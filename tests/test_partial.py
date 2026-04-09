@@ -11,7 +11,10 @@ def sample_file(tmp_path):
     path = tmp_path / "partial.medh5"
     rng = np.random.default_rng(99)
     image = rng.random((32, 64, 64), dtype=np.float32)
-    seg = rng.integers(0, 3, size=(32, 64, 64), dtype=np.uint8)
+    seg = {
+        "organ": rng.random((32, 64, 64)) > 0.6,
+        "lesion": rng.random((32, 64, 64)) > 0.9,
+    }
     MEDH5File.write(
         path,
         image=image,
@@ -33,8 +36,8 @@ class TestPartialRead:
     def test_seg_patch_read(self, sample_file):
         path, _, seg = sample_file
         with MEDH5File.open(path) as f:
-            patch = f["seg"][0:8, 0:16, 0:16]
-        np.testing.assert_array_equal(patch, seg[0:8, 0:16, 0:16])
+            patch = f["seg/organ"][0:8, 0:16, 0:16]
+        np.testing.assert_array_equal(patch, seg["organ"][0:8, 0:16, 0:16])
 
     def test_meta_from_open(self, sample_file):
         path, _, _ = sample_file
@@ -49,5 +52,7 @@ class TestPartialRead:
         path, _, _ = sample_file
         with MEDH5File.open(path) as f:
             keys = set(f.keys())
+            seg_keys = set(f["seg"].keys())
         assert "image" in keys
         assert "seg" in keys
+        assert seg_keys == {"organ", "lesion"}

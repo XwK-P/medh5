@@ -27,7 +27,10 @@ import numpy as np
 from medh5 import MEDH5File
 
 image = np.random.random((128, 256, 256)).astype(np.float32)
-seg   = np.random.randint(0, 4, size=image.shape, dtype=np.uint8)
+seg = {
+    "tumor": np.random.random(image.shape) > 0.9,
+    "liver": np.random.random(image.shape) > 0.5,
+}
 
 bboxes = np.array([
     [[10, 30], [40, 80], [50, 90]],   # box 1: [z_min,z_max], [y_min,y_max], [x_min,x_max]
@@ -61,13 +64,15 @@ from medh5 import MEDH5File
 
 sample = MEDH5File.read("sample.medh5")
 
-print(sample.image.shape)       # (128, 256, 256)
-print(sample.seg.shape)         # (128, 256, 256)
-print(sample.bboxes.shape)      # (2, 3, 2)
-print(sample.bbox_labels)       # ['tumor', 'cyst']
-print(sample.meta.label)        # 1
-print(sample.meta.spatial.spacing)  # [1.0, 0.5, 0.5]
-print(sample.meta.extra)        # {'modality': 'CT', 'patient_id': 'P001'}
+print(sample.image.shape)            # (128, 256, 256)
+print(list(sample.seg.keys()))       # ['liver', 'tumor']
+print(sample.seg["tumor"].dtype)     # bool
+print(sample.bboxes.shape)           # (2, 3, 2)
+print(sample.bbox_labels)            # ['tumor', 'cyst']
+print(sample.meta.label)             # 1
+print(sample.meta.seg_names)         # ['liver', 'tumor']
+print(sample.meta.spatial.spacing)   # [1.0, 0.5, 0.5]
+print(sample.meta.extra)             # {'modality': 'CT', 'patient_id': 'P001'}
 ```
 
 ### Partial / patch read (lazy)
@@ -78,8 +83,8 @@ For large datasets where loading the whole volume is impractical:
 from medh5 import MEDH5File
 
 with MEDH5File.open("sample.medh5") as f:
-    patch = f["image"][10:42, 50:114, 50:114]   # reads only required chunks
-    seg_patch = f["seg"][10:42, 50:114, 50:114]
+    patch = f["image"][10:42, 50:114, 50:114]          # reads only required chunks
+    tumor_patch = f["seg/tumor"][10:42, 50:114, 50:114]
 ```
 
 ### Metadata-only read
@@ -109,7 +114,10 @@ h5dump -A sample.medh5          # show all attributes
 ```
 sample.medh5
 ├── image          (dataset, N-D float32, Blosc2-compressed, chunked)
-├── seg            (dataset, N-D uint8, Blosc2-compressed, chunked, optional)
+├── seg/           (group, optional)
+│   ├── tumor      (dataset, N-D bool, Blosc2-compressed, chunked)
+│   ├── liver      (dataset, N-D bool, Blosc2-compressed, chunked)
+│   └── ...
 ├── bboxes         (dataset, [n, ndims, 2], optional)
 ├── bbox_scores    (dataset, [n], optional)
 ├── bbox_labels    (dataset, [n] variable-length string, optional)
@@ -118,6 +126,7 @@ sample.medh5
     ├── label: int or str
     ├── label_name: str
     ├── has_seg: bool
+    ├── seg_names: JSON list of mask names
     ├── has_bbox: bool
     └── extra: JSON string
 

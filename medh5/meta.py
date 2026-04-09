@@ -36,6 +36,7 @@ class SampleMeta:
     label: int | str | None = None
     label_name: str | None = None
     has_seg: bool = False
+    seg_names: list[str] | None = None
     has_bbox: bool = False
     patch_size: list[int] | None = None
     extra: dict[str, Any] | None = None
@@ -78,6 +79,8 @@ def write_meta(f: h5py.File, meta: SampleMeta) -> None:
     if meta.label_name is not None:
         f.attrs["label_name"] = meta.label_name
     f.attrs["has_seg"] = meta.has_seg
+    if meta.seg_names is not None:
+        f.attrs["seg_names"] = json.dumps(meta.seg_names)
     f.attrs["has_bbox"] = meta.has_bbox
     if meta.extra is not None:
         f.attrs["extra"] = json.dumps(meta.extra)
@@ -135,6 +138,14 @@ def read_meta(f: h5py.File) -> SampleMeta:
         label_name = label_name.decode()
 
     has_seg = bool(ra.get("has_seg", False))
+
+    seg_names: list[str] | None = None
+    if "seg_names" in ra:
+        raw_seg_names = ra["seg_names"]
+        if isinstance(raw_seg_names, bytes):
+            raw_seg_names = raw_seg_names.decode()
+        seg_names = json.loads(raw_seg_names)
+
     has_bbox = bool(ra.get("has_bbox", False))
 
     extra = None
@@ -153,6 +164,7 @@ def read_meta(f: h5py.File) -> SampleMeta:
         label=label,
         label_name=label_name,
         has_seg=has_seg,
+        seg_names=seg_names,
         has_bbox=has_bbox,
         patch_size=patch_size,
         extra=extra,

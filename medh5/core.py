@@ -26,7 +26,7 @@ class MEDH5Sample:
     """In-memory representation of everything in a ``.medh5`` file."""
 
     image: np.ndarray
-    seg: np.ndarray | None
+    seg: dict[str, np.ndarray] | None
     bboxes: np.ndarray | None
     bbox_scores: np.ndarray | None
     bbox_labels: list[str] | None
@@ -52,7 +52,7 @@ class MEDH5File:
         path: str | Path,
         image: np.ndarray,
         *,
-        seg: np.ndarray | None = None,
+        seg: dict[str, np.ndarray] | None = None,
         bboxes: np.ndarray | None = None,
         bbox_scores: np.ndarray | None = None,
         bbox_labels: list[str] | None = None,
@@ -77,8 +77,9 @@ class MEDH5File:
             Destination file path (must end with ``.medh5``).
         image : np.ndarray
             Image array (required).
-        seg : np.ndarray, optional
-            Segmentation mask with the same spatial shape as *image*.
+        seg : dict[str, np.ndarray], optional
+            Named binary segmentation masks.  Keys are mask names, values
+            are bool arrays with the same spatial shape as *image*.
         bboxes : np.ndarray, optional
             Bounding boxes shaped ``(n, ndims, 2)``  (min/max per axis).
         bbox_scores : np.ndarray, optional
@@ -136,17 +137,21 @@ class MEDH5File:
                 **blosc2_opts,
             )
 
+            seg_names: list[str] | None = None
             if seg is not None:
-                seg = np.ascontiguousarray(seg)
-                seg_chunks = tuple(
-                    min(c, s) for c, s in zip(chunks, seg.shape)
-                )
-                f.create_dataset(
-                    "seg",
-                    data=seg,
-                    chunks=seg_chunks,
-                    **blosc2_opts,
-                )
+                seg_grp = f.create_group("seg")
+                seg_names = sorted(seg.keys())
+                for name in seg_names:
+                    mask = np.ascontiguousarray(seg[name], dtype=bool)
+                    mask_chunks = tuple(
+                        min(c, s) for c, s in zip(chunks, mask.shape)
+                    )
+                    seg_grp.create_dataset(
+                        name,
+                        data=mask,
+                        chunks=mask_chunks,
+                        **blosc2_opts,
+                    )
 
             if bboxes is not None:
                 f.create_dataset("bboxes", data=np.asarray(bboxes))
@@ -177,6 +182,7 @@ class MEDH5File:
                 label=label,
                 label_name=label_name,
                 has_seg=seg is not None,
+                seg_names=seg_names,
                 has_bbox=bboxes is not None,
                 patch_size=list(ps_tuple),
                 extra=extra,
@@ -203,7 +209,8 @@ class MEDH5File:
 
             seg = None
             if "seg" in f:
-                seg = f["seg"][...]
+                seg_grp = f["seg"]
+                seg = {name: seg_grp[name][...] for name in seg_grp}
 
             bboxes = None
             if "bboxes" in f:

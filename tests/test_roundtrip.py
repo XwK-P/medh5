@@ -14,7 +14,10 @@ def tmp_path_medh5(tmp_path):
 def _make_sample():
     rng = np.random.default_rng(42)
     image = rng.random((32, 64, 64), dtype=np.float32)
-    seg = rng.integers(0, 4, size=(32, 64, 64), dtype=np.uint8)
+    seg = {
+        "tumor": rng.random((32, 64, 64)) > 0.8,
+        "liver": rng.random((32, 64, 64)) > 0.5,
+    }
     bboxes = np.array([
         [[2, 10], [5, 20], [5, 20]],
         [[12, 28], [40, 55], [30, 50]],
@@ -48,7 +51,10 @@ class TestFullRoundtrip:
         sample = MEDH5File.read(tmp_path_medh5)
 
         np.testing.assert_array_equal(sample.image, image)
-        np.testing.assert_array_equal(sample.seg, seg)
+        assert set(sample.seg.keys()) == set(seg.keys())
+        for name in seg:
+            np.testing.assert_array_equal(sample.seg[name], seg[name])
+            assert sample.seg[name].dtype == bool
         np.testing.assert_array_almost_equal(sample.bboxes, bboxes)
         np.testing.assert_array_almost_equal(sample.bbox_scores, bbox_scores)
         assert sample.bbox_labels == bbox_labels
@@ -57,6 +63,7 @@ class TestFullRoundtrip:
         assert m.label == 2
         assert m.label_name == "malignant"
         assert m.has_seg is True
+        assert m.seg_names == ["liver", "tumor"]
         assert m.has_bbox is True
         assert m.spatial.spacing == [1.0, 0.5, 0.5]
         assert m.spatial.origin == [0.0, 0.0, 0.0]
@@ -79,6 +86,7 @@ class TestFullRoundtrip:
         assert sample.bbox_labels is None
         assert sample.meta.label is None
         assert sample.meta.has_seg is False
+        assert sample.meta.seg_names is None
         assert sample.meta.has_bbox is False
 
     def test_string_label(self, tmp_path_medh5):
