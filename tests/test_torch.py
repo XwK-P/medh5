@@ -63,3 +63,20 @@ class TestMEDH5TorchDataset:
 
         ds = MEDH5TorchDataset(sample_files, transform=add_flag)
         assert ds[0]["transformed"] is True
+
+    def test_getitem_bboxes(self, tmp_path):
+        rng = np.random.default_rng(3)
+        path = tmp_path / "bbox_sample.medh5"
+        MEDH5File.write(
+            path,
+            images={"CT": rng.random((4, 8, 8), dtype=np.float32)},
+            bboxes=np.array([[[0, 3], [0, 3], [0, 3]], [[1, 4], [2, 5], [3, 6]]]),
+            bbox_scores=np.array([0.9, 0.75]),
+            bbox_labels=["tumor", "lesion"],
+        )
+        ds = MEDH5TorchDataset([path])
+        out = ds[0]
+        assert isinstance(out["bboxes"], torch.Tensor)
+        assert out["bboxes"].shape == (2, 3, 2)
+        assert isinstance(out["bbox_scores"], torch.Tensor)
+        assert out["bbox_labels"] == ["tumor", "lesion"]

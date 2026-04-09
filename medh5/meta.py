@@ -208,8 +208,7 @@ def read_meta(f: h5py.File) -> SampleMeta:
         from medh5.exceptions import MEDH5SchemaError
 
         raise MEDH5SchemaError(
-            f"Invalid schema version '{schema_version}'. "
-            "Expected an integer string."
+            f"Invalid schema version '{schema_version}'. Expected an integer string."
         ) from exc
 
     if schema_version_num > current_schema_num:

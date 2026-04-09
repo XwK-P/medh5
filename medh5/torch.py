@@ -16,12 +16,12 @@ try:
     import torch
 
     _TORCH_AVAILABLE = True
-except ImportError:
+except ImportError:  # pragma: no cover
     _TORCH_AVAILABLE = False
 
 
 def _require_torch() -> None:
-    if not _TORCH_AVAILABLE:
+    if not _TORCH_AVAILABLE:  # pragma: no cover
         raise ImportError(
             "PyTorch is required for MEDH5TorchDataset. "
             "Install it with: pip install medh5[torch]"

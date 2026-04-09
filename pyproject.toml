@@ -53,3 +53,8 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 strict = true
 warn_return_any = true
 warn_unused_configs = true
+
+[[tool.mypy.overrides]]
+module = ["h5py", "h5py.*", "hdf5plugin", "hdf5plugin.*", "torch", "torch.*"]
+ignore_missing_imports = true
+follow_imports = "skip"

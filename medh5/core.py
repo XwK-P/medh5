@@ -23,6 +23,23 @@ from medh5.meta import SampleMeta, SpatialMeta, read_meta, write_meta
 
 _SUFFIX = ".medh5"
 
+
+class _UnsetType:
+    """Sentinel type used so ``None`` can be distinguished from 'not provided'."""
+
+    _instance: _UnsetType | None = None
+
+    def __new__(cls) -> _UnsetType:
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __repr__(self) -> str:
+        return "UNSET"
+
+
+_UNSET = _UnsetType()
+
 _COMPRESSION_PRESETS: dict[str, tuple[str, int]] = {
     "fast": ("lz4", 3),
     "balanced": ("lz4hc", 8),
@@ -518,15 +535,15 @@ class MEDH5File:
     def update_meta(
         path: str | Path,
         *,
-        label: int | str | None = ...,  # type: ignore[assignment]
-        label_name: str | None = ...,  # type: ignore[assignment]
-        extra: dict[str, Any] | None = ...,  # type: ignore[assignment]
+        label: int | str | None | _UnsetType = _UNSET,
+        label_name: str | None | _UnsetType = _UNSET,
+        extra: dict[str, Any] | None | _UnsetType = _UNSET,
     ) -> None:
         """Update metadata attributes on an existing file.
 
         Only the provided keyword arguments are updated; omitted fields
-        are left unchanged.  Uses ``...`` (``Ellipsis``) as the default
-        sentinel so that ``None`` can be written explicitly.
+        are left unchanged.  Uses an ``_UNSET`` sentinel so that ``None``
+        can be written explicitly.
 
         Raises
         ------
@@ -542,17 +559,17 @@ class MEDH5File:
 
         try:
             with h5py.File(str(path), "a") as f:
-                if label is not ...:
+                if not isinstance(label, _UnsetType):
                     if label is None:
                         f.attrs.pop("label", None)
                     else:
                         f.attrs["label"] = label
-                if label_name is not ...:
+                if not isinstance(label_name, _UnsetType):
                     if label_name is None:
                         f.attrs.pop("label_name", None)
                     else:
                         f.attrs["label_name"] = label_name
-                if extra is not ...:
+                if not isinstance(extra, _UnsetType):
                     if extra is None:
                         f.attrs.pop("extra", None)
                     else:

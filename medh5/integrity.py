@@ -41,4 +41,4 @@ def verify_checksum(f: h5py.File) -> bool:
         return True
     if isinstance(stored, bytes):
         stored = stored.decode()
-    return compute_checksum(f) == stored
+    return bool(compute_checksum(f) == stored)

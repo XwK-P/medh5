@@ -123,3 +123,17 @@ class TestRepr:
         assert "SampleMeta" in r
         assert "CT" in r
         assert "spacing" in r
+
+    def test_meta_repr_with_bbox_and_extra(self, tmp_path):
+        path = tmp_path / "bbox_extra.medh5"
+        rng = np.random.default_rng(0)
+        MEDH5File.write(
+            path,
+            images={"CT": rng.random((4, 8, 8), dtype=np.float32)},
+            bboxes=np.array([[[0, 3], [0, 3], [0, 3]]]),
+            extra={"study_id": "S42"},
+        )
+        meta = MEDH5File.read_meta(path)
+        r = repr(meta)
+        assert "has_bbox=True" in r
+        assert "study_id" in r

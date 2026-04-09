@@ -171,10 +171,12 @@ def optimize_chunks(
             chunk = base
             break
 
-    chunk = [min(int(c), int(s)) for c, s in zip(chunk, img, strict=True)]
+    chunk_list: list[int] = [
+        min(int(c), int(s)) for c, s in zip(chunk, img, strict=True)
+    ]
 
     if non_spatial_axis is not None:
-        chunk = _move(chunk, 0, non_spatial_axis + num_squeezes)
+        chunk_list = _move(chunk_list, 0, non_spatial_axis + num_squeezes)
 
-    chunk = chunk[num_squeezes:]
-    return tuple(int(v) for v in chunk)
+    chunk_list = chunk_list[num_squeezes:]
+    return tuple(int(v) for v in chunk_list)
