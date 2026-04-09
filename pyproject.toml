@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "medh5"
-version = "0.1.0"
-description = "Thin HDF5 + Blosc2 multi-array format for ML workloads (image + segmentation + bboxes + label in one file)."
+version = "0.2.0"
+description = "Thin HDF5 + Blosc2 multi-array format for ML workloads (multi-modality images + segmentation + bboxes + label in one file)."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -25,8 +25,31 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "pytest>=7.0",
+  "pytest-cov>=4.0",
+  "ruff>=0.4",
+  "mypy>=1.0",
 ]
+torch = [
+  "torch>=2.0",
+]
+
+[project.scripts]
+medh5 = "medh5.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["medh5*"]
+
+[tool.pytest.ini_options]
+addopts = "--cov=medh5 --cov-report=term-missing"
+
+[tool.ruff]
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+strict = true
+warn_return_any = true
+warn_unused_configs = true

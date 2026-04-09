@@ -11,9 +11,42 @@ The default cache constants come from an Intel Xeon Silver 4110:
 from __future__ import annotations
 
 import math
-from copy import deepcopy
+import os
 
 import numpy as np
+
+_CHUNK_OVERSHOOT_LIMIT = 1.5
+"""Maximum allowed ratio of chunk size to patch size (per-axis average).
+
+When growing chunks to fill the L3 cache budget, we stop expanding if
+the mean ratio ``chunk / patch_size`` across spatial axes exceeds this
+value.  Keeping chunks close to the patch size avoids reading excessive
+unused data during patch-based training.
+"""
+
+_DEFAULT_L3_BYTES = 1_441_792
+
+
+def _detect_l3_cache_bytes() -> int | None:
+    """Try to detect L3 cache size from the OS.  Returns *None* on failure."""
+    try:
+        raw = os.popen("sysctl -n hw.l3cachesize 2>/dev/null").read().strip()
+        if raw.isdigit():
+            return int(raw)
+    except OSError:
+        pass
+    try:
+        with open("/sys/devices/system/cpu/cpu0/cache/index3/size") as fh:
+            raw = fh.read().strip()
+        if raw.endswith("K"):
+            return int(raw[:-1]) * 1024
+        if raw.endswith("M"):
+            return int(raw[:-1]) * 1024 * 1024
+        if raw.isdigit():
+            return int(raw)
+    except (FileNotFoundError, OSError, ValueError):
+        pass
+    return None
 
 
 def optimize_chunks(
@@ -21,7 +54,7 @@ def optimize_chunks(
     patch_size: tuple[int, ...] | int,
     bytes_per_element: int = 4,
     spatial_axis_mask: list[bool] | None = None,
-    l3_bytes: int = 1_441_792,
+    l3_bytes: int | None = None,
     safety: float = 0.8,
 ) -> tuple[int, ...]:
     """Return an HDF5 chunk shape optimized for patch-based reads.
@@ -39,10 +72,14 @@ def optimize_chunks(
         Boolean mask of length ``len(image_shape)`` indicating which axes
         are spatial.  When *None* every axis is treated as spatial.
     l3_bytes:
-        L3 cache per core in bytes.
+        L3 cache per core in bytes.  When *None* the optimizer tries to
+        auto-detect the L3 cache from the OS and falls back to a
+        conservative default (≈ 1.375 MiB).
     safety:
         Fraction of the cache to target (avoids filling it to the brim).
     """
+    if l3_bytes is None:
+        l3_bytes = _detect_l3_cache_bytes() or _DEFAULT_L3_BYTES
 
     image_shape = tuple(int(s) for s in image_shape)
     ndim = len(image_shape)
@@ -72,7 +109,7 @@ def optimize_chunks(
             f"spatial axes ({spatial_ndim})"
         )
 
-    def _move(lst, src, dst):
+    def _move(lst: list[int], src: int, dst: int) -> list[int]:
         lst = list(lst)
         val = lst.pop(src)
         lst.insert(dst, val)
@@ -103,16 +140,15 @@ def optimize_chunks(
         ps = [1] + ps
     ps_arr = np.array(ps)
 
-    chunk = np.array(
-        (img[0], *[2 ** max(0, math.ceil(math.log2(p))) for p in ps_arr])
-    )
-    chunk = np.array([min(c, s) for c, s in zip(chunk, img)])
+    chunk = np.array((img[0], *[2 ** max(0, math.ceil(math.log2(p))) for p in ps_arr]))
+    chunk = np.array([min(c, s) for c, s in zip(chunk, img, strict=True)])
 
     budget = l3_bytes * safety
 
     estimated = int(np.prod(chunk)) * bytes_per_element
     while estimated < budget:
-        if ps_arr[0] == 1 and all(chunk[2 + i] == img[2 + i] for i in range(len(ps_arr) - 1)):
+        tail_match = all(chunk[2 + i] == img[2 + i] for i in range(len(ps_arr) - 1))
+        if ps_arr[0] == 1 and tail_match:
             break
         if all(chunk[i] == img[i] for i in range(4)):
             break
@@ -131,11 +167,11 @@ def optimize_chunks(
         chunk[picked + 1] = min(chunk[picked + 1] + step, img[picked + 1])
         estimated = int(np.prod(chunk)) * bytes_per_element
 
-        if np.mean(chunk[1:] / ps_arr) > 1.5:
+        if np.mean(chunk[1:] / ps_arr) > _CHUNK_OVERSHOOT_LIMIT:
             chunk = base
             break
 
-    chunk = [min(int(c), int(s)) for c, s in zip(chunk, img)]
+    chunk = [min(int(c), int(s)) for c, s in zip(chunk, img, strict=True)]
 
     if non_spatial_axis is not None:
         chunk = _move(chunk, 0, non_spatial_axis + num_squeezes)

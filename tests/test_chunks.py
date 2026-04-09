@@ -14,7 +14,7 @@ class TestOptimizeChunks:
         )
         assert len(chunks) == 3
         assert all(c > 0 for c in chunks)
-        assert all(c <= s for c, s in zip(chunks, (128, 256, 256)))
+        assert all(c <= s for c, s in zip(chunks, (128, 256, 256), strict=True))
 
     def test_2d_basic(self):
         chunks = optimize_chunks(
@@ -28,7 +28,7 @@ class TestOptimizeChunks:
     def test_chunk_le_image(self):
         shape = (64, 64, 64)
         chunks = optimize_chunks(shape, patch_size=192, bytes_per_element=4)
-        for c, s in zip(chunks, shape):
+        for c, s in zip(chunks, shape, strict=True):
             assert c <= s
 
     def test_small_image_equals_image(self):

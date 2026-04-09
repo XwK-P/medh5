@@ -8,6 +8,7 @@ without any custom library.
 from __future__ import annotations
 
 import json
+import warnings
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -19,7 +20,7 @@ SCHEMA_VERSION = "1"
 
 @dataclass
 class SpatialMeta:
-    """Geometry metadata attached to the *image* dataset."""
+    """Geometry metadata shared by all images in a sample."""
 
     spacing: list[float] | None = None
     origin: list[float] | None = None
@@ -33,6 +34,7 @@ class SampleMeta:
     """Top-level metadata for a single ``.medh5`` sample."""
 
     spatial: SpatialMeta = field(default_factory=SpatialMeta)
+    image_names: list[str] | None = None
     label: int | str | None = None
     label_name: str | None = None
     has_seg: bool = False
@@ -41,6 +43,22 @@ class SampleMeta:
     patch_size: list[int] | None = None
     extra: dict[str, Any] | None = None
     schema_version: str = SCHEMA_VERSION
+
+    def __repr__(self) -> str:
+        parts = [f"schema_version={self.schema_version!r}"]
+        if self.image_names is not None:
+            parts.append(f"image_names={self.image_names}")
+        if self.label is not None:
+            parts.append(f"label={self.label!r}")
+        if self.has_seg and self.seg_names is not None:
+            parts.append(f"seg_names={self.seg_names}")
+        if self.has_bbox:
+            parts.append("has_bbox=True")
+        if self.spatial.spacing is not None:
+            parts.append(f"spacing={self.spatial.spacing}")
+        if self.extra is not None:
+            parts.append(f"extra={self.extra!r}")
+        return f"SampleMeta({', '.join(parts)})"
 
     def validate(self, ndim: int | None = None) -> None:
         """Raise on obviously invalid metadata."""
@@ -59,9 +77,10 @@ class SampleMeta:
             for row in s.direction:
                 if not all(isinstance(v, (int, float)) for v in row):
                     raise TypeError("direction must contain only numbers")
-        if s.axis_labels is not None:
-            if not all(isinstance(v, str) for v in s.axis_labels):
-                raise TypeError("axis_labels must be strings")
+        if s.axis_labels is not None and not all(
+            isinstance(v, str) for v in s.axis_labels
+        ):
+            raise TypeError("axis_labels must be strings")
         if self.extra is not None:
             json.dumps(self.extra)  # raises on non-serializable values
 
@@ -70,10 +89,16 @@ class SampleMeta:
 # HDF5 attribute I/O
 # ---------------------------------------------------------------------------
 
-def write_meta(f: h5py.File, meta: SampleMeta) -> None:
-    """Persist *meta* as HDF5 attributes on *f* (root + ``image`` dataset)."""
 
+def write_meta(f: h5py.File, meta: SampleMeta) -> None:
+    """Persist *meta* as HDF5 attributes on *f*.
+
+    Root attributes hold scalar/label/flag metadata.  Spatial metadata is
+    stored on the ``images`` group so it applies to every modality equally.
+    """
     f.attrs["schema_version"] = meta.schema_version
+    if meta.image_names is not None:
+        f.attrs["image_names"] = json.dumps(meta.image_names)
     if meta.label is not None:
         f.attrs["label"] = meta.label
     if meta.label_name is not None:
@@ -85,22 +110,22 @@ def write_meta(f: h5py.File, meta: SampleMeta) -> None:
     if meta.extra is not None:
         f.attrs["extra"] = json.dumps(meta.extra)
 
-    if "image" not in f:
+    if "images" not in f:
         return
-    ds = f["image"]
+    grp = f["images"]
     s = meta.spatial
     if s.spacing is not None:
-        ds.attrs["spacing"] = np.asarray(s.spacing, dtype=np.float64)
+        grp.attrs["spacing"] = np.asarray(s.spacing, dtype=np.float64)
     if s.origin is not None:
-        ds.attrs["origin"] = np.asarray(s.origin, dtype=np.float64)
+        grp.attrs["origin"] = np.asarray(s.origin, dtype=np.float64)
     if s.direction is not None:
-        ds.attrs["direction"] = np.asarray(s.direction, dtype=np.float64).ravel()
+        grp.attrs["direction"] = np.asarray(s.direction, dtype=np.float64).ravel()
     if s.axis_labels is not None:
-        ds.attrs["axis_labels"] = s.axis_labels
+        grp.attrs["axis_labels"] = s.axis_labels
     if s.coord_system is not None:
-        ds.attrs["coord_system"] = s.coord_system
+        grp.attrs["coord_system"] = s.coord_system
     if meta.patch_size is not None:
-        ds.attrs["patch_size"] = np.asarray(meta.patch_size, dtype=np.int64)
+        grp.attrs["patch_size"] = np.asarray(meta.patch_size, dtype=np.int64)
 
 
 def read_meta(f: h5py.File) -> SampleMeta:
@@ -109,16 +134,24 @@ def read_meta(f: h5py.File) -> SampleMeta:
     spatial = SpatialMeta()
     patch_size = None
 
-    if "image" in f:
-        a = f["image"].attrs
+    if "images" in f:
+        a = f["images"].attrs
         if "spacing" in a:
             spatial.spacing = a["spacing"].tolist()
         if "origin" in a:
             spatial.origin = a["origin"].tolist()
         if "direction" in a:
             raw = np.asarray(a["direction"])
-            ndim = len(f["image"].shape)
-            spatial.direction = raw.reshape(ndim, ndim).tolist()
+            first_key = next(iter(f["images"]))
+            ndim = len(f["images"][first_key].shape)
+            if raw.size != ndim * ndim:
+                warnings.warn(
+                    f"Malformed direction attribute: expected {ndim * ndim} "
+                    f"elements but got {raw.size}; skipping.",
+                    stacklevel=2,
+                )
+            else:
+                spatial.direction = raw.reshape(ndim, ndim).tolist()
         if "axis_labels" in a:
             spatial.axis_labels = list(a["axis_labels"])
         if "coord_system" in a:
@@ -127,6 +160,14 @@ def read_meta(f: h5py.File) -> SampleMeta:
             patch_size = a["patch_size"].tolist()
 
     ra = f.attrs
+
+    image_names: list[str] | None = None
+    if "image_names" in ra:
+        raw_image_names = ra["image_names"]
+        if isinstance(raw_image_names, bytes):
+            raw_image_names = raw_image_names.decode()
+        image_names = json.loads(raw_image_names)
+
     label = ra.get("label")
     if isinstance(label, bytes):
         label = label.decode()
@@ -155,12 +196,33 @@ def read_meta(f: h5py.File) -> SampleMeta:
             raw_extra = raw_extra.decode()
         extra = json.loads(raw_extra)
 
-    schema_version = str(ra.get("schema_version", SCHEMA_VERSION))
-    if isinstance(schema_version, bytes):
-        schema_version = schema_version.decode()
+    raw_schema_version = ra.get("schema_version", SCHEMA_VERSION)
+    if isinstance(raw_schema_version, bytes):
+        raw_schema_version = raw_schema_version.decode()
+    schema_version = str(raw_schema_version)
+
+    try:
+        schema_version_num = int(schema_version)
+        current_schema_num = int(SCHEMA_VERSION)
+    except ValueError as exc:
+        from medh5.exceptions import MEDH5SchemaError
+
+        raise MEDH5SchemaError(
+            f"Invalid schema version '{schema_version}'. "
+            "Expected an integer string."
+        ) from exc
+
+    if schema_version_num > current_schema_num:
+        from medh5.exceptions import MEDH5SchemaError
+
+        raise MEDH5SchemaError(
+            f"File has schema version '{schema_version}' but this library "
+            f"only supports up to '{SCHEMA_VERSION}'. Upgrade medh5."
+        )
 
     return SampleMeta(
         spatial=spatial,
+        image_names=image_names,
         label=label,
         label_name=label_name,
         has_seg=has_seg,
