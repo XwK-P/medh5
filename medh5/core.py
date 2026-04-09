@@ -1,6 +1,6 @@
-"""Core read/write API for ``.mlh5`` files.
+"""Core read/write API for ``.medh5`` files.
 
-A single ``.mlh5`` file stores image + segmentation + bounding boxes +
+A single ``.medh5`` file stores image + segmentation + bounding boxes +
 image-level label using HDF5 datasets and attributes with Blosc2
 compression provided by *hdf5plugin*.
 """
@@ -15,15 +15,15 @@ import h5py
 import hdf5plugin  # noqa: F401 – registers the Blosc2 filter
 import numpy as np
 
-from mlh5.chunks import optimize_chunks
-from mlh5.meta import SampleMeta, SpatialMeta, read_meta, write_meta
+from medh5.chunks import optimize_chunks
+from medh5.meta import SampleMeta, SpatialMeta, read_meta, write_meta
 
-_SUFFIX = ".mlh5"
+_SUFFIX = ".medh5"
 
 
 @dataclass
-class MLH5Sample:
-    """In-memory representation of everything in a ``.mlh5`` file."""
+class MEDH5Sample:
+    """In-memory representation of everything in a ``.medh5`` file."""
 
     image: np.ndarray
     seg: np.ndarray | None
@@ -33,14 +33,14 @@ class MLH5Sample:
     meta: SampleMeta
 
 
-class MLH5File:
-    """Static helpers for reading / writing ``.mlh5`` files.
+class MEDH5File:
+    """Static helpers for reading / writing ``.medh5`` files.
 
     Usage::
 
-        MLH5File.write("sample.mlh5", image=arr, seg=seg, label=1)
-        sample = MLH5File.read("sample.mlh5")
-        f = MLH5File.open("sample.mlh5")  # lazy h5py.File
+        MEDH5File.write("sample.medh5", image=arr, seg=seg, label=1)
+        sample = MEDH5File.read("sample.medh5")
+        f = MEDH5File.open("sample.medh5")  # lazy h5py.File
     """
 
     # ------------------------------------------------------------------
@@ -69,12 +69,12 @@ class MLH5File:
         cname: str = "lz4hc",
         clevel: int = 8,
     ) -> None:
-        """Write a complete sample to a ``.mlh5`` file.
+        """Write a complete sample to a ``.medh5`` file.
 
         Parameters
         ----------
         path : str or Path
-            Destination file path (must end with ``.mlh5``).
+            Destination file path (must end with ``.medh5``).
         image : np.ndarray
             Image array (required).
         seg : np.ndarray, optional
@@ -189,10 +189,10 @@ class MLH5File:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def read(path: str | Path) -> MLH5Sample:
-        """Read all contents of a ``.mlh5`` file into memory.
+    def read(path: str | Path) -> MEDH5Sample:
+        """Read all contents of a ``.medh5`` file into memory.
 
-        Returns an :class:`MLH5Sample` with numpy arrays and metadata.
+        Returns an :class:`MEDH5Sample` with numpy arrays and metadata.
         """
         path = Path(path)
         if path.suffix != _SUFFIX:
@@ -222,7 +222,7 @@ class MLH5File:
 
             meta = read_meta(f)
 
-        return MLH5Sample(
+        return MEDH5Sample(
             image=image,
             seg=seg,
             bboxes=bboxes,
@@ -237,14 +237,14 @@ class MLH5File:
 
     @staticmethod
     def open(path: str | Path, mode: str = "r") -> h5py.File:
-        """Open a ``.mlh5`` file for lazy / partial access.
+        """Open a ``.medh5`` file for lazy / partial access.
 
         Returns a raw :class:`h5py.File`.  The caller is responsible for
         closing it (or using it as a context manager).
 
         Example::
 
-            with MLH5File.open("sample.mlh5") as f:
+            with MEDH5File.open("sample.medh5") as f:
                 patch = f["image"][10:20, 50:60, 50:60]
         """
         path = Path(path)

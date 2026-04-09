@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "mlh5"
+name = "medh5"
 version = "0.1.0"
 description = "Thin HDF5 + Blosc2 multi-array format for ML workloads (image + segmentation + bboxes + label in one file)."
 readme = "README.md"
@@ -29,4 +29,4 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["mlh5*"]
+include = ["medh5*"]

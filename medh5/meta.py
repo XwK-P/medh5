@@ -30,7 +30,7 @@ class SpatialMeta:
 
 @dataclass
 class SampleMeta:
-    """Top-level metadata for a single ``.mlh5`` sample."""
+    """Top-level metadata for a single ``.medh5`` sample."""
 
     spatial: SpatialMeta = field(default_factory=SpatialMeta)
     label: int | str | None = None

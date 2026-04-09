@@ -1,14 +1,14 @@
-"""Write a .mlh5 file with every field populated, read it back, verify."""
+"""Write a .medh5 file with every field populated, read it back, verify."""
 
 import numpy as np
 import pytest
 
-from mlh5 import MLH5File, MLH5Sample
+from medh5 import MEDH5File, MEDH5Sample
 
 
 @pytest.fixture
-def tmp_path_mlh5(tmp_path):
-    return tmp_path / "sample.mlh5"
+def tmp_path_medh5(tmp_path):
+    return tmp_path / "sample.medh5"
 
 
 def _make_sample():
@@ -25,10 +25,10 @@ def _make_sample():
 
 
 class TestFullRoundtrip:
-    def test_all_fields(self, tmp_path_mlh5):
+    def test_all_fields(self, tmp_path_medh5):
         image, seg, bboxes, bbox_scores, bbox_labels = _make_sample()
-        MLH5File.write(
-            tmp_path_mlh5,
+        MEDH5File.write(
+            tmp_path_medh5,
             image=image,
             seg=seg,
             bboxes=bboxes,
@@ -45,7 +45,7 @@ class TestFullRoundtrip:
             extra={"modality": "CT", "patient_id": "P001"},
         )
 
-        sample = MLH5File.read(tmp_path_mlh5)
+        sample = MEDH5File.read(tmp_path_medh5)
 
         np.testing.assert_array_equal(sample.image, image)
         np.testing.assert_array_equal(sample.seg, seg)
@@ -66,12 +66,12 @@ class TestFullRoundtrip:
         assert m.extra == {"modality": "CT", "patient_id": "P001"}
         assert m.schema_version == "1"
 
-    def test_image_only(self, tmp_path_mlh5):
+    def test_image_only(self, tmp_path_medh5):
         rng = np.random.default_rng(0)
         image = rng.random((16, 32, 32), dtype=np.float32)
-        MLH5File.write(tmp_path_mlh5, image=image)
+        MEDH5File.write(tmp_path_medh5, image=image)
 
-        sample = MLH5File.read(tmp_path_mlh5)
+        sample = MEDH5File.read(tmp_path_medh5)
         np.testing.assert_array_equal(sample.image, image)
         assert sample.seg is None
         assert sample.bboxes is None
@@ -81,24 +81,24 @@ class TestFullRoundtrip:
         assert sample.meta.has_seg is False
         assert sample.meta.has_bbox is False
 
-    def test_string_label(self, tmp_path_mlh5):
+    def test_string_label(self, tmp_path_medh5):
         image = np.zeros((8, 8, 8), dtype=np.float32)
-        MLH5File.write(tmp_path_mlh5, image=image, label="benign")
+        MEDH5File.write(tmp_path_medh5, image=image, label="benign")
 
-        sample = MLH5File.read(tmp_path_mlh5)
+        sample = MEDH5File.read(tmp_path_medh5)
         assert sample.meta.label == "benign"
 
-    def test_meta_only_read(self, tmp_path_mlh5):
+    def test_meta_only_read(self, tmp_path_medh5):
         image = np.zeros((8, 8, 8), dtype=np.float32)
-        MLH5File.write(
-            tmp_path_mlh5,
+        MEDH5File.write(
+            tmp_path_medh5,
             image=image,
             label=5,
             spacing=[1.0, 1.0, 2.0],
             extra={"key": "value"},
         )
 
-        meta = MLH5File.read_meta(tmp_path_mlh5)
+        meta = MEDH5File.read_meta(tmp_path_medh5)
         assert meta.label == 5
         assert meta.spatial.spacing == [1.0, 1.0, 2.0]
         assert meta.extra == {"key": "value"}
@@ -106,6 +106,6 @@ class TestFullRoundtrip:
     def test_bad_extension_raises(self, tmp_path):
         image = np.zeros((4, 4), dtype=np.float32)
         with pytest.raises(ValueError, match="extension"):
-            MLH5File.write(tmp_path / "bad.hdf5", image=image)
+            MEDH5File.write(tmp_path / "bad.hdf5", image=image)
         with pytest.raises(ValueError, match="extension"):
-            MLH5File.read(tmp_path / "bad.hdf5")
+            MEDH5File.read(tmp_path / "bad.hdf5")
