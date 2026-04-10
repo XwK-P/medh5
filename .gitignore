@@ -10,3 +10,4 @@ build/
 .ruff_cache/
 .coverage
 htmlcov/
+.DS_Store

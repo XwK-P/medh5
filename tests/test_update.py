@@ -42,6 +42,26 @@ class TestUpdateMeta:
         meta = MEDH5File.read_meta(sample_file)
         assert meta.label_name == "benign"
 
+    def test_unified_update_meta_and_spatial(self, sample_file):
+        MEDH5File.update(
+            sample_file,
+            meta={
+                "label": 7,
+                "label_name": "reviewed",
+                "extra": {"key": "new"},
+                "spacing": [1.0, 2.0, 3.0],
+                "coord_system": "RAS",
+                "patch_size": [4, 8, 8],
+            },
+        )
+        meta = MEDH5File.read_meta(sample_file)
+        assert meta.label == 7
+        assert meta.label_name == "reviewed"
+        assert meta.extra == {"key": "new"}
+        assert meta.spatial.spacing == [1.0, 2.0, 3.0]
+        assert meta.spatial.coord_system == "RAS"
+        assert meta.patch_size == [4, 8, 8]
+
 
 class TestAddSeg:
     def test_add_seg_to_file_without_seg(self, sample_file):
@@ -78,3 +98,68 @@ class TestAddSeg:
         MEDH5File.add_seg(sample_file, "tumor", mask)
         with pytest.raises(MEDH5ValidationError, match="already exists"):
             MEDH5File.add_seg(sample_file, "tumor", mask)
+
+    def test_update_replace_and_remove_seg(self, sample_file):
+        mask = np.zeros((8, 16, 16), dtype=bool)
+        mask[0, 0, 0] = True
+        MEDH5File.update(sample_file, seg_ops={"add": {"tumor": mask}})
+
+        replacement = np.ones((8, 16, 16), dtype=bool)
+        MEDH5File.update(sample_file, seg_ops={"replace": {"tumor": replacement}})
+        sample = MEDH5File.read(sample_file)
+        assert sample.seg is not None
+        np.testing.assert_array_equal(sample.seg["tumor"], replacement)
+
+        MEDH5File.update(sample_file, seg_ops={"remove": ["tumor"]})
+        sample = MEDH5File.read(sample_file)
+        assert sample.seg is None
+        assert sample.meta.has_seg is False
+        assert sample.meta.seg_names is None
+
+    def test_failed_replace_does_not_create_empty_seg_group(self, sample_file):
+        with pytest.raises(MEDH5ValidationError, match="does not exist"):
+            MEDH5File.update(
+                sample_file,
+                seg_ops={"replace": {"tumor": np.zeros((8, 16, 16), dtype=bool)}},
+            )
+
+        sample = MEDH5File.read(sample_file)
+        assert sample.seg is None
+        assert sample.meta.has_seg is False
+        assert sample.meta.seg_names is None
+
+    def test_failed_remove_does_not_partially_delete_masks(self, sample_file):
+        mask = np.zeros((8, 16, 16), dtype=bool)
+        MEDH5File.update(
+            sample_file,
+            seg_ops={"add": {"tumor": mask, "organ": mask}},
+        )
+
+        with pytest.raises(MEDH5ValidationError, match="does not exist"):
+            MEDH5File.update(sample_file, seg_ops={"remove": ["tumor", "missing"]})
+
+        sample = MEDH5File.read(sample_file)
+        assert sample.seg is not None
+        assert set(sample.seg) == {"tumor", "organ"}
+
+    def test_update_bbox_payload(self, sample_file):
+        bboxes = np.array([[[1, 2], [3, 4], [5, 6]]], dtype=np.int64)
+        scores = np.array([0.9], dtype=np.float32)
+        labels = ["tumor"]
+        MEDH5File.update(
+            sample_file,
+            bbox_ops={
+                "bboxes": bboxes,
+                "bbox_scores": scores,
+                "bbox_labels": labels,
+            },
+        )
+        sample = MEDH5File.read(sample_file)
+        np.testing.assert_array_equal(sample.bboxes, bboxes)
+        np.testing.assert_array_equal(sample.bbox_scores, scores)
+        assert sample.bbox_labels == labels
+
+        MEDH5File.update(sample_file, bbox_ops={"clear": True})
+        sample = MEDH5File.read(sample_file)
+        assert sample.bboxes is None
+        assert sample.meta.has_bbox is False

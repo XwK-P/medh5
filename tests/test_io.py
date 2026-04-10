@@ -105,6 +105,121 @@ class TestFromNifti:
         with pytest.raises(MEDH5ValidationError, match="at least one"):
             from_nifti(images={}, out_path=tmp_path / "x.medh5")
 
+    def test_resample_to_reference_modality(self, tmp_path):
+        pytest.importorskip("SimpleITK")
+        from medh5.io import from_nifti
+
+        ct = np.ones((8, 16, 16), dtype=np.float32)
+        pet = np.ones((4, 8, 8), dtype=np.float32) * 5.0
+        tumor = np.zeros((4, 8, 8), dtype=np.uint8)
+        tumor[1:3, 2:6, 2:6] = 1
+
+        ct_p = tmp_path / "ct.nii.gz"
+        pet_p = tmp_path / "pet.nii.gz"
+        tumor_p = tmp_path / "tumor.nii.gz"
+        _write_nifti(ct_p, ct, _make_affine([1.0, 1.0, 1.0], [0.0, 0.0, 0.0]))
+        _write_nifti(pet_p, pet, _make_affine([2.0, 2.0, 2.0], [0.0, 0.0, 0.0]))
+        _write_nifti(tumor_p, tumor, _make_affine([2.0, 2.0, 2.0], [0.0, 0.0, 0.0]))
+
+        out = tmp_path / "resampled.medh5"
+        from_nifti(
+            images={"CT": ct_p, "PET": pet_p},
+            seg={"tumor": tumor_p},
+            out_path=out,
+            resample_to="CT",
+        )
+
+        sample = MEDH5File.read(out)
+        assert sample.images["CT"].shape == (8, 16, 16)
+        assert sample.images["PET"].shape == (8, 16, 16)
+        assert sample.seg is not None
+        assert sample.seg["tumor"].shape == (8, 16, 16)
+        assert sample.seg["tumor"].dtype == bool
+        assert sample.seg["tumor"].any()
+
+    def test_affine_mismatch_raises(self, tmp_path):
+        from medh5.io import from_nifti
+
+        ct = np.zeros((4, 8, 8), dtype=np.float32)
+        pet = np.zeros((4, 8, 8), dtype=np.float32)
+        ct_p = tmp_path / "ct.nii.gz"
+        pet_p = tmp_path / "pet.nii.gz"
+        _write_nifti(ct_p, ct, _make_affine([1.0, 1.0, 1.0], [0.0, 0.0, 0.0]))
+        _write_nifti(pet_p, pet, _make_affine([1.0, 1.0, 1.0], [5.0, 0.0, 0.0]))
+
+        with pytest.raises(MEDH5ValidationError, match="affine mismatch"):
+            from_nifti(images={"CT": ct_p, "PET": pet_p}, out_path=tmp_path / "x.medh5")
+
+    def test_seg_affine_mismatch_raises(self, tmp_path):
+        from medh5.io import from_nifti
+
+        ct = np.zeros((4, 8, 8), dtype=np.float32)
+        tumor = np.zeros((4, 8, 8), dtype=np.uint8)
+        ct_p = tmp_path / "ct.nii.gz"
+        tumor_p = tmp_path / "tumor.nii.gz"
+        _write_nifti(ct_p, ct, _make_affine([1.0, 1.0, 1.0], [0.0, 0.0, 0.0]))
+        _write_nifti(
+            tumor_p,
+            tumor,
+            _make_affine([1.0, 1.0, 1.0], [0.0, 2.0, 0.0]),
+        )
+
+        with pytest.raises(MEDH5ValidationError, match="affine does not match"):
+            from_nifti(
+                images={"CT": ct_p},
+                seg={"tumor": tumor_p},
+                out_path=tmp_path / "x.medh5",
+            )
+
+    def test_resample_to_external_reference(self, tmp_path):
+        pytest.importorskip("SimpleITK")
+        from medh5.io import from_nifti
+
+        ct = np.ones((4, 4, 4), dtype=np.float32)
+        ref = np.zeros((8, 8, 8), dtype=np.float32)
+        ct_p = tmp_path / "ct.nii.gz"
+        ref_p = tmp_path / "ref.nii.gz"
+        _write_nifti(ct_p, ct, _make_affine([2.0, 2.0, 2.0], [0.0, 0.0, 0.0]))
+        _write_nifti(ref_p, ref, _make_affine([1.0, 1.0, 1.0], [0.0, 0.0, 0.0]))
+
+        out = tmp_path / "external_ref.medh5"
+        from_nifti(images={"CT": ct_p}, out_path=out, resample_to=ref_p)
+        sample = MEDH5File.read(out)
+        assert sample.images["CT"].shape == (8, 8, 8)
+
+    def test_import_seg_nifti_replace_and_mismatch(self, tmp_path):
+        pytest.importorskip("SimpleITK")
+        from medh5.io import import_seg_nifti
+
+        medh5_path = tmp_path / "sample.medh5"
+        MEDH5File.write(
+            medh5_path,
+            images={"CT": np.zeros((8, 8, 8), dtype=np.float32)},
+            spacing=[1.0, 1.0, 1.0],
+            origin=[0.0, 0.0, 0.0],
+            direction=[[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+        )
+        same_grid_mask = np.zeros((8, 8, 8), dtype=np.uint8)
+        same_grid_mask[0, 0, 0] = 1
+        same_grid_path = tmp_path / "same.nii.gz"
+        _write_nifti(same_grid_path, same_grid_mask, np.eye(4))
+        import_seg_nifti(medh5_path, same_grid_path, name="tumor")
+
+        replacement = np.zeros((8, 8, 8), dtype=np.uint8)
+        replacement[1, 1, 1] = 1
+        replacement_path = tmp_path / "replacement.nii.gz"
+        _write_nifti(replacement_path, replacement, np.eye(4))
+        import_seg_nifti(medh5_path, replacement_path, name="tumor", replace=True)
+        sample = MEDH5File.read(medh5_path)
+        assert sample.seg is not None
+        assert sample.seg["tumor"][1, 1, 1]
+
+        mismatched = np.zeros((4, 4, 4), dtype=np.uint8)
+        mismatched_path = tmp_path / "mismatch.nii.gz"
+        _write_nifti(mismatched_path, mismatched, np.diag([2.0, 2.0, 2.0, 1.0]))
+        with pytest.raises(MEDH5ValidationError, match="Edited mask grid"):
+            import_seg_nifti(medh5_path, mismatched_path, name="bad", resample=False)
+
 
 # ---------------------------------------------------------------------------
 # medh5 -> NIfTI
@@ -155,22 +270,47 @@ class TestToNifti:
         with pytest.raises(MEDH5ValidationError, match="not found"):
             to_nifti(path, tmp_path / "out", modalities=["MISSING"])
 
+    def test_unknown_seg_raises(self, tmp_path):
+        from medh5.io import to_nifti
+
+        path = tmp_path / "s.medh5"
+        MEDH5File.write(
+            path,
+            images={"CT": np.zeros((2, 4, 4), dtype=np.float32)},
+            seg={"tumor": np.zeros((2, 4, 4), dtype=bool)},
+        )
+        with pytest.raises(MEDH5ValidationError, match="Segmentation 'missing'"):
+            to_nifti(path, tmp_path / "out", seg=["missing"])
+
 
 # ---------------------------------------------------------------------------
 # DICOM -> medh5
 # ---------------------------------------------------------------------------
 
 
-def _make_dicom_series(directory, n_slices=4, rows=8, cols=8):
+def _make_dicom_series(
+    directory,
+    n_slices=4,
+    rows=8,
+    cols=8,
+    *,
+    series_uid=None,
+    pixel_spacing=(0.75, 0.75),
+    slice_thickness=1.5,
+    rescale_slope=None,
+    rescale_intercept=None,
+    position_step=None,
+    multiframe=False,
+):
     """Create a synthetic axial CT-style series with monotonic IPP."""
     from pydicom.dataset import Dataset, FileDataset
     from pydicom.uid import ExplicitVRLittleEndian, generate_uid
 
     directory.mkdir(parents=True, exist_ok=True)
-    series_uid = generate_uid()
+    series_uid = series_uid or generate_uid()
     study_uid = generate_uid()
-    pixel_spacing = [0.75, 0.75]
-    slice_thickness = 1.5
+    pixel_spacing = list(pixel_spacing)
+    position_step = slice_thickness if position_step is None else position_step
     written_paths = []
     rng = np.random.default_rng(123)
     pixel_planes = []
@@ -201,7 +341,7 @@ def _make_dicom_series(directory, n_slices=4, rows=8, cols=8):
         ds.PixelSpacing = pixel_spacing
         ds.SliceThickness = slice_thickness
         ds.ImageOrientationPatient = [1, 0, 0, 0, 1, 0]
-        ds.ImagePositionPatient = [0.0, 0.0, float(i) * slice_thickness]
+        ds.ImagePositionPatient = [0.0, 0.0, float(i) * position_step]
         ds.Rows = rows
         ds.Columns = cols
         ds.BitsAllocated = 16
@@ -210,12 +350,18 @@ def _make_dicom_series(directory, n_slices=4, rows=8, cols=8):
         ds.PixelRepresentation = 0
         ds.SamplesPerPixel = 1
         ds.PhotometricInterpretation = "MONOCHROME2"
+        if rescale_slope is not None:
+            ds.RescaleSlope = rescale_slope
+        if rescale_intercept is not None:
+            ds.RescaleIntercept = rescale_intercept
+        if multiframe:
+            ds.NumberOfFrames = 2
         ds.PixelData = plane.tobytes()
 
         ds.save_as(str(directory / f"slice_{i:03d}.dcm"), enforce_file_format=True)
         written_paths.append(directory / f"slice_{i:03d}.dcm")
 
-    return written_paths, np.stack(pixel_planes, axis=0)
+    return written_paths, np.stack(pixel_planes, axis=0), series_uid
 
 
 class TestFromDicom:
@@ -223,7 +369,9 @@ class TestFromDicom:
         from medh5.io import from_dicom
 
         dicom_dir = tmp_path / "series"
-        _written, expected_volume = _make_dicom_series(dicom_dir, n_slices=5)
+        _written, expected_volume, series_uid = _make_dicom_series(
+            dicom_dir, n_slices=5
+        )
 
         out = tmp_path / "ct.medh5"
         from_dicom(dicom_dir, out, modality_name="CT", checksum=True)
@@ -239,7 +387,140 @@ class TestFromDicom:
         assert "dicom" in sample.meta.extra
         assert sample.meta.extra["dicom"]["PatientID"] == "P001"
         assert sample.meta.extra["dicom"]["Modality"] == "CT"
+        assert sample.meta.extra["dicom"]["selected_series_uid"] == series_uid
         assert MEDH5File.verify(out) is True
+
+    def test_modality_lut_applied(self, tmp_path):
+        from medh5.io import from_dicom
+
+        dicom_dir = tmp_path / "series_lut"
+        _written, expected_volume, _series_uid = _make_dicom_series(
+            dicom_dir,
+            n_slices=3,
+            rescale_slope=2.0,
+            rescale_intercept=-1000.0,
+        )
+
+        out = tmp_path / "ct_lut.medh5"
+        from_dicom(dicom_dir, out)
+        sample = MEDH5File.read(out)
+        expected = expected_volume.astype(np.float64) * 2.0 - 1000.0
+        np.testing.assert_array_equal(sample.images["CT"], expected)
+
+    def test_extra_tags_preserve_sequence_values(self, tmp_path):
+        from medh5.io import from_dicom
+
+        dicom_dir = tmp_path / "series_tags"
+        _make_dicom_series(dicom_dir, n_slices=2)
+        out = tmp_path / "ct_tags.medh5"
+        from_dicom(dicom_dir, out, extra_tags=["PixelSpacing"])
+        sample = MEDH5File.read(out)
+        assert sample.meta.extra is not None
+        assert sample.meta.extra["dicom"]["PixelSpacing"] == [0.75, 0.75]
+
+    def test_selects_largest_series_deterministically(self, tmp_path):
+        from medh5.io import from_dicom
+
+        root = tmp_path / "multi"
+        major_uid = "1.2.3.4.10"
+        minor_uid = "1.2.3.4.2"
+        _make_dicom_series(root / "a", n_slices=2, series_uid=minor_uid)
+        _written, expected_volume, _ = _make_dicom_series(
+            root / "b", n_slices=4, series_uid=major_uid
+        )
+
+        out = tmp_path / "selected.medh5"
+        from_dicom(root, out)
+        sample = MEDH5File.read(out)
+        np.testing.assert_array_equal(sample.images["CT"], expected_volume)
+        assert sample.meta.extra is not None
+        assert sample.meta.extra["dicom"]["selected_series_uid"] == major_uid
+
+    def test_series_uid_filter(self, tmp_path):
+        from medh5.io import from_dicom
+
+        root = tmp_path / "series_uid"
+        _make_dicom_series(root / "a", n_slices=2, series_uid="1.2.3")
+        _written, expected_volume, _ = _make_dicom_series(
+            root / "b", n_slices=3, series_uid="1.2.4"
+        )
+        out = tmp_path / "selected_uid.medh5"
+        from_dicom(root, out, series_uid="1.2.4")
+        sample = MEDH5File.read(out)
+        np.testing.assert_array_equal(sample.images["CT"], expected_volume)
+
+    def test_inconsistent_slice_spacing_raises(self, tmp_path):
+        from medh5.io import from_dicom
+
+        dicom_dir = tmp_path / "bad_spacing"
+        _make_dicom_series(dicom_dir, n_slices=3, position_step=1.5)
+        # overwrite one slice with a different ImagePositionPatient spacing
+        ds = pydicom.dcmread(str(dicom_dir / "slice_002.dcm"))
+        ds.ImagePositionPatient = [0.0, 0.0, 10.0]
+        ds.save_as(str(dicom_dir / "slice_002.dcm"), enforce_file_format=True)
+
+        with pytest.raises(MEDH5ValidationError, match="slice spacing"):
+            from_dicom(dicom_dir, tmp_path / "x.medh5")
+
+    def test_multiframe_raises(self, tmp_path):
+        from medh5.io import from_dicom
+
+        dicom_dir = tmp_path / "multiframe"
+        _make_dicom_series(dicom_dir, n_slices=1, multiframe=True)
+        with pytest.raises(MEDH5ValidationError, match="Multi-frame"):
+            from_dicom(dicom_dir, tmp_path / "x.medh5")
+
+    def test_series_uid_not_found_raises(self, tmp_path):
+        from medh5.io import from_dicom
+
+        dicom_dir = tmp_path / "series_uid_missing"
+        _make_dicom_series(dicom_dir, n_slices=2, series_uid="1.2.3")
+        with pytest.raises(MEDH5ValidationError, match="SeriesInstanceUID"):
+            from_dicom(dicom_dir, tmp_path / "x.medh5", series_uid="9.9.9")
+
+    def test_missing_pixel_data_raises(self, tmp_path):
+        from medh5.io import from_dicom
+
+        dicom_dir = tmp_path / "no_pixeldata"
+        written, _volume, _uid = _make_dicom_series(dicom_dir, n_slices=1)
+        ds = pydicom.dcmread(str(written[0]))
+        del ds.PixelData
+        ds.save_as(str(written[0]), enforce_file_format=True)
+
+        with pytest.raises(MEDH5ValidationError, match="No DICOM files with PixelData"):
+            from_dicom(dicom_dir, tmp_path / "x.medh5")
+
+    def test_missing_orientation_raises(self, tmp_path):
+        from medh5.io import from_dicom
+
+        dicom_dir = tmp_path / "missing_iop"
+        written, _volume, _uid = _make_dicom_series(dicom_dir, n_slices=2)
+        ds = pydicom.dcmread(str(written[0]))
+        del ds.ImageOrientationPatient
+        ds.save_as(str(written[0]), enforce_file_format=True)
+
+        with pytest.raises(MEDH5ValidationError, match="ImageOrientationPatient"):
+            from_dicom(dicom_dir, tmp_path / "x.medh5")
+
+    def test_bad_pixel_spacing_raises(self, tmp_path):
+        from medh5.io import from_dicom
+
+        dicom_dir = tmp_path / "bad_pixel_spacing"
+        _make_dicom_series(dicom_dir, n_slices=2, pixel_spacing=(0.0, 1.0))
+        with pytest.raises(MEDH5ValidationError, match="Invalid PixelSpacing"):
+            from_dicom(dicom_dir, tmp_path / "x.medh5")
+
+    def test_unsupported_photometric_raises(self, tmp_path):
+        from medh5.io import from_dicom
+
+        dicom_dir = tmp_path / "rgb"
+        written, _volume, _uid = _make_dicom_series(dicom_dir, n_slices=1)
+        ds = pydicom.dcmread(str(written[0]))
+        ds.PhotometricInterpretation = "RGB"
+        ds.save_as(str(written[0]), enforce_file_format=True)
+
+        with pytest.raises(MEDH5ValidationError, match="PhotometricInterpretation"):
+            from_dicom(dicom_dir, tmp_path / "x.medh5")
 
     def test_missing_dir_raises(self, tmp_path):
         from medh5.io import from_dicom

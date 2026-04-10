@@ -16,13 +16,13 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from medh5.io.dicom import from_dicom
-    from medh5.io.nifti import from_nifti, to_nifti
+    from medh5.io.nifti import from_nifti, import_seg_nifti, to_nifti
 
-__all__ = ["from_dicom", "from_nifti", "to_nifti"]
+__all__ = ["from_dicom", "from_nifti", "import_seg_nifti", "to_nifti"]
 
 
 def __getattr__(name: str) -> Any:
-    if name in ("from_nifti", "to_nifti"):
+    if name in ("from_nifti", "import_seg_nifti", "to_nifti"):
         from medh5.io import nifti as _nifti
 
         return getattr(_nifti, name)

@@ -43,3 +43,34 @@ class TestIntegrity:
             assert "checksum_sha256" in f.attrs
             digest = f.attrs["checksum_sha256"]
             assert len(digest) == 64
+
+    def test_verify_detects_metadata_change(self, sample_with_checksum):
+        MEDH5File.update_meta(sample_with_checksum, extra={"changed": True})
+        assert MEDH5File.verify(sample_with_checksum) is True
+
+        with h5py.File(str(sample_with_checksum), "a") as f:
+            f.attrs["label"] = 99
+
+        assert MEDH5File.verify(sample_with_checksum) is False
+
+    def test_verify_after_review_update(self, sample_with_checksum):
+        MEDH5File.set_review_status(
+            sample_with_checksum,
+            status="reviewed",
+            annotator="qa",
+        )
+        assert MEDH5File.verify(sample_with_checksum) is True
+
+    def test_verify_detects_seg_change(self, tmp_path):
+        path = tmp_path / "with_seg.medh5"
+        MEDH5File.write(
+            path,
+            images={"CT": np.zeros((4, 4, 4), dtype=np.float32)},
+            seg={"tumor": np.zeros((4, 4, 4), dtype=bool)},
+            checksum=True,
+        )
+        with h5py.File(str(path), "a") as f:
+            data = f["seg/tumor"][...]
+            data[0, 0, 0] = True
+            f["seg/tumor"][...] = data
+        assert MEDH5File.verify(path) is False

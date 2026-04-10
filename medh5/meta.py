@@ -17,6 +17,27 @@ import numpy as np
 
 SCHEMA_VERSION = "1"
 
+_ROOT_META_ATTRS = (
+    "schema_version",
+    "image_names",
+    "label",
+    "label_name",
+    "shape",
+    "has_seg",
+    "seg_names",
+    "has_bbox",
+    "extra",
+)
+
+_IMAGE_META_ATTRS = (
+    "spacing",
+    "origin",
+    "direction",
+    "axis_labels",
+    "coord_system",
+    "patch_size",
+)
+
 
 @dataclass
 class SpatialMeta:
@@ -84,6 +105,13 @@ class SampleMeta:
             isinstance(v, str) for v in s.axis_labels
         ):
             raise TypeError("axis_labels must be strings")
+        if self.patch_size is not None:
+            if not all(isinstance(v, int) for v in self.patch_size):
+                raise TypeError("patch_size must contain only integers")
+            if ndim is not None and len(self.patch_size) != ndim:
+                raise ValueError(
+                    f"patch_size length ({len(self.patch_size)}) != ndim ({ndim})"
+                )
         if self.extra is not None:
             json.dumps(self.extra)  # raises on non-serializable values
 
@@ -99,6 +127,8 @@ def write_meta(f: h5py.File, meta: SampleMeta) -> None:
     Root attributes hold scalar/label/flag metadata.  Spatial metadata is
     stored on the ``images`` group so it applies to every modality equally.
     """
+    for key in _ROOT_META_ATTRS:
+        f.attrs.pop(key, None)
     f.attrs["schema_version"] = meta.schema_version
     if meta.image_names is not None:
         f.attrs["image_names"] = json.dumps(meta.image_names)
@@ -118,6 +148,8 @@ def write_meta(f: h5py.File, meta: SampleMeta) -> None:
     if "images" not in f:
         return
     grp = f["images"]
+    for key in _IMAGE_META_ATTRS:
+        grp.attrs.pop(key, None)
     s = meta.spatial
     if s.spacing is not None:
         grp.attrs["spacing"] = np.asarray(s.spacing, dtype=np.float64)

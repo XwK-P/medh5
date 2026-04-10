@@ -1,7 +1,7 @@
 """medh5 — HDF5 + Blosc2 multi-array format for ML workloads."""
 
 from medh5.chunks import optimize_chunks
-from medh5.core import MEDH5File, MEDH5Sample
+from medh5.core import MEDH5File, MEDH5Sample, ValidationReport
 from medh5.exceptions import (
     MEDH5Error,
     MEDH5FileError,
@@ -21,5 +21,6 @@ __all__ = [
     "ReviewStatus",
     "SampleMeta",
     "SpatialMeta",
+    "ValidationReport",
     "optimize_chunks",
 ]

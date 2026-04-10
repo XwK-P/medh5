@@ -54,6 +54,25 @@ class TestCLI:
         ret = main(["info", str(tmp_path / "missing.medh5")])
         assert ret == 1
 
+    def test_info_json(self, sample_file, capsys):
+        ret = main(["info", str(sample_file), "--json"])
+        assert ret == 0
+        captured = capsys.readouterr()
+        assert '"shape"' in captured.out
+        assert '"review_status"' in captured.out
+
+    def test_validate_json(self, sample_file, capsys):
+        ret = main(["validate", str(sample_file), "--json"])
+        assert ret == 0
+        captured = capsys.readouterr()
+        assert '"errors"' in captured.out
+
+    def test_validate_strict_requires_no_warnings(self, tmp_path, capsys):
+        path = tmp_path / "strict.medh5"
+        MEDH5File.write(path, images={"CT": np.zeros((2, 4, 4), dtype=np.float32)})
+        ret = main(["validate", str(path), "--strict"])
+        assert ret == 1
+
 
 def _make_files(tmp_path, n=3, label_cycle=(0, 1)):
     paths = []
@@ -190,6 +209,39 @@ class TestImportExportCLI:
         assert ret == 0
         assert (export_dir / "image_CT.nii.gz").exists()
 
+    def test_import_nifti_with_resampling(self, tmp_path):
+        pytest.importorskip("SimpleITK")
+        nib = pytest.importorskip("nibabel")
+        ct = np.ones((8, 8, 8), dtype=np.float32)
+        pet = np.ones((4, 4, 4), dtype=np.float32) * 3.0
+        ct_path = tmp_path / "ct.nii.gz"
+        pet_path = tmp_path / "pet.nii.gz"
+        aff_ct = np.eye(4)
+        aff_pet = np.diag([2.0, 2.0, 2.0, 1.0])
+        nib.save(nib.Nifti1Image(ct, aff_ct), str(ct_path))
+        nib.save(nib.Nifti1Image(pet, aff_pet), str(pet_path))
+
+        out_medh5 = tmp_path / "resampled.medh5"
+        ret = main(
+            [
+                "import",
+                "nifti",
+                "--image",
+                "CT",
+                str(ct_path),
+                "--image",
+                "PET",
+                str(pet_path),
+                "--resample-to",
+                "CT",
+                "-o",
+                str(out_medh5),
+            ]
+        )
+        assert ret == 0
+        sample = MEDH5File.read(out_medh5)
+        assert sample.images["PET"].shape == (8, 8, 8)
+
 
 class TestReviewCLI:
     def test_review_set_get(self, tmp_path, capsys):
@@ -225,6 +277,15 @@ class TestReviewCLI:
         assert "s1.medh5" in out
         assert "s0.medh5" not in out
 
+    def test_review_get_json(self, tmp_path, capsys):
+        p = tmp_path / "s.medh5"
+        MEDH5File.write(p, images={"CT": np.zeros((2, 4, 4), dtype=np.float32)})
+        MEDH5File.set_review_status(p, status="reviewed", annotator="x")
+        ret = main(["review", "get", str(p), "--json"])
+        assert ret == 0
+        out = capsys.readouterr().out
+        assert '"status": "reviewed"' in out
+
     def test_review_import_seg(self, tmp_path, capsys):
         nib = pytest.importorskip("nibabel")
         p = tmp_path / "s.medh5"
@@ -250,3 +311,38 @@ class TestReviewCLI:
         sample = MEDH5File.read(p)
         assert sample.seg is not None
         assert sample.seg["tumor"].sum() == 1
+
+    def test_review_import_seg_with_resample(self, tmp_path):
+        pytest.importorskip("SimpleITK")
+        nib = pytest.importorskip("nibabel")
+        p = tmp_path / "s.medh5"
+        MEDH5File.write(
+            p,
+            images={"CT": np.zeros((8, 8, 8), dtype=np.float32)},
+            spacing=[1.0, 1.0, 1.0],
+            origin=[0.0, 0.0, 0.0],
+            direction=[[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+        )
+
+        mask = np.zeros((4, 4, 4), dtype=np.uint8)
+        mask[1:3, 1:3, 1:3] = 1
+        nii = tmp_path / "tumor_resampled.nii.gz"
+        nib.save(nib.Nifti1Image(mask, np.diag([2.0, 2.0, 2.0, 1.0])), str(nii))
+
+        ret = main(
+            [
+                "review",
+                "import-seg",
+                str(p),
+                "--name",
+                "tumor",
+                "--from",
+                str(nii),
+                "--resample",
+            ]
+        )
+        assert ret == 0
+        sample = MEDH5File.read(p)
+        assert sample.seg is not None
+        assert sample.seg["tumor"].shape == (8, 8, 8)
+        assert sample.seg["tumor"].any()

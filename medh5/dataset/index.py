@@ -34,9 +34,14 @@ class DatasetRecord:
     label: int | str | None = None
     label_name: str | None = None
     image_names: list[str] = field(default_factory=list)
+    shape: list[int] | None = None
+    spacing: list[float] | None = None
+    coord_system: str | None = None
+    patch_size: list[int] | None = None
     has_seg: bool = False
     seg_names: list[str] | None = None
     has_bbox: bool = False
+    review_status: str = "pending"
     extra: dict[str, Any] | None = None
     schema_version: str = SCHEMA_VERSION
     file_size: int = 0
@@ -48,14 +53,28 @@ class DatasetRecord:
         p = Path(path)
         meta = MEDH5File.read_meta(p)
         stat = p.stat()
+        review_status = "pending"
+        if meta.extra is not None:
+            review = meta.extra.get("review")
+            if isinstance(review, dict):
+                raw_status = review.get("status")
+                if isinstance(raw_status, str) and raw_status:
+                    review_status = raw_status
         return cls(
             path=str(p),
             label=meta.label,
             label_name=meta.label_name,
             image_names=list(meta.image_names) if meta.image_names else [],
+            shape=list(meta.shape) if meta.shape else None,
+            spacing=(
+                list(meta.spatial.spacing) if meta.spatial.spacing is not None else None
+            ),
+            coord_system=meta.spatial.coord_system,
+            patch_size=list(meta.patch_size) if meta.patch_size else None,
             has_seg=meta.has_seg,
             seg_names=list(meta.seg_names) if meta.seg_names else None,
             has_bbox=meta.has_bbox,
+            review_status=review_status,
             extra=dict(meta.extra) if meta.extra else None,
             schema_version=meta.schema_version,
             file_size=stat.st_size,

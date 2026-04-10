@@ -8,7 +8,7 @@ compression provided by *hdf5plugin*.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -18,7 +18,7 @@ import numpy as np
 
 from medh5.chunks import optimize_chunks
 from medh5.exceptions import MEDH5FileError, MEDH5ValidationError
-from medh5.integrity import verify_checksum, write_checksum
+from medh5.integrity import _CHECKSUM_ATTR, verify_checksum, write_checksum
 from medh5.meta import SampleMeta, SpatialMeta, read_meta, write_meta
 from medh5.review import get_review_status, set_review_status
 
@@ -140,6 +140,256 @@ class MEDH5Sample:
         if self.meta.label is not None:
             parts.append(f"label={self.meta.label!r}")
         return f"MEDH5Sample({', '.join(parts)})"
+
+
+@dataclass
+class ValidationIssue:
+    """A single validation finding."""
+
+    code: str
+    message: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {"code": self.code, "message": self.message}
+
+
+@dataclass
+class ValidationReport:
+    """Structured validation result for one ``.medh5`` file."""
+
+    path: str
+    errors: list[ValidationIssue] = field(default_factory=list)
+    warnings: list[ValidationIssue] = field(default_factory=list)
+
+    @property
+    def is_valid(self) -> bool:
+        return not self.errors
+
+    def ok(self, *, strict: bool = False) -> bool:
+        return self.is_valid and (not strict or not self.warnings)
+
+    def add_error(self, code: str, message: str) -> None:
+        self.errors.append(ValidationIssue(code=code, message=message))
+
+    def add_warning(self, code: str, message: str) -> None:
+        self.warnings.append(ValidationIssue(code=code, message=message))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "path": self.path,
+            "is_valid": self.is_valid,
+            "errors": [issue.to_dict() for issue in self.errors],
+            "warnings": [issue.to_dict() for issue in self.warnings],
+        }
+
+
+def _coerce_seg_write_kwargs(
+    image_ds: h5py.Dataset,
+    *,
+    cname: str,
+    clevel: int,
+) -> dict[str, Any]:
+    chunks = image_ds.chunks
+    blosc2_opts: dict[str, Any] = {**hdf5plugin.Blosc2(cname=cname, clevel=clevel)}
+    return {"chunks": chunks, **blosc2_opts}
+
+
+def _normalize_patch_size(
+    patch_size: int | list[int] | tuple[int, ...],
+    ref_arr: np.ndarray,
+    spatial_axis_mask: list[bool] | None,
+) -> tuple[int, ...]:
+    if isinstance(patch_size, int):
+        spatial_ndim = sum(spatial_axis_mask) if spatial_axis_mask else ref_arr.ndim
+        return (patch_size,) * spatial_ndim
+    return tuple(patch_size)
+
+
+def _sync_meta_from_file(f: h5py.File, meta: SampleMeta) -> None:
+    img_grp = f["images"]
+    image_names = sorted(img_grp.keys())
+    first_key = image_names[0]
+    ref_shape = list(img_grp[first_key].shape)
+    meta.image_names = image_names
+    meta.shape = ref_shape
+
+    seg_grp = f.get("seg")
+    if isinstance(seg_grp, h5py.Group) and len(seg_grp) > 0:
+        meta.has_seg = True
+        meta.seg_names = sorted(seg_grp.keys())
+    else:
+        meta.has_seg = False
+        meta.seg_names = None
+
+    meta.has_bbox = "bboxes" in f
+
+
+def _set_bbox_datasets(
+    f: h5py.File,
+    ref_shape: tuple[int, ...],
+    *,
+    bboxes: np.ndarray | None,
+    bbox_scores: np.ndarray | None,
+    bbox_labels: list[str] | None,
+) -> None:
+    ndim = len(ref_shape)
+    if bboxes is None:
+        if bbox_scores is not None or bbox_labels is not None:
+            raise MEDH5ValidationError("bbox_scores/bbox_labels require bboxes")
+        for key in ("bboxes", "bbox_scores", "bbox_labels"):
+            if key in f:
+                del f[key]
+        return
+
+    bboxes_arr = np.asarray(bboxes)
+    if bboxes_arr.ndim != 3 or bboxes_arr.shape[1:] != (ndim, 2):
+        raise MEDH5ValidationError(
+            f"bboxes must have shape (n, {ndim}, 2), got {bboxes_arr.shape}"
+        )
+    n_boxes = bboxes_arr.shape[0]
+    if bbox_scores is not None and len(bbox_scores) != n_boxes:
+        raise MEDH5ValidationError(
+            f"bbox_scores length ({len(bbox_scores)}) must match "
+            f"bboxes count ({n_boxes})"
+        )
+    if bbox_labels is not None and len(bbox_labels) != n_boxes:
+        raise MEDH5ValidationError(
+            f"bbox_labels length ({len(bbox_labels)}) must match "
+            f"bboxes count ({n_boxes})"
+        )
+
+    if "bboxes" in f:
+        del f["bboxes"]
+    f.create_dataset("bboxes", data=bboxes_arr)
+
+    if "bbox_scores" in f:
+        del f["bbox_scores"]
+    if bbox_scores is not None:
+        f.create_dataset("bbox_scores", data=np.asarray(bbox_scores))
+
+    if "bbox_labels" in f:
+        del f["bbox_labels"]
+    if bbox_labels is not None:
+        dt = h5py.string_dtype()
+        f.create_dataset(
+            "bbox_labels",
+            data=np.array(bbox_labels, dtype=object),
+            dtype=dt,
+        )
+
+
+def _validate_open_file(f: h5py.File, path: str | Path) -> ValidationReport:
+    report = ValidationReport(path=str(path))
+    if "images" not in f:
+        report.add_error("missing_images_group", "Missing required 'images' group")
+        return report
+
+    img_grp = f["images"]
+    if len(img_grp) == 0:
+        report.add_error("empty_images_group", "'images' group is empty")
+        return report
+
+    image_names = sorted(img_grp.keys())
+    first_key = image_names[0]
+    ref_shape = img_grp[first_key].shape
+    ndim = len(ref_shape)
+    for name in image_names[1:]:
+        if img_grp[name].shape != ref_shape:
+            report.add_error(
+                "image_shape_mismatch",
+                f"Image '{name}' has shape {img_grp[name].shape}; expected {ref_shape}",
+            )
+
+    if "schema_version" not in f.attrs:
+        report.add_error("missing_schema_version", "Missing 'schema_version' attribute")
+
+    try:
+        meta = read_meta(f)
+    except Exception as exc:
+        report.add_error("metadata_read_failed", f"Failed to read metadata: {exc}")
+        return report
+
+    try:
+        meta.validate(ndim=ndim)
+    except Exception as exc:
+        report.add_error("metadata_invalid", f"Invalid metadata: {exc}")
+
+    if meta.image_names is None:
+        report.add_warning("missing_image_names", "Missing 'image_names' metadata")
+    elif sorted(meta.image_names) != image_names:
+        report.add_error(
+            "image_names_mismatch",
+            f"Metadata image_names {meta.image_names} != datasets {image_names}",
+        )
+
+    if meta.shape is not None and tuple(meta.shape) != ref_shape:
+        report.add_error(
+            "shape_mismatch",
+            f"Metadata shape {meta.shape} != image shape {list(ref_shape)}",
+        )
+
+    seg_grp = f.get("seg")
+    actual_seg_names = []
+    if isinstance(seg_grp, h5py.Group) and len(seg_grp) > 0:
+        actual_seg_names = sorted(seg_grp.keys())
+    if meta.has_seg != bool(actual_seg_names):
+        report.add_error(
+            "seg_presence_mismatch",
+            "Metadata has_seg="
+            f"{meta.has_seg} != actual presence={bool(actual_seg_names)}",
+        )
+    if meta.seg_names is not None and sorted(meta.seg_names) != actual_seg_names:
+        report.add_error(
+            "seg_names_mismatch",
+            f"Metadata seg_names {meta.seg_names} != datasets {actual_seg_names}",
+        )
+    if isinstance(seg_grp, h5py.Group):
+        for name in actual_seg_names:
+            if seg_grp[name].shape != ref_shape:
+                report.add_error(
+                    "seg_shape_mismatch",
+                    "Segmentation "
+                    f"'{name}' has shape {seg_grp[name].shape}; expected {ref_shape}",
+                )
+
+    has_bbox = "bboxes" in f
+    if meta.has_bbox != has_bbox:
+        report.add_error(
+            "bbox_presence_mismatch",
+            f"Metadata has_bbox={meta.has_bbox} != actual presence={has_bbox}",
+        )
+    if has_bbox:
+        bbox_ds = f["bboxes"]
+        bbox_shape = bbox_ds.shape
+        if len(bbox_shape) != 3 or bbox_shape[1:] != (ndim, 2):
+            report.add_error(
+                "bbox_shape_invalid",
+                f"'bboxes' has shape {bbox_shape}; expected (n, {ndim}, 2)",
+            )
+        if "bbox_scores" in f and len(f["bbox_scores"]) != bbox_shape[0]:
+            report.add_error(
+                "bbox_scores_mismatch",
+                "'bbox_scores' length must match 'bboxes' count",
+            )
+        if "bbox_labels" in f and len(f["bbox_labels"]) != bbox_shape[0]:
+            report.add_error(
+                "bbox_labels_mismatch",
+                "'bbox_labels' length must match 'bboxes' count",
+            )
+    elif "bbox_scores" in f or "bbox_labels" in f:
+        report.add_error(
+            "bbox_dependents_without_bboxes",
+            "'bbox_scores'/'bbox_labels' present without 'bboxes'",
+        )
+
+    if _CHECKSUM_ATTR not in f.attrs:
+        report.add_warning("missing_checksum", "No checksum stored")
+    elif not verify_checksum(f):
+        report.add_error(
+            "checksum_mismatch", "Stored checksum does not match file contents"
+        )
+
+    return report
 
 
 class MEDH5File:
@@ -302,11 +552,7 @@ class MEDH5File:
         }
         ref_arr = prepared[image_names[0]]
 
-        if isinstance(patch_size, int):
-            spatial_ndim = sum(spatial_axis_mask) if spatial_axis_mask else ref_arr.ndim
-            ps_tuple = (patch_size,) * spatial_ndim
-        else:
-            ps_tuple = tuple(patch_size)
+        ps_tuple = _normalize_patch_size(patch_size, ref_arr, spatial_axis_mask)
 
         chunks = optimize_chunks(
             ref_shape,
@@ -554,30 +800,14 @@ class MEDH5File:
         MEDH5FileError
             If the file cannot be opened.
         """
-        import json
-
-        path = Path(path)
-        _validate_suffix(path)
-
-        try:
-            with h5py.File(str(path), "a") as f:
-                if not isinstance(label, _UnsetType):
-                    if label is None:
-                        f.attrs.pop("label", None)
-                    else:
-                        f.attrs["label"] = label
-                if not isinstance(label_name, _UnsetType):
-                    if label_name is None:
-                        f.attrs.pop("label_name", None)
-                    else:
-                        f.attrs["label_name"] = label_name
-                if not isinstance(extra, _UnsetType):
-                    if extra is None:
-                        f.attrs.pop("extra", None)
-                    else:
-                        f.attrs["extra"] = json.dumps(extra)
-        except OSError as exc:
-            raise MEDH5FileError(f"Failed to update '{path}': {exc}") from exc
+        meta_updates: dict[str, Any] = {}
+        if not isinstance(label, _UnsetType):
+            meta_updates["label"] = label
+        if not isinstance(label_name, _UnsetType):
+            meta_updates["label_name"] = label_name
+        if not isinstance(extra, _UnsetType):
+            meta_updates["extra"] = extra
+        MEDH5File.update(path, meta=meta_updates)
 
     @staticmethod
     def add_seg(
@@ -609,68 +839,209 @@ class MEDH5File:
         MEDH5FileError
             If the file cannot be opened.
         """
-        import json
+        MEDH5File.update(
+            path,
+            seg_ops={"add": {name: mask}, "cname": cname, "clevel": clevel},
+        )
 
+    @staticmethod
+    def update(
+        path: str | Path,
+        *,
+        meta: dict[str, Any] | None = None,
+        seg_ops: dict[str, Any] | None = None,
+        bbox_ops: dict[str, Any] | None = None,
+        recompute_checksum: bool = True,
+    ) -> None:
+        """Apply in-place metadata / seg / bbox updates to an existing file."""
         path = Path(path)
         _validate_suffix(path)
+        allowed_meta = {
+            "label",
+            "label_name",
+            "extra",
+            "spacing",
+            "origin",
+            "direction",
+            "axis_labels",
+            "coord_system",
+            "patch_size",
+        }
+        meta_updates = dict(meta or {})
+        unknown_meta = sorted(set(meta_updates) - allowed_meta)
+        if unknown_meta:
+            raise MEDH5ValidationError(f"Unknown meta update fields: {unknown_meta}")
 
-        mask = np.ascontiguousarray(mask, dtype=bool)
+        seg_updates = dict(seg_ops or {})
+        bbox_updates = dict(bbox_ops or {})
 
         try:
             with h5py.File(str(path), "a") as f:
                 img_grp = f["images"]
                 first_key = next(iter(img_grp))
-                ref_shape = img_grp[first_key].shape
+                ref_ds = img_grp[first_key]
+                ref_shape = ref_ds.shape
+                current_meta = read_meta(f)
 
-                if mask.shape != ref_shape:
-                    raise MEDH5ValidationError(
-                        f"Mask shape {mask.shape} does not match "
-                        f"image shape {ref_shape}"
+                for key, value in meta_updates.items():
+                    if key in {"label", "label_name", "extra"}:
+                        setattr(current_meta, key, value)
+                    elif key == "patch_size":
+                        if value is None:
+                            current_meta.patch_size = None
+                        elif isinstance(value, int):
+                            current_meta.patch_size = [value] * len(ref_shape)
+                        else:
+                            current_meta.patch_size = [int(v) for v in value]
+                    else:
+                        setattr(current_meta.spatial, key, value)
+
+                if seg_updates:
+                    cname = str(seg_updates.get("cname", "lz4hc"))
+                    clevel = int(seg_updates.get("clevel", 8))
+                    write_kwargs = _coerce_seg_write_kwargs(
+                        ref_ds, cname=cname, clevel=clevel
                     )
-
-                if "seg" not in f:
-                    seg_grp = f.create_group("seg")
-                    f.attrs["has_seg"] = True
-                else:
-                    seg_grp = f["seg"]
-
-                if name in seg_grp:
-                    raise MEDH5ValidationError(
-                        f"Segmentation mask '{name}' already exists"
+                    seg_grp = f.get("seg")
+                    existing_names = (
+                        set(seg_grp.keys())
+                        if isinstance(seg_grp, h5py.Group)
+                        else set()
                     )
+                    future_names = set(existing_names)
+                    remove_names = list(seg_updates.get("remove", []))
+                    prepared_masks: dict[str, tuple[bool, np.ndarray]] = {}
 
-                blosc2_opts: dict[str, Any] = {
-                    **hdf5plugin.Blosc2(cname=cname, clevel=clevel),
-                }
+                    for name in remove_names:
+                        if name not in future_names:
+                            raise MEDH5ValidationError(
+                                f"Segmentation mask '{name}' does not exist"
+                            )
+                        future_names.remove(name)
 
-                chunks = img_grp[first_key].chunks
-                if chunks is not None:
-                    mask_chunks = tuple(
-                        min(c, s) for c, s in zip(chunks, mask.shape, strict=True)
-                    )
-                else:
-                    mask_chunks = None
+                    for action in ("add", "replace"):
+                        replace = action == "replace"
+                        for name, mask in dict(seg_updates.get(action, {})).items():
+                            mask_arr = np.ascontiguousarray(mask, dtype=bool)
+                            if mask_arr.shape != ref_shape:
+                                raise MEDH5ValidationError(
+                                    "Mask shape "
+                                    f"{mask_arr.shape} does not match image shape "
+                                    f"{ref_shape}"
+                                )
+                            if name in future_names:
+                                if not replace:
+                                    raise MEDH5ValidationError(
+                                        f"Segmentation mask '{name}' already exists"
+                                    )
+                            elif replace:
+                                raise MEDH5ValidationError(
+                                    f"Segmentation mask '{name}' does not exist"
+                                )
+                            else:
+                                future_names.add(name)
+                            prepared_masks[name] = (replace, mask_arr)
 
-                seg_grp.create_dataset(
-                    name,
-                    data=mask,
-                    chunks=mask_chunks,
-                    **blosc2_opts,
-                )
+                    if remove_names or prepared_masks:
+                        if seg_grp is None and future_names:
+                            seg_grp = f.create_group("seg")
 
-                existing_names: list[str] = []
-                if "seg_names" in f.attrs:
-                    raw = f.attrs["seg_names"]
-                    if isinstance(raw, bytes):
-                        raw = raw.decode()
-                    existing_names = json.loads(raw)
-                existing_names.append(name)
-                existing_names.sort()
-                f.attrs["seg_names"] = json.dumps(existing_names)
+                        if isinstance(seg_grp, h5py.Group):
+                            for name in remove_names:
+                                del seg_grp[name]
+
+                            for name, (replace, mask_arr) in prepared_masks.items():
+                                if replace:
+                                    del seg_grp[name]
+                                mask_chunks = write_kwargs["chunks"]
+                                if mask_chunks is not None:
+                                    mask_chunks = tuple(
+                                        min(c, s)
+                                        for c, s in zip(
+                                            mask_chunks, mask_arr.shape, strict=True
+                                        )
+                                    )
+                                seg_grp.create_dataset(
+                                    name,
+                                    data=mask_arr,
+                                    chunks=mask_chunks,
+                                    **{
+                                        k: v
+                                        for k, v in write_kwargs.items()
+                                        if k != "chunks"
+                                    },
+                                )
+
+                            if len(seg_grp) == 0:
+                                del f["seg"]
+
+                if bbox_updates:
+                    clear = bool(bbox_updates.get("clear", False))
+                    if clear:
+                        _set_bbox_datasets(
+                            f,
+                            ref_shape,
+                            bboxes=None,
+                            bbox_scores=None,
+                            bbox_labels=None,
+                        )
+                    else:
+                        bboxes = (
+                            bbox_updates["bboxes"]
+                            if "bboxes" in bbox_updates
+                            else (f["bboxes"][...] if "bboxes" in f else None)
+                        )
+                        bbox_scores = (
+                            bbox_updates["bbox_scores"]
+                            if "bbox_scores" in bbox_updates
+                            else (f["bbox_scores"][...] if "bbox_scores" in f else None)
+                        )
+                        bbox_labels = (
+                            list(f["bbox_labels"].asstr()[...])
+                            if "bbox_labels" in f and "bbox_labels" not in bbox_updates
+                            else bbox_updates.get("bbox_labels")
+                        )
+                        if (
+                            "bboxes" in bbox_updates
+                            or "bbox_scores" in bbox_updates
+                            or "bbox_labels" in bbox_updates
+                        ):
+                            _set_bbox_datasets(
+                                f,
+                                ref_shape,
+                                bboxes=bboxes,
+                                bbox_scores=bbox_scores,
+                                bbox_labels=bbox_labels,
+                            )
+
+                _sync_meta_from_file(f, current_meta)
+                current_meta.validate(ndim=len(ref_shape))
+                write_meta(f, current_meta)
+
+                if recompute_checksum and (
+                    _CHECKSUM_ATTR in f.attrs
+                    or meta_updates
+                    or seg_updates
+                    or bbox_updates
+                ):
+                    write_checksum(f)
         except MEDH5ValidationError:
             raise
         except OSError as exc:
             raise MEDH5FileError(f"Failed to update '{path}': {exc}") from exc
+
+    @staticmethod
+    def validate(path: str | Path, *, strict: bool = False) -> ValidationReport:
+        """Validate a ``.medh5`` file and return a structured report."""
+        path = Path(path)
+        _validate_suffix(path)
+        try:
+            with h5py.File(str(path), "r") as f:
+                return _validate_open_file(f, path)
+        except OSError as exc:
+            report = ValidationReport(path=str(path))
+            report.add_error("file_open_failed", f"Failed to open '{path}': {exc}")
+        return report
 
     # ------------------------------------------------------------------
     # Review / curation helpers (delegated to medh5.review)

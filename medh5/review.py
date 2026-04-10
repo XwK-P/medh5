@@ -15,6 +15,7 @@ from typing import Any
 import h5py
 
 from medh5.exceptions import MEDH5FileError, MEDH5ValidationError
+from medh5.integrity import _CHECKSUM_ATTR, write_checksum
 from medh5.meta import read_meta
 
 _REVIEW_STATUSES: tuple[str, ...] = ("pending", "reviewed", "flagged", "rejected")
@@ -108,6 +109,8 @@ def set_review_status(
             )
             extra["review"] = review
             f.attrs["extra"] = json.dumps(extra)
+            if _CHECKSUM_ATTR in f.attrs:
+                write_checksum(f)
     except MEDH5ValidationError:
         raise
     except OSError as exc:

@@ -1,6 +1,7 @@
 """NIfTI ⇄ medh5 converters.
 
 Requires ``nibabel`` (install with ``pip install medh5[nifti]``).
+Resampling requires ``SimpleITK`` (install with ``pip install medh5[itk]``).
 
 The converters preserve the spatial geometry recorded in the NIfTI affine:
 ``spacing`` is taken from the column norms, ``origin`` from the affine
@@ -25,12 +26,27 @@ try:
 except ImportError:  # pragma: no cover
     _NIBABEL_AVAILABLE = False
 
+try:
+    import SimpleITK as sitk
+
+    _SIMPLEITK_AVAILABLE = True
+except ImportError:  # pragma: no cover
+    _SIMPLEITK_AVAILABLE = False
+
 
 def _require_nibabel() -> None:
     if not _NIBABEL_AVAILABLE:  # pragma: no cover
         raise ImportError(
             "nibabel is required for NIfTI I/O. "
             "Install it with: pip install medh5[nifti]"
+        )
+
+
+def _require_simpleitk() -> None:
+    if not _SIMPLEITK_AVAILABLE:  # pragma: no cover
+        raise ImportError(
+            "SimpleITK is required for resampling. "
+            "Install it with: pip install medh5[itk]"
         )
 
 
@@ -94,6 +110,135 @@ def _load_nifti(
     return data, affine
 
 
+def _to_sitk_image(data: np.ndarray, affine: np.ndarray) -> Any:
+    """Create a SimpleITK image whose physical space matches *affine*."""
+    if data.ndim not in (2, 3):
+        raise MEDH5ValidationError(
+            f"SimpleITK resampling supports only 2D or 3D arrays, got ndim={data.ndim}"
+        )
+    spacing, origin, direction = _decompose_affine(affine)
+    ndim = data.ndim
+    arr_for_sitk = np.transpose(data, axes=tuple(reversed(range(ndim))))
+    img = sitk.GetImageFromArray(arr_for_sitk)
+    img.SetSpacing(tuple(float(v) for v in spacing[:ndim]))
+    img.SetOrigin(tuple(float(v) for v in origin[:ndim]))
+    img.SetDirection(tuple(np.asarray(direction[:ndim], dtype=np.float64).ravel()))
+    return img
+
+
+def _from_sitk_image(img: Any) -> np.ndarray:
+    arr = np.asarray(sitk.GetArrayFromImage(img))
+    return np.transpose(arr, axes=tuple(reversed(range(arr.ndim))))
+
+
+def _resolve_interpolator(name: str, *, is_mask: bool) -> int:
+    if is_mask:
+        return int(sitk.sitkNearestNeighbor)
+    table = {
+        "linear": int(sitk.sitkLinear),
+        "nearest": int(sitk.sitkNearestNeighbor),
+        "bspline": int(sitk.sitkBSpline),
+    }
+    try:
+        return table[name]
+    except KeyError as exc:
+        raise MEDH5ValidationError(
+            f"Unknown interpolator '{name}'. Choose from: {sorted(table)}"
+        ) from exc
+
+
+def _resample_array(
+    data: np.ndarray,
+    affine: np.ndarray,
+    *,
+    ref_shape: tuple[int, ...],
+    ref_affine: np.ndarray,
+    interpolator: str,
+    is_mask: bool,
+) -> np.ndarray:
+    _require_simpleitk()
+    moving = _to_sitk_image(np.asarray(data), affine)
+    reference = _to_sitk_image(np.zeros(ref_shape, dtype=np.float32), ref_affine)
+    resampled = sitk.Resample(
+        moving,
+        reference,
+        sitk.Transform(),
+        _resolve_interpolator(interpolator, is_mask=is_mask),
+        0.0,
+        (
+            moving.GetPixelID()
+            if (is_mask or np.issubdtype(data.dtype, np.floating))
+            else sitk.sitkFloat32
+        ),
+    )
+    out = _from_sitk_image(resampled)
+    if is_mask:
+        return out.astype(bool)
+    if np.issubdtype(data.dtype, np.floating):
+        return out.astype(data.dtype, copy=False)
+    if interpolator == "nearest":
+        return out.astype(data.dtype, copy=False)
+    return out.astype(np.float32, copy=False)
+
+
+def _load_nifti_mask_for_medh5(
+    nifti_path: str | Path,
+    *,
+    ref_shape: tuple[int, ...],
+    ref_affine: np.ndarray,
+    resample: bool,
+) -> np.ndarray:
+    data, affine = _load_nifti(nifti_path)
+    if data.shape != ref_shape or not np.allclose(affine, ref_affine, atol=1e-5):
+        if not resample:
+            raise MEDH5ValidationError(
+                "Edited mask grid does not match the target medh5 sample. "
+                "Pass resample=True to align it with SimpleITK."
+            )
+        return _resample_array(
+            data,
+            affine,
+            ref_shape=ref_shape,
+            ref_affine=ref_affine,
+            interpolator="nearest",
+            is_mask=True,
+        )
+    return np.asarray(data).astype(bool)
+
+
+def import_seg_nifti(
+    medh5_path: str | Path,
+    nifti_path: str | Path,
+    *,
+    name: str,
+    resample: bool = False,
+    replace: bool = False,
+) -> None:
+    """Import a NIfTI segmentation mask into an existing ``.medh5`` file."""
+    _require_nibabel()
+    src = Path(medh5_path)
+    meta = MEDH5File.read_meta(src)
+    if meta.shape is None:
+        raise MEDH5ValidationError(f"Missing image shape metadata in '{src}'")
+    ref_shape = tuple(meta.shape)
+    ref_affine = _compose_affine(
+        meta.spatial.spacing,
+        meta.spatial.origin,
+        meta.spatial.direction,
+        len(ref_shape),
+    )
+    mask = _load_nifti_mask_for_medh5(
+        nifti_path,
+        ref_shape=ref_shape,
+        ref_affine=ref_affine,
+        resample=resample,
+    )
+    if replace:
+        MEDH5File.update(src, seg_ops={"replace": {name: mask}})
+    else:
+        MEDH5File.add_seg(src, name, mask)
+
+
 def from_nifti(
     images: dict[str, str | Path],
     out_path: str | Path,
@@ -105,6 +250,8 @@ def from_nifti(
     compression: str | None = "balanced",
     checksum: bool = False,
     require_same_grid: bool = True,
+    resample_to: str | Path | None = None,
+    interpolator: str = "linear",
 ) -> None:
     """Convert one or more NIfTI volumes into a single ``.medh5`` file.
 
@@ -127,6 +274,13 @@ def from_nifti(
     require_same_grid : bool
         If True (default), raise :class:`MEDH5ValidationError` when image
         shapes or affines disagree across modalities/masks.
+    resample_to : str or Path, optional
+        When provided, resample every image/mask onto a shared reference grid
+        using SimpleITK. A string matching an image key uses that modality as
+        the target grid; otherwise the value is interpreted as a NIfTI path.
+    interpolator : {"linear", "nearest", "bspline"}
+        Resampling interpolator for image volumes. Segmentation masks always
+        use nearest-neighbor interpolation.
 
     Raises
     ------
@@ -150,7 +304,7 @@ def from_nifti(
             ref_shape = data.shape
             ref_affine = aff
             ref_name = name
-        elif require_same_grid:
+        elif require_same_grid and resample_to is None:
             if data.shape != ref_shape:
                 raise MEDH5ValidationError(
                     f"NIfTI shape mismatch: '{ref_name}' has shape {ref_shape} "
@@ -164,15 +318,59 @@ def from_nifti(
         image_arrays[name] = data
         affines[name] = aff
 
+    if resample_to is not None:
+        if isinstance(resample_to, str) and resample_to in affines:
+            ref_name = str(resample_to)
+            ref_shape = tuple(image_arrays[ref_name].shape)
+            ref_affine = affines[ref_name]
+        else:
+            ref_data, ref_affine = _load_nifti(Path(resample_to))
+            ref_shape = tuple(ref_data.shape)
+            ref_name = str(resample_to)
+
     assert ref_affine is not None
     assert ref_shape is not None
+
+    if resample_to is not None:
+        image_arrays = {
+            name: (
+                arr
+                if arr.shape == ref_shape and np.allclose(aff, ref_affine, atol=1e-5)
+                else _resample_array(
+                    arr,
+                    aff,
+                    ref_shape=ref_shape,
+                    ref_affine=ref_affine,
+                    interpolator=interpolator,
+                    is_mask=False,
+                )
+            )
+            for name, (arr, aff) in (
+                (name, (image_arrays[name], affines[name]))
+                for name in sorted(image_arrays)
+            )
+        }
 
     seg_arrays: dict[str, np.ndarray] | None = None
     if seg:
         seg_arrays = {}
         for name in sorted(seg.keys()):
             data, aff = _load_nifti(seg[name])
-            if require_same_grid:
+            if resample_to is not None:
+                if data.shape != ref_shape or not np.allclose(
+                    aff, ref_affine, atol=1e-5
+                ):
+                    data = _resample_array(
+                        data,
+                        aff,
+                        ref_shape=ref_shape,
+                        ref_affine=ref_affine,
+                        interpolator="nearest",
+                        is_mask=True,
+                    )
+                else:
+                    data = data.astype(bool)
+            elif require_same_grid:
                 if data.shape != ref_shape:
                     raise MEDH5ValidationError(
                         f"Segmentation '{name}' shape {data.shape} does not "

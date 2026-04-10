@@ -61,13 +61,17 @@ class TestDatasetFromDirectory:
     def test_manifest_roundtrip(self, tmp_path):
         _make_file(tmp_path / "a.medh5", label=0, extra={"site": "A"})
         _make_file(tmp_path / "b.medh5", label=1, extra={"site": "B"})
+        MEDH5File.set_review_status(tmp_path / "a.medh5", status="reviewed")
         ds = Dataset.from_directory(tmp_path)
         manifest = tmp_path / "manifest.json"
         ds.save(manifest)
         reloaded = Dataset.load(manifest)
         assert len(reloaded) == len(ds)
         assert reloaded.paths == ds.paths
-        assert reloaded.records[0].extra == {"site": "A"}
+        assert reloaded.records[0].extra is not None
+        assert reloaded.records[0].extra["site"] == "A"
+        assert reloaded.records[0].shape == [2, 4, 4]
+        assert reloaded.records[0].review_status == "reviewed"
 
     def test_staleness_detection(self, tmp_path):
         path = tmp_path / "a.medh5"
@@ -93,3 +97,18 @@ class TestDatasetFromDirectory:
         _make_file(p2, label=1)
         ds = Dataset.from_paths([p1, p2])
         assert len(ds) == 2
+
+    def test_record_spatial_fields(self, tmp_path):
+        path = tmp_path / "a.medh5"
+        MEDH5File.write(
+            path,
+            images={"CT": np.zeros((2, 4, 4), dtype=np.float32)},
+            spacing=[1.0, 0.5, 0.5],
+            coord_system="RAS",
+            patch_size=[2, 4, 4],
+        )
+        ds = Dataset.from_directory(tmp_path)
+        record = ds[0]
+        assert record.spacing == [1.0, 0.5, 0.5]
+        assert record.coord_system == "RAS"
+        assert record.patch_size == [2, 4, 4]
