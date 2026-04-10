@@ -9,7 +9,6 @@ compression provided by *hdf5plugin*.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -21,8 +20,7 @@ from medh5.chunks import optimize_chunks
 from medh5.exceptions import MEDH5FileError, MEDH5ValidationError
 from medh5.integrity import verify_checksum, write_checksum
 from medh5.meta import SampleMeta, SpatialMeta, read_meta, write_meta
-
-_REVIEW_STATUSES: tuple[str, ...] = ("pending", "reviewed", "flagged", "rejected")
+from medh5.review import get_review_status, set_review_status
 
 _SUFFIX = ".medh5"
 
@@ -116,17 +114,6 @@ def _validate_write_inputs(
             )
 
     return ref_shape
-
-
-@dataclass
-class ReviewStatus:
-    """Lightweight view of the curation/review state stored under ``extra``."""
-
-    status: str = "pending"
-    annotator: str | None = None
-    timestamp: str | None = None
-    notes: str | None = None
-    history: list[dict[str, Any]] | None = None
 
 
 @dataclass
@@ -386,6 +373,7 @@ class MEDH5File:
                         coord_system=coord_system,
                     ),
                     image_names=image_names,
+                    shape=list(ref_shape),
                     label=label,
                     label_name=label_name,
                     has_seg=seg is not None,
@@ -685,90 +673,8 @@ class MEDH5File:
             raise MEDH5FileError(f"Failed to update '{path}': {exc}") from exc
 
     # ------------------------------------------------------------------
-    # Review / curation helpers
+    # Review / curation helpers (delegated to medh5.review)
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def set_review_status(
-        path: str | Path,
-        *,
-        status: str,
-        annotator: str | None = None,
-        notes: str | None = None,
-        timestamp: str | None = None,
-    ) -> None:
-        """Record a review/curation status under ``extra["review"]``.
-
-        The previous state is appended to ``extra["review"]["history"]``
-        so the audit trail is preserved across calls.
-
-        Parameters
-        ----------
-        path : str or Path
-            ``.medh5`` file to update.
-        status : str
-            One of ``"pending"``, ``"reviewed"``, ``"flagged"``, ``"rejected"``.
-        annotator : str, optional
-            Name of the annotator making the change.
-        notes : str, optional
-            Free-form notes for this status entry.
-        timestamp : str, optional
-            ISO-8601 timestamp. Defaults to ``datetime.now(UTC)``.
-
-        Raises
-        ------
-        MEDH5ValidationError
-            On unknown status.
-        """
-        if status not in _REVIEW_STATUSES:
-            raise MEDH5ValidationError(
-                f"Unknown review status '{status}'. "
-                f"Choose from: {list(_REVIEW_STATUSES)}"
-            )
-        if timestamp is None:
-            timestamp = datetime.now(timezone.utc).isoformat()
-
-        meta = MEDH5File.read_meta(path)
-        extra = dict(meta.extra) if meta.extra else {}
-        review = dict(extra.get("review") or {})
-        history = list(review.get("history") or [])
-        # Snapshot the previous active state (if any) into history.
-        if review.get("status") is not None:
-            history.append(
-                {
-                    "status": review.get("status"),
-                    "annotator": review.get("annotator"),
-                    "timestamp": review.get("timestamp"),
-                    "notes": review.get("notes"),
-                }
-            )
-        review.update(
-            {
-                "status": status,
-                "annotator": annotator,
-                "timestamp": timestamp,
-                "notes": notes,
-                "history": history,
-            }
-        )
-        extra["review"] = review
-        MEDH5File.update_meta(path, extra=extra)
-
-    @staticmethod
-    def get_review_status(path: str | Path) -> ReviewStatus:
-        """Return the current review state stored under ``extra["review"]``.
-
-        Returns a default :class:`ReviewStatus` (``status="pending"``) when
-        the file has no review metadata yet.
-        """
-        meta = MEDH5File.read_meta(path)
-        if not meta.extra or "review" not in meta.extra:
-            return ReviewStatus()
-        review = meta.extra["review"]
-        return ReviewStatus(
-            status=review.get("status", "pending"),
-            annotator=review.get("annotator"),
-            timestamp=review.get("timestamp"),
-            notes=review.get("notes"),
-            history=review.get("history"),
-        )
+    set_review_status = staticmethod(set_review_status)
+    get_review_status = staticmethod(get_review_status)

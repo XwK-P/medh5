@@ -37,6 +37,7 @@ class SampleMeta:
     image_names: list[str] | None = None
     label: int | str | None = None
     label_name: str | None = None
+    shape: list[int] | None = None
     has_seg: bool = False
     seg_names: list[str] | None = None
     has_bbox: bool = False
@@ -48,6 +49,8 @@ class SampleMeta:
         parts = [f"schema_version={self.schema_version!r}"]
         if self.image_names is not None:
             parts.append(f"image_names={self.image_names}")
+        if self.shape is not None:
+            parts.append(f"shape={self.shape}")
         if self.label is not None:
             parts.append(f"label={self.label!r}")
         if self.has_seg and self.seg_names is not None:
@@ -103,6 +106,8 @@ def write_meta(f: h5py.File, meta: SampleMeta) -> None:
         f.attrs["label"] = meta.label
     if meta.label_name is not None:
         f.attrs["label_name"] = meta.label_name
+    if meta.shape is not None:
+        f.attrs["shape"] = np.asarray(meta.shape, dtype=np.int64)
     f.attrs["has_seg"] = meta.has_seg
     if meta.seg_names is not None:
         f.attrs["seg_names"] = json.dumps(meta.seg_names)
@@ -178,6 +183,10 @@ def read_meta(f: h5py.File) -> SampleMeta:
     if isinstance(label_name, bytes):
         label_name = label_name.decode()
 
+    shape: list[int] | None = None
+    if "shape" in ra:
+        shape = ra["shape"].tolist()
+
     has_seg = bool(ra.get("has_seg", False))
 
     seg_names: list[str] | None = None
@@ -222,6 +231,7 @@ def read_meta(f: h5py.File) -> SampleMeta:
     return SampleMeta(
         spatial=spatial,
         image_names=image_names,
+        shape=shape,
         label=label,
         label_name=label_name,
         has_seg=has_seg,
