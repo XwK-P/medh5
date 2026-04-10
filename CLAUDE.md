@@ -30,17 +30,17 @@ mypy medh5
 
 ### Core module relationships
 
-- **`core.py`** — `MEDH5File` is the central API. Dual interface: static methods (`write`/`read`/`read_meta`/`verify`/`update_meta`/`add_seg`) for one-shot operations, and context-manager instance (`with MEDH5File(path) as f`) for lazy typed access via `f.images`, `f.seg`, `f.meta`.
-- **`meta.py`** — `SampleMeta` and `SpatialMeta` dataclasses that serialize to/from HDF5 root attributes. Schema version is `"1"`.
+- **`core.py`** — `MEDH5File` is the central API. Dual interface: static methods (`write`/`read`/`read_meta`/`verify`/`validate`/`update`/`update_meta`/`add_seg`) for one-shot operations, and context-manager instance (`with MEDH5File(path) as f`) for lazy typed access via `f.images`, `f.seg`, `f.meta`. Also defines `ValidationReport`/`ValidationIssue` for structured validation results. `update()` is the unified entry point for in-place mutations (metadata, seg add/replace/remove, bbox); `update_meta()` and `add_seg()` delegate to it.
 - **`chunks.py`** — L3 cache-aware chunk optimizer (from DKFZ mlarray). Called during `write()` to size HDF5 chunks for efficient patch reads.
-- **`integrity.py`** — SHA-256 checksum computation/verification over image datasets.
+- **`meta.py`** — `SampleMeta` and `SpatialMeta` dataclasses that serialize to/from HDF5 root attributes. Schema version is `"1"`. Exports `_ROOT_META_ATTRS` and `_IMAGE_META_ATTRS` tuples that canonically list which HDF5 attributes belong to the schema (also used by `integrity.py` for checksum hashing).
+- **`integrity.py`** — SHA-256 checksum computation/verification over image datasets, segmentation masks, bounding boxes, and critical metadata attributes. Reuses attribute-name tuples from `meta.py`.
 - **`torch.py`** — Two PyTorch datasets: `MEDH5TorchDataset` (eager full-volume) and `MEDH5PatchDataset` (lazy patch-based via `PatchSampler`). Both share a module-level `_HandleCache` (LRU, 32 handles) so repeated `__getitem__` calls reuse open h5py files.
 - **`sampling.py`** — `PatchSampler` with uniform/foreground/balanced strategies. Works with open `MEDH5File` instances, slicing lazily from h5py datasets.
 - **`transforms.py`** — Pure-numpy transforms (`Compose`, `Clip`, `Normalize`, `ZScore`, `RandomFlip`). Operate on sample dicts with `images` and `seg` keys.
 - **`stats.py`** — Streaming dataset statistics via Welford merge. Multi-process via `ProcessPoolExecutor`.
 - **`dataset/`** — `Dataset` (metadata-only manifest from `read_meta`, JSON persistence, staleness detection) and `make_splits` (stratified/grouped/k-fold splitting).
-- **`io/`** — NIfTI round-trip (`from_nifti`/`to_nifti`) and DICOM ingestion (`from_dicom`). Lazy-imported via `__getattr__` so importing `medh5` doesn't require nibabel/pydicom.
-- **`cli.py`** — 15 subcommands built on argparse. All handlers are module-level functions (`_cmd_*`).
+- **`io/`** — NIfTI round-trip (`from_nifti`/`to_nifti`), `import_seg_nifti` for adding NIfTI masks to existing files, and DICOM ingestion (`from_dicom`) with series selection, geometry validation, and modality LUT support. Optional SimpleITK resampling for multi-resolution data. Lazy-imported via `__getattr__` so importing `medh5` doesn't require nibabel/pydicom.
+- **`cli.py`** — 15 subcommands built on argparse. All handlers are module-level functions (`_cmd_*`). Several commands support `--json` for machine-readable output.
 
 ### Compression pipeline
 

@@ -130,8 +130,29 @@ Update metadata or add segmentation masks without rewriting image data:
 ```python
 from medh5 import MEDH5File
 
+# Simple convenience methods
 MEDH5File.update_meta("sample.medh5", label=2, extra={"reviewed": True})
 MEDH5File.add_seg("sample.medh5", "new_mask", mask_array)
+
+# Unified update API — metadata, seg, and bbox in one call
+MEDH5File.update(
+    "sample.medh5",
+    meta={"label": 3, "spacing": [1.0, 0.5, 0.5], "coord_system": "RAS"},
+    seg_ops={"add": {"organ": organ_mask}, "remove": ["old_mask"]},
+    bbox_ops={"bboxes": new_bboxes, "bbox_labels": ["tumor"]},
+)
+```
+
+### Validate file structure
+
+```python
+from medh5 import MEDH5File
+
+report = MEDH5File.validate("sample.medh5")
+print(report.is_valid)        # True if no errors
+print(report.errors)          # list of ValidationIssue(code=..., message=...)
+print(report.warnings)        # e.g. missing checksum
+print(report.ok(strict=True)) # False if any errors OR warnings
 ```
 
 ### Verify file integrity
@@ -203,6 +224,26 @@ from_nifti(
 )
 ```
 
+Resample multi-resolution modalities onto a shared grid (requires `medh5[itk]`):
+
+```python
+from_nifti(
+    images={"CT": "ct_1mm.nii.gz", "PET": "pet_2mm.nii.gz"},
+    seg={"tumor": "tumor_2mm.nii.gz"},
+    out_path="sample.medh5",
+    resample_to="CT",          # use CT grid as reference
+    interpolator="linear",     # masks always use nearest-neighbor
+)
+```
+
+Import a segmentation mask into an existing file:
+
+```python
+from medh5.io import import_seg_nifti
+
+import_seg_nifti("sample.medh5", "edited_tumor.nii.gz", name="tumor", resample=True, replace=True)
+```
+
 Export back to NIfTI for editing in 3D Slicer / ITK-SNAP:
 
 ```python
@@ -219,6 +260,8 @@ from_dicom(
     dicom_dir="path/to/series",
     out_path="sample.medh5",
     modality_name="CT",
+    series_uid="1.2.3.4.5",    # optional: select specific series
+    apply_modality_lut=True,   # apply RescaleSlope/Intercept (default)
     extra_tags=["PatientID", "StudyDate"],
 )
 ```
@@ -277,28 +320,37 @@ print(review.status, review.annotator, review.timestamp)
 ```bash
 # Single-file operations
 medh5 info sample.medh5             # print metadata summary
+medh5 info sample.medh5 --json      # machine-readable JSON output
 medh5 validate sample.medh5         # check file structure
+medh5 validate sample.medh5 --strict --json  # warnings become errors
 
 # Batch operations
 medh5 validate-all data/            # validate every .medh5 under a directory
+medh5 validate-all data/ --fail-fast --workers 4
 medh5 audit data/                   # verify SHA-256 checksums
 medh5 recompress data/ --compression max  # rewrite with different compression
 
 # Dataset management
 medh5 index data/ -o manifest.json
 medh5 split manifest.json --ratios 0.7,0.15,0.15 --stratify label -o splits/
-medh5 stats data/ -o stats.json
+medh5 stats data/ -o stats.json --json
 
 # NIfTI / DICOM conversion
 medh5 import nifti --image CT ct.nii.gz -o sample.medh5
+medh5 import nifti --image CT ct.nii.gz --image PET pet.nii.gz \
+      --resample-to CT --interpolator linear -o sample.medh5
 medh5 import dicom /path/to/series -o sample.medh5
+medh5 import dicom /path/to/series -o sample.medh5 \
+      --series-uid 1.2.3.4.5 --no-modality-lut
 medh5 export nifti sample.medh5 -o export/
 
 # Review workflow
 medh5 review set sample.medh5 --status reviewed --annotator puyang
 medh5 review get sample.medh5
+medh5 review get sample.medh5 --json
 medh5 review list data/ --status pending
 medh5 review import-seg sample.medh5 --name tumor --from edited.nii.gz
+medh5 review import-seg sample.medh5 --name tumor --from edited.nii.gz --resample --replace
 ```
 
 ### Inspect with standard HDF5 tools

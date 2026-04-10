@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "medh5"
-version = "0.3.0"
+version = "0.4.0"
 description = "Thin HDF5 + Blosc2 multi-array format for ML workloads (multi-modality images + segmentation + bboxes + label in one file)."
 readme = "README.md"
 requires-python = ">=3.10"

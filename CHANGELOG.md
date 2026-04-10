@@ -4,7 +4,75 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
-## [0.3.0] - Unreleased
+## [0.4.0] - Unreleased
+
+### Added
+
+- **Structured validation** (`ValidationReport`, `ValidationIssue`): `MEDH5File.validate()`
+  returns a report with typed error/warning codes instead of plain strings.
+  Supports `strict` mode where warnings are treated as failures. `ValidationReport`
+  is exported from `medh5`.
+- **Unified update API** (`MEDH5File.update()`): single entry point for in-place
+  metadata, segmentation (add/replace/remove), and bounding-box mutations.
+  Automatically resyncs `image_names`, `shape`, `has_seg`, `seg_names`, `has_bbox`
+  from file state and recomputes checksums when present.
+- **DICOM series selection**: `from_dicom()` now accepts `series_uid` to select
+  a specific series when multiple exist. Without it, the largest series is chosen
+  deterministically. Available series UIDs are recorded in `extra["dicom"]`.
+- **DICOM geometry validation**: strict checks for consistent
+  `ImageOrientationPatient`, `PixelSpacing`, and uniform slice spacing across
+  the selected series. Multi-frame and non-grayscale DICOM are rejected with
+  clear errors.
+- **DICOM modality LUT**: `apply_modality_lut` parameter (default `True`) applies
+  RescaleSlope/RescaleIntercept before writing via `pydicom.pixels`.
+  Disable with `apply_modality_lut=False` or `--no-modality-lut` on the CLI.
+- **SimpleITK resampling** for NIfTI imports: `from_nifti(resample_to=...)` resamples
+  all images and masks onto a shared reference grid. Supports `"linear"`,
+  `"nearest"`, and `"bspline"` interpolators. Masks always use nearest-neighbor.
+- **`import_seg_nifti()`** (`medh5.io`): import a NIfTI segmentation mask into
+  an existing `.medh5` file with optional resampling and replace semantics.
+- **Expanded checksum coverage**: SHA-256 now covers segmentation masks, bounding
+  boxes, and critical metadata attributes — not just image datasets. Review status
+  updates also recompute the checksum when one is stored.
+- **JSON output on CLI**: `--json` flag on `info`, `validate`, `stats`, and
+  `review get` commands for machine-readable output.
+- **CLI flags**: `--strict` on `validate`, `--fail-fast` on `validate-all`,
+  `--resample-to`/`--interpolator` on `import nifti`, `--series-uid`/`--no-modality-lut`
+  on `import dicom`, `--resample`/`--replace` on `review import-seg`.
+- **Dataset record fields**: `DatasetRecord` now includes `shape`, `spacing`,
+  `coord_system`, `patch_size`, and `review_status`.
+- **Metadata validation**: `SampleMeta.validate()` now checks `patch_size`
+  length and element types.
+- **`meta.py` attribute lists**: `_ROOT_META_ATTRS` and `_IMAGE_META_ATTRS`
+  tuples canonically define which HDF5 attributes belong to the schema.
+  `write_meta()` clears stale attributes before writing.
+
+### Changed
+
+- `MEDH5File.update_meta()` now delegates to `MEDH5File.update()` internally.
+- `MEDH5File.add_seg()` now delegates to `MEDH5File.update()` internally.
+- `_validate_file()` in `cli.py` replaced by `MEDH5File.validate()`.
+- DICOM `_read_series()` returns provenance metadata (selected UID, available
+  UIDs, instance count, LUT application status).
+- `from_dicom()` now raises on missing `ImageOrientationPatient`,
+  `ImagePositionPatient`, or `PixelSpacing` instead of falling back to defaults.
+- CLI `main()` wraps all command handlers in a top-level
+  `except (ImportError, MEDH5Error, ValueError)` for consistent error reporting.
+- **Tests**: expanded from 135 to 167 tests (90% coverage).
+
+### Fixed
+
+- `ValidationPayload` type alias was defined after `if __name__ == "__main____"`
+  in `cli.py`, making it unreachable during normal imports. Moved to module top.
+- `_build_info_payload()` opened the file twice (once via `MEDH5File` context
+  manager, once via `get_review_status()`). Now extracts review status from
+  `meta.extra` inline.
+- `_validate_open_file()` loaded the entire `bboxes` dataset into memory just
+  to check its shape. Now reads only HDF5 dataset metadata.
+- Duplicate attribute-name tuples in `integrity.py` (`_HASHED_ROOT_ATTRS`,
+  `_HASHED_IMAGE_ATTRS`) now reuse the canonical tuples from `meta.py`.
+
+## [0.3.0]
 
 ### Added
 
