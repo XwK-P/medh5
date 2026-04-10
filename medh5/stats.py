@@ -284,9 +284,7 @@ def compute_stats(
             p99=p99,
         )
 
-    seg_coverage_out = {
-        sn: seg_cov_sum[sn] / seg_cov_n[sn] for sn in seg_cov_sum
-    }
+    seg_coverage_out = {sn: seg_cov_sum[sn] / seg_cov_n[sn] for sn in seg_cov_sum}
 
     return DatasetStats(
         modalities=modalities_out,

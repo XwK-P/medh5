@@ -93,9 +93,7 @@ def _ratio_split(
     """
     total = sum(ratios.values())
     if abs(total - 1.0) > 1e-6:
-        raise MEDH5ValidationError(
-            f"ratios must sum to 1.0, got {total}: {ratios}"
-        )
+        raise MEDH5ValidationError(f"ratios must sum to 1.0, got {total}: {ratios}")
 
     rng = np.random.default_rng(seed)
     partition_names = list(ratios.keys())

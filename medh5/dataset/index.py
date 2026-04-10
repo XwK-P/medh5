@@ -139,9 +139,7 @@ class Dataset:
     # Filtering / projection
     # ------------------------------------------------------------------
 
-    def filter(
-        self, predicate: Callable[[DatasetRecord], bool]
-    ) -> Dataset:
+    def filter(self, predicate: Callable[[DatasetRecord], bool]) -> Dataset:
         """Return a new Dataset containing only records matching *predicate*."""
         return Dataset([r for r in self.records if predicate(r)])
 

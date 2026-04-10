@@ -31,15 +31,11 @@ def _coerce_patch_size(
         return (patch_size,) * ndim
     p = tuple(int(v) for v in patch_size)
     if len(p) != ndim:
-        raise MEDH5ValidationError(
-            f"patch_size length {len(p)} != volume ndim {ndim}"
-        )
+        raise MEDH5ValidationError(f"patch_size length {len(p)} != volume ndim {ndim}")
     return p
 
 
-def _build_slices(
-    starts: tuple[int, ...], patch: tuple[int, ...]
-) -> tuple[slice, ...]:
+def _build_slices(starts: tuple[int, ...], patch: tuple[int, ...]) -> tuple[slice, ...]:
     return tuple(slice(s, s + p) for s, p in zip(starts, patch, strict=True))
 
 
@@ -167,15 +163,13 @@ class PatchSampler:
         if self.strategy == "uniform":
             starts = self._uniform_start(shape, patch)
         elif self.strategy == "foreground":
-            starts = (
-                self._foreground_start(f, shape, patch)
-                or self._uniform_start(shape, patch)
+            starts = self._foreground_start(f, shape, patch) or self._uniform_start(
+                shape, patch
             )
         else:  # balanced
             if self._rng.random() < self.foreground_prob:
-                starts = (
-                    self._foreground_start(f, shape, patch)
-                    or self._uniform_start(shape, patch)
+                starts = self._foreground_start(f, shape, patch) or self._uniform_start(
+                    shape, patch
                 )
             else:
                 starts = self._uniform_start(shape, patch)

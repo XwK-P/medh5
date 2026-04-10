@@ -156,9 +156,7 @@ def from_nifti(
                     f"NIfTI shape mismatch: '{ref_name}' has shape {ref_shape} "
                     f"but '{name}' has shape {data.shape}"
                 )
-            if ref_affine is not None and not np.allclose(
-                aff, ref_affine, atol=1e-5
-            ):
+            if ref_affine is not None and not np.allclose(aff, ref_affine, atol=1e-5):
                 raise MEDH5ValidationError(
                     f"NIfTI affine mismatch between '{ref_name}' and '{name}'. "
                     "Pass require_same_grid=False to skip this check."
@@ -268,9 +266,7 @@ def to_nifti(
         seg_keys = seg if seg is not None else sorted(sample.seg.keys())
         for name in seg_keys:
             if name not in sample.seg:
-                raise MEDH5ValidationError(
-                    f"Segmentation '{name}' not found in {src}"
-                )
+                raise MEDH5ValidationError(f"Segmentation '{name}' not found in {src}")
             mask_u8 = np.asarray(sample.seg[name], dtype=np.uint8)
             out_path = out / f"seg_{name}{suffix}"
             nib.save(nib.Nifti1Image(mask_u8, affine), out_path)

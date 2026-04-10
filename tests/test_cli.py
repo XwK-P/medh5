@@ -93,9 +93,7 @@ class TestBatchCLI:
 
     def test_recompress_in_place(self, tmp_path, capsys):
         paths = _make_files(tmp_path, n=2)
-        ret = main(
-            ["recompress", str(tmp_path), "--compression", "max", "--checksum"]
-        )
+        ret = main(["recompress", str(tmp_path), "--compression", "max", "--checksum"])
         assert ret == 0
         for p in paths:
             assert MEDH5File.verify(p)
@@ -147,9 +145,7 @@ class TestIndexSplitStatsCLI:
         manifest = tmp_path / "m.json"
         main(["index", str(tmp_path), "-o", str(manifest)])
         out_dir = tmp_path / "folds"
-        ret = main(
-            ["split", str(manifest), "--k-folds", "2", "-o", str(out_dir)]
-        )
+        ret = main(["split", str(manifest), "--k-folds", "2", "-o", str(out_dir)])
         assert ret == 0
         assert (out_dir / "fold0_train.json").exists()
         assert (out_dir / "fold1_val.json").exists()

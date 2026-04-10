@@ -151,9 +151,7 @@ class TestHandleCache:
         _HANDLE_CACHE.close_all()
         _HANDLE_CACHE.opens = 0
         sampler = PatchSampler(patch_size=(4, 8, 8), seed=0)
-        ds = MEDH5PatchDataset(
-            sample_files[:1], sampler=sampler, samples_per_volume=10
-        )
+        ds = MEDH5PatchDataset(sample_files[:1], sampler=sampler, samples_per_volume=10)
         for i in range(len(ds)):
             ds[i]
         assert _HANDLE_CACHE.opens == 1  # one open across all 10 reads
