@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "medh5"
-version = "0.2.0"
+version = "0.3.0"
 description = "Thin HDF5 + Blosc2 multi-array format for ML workloads (multi-modality images + segmentation + bboxes + label in one file)."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -32,6 +32,15 @@ dev = [
 torch = [
   "torch>=2.0",
 ]
+nifti = [
+  "nibabel>=5",
+]
+dicom = [
+  "pydicom>=2.4",
+]
+itk = [
+  "SimpleITK>=2.3",
+]
 
 [project.scripts]
 medh5 = "medh5.cli:main"
@@ -55,6 +64,19 @@ warn_return_any = true
 warn_unused_configs = true
 
 [[tool.mypy.overrides]]
-module = ["h5py", "h5py.*", "hdf5plugin", "hdf5plugin.*", "torch", "torch.*"]
+module = [
+  "h5py",
+  "h5py.*",
+  "hdf5plugin",
+  "hdf5plugin.*",
+  "torch",
+  "torch.*",
+  "nibabel",
+  "nibabel.*",
+  "pydicom",
+  "pydicom.*",
+  "SimpleITK",
+  "SimpleITK.*",
+]
 ignore_missing_imports = true
 follow_imports = "skip"

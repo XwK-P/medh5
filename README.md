@@ -13,10 +13,13 @@ metadata as plain HDF5 attributes.
 pip install medh5
 ```
 
-With PyTorch dataset support:
+With optional extras:
 
 ```bash
-pip install medh5[torch]
+pip install medh5[torch]    # PyTorch dataset support
+pip install medh5[nifti]    # NIfTI import/export (nibabel)
+pip install medh5[dicom]    # DICOM import (pydicom)
+pip install medh5[itk]      # Resampling via SimpleITK
 ```
 
 Or install from source:
@@ -141,6 +144,8 @@ assert MEDH5File.verify("sample.medh5")  # True if checksum matches
 
 ### PyTorch integration
 
+**Eager dataset** (full-volume read per sample):
+
 ```python
 from medh5.torch import MEDH5TorchDataset
 
@@ -150,11 +155,150 @@ print(sample["images"]["CT"].shape)  # torch.Size([128, 256, 256])
 print(sample["label"])               # 1
 ```
 
+**Patch-based dataset** (lazy chunk-aligned reads):
+
+```python
+from medh5.sampling import PatchSampler
+from medh5.transforms import Compose, Clip, Normalize, RandomFlip
+from medh5.torch import MEDH5PatchDataset
+
+sampler = PatchSampler(
+    patch_size=(96, 96, 96),
+    strategy="foreground",     # "uniform" | "foreground" | "balanced"
+    foreground_seg="tumor",
+    foreground_prob=0.7,
+)
+
+transform = Compose([
+    Clip(min=-1000, max=1000),
+    Normalize(mean={"CT": -200.0}, std={"CT": 350.0}),
+    RandomFlip(axes=(1, 2), p=0.5),
+])
+
+dataset = MEDH5PatchDataset(
+    paths=["s1.medh5", "s2.medh5"],
+    sampler=sampler,
+    transform=transform,
+    samples_per_volume=4,
+)
+```
+
+Both dataset classes use a per-worker LRU file-handle cache, so repeated
+reads against the same file reuse one `h5py.File` handle instead of
+re-opening from scratch every call.
+
+### NIfTI / DICOM conversion
+
+Import NIfTI volumes into `.medh5`:
+
+```python
+from medh5.io import from_nifti, to_nifti
+
+from_nifti(
+    images={"CT": "ct.nii.gz", "PET": "pet.nii.gz"},
+    seg={"tumor": "tumor.nii.gz"},
+    out_path="sample.medh5",
+    label=1,
+    compression="balanced",
+)
+```
+
+Export back to NIfTI for editing in 3D Slicer / ITK-SNAP:
+
+```python
+to_nifti("sample.medh5", out_dir="export/")
+# Writes export/image_CT.nii.gz, export/image_PET.nii.gz, export/seg_tumor.nii.gz
+```
+
+Import a DICOM series:
+
+```python
+from medh5.io import from_dicom
+
+from_dicom(
+    dicom_dir="path/to/series",
+    out_path="sample.medh5",
+    modality_name="CT",
+    extra_tags=["PatientID", "StudyDate"],
+)
+```
+
+### Dataset operations
+
+Build a manifest, filter, and split:
+
+```python
+from medh5.dataset import Dataset, make_splits
+
+ds = Dataset.from_directory("data/", recursive=True)
+labeled = ds.filter(lambda r: r.label is not None)
+ds.save("manifest.json")
+
+splits = make_splits(
+    ds,
+    ratios={"train": 0.7, "val": 0.15, "test": 0.15},
+    stratify_by="label",
+    group_by="extra.patient_id",
+    seed=42,
+)
+splits["train"].save("train.json")
+```
+
+Compute dataset-level statistics:
+
+```python
+from medh5.stats import compute_stats
+
+stats = compute_stats(ds, workers=4)
+print(stats["CT"].mean, stats["CT"].std)
+print(stats.label_counts)
+```
+
+### Review / QA workflow
+
+Track annotation review status without a GUI:
+
+```python
+from medh5 import MEDH5File
+
+MEDH5File.set_review_status(
+    "sample.medh5",
+    status="reviewed",       # pending | reviewed | flagged | rejected
+    annotator="puyang",
+    notes="ok",
+)
+
+review = MEDH5File.get_review_status("sample.medh5")
+print(review.status, review.annotator, review.timestamp)
+```
+
 ### CLI
 
 ```bash
-medh5 info sample.medh5       # print metadata summary
-medh5 validate sample.medh5   # check file structure
+# Single-file operations
+medh5 info sample.medh5             # print metadata summary
+medh5 validate sample.medh5         # check file structure
+
+# Batch operations
+medh5 validate-all data/            # validate every .medh5 under a directory
+medh5 audit data/                   # verify SHA-256 checksums
+medh5 recompress data/ --compression max  # rewrite with different compression
+
+# Dataset management
+medh5 index data/ -o manifest.json
+medh5 split manifest.json --ratios 0.7,0.15,0.15 --stratify label -o splits/
+medh5 stats data/ -o stats.json
+
+# NIfTI / DICOM conversion
+medh5 import nifti --image CT ct.nii.gz -o sample.medh5
+medh5 import dicom /path/to/series -o sample.medh5
+medh5 export nifti sample.medh5 -o export/
+
+# Review workflow
+medh5 review set sample.medh5 --status reviewed --annotator puyang
+medh5 review get sample.medh5
+medh5 review list data/ --status pending
+medh5 review import-seg sample.medh5 --name tumor --from edited.nii.gz
 ```
 
 ### Inspect with standard HDF5 tools
@@ -255,6 +399,9 @@ nested JSON could consume significant memory.
 - `hdf5plugin >= 4.0`
 - `numpy >= 1.24`
 - `torch >= 2.0` (optional, for `medh5[torch]`)
+- `nibabel >= 5` (optional, for `medh5[nifti]`)
+- `pydicom >= 2.4` (optional, for `medh5[dicom]`)
+- `SimpleITK >= 2.3` (optional, for `medh5[itk]`)
 
 ## License
 
