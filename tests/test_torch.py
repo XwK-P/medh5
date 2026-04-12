@@ -70,6 +70,21 @@ class TestMEDH5TorchDataset:
         ds = MEDH5TorchDataset(sample_files, transform=add_flag)
         assert ds[0]["transformed"] is True
 
+    def test_numpy_transforms_run_before_tensor_conversion(self, sample_files):
+        # Regression: the numpy transforms in medh5.transforms call
+        # ``arr.astype(np.float32)``, so the transform must see numpy
+        # arrays, not tensors. MEDH5TorchDataset used to convert to
+        # tensors first and broke this contract.
+        from medh5.transforms import Clip, Compose, ZScore
+
+        pipe = Compose([Clip(min=0.0, max=1.0), ZScore()])
+        ds = MEDH5TorchDataset(sample_files, transform=pipe)
+        out = ds[0]
+        ct = out["images"]["CT"]
+        assert isinstance(ct, torch.Tensor)
+        # ZScore should have centered the per-volume mean on ~0.
+        assert abs(ct.float().mean().item()) < 1e-4
+
     def test_getitem_bboxes(self, tmp_path):
         rng = np.random.default_rng(3)
         path = tmp_path / "bbox_sample.medh5"

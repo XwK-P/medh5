@@ -98,6 +98,22 @@ def _open_cached(path: str | Path) -> MEDH5File:
     return _HANDLE_CACHE.get(path)
 
 
+def _to_tensors(sample: dict[str, Any]) -> dict[str, Any]:
+    """Convert nested numpy arrays in *sample* to torch tensors."""
+    out = dict(sample)
+    for key in ("images", "seg"):
+        group = out.get(key)
+        if isinstance(group, dict):
+            out[key] = {
+                name: torch.from_numpy(np.ascontiguousarray(arr))
+                for name, arr in group.items()
+            }
+    for key in ("bboxes", "bbox_scores"):
+        if key in out and out[key] is not None:
+            out[key] = torch.from_numpy(np.ascontiguousarray(out[key]))
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Eager dataset
 # ---------------------------------------------------------------------------
@@ -121,7 +137,10 @@ class MEDH5TorchDataset:
     paths : list of str or Path
         Paths to ``.medh5`` files (one per sample).
     transform : callable, optional
-        Applied to the sample dict after loading.
+        Pure-numpy transform applied to the sample dict *before* tensor
+        conversion, so the transforms in :mod:`medh5.transforms` work
+        out of the box. See :class:`MEDH5PatchDataset` for the same
+        contract.
     """
 
     def __init__(
@@ -140,54 +159,29 @@ class MEDH5TorchDataset:
         sample = MEDH5File.read(self.paths[idx])
 
         out: dict[str, Any] = {
-            "images": {
-                name: torch.from_numpy(np.ascontiguousarray(arr))
-                for name, arr in sample.images.items()
-            },
+            "images": dict(sample.images),
             "label": sample.meta.label,
             "meta": sample.meta,
         }
 
         if sample.seg is not None:
-            out["seg"] = {
-                name: torch.from_numpy(np.ascontiguousarray(arr))
-                for name, arr in sample.seg.items()
-            }
-
+            out["seg"] = dict(sample.seg)
         if sample.bboxes is not None:
-            out["bboxes"] = torch.from_numpy(np.ascontiguousarray(sample.bboxes))
+            out["bboxes"] = sample.bboxes
         if sample.bbox_scores is not None:
-            out["bbox_scores"] = torch.from_numpy(
-                np.ascontiguousarray(sample.bbox_scores)
-            )
+            out["bbox_scores"] = sample.bbox_scores
         if sample.bbox_labels is not None:
             out["bbox_labels"] = sample.bbox_labels
 
         if self.transform is not None:
             out = self.transform(out)
 
-        return out
+        return _to_tensors(out)
 
 
 # ---------------------------------------------------------------------------
 # Patch-based dataset
 # ---------------------------------------------------------------------------
-
-
-def _to_tensors(sample: dict[str, Any]) -> dict[str, Any]:
-    """Convert nested numpy arrays in *sample* to torch tensors."""
-    out = dict(sample)
-    if isinstance(out.get("images"), dict):
-        out["images"] = {
-            name: torch.from_numpy(np.ascontiguousarray(arr))
-            for name, arr in out["images"].items()
-        }
-    if isinstance(out.get("seg"), dict):
-        out["seg"] = {
-            name: torch.from_numpy(np.ascontiguousarray(arr))
-            for name, arr in out["seg"].items()
-        }
-    return out
 
 
 class MEDH5PatchDataset:
