@@ -2,6 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+This is a WIP project that has not been released yet — backward compatibility is not needed.
+
 ## Build & Test Commands
 
 ```bash
@@ -51,6 +53,14 @@ Three presets: `"fast"` (lz4/3), `"balanced"` (lz4hc/8, default), `"max"` (zstd/
 - **Eager:** `MEDH5File.read()` → loads everything into `MEDH5Sample` dataclass
 - **Lazy:** `MEDH5File(path)` context manager → `f.images["CT"][z0:z1, y0:y1, x0:x1]` slices directly from HDF5 chunks
 - **Metadata-only:** `MEDH5File.read_meta()` → reads HDF5 attributes without touching arrays
+
+## Pre-commit checks
+
+All CI checks must pass before committing and pushing:
+
+```bash
+ruff check . && ruff format --check . && mypy medh5 && pytest tests/ --cov=medh5 --cov-fail-under=90
+```
 
 ## Linting & Style
 
