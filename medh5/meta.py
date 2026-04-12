@@ -202,10 +202,6 @@ def read_meta(f: h5py.File) -> SampleMeta:
 
     ra = f.attrs
 
-    # Backward compat: older files stored shape on root attrs
-    if shape is None and "shape" in ra:
-        shape = ra["shape"].tolist()
-
     image_names: list[str] | None = None
     if "image_names" in ra:
         raw_image_names = ra["image_names"]
