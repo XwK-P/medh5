@@ -22,7 +22,6 @@ _ROOT_META_ATTRS = (
     "image_names",
     "label",
     "label_name",
-    "shape",
     "has_seg",
     "seg_names",
     "has_bbox",
@@ -30,6 +29,7 @@ _ROOT_META_ATTRS = (
 )
 
 _IMAGE_META_ATTRS = (
+    "shape",
     "spacing",
     "origin",
     "direction",
@@ -124,8 +124,9 @@ class SampleMeta:
 def write_meta(f: h5py.File, meta: SampleMeta) -> None:
     """Persist *meta* as HDF5 attributes on *f*.
 
-    Root attributes hold scalar/label/flag metadata.  Spatial metadata is
-    stored on the ``images`` group so it applies to every modality equally.
+    Root attributes hold scalar/label/flag metadata.  Shape and spatial
+    metadata are stored on the ``images`` group so they apply to every
+    modality equally.
     """
     for key in _ROOT_META_ATTRS:
         f.attrs.pop(key, None)
@@ -136,8 +137,6 @@ def write_meta(f: h5py.File, meta: SampleMeta) -> None:
         f.attrs["label"] = meta.label
     if meta.label_name is not None:
         f.attrs["label_name"] = meta.label_name
-    if meta.shape is not None:
-        f.attrs["shape"] = np.asarray(meta.shape, dtype=np.int64)
     f.attrs["has_seg"] = meta.has_seg
     if meta.seg_names is not None:
         f.attrs["seg_names"] = json.dumps(meta.seg_names)
@@ -150,6 +149,8 @@ def write_meta(f: h5py.File, meta: SampleMeta) -> None:
     grp = f["images"]
     for key in _IMAGE_META_ATTRS:
         grp.attrs.pop(key, None)
+    if meta.shape is not None:
+        grp.attrs["shape"] = np.asarray(meta.shape, dtype=np.int64)
     s = meta.spatial
     if s.spacing is not None:
         grp.attrs["spacing"] = np.asarray(s.spacing, dtype=np.float64)
@@ -169,6 +170,7 @@ def read_meta(f: h5py.File) -> SampleMeta:
     """Reconstruct a :class:`SampleMeta` from HDF5 attributes."""
 
     spatial = SpatialMeta()
+    shape: list[int] | None = None
     patch_size = None
 
     if "images" in f:
@@ -193,10 +195,16 @@ def read_meta(f: h5py.File) -> SampleMeta:
             spatial.axis_labels = list(a["axis_labels"])
         if "coord_system" in a:
             spatial.coord_system = str(a["coord_system"])
+        if "shape" in a:
+            shape = a["shape"].tolist()
         if "patch_size" in a:
             patch_size = a["patch_size"].tolist()
 
     ra = f.attrs
+
+    # Backward compat: older files stored shape on root attrs
+    if shape is None and "shape" in ra:
+        shape = ra["shape"].tolist()
 
     image_names: list[str] | None = None
     if "image_names" in ra:
@@ -214,10 +222,6 @@ def read_meta(f: h5py.File) -> SampleMeta:
     label_name = ra.get("label_name")
     if isinstance(label_name, bytes):
         label_name = label_name.decode()
-
-    shape: list[int] | None = None
-    if "shape" in ra:
-        shape = ra["shape"].tolist()
 
     has_seg = bool(ra.get("has_seg", False))
 

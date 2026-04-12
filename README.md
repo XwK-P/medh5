@@ -389,6 +389,7 @@ sample.medh5
     └── checksum_sha256: str (optional)
 
 images.attrs:
+    ├── shape: int array
     ├── spacing: float array
     ├── origin: float array
     ├── direction: float array (flattened)
