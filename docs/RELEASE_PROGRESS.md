@@ -12,7 +12,7 @@ the plan.
 | 2. Correctness bugs | complete | 1dc8568 |
 | 3. Stability hardening | complete | d749604 |
 | 4. Essential features | complete | 5e8fd7b |
-| 5. New tests | complete | see Phase 5 checkpoint |
+| 5. New tests | complete | 7b330fe |
 | 6. CI workflow | pending | — |
 | 7. Documentation | pending | — |
 
