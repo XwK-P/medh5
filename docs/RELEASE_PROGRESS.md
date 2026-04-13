@@ -9,7 +9,7 @@ the plan.
 | Phase | Status | Checkpoint commit |
 |---|---|---|
 | 1. Release blockers (data safety + packaging) | complete | 14a8a8a |
-| 2. Correctness bugs | complete | see Phase 2 checkpoint |
+| 2. Correctness bugs | complete | 1dc8568 |
 | 3. Stability hardening | pending | — |
 | 4. Essential features | pending | — |
 | 5. New tests | pending | — |
