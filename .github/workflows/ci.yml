@@ -40,3 +40,48 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: pip install -e ".[dev,torch,nifti,dicom,itk]"
       - run: pytest tests/ -v --cov=medh5 --cov-report=term-missing --cov-fail-under=90
+
+  test-macos:
+    # macOS defaults to the `spawn` multiprocessing start method,
+    # which is where the h5py DataLoader and ProcessPoolExecutor
+    # regressions bite. Keep this job on a single Python version —
+    # its job is to exercise the spawn path, not re-verify the matrix.
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        python-version: ["3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install -e ".[dev,torch,nifti,dicom,itk]"
+      - run: pytest tests/ -v --cov=medh5 --cov-report=term-missing --cov-fail-under=90
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install --upgrade build twine packaging
+      - run: python -m build
+      - run: twine check dist/*
+      - run: |
+          python - <<'PY'
+          import zipfile, glob, sys
+          wheels = glob.glob("dist/*.whl")
+          assert wheels, "no wheel produced"
+          with zipfile.ZipFile(wheels[0]) as z:
+              names = z.namelist()
+          missing = [n for n in ("medh5/py.typed",) if n not in names]
+          license_present = any(n.endswith("LICENSE") for n in names)
+          if missing or not license_present:
+              print("names:", names, file=sys.stderr)
+              sys.exit(f"missing {missing or 'LICENSE'} in wheel")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/

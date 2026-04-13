@@ -13,7 +13,7 @@ the plan.
 | 3. Stability hardening | complete | d749604 |
 | 4. Essential features | complete | 5e8fd7b |
 | 5. New tests | complete | 7b330fe |
-| 6. CI workflow | pending | — |
+| 6. CI workflow | complete | see Phase 6 checkpoint |
 | 7. Documentation | pending | — |
 
 ## Phase 1 — Release blockers
@@ -84,6 +84,46 @@ the plan.
 - Left `SampleMeta.validate(strict=…)` removal for Phase 2 cleanup; no behavior bug, just dead code.
 
 **Verification:** see "Phase 1 checkpoint results" above.
+
+### Phase 6 checkpoint — 2026-04-13
+
+**Scope:** CI workflow additions from `docs/RELEASE_PLAN.md` §6.
+
+**Files changed:**
+- `.github/workflows/ci.yml` — added two jobs:
+  - `test-macos` (`macos-latest`, Python 3.12) so CI exercises the
+    `spawn` multiprocessing default that the h5py DataLoader and
+    `ProcessPoolExecutor` paths are most fragile under.
+  - `build` — runs `python -m build`, `twine check dist/*`, an inline
+    wheel-content assertion that `medh5/py.typed` and the `LICENSE`
+    file both land in the wheel, and uploads the `dist/` directory as
+    an artifact.
+
+**Local verification:**
+- Parsed the YAML with `yaml.safe_load` — all 5 jobs
+  (`lint`, `typecheck`, `test`, `test-macos`, `build`) load cleanly.
+- Ran the build step locally: `python -m build` produced
+  `medh5-0.5.0-py3-none-any.whl` + `medh5-0.5.0.tar.gz`;
+  `twine check dist/*` reported PASSED on both artifacts; the wheel
+  contains `medh5/py.typed` and `medh5-0.5.0.dist-info/licenses/LICENSE`.
+
+**Deviations from plan:**
+- The plan hinted at an "optional tag-push publish" follow-up; left
+  deliberately unwired — the user should review the `dist/` artifact
+  before any `twine upload`.
+- `test-macos` runs only Python 3.12 — running the full 3.10/3.11/3.12
+  matrix on macOS would triple the CI minutes for a job whose purpose
+  is specifically to catch spawn regressions, not platform-matrix
+  coverage.
+
+### Phase 6 results
+
+- [x] YAML lints via `yaml.safe_load`
+- [x] Local `python -m build && twine check dist/*` passes
+- [x] Wheel contains `medh5/py.typed` and `LICENSE`
+- [x] No test regressions locally — CI will run the macOS path on push.
+
+---
 
 ### Phase 5 checkpoint — 2026-04-13
 
@@ -218,6 +258,25 @@ Most of Phase 4 was already satisfied by earlier work:
   `seg=None` is returned for an empty group.
 - Did not add the `strict=…` kwarg removal from `SampleMeta.validate` —
   deferred to a future phase since it's dead code, not a bug.
+
+---
+
+## Phase 6 — CI workflow
+
+### 6.1 macOS test job
+- [x] `test-macos` job on `macos-latest`, Python 3.12 only
+- [x] Same install + pytest invocation as the Linux matrix job
+- Rationale: macOS default is `spawn`, where h5py and
+  `ProcessPoolExecutor` are most fragile; one job is enough to catch
+  regressions without tripling CI minutes.
+
+### 6.2 Build + twine-check job
+- [x] `build` job runs `python -m build` and `twine check dist/*`
+- [x] Inline wheel-inspection asserts `medh5/py.typed` and `LICENSE`
+      are present in the built wheel
+- [x] Uploads `dist/` as an artifact so the user can grab it for
+      test-PyPI smoke uploads without rebuilding locally
+- Verified locally end-to-end before commit.
 
 ---
 
