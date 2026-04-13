@@ -31,12 +31,12 @@ from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import Any
 
-_Handler = Callable[[argparse.Namespace], int]
-
 import h5py
 
 from medh5.core import MEDH5File
 from medh5.exceptions import MEDH5Error
+
+_Handler = Callable[[argparse.Namespace], int]
 
 ValidationPayload = dict[str, Any]
 

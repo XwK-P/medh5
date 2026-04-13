@@ -11,7 +11,7 @@ the plan.
 | 1. Release blockers (data safety + packaging) | complete | 14a8a8a |
 | 2. Correctness bugs | complete | 1dc8568 |
 | 3. Stability hardening | complete | d749604 |
-| 4. Essential features | pending | — |
+| 4. Essential features | complete | see Phase 4 checkpoint |
 | 5. New tests | pending | — |
 | 6. CI workflow | pending | — |
 | 7. Documentation | pending | — |
@@ -85,6 +85,36 @@ the plan.
 
 **Verification:** see "Phase 1 checkpoint results" above.
 
+### Phase 4 checkpoint — 2026-04-13
+
+**Scope:** Essential features from `docs/RELEASE_PLAN.md` §4.
+
+Most of Phase 4 was already satisfied by earlier work:
+
+- §4.1 bbox-aware transforms / sampling — delivered in Phase 2.1 and 2.2.
+- §4.2 `worker_init_fn` export — delivered in Phase 1.3.
+- §4.3 `MEDH5File.is_valid` — implemented this checkpoint.
+
+**Files changed:**
+- `medh5/core.py` — new `MEDH5File.is_valid(path)` static method:
+  wraps `validate(path).is_valid` and swallows `MEDH5ValidationError`
+  (wrong extension) so the method can be used freely as a filter
+  predicate (`filter(MEDH5File.is_valid, paths)`).
+- `medh5/cli.py` — moved `_Handler = Callable[…]` alias below the third-
+  party imports to satisfy ruff E402 (the earlier position raised
+  "module level import not at top of file" on later imports).
+- `tests/test_roundtrip.py` — `TestIsValid` with valid, missing,
+  corrupted, and wrong-extension cases.
+
+### Phase 4 results
+
+- [x] `ruff check .` — clean
+- [x] `ruff format --check .` — 32 files already formatted
+- [x] `mypy medh5` — 0 issues, strict mode
+- [x] `pytest tests/` — **197 passed, 1 skipped, coverage 91.11%**
+
+---
+
 ### Phase 3 checkpoint — 2026-04-13
 
 **Scope:** Stability hardening from `docs/RELEASE_PLAN.md` §3.
@@ -149,6 +179,23 @@ the plan.
   `seg=None` is returned for an empty group.
 - Did not add the `strict=…` kwarg removal from `SampleMeta.validate` —
   deferred to a future phase since it's dead code, not a bug.
+
+---
+
+## Phase 4 — Essential features
+
+### 4.1 Bbox-aware transforms + sampling
+- [x] Delivered in Phase 2.1 (`RandomFlip` bbox flip) and Phase 2.2
+      (`PatchSampler(include_bboxes=True)`).
+
+### 4.2 `worker_init_fn` export
+- [x] Delivered in Phase 1.3 (`medh5.torch.worker_init_fn`).
+
+### 4.3 `MEDH5File.is_valid(path)` convenience
+- [x] `MEDH5File.is_valid(path)` returns a bool
+- [x] Returns `False` rather than raising for missing/wrong-extension paths
+      so it can be used as a filter predicate
+- [x] Tests: valid, missing, corrupted, wrong extension
 
 ---
 

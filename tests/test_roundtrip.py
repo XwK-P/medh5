@@ -305,6 +305,28 @@ class TestValidation:
             MEDH5File.read(path)
 
 
+class TestIsValid:
+    def test_valid_file(self, tmp_path_medh5):
+        MEDH5File.write(
+            tmp_path_medh5,
+            images={"CT": np.zeros((4, 4, 4), dtype=np.float32)},
+        )
+        assert MEDH5File.is_valid(tmp_path_medh5) is True
+
+    def test_missing_file(self, tmp_path):
+        assert MEDH5File.is_valid(tmp_path / "nope.medh5") is False
+
+    def test_corrupted_file(self, tmp_path):
+        bad = tmp_path / "bad.medh5"
+        bad.write_bytes(b"not hdf5 at all")
+        assert MEDH5File.is_valid(bad) is False
+
+    def test_wrong_extension(self, tmp_path):
+        bad = tmp_path / "x.hdf5"
+        bad.write_bytes(b"")
+        assert MEDH5File.is_valid(bad) is False
+
+
 class TestAtomicWrite:
     def test_interrupted_write_leaves_no_file(self, tmp_path, monkeypatch):
         """A crash during write() must not leave a stale/partial file

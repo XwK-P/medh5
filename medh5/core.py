@@ -1098,6 +1098,22 @@ class MEDH5File:
             report.add_error("file_open_failed", f"Failed to open '{path}': {exc}")
         return report
 
+    @staticmethod
+    def is_valid(path: str | Path) -> bool:
+        """Return ``True`` if *path* passes :meth:`validate` with no errors.
+
+        Thin convenience wrapper for the common "is this file OK?"
+        check — saves callers from constructing a
+        :class:`ValidationReport` just to read its ``is_valid`` flag.
+        Returns ``False`` (not raises) when the path is missing, has
+        the wrong extension, or cannot be opened, so it can be used
+        freely in ``filter(MEDH5File.is_valid, paths)`` style pipelines.
+        """
+        try:
+            return MEDH5File.validate(path).is_valid
+        except MEDH5ValidationError:
+            return False
+
     # ------------------------------------------------------------------
     # Review / curation helpers (delegated to medh5.review)
     # ------------------------------------------------------------------
