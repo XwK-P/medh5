@@ -4,7 +4,110 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
-## [0.4.0] - Unreleased
+## [0.5.0]
+
+First PyPI release. Bundles the 0.4.0 work (never released) with a
+dedicated release-hardening pass covering data-safety, PyTorch
+multiprocessing, spatial-metadata validation, statistics numerics, CLI
+exit codes, and packaging.
+
+### Added
+
+- **Atomic writes**: `MEDH5File.write()` now writes to a sibling temp file,
+  `fsync`s, and `os.replace`s into place. An interrupted write (Ctrl-C,
+  OOM, crash) can no longer leave a truncated `.medh5` file at the
+  destination path. Any pre-existing file at the target path is preserved
+  on failure.
+- **Checksum verification before in-place updates**: `MEDH5File.update()`
+  (and by extension `update_meta`, `add_seg`, `set_review_status`) now
+  verifies any stored SHA-256 *before* mutating, so an externally
+  corrupted file cannot silently have a fresh checksum baked in over top
+  of the corruption. New `force=True` escape hatch for intentional
+  repairs.
+- **Fork/spawn-safe PyTorch handle cache**: `medh5.torch._HandleCache` is
+  now PID-scoped — a forked worker observes the PID mismatch and resets
+  to a cold cache instead of inheriting parent h5py state. Works
+  transparently with `multiprocessing_context="spawn"` (default on macOS
+  / Windows / Python 3.14+).
+- **`medh5.torch.worker_init_fn`**: the supported `DataLoader(
+  worker_init_fn=…)` helper for `num_workers > 0`. Documented in
+  README.
+- **`PatchSampler(include_bboxes=True)`**: opt-in bbox return from
+  `PatchSampler.sample()`. Bboxes are translated into patch-local
+  coordinates and filtered to the ones intersecting the patch;
+  `bbox_scores` / `bbox_labels` are filtered consistently.
+- **`RandomFlip` geometry sync**: flipping now negates the corresponding
+  column of `meta.spatial.direction` (via `dataclasses.replace`, so the
+  file's cached `SampleMeta` is not mutated) and mirrors any bboxes in
+  the sample dict, keeping physical-space metadata consistent with the
+  flipped voxel data.
+- **`MEDH5File.is_valid(path)`**: thin convenience wrapper returning a
+  plain `bool` for the common "is this file OK?" check (swallows
+  `MEDH5ValidationError`).
+- **Dimension checks in `SampleMeta.validate()`**: `direction` must be
+  `ndim × ndim` and `axis_labels` length must equal `ndim`. A malformed
+  `direction` attribute on read now raises `MEDH5SchemaError` instead of
+  emitting a warning.
+- **Numerically-stable parallel stats**: `compute_stats` now accumulates
+  per-file `(n, mean, M2)` via Welford and merges with Chan's parallel
+  algorithm. Large uint16 CT volumes no longer suffer catastrophic
+  cancellation on variance.
+- **CLI exit codes**: `medh5 <no args>` and unknown subcommands return
+  exit code 2; runtime errors (`MEDH5Error`, `ValueError`, `ImportError`)
+  return 1; success returns 0. Replaced the `if cmd == …` ladder with a
+  typed dispatch table (`_TOP_HANDLERS`, `_SUB_DISPATCH`).
+- **macOS CI job**: `test-macos` on `macos-latest` + Python 3.12
+  exercises the `spawn` multiprocessing path that the Linux matrix does
+  not cover.
+- **Release-build CI job**: runs `python -m build`, `twine check dist/*`,
+  inspects the wheel for `medh5/py.typed` + `LICENSE`, and uploads the
+  dist/ artifact.
+- **PyPI packaging metadata**: authors, project URLs (Homepage,
+  Repository, Issues, Changelog), classifiers (Development Status ::
+  4 - Beta, Topic :: Scientific/Engineering :: Medical Science Apps.,
+  Typing :: Typed), `package-data = {medh5 = ["py.typed"]}`,
+  `license = {file = "LICENSE"}`. `LICENSE` file (MIT, Puyang Wang,
+  2026) added to the repo root and bundled in both wheel and sdist.
+- **Tightened lower bounds**: `h5py >= 3.10`, `hdf5plugin >= 4.1`,
+  `numpy >= 1.24`. No upper bounds.
+- **Tests**: expanded to 197 passing (91% coverage), including
+  `test_dataloader_workers[spawn]`, `test_patch_dataloader_spawn`,
+  `test_interrupted_write_*`, `test_update_verifies_checksum`,
+  `test_include_bboxes_*`, `test_randomflip_direction_sync`,
+  `test_compute_stats_parallel_matches_serial`, `test_is_valid_*`, and
+  CLI exit-code tests.
+
+### Changed
+
+- `MEDH5File.read()` returns `sample.seg = None` when the `seg/` group
+  exists but is empty, and `read_meta()` reports `has_seg = False` in
+  the same case — previously both could be inconsistent with file
+  state.
+- Bounding-box datasets are only Blosc2-compressed when `n > 64`;
+  tiny bbox arrays are written raw to avoid per-chunk filter overhead.
+- `RELEASE_PLAN.md` and `RELEASE_PROGRESS.md` added under `docs/` to
+  record the release plan and per-phase checkpoint log.
+
+### Fixed
+
+- `MEDH5File.write()` no longer leaves partial output when interrupted
+  mid-write (see "Atomic writes" above).
+- `MEDH5File.update()` no longer silently re-hashes corrupted data
+  (see "Checksum verification" above).
+- `MEDH5PatchDataset` + `DataLoader(num_workers > 0)` no longer
+  deadlocks under `fork` or crashes pickling under `spawn`.
+- `RandomFlip` no longer silently desynchronizes `meta.spatial.direction`
+  from the flipped voxel grid; downstream NIfTI export and
+  physical-space metrics now see consistent geometry.
+- `compute_stats(workers > 1)` no longer suffers precision loss on
+  large integer volumes.
+- `medh5 <no args>` now returns exit code 2 instead of 0, unbreaking
+  shell automation like `medh5 validate … || exit 1`.
+
+## [0.4.0]
+
+Bundled into 0.5.0 — never released on PyPI. Entries below describe
+work landed under the 0.4 development branch.
 
 ### Added
 
