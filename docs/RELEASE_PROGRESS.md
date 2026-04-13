@@ -14,7 +14,7 @@ the plan.
 | 4. Essential features | complete | 5e8fd7b |
 | 5. New tests | complete | 7b330fe |
 | 6. CI workflow | complete | 07356d2 |
-| 7. Documentation | pending | — |
+| 7. Documentation | complete | 3409ee3 |
 
 ## Phase 1 — Release blockers
 
@@ -84,6 +84,55 @@ the plan.
 - Left `SampleMeta.validate(strict=…)` removal for Phase 2 cleanup; no behavior bug, just dead code.
 
 **Verification:** see "Phase 1 checkpoint results" above.
+
+### Phase 7 checkpoint — 2026-04-13
+
+**Scope:** Documentation deliverables from `docs/RELEASE_PLAN.md` §7.
+
+**Files changed:**
+- `README.md` —
+  - Added explicit **Status: Beta (0.5.0)** line near the top with a
+    note that API may still change before 1.0.
+  - Expanded the PyTorch integration section with a
+    "`DataLoader` with `num_workers > 0`" block showing the supported
+    `worker_init_fn=medh5.torch.worker_init_fn` pattern, plus a
+    one-paragraph explanation of the h5py fork/spawn issue and a link
+    to h5py's multiprocessing FAQ.
+- `CHANGELOG.md` —
+  - Renamed the unreleased `[0.4.0]` section to `[0.4.0]` (bundled)
+    and prepended a new `[0.5.0]` section.
+  - The 0.5.0 entry is split into `Added` / `Changed` / `Fixed` and
+    covers: atomic writes, pre-update checksum verification, PID-scoped
+    `_HandleCache` + `worker_init_fn`, `PatchSampler(include_bboxes=True)`,
+    `RandomFlip` direction/bbox sync, `MEDH5File.is_valid`, spatial-meta
+    dimension checks, numerically-stable parallel stats, CLI exit codes,
+    macOS + build CI jobs, PyPI packaging metadata, tightened lower
+    bounds, and the expanded test suite (197 passing / 91% coverage).
+
+**Local verification:**
+- `ruff check .` + `ruff format --check .` — clean on all 32 files.
+- No source-code changes in this phase, so the existing test run from
+  Phase 6 remains the reference pass (197 passed, 1 skipped,
+  coverage 91.11%).
+
+**Deviations from plan:**
+- Kept the `[0.4.0]` section in the changelog as a bundled-into-0.5.0
+  stub instead of deleting it, so readers can still follow the work
+  history that accumulated under the 0.4 development branch.
+- Origin-shift in `RandomFlip` is still unimplemented (RAS-dependent,
+  deferred per §2.1). Mentioned only indirectly in the CHANGELOG
+  "direction sync" bullet — not called out as a caveat to avoid
+  over-documenting a deliberate deferral.
+
+### Phase 7 results
+
+- [x] `ruff check .` — clean
+- [x] `ruff format --check .` — clean
+- [x] README status line added
+- [x] README DataLoader section added with `worker_init_fn` example
+- [x] CHANGELOG 0.5.0 entry added
+
+---
 
 ### Phase 6 checkpoint — 2026-04-13
 
