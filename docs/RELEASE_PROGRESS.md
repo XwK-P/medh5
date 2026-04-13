@@ -13,7 +13,7 @@ the plan.
 | 3. Stability hardening | complete | d749604 |
 | 4. Essential features | complete | 5e8fd7b |
 | 5. New tests | complete | 7b330fe |
-| 6. CI workflow | complete | see Phase 6 checkpoint |
+| 6. CI workflow | complete | 07356d2 |
 | 7. Documentation | pending | — |
 
 ## Phase 1 — Release blockers
