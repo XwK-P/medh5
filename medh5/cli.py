@@ -26,10 +26,12 @@ import json
 import shutil
 import sys
 import tempfile
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import Any
+
+_Handler = Callable[[argparse.Namespace], int]
 
 import h5py
 
@@ -671,62 +673,79 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+_TOP_HANDLERS: dict[str, _Handler] = {
+    "info": _cmd_info,
+    "validate": _cmd_validate,
+    "validate-all": _cmd_validate_all,
+    "audit": _cmd_audit,
+    "recompress": _cmd_recompress,
+    "index": _cmd_index,
+    "split": _cmd_split,
+    "stats": _cmd_stats,
+}
+
+_IMPORT_HANDLERS: dict[str, _Handler] = {
+    "nifti": _cmd_import_nifti,
+    "dicom": _cmd_import_dicom,
+}
+
+_EXPORT_HANDLERS: dict[str, _Handler] = {
+    "nifti": _cmd_export_nifti,
+}
+
+_REVIEW_HANDLERS: dict[str, _Handler] = {
+    "set": _cmd_review_set,
+    "get": _cmd_review_get,
+    "list": _cmd_review_list,
+    "import-seg": _cmd_review_import_seg,
+}
+
+_SUB_DISPATCH: dict[str, tuple[str, dict[str, _Handler]]] = {
+    "import": ("import_command", _IMPORT_HANDLERS),
+    "export": ("export_command", _EXPORT_HANDLERS),
+    "review": ("review_command", _REVIEW_HANDLERS),
+}
+
+
 def main(argv: list[str] | None = None) -> int:
-    """Entry point for the ``medh5`` CLI."""
+    """Entry point for the ``medh5`` CLI.
+
+    Exit codes follow the usual Unix convention so shell automation
+    (``medh5 validate … || exit 1``) works:
+
+    - ``0`` — command ran successfully.
+    - ``1`` — a handler raised a known runtime error.
+    - ``2`` — no command given, or an unknown subcommand.
+    """
     parser = _build_parser()
     args = parser.parse_args(argv)
     cmd = args.command
 
     if cmd is None:
-        parser.print_help()
-        return 0
+        parser.print_help(sys.stderr)
+        return 2
 
-    handlers = {
-        "info": _cmd_info,
-        "validate": _cmd_validate,
-        "validate-all": _cmd_validate_all,
-        "audit": _cmd_audit,
-        "recompress": _cmd_recompress,
-        "index": _cmd_index,
-        "split": _cmd_split,
-        "stats": _cmd_stats,
-    }
     try:
-        if cmd in handlers:
-            return handlers[cmd](args)
+        if cmd in _TOP_HANDLERS:
+            return _TOP_HANDLERS[cmd](args)
 
-        if cmd == "import":
-            if args.import_command == "nifti":
-                return _cmd_import_nifti(args)
-            if args.import_command == "dicom":
-                return _cmd_import_dicom(args)
-            parser.parse_args(["import", "-h"])
-            return 0
-
-        if cmd == "export":
-            if args.export_command == "nifti":
-                return _cmd_export_nifti(args)
-            parser.parse_args(["export", "-h"])
-            return 0
-
-        if cmd == "review":
-            rc = args.review_command
-            if rc == "set":
-                return _cmd_review_set(args)
-            if rc == "get":
-                return _cmd_review_get(args)
-            if rc == "list":
-                return _cmd_review_list(args)
-            if rc == "import-seg":
-                return _cmd_review_import_seg(args)
-            parser.parse_args(["review", "-h"])
-            return 0
+        if cmd in _SUB_DISPATCH:
+            attr, table = _SUB_DISPATCH[cmd]
+            sub = getattr(args, attr, None)
+            if sub in table:
+                return table[sub](args)
+            print(
+                f"medh5 {cmd}: missing subcommand "
+                f"(choose from {', '.join(sorted(table))})",
+                file=sys.stderr,
+            )
+            return 2
     except (ImportError, MEDH5Error, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    parser.print_help()
-    return 0
+    parser.print_help(sys.stderr)
+    return 2
 
 
 if __name__ == "__main__":

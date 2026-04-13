@@ -67,6 +67,42 @@ class TestComputeStats:
         assert loaded.n_files == 1
         assert loaded["CT"].mean == stats["CT"].mean
 
+    def test_parallel_matches_serial(self, tmp_path):
+        rng = np.random.default_rng(42)
+        for i in range(3):
+            ct = rng.normal(loc=1000.0, scale=50.0, size=(4, 8, 8)).astype(np.float32)
+            _write(tmp_path / f"s{i}.medh5", ct, label=i % 2)
+
+        paths = sorted(tmp_path.glob("*.medh5"))
+        serial = compute_stats(paths, workers=1)
+        parallel = compute_stats(paths, workers=2)
+
+        assert serial.n_files == parallel.n_files == 3
+        s = serial["CT"]
+        p = parallel["CT"]
+        assert s.n_voxels == p.n_voxels
+        assert abs(s.mean - p.mean) < 1e-9
+        assert abs(s.std - p.std) < 1e-9
+        assert s.min == p.min
+        assert s.max == p.max
+        assert serial.label_counts == parallel.label_counts
+
+    def test_uint16_bulk_precision(self, tmp_path):
+        # Uint16 CT-like volume concentrated around 1000 HU — naive
+        # Σx²/n − mean² would lose ~6 significant bits on ~2M voxels.
+        rng = np.random.default_rng(7)
+        size = (64, 128, 128)
+        # Mean 1000, std 50, in HU; clip into uint16 range.
+        data = rng.normal(loc=1000.0, scale=50.0, size=size)
+        data = np.clip(data, 0, 65535).astype(np.uint16)
+        _write(tmp_path / "ct.medh5", data)
+
+        stats = compute_stats([tmp_path / "ct.medh5"])
+        exact_mean = float(data.astype(np.float64).mean())
+        exact_std = float(data.astype(np.float64).std())
+        assert abs(stats["CT"].mean - exact_mean) < 1e-9
+        assert abs(stats["CT"].std - exact_std) < 1e-9
+
     def test_modality_filter(self, tmp_path):
         MEDH5File.write(
             tmp_path / "s.medh5",

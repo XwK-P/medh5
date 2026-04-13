@@ -10,7 +10,7 @@ the plan.
 |---|---|---|
 | 1. Release blockers (data safety + packaging) | complete | 14a8a8a |
 | 2. Correctness bugs | complete | 1dc8568 |
-| 3. Stability hardening | pending | — |
+| 3. Stability hardening | complete | see Phase 3 checkpoint |
 | 4. Essential features | pending | — |
 | 5. New tests | pending | — |
 | 6. CI workflow | pending | — |
@@ -85,6 +85,42 @@ the plan.
 
 **Verification:** see "Phase 1 checkpoint results" above.
 
+### Phase 3 checkpoint — 2026-04-13
+
+**Scope:** Stability hardening from `docs/RELEASE_PLAN.md` §3.
+
+**Files changed:**
+- `medh5/stats.py` — per-file partials now use `(n, mean, M2)` instead of
+  `(n, Σx, Σx²)`, eliminating the catastrophic-cancellation variance path.
+  Merge uses Chan's parallel Welford formula
+  (`δ² · n_a · n_b / n`) which is exact up to float64 rounding.
+- `medh5/cli.py` — `main` returns `2` for missing/unknown commands,
+  `1` for handler errors, `0` on success. Subcommand dispatch uses typed
+  handler tables via `_TOP_HANDLERS` / `_SUB_DISPATCH` to replace the
+  hand-rolled `if cmd ==` chain.
+- `tests/test_stats.py` — `test_parallel_matches_serial` (workers=2 vs
+  workers=1, same numerics), `test_uint16_bulk_precision` (uint16 volume
+  centered on 1000 HU, assert mean/std match exact within 1e-9).
+- `tests/test_cli.py` — updated `test_no_command` to expect exit 2,
+  added `test_validate_missing_file` and `test_import_without_subcommand`.
+
+**Deviations from plan:**
+- Kept numpy's two-pass `arr.var()` per file instead of rolling a Kahan /
+  math.fsum loop — it's stable enough for the values-within-one-volume
+  case and avoids slow Python-level summation.
+- Did not touch `SampleMeta.validate(strict=…)` dead kwarg — still on
+  the follow-up list for a later cleanup phase.
+
+### Phase 3 results
+
+- [x] `ruff check .` — clean
+- [x] `ruff format --check .` — 32 files already formatted
+- [x] `mypy medh5` — 0 issues (after typing the CLI handler tables via
+  `_Handler = Callable[[argparse.Namespace], int]`)
+- [x] `pytest tests/` — **193 passed, 1 skipped, coverage 91.09%**
+
+---
+
 ### Phase 2 checkpoint — 2026-04-13
 
 **Scope:** Correctness bugs from `docs/RELEASE_PLAN.md` §2.
@@ -113,6 +149,31 @@ the plan.
   `seg=None` is returned for an empty group.
 - Did not add the `strict=…` kwarg removal from `SampleMeta.validate` —
   deferred to a future phase since it's dead code, not a bug.
+
+---
+
+## Phase 3 — Stability hardening
+
+### 3.1 Precise compute_stats accumulation
+- [x] `_FilePartial` now records `(n, mean, M2 = var·n)` per modality
+- [x] Parallel Welford merge (`delta² · n_a · n_b / n`) replaces the
+      naive `Σx²/n − mean²` variance computation
+- [x] `test_uint16_bulk_precision` — mean/std match exact float64
+      reference within 1e-9 on a uint16 volume centered around 1000 HU
+
+### 3.2 Parallel compute_stats test
+- [x] `test_parallel_matches_serial` runs the same 3-file input with
+      workers=1 and workers=2 and asserts identical mean/std/min/max,
+      catching any spawn-pickling regressions in the
+      `ProcessPoolExecutor` path
+
+### 3.3 CLI exit codes
+- [x] `main([])` returns `2` and prints help to stderr
+- [x] Missing import/export/review subcommands return `2` with a
+      "missing subcommand (choose from …)" diagnostic
+- [x] Runtime errors (`ImportError`, `MEDH5Error`, `ValueError`) return `1`
+- [x] Top-level and subcommand dispatch go through typed handler dicts
+      (`_TOP_HANDLERS`, `_SUB_DISPATCH`) instead of a hand-rolled chain
 
 ---
 
