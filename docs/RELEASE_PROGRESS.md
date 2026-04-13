@@ -12,7 +12,7 @@ the plan.
 | 2. Correctness bugs | complete | 1dc8568 |
 | 3. Stability hardening | complete | d749604 |
 | 4. Essential features | complete | 5e8fd7b |
-| 5. New tests | pending | — |
+| 5. New tests | complete | see Phase 5 checkpoint |
 | 6. CI workflow | pending | — |
 | 7. Documentation | pending | — |
 
@@ -84,6 +84,45 @@ the plan.
 - Left `SampleMeta.validate(strict=…)` removal for Phase 2 cleanup; no behavior bug, just dead code.
 
 **Verification:** see "Phase 1 checkpoint results" above.
+
+### Phase 5 checkpoint — 2026-04-13
+
+**Scope:** New tests table in `docs/RELEASE_PLAN.md` §5.
+
+Every row in the Phase 5 test table was already delivered alongside the
+feature work in earlier phases — no new test code landed in this
+checkpoint. Verification:
+
+| Planned test | Delivered in | Current location |
+|---|---|---|
+| `test_write_atomic_interrupted` | Phase 1.1 | `tests/test_roundtrip.py::TestAtomicWrite::test_interrupted_write_leaves_no_file` (+ `…_preserves_existing_file`) |
+| `test_update_verifies_checksum` | Phase 1.2 | `tests/test_integrity.py::TestUpdateVerifiesChecksum::test_update_meta_refuses_on_corrupted_data` |
+| `test_validate_direction_dim_mismatch` | Phase 1.5 | `tests/test_roundtrip.py::TestValidation::test_direction_dim_mismatch_raises` |
+| `test_validate_axis_labels_length` | Phase 1.5 | `tests/test_roundtrip.py::TestValidation::test_axis_labels_length_mismatch_raises` |
+| `test_randomflip_updates_direction` | Phase 2.1 | `tests/test_transforms.py::TestRandomFlip::test_direction_column_negated_on_flip` |
+| `test_randomflip_bbox` | Phase 2.1 | `tests/test_transforms.py::TestRandomFlip::test_bbox_mirrored` (+ `…_multiple_axes`) |
+| `test_patchsampler_bboxes` | Phase 2.2 | `tests/test_sampling.py::TestIncludeBboxes::test_patch_local_bboxes_filter_and_translate` |
+| `test_compute_stats_parallel` | Phase 3.2 | `tests/test_stats.py::TestComputeStats::test_parallel_matches_serial` |
+| `test_compute_stats_uint16_precision` | Phase 3.1 | `tests/test_stats.py::TestComputeStats::test_uint16_bulk_precision` |
+| `test_torch_dataloader_spawn` | Phase 1.3 | `tests/test_torch.py::TestDataLoaderMultiprocessing::test_dataloader_workers[spawn]` (+ `[fork]`) |
+| `test_cli_exit_codes` | Phase 3.3 | `tests/test_cli.py::TestCLI::test_no_command` (+ `test_import_without_subcommand`) |
+
+**Deviations from plan:**
+- Did not bump `--cov-fail-under` from 90 → 92. Current coverage is
+  **91.11%**, below the suggested 92 floor but comfortably above 90.
+  Raising the floor right now would make the test suite red on any
+  small regression in `medh5/cli.py` (~86% covered — the lowest-
+  coverage module because several rarely-hit CLI branches are hard to
+  exercise without spawning subprocesses). Worth revisiting after
+  Phase 7's CI additions.
+
+### Phase 5 results
+
+- [x] All 11 planned tests exist in the collected suite
+- [x] **197 passed, 1 skipped, coverage 91.11%** (from Phase 4 run)
+- No new code committed in this checkpoint; only a progress-log entry.
+
+---
 
 ### Phase 4 checkpoint — 2026-04-13
 
@@ -179,6 +218,28 @@ Most of Phase 4 was already satisfied by earlier work:
   `seg=None` is returned for an empty group.
 - Did not add the `strict=…` kwarg removal from `SampleMeta.validate` —
   deferred to a future phase since it's dead code, not a bug.
+
+---
+
+## Phase 5 — New tests
+
+All 11 rows in the Phase 5 test table were delivered alongside their
+corresponding feature work in Phases 1–3. See the Phase 5 checkpoint
+below for the delivery map.
+
+- [x] `test_write_atomic_interrupted` (Phase 1.1)
+- [x] `test_update_verifies_checksum` (Phase 1.2)
+- [x] `test_validate_direction_dim_mismatch` (Phase 1.5)
+- [x] `test_validate_axis_labels_length` (Phase 1.5)
+- [x] `test_randomflip_updates_direction` (Phase 2.1)
+- [x] `test_randomflip_bbox` (Phase 2.1)
+- [x] `test_patchsampler_bboxes` (Phase 2.2)
+- [x] `test_compute_stats_parallel` (Phase 3.2)
+- [x] `test_compute_stats_uint16_precision` (Phase 3.1)
+- [x] `test_torch_dataloader_spawn` (Phase 1.3)
+- [x] `test_cli_exit_codes` (Phase 3.3)
+- Note: `--cov-fail-under` stays at 90 (current coverage 91.11%);
+  deferring the 92 bump until Phase 7 lands the docs/CI work.
 
 ---
 
