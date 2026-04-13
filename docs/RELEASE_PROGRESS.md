@@ -10,7 +10,7 @@ the plan.
 |---|---|---|
 | 1. Release blockers (data safety + packaging) | complete | 14a8a8a |
 | 2. Correctness bugs | complete | 1dc8568 |
-| 3. Stability hardening | complete | see Phase 3 checkpoint |
+| 3. Stability hardening | complete | d749604 |
 | 4. Essential features | pending | — |
 | 5. New tests | pending | — |
 | 6. CI workflow | pending | — |
