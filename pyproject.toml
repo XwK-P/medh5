@@ -4,21 +4,41 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "medh5"
-version = "0.4.0"
-description = "Thin HDF5 + Blosc2 multi-array format for ML workloads (multi-modality images + segmentation + bboxes + label in one file)."
+version = "0.5.0"
+description = "HDF5 + Blosc2 single-file format for medical-imaging ML workloads (multi-modality images + segmentation + bboxes + label)."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = { file = "LICENSE" }
+authors = [
+  { name = "Puyang Wang", email = "pauliwang411@gmail.com" },
+]
+keywords = [
+  "medical imaging",
+  "hdf5",
+  "blosc2",
+  "machine learning",
+  "segmentation",
+  "nifti",
+  "dicom",
+  "pytorch",
+]
 classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
-  "Operating System :: OS Independent",
+  "Topic :: Scientific/Engineering",
+  "Topic :: Scientific/Engineering :: Medical Science Apps.",
+  "Typing :: Typed",
 ]
 dependencies = [
-  "h5py>=3.8",
-  "hdf5plugin>=4.0",
+  "h5py>=3.10",
+  "hdf5plugin>=4.1",
   "numpy>=1.24",
 ]
 
@@ -28,6 +48,8 @@ dev = [
   "pytest-cov>=4.0",
   "ruff>=0.4",
   "mypy>=1.0",
+  "build>=1.0",
+  "twine>=5.0",
 ]
 torch = [
   "torch>=2.0",
@@ -42,12 +64,21 @@ itk = [
   "SimpleITK>=2.3",
 ]
 
+[project.urls]
+Homepage = "https://github.com/XwK-P/medh5"
+Repository = "https://github.com/XwK-P/medh5"
+Issues = "https://github.com/XwK-P/medh5/issues"
+Changelog = "https://github.com/XwK-P/medh5/blob/main/CHANGELOG.md"
+
 [project.scripts]
 medh5 = "medh5.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["medh5*"]
+
+[tool.setuptools.package-data]
+medh5 = ["py.typed"]
 
 [tool.pytest.ini_options]
 addopts = "--cov=medh5 --cov-report=term-missing"

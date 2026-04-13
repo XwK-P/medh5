@@ -1,5 +1,6 @@
 """Write a .medh5 file with every field populated, read it back, verify."""
 
+import h5py
 import numpy as np
 import pytest
 
@@ -242,3 +243,101 @@ class TestValidation:
         bboxes = np.zeros((2, 4, 2))
         with pytest.raises(MEDH5ValidationError, match="bboxes must have shape"):
             MEDH5File.write(tmp_path / "x.medh5", images=images, bboxes=bboxes)
+
+    def test_direction_dim_mismatch_raises(self, tmp_path):
+        images = {"CT": np.zeros((8, 8, 8), dtype=np.float32)}
+        with pytest.raises(ValueError, match="direction must be a 3x3"):
+            MEDH5File.write(
+                tmp_path / "x.medh5",
+                images=images,
+                direction=[[1, 0], [0, 1]],  # 2x2 on a 3D image
+            )
+
+    def test_direction_non_square_raises(self, tmp_path):
+        images = {"CT": np.zeros((8, 8, 8), dtype=np.float32)}
+        with pytest.raises(ValueError, match="direction must be a 3x3"):
+            MEDH5File.write(
+                tmp_path / "x.medh5",
+                images=images,
+                direction=[[1, 0, 0], [0, 1, 0]],  # 2x3
+            )
+
+    def test_axis_labels_length_mismatch_raises(self, tmp_path):
+        images = {"CT": np.zeros((8, 8, 8), dtype=np.float32)}
+        with pytest.raises(ValueError, match="axis_labels length"):
+            MEDH5File.write(
+                tmp_path / "x.medh5",
+                images=images,
+                axis_labels=["x", "y"],  # 2 labels for 3D
+            )
+
+    def test_malformed_direction_on_read_raises(self, tmp_path):
+        path = tmp_path / "bad.medh5"
+        images = {"CT": np.zeros((4, 4, 4), dtype=np.float32)}
+        MEDH5File.write(path, images=images)
+        # Corrupt the direction attribute to a size that doesn't match ndim^2.
+        with h5py.File(str(path), "a") as f:
+            f["images"].attrs["direction"] = np.array([1.0, 0.0, 0.0, 0.0])
+        with pytest.raises(MEDH5SchemaError, match="Malformed 'direction'"):
+            MEDH5File.read(path)
+
+
+class TestAtomicWrite:
+    def test_interrupted_write_leaves_no_file(self, tmp_path, monkeypatch):
+        """A crash during write() must not leave a stale/partial file
+        at the destination path. The staged temp file is unlinked."""
+        target = tmp_path / "sample.medh5"
+        images = {"CT": np.zeros((8, 16, 16), dtype=np.float32)}
+
+        # Force write_meta to raise after the HDF5 datasets exist but
+        # before os.replace runs.
+        import medh5.core as core
+
+        original_write_meta = core.write_meta
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("simulated crash mid-write")
+
+        monkeypatch.setattr(core, "write_meta", boom)
+
+        with pytest.raises(RuntimeError, match="simulated crash"):
+            MEDH5File.write(target, images=images)
+
+        assert not target.exists(), "destination file must not exist after crash"
+        # No temp turds left behind either.
+        leftover = list(tmp_path.glob(".sample.medh5.tmp-*"))
+        assert leftover == [], f"stale temp files: {leftover}"
+
+        # Restore and verify a subsequent write still works.
+        monkeypatch.setattr(core, "write_meta", original_write_meta)
+        MEDH5File.write(target, images=images)
+        assert target.exists()
+
+    def test_interrupted_write_preserves_existing_file(self, tmp_path, monkeypatch):
+        """A crash during write() to an existing path must leave the
+        original file untouched (os.replace is atomic)."""
+        target = tmp_path / "sample.medh5"
+        MEDH5File.write(
+            target,
+            images={"CT": np.full((8, 16, 16), 1.0, dtype=np.float32)},
+            label=1,
+        )
+        original_bytes = target.read_bytes()
+
+        import medh5.core as core
+
+        monkeypatch.setattr(
+            core, "write_meta", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x"))
+        )
+
+        with pytest.raises(RuntimeError):
+            MEDH5File.write(
+                target,
+                images={"CT": np.full((8, 16, 16), 2.0, dtype=np.float32)},
+                label=2,
+            )
+
+        assert target.read_bytes() == original_bytes
+        sample = MEDH5File.read(target)
+        assert sample.meta.label == 1
+        assert float(sample.images["CT"][0, 0, 0]) == 1.0

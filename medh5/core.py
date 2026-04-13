@@ -8,6 +8,8 @@ compression provided by *hdf5plugin*.
 
 from __future__ import annotations
 
+import contextlib
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -565,8 +567,14 @@ class MEDH5File:
             **hdf5plugin.Blosc2(cname=cname, clevel=clevel),
         }
 
+        # Atomic write: stage to a sibling temp file, fsync, then os.replace
+        # into the target. An interrupted write (Ctrl-C, OOM, crash) leaves
+        # the destination path untouched; the temp file is unlinked below.
+        tmp_path = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+        tmp_str = str(tmp_path)
+        done = False
         try:
-            with h5py.File(str(path), "w") as f:
+            with h5py.File(tmp_str, "w") as f:
                 img_grp = f.create_group("images")
                 for name in image_names:
                     img_grp.create_dataset(
@@ -633,10 +641,28 @@ class MEDH5File:
 
                 if checksum:
                     write_checksum(f)
+
+                f.flush()
+
+            # Fsync the staged file before the rename so a crash
+            # between os.replace and fs flush leaves either the old
+            # file or the fully-written new one — never a torso.
+            fd = os.open(tmp_str, os.O_RDONLY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+
+            os.replace(tmp_str, str(path))
+            done = True
         except MEDH5ValidationError:
             raise
         except OSError as exc:
             raise MEDH5FileError(f"Failed to write '{path}': {exc}") from exc
+        finally:
+            if not done:
+                with contextlib.suppress(FileNotFoundError):
+                    os.unlink(tmp_str)
 
     # ------------------------------------------------------------------
     # Read (eager)
@@ -852,8 +878,16 @@ class MEDH5File:
         seg_ops: dict[str, Any] | None = None,
         bbox_ops: dict[str, Any] | None = None,
         recompute_checksum: bool = True,
+        force: bool = False,
     ) -> None:
-        """Apply in-place metadata / seg / bbox updates to an existing file."""
+        """Apply in-place metadata / seg / bbox updates to an existing file.
+
+        If the file has a stored checksum, it is verified **before** any
+        mutation.  A mismatch raises :class:`MEDH5FileError` — re-hashing
+        over pre-corrupted data would otherwise silently bake bad data
+        into the stored digest.  Pass ``force=True`` to bypass the
+        pre-verify (e.g. when intentionally repairing a file).
+        """
         path = Path(path)
         _validate_suffix(path)
         allowed_meta = {
@@ -877,6 +911,12 @@ class MEDH5File:
 
         try:
             with h5py.File(str(path), "a") as f:
+                if not force and _CHECKSUM_ATTR in f.attrs and not verify_checksum(f):
+                    raise MEDH5FileError(
+                        f"Refusing to update '{path}': stored checksum does "
+                        "not match current contents. Pass force=True to "
+                        "override (e.g. when repairing)."
+                    )
                 img_grp = f["images"]
                 first_key = next(iter(img_grp))
                 ref_ds = img_grp[first_key]
@@ -1026,6 +1066,8 @@ class MEDH5File:
                 ):
                     write_checksum(f)
         except MEDH5ValidationError:
+            raise
+        except MEDH5FileError:
             raise
         except OSError as exc:
             raise MEDH5FileError(f"Failed to update '{path}': {exc}") from exc

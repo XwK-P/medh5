@@ -11,6 +11,8 @@ from medh5.exceptions import (
 from medh5.meta import SampleMeta, SpatialMeta
 from medh5.review import ReviewStatus
 
+__version__ = "0.5.0"
+
 __all__ = [
     "MEDH5Error",
     "MEDH5File",
@@ -22,5 +24,6 @@ __all__ = [
     "SampleMeta",
     "SpatialMeta",
     "ValidationReport",
+    "__version__",
     "optimize_chunks",
 ]
