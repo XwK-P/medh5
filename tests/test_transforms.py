@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from medh5.meta import SampleMeta, SpatialMeta
 from medh5.transforms import Clip, Compose, Normalize, RandomFlip, ZScore
 
 
@@ -78,6 +79,63 @@ class TestRandomFlip:
         ct = np.arange(8, dtype=np.float32).reshape(2, 4)
         out = RandomFlip(axes=(0,), p=0.0, seed=0)(_sample(ct=ct))
         np.testing.assert_array_equal(out["images"]["CT"], ct)
+
+    def test_direction_column_negated_on_flip(self):
+        ct = np.zeros((4, 4, 4), dtype=np.float32)
+        meta = SampleMeta(
+            spatial=SpatialMeta(direction=[[1, 0, 0], [0, 1, 0], [0, 0, 1]]),
+            shape=[4, 4, 4],
+        )
+        sample = _sample(ct=ct)
+        sample["meta"] = meta
+        out = RandomFlip(axes=(0,), p=1.0, seed=0)(sample)
+        assert out["meta"].spatial.direction == [
+            [-1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ]
+        # Original meta must not have been mutated.
+        assert meta.spatial.direction == [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+
+    def test_flip_without_meta_ok(self):
+        ct = np.arange(16, dtype=np.float32).reshape(2, 4, 2)
+        sample = _sample(ct=ct)
+        out = RandomFlip(axes=(0,), p=1.0, seed=0)(sample)
+        np.testing.assert_array_equal(out["images"]["CT"], np.flip(ct, axis=0))
+        assert "meta" not in out
+
+    def test_bbox_mirrored(self):
+        ct = np.zeros((32, 64, 64), dtype=np.float32)
+        bboxes = np.array(
+            [
+                [[2, 10], [5, 20], [5, 20]],
+                [[12, 28], [40, 55], [30, 50]],
+            ],
+            dtype=np.float64,
+        )
+        sample = _sample(ct=ct)
+        sample["bboxes"] = bboxes.copy()
+        out = RandomFlip(axes=(0,), p=1.0, seed=0)(sample)
+        expected = bboxes.copy()
+        expected[0, 0, 0] = 32 - 1 - 10  # 21
+        expected[0, 0, 1] = 32 - 1 - 2  # 29
+        expected[1, 0, 0] = 32 - 1 - 28  # 3
+        expected[1, 0, 1] = 32 - 1 - 12  # 19
+        np.testing.assert_array_equal(out["bboxes"], expected)
+        # Non-flipped axes untouched.
+        np.testing.assert_array_equal(out["bboxes"][:, 1, :], bboxes[:, 1, :])
+        np.testing.assert_array_equal(out["bboxes"][:, 2, :], bboxes[:, 2, :])
+
+    def test_bbox_flip_multiple_axes(self):
+        ct = np.zeros((10, 20), dtype=np.float32)
+        bboxes = np.array([[[1, 3], [4, 9]]], dtype=np.float64)
+        sample = _sample(ct=ct)
+        sample["bboxes"] = bboxes.copy()
+        out = RandomFlip(axes=(0, 1), p=1.0, seed=0)(sample)
+        # axis 0: [1,3] -> [10-1-3, 10-1-1] = [6, 8]
+        # axis 1: [4,9] -> [20-1-9, 20-1-4] = [10, 15]
+        expected = np.array([[[6, 8], [10, 15]]], dtype=np.float64)
+        np.testing.assert_array_equal(out["bboxes"], expected)
 
 
 class TestCompose:

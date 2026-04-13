@@ -601,7 +601,19 @@ class MEDH5File:
                         )
 
                 if bboxes is not None:
-                    f.create_dataset("bboxes", data=np.asarray(bboxes))
+                    bboxes_arr = np.asarray(bboxes)
+                    # Compression only pays off for large bbox arrays;
+                    # tiny ones (the common case) pay Blosc2 chunk
+                    # overhead for no win, so store them raw.
+                    if bboxes_arr.shape[0] > 64:
+                        f.create_dataset(
+                            "bboxes",
+                            data=bboxes_arr,
+                            chunks=True,
+                            **blosc2_opts,
+                        )
+                    else:
+                        f.create_dataset("bboxes", data=bboxes_arr)
                 if bbox_scores is not None:
                     f.create_dataset("bbox_scores", data=np.asarray(bbox_scores))
                 if bbox_labels is not None:
@@ -694,7 +706,8 @@ class MEDH5File:
                 seg = None
                 if "seg" in f:
                     seg_grp = f["seg"]
-                    seg = {name: seg_grp[name][...] for name in seg_grp}
+                    if len(seg_grp) > 0:
+                        seg = {name: seg_grp[name][...] for name in seg_grp}
 
                 bboxes = None
                 if "bboxes" in f:

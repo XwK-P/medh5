@@ -14,6 +14,7 @@ pipeline.
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import replace
 from typing import Any
 
 import numpy as np
@@ -110,7 +111,21 @@ class ZScore:
 
 
 class RandomFlip:
-    """Randomly flip along one or more axes with probability *p* (per axis)."""
+    """Randomly flip along one or more axes with probability *p* (per axis).
+
+    When the sample carries ``meta`` (a :class:`~medh5.meta.SampleMeta`)
+    and/or ``bboxes``, those are kept in sync with the image flip:
+
+    - For each flipped axis ``k``, column ``k`` of
+      ``meta.spatial.direction`` is negated, so the physical-space
+      orientation matches the new voxel layout.  A fresh
+      :class:`~medh5.meta.SampleMeta` is written back via
+      :func:`dataclasses.replace` so the dataset's cached copy is not
+      mutated.
+    - Bounding boxes (shape ``(n, ndim, 2)``) are mirrored in voxel
+      coordinates: ``[lo, hi]`` → ``[S - 1 - hi, S - 1 - lo]`` using the
+      image shape in this sample.
+    """
 
     def __init__(
         self,
@@ -130,10 +145,44 @@ class RandomFlip:
         if not flip_axes:
             return sample
 
+        axes_tuple = tuple(flip_axes)
+        ref_shape: tuple[int, ...] | None = None
         for name, arr in _walk_images(sample):
-            sample["images"][name] = np.flip(arr, axis=tuple(flip_axes)).copy()
+            if ref_shape is None:
+                ref_shape = arr.shape
+            sample["images"][name] = np.flip(arr, axis=axes_tuple).copy()
         seg = sample.get("seg")
         if isinstance(seg, dict):
             for name, arr in seg.items():
-                seg[name] = np.flip(arr, axis=tuple(flip_axes)).copy()
+                seg[name] = np.flip(arr, axis=axes_tuple).copy()
+
+        bboxes = sample.get("bboxes")
+        if (
+            ref_shape is not None
+            and isinstance(bboxes, np.ndarray)
+            and bboxes.ndim == 3
+            and bboxes.shape[-1] == 2
+            and bboxes.size > 0
+        ):
+            flipped_boxes = bboxes.copy()
+            for ax in flip_axes:
+                if 0 <= ax < bboxes.shape[1]:
+                    s = ref_shape[ax]
+                    lo = flipped_boxes[..., ax, 0].copy()
+                    hi = flipped_boxes[..., ax, 1].copy()
+                    flipped_boxes[..., ax, 0] = (s - 1) - hi
+                    flipped_boxes[..., ax, 1] = (s - 1) - lo
+            sample["bboxes"] = flipped_boxes
+
+        meta = sample.get("meta")
+        if meta is not None:
+            spatial = getattr(meta, "spatial", None)
+            if spatial is not None and spatial.direction is not None:
+                dir_arr = np.asarray(spatial.direction, dtype=np.float64)
+                if dir_arr.ndim == 2:
+                    for ax in flip_axes:
+                        if 0 <= ax < dir_arr.shape[1]:
+                            dir_arr[:, ax] *= -1.0
+                    new_spatial = replace(spatial, direction=dir_arr.tolist())
+                    sample["meta"] = replace(meta, spatial=new_spatial)
         return sample

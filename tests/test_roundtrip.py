@@ -170,6 +170,29 @@ class TestFullRoundtrip:
         sample = MEDH5File.read(tmp_path_medh5)
         assert sample.meta.extra == extra
 
+    def test_many_bboxes_roundtrip(self, tmp_path_medh5):
+        rng = np.random.default_rng(3)
+        images = {"CT": np.zeros((8, 16, 16), dtype=np.float32)}
+        n = 128
+        bboxes = rng.random((n, 3, 2)) * 8
+        MEDH5File.write(tmp_path_medh5, images=images, bboxes=bboxes)
+        sample = MEDH5File.read(tmp_path_medh5)
+        np.testing.assert_allclose(sample.bboxes, bboxes)
+        assert sample.bboxes.shape == (n, 3, 2)
+
+    def test_empty_seg_group_returns_none(self, tmp_path_medh5):
+        images = {"CT": np.zeros((4, 4, 4), dtype=np.float32)}
+        seg = {"tumor": np.zeros((4, 4, 4), dtype=bool)}
+        MEDH5File.write(tmp_path_medh5, images=images, seg=seg)
+        # Drop the dataset out from under the group to simulate a
+        # file whose seg group exists but has zero members.
+        with h5py.File(str(tmp_path_medh5), "a") as f:
+            del f["seg/tumor"]
+        sample = MEDH5File.read(tmp_path_medh5)
+        assert sample.seg is None
+        assert sample.meta.has_seg is False
+        assert sample.meta.seg_names is None
+
     def test_schema_version_future_raises(self, tmp_path_medh5):
         import h5py
 

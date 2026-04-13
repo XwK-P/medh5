@@ -230,10 +230,16 @@ def read_meta(f: h5py.File) -> SampleMeta:
     if isinstance(label_name, bytes):
         label_name = label_name.decode()
 
-    has_seg = bool(ra.get("has_seg", False))
+    # Treat an empty or missing ``seg`` group as "no segmentation"
+    # regardless of what the stored attribute claims — callers get a
+    # consistent ``seg is None`` ↔ ``has_seg is False`` invariant even
+    # if a file was written with an empty seg dict.
+    seg_grp = f.get("seg")
+    has_seg_group = isinstance(seg_grp, h5py.Group) and len(seg_grp) > 0
+    has_seg = bool(ra.get("has_seg", False)) and has_seg_group
 
     seg_names: list[str] | None = None
-    if "seg_names" in ra:
+    if has_seg and "seg_names" in ra:
         raw_seg_names = ra["seg_names"]
         if isinstance(raw_seg_names, bytes):
             raw_seg_names = raw_seg_names.decode()
