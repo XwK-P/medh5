@@ -183,7 +183,9 @@ class RandomFlip:
                                 and 0 <= ax < len(ref_shape)
                             ):
                                 step = axis_vec
-                                if spacing_arr is not None and 0 <= ax < len(spacing_arr):
+                                if spacing_arr is not None and 0 <= ax < len(
+                                    spacing_arr
+                                ):
                                     step = step * spacing_arr[ax]
                                 origin_arr = origin_arr + step * (ref_shape[ax] - 1)
                             dir_arr[:, ax] *= -1.0
