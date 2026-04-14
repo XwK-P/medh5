@@ -97,6 +97,27 @@ class TestRandomFlip:
         # Original meta must not have been mutated.
         assert meta.spatial.direction == [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
 
+    def test_origin_shifted_on_flip(self):
+        ct = np.zeros((4, 5, 6), dtype=np.float32)
+        meta = SampleMeta(
+            spatial=SpatialMeta(
+                spacing=[2.0, 3.0, 4.0],
+                origin=[10.0, 20.0, 30.0],
+                direction=[[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+            ),
+            shape=[4, 5, 6],
+        )
+        sample = _sample(ct=ct)
+        sample["meta"] = meta
+        out = RandomFlip(axes=(0, 2), p=1.0, seed=0)(sample)
+        assert out["meta"].spatial.origin == [16.0, 20.0, 50.0]
+        assert out["meta"].spatial.direction == [
+            [-1.0, 0.0, -0.0],
+            [0.0, 1.0, -0.0],
+            [0.0, 0.0, -1.0],
+        ]
+        assert meta.spatial.origin == [10.0, 20.0, 30.0]
+
     def test_flip_without_meta_ok(self):
         ct = np.arange(16, dtype=np.float32).reshape(2, 4, 2)
         sample = _sample(ct=ct)

@@ -167,10 +167,34 @@ class RandomFlip:
             spatial = getattr(meta, "spatial", None)
             if spatial is not None and spatial.direction is not None:
                 dir_arr = np.asarray(spatial.direction, dtype=np.float64)
+                origin_arr = None
+                if spatial.origin is not None:
+                    origin_arr = np.asarray(spatial.origin, dtype=np.float64)
+                spacing_arr = None
+                if spatial.spacing is not None:
+                    spacing_arr = np.asarray(spatial.spacing, dtype=np.float64)
                 if dir_arr.ndim == 2:
                     for ax in flip_axes:
                         if 0 <= ax < dir_arr.shape[1]:
+                            axis_vec = dir_arr[:, ax].copy()
+                            if (
+                                origin_arr is not None
+                                and ref_shape is not None
+                                and 0 <= ax < len(ref_shape)
+                            ):
+                                step = axis_vec
+                                if spacing_arr is not None and 0 <= ax < len(spacing_arr):
+                                    step = step * spacing_arr[ax]
+                                origin_arr = origin_arr + step * (ref_shape[ax] - 1)
                             dir_arr[:, ax] *= -1.0
-                    new_spatial = replace(spatial, direction=dir_arr.tolist())
+                    new_spatial = replace(
+                        spatial,
+                        origin=(
+                            origin_arr.tolist()
+                            if origin_arr is not None
+                            else spatial.origin
+                        ),
+                        direction=dir_arr.tolist(),
+                    )
                     sample["meta"] = replace(meta, spatial=new_spatial)
         return sample
