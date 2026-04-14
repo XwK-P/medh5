@@ -77,12 +77,7 @@ class TestIntegrity:
 
 
 class TestUpdateVerifiesChecksum:
-    """update() must refuse to mutate a file whose stored checksum no
-    longer matches the data — otherwise a silent re-hash would bake
-    pre-existing corruption into the new digest."""
-
     def test_update_meta_refuses_on_corrupted_data(self, sample_with_checksum):
-        # Corrupt the image data behind medh5's back.
         with h5py.File(str(sample_with_checksum), "a") as f:
             data = f["images/CT"][...]
             data[0, 0, 0] = 999.0
@@ -91,7 +86,6 @@ class TestUpdateVerifiesChecksum:
         with pytest.raises(MEDH5FileError, match="checksum"):
             MEDH5File.update_meta(sample_with_checksum, label=1)
 
-        # The stored digest still catches the corruption.
         assert MEDH5File.verify(sample_with_checksum) is False
 
     def test_update_with_force_bypasses_verify(self, sample_with_checksum):
@@ -101,11 +95,9 @@ class TestUpdateVerifiesChecksum:
             f["images/CT"][...] = data
 
         MEDH5File.update(sample_with_checksum, meta={"label": 1}, force=True)
-        # After force-update the new checksum matches the corrupted data.
         assert MEDH5File.verify(sample_with_checksum) is True
 
     def test_update_no_checksum_is_unchanged(self, sample_without_checksum):
-        # Files without a stored checksum skip the pre-verify entirely.
         MEDH5File.update_meta(sample_without_checksum, label=7)
         sample = MEDH5File.read(sample_without_checksum)
         assert sample.meta.label == 7

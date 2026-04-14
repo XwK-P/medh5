@@ -5,36 +5,14 @@ Requires ``torch`` (install with ``pip install medh5[torch]``).
 Two dataset classes are provided:
 
 - :class:`MEDH5TorchDataset` — eager, full-volume read per ``__getitem__``.
-  Best for small samples that comfortably fit in memory.
 - :class:`MEDH5PatchDataset` — lazy, patch-based read using a
-  :class:`~medh5.sampling.PatchSampler`. Best for large volumes where
-  patch-based training is the norm.
+  :class:`~medh5.sampling.PatchSampler`.
 
-Both share a PID-scoped LRU file-handle cache (:class:`_HandleCache`)
-so repeated ``__getitem__`` calls against the same file reuse one
-``h5py.File`` instead of opening it from scratch every time.
-
-**PyTorch ``DataLoader`` with ``num_workers > 0``**:
-
-h5py is not fork-safe and open ``h5py.File`` objects cannot be pickled
-for ``multiprocessing_context='spawn'`` (the default on macOS / Windows
-/ Python 3.14+).  The handle cache therefore:
-
-- Detects PID changes on access and transparently resets itself, so a
-  forked worker gets a cold cache instead of shared h5py state.
-- Is stripped from the dataset on pickling (``__getstate__``) so
-  ``spawn`` workers start clean.
-
-Use :func:`worker_init_fn` for belt-and-braces safety::
-
-    from torch.utils.data import DataLoader
-    import medh5.torch as mt
-
-    loader = DataLoader(
-        mt.MEDH5PatchDataset(paths, sampler=sampler),
-        num_workers=4,
-        worker_init_fn=mt.worker_init_fn,
-    )
+Both share a module-level PID-scoped LRU file-handle cache
+(:class:`_HandleCache`, 32 entries) so repeated ``__getitem__`` calls
+against the same file reuse one ``h5py.File``.  Pass
+:func:`worker_init_fn` to :class:`~torch.utils.data.DataLoader` with
+``num_workers > 0``.
 """
 
 from __future__ import annotations
@@ -72,29 +50,18 @@ def _require_torch() -> None:
 
 
 class _HandleCache:
-    """PID-scoped LRU cache of open :class:`MEDH5File` handles.
-
-    Sized by *maxsize*. Eviction closes the handle.
-
-    The cache is keyed by ``os.getpid()``: if a process forks, the
-    child's first ``get()`` call observes ``pid != _owner_pid``, drops
-    the parent's entries (without closing them — the fds are shared
-    and closing from the child would break the parent), and starts
-    fresh.  This turns the forked cache into a cold cache instead of
-    hot shared-h5py state, which is the h5py fork-safety story.
-    """
+    """PID-scoped LRU cache of open :class:`MEDH5File` handles."""
 
     def __init__(self, maxsize: int = 32) -> None:
         self.maxsize = int(maxsize)
         self._items: OrderedDict[str, MEDH5File] = OrderedDict()
         self._owner_pid = os.getpid()
-        self.opens = 0  # exposed for tests / diagnostics
+        self.opens = 0
 
     def _ensure_owner(self) -> None:
         pid = os.getpid()
         if pid != self._owner_pid:
-            # Forked into a new process. Abandon parent handles (do not
-            # close — the fds are shared with the parent). Reset.
+            # Never close parent fds from a forked child — they're shared.
             self._items = OrderedDict()
             self._owner_pid = pid
 
@@ -115,12 +82,7 @@ class _HandleCache:
         return handle
 
     def clear(self) -> None:
-        """Drop all cached handles without closing them.
-
-        Used by :func:`worker_init_fn`: a spawned worker that inherits
-        the cache via pickling should abandon the entries rather than
-        close them — closing would interfere with the parent process.
-        """
+        """Drop all cached handles without closing them."""
         self._items = OrderedDict()
         self._owner_pid = os.getpid()
 
@@ -144,15 +106,8 @@ def _open_cached(path: str | Path) -> MEDH5File:
     return _HANDLE_CACHE.get(path)
 
 
-def worker_init_fn(worker_id: int) -> None:
-    """``DataLoader`` ``worker_init_fn`` that resets the handle cache.
-
-    Pass this to :class:`torch.utils.data.DataLoader` when you use
-    ``num_workers > 0``.  It ensures every worker starts with an empty
-    cache regardless of whether it was created via ``fork`` or
-    ``spawn``.
-    """
-    del worker_id  # unused
+def worker_init_fn(_worker_id: int) -> None:
+    """``DataLoader`` ``worker_init_fn`` that resets the handle cache."""
     _HANDLE_CACHE.clear()
 
 

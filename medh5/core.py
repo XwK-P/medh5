@@ -49,6 +49,8 @@ _COMPRESSION_PRESETS: dict[str, tuple[str, int]] = {
     "max": ("zstd", 9),
 }
 
+_BBOX_COMPRESS_THRESHOLD = 64
+
 
 def _validate_suffix(path: Path) -> None:
     if path.suffix != _SUFFIX:
@@ -418,6 +420,10 @@ class MEDH5File:
         except OSError as exc:
             raise MEDH5FileError(f"Failed to open '{path}': {exc}") from exc
         self._path = path
+        self._meta_cache: SampleMeta | None = None
+        self._bbox_cache: (
+            tuple[np.ndarray | None, np.ndarray | None, list[str] | None] | None
+        ) = None
 
     def __enter__(self) -> MEDH5File:
         return self
@@ -432,7 +438,9 @@ class MEDH5File:
     @property
     def meta(self) -> SampleMeta:
         """Read metadata from the open file."""
-        return read_meta(self._h5)
+        if self._meta_cache is None:
+            self._meta_cache = read_meta(self._h5)
+        return self._meta_cache
 
     @property
     def images(self) -> h5py.Group:
@@ -448,6 +456,26 @@ class MEDH5File:
     def h5(self) -> h5py.File:
         """The underlying raw :class:`h5py.File`."""
         return self._h5
+
+    def bbox_arrays(
+        self,
+    ) -> tuple[np.ndarray | None, np.ndarray | None, list[str] | None]:
+        """Return (bboxes, bbox_scores, bbox_labels) for the open file, cached."""
+        if self._bbox_cache is None:
+            boxes = (
+                np.asarray(self._h5["bboxes"][...]) if "bboxes" in self._h5 else None
+            )
+            scores = (
+                np.asarray(self._h5["bbox_scores"][...])
+                if "bbox_scores" in self._h5
+                else None
+            )
+            labels: list[str] | None = None
+            if "bbox_labels" in self._h5:
+                raw = self._h5["bbox_labels"][...]
+                labels = [v.decode() if isinstance(v, bytes) else str(v) for v in raw]
+            self._bbox_cache = (boxes, scores, labels)
+        return self._bbox_cache
 
     # ------------------------------------------------------------------
     # Write
@@ -567,9 +595,6 @@ class MEDH5File:
             **hdf5plugin.Blosc2(cname=cname, clevel=clevel),
         }
 
-        # Atomic write: stage to a sibling temp file, fsync, then os.replace
-        # into the target. An interrupted write (Ctrl-C, OOM, crash) leaves
-        # the destination path untouched; the temp file is unlinked below.
         tmp_path = path.with_name(f".{path.name}.tmp-{os.getpid()}")
         tmp_str = str(tmp_path)
         done = False
@@ -602,10 +627,7 @@ class MEDH5File:
 
                 if bboxes is not None:
                     bboxes_arr = np.asarray(bboxes)
-                    # Compression only pays off for large bbox arrays;
-                    # tiny ones (the common case) pay Blosc2 chunk
-                    # overhead for no win, so store them raw.
-                    if bboxes_arr.shape[0] > 64:
+                    if bboxes_arr.shape[0] > _BBOX_COMPRESS_THRESHOLD:
                         f.create_dataset(
                             "bboxes",
                             data=bboxes_arr,
@@ -656,9 +678,6 @@ class MEDH5File:
 
                 f.flush()
 
-            # Fsync the staged file before the rename so a crash
-            # between os.replace and fs flush leaves either the old
-            # file or the fully-written new one — never a torso.
             fd = os.open(tmp_str, os.O_RDONLY)
             try:
                 os.fsync(fd)
@@ -666,6 +685,12 @@ class MEDH5File:
                 os.close(fd)
 
             os.replace(tmp_str, str(path))
+
+            dir_fd = os.open(str(path.parent), os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
             done = True
         except MEDH5ValidationError:
             raise
@@ -895,11 +920,8 @@ class MEDH5File:
     ) -> None:
         """Apply in-place metadata / seg / bbox updates to an existing file.
 
-        If the file has a stored checksum, it is verified **before** any
-        mutation.  A mismatch raises :class:`MEDH5FileError` — re-hashing
-        over pre-corrupted data would otherwise silently bake bad data
-        into the stored digest.  Pass ``force=True`` to bypass the
-        pre-verify (e.g. when intentionally repairing a file).
+        Verifies the stored checksum before mutating; pass ``force=True``
+        to skip (e.g. when repairing a known-corrupt file).
         """
         path = Path(path)
         _validate_suffix(path)
@@ -1100,15 +1122,7 @@ class MEDH5File:
 
     @staticmethod
     def is_valid(path: str | Path) -> bool:
-        """Return ``True`` if *path* passes :meth:`validate` with no errors.
-
-        Thin convenience wrapper for the common "is this file OK?"
-        check — saves callers from constructing a
-        :class:`ValidationReport` just to read its ``is_valid`` flag.
-        Returns ``False`` (not raises) when the path is missing, has
-        the wrong extension, or cannot be opened, so it can be used
-        freely in ``filter(MEDH5File.is_valid, paths)`` style pipelines.
-        """
+        """Return ``True`` if *path* passes :meth:`validate`; never raises."""
         try:
             return MEDH5File.validate(path).is_valid
         except MEDH5ValidationError:

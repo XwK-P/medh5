@@ -113,18 +113,9 @@ class ZScore:
 class RandomFlip:
     """Randomly flip along one or more axes with probability *p* (per axis).
 
-    When the sample carries ``meta`` (a :class:`~medh5.meta.SampleMeta`)
-    and/or ``bboxes``, those are kept in sync with the image flip:
-
-    - For each flipped axis ``k``, column ``k`` of
-      ``meta.spatial.direction`` is negated, so the physical-space
-      orientation matches the new voxel layout.  A fresh
-      :class:`~medh5.meta.SampleMeta` is written back via
-      :func:`dataclasses.replace` so the dataset's cached copy is not
-      mutated.
-    - Bounding boxes (shape ``(n, ndim, 2)``) are mirrored in voxel
-      coordinates: ``[lo, hi]`` → ``[S - 1 - hi, S - 1 - lo]`` using the
-      image shape in this sample.
+    Also flips ``sample['bboxes']`` in voxel coordinates and negates the
+    matching column of ``sample['meta'].spatial.direction`` so physical
+    orientation stays consistent with the new voxel layout.
     """
 
     def __init__(
@@ -168,10 +159,7 @@ class RandomFlip:
             for ax in flip_axes:
                 if 0 <= ax < bboxes.shape[1]:
                     s = ref_shape[ax]
-                    lo = flipped_boxes[..., ax, 0].copy()
-                    hi = flipped_boxes[..., ax, 1].copy()
-                    flipped_boxes[..., ax, 0] = (s - 1) - hi
-                    flipped_boxes[..., ax, 1] = (s - 1) - lo
+                    flipped_boxes[..., ax, :] = (s - 1) - flipped_boxes[..., ax, ::-1]
             sample["bboxes"] = flipped_boxes
 
         meta = sample.get("meta")

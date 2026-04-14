@@ -329,13 +329,9 @@ class TestIsValid:
 
 class TestAtomicWrite:
     def test_interrupted_write_leaves_no_file(self, tmp_path, monkeypatch):
-        """A crash during write() must not leave a stale/partial file
-        at the destination path. The staged temp file is unlinked."""
         target = tmp_path / "sample.medh5"
         images = {"CT": np.zeros((8, 16, 16), dtype=np.float32)}
 
-        # Force write_meta to raise after the HDF5 datasets exist but
-        # before os.replace runs.
         import medh5.core as core
 
         original_write_meta = core.write_meta
@@ -348,19 +344,15 @@ class TestAtomicWrite:
         with pytest.raises(RuntimeError, match="simulated crash"):
             MEDH5File.write(target, images=images)
 
-        assert not target.exists(), "destination file must not exist after crash"
-        # No temp turds left behind either.
+        assert not target.exists()
         leftover = list(tmp_path.glob(".sample.medh5.tmp-*"))
-        assert leftover == [], f"stale temp files: {leftover}"
+        assert leftover == []
 
-        # Restore and verify a subsequent write still works.
         monkeypatch.setattr(core, "write_meta", original_write_meta)
         MEDH5File.write(target, images=images)
         assert target.exists()
 
     def test_interrupted_write_preserves_existing_file(self, tmp_path, monkeypatch):
-        """A crash during write() to an existing path must leave the
-        original file untouched (os.replace is atomic)."""
         target = tmp_path / "sample.medh5"
         MEDH5File.write(
             target,

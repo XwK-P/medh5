@@ -79,14 +79,7 @@ class DatasetStats:
 
 @dataclass
 class _FilePartial:
-    """Per-file partial result returned by a worker.
-
-    Uses the ``(n, mean, M2)`` representation where
-    ``M2 = Σ(x - mean)²``, so merging across files with Chan's parallel
-    Welford update avoids the catastrophic cancellation that a naive
-    ``Σx² / n - mean²`` variance computation suffers on large volumes
-    with a non-zero bulk mean (e.g., 134M-voxel CTs around 1000 HU).
-    """
+    """Per-file partial result in ``(n, mean, M2)`` form for Welford merge."""
 
     n_per_modality: dict[str, int]
     mean_per_modality: dict[str, float]
@@ -147,9 +140,6 @@ def _process_file(args: tuple[str, list[str] | None, int, str | None]) -> _FileP
 
             values_f = values.astype(np.float64, copy=False)
             count = int(values_f.size)
-            # numpy's mean/var use a stable two-pass (no large Σx²)
-            # path; combined with M2 = var * n we can merge across
-            # files without ever forming Σx² or Σx.
             mean_v = float(values_f.mean())
             var_v = float(values_f.var())
             n[name] = count
@@ -158,9 +148,8 @@ def _process_file(args: tuple[str, list[str] | None, int, str | None]) -> _FileP
             mn[name] = float(values_f.min())
             mx[name] = float(values_f.max())
 
-            # Random voxel subsample for percentile estimation
             if values_f.size > sample_voxels:
-                idx = rng.choice(values_f.size, size=sample_voxels, replace=False)
+                idx = rng.integers(0, values_f.size, size=sample_voxels)
                 samples[name] = values_f[idx].tolist()
             else:
                 samples[name] = values_f.tolist()
@@ -234,13 +223,6 @@ def compute_stats(
             for r in ex.map(_process_file, args):
                 partials.append(r)
 
-    # Parallel Welford merge (Chan et al.): combine partials via
-    #   n   = n_a + n_b
-    #   δ   = mean_b - mean_a
-    #   mean = mean_a + δ · n_b / n
-    #   M2   = M2_a + M2_b + δ² · n_a · n_b / n
-    # This is exact up to float64 rounding and never forms Σx² over the
-    # whole dataset, which is the bit the old naive path got wrong.
     agg_n: dict[str, int] = {}
     agg_mean: dict[str, float] = {}
     agg_m2: dict[str, float] = {}

@@ -70,10 +70,8 @@ class PatchSampler:
         If True and the source file contains bounding boxes, return
         patch-local bboxes in ``sample["bboxes"]`` (and the matching
         scores/labels).  Boxes are translated to patch-local
-        coordinates and filtered to those that intersect the patch.
-        Clipped — not cropped to the patch extent — because downstream
-        detection losses typically expect raw (possibly-truncated) box
-        bounds rather than the clipped crop.
+        coordinates and filtered to those that intersect the patch;
+        bounds are not clipped.
     seed : int, optional
         RNG seed for reproducibility.
     """
@@ -202,32 +200,28 @@ class PatchSampler:
                 arr = np.asarray(f.seg[name][slices])
                 out["seg"][name] = _pad_to(arr, patch, 0)
 
-        if self.include_bboxes and "bboxes" in f.h5:
-            boxes = np.asarray(f.h5["bboxes"][...])
-            if boxes.shape[0] > 0:
-                shift = np.asarray(starts, dtype=boxes.dtype)
-                boxes_local = boxes - shift[None, :, None]
-                patch_arr = np.asarray(patch, dtype=boxes.dtype)
-                # Keep any box whose intersection with the patch is
-                # non-empty (lo < patch size and hi >= 0 on every axis).
-                keep = np.all(
-                    (boxes_local[..., 1] >= 0)
-                    & (boxes_local[..., 0] < patch_arr[None, :]),
-                    axis=1,
-                )
-            else:
-                boxes_local = boxes
-                keep = np.zeros((0,), dtype=bool)
-            out["bboxes"] = boxes_local[keep]
-            if "bbox_scores" in f.h5:
-                out["bbox_scores"] = np.asarray(f.h5["bbox_scores"][...])[keep]
-            if "bbox_labels" in f.h5:
-                raw_labels = f.h5["bbox_labels"][...]
-                decoded = [
-                    v.decode() if isinstance(v, bytes) else str(v) for v in raw_labels
-                ]
-                out["bbox_labels"] = [
-                    lbl for lbl, k in zip(decoded, keep.tolist(), strict=True) if k
-                ]
+        if self.include_bboxes:
+            boxes, scores, labels = f.bbox_arrays()
+            if boxes is not None:
+                if boxes.shape[0] > 0:
+                    shift = np.asarray(starts, dtype=boxes.dtype)
+                    boxes_local = boxes - shift[None, :, None]
+                    patch_arr = np.asarray(patch, dtype=boxes.dtype)
+                    keep = np.all(
+                        (boxes_local[..., 1] >= 0)
+                        & (boxes_local[..., 0] < patch_arr[None, :]),
+                        axis=1,
+                    )
+                else:
+                    boxes_local = boxes
+                    keep = np.zeros((0,), dtype=bool)
+                out["bboxes"] = boxes_local[keep]
+                if scores is not None:
+                    out["bbox_scores"] = scores[keep]
+                if labels is not None:
+                    keep_list = keep.tolist()
+                    out["bbox_labels"] = [
+                        lbl for lbl, k in zip(labels, keep_list, strict=True) if k
+                    ]
 
         return out

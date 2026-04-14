@@ -88,11 +88,8 @@ class TestComputeStats:
         assert serial.label_counts == parallel.label_counts
 
     def test_uint16_bulk_precision(self, tmp_path):
-        # Uint16 CT-like volume concentrated around 1000 HU — naive
-        # Σx²/n − mean² would lose ~6 significant bits on ~2M voxels.
         rng = np.random.default_rng(7)
         size = (64, 128, 128)
-        # Mean 1000, std 50, in HU; clip into uint16 range.
         data = rng.normal(loc=1000.0, scale=50.0, size=size)
         data = np.clip(data, 0, 65535).astype(np.uint16)
         _write(tmp_path / "ct.medh5", data)

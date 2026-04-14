@@ -168,29 +168,22 @@ class TestHandleCache:
         cache.close_all()
 
     def test_patch_dataset_uses_module_cache(self, sample_files, monkeypatch):
-        # Reset the module-level cache to a fresh known state
         _HANDLE_CACHE.close_all()
         _HANDLE_CACHE.opens = 0
         sampler = PatchSampler(patch_size=(4, 8, 8), seed=0)
         ds = MEDH5PatchDataset(sample_files[:1], sampler=sampler, samples_per_volume=10)
         for i in range(len(ds)):
             ds[i]
-        assert _HANDLE_CACHE.opens == 1  # one open across all 10 reads
+        assert _HANDLE_CACHE.opens == 1
         _HANDLE_CACHE.close_all()
 
     def test_pid_reset_on_fork(self, sample_files, monkeypatch):
-        """When the observed PID changes, the cache drops its entries
-        (without closing them — parent still holds them) and starts
-        cold. This is the fork-safety story."""
         cache = _HandleCache(maxsize=4)
         cache.get(sample_files[0])
         assert len(cache._items) == 1
 
-        # Simulate a fork: pretend we're in a different process.
         monkeypatch.setattr("medh5.torch.os.getpid", lambda: cache._owner_pid + 1)
         cache.get(sample_files[0])
-        # Cache was reset then re-populated; still one entry, but the
-        # owner_pid advanced and opens counter reflects the second open.
         assert len(cache._items) == 1
         assert cache.opens == 2
 
@@ -203,10 +196,6 @@ class TestHandleCache:
 
 
 class TestDataLoaderMultiprocessing:
-    """Verify DataLoader with num_workers > 0 works under both fork
-    and spawn.  h5py is not fork-safe, so this is the path that
-    historically deadlocked or silently corrupted reads."""
-
     @pytest.mark.parametrize("start_method", ["spawn", "fork"])
     def test_dataloader_workers(self, sample_files, start_method):
         import sys
