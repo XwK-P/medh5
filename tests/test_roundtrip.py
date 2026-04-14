@@ -1,5 +1,6 @@
 """Write a .medh5 file with every field populated, read it back, verify."""
 
+import h5py
 import numpy as np
 import pytest
 
@@ -169,6 +170,29 @@ class TestFullRoundtrip:
         sample = MEDH5File.read(tmp_path_medh5)
         assert sample.meta.extra == extra
 
+    def test_many_bboxes_roundtrip(self, tmp_path_medh5):
+        rng = np.random.default_rng(3)
+        images = {"CT": np.zeros((8, 16, 16), dtype=np.float32)}
+        n = 128
+        bboxes = rng.random((n, 3, 2)) * 8
+        MEDH5File.write(tmp_path_medh5, images=images, bboxes=bboxes)
+        sample = MEDH5File.read(tmp_path_medh5)
+        np.testing.assert_allclose(sample.bboxes, bboxes)
+        assert sample.bboxes.shape == (n, 3, 2)
+
+    def test_empty_seg_group_returns_none(self, tmp_path_medh5):
+        images = {"CT": np.zeros((4, 4, 4), dtype=np.float32)}
+        seg = {"tumor": np.zeros((4, 4, 4), dtype=bool)}
+        MEDH5File.write(tmp_path_medh5, images=images, seg=seg)
+        # Drop the dataset out from under the group to simulate a
+        # file whose seg group exists but has zero members.
+        with h5py.File(str(tmp_path_medh5), "a") as f:
+            del f["seg/tumor"]
+        sample = MEDH5File.read(tmp_path_medh5)
+        assert sample.seg is None
+        assert sample.meta.has_seg is False
+        assert sample.meta.seg_names is None
+
     def test_schema_version_future_raises(self, tmp_path_medh5):
         import h5py
 
@@ -242,3 +266,115 @@ class TestValidation:
         bboxes = np.zeros((2, 4, 2))
         with pytest.raises(MEDH5ValidationError, match="bboxes must have shape"):
             MEDH5File.write(tmp_path / "x.medh5", images=images, bboxes=bboxes)
+
+    def test_direction_dim_mismatch_raises(self, tmp_path):
+        images = {"CT": np.zeros((8, 8, 8), dtype=np.float32)}
+        with pytest.raises(ValueError, match="direction must be a 3x3"):
+            MEDH5File.write(
+                tmp_path / "x.medh5",
+                images=images,
+                direction=[[1, 0], [0, 1]],  # 2x2 on a 3D image
+            )
+
+    def test_direction_non_square_raises(self, tmp_path):
+        images = {"CT": np.zeros((8, 8, 8), dtype=np.float32)}
+        with pytest.raises(ValueError, match="direction must be a 3x3"):
+            MEDH5File.write(
+                tmp_path / "x.medh5",
+                images=images,
+                direction=[[1, 0, 0], [0, 1, 0]],  # 2x3
+            )
+
+    def test_axis_labels_length_mismatch_raises(self, tmp_path):
+        images = {"CT": np.zeros((8, 8, 8), dtype=np.float32)}
+        with pytest.raises(ValueError, match="axis_labels length"):
+            MEDH5File.write(
+                tmp_path / "x.medh5",
+                images=images,
+                axis_labels=["x", "y"],  # 2 labels for 3D
+            )
+
+    def test_malformed_direction_on_read_raises(self, tmp_path):
+        path = tmp_path / "bad.medh5"
+        images = {"CT": np.zeros((4, 4, 4), dtype=np.float32)}
+        MEDH5File.write(path, images=images)
+        # Corrupt the direction attribute to a size that doesn't match ndim^2.
+        with h5py.File(str(path), "a") as f:
+            f["images"].attrs["direction"] = np.array([1.0, 0.0, 0.0, 0.0])
+        with pytest.raises(MEDH5SchemaError, match="Malformed 'direction'"):
+            MEDH5File.read(path)
+
+
+class TestIsValid:
+    def test_valid_file(self, tmp_path_medh5):
+        MEDH5File.write(
+            tmp_path_medh5,
+            images={"CT": np.zeros((4, 4, 4), dtype=np.float32)},
+        )
+        assert MEDH5File.is_valid(tmp_path_medh5) is True
+
+    def test_missing_file(self, tmp_path):
+        assert MEDH5File.is_valid(tmp_path / "nope.medh5") is False
+
+    def test_corrupted_file(self, tmp_path):
+        bad = tmp_path / "bad.medh5"
+        bad.write_bytes(b"not hdf5 at all")
+        assert MEDH5File.is_valid(bad) is False
+
+    def test_wrong_extension(self, tmp_path):
+        bad = tmp_path / "x.hdf5"
+        bad.write_bytes(b"")
+        assert MEDH5File.is_valid(bad) is False
+
+
+class TestAtomicWrite:
+    def test_interrupted_write_leaves_no_file(self, tmp_path, monkeypatch):
+        target = tmp_path / "sample.medh5"
+        images = {"CT": np.zeros((8, 16, 16), dtype=np.float32)}
+
+        import medh5.core as core
+
+        original_write_meta = core.write_meta
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("simulated crash mid-write")
+
+        monkeypatch.setattr(core, "write_meta", boom)
+
+        with pytest.raises(RuntimeError, match="simulated crash"):
+            MEDH5File.write(target, images=images)
+
+        assert not target.exists()
+        leftover = list(tmp_path.glob(".sample.medh5.tmp-*"))
+        assert leftover == []
+
+        monkeypatch.setattr(core, "write_meta", original_write_meta)
+        MEDH5File.write(target, images=images)
+        assert target.exists()
+
+    def test_interrupted_write_preserves_existing_file(self, tmp_path, monkeypatch):
+        target = tmp_path / "sample.medh5"
+        MEDH5File.write(
+            target,
+            images={"CT": np.full((8, 16, 16), 1.0, dtype=np.float32)},
+            label=1,
+        )
+        original_bytes = target.read_bytes()
+
+        import medh5.core as core
+
+        monkeypatch.setattr(
+            core, "write_meta", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x"))
+        )
+
+        with pytest.raises(RuntimeError):
+            MEDH5File.write(
+                target,
+                images={"CT": np.full((8, 16, 16), 2.0, dtype=np.float32)},
+                label=2,
+            )
+
+        assert target.read_bytes() == original_bytes
+        sample = MEDH5File.read(target)
+        assert sample.meta.label == 1
+        assert float(sample.images["CT"][0, 0, 0]) == 1.0

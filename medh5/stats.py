@@ -79,11 +79,11 @@ class DatasetStats:
 
 @dataclass
 class _FilePartial:
-    """Per-file partial result returned by a worker."""
+    """Per-file partial result in ``(n, mean, M2)`` form for Welford merge."""
 
     n_per_modality: dict[str, int]
-    sum_per_modality: dict[str, float]
-    sumsq_per_modality: dict[str, float]
+    mean_per_modality: dict[str, float]
+    m2_per_modality: dict[str, float]
     min_per_modality: dict[str, float]
     max_per_modality: dict[str, float]
     samples_per_modality: dict[str, list[float]]
@@ -95,8 +95,8 @@ class _FilePartial:
 def _process_file(args: tuple[str, list[str] | None, int, str | None]) -> _FilePartial:
     path, modalities, sample_voxels, foreground_mask = args
     n: dict[str, int] = {}
-    s: dict[str, float] = {}
-    sq: dict[str, float] = {}
+    means: dict[str, float] = {}
+    m2s: dict[str, float] = {}
     mn: dict[str, float] = {}
     mx: dict[str, float] = {}
     samples: dict[str, list[float]] = {}
@@ -139,15 +139,17 @@ def _process_file(args: tuple[str, list[str] | None, int, str | None]) -> _FileP
                 continue
 
             values_f = values.astype(np.float64, copy=False)
-            n[name] = int(values_f.size)
-            s[name] = float(values_f.sum())
-            sq[name] = float(np.square(values_f).sum())
+            count = int(values_f.size)
+            mean_v = float(values_f.mean())
+            var_v = float(values_f.var())
+            n[name] = count
+            means[name] = mean_v
+            m2s[name] = var_v * count
             mn[name] = float(values_f.min())
             mx[name] = float(values_f.max())
 
-            # Random voxel subsample for percentile estimation
             if values_f.size > sample_voxels:
-                idx = rng.choice(values_f.size, size=sample_voxels, replace=False)
+                idx = rng.integers(0, values_f.size, size=sample_voxels)
                 samples[name] = values_f[idx].tolist()
             else:
                 samples[name] = values_f.tolist()
@@ -161,8 +163,8 @@ def _process_file(args: tuple[str, list[str] | None, int, str | None]) -> _FileP
 
     return _FilePartial(
         n_per_modality=n,
-        sum_per_modality=s,
-        sumsq_per_modality=sq,
+        mean_per_modality=means,
+        m2_per_modality=m2s,
         min_per_modality=mn,
         max_per_modality=mx,
         samples_per_modality=samples,
@@ -221,11 +223,9 @@ def compute_stats(
             for r in ex.map(_process_file, args):
                 partials.append(r)
 
-    # Welford merge across files (algebraically equivalent for our case
-    # since we kept Σx, Σx², n per modality).
     agg_n: dict[str, int] = {}
-    agg_sum: dict[str, float] = {}
-    agg_sumsq: dict[str, float] = {}
+    agg_mean: dict[str, float] = {}
+    agg_m2: dict[str, float] = {}
     agg_min: dict[str, float] = {}
     agg_max: dict[str, float] = {}
     agg_samples: dict[str, list[float]] = {}
@@ -236,10 +236,24 @@ def compute_stats(
     seg_cov_n: dict[str, int] = {}
 
     for p in partials:
-        for name, n in p.n_per_modality.items():
-            agg_n[name] = agg_n.get(name, 0) + n
-            agg_sum[name] = agg_sum.get(name, 0.0) + p.sum_per_modality[name]
-            agg_sumsq[name] = agg_sumsq.get(name, 0.0) + p.sumsq_per_modality[name]
+        for name, n_b in p.n_per_modality.items():
+            if n_b == 0:
+                continue
+            mean_b = p.mean_per_modality[name]
+            m2_b = p.m2_per_modality[name]
+            n_a = agg_n.get(name, 0)
+            if n_a == 0:
+                agg_n[name] = n_b
+                agg_mean[name] = mean_b
+                agg_m2[name] = m2_b
+            else:
+                mean_a = agg_mean[name]
+                m2_a = agg_m2[name]
+                n_total = n_a + n_b
+                delta = mean_b - mean_a
+                agg_n[name] = n_total
+                agg_mean[name] = mean_a + delta * n_b / n_total
+                agg_m2[name] = m2_a + m2_b + delta * delta * n_a * n_b / n_total
             agg_min[name] = min(
                 agg_min.get(name, float("inf")), p.min_per_modality[name]
             )
@@ -264,8 +278,8 @@ def compute_stats(
     for name, n in agg_n.items():
         if n == 0:
             continue
-        mean = agg_sum[name] / n
-        var = max(agg_sumsq[name] / n - mean * mean, 0.0)
+        mean = agg_mean[name]
+        var = max(agg_m2[name] / n, 0.0)
         std = float(np.sqrt(var))
         samples = np.asarray(agg_samples.get(name, []), dtype=np.float64)
         if samples.size > 0:

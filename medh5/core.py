@@ -8,6 +8,8 @@ compression provided by *hdf5plugin*.
 
 from __future__ import annotations
 
+import contextlib
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -46,6 +48,8 @@ _COMPRESSION_PRESETS: dict[str, tuple[str, int]] = {
     "balanced": ("lz4hc", 8),
     "max": ("zstd", 9),
 }
+
+_BBOX_COMPRESS_THRESHOLD = 64
 
 
 def _validate_suffix(path: Path) -> None:
@@ -416,6 +420,10 @@ class MEDH5File:
         except OSError as exc:
             raise MEDH5FileError(f"Failed to open '{path}': {exc}") from exc
         self._path = path
+        self._meta_cache: SampleMeta | None = None
+        self._bbox_cache: (
+            tuple[np.ndarray | None, np.ndarray | None, list[str] | None] | None
+        ) = None
 
     def __enter__(self) -> MEDH5File:
         return self
@@ -430,7 +438,9 @@ class MEDH5File:
     @property
     def meta(self) -> SampleMeta:
         """Read metadata from the open file."""
-        return read_meta(self._h5)
+        if self._meta_cache is None:
+            self._meta_cache = read_meta(self._h5)
+        return self._meta_cache
 
     @property
     def images(self) -> h5py.Group:
@@ -446,6 +456,26 @@ class MEDH5File:
     def h5(self) -> h5py.File:
         """The underlying raw :class:`h5py.File`."""
         return self._h5
+
+    def bbox_arrays(
+        self,
+    ) -> tuple[np.ndarray | None, np.ndarray | None, list[str] | None]:
+        """Return (bboxes, bbox_scores, bbox_labels) for the open file, cached."""
+        if self._bbox_cache is None:
+            boxes = (
+                np.asarray(self._h5["bboxes"][...]) if "bboxes" in self._h5 else None
+            )
+            scores = (
+                np.asarray(self._h5["bbox_scores"][...])
+                if "bbox_scores" in self._h5
+                else None
+            )
+            labels: list[str] | None = None
+            if "bbox_labels" in self._h5:
+                raw = self._h5["bbox_labels"][...]
+                labels = [v.decode() if isinstance(v, bytes) else str(v) for v in raw]
+            self._bbox_cache = (boxes, scores, labels)
+        return self._bbox_cache
 
     # ------------------------------------------------------------------
     # Write
@@ -565,8 +595,11 @@ class MEDH5File:
             **hdf5plugin.Blosc2(cname=cname, clevel=clevel),
         }
 
+        tmp_path = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+        tmp_str = str(tmp_path)
+        done = False
         try:
-            with h5py.File(str(path), "w") as f:
+            with h5py.File(tmp_str, "w") as f:
                 img_grp = f.create_group("images")
                 for name in image_names:
                     img_grp.create_dataset(
@@ -593,7 +626,16 @@ class MEDH5File:
                         )
 
                 if bboxes is not None:
-                    f.create_dataset("bboxes", data=np.asarray(bboxes))
+                    bboxes_arr = np.asarray(bboxes)
+                    if bboxes_arr.shape[0] > _BBOX_COMPRESS_THRESHOLD:
+                        f.create_dataset(
+                            "bboxes",
+                            data=bboxes_arr,
+                            chunks=True,
+                            **blosc2_opts,
+                        )
+                    else:
+                        f.create_dataset("bboxes", data=bboxes_arr)
                 if bbox_scores is not None:
                     f.create_dataset("bbox_scores", data=np.asarray(bbox_scores))
                 if bbox_labels is not None:
@@ -633,10 +675,31 @@ class MEDH5File:
 
                 if checksum:
                     write_checksum(f)
+
+                f.flush()
+
+            fd = os.open(tmp_str, os.O_RDONLY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+
+            os.replace(tmp_str, str(path))
+
+            dir_fd = os.open(str(path.parent), os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+            done = True
         except MEDH5ValidationError:
             raise
         except OSError as exc:
             raise MEDH5FileError(f"Failed to write '{path}': {exc}") from exc
+        finally:
+            if not done:
+                with contextlib.suppress(FileNotFoundError):
+                    os.unlink(tmp_str)
 
     # ------------------------------------------------------------------
     # Read (eager)
@@ -668,7 +731,8 @@ class MEDH5File:
                 seg = None
                 if "seg" in f:
                     seg_grp = f["seg"]
-                    seg = {name: seg_grp[name][...] for name in seg_grp}
+                    if len(seg_grp) > 0:
+                        seg = {name: seg_grp[name][...] for name in seg_grp}
 
                 bboxes = None
                 if "bboxes" in f:
@@ -852,8 +916,13 @@ class MEDH5File:
         seg_ops: dict[str, Any] | None = None,
         bbox_ops: dict[str, Any] | None = None,
         recompute_checksum: bool = True,
+        force: bool = False,
     ) -> None:
-        """Apply in-place metadata / seg / bbox updates to an existing file."""
+        """Apply in-place metadata / seg / bbox updates to an existing file.
+
+        Verifies the stored checksum before mutating; pass ``force=True``
+        to skip (e.g. when repairing a known-corrupt file).
+        """
         path = Path(path)
         _validate_suffix(path)
         allowed_meta = {
@@ -877,6 +946,12 @@ class MEDH5File:
 
         try:
             with h5py.File(str(path), "a") as f:
+                if not force and _CHECKSUM_ATTR in f.attrs and not verify_checksum(f):
+                    raise MEDH5FileError(
+                        f"Refusing to update '{path}': stored checksum does "
+                        "not match current contents. Pass force=True to "
+                        "override (e.g. when repairing)."
+                    )
                 img_grp = f["images"]
                 first_key = next(iter(img_grp))
                 ref_ds = img_grp[first_key]
@@ -1027,6 +1102,8 @@ class MEDH5File:
                     write_checksum(f)
         except MEDH5ValidationError:
             raise
+        except MEDH5FileError:
+            raise
         except OSError as exc:
             raise MEDH5FileError(f"Failed to update '{path}': {exc}") from exc
 
@@ -1042,6 +1119,14 @@ class MEDH5File:
             report = ValidationReport(path=str(path))
             report.add_error("file_open_failed", f"Failed to open '{path}': {exc}")
         return report
+
+    @staticmethod
+    def is_valid(path: str | Path) -> bool:
+        """Return ``True`` if *path* passes :meth:`validate`; never raises."""
+        try:
+            return MEDH5File.validate(path).is_valid
+        except MEDH5ValidationError:
+            return False
 
     # ------------------------------------------------------------------
     # Review / curation helpers (delegated to medh5.review)

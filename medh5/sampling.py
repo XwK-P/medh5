@@ -66,6 +66,12 @@ class PatchSampler:
     pad_value : float
         Value used to pad patches that fall partially outside the
         volume bounds.
+    include_bboxes : bool
+        If True and the source file contains bounding boxes, return
+        patch-local bboxes in ``sample["bboxes"]`` (and the matching
+        scores/labels).  Boxes are translated to patch-local
+        coordinates and filtered to those that intersect the patch;
+        bounds are not clipped.
     seed : int, optional
         RNG seed for reproducibility.
     """
@@ -78,6 +84,7 @@ class PatchSampler:
         foreground_seg: str | None = None,
         foreground_prob: float = 0.5,
         pad_value: float = 0.0,
+        include_bboxes: bool = False,
         seed: int | None = None,
     ) -> None:
         if strategy not in ("uniform", "foreground", "balanced"):
@@ -94,6 +101,7 @@ class PatchSampler:
         self.foreground_seg = foreground_seg
         self.foreground_prob = float(foreground_prob)
         self.pad_value = float(pad_value)
+        self.include_bboxes = bool(include_bboxes)
         self._rng = np.random.default_rng(seed)
         self._fg_indices_cache: dict[str, np.ndarray] = {}
 
@@ -191,5 +199,29 @@ class PatchSampler:
             for name in f.seg:
                 arr = np.asarray(f.seg[name][slices])
                 out["seg"][name] = _pad_to(arr, patch, 0)
+
+        if self.include_bboxes:
+            boxes, scores, labels = f.bbox_arrays()
+            if boxes is not None:
+                if boxes.shape[0] > 0:
+                    shift = np.asarray(starts, dtype=boxes.dtype)
+                    boxes_local = boxes - shift[None, :, None]
+                    patch_arr = np.asarray(patch, dtype=boxes.dtype)
+                    keep = np.all(
+                        (boxes_local[..., 1] >= 0)
+                        & (boxes_local[..., 0] < patch_arr[None, :]),
+                        axis=1,
+                    )
+                else:
+                    boxes_local = boxes
+                    keep = np.zeros((0,), dtype=bool)
+                out["bboxes"] = boxes_local[keep]
+                if scores is not None:
+                    out["bbox_scores"] = scores[keep]
+                if labels is not None:
+                    keep_list = keep.tolist()
+                    out["bbox_labels"] = [
+                        lbl for lbl, k in zip(labels, keep_list, strict=True) if k
+                    ]
 
         return out

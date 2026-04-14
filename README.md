@@ -2,6 +2,9 @@
 
 **HDF5 + Blosc2 multi-array format for ML workloads.**
 
+> **Status:** Beta (0.5.0) — API may still change between minor versions.
+> Backward compatibility is not guaranteed until 1.0.
+
 Store multiple co-registered images (e.g. CT, MRI, PET) + segmentation
 masks + bounding boxes + image-level label in a single `.medh5` file with
 Blosc2 compression, chunk-size optimization for patch-based training, and
@@ -207,6 +210,39 @@ dataset = MEDH5PatchDataset(
 Both dataset classes use a per-worker LRU file-handle cache, so repeated
 reads against the same file reuse one `h5py.File` handle instead of
 re-opening from scratch every call.
+
+**`DataLoader` with `num_workers > 0`**
+
+h5py is not fork-safe, and open `h5py.File` handles cannot be pickled for
+`multiprocessing_context="spawn"` (the default on macOS / Windows /
+Python 3.14+). medh5 handles this in two ways: the handle cache
+detects PID changes on access and transparently resets itself, and
+`medh5.torch.worker_init_fn` clears the cache at worker startup for
+belt-and-braces safety. Always pass `worker_init_fn=medh5.torch.worker_init_fn`
+when you use `num_workers > 0`:
+
+```python
+from torch.utils.data import DataLoader
+import medh5.torch as mt
+
+dataset = mt.MEDH5PatchDataset(paths, sampler=sampler)
+
+loader = DataLoader(
+    dataset,
+    batch_size=4,
+    num_workers=4,
+    worker_init_fn=mt.worker_init_fn,   # <- required with num_workers > 0
+    # multiprocessing_context="spawn",  # optional, default on macOS/Windows
+)
+
+for batch in loader:
+    ...
+```
+
+Without `worker_init_fn`, a forked worker would observe stale h5py state
+inherited from the parent process, which can deadlock or silently corrupt
+reads. See [h5py's documentation](https://docs.h5py.org/en/stable/faq.html#multiprocessing)
+for the underlying issue.
 
 ### NIfTI / DICOM conversion
 

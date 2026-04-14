@@ -8,12 +8,13 @@ without any custom library.
 from __future__ import annotations
 
 import json
-import warnings
 from dataclasses import dataclass, field
 from typing import Any
 
 import h5py
 import numpy as np
+
+from medh5.exceptions import MEDH5SchemaError
 
 SCHEMA_VERSION = "1"
 
@@ -101,10 +102,21 @@ class SampleMeta:
             for row in s.direction:
                 if not all(isinstance(v, (int, float)) for v in row):
                     raise TypeError("direction must contain only numbers")
-        if s.axis_labels is not None and not all(
-            isinstance(v, str) for v in s.axis_labels
-        ):
-            raise TypeError("axis_labels must be strings")
+            if ndim is not None and (
+                len(s.direction) != ndim or any(len(row) != ndim for row in s.direction)
+            ):
+                bad_cols = len(s.direction[0]) if s.direction else 0
+                raise ValueError(
+                    f"direction must be a {ndim}x{ndim} matrix, "
+                    f"got {len(s.direction)}x{bad_cols}"
+                )
+        if s.axis_labels is not None:
+            if not all(isinstance(v, str) for v in s.axis_labels):
+                raise TypeError("axis_labels must be strings")
+            if ndim is not None and len(s.axis_labels) != ndim:
+                raise ValueError(
+                    f"axis_labels length ({len(s.axis_labels)}) != ndim ({ndim})"
+                )
         if self.patch_size is not None:
             if not all(isinstance(v, int) for v in self.patch_size):
                 raise TypeError("patch_size must contain only integers")
@@ -184,13 +196,12 @@ def read_meta(f: h5py.File) -> SampleMeta:
             first_key = next(iter(f["images"]))
             ndim = len(f["images"][first_key].shape)
             if raw.size != ndim * ndim:
-                warnings.warn(
-                    f"Malformed direction attribute: expected {ndim * ndim} "
-                    f"elements but got {raw.size}; skipping.",
-                    stacklevel=2,
+                raise MEDH5SchemaError(
+                    f"Malformed 'direction' attribute: expected "
+                    f"{ndim * ndim} elements for a {ndim}D volume but "
+                    f"got {raw.size}."
                 )
-            else:
-                spatial.direction = raw.reshape(ndim, ndim).tolist()
+            spatial.direction = raw.reshape(ndim, ndim).tolist()
         if "axis_labels" in a:
             spatial.axis_labels = list(a["axis_labels"])
         if "coord_system" in a:
@@ -219,10 +230,12 @@ def read_meta(f: h5py.File) -> SampleMeta:
     if isinstance(label_name, bytes):
         label_name = label_name.decode()
 
-    has_seg = bool(ra.get("has_seg", False))
+    seg_grp = f.get("seg")
+    has_seg_group = isinstance(seg_grp, h5py.Group) and len(seg_grp) > 0
+    has_seg = bool(ra.get("has_seg", False)) and has_seg_group
 
     seg_names: list[str] | None = None
-    if "seg_names" in ra:
+    if has_seg and "seg_names" in ra:
         raw_seg_names = ra["seg_names"]
         if isinstance(raw_seg_names, bytes):
             raw_seg_names = raw_seg_names.decode()
@@ -246,15 +259,11 @@ def read_meta(f: h5py.File) -> SampleMeta:
         schema_version_num = int(schema_version)
         current_schema_num = int(SCHEMA_VERSION)
     except ValueError as exc:
-        from medh5.exceptions import MEDH5SchemaError
-
         raise MEDH5SchemaError(
             f"Invalid schema version '{schema_version}'. Expected an integer string."
         ) from exc
 
     if schema_version_num > current_schema_num:
-        from medh5.exceptions import MEDH5SchemaError
-
         raise MEDH5SchemaError(
             f"File has schema version '{schema_version}' but this library "
             f"only supports up to '{SCHEMA_VERSION}'. Upgrade medh5."

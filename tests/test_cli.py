@@ -48,11 +48,19 @@ class TestCLI:
 
     def test_no_command(self, capsys):
         ret = main([])
-        assert ret == 0
+        assert ret == 2
+        err = capsys.readouterr().err
+        assert "usage:" in err.lower()
 
     def test_info_missing_file(self, tmp_path, capsys):
         ret = main(["info", str(tmp_path / "missing.medh5")])
         assert ret == 1
+
+    def test_import_without_subcommand(self, capsys):
+        ret = main(["import"])
+        assert ret == 2
+        err = capsys.readouterr().err
+        assert "missing subcommand" in err
 
     def test_info_json(self, sample_file, capsys):
         ret = main(["info", str(sample_file), "--json"])

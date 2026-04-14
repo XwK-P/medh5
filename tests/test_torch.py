@@ -13,7 +13,13 @@ from medh5.torch import (  # noqa: E402
     MEDH5PatchDataset,
     MEDH5TorchDataset,
     _HandleCache,
+    worker_init_fn,
 )
+
+
+def _identity_collate(batch):
+    """Top-level so it is pickleable under spawn."""
+    return batch
 
 
 @pytest.fixture
@@ -162,12 +168,80 @@ class TestHandleCache:
         cache.close_all()
 
     def test_patch_dataset_uses_module_cache(self, sample_files, monkeypatch):
-        # Reset the module-level cache to a fresh known state
         _HANDLE_CACHE.close_all()
         _HANDLE_CACHE.opens = 0
         sampler = PatchSampler(patch_size=(4, 8, 8), seed=0)
         ds = MEDH5PatchDataset(sample_files[:1], sampler=sampler, samples_per_volume=10)
         for i in range(len(ds)):
             ds[i]
-        assert _HANDLE_CACHE.opens == 1  # one open across all 10 reads
+        assert _HANDLE_CACHE.opens == 1
         _HANDLE_CACHE.close_all()
+
+    def test_pid_reset_on_fork(self, sample_files, monkeypatch):
+        cache = _HandleCache(maxsize=4)
+        cache.get(sample_files[0])
+        assert len(cache._items) == 1
+
+        monkeypatch.setattr("medh5.torch.os.getpid", lambda: cache._owner_pid + 1)
+        cache.get(sample_files[0])
+        assert len(cache._items) == 1
+        assert cache.opens == 2
+
+    def test_worker_init_fn_clears_cache(self, sample_files):
+        _HANDLE_CACHE.close_all()
+        _HANDLE_CACHE.get(sample_files[0])
+        assert len(_HANDLE_CACHE._items) == 1
+        worker_init_fn(0)
+        assert len(_HANDLE_CACHE._items) == 0
+
+
+class TestDataLoaderMultiprocessing:
+    @pytest.mark.parametrize("start_method", ["spawn", "fork"])
+    def test_dataloader_workers(self, sample_files, start_method):
+        import sys
+
+        if start_method == "fork" and sys.platform == "darwin":
+            pytest.skip("fork is unsafe on macOS; we only ship spawn support")
+
+        from torch.utils.data import DataLoader
+
+        ds = MEDH5TorchDataset(sample_files)
+
+        loader = DataLoader(
+            ds,
+            batch_size=1,
+            num_workers=2,
+            worker_init_fn=worker_init_fn,
+            multiprocessing_context=start_method,
+            collate_fn=_identity_collate,
+        )
+
+        seen = []
+        for batch in loader:
+            assert len(batch) == 1
+            sample = batch[0]
+            assert sample["images"]["CT"].shape == (8, 16, 16)
+            seen.append(int(sample["label"]))
+
+        assert sorted(seen) == [0, 1, 2]
+
+    def test_patch_dataloader_spawn(self, sample_files):
+        from torch.utils.data import DataLoader
+
+        sampler = PatchSampler(patch_size=(4, 8, 8), seed=0)
+        ds = MEDH5PatchDataset(sample_files, sampler=sampler, samples_per_volume=2)
+
+        loader = DataLoader(
+            ds,
+            batch_size=1,
+            num_workers=2,
+            worker_init_fn=worker_init_fn,
+            multiprocessing_context="spawn",
+            collate_fn=_identity_collate,
+        )
+
+        count = 0
+        for batch in loader:
+            assert batch[0]["images"]["CT"].shape == (4, 8, 8)
+            count += 1
+        assert count == len(ds)

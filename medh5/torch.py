@@ -5,22 +5,21 @@ Requires ``torch`` (install with ``pip install medh5[torch]``).
 Two dataset classes are provided:
 
 - :class:`MEDH5TorchDataset` — eager, full-volume read per ``__getitem__``.
-  Best for small samples that comfortably fit in memory.
 - :class:`MEDH5PatchDataset` — lazy, patch-based read using a
-  :class:`~medh5.sampling.PatchSampler`. Best for large volumes where
-  patch-based training is the norm.
+  :class:`~medh5.sampling.PatchSampler`.
 
-Both share a per-process LRU file-handle cache (:class:`_HandleCache`)
-so repeated ``__getitem__`` calls against the same file reuse one
-``h5py.File`` instead of opening it from scratch every time. PyTorch
-DataLoader workers each get their own copy of the cache (forked
-process), so no cross-worker synchronization is needed.
+Both share a module-level PID-scoped LRU file-handle cache
+(:class:`_HandleCache`, 32 entries) so repeated ``__getitem__`` calls
+against the same file reuse one ``h5py.File``.  Pass
+:func:`worker_init_fn` to :class:`~torch.utils.data.DataLoader` with
+``num_workers > 0``.
 """
 
 from __future__ import annotations
 
 import atexit
 import contextlib
+import os
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any
@@ -51,19 +50,23 @@ def _require_torch() -> None:
 
 
 class _HandleCache:
-    """LRU cache of open :class:`MEDH5File` handles.
-
-    Sized by *maxsize*. Eviction closes the handle. Per-process state —
-    PyTorch DataLoader workers each get their own copy because they are
-    forked.
-    """
+    """PID-scoped LRU cache of open :class:`MEDH5File` handles."""
 
     def __init__(self, maxsize: int = 32) -> None:
         self.maxsize = int(maxsize)
         self._items: OrderedDict[str, MEDH5File] = OrderedDict()
-        self.opens = 0  # exposed for tests / diagnostics
+        self._owner_pid = os.getpid()
+        self.opens = 0
+
+    def _ensure_owner(self) -> None:
+        pid = os.getpid()
+        if pid != self._owner_pid:
+            # Never close parent fds from a forked child — they're shared.
+            self._items = OrderedDict()
+            self._owner_pid = pid
 
     def get(self, path: str | Path) -> MEDH5File:
+        self._ensure_owner()
         key = str(path)
         cached = self._items.get(key)
         if cached is not None:
@@ -77,6 +80,11 @@ class _HandleCache:
             with contextlib.suppress(Exception):  # pragma: no cover
                 evicted.close()
         return handle
+
+    def clear(self) -> None:
+        """Drop all cached handles without closing them."""
+        self._items = OrderedDict()
+        self._owner_pid = os.getpid()
 
     def close_all(self) -> None:
         while self._items:
@@ -96,6 +104,11 @@ def _close_handle_cache() -> None:  # pragma: no cover - process exit hook
 def _open_cached(path: str | Path) -> MEDH5File:
     """Module-level helper used by both dataset classes."""
     return _HANDLE_CACHE.get(path)
+
+
+def worker_init_fn(_worker_id: int) -> None:
+    """``DataLoader`` ``worker_init_fn`` that resets the handle cache."""
+    _HANDLE_CACHE.clear()
 
 
 def _to_tensors(sample: dict[str, Any]) -> dict[str, Any]:
