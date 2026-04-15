@@ -217,6 +217,62 @@ class TestImportExportCLI:
         assert ret == 0
         assert (export_dir / "image_CT.nii.gz").exists()
 
+    def test_import_export_nnunetv2_roundtrip(self, tmp_path):
+        nib = pytest.importorskip("nibabel")
+        import json as _json
+
+        src = tmp_path / "Dataset099_Cli"
+        (src / "imagesTr").mkdir(parents=True)
+        (src / "labelsTr").mkdir()
+        aff = np.diag([1.0, 1.0, 1.0, 1.0])
+        for cid in ("c1", "c2"):
+            for idx in (0, 1):
+                arr = np.arange(4 * 4 * 4, dtype=np.float32).reshape(4, 4, 4) + idx
+                nib.save(
+                    nib.Nifti1Image(arr, aff),
+                    str(src / "imagesTr" / f"{cid}_{idx:04d}.nii.gz"),
+                )
+            lab = np.zeros((4, 4, 4), dtype=np.uint8)
+            lab[1, 1, 1] = 1
+            lab[2, 2, 2] = 2
+            nib.save(nib.Nifti1Image(lab, aff), str(src / "labelsTr" / f"{cid}.nii.gz"))
+        (src / "dataset.json").write_text(
+            _json.dumps(
+                {
+                    "channel_names": {"0": "T1", "1": "T2"},
+                    "labels": {"background": 0, "lesion": 1, "edema": 2},
+                    "numTraining": 2,
+                    "file_ending": ".nii.gz",
+                }
+            )
+        )
+
+        medh5_out = tmp_path / "medh5_out"
+        ret = main(["import", "nnunetv2", str(src), "-o", str(medh5_out)])
+        assert ret == 0
+        assert (medh5_out / "imagesTr" / "c1.medh5").is_file()
+        assert (medh5_out / "imagesTr" / "c2.medh5").is_file()
+
+        sample = MEDH5File.read(medh5_out / "imagesTr" / "c1.medh5")
+        assert set(sample.images.keys()) == {"T1", "T2"}
+        assert sample.seg is not None
+        assert sample.seg["lesion"][1, 1, 1]
+        assert sample.seg["edema"][2, 2, 2]
+
+        exported = tmp_path / "exported"
+        ret = main(["export", "nnunetv2", str(medh5_out), "-o", str(exported)])
+        assert ret == 0
+        assert (exported / "dataset.json").is_file()
+        payload = _json.loads((exported / "dataset.json").read_text())
+        assert payload["channel_names"] == {"0": "T1", "1": "T2"}
+        assert payload["labels"] == {"background": 0, "lesion": 1, "edema": 2}
+        assert payload["numTraining"] == 2
+
+        back = nib.load(str(exported / "labelsTr" / "c1.nii.gz"))
+        back_arr = np.asarray(back.dataobj)
+        assert back_arr[1, 1, 1] == 1
+        assert back_arr[2, 2, 2] == 2
+
     def test_import_nifti_with_resampling(self, tmp_path):
         pytest.importorskip("SimpleITK")
         nib = pytest.importorskip("nibabel")

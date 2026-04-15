@@ -17,8 +17,16 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from medh5.io.dicom import from_dicom
     from medh5.io.nifti import from_nifti, import_seg_nifti, to_nifti
+    from medh5.io.nnunetv2 import from_nnunetv2, to_nnunetv2
 
-__all__ = ["from_dicom", "from_nifti", "import_seg_nifti", "to_nifti"]
+__all__ = [
+    "from_dicom",
+    "from_nifti",
+    "from_nnunetv2",
+    "import_seg_nifti",
+    "to_nifti",
+    "to_nnunetv2",
+]
 
 
 def __getattr__(name: str) -> Any:
@@ -26,6 +34,10 @@ def __getattr__(name: str) -> Any:
         from medh5.io import nifti as _nifti
 
         return getattr(_nifti, name)
+    if name in ("from_nnunetv2", "to_nnunetv2"):
+        from medh5.io import nnunetv2 as _nnu
+
+        return getattr(_nnu, name)
     if name == "from_dicom":
         from medh5.io import dicom as _dicom
 
