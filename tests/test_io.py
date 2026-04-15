@@ -713,6 +713,19 @@ class TestFromNnunetv2:
         with pytest.raises(MEDH5ValidationError, match="consecutive"):
             from_nnunetv2(src, tmp_path / "out")
 
+    def test_undeclared_label_value_rejected(self, tmp_path):
+        from medh5.io import from_nnunetv2
+
+        src = tmp_path / "Dataset007_StrayVal"
+        _build_nnunetv2_dataset(src)
+        # Paint a voxel with a class value not declared in dataset.json.
+        aff = _make_affine([1.5, 1.0, 1.0], [4.0, -3.0, 2.0])
+        stray = np.zeros((6, 8, 10), dtype=np.uint8)
+        stray[0, 0, 0] = 7  # not in {0, 1, 2}
+        _write_nifti(src / "labelsTr" / "c001.nii.gz", stray, aff)
+        with pytest.raises(MEDH5ValidationError, match="undeclared values"):
+            from_nnunetv2(src, tmp_path / "out")
+
 
 class TestToNnunetv2:
     def test_roundtrip_preserves_images_and_labels(self, tmp_path):
@@ -798,3 +811,75 @@ class TestToNnunetv2:
         empty.mkdir()
         with pytest.raises(MEDH5ValidationError, match="No training"):
             to_nnunetv2(empty, tmp_path / "out")
+
+    def test_extra_seg_mask_rejected_on_export(self, tmp_path):
+        from medh5.io import to_nnunetv2
+
+        # Write a .medh5 file carrying nnU-Net metadata plus a seg mask whose
+        # name is not declared in ``labels``. Export must refuse rather than
+        # silently drop the stray mask.
+        images_tr = tmp_path / "imagesTr"
+        images_tr.mkdir()
+        images = {"T1": np.zeros((4, 6, 8), dtype=np.float32)}
+        tumor = np.zeros((4, 6, 8), dtype=bool)
+        tumor[1, 1, 1] = True
+        rogue = np.zeros((4, 6, 8), dtype=bool)
+        rogue[2, 2, 2] = True
+        nnunet_meta = {
+            "channel_names": {"0": "T1"},
+            "labels": {"background": 0, "tumor": 1},
+            "numTraining": 1,
+            "file_ending": ".nii.gz",
+        }
+        MEDH5File.write(
+            images_tr / "case1.medh5",
+            images=images,
+            seg={"tumor": tumor, "rogue": rogue},
+            spacing=[1.0, 1.0, 1.0],
+            origin=[0.0, 0.0, 0.0],
+            direction=[[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+            extra={"nnunetv2": nnunet_meta},
+        )
+        with pytest.raises(MEDH5ValidationError, match="not declared"):
+            to_nnunetv2(tmp_path, tmp_path / "out")
+
+    def test_channel_set_mismatch_rejected_on_export(self, tmp_path):
+        from medh5.io import to_nnunetv2
+
+        # .medh5 declares two channels in nnU-Net metadata but only stores one.
+        images_tr = tmp_path / "imagesTr"
+        images_tr.mkdir()
+        images = {"T1": np.zeros((4, 6, 8), dtype=np.float32)}
+        nnunet_meta = {
+            "channel_names": {"0": "T1", "1": "T2"},
+            "labels": {"background": 0, "tumor": 1},
+            "numTraining": 1,
+            "file_ending": ".nii.gz",
+        }
+        # ``to_nnunetv2`` resolves channel order from the first file's
+        # metadata, so the mismatch must be caught by ``_write_case_nifti``.
+        # Use two files so the resolver sees the full channel list first.
+        full_images = {
+            "T1": np.zeros((4, 6, 8), dtype=np.float32),
+            "T2": np.zeros((4, 6, 8), dtype=np.float32),
+        }
+        MEDH5File.write(
+            images_tr / "case0.medh5",
+            images=full_images,
+            seg={"tumor": np.zeros((4, 6, 8), dtype=bool)},
+            spacing=[1.0, 1.0, 1.0],
+            origin=[0.0, 0.0, 0.0],
+            direction=[[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+            extra={"nnunetv2": nnunet_meta},
+        )
+        MEDH5File.write(
+            images_tr / "case1.medh5",
+            images=images,
+            seg={"tumor": np.zeros((4, 6, 8), dtype=bool)},
+            spacing=[1.0, 1.0, 1.0],
+            origin=[0.0, 0.0, 0.0],
+            direction=[[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+            extra={"nnunetv2": nnunet_meta},
+        )
+        with pytest.raises(MEDH5ValidationError, match="channels do not match"):
+            to_nnunetv2(tmp_path, tmp_path / "out")

@@ -227,13 +227,26 @@ def _find_label_file(labels_dir: Path, case_id: str, file_ending: str) -> Path:
 def _split_label_volume(
     label_arr: np.ndarray,
     labels: dict[str, int],
+    *,
+    case_id: str,
 ) -> dict[str, np.ndarray]:
     """Split an integer label volume into per-class boolean masks.
 
     Drops background (value 0) and returns one mask per foreground class.
+    Raises ``MEDH5ValidationError`` if the volume contains any value not
+    declared in ``labels`` — otherwise the round-trip would silently drop
+    those voxels.
     """
-    seg: dict[str, np.ndarray] = {}
     int_arr = np.asarray(label_arr)
+    declared = set(labels.values())
+    actual = {int(v) for v in np.unique(int_arr)}
+    unexpected = sorted(actual - declared)
+    if unexpected:
+        raise MEDH5ValidationError(
+            f"Case '{case_id}': label volume contains undeclared values "
+            f"{unexpected}; dataset.json declares {sorted(declared)}"
+        )
+    seg: dict[str, np.ndarray] = {}
     for class_name, class_value in labels.items():
         if class_value == 0:
             continue
@@ -295,7 +308,7 @@ def _convert_case(
             raise MEDH5ValidationError(
                 f"Case '{case_id}': label affine does not match images"
             )
-        seg_arrays = _split_label_volume(label_data, labels)
+        seg_arrays = _split_label_volume(label_data, labels, case_id=case_id)
 
     spacing, origin, direction = _decompose_affine(ref_affine)
     ndim = len(ref_shape)
@@ -528,6 +541,17 @@ def _write_case_nifti(
     labels_out: Path | None,
     file_ending: str,
 ) -> None:
+    expected_channels = set(channel_order.values())
+    actual_channels = set(sample.images.keys())
+    missing_channels = sorted(expected_channels - actual_channels)
+    extra_channels = sorted(actual_channels - expected_channels)
+    if missing_channels or extra_channels:
+        raise MEDH5ValidationError(
+            f"Case '{case_id}': image channels do not match the dataset "
+            f"channel set {sorted(expected_channels)} — "
+            f"missing={missing_channels}, extra={extra_channels}"
+        )
+
     shape = tuple(next(iter(sample.images.values())).shape)
     spatial = sample.meta.spatial
     affine = _compose_affine(
@@ -540,6 +564,16 @@ def _write_case_nifti(
         nib.save(nib.Nifti1Image(arr, affine), str(out_path))
 
     if labels_out is not None:
+        if sample.seg is not None:
+            declared_seg_names = {name for name, value in labels.items() if value != 0}
+            unexpected_seg = sorted(set(sample.seg.keys()) - declared_seg_names)
+            if unexpected_seg:
+                raise MEDH5ValidationError(
+                    f"Case '{case_id}': seg masks {unexpected_seg} are not "
+                    f"declared in the nnU-Net label map "
+                    f"{sorted(declared_seg_names)}. Update "
+                    f"extra['nnunetv2']['labels'] or drop the masks before export."
+                )
         label_arr = _merge_seg_to_label(sample.seg, labels, shape)
         out_path = labels_out / f"{case_id}{file_ending}"
         nib.save(nib.Nifti1Image(label_arr, affine), str(out_path))
