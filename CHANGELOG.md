@@ -4,6 +4,46 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Added
+
+- **nnU-Net v2 dataset converters** (`medh5.io.nnunetv2`): `from_nnunetv2()`
+  converts a raw nnU-Net v2 dataset folder (`imagesTr/`, `labelsTr/`,
+  optional `imagesTs/`, `dataset.json`) into a directory of per-case
+  `.medh5` files, bundling every channel and splitting the integer label
+  volume into one boolean mask per foreground class declared in
+  `dataset.json`. `to_nnunetv2()` is the reverse: it emits a raw nnU-Net
+  v2 layout from a directory of `.medh5` files. The parsed `dataset.json`
+  payload is stashed in each file's `extra["nnunetv2"]` so export is
+  lossless — channel order, label integer values, and optional fields
+  (`overwrite_image_reader_writer`, `regions_class_order`, `name`) all
+  round-trip. Region-based (list-valued) labels are rejected with a clear
+  error. Requires the `nifti` extra. Lazy-imported from `medh5.io`.
+- **CLI**: `medh5 import nnunetv2 <src> -o <dst>` and
+  `medh5 export nnunetv2 <src> -o <dst>` subcommands with
+  `--no-test`, `--compression`, `--checksum`, `--dataset-name`, and
+  `--file-ending` flags.
+- **Tests**: added `TestFromNnunetv2` and `TestToNnunetv2` in
+  `tests/test_io.py` plus a CLI round-trip test in `tests/test_cli.py`,
+  covering the happy path, test-split handling, and silent-data-loss
+  guards (undeclared label values on import; seg-mask and channel-set
+  mismatches on export).
+
+### Fixed
+
+- nnU-Net v2 import no longer silently drops voxels whose integer label
+  is not declared in `dataset.json` — `_split_label_volume` now raises
+  `MEDH5ValidationError` listing the offending values.
+- nnU-Net v2 export no longer silently drops seg masks whose names are
+  not declared in the nnU-Net label map when merging back to an integer
+  label volume; it now raises `MEDH5ValidationError` and asks the caller
+  to update `extra["nnunetv2"]["labels"]` or remove the extra mask.
+- nnU-Net v2 export no longer silently omits per-file image channels
+  that disagree with the dataset-wide channel set resolved from the
+  first file's metadata; channel mismatches now raise
+  `MEDH5ValidationError` with a clear missing/extra report.
+
 ## [0.5.0]
 
 First PyPI release. Bundles the 0.4.0 work (never released) with a
