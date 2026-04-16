@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -535,3 +537,383 @@ class TestFromDicom:
         empty.mkdir()
         with pytest.raises(MEDH5ValidationError, match="No DICOM"):
             from_dicom(empty, tmp_path / "x.medh5")
+
+
+# ---------------------------------------------------------------------------
+# nnU-Net v2 ⇄ medh5
+# ---------------------------------------------------------------------------
+
+
+def _build_nnunetv2_dataset(
+    root,
+    *,
+    cases=("c001", "c002"),
+    channel_names=(("0", "T1"), ("1", "T2")),
+    labels=(("background", 0), ("tumor", 1), ("edema", 2)),
+    include_test=False,
+    test_cases=("t001",),
+    extra_json=None,
+):
+    """Create a synthetic nnU-Net v2 dataset on disk and return (root, arrays).
+
+    ``arrays`` is a dict mapping ``{case_id: {"channel_{idx}": arr, "label": arr}}``
+    so tests can verify byte-identical round-trips.
+    """
+    import json as _json
+
+    root = Path(root)
+    (root / "imagesTr").mkdir(parents=True, exist_ok=True)
+    (root / "labelsTr").mkdir(parents=True, exist_ok=True)
+    aff = _make_affine([1.5, 1.0, 1.0], [4.0, -3.0, 2.0])
+    arrays: dict = {}
+    rng = np.random.default_rng(42)
+    n_channels = len(channel_names)
+
+    for cid in cases:
+        arrays[cid] = {}
+        for idx_str, _name in channel_names:
+            arr = rng.standard_normal((6, 8, 10)).astype(np.float32)
+            arrays[cid][f"channel_{idx_str}"] = arr
+            img_path = root / "imagesTr" / f"{cid}_{int(idx_str):04d}.nii.gz"
+            _write_nifti(img_path, arr, aff)
+        lab = np.zeros((6, 8, 10), dtype=np.uint8)
+        lab[1:3, 1:4, 1:5] = 1
+        lab[3:5, 4:7, 5:9] = 2
+        arrays[cid]["label"] = lab
+        _write_nifti(root / "labelsTr" / f"{cid}.nii.gz", lab, aff)
+
+    if include_test:
+        (root / "imagesTs").mkdir(parents=True, exist_ok=True)
+        for cid in test_cases:
+            arrays[cid] = {}
+            for idx_str, _name in channel_names:
+                arr = rng.standard_normal((6, 8, 10)).astype(np.float32)
+                arrays[cid][f"channel_{idx_str}"] = arr
+                _write_nifti(
+                    root / "imagesTs" / f"{cid}_{int(idx_str):04d}.nii.gz", arr, aff
+                )
+
+    payload = {
+        "channel_names": dict(channel_names),
+        "labels": dict(labels),
+        "numTraining": len(cases),
+        "file_ending": ".nii.gz",
+        "name": root.name,
+    }
+    if extra_json is not None:
+        payload.update(extra_json)
+    (root / "dataset.json").write_text(_json.dumps(payload))
+
+    # Return the expected number of channels as a convenience.
+    return root, arrays, n_channels
+
+
+class TestFromNnunetv2:
+    def test_minimal_dataset_import(self, tmp_path):
+        from medh5.io import from_nnunetv2
+
+        src = tmp_path / "Dataset001_Foo"
+        _build_nnunetv2_dataset(src)
+
+        out = tmp_path / "converted"
+        written = from_nnunetv2(src, out)
+
+        assert len(written["train"]) == 2
+        assert len(written["test"]) == 0
+        assert (out / "imagesTr" / "c001.medh5").is_file()
+        assert (out / "imagesTr" / "c002.medh5").is_file()
+
+        sample = MEDH5File.read(out / "imagesTr" / "c001.medh5")
+        assert set(sample.images.keys()) == {"T1", "T2"}
+        assert sample.seg is not None
+        assert set(sample.seg.keys()) == {"tumor", "edema"}
+        assert sample.seg["tumor"].dtype == bool
+        assert sample.seg["edema"].any()
+        # background is not stored as a seg entry
+        assert "background" not in sample.seg
+        assert sample.meta.spatial.coord_system == "RAS"
+        np.testing.assert_allclose(sample.meta.spatial.spacing, [1.5, 1.0, 1.0])
+        # extra["nnunetv2"] round-trips
+        assert sample.meta.extra is not None
+        nnu = sample.meta.extra["nnunetv2"]
+        assert nnu["channel_names"] == {"0": "T1", "1": "T2"}
+        assert nnu["labels"] == {"background": 0, "tumor": 1, "edema": 2}
+        assert nnu["file_ending"] == ".nii.gz"
+
+    def test_include_test_flag(self, tmp_path):
+        from medh5.io import from_nnunetv2
+
+        src = tmp_path / "Dataset002_Bar"
+        _build_nnunetv2_dataset(src, include_test=True)
+
+        out = tmp_path / "converted"
+        written = from_nnunetv2(src, out)
+        assert len(written["test"]) == 1
+        test_sample = MEDH5File.read(out / "imagesTs" / "t001.medh5")
+        assert test_sample.seg is None
+
+        # Now skip the test split.
+        out_no_test = tmp_path / "converted_no_test"
+        written_no_test = from_nnunetv2(src, out_no_test, include_test=False)
+        assert len(written_no_test["test"]) == 0
+        assert not (out_no_test / "imagesTs").exists()
+
+    def test_region_labels_rejected(self, tmp_path):
+        from medh5.io import from_nnunetv2
+
+        src = tmp_path / "Dataset003_Region"
+        _build_nnunetv2_dataset(
+            src,
+            labels=(("background", 0), ("whole_tumor", 1)),
+            extra_json={
+                "labels": {"background": 0, "whole_tumor": [1, 2]},
+                "regions_class_order": [1, 2],
+            },
+        )
+        with pytest.raises(MEDH5ValidationError, match="[Rr]egion"):
+            from_nnunetv2(src, tmp_path / "out")
+
+    def test_missing_dataset_json_raises(self, tmp_path):
+        from medh5.io import from_nnunetv2
+
+        src = tmp_path / "empty"
+        src.mkdir()
+        with pytest.raises(MEDH5ValidationError, match="dataset.json"):
+            from_nnunetv2(src, tmp_path / "out")
+
+    def test_missing_channel_raises(self, tmp_path):
+        from medh5.io import from_nnunetv2
+
+        src = tmp_path / "Dataset004_Missing"
+        _build_nnunetv2_dataset(src)
+        # Remove one channel file for case c001.
+        (src / "imagesTr" / "c001_0001.nii.gz").unlink()
+        with pytest.raises(MEDH5ValidationError, match="missing"):
+            from_nnunetv2(src, tmp_path / "out")
+
+    def test_label_grid_mismatch_raises(self, tmp_path):
+        from medh5.io import from_nnunetv2
+
+        src = tmp_path / "Dataset005_Bad"
+        _build_nnunetv2_dataset(src)
+        # Overwrite the label with a wrong-shaped volume.
+        bad = np.zeros((4, 4, 4), dtype=np.uint8)
+        _write_nifti(src / "labelsTr" / "c001.nii.gz", bad, np.eye(4))
+        with pytest.raises(MEDH5ValidationError, match="label"):
+            from_nnunetv2(src, tmp_path / "out")
+
+    def test_bad_labels_mapping_raises(self, tmp_path):
+        from medh5.io import from_nnunetv2
+
+        src = tmp_path / "Dataset006_BadLabels"
+        _build_nnunetv2_dataset(
+            src,
+            extra_json={"labels": {"background": 0, "tumor": 1, "edema": 3}},
+        )
+        with pytest.raises(MEDH5ValidationError, match="consecutive"):
+            from_nnunetv2(src, tmp_path / "out")
+
+    def test_undeclared_label_value_rejected(self, tmp_path):
+        from medh5.io import from_nnunetv2
+
+        src = tmp_path / "Dataset007_StrayVal"
+        _build_nnunetv2_dataset(src)
+        # Paint a voxel with a class value not declared in dataset.json.
+        aff = _make_affine([1.5, 1.0, 1.0], [4.0, -3.0, 2.0])
+        stray = np.zeros((6, 8, 10), dtype=np.uint8)
+        stray[0, 0, 0] = 7  # not in {0, 1, 2}
+        _write_nifti(src / "labelsTr" / "c001.nii.gz", stray, aff)
+        with pytest.raises(MEDH5ValidationError, match="undeclared values"):
+            from_nnunetv2(src, tmp_path / "out")
+
+    def test_non_integer_label_voxels_rejected(self, tmp_path):
+        from medh5.io import from_nnunetv2
+
+        src = tmp_path / "Dataset008_FloatLabel"
+        _build_nnunetv2_dataset(src)
+        # Overwrite label with a float volume containing non-integer values.
+        # Value 1.9 would truncate to 1 in the old int() check but miss the
+        # equality mask, silently dropping those voxels.
+        aff = _make_affine([1.5, 1.0, 1.0], [4.0, -3.0, 2.0])
+        bad_lab = np.zeros((6, 8, 10), dtype=np.float32)
+        bad_lab[0, 0, 0] = 1.9
+        _write_nifti(src / "labelsTr" / "c001.nii.gz", bad_lab, aff)
+        with pytest.raises(MEDH5ValidationError, match="non-integer"):
+            from_nnunetv2(src, tmp_path / "out")
+
+    def test_integer_valued_float_label_accepted(self, tmp_path):
+        from medh5.io import from_nnunetv2
+
+        src = tmp_path / "Dataset009_FloatOk"
+        _build_nnunetv2_dataset(src)
+        # Float dtype but all values are integer-valued (0.0, 1.0, 2.0)
+        # — should be accepted without error.
+        aff = _make_affine([1.5, 1.0, 1.0], [4.0, -3.0, 2.0])
+        lab = np.zeros((6, 8, 10), dtype=np.float64)
+        lab[1:3, 1:4, 1:5] = 1.0
+        lab[3:5, 4:7, 5:9] = 2.0
+        _write_nifti(src / "labelsTr" / "c001.nii.gz", lab, aff)
+        out = tmp_path / "out"
+        written = from_nnunetv2(src, out)
+        assert len(written["train"]) == 2
+        sample = MEDH5File.read(out / "imagesTr" / "c001.medh5")
+        assert sample.seg is not None
+        assert sample.seg["tumor"][2, 2, 2]  # in the lab[1:3,...]=1.0 region
+
+
+class TestToNnunetv2:
+    def test_roundtrip_preserves_images_and_labels(self, tmp_path):
+        from medh5.io import from_nnunetv2, to_nnunetv2
+
+        src = tmp_path / "Dataset010_Round"
+        _build_nnunetv2_dataset(src, include_test=True)
+
+        medh5_dir = tmp_path / "medh5_dir"
+        from_nnunetv2(src, medh5_dir, include_test=True)
+
+        out = tmp_path / "Dataset010_Roundtrip"
+        dataset_json_path = to_nnunetv2(medh5_dir, out)
+        assert dataset_json_path.is_file()
+
+        # Training images + labels survive byte-identical.
+        for cid in ("c001", "c002"):
+            for idx in (0, 1):
+                orig = nib.load(str(src / "imagesTr" / f"{cid}_{idx:04d}.nii.gz"))
+                back = nib.load(str(out / "imagesTr" / f"{cid}_{idx:04d}.nii.gz"))
+                np.testing.assert_array_equal(
+                    np.asarray(back.dataobj), np.asarray(orig.dataobj)
+                )
+                np.testing.assert_allclose(back.affine, orig.affine, atol=1e-6)
+            orig_lab = nib.load(str(src / "labelsTr" / f"{cid}.nii.gz"))
+            back_lab = nib.load(str(out / "labelsTr" / f"{cid}.nii.gz"))
+            np.testing.assert_array_equal(
+                np.asarray(back_lab.dataobj), np.asarray(orig_lab.dataobj)
+            )
+
+        # Test images survive.
+        for idx in (0, 1):
+            orig = nib.load(str(src / "imagesTs" / f"t001_{idx:04d}.nii.gz"))
+            back = nib.load(str(out / "imagesTs" / f"t001_{idx:04d}.nii.gz"))
+            np.testing.assert_array_equal(
+                np.asarray(back.dataobj), np.asarray(orig.dataobj)
+            )
+
+        # dataset.json re-parses with equivalent core fields.
+        import json as _json
+
+        orig_json = _json.loads((src / "dataset.json").read_text())
+        back_json = _json.loads(dataset_json_path.read_text())
+        assert back_json["channel_names"] == orig_json["channel_names"]
+        assert back_json["labels"] == orig_json["labels"]
+        assert back_json["numTraining"] == orig_json["numTraining"]
+        assert back_json["file_ending"] == orig_json["file_ending"]
+
+    def test_export_flat_medh5_without_nnunet_meta(self, tmp_path):
+        from medh5.io import to_nnunetv2
+
+        # Write a single .medh5 file with no nnunetv2 metadata.
+        images = {"CT": np.zeros((4, 6, 8), dtype=np.float32)}
+        seg_mask = np.zeros((4, 6, 8), dtype=bool)
+        seg_mask[1:3, 2:4, 3:6] = True
+        seg = {"tumor": seg_mask}
+        MEDH5File.write(
+            tmp_path / "case1.medh5",
+            images=images,
+            seg=seg,
+            spacing=[1.0, 1.0, 1.0],
+            origin=[0.0, 0.0, 0.0],
+            direction=[[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+        )
+
+        out = tmp_path / "DatasetFlat"
+        dataset_json_path = to_nnunetv2(tmp_path, out)
+        assert dataset_json_path.is_file()
+        assert (out / "imagesTr" / "case1_0000.nii.gz").is_file()
+        assert (out / "labelsTr" / "case1.nii.gz").is_file()
+
+        import json as _json
+
+        payload = _json.loads(dataset_json_path.read_text())
+        assert payload["channel_names"] == {"0": "CT"}
+        assert payload["labels"] == {"background": 0, "tumor": 1}
+        assert payload["numTraining"] == 1
+
+    def test_export_empty_src_raises(self, tmp_path):
+        from medh5.io import to_nnunetv2
+
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        with pytest.raises(MEDH5ValidationError, match="No training"):
+            to_nnunetv2(empty, tmp_path / "out")
+
+    def test_extra_seg_mask_rejected_on_export(self, tmp_path):
+        from medh5.io import to_nnunetv2
+
+        # Write a .medh5 file carrying nnU-Net metadata plus a seg mask whose
+        # name is not declared in ``labels``. Export must refuse rather than
+        # silently drop the stray mask.
+        images_tr = tmp_path / "imagesTr"
+        images_tr.mkdir()
+        images = {"T1": np.zeros((4, 6, 8), dtype=np.float32)}
+        tumor = np.zeros((4, 6, 8), dtype=bool)
+        tumor[1, 1, 1] = True
+        rogue = np.zeros((4, 6, 8), dtype=bool)
+        rogue[2, 2, 2] = True
+        nnunet_meta = {
+            "channel_names": {"0": "T1"},
+            "labels": {"background": 0, "tumor": 1},
+            "numTraining": 1,
+            "file_ending": ".nii.gz",
+        }
+        MEDH5File.write(
+            images_tr / "case1.medh5",
+            images=images,
+            seg={"tumor": tumor, "rogue": rogue},
+            spacing=[1.0, 1.0, 1.0],
+            origin=[0.0, 0.0, 0.0],
+            direction=[[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+            extra={"nnunetv2": nnunet_meta},
+        )
+        with pytest.raises(MEDH5ValidationError, match="not declared"):
+            to_nnunetv2(tmp_path, tmp_path / "out")
+
+    def test_channel_set_mismatch_rejected_on_export(self, tmp_path):
+        from medh5.io import to_nnunetv2
+
+        # .medh5 declares two channels in nnU-Net metadata but only stores one.
+        images_tr = tmp_path / "imagesTr"
+        images_tr.mkdir()
+        images = {"T1": np.zeros((4, 6, 8), dtype=np.float32)}
+        nnunet_meta = {
+            "channel_names": {"0": "T1", "1": "T2"},
+            "labels": {"background": 0, "tumor": 1},
+            "numTraining": 1,
+            "file_ending": ".nii.gz",
+        }
+        # ``to_nnunetv2`` resolves channel order from the first file's
+        # metadata, so the mismatch must be caught by ``_write_case_nifti``.
+        # Use two files so the resolver sees the full channel list first.
+        full_images = {
+            "T1": np.zeros((4, 6, 8), dtype=np.float32),
+            "T2": np.zeros((4, 6, 8), dtype=np.float32),
+        }
+        MEDH5File.write(
+            images_tr / "case0.medh5",
+            images=full_images,
+            seg={"tumor": np.zeros((4, 6, 8), dtype=bool)},
+            spacing=[1.0, 1.0, 1.0],
+            origin=[0.0, 0.0, 0.0],
+            direction=[[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+            extra={"nnunetv2": nnunet_meta},
+        )
+        MEDH5File.write(
+            images_tr / "case1.medh5",
+            images=images,
+            seg={"tumor": np.zeros((4, 6, 8), dtype=bool)},
+            spacing=[1.0, 1.0, 1.0],
+            origin=[0.0, 0.0, 0.0],
+            direction=[[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+            extra={"nnunetv2": nnunet_meta},
+        )
+        with pytest.raises(MEDH5ValidationError, match="channels do not match"):
+            to_nnunetv2(tmp_path, tmp_path / "out")

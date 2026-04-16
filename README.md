@@ -302,6 +302,44 @@ from_dicom(
 )
 ```
 
+### nnU-Net v2 dataset conversion
+
+Convert a raw [nnU-Net v2](https://github.com/MIC-DKFZ/nnUNet) dataset folder
+(`imagesTr/`, `labelsTr/`, optional `imagesTs/`, `dataset.json`) into a
+directory of per-case `.medh5` files and back. Each case becomes one
+`.medh5` bundling every channel plus one boolean mask per foreground class
+declared in `dataset.json`. The parsed `dataset.json` payload is stashed in
+`extra["nnunetv2"]` so export reconstructs the exact source layout —
+including channel order and integer label values. Requires `medh5[nifti]`.
+
+```python
+from medh5.io import from_nnunetv2, to_nnunetv2
+
+# Raw nnU-Net v2 → directory of .medh5 files
+from_nnunetv2(
+    "Dataset042_BraTS/",
+    "medh5_out/",
+    include_test=True,     # also convert imagesTs/ (seg=None)
+    compression="balanced",
+    checksum=True,
+)
+# Writes medh5_out/imagesTr/{case}.medh5 (+ medh5_out/imagesTs/{case}.medh5)
+
+# Directory of .medh5 files → raw nnU-Net v2 layout
+to_nnunetv2("medh5_out/", "Dataset042_BraTS_roundtrip/")
+```
+
+The converters reject silent-data-loss conditions up front:
+
+- **Import**: label volumes containing integer values that aren't declared
+  in `dataset.json`'s `labels` map raise `MEDH5ValidationError` instead of
+  silently dropping those voxels.
+- **Export**: `.medh5` files whose seg-mask names or image channels do not
+  match the nnU-Net metadata stored in `extra["nnunetv2"]` are rejected
+  rather than silently omitted from the emitted dataset.
+- Region-based labels (list-valued `labels`) are rejected with a clear
+  error — convert to integer labels first.
+
 ### Dataset operations
 
 Build a manifest, filter, and split:
@@ -371,14 +409,18 @@ medh5 index data/ -o manifest.json
 medh5 split manifest.json --ratios 0.7,0.15,0.15 --stratify label -o splits/
 medh5 stats data/ -o stats.json --json
 
-# NIfTI / DICOM conversion
+# NIfTI / DICOM / nnU-Net v2 conversion
 medh5 import nifti --image CT ct.nii.gz -o sample.medh5
 medh5 import nifti --image CT ct.nii.gz --image PET pet.nii.gz \
       --resample-to CT --interpolator linear -o sample.medh5
 medh5 import dicom /path/to/series -o sample.medh5
 medh5 import dicom /path/to/series -o sample.medh5 \
       --series-uid 1.2.3.4.5 --no-modality-lut
+medh5 import nnunetv2 Dataset042_BraTS/ -o medh5_out/
+medh5 import nnunetv2 Dataset042_BraTS/ -o medh5_out/ \
+      --no-test --compression max --checksum
 medh5 export nifti sample.medh5 -o export/
+medh5 export nnunetv2 medh5_out/ -o Dataset042_BraTS_roundtrip/
 
 # Review workflow
 medh5 review set sample.medh5 --status reviewed --annotator puyang

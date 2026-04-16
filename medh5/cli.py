@@ -12,7 +12,9 @@ Subcommands:
 - ``stats``          — compute dataset-level statistics
 - ``import nifti``   — convert NIfTI volumes → ``.medh5``
 - ``import dicom``   — convert a DICOM series directory → ``.medh5``
+- ``import nnunetv2`` — convert a raw nnU-Net v2 dataset folder → ``.medh5`` files
 - ``export nifti``   — export ``.medh5`` images/masks → NIfTI
+- ``export nnunetv2`` — export ``.medh5`` files → raw nnU-Net v2 dataset folder
 - ``review set``     — record a review/QA status entry
 - ``review get``     — print the current review status
 - ``review list``    — list files in a directory matching a status filter
@@ -442,6 +444,36 @@ def _cmd_export_nifti(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_import_nnunetv2(args: argparse.Namespace) -> int:
+    from medh5.io import from_nnunetv2
+
+    written = from_nnunetv2(
+        Path(args.src),
+        Path(args.output),
+        include_test=not args.no_test,
+        compression=args.compression,
+        checksum=args.checksum,
+    )
+    print(
+        f"Wrote {len(written['train'])} train + {len(written['test'])} test "
+        f"files to {args.output}"
+    )
+    return 0
+
+
+def _cmd_export_nnunetv2(args: argparse.Namespace) -> int:
+    from medh5.io import to_nnunetv2
+
+    dataset_json = to_nnunetv2(
+        Path(args.src),
+        Path(args.output),
+        dataset_name=args.dataset_name,
+        file_ending=args.file_ending,
+    )
+    print(f"Wrote nnU-Net v2 dataset → {dataset_json.parent}")
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # review subcommands
 # ---------------------------------------------------------------------------
@@ -632,6 +664,23 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     pd.add_argument("--checksum", action="store_true")
 
+    pnu = isub.add_parser("nnunetv2", help="Import a raw nnU-Net v2 dataset folder")
+    pnu.add_argument(
+        "src", help="Path to Dataset###_NAME/ folder containing dataset.json"
+    )
+    pnu.add_argument(
+        "-o", "--output", required=True, help="Output directory for .medh5 files"
+    )
+    pnu.add_argument(
+        "--no-test",
+        action="store_true",
+        help="Skip imagesTs/ (test cases)",
+    )
+    pnu.add_argument(
+        "--compression", default="balanced", choices=["fast", "balanced", "max"]
+    )
+    pnu.add_argument("--checksum", action="store_true")
+
     # export (subgroup)
     p = sub.add_parser("export", help="Export .medh5 to external formats")
     esub = p.add_subparsers(dest="export_command")
@@ -640,6 +689,23 @@ def _build_parser() -> argparse.ArgumentParser:
     pe.add_argument("-o", "--output", required=True, help="Output directory")
     pe.add_argument("--modalities", nargs="*", default=None)
     pe.add_argument("--seg", nargs="*", default=None)
+
+    pen = esub.add_parser(
+        "nnunetv2", help="Export .medh5 files as a raw nnU-Net v2 dataset"
+    )
+    pen.add_argument(
+        "src",
+        help="Directory of .medh5 files (with optional imagesTr/ and imagesTs/)",
+    )
+    pen.add_argument(
+        "-o", "--output", required=True, help="Output DatasetXXX_NAME/ folder"
+    )
+    pen.add_argument(
+        "--dataset-name",
+        default=None,
+        help="Overrides 'name' field in dataset.json",
+    )
+    pen.add_argument("--file-ending", default=".nii.gz")
 
     # review (subgroup)
     p = sub.add_parser("review", help="Review/QA workflow helpers")
@@ -687,10 +753,12 @@ _TOP_HANDLERS: dict[str, _Handler] = {
 _IMPORT_HANDLERS: dict[str, _Handler] = {
     "nifti": _cmd_import_nifti,
     "dicom": _cmd_import_dicom,
+    "nnunetv2": _cmd_import_nnunetv2,
 }
 
 _EXPORT_HANDLERS: dict[str, _Handler] = {
     "nifti": _cmd_export_nifti,
+    "nnunetv2": _cmd_export_nnunetv2,
 }
 
 _REVIEW_HANDLERS: dict[str, _Handler] = {
