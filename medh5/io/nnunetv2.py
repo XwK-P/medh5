@@ -233,13 +233,24 @@ def _split_label_volume(
     """Split an integer label volume into per-class boolean masks.
 
     Drops background (value 0) and returns one mask per foreground class.
-    Raises ``MEDH5ValidationError`` if the volume contains any value not
-    declared in ``labels`` — otherwise the round-trip would silently drop
-    those voxels.
+    Raises ``MEDH5ValidationError`` if the volume contains non-integer
+    voxel values or any value not declared in ``labels`` — otherwise
+    the round-trip would silently drop those voxels.
     """
-    int_arr = np.asarray(label_arr)
+    raw = np.asarray(label_arr)
+    # Reject non-integer voxels: a float label like 1.9 would pass the
+    # undeclared-value check (int(1.9) == 1) yet fail the equality mask
+    # (1.9 != 1), silently dropping those voxels.
+    if not np.issubdtype(raw.dtype, np.integer):
+        rounded = np.round(raw)
+        if not np.array_equal(raw, rounded):
+            raise MEDH5ValidationError(
+                f"Case '{case_id}': label volume has dtype {raw.dtype} and "
+                f"contains non-integer values; expected an integer mask"
+            )
+        raw = rounded.astype(np.intp)
     declared = set(labels.values())
-    actual = {int(v) for v in np.unique(int_arr)}
+    actual = {int(v) for v in np.unique(raw)}
     unexpected = sorted(actual - declared)
     if unexpected:
         raise MEDH5ValidationError(
@@ -250,7 +261,7 @@ def _split_label_volume(
     for class_name, class_value in labels.items():
         if class_value == 0:
             continue
-        seg[class_name] = int_arr == class_value
+        seg[class_name] = raw == class_value
     return seg
 
 

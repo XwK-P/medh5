@@ -726,6 +726,40 @@ class TestFromNnunetv2:
         with pytest.raises(MEDH5ValidationError, match="undeclared values"):
             from_nnunetv2(src, tmp_path / "out")
 
+    def test_non_integer_label_voxels_rejected(self, tmp_path):
+        from medh5.io import from_nnunetv2
+
+        src = tmp_path / "Dataset008_FloatLabel"
+        _build_nnunetv2_dataset(src)
+        # Overwrite label with a float volume containing non-integer values.
+        # Value 1.9 would truncate to 1 in the old int() check but miss the
+        # equality mask, silently dropping those voxels.
+        aff = _make_affine([1.5, 1.0, 1.0], [4.0, -3.0, 2.0])
+        bad_lab = np.zeros((6, 8, 10), dtype=np.float32)
+        bad_lab[0, 0, 0] = 1.9
+        _write_nifti(src / "labelsTr" / "c001.nii.gz", bad_lab, aff)
+        with pytest.raises(MEDH5ValidationError, match="non-integer"):
+            from_nnunetv2(src, tmp_path / "out")
+
+    def test_integer_valued_float_label_accepted(self, tmp_path):
+        from medh5.io import from_nnunetv2
+
+        src = tmp_path / "Dataset009_FloatOk"
+        _build_nnunetv2_dataset(src)
+        # Float dtype but all values are integer-valued (0.0, 1.0, 2.0)
+        # — should be accepted without error.
+        aff = _make_affine([1.5, 1.0, 1.0], [4.0, -3.0, 2.0])
+        lab = np.zeros((6, 8, 10), dtype=np.float64)
+        lab[1:3, 1:4, 1:5] = 1.0
+        lab[3:5, 4:7, 5:9] = 2.0
+        _write_nifti(src / "labelsTr" / "c001.nii.gz", lab, aff)
+        out = tmp_path / "out"
+        written = from_nnunetv2(src, out)
+        assert len(written["train"]) == 2
+        sample = MEDH5File.read(out / "imagesTr" / "c001.medh5")
+        assert sample.seg is not None
+        assert sample.seg["tumor"][2, 2, 2]  # in the lab[1:3,...]=1.0 region
+
 
 class TestToNnunetv2:
     def test_roundtrip_preserves_images_and_labels(self, tmp_path):
