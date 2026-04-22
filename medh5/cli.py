@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -138,7 +139,7 @@ def _build_info_payload(path: Path) -> dict[str, object]:
 def _cmd_validate(args: argparse.Namespace) -> int:
     """Validate a .medh5 file structure and schema."""
     path = Path(args.file)
-    report = MEDH5File.validate(path, strict=args.strict)
+    report = MEDH5File.validate(path)
     ok = report.ok(strict=args.strict)
     if args.json:
         print(json.dumps(report.to_dict(), indent=2))
@@ -254,8 +255,6 @@ def _cmd_recompress(args: argparse.Namespace) -> int:
                     suffix=".medh5", prefix=".tmp_recompress_", dir=str(path.parent)
                 )
                 # Close the OS-level fd; h5py will reopen the path itself.
-                import os
-
                 os.close(fd)
                 tmp_path = Path(tmp_str)
                 dest = path

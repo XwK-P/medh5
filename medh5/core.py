@@ -1108,8 +1108,13 @@ class MEDH5File:
             raise MEDH5FileError(f"Failed to update '{path}': {exc}") from exc
 
     @staticmethod
-    def validate(path: str | Path, *, strict: bool = False) -> ValidationReport:
-        """Validate a ``.medh5`` file and return a structured report."""
+    def validate(path: str | Path) -> ValidationReport:
+        """Validate a ``.medh5`` file and return a structured report.
+
+        The report includes warnings (e.g. missing checksum) that callers
+        can treat as errors via :meth:`ValidationReport.ok` with
+        ``strict=True``.
+        """
         path = Path(path)
         _validate_suffix(path)
         try:
