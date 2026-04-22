@@ -1126,10 +1126,14 @@ class MEDH5File:
         return report
 
     @staticmethod
-    def is_valid(path: str | Path) -> bool:
-        """Return ``True`` if *path* passes :meth:`validate`; never raises."""
+    def is_valid(path: str | Path, *, strict: bool = False) -> bool:
+        """Return ``True`` if *path* passes :meth:`validate`; never raises.
+
+        With ``strict=True`` warnings (e.g. missing checksum) also count
+        as failures.
+        """
         try:
-            return MEDH5File.validate(path).is_valid
+            return MEDH5File.validate(path).ok(strict=strict)
         except MEDH5ValidationError:
             return False
 
