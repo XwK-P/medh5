@@ -9,6 +9,7 @@ multi-TB datasets are not worth the cost.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict, dataclass, field
@@ -102,7 +103,13 @@ def _process_file(args: tuple[str, list[str] | None, int, str | None]) -> _FileP
     samples: dict[str, list[float]] = {}
     seg_cov: dict[str, float] = {}
 
-    rng = np.random.default_rng(abs(hash(path)) % (2**32))
+    # Deterministic per-path seed so subsamples (and thus percentile
+    # estimates) are reproducible across processes and runs. Python's
+    # built-in ``hash`` is randomized per interpreter by default.
+    path_seed = int.from_bytes(
+        hashlib.blake2b(path.encode("utf-8"), digest_size=8).digest(), "little"
+    )
+    rng = np.random.default_rng(path_seed)
 
     with MEDH5File(path) as f:
         meta = f.meta

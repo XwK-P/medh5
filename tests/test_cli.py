@@ -273,6 +273,30 @@ class TestImportExportCLI:
         assert back_arr[1, 1, 1] == 1
         assert back_arr[2, 2, 2] == 2
 
+    def test_import_dicom(self, tmp_path, capsys):
+        pytest.importorskip("pydicom")
+        from test_io import _make_dicom_series
+
+        dicom_dir = tmp_path / "series"
+        _make_dicom_series(dicom_dir, n_slices=3)
+        out_medh5 = tmp_path / "ct.medh5"
+        ret = main(
+            [
+                "import",
+                "dicom",
+                str(dicom_dir),
+                "-o",
+                str(out_medh5),
+                "--modality",
+                "CT",
+                "--checksum",
+            ]
+        )
+        assert ret == 0
+        sample = MEDH5File.read(out_medh5)
+        assert sample.images["CT"].shape[0] == 3
+        assert MEDH5File.verify(out_medh5)
+
     def test_import_nifti_with_resampling(self, tmp_path):
         pytest.importorskip("SimpleITK")
         nib = pytest.importorskip("nibabel")

@@ -326,6 +326,22 @@ class TestIsValid:
         bad.write_bytes(b"")
         assert MEDH5File.is_valid(bad) is False
 
+    def test_strict_treats_missing_checksum_as_invalid(self, tmp_path_medh5):
+        MEDH5File.write(
+            tmp_path_medh5,
+            images={"CT": np.zeros((4, 4, 4), dtype=np.float32)},
+        )
+        assert MEDH5File.is_valid(tmp_path_medh5) is True
+        assert MEDH5File.is_valid(tmp_path_medh5, strict=True) is False
+
+    def test_strict_passes_with_checksum(self, tmp_path_medh5):
+        MEDH5File.write(
+            tmp_path_medh5,
+            images={"CT": np.zeros((4, 4, 4), dtype=np.float32)},
+            checksum=True,
+        )
+        assert MEDH5File.is_valid(tmp_path_medh5, strict=True) is True
+
 
 class TestAtomicWrite:
     def test_interrupted_write_leaves_no_file(self, tmp_path, monkeypatch):
