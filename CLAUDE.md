@@ -42,7 +42,7 @@ mypy medh5
 - **`stats.py`** — Streaming dataset statistics via Welford merge. Multi-process via `ProcessPoolExecutor`.
 - **`dataset/`** — `Dataset` (metadata-only manifest from `read_meta`, JSON persistence, staleness detection) and `make_splits` (stratified/grouped/k-fold splitting).
 - **`io/`** — NIfTI round-trip (`from_nifti`/`to_nifti`), `import_seg_nifti` for adding NIfTI masks to existing files, DICOM ingestion (`from_dicom`) with series selection, geometry validation, and modality LUT support, and nnU-Net v2 dataset round-trip (`from_nnunetv2`/`to_nnunetv2`) that bundles each case's channels + per-class seg masks into one `.medh5` file and stashes the parsed `dataset.json` in `extra["nnunetv2"]` for lossless export. Optional SimpleITK resampling for multi-resolution data. Lazy-imported via `__getattr__` so importing `medh5` doesn't require nibabel/pydicom.
-- **`cli.py`** — 17 subcommands built on argparse. All handlers are module-level functions (`_cmd_*`). Several commands support `--json` for machine-readable output.
+- **`cli/`** — Argparse-based CLI split across submodules by command group: `cli/inspect.py` (info/validate/validate-all/audit/recompress), `cli/dataset.py` (index/split/stats), `cli/convert.py` (import/export subgroups for NIfTI/DICOM/nnU-Net v2), `cli/review.py` (review subgroup). Each submodule exposes `register(sub)` and `dispatch(cmd, args) -> int | None`; `cli/__init__.py::main` composes them. Several commands support `--json` for machine-readable output.
 
 ### Compression pipeline
 
