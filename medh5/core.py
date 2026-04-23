@@ -21,10 +21,14 @@ import numpy as np
 from medh5.chunks import optimize_chunks
 from medh5.exceptions import MEDH5FileError, MEDH5ValidationError
 from medh5.integrity import _CHECKSUM_ATTR, verify_checksum, write_checksum
-from medh5.meta import SampleMeta, SpatialMeta, read_meta, write_meta
+from medh5.meta import (
+    SampleMeta,
+    SpatialMeta,
+    _validate_suffix,
+    read_meta,
+    write_meta,
+)
 from medh5.review import get_review_status, set_review_status
-
-_SUFFIX = ".medh5"
 
 
 class _UnsetType:
@@ -50,13 +54,6 @@ _COMPRESSION_PRESETS: dict[str, tuple[str, int]] = {
 }
 
 _BBOX_COMPRESS_THRESHOLD = 64
-
-
-def _validate_suffix(path: Path) -> None:
-    if path.suffix != _SUFFIX:
-        raise MEDH5ValidationError(
-            f"File must have '{_SUFFIX}' extension, got '{path.suffix}'"
-        )
 
 
 def _validate_write_inputs(

@@ -16,11 +16,9 @@ import h5py
 
 from medh5.exceptions import MEDH5FileError, MEDH5ValidationError
 from medh5.integrity import _CHECKSUM_ATTR, write_checksum
-from medh5.meta import read_meta
+from medh5.meta import _validate_suffix, read_meta
 
 _REVIEW_STATUSES: tuple[str, ...] = ("pending", "reviewed", "flagged", "rejected")
-
-_SUFFIX = ".medh5"
 
 
 @dataclass
@@ -32,13 +30,6 @@ class ReviewStatus:
     timestamp: str | None = None
     notes: str | None = None
     history: list[dict[str, Any]] | None = None
-
-
-def _validate_suffix(path: Path) -> None:
-    if path.suffix != _SUFFIX:
-        raise MEDH5ValidationError(
-            f"File must have '{_SUFFIX}' extension, got '{path.suffix}'"
-        )
 
 
 def set_review_status(
