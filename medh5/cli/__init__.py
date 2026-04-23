@@ -18,20 +18,35 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections.abc import Callable
 
 from medh5.cli import convert, dataset, inspect, review
 from medh5.exceptions import MEDH5Error
 
 __all__ = ["main"]
 
-_MODULES = (inspect, dataset, convert, review)
+_Dispatch = Callable[[str, argparse.Namespace], "int | None"]
+_Register = Callable[["argparse._SubParsersAction[argparse.ArgumentParser]"], None]
+
+_REGISTER: tuple[_Register, ...] = (
+    inspect.register,
+    dataset.register,
+    convert.register,
+    review.register,
+)
+_DISPATCH: tuple[_Dispatch, ...] = (
+    inspect.dispatch,
+    dataset.dispatch,
+    convert.dispatch,
+    review.dispatch,
+)
 
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="medh5", description="medh5 file utility")
     sub = parser.add_subparsers(dest="command")
-    for module in _MODULES:
-        module.register(sub)
+    for register in _REGISTER:
+        register(sub)
     return parser
 
 
@@ -54,8 +69,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     try:
-        for module in _MODULES:
-            rc = module.dispatch(cmd, args)
+        for dispatch in _DISPATCH:
+            rc = dispatch(cmd, args)
             if rc is not None:
                 return rc
     except (ImportError, MEDH5Error, ValueError) as exc:
