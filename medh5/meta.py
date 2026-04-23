@@ -9,14 +9,25 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import h5py
 import numpy as np
 
-from medh5.exceptions import MEDH5SchemaError
+from medh5.exceptions import MEDH5SchemaError, MEDH5ValidationError
 
 SCHEMA_VERSION = "1"
+
+_SUFFIX = ".medh5"
+
+
+def _validate_suffix(path: Path) -> None:
+    if path.suffix != _SUFFIX:
+        raise MEDH5ValidationError(
+            f"File must have '{_SUFFIX}' extension, got '{path.suffix}'"
+        )
+
 
 _ROOT_META_ATTRS = (
     "schema_version",
