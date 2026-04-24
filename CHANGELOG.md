@@ -4,52 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
-
-### Added
-
-- **nnU-Net v2 dataset converters** (`medh5.io.nnunetv2`): `from_nnunetv2()`
-  converts a raw nnU-Net v2 dataset folder (`imagesTr/`, `labelsTr/`,
-  optional `imagesTs/`, `dataset.json`) into a directory of per-case
-  `.medh5` files, bundling every channel and splitting the integer label
-  volume into one boolean mask per foreground class declared in
-  `dataset.json`. `to_nnunetv2()` is the reverse: it emits a raw nnU-Net
-  v2 layout from a directory of `.medh5` files. The parsed `dataset.json`
-  payload is stashed in each file's `extra["nnunetv2"]` so export is
-  lossless — channel order, label integer values, and optional fields
-  (`overwrite_image_reader_writer`, `regions_class_order`, `name`) all
-  round-trip. Region-based (list-valued) labels are rejected with a clear
-  error. Requires the `nifti` extra. Lazy-imported from `medh5.io`.
-- **CLI**: `medh5 import nnunetv2 <src> -o <dst>` and
-  `medh5 export nnunetv2 <src> -o <dst>` subcommands with
-  `--no-test`, `--compression`, `--checksum`, `--dataset-name`, and
-  `--file-ending` flags.
-- **Tests**: added `TestFromNnunetv2` and `TestToNnunetv2` in
-  `tests/test_io.py` plus a CLI round-trip test in `tests/test_cli.py`,
-  covering the happy path, test-split handling, and silent-data-loss
-  guards (undeclared label values on import; seg-mask and channel-set
-  mismatches on export).
-
-### Fixed
-
-- nnU-Net v2 import no longer silently drops voxels whose integer label
-  is not declared in `dataset.json` — `_split_label_volume` now raises
-  `MEDH5ValidationError` listing the offending values.
-- nnU-Net v2 export no longer silently drops seg masks whose names are
-  not declared in the nnU-Net label map when merging back to an integer
-  label volume; it now raises `MEDH5ValidationError` and asks the caller
-  to update `extra["nnunetv2"]["labels"]` or remove the extra mask.
-- nnU-Net v2 export no longer silently omits per-file image channels
-  that disagree with the dataset-wide channel set resolved from the
-  first file's metadata; channel mismatches now raise
-  `MEDH5ValidationError` with a clear missing/extra report.
-
 ## [0.5.0]
 
 First PyPI release. Bundles the 0.4.0 work (never released) with a
 dedicated release-hardening pass covering data-safety, PyTorch
 multiprocessing, spatial-metadata validation, statistics numerics, CLI
-exit codes, and packaging.
+exit codes, packaging, and adds the nnU-Net v2 dataset converter and a
+post-review refactor round that split the CLI into a package and
+consolidated duplicated helpers.
 
 ### Added
 
@@ -110,12 +72,38 @@ exit codes, and packaging.
   2026) added to the repo root and bundled in both wheel and sdist.
 - **Tightened lower bounds**: `h5py >= 3.10`, `hdf5plugin >= 4.1`,
   `numpy >= 1.24`. No upper bounds.
-- **Tests**: expanded to 197 passing (91% coverage), including
+- **nnU-Net v2 dataset converters** (`medh5.io.nnunetv2`): `from_nnunetv2()`
+  converts a raw nnU-Net v2 dataset folder (`imagesTr/`, `labelsTr/`,
+  optional `imagesTs/`, `dataset.json`) into a directory of per-case
+  `.medh5` files, bundling every channel and splitting the integer label
+  volume into one boolean mask per foreground class declared in
+  `dataset.json`. `to_nnunetv2()` is the reverse: it emits a raw nnU-Net
+  v2 layout from a directory of `.medh5` files. The parsed `dataset.json`
+  payload is stashed in each file's `extra["nnunetv2"]` so export is
+  lossless — channel order, label integer values, and optional fields
+  (`overwrite_image_reader_writer`, `regions_class_order`, `name`) all
+  round-trip. Region-based (list-valued) labels are rejected with a clear
+  error. Requires the `nifti` extra. Lazy-imported from `medh5.io`.
+- **CLI nnU-Net v2 subcommands**: `medh5 import nnunetv2 <src> -o <dst>`
+  and `medh5 export nnunetv2 <src> -o <dst>` with `--no-test`,
+  `--compression`, `--checksum`, `--dataset-name`, and `--file-ending`
+  flags.
+- **`MEDH5File.is_valid(strict=...)`**: `is_valid()` now forwards a
+  `strict` kwarg to `ValidationReport.ok()`, so callers that want the
+  one-call "did this file pass cleanly, warnings included?" check can
+  get it without building a report object themselves.
+- **Deterministic `stats.compute_stats` sampling**: per-file percentile
+  sample seeds now derive from a stable BLAKE2b digest of the file path
+  instead of Python's hash-randomized `hash()`, so percentile estimates
+  are reproducible across runs and across Python invocations.
+- **Tests**: expanded to 217 passing (91% coverage), including
   `test_dataloader_workers[spawn]`, `test_patch_dataloader_spawn`,
   `test_interrupted_write_*`, `test_update_verifies_checksum`,
   `test_include_bboxes_*`, `test_randomflip_direction_sync`,
-  `test_compute_stats_parallel_matches_serial`, `test_is_valid_*`, and
-  CLI exit-code tests.
+  `test_compute_stats_parallel_matches_serial`, `test_is_valid_*`,
+  CLI exit-code tests, end-to-end `medh5 import dicom` CLI coverage,
+  `TestFromNnunetv2`/`TestToNnunetv2` happy-path and silent-data-loss
+  guards, and a `medh5 import/export nnunetv2` CLI round-trip test.
 
 ### Changed
 
@@ -125,8 +113,22 @@ exit codes, and packaging.
   state.
 - Bounding-box datasets are only Blosc2-compressed when `n > 64`;
   tiny bbox arrays are written raw to avoid per-chunk filter overhead.
-- `RELEASE_PLAN.md` and `RELEASE_PROGRESS.md` added under `docs/` to
-  record the release plan and per-phase checkpoint log.
+- **`MEDH5File.validate()` no longer takes `strict`**: strictness is
+  applied on the returned `ValidationReport` via `report.ok(strict=...)`,
+  keeping the report layer policy-free. The one-call `is_valid()`
+  shortcut accepts `strict` as described above.
+- **CLI split into `medh5.cli` package**: the 819-line flat
+  `medh5/cli.py` is now a package grouped by command —
+  `cli/inspect.py` (`info`/`validate`/`validate-all`/`audit`/`recompress`),
+  `cli/dataset.py` (`index`/`split`/`stats`), `cli/convert.py`
+  (`import`/`export` subgroups), `cli/review.py` (`review set`/`get`/
+  `list`/`import-seg`), and `cli/_common.py` for shared helpers. Each
+  submodule exposes `register(sub)` and `dispatch(cmd, args) -> int | None`;
+  `cli/__init__.py::main()` composes them. Public surface
+  (`medh5.cli:main`, `python -m medh5.cli`) is unchanged.
+- **`.medh5` suffix helper consolidated**: the duplicate
+  `_validate_suffix` / `_SUFFIX` pair in `core.py` and `review.py` was
+  hoisted into `medh5.meta` and re-used from both modules.
 
 ### Fixed
 
@@ -143,6 +145,19 @@ exit codes, and packaging.
   large integer volumes.
 - `medh5 <no args>` now returns exit code 2 instead of 0, unbreaking
   shell automation like `medh5 validate … || exit 1`.
+- nnU-Net v2 import no longer silently drops voxels whose integer label
+  is not declared in `dataset.json` — `_split_label_volume` raises
+  `MEDH5ValidationError` listing the offending values, and rejects
+  float label volumes that contain genuinely non-integer voxels while
+  still accepting integer-valued floats (`0.0`, `1.0`, …).
+- nnU-Net v2 export no longer silently drops seg masks whose names are
+  not declared in the nnU-Net label map when merging back to an integer
+  label volume; it raises `MEDH5ValidationError` and asks the caller to
+  update `extra["nnunetv2"]["labels"]` or remove the extra mask.
+- nnU-Net v2 export no longer silently omits per-file image channels
+  that disagree with the dataset-wide channel set resolved from the
+  first file's metadata; channel mismatches raise
+  `MEDH5ValidationError` with a clear missing/extra report.
 
 ## [0.4.0]
 

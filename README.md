@@ -10,6 +10,19 @@ masks + bounding boxes + image-level label in a single `.medh5` file with
 Blosc2 compression, chunk-size optimization for patch-based training, and
 metadata as plain HDF5 attributes.
 
+## Documentation
+
+Full docs live under [`docs/`](docs/index.md):
+
+- [Getting started](docs/getting-started.md)
+- [File format](docs/file-format.md)
+- [Python API](docs/python-api.md)
+- [CLI reference](docs/cli.md)
+- [PyTorch integration](docs/pytorch.md)
+- [Converters (NIfTI / DICOM / nnU-Net v2)](docs/converters.md)
+- [Datasets and statistics](docs/dataset-and-stats.md)
+- [Review / QA workflow](docs/review.md)
+
 ## Installation
 
 ```bash

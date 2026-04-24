@@ -1,0 +1,84 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions: {}
+
+jobs:
+  build:
+    name: Build distributions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tooling
+        run: pip install --upgrade build twine
+
+      - name: Verify tag matches package version
+        run: |
+          python - <<'PY'
+          import os, re, sys, tomllib
+          ref = os.environ["GITHUB_REF"]
+          m = re.fullmatch(r"refs/tags/v(.+)", ref)
+          if not m:
+              sys.exit(f"unexpected GITHUB_REF: {ref}")
+          tag_version = m.group(1)
+          with open("pyproject.toml", "rb") as f:
+              data = tomllib.load(f)
+          pkg_version = data["project"]["version"]
+          if tag_version != pkg_version:
+              sys.exit(f"tag {tag_version!r} does not match pyproject version {pkg_version!r}")
+          print(f"tag and package version agree: {pkg_version}")
+          PY
+
+      - name: Build sdist and wheel
+        run: python -m build
+
+      - name: twine check
+        run: twine check dist/*
+
+      - name: Verify wheel contents
+        run: |
+          python - <<'PY'
+          import glob, sys, zipfile
+          wheels = glob.glob("dist/*.whl")
+          assert wheels, "no wheel produced"
+          with zipfile.ZipFile(wheels[0]) as z:
+              names = z.namelist()
+          missing = [n for n in ("medh5/py.typed",) if n not in names]
+          license_present = any(n.endswith("LICENSE") for n in names)
+          if missing or not license_present:
+              sys.exit(f"wheel missing required files: missing={missing} license={license_present}")
+          print("wheel contents ok")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/medh5
+    permissions:
+      id-token: write   # OIDC exchange for Trusted Publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish via PyPI Trusted Publishing
+        uses: pypa/gh-action-pypi-publish@release/v1
