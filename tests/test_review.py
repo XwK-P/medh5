@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from medh5 import MEDH5File, MEDH5ValidationError, ReviewStatus
+from medh5 import MEDH5File, MEDH5FileError, MEDH5ValidationError, ReviewStatus
 
 
 def _make_file(path):
@@ -28,17 +28,31 @@ class TestReviewStatus:
     def test_set_and_get(self, tmp_path):
         p = tmp_path / "s.medh5"
         _make_file(p)
-        MEDH5File.set_review_status(
+        returned = MEDH5File.set_review_status(
             p, status="reviewed", annotator="puyang", notes="ok"
         )
+        assert isinstance(returned, ReviewStatus)
+        assert returned.status == "reviewed"
+        assert returned.annotator == "puyang"
+        assert returned.notes == "ok"
+        assert returned.timestamp is not None
         st = MEDH5File.get_review_status(p)
-        assert st.status == "reviewed"
-        assert st.annotator == "puyang"
-        assert st.notes == "ok"
-        assert st.timestamp is not None
+        assert st.status == returned.status
+        assert st.annotator == returned.annotator
+        assert st.notes == returned.notes
+        assert st.timestamp == returned.timestamp
         # User-supplied keys preserved
         meta = MEDH5File.read_meta(p)
         assert meta.extra["patient_id"] == "P001"
+
+    def test_already_open_error(self, tmp_path):
+        p = tmp_path / "s.medh5"
+        _make_file(p)
+        with (
+            MEDH5File(p) as _held,  # noqa: F841 — hold the read handle open
+            pytest.raises(MEDH5FileError, match="already open in this process"),
+        ):
+            MEDH5File.set_review_status(p, status="reviewed")
 
     def test_history_appended(self, tmp_path):
         p = tmp_path / "s.medh5"
@@ -48,9 +62,22 @@ class TestReviewStatus:
         st = MEDH5File.get_review_status(p)
         assert st.status == "flagged"
         assert st.history is not None
-        assert len(st.history) == 1  # only the prior 'reviewed' state
-        assert st.history[0]["status"] == "reviewed"
-        assert st.history[0]["annotator"] == "a"
+        # History records both the implicit initial "pending" and the prior
+        # "reviewed" state, so consumers see the complete audit trail.
+        assert len(st.history) == 2
+        assert st.history[0]["status"] == "pending"
+        assert st.history[0]["annotator"] is None
+        assert st.history[1]["status"] == "reviewed"
+        assert st.history[1]["annotator"] == "a"
+
+    def test_initial_pending_recorded_on_first_call(self, tmp_path):
+        p = tmp_path / "s.medh5"
+        _make_file(p)
+        MEDH5File.set_review_status(p, status="reviewed", annotator="a")
+        st = MEDH5File.get_review_status(p)
+        assert st.history is not None
+        assert len(st.history) == 1
+        assert st.history[0]["status"] == "pending"
 
     def test_invalid_status(self, tmp_path):
         p = tmp_path / "s.medh5"

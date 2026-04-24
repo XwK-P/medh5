@@ -143,6 +143,9 @@ def _parse_dataset_json(path: Path) -> dict[str, Any]:
     return parsed
 
 
+_NNUNETV2_SCHEMA_VERSION = 1
+
+
 def _nnunet_meta_for_extra(parsed: dict[str, Any]) -> dict[str, Any]:
     """Make a JSON-friendly copy suitable for storage in ``extra``.
 
@@ -154,6 +157,7 @@ def _nnunet_meta_for_extra(parsed: dict[str, Any]) -> dict[str, Any]:
         str(idx): name for idx, name in parsed["channel_names"].items()
     }
     meta["labels"] = dict(parsed["labels"])
+    meta["schema_version"] = _NNUNETV2_SCHEMA_VERSION
     return meta
 
 

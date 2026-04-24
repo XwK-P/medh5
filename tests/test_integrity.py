@@ -4,7 +4,7 @@ import h5py
 import numpy as np
 import pytest
 
-from medh5 import MEDH5File, MEDH5FileError
+from medh5 import MEDH5File, MEDH5FileError, VerifyResult
 
 
 @pytest.fixture
@@ -25,10 +25,10 @@ def sample_without_checksum(tmp_path):
 
 class TestIntegrity:
     def test_verify_valid(self, sample_with_checksum):
-        assert MEDH5File.verify(sample_with_checksum) is True
+        assert MEDH5File.verify(sample_with_checksum) is VerifyResult.OK
 
-    def test_verify_no_checksum_returns_true(self, sample_without_checksum):
-        assert MEDH5File.verify(sample_without_checksum) is True
+    def test_verify_no_checksum_returns_missing(self, sample_without_checksum):
+        assert MEDH5File.verify(sample_without_checksum) is VerifyResult.MISSING
 
     def test_verify_corrupted(self, sample_with_checksum):
         with h5py.File(str(sample_with_checksum), "a") as f:
@@ -36,7 +36,7 @@ class TestIntegrity:
             data[0, 0, 0] = 999.0
             f["images/CT"][...] = data
 
-        assert MEDH5File.verify(sample_with_checksum) is False
+        assert MEDH5File.verify(sample_with_checksum) is VerifyResult.MISMATCH
 
     def test_checksum_stored_as_attribute(self, sample_with_checksum):
         with h5py.File(str(sample_with_checksum), "r") as f:
@@ -46,12 +46,12 @@ class TestIntegrity:
 
     def test_verify_detects_metadata_change(self, sample_with_checksum):
         MEDH5File.update_meta(sample_with_checksum, extra={"changed": True})
-        assert MEDH5File.verify(sample_with_checksum) is True
+        assert MEDH5File.verify(sample_with_checksum) is VerifyResult.OK
 
         with h5py.File(str(sample_with_checksum), "a") as f:
             f.attrs["label"] = 99
 
-        assert MEDH5File.verify(sample_with_checksum) is False
+        assert MEDH5File.verify(sample_with_checksum) is VerifyResult.MISMATCH
 
     def test_verify_after_review_update(self, sample_with_checksum):
         MEDH5File.set_review_status(
@@ -59,7 +59,7 @@ class TestIntegrity:
             status="reviewed",
             annotator="qa",
         )
-        assert MEDH5File.verify(sample_with_checksum) is True
+        assert MEDH5File.verify(sample_with_checksum) is VerifyResult.OK
 
     def test_verify_detects_seg_change(self, tmp_path):
         path = tmp_path / "with_seg.medh5"
@@ -73,7 +73,7 @@ class TestIntegrity:
             data = f["seg/tumor"][...]
             data[0, 0, 0] = True
             f["seg/tumor"][...] = data
-        assert MEDH5File.verify(path) is False
+        assert MEDH5File.verify(path) is VerifyResult.MISMATCH
 
 
 class TestUpdateVerifiesChecksum:
@@ -86,7 +86,7 @@ class TestUpdateVerifiesChecksum:
         with pytest.raises(MEDH5FileError, match="checksum"):
             MEDH5File.update_meta(sample_with_checksum, label=1)
 
-        assert MEDH5File.verify(sample_with_checksum) is False
+        assert MEDH5File.verify(sample_with_checksum) is VerifyResult.MISMATCH
 
     def test_update_with_force_bypasses_verify(self, sample_with_checksum):
         with h5py.File(str(sample_with_checksum), "a") as f:
@@ -95,7 +95,7 @@ class TestUpdateVerifiesChecksum:
             f["images/CT"][...] = data
 
         MEDH5File.update(sample_with_checksum, meta={"label": 1}, force=True)
-        assert MEDH5File.verify(sample_with_checksum) is True
+        assert MEDH5File.verify(sample_with_checksum) is VerifyResult.OK
 
     def test_update_no_checksum_is_unchanged(self, sample_without_checksum):
         MEDH5File.update_meta(sample_without_checksum, label=7)

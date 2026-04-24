@@ -8,6 +8,7 @@ without any custom library.
 from __future__ import annotations
 
 import json
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,15 @@ import numpy as np
 from medh5.exceptions import MEDH5SchemaError, MEDH5ValidationError
 
 SCHEMA_VERSION = "1"
+
+# Known subsystems under ``extra`` that we validate for shape mismatches
+# and schema_version drift. Values are the max version this library
+# understands; anything higher triggers a UserWarning on read.
+_KNOWN_EXTRA_SUBSYSTEMS: dict[str, int] = {
+    "review": 1,
+    "nnunetv2": 1,
+    "checksum": 1,
+}
 
 _SUFFIX = ".medh5"
 
@@ -60,6 +70,64 @@ class SpatialMeta:
     direction: list[list[float]] | None = None
     axis_labels: list[str] | None = None
     coord_system: str | None = None
+
+    def as_affine(self, ndim: int) -> np.ndarray | None:
+        """Compose a homogeneous affine for viewer-style consumers.
+
+        Builds ``(ndim+1, ndim+1)`` matrix ``M`` where
+        ``M[:ndim,:ndim] = direction @ diag(spacing)`` and
+        ``M[:ndim, ndim] = origin`` (any missing pieces default to the
+        identity / zero).
+
+        Returns ``None`` when the rotation component is effectively
+        identity (no direction, or direction ≈ ``I``), signalling the
+        caller they can use simpler ``scale``+``translate`` machinery.
+        """
+        spacing = self.spacing
+        origin = self.origin
+        direction = self.direction
+
+        if spacing is not None and len(spacing) != ndim:
+            raise MEDH5ValidationError(
+                f"spacing length ({len(spacing)}) != ndim ({ndim})"
+            )
+        if origin is not None and len(origin) != ndim:
+            raise MEDH5ValidationError(
+                f"origin length ({len(origin)}) != ndim ({ndim})"
+            )
+        if direction is not None and (
+            len(direction) != ndim or any(len(row) != ndim for row in direction)
+        ):
+            bad_cols = len(direction[0]) if direction else 0
+            raise MEDH5ValidationError(
+                f"direction must be a {ndim}x{ndim} matrix, "
+                f"got {len(direction)}x{bad_cols}"
+            )
+
+        dir_arr = (
+            np.asarray(direction, dtype=np.float64)
+            if direction is not None
+            else np.eye(ndim, dtype=np.float64)
+        )
+        identity_direction = direction is None or np.allclose(dir_arr, np.eye(ndim))
+        if identity_direction:
+            return None
+
+        spacing_arr = (
+            np.asarray(spacing, dtype=np.float64)
+            if spacing is not None
+            else np.ones(ndim, dtype=np.float64)
+        )
+        origin_arr = (
+            np.asarray(origin, dtype=np.float64)
+            if origin is not None
+            else np.zeros(ndim, dtype=np.float64)
+        )
+
+        affine = np.eye(ndim + 1, dtype=np.float64)
+        affine[:ndim, :ndim] = dir_arr * spacing_arr  # broadcast: columns scaled
+        affine[:ndim, ndim] = origin_arr
+        return affine
 
 
 @dataclass
@@ -142,6 +210,61 @@ class SampleMeta:
 # ---------------------------------------------------------------------------
 # HDF5 attribute I/O
 # ---------------------------------------------------------------------------
+
+
+def _warn_malformed_extra(extra: Any) -> None:
+    """Emit :class:`UserWarning` for malformed / future subsystem payloads.
+
+    The raw payload is left unchanged so callers can still introspect
+    it; the warnings are purely advisory. We only look at the subsystems
+    listed in :data:`_KNOWN_EXTRA_SUBSYSTEMS`; unknown keys pass through
+    without comment.
+    """
+    if not isinstance(extra, dict):
+        return
+
+    for key, max_version in _KNOWN_EXTRA_SUBSYSTEMS.items():
+        payload = extra.get(key)
+        if payload is None:
+            continue
+        if not isinstance(payload, dict):
+            warnings.warn(
+                f"Malformed extra.{key}: expected dict, got {type(payload).__name__}",
+                UserWarning,
+                stacklevel=3,
+            )
+            continue
+        ver = payload.get("schema_version")
+        if ver is not None and isinstance(ver, int) and ver > max_version:
+            warnings.warn(
+                f"extra.{key} schema_version={ver} is newer than this "
+                f"library's max ({max_version}); fields may be ignored.",
+                UserWarning,
+                stacklevel=3,
+            )
+
+    review = extra.get("review")
+    if isinstance(review, dict) and "status" in review:
+        status = review["status"]
+        if status is not None and not isinstance(status, str):
+            warnings.warn(
+                f"Malformed extra.review.status: expected str, got "
+                f"{type(status).__name__}",
+                UserWarning,
+                stacklevel=3,
+            )
+
+    nnunet = extra.get("nnunetv2")
+    if isinstance(nnunet, dict) and "labels" in nnunet:
+        labels = nnunet["labels"]
+        if not isinstance(labels, dict) or not all(
+            isinstance(k, str) and isinstance(v, int) for k, v in labels.items()
+        ):
+            warnings.warn(
+                "Malformed extra.nnunetv2.labels: expected dict[str, int]",
+                UserWarning,
+                stacklevel=3,
+            )
 
 
 def write_meta(f: h5py.File, meta: SampleMeta) -> None:
@@ -260,6 +383,7 @@ def read_meta(f: h5py.File) -> SampleMeta:
         if isinstance(raw_extra, bytes):
             raw_extra = raw_extra.decode()
         extra = json.loads(raw_extra)
+        _warn_malformed_extra(extra)
 
     raw_schema_version = ra.get("schema_version", SCHEMA_VERSION)
     if isinstance(raw_schema_version, bytes):

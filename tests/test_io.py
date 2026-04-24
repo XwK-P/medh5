@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from medh5 import MEDH5File, MEDH5ValidationError
+from medh5 import MEDH5File, MEDH5ValidationError, VerifyResult
 
 nib = pytest.importorskip("nibabel")
 pydicom = pytest.importorskip("pydicom")
@@ -390,7 +390,7 @@ class TestFromDicom:
         assert sample.meta.extra["dicom"]["PatientID"] == "P001"
         assert sample.meta.extra["dicom"]["Modality"] == "CT"
         assert sample.meta.extra["dicom"]["selected_series_uid"] == series_uid
-        assert MEDH5File.verify(out) is True
+        assert MEDH5File.verify(out) is VerifyResult.OK
 
     def test_modality_lut_applied(self, tmp_path):
         from medh5.io import from_dicom

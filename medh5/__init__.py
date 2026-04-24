@@ -1,17 +1,19 @@
 """medh5 — HDF5 + Blosc2 multi-array format for ML workloads."""
 
+from medh5._shared import open_shared
 from medh5.chunks import optimize_chunks
-from medh5.core import MEDH5File, MEDH5Sample, ValidationReport
+from medh5.core import MEDH5File, MEDH5Sample, ValidationReport, validate_bboxes
 from medh5.exceptions import (
     MEDH5Error,
     MEDH5FileError,
     MEDH5SchemaError,
     MEDH5ValidationError,
 )
+from medh5.integrity import VerifyResult
 from medh5.meta import SampleMeta, SpatialMeta
 from medh5.review import ReviewStatus
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 __all__ = [
     "MEDH5Error",
@@ -24,6 +26,9 @@ __all__ = [
     "SampleMeta",
     "SpatialMeta",
     "ValidationReport",
+    "VerifyResult",
     "__version__",
+    "open_shared",
     "optimize_chunks",
+    "validate_bboxes",
 ]

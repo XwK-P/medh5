@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from medh5 import MEDH5File
+from medh5 import MEDH5File, VerifyResult
 from medh5.cli import main
 
 
@@ -123,7 +123,7 @@ class TestBatchCLI:
         ret = main(["recompress", str(tmp_path), "--compression", "max", "--checksum"])
         assert ret == 0
         for p in paths:
-            assert MEDH5File.verify(p)
+            assert MEDH5File.verify(p) is VerifyResult.OK
 
     def test_recompress_out_dir(self, tmp_path, capsys):
         paths = _make_files(tmp_path, n=2)
@@ -295,7 +295,7 @@ class TestImportExportCLI:
         assert ret == 0
         sample = MEDH5File.read(out_medh5)
         assert sample.images["CT"].shape[0] == 3
-        assert MEDH5File.verify(out_medh5)
+        assert MEDH5File.verify(out_medh5) is VerifyResult.OK
 
     def test_import_nifti_with_resampling(self, tmp_path):
         pytest.importorskip("SimpleITK")

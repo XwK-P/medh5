@@ -4,6 +4,115 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.6.0]
+
+Hardening pass driven by the napari-medh5 plugin integration report:
+clearer single-open diagnostics, process-shared read handles that
+obsolete downstream registry workarounds, tri-state checksum
+verification so audit UIs can distinguish "no checksum" from "verified
+good", and a handful of small ergonomic additions that several
+downstream consumers had been re-implementing locally.
+
+### Added
+
+- **`medh5.open_shared(path)`**: ref-counted read-only context manager.
+  Multiple callers in the same process (and across threads) share a
+  single underlying `h5py.File`; the handle closes only after the last
+  caller releases it. Keyed by `Path.resolve()` so symlinks share a
+  handle. Replaces hand-rolled handle registries in lazy-read consumers
+  (napari plugins, dashboards, viewers).
+- **`medh5.VerifyResult`**: `StrEnum` with `OK`, `MISSING`, `MISMATCH`.
+  `MEDH5File.verify()` now returns this enum so callers can distinguish
+  "no checksum was ever stored" from "checksum verified successfully"
+  — the two cases previously both returned `True`, making trustworthy
+  audit UIs impossible to build.
+- **`medh5.validate_bboxes(bboxes, sample_shape)`**: public clamping
+  helper. Returns `(clamped, issues)` where issues is a list of
+  `(index, axis, reason)` tuples describing every `"min<0"`,
+  `"max>shape"`, or `"min>max"` adjustment applied. Shape mismatches
+  raise `MEDH5ValidationError`.
+- **`SpatialMeta.as_affine(ndim)`**: compose
+  `direction · diag(spacing) + origin` into an `(ndim+1, ndim+1)`
+  homogeneous matrix, or return `None` when the rotation is effectively
+  identity so consumers can fall back to simpler `scale`+`translate`.
+  Obsoletes ~30 lines of hand-rolled affine composition that every
+  viewer-style consumer was writing.
+- **`on_reopened` callback on `MEDH5File.update` / `update_meta` /
+  `add_seg` / `set_review_status`**: fired with `path` only after the
+  HDF5 write handle has closed successfully. Lets lazy-read consumers
+  re-acquire handles or rebind cached views without reinventing an
+  event system.
+- **`ValidationIssue.location`**: optional `str | None` field
+  (e.g. `"images/CT"`, `"seg/tumor"`, `"bboxes"`,
+  `"extra.nnunetv2.labels"`). `_validate_open_file` populates it at
+  every error/warning site so downstream UIs can highlight the offending
+  dataset without re-parsing `message`. Non-breaking — `to_dict()`
+  omits the key when it is `None`.
+- **Subsystem `schema_version` stamping**: `set_review_status` stamps
+  `extra["review"]["schema_version"] = 1`; the nnU-Net v2 converter
+  stamps `extra["nnunetv2"]["schema_version"] = 1`. `read_meta` emits
+  a `UserWarning` when a subsystem's stamp is newer than this library
+  understands, so consumers can fail loudly on schema drift instead of
+  silently mis-rendering.
+- **Malformed-`extra` warnings**: `read_meta` validates the shape of
+  well-known subsystems (`review.status` must be str;
+  `nnunetv2.labels` must be `dict[str, int]`; subsystems must be
+  dicts) and emits `UserWarning` on mismatches. The raw payload is
+  preserved so consumers can still introspect.
+- **Initial "pending" in review history**: `set_review_status` now
+  always records the prior state (treating absent as `"pending"`), so
+  the audit trail captures the sample's pre-review life from the very
+  first call.
+- **Clearer single-open diagnostics**: `MEDH5File.update` and
+  `set_review_status` detect HDF5's "file is already open" /
+  "unable to lock file" errors and raise
+  `MEDH5FileError("'{path}' is already open in this process; close
+  other MEDH5File handles before …")` with the original as `__cause__`,
+  instead of passing the raw h5py message through. Docstrings document
+  the exclusive-access requirement and point at `open_shared` for the
+  cooperative read side.
+- **`"Choosing the right read API"` section** in `docs/python-api.md`:
+  table comparing `read()` / `read_meta()` / `MEDH5File(path)` context
+  manager so consumers pick the right path the first time.
+- **Tests**: expanded to 255 passing (92% coverage) — new
+  `tests/test_shared.py`, `tests/test_validate.py`,
+  `tests/test_bbox_validation.py`, `tests/test_meta.py`; the existing
+  update/review/integrity/io/cli suites now exercise `VerifyResult`,
+  `on_reopened`, initial-pending-in-history, and `location` field
+  propagation.
+
+### Changed
+
+- **BREAKING**: `MEDH5File.verify(path)` now returns `VerifyResult`
+  instead of `bool`. Callers that did `if MEDH5File.verify(p): ...` must
+  switch to `if MEDH5File.verify(p) is VerifyResult.OK: ...` (or the
+  looser `is not VerifyResult.MISMATCH` for the previous semantics).
+  `verify_checksum(f)` in `medh5.integrity` returns the same enum.
+  Per the project's pre-1.0 policy in CLAUDE.md, backward compatibility
+  is not guaranteed.
+- **`set_review_status` returns `ReviewStatus`** instead of `None`, so
+  UIs can refresh without re-reading the file. Non-breaking for callers
+  that ignored the return value.
+- `MEDH5File.__init__` now closes the underlying h5py handle if any
+  post-open assignment ever raised (belt-and-braces — impossible in
+  practice today, but removes the last bare-open-without-with in the
+  module).
+- `medh5` CLI `audit` and `recompress --checksum` routes migrated to
+  `VerifyResult`: audit still passes on `OK` or `MISSING` (checksums
+  remain opt-in); `recompress --checksum` now requires `OK` after
+  post-write verification (was "not False", which let `MISSING` slip
+  through).
+
+### Fixed
+
+- `set_review_status` history no longer skips the sample's entire
+  pre-review life — the first call now records the implicit initial
+  `"pending"` state before overwriting it with the user's chosen
+  status.
+- `MEDH5File.update` no longer leaks the HDF5 write handle on
+  post-open exceptions from `__init__` field assignments (defensive;
+  no known trigger pre-fix).
+
 ## [0.5.0]
 
 First PyPI release. Bundles the 0.4.0 work (never released) with a
