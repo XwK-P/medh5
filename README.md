@@ -1,6 +1,15 @@
 # medh5
 
-**HDF5 + Blosc2 multi-array format for ML workloads.**
+[![PyPI version](https://img.shields.io/pypi/v/medh5.svg)](https://pypi.org/project/medh5/)
+[![Python versions](https://img.shields.io/pypi/pyversions/medh5.svg)](https://pypi.org/project/medh5/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![CI](https://github.com/XwK-P/medh5/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/XwK-P/medh5/actions/workflows/ci.yml)
+[![Release](https://github.com/XwK-P/medh5/actions/workflows/release.yml/badge.svg)](https://github.com/XwK-P/medh5/actions/workflows/release.yml)
+[![Coverage](https://img.shields.io/badge/coverage-91%25-brightgreen.svg)](#)
+[![Typed](https://img.shields.io/badge/typed-mypy%20strict-informational.svg)](medh5/py.typed)
+[![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
+
+**HDF5 + Blosc2 multi-array format for Medical Imaging ML workloads.**
 
 > **Status:** Beta (0.5.0) — API may still change between minor versions.
 > Backward compatibility is not guaranteed until 1.0.
