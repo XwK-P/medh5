@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from enum import Enum
 from typing import Any
 
 import h5py
@@ -16,6 +17,19 @@ import numpy as np
 from medh5.meta import _IMAGE_META_ATTRS, _ROOT_META_ATTRS
 
 _CHECKSUM_ATTR = "checksum_sha256"
+
+
+class VerifyResult(str, Enum):
+    """Tri-state outcome of :func:`verify_checksum`.
+
+    Distinguishes "no checksum stored" from "verified good" so audit UIs
+    can surface the difference instead of rendering both as a bare green
+    tick.
+    """
+
+    OK = "ok"
+    MISSING = "missing"
+    MISMATCH = "mismatch"
 
 
 def _json_safe(value: Any) -> Any:
@@ -105,14 +119,19 @@ def write_checksum(f: h5py.File) -> str:
     return digest
 
 
-def verify_checksum(f: h5py.File) -> bool:
-    """Return *True* if the stored checksum matches the data.
+def verify_checksum(f: h5py.File) -> VerifyResult:
+    """Verify the stored checksum against current file contents.
 
-    Returns *True* if no checksum is stored (opt-in verification).
+    Returns
+    -------
+    VerifyResult
+        ``MISSING`` if no checksum was stored (checksums are opt-in via
+        ``MEDH5File.write(..., checksum=True)``); ``OK`` if the stored
+        value matches; ``MISMATCH`` if the contents have changed.
     """
     stored = f.attrs.get(_CHECKSUM_ATTR)
     if stored is None:
-        return True
+        return VerifyResult.MISSING
     if isinstance(stored, bytes):
         stored = stored.decode()
-    return bool(compute_checksum(f) == stored)
+    return VerifyResult.OK if compute_checksum(f) == stored else VerifyResult.MISMATCH

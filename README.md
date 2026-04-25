@@ -11,7 +11,7 @@
 
 **HDF5 + Blosc2 multi-array format for Medical Imaging ML workloads.**
 
-> **Status:** Beta (0.5.0) — API may still change between minor versions.
+> **Status:** Beta (0.6.0) — API may still change between minor versions.
 > Backward compatibility is not guaranteed until 1.0.
 
 Store multiple co-registered images (e.g. CT, MRI, PET) + segmentation
@@ -182,11 +182,35 @@ print(report.ok(strict=True)) # False if any errors OR warnings
 
 ### Verify file integrity
 
-```python
-from medh5 import MEDH5File
+`verify()` returns a tri-state `VerifyResult` so audit UIs can
+distinguish "no checksum stored" from "verified good":
 
-assert MEDH5File.verify("sample.medh5")  # True if checksum matches
+```python
+from medh5 import MEDH5File, VerifyResult
+
+match MEDH5File.verify("sample.medh5"):
+    case VerifyResult.OK:       ...   # stored checksum matches
+    case VerifyResult.MISSING:  ...   # no checksum was stored (opt-in)
+    case VerifyResult.MISMATCH: ...   # data has diverged from digest
 ```
+
+### Concurrent lazy reads (`open_shared`)
+
+Multiple consumers in the same process (viewers, dashboards, napari
+layers) can share a single underlying `h5py.File` via ref-counted
+`open_shared`. The handle closes when the last caller exits its `with`
+block:
+
+```python
+from medh5 import open_shared
+
+with open_shared("sample.medh5") as f:
+    patch = f["images/CT"][10:42, 20:84, 20:84]
+```
+
+Pair it with `on_reopened=` on any mutating call (`update`,
+`update_meta`, `add_seg`, `set_review_status`) to rebind cached views
+after a successful write.
 
 ### PyTorch integration
 
@@ -548,8 +572,8 @@ nested JSON could consume significant memory.
 
 ## Dependencies
 
-- `h5py >= 3.8`
-- `hdf5plugin >= 4.0`
+- `h5py >= 3.10`
+- `hdf5plugin >= 4.1`
 - `numpy >= 1.24`
 - `torch >= 2.0` (optional, for `medh5[torch]`)
 - `nibabel >= 5` (optional, for `medh5[nifti]`)

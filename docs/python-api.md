@@ -52,6 +52,18 @@ shape. Writes are atomic (see [File format](file-format.md)).
 
 ## Reading
 
+### Choosing the right read API
+
+| API | Returns | Reads arrays? | Holds a file handle? | Use when |
+|-----|---------|---------------|----------------------|----------|
+| `MEDH5File.read(path)` | `MEDH5Sample` dataclass with every image/mask materialised in memory | Yes, all of them | No (opens, reads, closes) | You want the whole sample in RAM for training/preprocessing. |
+| `MEDH5File.read_meta(path)` | `SampleMeta` only | No | No (opens, reads attrs, closes) | You need labels / shape / spatial metadata to build a manifest, without paying for array I/O. |
+| `with MEDH5File(path) as f:` | Context-manager `MEDH5File` instance; access via `f.images`, `f.seg`, `f.meta`, `f.bbox_arrays()` | Only the slices you index | Yes, until the `with` block exits | You want lazy slicing (viewer-style), repeated partial reads, or patch sampling on a large volume. |
+
+Rule of thumb: `read_meta` for catalog/index builders, the context manager
+for viewers and patch pipelines, `read` when you truly need the full sample
+as numpy arrays.
+
 Eager — load everything into a `MEDH5Sample` dataclass:
 
 ```python
@@ -120,9 +132,16 @@ report = MEDH5File.validate("sample.medh5")
 
 report.ok()                # bool, no errors
 report.ok(strict=True)     # bool, no errors AND no warnings
-report.errors              # list[ValidationIssue(code=..., message=...)]
+report.errors              # list[ValidationIssue(code, message, location)]
 report.warnings
 ```
+
+Each `ValidationIssue` carries an optional `location` string (e.g.
+`"images/CT"`, `"seg/tumor"`, `"bboxes"`, `"checksum_sha256"`,
+`"extra.nnunetv2.labels"`). UIs can use it to highlight the offending
+dataset without re-parsing `message`. `ValidationIssue.to_dict()` omits
+the key when `location is None`, so the JSON shape stays compact for
+issues that don't have a natural location.
 
 Or, the one-call shortcut when you just want a boolean answer:
 
@@ -136,11 +155,58 @@ returned report, keeping validation policy out of the report-building layer.
 
 ## Integrity
 
+`MEDH5File.verify()` returns a tri-state `VerifyResult` so callers can
+distinguish "no checksum was ever stored" from "checksum verified
+successfully" — the two cases previously both returned `True`, which
+made trustworthy audit UIs impossible to build.
+
 ```python
-MEDH5File.verify("sample.medh5")    # True iff stored checksum matches recomputed
+from medh5 import MEDH5File, VerifyResult
+
+match MEDH5File.verify("sample.medh5"):
+    case VerifyResult.OK:        ...   # stored checksum matches data
+    case VerifyResult.MISSING:   ...   # no checksum was stored (opt-in)
+    case VerifyResult.MISMATCH:  ...   # data has diverged from stored digest
 ```
 
-If no checksum was stored, `verify()` raises `MEDH5ValidationError`.
+Checksums are written opt-in via `MEDH5File.write(..., checksum=True)`.
+
+## Concurrent reads: `open_shared`
+
+HDF5 refuses to reopen a file already open elsewhere in the same
+process. Lazy-read consumers (napari plugins, dashboards, viewers) that
+need to hand out independent "handles" while keeping the underlying
+file single-open should use `open_shared`:
+
+```python
+from medh5 import open_shared
+
+with open_shared("sample.medh5") as f:
+    patch = f["images/CT"][10:42, 20:84, 20:84]
+```
+
+`open_shared` is a ref-counted context manager keyed by
+`Path.resolve()`: the first caller opens the file, subsequent callers
+(in any thread of the same process) receive the *same* `h5py.File`,
+and the handle closes when the last `with` block exits. Callers must
+treat the returned object as read-only.
+
+## Post-write callbacks: `on_reopened`
+
+Every mutating entry point — `MEDH5File.update`, `update_meta`,
+`add_seg`, and `set_review_status` — accepts `on_reopened`, invoked
+with the file `Path` after the HDF5 write handle has closed *and only
+when the operation succeeded*. This is the hook for lazy-read
+consumers to re-acquire handles or rebind cached views without
+inventing their own event system:
+
+```python
+def reopen(path):
+    # re-issue any cached dask arrays / layer.data bindings here
+    ...
+
+MEDH5File.update("sample.medh5", meta={"label": 2}, on_reopened=reopen)
+```
 
 ## In-place updates
 
@@ -157,6 +223,7 @@ MEDH5File.update(
     seg_ops={"add": {"organ": organ_mask}, "remove": ["old_mask"]},
     bbox_ops={"bboxes": new_bboxes, "bbox_labels": ["tumor"]},
     force=False,         # set True to skip pre-mutation checksum verify
+    on_reopened=None,    # callback for lazy-read consumers (see above)
 )
 ```
 
@@ -166,6 +233,67 @@ Convenience shortcuts delegate to `update()`:
 MEDH5File.update_meta("sample.medh5", label=2, extra={"reviewed": True})
 MEDH5File.add_seg("sample.medh5", "new_mask", mask_array)
 ```
+
+`update()` (and therefore every shortcut) requires **exclusive write
+access**: close any open `MEDH5File(...)` context managers and drop
+lazy views first, or HDF5 raises an "already open" error. `medh5`
+detects that specific error and raises `MEDH5FileError` with a clear
+message pointing at the constraint.
+
+## Spatial affine composition
+
+Viewer-style consumers can ask `SpatialMeta` for a composed homogeneous
+affine matrix in one call:
+
+```python
+from medh5 import MEDH5File
+
+meta = MEDH5File.read_meta("sample.medh5")
+affine = meta.spatial.as_affine(ndim=3)
+if affine is None:
+    # Rotation is effectively identity — use simpler scale+translate
+    ...
+else:
+    # (ndim+1, ndim+1) matrix: direction · diag(spacing) + origin
+    assert affine.shape == (4, 4)
+```
+
+`as_affine` returns `None` when `direction` is absent or numerically
+close to identity, so consumers can pick the cheap path when a full
+affine isn't needed.
+
+## Bbox clamping
+
+`validate_bboxes` clamps out-of-range boxes to the sample's spatial
+bounds and reports every adjustment it made:
+
+```python
+from medh5 import validate_bboxes
+
+clamped, issues = validate_bboxes(boxes, sample_shape=(128, 256, 256))
+for i, axis, reason in issues:
+    # reason ∈ {"min<0", "max>shape", "min>max"}
+    print(f"box {i} axis {axis}: {reason}")
+```
+
+The input array is not mutated; `clamped` is always a fresh `int64`
+array shaped `(n, ndim, 2)`. Shape mismatches raise
+`MEDH5ValidationError`.
+
+## `extra` subsystem conventions
+
+Three `extra` sub-keys are well-known to medh5 and get light validation
+on read:
+
+| Key | Producer | Notes |
+|-----|---------|-------|
+| `extra["review"]` | `set_review_status` | Stamped with `schema_version: 1`. `status` must be a string. |
+| `extra["nnunetv2"]` | `medh5.io.from_nnunetv2` | Stamped with `schema_version: 1`. `labels` must be `dict[str, int]`. |
+| `extra["checksum"]` | reserved | Reserved for future structured checksum metadata. |
+
+`read_meta` emits a `UserWarning` for malformed shapes and for any
+`schema_version` newer than this library understands; the raw payload
+is preserved in `meta.extra` either way.
 
 ## Exceptions
 

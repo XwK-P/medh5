@@ -1,5 +1,7 @@
 """Tests for in-place update operations."""
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -163,3 +165,41 @@ class TestAddSeg:
         sample = MEDH5File.read(sample_file)
         assert sample.bboxes is None
         assert sample.meta.has_bbox is False
+
+
+class TestOnReopenedCallback:
+    def test_update_fires_callback_on_success(self, sample_file):
+        seen: list[Path] = []
+        MEDH5File.update(sample_file, meta={"label": 7}, on_reopened=seen.append)
+        assert seen == [sample_file]
+
+    def test_update_meta_forwards_callback(self, sample_file):
+        seen: list[Path] = []
+        MEDH5File.update_meta(sample_file, label=9, on_reopened=seen.append)
+        assert seen == [sample_file]
+
+    def test_add_seg_forwards_callback(self, sample_file):
+        seen: list[Path] = []
+        mask = np.zeros((8, 16, 16), dtype=bool)
+        MEDH5File.add_seg(sample_file, "tumor", mask, on_reopened=seen.append)
+        assert seen == [sample_file]
+
+    def test_callback_not_fired_on_failure(self, sample_file):
+        seen: list[Path] = []
+        # Trigger MEDH5ValidationError during update via unknown meta key.
+        with pytest.raises(MEDH5ValidationError):
+            MEDH5File.update(sample_file, meta={"bogus": 1}, on_reopened=seen.append)
+        assert seen == []
+
+    def test_set_review_status_fires_callback(self, sample_file):
+        from medh5 import ReviewStatus
+
+        seen: list[Path] = []
+        result = MEDH5File.set_review_status(
+            sample_file,
+            status="reviewed",
+            annotator="qa",
+            on_reopened=seen.append,
+        )
+        assert seen == [sample_file]
+        assert isinstance(result, ReviewStatus)

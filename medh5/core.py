@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -20,7 +21,12 @@ import numpy as np
 
 from medh5.chunks import optimize_chunks
 from medh5.exceptions import MEDH5FileError, MEDH5ValidationError
-from medh5.integrity import _CHECKSUM_ATTR, verify_checksum, write_checksum
+from medh5.integrity import (
+    _CHECKSUM_ATTR,
+    VerifyResult,
+    verify_checksum,
+    write_checksum,
+)
 from medh5.meta import (
     SampleMeta,
     SpatialMeta,
@@ -28,7 +34,11 @@ from medh5.meta import (
     read_meta,
     write_meta,
 )
-from medh5.review import get_review_status, set_review_status
+from medh5.review import (
+    _wrap_open_or_lock_error,
+    get_review_status,
+    set_review_status,
+)
 
 
 class _UnsetType:
@@ -145,13 +155,23 @@ class MEDH5Sample:
 
 @dataclass
 class ValidationIssue:
-    """A single validation finding."""
+    """A single validation finding.
+
+    ``location`` pinpoints where inside the file the problem lives
+    (e.g. ``"images/CT"``, ``"seg/tumor"``, ``"bboxes"``,
+    ``"extra.nnunetv2.labels"``). UIs can use it to highlight the
+    offending dataset without parsing ``message`` strings.
+    """
 
     code: str
     message: str
+    location: str | None = None
 
-    def to_dict(self) -> dict[str, str]:
-        return {"code": self.code, "message": self.message}
+    def to_dict(self) -> dict[str, str | None]:
+        out: dict[str, str | None] = {"code": self.code, "message": self.message}
+        if self.location is not None:
+            out["location"] = self.location
+        return out
 
 
 @dataclass
@@ -169,11 +189,19 @@ class ValidationReport:
     def ok(self, *, strict: bool = False) -> bool:
         return self.is_valid and (not strict or not self.warnings)
 
-    def add_error(self, code: str, message: str) -> None:
-        self.errors.append(ValidationIssue(code=code, message=message))
+    def add_error(
+        self, code: str, message: str, *, location: str | None = None
+    ) -> None:
+        self.errors.append(
+            ValidationIssue(code=code, message=message, location=location)
+        )
 
-    def add_warning(self, code: str, message: str) -> None:
-        self.warnings.append(ValidationIssue(code=code, message=message))
+    def add_warning(
+        self, code: str, message: str, *, location: str | None = None
+    ) -> None:
+        self.warnings.append(
+            ValidationIssue(code=code, message=message, location=location)
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -182,6 +210,71 @@ class ValidationReport:
             "errors": [issue.to_dict() for issue in self.errors],
             "warnings": [issue.to_dict() for issue in self.warnings],
         }
+
+
+def validate_bboxes(
+    bboxes: np.ndarray,
+    sample_shape: tuple[int, ...],
+) -> tuple[np.ndarray, list[tuple[int, int, str]]]:
+    """Clamp bboxes to the sample's spatial bounds.
+
+    Each box is expected as ``[min, max]`` per axis with integer indices.
+    Bounds are checked in [0, shape_axis] (exclusive upper bound is
+    permitted for ``max``), mirroring numpy slice conventions.
+
+    Parameters
+    ----------
+    bboxes : np.ndarray
+        Array of shape ``(n, ndim, 2)`` where ``ndim == len(sample_shape)``.
+    sample_shape : tuple[int, ...]
+        The spatial shape that the bboxes should fit into.
+
+    Returns
+    -------
+    clamped : np.ndarray
+        A fresh ``(n, ndim, 2)`` array with every out-of-range value
+        clamped and every inverted ``(min > max)`` swapped.
+    issues : list[tuple[int, int, str]]
+        One entry per adjustment: ``(box_index, axis, reason)`` where
+        reason is one of ``"min<0"``, ``"max>shape"``, or ``"min>max"``.
+        Empty when *bboxes* were already valid.
+
+    Raises
+    ------
+    MEDH5ValidationError
+        When *bboxes* has the wrong shape.
+    """
+    arr = np.asarray(bboxes)
+    ndim = len(sample_shape)
+    if arr.ndim != 3 or arr.shape[1:] != (ndim, 2):
+        raise MEDH5ValidationError(
+            f"bboxes must have shape (n, {ndim}, 2), got {arr.shape}"
+        )
+    if arr.dtype.kind not in {"i", "u"}:
+        raise MEDH5ValidationError(
+            f"bboxes must have integer dtype (got {arr.dtype}); "
+            f"convert with .astype(np.int64) first"
+        )
+
+    clamped = arr.astype(np.int64, copy=True)
+    issues: list[tuple[int, int, str]] = []
+    for i in range(clamped.shape[0]):
+        for axis in range(ndim):
+            lo = int(clamped[i, axis, 0])
+            hi = int(clamped[i, axis, 1])
+            bound = int(sample_shape[axis])
+            if lo < 0:
+                issues.append((i, axis, "min<0"))
+                lo = 0
+            if hi > bound:
+                issues.append((i, axis, "max>shape"))
+                hi = bound
+            if lo > hi:
+                issues.append((i, axis, "min>max"))
+                lo, hi = hi, lo
+            clamped[i, axis, 0] = lo
+            clamped[i, axis, 1] = hi
+    return clamped, issues
 
 
 def _coerce_seg_write_kwargs(
@@ -282,12 +375,18 @@ def _set_bbox_datasets(
 def _validate_open_file(f: h5py.File, path: str | Path) -> ValidationReport:
     report = ValidationReport(path=str(path))
     if "images" not in f:
-        report.add_error("missing_images_group", "Missing required 'images' group")
+        report.add_error(
+            "missing_images_group",
+            "Missing required 'images' group",
+            location="images",
+        )
         return report
 
     img_grp = f["images"]
     if len(img_grp) == 0:
-        report.add_error("empty_images_group", "'images' group is empty")
+        report.add_error(
+            "empty_images_group", "'images' group is empty", location="images"
+        )
         return report
 
     image_names = sorted(img_grp.keys())
@@ -299,10 +398,15 @@ def _validate_open_file(f: h5py.File, path: str | Path) -> ValidationReport:
             report.add_error(
                 "image_shape_mismatch",
                 f"Image '{name}' has shape {img_grp[name].shape}; expected {ref_shape}",
+                location=f"images/{name}",
             )
 
     if "schema_version" not in f.attrs:
-        report.add_error("missing_schema_version", "Missing 'schema_version' attribute")
+        report.add_error(
+            "missing_schema_version",
+            "Missing 'schema_version' attribute",
+            location="schema_version",
+        )
 
     try:
         meta = read_meta(f)
@@ -316,17 +420,23 @@ def _validate_open_file(f: h5py.File, path: str | Path) -> ValidationReport:
         report.add_error("metadata_invalid", f"Invalid metadata: {exc}")
 
     if meta.image_names is None:
-        report.add_warning("missing_image_names", "Missing 'image_names' metadata")
+        report.add_warning(
+            "missing_image_names",
+            "Missing 'image_names' metadata",
+            location="image_names",
+        )
     elif sorted(meta.image_names) != image_names:
         report.add_error(
             "image_names_mismatch",
             f"Metadata image_names {meta.image_names} != datasets {image_names}",
+            location="image_names",
         )
 
     if meta.shape is not None and tuple(meta.shape) != ref_shape:
         report.add_error(
             "shape_mismatch",
             f"Metadata shape {meta.shape} != image shape {list(ref_shape)}",
+            location="images/shape",
         )
 
     seg_grp = f.get("seg")
@@ -338,11 +448,13 @@ def _validate_open_file(f: h5py.File, path: str | Path) -> ValidationReport:
             "seg_presence_mismatch",
             "Metadata has_seg="
             f"{meta.has_seg} != actual presence={bool(actual_seg_names)}",
+            location="seg",
         )
     if meta.seg_names is not None and sorted(meta.seg_names) != actual_seg_names:
         report.add_error(
             "seg_names_mismatch",
             f"Metadata seg_names {meta.seg_names} != datasets {actual_seg_names}",
+            location="seg",
         )
     if isinstance(seg_grp, h5py.Group):
         for name in actual_seg_names:
@@ -351,6 +463,7 @@ def _validate_open_file(f: h5py.File, path: str | Path) -> ValidationReport:
                     "seg_shape_mismatch",
                     "Segmentation "
                     f"'{name}' has shape {seg_grp[name].shape}; expected {ref_shape}",
+                    location=f"seg/{name}",
                 )
 
     has_bbox = "bboxes" in f
@@ -358,6 +471,7 @@ def _validate_open_file(f: h5py.File, path: str | Path) -> ValidationReport:
         report.add_error(
             "bbox_presence_mismatch",
             f"Metadata has_bbox={meta.has_bbox} != actual presence={has_bbox}",
+            location="bboxes",
         )
     if has_bbox:
         bbox_ds = f["bboxes"]
@@ -366,28 +480,37 @@ def _validate_open_file(f: h5py.File, path: str | Path) -> ValidationReport:
             report.add_error(
                 "bbox_shape_invalid",
                 f"'bboxes' has shape {bbox_shape}; expected (n, {ndim}, 2)",
+                location="bboxes",
             )
         if "bbox_scores" in f and len(f["bbox_scores"]) != bbox_shape[0]:
             report.add_error(
                 "bbox_scores_mismatch",
                 "'bbox_scores' length must match 'bboxes' count",
+                location="bbox_scores",
             )
         if "bbox_labels" in f and len(f["bbox_labels"]) != bbox_shape[0]:
             report.add_error(
                 "bbox_labels_mismatch",
                 "'bbox_labels' length must match 'bboxes' count",
+                location="bbox_labels",
             )
     elif "bbox_scores" in f or "bbox_labels" in f:
         report.add_error(
             "bbox_dependents_without_bboxes",
             "'bbox_scores'/'bbox_labels' present without 'bboxes'",
+            location="bboxes",
         )
 
-    if _CHECKSUM_ATTR not in f.attrs:
-        report.add_warning("missing_checksum", "No checksum stored")
-    elif not verify_checksum(f):
+    result = verify_checksum(f)
+    if result is VerifyResult.MISSING:
+        report.add_warning(
+            "missing_checksum", "No checksum stored", location="checksum_sha256"
+        )
+    elif result is VerifyResult.MISMATCH:
         report.add_error(
-            "checksum_mismatch", "Stored checksum does not match file contents"
+            "checksum_mismatch",
+            "Stored checksum does not match file contents",
+            location="checksum_sha256",
         )
 
     return report
@@ -416,11 +539,18 @@ class MEDH5File:
             self._h5: h5py.File = h5py.File(str(path), mode)
         except OSError as exc:
             raise MEDH5FileError(f"Failed to open '{path}': {exc}") from exc
-        self._path = path
-        self._meta_cache: SampleMeta | None = None
-        self._bbox_cache: (
-            tuple[np.ndarray | None, np.ndarray | None, list[str] | None] | None
-        ) = None
+        try:
+            self._path = path
+            self._meta_cache: SampleMeta | None = None
+            self._bbox_cache: (
+                tuple[np.ndarray | None, np.ndarray | None, list[str] | None] | None
+            ) = None
+        except BaseException:
+            # Belt-and-braces: the field assignments above cannot raise today,
+            # but guarantee we close the handle if anything ever does, since
+            # the caller never gets the chance to run __exit__ / close().
+            self._h5.close()
+            raise
 
     def __enter__(self) -> MEDH5File:
         return self
@@ -820,12 +950,14 @@ class MEDH5File:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def verify(path: str | Path) -> bool:
+    def verify(path: str | Path) -> VerifyResult:
         """Verify the checksum of a ``.medh5`` file.
 
-        Returns *True* if the stored checksum matches the data, or if
-        no checksum was stored (opt-in).  Returns *False* if the data
-        has been corrupted.
+        Returns a :class:`VerifyResult`: ``OK`` when the stored checksum
+        matches, ``MISSING`` when no checksum was ever stored (opt-in via
+        ``write(..., checksum=True)``), or ``MISMATCH`` when the content
+        has diverged from the stored digest. Audit UIs should treat
+        ``MISSING`` distinctly from ``OK``.
         """
         path = Path(path)
         _validate_suffix(path)
@@ -847,12 +979,15 @@ class MEDH5File:
         label: int | str | None | _UnsetType = _UNSET,
         label_name: str | None | _UnsetType = _UNSET,
         extra: dict[str, Any] | None | _UnsetType = _UNSET,
+        on_reopened: Callable[[Path], None] | None = None,
     ) -> None:
         """Update metadata attributes on an existing file.
 
         Only the provided keyword arguments are updated; omitted fields
         are left unchanged.  Uses an ``_UNSET`` sentinel so that ``None``
         can be written explicitly.
+
+        ``on_reopened`` is forwarded to :meth:`update`.
 
         Raises
         ------
@@ -868,7 +1003,7 @@ class MEDH5File:
             meta_updates["label_name"] = label_name
         if not isinstance(extra, _UnsetType):
             meta_updates["extra"] = extra
-        MEDH5File.update(path, meta=meta_updates)
+        MEDH5File.update(path, meta=meta_updates, on_reopened=on_reopened)
 
     @staticmethod
     def add_seg(
@@ -878,6 +1013,7 @@ class MEDH5File:
         *,
         cname: str = "lz4hc",
         clevel: int = 8,
+        on_reopened: Callable[[Path], None] | None = None,
     ) -> None:
         """Add a segmentation mask to an existing ``.medh5`` file.
 
@@ -891,6 +1027,8 @@ class MEDH5File:
             Boolean mask array (must match image shape).
         cname, clevel :
             Blosc2 compression parameters.
+        on_reopened : callable, optional
+            Forwarded to :meth:`update`.
 
         Raises
         ------
@@ -903,6 +1041,7 @@ class MEDH5File:
         MEDH5File.update(
             path,
             seg_ops={"add": {name: mask}, "cname": cname, "clevel": clevel},
+            on_reopened=on_reopened,
         )
 
     @staticmethod
@@ -914,11 +1053,22 @@ class MEDH5File:
         bbox_ops: dict[str, Any] | None = None,
         recompute_checksum: bool = True,
         force: bool = False,
+        on_reopened: Callable[[Path], None] | None = None,
     ) -> None:
         """Apply in-place metadata / seg / bbox updates to an existing file.
 
         Verifies the stored checksum before mutating; pass ``force=True``
         to skip (e.g. when repairing a known-corrupt file).
+
+        Requires exclusive write access: HDF5 refuses to reopen a file
+        already open elsewhere in the same process. Close any lingering
+        :class:`MEDH5File` read handles (and drop lazy views) before
+        calling.
+
+        ``on_reopened`` is invoked with *path* after the HDF5 write
+        handle has been closed and only when the update succeeded.
+        Lazy-read consumers use this to re-acquire handles or rebind
+        cached views; it pairs with :func:`medh5.open_shared`.
         """
         path = Path(path)
         _validate_suffix(path)
@@ -943,7 +1093,11 @@ class MEDH5File:
 
         try:
             with h5py.File(str(path), "a") as f:
-                if not force and _CHECKSUM_ATTR in f.attrs and not verify_checksum(f):
+                if (
+                    not force
+                    and _CHECKSUM_ATTR in f.attrs
+                    and verify_checksum(f) is VerifyResult.MISMATCH
+                ):
                     raise MEDH5FileError(
                         f"Refusing to update '{path}': stored checksum does "
                         "not match current contents. Pass force=True to "
@@ -1102,7 +1256,12 @@ class MEDH5File:
         except MEDH5FileError:
             raise
         except OSError as exc:
-            raise MEDH5FileError(f"Failed to update '{path}': {exc}") from exc
+            raise _wrap_open_or_lock_error(
+                path, exc, action="update", before_phrase="updating"
+            ) from exc
+
+        if on_reopened is not None:
+            on_reopened(path)
 
     @staticmethod
     def validate(path: str | Path) -> ValidationReport:

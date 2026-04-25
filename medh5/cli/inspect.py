@@ -16,6 +16,7 @@ import h5py
 from medh5.cli._common import Handler, ValidationPayload, iter_medh5
 from medh5.core import MEDH5File
 from medh5.exceptions import MEDH5Error
+from medh5.integrity import VerifyResult
 
 
 def _filter_summary(ds: object) -> list[str]:
@@ -165,8 +166,10 @@ def _cmd_validate_all(args: argparse.Namespace) -> int:
 
 def _verify_one(path_str: str) -> tuple[str, bool, str | None]:
     try:
-        ok = MEDH5File.verify(Path(path_str))
-        return path_str, ok, None
+        result = MEDH5File.verify(Path(path_str))
+        if result is VerifyResult.MISMATCH:
+            return path_str, False, "checksum mismatch"
+        return path_str, True, None
     except MEDH5Error as exc:
         return path_str, False, str(exc)
 
@@ -239,7 +242,7 @@ def _cmd_recompress(args: argparse.Namespace) -> int:
                 compression=args.compression,
                 checksum=args.checksum,
             )
-            if args.checksum and not MEDH5File.verify(tmp_path):
+            if args.checksum and MEDH5File.verify(tmp_path) is not VerifyResult.OK:
                 print(f"FAIL: post-write checksum mismatch for {path}", file=sys.stderr)
                 if out_dir is None:
                     tmp_path.unlink(missing_ok=True)
