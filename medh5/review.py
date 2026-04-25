@@ -26,11 +26,29 @@ _REVIEW_SCHEMA_VERSION = 1
 def _looks_like_already_open(exc: OSError) -> bool:
     """Heuristic: does *exc* look like HDF5's single-open-per-process error?"""
     msg = str(exc).lower()
-    return (
-        "already open" in msg
-        or "unable to lock file" in msg
-        or ("unable to open file" in msg and "already open" in msg)
-    )
+    return "already open" in msg or "unable to lock file" in msg
+
+
+def _wrap_open_or_lock_error(
+    path: Path,
+    exc: OSError,
+    *,
+    action: str,
+    before_phrase: str,
+) -> MEDH5FileError:
+    """Build the MEDH5FileError for an open/lock OSError raised by h5py.
+
+    *action* is the infinitive verb used in the generic
+    ``"Failed to {action} '{path}'"`` message; *before_phrase* is the
+    gerund used in the already-open hint
+    (``"before {before_phrase}"``).
+    """
+    if _looks_like_already_open(exc):
+        return MEDH5FileError(
+            f"'{path}' is already open in this process; close other "
+            f"MEDH5File handles before {before_phrase}"
+        )
+    return MEDH5FileError(f"Failed to {action} '{path}': {exc}")
 
 
 @dataclass
@@ -139,12 +157,12 @@ def set_review_status(
     except MEDH5ValidationError:
         raise
     except OSError as exc:
-        if _looks_like_already_open(exc):
-            raise MEDH5FileError(
-                f"'{path}' is already open in this process; close other "
-                f"MEDH5File handles before setting review status"
-            ) from exc
-        raise MEDH5FileError(f"Failed to update '{path}': {exc}") from exc
+        raise _wrap_open_or_lock_error(
+            path,
+            exc,
+            action="update",
+            before_phrase="setting review status",
+        ) from exc
 
     if on_reopened is not None:
         on_reopened(path)

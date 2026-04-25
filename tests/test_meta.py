@@ -92,6 +92,13 @@ class TestExtraWarnings:
         with pytest.warns(UserWarning, match="extra.nnunetv2.labels"):
             MEDH5File.read_meta(p)
 
+    def test_nnunetv2_labels_bool_value_warns(self, tmp_path):
+        p = tmp_path / "s.medh5"
+        _make(p)
+        _write_raw_extra(p, {"nnunetv2": {"labels": {"tumor": True}}})
+        with pytest.warns(UserWarning, match="extra.nnunetv2.labels"):
+            MEDH5File.read_meta(p)
+
     def test_review_status_not_string_warns(self, tmp_path):
         p = tmp_path / "s.medh5"
         _make(p)
@@ -116,8 +123,11 @@ class TestExtraWarnings:
                 "nnunetv2": {"labels": {"background": 0, "tumor": 1}},
             },
         )
+        # Promote only our advisory UserWarnings to errors; let unrelated
+        # warnings (DeprecationWarning, ResourceWarning from h5py, …)
+        # pass through unchanged.
         with warnings.catch_warnings():
-            warnings.simplefilter("error")  # turn warnings into errors
+            warnings.simplefilter("error", UserWarning)
             MEDH5File.read_meta(p)
 
 

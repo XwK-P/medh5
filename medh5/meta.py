@@ -71,17 +71,11 @@ class SpatialMeta:
     axis_labels: list[str] | None = None
     coord_system: str | None = None
 
-    def as_affine(self, ndim: int) -> np.ndarray | None:
-        """Compose a homogeneous affine for viewer-style consumers.
+    def _validate_dims(self, ndim: int) -> None:
+        """Check that every populated field has the expected length.
 
-        Builds ``(ndim+1, ndim+1)`` matrix ``M`` where
-        ``M[:ndim,:ndim] = direction @ diag(spacing)`` and
-        ``M[:ndim, ndim] = origin`` (any missing pieces default to the
-        identity / zero).
-
-        Returns ``None`` when the rotation component is effectively
-        identity (no direction, or direction ≈ ``I``), signalling the
-        caller they can use simpler ``scale``+``translate`` machinery.
+        Raises :class:`MEDH5ValidationError` (a ``ValueError`` subclass)
+        on mismatch so callers can catch either type.
         """
         spacing = self.spacing
         origin = self.origin
@@ -103,29 +97,49 @@ class SpatialMeta:
                 f"direction must be a {ndim}x{ndim} matrix, "
                 f"got {len(direction)}x{bad_cols}"
             )
+        if self.axis_labels is not None and len(self.axis_labels) != ndim:
+            raise MEDH5ValidationError(
+                f"axis_labels length ({len(self.axis_labels)}) != ndim ({ndim})"
+            )
+
+    def as_affine(self, ndim: int) -> np.ndarray | None:
+        """Compose a homogeneous affine for viewer-style consumers.
+
+        Builds ``(ndim+1, ndim+1)`` matrix ``M`` where
+        ``M[:ndim,:ndim] = direction @ diag(spacing)`` and
+        ``M[:ndim, ndim] = origin`` (any missing pieces default to the
+        identity / zero).
+
+        Returns ``None`` when the rotation component is effectively
+        identity (no direction, or direction ≈ ``I``), signalling the
+        caller they can use simpler ``scale``+``translate`` machinery.
+        """
+        self._validate_dims(ndim)
+        direction = self.direction
 
         dir_arr = (
             np.asarray(direction, dtype=np.float64)
             if direction is not None
             else np.eye(ndim, dtype=np.float64)
         )
-        identity_direction = direction is None or np.allclose(dir_arr, np.eye(ndim))
-        if identity_direction:
+        if direction is None or np.allclose(dir_arr, np.eye(ndim)):
             return None
 
         spacing_arr = (
-            np.asarray(spacing, dtype=np.float64)
-            if spacing is not None
+            np.asarray(self.spacing, dtype=np.float64)
+            if self.spacing is not None
             else np.ones(ndim, dtype=np.float64)
         )
         origin_arr = (
-            np.asarray(origin, dtype=np.float64)
-            if origin is not None
+            np.asarray(self.origin, dtype=np.float64)
+            if self.origin is not None
             else np.zeros(ndim, dtype=np.float64)
         )
 
         affine = np.eye(ndim + 1, dtype=np.float64)
-        affine[:ndim, :ndim] = dir_arr * spacing_arr  # broadcast: columns scaled
+        # `dir_arr * spacing_arr` broadcasts spacing across columns,
+        # which is equivalent to `dir_arr @ np.diag(spacing_arr)`.
+        affine[:ndim, :ndim] = dir_arr * spacing_arr
         affine[:ndim, ndim] = origin_arr
         return affine
 
@@ -167,35 +181,24 @@ class SampleMeta:
     def validate(self, ndim: int | None = None) -> None:
         """Raise on obviously invalid metadata."""
         s = self.spatial
-        if s.spacing is not None:
-            if not all(isinstance(v, (int, float)) for v in s.spacing):
-                raise TypeError("spacing must contain only numbers")
-            if ndim is not None and len(s.spacing) != ndim:
-                raise ValueError(f"spacing length ({len(s.spacing)}) != ndim ({ndim})")
-        if s.origin is not None:
-            if not all(isinstance(v, (int, float)) for v in s.origin):
-                raise TypeError("origin must contain only numbers")
-            if ndim is not None and len(s.origin) != ndim:
-                raise ValueError(f"origin length ({len(s.origin)}) != ndim ({ndim})")
+        if s.spacing is not None and not all(
+            isinstance(v, (int, float)) for v in s.spacing
+        ):
+            raise TypeError("spacing must contain only numbers")
+        if s.origin is not None and not all(
+            isinstance(v, (int, float)) for v in s.origin
+        ):
+            raise TypeError("origin must contain only numbers")
         if s.direction is not None:
             for row in s.direction:
                 if not all(isinstance(v, (int, float)) for v in row):
                     raise TypeError("direction must contain only numbers")
-            if ndim is not None and (
-                len(s.direction) != ndim or any(len(row) != ndim for row in s.direction)
-            ):
-                bad_cols = len(s.direction[0]) if s.direction else 0
-                raise ValueError(
-                    f"direction must be a {ndim}x{ndim} matrix, "
-                    f"got {len(s.direction)}x{bad_cols}"
-                )
-        if s.axis_labels is not None:
-            if not all(isinstance(v, str) for v in s.axis_labels):
-                raise TypeError("axis_labels must be strings")
-            if ndim is not None and len(s.axis_labels) != ndim:
-                raise ValueError(
-                    f"axis_labels length ({len(s.axis_labels)}) != ndim ({ndim})"
-                )
+        if s.axis_labels is not None and not all(
+            isinstance(v, str) for v in s.axis_labels
+        ):
+            raise TypeError("axis_labels must be strings")
+        if ndim is not None:
+            s._validate_dims(ndim)
         if self.patch_size is not None:
             if not all(isinstance(v, int) for v in self.patch_size):
                 raise TypeError("patch_size must contain only integers")
@@ -257,8 +260,11 @@ def _warn_malformed_extra(extra: Any) -> None:
     nnunet = extra.get("nnunetv2")
     if isinstance(nnunet, dict) and "labels" in nnunet:
         labels = nnunet["labels"]
+        # bool is an int subclass in Python; exclude it explicitly so a
+        # stray {"tumor": True} doesn't slip through the dtype check.
         if not isinstance(labels, dict) or not all(
-            isinstance(k, str) and isinstance(v, int) for k, v in labels.items()
+            isinstance(k, str) and isinstance(v, int) and not isinstance(v, bool)
+            for k, v in labels.items()
         ):
             warnings.warn(
                 "Malformed extra.nnunetv2.labels: expected dict[str, int]",

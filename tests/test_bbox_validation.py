@@ -45,6 +45,12 @@ class TestValidateBboxes:
         with pytest.raises(MEDH5ValidationError, match="shape"):
             validate_bboxes(np.zeros((2, 2), dtype=np.int64), (8, 8, 8))
 
+    def test_float_dtype_rejected(self):
+        # Silent float-truncation would mask off-by-one errors; reject upfront.
+        boxes = np.array([[[0.5, 4.5], [0.0, 4.0], [0.0, 4.0]]], dtype=np.float64)
+        with pytest.raises(MEDH5ValidationError, match="integer dtype"):
+            validate_bboxes(boxes, (8, 8, 8))
+
     def test_does_not_mutate_input(self):
         boxes = np.array([[[-2, 20], [0, 4], [0, 4]]], dtype=np.int64)
         original = boxes.copy()

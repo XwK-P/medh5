@@ -34,7 +34,11 @@ from medh5.meta import (
     read_meta,
     write_meta,
 )
-from medh5.review import _looks_like_already_open, get_review_status, set_review_status
+from medh5.review import (
+    _wrap_open_or_lock_error,
+    get_review_status,
+    set_review_status,
+)
 
 
 class _UnsetType:
@@ -245,6 +249,11 @@ def validate_bboxes(
     if arr.ndim != 3 or arr.shape[1:] != (ndim, 2):
         raise MEDH5ValidationError(
             f"bboxes must have shape (n, {ndim}, 2), got {arr.shape}"
+        )
+    if arr.dtype.kind not in {"i", "u"}:
+        raise MEDH5ValidationError(
+            f"bboxes must have integer dtype (got {arr.dtype}); "
+            f"convert with .astype(np.int64) first"
         )
 
     clamped = arr.astype(np.int64, copy=True)
@@ -1247,12 +1256,9 @@ class MEDH5File:
         except MEDH5FileError:
             raise
         except OSError as exc:
-            if _looks_like_already_open(exc):
-                raise MEDH5FileError(
-                    f"'{path}' is already open in this process; close other "
-                    f"MEDH5File handles before updating"
-                ) from exc
-            raise MEDH5FileError(f"Failed to update '{path}': {exc}") from exc
+            raise _wrap_open_or_lock_error(
+                path, exc, action="update", before_phrase="updating"
+            ) from exc
 
         if on_reopened is not None:
             on_reopened(path)
