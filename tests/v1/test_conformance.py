@@ -17,10 +17,10 @@ from medh5.conformance import CASES, build_corpus, case_by_name, run_corpus
 from medh5.errors import CODES
 from medh5.validate import validate_file
 
-# Codes owned by spec sections that phases 3 and 4 implement (oriented boxes and
-# transforms).  Listed explicitly so the corpus's coverage gap is a decision on
-# the record rather than an omission nobody noticed.
-DEFERRED_CODES = frozenset({"E407", "E501", "E502", "E503", "E504", "E505"})
+# Codes owned by §10 (transforms), which phase 4 implements.  Listed explicitly
+# so the corpus's coverage gap is a decision on the record rather than an
+# omission nobody noticed.
+DEFERRED_CODES = frozenset({"E501", "E502", "E503", "E504", "E505"})
 
 
 @pytest.fixture(scope="module")

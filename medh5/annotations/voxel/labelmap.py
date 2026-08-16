@@ -9,7 +9,8 @@ import numpy as np
 import numpy.typing as npt
 
 from medh5.annotations.base import VoxelAnnotation
-from medh5.annotations.voxel.payload import Masks, VoxelPayload, normalize_masks
+from medh5.annotations.payload import AnnotationPayload
+from medh5.annotations.voxel.payload import Masks, normalize_masks
 from medh5.annotations.voxel.select import label_dtype_size
 from medh5.errors import MEDH5ValidationError
 from medh5.labels.labelset import IGNORE_ID
@@ -21,7 +22,7 @@ def encode_labelmap(
     *,
     ignore: npt.NDArray[np.bool_] | None = None,
     ignore_id: int = IGNORE_ID,
-) -> VoxelPayload:
+) -> AnnotationPayload:
     """Pack mutually exclusive class masks into one integer volume.
 
     Raises E404 when two classes claim the same voxel: silently letting the last
@@ -49,7 +50,7 @@ def encode_labelmap(
     if ignore is not None:
         ignore_arr = np.asarray(ignore, dtype=bool)
         data[ignore_arr & ~claimed] = dtype(ignore_id)
-    return VoxelPayload(
+    return AnnotationPayload(
         kind="labelmap",
         datasets={"data": data},
         attrs={},

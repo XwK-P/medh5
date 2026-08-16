@@ -19,7 +19,8 @@ import numpy as np
 import numpy.typing as npt
 
 from medh5.annotations.base import VoxelAnnotation
-from medh5.annotations.voxel.payload import Masks, VoxelPayload, normalize_masks
+from medh5.annotations.payload import AnnotationPayload
+from medh5.annotations.voxel.payload import Masks, normalize_masks
 from medh5.annotations.voxel.select import (
     label_dtype_size,
     layers_from_colouring,
@@ -35,7 +36,7 @@ def encode_layers(
     colouring: dict[int, int] | None = None,
     ignore: npt.NDArray[np.bool_] | None = None,
     ignore_id: int = IGNORE_ID,
-) -> VoxelPayload:
+) -> AnnotationPayload:
     """Colour the overlap graph and pack each colour into one labelmap."""
     from medh5.annotations.voxel.select import analyse
 
@@ -76,7 +77,7 @@ def encode_layers(
     for layer, bucket in enumerate(buckets):
         layer_class_ids[layer, : len(bucket)] = np.asarray(bucket, dtype=np.uint16)
 
-    return VoxelPayload(
+    return AnnotationPayload(
         kind="layers",
         datasets={"data": data, "layer_class_ids": layer_class_ids},
         attrs={},

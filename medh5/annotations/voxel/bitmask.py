@@ -19,7 +19,8 @@ import numpy as np
 import numpy.typing as npt
 
 from medh5.annotations.base import VoxelAnnotation
-from medh5.annotations.voxel.payload import Masks, VoxelPayload, normalize_masks
+from medh5.annotations.payload import AnnotationPayload
+from medh5.annotations.voxel.payload import Masks, normalize_masks
 from medh5.errors import MEDH5ValidationError
 
 BITS_PER_PLANE = 64
@@ -27,7 +28,7 @@ BITS_PER_PLANE = 64
 
 def encode_bitmask(
     masks: Masks, spatial_shape: tuple[int, ...] | None = None
-) -> VoxelPayload:
+) -> AnnotationPayload:
     """Pack class masks into ``ceil(C/64)`` ``uint64`` bitplanes."""
     resolved, shape = normalize_masks(masks, spatial_shape)
     class_ids = tuple(sorted(resolved))
@@ -36,7 +37,7 @@ def encode_bitmask(
     for position, class_id in enumerate(class_ids):
         plane, bit = divmod(position, BITS_PER_PLANE)
         data[plane][resolved[class_id]] |= np.uint64(1) << np.uint64(bit)
-    return VoxelPayload(
+    return AnnotationPayload(
         kind="bitmask",
         datasets={
             "data": data,

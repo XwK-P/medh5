@@ -46,7 +46,7 @@ the declared profiles. Profiles compose; `core` is always required.
 |---|---|
 | `core` | §2 container, §3 geometry and timepoints, §4 images, §13 integrity |
 | `seg` | `core` + §5 label set + at least one voxel annotation (§7) |
-| `det` | `core` + §5 label set + at least one geometric annotation (§8) |
+| `det` | `core` + §5 label set + at least one geometric annotation (§8) whose `task` is `detection`. Contours and meshes are geometry in service of segmentation (§6.3) and do not, alone, make a file a detection dataset. |
 | `cls` | `core` + §5 label set + at least one classification annotation (§9) |
 | `reg` | `core` + at least one transform (§10) with resolvable endpoints |
 | `curation` | `core` + §11 provenance graph + `quality` on every annotation |
@@ -890,7 +890,7 @@ profile on its own.
 
 | Dataset | Shape | dtype | Meaning |
 |---|---|---|---|
-| `class_ids` | `(K,)` | `uint16` | asserted classes |
+| `class_ids` | `(K,)` | `uint16` | asserted classes — **the dataset**, distinct from the same-named §6.2 *attribute*, which declares the classes this annotation can express |
 | `values` | `(K,)` | `float32` | `1.0` for a hard positive; ∈[0,1] for soft/consensus labels; `0.0` asserts **verified negative** |
 | `scope_ids` | `(K,)` | `int64` | OPTIONAL — per assertion: slice index, roi id, instance id, or timepoint `index` when `scope = "timepoint"` |
 | `scheme_values` | `(K,)` | vlen UTF-8 | OPTIONAL — ordinal value in a named scheme |
@@ -898,8 +898,12 @@ profile on its own.
 
 Semantics:
 
-* A class in `annotated_class_ids` with **no** entry in `class_ids` is a **negative**: it was looked
-  for and not found. A class not in `annotated_class_ids` is **unknown**.
+* A class in `annotated_class_ids` with **no** entry in the `class_ids` *dataset* is a **negative**:
+  it was looked for and not found. A class not in `annotated_class_ids` is **unknown**. Because
+  `annotated_class_ids ⊆ class_ids` must hold for the *attribute* (§6.2), a writer includes every
+  searched-for class in the attribute even when no assertion carries it. This is the general rule for
+  kinds whose `class_ids` attribute does not index storage — §8 and §9 — and it is why the attribute
+  and the dataset are allowed to differ.
 * `values = 0.0` records an explicit negative assertion (useful for multi-rater aggregation where
   "0 of 4 raters" differs from "not assessed").
 * Ordinal scales are labels, not numbers: store `schemes = "BI-RADS"`, `scheme_values = "4b"`, plus a
@@ -1373,7 +1377,7 @@ one.
 | `E1xx` | geometry | `E101` referenced grid does not exist; `E102` `direction` not orthonormal; `E103` spatial axes not trailing/contiguous; `E104` `spacing ≤ 0`; `E105` multiscale geometry inconsistent; `E106` grid without `timepoint` in a multi-timepoint sample; `E107` grid `timepoint` not declared; `E108` `timepoints` empty, or `index` not dense and increasing; `E109` required grid attribute missing or of the wrong rank; `E110` `axis_kinds` invalid for the declared dimensionality; `E111` `grids` contains no grid |
 | `E2xx` | images | `E201` `images` empty; `E202` image shape ≠ grid shape; `E203` unknown `value_type`; `E204` `channel_names` length ≠ channel extent; `E205` required image attribute missing |
 | `E3xx` | label set | `E301` missing label set for a declared profile; `E302` duplicate class id or key; `E303` reserved id used; `E304` hierarchy cycle; `E305` `ref` label set lacking `uri`/`sha256`, or unresolvable; `E306` class entry missing a required field, out of id range, or naming an unknown parent |
-| `E4xx` | annotations | `E401` unknown `kind`; `E402` class id not in label set; `E403` `annotated_class_ids ⊄ class_ids`; `E404` encoding invariant violated (e.g. a class in two layers); `E405` shape mismatch with grid; `E406` box `lo > hi`; `E407` `rotations` not a proper rotation; `E408` offsets not monotonic; `E409` `timepoints` references an undeclared timepoint; `E410` a dataset required by the `kind` is absent; `E411` dataset dtype not permitted for the `kind`; `E412` required annotation attribute missing |
+| `E4xx` | annotations | `E401` unknown `kind`; `E402` class id not in label set; `E403` `annotated_class_ids ⊄ class_ids`; `E404` encoding invariant violated (e.g. a class in two layers); `E405` shape mismatch with grid; `E406` box `lo > hi`; `E407` `rotations` not a proper rotation; `E408` offsets not monotonic; `E409` `timepoints` references an undeclared timepoint; `E410` a dataset required by the `kind` is absent; `E411` dataset dtype not permitted for the `kind`; `E412` required annotation attribute missing; `E413` reference to a skeleton, correspondence, ignore mask or source annotation that does not exist; `E414` `space` invalid for the annotation's grid or frame |
 | `E5xx` | transforms | `E501` composite frame chain broken; `E502` unknown transform kind; `E503` field grid not in `from_frame`; `E504` affine last row ≠ `[0…0 1]`; `E505` `inverse_id` not mutually consistent |
 | `E6xx` | curation | `E601` dangling `prov` reference; `E602` unknown `quality` key; `E603` unknown agent or activity type; `E604` non-RFC3339 timestamp; `E605` activity names an undeclared agent |
 | `E7xx` | integrity | `E701` object digest mismatch; `E702` `content_id` mismatch; `E703` malformed digest string |
@@ -1483,9 +1487,9 @@ grouping, since a 0.x file carries no reliable subject key of its own.
 
 ### C.1 Reference implementation
 
-Sections §2–§7 and §11–§15 are **implemented** in the `medh5` package and exercised by a conformance
-corpus (§15) of 75 files: valid samples covering every encoding, dimensionality and profile, plus one
-deliberately-invalid file per diagnostic code. Running the corpus against a validator is how a
+Sections §2–§9 and §11–§15 are **implemented** in the `medh5` package and exercised by a conformance
+corpus (§15) of 87 files: valid samples covering every encoding, annotation kind, dimensionality and
+profile, plus one deliberately-invalid file per diagnostic code. Running the corpus against a validator is how a
 third-party implementation demonstrates conformance:
 
 ```
@@ -1493,8 +1497,8 @@ $ medh5 conformance run ./corpus
 75/75 cases pass
 ```
 
-Every code in §15.2 except `E407` and `E501`–`E505` — the oriented-box and transform codes, whose
-sections are not yet implemented — has a corpus case. The implementation gates on `ruff`,
+Every code in §15.2 except `E501`–`E505` — the transform codes, whose section is not yet
+implemented — has a corpus case. The implementation gates on `ruff`,
 `mypy --strict` and ≥ 90 % test coverage, and a test asserts that the §15.2 table and the
 implementation's code registry are identical, so the two cannot drift.
 
@@ -1507,6 +1511,8 @@ not implementable as written:
 | §5.1 | The canonical serialization behind `label_set.sha256` is now defined (sorted keys, no whitespace, UTF-8, carriage fields excluded), so two implementations agree on the digest. |
 | §13.2 | `content_id` covers exactly `medh5_version`, `medh5_kind` and `medh5_profiles` at the root. `created` and `generator` are excluded, or identical samples written at different times would not share an address. |
 | §13.3 | "the `digest` of the annotation" is now defined for a multi-dataset group, since only datasets carry digests. |
+| §1.3 | `det` requires a §8 annotation whose `task` is `detection`, not any §8 kind: §6.3 assigns contours and meshes to segmentation, so the two clauses contradicted each other. |
+| §9 | The `class_ids` *dataset* (asserted classes) and the same-named §6.2 *attribute* (classes the annotation can express) are now explicitly distinguished, since `annotated_class_ids ⊆ class_ids` would otherwise make "looked for and not found" inexpressible. |
 
 ### C.2 Prototype checks
 

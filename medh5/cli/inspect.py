@@ -182,11 +182,12 @@ def _info(args: argparse.Namespace) -> int:
                                     a["id"],
                                     a["kind"],
                                     a["task"],
-                                    a["grid"] or "-",
-                                    ",".join(a["timepoints"]) or "-",
-                                    f"{a['annotated_classes']}/{a['classes']}",
-                                    "yes" if a["fully_covered"] else "PARTIAL",
-                                    a["quality"] or "-",
+                                    a.get("grid") or "-",
+                                    ",".join(a.get("timepoints") or ()) or "-",
+                                    f"{a.get('annotated_classes', 0)}"
+                                    f"/{a.get('classes', 0)}",
+                                    "yes" if a.get("fully_covered") else "PARTIAL",
+                                    a.get("quality") or "-",
                                 ]
                                 for a in summary["annotations"]
                             ],

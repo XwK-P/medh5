@@ -12,14 +12,14 @@ import numpy as np
 import numpy.typing as npt
 
 from medh5.annotations.base import VoxelAnnotation
-from medh5.annotations.voxel.payload import VoxelPayload
+from medh5.annotations.payload import AnnotationPayload
 from medh5.errors import MEDH5ValidationError
 
 
-def encode_mask(mask: npt.NDArray[Any]) -> VoxelPayload:
+def encode_mask(mask: npt.NDArray[Any]) -> AnnotationPayload:
     """Wrap a boolean volume as a ``mask`` payload."""
     data = np.asarray(mask, dtype=bool)
-    return VoxelPayload(
+    return AnnotationPayload(
         kind="mask", datasets={"data": data}, attrs={}, stacked_axes=0, class_ids=()
     )
 

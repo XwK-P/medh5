@@ -42,10 +42,21 @@ from medh5.annotations.base import (
     VoxelAnnotation,
     open_annotation,
 )
+from medh5.annotations.classification import encode_classification
+from medh5.annotations.geometric import (
+    Polygon,
+    check_space,
+    encode_boxes,
+    encode_contours,
+    encode_keypoints,
+    encode_mesh,
+    encode_obb,
+    encode_points,
+)
 from medh5.annotations.voxel import (
+    AnnotationPayload,
     InstanceInput,
     OverlapStats,
-    VoxelPayload,
     encode_instances,
     encode_mask,
     encode_masks,
@@ -941,7 +952,7 @@ class SampleWriter:
         grid: Grid,
         encoding: str,
         ignore: npt.NDArray[np.bool_] | None,
-    ) -> tuple[VoxelPayload, OverlapStats | None, tuple[int, ...]]:
+    ) -> tuple[AnnotationPayload, OverlapStats | None, tuple[int, ...]]:
         if instances is not None:
             payload = encode_instances(instances, grid.spatial_shape)
             return payload, None, payload.class_ids
@@ -994,8 +1005,8 @@ class SampleWriter:
         self,
         ann_id: str,
         header: AnnotationHeader,
-        payload: VoxelPayload,
-        grid: Grid,
+        payload: AnnotationPayload,
+        grid: Grid | None,
         codec: str | None,
     ) -> h5py.Group:
         validate_id(ann_id, what="annotation id")
@@ -1005,7 +1016,7 @@ class SampleWriter:
         group = node.create_group(ann_id)
         for name, array in payload.datasets.items():
             chunks = None
-            if name == "data" and array.ndim >= grid.n_spatial:
+            if grid is not None and name == "data" and array.ndim >= grid.n_spatial:
                 proposed = self._chunks_for(
                     grid, array.dtype.itemsize, leading=payload.stacked_axes
                 )[-array.ndim :]
@@ -1108,6 +1119,433 @@ class SampleWriter:
         self._write_annotation(ann_id, header, payload, grid, codec)
         return to_kind
 
+    # -- geometric and classification annotations (§8, §9) -----------------
+
+    def _add_object_annotation(
+        self,
+        ann_id: str,
+        payload: AnnotationPayload,
+        *,
+        grid: str | None,
+        space: str | None,
+        frame_uid: str | None,
+        annotated_classes: str | Sequence[int | str],
+        closure: str,
+        timepoints: Sequence[str] | None,
+        prov: Activity | str | None,
+        quality: str | Mapping[str, Any] | None,
+        derived_from: Sequence[str],
+        task: str,
+        codec: str | None,
+        extra: Mapping[str, Any] | None = None,
+    ) -> h5py.Group:
+        """Shared path for every §8/§9 kind: resolve the space, then write.
+
+        ``space = None`` is the classification case: a label is *about* a scope
+        unit rather than located in one, so it has no coordinates to place.
+        """
+        target = self._grid(grid) if grid is not None else None
+        if space is not None:
+            check_space(space)
+        if space == "index" and target is None:
+            raise MEDH5ValidationError(
+                f"annotation {ann_id!r}: space='index' names a grid's coordinates, "
+                "so `grid` is required",
+                code="E412",
+            )
+        resolved_frame = frame_uid
+        if space == "world":
+            if resolved_frame is None and target is not None:
+                resolved_frame = target.frame_uid
+            if resolved_frame is None:
+                raise MEDH5ValidationError(
+                    f"annotation {ann_id!r}: space='world' names a physical frame, so "
+                    "`frame_uid` is required (directly or via the grid)",
+                    code="E412",
+                )
+        if target is not None and target.units == "px" and space != "index":
+            raise MEDH5ValidationError(
+                f"annotation {ann_id!r}: grid {target.grid_id!r} is uncalibrated "
+                "(units='px'), so geometric annotations on it must use space='index'",
+                code="E414",
+            )
+        # For §8/§9 kinds the `class_ids` attribute is a *declaration*, not an
+        # index into storage the way a layer table or a bitplane order is.  A
+        # class that was searched for and not found therefore belongs in it:
+        # otherwise `annotated_class_ids` could not be a subset (E403), and §9's
+        # "looked for and not found is a negative" would be inexpressible.
+        annotated = self._resolve_annotated(annotated_classes, payload.class_ids)
+        declared = tuple(sorted(set(payload.class_ids) | set(annotated)))
+        header = AnnotationHeader(
+            kind=payload.kind,
+            task=task,
+            grid=grid,
+            timepoints=tuple(timepoints) if timepoints is not None else None,
+            space=space,
+            frame_uid=resolved_frame,
+            class_ids=declared,
+            annotated_class_ids=annotated,
+            closure=closure,
+            prov=_prov_id(prov),
+            quality=self._quality_key(ann_id, quality),
+            derived_from=tuple(derived_from),
+            extra={**dict(payload.attrs), **dict(extra or {})},
+        )
+        return self._write_annotation(ann_id, header, payload, target, codec)
+
+    def add_boxes(
+        self,
+        ann_id: str,
+        boxes: npt.ArrayLike,
+        class_ids: Sequence[int | str],
+        *,
+        grid: str | None = None,
+        space: str = "index",
+        frame_uid: str | None = None,
+        instance_ids: Sequence[int] | None = None,
+        scores: Sequence[float] | None = None,
+        attributes: Sequence[Mapping[str, Any]] | None = None,
+        slice_index: Sequence[int] | None = None,
+        annotated_classes: str | Sequence[int | str] = "all_given",
+        closure: str = "explicit",
+        timepoints: Sequence[str] | None = None,
+        prov: Activity | str | None = None,
+        quality: str | Mapping[str, Any] | None = None,
+        derived_from: Sequence[str] = (),
+        task: str = "detection",
+        codec: str | None = None,
+    ) -> h5py.Group:
+        """Write axis-aligned boxes as ``(N, S, 2)`` float `[lo, hi]` (spec §8.2)."""
+        payload = encode_boxes(
+            boxes,
+            [self._class_id(c) for c in class_ids],
+            instance_ids=instance_ids,
+            scores=scores,
+            attributes=attributes,
+            slice_index=slice_index,
+        )
+        return self._add_object_annotation(
+            ann_id,
+            payload,
+            grid=grid,
+            space=space,
+            frame_uid=frame_uid,
+            annotated_classes=annotated_classes,
+            closure=closure,
+            timepoints=timepoints,
+            prov=prov,
+            quality=quality,
+            derived_from=derived_from,
+            task=task,
+            codec=codec,
+        )
+
+    def add_obb(
+        self,
+        ann_id: str,
+        centers: npt.ArrayLike,
+        sizes: npt.ArrayLike,
+        rotations: npt.ArrayLike,
+        class_ids: Sequence[int | str],
+        *,
+        grid: str | None = None,
+        space: str = "index",
+        frame_uid: str | None = None,
+        instance_ids: Sequence[int] | None = None,
+        scores: Sequence[float] | None = None,
+        attributes: Sequence[Mapping[str, Any]] | None = None,
+        annotated_classes: str | Sequence[int | str] = "all_given",
+        closure: str = "explicit",
+        timepoints: Sequence[str] | None = None,
+        prov: Activity | str | None = None,
+        quality: str | Mapping[str, Any] | None = None,
+        derived_from: Sequence[str] = (),
+        task: str = "detection",
+        codec: str | None = None,
+    ) -> h5py.Group:
+        """Write oriented boxes: centre, full edge lengths, rotation matrix (§8.3)."""
+        payload = encode_obb(
+            centers,
+            sizes,
+            rotations,
+            [self._class_id(c) for c in class_ids],
+            instance_ids=instance_ids,
+            scores=scores,
+            attributes=attributes,
+        )
+        return self._add_object_annotation(
+            ann_id,
+            payload,
+            grid=grid,
+            space=space,
+            frame_uid=frame_uid,
+            annotated_classes=annotated_classes,
+            closure=closure,
+            timepoints=timepoints,
+            prov=prov,
+            quality=quality,
+            derived_from=derived_from,
+            task=task,
+            codec=codec,
+        )
+
+    def add_keypoints(
+        self,
+        ann_id: str,
+        points: npt.ArrayLike,
+        keypoint_classes: Sequence[int | str],
+        class_ids: Sequence[int | str],
+        *,
+        grid: str | None = None,
+        space: str = "index",
+        frame_uid: str | None = None,
+        visibility: npt.ArrayLike | None = None,
+        instance_ids: Sequence[int] | None = None,
+        scores: Sequence[float] | None = None,
+        skeleton: str | None = None,
+        annotated_classes: str | Sequence[int | str] = "all_given",
+        closure: str = "explicit",
+        timepoints: Sequence[str] | None = None,
+        prov: Activity | str | None = None,
+        quality: str | Mapping[str, Any] | None = None,
+        derived_from: Sequence[str] = (),
+        task: str = "detection",
+        codec: str | None = None,
+    ) -> h5py.Group:
+        """Write ``(N, K, S)`` keypoints with per-slot classes (spec §8.4)."""
+        if skeleton is not None:
+            label_set = self._document.label_set
+            if label_set is None or not any(
+                sk.id == skeleton for sk in label_set.skeletons
+            ):
+                raise MEDH5ValidationError(
+                    f"annotation {ann_id!r} names skeleton {skeleton!r}, which the "
+                    "label set does not declare",
+                    code="E413",
+                )
+        payload = encode_keypoints(
+            points,
+            [self._class_id(c) for c in keypoint_classes],
+            [self._class_id(c) for c in class_ids],
+            visibility=visibility,
+            instance_ids=instance_ids,
+            scores=scores,
+            skeleton=skeleton,
+        )
+        return self._add_object_annotation(
+            ann_id,
+            payload,
+            grid=grid,
+            space=space,
+            frame_uid=frame_uid,
+            annotated_classes=annotated_classes,
+            closure=closure,
+            timepoints=timepoints,
+            prov=prov,
+            quality=quality,
+            derived_from=derived_from,
+            task=task,
+            codec=codec,
+        )
+
+    def add_points(
+        self,
+        ann_id: str,
+        points: npt.ArrayLike,
+        *,
+        grid: str | None = None,
+        space: str = "index",
+        frame_uid: str | None = None,
+        class_ids: Sequence[int | str] | None = None,
+        names: Sequence[str] | None = None,
+        weights: Sequence[float] | None = None,
+        correspondence: str | None = None,
+        annotated_classes: str | Sequence[int | str] = "all_given",
+        closure: str = "explicit",
+        timepoints: Sequence[str] | None = None,
+        prov: Activity | str | None = None,
+        quality: str | Mapping[str, Any] | None = None,
+        derived_from: Sequence[str] = (),
+        task: str = "detection",
+        codec: str | None = None,
+    ) -> h5py.Group:
+        """Write a point set: landmarks, seeds, or half of a correspondence (§8.5)."""
+        payload = encode_points(
+            points,
+            class_ids=(
+                [self._class_id(c) for c in class_ids]
+                if class_ids is not None
+                else None
+            ),
+            names=names,
+            weights=weights,
+            correspondence=correspondence,
+        )
+        return self._add_object_annotation(
+            ann_id,
+            payload,
+            grid=grid,
+            space=space,
+            frame_uid=frame_uid,
+            annotated_classes=annotated_classes,
+            closure=closure,
+            timepoints=timepoints,
+            prov=prov,
+            quality=quality,
+            derived_from=derived_from,
+            task=task,
+            codec=codec,
+        )
+
+    def add_contours(
+        self,
+        ann_id: str,
+        polygons: Sequence[Polygon],
+        *,
+        grid: str | None = None,
+        space: str = "index",
+        frame_uid: str | None = None,
+        annotated_classes: str | Sequence[int | str] = "all_given",
+        closure: str = "explicit",
+        timepoints: Sequence[str] | None = None,
+        prov: Activity | str | None = None,
+        quality: str | Mapping[str, Any] | None = None,
+        derived_from: Sequence[str] = (),
+        task: str = "segmentation",
+        codec: str | None = None,
+    ) -> h5py.Group:
+        """Write planar polygons (spec §8.6) --- the RTSTRUCT-shaped annotation."""
+        payload = encode_contours(polygons)
+        return self._add_object_annotation(
+            ann_id,
+            payload,
+            grid=grid,
+            space=space,
+            frame_uid=frame_uid,
+            annotated_classes=annotated_classes,
+            closure=closure,
+            timepoints=timepoints,
+            prov=prov,
+            quality=quality,
+            derived_from=derived_from,
+            task=task,
+            codec=codec,
+        )
+
+    def add_mesh(
+        self,
+        ann_id: str,
+        vertices: npt.ArrayLike,
+        faces: npt.ArrayLike,
+        *,
+        grid: str | None = None,
+        space: str = "world",
+        frame_uid: str | None = None,
+        normals: npt.ArrayLike | None = None,
+        vertex_class_ids: Sequence[int | str] | None = None,
+        mesh_offsets: Sequence[int] | None = None,
+        mesh_class_ids: Sequence[int | str] | None = None,
+        annotated_classes: str | Sequence[int | str] = "all_given",
+        closure: str = "explicit",
+        timepoints: Sequence[str] | None = None,
+        prov: Activity | str | None = None,
+        quality: str | Mapping[str, Any] | None = None,
+        derived_from: Sequence[str] = (),
+        task: str = "segmentation",
+        codec: str | None = None,
+    ) -> h5py.Group:
+        """Write a triangle surface mesh (spec §8.7)."""
+        payload = encode_mesh(
+            vertices,
+            faces,
+            normals=normals,
+            vertex_class_ids=(
+                [self._class_id(c) for c in vertex_class_ids]
+                if vertex_class_ids is not None
+                else None
+            ),
+            mesh_offsets=mesh_offsets,
+            mesh_class_ids=(
+                [self._class_id(c) for c in mesh_class_ids]
+                if mesh_class_ids is not None
+                else None
+            ),
+        )
+        return self._add_object_annotation(
+            ann_id,
+            payload,
+            grid=grid,
+            space=space,
+            frame_uid=frame_uid,
+            annotated_classes=annotated_classes,
+            closure=closure,
+            timepoints=timepoints,
+            prov=prov,
+            quality=quality,
+            derived_from=derived_from,
+            task=task,
+            codec=codec,
+        )
+
+    def add_classification(
+        self,
+        ann_id: str,
+        labels: Mapping[int | str, float],
+        *,
+        scope: str = "sample",
+        multilabel: bool = True,
+        scope_ids: Sequence[int] | None = None,
+        schemes: Sequence[str] | None = None,
+        scheme_values: Sequence[str] | None = None,
+        grid: str | None = None,
+        annotated_classes: str | Sequence[int | str] = "all_given",
+        closure: str = "explicit",
+        timepoints: Sequence[str] | None = None,
+        prov: Activity | str | None = None,
+        quality: str | Mapping[str, Any] | None = None,
+        derived_from: Sequence[str] = (),
+        codec: str | None = None,
+    ) -> h5py.Group:
+        """Write a classification annotation (spec §9).
+
+        A **change label** is this call with ``scope="sample"`` and an explicit
+        ``timepoints`` list naming the visits compared --- the format adds no
+        ``change`` kind, because what makes a change label well defined is that
+        the compared timepoints are named rather than implied.
+        """
+        payload = encode_classification(
+            {self._class_id(k): v for k, v in labels.items()},
+            scope=scope,
+            multilabel=multilabel,
+            scope_ids=scope_ids,
+            schemes=schemes,
+            scheme_values=scheme_values,
+        )
+        if scope == "timepoint" and scope_ids is not None:
+            declared = len(self._document.timepoints)
+            unknown = sorted({int(v) for v in scope_ids if not 0 <= int(v) < declared})
+            if unknown:
+                raise MEDH5ValidationError(
+                    f"annotation {ann_id!r}: scope='timepoint' scope_ids {unknown} "
+                    f"are not timepoint indices (0..{declared - 1})",
+                    code="E409",
+                )
+        return self._add_object_annotation(
+            ann_id,
+            payload,
+            grid=grid,
+            space=None,
+            frame_uid=None,
+            annotated_classes=annotated_classes,
+            closure=closure,
+            timepoints=timepoints,
+            prov=prov,
+            quality=quality,
+            derived_from=derived_from,
+            task="classification",
+            codec=codec,
+        )
+
     # -- index -------------------------------------------------------------
 
     def build_index(
@@ -1160,10 +1598,7 @@ class SampleWriter:
             doc.label_set
         ):
             found.add("seg")
-        if (
-            kinds & {"boxes", "obb", "keypoints", "points", "instances"}
-            and doc.label_set
-        ):
+        if doc.label_set and self._has_task("detection"):
             found.add("det")
         if "classification" in kinds and doc.label_set:
             found.add("cls")
@@ -1190,6 +1625,17 @@ class SampleWriter:
                 f"unknown profile(s) {sorted(unknown)}", code="E007"
             )
         return frozenset(found | self._declared_profiles)
+
+    def _has_task(self, task: str) -> bool:
+        """Whether any annotation declares this task.
+
+        `det` is about the *task* an annotation serves, not merely about it being
+        a §8 kind: contours and a surface mesh are geometry in service of
+        segmentation (§6.3), and claiming a detection profile for them would make
+        the profile mean nothing.
+        """
+        node = self._file["annotations"]
+        return any(as_str(node[name].attrs.get("task", "")) == task for name in node)
 
     def _check_references(self) -> None:
         doc = self._document

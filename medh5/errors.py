@@ -143,6 +143,8 @@ _TABLE: tuple[Code, ...] = (
         "dataset dtype is not permitted for the annotation `kind`",
     ),
     _c("E412", "annotations", "required annotation attribute is missing"),
+    _c("E413", "annotations", "annotation references an object that does not exist"),
+    _c("E414", "annotations", "`space` is invalid for the annotation's grid or frame"),
     # --- E5xx transforms ----------------------------------------------------
     _c("E501", "transforms", "composite frame chain is broken"),
     _c("E502", "transforms", "unknown transform `kind`"),

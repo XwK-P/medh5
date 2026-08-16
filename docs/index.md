@@ -28,10 +28,11 @@ In 1.0 a **sample is one subject at one or more timepoints**, each with one or m
 longitudinal work (change detection, response assessment, lesion tracking, follow-up registration)
 lives inside one file, and assigning whole files to train/val/test cannot leak a patient.
 
-**Implemented so far** (plan phases 0–2): the container and its geometry, timepoints, images and
+**Implemented so far** (plan phases 0–3): the container and its geometry, timepoints, images and
 multiscale pyramids, label sets, all five voxel-annotation encodings with lossless transcoding between
-them, per-object digests and content addressing, the sampling index, the validator, a 75-case
-conformance corpus, and a CLI.
+them, every geometric annotation (boxes, oriented boxes, keypoints, landmarks, contours, meshes),
+classification including change labels across timepoints, per-object digests and content addressing,
+the sampling index, the validator, an 87-case conformance corpus, and a CLI.
 
 ```python
 import medh5
@@ -39,6 +40,8 @@ import medh5
 with medh5.open("case_0001.medh5") as s:
     s.at("tp1").images["CT_tp1"].read(physical=True)      # HU, not raw counts
     s.annotations["organs"].dense(["liver", "spleen"])    # any encoding, one API
+    s.annotations["lesions"].as_slices()                  # boxes -> numpy slices
+    s.annotations["response"].labels                      # change label across visits
     s.track(class_key="lesion")                           # instance ids across visits
 ```
 
@@ -48,10 +51,9 @@ $ medh5 validate case_0001.medh5 --level strict
 $ medh5 seg convert case_0001.medh5 organs --to bitmask   # lossless re-encoding
 ```
 
-**Not yet implemented:** geometric annotations (§8), classification (§9), transforms (§10),
-collections (§2.2), converters, and the PyTorch/MONAI loaders. Until those land, `medh5.legacy`
-holds the 0.6.0 implementation unchanged — the docs below describe it, and its import paths are
-`medh5.legacy.*`.
+**Not yet implemented:** transforms (§10), collections (§2.2), converters, and the PyTorch/MONAI
+loaders. Until those land, `medh5.legacy` holds the 0.6.0 implementation unchanged — the docs below
+describe it, and its import paths are `medh5.legacy.*`.
 
 - **[Specification (v1.0)](spec/medh5-1.0.md)** — normative on-disk schema: grids, geometry and
   timepoints, label sets, the voxel-annotation encodings, geometric annotations, transforms,

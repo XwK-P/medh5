@@ -16,7 +16,7 @@ import numpy as np
 import numpy.typing as npt
 
 from medh5.annotations.base import VoxelAnnotation
-from medh5.annotations.voxel.payload import VoxelPayload
+from medh5.annotations.payload import AnnotationPayload
 from medh5.errors import MEDH5ValidationError
 
 DEFAULT_THRESHOLD = 0.5
@@ -28,7 +28,7 @@ def encode_probmap(
     *,
     dtype: npt.DTypeLike = np.float16,
     normalized: bool = False,
-) -> VoxelPayload:
+) -> AnnotationPayload:
     """Stack per-class probability volumes on a leading class axis."""
     class_ids = tuple(sorted(int(c) for c in probabilities))
     shape = spatial_shape
@@ -52,7 +52,7 @@ def encode_probmap(
     if shape is None:
         raise MEDH5ValidationError("no probability maps were supplied", code="E410")
     data = np.stack(planes) if planes else np.zeros((0, *shape), dtype=np.dtype(dtype))
-    return VoxelPayload(
+    return AnnotationPayload(
         kind="probmap",
         datasets={"data": data},
         attrs={"normalized": bool(normalized)},

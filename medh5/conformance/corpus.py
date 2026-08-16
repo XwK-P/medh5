@@ -14,8 +14,9 @@ import numpy.typing as npt
 
 import medh5
 from medh5._hdf5 import encode_attr, open_h5, str_dtype
+from medh5.annotations.geometric import Polygon
 from medh5.annotations.voxel import InstanceInput
-from medh5.labels.labelset import LabelClass, LabelSet
+from medh5.labels.labelset import LabelClass, LabelSet, Skeleton
 from medh5.validate import validate_file
 from medh5.validate.report import Level
 
@@ -1450,6 +1451,343 @@ def _register_third_batch() -> None:
 
 
 _register_third_batch()
+
+
+def _det_base(
+    path: Path,
+    *,
+    space: str = "index",
+    units: str = "mm",
+    bad_box: bool = False,
+    bad_rotation: bool = False,
+    skeleton: str | None = None,
+    with_obb: bool = True,
+    with_keypoints: bool = False,
+) -> None:
+    """A detection sample: boxes, oriented boxes and optionally keypoints."""
+    rng = np.random.default_rng(SEED)
+    shape = (16, 24, 24)
+    boxes = np.array(
+        [
+            [[1.5, 7.5], [1.5, 9.5], [1.5, 9.5]],
+            [[6.5, 11.5], [10.5, 18.5], [4.5, 12.5]],
+        ],
+        dtype=np.float32,
+    )
+    label_set = _LS
+    if skeleton is not None:
+        label_set = LabelSet(
+            _LS.id,
+            version=_LS.version,
+            classes=list(_LS.classes),
+            skeletons=[Skeleton(skeleton, (1, 2), ((1, 2),))],
+        )
+    with medh5.create(path, sample_id=path.stem, codec="portable") as w:
+        w.add_timepoint("tp0")
+        w.label_set(label_set)
+        w.add_grid(
+            "ct",
+            shape=shape,
+            spacing=(1.5, 0.8, 0.8),
+            units=units,
+            timepoint="tp0",
+            frame_uid="pseudo:frame-100",
+        )
+        w.add_image(
+            "CT",
+            rng.integers(-1000, 1500, shape).astype(np.int16),
+            grid="ct",
+            modality="CT",
+            value_type="quantitative",
+            value_units="HU",
+        )
+        w.add_boxes(
+            "lesions",
+            boxes,
+            [3, 3],
+            grid="ct",
+            space=space,
+            instance_ids=[1, 2],
+            scores=[0.91, 0.62],
+            attributes=[{"reader": "r1"}, {"reader": "r1"}],
+        )
+        if with_obb:
+            angle = np.pi / 5
+            rotation = np.array(
+                [
+                    [1.0, 0.0, 0.0],
+                    [0.0, np.cos(angle), -np.sin(angle)],
+                    [0.0, np.sin(angle), np.cos(angle)],
+                ],
+                dtype=np.float32,
+            )
+            w.add_obb(
+                "lesions_obb",
+                centers=np.array([[6.0, 8.0, 8.0]], dtype=np.float32),
+                sizes=np.array([[4.0, 6.0, 6.0]], dtype=np.float32),
+                rotations=rotation[None],
+                class_ids=[3],
+                grid="ct",
+                space=space,
+            )
+        if with_keypoints:
+            w.add_keypoints(
+                "landmarks",
+                points=np.array([[[2.0, 3.0, 4.0], [5.0, 6.0, 7.0]]], dtype=np.float32),
+                keypoint_classes=[1, 2],
+                class_ids=[1],
+                grid="ct",
+                space=space,
+                visibility=np.array([[2, 1]], dtype=np.uint8),
+                skeleton=skeleton,
+            )
+        w.deidentification(method="dicom-psi-profile")
+    if bad_box:
+
+        def flip(handle: h5py.File) -> None:
+            values = np.asarray(handle["annotations/lesions/boxes"][...])
+            values[0, 0] = values[0, 0][::-1]
+            handle["annotations/lesions/boxes"][...] = values
+
+        _mutate(path, flip)
+    if bad_rotation:
+
+        def skew(handle: h5py.File) -> None:
+            values = np.asarray(handle["annotations/lesions_obb/rotations"][...])
+            values[0, 0, 1] = 0.7
+            handle["annotations/lesions_obb/rotations"][...] = values
+
+        _mutate(path, skew)
+
+
+def _cls_base(path: Path, *, multilabel: bool = True) -> None:
+    """A two-timepoint sample with per-visit staging and a change label."""
+    rng = np.random.default_rng(SEED)
+    shape = (12, 16, 16)
+    with medh5.create(path, sample_id=path.stem, codec="portable") as w:
+        w.add_timepoint("tp0", label="baseline", days_from_baseline=0)
+        w.add_timepoint("tp1", label="follow_up", days_from_baseline=92)
+        w.label_set(_LS)
+        for tp, frame in (("tp0", "pseudo:frame-100"), ("tp1", "pseudo:frame-101")):
+            w.add_grid(
+                f"ct_{tp}",
+                shape=shape,
+                spacing=(1.5, 0.8, 0.8),
+                timepoint=tp,
+                frame_uid=frame,
+            )
+            w.add_image(
+                f"CT_{tp}",
+                rng.integers(-1000, 1500, shape).astype(np.int16),
+                grid=f"ct_{tp}",
+                modality="CT",
+                value_type="quantitative",
+                value_units="HU",
+            )
+        w.add_classification(
+            "staging",
+            {3: 1.0, 4: 1.0},
+            scope="timepoint",
+            scope_ids=[0, 1],
+            multilabel=multilabel,
+            schemes=["Lung-RADS", "Lung-RADS"],
+            scheme_values=["4A", "4B"],
+        )
+        w.add_classification(
+            "response",
+            {1: 1.0},
+            scope="sample",
+            multilabel=False,
+            timepoints=["tp0", "tp1"],
+        )
+        w.deidentification(method="dicom-psi-profile")
+
+
+def _shape_base(path: Path) -> None:
+    """Contours and a surface mesh, the two non-voxel shape representations."""
+    rng = np.random.default_rng(SEED)
+    shape = (12, 16, 16)
+    square = np.array(
+        [[4.0, 4.0, 4.0], [4.0, 4.0, 9.0], [4.0, 9.0, 9.0], [4.0, 9.0, 4.0]],
+        dtype=np.float32,
+    )
+    hole = np.array(
+        [[4.0, 6.0, 6.0], [4.0, 6.0, 7.0], [4.0, 7.0, 7.0]], dtype=np.float32
+    )
+    vertices = np.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        dtype=np.float32,
+    )
+    faces = np.array([[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]], dtype=np.int32)
+    with medh5.create(path, sample_id=path.stem, codec="portable") as w:
+        w.add_timepoint("tp0")
+        w.label_set(_LS)
+        w.add_grid(
+            "ct",
+            shape=shape,
+            spacing=(1.0, 1.0, 1.0),
+            timepoint="tp0",
+            frame_uid="pseudo:frame-100",
+        )
+        w.add_image(
+            "CT",
+            rng.integers(-1000, 1500, shape).astype(np.int16),
+            grid="ct",
+            modality="CT",
+            value_type="quantitative",
+            value_units="HU",
+        )
+        w.add_contours(
+            "rtstruct",
+            [
+                Polygon(square, class_id=1, plane=(0, 4), role="outer"),
+                Polygon(hole, class_id=1, plane=(0, 4), role="hole"),
+            ],
+            grid="ct",
+        )
+        w.add_mesh(
+            "liver_surface",
+            vertices,
+            faces,
+            grid="ct",
+            space="world",
+            frame_uid="pseudo:frame-100",
+            mesh_class_ids=[1],
+        )
+        w.add_points(
+            "landmarks",
+            np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float32),
+            grid="ct",
+            names=["apex", "carina"],
+            weights=[1.0, 0.5],
+        )
+        w.deidentification(method="dicom-psi-profile")
+
+
+def _crowd_one_scope_unit(handle: h5py.File) -> None:
+    """Put both positives in one scope unit, then forbid more than one."""
+    group = handle["annotations/staging"]
+    group["scope_ids"][...] = np.zeros_like(np.asarray(group["scope_ids"][...]))
+    group.attrs["multilabel"] = np.bool_(False)
+
+
+def _register_geometric_cases() -> None:
+    _CASES.append(
+        Case(
+            name="det-boxes-obb",
+            description="Axis-aligned and oriented boxes with scores and attributes.",
+            clause="§8.2, §8.3",
+            build=_det_base,
+            warnings=("W912",),
+        )
+    )
+    _CASES.append(
+        Case(
+            name="det-keypoints",
+            description="Keypoints with per-slot classes, visibility and a skeleton.",
+            clause="§8.4",
+            build=lambda p: _det_base(p, with_keypoints=True, skeleton="pair"),
+            warnings=("W912",),
+        )
+    )
+    _CASES.append(
+        Case(
+            name="det-boxes-world",
+            description="Boxes stored in world coordinates of a named frame.",
+            clause="§8.1",
+            build=lambda p: _det_base(p, space="world"),
+            warnings=("W912",),
+        )
+    )
+    _CASES.append(
+        Case(
+            name="shapes-contours-mesh",
+            description="Planar contours with a hole, a surface mesh, and landmarks.",
+            clause="§8.5, §8.6, §8.7",
+            build=_shape_base,
+            warnings=("W912",),
+        )
+    )
+    _CASES.append(
+        Case(
+            name="cls-staging-and-change",
+            description="Per-visit staging with an ordinal scheme, plus a change "
+            "label naming the timepoints compared.",
+            clause="§9",
+            build=_cls_base,
+            warnings=("W911", "W912"),
+        )
+    )
+    _invalid(
+        "E406-box-lo-gt-hi-boxes",
+        "An axis-aligned box with lo greater than hi.",
+        "§8.1",
+        ["E406"],
+        lambda f: None,
+        base=lambda p: _det_base(p, bad_box=True),
+        warnings=["W912"],
+    )
+    _invalid(
+        "E407-improper-rotation",
+        "An `obb` rotation matrix that is not a proper rotation.",
+        "§8.3",
+        ["E407"],
+        lambda f: None,
+        base=lambda p: _det_base(p, bad_rotation=True),
+        warnings=["W912"],
+    )
+    _invalid(
+        "E412-missing-space",
+        "A geometric annotation with no `space`.",
+        "§8.1",
+        ["E412"],
+        lambda f: f["annotations/lesions"].attrs.__delitem__("space"),
+        base=_det_base,
+        warnings=["W912"],
+    )
+    _invalid(
+        "E413-unknown-skeleton",
+        "A `keypoints` annotation naming a skeleton the label set lacks.",
+        "§8.4",
+        ["E413"],
+        lambda f: f["annotations/landmarks"].attrs.__setitem__(
+            "skeleton", encode_attr("nope")
+        ),
+        base=lambda p: _det_base(p, with_keypoints=True, skeleton="pair"),
+        warnings=["W912"],
+    )
+    _invalid(
+        "E414-world-space-on-px-grid",
+        "World coordinates on an uncalibrated (units='px') grid.",
+        "§3.5",
+        ["E414"],
+        lambda f: f["grids/ct"].attrs.__setitem__("units", encode_attr("px")),
+        base=lambda p: _det_base(p, space="world"),
+        warnings=["W912"],
+    )
+    _invalid(
+        "E404-single-label-two-positives",
+        "multilabel=false with two positive classes in one scope unit.",
+        "§9",
+        ["E404"],
+        _crowd_one_scope_unit,
+        base=lambda p: _cls_base(p),
+        warnings=["W911", "W912"],
+    )
+    _invalid(
+        "E408-contour-offsets",
+        "Contour offsets that do not end at the vertex count.",
+        "§8.6",
+        ["E408"],
+        lambda f: f["annotations/rtstruct/contour_offsets"].__setitem__(
+            slice(None), np.array([0, 4, 5], dtype=np.int64)
+        ),
+        base=_shape_base,
+        warnings=["W912"],
+    )
+
+
+_register_geometric_cases()
 
 
 CASES: tuple[Case, ...] = tuple(_CASES)

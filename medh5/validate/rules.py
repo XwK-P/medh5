@@ -20,14 +20,17 @@ import numpy as np
 from medh5._hdf5 import ID_PATTERN, as_str, as_str_tuple
 from medh5.annotations.base import (
     ANNOTATION_KINDS,
+    GEOMETRIC_KINDS,
     RESERVED_KINDS,
     TASKS,
     VOXEL_KINDS,
 )
+from medh5.annotations.classification import SCOPES
+from medh5.annotations.geometric import ROTATION_TOL, SPACES
 from medh5.curation.provenance import ACTIVITY_TYPES, RFC3339
 from medh5.document import SampleDocument, schema_available, validate_against_schema
 from medh5.errors import CODES
-from medh5.geometry.affine import is_orthonormal
+from medh5.geometry.affine import is_orthonormal, is_proper_rotation
 from medh5.geometry.grid import AXIS_KINDS
 from medh5.image import VALUE_TYPES
 from medh5.labels.labelset import BACKGROUND_ID, CLOSURES, IGNORE_ID
@@ -44,6 +47,13 @@ REQUIRED_DATASETS: dict[str, tuple[str, ...]] = {
     "probmap": ("data",),
     "mask": ("data",),
     "instances": ("boxes", "class_ids", "instance_ids"),
+    "boxes": ("boxes", "class_ids"),
+    "obb": ("centers", "sizes", "rotations", "class_ids"),
+    "keypoints": ("points", "keypoint_class_ids", "class_ids"),
+    "points": ("points",),
+    "contours": ("vertices", "contour_offsets", "contour_class_ids"),
+    "mesh": ("vertices", "faces"),
+    "classification": ("class_ids", "values"),
 }
 
 ALLOWED_DTYPES: dict[str, tuple[str, ...]] = {
@@ -52,6 +62,20 @@ ALLOWED_DTYPES: dict[str, tuple[str, ...]] = {
     "bitmask": ("uint64",),
     "probmap": ("float16", "float32"),
     "mask": ("bool", "uint8"),
+}
+
+GEOMETRIC_DTYPES: dict[str, dict[str, tuple[str, ...]]] = {
+    "boxes": {"boxes": ("float32", "float64"), "class_ids": ("uint16",)},
+    "obb": {
+        "centers": ("float32", "float64"),
+        "sizes": ("float32", "float64"),
+        "rotations": ("float32", "float64"),
+    },
+    "keypoints": {"points": ("float32", "float64"), "visibility": ("uint8",)},
+    "points": {"points": ("float32", "float64")},
+    "contours": {"vertices": ("float32", "float64"), "contour_offsets": ("int64",)},
+    "mesh": {"vertices": ("float32", "float64"), "faces": ("int32", "int64")},
+    "classification": {"class_ids": ("uint16",), "values": ("float32", "float64")},
 }
 
 W908_TOLERANCE = 2
@@ -671,6 +695,9 @@ def check_annotations(ctx: Context) -> Iterator[Diagnostic]:
                 )
         yield from _check_voxel_shape(ctx, name, group, kind, grid_id, grids_node)
         yield from _check_encoding_invariants(ctx, name, group, kind)
+        yield from _check_dataset_dtypes(ctx, name, group, kind)
+        yield from _check_geometric(ctx, name, group, kind, grid_id, grids_node)
+        yield from _check_classification(ctx, name, group, kind, declared_timepoints)
         if kind != "mask" and annotated < class_ids and not _has_ignore(group, kind):
             yield ctx.err(
                 "W904",
@@ -785,14 +812,14 @@ def _check_layer_optimality(
 ) -> Iterator[Diagnostic]:
     if ctx.level not in ("semantic", "strict") or n_classes == 0:
         return
-    from medh5.annotations.voxel.payload import VoxelPayload
+    from medh5.annotations.payload import AnnotationPayload
     from medh5.annotations.voxel.select import analyse
     from medh5.annotations.voxel.transcode import payload_to_masks
 
     data = group["data"]
     if data.size > 64_000_000:  # noqa: PLR2004 - bounded: colouring needs the masks
         return
-    payload = VoxelPayload(
+    payload = AnnotationPayload(
         kind="layers",
         datasets={
             "data": np.asarray(data[...]),
@@ -809,6 +836,274 @@ def _check_layer_optimality(
             f"{optimal}; transcoding would cut the label volume by "
             f"{100 * (1 - optimal / n_layers):.0f}%",
         )
+
+
+def _check_dataset_dtypes(
+    ctx: Context, name: str, group: h5py.Group, kind: str
+) -> Iterator[Diagnostic]:
+    """Per-kind dtype checks for the §8/§9 datasets (E411)."""
+    for dataset, allowed in GEOMETRIC_DTYPES.get(kind, {}).items():
+        if dataset not in group:
+            continue
+        found = group[dataset].dtype.name
+        if found not in allowed:
+            yield ctx.err(
+                "E411",
+                f"/annotations/{name}/{dataset}",
+                f"dtype {found} is not permitted for {kind!r}.{dataset} "
+                f"(expected one of {list(allowed)})",
+            )
+
+
+def _check_geometric(
+    ctx: Context,
+    name: str,
+    group: h5py.Group,
+    kind: str,
+    grid_id: str | None,
+    grids_node: h5py.Group | None,
+) -> Iterator[Diagnostic]:
+    """Coordinate-space and per-kind invariants for §8 annotations."""
+    if kind not in GEOMETRIC_KINDS:
+        return
+    location = f"/annotations/{name}"
+    attrs = group.attrs
+    space = as_str(attrs["space"]) if "space" in attrs else None
+    if space is None:
+        yield ctx.err("E412", location, f"kind {kind!r} requires a `space` attribute")
+    elif space not in SPACES:
+        yield ctx.err("E412", location, f"unknown space {space!r}")
+    elif space == "index" and grid_id is None:
+        yield ctx.err(
+            "E412", location, "space='index' names a grid's coordinates, but no `grid`"
+        )
+    elif space == "world" and "frame_uid" not in attrs:
+        yield ctx.err(
+            "E412", location, "space='world' names a physical frame, but no `frame_uid`"
+        )
+    if (
+        space is not None
+        and space != "index"
+        and grid_id is not None
+        and grids_node is not None
+        and grid_id in grids_node
+        and as_str(grids_node[grid_id].attrs.get("units", "mm")) == "px"
+    ):
+        yield ctx.err(
+            "E414",
+            location,
+            f"grid {grid_id!r} is uncalibrated (units='px'), so a geometric "
+            "annotation on it must use space='index'",
+        )
+
+    if kind == "boxes" and "boxes" in group:
+        boxes = np.asarray(group["boxes"][...])
+        if boxes.ndim == 3 and boxes.size and np.any(boxes[..., 0] > boxes[..., 1]):  # noqa: PLR2004
+            bad = int(np.sum(np.any(boxes[..., 0] > boxes[..., 1], axis=1)))
+            yield ctx.err("E406", location, f"{bad} box(es) have lo > hi")
+    if kind == "obb" and "rotations" in group:
+        rotations = np.asarray(group["rotations"][...], dtype=np.float64)
+        offenders = [
+            i
+            for i in range(rotations.shape[0])
+            if not is_proper_rotation(rotations[i], ROTATION_TOL)
+        ]
+        if offenders:
+            yield ctx.err(
+                "E407",
+                location,
+                f"{len(offenders)} rotation(s) are not proper rotations "
+                f"(orthonormal with det = +1); first at index {offenders[0]}",
+            )
+        if "sizes" in group and np.any(np.asarray(group["sizes"][...]) < 0):
+            yield ctx.err("E406", location, "`sizes` must be non-negative edge lengths")
+    if kind == "keypoints":
+        yield from _check_keypoints(ctx, name, group)
+    if kind == "points":
+        target = as_str(attrs["correspondence"]) if "correspondence" in attrs else None
+        if target is not None and target not in ctx.annotation_groups:
+            yield ctx.err(
+                "E413",
+                location,
+                f"`correspondence` names annotation {target!r}, which does not exist",
+            )
+    if kind == "contours":
+        yield from _check_offsets(ctx, name, group, "contour_offsets", "vertices")
+    if kind == "mesh":
+        yield from _check_mesh(ctx, name, group)
+
+
+def _check_keypoints(
+    ctx: Context, name: str, group: h5py.Group
+) -> Iterator[Diagnostic]:
+    location = f"/annotations/{name}"
+    if "points" not in group:
+        return
+    points = group["points"]
+    if points.ndim != 3:  # noqa: PLR2004
+        yield ctx.err(
+            "E405", f"{location}/points", f"expected (N, K, S), got {points.shape}"
+        )
+        return
+    n, k = int(points.shape[0]), int(points.shape[1])
+    if "keypoint_class_ids" in group and int(group["keypoint_class_ids"].shape[0]) != k:
+        yield ctx.err(
+            "E405",
+            location,
+            f"`keypoint_class_ids` has {group['keypoint_class_ids'].shape[0]} entries "
+            f"for {k} keypoint slots",
+        )
+    if "visibility" in group:
+        visibility = np.asarray(group["visibility"][...])
+        if visibility.shape != (n, k):
+            yield ctx.err(
+                "E405", location, f"`visibility` {visibility.shape} must be ({n}, {k})"
+            )
+        elif visibility.size and int(visibility.max()) > 2:  # noqa: PLR2004
+            yield ctx.err(
+                "E411",
+                f"{location}/visibility",
+                "values must be 0 (unlabelled), 1 (occluded) or 2 (visible)",
+            )
+    skeleton = as_str(group.attrs["skeleton"]) if "skeleton" in group.attrs else None
+    if skeleton is not None:
+        label_set = ctx.document.label_set if ctx.document else None
+        known = {sk.id for sk in label_set.skeletons} if label_set else set()
+        if skeleton not in known:
+            yield ctx.err(
+                "E413",
+                location,
+                f"`skeleton` names {skeleton!r}, which the label set does not declare",
+            )
+
+
+def _check_offsets(
+    ctx: Context, name: str, group: h5py.Group, offsets_name: str, target: str
+) -> Iterator[Diagnostic]:
+    if offsets_name not in group:
+        return
+    offsets = np.asarray(group[offsets_name][...]).astype(np.int64)
+    location = f"/annotations/{name}/{offsets_name}"
+    if offsets.size and np.any(np.diff(offsets) < 0):
+        yield ctx.err("E408", location, "offsets are not monotonically increasing")
+    if (
+        offsets.size
+        and target in group
+        and int(offsets[-1]) != int(group[target].shape[0])
+    ):
+        yield ctx.err(
+            "E408",
+            location,
+            f"last offset {int(offsets[-1])} != {target} length "
+            f"{int(group[target].shape[0])}",
+        )
+
+
+def _check_mesh(ctx: Context, name: str, group: h5py.Group) -> Iterator[Diagnostic]:
+    location = f"/annotations/{name}"
+    yield from _check_offsets(ctx, name, group, "mesh_offsets", "faces")
+    if "vertices" not in group or "faces" not in group:
+        return
+    n_vertices = int(group["vertices"].shape[0])
+    faces = np.asarray(group["faces"][...])
+    if faces.size and (int(faces.min()) < 0 or int(faces.max()) >= n_vertices):
+        yield ctx.err(
+            "E405",
+            f"{location}/faces",
+            f"face indices reach outside the {n_vertices} vertices",
+        )
+    if "normals" in group and tuple(group["normals"].shape) != tuple(
+        group["vertices"].shape
+    ):
+        yield ctx.err(
+            "E405",
+            f"{location}/normals",
+            f"{tuple(group['normals'].shape)} must match vertices "
+            f"{tuple(group['vertices'].shape)}",
+        )
+
+
+def _check_classification(
+    ctx: Context,
+    name: str,
+    group: h5py.Group,
+    kind: str,
+    declared_timepoints: set[str],
+) -> Iterator[Diagnostic]:
+    """§9 invariants: scope, value range, and single-label exclusivity."""
+    if kind != "classification":
+        return
+    location = f"/annotations/{name}"
+    attrs = group.attrs
+    if "scope" not in attrs:
+        yield ctx.err("E412", location, "`classification` requires a `scope` attribute")
+        scope = None
+    else:
+        scope = as_str(attrs["scope"])
+        if scope not in SCOPES:
+            yield ctx.err("E412", location, f"unknown classification scope {scope!r}")
+    if "class_ids" not in group or "values" not in group:
+        return
+    class_ids = np.asarray(group["class_ids"][...])
+    values = np.asarray(group["values"][...], dtype=np.float64)
+    if values.shape != class_ids.shape:
+        yield ctx.err(
+            "E405",
+            location,
+            f"`values` {values.shape} must match `class_ids` {class_ids.shape}",
+        )
+        return
+    if values.size and (values.min() < 0.0 or values.max() > 1.0):
+        yield ctx.err(
+            "E404",
+            location,
+            "values must lie in [0, 1]; 1.0 is a hard positive, 0.0 an explicit "
+            "negative",
+        )
+    scope_ids = np.asarray(group["scope_ids"][...]) if "scope_ids" in group else None
+    if scope_ids is not None and scope_ids.shape != class_ids.shape:
+        yield ctx.err(
+            "E405",
+            location,
+            f"`scope_ids` {scope_ids.shape} must match `class_ids` {class_ids.shape}",
+        )
+        scope_ids = None
+    multilabel = bool(attrs.get("multilabel", True))
+    if not multilabel and values.size:
+        units = scope_ids if scope_ids is not None else np.zeros_like(values, dtype=int)
+        crowded = sorted(
+            {
+                int(u)
+                for u in np.unique(units)
+                if int((values > 0.0)[units == u].sum()) > 1
+            }
+        )
+        if crowded:
+            yield ctx.err(
+                "E404",
+                location,
+                f"multilabel=false allows one positive class per scope unit, but "
+                f"unit(s) {crowded} carry several",
+            )
+    if scope == "timepoint" and scope_ids is not None and ctx.document is not None:
+        declared = len(ctx.document.timepoints)
+        unknown = sorted({int(v) for v in scope_ids if not 0 <= int(v) < declared})
+        if unknown:
+            yield ctx.err(
+                "E409",
+                location,
+                f"scope='timepoint' scope_ids {unknown} are not timepoint indices "
+                f"(0..{declared - 1})",
+            )
+    for column in ("schemes", "scheme_values"):
+        if column in group and tuple(group[column].shape) != tuple(class_ids.shape):
+            yield ctx.err(
+                "E405",
+                f"{location}/{column}",
+                f"{tuple(group[column].shape)} must match `class_ids` "
+                f"{tuple(class_ids.shape)}",
+            )
+    del declared_timepoints
 
 
 def _check_instances(
@@ -988,13 +1283,16 @@ def check_profiles(ctx: Context) -> Iterator[Diagnostic]:
         yield ctx.err(
             "E009", "/", "profile `seg` is declared but no voxel annotation is present"
         )
-    if "det" in declared and not (
-        kinds & {"boxes", "obb", "keypoints", "points", "instances"}
-    ):
+    tasks = {
+        as_str(g.attrs["task"])
+        for g in ctx.annotation_groups.values()
+        if "task" in g.attrs
+    }
+    if "det" in declared and "detection" not in tasks:
         yield ctx.err(
             "E009",
             "/",
-            "profile `det` is declared but no geometric annotation is present",
+            "profile `det` is declared but no annotation declares task='detection'",
         )
     if "cls" in declared and "classification" not in kinds:
         yield ctx.err(

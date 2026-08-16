@@ -555,6 +555,19 @@ class VoxelAnnotation(Annotation):
         }
 
 
+def readers() -> dict[str, Any]:
+    """``kind`` -> reader class, assembled lazily to keep the imports acyclic."""
+    from medh5.annotations.classification import ClassificationAnnotation
+    from medh5.annotations.geometric import GEOMETRIC_READERS
+    from medh5.annotations.voxel import READERS as VOXEL_READERS
+
+    return {
+        **VOXEL_READERS,
+        **GEOMETRIC_READERS,
+        "classification": ClassificationAnnotation,
+    }
+
+
 def open_annotation(
     ann_id: str,
     group: h5py.Group,
@@ -562,10 +575,8 @@ def open_annotation(
     label_set: LabelSet | None = None,
 ) -> Annotation:
     """Open an annotation group as the class matching its ``kind``."""
-    from medh5.annotations.voxel import READERS
-
     header = AnnotationHeader.read(group)
-    reader = READERS.get(header.kind)
+    reader = readers().get(header.kind)
     if reader is None:
         raise MEDH5ValidationError(
             f"annotation {ann_id!r}: kind {header.kind!r} is not implemented yet",
@@ -588,4 +599,5 @@ __all__ = [
     "Instance",
     "VoxelAnnotation",
     "open_annotation",
+    "readers",
 ]

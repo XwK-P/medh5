@@ -6,7 +6,7 @@ declared threshold.  That property is what makes the encoding a storage decision
 rather than a data-model decision: a file can be re-encoded for a different
 access pattern without anyone re-deriving the ground truth.
 
-Everything here works on :class:`VoxelPayload` arrays as well as on open
+Everything here works on :class:`AnnotationPayload` arrays as well as on open
 annotations, so the round-trip matrix is testable without touching a file.
 """
 
@@ -19,12 +19,12 @@ import numpy as np
 import numpy.typing as npt
 
 from medh5.annotations.base import VoxelAnnotation
+from medh5.annotations.payload import AnnotationPayload
 from medh5.annotations.voxel.bitmask import BITS_PER_PLANE, encode_bitmask
 from medh5.annotations.voxel.instances import InstanceInput, encode_instances
 from medh5.annotations.voxel.labelmap import encode_labelmap
 from medh5.annotations.voxel.layers import encode_layers
 from medh5.annotations.voxel.mask import encode_mask
-from medh5.annotations.voxel.payload import VoxelPayload
 from medh5.annotations.voxel.probmap import DEFAULT_THRESHOLD, encode_probmap
 from medh5.errors import MEDH5ValidationError
 from medh5.geometry.affine import box_to_slices
@@ -33,7 +33,7 @@ TRANSCODABLE = ("labelmap", "layers", "bitmask", "instances", "probmap")
 
 
 def payload_to_masks(
-    payload: VoxelPayload,
+    payload: AnnotationPayload,
     *,
     spatial_shape: tuple[int, ...] | None = None,
     threshold: float = DEFAULT_THRESHOLD,
@@ -81,7 +81,7 @@ def payload_to_masks(
 
 
 def _instances_to_masks(
-    payload: VoxelPayload, spatial_shape: tuple[int, ...]
+    payload: AnnotationPayload, spatial_shape: tuple[int, ...]
 ) -> dict[int, npt.NDArray[np.bool_]]:
     boxes = payload.datasets["boxes"]
     classes = payload.datasets["class_ids"]
@@ -124,7 +124,7 @@ def encode_masks(
     kind: str,
     spatial_shape: tuple[int, ...] | None = None,
     **kwargs: Any,
-) -> VoxelPayload:
+) -> AnnotationPayload:
     """Encode per-class boolean masks into any voxel encoding."""
     if kind == "labelmap":
         return encode_labelmap(masks, spatial_shape, **kwargs)
@@ -160,13 +160,13 @@ def encode_masks(
 
 
 def transcode_payload(
-    payload: VoxelPayload,
+    payload: AnnotationPayload,
     to_kind: str,
     *,
     spatial_shape: tuple[int, ...] | None = None,
     threshold: float = DEFAULT_THRESHOLD,
     **kwargs: Any,
-) -> VoxelPayload:
+) -> AnnotationPayload:
     """Convert a payload to another encoding, preserving ``contains``."""
     if to_kind == payload.kind:
         return payload
@@ -175,7 +175,9 @@ def transcode_payload(
     return encode_masks(masks, to_kind, tuple(shape), **kwargs)
 
 
-def transcode(annotation: VoxelAnnotation, to_kind: str, **kwargs: Any) -> VoxelPayload:
+def transcode(
+    annotation: VoxelAnnotation, to_kind: str, **kwargs: Any
+) -> AnnotationPayload:
     """Convert an open annotation to another encoding."""
     if to_kind not in TRANSCODABLE and to_kind != "mask":
         raise MEDH5ValidationError(
@@ -197,7 +199,7 @@ def masks_equal(
 
 
 def check_roundtrip(
-    payload: VoxelPayload,
+    payload: AnnotationPayload,
     to_kind: str,
     *,
     spatial_shape: tuple[int, ...] | None = None,

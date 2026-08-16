@@ -345,3 +345,61 @@ class TestHelpers:
 
     def test_empty_table(self):
         assert table([], ["k", "v"]).splitlines()[0] == "k  v"
+
+
+class TestPhase3Kinds:
+    """`info` and `validate` must handle the §8/§9 kinds, including grid-less ones."""
+
+    @staticmethod
+    def _build(tmp_path, name):
+        from medh5.conformance import build_corpus
+
+        build_corpus(tmp_path, names=[name])
+        return tmp_path / f"{name}.medh5"
+
+    def test_info_renders_boxes_and_obb(self, capsys, tmp_path):
+        path = self._build(tmp_path, "det-boxes-obb")
+        code, out = run(capsys, "info", str(path))
+        assert code == EXIT_OK
+        assert "boxes" in out.out and "obb" in out.out
+        assert "det" in out.out
+
+    def test_info_renders_a_grid_less_classification(self, capsys, tmp_path):
+        path = self._build(tmp_path, "cls-staging-and-change")
+        code, out = run(capsys, "info", str(path))
+        assert code == EXIT_OK
+        assert "classification" in out.out
+        assert "tp0,tp1" in out.out  # the change label names the visits compared
+
+    def test_info_json_covers_every_kind(self, capsys, tmp_path):
+        path = self._build(tmp_path, "shapes-contours-mesh")
+        code, out = run(capsys, "info", str(path), "--json")
+        kinds = {a["kind"] for a in json.loads(out.out)["annotations"]}
+        assert kinds == {"contours", "mesh", "points"}
+
+    def test_validate_is_clean_for_every_phase3_case(self, capsys, tmp_path):
+        for name in (
+            "det-boxes-obb",
+            "det-keypoints",
+            "det-boxes-world",
+            "shapes-contours-mesh",
+            "cls-staging-and-change",
+        ):
+            path = self._build(tmp_path, name)
+            code, out = run(capsys, "validate", str(path), "--level", "integrity")
+            assert code == EXIT_OK, out.out
+
+    def test_seg_convert_refuses_a_geometric_annotation(self, capsys, tmp_path):
+        path = self._build(tmp_path, "det-boxes-obb")
+        code, out = run(
+            capsys, "seg", "convert", str(path), "lesions", "--to", "layers"
+        )
+        assert code == EXIT_ERROR
+        assert "not a voxel encoding" in out.err
+
+    def test_tree_names_every_dataset(self, capsys, tmp_path):
+        path = self._build(tmp_path, "shapes-contours-mesh")
+        code, out = run(capsys, "tree", str(path))
+        assert code == EXIT_OK
+        for dataset in ("contour_offsets", "contour_role", "faces", "vertices"):
+            assert dataset in out.out

@@ -2,9 +2,10 @@
 
 **Companion documents:** [Specification](../spec/medh5-1.0.md) · [Design proposal](medh5-1.0-proposal.md)
 
-**Status: phases 0, 1 and 2 are complete.** The core container, the label space, all five voxel
-encodings, the validator and the conformance corpus are implemented and gated on `ruff`,
-`mypy --strict` and ≥ 90 % coverage. Phase 3 (geometric and classification annotations) is next.
+**Status: phases 0–3 are complete.** The core container, the label space, all five voxel encodings,
+every geometric annotation, classification (including change labels), the validator and the
+conformance corpus are implemented and gated on `ruff`, `mypy --strict` and ≥ 90 % coverage. Phase 4
+(registration) is next, and it closes the last five uncovered diagnostic codes.
 
 ---
 
@@ -37,12 +38,13 @@ medh5/
 ├── annotations/           §6–§9
 │   ├── base.py         ✅ Annotation ABC: the contains/dense/labelmap/instances contract
 │   ├── voxel/          ✅
-│   │   ├── payload.py  ✅ the arrays-in/arrays-out intermediate every encoder produces
+│   │   ├── payload.py  ✅ mask helpers shared by the voxel encoders
 │   │   ├── labelmap.py ✅ layers.py ✅ bitmask.py ✅ instances.py ✅ probmap.py ✅ mask.py ✅
 │   │   ├── select.py   ✅ §7.6 overlap graph, greedy colouring, cost model, auto-selection
 │   │   └── transcode.py ✅ lossless conversion between any pair of encodings
-│   ├── geometric.py       boxes, obb, keypoints, points, contours, mesh
-│   └── classification.py  §9
+│   ├── payload.py      ✅ the arrays-in/arrays-out intermediate every encoder produces
+│   ├── geometric.py    ✅ boxes, obb, keypoints, points, contours, mesh (§8)
+│   └── classification.py ✅ labels, ordinal schemes, change labels (§9)
 │
 ├── transforms/            §10
 │   ├── affine.py  displacement.py  bspline.py  composite.py
@@ -289,7 +291,7 @@ experienced developer; the phases are largely independent after Phase 2.
 | **0 · Conformance harness** ✅ | Golden-file corpus, validator report model, spec-cross-referenced test IDs; port the 0.x test *scenarios* to spec assertions | **Done.** 75-case corpus with per-code expectations; `medh5 conformance run` green; a test asserts the §15.2 table and the code registry are identical | 1 w |
 | **1 · Core container** ✅ | `_hdf5`, `geometry/` incl. §3.7 timepoints and grid binding, `images`, `/meta` + JSON Schema, atomic create, CoW amend, `integrity/` | **Done.** `core` profile validates; geometry round-trips; timepoint inheritance resolves; multiscale pyramids write and validate; four spec clauses corrected (Appendix C) | 2.5 w |
 | **2 · Label sets + voxel annotations** ✅ | `labels/`, the five voxel encodings, `select.py`, `transcode.py`, coverage semantics, `index/` | **Done.** `seg` profile complete; the transcoding matrix passes `contains()` equality for every ordered pair; encoding auto-selection measured; sampling index is O(1) in volume | 2.5 w |
-| **3 · Geometric + classification annotations** | boxes, obb, keypoints, points, contours, mesh, classification | `det` and `cls` profiles complete; box↔slice property tests; OBB corner round-trips | 2 w |
+| **3 · Geometric + classification annotations** ✅ | boxes, obb, keypoints, points, contours, mesh, classification | **Done.** `det` and `cls` profiles complete; box↔slice round-trips over 200 randomised boxes; OBB centre/size/rotation recovered from its corners; two more spec clauses corrected (§1.3 `det`, §9 `class_ids`) | 2 w |
 | **4 · Registration** | affine, displacement, bspline, composite, landmarks, `apply.py`, inter-timepoint transform resolution | `reg` profile complete; TRE reproduces a Learn2Reg reference case within tolerance; `transform_between(tp_a, tp_b)` resolves through frames | 2 w |
 | **5 · Curation + longitudinal + collections** | provenance graph, quality, identity/cohort/splits, instance tracking joins, change annotations, `.medh5c` pack/unpack (**in 1.0**, not deferred) | `curation` and `longitudinal` profiles complete; tracking join round-trips; W909/W910/W911 fire on crafted inputs; pack/unpack byte-identical on sample subtrees | 2 w |
 | **6 · Loaders + performance** | torch datasets/samplers/collate, paired/longitudinal sampling, MONAI adapter, codec profiles, chunking policy, `recompress` | Throughput target met (§4.3); paired sampling correct against a hand-checked fixture; no per-worker memory growth over a 10-epoch soak | 2.5 w |

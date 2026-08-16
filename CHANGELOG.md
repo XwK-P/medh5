@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
-## [1.0.0a0] — MEDH5 format 1.0, phases 0–2
+## [1.0.0a0] — MEDH5 format 1.0, phases 0–3
 
 A clean-slate reimplementation of the format. **Not backward compatible with 0.x**, by design: a
 1.0 reader refuses a 0.x file rather than guessing, and a 0.x reader raises on the missing
@@ -39,6 +39,16 @@ file, and assigning whole files to train/val/test cannot leak a patient across p
   48 KiB against 9.2 ms and O(volume) for the 0.x `argwhere` path.
 - **A validator** with four levels and a stable diagnostic-code table, and a **75-case conformance
   corpus** with per-code expectations that a third-party implementation can run.
+- **Every geometric annotation** (§8): axis-aligned boxes that convert to numpy slices without
+  rounding, oriented boxes stored as rotation *matrices* (dimension-generic, no ordering convention,
+  no double cover), keypoints with per-slot classes and visibility, landmark point sets with
+  correspondence, planar contours for RTSTRUCT round-trips, and triangle surface meshes. Coordinates
+  live in a declared `space` — a grid's continuous index coordinates or a named frame — and readers
+  convert through the affine instead of assuming.
+- **Classification** (§9), including the three-state semantics that make partial labels safe
+  (positive / verified-negative / unknown), ordinal schemes stored verbatim rather than coerced to
+  numbers, and **change labels**: an ordinary classification whose `timepoints` names the visits
+  compared, so `["tp0","tp2"]` and `["tp1","tp2"]` are distinct assessments.
 - **A CLI**: `info`, `tree`, `validate`, `verify`, `timeline`, `track`, `labels`, `seg stats`,
   `seg convert`, `index build`, `conformance`.
 
@@ -47,15 +57,16 @@ file, and assigning whole files to train/val/test cannot leak a patient across p
 - The 0.6.0 implementation moved to `medh5.legacy` unchanged, and is still tested. Import paths in
   the 0.x documentation changed accordingly; the `medh5-0x` console script runs its CLI. It will be
   deleted once the 1.0 converters land.
-- Four specification clauses were corrected because implementing them showed the text was not
-  implementable as written: `/meta` cannot be compressed, the label-set canonical serialization is
-  now defined, `content_id` excludes `created`/`generator`, and "the digest of an annotation" is
-  defined for a multi-dataset group. See Appendix C of the specification.
+- Six specification clauses were corrected because implementing them showed the text was not
+  implementable, or contradicted itself: `/meta` cannot be compressed, the label-set canonical
+  serialization is now defined, `content_id` excludes `created`/`generator`, "the digest of an
+  annotation" is defined for a multi-dataset group, the `det` profile requires a *detection-task*
+  annotation rather than any §8 kind, and §9's `class_ids` dataset and attribute are explicitly
+  distinguished. See Appendix C of the specification.
 
 ### Not yet implemented
 
-Geometric annotations (§8), classification (§9), transforms (§10), collections (§2.2), converters,
-and the PyTorch/MONAI loaders.
+Transforms (§10), collections (§2.2), converters, and the PyTorch/MONAI loaders.
 
 ## [0.6.0]
 

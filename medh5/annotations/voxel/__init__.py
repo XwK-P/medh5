@@ -9,6 +9,7 @@ import numpy as np
 import numpy.typing as npt
 
 from medh5.annotations.base import Instance
+from medh5.annotations.payload import AnnotationPayload
 from medh5.annotations.voxel.bitmask import BitmaskAnnotation, encode_bitmask
 from medh5.annotations.voxel.instances import (
     InstanceInput,
@@ -19,7 +20,7 @@ from medh5.annotations.voxel.instances import (
 from medh5.annotations.voxel.labelmap import LabelmapAnnotation, encode_labelmap
 from medh5.annotations.voxel.layers import LayersAnnotation, encode_layers
 from medh5.annotations.voxel.mask import MaskAnnotation, encode_mask
-from medh5.annotations.voxel.payload import Masks, VoxelPayload, normalize_masks
+from medh5.annotations.voxel.payload import Masks, normalize_masks
 from medh5.annotations.voxel.probmap import ProbmapAnnotation, encode_probmap
 from medh5.annotations.voxel.select import (
     OverlapStats,
@@ -55,7 +56,7 @@ def encode_voxels(
     encoding: str = "auto",
     ignore: npt.NDArray[np.bool_] | None = None,
     **kwargs: Any,
-) -> tuple[VoxelPayload, OverlapStats]:
+) -> tuple[AnnotationPayload, OverlapStats]:
     """Encode class masks, choosing the encoding by measurement when asked to.
 
     Returns the payload **and** the statistics behind the choice, so a writer can
@@ -83,7 +84,7 @@ __all__ = [
     "Masks",
     "OverlapStats",
     "ProbmapAnnotation",
-    "VoxelPayload",
+    "AnnotationPayload",
     "analyse",
     "annotation_to_masks",
     "check_roundtrip",

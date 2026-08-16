@@ -24,7 +24,7 @@ import numpy as np
 import numpy.typing as npt
 
 from medh5.annotations.base import Instance, VoxelAnnotation
-from medh5.annotations.voxel.payload import VoxelPayload
+from medh5.annotations.payload import AnnotationPayload
 from medh5.errors import MEDH5ValidationError
 from medh5.geometry.affine import box_to_slices, slices_to_box
 
@@ -58,7 +58,7 @@ def encode_instances(
     *,
     store_masks: bool = True,
     class_ids: Sequence[int] | None = None,
-) -> VoxelPayload:
+) -> AnnotationPayload:
     """Pack objects into boxes, ids, offsets and one concatenated bit stream.
 
     *class_ids* declares the classes the annotation can express, which is not
@@ -143,7 +143,7 @@ def encode_instances(
         if class_ids is not None
         else tuple(sorted(set(object_classes)))
     )
-    return VoxelPayload(
+    return AnnotationPayload(
         kind="instances",
         datasets=datasets,
         attrs={},
