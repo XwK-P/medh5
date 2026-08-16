@@ -7,7 +7,7 @@ scans with `read_meta()` (no array reads), so building a manifest over
 thousands of files is fast and cheap.
 
 ```python
-from medh5.dataset import Dataset
+from medh5.legacy.dataset import Dataset
 
 ds = Dataset.from_directory("data/", recursive=True)
 
@@ -39,7 +39,7 @@ Loaded manifests track per-file mtime and size. `ds.is_stale()` returns
 optional stratification and grouping.
 
 ```python
-from medh5.dataset import make_splits
+from medh5.legacy.dataset import make_splits
 
 splits = make_splits(
     ds,
@@ -72,7 +72,7 @@ across files. Large integer volumes no longer suffer catastrophic
 cancellation on variance.
 
 ```python
-from medh5.stats import compute_stats
+from medh5.legacy.stats import compute_stats
 
 stats = compute_stats(ds, workers=4)
 

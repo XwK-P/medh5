@@ -5,7 +5,7 @@ from __future__ import annotations
 import h5py
 import numpy as np
 
-from medh5 import MEDH5File
+from medh5.legacy import MEDH5File
 
 
 def _make_file(path):
@@ -38,7 +38,7 @@ class TestValidationLocation:
         assert issue.location == "seg/tumor"
 
     def test_to_dict_omits_location_when_absent(self):
-        from medh5.core import ValidationIssue
+        from medh5.legacy.core import ValidationIssue
 
         issue = ValidationIssue(code="x", message="y")
         assert issue.to_dict() == {"code": "x", "message": "y"}

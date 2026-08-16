@@ -13,7 +13,7 @@ pip install "medh5[torch]"
 One `.medh5` file = one sample, loaded in full per `__getitem__`.
 
 ```python
-from medh5.torch import MEDH5TorchDataset
+from medh5.legacy.torch import MEDH5TorchDataset
 
 dataset = MEDH5TorchDataset(paths=["s1.medh5", "s2.medh5", "s3.medh5"])
 sample = dataset[0]
@@ -30,8 +30,8 @@ Uses `PatchSampler` to slice chunk-aligned patches directly from h5py
 datasets. The virtual length is `len(paths) * samples_per_volume`.
 
 ```python
-from medh5.sampling import PatchSampler
-from medh5.torch import MEDH5PatchDataset
+from medh5.legacy.sampling import PatchSampler
+from medh5.legacy.torch import MEDH5PatchDataset
 
 sampler = PatchSampler(
     patch_size=(96, 96, 96),
@@ -65,7 +65,7 @@ Pure-numpy, no torch or PIL dependency. Operate on the sample dict
 (`{"images": ..., "seg": ..., ...}`).
 
 ```python
-from medh5.transforms import Compose, Clip, Normalize, ZScore, RandomFlip
+from medh5.legacy.transforms import Compose, Clip, Normalize, ZScore, RandomFlip
 
 transform = Compose([
     Clip(min=-1000, max=1000),
@@ -104,7 +104,7 @@ Always pass `worker_init_fn` when `num_workers > 0`:
 
 ```python
 from torch.utils.data import DataLoader
-import medh5.torch as mt
+import medh5.legacy.torch as mt
 
 loader = DataLoader(
     dataset,

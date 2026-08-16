@@ -3,8 +3,8 @@
 import numpy as np
 import pytest
 
-from medh5 import MEDH5File, VerifyResult
-from medh5.cli import main
+from medh5.legacy import MEDH5File, VerifyResult
+from medh5.legacy.cli import main
 
 
 @pytest.fixture
@@ -275,7 +275,7 @@ class TestImportExportCLI:
 
     def test_import_dicom(self, tmp_path, capsys):
         pytest.importorskip("pydicom")
-        from test_io import _make_dicom_series
+        from tests.test_io import _make_dicom_series
 
         dicom_dir = tmp_path / "series"
         _make_dicom_series(dicom_dir, n_slices=3)

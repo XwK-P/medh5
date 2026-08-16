@@ -17,7 +17,7 @@ pip install "medh5[itk]"      # SimpleITK resampling for from_nifti
 ## NIfTI
 
 ```python
-from medh5.io import from_nifti, to_nifti, import_seg_nifti
+from medh5.legacy.io import from_nifti, to_nifti, import_seg_nifti
 
 from_nifti(
     images={"CT": "ct.nii.gz", "PET": "pet.nii.gz"},
@@ -70,7 +70,7 @@ import_seg_nifti(
 ## DICOM
 
 ```python
-from medh5.io import from_dicom
+from medh5.legacy.io import from_dicom
 
 from_dicom(
     dicom_dir="path/to/series",
@@ -99,7 +99,7 @@ payload is stashed in `extra["nnunetv2"]` so export reconstructs the exact
 source layout.
 
 ```python
-from medh5.io import from_nnunetv2, to_nnunetv2
+from medh5.legacy.io import from_nnunetv2, to_nnunetv2
 
 # Raw nnU-Net v2 → directory of .medh5 files
 from_nnunetv2(

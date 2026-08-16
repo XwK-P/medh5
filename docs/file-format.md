@@ -71,7 +71,7 @@ Image and segmentation datasets are chunked with sizes computed by
 chunk to fit comfortably in L3 cache during patch-based training reads.
 
 ```python
-from medh5 import optimize_chunks
+from medh5.legacy import optimize_chunks
 
 chunks = optimize_chunks(
     image_shape=(128, 256, 256),

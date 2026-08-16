@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from medh5 import MEDH5ValidationError, validate_bboxes
+from medh5.legacy import MEDH5ValidationError, validate_bboxes
 
 
 class TestValidateBboxes:

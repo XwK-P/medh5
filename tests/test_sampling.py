@@ -5,8 +5,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from medh5 import MEDH5File, MEDH5ValidationError
-from medh5.sampling import PatchSampler
+from medh5.legacy import MEDH5File, MEDH5ValidationError
+from medh5.legacy.sampling import PatchSampler
 
 
 def _make_volume(path, shape=(8, 32, 32), seg_shape=None):

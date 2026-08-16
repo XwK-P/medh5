@@ -5,9 +5,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from medh5 import MEDH5File
-from medh5.dataset import Dataset
-from medh5.exceptions import MEDH5Error
+from medh5.legacy import MEDH5File
+from medh5.legacy.dataset import Dataset
+from medh5.legacy.exceptions import MEDH5Error
 
 
 def _make_file(path, label=None, label_name=None, extra=None, seg=False):

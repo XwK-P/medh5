@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from medh5 import MEDH5File
+from medh5.legacy import MEDH5File
 
 
 @pytest.fixture
@@ -50,7 +50,7 @@ class TestPartialRead:
 
     def test_meta_from_open(self, sample_file):
         path, _, _ = sample_file
-        from medh5.meta import read_meta
+        from medh5.legacy.meta import read_meta
 
         with MEDH5File.open(path) as f:
             meta = read_meta(f)

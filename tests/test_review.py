@@ -5,7 +5,12 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from medh5 import MEDH5File, MEDH5FileError, MEDH5ValidationError, ReviewStatus
+from medh5.legacy import (
+    MEDH5File,
+    MEDH5FileError,
+    MEDH5ValidationError,
+    ReviewStatus,
+)
 
 
 def _make_file(path):

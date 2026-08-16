@@ -2,7 +2,7 @@
 
 import pytest
 
-from medh5.chunks import optimize_chunks
+from medh5.legacy.chunks import optimize_chunks
 
 
 class TestOptimizeChunks:

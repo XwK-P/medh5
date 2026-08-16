@@ -5,8 +5,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from medh5 import MEDH5File, MEDH5ValidationError
-from medh5.dataset import Dataset, make_splits
+from medh5.legacy import MEDH5File, MEDH5ValidationError
+from medh5.legacy.dataset import Dataset, make_splits
 
 
 def _make_files(tmp_path, n=20):

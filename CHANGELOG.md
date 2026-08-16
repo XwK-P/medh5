@@ -4,6 +4,59 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.0.0a0] — MEDH5 format 1.0, phases 0–2
+
+A clean-slate reimplementation of the format. **Not backward compatible with 0.x**, by design: a
+1.0 reader refuses a 0.x file rather than guessing, and a 0.x reader raises on the missing
+`schema_version`. See [the specification](docs/spec/medh5-1.0.md) and
+[the implementation plan](docs/design/medh5-1.0-implementation-plan.md).
+
+### The model
+
+A **sample is one subject at one or more timepoints**, each with one or more images. Longitudinal
+work — change detection, response assessment, lesion tracking, follow-up registration — lives in one
+file, and assigning whole files to train/val/test cannot leak a patient across partitions.
+
+### Added
+
+- `medh5.open` / `create` / `amend` and the `Sample` / `SampleWriter` API.
+- **Geometry as a first-class object.** Grids carry the full index→world affine, a frame of
+  reference and a timepoint; images and annotations inherit rather than repeat it. Multiscale
+  pyramids validate the half-voxel origin shift that silently misplaces predictions when omitted.
+- **Label sets** as DAGs with ontology bindings, explicit/implicit closure, canonical digests, and
+  three bundled vocabularies (`binary-foreground`, `brats-subregions`, `amos22-organs`).
+- **Five voxel encodings** — `labelmap`, `layers`, `bitmask`, `instances`, `probmap` — behind one
+  read contract (`contains`, `dense`, `labelmap`, `instances`). The encoding is chosen by measuring
+  the class overlap graph, and any pair transcodes losslessly, so it is a storage decision rather
+  than a data-model decision.
+- **The coverage contract.** `annotated_class_ids` records what the annotator committed to finding,
+  so `0` reads as "verified absent" only where that is true. Partially-labelled cohorts become
+  safely trainable instead of quietly mistrained.
+- **Content addressing.** Per-object SHA-256 digests over decompressed content plus a Merkle
+  `content_id`, so verification is incremental, partial and local, and recompression does not
+  invalidate anything.
+- **A sampling index** that answers foreground patch sampling in O(1) in volume size — 0.52 ms and
+  48 KiB against 9.2 ms and O(volume) for the 0.x `argwhere` path.
+- **A validator** with four levels and a stable diagnostic-code table, and a **75-case conformance
+  corpus** with per-code expectations that a third-party implementation can run.
+- **A CLI**: `info`, `tree`, `validate`, `verify`, `timeline`, `track`, `labels`, `seg stats`,
+  `seg convert`, `index build`, `conformance`.
+
+### Changed
+
+- The 0.6.0 implementation moved to `medh5.legacy` unchanged, and is still tested. Import paths in
+  the 0.x documentation changed accordingly; the `medh5-0x` console script runs its CLI. It will be
+  deleted once the 1.0 converters land.
+- Four specification clauses were corrected because implementing them showed the text was not
+  implementable as written: `/meta` cannot be compressed, the label-set canonical serialization is
+  now defined, `content_id` excludes `created`/`generator`, and "the digest of an annotation" is
+  defined for a multi-dataset group. See Appendix C of the specification.
+
+### Not yet implemented
+
+Geometric annotations (§8), classification (§9), transforms (§10), collections (§2.2), converters,
+and the PyTorch/MONAI loaders.
+
 ## [0.6.0]
 
 Hardening pass driven by the napari-medh5 plugin integration report:

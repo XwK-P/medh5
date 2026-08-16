@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from medh5 import MEDH5File, MEDH5ValidationError
+from medh5.legacy import MEDH5File, MEDH5ValidationError
 
 
 @pytest.fixture
@@ -192,7 +192,7 @@ class TestOnReopenedCallback:
         assert seen == []
 
     def test_set_review_status_fires_callback(self, sample_file):
-        from medh5 import ReviewStatus
+        from medh5.legacy import ReviewStatus
 
         seen: list[Path] = []
         result = MEDH5File.set_review_status(

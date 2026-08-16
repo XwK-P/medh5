@@ -7,8 +7,13 @@ import threading
 import numpy as np
 import pytest
 
-from medh5 import MEDH5File, MEDH5FileError, MEDH5ValidationError, open_shared
-from medh5._shared import _registry
+from medh5.legacy import (
+    MEDH5File,
+    MEDH5FileError,
+    MEDH5ValidationError,
+    open_shared,
+)
+from medh5.legacy._shared import _registry
 
 
 def _make_file(path):

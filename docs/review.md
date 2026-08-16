@@ -16,7 +16,7 @@ no schema change is required and plain HDF5 tools can inspect it.
 ## Python API
 
 ```python
-from medh5 import MEDH5File, ReviewStatus
+from medh5.legacy import MEDH5File, ReviewStatus
 
 updated: ReviewStatus = MEDH5File.set_review_status(
     "sample.medh5",
@@ -64,7 +64,7 @@ ref-counted read handle shared across the process — and pass an
 views get rebound after the write completes:
 
 ```python
-from medh5 import MEDH5File, open_shared
+from medh5.legacy import MEDH5File, open_shared
 
 def reopen(path):
     # re-issue any cached dask arrays / h5py.Dataset references here

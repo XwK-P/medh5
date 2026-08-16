@@ -1,0 +1,236 @@
+{
+  "id": "amos22-organs",
+  "version": "1.0.0",
+  "description": "The 15 abdominal structures of the AMOS22 multi-organ task.",
+  "classes": [
+    {
+      "id": 1,
+      "key": "spleen",
+      "name": "Spleen",
+      "category": "organ",
+      "color": [
+        190,
+        60,
+        60,
+        255
+      ],
+      "properties": {
+        "bodypart": "abdomen"
+      }
+    },
+    {
+      "id": 2,
+      "key": "kidney_right",
+      "name": "Right Kidney",
+      "category": "organ",
+      "color": [
+        80,
+        150,
+        220,
+        255
+      ],
+      "laterality": "right",
+      "properties": {
+        "bodypart": "abdomen"
+      }
+    },
+    {
+      "id": 3,
+      "key": "kidney_left",
+      "name": "Left Kidney",
+      "category": "organ",
+      "color": [
+        80,
+        180,
+        150,
+        255
+      ],
+      "laterality": "left",
+      "properties": {
+        "bodypart": "abdomen"
+      }
+    },
+    {
+      "id": 4,
+      "key": "gallbladder",
+      "name": "Gallbladder",
+      "category": "organ",
+      "color": [
+        120,
+        200,
+        90,
+        255
+      ],
+      "properties": {
+        "bodypart": "abdomen"
+      }
+    },
+    {
+      "id": 5,
+      "key": "esophagus",
+      "name": "Esophagus",
+      "category": "organ",
+      "color": [
+        220,
+        180,
+        90,
+        255
+      ],
+      "properties": {
+        "bodypart": "abdomen"
+      }
+    },
+    {
+      "id": 6,
+      "key": "liver",
+      "name": "Liver",
+      "category": "organ",
+      "color": [
+        200,
+        90,
+        70,
+        255
+      ],
+      "properties": {
+        "bodypart": "abdomen"
+      }
+    },
+    {
+      "id": 7,
+      "key": "stomach",
+      "name": "Stomach",
+      "category": "organ",
+      "color": [
+        230,
+        140,
+        90,
+        255
+      ],
+      "properties": {
+        "bodypart": "abdomen"
+      }
+    },
+    {
+      "id": 8,
+      "key": "aorta",
+      "name": "Aorta",
+      "category": "vessel",
+      "color": [
+        180,
+        60,
+        120,
+        255
+      ],
+      "properties": {
+        "bodypart": "abdomen"
+      }
+    },
+    {
+      "id": 9,
+      "key": "inferior_vena_cava",
+      "name": "Inferior Vena Cava",
+      "category": "vessel",
+      "color": [
+        90,
+        110,
+        200,
+        255
+      ],
+      "properties": {
+        "bodypart": "abdomen"
+      }
+    },
+    {
+      "id": 10,
+      "key": "pancreas",
+      "name": "Pancreas",
+      "category": "organ",
+      "color": [
+        240,
+        200,
+        120,
+        255
+      ],
+      "properties": {
+        "bodypart": "abdomen"
+      }
+    },
+    {
+      "id": 11,
+      "key": "adrenal_gland_right",
+      "name": "Right Adrenal Gland",
+      "category": "organ",
+      "color": [
+        150,
+        110,
+        190,
+        255
+      ],
+      "laterality": "right",
+      "properties": {
+        "bodypart": "abdomen"
+      }
+    },
+    {
+      "id": 12,
+      "key": "adrenal_gland_left",
+      "name": "Left Adrenal Gland",
+      "category": "organ",
+      "color": [
+        120,
+        90,
+        180,
+        255
+      ],
+      "laterality": "left",
+      "properties": {
+        "bodypart": "abdomen"
+      }
+    },
+    {
+      "id": 13,
+      "key": "duodenum",
+      "name": "Duodenum",
+      "category": "organ",
+      "color": [
+        210,
+        150,
+        180,
+        255
+      ],
+      "properties": {
+        "bodypart": "abdomen"
+      }
+    },
+    {
+      "id": 14,
+      "key": "bladder",
+      "name": "Urinary Bladder",
+      "category": "organ",
+      "color": [
+        100,
+        190,
+        200,
+        255
+      ],
+      "properties": {
+        "bodypart": "abdomen"
+      }
+    },
+    {
+      "id": 15,
+      "key": "prostate_uterus",
+      "name": "Prostate / Uterus",
+      "category": "organ",
+      "color": [
+        170,
+        170,
+        90,
+        255
+      ],
+      "properties": {
+        "bodypart": "abdomen"
+      }
+    }
+  ]
+}

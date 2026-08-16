@@ -1,304 +1,397 @@
-"""``info`` / ``validate`` / ``validate-all`` / ``audit`` / ``recompress``."""
+"""``info``, ``tree``, ``validate``, ``verify``, ``timeline``, ``track``."""
 
 from __future__ import annotations
 
 import argparse
-import json
-import os
-import shutil
-import sys
-import tempfile
-from concurrent.futures import ProcessPoolExecutor
-from pathlib import Path
+from typing import Any
 
 import h5py
 
-from medh5.cli._common import Handler, ValidationPayload, iter_medh5
-from medh5.core import MEDH5File
-from medh5.exceptions import MEDH5Error
-from medh5.integrity import VerifyResult
+import medh5
+from medh5.cli._common import (
+    EXIT_ERROR,
+    EXIT_OK,
+    add_json_flag,
+    add_paths,
+    emit,
+    fail,
+    human_bytes,
+    table,
+)
+from medh5.errors import MEDH5Error
+from medh5.storage.codecs import describe_filters
+from medh5.validate import validate_paths
+from medh5.validate.report import LEVELS
 
 
-def _filter_summary(ds: object) -> list[str]:
-    if not isinstance(ds, h5py.Dataset):
-        return []
-    plist = ds.id.get_create_plist()
-    filters: list[str] = []
-    for i in range(plist.get_nfilters()):
-        filter_info = plist.get_filter(i)
-        filter_name = filter_info[3]
-        if isinstance(filter_name, bytes):
-            filter_name = filter_name.decode("utf-8", errors="replace")
-        filters.append(str(filter_name))
-    return filters
+def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    info = sub.add_parser("info", help="summarise a sample")
+    info.add_argument("path")
+    add_json_flag(info)
+
+    tree = sub.add_parser("tree", help="annotated object listing with spec roles")
+    tree.add_argument("path")
+
+    validate = sub.add_parser("validate", help="check conformance (spec §15)")
+    add_paths(validate)
+    validate.add_argument("--level", choices=LEVELS, default="semantic")
+    validate.add_argument(
+        "--profile",
+        action="append",
+        dest="profiles",
+        help="override the declared profiles; repeatable",
+    )
+    validate.add_argument("-v", "--verbose", action="store_true")
+    add_json_flag(validate)
+
+    verify = sub.add_parser("verify", help="check digests and content_id (spec §13)")
+    add_paths(verify)
+    verify.add_argument(
+        "--partial",
+        action="append",
+        dest="partial",
+        metavar="OBJ",
+        help="verify only these objects; repeatable",
+    )
+    add_json_flag(verify)
+
+    timeline = sub.add_parser("timeline", help="timepoints and what belongs to each")
+    timeline.add_argument("path")
+    add_json_flag(timeline)
+
+    track = sub.add_parser("track", help="join instance ids across timepoints")
+    track.add_argument("path")
+    track.add_argument("--class", dest="class_key", help="restrict to one class")
+    add_json_flag(track)
 
 
-def _build_info_payload(path: Path) -> dict[str, object]:
-    with MEDH5File(path) as f:
-        meta = f.meta
-        img_grp = f.images
-        first_key = next(iter(img_grp))
-        first_ds = img_grp[first_key]
-        review_status = "pending"
-        if meta.extra and isinstance(meta.extra.get("review"), dict):
-            raw = meta.extra["review"].get("status")
-            if isinstance(raw, str) and raw:
-                review_status = raw
-        return {
-            "file": str(path),
-            "schema_version": meta.schema_version,
-            "image_names": meta.image_names,
-            "shape": list(first_ds.shape),
-            "dtype": str(first_ds.dtype),
-            "chunks": list(first_ds.chunks) if first_ds.chunks is not None else None,
-            "filters": _filter_summary(first_ds),
-            "label": meta.label,
-            "label_name": meta.label_name,
-            "seg_names": meta.seg_names,
-            "has_bbox": meta.has_bbox,
-            "spacing": meta.spatial.spacing,
-            "origin": meta.spatial.origin,
-            "coord_system": meta.spatial.coord_system,
-            "patch_size": meta.patch_size,
-            "review_status": review_status,
-            "extra": meta.extra,
-        }
+def dispatch(command: str, args: argparse.Namespace) -> int | None:
+    if command == "info":
+        return _info(args)
+    if command == "tree":
+        return _tree(args)
+    if command == "validate":
+        return _validate(args)
+    if command == "verify":
+        return _verify(args)
+    if command == "timeline":
+        return _timeline(args)
+    if command == "track":
+        return _track(args)
+    return None
 
 
-def _cmd_info(args: argparse.Namespace) -> int:
-    """Print metadata summary for a .medh5 file."""
-    path = Path(args.file)
+def _info(args: argparse.Namespace) -> int:
     try:
-        payload = _build_info_payload(path)
-        if args.json:
-            print(json.dumps(payload, indent=2))
-            return 0
-
-        print(f"File:         {payload['file']}")
-        print(f"Schema:       v{payload['schema_version']}")
-        print(f"Images:       {payload['image_names']}")
-        print(f"Shape:        {payload['shape']}")
-        print(f"Dtype:        {payload['dtype']}")
-        print(f"Chunks:       {payload['chunks']}")
-        print(f"Filters:      {payload['filters']}")
-        if payload["label"] is not None:
-            label_str = repr(payload["label"])
-            if payload["label_name"]:
-                label_str += f" ({payload['label_name']})"
-            print(f"Label:        {label_str}")
-        if payload["seg_names"]:
-            print(f"Seg masks:    {payload['seg_names']}")
-        if payload["has_bbox"]:
-            print("Bboxes:       yes")
-        if payload["spacing"] is not None:
-            print(f"Spacing:      {payload['spacing']}")
-        if payload["origin"] is not None:
-            print(f"Origin:       {payload['origin']}")
-        if payload["coord_system"] is not None:
-            print(f"Coord system: {payload['coord_system']}")
-        if payload["patch_size"] is not None:
-            print(f"Patch size:   {payload['patch_size']}")
-        print(f"Review:       {payload['review_status']}")
-        if payload["extra"] is not None:
-            print(f"Extra:        {payload['extra']}")
-    except MEDH5Error as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        return 1
-    return 0
-
-
-def _cmd_validate(args: argparse.Namespace) -> int:
-    """Validate a .medh5 file structure and schema."""
-    path = Path(args.file)
-    report = MEDH5File.validate(path)
-    ok = report.ok(strict=args.strict)
-    if args.json:
-        print(json.dumps(report.to_dict(), indent=2))
-    elif ok:
-        print(f"VALID: {path}")
-    else:
-        print(f"INVALID: {path}", file=sys.stderr)
-        for issue in report.errors:
-            print(f"  - error[{issue.code}]: {issue.message}", file=sys.stderr)
-        for issue in report.warnings:
-            prefix = sys.stderr if args.strict else sys.stdout
-            print(f"  - warning[{issue.code}]: {issue.message}", file=prefix)
-    return 0 if ok else 1
-
-
-def _validate_one(path_str: str) -> tuple[str, ValidationPayload]:
-    report = MEDH5File.validate(Path(path_str))
-    return path_str, report.to_dict()
-
-
-def _cmd_validate_all(args: argparse.Namespace) -> int:
-    root = Path(args.dir)
-    paths = [str(p) for p in iter_medh5(root)]
-    if not paths:
-        print(f"No .medh5 files found under {root}", file=sys.stderr)
-        return 1
-
-    results: list[tuple[str, ValidationPayload]]
-    if args.workers > 1:
-        with ProcessPoolExecutor(max_workers=args.workers) as ex:
-            result_iter = ex.map(_validate_one, paths)
-            results = []
-            for item in result_iter:
-                results.append(item)
-                if args.fail_fast and item[1]["errors"]:
-                    break
-    else:
-        results = []
-        for p in paths:
-            item = _validate_one(p)
-            results.append(item)
-            if args.fail_fast and item[1]["errors"]:
-                break
-
-    invalid = [(p, payload) for p, payload in results if payload["errors"]]
-    print(f"Checked: {len(results)}  Invalid: {len(invalid)}")
-    for p, payload in invalid:
-        print(f"INVALID: {p}", file=sys.stderr)
-        for err in payload["errors"]:
-            print(f"  - error[{err['code']}]: {err['message']}", file=sys.stderr)
-    return 1 if invalid else 0
-
-
-def _verify_one(path_str: str) -> tuple[str, bool, str | None]:
-    try:
-        result = MEDH5File.verify(Path(path_str))
-        if result is VerifyResult.MISMATCH:
-            return path_str, False, "checksum mismatch"
-        return path_str, True, None
-    except MEDH5Error as exc:
-        return path_str, False, str(exc)
-
-
-def _cmd_audit(args: argparse.Namespace) -> int:
-    root = Path(args.dir)
-    paths = [str(p) for p in iter_medh5(root)]
-    if not paths:
-        print(f"No .medh5 files found under {root}", file=sys.stderr)
-        return 1
-
-    results: list[tuple[str, bool, str | None]]
-    if args.workers > 1:
-        with ProcessPoolExecutor(max_workers=args.workers) as ex:
-            results = list(ex.map(_verify_one, paths))
-    else:
-        results = [_verify_one(p) for p in paths]
-
-    bad = [r for r in results if not r[1]]
-    print(f"Checked: {len(results)}  Failed: {len(bad)}")
-    for p, _, err in bad:
-        msg = err or "checksum mismatch"
-        print(f"FAIL: {p}  ({msg})", file=sys.stderr)
-    return 1 if bad else 0
-
-
-def _cmd_recompress(args: argparse.Namespace) -> int:
-    src_root = Path(args.dir_or_file)
-    paths = [src_root] if src_root.is_file() else list(iter_medh5(src_root))
-    if not paths:
-        print(f"No .medh5 files found under {src_root}", file=sys.stderr)
-        return 1
-
-    out_dir = Path(args.out_dir) if args.out_dir else None
-    if out_dir is not None:
-        out_dir.mkdir(parents=True, exist_ok=True)
-
-    n_ok = 0
-    for path in paths:
-        try:
-            sample = MEDH5File.read(path)
-            if out_dir is not None:
-                dest = out_dir / path.name
-                tmp_path = dest
-            else:
-                fd, tmp_str = tempfile.mkstemp(
-                    suffix=".medh5", prefix=".tmp_recompress_", dir=str(path.parent)
-                )
-                # Close the OS-level fd; h5py will reopen the path itself.
-                os.close(fd)
-                tmp_path = Path(tmp_str)
-                dest = path
-
-            MEDH5File.write(
-                tmp_path,
-                images=sample.images,
-                seg=sample.seg,
-                bboxes=sample.bboxes,
-                bbox_scores=sample.bbox_scores,
-                bbox_labels=sample.bbox_labels,
-                label=sample.meta.label,
-                label_name=sample.meta.label_name,
-                spacing=sample.meta.spatial.spacing,
-                origin=sample.meta.spatial.origin,
-                direction=sample.meta.spatial.direction,
-                axis_labels=sample.meta.spatial.axis_labels,
-                coord_system=sample.meta.spatial.coord_system,
-                patch_size=sample.meta.patch_size or 192,
-                extra=sample.meta.extra,
-                compression=args.compression,
-                checksum=args.checksum,
+        with medh5.open(args.path) as sample:
+            summary = sample.summary()
+            if args.json:
+                emit(summary, as_json=True)
+                return EXIT_OK
+            print(f"{args.path}")
+            print(f"  format      {summary['version']} ({summary['kind']})")
+            print(f"  profiles    {', '.join(summary['profiles'])}")
+            print(
+                f"  sample      {summary['sample_id']}  subject {summary['subject_id']}"
             )
-            if args.checksum and MEDH5File.verify(tmp_path) is not VerifyResult.OK:
-                print(f"FAIL: post-write checksum mismatch for {path}", file=sys.stderr)
-                if out_dir is None:
-                    tmp_path.unlink(missing_ok=True)
-                continue
-            if out_dir is None:
-                shutil.move(str(tmp_path), str(dest))
-            n_ok += 1
-            print(f"OK: {dest}")
-        except MEDH5Error as exc:
-            print(f"FAIL: {path}: {exc}", file=sys.stderr)
+            print(f"  content_id  {summary['content_id'] or '-'}")
+            print("\ntimepoints")
+            print(
+                _indent(
+                    table(
+                        [
+                            [
+                                t["id"],
+                                t["index"],
+                                t["label"] or "-",
+                                t["days_from_baseline"]
+                                if t["days_from_baseline"] is not None
+                                else "-",
+                            ]
+                            for t in summary["timepoints"]
+                        ],
+                        ["id", "index", "label", "days"],
+                    )
+                )
+            )
+            print("\ngrids")
+            print(
+                _indent(
+                    table(
+                        [
+                            [
+                                g["id"],
+                                "x".join(map(str, g["shape"])),
+                                " ".join(f"{v:g}" for v in g["spacing"]),
+                                g["coord_system"],
+                                g["units"],
+                                g["timepoint"] or "-",
+                                g["frame_uid"] or "-",
+                            ]
+                            for g in summary["grids"]
+                        ],
+                        [
+                            "id",
+                            "shape",
+                            "spacing",
+                            "system",
+                            "units",
+                            "timepoint",
+                            "frame",
+                        ],
+                    )
+                )
+            )
+            print("\nimages")
+            print(
+                _indent(
+                    table(
+                        [
+                            [
+                                i["id"],
+                                i["modality"],
+                                "x".join(map(str, i["shape"])),
+                                i["dtype"],
+                                i["value_units"] or "-",
+                                i["grid"],
+                                describe_filters(sample.images[i["id"]].dataset),
+                                human_bytes(i["nbytes"]),
+                            ]
+                            for i in summary["images"]
+                        ],
+                        [
+                            "id",
+                            "mod",
+                            "shape",
+                            "dtype",
+                            "units",
+                            "grid",
+                            "codec",
+                            "raw",
+                        ],
+                    )
+                )
+            )
+            if summary["annotations"]:
+                print("\nannotations")
+                print(
+                    _indent(
+                        table(
+                            [
+                                [
+                                    a["id"],
+                                    a["kind"],
+                                    a["task"],
+                                    a["grid"] or "-",
+                                    ",".join(a["timepoints"]) or "-",
+                                    f"{a['annotated_classes']}/{a['classes']}",
+                                    "yes" if a["fully_covered"] else "PARTIAL",
+                                    a["quality"] or "-",
+                                ]
+                                for a in summary["annotations"]
+                            ],
+                            [
+                                "id",
+                                "kind",
+                                "task",
+                                "grid",
+                                "tp",
+                                "cover",
+                                "full",
+                                "quality",
+                            ],
+                        )
+                    )
+                )
+            if summary["index"]:
+                print(f"\nindex        {', '.join(summary['index'])}")
+            if summary["label_set"]:
+                label = summary["label_set"]
+                print(
+                    f"\nlabel set    {label['id']} v{label['version']} "
+                    f"({label['classes']} classes, {label['form']})"
+                )
+            return EXIT_OK
+    except MEDH5Error as exc:
+        return fail(str(exc))
 
-    print(f"Recompressed: {n_ok}/{len(paths)}")
-    return 0 if n_ok == len(paths) else 1
+
+def _indent(text: str, prefix: str = "  ") -> str:
+    return "\n".join(prefix + line for line in text.splitlines())
 
 
-HANDLERS: dict[str, Handler] = {
-    "info": _cmd_info,
-    "validate": _cmd_validate,
-    "validate-all": _cmd_validate_all,
-    "audit": _cmd_audit,
-    "recompress": _cmd_recompress,
+_ROLES = {
+    "meta": "sample document (§2.4)",
+    "grids": "geometry (§3.2)",
+    "images": "image data (§4)",
+    "annotations": "ground truth (§6-§9)",
+    "transforms": "spatial mappings (§10)",
+    "index": "derived sampling caches (§14.3)",
 }
 
 
-def register(sub: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
-    p = sub.add_parser("info", help="Print metadata summary")
-    p.add_argument("file", help="Path to .medh5 file")
-    p.add_argument("--json", action="store_true")
-
-    p = sub.add_parser("validate", help="Validate file structure")
-    p.add_argument("file", help="Path to .medh5 file")
-    p.add_argument("--json", action="store_true")
-    p.add_argument("--strict", action="store_true")
-
-    p = sub.add_parser("validate-all", help="Validate every .medh5 under a directory")
-    p.add_argument("dir", help="Directory to scan recursively")
-    p.add_argument("--workers", type=int, default=1)
-    p.add_argument("--fail-fast", action="store_true")
-
-    p = sub.add_parser("audit", help="Verify SHA-256 checksums under a directory")
-    p.add_argument("dir", help="Directory to scan recursively")
-    p.add_argument("--workers", type=int, default=1)
-
-    p = sub.add_parser("recompress", help="Rewrite files with a new compression preset")
-    p.add_argument("dir_or_file", help="Directory or single .medh5 file")
-    p.add_argument(
-        "--compression", default="balanced", choices=["fast", "balanced", "max"]
-    )
-    p.add_argument(
-        "--out-dir",
-        default=None,
-        help="Write recompressed copies here (default: in place via tempfile)",
-    )
-    p.add_argument("--checksum", action="store_true")
+def _tree(args: argparse.Namespace) -> int:
+    try:
+        with medh5.open(args.path) as sample:
+            print(args.path)
+            root = sample.root
+            for name in sorted(root, key=lambda n: (n != "meta", n)):
+                role = _ROLES.get(name, "extension object (§16)")
+                node = root[name]
+                if isinstance(node, h5py.Dataset):
+                    print(f"├── {name:22s} {_describe(node)}   # {role}")
+                    continue
+                print(f"├── {name}/{'':{max(0, 21 - len(name))}} # {role}")
+                for child in sorted(node):
+                    sub = node[child]
+                    print(f"│   ├── {child:20s} {_describe(sub)}")
+                    if isinstance(sub, h5py.Group):
+                        for leaf in sorted(sub):
+                            print(f"│   │   ├── {leaf:16s} {_describe(sub[leaf])}")
+            return EXIT_OK
+    except MEDH5Error as exc:
+        return fail(str(exc))
 
 
-def dispatch(cmd: str, args: argparse.Namespace) -> int | None:
-    handler = HANDLERS.get(cmd)
-    return handler(args) if handler else None
+def _describe(node: Any) -> str:
+    if isinstance(node, h5py.Dataset):
+        shape = "scalar" if node.shape == () else "x".join(map(str, node.shape))
+        return f"{shape} {node.dtype.str} {describe_filters(node)}"
+    kind = node.attrs.get("kind")
+    if kind is not None:
+        from medh5._hdf5 import as_str
+
+        return f"group kind={as_str(kind)}"
+    return "group"
+
+
+def _validate(args: argparse.Namespace) -> int:
+    reports = validate_paths(args.paths, level=args.level, profiles=args.profiles)
+    if args.json:
+        emit([r.to_json() for r in reports], as_json=True)
+    else:
+        for report in reports:
+            print(report.format(verbose=args.verbose))
+    return EXIT_OK if all(r.ok for r in reports) else EXIT_ERROR
+
+
+def _verify(args: argparse.Namespace) -> int:
+    results: list[dict[str, Any]] = []
+    ok = True
+    for path in args.paths:
+        try:
+            with medh5.open(path) as sample:
+                result = sample.verify(partial=args.partial)
+        except MEDH5Error as exc:
+            return fail(str(exc))
+        summary = {"path": path, **result.summary()}
+        results.append(summary)
+        ok = ok and result.ok
+        if not args.json:
+            state = "OK" if result.ok else "FAILED"
+            print(
+                f"{path}: {state}  {len(result.checked)} objects, "
+                f"content_id {'ok' if result.content_id_ok else result.content_id_ok}"
+            )
+            for name in result.mismatched:
+                print(f"  MISMATCH  {name}")
+            for name in result.stale_index:
+                print(f"  STALE     index/{name} (rebuild with `medh5 index build`)")
+    emit(results, as_json=args.json)
+    return EXIT_OK if ok else EXIT_ERROR
+
+
+def _timeline(args: argparse.Namespace) -> int:
+    try:
+        with medh5.open(args.path) as sample:
+            rows = []
+            payload = []
+            for tp in sample.timepoints:
+                view = sample.at(tp.id)
+                rows.append(
+                    [
+                        tp.id,
+                        tp.index,
+                        tp.label or "-",
+                        tp.days_from_baseline
+                        if tp.days_from_baseline is not None
+                        else "-",
+                        ",".join(sorted(view.images)) or "-",
+                        ",".join(sorted(view.annotations)) or "-",
+                    ]
+                )
+                payload.append(
+                    {
+                        **tp.to_json(),
+                        "images": sorted(view.images),
+                        "annotations": sorted(view.annotations),
+                        "grids": sorted(view.grids),
+                    }
+                )
+            if args.json:
+                emit(payload, as_json=True)
+                return EXIT_OK
+            print(
+                table(rows, ["id", "index", "label", "days", "images", "annotations"])
+            )
+            spanning = sample.annotations.spanning()
+            if spanning:
+                print(
+                    "\nspanning annotations: "
+                    + ", ".join(
+                        f"{a.ann_id} ({','.join(a.timepoints)})" for a in spanning
+                    )
+                )
+            return EXIT_OK
+    except MEDH5Error as exc:
+        return fail(str(exc))
+
+
+def _track(args: argparse.Namespace) -> int:
+    try:
+        with medh5.open(args.path) as sample:
+            tracks = sample.track(args.class_key)
+            declared = set(sample.timepoints.ids)
+            payload = {}
+            rows = []
+            for instance_id, seen in sorted(tracks.items()):
+                present = sorted(seen)
+                state = (
+                    "persisted"
+                    if len(present) == len(declared)
+                    else "new"
+                    if present == [sample.timepoints[-1].id]
+                    else "resolved"
+                    if present == [sample.timepoints[0].id]
+                    else "partial"
+                )
+                payload[str(instance_id)] = {
+                    "timepoints": present,
+                    "state": state,
+                    "annotations": {tp: seen[tp][0] for tp in present},
+                }
+                rows.append(
+                    [
+                        instance_id,
+                        ",".join(present),
+                        state,
+                        ",".join(seen[tp][0] for tp in present),
+                    ]
+                )
+            if args.json:
+                emit(payload, as_json=True)
+                return EXIT_OK
+            if not rows:
+                print("no instance-carrying annotations in this sample")
+                return EXIT_OK
+            print(table(rows, ["instance", "timepoints", "state", "annotations"]))
+            print(
+                "\nabsence means `resolved` only where `annotated_class_ids` covers "
+                "the class at that timepoint (spec §7.4)."
+            )
+            return EXIT_OK
+    except MEDH5Error as exc:
+        return fail(str(exc))
+
+
+__all__ = ["dispatch", "register"]

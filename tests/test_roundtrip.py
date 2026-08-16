@@ -4,7 +4,7 @@ import h5py
 import numpy as np
 import pytest
 
-from medh5 import MEDH5File, MEDH5SchemaError, MEDH5ValidationError
+from medh5.legacy import MEDH5File, MEDH5SchemaError, MEDH5ValidationError
 
 
 @pytest.fixture
@@ -348,7 +348,7 @@ class TestAtomicWrite:
         target = tmp_path / "sample.medh5"
         images = {"CT": np.zeros((8, 16, 16), dtype=np.float32)}
 
-        import medh5.core as core
+        import medh5.legacy.core as core
 
         original_write_meta = core.write_meta
 
@@ -377,7 +377,7 @@ class TestAtomicWrite:
         )
         original_bytes = target.read_bytes()
 
-        import medh5.core as core
+        import medh5.legacy.core as core
 
         monkeypatch.setattr(
             core, "write_meta", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x"))

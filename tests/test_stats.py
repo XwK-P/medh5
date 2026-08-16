@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import numpy as np
 
-from medh5 import MEDH5File
-from medh5.dataset import Dataset
-from medh5.stats import DatasetStats, compute_stats
+from medh5.legacy import MEDH5File
+from medh5.legacy.dataset import Dataset
+from medh5.legacy.stats import DatasetStats, compute_stats
 
 
 def _write(path, ct, label=None, seg=None):

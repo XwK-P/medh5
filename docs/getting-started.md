@@ -31,7 +31,7 @@ Python >= 3.10. Supported matrix: 3.10, 3.11, 3.12.
 
 ```python
 import numpy as np
-from medh5 import MEDH5File
+from medh5.legacy import MEDH5File
 
 ct  = np.random.random((64, 128, 128)).astype(np.float32)
 pet = np.random.random((64, 128, 128)).astype(np.float32)
@@ -60,7 +60,7 @@ destination.
 ## Read it back
 
 ```python
-from medh5 import MEDH5File
+from medh5.legacy import MEDH5File
 
 sample = MEDH5File.read("sample.medh5")
 
@@ -82,7 +82,7 @@ with MEDH5File("sample.medh5") as f:
 ## Validate and verify
 
 ```python
-from medh5 import MEDH5File
+from medh5.legacy import MEDH5File
 
 report = MEDH5File.validate("sample.medh5")
 assert report.ok()                  # no errors

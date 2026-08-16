@@ -3,12 +3,12 @@
 import numpy as np
 import pytest
 
-from medh5 import MEDH5File
+from medh5.legacy import MEDH5File
 
 torch = pytest.importorskip("torch")
 
-from medh5.sampling import PatchSampler  # noqa: E402
-from medh5.torch import (  # noqa: E402
+from medh5.legacy.sampling import PatchSampler  # noqa: E402
+from medh5.legacy.torch import (  # noqa: E402
     _HANDLE_CACHE,
     MEDH5PatchDataset,
     MEDH5TorchDataset,
@@ -81,7 +81,7 @@ class TestMEDH5TorchDataset:
         # ``arr.astype(np.float32)``, so the transform must see numpy
         # arrays, not tensors. MEDH5TorchDataset used to convert to
         # tensors first and broke this contract.
-        from medh5.transforms import Clip, Compose, ZScore
+        from medh5.legacy.transforms import Clip, Compose, ZScore
 
         pipe = Compose([Clip(min=0.0, max=1.0), ZScore()])
         ds = MEDH5TorchDataset(sample_files, transform=pipe)
@@ -182,7 +182,9 @@ class TestHandleCache:
         cache.get(sample_files[0])
         assert len(cache._items) == 1
 
-        monkeypatch.setattr("medh5.torch.os.getpid", lambda: cache._owner_pid + 1)
+        monkeypatch.setattr(
+            "medh5.legacy.torch.os.getpid", lambda: cache._owner_pid + 1
+        )
         cache.get(sample_files[0])
         assert len(cache._items) == 1
         assert cache.opens == 2

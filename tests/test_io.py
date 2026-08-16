@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from medh5 import MEDH5File, MEDH5ValidationError, VerifyResult
+from medh5.legacy import MEDH5File, MEDH5ValidationError, VerifyResult
 
 nib = pytest.importorskip("nibabel")
 pydicom = pytest.importorskip("pydicom")
@@ -39,7 +39,7 @@ def _make_affine(spacing, origin):
 
 class TestFromNifti:
     def test_single_modality_roundtrip(self, tmp_path):
-        from medh5.io import from_nifti
+        from medh5.legacy.io import from_nifti
 
         ct = (np.arange(8 * 16 * 16) % 200).reshape(8, 16, 16).astype(np.int16)
         aff = _make_affine([1.5, 0.75, 0.75], [10.0, -20.0, 5.0])
@@ -58,7 +58,7 @@ class TestFromNifti:
         assert sample.meta.label == 1
 
     def test_multi_modality_with_seg(self, tmp_path):
-        from medh5.io import from_nifti
+        from medh5.legacy.io import from_nifti
 
         rng = np.random.default_rng(0)
         ct = rng.standard_normal((6, 12, 12)).astype(np.float32)
@@ -88,7 +88,7 @@ class TestFromNifti:
         np.testing.assert_array_equal(sample.seg["tumor"], tumor.astype(bool))
 
     def test_grid_mismatch_raises(self, tmp_path):
-        from medh5.io import from_nifti
+        from medh5.legacy.io import from_nifti
 
         ct = np.zeros((4, 8, 8), dtype=np.float32)
         pet = np.zeros((4, 8, 9), dtype=np.float32)  # mismatched
@@ -102,14 +102,14 @@ class TestFromNifti:
             from_nifti(images={"CT": ct_p, "PET": pet_p}, out_path=tmp_path / "x.medh5")
 
     def test_empty_images_raises(self, tmp_path):
-        from medh5.io import from_nifti
+        from medh5.legacy.io import from_nifti
 
         with pytest.raises(MEDH5ValidationError, match="at least one"):
             from_nifti(images={}, out_path=tmp_path / "x.medh5")
 
     def test_resample_to_reference_modality(self, tmp_path):
         pytest.importorskip("SimpleITK")
-        from medh5.io import from_nifti
+        from medh5.legacy.io import from_nifti
 
         ct = np.ones((8, 16, 16), dtype=np.float32)
         pet = np.ones((4, 8, 8), dtype=np.float32) * 5.0
@@ -140,7 +140,7 @@ class TestFromNifti:
         assert sample.seg["tumor"].any()
 
     def test_affine_mismatch_raises(self, tmp_path):
-        from medh5.io import from_nifti
+        from medh5.legacy.io import from_nifti
 
         ct = np.zeros((4, 8, 8), dtype=np.float32)
         pet = np.zeros((4, 8, 8), dtype=np.float32)
@@ -153,7 +153,7 @@ class TestFromNifti:
             from_nifti(images={"CT": ct_p, "PET": pet_p}, out_path=tmp_path / "x.medh5")
 
     def test_seg_affine_mismatch_raises(self, tmp_path):
-        from medh5.io import from_nifti
+        from medh5.legacy.io import from_nifti
 
         ct = np.zeros((4, 8, 8), dtype=np.float32)
         tumor = np.zeros((4, 8, 8), dtype=np.uint8)
@@ -175,7 +175,7 @@ class TestFromNifti:
 
     def test_resample_to_external_reference(self, tmp_path):
         pytest.importorskip("SimpleITK")
-        from medh5.io import from_nifti
+        from medh5.legacy.io import from_nifti
 
         ct = np.ones((4, 4, 4), dtype=np.float32)
         ref = np.zeros((8, 8, 8), dtype=np.float32)
@@ -191,7 +191,7 @@ class TestFromNifti:
 
     def test_import_seg_nifti_replace_and_mismatch(self, tmp_path):
         pytest.importorskip("SimpleITK")
-        from medh5.io import import_seg_nifti
+        from medh5.legacy.io import import_seg_nifti
 
         medh5_path = tmp_path / "sample.medh5"
         MEDH5File.write(
@@ -230,7 +230,7 @@ class TestFromNifti:
 
 class TestToNifti:
     def test_image_and_seg_roundtrip(self, tmp_path):
-        from medh5.io import from_nifti, to_nifti
+        from medh5.legacy.io import from_nifti, to_nifti
 
         ct = (np.arange(4 * 8 * 8) % 100).reshape(4, 8, 8).astype(np.int16)
         tumor = (ct > 50).astype(np.uint8)
@@ -264,7 +264,7 @@ class TestToNifti:
         )
 
     def test_unknown_modality_raises(self, tmp_path):
-        from medh5.io import to_nifti
+        from medh5.legacy.io import to_nifti
 
         ct = np.zeros((2, 4, 4), dtype=np.float32)
         path = tmp_path / "s.medh5"
@@ -273,7 +273,7 @@ class TestToNifti:
             to_nifti(path, tmp_path / "out", modalities=["MISSING"])
 
     def test_unknown_seg_raises(self, tmp_path):
-        from medh5.io import to_nifti
+        from medh5.legacy.io import to_nifti
 
         path = tmp_path / "s.medh5"
         MEDH5File.write(
@@ -368,7 +368,7 @@ def _make_dicom_series(
 
 class TestFromDicom:
     def test_series_to_medh5(self, tmp_path):
-        from medh5.io import from_dicom
+        from medh5.legacy.io import from_dicom
 
         dicom_dir = tmp_path / "series"
         _written, expected_volume, series_uid = _make_dicom_series(
@@ -393,7 +393,7 @@ class TestFromDicom:
         assert MEDH5File.verify(out) is VerifyResult.OK
 
     def test_modality_lut_applied(self, tmp_path):
-        from medh5.io import from_dicom
+        from medh5.legacy.io import from_dicom
 
         dicom_dir = tmp_path / "series_lut"
         _written, expected_volume, _series_uid = _make_dicom_series(
@@ -410,7 +410,7 @@ class TestFromDicom:
         np.testing.assert_array_equal(sample.images["CT"], expected)
 
     def test_extra_tags_preserve_sequence_values(self, tmp_path):
-        from medh5.io import from_dicom
+        from medh5.legacy.io import from_dicom
 
         dicom_dir = tmp_path / "series_tags"
         _make_dicom_series(dicom_dir, n_slices=2)
@@ -421,7 +421,7 @@ class TestFromDicom:
         assert sample.meta.extra["dicom"]["PixelSpacing"] == [0.75, 0.75]
 
     def test_selects_largest_series_deterministically(self, tmp_path):
-        from medh5.io import from_dicom
+        from medh5.legacy.io import from_dicom
 
         root = tmp_path / "multi"
         major_uid = "1.2.3.4.10"
@@ -439,7 +439,7 @@ class TestFromDicom:
         assert sample.meta.extra["dicom"]["selected_series_uid"] == major_uid
 
     def test_series_uid_filter(self, tmp_path):
-        from medh5.io import from_dicom
+        from medh5.legacy.io import from_dicom
 
         root = tmp_path / "series_uid"
         _make_dicom_series(root / "a", n_slices=2, series_uid="1.2.3")
@@ -452,7 +452,7 @@ class TestFromDicom:
         np.testing.assert_array_equal(sample.images["CT"], expected_volume)
 
     def test_inconsistent_slice_spacing_raises(self, tmp_path):
-        from medh5.io import from_dicom
+        from medh5.legacy.io import from_dicom
 
         dicom_dir = tmp_path / "bad_spacing"
         _make_dicom_series(dicom_dir, n_slices=3, position_step=1.5)
@@ -465,7 +465,7 @@ class TestFromDicom:
             from_dicom(dicom_dir, tmp_path / "x.medh5")
 
     def test_multiframe_raises(self, tmp_path):
-        from medh5.io import from_dicom
+        from medh5.legacy.io import from_dicom
 
         dicom_dir = tmp_path / "multiframe"
         _make_dicom_series(dicom_dir, n_slices=1, multiframe=True)
@@ -473,7 +473,7 @@ class TestFromDicom:
             from_dicom(dicom_dir, tmp_path / "x.medh5")
 
     def test_series_uid_not_found_raises(self, tmp_path):
-        from medh5.io import from_dicom
+        from medh5.legacy.io import from_dicom
 
         dicom_dir = tmp_path / "series_uid_missing"
         _make_dicom_series(dicom_dir, n_slices=2, series_uid="1.2.3")
@@ -481,7 +481,7 @@ class TestFromDicom:
             from_dicom(dicom_dir, tmp_path / "x.medh5", series_uid="9.9.9")
 
     def test_missing_pixel_data_raises(self, tmp_path):
-        from medh5.io import from_dicom
+        from medh5.legacy.io import from_dicom
 
         dicom_dir = tmp_path / "no_pixeldata"
         written, _volume, _uid = _make_dicom_series(dicom_dir, n_slices=1)
@@ -493,7 +493,7 @@ class TestFromDicom:
             from_dicom(dicom_dir, tmp_path / "x.medh5")
 
     def test_missing_orientation_raises(self, tmp_path):
-        from medh5.io import from_dicom
+        from medh5.legacy.io import from_dicom
 
         dicom_dir = tmp_path / "missing_iop"
         written, _volume, _uid = _make_dicom_series(dicom_dir, n_slices=2)
@@ -505,7 +505,7 @@ class TestFromDicom:
             from_dicom(dicom_dir, tmp_path / "x.medh5")
 
     def test_bad_pixel_spacing_raises(self, tmp_path):
-        from medh5.io import from_dicom
+        from medh5.legacy.io import from_dicom
 
         dicom_dir = tmp_path / "bad_pixel_spacing"
         _make_dicom_series(dicom_dir, n_slices=2, pixel_spacing=(0.0, 1.0))
@@ -513,7 +513,7 @@ class TestFromDicom:
             from_dicom(dicom_dir, tmp_path / "x.medh5")
 
     def test_unsupported_photometric_raises(self, tmp_path):
-        from medh5.io import from_dicom
+        from medh5.legacy.io import from_dicom
 
         dicom_dir = tmp_path / "rgb"
         written, _volume, _uid = _make_dicom_series(dicom_dir, n_slices=1)
@@ -525,13 +525,13 @@ class TestFromDicom:
             from_dicom(dicom_dir, tmp_path / "x.medh5")
 
     def test_missing_dir_raises(self, tmp_path):
-        from medh5.io import from_dicom
+        from medh5.legacy.io import from_dicom
 
         with pytest.raises(MEDH5ValidationError, match="not found"):
             from_dicom(tmp_path / "nope", tmp_path / "x.medh5")
 
     def test_empty_dir_raises(self, tmp_path):
-        from medh5.io import from_dicom
+        from medh5.legacy.io import from_dicom
 
         empty = tmp_path / "empty"
         empty.mkdir()
@@ -610,7 +610,7 @@ def _build_nnunetv2_dataset(
 
 class TestFromNnunetv2:
     def test_minimal_dataset_import(self, tmp_path):
-        from medh5.io import from_nnunetv2
+        from medh5.legacy.io import from_nnunetv2
 
         src = tmp_path / "Dataset001_Foo"
         _build_nnunetv2_dataset(src)
@@ -641,7 +641,7 @@ class TestFromNnunetv2:
         assert nnu["file_ending"] == ".nii.gz"
 
     def test_include_test_flag(self, tmp_path):
-        from medh5.io import from_nnunetv2
+        from medh5.legacy.io import from_nnunetv2
 
         src = tmp_path / "Dataset002_Bar"
         _build_nnunetv2_dataset(src, include_test=True)
@@ -659,7 +659,7 @@ class TestFromNnunetv2:
         assert not (out_no_test / "imagesTs").exists()
 
     def test_region_labels_rejected(self, tmp_path):
-        from medh5.io import from_nnunetv2
+        from medh5.legacy.io import from_nnunetv2
 
         src = tmp_path / "Dataset003_Region"
         _build_nnunetv2_dataset(
@@ -674,7 +674,7 @@ class TestFromNnunetv2:
             from_nnunetv2(src, tmp_path / "out")
 
     def test_missing_dataset_json_raises(self, tmp_path):
-        from medh5.io import from_nnunetv2
+        from medh5.legacy.io import from_nnunetv2
 
         src = tmp_path / "empty"
         src.mkdir()
@@ -682,7 +682,7 @@ class TestFromNnunetv2:
             from_nnunetv2(src, tmp_path / "out")
 
     def test_missing_channel_raises(self, tmp_path):
-        from medh5.io import from_nnunetv2
+        from medh5.legacy.io import from_nnunetv2
 
         src = tmp_path / "Dataset004_Missing"
         _build_nnunetv2_dataset(src)
@@ -692,7 +692,7 @@ class TestFromNnunetv2:
             from_nnunetv2(src, tmp_path / "out")
 
     def test_label_grid_mismatch_raises(self, tmp_path):
-        from medh5.io import from_nnunetv2
+        from medh5.legacy.io import from_nnunetv2
 
         src = tmp_path / "Dataset005_Bad"
         _build_nnunetv2_dataset(src)
@@ -703,7 +703,7 @@ class TestFromNnunetv2:
             from_nnunetv2(src, tmp_path / "out")
 
     def test_bad_labels_mapping_raises(self, tmp_path):
-        from medh5.io import from_nnunetv2
+        from medh5.legacy.io import from_nnunetv2
 
         src = tmp_path / "Dataset006_BadLabels"
         _build_nnunetv2_dataset(
@@ -714,7 +714,7 @@ class TestFromNnunetv2:
             from_nnunetv2(src, tmp_path / "out")
 
     def test_undeclared_label_value_rejected(self, tmp_path):
-        from medh5.io import from_nnunetv2
+        from medh5.legacy.io import from_nnunetv2
 
         src = tmp_path / "Dataset007_StrayVal"
         _build_nnunetv2_dataset(src)
@@ -727,7 +727,7 @@ class TestFromNnunetv2:
             from_nnunetv2(src, tmp_path / "out")
 
     def test_non_integer_label_voxels_rejected(self, tmp_path):
-        from medh5.io import from_nnunetv2
+        from medh5.legacy.io import from_nnunetv2
 
         src = tmp_path / "Dataset008_FloatLabel"
         _build_nnunetv2_dataset(src)
@@ -742,7 +742,7 @@ class TestFromNnunetv2:
             from_nnunetv2(src, tmp_path / "out")
 
     def test_integer_valued_float_label_accepted(self, tmp_path):
-        from medh5.io import from_nnunetv2
+        from medh5.legacy.io import from_nnunetv2
 
         src = tmp_path / "Dataset009_FloatOk"
         _build_nnunetv2_dataset(src)
@@ -763,7 +763,7 @@ class TestFromNnunetv2:
 
 class TestToNnunetv2:
     def test_roundtrip_preserves_images_and_labels(self, tmp_path):
-        from medh5.io import from_nnunetv2, to_nnunetv2
+        from medh5.legacy.io import from_nnunetv2, to_nnunetv2
 
         src = tmp_path / "Dataset010_Round"
         _build_nnunetv2_dataset(src, include_test=True)
@@ -809,7 +809,7 @@ class TestToNnunetv2:
         assert back_json["file_ending"] == orig_json["file_ending"]
 
     def test_export_flat_medh5_without_nnunet_meta(self, tmp_path):
-        from medh5.io import to_nnunetv2
+        from medh5.legacy.io import to_nnunetv2
 
         # Write a single .medh5 file with no nnunetv2 metadata.
         images = {"CT": np.zeros((4, 6, 8), dtype=np.float32)}
@@ -839,7 +839,7 @@ class TestToNnunetv2:
         assert payload["numTraining"] == 1
 
     def test_export_empty_src_raises(self, tmp_path):
-        from medh5.io import to_nnunetv2
+        from medh5.legacy.io import to_nnunetv2
 
         empty = tmp_path / "empty"
         empty.mkdir()
@@ -847,7 +847,7 @@ class TestToNnunetv2:
             to_nnunetv2(empty, tmp_path / "out")
 
     def test_extra_seg_mask_rejected_on_export(self, tmp_path):
-        from medh5.io import to_nnunetv2
+        from medh5.legacy.io import to_nnunetv2
 
         # Write a .medh5 file carrying nnU-Net metadata plus a seg mask whose
         # name is not declared in ``labels``. Export must refuse rather than
@@ -878,7 +878,7 @@ class TestToNnunetv2:
             to_nnunetv2(tmp_path, tmp_path / "out")
 
     def test_channel_set_mismatch_rejected_on_export(self, tmp_path):
-        from medh5.io import to_nnunetv2
+        from medh5.legacy.io import to_nnunetv2
 
         # .medh5 declares two channels in nnU-Net metadata but only stores one.
         images_tr = tmp_path / "imagesTr"

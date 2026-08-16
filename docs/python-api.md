@@ -3,7 +3,7 @@
 All of medh5's public surface is re-exported from the top-level package:
 
 ```python
-from medh5 import (
+from medh5.legacy import (
     MEDH5File,
     MEDH5Sample,
     SampleMeta,
@@ -161,7 +161,7 @@ successfully" — the two cases previously both returned `True`, which
 made trustworthy audit UIs impossible to build.
 
 ```python
-from medh5 import MEDH5File, VerifyResult
+from medh5.legacy import MEDH5File, VerifyResult
 
 match MEDH5File.verify("sample.medh5"):
     case VerifyResult.OK:        ...   # stored checksum matches data
@@ -179,7 +179,7 @@ need to hand out independent "handles" while keeping the underlying
 file single-open should use `open_shared`:
 
 ```python
-from medh5 import open_shared
+from medh5.legacy import open_shared
 
 with open_shared("sample.medh5") as f:
     patch = f["images/CT"][10:42, 20:84, 20:84]
@@ -246,7 +246,7 @@ Viewer-style consumers can ask `SpatialMeta` for a composed homogeneous
 affine matrix in one call:
 
 ```python
-from medh5 import MEDH5File
+from medh5.legacy import MEDH5File
 
 meta = MEDH5File.read_meta("sample.medh5")
 affine = meta.spatial.as_affine(ndim=3)
@@ -268,7 +268,7 @@ affine isn't needed.
 bounds and reports every adjustment it made:
 
 ```python
-from medh5 import validate_bboxes
+from medh5.legacy import validate_bboxes
 
 clamped, issues = validate_bboxes(boxes, sample_shape=(128, 256, 256))
 for i, axis, reason in issues:
@@ -309,7 +309,7 @@ Catch `MEDH5Error` at the boundary to handle all medh5 failures uniformly.
 ## Chunk optimizer
 
 ```python
-from medh5 import optimize_chunks
+from medh5.legacy import optimize_chunks
 
 chunks = optimize_chunks(
     image_shape=(128, 256, 256),

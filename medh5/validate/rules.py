@@ -1,0 +1,1070 @@
+"""The validation rules, one section of the spec at a time (spec §15).
+
+Rules are plain generators over a :class:`Context`.  Each yields
+:class:`~medh5.validate.report.Diagnostic` objects and never raises: a validator
+that stops at the first problem is useless for curation, where the point is to
+see everything wrong with a file in one pass.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+from collections.abc import Iterator
+from dataclasses import dataclass, field
+from typing import Any
+
+import h5py
+import numpy as np
+
+from medh5._hdf5 import ID_PATTERN, as_str, as_str_tuple
+from medh5.annotations.base import (
+    ANNOTATION_KINDS,
+    RESERVED_KINDS,
+    TASKS,
+    VOXEL_KINDS,
+)
+from medh5.curation.provenance import ACTIVITY_TYPES, RFC3339
+from medh5.document import SampleDocument, schema_available, validate_against_schema
+from medh5.errors import CODES
+from medh5.geometry.affine import is_orthonormal
+from medh5.geometry.grid import AXIS_KINDS
+from medh5.image import VALUE_TYPES
+from medh5.labels.labelset import BACKGROUND_ID, CLOSURES, IGNORE_ID
+from medh5.sample import PROFILES
+from medh5.storage.codecs import is_bulk
+from medh5.validate.report import Diagnostic, Level, Report
+
+SUPPORTED_MAJOR = "1"
+
+REQUIRED_DATASETS: dict[str, tuple[str, ...]] = {
+    "labelmap": ("data",),
+    "layers": ("data", "layer_class_ids"),
+    "bitmask": ("data", "bit_class_ids"),
+    "probmap": ("data",),
+    "mask": ("data",),
+    "instances": ("boxes", "class_ids", "instance_ids"),
+}
+
+ALLOWED_DTYPES: dict[str, tuple[str, ...]] = {
+    "labelmap": ("uint8", "uint16"),
+    "layers": ("uint8", "uint16"),
+    "bitmask": ("uint64",),
+    "probmap": ("float16", "float32"),
+    "mask": ("bool", "uint8"),
+}
+
+W908_TOLERANCE = 2
+"""Extra layers beyond the greedy optimum before W908 fires."""
+
+
+@dataclass
+class Context:
+    """What every rule gets: the file, the parsed document, and the level."""
+
+    root: h5py.Group
+    path: str
+    level: Level
+    profiles: tuple[str, ...] = ()
+    document: SampleDocument | None = None
+    grids: dict[str, Any] = field(default_factory=dict)
+    notes: dict[str, Any] = field(default_factory=dict)
+
+    def err(self, code: str, location: str, message: str) -> Diagnostic:
+        return Diagnostic(
+            code=code,
+            location=location,
+            message=message,
+            severity=CODES[code].severity if code in CODES else "error",
+            level=self.level,
+        )
+
+    @property
+    def annotation_groups(self) -> dict[str, h5py.Group]:
+        node = self.root.get("annotations")
+        return {name: node[name] for name in sorted(node)} if node is not None else {}
+
+    @property
+    def image_nodes(self) -> dict[str, Any]:
+        node = self.root.get("images")
+        return {name: node[name] for name in sorted(node)} if node is not None else {}
+
+
+# --------------------------------------------------------------------------
+# §2 container
+# --------------------------------------------------------------------------
+
+
+def check_container(ctx: Context) -> Iterator[Diagnostic]:
+    attrs = ctx.root.attrs
+    if "medh5_version" not in attrs:
+        yield ctx.err("E001", "/", "root has no `medh5_version` attribute")
+    else:
+        version = as_str(attrs["medh5_version"])
+        major = version.split(".", 1)[0]
+        if major != SUPPORTED_MAJOR:
+            yield ctx.err(
+                "E002",
+                "/",
+                f"declares MEDH5 {version}; this validator implements "
+                f"{SUPPORTED_MAJOR}.x",
+            )
+    if "medh5_kind" not in attrs:
+        yield ctx.err("E006", "/", "root has no `medh5_kind` attribute")
+    elif as_str(attrs["medh5_kind"]) not in ("sample", "collection"):
+        yield ctx.err(
+            "E006",
+            "/",
+            f"unknown `medh5_kind` {as_str(attrs['medh5_kind'])!r}",
+        )
+    if "medh5_profiles" not in attrs:
+        yield ctx.err("E007", "/", "root has no `medh5_profiles` attribute")
+    else:
+        unknown = set(as_str_tuple(attrs["medh5_profiles"])) - set(PROFILES)
+        if unknown:
+            yield ctx.err("E007", "/", f"unknown profile(s) {sorted(unknown)}")
+    for required in ("grids", "images"):
+        if required not in ctx.root:
+            yield ctx.err(
+                "E008", f"/{required}", f"required group `{required}` is absent"
+            )
+    if "meta" not in ctx.root:
+        yield ctx.err("E004", "/meta", "required dataset `meta` is absent")
+
+    for group_name in ("grids", "images", "annotations", "transforms"):
+        node = ctx.root.get(group_name)
+        if node is None:
+            continue
+        for name in node:
+            if not ID_PATTERN.match(name) or name == "meta":
+                yield ctx.err(
+                    "E003",
+                    f"/{group_name}/{name}",
+                    f"identifier {name!r} does not match [A-Za-z0-9_.-]{{1,128}}",
+                )
+
+
+def check_document(ctx: Context) -> Iterator[Diagnostic]:
+    """Parse and check ``/meta`` in three separable steps.
+
+    Keeping them separate is what makes the codes mean what they say: E004 is
+    "not JSON", E005 is "JSON that the schema rejects", and a document that is
+    schema-valid but semantically impossible (a non-dense timepoint index, say)
+    keeps its own specific code rather than being flattened into E005.
+    """
+    if "meta" not in ctx.root:
+        return
+    raw = ctx.root["meta"][()]
+    text = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError as exc:
+        yield ctx.err("E004", "/meta", f"`meta` is not valid JSON: {exc}")
+        return
+    if not isinstance(parsed, dict):
+        yield ctx.err("E004", "/meta", "`meta` must hold a JSON object")
+        return
+
+    ctx.notes["schema_checked"] = schema_available()
+    schema_failed = False
+    if schema_available():
+        for message in validate_against_schema(parsed):
+            schema_failed = True
+            location, _, detail = message.partition(": ")
+            yield ctx.err("E005", f"/meta#{location}", detail or message)
+
+    try:
+        ctx.document = SampleDocument.from_json(parsed)
+    except Exception as exc:  # noqa: BLE001 - reported, never raised
+        code = getattr(exc, "code", None) or "E005"
+        if not (schema_failed and code == "E005"):
+            yield ctx.err(code, "/meta", str(exc))
+
+
+def check_bulk_storage(ctx: Context) -> Iterator[Diagnostic]:
+    def visit(name: str, obj: h5py.HLObject) -> None:
+        return None
+
+    del visit
+    for name, node in _iter_datasets(ctx.root):
+        if name == "meta" or name.startswith("index/"):
+            continue
+        if is_bulk(node) and (node.chunks is None or not _has_filter(node)):
+            yield ctx.err(
+                "W902",
+                f"/{name}",
+                f"{node.nbytes / 1024 / 1024:.1f} MiB dataset is "
+                f"{'unchunked' if node.chunks is None else 'uncompressed'}",
+            )
+
+
+def _has_filter(node: h5py.Dataset) -> bool:
+    if node.compression:
+        return True
+    plist = node.id.get_create_plist()
+    return int(plist.get_nfilters()) > 0
+
+
+def _iter_datasets(root: h5py.Group) -> Iterator[tuple[str, h5py.Dataset]]:
+    found: list[tuple[str, h5py.Dataset]] = []
+
+    def visit(name: str, obj: h5py.HLObject) -> None:
+        if isinstance(obj, h5py.Dataset):
+            found.append((name, obj))
+
+    root.visititems(visit)
+    return iter(found)
+
+
+# --------------------------------------------------------------------------
+# §3 geometry and timepoints
+# --------------------------------------------------------------------------
+
+
+def check_geometry(ctx: Context) -> Iterator[Diagnostic]:
+    node = ctx.root.get("grids")
+    if node is None:
+        return
+    if len(node) == 0:
+        yield ctx.err("E111", "/grids", "a sample must declare at least one grid")
+        return
+    for name in sorted(node):
+        group = node[name]
+        location = f"/grids/{name}"
+        attrs = group.attrs
+        missing = [
+            key
+            for key in (
+                "shape",
+                "axis_names",
+                "axis_kinds",
+                "spacing",
+                "origin",
+                "direction",
+                "coord_system",
+                "units",
+            )
+            if key not in attrs
+        ]
+        if missing:
+            yield ctx.err("E109", location, f"missing required attribute(s) {missing}")
+            continue
+        shape = np.atleast_1d(attrs["shape"])
+        kinds = as_str_tuple(attrs["axis_kinds"])
+        names = as_str_tuple(attrs["axis_names"])
+        if len(kinds) != shape.size or len(names) != shape.size:
+            yield ctx.err(
+                "E109",
+                location,
+                f"axis_names/axis_kinds have {len(names)}/{len(kinds)} entries "
+                f"for a {shape.size}-D shape",
+            )
+            continue
+        unknown = set(kinds) - set(AXIS_KINDS)
+        if unknown:
+            yield ctx.err("E110", location, f"unknown axis kinds {sorted(unknown)}")
+            continue
+        n_spatial = kinds.count("spatial")
+        if not 2 <= n_spatial <= 3:  # noqa: PLR2004
+            yield ctx.err(
+                "E110", location, f"{n_spatial} spatial axes; the spec allows 2 or 3"
+            )
+        if kinds.count("time") > 1 or kinds.count("channel") > 1:
+            yield ctx.err(
+                "E110",
+                location,
+                "at most one `time` and one `channel` axis are allowed",
+            )
+        spatial_positions = tuple(i for i, k in enumerate(kinds) if k == "spatial")
+        expected = tuple(range(len(kinds) - n_spatial, len(kinds)))
+        if spatial_positions != expected:
+            yield ctx.err(
+                "E103",
+                location,
+                f"spatial axes at {spatial_positions} must be contiguous and trailing "
+                f"(expected {expected})",
+            )
+        spacing = np.atleast_1d(np.asarray(attrs["spacing"], dtype=float))
+        if np.any(spacing <= 0):
+            yield ctx.err(
+                "E104",
+                location,
+                f"spacing {spacing.tolist()} must be strictly positive",
+            )
+        direction = np.asarray(attrs["direction"], dtype=float)
+        if direction.ndim != 2:  # noqa: PLR2004
+            yield ctx.err(
+                "E109",
+                location,
+                f"`direction` must be stored 2-D, got shape {direction.shape}",
+            )
+        elif not is_orthonormal(direction):
+            residual = float(
+                np.max(np.abs(direction.T @ direction - np.eye(direction.shape[0])))
+            )
+            yield ctx.err(
+                "E102",
+                location,
+                f"`direction` is not orthonormal (max residual {residual:.3g})",
+            )
+
+
+def check_timepoints(ctx: Context) -> Iterator[Diagnostic]:
+    document = ctx.document
+    if document is None:
+        return
+    declared = set(document.timepoints.ids)
+    multi = len(declared) > 1
+    node = ctx.root.get("grids")
+    if node is None:
+        return
+    frames: dict[str, set[str]] = {}
+    for name in sorted(node):
+        attrs = node[name].attrs
+        location = f"/grids/{name}"
+        timepoint = as_str(attrs["timepoint"]) if "timepoint" in attrs else None
+        if timepoint is None:
+            if multi:
+                yield ctx.err(
+                    "E106",
+                    location,
+                    f"grid has no `timepoint`, but the sample declares "
+                    f"{len(declared)} timepoints",
+                )
+            continue
+        if timepoint not in declared:
+            yield ctx.err(
+                "E107",
+                location,
+                f"`timepoint` {timepoint!r} is not declared "
+                f"(declared: {sorted(declared)})",
+            )
+            continue
+        frame = as_str(attrs["frame_uid"]) if "frame_uid" in attrs else None
+        if frame:
+            frames.setdefault(frame, set()).add(timepoint)
+    for frame, timepoints in sorted(frames.items()):
+        if len(timepoints) > 1:
+            yield ctx.err(
+                "W910",
+                "/grids",
+                f"frame_uid {frame!r} is shared by timepoints {sorted(timepoints)}; "
+                "follow-up imaging is a new frame unless the subject was never "
+                "repositioned",
+            )
+    if multi and not _has_relating_transform(ctx, frames):
+        yield ctx.err(
+            "W911",
+            "/transforms",
+            f"the sample declares {len(declared)} timepoints but no transform "
+            "relates any two of them",
+        )
+
+
+def _has_relating_transform(ctx: Context, frames: dict[str, set[str]]) -> bool:
+    node = ctx.root.get("transforms")
+    if node is None or len(node) == 0:
+        return False
+    for name in node:
+        attrs = node[name].attrs
+        src = as_str(attrs["from_frame"]) if "from_frame" in attrs else None
+        dst = as_str(attrs["to_frame"]) if "to_frame" in attrs else None
+        if src and dst and frames.get(src, set()) != frames.get(dst, set()):
+            return True
+    return False
+
+
+# --------------------------------------------------------------------------
+# §4 images
+# --------------------------------------------------------------------------
+
+
+def check_images(ctx: Context) -> Iterator[Diagnostic]:
+    node = ctx.root.get("images")
+    if node is None:
+        return
+    if len(node) == 0:
+        yield ctx.err("E201", "/images", "a sample must contain at least one image")
+        return
+    grids_node = ctx.root.get("grids")
+    for name in sorted(node):
+        image = node[name]
+        location = f"/images/{name}"
+        attrs = image.attrs
+        for key, code in (
+            ("grid", "E205"),
+            ("modality", "E205"),
+            ("value_type", "E205"),
+        ):
+            if key not in attrs:
+                yield ctx.err(code, location, f"missing required attribute {key!r}")
+        if "value_type" in attrs and as_str(attrs["value_type"]) not in VALUE_TYPES:
+            yield ctx.err(
+                "E203",
+                location,
+                f"unknown value_type {as_str(attrs['value_type'])!r}",
+            )
+        if "grid" not in attrs:
+            continue
+        grid_id = as_str(attrs["grid"])
+        if grids_node is None or grid_id not in grids_node:
+            yield ctx.err(
+                "E101", location, f"names grid {grid_id!r}, which does not exist"
+            )
+            continue
+        grid_shape = tuple(
+            int(v) for v in np.atleast_1d(grids_node[grid_id].attrs["shape"])
+        )
+        dataset = image["0"] if isinstance(image, h5py.Group) else image
+        if tuple(dataset.shape) != grid_shape:
+            yield ctx.err(
+                "E202",
+                location,
+                f"shape {tuple(dataset.shape)} != grid {grid_id!r} shape {grid_shape}",
+            )
+        if "channel_names" in attrs:
+            kinds = as_str_tuple(grids_node[grid_id].attrs["axis_kinds"])
+            if "channel" not in kinds:
+                yield ctx.err(
+                    "E204", location, "`channel_names` on a grid with no channel axis"
+                )
+            else:
+                extent = grid_shape[kinds.index("channel")]
+                if len(as_str_tuple(attrs["channel_names"])) != extent:
+                    yield ctx.err(
+                        "E204",
+                        location,
+                        f"`channel_names` has "
+                        f"{len(as_str_tuple(attrs['channel_names']))} "
+                        f"entries for a channel axis of extent {extent}",
+                    )
+        if dataset.dtype.kind == "f" and _int16_lossless(dataset):
+            yield ctx.err(
+                "W907",
+                location,
+                f"stored as {dataset.dtype.name} but every value is an integer within "
+                "int16 range; int16 + rescale is lossless and ~3x smaller",
+            )
+
+
+def _int16_lossless(dataset: h5py.Dataset, sample_limit: int = 4_000_000) -> bool:
+    if dataset.size == 0 or dataset.size > sample_limit:
+        return False
+    values = np.asarray(dataset[...])
+    finite = values[np.isfinite(values)]
+    if finite.size == 0 or not np.array_equal(finite, np.rint(finite)):
+        return False
+    return bool(
+        finite.min() >= np.iinfo(np.int16).min
+        and finite.max() <= np.iinfo(np.int16).max
+    )
+
+
+def check_multiscale(ctx: Context) -> Iterator[Diagnostic]:
+    from medh5.geometry.grid import read_grid
+    from medh5.geometry.multiscale import check_pyramid
+
+    node = ctx.root.get("images")
+    grids_node = ctx.root.get("grids")
+    if node is None or grids_node is None:
+        return
+    for name in sorted(node):
+        image = node[name]
+        if not isinstance(image, h5py.Group):
+            continue
+        attrs = image.attrs
+        location = f"/images/{name}"
+        if "grid_levels" not in attrs or "downsample_factors" not in attrs:
+            yield ctx.err(
+                "E105",
+                location,
+                "multiscale image needs `grid_levels` and `downsample_factors`",
+            )
+            continue
+        level_ids = as_str_tuple(attrs["grid_levels"])
+        if any(gid not in grids_node for gid in level_ids):
+            yield ctx.err(
+                "E101",
+                location,
+                f"grid_levels reference missing grids {list(level_ids)}",
+            )
+            continue
+        grids = [read_grid(grids_node[gid], gid) for gid in level_ids]
+        problems = check_pyramid(
+            grids[0], grids, np.asarray(attrs["downsample_factors"], dtype=float)
+        )
+        for problem in problems:
+            yield ctx.err("E105", location, problem)
+
+
+# --------------------------------------------------------------------------
+# §5 label set
+# --------------------------------------------------------------------------
+
+
+def check_label_set(ctx: Context) -> Iterator[Diagnostic]:
+    document = ctx.document
+    if document is None:
+        return
+    needs_labels = {"seg", "det", "cls"} & set(ctx.profiles)
+    label_set = document.label_set
+    if label_set is None:
+        if needs_labels:
+            yield ctx.err(
+                "E301",
+                "/meta#label_set",
+                f"profile(s) {sorted(needs_labels)} require a label set",
+            )
+        return
+    if label_set.form == "ref" and not label_set.uri:
+        yield ctx.err("E305", "/meta#label_set", "`form: ref` requires a `uri`")
+    seen_ids: set[int] = set()
+    seen_keys: set[str] = set()
+    for entry in label_set.classes:
+        if entry.id in (BACKGROUND_ID, IGNORE_ID):
+            yield ctx.err(
+                "E303",
+                f"/meta#label_set/classes/{entry.key}",
+                f"id {entry.id} is reserved",
+            )
+        if entry.id in seen_ids:
+            yield ctx.err(
+                "E302",
+                f"/meta#label_set/classes/{entry.key}",
+                f"duplicate class id {entry.id}",
+            )
+        if entry.key in seen_keys:
+            yield ctx.err(
+                "E302",
+                f"/meta#label_set/classes/{entry.key}",
+                f"duplicate class key {entry.key!r}",
+            )
+        seen_ids.add(entry.id)
+        seen_keys.add(entry.key)
+    try:
+        label_set.check()
+    except Exception as exc:  # noqa: BLE001 - surfaced as a diagnostic
+        code = getattr(exc, "code", None) or "E306"
+        yield ctx.err(code, "/meta#label_set", str(exc))
+
+
+def check_ontology_bindings(ctx: Context) -> Iterator[Diagnostic]:
+    document = ctx.document
+    if document is None or document.label_set is None:
+        return
+    used: set[int] = set()
+    for group in ctx.annotation_groups.values():
+        if "class_ids" in group.attrs:
+            used.update(int(c) for c in np.atleast_1d(group.attrs["class_ids"]))
+    unbound = sorted(
+        c
+        for c in used
+        if (entry := document.label_set.get(c)) is not None and not entry.codes
+    )
+    if unbound:
+        yield ctx.err(
+            "W912",
+            "/meta#label_set",
+            f"{len(unbound)} class(es) used by annotations have no ontology binding: "
+            f"{unbound[:8]}{'...' if len(unbound) > 8 else ''}",
+        )
+
+
+# --------------------------------------------------------------------------
+# §6-§7 annotations
+# --------------------------------------------------------------------------
+
+
+def check_annotations(ctx: Context) -> Iterator[Diagnostic]:
+    document = ctx.document
+    grids_node = ctx.root.get("grids")
+    declared_timepoints = set(document.timepoints.ids) if document else set()
+    label_set = document.label_set if document else None
+
+    for name, group in ctx.annotation_groups.items():
+        location = f"/annotations/{name}"
+        attrs = group.attrs
+        if "kind" not in attrs:
+            yield ctx.err("E412", location, "missing required attribute `kind`")
+            continue
+        kind = as_str(attrs["kind"])
+        if kind in RESERVED_KINDS:
+            yield ctx.err(
+                "E401",
+                location,
+                f"kind {kind!r} is reserved by spec §16 and must not appear in a 1.0 "
+                f"file",
+            )
+            continue
+        if kind not in ANNOTATION_KINDS:
+            yield ctx.err("E401", location, f"unknown annotation kind {kind!r}")
+            continue
+        if "task" in attrs and as_str(attrs["task"]) not in TASKS:
+            yield ctx.err("E412", location, f"unknown task {as_str(attrs['task'])!r}")
+        if "closure" in attrs and as_str(attrs["closure"]) not in CLOSURES:
+            yield ctx.err(
+                "E412", location, f"unknown closure {as_str(attrs['closure'])!r}"
+            )
+        if "annotated_class_ids" not in attrs and kind != "mask":
+            yield ctx.err(
+                "E412",
+                location,
+                "missing `annotated_class_ids`; the coverage contract is required",
+            )
+        class_ids = (
+            {int(c) for c in np.atleast_1d(attrs["class_ids"])}
+            if "class_ids" in attrs
+            else set()
+        )
+        annotated = (
+            {int(c) for c in np.atleast_1d(attrs["annotated_class_ids"])}
+            if "annotated_class_ids" in attrs
+            else set()
+        )
+        if not annotated <= class_ids and kind != "mask":
+            yield ctx.err(
+                "E403",
+                location,
+                f"annotated_class_ids {sorted(annotated - class_ids)} are not in "
+                f"class_ids",
+            )
+        if label_set is not None and label_set.form == "inline":
+            missing = label_set.missing(class_ids)
+            if missing:
+                yield ctx.err(
+                    "E402",
+                    location,
+                    f"class ids {list(missing)} are not in label set {label_set.id!r}",
+                )
+        reserved = class_ids & {BACKGROUND_ID, IGNORE_ID}
+        if reserved:
+            yield ctx.err(
+                "E303", location, f"class_ids uses reserved id(s) {sorted(reserved)}"
+            )
+        if "timepoints" in attrs:
+            for timepoint in as_str_tuple(attrs["timepoints"]):
+                if timepoint not in declared_timepoints:
+                    yield ctx.err(
+                        "E409", location, f"undeclared timepoint {timepoint!r}"
+                    )
+        grid_id = as_str(attrs["grid"]) if "grid" in attrs else None
+        if kind in VOXEL_KINDS:
+            if grid_id is None:
+                yield ctx.err("E412", location, f"kind {kind!r} requires a `grid`")
+            elif grids_node is None or grid_id not in grids_node:
+                yield ctx.err(
+                    "E101", location, f"names grid {grid_id!r}, which does not exist"
+                )
+        for required in REQUIRED_DATASETS.get(kind, ()):
+            if required not in group:
+                yield ctx.err(
+                    "E410", location, f"kind {kind!r} requires dataset {required!r}"
+                )
+        if "data" in group and kind in ALLOWED_DTYPES:
+            dtype_name = group["data"].dtype.name
+            if dtype_name not in ALLOWED_DTYPES[kind]:
+                yield ctx.err(
+                    "E411",
+                    f"{location}/data",
+                    f"dtype {dtype_name} is not permitted for kind {kind!r} "
+                    f"(expected one of {list(ALLOWED_DTYPES[kind])})",
+                )
+        yield from _check_voxel_shape(ctx, name, group, kind, grid_id, grids_node)
+        yield from _check_encoding_invariants(ctx, name, group, kind)
+        if kind != "mask" and annotated < class_ids and not _has_ignore(group, kind):
+            yield ctx.err(
+                "W904",
+                location,
+                f"{len(class_ids - annotated)} class(es) are encodable but not "
+                "annotated, and there is no ignore region; `0` cannot be read as "
+                "a verified negative for them",
+            )
+
+
+def _has_ignore(group: h5py.Group, kind: str) -> bool:
+    if "ignore_mask" in group.attrs:
+        return True
+    if kind in ("labelmap", "layers") and "data" in group:
+        ignore_id = int(group.attrs.get("ignore_id", IGNORE_ID))
+        data = group["data"]
+        if data.size <= 64_000_000:  # noqa: PLR2004 - bounded scan
+            return bool(np.any(np.asarray(data[...]) == ignore_id))
+    return False
+
+
+def _check_voxel_shape(
+    ctx: Context,
+    name: str,
+    group: h5py.Group,
+    kind: str,
+    grid_id: str | None,
+    grids_node: h5py.Group | None,
+) -> Iterator[Diagnostic]:
+    if kind not in VOXEL_KINDS or grid_id is None or grids_node is None:
+        return
+    if grid_id not in grids_node or "data" not in group:
+        return
+    attrs = grids_node[grid_id].attrs
+    shape = tuple(int(v) for v in np.atleast_1d(attrs["shape"]))
+    kinds = as_str_tuple(attrs["axis_kinds"])
+    spatial = tuple(s for s, k in zip(shape, kinds, strict=True) if k == "spatial")
+    data_shape = tuple(int(v) for v in group["data"].shape)
+    expected_stacked = kind in ("layers", "bitmask", "probmap")
+    tail = data_shape[1:] if expected_stacked else data_shape
+    if tail != spatial:
+        yield ctx.err(
+            "E405",
+            f"/annotations/{name}/data",
+            f"spatial shape {tail} != grid {grid_id!r} spatial shape {spatial}",
+        )
+    if (
+        expected_stacked
+        and group["data"].chunks is not None
+        and group["data"].chunks[0] != 1
+    ):
+        yield ctx.err(
+            "W902",
+            f"/annotations/{name}/data",
+            f"chunk shape {group['data'].chunks} spans the stacked axis; the spec "
+            "requires (1, *spatial_chunk) so one plane reads without the others",
+        )
+
+
+def _check_encoding_invariants(
+    ctx: Context, name: str, group: h5py.Group, kind: str
+) -> Iterator[Diagnostic]:
+    location = f"/annotations/{name}"
+    declared = (
+        {int(c) for c in np.atleast_1d(group.attrs["class_ids"])}
+        if "class_ids" in group.attrs
+        else set()
+    )
+    if kind == "layers" and "layer_class_ids" in group:
+        table = np.asarray(group["layer_class_ids"][...])
+        seen: dict[int, int] = {}
+        for layer in range(table.shape[0]):
+            for value in table[layer]:
+                class_id = int(value)
+                if class_id == 0:
+                    continue
+                if class_id in seen:
+                    yield ctx.err(
+                        "E404",
+                        location,
+                        f"class {class_id} appears in layers {seen[class_id]} and "
+                        f"{layer}; "
+                        "every class must be in exactly one layer",
+                    )
+                seen[class_id] = layer
+        missing = declared - set(seen)
+        if missing:
+            yield ctx.err(
+                "E404",
+                location,
+                f"class_ids {sorted(missing)} are not assigned to any layer",
+            )
+        yield from _check_layer_optimality(
+            ctx, name, group, table.shape[0], len(declared)
+        )
+    if kind == "bitmask" and "bit_class_ids" in group and "data" in group:
+        n_classes = int(np.asarray(group["bit_class_ids"]).size)
+        expected = max(1, math.ceil(n_classes / 64))
+        planes = int(group["data"].shape[0])
+        if planes != expected:
+            yield ctx.err(
+                "E404",
+                location,
+                f"{planes} bitplanes for {n_classes} classes; expected {expected}",
+            )
+    if kind == "instances":
+        yield from _check_instances(ctx, name, group)
+
+
+def _check_layer_optimality(
+    ctx: Context, name: str, group: h5py.Group, n_layers: int, n_classes: int
+) -> Iterator[Diagnostic]:
+    if ctx.level not in ("semantic", "strict") or n_classes == 0:
+        return
+    from medh5.annotations.voxel.payload import VoxelPayload
+    from medh5.annotations.voxel.select import analyse
+    from medh5.annotations.voxel.transcode import payload_to_masks
+
+    data = group["data"]
+    if data.size > 64_000_000:  # noqa: PLR2004 - bounded: colouring needs the masks
+        return
+    payload = VoxelPayload(
+        kind="layers",
+        datasets={
+            "data": np.asarray(data[...]),
+            "layer_class_ids": np.asarray(group["layer_class_ids"][...]),
+        },
+    )
+    masks = payload_to_masks(payload)
+    optimal = analyse(masks).n_layers
+    if n_layers > optimal + W908_TOLERANCE:
+        yield ctx.err(
+            "W908",
+            f"/annotations/{name}",
+            f"{n_layers} layers where a greedy colouring of the overlap graph needs "
+            f"{optimal}; transcoding would cut the label volume by "
+            f"{100 * (1 - optimal / n_layers):.0f}%",
+        )
+
+
+def _check_instances(
+    ctx: Context, name: str, group: h5py.Group
+) -> Iterator[Diagnostic]:
+    location = f"/annotations/{name}"
+    if "boxes" in group:
+        boxes = np.asarray(group["boxes"][...])
+        if boxes.ndim == 3 and np.any(boxes[..., 0] > boxes[..., 1]):  # noqa: PLR2004
+            bad = int(np.sum(np.any(boxes[..., 0] > boxes[..., 1], axis=1)))
+            yield ctx.err("E406", location, f"{bad} box(es) have lo > hi")
+    if "mask_offsets" in group:
+        offsets = np.asarray(group["mask_offsets"][...])
+        if np.any(np.diff(offsets.astype(np.int64)) < 0):
+            yield ctx.err("E408", location, "`mask_offsets` are not monotonic")
+    if "instance_ids" in group and "class_ids" in group:
+        ids = np.asarray(group["instance_ids"][...])
+        classes = np.asarray(group["class_ids"][...])
+        table: dict[int, int] = {}
+        conflicting: list[int] = []
+        for instance_id, class_id in zip(ids.tolist(), classes.tolist(), strict=True):
+            if table.setdefault(instance_id, class_id) != class_id:
+                conflicting.append(instance_id)
+        if conflicting:
+            yield ctx.err(
+                "W909",
+                location,
+                f"instance id(s) {sorted(set(conflicting))} carry more than one class "
+                f"id; "
+                "this is almost always a tracking error rather than a reclassification",
+            )
+
+
+# --------------------------------------------------------------------------
+# §11-§12 curation
+# --------------------------------------------------------------------------
+
+
+def check_curation(ctx: Context) -> Iterator[Diagnostic]:
+    document = ctx.document
+    if document is None:
+        return
+    provenance = document.provenance
+    for activity in provenance.activities:
+        if activity.type not in ACTIVITY_TYPES:
+            yield ctx.err(
+                "E603",
+                f"/meta#provenance/activities/{activity.id}",
+                f"unknown activity type {activity.type!r}",
+            )
+        for field_name in ("started", "ended"):
+            value = getattr(activity, field_name)
+            if value is not None and not RFC3339.match(value):
+                yield ctx.err(
+                    "E604",
+                    f"/meta#provenance/activities/{activity.id}",
+                    f"{field_name} {value!r} is not RFC 3339",
+                )
+    for activity_id, agent_id in provenance.dangling_agent_refs():
+        yield ctx.err(
+            "E605",
+            f"/meta#provenance/activities/{activity_id}",
+            f"names agent {agent_id!r}, which is not declared",
+        )
+    for name, group in ctx.annotation_groups.items():
+        yield from _check_links(ctx, f"/annotations/{name}", group.attrs, document)
+    for name, node in ctx.image_nodes.items():
+        yield from _check_links(ctx, f"/images/{name}", node.attrs, document)
+    if document.deidentification is None:
+        yield ctx.err(
+            "W903",
+            "/meta#deidentification",
+            "no de-identification record; tooling must treat this file as "
+            "potentially identifying",
+        )
+    if "curation" in ctx.profiles:
+        for name, group in ctx.annotation_groups.items():
+            if "quality" not in group.attrs:
+                yield ctx.err(
+                    "E009",
+                    f"/annotations/{name}",
+                    "the `curation` profile requires `quality` on every annotation",
+                )
+
+
+def _check_links(
+    ctx: Context, location: str, attrs: Any, document: SampleDocument
+) -> Iterator[Diagnostic]:
+    if "prov" in attrs:
+        activity_id = as_str(attrs["prov"])
+        if not document.provenance.has_activity(activity_id):
+            yield ctx.err(
+                "E601", location, f"`prov` names unknown activity {activity_id!r}"
+            )
+    if "quality" in attrs:
+        key = as_str(attrs["quality"])
+        if key not in document.quality:
+            yield ctx.err("E602", location, f"`quality` names unknown record {key!r}")
+
+
+def check_splits(ctx: Context) -> Iterator[Diagnostic]:
+    document = ctx.document
+    if document is None:
+        return
+    by_set: dict[str, set[str]] = {}
+    for claim in document.splits:
+        if claim.manifest_sha256:
+            by_set.setdefault(claim.set_id, set()).add(claim.manifest_sha256)
+    for set_id, hashes in sorted(by_set.items()):
+        if len(hashes) > 1:
+            yield ctx.err(
+                "W906",
+                "/meta#splits",
+                f"split set {set_id!r} is claimed against {len(hashes)} different "
+                "manifests in one file",
+            )
+
+
+# --------------------------------------------------------------------------
+# §13 integrity
+# --------------------------------------------------------------------------
+
+
+def check_integrity(ctx: Context) -> Iterator[Diagnostic]:
+    from medh5.integrity.digest import parse_digest
+    from medh5.integrity.verify import stale_index_entries, verify_root
+
+    attr_names = ctx.notes.get("attr_names")
+    result = verify_root(ctx.root, attr_names)
+    if not result.checked and not result.undigested:
+        return
+    if result.undigested and not result.checked:
+        yield ctx.err("W901", "/", "no dataset carries a `digest` attribute")
+    for path in result.malformed:
+        yield ctx.err("E703", f"/{path}", "malformed digest string")
+    for path in result.mismatched:
+        yield ctx.err("E701", f"/{path}", "digest does not match the stored data")
+    if result.content_id_ok is False:
+        yield ctx.err(
+            "E702",
+            "/",
+            f"`content_id` {result.content_id_declared} does not match the computed "
+            f"{result.content_id_computed}",
+        )
+    for name in stale_index_entries(ctx.root):
+        yield ctx.err(
+            "W905",
+            f"/index/{name}",
+            "index `source_digest` does not match its annotation; readers must "
+            "ignore this entry and rebuild it",
+        )
+    if "digest_algo" in ctx.root.attrs:
+        try:
+            parse_digest(f"{as_str(ctx.root.attrs['digest_algo'])}:00")
+        except Exception:  # noqa: BLE001 - reported as a diagnostic
+            yield ctx.err(
+                "E703",
+                "/",
+                f"unsupported digest_algo {as_str(ctx.root.attrs['digest_algo'])!r}",
+            )
+
+
+# --------------------------------------------------------------------------
+# §1.3 profiles
+# --------------------------------------------------------------------------
+
+
+def check_profiles(ctx: Context) -> Iterator[Diagnostic]:
+    document = ctx.document
+    kinds = {
+        as_str(g.attrs["kind"])
+        for g in ctx.annotation_groups.values()
+        if "kind" in g.attrs
+    }
+    declared = set(ctx.profiles)
+    if "seg" in declared and not (kinds & set(VOXEL_KINDS) - {"mask"}):
+        yield ctx.err(
+            "E009", "/", "profile `seg` is declared but no voxel annotation is present"
+        )
+    if "det" in declared and not (
+        kinds & {"boxes", "obb", "keypoints", "points", "instances"}
+    ):
+        yield ctx.err(
+            "E009",
+            "/",
+            "profile `det` is declared but no geometric annotation is present",
+        )
+    if "cls" in declared and "classification" not in kinds:
+        yield ctx.err(
+            "E009",
+            "/",
+            "profile `cls` is declared but no classification annotation is present",
+        )
+    if "reg" in declared and (
+        "transforms" not in ctx.root or len(ctx.root["transforms"]) == 0
+    ):
+        yield ctx.err(
+            "E009", "/", "profile `reg` is declared but no transform is present"
+        )
+    if "training" in declared and (
+        "index" not in ctx.root or len(ctx.root["index"]) == 0
+    ):
+        yield ctx.err(
+            "E009",
+            "/",
+            "profile `training` is declared but no sampling index is present",
+        )
+    if (
+        "longitudinal" in declared
+        and document is not None
+        and len(document.timepoints) < 2  # noqa: PLR2004
+    ):
+        yield ctx.err(
+            "E009",
+            "/meta#timepoints",
+            "profile `longitudinal` requires at least two declared timepoints",
+        )
+
+
+STRUCTURAL_RULES = (
+    check_container,
+    check_document,
+    check_geometry,
+    check_images,
+    check_annotations,
+    check_bulk_storage,
+)
+
+SEMANTIC_RULES = (
+    check_timepoints,
+    check_label_set,
+    check_multiscale,
+    check_curation,
+    check_splits,
+    check_profiles,
+    check_ontology_bindings,
+)
+
+INTEGRITY_RULES = (check_integrity,)
+
+
+def rules_for(level: Level) -> tuple[Any, ...]:
+    """The rules a level runs.  Each level includes every earlier level's rules."""
+    if level == "structural":
+        return STRUCTURAL_RULES
+    if level == "semantic":
+        return STRUCTURAL_RULES + SEMANTIC_RULES
+    return STRUCTURAL_RULES + SEMANTIC_RULES + INTEGRITY_RULES
+
+
+__all__ = [
+    "INTEGRITY_RULES",
+    "SEMANTIC_RULES",
+    "STRUCTURAL_RULES",
+    "Context",
+    "Diagnostic",
+    "Report",
+    "rules_for",
+]

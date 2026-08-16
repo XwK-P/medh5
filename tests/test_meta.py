@@ -9,7 +9,7 @@ import h5py
 import numpy as np
 import pytest
 
-from medh5 import MEDH5File, MEDH5ValidationError, SpatialMeta
+from medh5.legacy import MEDH5File, MEDH5ValidationError, SpatialMeta
 
 
 class TestAsAffine:

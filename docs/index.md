@@ -19,6 +19,54 @@ statistics, and the review/QA workflow.
 - **[Datasets and statistics](dataset-and-stats.md)** — manifest scanning, filtering, reproducible splitting, streaming stats.
 - **[Review / QA workflow](review.md)** — tracking annotation review state in-file.
 
+## Format v1.0 — in development
+
+A clean-slate redesign of the format. It is **not** backward compatible with 0.x and targets
+classification, detection, segmentation and registration workflows at scale.
+
+In 1.0 a **sample is one subject at one or more timepoints**, each with one or more images — so
+longitudinal work (change detection, response assessment, lesion tracking, follow-up registration)
+lives inside one file, and assigning whole files to train/val/test cannot leak a patient.
+
+**Implemented so far** (plan phases 0–2): the container and its geometry, timepoints, images and
+multiscale pyramids, label sets, all five voxel-annotation encodings with lossless transcoding between
+them, per-object digests and content addressing, the sampling index, the validator, a 75-case
+conformance corpus, and a CLI.
+
+```python
+import medh5
+
+with medh5.open("case_0001.medh5") as s:
+    s.at("tp1").images["CT_tp1"].read(physical=True)      # HU, not raw counts
+    s.annotations["organs"].dense(["liver", "spleen"])    # any encoding, one API
+    s.track(class_key="lesion")                           # instance ids across visits
+```
+
+```
+$ medh5 info case_0001.medh5      # grids, images, annotations, coverage, codecs
+$ medh5 validate case_0001.medh5 --level strict
+$ medh5 seg convert case_0001.medh5 organs --to bitmask   # lossless re-encoding
+```
+
+**Not yet implemented:** geometric annotations (§8), classification (§9), transforms (§10),
+collections (§2.2), converters, and the PyTorch/MONAI loaders. Until those land, `medh5.legacy`
+holds the 0.6.0 implementation unchanged — the docs below describe it, and its import paths are
+`medh5.legacy.*`.
+
+- **[Specification (v1.0)](spec/medh5-1.0.md)** — normative on-disk schema: grids, geometry and
+  timepoints, label sets, the voxel-annotation encodings, geometric annotations, transforms,
+  provenance, integrity, conformance profiles and the diagnostic-code table.
+- **[Design proposal](design/medh5-1.0-proposal.md)** — what breaks in 0.6.0 (with measurements),
+  design principles, alternatives considered, benchmark results, costs, risks, decisions taken.
+- **[Implementation plan](design/medh5-1.0-implementation-plan.md)** — package layout, public API,
+  phased delivery, test strategy, CLI, migration from 0.x.
+- **[JSON Schema](../schemas/medh5-sample-1.0.schema.json)** — machine validation of the `/meta`
+  document; the package ships an identical copy and a test asserts the two match.
+- **[Benchmarks and reference prototype](design/benchmarks/README.md)** — reproducible scripts behind
+  every number in the proposal.
+
+The documents below describe the **0.6.0 format**, now reached through `medh5.legacy`.
+
 ## What makes medh5 different
 
 - **One file per sample.** Each `.medh5` is self-contained — images, masks,

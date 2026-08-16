@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from medh5.meta import SampleMeta, SpatialMeta
-from medh5.transforms import Clip, Compose, Normalize, RandomFlip, ZScore
+from medh5.legacy.meta import SampleMeta, SpatialMeta
+from medh5.legacy.transforms import Clip, Compose, Normalize, RandomFlip, ZScore
 
 
 def _sample(ct=None, pet=None, seg=None):

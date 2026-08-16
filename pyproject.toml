@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "medh5"
-version = "0.6.0"
-description = "HDF5 + Blosc2 single-file format for medical-imaging ML workloads (multi-modality images + segmentation + bboxes + label)."
+version = "1.0.0a0"
+description = "Self-describing HDF5 container for one medical imaging sample and all of its ground truth: multi-timepoint, multi-modal images with segmentation, detection, classification and registration labels."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
@@ -50,6 +50,12 @@ dev = [
   "mypy>=1.0",
   "build>=1.0",
   "twine>=5.0",
+  "jsonschema>=4.18",
+]
+schema = [
+  # Without this the validator cannot check E005, and says so rather than
+  # reporting a clean document it never inspected.
+  "jsonschema>=4.18",
 ]
 torch = [
   "torch>=2.0",
@@ -72,19 +78,23 @@ Changelog = "https://github.com/XwK-P/medh5/blob/main/CHANGELOG.md"
 
 [project.scripts]
 medh5 = "medh5.cli:main"
+medh5-0x = "medh5.legacy.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["medh5*"]
 
 [tool.setuptools.package-data]
-medh5 = ["py.typed"]
+medh5 = ["py.typed", "schemas/*.json", "labels/vocabularies/*.json"]
 
 [tool.pytest.ini_options]
 addopts = "--cov=medh5 --cov-report=term-missing"
 
 [tool.ruff]
 target-version = "py310"
+# Reference/benchmark scripts published alongside the 1.0 spec. They are documentation
+# artifacts meant to be read next to the prose -- deliberately compact, not library code.
+extend-exclude = ["docs/design/benchmarks"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
@@ -93,6 +103,14 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 strict = true
 warn_return_any = true
 warn_unused_configs = true
+
+[[tool.mypy.overrides]]
+# The 0.x implementation, kept importable until the 1.0 converters land and it is
+# deleted wholesale (see docs/design/medh5-1.0-implementation-plan.md, phase 8).
+# Its `np.ndarray` annotations predate the numpy/mypy generic-parameter
+# requirement; retrofitting them buys nothing for code with a scheduled removal.
+module = ["medh5.legacy.*"]
+disable_error_code = ["type-arg"]
 
 [[tool.mypy.overrides]]
 module = [
@@ -108,6 +126,8 @@ module = [
   "pydicom.*",
   "SimpleITK",
   "SimpleITK.*",
+  "jsonschema",
+  "jsonschema.*",
 ]
 ignore_missing_imports = true
 follow_imports = "skip"
