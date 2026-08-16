@@ -34,8 +34,8 @@ ORTHONORMAL_TOL = 1e-4
 
 
 def build_affine(
-    spacing: Sequence[float],
-    origin: Sequence[float],
+    spacing: npt.ArrayLike,
+    origin: npt.ArrayLike,
     direction: npt.ArrayLike,
 ) -> npt.NDArray[np.float64]:
     """Assemble the ``(S+1, S+1)`` index-to-world affine of spec §3.3."""

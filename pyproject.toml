@@ -72,6 +72,13 @@ nifti = [
 dicom = [
   "pydicom>=2.4",
 ]
+dicomseg = [
+  # Reading DICOM SEG and RTSTRUCT needs only pydicom; *writing* a SEG needs
+  # highdicom, the reference implementation of the Segmentation IOD.  Building
+  # the per-frame functional groups by hand is how invalid SEGs get published.
+  "highdicom>=0.22",
+  "pydicom>=2.4",
+]
 itk = [
   "SimpleITK>=2.3",
 ]
@@ -143,6 +150,8 @@ module = [
   "scipy.*",
   "monai",
   "monai.*",
+  "highdicom",
+  "highdicom.*",
 ]
 ignore_missing_imports = true
 follow_imports = "skip"

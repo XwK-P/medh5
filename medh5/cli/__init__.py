@@ -12,11 +12,11 @@ import sys
 from collections.abc import Sequence
 
 from medh5.__about__ import __format_version__, __version__
-from medh5.cli import conformance, curation, inspect, labels, perf, seg
+from medh5.cli import conformance, convert, curation, inspect, labels, perf, seg
 from medh5.cli._common import EXIT_ERROR, EXIT_USAGE
 from medh5.errors import MEDH5Error
 
-MODULES = (inspect, seg, labels, curation, perf, conformance)
+MODULES = (inspect, seg, labels, curation, convert, perf, conformance)
 
 
 def build_parser() -> argparse.ArgumentParser:

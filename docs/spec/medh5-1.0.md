@@ -1483,7 +1483,9 @@ follow-up is a new frame. Lesion 3 appears at baseline and not at follow-up, and
 | `has_seg`, `has_bbox`, `seg_names`, `image_names` | removed — derived by enumerating groups; a flag that can disagree with the data is a bug generator |
 
 `medh5 migrate` performs this mapping and emits a report of every non-mechanical decision
-(chosen encoding, minted class ids, half-voxel box conversion, timepoint grouping).
+(chosen encoding, minted class ids, half-voxel box conversion, timepoint grouping). Class ids are
+minted once for a whole cohort and written to a reviewable sidecar, so `liver` cannot be id 1 in one
+sample and id 2 in the next.
 
 **Grouping.** Converters that read study-scoped sources — 0.x files, a DICOM tree, an nnU-Net
 dataset — **SHOULD** default to grouping by subject, producing one multi-timepoint sample per

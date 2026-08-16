@@ -8,6 +8,7 @@ import h5py
 import numpy as np
 import pytest
 
+import medh5
 from medh5._hdf5 import encode_attr
 from medh5.cli import main
 from medh5.cli._common import EXIT_ERROR, EXIT_OK, EXIT_USAGE, human_bytes, table
@@ -734,3 +735,165 @@ class TestPhase6Performance:
         )
         assert "target" in out.out
         assert code in (EXIT_OK, EXIT_ERROR)
+
+
+class TestPhase7Convert:
+    """``convert`` and ``migrate`` (plan §7)."""
+
+    @pytest.fixture
+    def nifti(self, tmp_path):
+        nib = pytest.importorskip("nibabel")
+        affine = np.diag([1.0, 1.0, 2.0, 1.0])
+        shape = (12, 10, 6)
+        ct = tmp_path / "ct.nii.gz"
+        mask = tmp_path / "liver.nii.gz"
+        nib.save(nib.Nifti1Image(np.zeros(shape, np.int16), affine), str(ct))
+        volume = np.zeros(shape, np.uint8)
+        volume[2:6, 2:6, 1:3] = 1
+        nib.save(nib.Nifti1Image(volume, affine), str(mask))
+        return {"ct": ct, "mask": mask}
+
+    def test_from_nifti_and_back(self, capsys, tmp_path, nifti):
+        out = tmp_path / "case.medh5"
+        code, printed = run(
+            capsys,
+            "convert",
+            "from-nifti",
+            str(out),
+            "--image",
+            f"CT={nifti['ct']}",
+            "--mask",
+            f"liver={nifti['mask']}",
+            "--modality",
+            "CT=CT",
+        )
+        assert code == EXIT_OK
+        assert "DECISION" in printed.out
+        assert out.exists()
+
+        code, printed = run(
+            capsys, "convert", "to-nifti", str(out), "CT", str(tmp_path / "b.nii.gz")
+        )
+        assert code == EXIT_OK
+        assert (tmp_path / "b.nii.gz").exists()
+
+    def test_the_report_is_written_and_machine_readable(self, capsys, tmp_path, nifti):
+        report = tmp_path / "report.json"
+        code, printed = run(
+            capsys,
+            "convert",
+            "from-nifti",
+            str(tmp_path / "c.medh5"),
+            "--image",
+            f"CT={nifti['ct']}",
+            "--report",
+            str(report),
+            "--json",
+        )
+        assert code == EXIT_OK
+        payload = json.loads(printed.out)
+        assert payload["converter"] == "from-nifti"
+        assert json.loads(report.read_text())["ok"] is True
+
+    def test_a_malformed_pair_is_reported(self, capsys, tmp_path, nifti):
+        code, printed = run(
+            capsys, "convert", "from-nifti", str(tmp_path / "x.medh5"), "--image", "CT"
+        )
+        assert code == EXIT_ERROR
+        assert "NAME=VALUE" in printed.err
+
+    def test_convert_without_a_subcommand_explains_itself(self, capsys):
+        code, printed = run(capsys, "convert")
+        assert code == EXIT_ERROR
+        assert "medh5 convert COMMAND" in printed.err
+
+    def test_from_nnunet_and_to_nnunet(self, capsys, tmp_path):
+        nib = pytest.importorskip("nibabel")
+        root = tmp_path / "Dataset001_T"
+        (root / "imagesTr").mkdir(parents=True)
+        (root / "labelsTr").mkdir()
+        shape = (8, 6, 4)
+        for channel in range(1):
+            nib.save(
+                nib.Nifti1Image(np.zeros(shape, np.int16), np.eye(4)),
+                str(root / "imagesTr" / f"C1_{channel:04d}.nii.gz"),
+            )
+        labels = np.zeros(shape, np.uint8)
+        labels[1:4, 1:3, 1:2] = 1
+        nib.save(
+            nib.Nifti1Image(labels, np.eye(4)), str(root / "labelsTr" / "C1.nii.gz")
+        )
+        (root / "dataset.json").write_text(
+            json.dumps(
+                {
+                    "channel_names": {"0": "CT"},
+                    "labels": {"background": 0, "liver": 1},
+                    "numTraining": 1,
+                    "file_ending": ".nii.gz",
+                }
+            )
+        )
+        code, printed = run(
+            capsys, "convert", "from-nnunet", str(root), str(tmp_path / "out")
+        )
+        assert code == EXIT_OK
+        assert (tmp_path / "out" / "C1.medh5").exists()
+
+        code, printed = run(
+            capsys,
+            "convert",
+            "to-nnunet",
+            str(tmp_path / "back"),
+            str(tmp_path / "out" / "C1.medh5"),
+        )
+        assert code == EXIT_OK
+        assert (tmp_path / "back" / "Dataset001_medh5" / "dataset.json").exists()
+
+    def test_migrate_writes_labels_then_migrates(self, capsys, tmp_path):
+        from medh5.legacy.core import MEDH5File
+
+        shape = (6, 8, 10)
+        mask = np.zeros(shape, bool)
+        mask[1:4, 2:6, 3:8] = True
+        old = tmp_path / "old.medh5"
+        MEDH5File.write(
+            old,
+            images={"CT": np.zeros(shape, np.int16)},
+            seg={"liver": mask},
+            spacing=[1.0, 1.0, 1.0],
+        )
+        labels = tmp_path / "labels.json"
+        code, printed = run(
+            capsys,
+            "migrate",
+            str(old),
+            "-o",
+            str(tmp_path / "m"),
+            "--write-labels",
+            str(labels),
+        )
+        assert code == EXIT_OK
+        assert "review before migrating" in printed.out
+        assert json.loads(labels.read_text())["classes"]
+
+        code, printed = run(
+            capsys,
+            "migrate",
+            str(old),
+            "-o",
+            str(tmp_path / "m"),
+            "--label-set",
+            str(labels),
+        )
+        assert code == EXIT_OK
+        written = sorted((tmp_path / "m").glob("*.medh5"))
+        assert len(written) == 1
+        with medh5.open(written[0]) as sample:
+            assert sample.annotations["seg"].class_ids
+
+    def test_migrate_reports_an_unreadable_file(self, capsys, tmp_path):
+        broken = tmp_path / "broken.medh5"
+        broken.write_bytes(b"not hdf5")
+        code, printed = run(capsys, "migrate", str(broken), "-o", str(tmp_path / "m"))
+        assert code == EXIT_ERROR
+        assert "WARNING" in printed.out

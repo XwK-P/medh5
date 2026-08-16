@@ -135,3 +135,84 @@ def longitudinal_path(
         timepoints=("tp0", "tp1"),
         index=True,
     )
+
+
+def write_dicom_series(
+    directory: Path,
+    *,
+    patient_id: str,
+    study_uid: str,
+    study_date: str,
+    modality: str = "CT",
+    shape: tuple[int, int, int] = (6, 16, 20),
+    spacing: tuple[float, float, float] = (2.5, 0.8, 0.9),
+    origin: tuple[float, float, float] = (-10.0, -20.0, 30.0),
+    frame_uid: str | None = None,
+    seed: int = 0,
+) -> dict[str, Any]:
+    """A minimal but valid CT/PT series.
+
+    Two details are deliberate, because the converter's job is to survive them:
+    ``SliceThickness`` is twice the slice increment (it is the slab, not the
+    step), and ``InstanceNumber`` counts *down*, so a converter that trusts it
+    rather than geometry produces a flipped volume.
+    """
+    import numpy as np
+    import pydicom
+    from pydicom.dataset import Dataset, FileMetaDataset
+    from pydicom.uid import CTImageStorage, ExplicitVRLittleEndian, generate_uid
+
+    directory.mkdir(parents=True, exist_ok=True)
+    rng = np.random.default_rng(seed)
+    series_uid = generate_uid()
+    frame = frame_uid or generate_uid()
+    volume = rng.integers(0, 2000, shape).astype(np.uint16)
+    for k in range(shape[0]):
+        ds = Dataset()
+        ds.file_meta = FileMetaDataset()
+        ds.file_meta.MediaStorageSOPClassUID = CTImageStorage
+        ds.file_meta.MediaStorageSOPInstanceUID = generate_uid()
+        ds.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+        ds.SOPClassUID = CTImageStorage
+        ds.SOPInstanceUID = ds.file_meta.MediaStorageSOPInstanceUID
+        ds.PatientID = patient_id
+        ds.PatientName = "ANON^ANON"
+        ds.PatientBirthDate = ""
+        ds.PatientSex = ""
+        ds.StudyInstanceUID = study_uid
+        ds.SeriesInstanceUID = series_uid
+        ds.FrameOfReferenceUID = frame
+        ds.StudyID = "1"
+        ds.AccessionNumber = ""
+        ds.StudyDate = study_date
+        ds.StudyTime = "120000"
+        ds.ContentDate = study_date
+        ds.ContentTime = "120000"
+        ds.SeriesNumber = 1
+        ds.Modality = modality
+        ds.SeriesDescription = f"{modality} axial"
+        ds.Manufacturer = "SYNTH"
+        ds.ConvolutionKernel = "B30f"
+        ds.SliceThickness = spacing[0] * 2
+        ds.PixelSpacing = [spacing[1], spacing[2]]
+        ds.ImageOrientationPatient = [0, 0, 1, 0, 1, 0]
+        ds.ImagePositionPatient = [origin[0] - k * spacing[0], origin[1], origin[2]]
+        ds.InstanceNumber = shape[0] - k
+        ds.Rows, ds.Columns = shape[1], shape[2]
+        ds.SamplesPerPixel = 1
+        ds.PhotometricInterpretation = "MONOCHROME2"
+        ds.BitsAllocated = 16
+        ds.BitsStored = 16
+        ds.HighBit = 15
+        ds.PixelRepresentation = 0
+        ds.RescaleSlope = 1.0
+        ds.RescaleIntercept = -1024.0
+        ds.PixelData = volume[k].tobytes()
+        ds.save_as(str(directory / f"{modality}_{k:03d}.dcm"), enforce_file_format=True)
+    assert pydicom is not None
+    return {
+        "series_uid": series_uid,
+        "frame_uid": frame,
+        "volume": volume,
+        "paths": sorted(str(p) for p in directory.glob("*.dcm")),
+    }

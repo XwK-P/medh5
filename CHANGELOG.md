@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
-## [1.0.0a0] — MEDH5 format 1.0, phases 0–6
+## [1.0.0a0] — MEDH5 format 1.0, phases 0–7
 
 A clean-slate reimplementation of the format. **Not backward compatible with 0.x**, by design: a
 1.0 reader refuses a 0.x file rather than guessing, and a 0.x reader raises on the missing
@@ -104,9 +104,40 @@ file, and assigning whole files to train/val/test cannot leak a patient across p
 - **`medh5 bench`**, which reproduces every performance target in the plan on the reader's own
   hardware. All are met: sustained patch throughput measures 600–850 patches/s against a target of
   400.
+- **Converters** for NIfTI, DICOM, DICOM SEG, RTSTRUCT and nnU-Net v2, plus `migrate` from 0.x.
+  Each returns a report of what it *decided* and what it *guessed*, because the interesting part of
+  an import is never that it succeeded:
+  - **NIfTI**: RAS↔LPS is a sign flip on the affine, never on the voxels, and which convention was
+    written is recorded rather than assumed. Volumes that disagree on a grid are refused instead of
+    silently resampled.
+  - **DICOM**: slices are ordered by their projection on the slice normal, not by `InstanceNumber`
+    (a display hint that routinely disagrees with geometry); z spacing is *measured* between slice
+    origins rather than taken from `SliceThickness`, which is the slab and not the increment; an
+    irregular stack is refused, because it is not a grid. Rescale is stored, not applied (§4.2).
+    Only a named list of acquisition tags is copied — §11.4 forbids bulk-copying DICOM into a file
+    that claims to be de-identified.
+  - **DICOM SEG**: frames are placed by geometry, so a SEG that stores them out of order still
+    reads; overlapping segments and `FRACTIONAL` both survive, where flattening to a labelmap would
+    drop the tumour inside the organ. Segments match an existing label set by `SegmentLabel`, since
+    DICOM segment numbers are positional and carry no identity.
+  - **RTSTRUCT**: contours are stored as contours (§8.6) and round-trip exactly. Rasterisation is
+    opt-in and its rule is written into the provenance graph, because "does a boundary voxel count"
+    is a decision that belongs in the record. A contour enclosed by another on the same slice is a
+    hole, not a second region.
+  - **nnU-Net v2**: the dataset's own integer ids are kept, so a model's predictions map back with
+    no translation table; region labels become classes whose components are their children in the
+    §5.1 DAG; `dataset.json` is stashed verbatim, so an export reproduces the dataset rather than
+    reconstructing it.
+  - **`migrate`**: applies Appendix B and reports each non-mechanical step — the encoding chosen,
+    the ids minted (cohort-wide, into a reviewable sidecar), the **half-voxel box shift** from 0.x's
+    `[min, max)` integers to voxel edges, and whether a timepoint order was read from dates or
+    guessed from mtimes. Instance correspondence across merged files is never inferred.
+  - **Grouping**: identity comes from a declared key and never from a filename, a date or an
+    accession number. Where it cannot be established the converter falls back to one sample per
+    study, names the inputs, and records the fallback.
 - **A CLI**: `info`, `tree`, `validate`, `verify`, `timeline`, `track`, `labels`, `seg stats`,
   `seg convert`, `index build`, `pack`, `unpack`, `ls`, `prov`, `agree`, `splits`, `recompress`,
-  `bench`, `conformance`.
+  `bench`, `convert`, `migrate`, `conformance`.
 
 ### Changed
 
@@ -126,7 +157,12 @@ file, and assigning whole files to train/val/test cannot leak a patient across p
 
 ### Not yet implemented
 
-The converters (NIfTI, DICOM, DICOM-SEG, RTSTRUCT, nnU-Net v2, COCO) and `migrate` from 0.x.
+The 1.0 release itself: published conformance suite, tutorials, and the napari-medh5 update.
+
+**COCO was dropped from 1.0.** It has no world geometry, no spacing and no frame of reference, so
+importing one means inventing a grid and exporting one means discarding the geometry that makes a
+medical annotation reproducible. Every other converter here is built on not telling that kind of
+silent lie. A 2-D-native path can be added in a minor version — §3.6 already supports 2-D grids.
 
 ## [0.6.0]
 

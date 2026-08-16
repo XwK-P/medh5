@@ -2,12 +2,13 @@
 
 **Companion documents:** [Specification](../spec/medh5-1.0.md) · [Design proposal](medh5-1.0-proposal.md)
 
-**Status: phases 0–6 are complete.** The core container, the label space, all five voxel encodings,
+**Status: phases 0–7 are complete.** The core container, the label space, all five voxel encodings,
 every geometric annotation, classification (including change labels), registration, curation,
-longitudinal tracking joins, collections, the PyTorch and MONAI loaders, the validator and the
-conformance corpus are implemented and gated on `ruff`, `mypy --strict` and ≥ 90 % coverage.
-**Every diagnostic code in §15.2 has a conformance case, and every §4.3 performance target is met**
-(`medh5 bench` reproduces them). Phase 7 (converters) is next.
+longitudinal tracking joins, collections, the PyTorch and MONAI loaders, the converters (NIfTI,
+DICOM, DICOM SEG, RTSTRUCT, nnU-Net v2 and `migrate` from 0.x), the validator and the conformance
+corpus are implemented and gated on `ruff`, `mypy --strict` and ≥ 90 % coverage. **Every diagnostic
+code in §15.2 has a conformance case, and every §4.3 performance target is met** (`medh5 bench`
+reproduces them). Phase 8 (release) is next.
 
 ---
 
@@ -87,7 +88,15 @@ medh5/
 │                          conformance
 ├── collection.py       ✅ §2.2 collection files, byte-identical pack/unpack
 ├── dataset/               manifests, splits, streaming statistics
-├── io/                    nifti, dicom, dicom_seg, rtstruct, nnunetv2, coco, learn2reg
+├── io/                 ✅ §7 converters, each lazily imported
+│   ├── report.py       ✅ what a conversion decided, and where it guessed
+│   ├── grouping.py     ✅ §3.7 study -> subject grouping, identity never inferred
+│   ├── nifti.py        ✅ RAS↔LPS and axis order, both explicit and recorded
+│   ├── dicom.py        ✅ geometric slice ordering, measured spacing, §11.4 tag policy
+│   ├── dicom_seg.py    ✅ frames placed by geometry; overlap and FRACTIONAL survive
+│   ├── rtstruct.py     ✅ §8.6 contours; rasterisation is opt-in and provenance-tracked
+│   ├── nnunetv2.py     ✅ nnU-Net ids kept; regions become §5.1 DAG parents
+│   └── legacy.py       ✅ 0.x -> 1.0, Appendix B, with a per-file decision report
 ├── torch/              ✅ datasets, handle cache, collate
 └── legacy/             ✅ the whole 0.x implementation, moved here intact
 ```
@@ -314,7 +323,7 @@ experienced developer; the phases are largely independent after Phase 2.
 | **4 · Registration** ✅ | affine, displacement, bspline, composite, landmarks, `apply.py`, inter-timepoint transform resolution | **Done.** `reg` profile complete; TRE computed from paired landmark sets; `transform_between` resolves through the frame graph, using inverses where they exist and refusing to invent them where they do not; every §15.2 code now has a corpus case | 2 w |
 | **5 · Curation + longitudinal + collections** ✅ | provenance graph, quality, identity/cohort/splits, instance tracking joins, change annotations, `.medh5c` pack/unpack (**in 1.0**, not deferred) | **Done.** `curation` and `longitudinal` profiles complete; the tracking join answers present/resolved/unexamined from `annotated_class_ids` rather than from absence; W909/W910/W911 fire on crafted inputs and W909 is sample-scoped; pack/unpack byte-identical on sample subtrees, verified chunk by chunk; two more spec clauses corrected (§2.2 `E010`, §7.4 W909 scope) | 2 w |
 | **6 · Loaders + performance** ✅ | torch datasets/samplers/collate, paired/longitudinal sampling, MONAI adapter, codec profiles, chunking policy, `recompress` | **Done.** Every §4.3 target met and reproducible with `medh5 bench`; a +4-voxel registration shift moves the paired patch by exactly 4 voxels; a 10-epoch soak leaves the handle cache and descriptor count flat; `recompress` changes every stored byte and no `content_id` | 2.5 w |
-| **7 · Converters** | NIfTI, DICOM, DICOM-SEG, RTSTRUCT, nnU-Net v2, COCO, `migrate` from 0.x, subject-grouping across studies | Round-trip fidelity tests per converter; `--group-by subject` produces correct multi-timepoint samples from a multi-study DICOM tree; migration report on a real 0.x cohort | 3 w |
+| **7 · Converters** ✅ | NIfTI, DICOM, DICOM-SEG, RTSTRUCT, nnU-Net v2, `migrate` from 0.x, subject-grouping across studies | **Done.** Every converter round-trips its own format bit-for-bit where the format allows it (NIfTI affine and voxels, nnU-Net label volumes and `dataset.json`, RTSTRUCT contours, DICOM SEG including an overlapping pair); `--group-by subject` merges a two-study DICOM tree into one two-timepoint sample; every conversion emits a report naming what it decided and what it guessed. **COCO was dropped from 1.0** (see below) | 3 w |
 | **8 · Release** | Docs, tutorials, conformance suite publication, PyPI 1.0.0 | Spec + suite published; napari-medh5 updated against 1.0 | 1 w |
 
 Critical path: 0 → 1 → 2 → 6. Phases 3, 4, 5 and 7 parallelise after Phase 2. Total ≈ 17.5 weeks:
@@ -333,7 +342,7 @@ deferring `rle` returns half a week in Phase 2.
 | **Unit** | Per module. Geometry: affine round-trips, orthonormality, half-voxel box conversion at boundaries. Encodings: `contains()` against a brute-force reference. |
 | **Property-based** (Hypothesis) | Randomised grids (2D/3D/4D, anisotropic, oblique, negative determinant) and randomised class-overlap graphs. Invariants: (a) `write → read` is identity; (b) `transcode(A→B→A)` is identity for every ordered pair of the five voxel encodings; (c) `box → slices → box` round-trips within a half voxel; (c2) timepoint inheritance agrees with explicit annotation for every object; (c3) an instance id joined across timepoints yields the same object set as a brute-force scan; (d) `T ∘ T⁻¹ ≈ identity` for invertible transforms; (e) `content_id` is stable under recompression and unstable under any content change. |
 | **Conformance corpus** | ~40 golden files, each targeting spec clauses, with expected validator output as JSON. Third-party implementations run the same corpus. Includes deliberately-invalid files, one per error code. |
-| **Interop round-trips** | NIfTI, DICOM-SEG, RTSTRUCT, nnU-Net v2, COCO. Assert geometry, class identity and voxel equality; assert the failure is *loud* where a source cannot express a MEDH5 feature. |
+| **Interop round-trips** | NIfTI, DICOM-SEG, RTSTRUCT, nnU-Net v2. Assert geometry, class identity and voxel equality; assert the failure is *loud* where a source cannot express a MEDH5 feature. |
 | **Benchmarks in CI** | §5 of the proposal, run on every PR with a regression threshold (fail at > 20 % slower or > 10 % larger). Committed as `docs/design/benchmarks/`. |
 | **Longitudinal fixtures** | Hand-built samples covering: 1 timepoint; 2 timepoints with a persisting, a resolved and a new lesion; a timepoint annotated for fewer classes than another; a frame reused across timepoints (W910); a multi-timepoint sample with no relating transform (W911). Expected validator output committed alongside. |
 | **Soak** | 10-epoch dataloader run over ≥ 1 000 files × 8 workers; assert flat RSS, no fd leaks, no handle-cache growth across `fork`. |
@@ -391,9 +400,10 @@ medh5 dataset split manifest.json --k-folds 5 --group-by cohort.group_id --strat
 medh5 dataset stats manifest.json --workers 8
 medh5 dataset check manifest.json              # vocabulary drift, split claim conflicts, coverage report
 
-medh5 convert from-nifti | from-dicom | from-dicom-seg | from-rtstruct | from-nnunet | from-coco
+medh5 convert from-nifti | from-dicom | from-dicom-seg | from-rtstruct | from-nnunet
                  [--group-by subject|study]    # default: subject; falls back to study + warning
-medh5 convert to-nifti   | to-dicom-seg | to-nnunet   | to-coco
+                 [--report FILE]               # the conversion's decisions, as JSON
+medh5 convert to-nifti   | to-dicom-seg | to-rtstruct | to-nnunet
 medh5 migrate PATH... -o OUTDIR [--report report.json]     # 0.x -> 1.0
                  [--group-by subject|study] [--subject-key extra.patient_id]   # default: study
 
@@ -445,6 +455,13 @@ report flags every file so the curator can widen or narrow it. `extra` is copied
 Migration is one-way. 0.x readers cannot open 1.0 files, by design: `medh5_version` is a new
 attribute and 0.x's `read_meta` raises `MEDH5SchemaError` on the missing `schema_version`, which is
 the correct loud failure.
+
+**COCO is not part of 1.0.** It was in the original phase-7 list and was dropped: COCO is a 2-D
+polygon/RLE format with no world geometry, no spacing and no frame of reference, so importing one
+means inventing a grid and exporting one means discarding the geometry that makes a medical
+annotation reproducible. Neither direction can be done without a silent lie, and every other
+converter here is built on not telling one. A 2-D-native path can be added in a minor version if a
+concrete need appears; nothing in the format prevents it (§3.6 already supports 2-D grids).
 
 ---
 
