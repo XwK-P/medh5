@@ -60,6 +60,12 @@ schema = [
 torch = [
   "torch>=2.0",
 ]
+monai = [
+  # Only needed for `medh5.monai`; the affine and metadata it builds are
+  # computed without it, so the geometry is testable in a bare environment.
+  "monai>=1.3",
+  "torch>=2.0",
+]
 nifti = [
   "nibabel>=5",
 ]
@@ -135,6 +141,8 @@ module = [
   "jsonschema.*",
   "scipy",
   "scipy.*",
+  "monai",
+  "monai.*",
 ]
 ignore_missing_imports = true
 follow_imports = "skip"

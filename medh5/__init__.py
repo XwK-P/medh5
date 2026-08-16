@@ -50,6 +50,13 @@ from medh5.sample import (
     create,
     open_sample,
 )
+from medh5.sampling import (
+    Patch,
+    PatchSampler,
+    TimepointPair,
+    TimepointPairSampler,
+    grid_patches,
+)
 
 open = open_sample  # noqa: A001 - `medh5.open` is the documented entry point
 
@@ -78,6 +85,8 @@ __all__ = [
     "MEDH5ValidationError",
     "MEDH5VersionError",
     "Observation",
+    "Patch",
+    "PatchSampler",
     "Provenance",
     "QualityRecord",
     "Sample",
@@ -87,6 +96,8 @@ __all__ = [
     "SplitClaim",
     "Timeline",
     "Timepoint",
+    "TimepointPair",
+    "TimepointPairSampler",
     "Track",
     "Tracking",
     "VoxelAnnotation",
@@ -96,6 +107,7 @@ __all__ = [
     "audit_splits",
     "compare_annotations",
     "create",
+    "grid_patches",
     "open",
     "open_collection",
     "open_sample",

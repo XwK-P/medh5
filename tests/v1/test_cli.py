@@ -644,3 +644,93 @@ class TestPhase5Curation:
         code, out = run(capsys, "splits", str(bad))
         assert code == EXIT_ERROR
         assert "UNREADABLE" in out.out
+
+
+class TestPhase6Performance:
+    """``recompress`` and ``bench`` (§14.2, plan §4.3)."""
+
+    def test_recompress_preserves_the_content_id(self, capsys, sample_path):
+        import medh5
+
+        with medh5.open(sample_path) as sample:
+            before = sample.content_id
+        code, out = run(capsys, "recompress", str(sample_path), "--profile", "archive")
+        assert code == EXIT_OK
+        assert "archive" in out.out
+        assert "content_id" in out.out
+        with medh5.open(sample_path) as sample:
+            assert sample.content_id == before
+
+    def test_recompress_json(self, capsys, sample_path):
+        code, out = run(
+            capsys, "recompress", str(sample_path), "--profile", "portable", "--json"
+        )
+        payload = json.loads(out.out)
+        assert payload[0]["content_id_preserved"] is True
+        assert payload[0]["profile"] == "portable"
+
+    def test_recompress_out_takes_one_input(self, capsys, sample_path, tmp_path):
+        code, out = run(
+            capsys,
+            "recompress",
+            str(sample_path),
+            str(sample_path),
+            "--profile",
+            "archive",
+            "-o",
+            str(tmp_path / "x.medh5"),
+        )
+        assert code == EXIT_ERROR
+        assert "single input" in out.err
+
+    def test_recompress_rechunks_only_when_asked(self, capsys, tmp_path, label_set):
+        import h5py
+
+        import medh5
+
+        path = tmp_path / "chunked.medh5"
+        with medh5.create(path, codec="balanced") as w:
+            w.add_grid("g", shape=(48, 64, 64), spacing=(1.0, 1.0, 1.0))
+            w.add_image(
+                "CT",
+                np.zeros((48, 64, 64), dtype=np.int16),
+                grid="g",
+                modality="CT",
+            )
+        with h5py.File(path) as handle:
+            before = handle["images/CT"].chunks
+        run(capsys, "recompress", str(path), "--profile", "archive")
+        with h5py.File(path) as handle:
+            assert handle["images/CT"].chunks == before
+
+    def test_bench_runs_against_a_file(self, capsys, longitudinal_path):
+        code, out = run(
+            capsys,
+            "bench",
+            str(longitudinal_path),
+            "--patch",
+            "8",
+            "--repeats",
+            "2",
+            "--no-throughput",
+            "--json",
+        )
+        payload = json.loads(out.out)
+        names = {m["name"] for m in payload["measurements"]}
+        assert "meta_read_ms" in names
+        assert "foreground_sample_ms" in names
+        assert all("target" in m for m in payload["measurements"])
+
+    def test_bench_text_output_names_the_targets(self, capsys, sample_path):
+        code, out = run(
+            capsys,
+            "bench",
+            str(sample_path),
+            "--patch",
+            "8",
+            "--repeats",
+            "2",
+            "--no-throughput",
+        )
+        assert "target" in out.out
+        assert code in (EXIT_OK, EXIT_ERROR)

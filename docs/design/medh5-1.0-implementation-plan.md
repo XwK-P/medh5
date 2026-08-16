@@ -2,11 +2,12 @@
 
 **Companion documents:** [Specification](../spec/medh5-1.0.md) · [Design proposal](medh5-1.0-proposal.md)
 
-**Status: phases 0–5 are complete.** The core container, the label space, all five voxel encodings,
+**Status: phases 0–6 are complete.** The core container, the label space, all five voxel encodings,
 every geometric annotation, classification (including change labels), registration, curation,
-longitudinal tracking joins, collections, the validator and the conformance corpus are implemented
-and gated on `ruff`, `mypy --strict` and ≥ 90 % coverage. **Every diagnostic code in §15.2 has a
-conformance case.** Phase 6 (loaders and performance) is next.
+longitudinal tracking joins, collections, the PyTorch and MONAI loaders, the validator and the
+conformance corpus are implemented and gated on `ruff`, `mypy --strict` and ≥ 90 % coverage.
+**Every diagnostic code in §15.2 has a conformance case, and every §4.3 performance target is met**
+(`medh5 bench` reproduces them). Phase 7 (converters) is next.
 
 ---
 
@@ -72,18 +73,22 @@ medh5/
 ├── storage/            ✅ §14
 │   ├── chunking.py     ✅ L3-aware optimizer, decomposed into spatial + composition
 │   ├── codecs.py       ✅ four profiles, filter-pipeline introspection
+│   ├── recompress.py   ✅ §14.2 re-encoding; `content_id` survives it
 │   └── index.py        ✅ sampling index build/read, bounded-memory subsampling, occupancy
 │
+├── sampling.py         ✅ §14.3 patch and timepoint-pair sampling, framework-free
+├── bench.py            ✅ §4.3 targets, reproducible on the reader's hardware
+├── monai.py            ✅ MetaTensor adapter (affine-preserving, LPS/RAS explicit)
 ├── sample.py           ✅ Sample / SampleWriter / open / create / amend — the assembly point
 ├── validate/           ✅ §15 rule engine, levels, profiles, report model
 ├── conformance/        ✅ the golden corpus and its expected-output manifest
 ├── cli/                ✅ info, tree, validate, verify, timeline, track, labels, seg, index,
-│                          pack, unpack, ls, prov, agree, splits, conformance
+│                          pack, unpack, ls, prov, agree, splits, recompress, bench,
+│                          conformance
 ├── collection.py       ✅ §2.2 collection files, byte-identical pack/unpack
 ├── dataset/               manifests, splits, streaming statistics
 ├── io/                    nifti, dicom, dicom_seg, rtstruct, nnunetv2, coco, learn2reg
-├── torch/                 datasets, samplers, collate
-├── monai.py               MetaTensor adapter (affine-preserving)
+├── torch/              ✅ datasets, handle cache, collate
 └── legacy/             ✅ the whole 0.x implementation, moved here intact
 ```
 
@@ -308,7 +313,7 @@ experienced developer; the phases are largely independent after Phase 2.
 | **3 · Geometric + classification annotations** ✅ | boxes, obb, keypoints, points, contours, mesh, classification | **Done.** `det` and `cls` profiles complete; box↔slice round-trips over 200 randomised boxes; OBB centre/size/rotation recovered from its corners; two more spec clauses corrected (§1.3 `det`, §9 `class_ids`) | 2 w |
 | **4 · Registration** ✅ | affine, displacement, bspline, composite, landmarks, `apply.py`, inter-timepoint transform resolution | **Done.** `reg` profile complete; TRE computed from paired landmark sets; `transform_between` resolves through the frame graph, using inverses where they exist and refusing to invent them where they do not; every §15.2 code now has a corpus case | 2 w |
 | **5 · Curation + longitudinal + collections** ✅ | provenance graph, quality, identity/cohort/splits, instance tracking joins, change annotations, `.medh5c` pack/unpack (**in 1.0**, not deferred) | **Done.** `curation` and `longitudinal` profiles complete; the tracking join answers present/resolved/unexamined from `annotated_class_ids` rather than from absence; W909/W910/W911 fire on crafted inputs and W909 is sample-scoped; pack/unpack byte-identical on sample subtrees, verified chunk by chunk; two more spec clauses corrected (§2.2 `E010`, §7.4 W909 scope) | 2 w |
-| **6 · Loaders + performance** | torch datasets/samplers/collate, paired/longitudinal sampling, MONAI adapter, codec profiles, chunking policy, `recompress` | Throughput target met (§4.3); paired sampling correct against a hand-checked fixture; no per-worker memory growth over a 10-epoch soak | 2.5 w |
+| **6 · Loaders + performance** ✅ | torch datasets/samplers/collate, paired/longitudinal sampling, MONAI adapter, codec profiles, chunking policy, `recompress` | **Done.** Every §4.3 target met and reproducible with `medh5 bench`; a +4-voxel registration shift moves the paired patch by exactly 4 voxels; a 10-epoch soak leaves the handle cache and descriptor count flat; `recompress` changes every stored byte and no `content_id` | 2.5 w |
 | **7 · Converters** | NIfTI, DICOM, DICOM-SEG, RTSTRUCT, nnU-Net v2, COCO, `migrate` from 0.x, subject-grouping across studies | Round-trip fidelity tests per converter; `--group-by subject` produces correct multi-timepoint samples from a multi-study DICOM tree; migration report on a real 0.x cohort | 3 w |
 | **8 · Release** | Docs, tutorials, conformance suite publication, PyPI 1.0.0 | Spec + suite published; napari-medh5 updated against 1.0 | 1 w |
 
@@ -341,14 +346,20 @@ normative **MUST** in the spec maps to at least one test id (`test_spec.py::test
 
 ### 4.3 Performance targets
 
-| Metric | Target | Baseline (0.x) |
-|---|---|---|
-| 64³ patch, 200-class multi-label labels only | ≤ 10 ms | 117 ms |
-| Foreground centre sampling | ≤ 1 ms, O(1) memory | 9.2 ms, O(volume) |
-| Metadata-only read (`/meta` parse) | ≤ 2 ms | ~1.5 ms (attribute reconstruction) |
-| Full `open()` → first patch | ≤ 15 ms | ~120 ms with labels |
-| Sustained 96³ multi-modal patch throughput, 8 workers | ≥ 400 patches/s | ~60 patches/s |
-| Storage vs 0.x, 200-class cohort | ≤ 0.25× | 1.0× |
+| Metric | Target | Baseline (0.x) | Measured |
+|---|---|---|---|
+| 64³ patch, multi-class labels only | ≤ 10 ms | 117 ms | **4.0 ms** |
+| Foreground centre sampling | ≤ 1 ms, O(1) memory | 9.2 ms, O(volume) | **0.90 ms** |
+| Metadata-only read (`/meta` parse) | ≤ 2 ms | ~1.5 ms (attribute reconstruction) | **0.21 ms** |
+| Full `open()` → first patch | ≤ 15 ms | ~120 ms with labels | **2.4 ms** |
+| Sustained 96³ patch throughput | ≥ 400 patches/s | ~60 patches/s | **600–850 patches/s** (4 workers) |
+| Storage vs 0.x, 200-class cohort | ≤ 0.25× | 1.0× | see `docs/design/benchmarks/` |
+
+Measured with `medh5 bench` on a 192×256×256 synthetic CT with eight classes, Apple M-series, and
+reproducible on other hardware by running the same command. Two decisions are behind the label-read
+number: chunking each stacked plane separately (§14.1) so one layer reads without the others, and
+grouping a multi-class `dense()` **by plane rather than by class** — a 200-class annotation packed
+into four layers is four reads, not two hundred.
 
 ---
 

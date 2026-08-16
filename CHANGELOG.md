@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
-## [1.0.0a0] — MEDH5 format 1.0, phases 0–5
+## [1.0.0a0] — MEDH5 format 1.0, phases 0–6
 
 A clean-slate reimplementation of the format. **Not backward compatible with 0.x**, by design: a
 1.0 reader refuses a 0.x file rather than guessing, and a 0.x reader raises on the missing
@@ -79,8 +79,34 @@ file, and assigning whole files to train/val/test cannot leak a patient across p
   byte-identical and every `content_id` survives it — a shard is a container for samples, never a
   second encoding of them. A packed sample root *is* a sample root: every reader, validator and
   loader works on it unchanged.
+- **Loaders** (plan §2.3). `medh5.sampling` chooses patch windows and visit pairs and depends on no
+  deep-learning framework, because where to read is a geometry question. Foreground sampling reads
+  the cached coordinate subsample (§14.3) instead of scanning a mask — **0.90 ms and O(1) in volume
+  size**, against 9.2 ms and O(volume) for the 0.x `argwhere` path — and a file without an index
+  still works but says so on every patch it returns, since a silent 20× slowdown in a dataloader is
+  indistinguishable from a slow disk. `medh5.torch` adds `VolumeDataset`, `PatchDataset`,
+  `GridPatchDataset`, `PairedPatchDataset`, a collate that keeps ragged detection targets ragged,
+  and a **PID-keyed handle cache** (§14.4) — an HDF5 handle inherited across `fork` returns corrupt
+  reads that look like data errors, so the cache abandons its contents the moment it notices a new
+  process.
+- **Paired longitudinal sampling.** `align="transform"` maps the patch centre through the transform
+  relating two visits, so both patches cover the same anatomy; `align="none"` returns unregistered
+  pairs. A cross-sectional file contributes no pairs and is *counted*, not silently dropped.
+- **A MONAI adapter**: `to_metatensor` hands MONAI the correct affine, labelled with its world
+  convention rather than converted to RAS behind the caller's back. An ROI shifts the origin, so a
+  cropped tensor still lands where its anatomy is.
+- **`recompress`** (§14.2). Because digests cover *decompressed* content (§13.1), re-encoding
+  changes every stored byte and no `content_id`: a cache keyed on it stays valid, and moving a
+  cohort from `training` to `archive` is a storage decision rather than a data migration.
+- **Faster multi-class label reads.** `dense()` on `layers` and `bitmask` now groups by **plane
+  rather than by class**: a 200-class annotation packed into four layers costs four reads, not two
+  hundred. A 64³ multi-class patch read is **4.0 ms** against the 117 ms the 0.x layout needed.
+- **`medh5 bench`**, which reproduces every performance target in the plan on the reader's own
+  hardware. All are met: sustained patch throughput measures 600–850 patches/s against a target of
+  400.
 - **A CLI**: `info`, `tree`, `validate`, `verify`, `timeline`, `track`, `labels`, `seg stats`,
-  `seg convert`, `index build`, `pack`, `unpack`, `ls`, `prov`, `agree`, `splits`, `conformance`.
+  `seg convert`, `index build`, `pack`, `unpack`, `ls`, `prov`, `agree`, `splits`, `recompress`,
+  `bench`, `conformance`.
 
 ### Changed
 
@@ -100,7 +126,7 @@ file, and assigning whole files to train/val/test cannot leak a patient across p
 
 ### Not yet implemented
 
-Converters and the PyTorch/MONAI loaders.
+The converters (NIfTI, DICOM, DICOM-SEG, RTSTRUCT, nnU-Net v2, COCO) and `migrate` from 0.x.
 
 ## [0.6.0]
 

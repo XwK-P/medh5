@@ -1352,6 +1352,11 @@ tens of GiB and cannot exist.
 * Slice in **one** call: `d[(k, *roi)]`, never `d[k][roi]`. The latter materialises the whole
   sub-array first — measured 40× slower for a 64³ ROI out of a 160³ `uint64` bitplane (32.8 ms vs
   0.8 ms). The reference API **MUST NOT** expose an interface that makes the slow form natural.
+* Read a multi-class region **by plane, not by class**. In `layers` and `bitmask` one stored plane
+  serves many classes, so answering a *C*-class query with *C* reads re-decompresses the same chunks
+  — up to 64× for a bitplane. Group the requested classes by the plane that carries them and read
+  each plane once; measured 4.0 ms versus 11.0 ms for an eight-class 64³ patch, and the gap widens
+  with class count.
 * Prefer whole-chunk-aligned ROIs when the caller does not care about exact placement.
 * `read_direct_chunk` **MAY** be used to hand compressed chunks to a GPU decompressor; the format
   imposes nothing that prevents it.
@@ -1505,6 +1510,11 @@ $ medh5 conformance run ./corpus
 **Every code in §15.2 has a corpus case.** The implementation gates on `ruff`,
 `mypy --strict` and ≥ 90 % test coverage, and a test asserts that the §15.2 table and the
 implementation's code registry are identical, so the two cannot drift.
+
+The §14 performance claims are reproducible rather than asserted: `medh5 bench` re-measures them on
+any machine. On a 192×256×256 synthetic CT with eight classes, a multi-class 64³ label read costs
+4.0 ms, foreground centre sampling 0.90 ms (O(1) in volume size, via §14.3), a metadata-only read
+0.21 ms, and `open()` → first patch 2.4 ms.
 
 Eight clauses were corrected during implementation, each because writing the code showed the text was
 not implementable, or not unambiguous, as written:

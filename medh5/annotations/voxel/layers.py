@@ -13,6 +13,7 @@ never ``data[l][roi]``, which materialises the whole layer first (spec §14.5).
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
@@ -149,6 +150,34 @@ class LayersAnnotation(VoxelAnnotation):
             return np.zeros(self._roi_shape(roi), dtype=bool)
         block: npt.NDArray[np.bool_] = np.asarray(self.data[(layer, *roi)]) == class_id
         return block
+
+    def dense(
+        self,
+        classes: Sequence[int | str] | None = None,
+        roi: Sequence[slice] | None = None,
+    ) -> npt.NDArray[np.bool_]:
+        """``(C, *roi)`` occupancy, reading each layer once rather than once
+        per class.
+
+        The generic implementation asks for one class at a time, which for a
+        200-class annotation packed into four layers means 200 reads of four
+        distinct planes --- 50× more decompression than the data requires.
+        Grouping by layer first is the whole reason a 64³ multi-class label
+        read costs milliseconds instead of the 117 ms the 0.x layout did.
+        """
+        ids = self.resolve_classes(classes)
+        window = self._roi(roi)
+        out = np.zeros((len(ids), *self._roi_shape(window)), dtype=bool)
+        by_layer: dict[int, list[int]] = {}
+        for position, class_id in enumerate(ids):
+            layer = self.layer_of.get(class_id)
+            if layer is not None:
+                by_layer.setdefault(layer, []).append(position)
+        for layer, positions in sorted(by_layer.items()):
+            block = np.asarray(self.data[(layer, *window)])
+            for position in positions:
+                out[position] = block == ids[position]
+        return out
 
     def read_layer(
         self, layer: int, roi: tuple[slice, ...] | None = None

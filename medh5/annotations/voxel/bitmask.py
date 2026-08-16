@@ -13,6 +13,7 @@ independent.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
@@ -94,6 +95,36 @@ class BitmaskAnnotation(VoxelAnnotation):
             block & (np.uint64(1) << np.uint64(bit))
         ) != np.uint64(0)
         return hit
+
+    def dense(
+        self,
+        classes: Sequence[int | str] | None = None,
+        roi: Sequence[slice] | None = None,
+    ) -> npt.NDArray[np.bool_]:
+        """``(C, *roi)`` occupancy, reading each bitplane once.
+
+        One ``uint64`` plane carries 64 classes, so asking per class re-reads
+        and re-decompresses the same words up to 64 times.  Grouping by plane
+        makes a 200-class read four plane reads and 200 mask operations on
+        data already in cache.
+        """
+        ids = self.resolve_classes(classes)
+        window = self._roi(roi)
+        out = np.zeros((len(ids), *self._roi_shape(window)), dtype=bool)
+        by_plane: dict[int, list[tuple[int, int]]] = {}
+        for position, class_id in enumerate(ids):
+            slot = self.position_of.get(class_id)
+            if slot is None:
+                continue
+            plane, bit = divmod(slot, BITS_PER_PLANE)
+            by_plane.setdefault(plane, []).append((position, bit))
+        for plane, entries in sorted(by_plane.items()):
+            block = np.asarray(self.data[(plane, *window)], dtype=np.uint64)
+            for position, bit in entries:
+                out[position] = (block & (np.uint64(1) << np.uint64(bit))) != np.uint64(
+                    0
+                )
+        return out
 
     def classes_at(self, voxel: tuple[int, ...]) -> tuple[int, ...]:
         """Every class present at one voxel, in O(P) reads.
