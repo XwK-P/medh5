@@ -1,0 +1,13 @@
+# The sdist carries what makes the package auditable: the normative
+# specification, the JSON Schema, the documentation and the test suite.  A
+# format release whose source distribution omits the format is not one.
+include LICENSE
+include README.md
+include CHANGELOG.md
+include CLAUDE.md
+recursive-include docs *.md *.json *.py
+recursive-include schemas *.json
+recursive-include tests *.py
+recursive-include medh5 py.typed *.json
+global-exclude *.pyc
+global-exclude __pycache__

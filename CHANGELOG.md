@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
-## [1.0.0a0] — MEDH5 format 1.0, phases 0–7
+## [1.0.0] — MEDH5 format 1.0
 
 A clean-slate reimplementation of the format. **Not backward compatible with 0.x**, by design: a
 1.0 reader refuses a 0.x file rather than guessing, and a 0.x reader raises on the missing
@@ -139,11 +139,49 @@ file, and assigning whole files to train/val/test cannot leak a patient across p
   `seg convert`, `index build`, `pack`, `unpack`, `ls`, `prov`, `agree`, `splits`, `recompress`,
   `bench`, `convert`, `migrate`, `conformance`.
 
+- **Cohort tools** (`medh5.dataset`, `medh5 dataset`). A manifest is a metadata-only scan cached as
+  JSON, and it is the *authority* for splits (§12.3): its digest covers membership and grouping —
+  which samples, grouped how — and deliberately not content, because writing a claim into a file
+  changes the file, and a content-covering digest would make every claim stale the moment it was
+  written. Splitting groups before it splits, never by file, and is deterministic given
+  `(digest, seed, parameters)`. Groups are dealt by largest deficit against the target ratios
+  rather than sliced by index — slicing six groups at 70/15/15 gives train all of them — and where
+  an indivisible set of groups genuinely cannot meet the ratios, the split *says which partition got
+  nothing* instead of leaving an empty test set to be discovered after the results are written up.
+  Strata are interleaved with a rotating lead and dealt against one global tally, so stratifying
+  balances the cohort instead of starving val and test. Statistics stream with an exact
+  Chan-Golub-LeVeque merge weighted by voxel count, read class counts from the sampling index when
+  it is current, and never count an unexamined class as a zero. `dataset check` asks the questions
+  no single file can answer — one label set or several, a class id meaning two things, a claim from
+  another manifest, a subject in two partitions, a class examined in a tenth of the cohort — under
+  its own `C1xx` codes, because a file is not non-conforming because the cohort around it is.
+- **`medh5 fix`**, which separates rebuilding a derived cache from restamping a claim. Rebuilding
+  an index recomputes a cache from what it caches. Rewriting digests is *not* repair: a mismatch is
+  evidence the bytes changed, and recomputing it destroys the evidence. So `--rewrite-digests`
+  requires a reason, records an activity naming what it did not verify, and says so on stdout.
+- **`medh5 scrub`** (§11.4): a de-identification sweep over the container that attests to exactly
+  what it did. UIDs are pseudonymised rather than deleted, since a frame UID is how two files agree
+  they share a frame of reference, and the pseudonym is stable so a cohort scrubbed file by file
+  still joins. Only a *salted* run records `id_mapping: external` — an unsalted hash is recoverable
+  by anyone holding the original UIDs. Dates shift rather than vanish so intervals survive, and
+  running it twice does not shift them twice. It reads metadata and not pixels, so it writes
+  `burned_in_annotation_checked: false` and lists what it did not check, rather than writing
+  "de-identified".
+- **A publishable conformance suite.** `medh5 conformance publish` writes a standalone directory —
+  103 cases, `expected.json`, the §15.2 code table as data, the JSON Schema, `SHA256SUMS` and a
+  README — so an implementer needs nothing installed to be measured. `medh5 conformance score`
+  scores any validator, in any language, from `[{file, errors, warnings}, ...]`. `medh5 validate
+  --json` emits a superset of that shape, so the reference implementation is scored through exactly
+  the same door as everybody else, and a test asserts it.
+- **Thirteen documentation pages** written against the 1.0 API, every snippet executed against a
+  real sample rather than proofread.
+
 ### Changed
 
-- The 0.6.0 implementation moved to `medh5.legacy` unchanged, and is still tested. Import paths in
-  the 0.x documentation changed accordingly; the `medh5-0x` console script runs its CLI. It will be
-  deleted once the 1.0 converters land.
+- **The 0.x implementation is gone.** 1.0 ships a *reader* for the old layout (~200 lines,
+  documenting the format in full) so `medh5 migrate` still works, but not an implementation of it:
+  shipping the old package inside the new one would let a curator keep writing the format they are
+  migrating away from. The `medh5-0x` console script is removed.
 - Eight specification clauses were corrected because implementing them showed the text was not
   implementable, or contradicted itself: `/meta` cannot be compressed, the label-set canonical
   serialization is now defined, `content_id` excludes `created`/`generator`, "the digest of an
@@ -155,9 +193,31 @@ file, and assigning whole files to train/val/test cannot leak a patient across p
   empty one rather than dropping it. Without that, "searched for and not found" collapsed into
   "never looked for" — the distinction §11.3 exists to preserve.
 
-### Not yet implemented
+- `writer.split()` now **replaces** a claim for the same `set_id` instead of appending one. Two
+  claims for one set is precisely the W906 conflict §12.3 defines, so appending on a re-split
+  manufactured the defect the validator exists to catch.
+- `set_quality(issues=[...])` accepts constructed `Issue` and `Agreement` records as readily as
+  JSON, instead of raising `TypeError: 'Issue' object is not subscriptable`.
 
-The 1.0 release itself: published conformance suite, tutorials, and the napari-medh5 update.
+### Fixed
+
+- `medh5 dataset check` reported `C201` on the split it had just written, because the manifest
+  digest covered `content_id` and `--write-claims` rewrites every file. The digest now covers
+  membership and grouping; content drift is a separate question answered by `C401` and `--deep`.
+- Stratified splitting put every group in `train` on small cohorts: each stratum was dealt against
+  its own tally, and every small stratum rounds that way. Fixed by interleaving strata against one
+  global tally, with the lead stratum rotating per round so the small partitions do not fill from
+  the same stratum every time.
+
+### Notes
+
+- `content_id` is a Merkle digest over *stored object digests*, so editing a dataset without
+  restamping it breaks that object's digest and leaves the root matching. `verify` therefore checks
+  every object rather than only the root, and there is a test that says so.
+- Reading a case at a level deeper than the conformance manifest declares is **not** safe: 71 of
+  the invalid cases are built by editing a valid file, so an integrity pass adds a `content_id`
+  mismatch the case never claimed. The published README says so; it originally said the opposite,
+  and running it corrected that.
 
 **COCO was dropped from 1.0.** It has no world geometry, no spacing and no frame of reference, so
 importing one means inventing a grid and exporting one means discarding the geometry that makes a

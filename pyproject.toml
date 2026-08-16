@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "medh5"
-version = "1.0.0a0"
-description = "Self-describing HDF5 container for one medical imaging sample and all of its ground truth: multi-timepoint, multi-modal images with segmentation, detection, classification and registration labels."
+version = "1.0.0"
+description = "Self-describing HDF5 container for one medical imaging sample and all of its ground truth: multi-timepoint, multi-modal images with segmentation, detection, classification and registration annotations, provenance and integrity."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
@@ -18,12 +18,18 @@ keywords = [
   "blosc2",
   "machine learning",
   "segmentation",
+  "detection",
+  "registration",
+  "longitudinal",
   "nifti",
   "dicom",
+  "rtstruct",
+  "nnunet",
   "pytorch",
+  "monai",
 ]
 classifiers = [
-  "Development Status :: 4 - Beta",
+  "Development Status :: 5 - Production/Stable",
   "Intended Audience :: Developers",
   "Intended Audience :: Science/Research",
   "License :: OSI Approved :: MIT License",
@@ -93,6 +99,8 @@ Homepage = "https://github.com/XwK-P/medh5"
 Repository = "https://github.com/XwK-P/medh5"
 Issues = "https://github.com/XwK-P/medh5/issues"
 Changelog = "https://github.com/XwK-P/medh5/blob/main/CHANGELOG.md"
+Documentation = "https://github.com/XwK-P/medh5/blob/main/docs/index.md"
+Specification = "https://github.com/XwK-P/medh5/blob/main/docs/spec/medh5-1.0.md"
 
 [project.scripts]
 medh5 = "medh5.cli:main"

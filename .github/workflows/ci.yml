@@ -38,7 +38,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - run: pip install -e ".[dev,torch,nifti,dicom,itk]"
+      - run: pip install -e ".[dev,schema,torch,nifti,dicom,dicomseg,itk,interp]"
       - run: pytest tests/ -v --cov=medh5 --cov-report=term-missing --cov-fail-under=90
 
   test-macos:
@@ -55,8 +55,43 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - run: pip install -e ".[dev,torch,nifti,dicom,itk]"
+      - run: pip install -e ".[dev,schema,torch,nifti,dicom,dicomseg,itk,interp]"
       - run: pytest tests/ -v --cov=medh5 --cov-report=term-missing --cov-fail-under=90
+
+  conformance:
+    # The corpus is a shipped artifact, not a test fixture: a third-party
+    # implementation runs the same 103 cases, and is scored the same way.
+    # Running it here through `publish` + `score` exercises the public path
+    # rather than the in-process one.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev,schema]"
+      - run: medh5 conformance run corpus/
+      - run: medh5 conformance publish suite/
+      - run: |
+          python - <<'PY'
+          import json, subprocess
+          manifest = json.load(open("suite/expected.json"))
+          results = []
+          for case in manifest["cases"]:
+              out = subprocess.run(
+                  ["medh5", "validate", f"suite/{case['file']}",
+                   "--level", case["level"], "--json"],
+                  capture_output=True, text=True, check=True,
+              ).stdout
+              report = json.loads(out)[0]
+              results.append({"file": case["file"], "diagnostics": report["diagnostics"]})
+          json.dump(results, open("results.json", "w"))
+          PY
+      - run: medh5 conformance score suite/ results.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: conformance-suite
+          path: suite/
 
   build:
     runs-on: ubuntu-latest
