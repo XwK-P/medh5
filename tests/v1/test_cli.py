@@ -403,3 +403,47 @@ class TestPhase3Kinds:
         assert code == EXIT_OK
         for dataset in ("contour_offsets", "contour_role", "faces", "vertices"):
             assert dataset in out.out
+
+
+class TestPhase4Transforms:
+    """`info` and `validate` must render and check §10 transforms."""
+
+    @staticmethod
+    def _build(tmp_path, name):
+        from medh5.conformance import build_corpus
+
+        build_corpus(tmp_path, names=[name])
+        return tmp_path / f"{name}.medh5"
+
+    def test_info_renders_the_transform_table(self, capsys, tmp_path):
+        path = self._build(tmp_path, "reg-displacement-composite")
+        code, out = run(capsys, "info", str(path))
+        assert code == EXIT_OK
+        assert "transforms" in out.out
+        for kind in ("affine", "displacement", "composite"):
+            assert kind in out.out
+        assert "reg" in out.out
+
+    def test_info_json_carries_frames_and_timepoints(self, capsys, tmp_path):
+        path = self._build(tmp_path, "reg-affine-landmarks")
+        code, out = run(capsys, "info", str(path), "--json")
+        transforms = json.loads(out.out)["transforms"]
+        assert transforms[0]["from_frame"] != transforms[0]["to_frame"]
+        assert transforms[0]["timepoints"] == ["tp0", "tp1"]
+
+    def test_validate_is_clean_for_every_registration_case(self, capsys, tmp_path):
+        for name in (
+            "reg-affine-landmarks",
+            "reg-inverse-pair",
+            "reg-displacement-composite",
+            "reg-bspline",
+        ):
+            path = self._build(tmp_path, name)
+            code, out = run(capsys, "validate", str(path), "--level", "strict")
+            assert code == EXIT_OK, out.out
+
+    def test_a_registered_pair_no_longer_warns_about_W911(self, capsys, tmp_path):
+        """The warning exists to catch exactly the file this case is not."""
+        path = self._build(tmp_path, "reg-affine-landmarks")
+        code, out = run(capsys, "validate", str(path))
+        assert "W911" not in out.out

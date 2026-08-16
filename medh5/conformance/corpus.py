@@ -1790,6 +1790,223 @@ def _register_geometric_cases() -> None:
 _register_geometric_cases()
 
 
+def _reg_base(
+    path: Path,
+    *,
+    with_displacement: bool = False,
+    with_bspline: bool = False,
+    with_composite: bool = False,
+    with_inverse: bool = False,
+    landmarks: bool = True,
+) -> None:
+    """Two timepoints related by a transform, with landmark ground truth (§10)."""
+    rng = np.random.default_rng(SEED)
+    shape = (12, 16, 16)
+    fixed = np.array([[2.0, 3.0, 4.0], [6.0, 7.0, 8.0]], dtype=np.float32)
+    shift = np.array([2.0, -1.0, 0.5])
+    matrix = np.eye(4)
+    matrix[:3, 3] = shift
+    with medh5.create(path, sample_id=path.stem, codec="portable") as w:
+        w.add_timepoint("tp0", label="baseline", days_from_baseline=0)
+        w.add_timepoint("tp1", label="follow_up", days_from_baseline=92)
+        w.label_set(_LS)
+        for tp, frame in (("tp0", "pseudo:frame-100"), ("tp1", "pseudo:frame-101")):
+            w.add_grid(
+                f"ct_{tp}",
+                shape=shape,
+                spacing=(1.5, 0.8, 0.8),
+                origin=(0.0, 0.0, 0.0),
+                timepoint=tp,
+                frame_uid=frame,
+            )
+            w.add_image(
+                f"CT_{tp}",
+                rng.integers(-1000, 1500, shape).astype(np.int16),
+                grid=f"ct_{tp}",
+                modality="CT",
+                value_type="quantitative",
+                value_units="HU",
+            )
+        w.add_transform(
+            "tp0_to_tp1",
+            kind="affine",
+            from_frame="pseudo:frame-100",
+            to_frame="pseudo:frame-101",
+            matrix=matrix,
+            from_grid="ct_tp0",
+            to_grid="ct_tp1",
+            invertible=True,
+            inverse_id="tp1_to_tp0" if with_inverse else None,
+            metrics={"status": "approved", "confidence": 0.88},
+        )
+        if with_inverse:
+            inverse = np.eye(4)
+            inverse[:3, 3] = -shift
+            w.add_transform(
+                "tp1_to_tp0",
+                kind="affine",
+                from_frame="pseudo:frame-101",
+                to_frame="pseudo:frame-100",
+                matrix=inverse,
+                invertible=True,
+                inverse_id="tp0_to_tp1",
+            )
+        if with_displacement:
+            field = np.zeros((3, *shape), dtype=np.float32)
+            field[0] = 0.75
+            w.add_transform(
+                "refine",
+                kind="displacement",
+                from_frame="pseudo:frame-101",
+                to_frame="pseudo:frame-102",
+                field=field,
+                field_grid="ct_tp1",
+                vector_space="world",
+            )
+        if with_bspline:
+            control = np.zeros((3, 6, 6, 6), dtype=np.float64)
+            control[1] = 0.5
+            w.add_grid(
+                "cp",
+                shape=(6, 6, 6),
+                spacing=(3.0, 3.2, 3.2),
+                origin=(0.0, 0.0, 0.0),
+                timepoint="tp1",
+                frame_uid="pseudo:frame-101",
+            )
+            w.add_transform(
+                "ffd",
+                kind="bspline",
+                from_frame="pseudo:frame-101",
+                to_frame="pseudo:frame-103",
+                control_points=control,
+                cp_grid="cp",
+                order=3,
+            )
+        if with_composite:
+            w.add_transform(
+                "tp0_to_refined",
+                kind="composite",
+                from_frame="pseudo:frame-100",
+                to_frame="pseudo:frame-102",
+                components=["tp0_to_tp1", "refine"],
+            )
+        if landmarks:
+            w.add_points(
+                "landmarks_tp0",
+                fixed,
+                grid="ct_tp0",
+                space="world",
+                names=["apex", "carina"],
+                weights=[1.0, 1.0],
+                correspondence="landmarks_tp1",
+                task="registration",
+            )
+            w.add_points(
+                "landmarks_tp1",
+                fixed + shift.astype(np.float32),
+                grid="ct_tp1",
+                space="world",
+                names=["apex", "carina"],
+                correspondence="landmarks_tp0",
+                task="registration",
+            )
+        w.deidentification(method="dicom-psi-profile")
+
+
+def _register_transform_cases() -> None:
+    _CASES.append(
+        Case(
+            name="reg-affine-landmarks",
+            description="Baseline-to-follow-up affine with paired landmark ground "
+            "truth and a metrics record.",
+            clause="§10.3, §10.6",
+            build=_reg_base,
+        )
+    )
+    _CASES.append(
+        Case(
+            name="reg-inverse-pair",
+            description="Two affines declaring each other as inverses.",
+            clause="§10.1",
+            build=lambda p: _reg_base(p, with_inverse=True),
+        )
+    )
+    _CASES.append(
+        Case(
+            name="reg-displacement-composite",
+            description="A dense field refining an affine, and the composite of both.",
+            clause="§10.4, §10.5",
+            build=lambda p: _reg_base(p, with_displacement=True, with_composite=True),
+        )
+    )
+    _CASES.append(
+        Case(
+            name="reg-bspline",
+            description="A cubic free-form deformation on a control-point lattice.",
+            clause="§10.5",
+            build=lambda p: _reg_base(p, with_bspline=True),
+        )
+    )
+    _invalid(
+        "E501-broken-composite-chain",
+        "A composite whose components do not chain.",
+        "§10.5",
+        ["E501"],
+        lambda f: f["transforms/tp0_to_refined"].attrs.__setitem__(
+            "to_frame", encode_attr("pseudo:frame-999")
+        ),
+        base=lambda p: _reg_base(p, with_displacement=True, with_composite=True),
+    )
+    _invalid(
+        "E502-unknown-transform-kind",
+        "A transform of an unregistered kind.",
+        "§10.1",
+        ["E502"],
+        lambda f: f["transforms/tp0_to_tp1"].attrs.__setitem__(
+            "kind", encode_attr("wormhole")
+        ),
+        base=_reg_base,
+    )
+    _invalid(
+        "E503-field-grid-wrong-frame",
+        "A displacement field sampled outside the source frame.",
+        "§10.4",
+        ["E503"],
+        lambda f: f["transforms/refine"].attrs.__setitem__(
+            "from_frame", encode_attr("pseudo:frame-100")
+        ),
+        base=lambda p: _reg_base(p, with_displacement=True),
+    )
+    _invalid(
+        "E504-affine-last-row",
+        "An affine whose last row is not [0 … 0 1].",
+        "§10.3",
+        ["E504"],
+        _break_affine_last_row,
+        base=_reg_base,
+    )
+    _invalid(
+        "E505-inverse-not-mutual",
+        "An `inverse_id` naming a transform that is not the inverse.",
+        "§10.1",
+        ["E505"],
+        lambda f: f["transforms/tp1_to_tp0"].attrs.__setitem__(
+            "inverse_id", encode_attr("tp1_to_tp0")
+        ),
+        base=lambda p: _reg_base(p, with_inverse=True),
+    )
+
+
+def _break_affine_last_row(handle: h5py.File) -> None:
+    matrix = np.asarray(handle["transforms/tp0_to_tp1/matrix"][...])
+    matrix[-1, 0] = 0.5
+    handle["transforms/tp0_to_tp1/matrix"][...] = matrix
+
+
+_register_transform_cases()
+
+
 CASES: tuple[Case, ...] = tuple(_CASES)
 
 

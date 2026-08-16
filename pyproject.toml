@@ -69,6 +69,11 @@ dicom = [
 itk = [
   "SimpleITK>=2.3",
 ]
+interp = [
+  # Only needed to evaluate a displacement field that declares
+  # `interpolation: cubic`; linear interpolation is built in.
+  "scipy>=1.10",
+]
 
 [project.urls]
 Homepage = "https://github.com/XwK-P/medh5"
@@ -128,6 +133,8 @@ module = [
   "SimpleITK.*",
   "jsonschema",
   "jsonschema.*",
+  "scipy",
+  "scipy.*",
 ]
 ignore_missing_imports = true
 follow_imports = "skip"

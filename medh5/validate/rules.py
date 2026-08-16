@@ -36,6 +36,7 @@ from medh5.image import VALUE_TYPES
 from medh5.labels.labelset import BACKGROUND_ID, CLOSURES, IGNORE_ID
 from medh5.sample import PROFILES
 from medh5.storage.codecs import is_bulk
+from medh5.transforms.base import TRANSFORM_KINDS, VECTOR_SPACES
 from medh5.validate.report import Diagnostic, Level, Report
 
 SUPPORTED_MAJOR = "1"
@@ -1138,6 +1139,228 @@ def _check_instances(
 
 
 # --------------------------------------------------------------------------
+# §10 transforms
+# --------------------------------------------------------------------------
+
+
+def check_transforms(ctx: Context) -> Iterator[Diagnostic]:
+    """Transform structure, frame chaining and inverse consistency (§10)."""
+    node = ctx.root.get("transforms")
+    if node is None:
+        return
+    grids_node = ctx.root.get("grids")
+    declared: dict[str, tuple[str, str]] = {}
+    for name in sorted(node):
+        group = node[name]
+        location = f"/transforms/{name}"
+        attrs = group.attrs
+        if "kind" not in attrs:
+            yield ctx.err("E502", location, "transform has no `kind` attribute")
+            continue
+        kind = as_str(attrs["kind"])
+        if kind not in TRANSFORM_KINDS:
+            yield ctx.err(
+                "E502",
+                location,
+                f"unknown transform kind {kind!r}; expected one of "
+                f"{list(TRANSFORM_KINDS)}",
+            )
+            continue
+        missing = [k for k in ("from_frame", "to_frame") if k not in attrs]
+        if missing:
+            yield ctx.err("E502", location, f"missing {missing}")
+            continue
+        source, target = as_str(attrs["from_frame"]), as_str(attrs["to_frame"])
+        declared[name] = (source, target)
+        if source == target:
+            yield ctx.err(
+                "E502",
+                location,
+                f"maps frame {source!r} to itself; grids sharing a frame need no "
+                "transform (§3.4)",
+            )
+        if kind == "affine":
+            yield from _check_affine(ctx, name, group)
+        if kind in ("displacement", "bspline"):
+            yield from _check_field_transform(
+                ctx, name, group, kind, source, grids_node
+            )
+        if kind == "composite":
+            yield from _check_composite(ctx, name, group, declared, source, target)
+    yield from _check_inverses(ctx, node, declared)
+
+
+def _check_affine(ctx: Context, name: str, group: h5py.Group) -> Iterator[Diagnostic]:
+    location = f"/transforms/{name}"
+    if "matrix" not in group:
+        yield ctx.err("E502", location, "kind 'affine' requires a `matrix` dataset")
+        return
+    matrix = np.asarray(group["matrix"][...], dtype=np.float64)
+    if matrix.ndim != 2 or matrix.shape[0] != matrix.shape[1]:  # noqa: PLR2004
+        yield ctx.err(
+            "E504", location, f"`matrix` must be square (S+1, S+1), got {matrix.shape}"
+        )
+        return
+    expected = np.zeros(matrix.shape[0])
+    expected[-1] = 1.0
+    if not np.allclose(matrix[-1], expected, atol=1e-9):
+        yield ctx.err(
+            "E504",
+            location,
+            f"last row must be [0 … 0 1], got {matrix[-1].tolist()}",
+        )
+
+
+def _check_field_transform(
+    ctx: Context,
+    name: str,
+    group: h5py.Group,
+    kind: str,
+    from_frame: str,
+    grids_node: h5py.Group | None,
+) -> Iterator[Diagnostic]:
+    location = f"/transforms/{name}"
+    dataset, grid_attr = (
+        ("field", "field_grid")
+        if kind == "displacement"
+        else ("control_points", "cp_grid")
+    )
+    if dataset not in group:
+        yield ctx.err("E502", location, f"kind {kind!r} requires a {dataset!r} dataset")
+    if grid_attr not in group.attrs:
+        yield ctx.err("E503", location, f"kind {kind!r} requires {grid_attr!r}")
+        return
+    grid_id = as_str(group.attrs[grid_attr])
+    if grids_node is None or grid_id not in grids_node:
+        yield ctx.err("E101", location, f"{grid_attr} {grid_id!r} does not exist")
+        return
+    grid_attrs = grids_node[grid_id].attrs
+    frame = as_str(grid_attrs["frame_uid"]) if "frame_uid" in grid_attrs else None
+    if frame is not None and frame != from_frame:
+        yield ctx.err(
+            "E503",
+            location,
+            f"{grid_attr} {grid_id!r} is in frame {frame!r} but the transform starts "
+            f"in {from_frame!r}; the field is sampled in the source frame",
+        )
+    space = as_str(group.attrs.get("vector_space", "world"))
+    if space not in VECTOR_SPACES:
+        yield ctx.err("E502", location, f"unknown vector_space {space!r}")
+    if dataset in group:
+        data = group[dataset]
+        kinds = as_str_tuple(grid_attrs["axis_kinds"])
+        n_spatial = kinds.count("spatial")
+        if int(data.shape[0]) != n_spatial:
+            yield ctx.err(
+                "E503",
+                f"{location}/{dataset}",
+                f"{data.shape[0]} components on a {n_spatial}-D lattice; they must "
+                "match",
+            )
+        if kind == "displacement":
+            shape = tuple(int(v) for v in np.atleast_1d(grid_attrs["shape"]))
+            spatial = tuple(
+                s for s, k in zip(shape, kinds, strict=True) if k == "spatial"
+            )
+            if tuple(int(v) for v in data.shape[1:]) != spatial:
+                yield ctx.err(
+                    "E503",
+                    f"{location}/{dataset}",
+                    f"field lattice {tuple(data.shape[1:])} != grid {grid_id!r} "
+                    f"spatial shape {spatial}",
+                )
+
+
+def _check_composite(
+    ctx: Context,
+    name: str,
+    group: h5py.Group,
+    declared: dict[str, tuple[str, str]],
+    source: str,
+    target: str,
+) -> Iterator[Diagnostic]:
+    location = f"/transforms/{name}"
+    if "components" not in group.attrs:
+        yield ctx.err("E501", location, "kind 'composite' requires `components`")
+        return
+    components = as_str_tuple(group.attrs["components"])
+    node = ctx.root["transforms"]
+    unknown = [c for c in components if c not in node]
+    if unknown:
+        yield ctx.err("E501", location, f"names components {unknown} that do not exist")
+        return
+    frames = []
+    for component in components:
+        attrs = node[component].attrs
+        if "from_frame" not in attrs or "to_frame" not in attrs:
+            yield ctx.err(
+                "E501", location, f"component {component!r} declares no frames"
+            )
+            return
+        frames.append((as_str(attrs["from_frame"]), as_str(attrs["to_frame"])))
+    if frames[0][0] != source:
+        yield ctx.err(
+            "E501",
+            location,
+            f"first component starts in {frames[0][0]!r} but the composite declares "
+            f"{source!r}",
+        )
+    if frames[-1][1] != target:
+        yield ctx.err(
+            "E501",
+            location,
+            f"last component ends in {frames[-1][1]!r} but the composite declares "
+            f"{target!r}",
+        )
+    for (left, right), (a, b) in zip(
+        zip(components, components[1:], strict=False),
+        zip(frames, frames[1:], strict=False),
+        strict=False,
+    ):
+        if a[1] != b[0]:
+            yield ctx.err(
+                "E501",
+                location,
+                f"{left!r} ends in {a[1]!r} but {right!r} starts in {b[0]!r}",
+            )
+    del declared
+
+
+def _check_inverses(
+    ctx: Context, node: h5py.Group, declared: dict[str, tuple[str, str]]
+) -> Iterator[Diagnostic]:
+    """``inverse_id`` must name a transform that really is the inverse (E505)."""
+    for name, (source, target) in sorted(declared.items()):
+        attrs = node[name].attrs
+        if "inverse_id" not in attrs:
+            continue
+        other = as_str(attrs["inverse_id"])
+        location = f"/transforms/{name}"
+        if other not in declared:
+            yield ctx.err(
+                "E505", location, f"`inverse_id` names {other!r}, which does not exist"
+            )
+            continue
+        other_source, other_target = declared[other]
+        if (other_source, other_target) != (target, source):
+            yield ctx.err(
+                "E505",
+                location,
+                f"`inverse_id` names {other!r}, which maps {other_source!r} -> "
+                f"{other_target!r}; an inverse must map {target!r} -> {source!r}",
+            )
+            continue
+        back = node[other].attrs.get("inverse_id")
+        if back is not None and as_str(back) != name:
+            yield ctx.err(
+                "E505",
+                location,
+                f"{other!r} names {as_str(back)!r} as its inverse, not {name!r}; the "
+                "relation must be mutual",
+            )
+
+
+# --------------------------------------------------------------------------
 # §11-§12 curation
 # --------------------------------------------------------------------------
 
@@ -1337,6 +1560,7 @@ STRUCTURAL_RULES = (
 
 SEMANTIC_RULES = (
     check_timepoints,
+    check_transforms,
     check_label_set,
     check_multiscale,
     check_curation,

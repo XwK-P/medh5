@@ -17,10 +17,9 @@ from medh5.conformance import CASES, build_corpus, case_by_name, run_corpus
 from medh5.errors import CODES
 from medh5.validate import validate_file
 
-# Codes owned by §10 (transforms), which phase 4 implements.  Listed explicitly
-# so the corpus's coverage gap is a decision on the record rather than an
-# omission nobody noticed.
-DEFERRED_CODES = frozenset({"E501", "E502", "E503", "E504", "E505"})
+# Every diagnostic code in §15.2 now has a corpus case.  The set stays here so a
+# future deferral has to be written down rather than silently opening a gap.
+DEFERRED_CODES: frozenset[str] = frozenset()
 
 
 @pytest.fixture(scope="module")
@@ -55,6 +54,10 @@ class TestCorpus:
         assert not (DEFERRED_CODES & covered), (
             "a deferred code now has a case; remove it from DEFERRED_CODES"
         )
+
+    def test_the_corpus_covers_every_code(self):
+        covered = {c for case in CASES for c in (*case.errors, *case.warnings)}
+        assert covered == set(CODES)
 
     def test_case_names_are_unique(self):
         names = [c.name for c in CASES]

@@ -2,10 +2,11 @@
 
 **Companion documents:** [Specification](../spec/medh5-1.0.md) · [Design proposal](medh5-1.0-proposal.md)
 
-**Status: phases 0–3 are complete.** The core container, the label space, all five voxel encodings,
-every geometric annotation, classification (including change labels), the validator and the
-conformance corpus are implemented and gated on `ruff`, `mypy --strict` and ≥ 90 % coverage. Phase 4
-(registration) is next, and it closes the last five uncovered diagnostic codes.
+**Status: phases 0–4 are complete.** The core container, the label space, all five voxel encodings,
+every geometric annotation, classification (including change labels), registration, the validator and
+the conformance corpus are implemented and gated on `ruff`, `mypy --strict` and ≥ 90 % coverage.
+**Every diagnostic code in §15.2 now has a conformance case.** Phase 5 (curation, longitudinal joins
+and collections) is next.
 
 ---
 
@@ -46,9 +47,14 @@ medh5/
 │   ├── geometric.py    ✅ boxes, obb, keypoints, points, contours, mesh (§8)
 │   └── classification.py ✅ labels, ordinal schemes, change labels (§9)
 │
-├── transforms/            §10
-│   ├── affine.py  displacement.py  bspline.py  composite.py
-│   └── apply.py           point transforms, resampling hooks (SimpleITK optional)
+├── transforms/         ✅ §10
+│   ├── base.py         ✅ Transform ABC, the direction convention, header, registry
+│   ├── affine.py       ✅ identity and affine, with analytic inverse and Jacobian
+│   ├── displacement.py ✅ dense fields, component-major, Jacobian and folding
+│   ├── bspline.py      ✅ free-form deformation, basis written out rather than imported
+│   ├── composite.py    ✅ ordered chains with frame-chain checking
+│   ├── resolve.py      ✅ frame-graph search, inverses, multi-hop chains
+│   └── apply.py        ✅ interpolation, Jacobian determinant, TRE
 │
 ├── curation/           ✅ §11–§12
 │   ├── provenance.py   ✅ agents/activities graph, reference resolution
@@ -74,7 +80,6 @@ medh5/
 ├── io/                    nifti, dicom, dicom_seg, rtstruct, nnunetv2, coco, learn2reg
 ├── torch/                 datasets, samplers, collate
 ├── monai.py               MetaTensor adapter (affine-preserving)
-├── transforms/            §10 affine, displacement, bspline, composite
 └── legacy/             ✅ the whole 0.x implementation, moved here intact
 ```
 
@@ -292,7 +297,7 @@ experienced developer; the phases are largely independent after Phase 2.
 | **1 · Core container** ✅ | `_hdf5`, `geometry/` incl. §3.7 timepoints and grid binding, `images`, `/meta` + JSON Schema, atomic create, CoW amend, `integrity/` | **Done.** `core` profile validates; geometry round-trips; timepoint inheritance resolves; multiscale pyramids write and validate; four spec clauses corrected (Appendix C) | 2.5 w |
 | **2 · Label sets + voxel annotations** ✅ | `labels/`, the five voxel encodings, `select.py`, `transcode.py`, coverage semantics, `index/` | **Done.** `seg` profile complete; the transcoding matrix passes `contains()` equality for every ordered pair; encoding auto-selection measured; sampling index is O(1) in volume | 2.5 w |
 | **3 · Geometric + classification annotations** ✅ | boxes, obb, keypoints, points, contours, mesh, classification | **Done.** `det` and `cls` profiles complete; box↔slice round-trips over 200 randomised boxes; OBB centre/size/rotation recovered from its corners; two more spec clauses corrected (§1.3 `det`, §9 `class_ids`) | 2 w |
-| **4 · Registration** | affine, displacement, bspline, composite, landmarks, `apply.py`, inter-timepoint transform resolution | `reg` profile complete; TRE reproduces a Learn2Reg reference case within tolerance; `transform_between(tp_a, tp_b)` resolves through frames | 2 w |
+| **4 · Registration** ✅ | affine, displacement, bspline, composite, landmarks, `apply.py`, inter-timepoint transform resolution | **Done.** `reg` profile complete; TRE computed from paired landmark sets; `transform_between` resolves through the frame graph, using inverses where they exist and refusing to invent them where they do not; every §15.2 code now has a corpus case | 2 w |
 | **5 · Curation + longitudinal + collections** | provenance graph, quality, identity/cohort/splits, instance tracking joins, change annotations, `.medh5c` pack/unpack (**in 1.0**, not deferred) | `curation` and `longitudinal` profiles complete; tracking join round-trips; W909/W910/W911 fire on crafted inputs; pack/unpack byte-identical on sample subtrees | 2 w |
 | **6 · Loaders + performance** | torch datasets/samplers/collate, paired/longitudinal sampling, MONAI adapter, codec profiles, chunking policy, `recompress` | Throughput target met (§4.3); paired sampling correct against a hand-checked fixture; no per-worker memory growth over a 10-epoch soak | 2.5 w |
 | **7 · Converters** | NIfTI, DICOM, DICOM-SEG, RTSTRUCT, nnU-Net v2, COCO, `migrate` from 0.x, subject-grouping across studies | Round-trip fidelity tests per converter; `--group-by subject` produces correct multi-timepoint samples from a multi-study DICOM tree; migration report on a real 0.x cohort | 3 w |

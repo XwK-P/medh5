@@ -204,6 +204,27 @@ def _info(args: argparse.Namespace) -> int:
                         )
                     )
                 )
+            if summary.get("transforms"):
+                print("\ntransforms")
+                print(
+                    _indent(
+                        table(
+                            [
+                                [
+                                    t["id"],
+                                    t["kind"],
+                                    t["from_frame"],
+                                    t["to_frame"],
+                                    ",".join(t["timepoints"]) or "-",
+                                    "yes" if t["invertible"] else "no",
+                                    t["metrics"] or "-",
+                                ]
+                                for t in summary["transforms"]
+                            ],
+                            ["id", "kind", "from", "to", "tp", "inv", "metrics"],
+                        )
+                    )
+                )
             if summary["index"]:
                 print(f"\nindex        {', '.join(summary['index'])}")
             if summary["label_set"]:

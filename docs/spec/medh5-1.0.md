@@ -1487,9 +1487,9 @@ grouping, since a 0.x file carries no reliable subject key of its own.
 
 ### C.1 Reference implementation
 
-Sections §2–§9 and §11–§15 are **implemented** in the `medh5` package and exercised by a conformance
-corpus (§15) of 87 files: valid samples covering every encoding, annotation kind, dimensionality and
-profile, plus one deliberately-invalid file per diagnostic code. Running the corpus against a validator is how a
+Sections §2–§15 are **implemented** in the `medh5` package and exercised by a conformance corpus
+(§15) of 96 files: valid samples covering every encoding, annotation kind, transform kind,
+dimensionality and profile, plus one deliberately-invalid file per diagnostic code. Running the corpus against a validator is how a
 third-party implementation demonstrates conformance:
 
 ```
@@ -1497,8 +1497,7 @@ $ medh5 conformance run ./corpus
 75/75 cases pass
 ```
 
-Every code in §15.2 except `E501`–`E505` — the transform codes, whose section is not yet
-implemented — has a corpus case. The implementation gates on `ruff`,
+**Every code in §15.2 has a corpus case.** The implementation gates on `ruff`,
 `mypy --strict` and ≥ 90 % test coverage, and a test asserts that the §15.2 table and the
 implementation's code registry are identical, so the two cannot drift.
 

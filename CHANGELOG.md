@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
-## [1.0.0a0] — MEDH5 format 1.0, phases 0–3
+## [1.0.0a0] — MEDH5 format 1.0, phases 0–4
 
 A clean-slate reimplementation of the format. **Not backward compatible with 0.x**, by design: a
 1.0 reader refuses a 0.x file rather than guessing, and a 0.x reader raises on the missing
@@ -37,8 +37,9 @@ file, and assigning whole files to train/val/test cannot leak a patient across p
   invalidate anything.
 - **A sampling index** that answers foreground patch sampling in O(1) in volume size — 0.52 ms and
   48 KiB against 9.2 ms and O(volume) for the 0.x `argwhere` path.
-- **A validator** with four levels and a stable diagnostic-code table, and a **75-case conformance
-  corpus** with per-code expectations that a third-party implementation can run.
+- **A validator** with four levels and a stable diagnostic-code table, and a **96-case conformance
+  corpus** with per-code expectations that a third-party implementation can run. Every code in the
+  table has a case.
 - **Every geometric annotation** (§8): axis-aligned boxes that convert to numpy slices without
   rounding, oriented boxes stored as rotation *matrices* (dimension-generic, no ordering convention,
   no double cover), keypoints with per-slot classes and visibility, landmark point sets with
@@ -49,6 +50,14 @@ file, and assigning whole files to train/val/test cannot leak a patient across p
   (positive / verified-negative / unknown), ordinal schemes stored verbatim rather than coerced to
   numbers, and **change labels**: an ordinary classification whose `timepoints` names the visits
   compared, so `["tp0","tp2"]` and `["tp1","tp2"]` are distinct assessments.
+- **Registration** (§10): identity, affine, dense displacement fields, B-spline free-form
+  deformations and composites. One direction convention, `x_M = T(x_F)`, with no attribute to
+  reverse it — ambiguity there is the leading cause of silently mirrored results. Displacement
+  fields store components on the leading axis so one component or one ROI reads without the rest,
+  and report their Jacobian determinant and folding fraction. `transform_between` resolves through
+  the **frame graph** rather than by name, uses inverses where they exist, and refuses to invent
+  one for a dense field — approximating it would report an accuracy nobody measured. Target
+  registration error is computed from paired landmark sets (§10.6).
 - **A CLI**: `info`, `tree`, `validate`, `verify`, `timeline`, `track`, `labels`, `seg stats`,
   `seg convert`, `index build`, `conformance`.
 
@@ -66,7 +75,7 @@ file, and assigning whole files to train/val/test cannot leak a patient across p
 
 ### Not yet implemented
 
-Transforms (§10), collections (§2.2), converters, and the PyTorch/MONAI loaders.
+Collections (§2.2), converters, and the PyTorch/MONAI loaders.
 
 ## [0.6.0]
 

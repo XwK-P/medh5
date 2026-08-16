@@ -92,6 +92,19 @@ from medh5.storage.index import (
     read_indices,
     write_index,
 )
+from medh5.transforms.affine import encode_affine, encode_identity
+from medh5.transforms.base import (
+    SPEC_TRANSFORM_ATTRS,
+    TRANSFORM_KINDS,
+    Transform,
+    TransformHeader,
+    check_transform_id,
+    read_transforms,
+)
+from medh5.transforms.bspline import encode_bspline
+from medh5.transforms.composite import encode_composite
+from medh5.transforms.displacement import encode_displacement
+from medh5.transforms.resolve import frames_of_timepoint, resolve_between
 
 FORMAT_VERSION = "1.0"
 PROFILES = (
@@ -383,9 +396,36 @@ class Sample:
 
     @property
     def transforms(self) -> _Collection:
-        node = self.root.get("transforms")
-        names = sorted(node) if node is not None else []
-        return _Collection("transform", {name: node[name] for name in names})
+        return _Collection("transform", read_transforms(self.root, self.grids))
+
+    def transform_between(self, source: str, target: str) -> Transform | None:
+        """The transform relating two timepoints or two frames (spec §10).
+
+        Resolution walks the frame graph, not transform names: a file may relate
+        baseline to follow-up with one affine, a composite, or an affine plus a
+        deformable refinement, and a consumer should not have to know which.
+        Returns ``None`` when the two already share a frame --- nothing to apply.
+        """
+        transforms = dict(self.transforms)
+        pairs = [
+            (a, b) for a in self._frames_for(source) for b in self._frames_for(target)
+        ]
+        for a, b in pairs:
+            if a == b:
+                return None
+            found = resolve_between(transforms, a, b)
+            if found is not None:
+                return found
+        return None
+
+    def _frames_for(self, key: str) -> tuple[str, ...]:
+        """Frames named by a timepoint id, a grid id, or a frame uid itself."""
+        if key in self.timepoints.ids:
+            return frames_of_timepoint(self.grids, key)
+        if key in self.grids:
+            frame = self.grids[key].frame_uid
+            return (frame,) if frame else ()
+        return (key,)
 
     # -- timepoints --------------------------------------------------------
 
@@ -431,6 +471,10 @@ class Sample:
             out[f"annotations/{name}"] = tuple(
                 a for a in SPEC_ANNOTATION_ATTRS if a != "digest"
             )
+        for name in self.transforms:
+            out[f"transforms/{name}"] = tuple(
+                a for a in SPEC_TRANSFORM_ATTRS if a != "digest"
+            )
         return out
 
     def verify(self, partial: Sequence[str] | None = None) -> Any:
@@ -461,6 +505,7 @@ class Sample:
             "grids": [g.summary() for g in self.grids.values()],
             "images": [i.summary() for i in self.images.values()],
             "annotations": [a.summary() for a in self.annotations.values()],
+            "transforms": [t.summary() for t in self.transforms.values()],
             "index": sorted(self.index),
         }
 
@@ -484,6 +529,7 @@ class SampleWriter:
         "_image_multiscale",
         "_images",
         "_stack",
+        "_transform_frames",
         "codec",
         "path",
     )
@@ -507,6 +553,7 @@ class SampleWriter:
         self._images: dict[str, tuple[str, str]] = {}
         self._image_multiscale: dict[str, bool] = {}
         self._annotation_kinds: dict[str, str] = {}
+        self._transform_frames: dict[str, tuple[str, str]] = {}
         self._declared_profiles = set(profiles)
         self._default_timeline = True
         default_id = sample_id or os.path.basename(self.path).split(".")[0]
@@ -1546,6 +1593,194 @@ class SampleWriter:
             codec=codec,
         )
 
+    # -- transforms (§10) --------------------------------------------------
+
+    def add_transform(
+        self,
+        transform_id: str,
+        *,
+        kind: str,
+        from_frame: str,
+        to_frame: str,
+        matrix: npt.ArrayLike | None = None,
+        field: npt.ArrayLike | None = None,
+        control_points: npt.ArrayLike | None = None,
+        components: Sequence[str] | None = None,
+        field_grid: str | None = None,
+        cp_grid: str | None = None,
+        vector_space: str = "world",
+        interpolation: str = "linear",
+        extrapolation: str = "zero",
+        order: int = 3,
+        units: str = "mm",
+        from_grid: str | None = None,
+        to_grid: str | None = None,
+        invertible: bool | None = None,
+        inverse_id: str | None = None,
+        metrics: str | Mapping[str, Any] | None = None,
+        prov: Activity | str | None = None,
+        codec: str | None = None,
+    ) -> h5py.Group:
+        """Write a transform mapping points from *from_frame* to *to_frame* (§10).
+
+        The direction is fixed and unswitchable: ``x_M = T(x_F)``, the ITK
+        convention.  To warp a moving image onto a fixed grid, evaluate T at each
+        fixed-grid point.  There is no attribute to select the other convention,
+        because ambiguity here is the leading cause of silently mirrored results.
+        """
+        check_transform_id(transform_id)
+        if from_frame == to_frame:
+            raise MEDH5ValidationError(
+                f"transform {transform_id!r} maps {from_frame!r} to itself; grids that "
+                "share a frame need no transform (§3.4)",
+                code="E502",
+            )
+        payload = self._encode_transform(
+            transform_id,
+            kind,
+            matrix=matrix,
+            field=field,
+            control_points=control_points,
+            components=components,
+            field_grid=field_grid,
+            cp_grid=cp_grid,
+            vector_space=vector_space,
+            interpolation=interpolation,
+            extrapolation=extrapolation,
+            order=order,
+            from_frame=from_frame,
+        )
+        header = TransformHeader(
+            kind=kind,
+            from_frame=from_frame,
+            to_frame=to_frame,
+            units=units,
+            from_grid=from_grid,
+            to_grid=to_grid,
+            invertible=invertible,
+            inverse_id=inverse_id,
+            prov=_prov_id(prov),
+            metrics=self._quality_key(transform_id, metrics),
+            extra=dict(payload.attrs),
+        )
+        node = self._file.require_group("transforms")
+        if transform_id in node:
+            raise MEDH5ValidationError(f"transform {transform_id!r} already exists")
+        group = node.create_group(transform_id)
+        for name, array in payload.datasets.items():
+            chunks = None
+            if name in ("field", "control_points") and field_grid is not None:
+                grid = self._grids.get(field_grid)
+                if grid is not None and array.ndim == grid.n_spatial + 1:
+                    chunks = (
+                        1,
+                        *self._chunks_for(grid, array.dtype.itemsize)[
+                            -grid.n_spatial :
+                        ],
+                    )
+                    chunks = tuple(
+                        min(int(c), int(s))
+                        for c, s in zip(chunks, array.shape, strict=True)
+                    )
+            group.create_dataset(
+                name,
+                data=array,
+                **dataset_kwargs(
+                    array.shape,
+                    array.dtype,
+                    profile=codec or self.codec,
+                    role="label",
+                    chunks=chunks,
+                ),
+            )
+        set_attrs(group, header.attrs())
+        self._transform_frames[transform_id] = (from_frame, to_frame)
+        return group
+
+    def _encode_transform(
+        self,
+        transform_id: str,
+        kind: str,
+        *,
+        matrix: npt.ArrayLike | None,
+        field: npt.ArrayLike | None,
+        control_points: npt.ArrayLike | None,
+        components: Sequence[str] | None,
+        field_grid: str | None,
+        cp_grid: str | None,
+        vector_space: str,
+        interpolation: str,
+        extrapolation: str,
+        order: int,
+        from_frame: str,
+    ) -> AnnotationPayload:
+        if kind == "identity":
+            return encode_identity()
+        if kind == "affine":
+            if matrix is None:
+                raise MEDH5ValidationError(
+                    f"transform {transform_id!r}: kind 'affine' needs `matrix`",
+                    code="E502",
+                )
+            return encode_affine(matrix)
+        if kind == "displacement":
+            if field is None or field_grid is None:
+                raise MEDH5ValidationError(
+                    f"transform {transform_id!r}: kind 'displacement' needs `field` "
+                    "and `field_grid`",
+                    code="E503",
+                )
+            self._check_field_frame(transform_id, field_grid, from_frame)
+            return encode_displacement(
+                field,
+                field_grid=field_grid,
+                vector_space=vector_space,
+                interpolation=interpolation,
+                extrapolation=extrapolation,
+            )
+        if kind == "bspline":
+            if control_points is None or cp_grid is None:
+                raise MEDH5ValidationError(
+                    f"transform {transform_id!r}: kind 'bspline' needs "
+                    "`control_points` and `cp_grid`",
+                    code="E503",
+                )
+            self._check_field_frame(transform_id, cp_grid, from_frame)
+            return encode_bspline(
+                control_points, cp_grid=cp_grid, order=order, vector_space=vector_space
+            )
+        if kind == "composite":
+            if components is None:
+                raise MEDH5ValidationError(
+                    f"transform {transform_id!r}: kind 'composite' needs `components`",
+                    code="E501",
+                )
+            missing = [c for c in components if c not in self._transform_frames]
+            if missing:
+                raise MEDH5ValidationError(
+                    f"transform {transform_id!r} names components {missing} that do "
+                    "not exist yet; declare them first",
+                    code="E501",
+                )
+            return encode_composite(components)
+        raise MEDH5ValidationError(
+            f"unknown transform kind {kind!r}; expected one of {list(TRANSFORM_KINDS)}",
+            code="E502",
+        )
+
+    def _check_field_frame(
+        self, transform_id: str, grid_id: str, from_frame: str
+    ) -> None:
+        """A field is sampled at the points being mapped, so it lives in the source."""
+        grid = self._grid(grid_id)
+        if grid.frame_uid is not None and grid.frame_uid != from_frame:
+            raise MEDH5ValidationError(
+                f"transform {transform_id!r}: grid {grid_id!r} is in frame "
+                f"{grid.frame_uid!r} but the transform starts in {from_frame!r}; the "
+                "field must be sampled in the source frame",
+                code="E503",
+            )
+
     # -- index -------------------------------------------------------------
 
     def build_index(
@@ -1602,7 +1837,7 @@ class SampleWriter:
             found.add("det")
         if "classification" in kinds and doc.label_set:
             found.add("cls")
-        if "transforms" in self._file and len(self._file["transforms"]):
+        if self._transform_frames:
             found.add("reg")
         annotated = set(self._annotation_kinds)
         if (
@@ -1754,6 +1989,10 @@ class SampleWriter:
         for name in self._annotation_kinds:
             out[f"annotations/{name}"] = tuple(
                 a for a in SPEC_ANNOTATION_ATTRS if a != "digest"
+            )
+        for name in self._transform_frames:
+            out[f"transforms/{name}"] = tuple(
+                a for a in SPEC_TRANSFORM_ATTRS if a != "digest"
             )
         return out
 
