@@ -8,7 +8,7 @@ longitudinal tracking joins, collections, the PyTorch and MONAI loaders, the con
 DICOM, DICOM SEG, RTSTRUCT, nnU-Net v2 and `migrate` from 0.x), the validator and the conformance
 corpus are implemented and gated on `ruff`, `mypy --strict` and ≥ 90 % coverage. **Every diagnostic
 code in §15.2 has a conformance case, and every §4.3 performance target is met** (`medh5 bench`
-reproduces them). Phase 8 (release) is next.
+reproduces them). Phase 8 (release) is complete.
 
 ---
 
@@ -87,7 +87,7 @@ medh5/
 │                          pack, unpack, ls, prov, agree, splits, recompress, bench,
 │                          conformance
 ├── collection.py       ✅ §2.2 collection files, byte-identical pack/unpack
-├── dataset/               manifests, splits, streaming statistics
+├── dataset/            ✅ manifests, splits, streaming statistics, cohort checks
 ├── io/                 ✅ §7 converters, each lazily imported
 │   ├── report.py       ✅ what a conversion decided, and where it guessed
 │   ├── grouping.py     ✅ §3.7 study -> subject grouping, identity never inferred
@@ -97,17 +97,17 @@ medh5/
 │   ├── rtstruct.py     ✅ §8.6 contours; rasterisation is opt-in and provenance-tracked
 │   ├── nnunetv2.py     ✅ nnU-Net ids kept; regions become §5.1 DAG parents
 │   └── legacy.py       ✅ 0.x -> 1.0, Appendix B, with a per-file decision report
-├── torch/              ✅ datasets, handle cache, collate
-└── legacy/             ✅ the whole 0.x implementation, moved here intact
+└── torch/              ✅ datasets, handle cache, collate
 ```
 
 **Two departures from the plan as written, both deliberate.**
 
-*The 0.x tree moved rather than being deleted.* `medh5/legacy/` holds the 0.x implementation verbatim,
-importable and still covered by its own tests, because `medh5 migrate` (phase 7) has to read 0.x files
-and because a rewrite that breaks the shipped package on day one is a rewrite nobody can bisect.
-Phase 8's "delete 0.x" becomes `rm -rf medh5/legacy` plus one `pyproject.toml` edit. It is excluded
-from `mypy --strict`'s `type-arg` check, scoped to that package with a comment saying why.
+*The 0.x tree was carried through phases 1–7 and deleted in phase 8.* `medh5/legacy/` held the 0.x
+implementation verbatim while `medh5 migrate` was written against it, because a rewrite that breaks
+the shipped package on day one is a rewrite nobody can bisect. At 1.0 it is gone --- 9,716 lines, the
+`medh5-0x` console script and its mypy exemption --- replaced by `io/_legacy_reader.py`, a ~200-line
+*reader* that states the old layout in full and implements only reading. Shipping the old package
+inside the new one would have let a curator keep writing the format they are migrating away from.
 
 *Three modules the plan did not name.* `document.py` (the `/meta` document is a distinct concern from
 the objects it describes), `image.py` (lazy reads, rescale and pyramid levels are more than
@@ -324,7 +324,7 @@ experienced developer; the phases are largely independent after Phase 2.
 | **5 · Curation + longitudinal + collections** ✅ | provenance graph, quality, identity/cohort/splits, instance tracking joins, change annotations, `.medh5c` pack/unpack (**in 1.0**, not deferred) | **Done.** `curation` and `longitudinal` profiles complete; the tracking join answers present/resolved/unexamined from `annotated_class_ids` rather than from absence; W909/W910/W911 fire on crafted inputs and W909 is sample-scoped; pack/unpack byte-identical on sample subtrees, verified chunk by chunk; two more spec clauses corrected (§2.2 `E010`, §7.4 W909 scope) | 2 w |
 | **6 · Loaders + performance** ✅ | torch datasets/samplers/collate, paired/longitudinal sampling, MONAI adapter, codec profiles, chunking policy, `recompress` | **Done.** Every §4.3 target met and reproducible with `medh5 bench`; a +4-voxel registration shift moves the paired patch by exactly 4 voxels; a 10-epoch soak leaves the handle cache and descriptor count flat; `recompress` changes every stored byte and no `content_id` | 2.5 w |
 | **7 · Converters** ✅ | NIfTI, DICOM, DICOM-SEG, RTSTRUCT, nnU-Net v2, `migrate` from 0.x, subject-grouping across studies | **Done.** Every converter round-trips its own format bit-for-bit where the format allows it (NIfTI affine and voxels, nnU-Net label volumes and `dataset.json`, RTSTRUCT contours, DICOM SEG including an overlapping pair); `--group-by subject` merges a two-study DICOM tree into one two-timepoint sample; every conversion emits a report naming what it decided and what it guessed. **COCO was dropped from 1.0** (see below) | 3 w |
-| **8 · Release** | Docs, tutorials, conformance suite publication, PyPI 1.0.0 | Spec + suite published; napari-medh5 updated against 1.0 | 1 w |
+| **8 · Release** ✅ | Docs, conformance suite publication, PyPI 1.0.0, napari-medh5 | **Done.** 0.x deleted (a ~200-line reader remains so `migrate` works); the suite publishes as a standalone directory and scores foreign implementations, with the reference validator going through the same public path; thirteen documentation pages with every snippet executed; `dataset`, `fix` and `scrub` complete the plan's §5 CLI; 1.0.0 built, twine-checked and verified from a clean venv; napari-medh5 ported (133 tests, 94% coverage) | 1 w |
 
 Critical path: 0 → 1 → 2 → 6. Phases 3, 4, 5 and 7 parallelise after Phase 2. Total ≈ 17.5 weeks:
 the longitudinal model costs about half a week in the core and half in curation — buying the
@@ -398,7 +398,7 @@ medh5 recompress PATH... --profile training|balanced|archive|portable
 medh5 dataset index ROOT -o manifest.json      # metadata-only scan
 medh5 dataset split manifest.json --k-folds 5 --group-by cohort.group_id --stratify-by …
 medh5 dataset stats manifest.json --workers 8
-medh5 dataset check manifest.json              # vocabulary drift, split claim conflicts, coverage report
+medh5 dataset check manifest.json [--deep]     # vocabulary drift, split claim conflicts, coverage
 
 medh5 convert from-nifti | from-dicom | from-dicom-seg | from-rtstruct | from-nnunet
                  [--group-by subject|study]    # default: subject; falls back to study + warning
@@ -409,7 +409,8 @@ medh5 migrate PATH... -o OUTDIR [--report report.json]     # 0.x -> 1.0
 
 medh5 pack PATH... -o shard.medh5c [--key K]   # byte-identical; content_id preserved
 medh5 unpack shard.medh5c -o DIR [--key K] | medh5 ls shard.medh5c [--json]
-medh5 scrub PATH... --profile basic            # de-identification sweep + attestation
+medh5 scrub PATH... [--profile basic|strict] [--apply] [--date-shift-days N] [--salt S]
+medh5 conformance list | build DIR | run DIR | publish DIR | score DIR results.json
 medh5 bench PATH                               # reproduce the benchmark table on your hardware
 ```
 
