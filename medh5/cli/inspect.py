@@ -55,6 +55,8 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     )
     add_json_flag(verify)
 
+    _register_fix(sub)
+
     timeline = sub.add_parser("timeline", help="timepoints and what belongs to each")
     timeline.add_argument("path")
     add_json_flag(timeline)
@@ -65,11 +67,90 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     add_json_flag(track)
 
 
+def _register_fix(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    fixer = sub.add_parser("fix", help="rebuild derived data; restamp digests")
+    add_paths(fixer)
+    fixer.add_argument(
+        "--rebuild-index",
+        action="store_true",
+        help="recompute stale sampling indices (§14.3)",
+    )
+    fixer.add_argument(
+        "--rewrite-digests",
+        action="store_true",
+        help="restamp digests over the current bytes --- see --reason",
+    )
+    fixer.add_argument(
+        "--reason",
+        help="why the digests are being rewritten; recorded in the file",
+    )
+    fixer.add_argument("--by", dest="performed_by")
+    add_json_flag(fixer)
+
+
+def _fix(args: argparse.Namespace) -> int:
+    from medh5.integrity.repair import fix
+
+    results = []
+    for path in args.paths:
+        try:
+            repair = fix(
+                path,
+                rebuild_index=args.rebuild_index,
+                rewrite_digests=args.rewrite_digests,
+                reason=args.reason,
+                performed_by=args.performed_by,
+            )
+        except MEDH5Error as exc:
+            return fail(str(exc))
+        results.append(repair.to_json())
+        if args.json:
+            continue
+        diagnosis = repair.diagnosis
+        if repair.changed:
+            done = []
+            if repair.rebuilt_index:
+                done.append(f"rebuilt index for {', '.join(repair.rebuilt_index)}")
+            if repair.rewrote_digests:
+                done.append("rewrote digests")
+            print(f"{path}: {'; '.join(done)}")
+            for note in repair.notes:
+                print(f"  note: {note}")
+        elif diagnosis.clean:
+            print(f"{path}: nothing to fix")
+        else:
+            print(f"{path}: needs attention, nothing changed")
+            if diagnosis.stale_index:
+                print(
+                    f"  stale index: {', '.join(diagnosis.stale_index)} "
+                    "(--rebuild-index)"
+                )
+            if diagnosis.mismatched:
+                print(
+                    f"  digest mismatch: {', '.join(diagnosis.mismatched)} "
+                    "(--rewrite-digests, and read what it means first)"
+                )
+            if diagnosis.content_id_ok is False:
+                print("  content_id does not match the file's own contents")
+    emit(results, as_json=args.json)
+    # Non-zero when a file still needs attention: a fix run that found problems
+    # and was not asked to act on them has not succeeded, it has reported.
+    outstanding = [
+        r
+        for r in results
+        if not r["changed"]
+        and (r["diagnosis"]["needs_index"] or r["diagnosis"]["needs_digests"])
+    ]
+    return EXIT_OK if not outstanding else EXIT_ERROR
+
+
 def dispatch(command: str, args: argparse.Namespace) -> int | None:
     if command == "info":
         return _info(args)
     if command == "tree":
         return _tree(args)
+    if command == "fix":
+        return _fix(args)
     if command == "validate":
         return _validate(args)
     if command == "verify":

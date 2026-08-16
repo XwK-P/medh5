@@ -1,8 +1,8 @@
-"""``pack``, ``unpack``, ``ls``, ``prov``, ``agree`` and ``splits``.
+"""``pack``, ``unpack``, ``ls``, ``prov``, ``agree``, ``splits`` and ``scrub``.
 
 The curation half of the command line: shards (§2.2), the provenance graph and
-quality records (§11), and the cross-file split audit (§12.3) that no per-file
-validator can perform.
+quality records (§11), the cross-file split audit (§12.3) that no per-file
+validator can perform, and the de-identification sweep (§11.4).
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ from medh5.cli._common import (
 )
 from medh5.collection import SUFFIX, open_collection, pack, unpack
 from medh5.curation.agreement import compare_instances, compare_voxel
+from medh5.curation.scrub import PROFILES as SCRUB_PROFILES
 from medh5.curation.splits import audit_splits
 from medh5.errors import MEDH5Error
 
@@ -74,6 +75,30 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     )
     add_json_flag(agree)
 
+    scrub = sub.add_parser(
+        "scrub", help="find identifiers in the container and attest to it (§11.4)"
+    )
+    add_paths(scrub)
+    scrub.add_argument("--profile", choices=SCRUB_PROFILES, default="basic")
+    scrub.add_argument(
+        "--apply",
+        action="store_true",
+        dest="apply_changes",
+        help="act on the actionable findings; without it, nothing is written",
+    )
+    scrub.add_argument(
+        "--date-shift-days",
+        type=int,
+        help="shift dates by N days instead of dropping them, preserving intervals",
+    )
+    scrub.add_argument(
+        "--salt",
+        default="",
+        help="salt the UID pseudonyms; keep it to reproduce the mapping",
+    )
+    scrub.add_argument("--by", dest="performed_by")
+    add_json_flag(scrub)
+
     splits = sub.add_parser("splits", help="audit split claims across files (§12.3)")
     add_paths(splits, "sample or collection files to audit")
     add_json_flag(splits)
@@ -92,6 +117,8 @@ def dispatch(command: str, args: argparse.Namespace) -> int | None:
         return _agree(args)
     if command == "splits":
         return _splits(args)
+    if command == "scrub":
+        return _scrub(args)
     return None
 
 
@@ -359,3 +386,40 @@ def _splits(args: argparse.Namespace) -> int:
 
 
 __all__ = ["dispatch", "register"]
+
+
+# -- de-identification ------------------------------------------------------
+
+
+def _scrub(args: argparse.Namespace) -> int:
+    from medh5.curation import scrub as scrubber
+
+    reports = []
+    for path in args.paths:
+        try:
+            if args.apply_changes:
+                report = scrubber.apply(
+                    path,
+                    profile=args.profile,
+                    salt=args.salt,
+                    date_shift_days=args.date_shift_days,
+                    performed_by=args.performed_by,
+                )
+            else:
+                report = scrubber.scan(path, profile=args.profile)
+        except MEDH5Error as exc:
+            return fail(str(exc))
+        reports.append(report.to_json())
+        if not args.json:
+            print(report.format())
+            if not args.apply_changes and report.actionable:
+                print(
+                    f"  {len(report.actionable)} finding(s) can be acted on: "
+                    "re-run with --apply"
+                )
+    emit(reports, as_json=args.json)
+    # A scrub that only looked reports findings as a failure, so it is usable in
+    # a pipeline gate.  A scrub that acted succeeds if it acted.
+    if args.apply_changes:
+        return EXIT_OK
+    return EXIT_OK if all(not r["findings"] for r in reports) else EXIT_ERROR

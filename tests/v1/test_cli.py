@@ -383,6 +383,258 @@ class TestConformanceCommands:
         assert run(capsys, "conformance")[0] == EXIT_ERROR
 
 
+class TestFixAndScrub:
+    def test_fix_reports_and_changes_nothing(self, capsys, sample_path):
+        code, out = run(capsys, "fix", str(sample_path))
+        assert code == EXIT_OK
+        assert "nothing to fix" in out.out
+
+    def test_fix_refuses_to_restamp_without_a_reason(self, capsys, sample_path):
+        code, out = run(capsys, "fix", str(sample_path), "--rewrite-digests")
+        assert code == EXIT_ERROR
+
+    def test_fix_restamps_when_told_why(self, capsys, sample_path):
+        code, out = run(
+            capsys,
+            "fix",
+            str(sample_path),
+            "--rewrite-digests",
+            "--reason",
+            "rebuilt by an external tool",
+        )
+        assert code == EXIT_OK
+        assert "rewrote digests" in out.out
+        assert "asserts nothing" in out.out
+
+    def test_fix_rebuilds_an_index(self, capsys, longitudinal_path):
+        code, out = run(
+            capsys, "fix", str(longitudinal_path), "--rebuild-index", "--json"
+        )
+        assert code == EXIT_OK
+        assert json.loads(out.out)[0]["changed"]
+
+    def test_scrub_finds_and_exits_non_zero(self, capsys, tmp_path):
+        path = tmp_path / "dirty.medh5"
+        with medh5.create(path, sample_id="s", subject_id="subj-A") as w:
+            w.add_timepoint("tp0")
+            w.add_grid("g", shape=(4, 4, 4), spacing=(1, 1, 1))
+            w.add_image("CT", np.zeros((4, 4, 4), np.int16), grid="g", modality="CT")
+            w.acquisition("CT", PatientName="Doe^Jane")
+        code, out = run(capsys, "scrub", str(path))
+        assert code == EXIT_ERROR
+        assert "PatientName" in out.out
+        assert "re-run with --apply" in out.out
+        assert "NOT checked" in out.out
+
+    def test_scrub_applies_and_attests(self, capsys, tmp_path):
+        path = tmp_path / "dirty.medh5"
+        with medh5.create(path, sample_id="s", subject_id="subj-A") as w:
+            w.add_timepoint("tp0", date="2026-02-03")
+            w.add_grid("g", shape=(4, 4, 4), spacing=(1, 1, 1))
+            w.add_image("CT", np.zeros((4, 4, 4), np.int16), grid="g", modality="CT")
+            w.acquisition("CT", PatientName="Doe^Jane")
+        code, out = run(
+            capsys, "scrub", str(path), "--apply", "--date-shift-days", "-30"
+        )
+        assert code == EXIT_OK
+        with medh5.open(path) as sample:
+            assert "PatientName" not in sample.document.acquisition["CT"]
+            assert sample.document.deidentification.method == "medh5-scrub"
+        assert run(capsys, "scrub", str(path))[0] == EXIT_OK
+
+    def test_scrub_on_a_clean_file_passes(self, capsys, sample_path):
+        assert run(capsys, "scrub", str(sample_path))[0] == EXIT_OK
+
+
+class TestDatasetCommands:
+    """The cohort commands (plan §5): index, split, stats, check."""
+
+    @pytest.fixture
+    def cohort(self, tmp_path, label_set):
+        from tests.v1.conftest import SHAPE, block, write_sample
+
+        root = tmp_path / "cohort"
+        root.mkdir()
+        masks = {1: block(SHAPE, (2, 2, 2), 8)}
+        for index, subject in enumerate(("A", "A", "B", "C", "D", "E")):
+            path = root / f"case-{index}.medh5"
+            write_sample(
+                path, label_set=label_set, masks=masks, sample_id=f"case-{index}"
+            )
+            with medh5.amend(path) as writer:
+                writer.identity(subject_id=f"subj-{subject}")
+        return root
+
+    def test_index_writes_a_manifest(self, capsys, cohort, tmp_path):
+        manifest = tmp_path / "m.json"
+        code, out = run(capsys, "dataset", "index", str(cohort), "-o", str(manifest))
+        assert code == EXIT_OK
+        assert "6 sample(s), 5 subject(s)" in out.out
+        assert json.loads(manifest.read_text())["samples"] == 6
+
+    def test_index_json_carries_the_digest(self, capsys, cohort, tmp_path):
+        code, out = run(
+            capsys,
+            "dataset",
+            "index",
+            str(cohort),
+            "-o",
+            str(tmp_path / "m.json"),
+            "--json",
+        )
+        payload = json.loads(out.out)
+        assert len(payload["sha256"]) == 64
+        assert payload["failed"] == []
+
+    def test_index_reports_what_would_not_open(self, capsys, cohort, tmp_path):
+        (cohort / "broken.medh5").write_bytes(b"not hdf5")
+        code, out = run(
+            capsys, "dataset", "index", str(cohort), "-o", str(tmp_path / "m.json")
+        )
+        assert code == EXIT_OK
+        assert "unreadable" in out.out
+
+    def test_index_strict_stops(self, capsys, cohort, tmp_path):
+        (cohort / "broken.medh5").write_bytes(b"not hdf5")
+        code, out = run(
+            capsys,
+            "dataset",
+            "index",
+            str(cohort),
+            "-o",
+            str(tmp_path / "m.json"),
+            "--strict",
+        )
+        assert code == EXIT_ERROR
+
+    def test_split_then_write_claims(self, capsys, cohort, tmp_path):
+        manifest = tmp_path / "m.json"
+        run(capsys, "dataset", "index", str(cohort), "-o", str(manifest))
+        code, out = run(
+            capsys,
+            "dataset",
+            "split",
+            str(manifest),
+            "-o",
+            str(tmp_path / "split.json"),
+            "--seed",
+            "3",
+            "--write-claims",
+        )
+        assert code == EXIT_OK
+        assert "wrote split claims into 6 file(s)" in out.out
+        payload = json.loads((tmp_path / "split.json").read_text())
+        assert sum(payload["counts"].values()) == 6
+        with medh5.open(sorted(cohort.glob("*.medh5"))[0]) as sample:
+            assert sample.document.splits[0].manifest_sha256
+
+    def test_split_warns_when_a_partition_gets_nothing(self, capsys, cohort, tmp_path):
+        manifest = tmp_path / "m.json"
+        run(capsys, "dataset", "index", str(cohort), "-o", str(manifest))
+        code, out = run(
+            capsys,
+            "dataset",
+            "split",
+            str(manifest),
+            "--ratios",
+            "train=0.98,val=0.01,test=0.01",
+        )
+        assert "got no groups" in out.out
+
+    def test_split_k_folds_needs_a_fold_to_write_claims(self, capsys, cohort, tmp_path):
+        manifest = tmp_path / "m.json"
+        run(capsys, "dataset", "index", str(cohort), "-o", str(manifest))
+        code, out = run(
+            capsys,
+            "dataset",
+            "split",
+            str(manifest),
+            "--k-folds",
+            "3",
+            "--write-claims",
+        )
+        assert code == EXIT_ERROR
+        code, out = run(
+            capsys,
+            "dataset",
+            "split",
+            str(manifest),
+            "--k-folds",
+            "3",
+            "--write-claims",
+            "--fold",
+            "0",
+            "--json",
+        )
+        assert code == EXIT_OK
+        assert len(json.loads(out.out)["claims_written"]) == 6
+
+    def test_split_rejects_bad_ratios(self, capsys, cohort, tmp_path):
+        manifest = tmp_path / "m.json"
+        run(capsys, "dataset", "index", str(cohort), "-o", str(manifest))
+        assert (
+            run(capsys, "dataset", "split", str(manifest), "--ratios", "train")[0]
+            == EXIT_ERROR
+        )
+
+    def test_stats_reports_intensities_and_classes(self, capsys, cohort, tmp_path):
+        manifest = tmp_path / "m.json"
+        run(capsys, "dataset", "index", str(cohort), "-o", str(manifest))
+        code, out = run(
+            capsys, "dataset", "stats", str(manifest), "-o", str(tmp_path / "s.json")
+        )
+        assert code == EXIT_OK
+        assert "CT_tp0" in out.out
+        payload = json.loads((tmp_path / "s.json").read_text())
+        assert payload["samples"] == 6
+        assert payload["images"]["CT_tp0"]["std"] > 0
+
+    def test_stats_can_be_restricted_to_a_partition(self, capsys, cohort, tmp_path):
+        manifest = tmp_path / "m.json"
+        run(capsys, "dataset", "index", str(cohort), "-o", str(manifest))
+        run(capsys, "dataset", "split", str(manifest), "--write-claims", "--seed", "1")
+        run(capsys, "dataset", "index", str(cohort), "-o", str(manifest))
+        code, out = run(
+            capsys,
+            "dataset",
+            "stats",
+            str(manifest),
+            "--partition",
+            "train",
+            "--json",
+        )
+        assert code == EXIT_OK
+        assert 0 < json.loads(out.out)["samples"] < 6
+
+    def test_stats_says_so_when_no_sample_claims_the_partition(
+        self, capsys, cohort, tmp_path
+    ):
+        manifest = tmp_path / "m.json"
+        run(capsys, "dataset", "index", str(cohort), "-o", str(manifest))
+        code, out = run(
+            capsys, "dataset", "stats", str(manifest), "--partition", "train"
+        )
+        assert code == EXIT_ERROR
+
+    def test_check_passes_a_clean_cohort(self, capsys, cohort, tmp_path):
+        manifest = tmp_path / "m.json"
+        run(capsys, "dataset", "index", str(cohort), "-o", str(manifest))
+        code, out = run(capsys, "dataset", "check", str(manifest))
+        assert code == EXIT_OK
+        assert "OK" in out.out
+
+    def test_check_reports_a_missing_file(self, capsys, cohort, tmp_path):
+        manifest = tmp_path / "m.json"
+        run(capsys, "dataset", "index", str(cohort), "-o", str(manifest))
+        sorted(cohort.glob("*.medh5"))[0].unlink()
+        code, out = run(capsys, "dataset", "check", str(manifest), "--json")
+        assert code == EXIT_ERROR
+        assert "C402" in {f["code"] for f in json.loads(out.out)["findings"]}
+
+    def test_usage(self, capsys):
+        assert run(capsys, "dataset")[0] == EXIT_ERROR
+
+
 class TestHelpers:
     def test_human_bytes(self):
         assert human_bytes(512) == "512 B"

@@ -681,8 +681,16 @@ class SampleWriter:
         return record
 
     def split(self, **fields: Any) -> SplitClaim:
+        """Record a split claim, replacing any earlier claim for the same set.
+
+        Replacing rather than appending: two claims for one ``set_id`` is
+        exactly the W906 conflict §12.3 defines, so a writer that appends on a
+        re-split manufactures the defect the validator exists to catch.  Claims
+        for *other* sets are left alone --- a sample may belong to several.
+        """
         claim = SplitClaim.from_json(fields)
-        self._document.splits = (*self._document.splits, claim)
+        kept = tuple(s for s in self._document.splits if s.set_id != claim.set_id)
+        self._document.splits = (*kept, claim)
         return claim
 
     def deidentification(self, **fields: Any) -> Deidentification:
@@ -748,6 +756,26 @@ class SampleWriter:
             patch_hint=tuple(patch_hint) if patch_hint is not None else None,
             chunk_hint=tuple(chunk_hint) if chunk_hint is not None else None,
         )
+        write_grid(self._file["grids"], grid)
+        self._grids[grid_id] = grid
+        return grid
+
+    @property
+    def grids(self) -> dict[str, Grid]:
+        """Grids declared so far, so a pass over them does not need internals."""
+        return dict(self._grids)
+
+    def set_frame_uid(self, grid_id: str, frame_uid: str) -> Grid:
+        """Replace a grid's frame-of-reference UID, keeping everything else.
+
+        The one geometric field that is an *identifier* rather than a
+        measurement (§3.4): a de-identification pass has to be able to
+        pseudonymise it without rewriting the geometry around it.
+        """
+        from dataclasses import replace as _replace
+
+        grid = _replace(self._grid(grid_id), frame_uid=frame_uid)
+        del self._file["grids"][grid_id]
         write_grid(self._file["grids"], grid)
         self._grids[grid_id] = grid
         return grid
