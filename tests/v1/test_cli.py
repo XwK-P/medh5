@@ -181,9 +181,14 @@ class TestLongitudinal:
             )
         code, out = run(capsys, "track", str(path), "--json")
         payload = json.loads(out.out)
-        assert payload["1"]["state"] == "persisted"
-        assert payload["3"]["state"] == "resolved"
-        assert payload["8"]["state"] == "new"
+        states = {t["instance_id"]: t["states"] for t in payload["tracks"]}
+        assert states[1] == {"tp0": "present", "tp1": "present"}
+        assert states[3] == {"tp0": "present", "tp1": "resolved"}
+        assert states[8] == {"tp0": "resolved", "tp1": "present"}
+
+        code, out = run(capsys, "track", str(path))
+        assert code == EXIT_OK
+        assert "resolved" in out.out and "new" in out.out
 
 
 class TestLabels:
@@ -447,3 +452,195 @@ class TestPhase4Transforms:
         path = self._build(tmp_path, "reg-affine-landmarks")
         code, out = run(capsys, "validate", str(path))
         assert "W911" not in out.out
+
+
+class TestPhase5Curation:
+    """Shards, provenance, agreement and the split audit (§2.2, §11, §12.3)."""
+
+    def _members(self, tmp_path, label_set, masks, n=2):
+        from tests.v1.conftest import write_sample
+
+        return [
+            write_sample(
+                tmp_path / f"m{i}.medh5",
+                label_set=label_set,
+                masks=masks,
+                sample_id=f"m{i}",
+            )
+            for i in range(n)
+        ]
+
+    def test_pack_ls_unpack_round_trip(self, capsys, tmp_path, label_set, masks):
+        members = self._members(tmp_path, label_set, masks)
+        shard = tmp_path / "cohort.medh5c"
+        code, out = run(capsys, "pack", *map(str, members), "-o", str(shard))
+        assert code == EXIT_OK
+        assert "2 samples" in out.out
+
+        code, out = run(capsys, "ls", str(shard))
+        assert code == EXIT_OK
+        assert "m0" in out.out and "content_id" in out.out
+
+        code, out = run(capsys, "unpack", str(shard), "-o", str(tmp_path / "back"))
+        assert code == EXIT_OK
+        assert (tmp_path / "back" / "m1.medh5").exists()
+
+    def test_pack_json_reports_sizes(self, capsys, tmp_path, label_set, masks):
+        members = self._members(tmp_path, label_set, masks, n=1)
+        shard = tmp_path / "one.medh5c"
+        code, out = run(capsys, "pack", str(members[0]), "-o", str(shard), "--json")
+        payload = json.loads(out.out)
+        assert payload["samples"] == 1
+        assert payload["bytes"] > 0
+
+    def test_pack_with_explicit_keys(self, capsys, tmp_path, label_set, masks):
+        members = self._members(tmp_path, label_set, masks)
+        shard = tmp_path / "k.medh5c"
+        code, out = run(
+            capsys,
+            "pack",
+            *map(str, members),
+            "-o",
+            str(shard),
+            "--key",
+            "alpha",
+            "--key",
+            "beta",
+        )
+        code, out = run(capsys, "ls", str(shard), "--json")
+        assert [e["key"] for e in json.loads(out.out)["samples"]] == ["alpha", "beta"]
+
+    def test_ls_on_a_sample_file_fails_clearly(self, capsys, sample_path):
+        code, out = run(capsys, "ls", str(sample_path))
+        assert code == EXIT_ERROR
+        assert "collection" in out.err
+
+    def test_unpack_selecting_a_missing_key(self, capsys, tmp_path, label_set, masks):
+        members = self._members(tmp_path, label_set, masks, n=1)
+        shard = tmp_path / "s.medh5c"
+        run(capsys, "pack", str(members[0]), "-o", str(shard))
+        code, out = run(
+            capsys, "unpack", str(shard), "-o", str(tmp_path / "x"), "--key", "ghost"
+        )
+        assert code == EXIT_ERROR
+
+    def test_validate_reads_a_collection(self, capsys, tmp_path, label_set, masks):
+        members = self._members(tmp_path, label_set, masks)
+        shard = tmp_path / "v.medh5c"
+        run(capsys, "pack", *map(str, members), "-o", str(shard))
+        code, out = run(capsys, "validate", str(shard), "--level", "integrity")
+        assert code == EXIT_OK, out.out
+
+    def test_prov_prints_the_graph(self, capsys, sample_path):
+        code, out = run(capsys, "prov", str(sample_path))
+        assert code == EXIT_OK
+        assert "agents" in out.out and "activities" in out.out
+        assert "quality" in out.out
+        assert "dicom-psi-profile" in out.out
+
+    def test_prov_json(self, capsys, sample_path):
+        code, out = run(capsys, "prov", str(sample_path), "--json")
+        payload = json.loads(out.out)
+        assert payload["provenance"]["agents"]
+        assert payload["deidentification"]["method"] == "dicom-psi-profile"
+
+    def test_prov_without_a_graph(self, capsys, tmp_path):
+        import medh5
+        from tests.v1.conftest import SHAPE
+
+        path = tmp_path / "bare.medh5"
+        with medh5.create(path, codec="portable") as w:
+            w.add_grid("g", shape=SHAPE, spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", np.zeros(SHAPE), grid="g", modality="CT")
+        code, out = run(capsys, "prov", str(path))
+        assert "no provenance graph" in out.out
+        assert "ABSENT (W903)" in out.out
+
+    def test_agree_between_two_voxel_annotations(
+        self, capsys, tmp_path, label_set, masks
+    ):
+        import medh5
+        from tests.v1.conftest import SHAPE, block
+
+        path = tmp_path / "raters.medh5"
+        with medh5.create(path, codec="portable") as w:
+            w.label_set(label_set)
+            w.add_grid("g", shape=SHAPE, spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", np.zeros(SHAPE, dtype=np.int16), grid="g", modality="CT")
+            w.add_segmentation("r1", grid="g", masks=masks)
+            w.add_segmentation(
+                "r2",
+                grid="g",
+                masks={**masks, 2: block(SHAPE, (8, 8, 8), 3)},
+            )
+        code, out = run(capsys, "agree", str(path), "r1", "r2")
+        assert code == EXIT_OK
+        assert "dice =" in out.out and "liver" in out.out
+
+        code, out = run(capsys, "agree", str(path), "r1", "r2", "--json", "--record")
+        assert json.loads(out.out)["quality_agreement"]["metric"] == "dice"
+
+        code, out = run(capsys, "agree", str(path), "r1", "nope")
+        assert code == EXIT_ERROR
+
+    def test_agree_between_instance_annotations(self, capsys, tmp_path, label_set):
+        from tests.v1.test_tracking import write_series
+
+        path = write_series(tmp_path / "series.medh5", label_set)
+        code, out = run(capsys, "agree", str(path), "les_tp0", "les_tp1")
+        assert code == EXIT_OK
+        assert "matched" in out.out and "instance_id" in out.out
+
+    def test_splits_audit_reports_leakage(self, capsys, tmp_path, label_set, masks):
+        import medh5
+        from tests.v1.conftest import write_sample
+
+        paths = []
+        for i in range(2):
+            path = tmp_path / f"visit{i}.medh5"
+            write_sample(path, label_set=label_set, masks=masks, sample_id=path.stem)
+            with medh5.amend(path) as w:
+                w.identity(subject_id="subj-shared")
+                w.split(set_id="cv5", partition="train" if i == 0 else "test")
+            paths.append(path)
+        code, out = run(capsys, "splits", *map(str, paths))
+        assert code == EXIT_ERROR
+        assert "LEAK" in out.out
+        assert "re-split rather than re-stamp" in out.out
+
+        code, out = run(capsys, "splits", *map(str, paths), "--json")
+        assert len(json.loads(out.out)["leaks"]) == 1
+
+    def test_splits_audit_is_quiet_when_clean(self, capsys, sample_path):
+        code, out = run(capsys, "splits", str(sample_path))
+        assert code == EXIT_OK
+        assert "no split claims" in out.out
+
+    def test_splits_reports_conflicting_manifests(
+        self, capsys, tmp_path, label_set, masks
+    ):
+        import medh5
+        from tests.v1.conftest import write_sample
+
+        paths = []
+        for i in range(2):
+            path = tmp_path / f"c{i}.medh5"
+            write_sample(path, label_set=label_set, masks=masks, sample_id=path.stem)
+            with medh5.amend(path) as w:
+                w.identity(subject_id=f"subj-{i}")
+                w.split(
+                    set_id="cv5",
+                    partition="train",
+                    manifest_sha256=("a" if i == 0 else "b") * 64,
+                )
+            paths.append(path)
+        code, out = run(capsys, "splits", *map(str, paths))
+        assert code == EXIT_ERROR
+        assert "W906" in out.out
+
+    def test_splits_lists_unreadable_files(self, capsys, tmp_path):
+        bad = tmp_path / "bad.medh5"
+        bad.write_bytes(b"not hdf5")
+        code, out = run(capsys, "splits", str(bad))
+        assert code == EXIT_ERROR
+        assert "UNREADABLE" in out.out

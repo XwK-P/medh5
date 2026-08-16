@@ -93,6 +93,11 @@ _TABLE: tuple[Code, ...] = (
     _c("E007", "container", "missing `medh5_profiles`, or an unknown profile"),
     _c("E008", "container", "a group required by the layout is absent"),
     _c("E009", "container", "declared profile's requirements are not met"),
+    _c(
+        "E010",
+        "container",
+        "sample root in a `collection` lacks its own `content_id`",
+    ),
     # --- E1xx geometry ------------------------------------------------------
     _c("E101", "geometry", "referenced grid does not exist"),
     _c("E102", "geometry", "`direction` is not orthonormal to 1e-4"),

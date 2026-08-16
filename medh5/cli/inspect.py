@@ -372,48 +372,69 @@ def _timeline(args: argparse.Namespace) -> int:
 def _track(args: argparse.Namespace) -> int:
     try:
         with medh5.open(args.path) as sample:
-            tracks = sample.track(args.class_key)
-            declared = set(sample.timepoints.ids)
-            payload = {}
+            tracking = sample.tracks(args.class_key)
+            if args.json:
+                emit(tracking.to_json(), as_json=True)
+                return EXIT_OK
+            if not len(tracking):
+                print("no instance-carrying annotations in this sample")
+                return EXIT_OK
+            timepoints = tracking.timepoints or ("-",)
             rows = []
-            for instance_id, seen in sorted(tracks.items()):
-                present = sorted(seen)
-                state = (
-                    "persisted"
-                    if len(present) == len(declared)
-                    else "new"
-                    if present == [sample.timepoints[-1].id]
-                    else "resolved"
-                    if present == [sample.timepoints[0].id]
-                    else "partial"
-                )
-                payload[str(instance_id)] = {
-                    "timepoints": present,
-                    "state": state,
-                    "annotations": {tp: seen[tp][0] for tp in present},
-                }
+            for instance_id, track in sorted(tracking.items()):
+                states = tracking.states(instance_id)
                 rows.append(
                     [
                         instance_id,
-                        ",".join(present),
-                        state,
-                        ",".join(seen[tp][0] for tp in present),
+                        track.class_key or track.class_id,
+                        *(_cell(track, states, tp) for tp in timepoints),
+                        _trend(tracking, instance_id, track, timepoints),
                     ]
                 )
-            if args.json:
-                emit(payload, as_json=True)
-                return EXIT_OK
-            if not rows:
-                print("no instance-carrying annotations in this sample")
-                return EXIT_OK
-            print(table(rows, ["instance", "timepoints", "state", "annotations"]))
             print(
-                "\nabsence means `resolved` only where `annotated_class_ids` covers "
-                "the class at that timepoint (spec §7.4)."
+                table(
+                    rows,
+                    ["instance", "class", *timepoints, "trend"],
+                )
+            )
+            conflicts = tracking.class_conflicts()
+            for instance_id, class_ids in sorted(conflicts.items()):
+                print(
+                    f"\nW909  instance {instance_id} carries class ids "
+                    f"{list(class_ids)}"
+                )
+            print(
+                "\nvolume in the grid's units; `resolved` means the class was in "
+                "`annotated_class_ids` at that timepoint and the object was not "
+                "found, `unexamined` that nobody looked (spec §7.4, §11.3)."
             )
             return EXIT_OK
     except MEDH5Error as exc:
         return fail(str(exc))
+
+
+def _cell(track: Any, states: dict[str, str], timepoint: str) -> str:
+    state = states.get(timepoint, "unexamined")
+    if state != "present":
+        return state
+    volume = track.volume(timepoint)
+    return "present" if volume is None else f"{volume:.4g}"
+
+
+def _trend(
+    tracking: Any, instance_id: int, track: Any, timepoints: tuple[str, ...]
+) -> str:
+    """Relative volume change from first to last visit, where it is measurable."""
+    if len(timepoints) < 2:  # noqa: PLR2004 - a trend needs two visits
+        return "-"
+    change = track.relative_change(timepoints[0], timepoints[-1])
+    if change is not None:
+        return f"{change:+.1%}"
+    if tracking.is_new(instance_id):
+        return "new"
+    if tracking.is_resolved(instance_id):
+        return "resolved"
+    return "-"
 
 
 __all__ = ["dispatch", "register"]

@@ -20,10 +20,14 @@ from __future__ import annotations
 
 from medh5.__about__ import __format_version__, __version__
 from medh5.annotations.base import Annotation, Instance, VoxelAnnotation
+from medh5.collection import Collection, open_collection, pack, unpack
+from medh5.curation.agreement import compare as compare_annotations
 from medh5.curation.identity import Cohort, Deidentification, Identity, SplitClaim
 from medh5.curation.provenance import Activity, Agent, Provenance
 from medh5.curation.quality import Agreement, Issue, QualityRecord
+from medh5.curation.splits import SplitAudit, audit_splits
 from medh5.curation.timeline import Timeline, Timepoint
+from medh5.curation.tracking import Observation, Track, Tracking
 from medh5.document import SampleDocument
 from medh5.errors import (
     CODES,
@@ -58,6 +62,7 @@ __all__ = [
     "Agreement",
     "Annotation",
     "Cohort",
+    "Collection",
     "Deidentification",
     "Grid",
     "Identity",
@@ -72,19 +77,28 @@ __all__ = [
     "MEDH5SchemaError",
     "MEDH5ValidationError",
     "MEDH5VersionError",
+    "Observation",
     "Provenance",
     "QualityRecord",
     "Sample",
     "SampleDocument",
     "SampleWriter",
+    "SplitAudit",
     "SplitClaim",
     "Timeline",
     "Timepoint",
+    "Track",
+    "Tracking",
     "VoxelAnnotation",
     "__format_version__",
     "__version__",
     "amend",
+    "audit_splits",
+    "compare_annotations",
     "create",
     "open",
+    "open_collection",
     "open_sample",
+    "pack",
+    "unpack",
 ]

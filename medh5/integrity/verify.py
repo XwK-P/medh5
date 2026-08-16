@@ -171,4 +171,97 @@ def verify_root(
     )
 
 
-__all__ = ["VerifyResult", "stale_index_entries", "verify_object", "verify_root"]
+# --------------------------------------------------------------------------
+# Raw-byte comparison --- what "a pure copy" has to mean
+# --------------------------------------------------------------------------
+
+
+def raw_chunks(dset: h5py.Dataset) -> list[bytes]:
+    """Every stored chunk of *dset*, exactly as it sits on disk.
+
+    Reading through the dataset API would decompress and recompress, which
+    proves the *values* survived a copy but not the bytes.  For a container
+    operation like packing a collection (§2.2) that distinction is the whole
+    claim: if the chunks are identical then nothing was re-encoded, no filter
+    was silently dropped, and every digest in the file still addresses the
+    content it was computed over.
+
+    Returns an empty list for a contiguous dataset, which has no chunks to
+    compare; :func:`subtrees_identical` falls back to values there.
+    """
+    if dset.chunks is None:
+        return []
+    out: list[bytes] = []
+    space = dset.id.get_space()
+    for i in range(dset.id.get_num_chunks()):
+        info = dset.id.get_chunk_info(i, space)
+        _, payload = dset.id.read_direct_chunk(info.chunk_offset)
+        out.append(bytes(payload))
+    return out
+
+
+def subtrees_identical(a: h5py.Group, b: h5py.Group) -> tuple[str, ...]:
+    """Paths at which two object trees differ, byte for byte.
+
+    Compares structure, attributes and *stored* chunk bytes.  An empty result
+    means one tree is a pure copy of the other.
+    """
+    differences: list[str] = []
+    _compare(a, b, "", differences)
+    return tuple(sorted(differences))
+
+
+def _compare(a: Any, b: Any, prefix: str, out: list[str]) -> None:
+    if type(a) is not type(b):
+        out.append(f"{prefix or '/'}: {type(a).__name__} vs {type(b).__name__}")
+        return
+    keys_a = set(a.attrs)
+    keys_b = set(b.attrs)
+    for key in sorted(keys_a ^ keys_b):
+        out.append(f"{prefix or '/'}@{key}: present in only one tree")
+    for key in sorted(keys_a & keys_b):
+        if not _attr_equal(a.attrs[key], b.attrs[key]):
+            out.append(f"{prefix or '/'}@{key}: differs")
+    if isinstance(a, h5py.Dataset):
+        if a.shape != b.shape or a.dtype != b.dtype:
+            out.append(f"{prefix}: shape/dtype differ")
+        elif not _data_equal(a, b):
+            out.append(f"{prefix}: stored bytes differ")
+        return
+    names_a = set(a)
+    names_b = set(b)
+    for name in sorted(names_a ^ names_b):
+        out.append(f"{prefix}/{name}: present in only one tree")
+    for name in sorted(names_a & names_b):
+        _compare(a[name], b[name], f"{prefix}/{name}", out)
+
+
+def _data_equal(a: h5py.Dataset, b: h5py.Dataset) -> bool:
+    """Chunk bytes when both are chunked, values otherwise."""
+    chunks_a = raw_chunks(a)
+    chunks_b = raw_chunks(b)
+    if chunks_a or chunks_b:
+        return chunks_a == chunks_b
+    if a.chunks != b.chunks:
+        return False
+    return _attr_equal(a[()], b[()])
+
+
+def _attr_equal(left: Any, right: Any) -> bool:
+    import numpy as np
+
+    left_arr = np.asarray(left)
+    right_arr = np.asarray(right)
+    if left_arr.shape != right_arr.shape:
+        return False
+    return bool(np.array_equal(left_arr, right_arr))
+
+
+__all__ = [
+    "VerifyResult",
+    "raw_chunks",
+    "stale_index_entries",
+    "subtrees_identical",
+    "verify_object",
+    "verify_root",
+]

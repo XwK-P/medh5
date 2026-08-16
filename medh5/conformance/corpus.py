@@ -52,6 +52,8 @@ class Case:
     level: Level = "semantic"
     errors: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
+    suffix: str = ".medh5"
+    """``.medh5c`` for a collection case (§2.1); the corpus runner honours it."""
     mutated: bool = False
     """Built by editing a committed file, so its digests are deliberately stale.
 
@@ -71,6 +73,7 @@ class Case:
             "description": self.description,
             "clause": self.clause,
             "level": self.level,
+            "file_suffix": self.suffix,
             "valid": self.valid,
             "mutated": self.mutated,
             "expect_errors": sorted(self.errors),
@@ -120,6 +123,7 @@ def case(
     level: Level = "semantic",
     errors: Sequence[str] = (),
     warnings: Sequence[str] = (),
+    suffix: str = ".medh5",
     mutated: bool = False,
 ) -> Callable[[Callable[[Path], None]], Callable[[Path], None]]:
     def wrap(fn: Callable[[Path], None]) -> Callable[[Path], None]:
@@ -132,6 +136,7 @@ def case(
                 level=level,
                 errors=tuple(errors),
                 warnings=tuple(warnings),
+                suffix=suffix,
                 mutated=mutated,
             )
         )
@@ -2007,6 +2012,213 @@ def _break_affine_last_row(handle: h5py.File) -> None:
 _register_transform_cases()
 
 
+# --------------------------------------------------------------------------
+# §2.2 collections and §7.4 tracking
+# --------------------------------------------------------------------------
+
+
+def _tracking_sample(
+    path: Path,
+    *,
+    reclassify: bool = False,
+    partial_coverage: bool = False,
+) -> None:
+    """Two visits of one subject, with the same lesion in both (§7.4).
+
+    ``reclassify`` makes instance 7 a different class at follow-up, which is the
+    cross-annotation tracking error W909 exists to catch; ``partial_coverage``
+    withdraws the follow-up commitment so absence becomes *unexamined*.
+    """
+    rng = np.random.default_rng(SEED)
+    shape = (12, 16, 16)
+
+    def lesion(z: int, y: int, x: int, r: int) -> npt.NDArray[np.bool_]:
+        mask = np.zeros(shape, dtype=bool)
+        mask[z - r : z + r, y - r : y + r, x - r : x + r] = True
+        return mask
+
+    with medh5.create(
+        path, sample_id=path.stem, subject_id="subj-A", codec="portable"
+    ) as w:
+        w.add_timepoint("tp0", label="baseline", days_from_baseline=0)
+        w.add_timepoint("tp1", label="follow_up", days_from_baseline=92)
+        w.label_set(_LS)
+        rad = w.person("pseudonym:RAD-07", role="annotator")
+        act = w.activity("annotate", agent=rad, ended="2026-02-05T14:47:00Z")
+        for gid, tp, frame in (
+            ("ct_tp0", "tp0", "pseudo:frame-100"),
+            ("ct_tp1", "tp1", "pseudo:frame-101"),
+        ):
+            w.add_grid(
+                gid, shape=shape, spacing=(1.5, 0.8, 0.8), timepoint=tp, frame_uid=frame
+            )
+            w.add_image(
+                f"CT_{tp}",
+                rng.integers(-1000, 1500, shape).astype(np.int16),
+                grid=gid,
+                modality="CT",
+                value_type="quantitative",
+                value_units="HU",
+            )
+        w.add_segmentation(
+            "lesions_tp0",
+            grid="ct_tp0",
+            instances=[
+                InstanceInput(class_id=3, instance_id=7, mask=lesion(6, 6, 6, 2)),
+                InstanceInput(class_id=3, instance_id=8, mask=lesion(6, 11, 11, 1)),
+            ],
+            annotated_classes=[3],
+            prov=act,
+            quality={"status": "approved", "confidence": 0.9},
+        )
+        w.add_segmentation(
+            "lesions_tp1",
+            grid="ct_tp1",
+            instances=[
+                InstanceInput(
+                    class_id=1 if reclassify else 3,
+                    instance_id=7,
+                    mask=lesion(6, 6, 6, 3),
+                ),
+                InstanceInput(class_id=3, instance_id=9, mask=lesion(7, 3, 12, 1)),
+            ],
+            # A case isolates one defect: the reclassified follow-up commits to
+            # both classes so W904 does not fire alongside the W909 it is for.
+            annotated_classes=(
+                [] if partial_coverage else [1, 3] if reclassify else [3]
+            ),
+            prov=act,
+            quality={"status": "approved"},
+        )
+        w.add_transform(
+            "tp0_to_tp1",
+            kind="affine",
+            matrix=np.eye(4),
+            from_frame="pseudo:frame-100",
+            to_frame="pseudo:frame-101",
+        )
+        w.deidentification(method="dicom-psi-profile")
+        w.split(set_id="cv5-2026-02", partition="train", fold=1)
+
+
+@case(
+    "longitudinal-instance-tracking",
+    "One lesion followed across two visits, joined on `instance_id`.",
+    "§7.4, §11.3",
+    warnings=["W912"],
+)
+def _tracking(path: Path) -> None:
+    _tracking_sample(path)
+
+
+@case(
+    "W909-instance-reclassified-across-timepoints",
+    "One `instance_id` carrying a different class at follow-up.",
+    "§7.4",
+    warnings=["W909", "W912"],
+)
+def _tracking_reclassified(path: Path) -> None:
+    _tracking_sample(path, reclassify=True)
+
+
+@case(
+    "W904-follow-up-coverage-withdrawn",
+    "A follow-up that commits to no class, so absence measures nothing.",
+    "§11.3",
+    warnings=["W904", "W912"],
+)
+def _tracking_unexamined(path: Path) -> None:
+    _tracking_sample(path, partial_coverage=True)
+
+
+def _collection(
+    path: Path,
+    *,
+    samples: int = 2,
+    drop_content_id: bool = False,
+    bad_key: bool = False,
+    drop_samples_group: bool = False,
+) -> None:
+    """A shard built the way a curator builds one: pack standalone samples."""
+    import shutil
+
+    from medh5.collection import SAMPLES_GROUP, pack
+
+    # The members are scaffolding, not corpus files: a shipped corpus directory
+    # must contain exactly the cases its manifest lists.
+    directory = path.parent / f".{path.stem}-members"
+    if directory.exists():
+        shutil.rmtree(directory)
+    directory.mkdir(parents=True)
+    try:
+        sources = []
+        for i in range(samples):
+            member = directory / f"case_{i}.medh5"
+            _base(member, timepoints=(("tp0", {"label": "baseline"}),))
+            sources.append(member)
+        keys = ["case.0", "not a key" if bad_key else "case_1"][:samples]
+        pack(sources, path, keys=keys)
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+    if drop_content_id:
+        _mutate(
+            path,
+            lambda f: f[f"{SAMPLES_GROUP}/case.0"].attrs.__delitem__("content_id"),
+        )
+    if drop_samples_group:
+        _mutate(path, lambda f: f.__delitem__(SAMPLES_GROUP))
+
+
+@case(
+    "collection-two-samples",
+    "Two sample roots in one shard, each independently identifiable.",
+    "§2.2",
+    suffix=".medh5c",
+)
+def _collection_valid(path: Path) -> None:
+    _collection(path)
+
+
+@case(
+    "E010-collection-member-without-content-id",
+    "A packed sample root that lost its own `content_id`.",
+    "§2.2",
+    errors=["E010"],
+    suffix=".medh5c",
+    mutated=True,
+)
+def _collection_no_content_id(path: Path) -> None:
+    _collection(path, drop_content_id=True)
+
+
+@case(
+    "E003-collection-bad-sample-key",
+    "A sample key outside [A-Za-z0-9_.-]{1,255}.",
+    "§2.2",
+    errors=["E003"],
+    suffix=".medh5c",
+    mutated=True,
+)
+def _collection_bad_key(path: Path) -> None:
+    from medh5._hdf5 import open_h5
+
+    _collection(path, samples=1)
+    with open_h5(path, "r+") as handle:
+        handle["samples"].move("case.0", "not a key")
+
+
+@case(
+    "E008-collection-without-samples-group",
+    "A file declaring `collection` with nothing in it.",
+    "§2.2",
+    errors=["E008"],
+    suffix=".medh5c",
+    mutated=True,
+)
+def _collection_empty(path: Path) -> None:
+    _collection(path, samples=1, drop_samples_group=True)
+
+
 CASES: tuple[Case, ...] = tuple(_CASES)
 
 
@@ -2028,7 +2240,7 @@ def build_corpus(outdir: str | Path, *, names: Sequence[str] | None = None) -> P
         "cases": [],
     }
     for entry in selected:
-        path = root / f"{entry.name}.medh5"
+        path = root / f"{entry.name}{entry.suffix}"
         if path.exists():
             path.unlink()
         entry.build(path)
@@ -2049,7 +2261,7 @@ def run_corpus(
     for entry in CASES:
         if names is not None and entry.name not in set(names):
             continue
-        path = root / f"{entry.name}.medh5"
+        path = root / f"{entry.name}{entry.suffix}"
         result = CaseResult(case=entry, path=str(path))
         try:
             report = validate_file(path, level=entry.level)

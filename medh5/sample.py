@@ -68,6 +68,7 @@ from medh5.curation.identity import Cohort, Deidentification, Identity, SplitCla
 from medh5.curation.provenance import Activity, Agent
 from medh5.curation.quality import QualityRecord
 from medh5.curation.timeline import Timeline, Timepoint
+from medh5.curation.tracking import Tracking
 from medh5.document import (
     SampleDocument,
     read_document,
@@ -437,26 +438,21 @@ class Sample:
     def is_longitudinal(self) -> bool:
         return self.timepoints.is_longitudinal
 
-    def track(self, class_key: int | str | None = None) -> dict[int, dict[str, Any]]:
+    def tracks(
+        self, class_key: int | str | None = None, *, measure: bool = True
+    ) -> Tracking:
         """Join ``instance_id`` across timepoints --- the tracking operation (§7.4).
 
-        Returns ``instance_id -> {timepoint_id: (annotation_id, index)}``.  A
-        lesion that persisted appears under several timepoints; one that resolved
-        appears under fewer than the sample declares.  Whether that absence means
-        *resolved* or *unexamined* is answered by ``annotated_class_ids``, not by
-        this join.
+        A lesion that persisted appears under several timepoints; one that
+        vanished appears under fewer than the sample declares.  Whether that
+        absence means *resolved* or *unexamined* is answered by
+        ``annotated_class_ids`` (§11.3), which is why the result is a
+        :class:`~medh5.curation.tracking.Tracking` rather than a plain dict:
+        the coverage it needs to answer that question travels with the join.
         """
-        out: dict[int, dict[str, Any]] = {}
-        for ann in self.annotations.values():
-            if ann.kind != "instances":
-                continue
-            wanted = None if class_key is None else ann.resolve_class(class_key)
-            for obj in ann.instances():
-                if wanted is not None and obj.class_id != wanted:
-                    continue
-                for tp in ann.timepoints:
-                    out.setdefault(obj.instance_id, {})[tp] = (ann.ann_id, obj.index)
-        return out
+        from medh5.curation.tracking import build_tracks
+
+        return build_tracks(self, class_key, measure=measure)
 
     # -- integrity ---------------------------------------------------------
 
@@ -971,7 +967,13 @@ class SampleWriter:
         """
         target = self._grid(grid)
         payload, stats, class_ids = self._encode_segmentation(
-            masks, probabilities, instances, target, encoding, ignore
+            masks,
+            probabilities,
+            instances,
+            target,
+            encoding,
+            ignore,
+            self._named_classes(annotated_classes),
         )
         annotated = self._resolve_annotated(annotated_classes, class_ids)
         header = AnnotationHeader(
@@ -999,9 +1001,19 @@ class SampleWriter:
         grid: Grid,
         encoding: str,
         ignore: npt.NDArray[np.bool_] | None,
+        examined: tuple[int, ...] = (),
     ) -> tuple[AnnotationPayload, OverlapStats | None, tuple[int, ...]]:
+        """Encode the payload, keeping every *examined* class expressible.
+
+        A class the annotator searched for and did not find has to survive into
+        ``class_ids``, or the file cannot tell "verified absent" from "never
+        looked for" (spec §11.3).  Empty classes therefore reach the encoders
+        rather than being dropped for having no voxels.
+        """
         if instances is not None:
-            payload = encode_instances(instances, grid.spatial_shape)
+            payload = encode_instances(
+                instances, grid.spatial_shape, class_ids=examined or None
+            )
             return payload, None, payload.class_ids
         if probabilities is not None:
             resolved = {self._class_id(k): v for k, v in probabilities.items()}
@@ -1011,9 +1023,10 @@ class SampleWriter:
             raise MEDH5ValidationError(
                 "add_segmentation needs one of masks=, probabilities= or instances="
             )
-        resolved_masks, shape = normalize_masks(
-            {self._class_id(k): v for k, v in masks.items()}, grid.spatial_shape
-        )
+        given = {self._class_id(k): v for k, v in masks.items()}
+        for class_id in examined:
+            given.setdefault(class_id, np.zeros(grid.spatial_shape, dtype=bool))
+        resolved_masks, shape = normalize_masks(given, grid.spatial_shape)
         kind, stats = select_encoding(
             resolved_masks, shape, prefer=None if encoding == "auto" else encoding
         )
@@ -1096,6 +1109,12 @@ class SampleWriter:
                 f"cannot resolve class name {key!r}: declare a label set first"
             )
         return label_set[key].id
+
+    def _named_classes(self, annotated: str | Sequence[int | str]) -> tuple[int, ...]:
+        """The classes an explicit ``annotated_classes=`` names, resolved to ids."""
+        if isinstance(annotated, str):
+            return ()
+        return tuple(self._class_id(k) for k in annotated)
 
     def _resolve_annotated(
         self, annotated: str | Sequence[int | str], class_ids: Sequence[int]

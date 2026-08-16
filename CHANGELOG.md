@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
-## [1.0.0a0] — MEDH5 format 1.0, phases 0–4
+## [1.0.0a0] — MEDH5 format 1.0, phases 0–5
 
 A clean-slate reimplementation of the format. **Not backward compatible with 0.x**, by design: a
 1.0 reader refuses a 0.x file rather than guessing, and a 0.x reader raises on the missing
@@ -37,7 +37,7 @@ file, and assigning whole files to train/val/test cannot leak a patient across p
   invalidate anything.
 - **A sampling index** that answers foreground patch sampling in O(1) in volume size — 0.52 ms and
   48 KiB against 9.2 ms and O(volume) for the 0.x `argwhere` path.
-- **A validator** with four levels and a stable diagnostic-code table, and a **96-case conformance
+- **A validator** with four levels and a stable diagnostic-code table, and a **103-case conformance
   corpus** with per-code expectations that a third-party implementation can run. Every code in the
   table has a case.
 - **Every geometric annotation** (§8): axis-aligned boxes that convert to numpy slices without
@@ -58,24 +58,49 @@ file, and assigning whole files to train/val/test cannot leak a patient across p
   the **frame graph** rather than by name, uses inverses where they exist, and refuses to invent
   one for a dense field — approximating it would report an accuracy nobody measured. Target
   registration error is computed from paired landmark sets (§10.6).
+- **Curation** (§11, §12): a two-node PROV graph of agents and activities that describes the
+  dominant real workflow — a model pre-annotation corrected by a human — where a review-status field
+  cannot; quality records whose status is current state, with history living in the graph; and
+  `agreement` computed from the annotations themselves (per-class Dice/IoU, object-level F1), so a
+  number in a file is reproducible from that file. Classes one side never examined are reported as
+  *not scored* rather than scored zero, because a class nobody looked at is not a disagreement.
+- **Longitudinal tracking joins** (§7.4): `Sample.tracks()` groups objects on `instance_id` across
+  visits and reports per-visit volumes and growth. Absence resolves to **`resolved`** only where the
+  class is in that visit's `annotated_class_ids`, and to **`unexamined`** otherwise — a growth curve
+  that reads "not assessed" as volume zero reports a complete response that never happened. W909 is
+  sample-scoped, so it catches the conflict that matters: one lesion classed differently at two
+  visits, each annotation internally consistent and only the join wrong.
+- **A cross-file split audit** (§12.3). A per-file validator cannot see either failure that matters:
+  two files claiming one `set_id` against different manifests (W906), or one subject appearing in
+  two partitions — the leakage that inflates every reported metric in medical AI. `medh5 splits`
+  reports both, and keeps them separate because the remedies differ.
+- **Collections** (§2.2): `.medh5c` shards for cohorts where one file per sample is an operational
+  problem. `pack` and `unpack` move stored chunks rather than re-encoding them, so a round trip is
+  byte-identical and every `content_id` survives it — a shard is a container for samples, never a
+  second encoding of them. A packed sample root *is* a sample root: every reader, validator and
+  loader works on it unchanged.
 - **A CLI**: `info`, `tree`, `validate`, `verify`, `timeline`, `track`, `labels`, `seg stats`,
-  `seg convert`, `index build`, `conformance`.
+  `seg convert`, `index build`, `pack`, `unpack`, `ls`, `prov`, `agree`, `splits`, `conformance`.
 
 ### Changed
 
 - The 0.6.0 implementation moved to `medh5.legacy` unchanged, and is still tested. Import paths in
   the 0.x documentation changed accordingly; the `medh5-0x` console script runs its CLI. It will be
   deleted once the 1.0 converters land.
-- Six specification clauses were corrected because implementing them showed the text was not
+- Eight specification clauses were corrected because implementing them showed the text was not
   implementable, or contradicted itself: `/meta` cannot be compressed, the label-set canonical
   serialization is now defined, `content_id` excludes `created`/`generator`, "the digest of an
   annotation" is defined for a multi-dataset group, the `det` profile requires a *detection-task*
-  annotation rather than any §8 kind, and §9's `class_ids` dataset and attribute are explicitly
-  distinguished. See Appendix C of the specification.
+  annotation rather than any §8 kind, §9's `class_ids` dataset and attribute are explicitly
+  distinguished, `E010` was added because §2.2 stated a MUST with no code to report it, and W909 is
+  stated to be sample-scoped. See Appendix C of the specification.
+- `add_segmentation` now keeps every class named in `annotated_classes` expressible, encoding an
+  empty one rather than dropping it. Without that, "searched for and not found" collapsed into
+  "never looked for" — the distinction §11.3 exists to preserve.
 
 ### Not yet implemented
 
-Collections (§2.2), converters, and the PyTorch/MONAI loaders.
+Converters and the PyTorch/MONAI loaders.
 
 ## [0.6.0]
 

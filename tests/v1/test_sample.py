@@ -279,17 +279,39 @@ class TestCoverage:
             assert not seg.is_fully_covered
             assert {c.key for c in seg.annotated_classes} == {"liver"}
 
-    def test_S6_2_annotated_must_be_a_subset(self, tmp_path, label_set, masks):
-        with (
-            pytest.raises(MEDH5ValidationError) as exc,
-            medh5.create(tmp_path / "x.medh5") as w,
-        ):
+    def test_S6_2_annotated_must_be_a_subset(self):
+        """The invariant itself: no header may claim coverage it cannot index."""
+        from medh5.annotations.base import AnnotationHeader
+
+        with pytest.raises(MEDH5ValidationError) as exc:
+            AnnotationHeader(
+                kind="layers",
+                task="segmentation",
+                class_ids=(1, 2),
+                annotated_class_ids=(1, 4),
+            )
+        assert exc.value.code == "E403"
+
+    def test_S11_3_a_class_examined_and_not_found_is_declared(
+        self, tmp_path, label_set, masks
+    ):
+        """ "Verified absent" must not collapse into "never looked for" (§11.3)."""
+        path = tmp_path / "absent.medh5"
+        with medh5.create(path, codec="portable") as w:
             w.add_timepoint("tp0")
             w.label_set(label_set)
             w.add_grid("g", shape=SHAPE, spacing=(1.0, 1.0, 1.0), timepoint="tp0")
-            w.add_image("CT", np.zeros(SHAPE), grid="g", modality="CT")
-            w.add_segmentation("s", grid="g", masks=masks, annotated_classes=[4])
-        assert exc.value.code == "E403"
+            w.add_image("CT", np.zeros(SHAPE, dtype=np.int16), grid="g", modality="CT")
+            w.add_segmentation(
+                "s", grid="g", masks=masks, annotated_classes=[1, 2, 3, 4]
+            )
+        with medh5.open(path) as sample:
+            seg = sample.annotations["s"]
+            assert 4 in seg.class_ids
+            assert seg.is_annotated("vessel")
+            assert not seg.dense(["vessel"])[0].any()
+            assert seg.is_fully_covered
+        assert not validate_file(path).errors
 
     def test_annotated_all_uses_the_label_set(self, tmp_path, label_set, masks):
         path = tmp_path / "all.medh5"
@@ -347,11 +369,12 @@ class TestTracking:
                 ],
             )
         with medh5.open(path) as sample:
-            tracks = sample.track(3)
-            assert sorted(tracks) == [1, 3, 8]
-            assert sorted(tracks[1]) == ["tp0", "tp1"]  # persisted
-            assert sorted(tracks[3]) == ["tp0"]  # resolved
-            assert sorted(tracks[8]) == ["tp1"]  # new
+            tracking = sample.tracks(3)
+            assert sorted(tracking) == [1, 3, 8]
+            assert tracking.is_persistent(1)
+            assert tracking.is_resolved(3)
+            assert tracking.is_new(8)
+            assert tracking[1].timepoints == ("tp0", "tp1")
             assert sample.annotations["les_tp0"].instance(3).class_id == 3
 
 

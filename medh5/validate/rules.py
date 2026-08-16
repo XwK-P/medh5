@@ -17,7 +17,7 @@ from typing import Any
 import h5py
 import numpy as np
 
-from medh5._hdf5 import ID_PATTERN, as_str, as_str_tuple
+from medh5._hdf5 import ID_PATTERN, SAMPLE_KEY_PATTERN, as_str, as_str_tuple
 from medh5.annotations.base import (
     ANNOTATION_KINDS,
     GEOMETRIC_KINDS,
@@ -27,6 +27,7 @@ from medh5.annotations.base import (
 )
 from medh5.annotations.classification import SCOPES
 from medh5.annotations.geometric import ROTATION_TOL, SPACES
+from medh5.collection import SAMPLES_GROUP
 from medh5.curation.provenance import ACTIVITY_TYPES, RFC3339
 from medh5.document import SampleDocument, schema_available, validate_against_schema
 from medh5.errors import CODES
@@ -167,6 +168,60 @@ def check_container(ctx: Context) -> Iterator[Diagnostic]:
                     f"/{group_name}/{name}",
                     f"identifier {name!r} does not match [A-Za-z0-9_.-]{{1,128}}",
                 )
+
+
+def check_collection(ctx: Context) -> Iterator[Diagnostic]:
+    """Rules that apply to a ``collection`` root itself (spec §2.2).
+
+    The members are validated as ordinary samples --- that is the point of the
+    containment --- so this checks only what is true of the shard: that it says
+    what it is, that its keys are legal, and that every member still carries the
+    two attributes that make it independently identifiable once extracted.
+    """
+    attrs = ctx.root.attrs
+    if "medh5_version" not in attrs:
+        yield ctx.err("E001", "/", "collection root has no `medh5_version` attribute")
+    elif as_str(attrs["medh5_version"]).split(".", 1)[0] != SUPPORTED_MAJOR:
+        yield ctx.err(
+            "E002",
+            "/",
+            f"declares MEDH5 {as_str(attrs['medh5_version'])}; this validator "
+            f"implements {SUPPORTED_MAJOR}.x",
+        )
+    node = ctx.root.get(SAMPLES_GROUP)
+    if node is None:
+        yield ctx.err(
+            "E008",
+            f"/{SAMPLES_GROUP}",
+            f"a `collection` requires a `{SAMPLES_GROUP}` group",
+        )
+        return
+    if len(node) == 0:
+        yield ctx.err(
+            "E008", f"/{SAMPLES_GROUP}", "collection contains no sample roots"
+        )
+    for key in sorted(node):
+        location = f"/{SAMPLES_GROUP}/{key}"
+        if not SAMPLE_KEY_PATTERN.match(key):
+            yield ctx.err(
+                "E003",
+                location,
+                f"sample key {key!r} does not match [A-Za-z0-9_.-]{{1,255}}",
+            )
+        member = node[key]
+        if "medh5_profiles" not in member.attrs:
+            yield ctx.err(
+                "E007",
+                location,
+                "a sample root in a collection carries its own `medh5_profiles`",
+            )
+        if "content_id" not in member.attrs:
+            yield ctx.err(
+                "E010",
+                location,
+                "a sample root in a collection carries its own `content_id`, so "
+                "extracting it yields an identifiable sample",
+            )
 
 
 def check_document(ctx: Context) -> Iterator[Diagnostic]:
@@ -1143,6 +1198,46 @@ def _check_instances(
 # --------------------------------------------------------------------------
 
 
+def check_instance_identity(ctx: Context) -> Iterator[Diagnostic]:
+    """``instance_id`` is sample-scoped, so the check has to be too (§7.4).
+
+    :func:`_check_instances` already catches a conflict inside one annotation.
+    The conflict that actually costs a study is the one *between* annotations:
+    lesion 7 is a metastasis at baseline and a cyst at follow-up, each file
+    internally consistent, the tracking join silently wrong.  Nothing but a
+    sample-wide pass can see it.
+    """
+    table: dict[int, dict[int, list[str]]] = {}
+    for name, group in ctx.annotation_groups.items():
+        if "instance_ids" not in group or "class_ids" not in group:
+            continue
+        ids = np.asarray(group["instance_ids"][...]).reshape(-1)
+        classes = np.asarray(group["class_ids"][...]).reshape(-1)
+        if ids.shape != classes.shape:
+            continue  # E405 reports the mismatch; do not compound it
+        for instance_id, class_id in zip(ids.tolist(), classes.tolist(), strict=True):
+            table.setdefault(int(instance_id), {}).setdefault(int(class_id), []).append(
+                name
+            )
+    for instance_id, by_class in sorted(table.items()):
+        if len(by_class) < 2:  # noqa: PLR2004 - one class is the healthy case
+            continue
+        where = sorted({n for names in by_class.values() for n in names})
+        if len(where) < 2:  # noqa: PLR2004 - single-annotation case: _check_instances
+            continue
+        detail = ", ".join(
+            f"class {c} in {sorted(set(names))}"
+            for c, names in sorted(by_class.items())
+        )
+        yield ctx.err(
+            "W909",
+            "/annotations",
+            f"instance id {instance_id} carries several class ids across "
+            f"annotations ({detail}); the longitudinal join treats these as one "
+            "object",
+        )
+
+
 def check_transforms(ctx: Context) -> Iterator[Diagnostic]:
     """Transform structure, frame chaining and inverse consistency (§10)."""
     node = ctx.root.get("transforms")
@@ -1549,6 +1644,9 @@ def check_profiles(ctx: Context) -> Iterator[Diagnostic]:
         )
 
 
+COLLECTION_RULES = (check_collection,)
+"""Rules for a ``collection`` root; its members are validated as samples."""
+
 STRUCTURAL_RULES = (
     check_container,
     check_document,
@@ -1560,6 +1658,7 @@ STRUCTURAL_RULES = (
 
 SEMANTIC_RULES = (
     check_timepoints,
+    check_instance_identity,
     check_transforms,
     check_label_set,
     check_multiscale,
@@ -1582,6 +1681,7 @@ def rules_for(level: Level) -> tuple[Any, ...]:
 
 
 __all__ = [
+    "COLLECTION_RULES",
     "INTEGRITY_RULES",
     "SEMANTIC_RULES",
     "STRUCTURAL_RULES",

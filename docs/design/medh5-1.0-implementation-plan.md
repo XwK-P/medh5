@@ -2,11 +2,11 @@
 
 **Companion documents:** [Specification](../spec/medh5-1.0.md) · [Design proposal](medh5-1.0-proposal.md)
 
-**Status: phases 0–4 are complete.** The core container, the label space, all five voxel encodings,
-every geometric annotation, classification (including change labels), registration, the validator and
-the conformance corpus are implemented and gated on `ruff`, `mypy --strict` and ≥ 90 % coverage.
-**Every diagnostic code in §15.2 now has a conformance case.** Phase 5 (curation, longitudinal joins
-and collections) is next.
+**Status: phases 0–5 are complete.** The core container, the label space, all five voxel encodings,
+every geometric annotation, classification (including change labels), registration, curation,
+longitudinal tracking joins, collections, the validator and the conformance corpus are implemented
+and gated on `ruff`, `mypy --strict` and ≥ 90 % coverage. **Every diagnostic code in §15.2 has a
+conformance case.** Phase 6 (loaders and performance) is next.
 
 ---
 
@@ -59,7 +59,10 @@ medh5/
 ├── curation/           ✅ §11–§12
 │   ├── provenance.py   ✅ agents/activities graph, reference resolution
 │   ├── quality.py      ✅ quality records, agreement metrics
+│   ├── agreement.py    ✅ Dice/IoU/object-F1 between two annotations → an Agreement record
 │   ├── identity.py     ✅ identity, cohort, split claims, de-identification
+│   ├── splits.py       ✅ §12.3 cross-file audit: W906 conflicts and subject leakage
+│   ├── tracking.py     ✅ §7.4 instance joins, present/resolved/unexamined, growth
 │   └── timeline.py     ✅ §3.7 timepoint declaration, grid binding, inheritance
 │
 ├── integrity/          ✅ §13
@@ -74,8 +77,9 @@ medh5/
 ├── sample.py           ✅ Sample / SampleWriter / open / create / amend — the assembly point
 ├── validate/           ✅ §15 rule engine, levels, profiles, report model
 ├── conformance/        ✅ the golden corpus and its expected-output manifest
-├── cli/                ✅ info, tree, validate, verify, timeline, track, labels, seg, index
-├── collection.py          §2.2 collection files, pack/unpack
+├── cli/                ✅ info, tree, validate, verify, timeline, track, labels, seg, index,
+│                          pack, unpack, ls, prov, agree, splits, conformance
+├── collection.py       ✅ §2.2 collection files, byte-identical pack/unpack
 ├── dataset/               manifests, splits, streaming statistics
 ├── io/                    nifti, dicom, dicom_seg, rtstruct, nnunetv2, coco, learn2reg
 ├── torch/                 datasets, samplers, collate
@@ -167,11 +171,16 @@ with medh5.open("case_0001.medh5") as s:            # -> Sample
     seg.quality.agreement[0].value                   # 0.913
 
     # --- longitudinal ---------------------------------------------------
-    s.track(9)                                       # class -> {instance_id: {tp: Instance}}
-    s.track(9)[1].timepoints                         # ("tp0", "tp1")  -- this lesion persisted
-    s.track(9)[3].resolved_after                     # "tp0"           -- absent at tp1, and covered
-    s.changes()                                      # annotations whose `timepoints` span >1 visit
+    t = s.tracks("lesion")                           # instance_id -> Track, joined on §7.4 ids
+    t[1].timepoints                                  # ("tp0", "tp1")  -- this lesion persisted
+    t[1].relative_change("tp0", "tp1")               # +1.37           -- volume growth
+    t.state_at(3, "tp1")                             # "resolved" | "unexamined" -- never a zero
+    t.class_conflicts()                              # {}              -- W909 would be non-empty
     s.transform_between("tp0", "tp1")                # resolves via frames, not by name
+
+    # --- collections ----------------------------------------------------
+    with medh5.open_collection("shard.medh5c") as c: # sample_key -> Sample
+        c["case_0001"].images["CT"].read()           # a member *is* a sample
 
     # --- sampling -------------------------------------------------------
     idx = s.index["organs"]
@@ -298,7 +307,7 @@ experienced developer; the phases are largely independent after Phase 2.
 | **2 · Label sets + voxel annotations** ✅ | `labels/`, the five voxel encodings, `select.py`, `transcode.py`, coverage semantics, `index/` | **Done.** `seg` profile complete; the transcoding matrix passes `contains()` equality for every ordered pair; encoding auto-selection measured; sampling index is O(1) in volume | 2.5 w |
 | **3 · Geometric + classification annotations** ✅ | boxes, obb, keypoints, points, contours, mesh, classification | **Done.** `det` and `cls` profiles complete; box↔slice round-trips over 200 randomised boxes; OBB centre/size/rotation recovered from its corners; two more spec clauses corrected (§1.3 `det`, §9 `class_ids`) | 2 w |
 | **4 · Registration** ✅ | affine, displacement, bspline, composite, landmarks, `apply.py`, inter-timepoint transform resolution | **Done.** `reg` profile complete; TRE computed from paired landmark sets; `transform_between` resolves through the frame graph, using inverses where they exist and refusing to invent them where they do not; every §15.2 code now has a corpus case | 2 w |
-| **5 · Curation + longitudinal + collections** | provenance graph, quality, identity/cohort/splits, instance tracking joins, change annotations, `.medh5c` pack/unpack (**in 1.0**, not deferred) | `curation` and `longitudinal` profiles complete; tracking join round-trips; W909/W910/W911 fire on crafted inputs; pack/unpack byte-identical on sample subtrees | 2 w |
+| **5 · Curation + longitudinal + collections** ✅ | provenance graph, quality, identity/cohort/splits, instance tracking joins, change annotations, `.medh5c` pack/unpack (**in 1.0**, not deferred) | **Done.** `curation` and `longitudinal` profiles complete; the tracking join answers present/resolved/unexamined from `annotated_class_ids` rather than from absence; W909/W910/W911 fire on crafted inputs and W909 is sample-scoped; pack/unpack byte-identical on sample subtrees, verified chunk by chunk; two more spec clauses corrected (§2.2 `E010`, §7.4 W909 scope) | 2 w |
 | **6 · Loaders + performance** | torch datasets/samplers/collate, paired/longitudinal sampling, MONAI adapter, codec profiles, chunking policy, `recompress` | Throughput target met (§4.3); paired sampling correct against a hand-checked fixture; no per-worker memory growth over a 10-epoch soak | 2.5 w |
 | **7 · Converters** | NIfTI, DICOM, DICOM-SEG, RTSTRUCT, nnU-Net v2, COCO, `migrate` from 0.x, subject-grouping across studies | Round-trip fidelity tests per converter; `--group-by subject` produces correct multi-timepoint samples from a multi-study DICOM tree; migration report on a real 0.x cohort | 3 w |
 | **8 · Release** | Docs, tutorials, conformance suite publication, PyPI 1.0.0 | Spec + suite published; napari-medh5 updated against 1.0 | 1 w |
@@ -353,7 +362,10 @@ medh5 verify PATH... [--partial OBJ]           # digests / content_id
 medh5 fix PATH... [--rebuild-index] [--rewrite-digests]
 
 medh5 timeline FILE [--json]                    # timepoints, per-visit images/annotations, intervals
-medh5 track FILE [--class KEY] [--json]        # instance ids joined across timepoints: persisted/resolved/new
+medh5 track FILE [--class KEY] [--json]        # instance ids joined across visits: present/resolved/unexamined
+medh5 prov FILE [--json]                       # agents, activities, quality, de-identification
+medh5 agree FILE A B [--metric dice|iou] [--record]   # per-class Dice / object F1 between two annotations
+medh5 splits PATH... [--json]                  # cross-file: conflicting claims (W906) and subject leakage
 
 medh5 labels show FILE | check PATH... | registry list
 
@@ -374,7 +386,8 @@ medh5 convert to-nifti   | to-dicom-seg | to-nnunet   | to-coco
 medh5 migrate PATH... -o OUTDIR [--report report.json]     # 0.x -> 1.0
                  [--group-by subject|study] [--subject-key extra.patient_id]   # default: study
 
-medh5 pack ROOT -o shard.medh5c | medh5 unpack shard.medh5c -o ROOT
+medh5 pack PATH... -o shard.medh5c [--key K]   # byte-identical; content_id preserved
+medh5 unpack shard.medh5c -o DIR [--key K] | medh5 ls shard.medh5c [--json]
 medh5 scrub PATH... --profile basic            # de-identification sweep + attestation
 medh5 bench PATH                               # reproduce the benchmark table on your hardware
 ```

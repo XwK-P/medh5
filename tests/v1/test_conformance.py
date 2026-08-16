@@ -8,11 +8,13 @@ third-party implementation runs the same manifest.
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 
 import medh5
+from medh5.collection import open_collection
 from medh5.conformance import CASES, build_corpus, case_by_name, run_corpus
 from medh5.errors import CODES
 from medh5.validate import validate_file
@@ -73,6 +75,23 @@ class TestCorpus:
             case_by_name("nope")
 
 
+@contextmanager
+def _open_any(path: Path):
+    """Open a corpus file whatever kind it is."""
+    if path.suffix == ".medh5c":
+        with open_collection(path) as shard:
+            yield [shard[key] for key in shard]
+        return
+    with medh5.open(path) as sample:
+        yield [sample]
+
+
+def _samples_of(path: Path):
+    """Every sample in a corpus file --- one, or one per collection member."""
+    with _open_any(path) as samples:
+        yield from samples
+
+
 class TestManifest:
     def test_manifest_describes_every_written_file(self, tmp_path):
         manifest_path = build_corpus(tmp_path, names=["core-minimal", "seg-layers"])
@@ -90,24 +109,45 @@ class TestManifest:
                 "expect_errors",
                 "expect_warnings",
                 "file",
+                "file_suffix",
             }
 
     def test_valid_cases_open_with_the_public_reader(self, tmp_path):
-        names = [c.name for c in CASES if c.valid]
-        build_corpus(tmp_path, names=names)
-        for name in names:
-            with medh5.open(tmp_path / f"{name}.medh5") as sample:
+        valid = [c for c in CASES if c.valid]
+        build_corpus(tmp_path, names=[c.name for c in valid])
+        for case in valid:
+            for sample in _samples_of(tmp_path / f"{case.name}{case.suffix}"):
                 assert sample.version == medh5.FORMAT_VERSION
                 assert len(sample.images) >= 1
 
     def test_unmutated_valid_cases_verify(self, tmp_path):
         """A file the writer produced end to end must also verify (spec §13)."""
-        names = [c.name for c in CASES if c.valid and not c.mutated]
-        assert len(names) >= 10
-        build_corpus(tmp_path, names=names)
-        for name in names:
-            with medh5.open(tmp_path / f"{name}.medh5") as sample:
-                assert sample.verify().ok, name
+        clean = [c for c in CASES if c.valid and not c.mutated]
+        assert len(clean) >= 10
+        build_corpus(tmp_path, names=[c.name for c in clean])
+        for case in clean:
+            for sample in _samples_of(tmp_path / f"{case.name}{case.suffix}"):
+                assert sample.verify().ok, case.name
+
+    def test_the_corpus_directory_holds_only_its_cases(self, tmp_path):
+        """A shipped artifact must not carry the scaffolding that built it."""
+        build_corpus(tmp_path, names=["collection-two-samples", "core-minimal"])
+        assert sorted(p.name for p in tmp_path.iterdir()) == [
+            "collection-two-samples.medh5c",
+            "core-minimal.medh5",
+            "expected.json",
+        ]
+
+    def test_S2_2_a_packed_sample_root_is_a_sample_root(self, tmp_path):
+        """The containment the corpus asserts: no member is a lesser sample."""
+        build_corpus(tmp_path, names=["collection-two-samples"])
+        with open_collection(tmp_path / "collection-two-samples.medh5c") as shard:
+            assert sorted(shard) == ["case.0", "case_1"]
+            for key in shard:
+                member = shard[key]
+                assert member.content_id is not None
+                assert member.profiles
+                assert member.verify().ok, key
 
     def test_mutated_cases_declare_it(self):
         """`valid` must never be read as "this also verifies"."""

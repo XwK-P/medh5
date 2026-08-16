@@ -98,8 +98,11 @@ All object paths in this specification are relative to a **sample root group**:
 
 A collection file **MUST** carry `medh5_kind = "collection"` at `/` and **MUST** repeat
 `medh5_version` on `/`. Each sample root in a collection **MUST** be structurally identical to a
-standalone sample and **MUST** carry its own `medh5_profiles` and `content_id`. This makes
-`sample ⊂ collection` a strict containment: extracting a sample root into a new file is a pure copy.
+standalone sample and **MUST** carry its own `medh5_profiles` and `content_id` (E007, E010). This
+makes `sample ⊂ collection` a strict containment: extracting a sample root into a new file is a pure
+copy. Packing and unpacking **MUST NOT** re-encode bulk data — chunks move as stored bytes — so a
+sample's `content_id` is unchanged by either operation and a shard is never a second encoding of the
+samples it holds.
 
 > **Rationale.** One sample per file is the primary mode: it keeps write locking trivial, makes
 > content addressing and split membership per-sample, and lets datasets be assembled with `ln -s`.
@@ -704,7 +707,9 @@ within the sample. The same object observed at several timepoints **MUST** reuse
 annotation that describes it; two distinct objects **MUST NOT** share one. Lesion tracking, growth
 curves and per-lesion response therefore need no additional structure — joining on `instance_id`
 across timepoints is the tracking. A validator warns (W909) when one id appears with two different
-class ids, which is almost always a tracking error rather than a reclassification.
+class ids, which is almost always a tracking error rather than a reclassification. Because identity
+is sample-scoped, so is the check: the conflict that matters most is *between* two visits'
+annotations, where each file is internally consistent and only the join is wrong.
 
 An object present at one timepoint and absent at another is represented by its absence from that
 timepoint's annotation; a *resolved* lesion is distinguishable from an *unexamined* one only through
@@ -1373,7 +1378,7 @@ one.
 
 | Range | Domain | Examples |
 |---|---|---|
-| `E0xx` | container | `E001` missing `medh5_version`; `E002` unsupported major version; `E003` bad identifier; `E004` `/meta` absent or not valid JSON; `E005` `/meta` fails schema; `E006` missing or unknown `medh5_kind`; `E007` missing `medh5_profiles` or unknown profile; `E008` a group required by §2.3 is absent; `E009` a declared profile's requirements are not met |
+| `E0xx` | container | `E001` missing `medh5_version`; `E002` unsupported major version; `E003` bad identifier; `E004` `/meta` absent or not valid JSON; `E005` `/meta` fails schema; `E006` missing or unknown `medh5_kind`; `E007` missing `medh5_profiles` or unknown profile; `E008` a group required by §2.3 is absent; `E009` a declared profile's requirements are not met; `E010` a sample root in a `collection` lacks its own `content_id` |
 | `E1xx` | geometry | `E101` referenced grid does not exist; `E102` `direction` not orthonormal; `E103` spatial axes not trailing/contiguous; `E104` `spacing ≤ 0`; `E105` multiscale geometry inconsistent; `E106` grid without `timepoint` in a multi-timepoint sample; `E107` grid `timepoint` not declared; `E108` `timepoints` empty, or `index` not dense and increasing; `E109` required grid attribute missing or of the wrong rank; `E110` `axis_kinds` invalid for the declared dimensionality; `E111` `grids` contains no grid |
 | `E2xx` | images | `E201` `images` empty; `E202` image shape ≠ grid shape; `E203` unknown `value_type`; `E204` `channel_names` length ≠ channel extent; `E205` required image attribute missing |
 | `E3xx` | label set | `E301` missing label set for a declared profile; `E302` duplicate class id or key; `E303` reserved id used; `E304` hierarchy cycle; `E305` `ref` label set lacking `uri`/`sha256`, or unresolvable; `E306` class entry missing a required field, out of id range, or naming an unknown parent |
@@ -1488,21 +1493,21 @@ grouping, since a 0.x file carries no reliable subject key of its own.
 ### C.1 Reference implementation
 
 Sections §2–§15 are **implemented** in the `medh5` package and exercised by a conformance corpus
-(§15) of 96 files: valid samples covering every encoding, annotation kind, transform kind,
-dimensionality and profile, plus one deliberately-invalid file per diagnostic code. Running the corpus against a validator is how a
-third-party implementation demonstrates conformance:
+(§15) of 103 files: valid samples covering every encoding, annotation kind, transform kind,
+dimensionality, profile and container kind, plus one deliberately-invalid file per diagnostic code.
+Running the corpus against a validator is how a third-party implementation demonstrates conformance:
 
 ```
 $ medh5 conformance run ./corpus
-75/75 cases pass
+103/103 cases pass
 ```
 
 **Every code in §15.2 has a corpus case.** The implementation gates on `ruff`,
 `mypy --strict` and ≥ 90 % test coverage, and a test asserts that the §15.2 table and the
 implementation's code registry are identical, so the two cannot drift.
 
-Four clauses were corrected during implementation, each because writing the code showed the text was
-not implementable as written:
+Eight clauses were corrected during implementation, each because writing the code showed the text was
+not implementable, or not unambiguous, as written:
 
 | Clause | Correction |
 |---|---|
@@ -1512,6 +1517,8 @@ not implementable as written:
 | §13.3 | "the `digest` of the annotation" is now defined for a multi-dataset group, since only datasets carry digests. |
 | §1.3 | `det` requires a §8 annotation whose `task` is `detection`, not any §8 kind: §6.3 assigns contours and meshes to segmentation, so the two clauses contradicted each other. |
 | §9 | The `class_ids` *dataset* (asserted classes) and the same-named §6.2 *attribute* (classes the annotation can express) are now explicitly distinguished, since `annotated_class_ids ⊆ class_ids` would otherwise make "looked for and not found" inexpressible. |
+| §2.2 | §2.2 requires every sample root in a collection to carry its own `content_id`, but §15.2 had no code to report a missing one. `E010` was added. |
+| §7.4 | W909 is **sample-scoped**, matching the scope of `instance_id` itself. Checking it per annotation would miss the case it exists for: one lesion classified differently at two visits, each annotation internally consistent. |
 
 ### C.2 Prototype checks
 

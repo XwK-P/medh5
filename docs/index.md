@@ -28,13 +28,14 @@ In 1.0 a **sample is one subject at one or more timepoints**, each with one or m
 longitudinal work (change detection, response assessment, lesion tracking, follow-up registration)
 lives inside one file, and assigning whole files to train/val/test cannot leak a patient.
 
-**Implemented so far** (plan phases 0–4): the container and its geometry, timepoints, images and
+**Implemented so far** (plan phases 0–5): the container and its geometry, timepoints, images and
 multiscale pyramids, label sets, all five voxel-annotation encodings with lossless transcoding between
 them, every geometric annotation (boxes, oriented boxes, keypoints, landmarks, contours, meshes),
 classification including change labels across timepoints, registration (affine, dense displacement,
-B-spline, composite) with frame-graph resolution and target registration error, per-object digests and
-content addressing, the sampling index, the validator, a 96-case conformance corpus covering **every**
-diagnostic code, and a CLI.
+B-spline, composite) with frame-graph resolution and target registration error, curation (provenance,
+quality, agreement, identity, splits), longitudinal tracking joins, collections with byte-identical
+pack/unpack, per-object digests and content addressing, the sampling index, the validator, a 103-case
+conformance corpus covering **every** diagnostic code, and a CLI.
 
 ```python
 import medh5
@@ -45,18 +46,21 @@ with medh5.open("case_0001.medh5") as s:
     s.annotations["lesions"].as_slices()                  # boxes -> numpy slices
     s.annotations["response"].labels                      # change label across visits
     s.transform_between("tp0", "tp1")                     # resolved via frames, not names
-    s.track(class_key="lesion")                           # instance ids across visits
+    s.tracks("lesion")                                    # lesions joined across visits
 ```
 
 ```
 $ medh5 info case_0001.medh5      # grids, images, annotations, coverage, codecs
 $ medh5 validate case_0001.medh5 --level strict
 $ medh5 seg convert case_0001.medh5 organs --to bitmask   # lossless re-encoding
+$ medh5 track case_0001.medh5     # per-lesion volumes and present/resolved/unexamined
+$ medh5 pack cohort/*.medh5 -o shard.medh5c              # and `unpack` puts them back, byte for byte
+$ medh5 splits cohort/*.medh5     # conflicting split claims and subject leakage
 ```
 
-**Not yet implemented:** collections (§2.2), converters, and the PyTorch/MONAI loaders. Until those
-land, `medh5.legacy` holds the 0.6.0 implementation unchanged — the docs below describe it, and its
-import paths are `medh5.legacy.*`.
+**Not yet implemented:** converters and the PyTorch/MONAI loaders. Until those land, `medh5.legacy`
+holds the 0.6.0 implementation unchanged — the docs below describe it, and its import paths are
+`medh5.legacy.*`.
 
 - **[Specification (v1.0)](spec/medh5-1.0.md)** — normative on-disk schema: grids, geometry and
   timepoints, label sets, the voxel-annotation encodings, geometric annotations, transforms,
