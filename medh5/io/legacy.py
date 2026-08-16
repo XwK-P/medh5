@@ -37,6 +37,10 @@ from typing import Any
 
 import numpy as np
 
+from medh5.errors import MEDH5Error
+from medh5.io._legacy_reader import LegacyMeta, LegacySample, is_legacy
+from medh5.io._legacy_reader import read_meta as _read_meta
+from medh5.io._legacy_reader import read_sample as _read_sample
 from medh5.io.grouping import (
     Occasion,
     SubjectGroup,
@@ -50,24 +54,21 @@ BOX_SHIFT = -0.5
 """0.x ``[min, max)`` integer boxes sit at voxel edges once shifted (§8.1)."""
 
 
-def read_legacy(path: str | os.PathLike[str]) -> Any:
-    """Read a 0.x file through the preserved 0.x implementation."""
-    from medh5.legacy.core import MEDH5File
-
-    return MEDH5File.read(os.fspath(path))
+def read_legacy(path: str | os.PathLike[str]) -> LegacySample:
+    """Read a whole 0.x file (:mod:`medh5.io._legacy_reader`)."""
+    return _read_sample(path)
 
 
-def legacy_meta(path: str | os.PathLike[str]) -> Any:
-    from medh5.legacy.core import MEDH5File
+def legacy_meta(path: str | os.PathLike[str]) -> LegacyMeta:
+    """Read a 0.x file's metadata without its arrays."""
+    return _read_meta(path)
 
-    return MEDH5File.read_meta(os.fspath(path))
 
-
-def _subject_key(meta: Any, key: str | None) -> str | None:
+def _subject_key(meta: LegacyMeta, key: str | None) -> str | None:
     """Pull a subject key out of 0.x ``extra`` by dotted path."""
     if not key:
         return None
-    node: Any = {"extra": dict(meta.extra or {})}
+    node: Any = {"extra": dict(meta.extra)}
     for part in key.split("."):
         if not isinstance(node, Mapping) or part not in node:
             return None
@@ -94,12 +95,12 @@ def build_label_set(
     for path in paths:
         try:
             meta = legacy_meta(path)
-        except Exception:  # noqa: BLE001 - reported when the file is migrated
-            continue
-        for name in meta.seg_names or ():
+        except MEDH5Error:
+            continue  # reported by the pass that migrates it
+        for name in meta.seg_names:
             if name not in names:
                 names.append(name)
-        extra = dict(meta.extra or {})
+        extra = dict(meta.extra)
         nnunet = extra.get("nnunetv2") or {}
         for label, value in (nnunet.get("labels") or {}).items():
             if isinstance(value, int) and value > 0:
@@ -107,8 +108,8 @@ def build_label_set(
         sample = None
         try:
             sample = read_legacy(path)
-        except Exception:  # noqa: BLE001 - reported by the caller's own pass
-            sample = None
+        except MEDH5Error:
+            sample = None  # likewise
         if sample is not None and sample.bbox_labels:
             for label in sample.bbox_labels:
                 if label not in names:
@@ -190,10 +191,9 @@ def migrate_paths(
         text = os.fspath(path)
         try:
             meta = legacy_meta(text)
-        except Exception as exc:  # noqa: BLE001 - see below
-            # A 0.x file raises from `medh5.legacy.exceptions`, a separate
-            # hierarchy, and a non-MEDH5 file raises from h5py; a migration must
-            # report either and carry on rather than abandon the cohort.
+        except MEDH5Error as exc:
+            # Not a 0.x file, or a broken one.  A cohort migration reports it
+            # and carries on rather than abandoning the other files.
             log.warn("unreadable", f"{text}: {exc}", {"path": text})
             continue
         occasions.append(
@@ -220,8 +220,8 @@ def migrate_paths(
     return log
 
 
-def _date_of(meta: Any) -> str | None:
-    extra = dict(getattr(meta, "extra", None) or {})
+def _date_of(meta: LegacyMeta) -> str | None:
+    extra = dict(meta.extra)
     for key in ("study_date", "date", "acquisition_date"):
         value = extra.get(key)
         if value:
@@ -276,7 +276,7 @@ def _write(
 
 def _migrate_one(
     writer: Any,
-    sample: Any,
+    sample: LegacySample,
     source: str,
     timepoint: str,
     label_set: Any,
@@ -383,7 +383,7 @@ def _migrate_one(
                 {"source": source, "label": name},
             )
 
-    extra = dict(meta.extra or {})
+    extra = dict(meta.extra)
     if extra:
         writer.extra("legacy", extra)
     review = extra.get("review")
@@ -453,6 +453,7 @@ def load_sidecar(path: str | os.PathLike[str]) -> Any:
 
 __all__ = [
     "BOX_SHIFT",
+    "is_legacy",
     "build_label_set",
     "legacy_meta",
     "load_sidecar",

@@ -216,3 +216,75 @@ def write_dicom_series(
         "volume": volume,
         "paths": sorted(str(p) for p in directory.glob("*.dcm")),
     }
+
+
+def write_legacy_sample(
+    path: Path,
+    *,
+    images: dict[str, Any],
+    seg: dict[str, Any] | None = None,
+    bboxes: Any = None,
+    bbox_labels: list[str] | None = None,
+    bbox_scores: Any = None,
+    spacing: list[float] | None = None,
+    origin: list[float] | None = None,
+    direction: list[list[float]] | None = None,
+    coord_system: str | None = None,
+    label: int | str | None = None,
+    label_name: str | None = None,
+    patch_size: list[int] | None = None,
+    extra: dict[str, Any] | None = None,
+) -> Path:
+    """Write a 0.x file with plain h5py, to the layout documented in Appendix B.
+
+    Deliberately not written by the 0.x package: 1.0 does not ship one.  The
+    migration is therefore tested against the format as specified, not against
+    whichever implementation happened to be in the tree.
+    """
+    import json
+
+    import h5py
+
+    with h5py.File(str(path), "w") as handle:
+        group = handle.create_group("images")
+        for name, array in images.items():
+            group.create_dataset(name, data=np.asarray(array))
+        first = np.asarray(next(iter(images.values())))
+        group.attrs["shape"] = np.asarray(first.shape, dtype=np.int64)
+        if spacing is not None:
+            group.attrs["spacing"] = np.asarray(spacing, dtype=np.float64)
+        if origin is not None:
+            group.attrs["origin"] = np.asarray(origin, dtype=np.float64)
+        if direction is not None:
+            group.attrs["direction"] = np.asarray(direction, dtype=np.float64).ravel()
+        if coord_system is not None:
+            group.attrs["coord_system"] = coord_system
+        if patch_size is not None:
+            group.attrs["patch_size"] = np.asarray(patch_size, dtype=np.int64)
+
+        handle.attrs["schema_version"] = "1"
+        handle.attrs["image_names"] = json.dumps(sorted(images))
+        handle.attrs["has_seg"] = bool(seg)
+        handle.attrs["has_bbox"] = bboxes is not None
+        if seg:
+            masks = handle.create_group("seg")
+            for name, mask in seg.items():
+                masks.create_dataset(name, data=np.asarray(mask, dtype=bool))
+            handle.attrs["seg_names"] = json.dumps(sorted(seg))
+        if label is not None:
+            handle.attrs["label"] = label
+        if label_name is not None:
+            handle.attrs["label_name"] = label_name
+        if extra is not None:
+            handle.attrs["extra"] = json.dumps(extra)
+        if bboxes is not None:
+            handle.create_dataset("bboxes", data=np.asarray(bboxes))
+        if bbox_scores is not None:
+            handle.create_dataset("bbox_scores", data=np.asarray(bbox_scores))
+        if bbox_labels is not None:
+            handle.create_dataset(
+                "bbox_labels",
+                data=np.array(bbox_labels, dtype=object),
+                dtype=h5py.string_dtype(),
+            )
+    return path

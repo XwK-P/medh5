@@ -13,7 +13,8 @@ annotation, transform and curation record about them in a single file.  See
         s.at("tp1").images["CT_tp1"].read(physical=True)
         s.annotations["organs"].dense(["liver", "spleen"])
 
-The 0.x API remains importable as :mod:`medh5.legacy` until the converters land.
+0.x files are read by ``medh5 migrate`` and nothing else: 1.0 ships a reader for
+the old layout, not an implementation of it.
 """
 
 from __future__ import annotations

@@ -12,6 +12,7 @@ import medh5
 from medh5._hdf5 import encode_attr
 from medh5.cli import main
 from medh5.cli._common import EXIT_ERROR, EXIT_OK, EXIT_USAGE, human_bytes, table
+from tests.v1.conftest import write_legacy_sample
 
 
 def run(capsys, *argv):
@@ -334,6 +335,49 @@ class TestConformanceCommands:
         )
         assert code == EXIT_OK
         assert "1/1 cases pass" in out.out
+
+    def test_publish_then_score(self, capsys, tmp_path):
+        code, out = run(
+            capsys, "conformance", "publish", str(tmp_path), "--case", "core-minimal"
+        )
+        assert code == EXIT_OK
+        assert (tmp_path / "README.md").exists()
+        assert (tmp_path / "SHA256SUMS").exists()
+
+        results = tmp_path / "results.json"
+        results.write_text(
+            json.dumps([{"file": "core-minimal.medh5", "errors": [], "warnings": []}])
+        )
+        code, out = run(capsys, "conformance", "score", str(tmp_path), str(results))
+        assert code == EXIT_OK
+        assert "1/1 cases pass" in out.out
+
+    def test_score_reports_a_wrong_answer(self, capsys, tmp_path):
+        run(capsys, "conformance", "publish", str(tmp_path), "--case", "core-minimal")
+        results = tmp_path / "results.json"
+        results.write_text(
+            json.dumps([{"file": "core-minimal.medh5", "errors": ["E101"]}])
+        )
+        code, out = run(capsys, "conformance", "score", str(tmp_path), str(results))
+        assert code == EXIT_ERROR
+        assert "unexpected" in out.out and "E101" in out.out
+
+    def test_score_warns_when_the_files_have_drifted(self, capsys, tmp_path):
+        run(capsys, "conformance", "publish", str(tmp_path), "--case", "core-minimal")
+        case = tmp_path / "core-minimal.medh5"
+        case.write_bytes(case.read_bytes() + b"\x00")
+        results = tmp_path / "results.json"
+        results.write_text(
+            json.dumps([{"file": "core-minimal.medh5", "errors": [], "warnings": []}])
+        )
+        code, out = run(capsys, "conformance", "score", str(tmp_path), str(results))
+        assert "differ" in out.out and "core-minimal.medh5" in out.out
+
+    def test_score_without_a_suite_fails_cleanly(self, capsys, tmp_path):
+        results = tmp_path / "results.json"
+        results.write_text("[]")
+        code, out = run(capsys, "conformance", "score", str(tmp_path), str(results))
+        assert code == EXIT_ERROR
 
     def test_usage(self, capsys):
         assert run(capsys, "conformance")[0] == EXIT_ERROR
@@ -850,13 +894,11 @@ class TestPhase7Convert:
         assert (tmp_path / "back" / "Dataset001_medh5" / "dataset.json").exists()
 
     def test_migrate_writes_labels_then_migrates(self, capsys, tmp_path):
-        from medh5.legacy.core import MEDH5File
-
         shape = (6, 8, 10)
         mask = np.zeros(shape, bool)
         mask[1:4, 2:6, 3:8] = True
         old = tmp_path / "old.medh5"
-        MEDH5File.write(
+        write_legacy_sample(
             old,
             images={"CT": np.zeros(shape, np.int16)},
             seg={"liver": mask},

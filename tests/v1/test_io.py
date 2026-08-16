@@ -6,14 +6,16 @@ import json
 from pathlib import Path
 from typing import Any
 
+import h5py
 import numpy as np
 import pytest
 
 import medh5
-from medh5.errors import MEDH5ValidationError
+from medh5.errors import MEDH5FileError, MEDH5SchemaError, MEDH5ValidationError
 from medh5.io.grouping import Occasion, SubjectGroup, group_by_subject
 from medh5.io.report import ConversionReport, Note, merge_reports
 from medh5.validate import validate_file
+from tests.v1.conftest import write_legacy_sample
 
 nib = pytest.importorskip("nibabel")
 pydicom = pytest.importorskip("pydicom")
@@ -423,8 +425,6 @@ class TestNnunet:
 class TestMigrate:
     @pytest.fixture
     def legacy(self, tmp_path: Path) -> list[Path]:
-        from medh5.legacy.core import MEDH5File
-
         shape = (8, 12, 16)
         rng = np.random.default_rng(3)
         liver = np.zeros(shape, bool)
@@ -434,7 +434,7 @@ class TestMigrate:
         paths = []
         for index, patient in enumerate(("PAT-A", "PAT-A", "PAT-B")):
             path = tmp_path / f"old_{index}.medh5"
-            MEDH5File.write(
+            write_legacy_sample(
                 path,
                 images={"CT": rng.integers(-1000, 1500, shape).astype(np.int16)},
                 seg={"liver": liver, "lesion": lesion},
@@ -489,11 +489,10 @@ class TestMigrate:
         assert note.detail["shift"] == -0.5
 
     def test_masks_survive_and_coverage_is_flagged(self, legacy, tmp_path):
-        from medh5.io.legacy import migrate
-        from medh5.legacy.core import MEDH5File
+        from medh5.io.legacy import migrate, read_legacy
 
         migrate(legacy[0], tmp_path / "new.medh5")
-        original = MEDH5File.read(legacy[0])
+        original = read_legacy(legacy[0])
         with medh5.open(tmp_path / "new.medh5") as sample:
             seg = sample.annotations["seg"]
             for name, mask in original.seg.items():
@@ -558,6 +557,104 @@ class TestMigrate:
         report = migrate_paths([*legacy, broken], tmp_path / "out")
         assert report.warnings
         assert len(list((tmp_path / "out").glob("*.medh5"))) == 3
+
+
+class TestLegacyReader:
+    """1.0 ships a reader for the 0.x layout, not an implementation of it."""
+
+    def test_the_0x_package_is_gone(self):
+        with pytest.raises(ImportError):
+            import medh5.legacy  # noqa: F401
+
+    def test_a_1_0_file_is_refused_as_0_x(self, sample_path):
+        from medh5.io._legacy_reader import is_legacy, read_sample
+
+        with pytest.raises(MEDH5SchemaError, match="1.0 file"):
+            read_sample(sample_path)
+        assert not is_legacy(sample_path)
+
+    def test_a_non_hdf5_file_is_refused(self, tmp_path):
+        from medh5.io._legacy_reader import is_legacy, read_sample
+
+        path = tmp_path / "junk.medh5"
+        path.write_bytes(b"not hdf5")
+        with pytest.raises(MEDH5FileError):
+            read_sample(path)
+        assert not is_legacy(path)
+
+    def test_a_future_0_x_schema_version_is_refused(self, tmp_path):
+        from medh5.io._legacy_reader import read_meta
+
+        path = write_legacy_sample(
+            tmp_path / "old.medh5", images={"CT": np.zeros((2, 3, 4), np.int16)}
+        )
+        with h5py.File(path, "a") as handle:
+            handle.attrs["schema_version"] = "2"
+        with pytest.raises(MEDH5SchemaError, match="schema version"):
+            read_meta(path)
+
+    def test_the_file_beats_its_own_flags(self, tmp_path):
+        """0.x denormalised `has_seg`/`seg_names`, and they could drift."""
+        from medh5.io._legacy_reader import read_sample
+
+        mask = np.zeros((2, 3, 4), bool)
+        mask[0, 1, 2] = True
+        path = write_legacy_sample(
+            tmp_path / "old.medh5",
+            images={"CT": np.zeros((2, 3, 4), np.int16)},
+            seg={"liver": mask},
+        )
+        with h5py.File(path, "a") as handle:
+            handle.attrs["has_seg"] = False
+            del handle.attrs["seg_names"]
+        sample = read_sample(path)
+        assert list(sample.seg) == ["liver"]
+        assert sample.meta.seg_names == ["liver"]
+
+    def test_geometry_and_extra_round_trip(self, tmp_path):
+        from medh5.io._legacy_reader import read_sample
+
+        direction = [[0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [-1.0, 0.0, 0.0]]
+        path = write_legacy_sample(
+            tmp_path / "old.medh5",
+            images={"CT": np.zeros((2, 3, 4), np.int16)},
+            spacing=[2.0, 0.8, 0.9],
+            origin=[1.0, 2.0, 3.0],
+            direction=direction,
+            coord_system="LPS",
+            patch_size=[2, 2, 2],
+            label=1,
+            label_name="lesion",
+            extra={"patient_id": "PAT-A"},
+        )
+        sample = read_sample(path)
+        assert sample.meta.spatial.direction == direction
+        assert sample.meta.spatial.spacing == [2.0, 0.8, 0.9]
+        assert sample.meta.patch_size == [2, 2, 2]
+        assert sample.meta.label == 1
+        assert sample.meta.extra["patient_id"] == "PAT-A"
+
+    def test_a_malformed_direction_is_named(self, tmp_path):
+        from medh5.io._legacy_reader import read_meta
+
+        path = write_legacy_sample(
+            tmp_path / "old.medh5", images={"CT": np.zeros((2, 3, 4), np.int16)}
+        )
+        with h5py.File(path, "a") as handle:
+            handle["images"].attrs["direction"] = np.zeros(4, np.float64)
+        with pytest.raises(MEDH5SchemaError, match="4 element"):
+            read_meta(path)
+
+    def test_malformed_extra_is_named(self, tmp_path):
+        from medh5.io._legacy_reader import read_meta
+
+        path = write_legacy_sample(
+            tmp_path / "old.medh5", images={"CT": np.zeros((2, 3, 4), np.int16)}
+        )
+        with h5py.File(path, "a") as handle:
+            handle.attrs["extra"] = "{not json"
+        with pytest.raises(MEDH5SchemaError, match="not JSON"):
+            read_meta(path)
 
 
 class TestDicom:
