@@ -244,12 +244,18 @@ class Manifest:
         }
 
     def sha256(self) -> str:
-        """Digest of what the manifest *is about*, not of how it was written.
+        """Digest of the cohort's *membership*: which samples, grouped how.
 
-        Only identity and content are hashed --- not ``mtime``, ``size``, the
-        generating version or the root path --- so re-scanning the same cohort
-        from another machine produces the same digest, and a split claim made
-        against it still verifies.
+        Only ``sample_id``, ``subject_id`` and ``group_id`` are hashed --- not
+        paths, sizes, mtimes, the generating version, and deliberately **not**
+        ``content_id``.
+
+        Membership and grouping are exactly what a split is computed from, so
+        this is what a split claim should be checkable against.  Including
+        content would make the digest unusable for that: writing a claim into a
+        file changes the file's content, so every claim would be stale the
+        instant it was written.  Content drift is a different question, and
+        ``dataset check`` answers it separately (C401, and ``--deep``).
         """
         import hashlib
 
@@ -258,7 +264,6 @@ class Manifest:
                 "sample_id": e.sample_id,
                 "subject_id": e.subject_id,
                 "group_id": e.group_id,
-                "content_id": e.content_id,
             }
             for e in sorted(self.entries, key=lambda e: (e.sample_id, e.path))
         ]

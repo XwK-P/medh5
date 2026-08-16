@@ -144,8 +144,17 @@ class QualityRecord:
             status=str(doc["status"]),
             confidence=doc.get("confidence"),
             reviewed_by=tuple(doc.get("reviewed_by") or ()),
-            agreement=tuple(Agreement.from_json(a) for a in doc.get("agreement") or ()),
-            issues=tuple(Issue.from_json(i) for i in doc.get("issues") or ()),
+            # Accept already-constructed records as well as JSON: `set_quality`
+            # routes through here, and handing it an `Issue` should not be an
+            # error message about subscripting.
+            agreement=tuple(
+                a if isinstance(a, Agreement) else Agreement.from_json(a)
+                for a in doc.get("agreement") or ()
+            ),
+            issues=tuple(
+                i if isinstance(i, Issue) else Issue.from_json(i)
+                for i in doc.get("issues") or ()
+            ),
             edit_effort_s=doc.get("edit_effort_s"),
             extra={k: v for k, v in doc.items() if k not in known},
         )

@@ -6,95 +6,138 @@
 pip install medh5
 ```
 
-Optional extras pull in the dependencies needed for specific features:
+Extras, all optional:
+
+| Extra | For |
+|---|---|
+| `torch` | `medh5.torch` datasets and samplers |
+| `monai` | `medh5.monai` MetaTensor adapter |
+| `nifti` | NIfTI import and export (nibabel) |
+| `dicom` | DICOM, DICOM SEG and RTSTRUCT reading (pydicom) |
+| `dicomseg` | *Writing* DICOM SEG (highdicom) |
+| `itk` | Resampling in the converters (SimpleITK) |
+| `schema` | JSON Schema validation of `/meta` (jsonschema) |
+| `interp` | Cubic displacement-field evaluation (scipy) |
 
 ```bash
-pip install "medh5[torch]"    # PyTorch datasets
-pip install "medh5[nifti]"    # NIfTI import/export  (needs nibabel)
-pip install "medh5[dicom]"    # DICOM import         (needs pydicom)
-pip install "medh5[itk]"      # Resampling           (needs SimpleITK)
+pip install "medh5[torch,nifti,dicom]"
 ```
 
-To install from source for development:
+Nothing but `h5py`, `hdf5plugin` and `numpy` is needed to read or write a file.
 
-```bash
-git clone https://github.com/XwK-P/medh5.git
-cd medh5
-pip install -e ".[dev,torch,nifti,dicom,itk]"
-```
-
-## Python requirement
-
-Python >= 3.10. Supported matrix: 3.10, 3.11, 3.12.
-
-## Write your first `.medh5`
+## Write a sample
 
 ```python
 import numpy as np
-from medh5.legacy import MEDH5File
+import medh5
+from medh5 import LabelClass, LabelSet
 
-ct  = np.random.random((64, 128, 128)).astype(np.float32)
-pet = np.random.random((64, 128, 128)).astype(np.float32)
-tumor = np.random.random(ct.shape) > 0.95
+labels = LabelSet("demo-v1", version="1.0.0", classes=[
+    LabelClass(1, "liver", "Liver", category="organ"),
+    LabelClass(2, "spleen", "Spleen", category="organ"),
+    LabelClass(3, "lesion", "Lesion", parents=[1], category="lesion"),
+])
 
-MEDH5File.write(
-    "sample.medh5",
-    images={"CT": ct, "PET": pet},
-    seg={"tumor": tumor},
-    label=1,
-    label_name="malignant",
-    spacing=[1.0, 0.5, 0.5],
-    origin=[0.0, 0.0, 0.0],
-    direction=[[1, 0, 0], [0, 1, 0], [0, 0, 1]],
-    coord_system="RAS",
-    extra={"patient_id": "P001"},
-    compression="balanced",   # or "fast" / "max"
-    checksum=True,
-)
+ct = np.random.default_rng(0).integers(-1000, 1500, (64, 96, 96)).astype(np.int16)
+liver = np.zeros(ct.shape, bool); liver[10:40, 20:70, 20:70] = True
+lesion = np.zeros(ct.shape, bool); lesion[20:26, 35:45, 35:45] = True
+
+with medh5.create("case_0001.medh5", sample_id="case_0001",
+                  subject_id="DEMO-0001") as w:
+    w.identity(sex="F", bodypart="abdomen")
+    w.label_set(labels)
+    w.add_timepoint("tp0", label="baseline", days_from_baseline=0)
+
+    w.add_grid("ct", shape=ct.shape, spacing=(2.0, 0.8, 0.8),
+               origin=(-64.0, -38.4, -38.4), timepoint="tp0")
+
+    w.add_image("CT", ct, grid="ct", modality="CT",
+                value_type="quantitative", value_units="HU")
+
+    w.add_segmentation("organs", grid="ct",
+                       masks={"liver": liver, "lesion": lesion},
+                       annotated_classes=["liver", "spleen", "lesion"])
 ```
 
-Writes are **atomic** — if the process is killed mid-write, any pre-existing
-file at `sample.medh5` is preserved and no truncated file is left at the
-destination.
+Four things happened that are worth naming.
+
+**The grid carries the geometry**, and the image and the segmentation reference
+it. They cannot drift apart.
+
+**`annotated_classes` names the spleen** even though there is no spleen mask.
+That records "we looked and found none", which is a usable negative example.
+Leave it out and the default `"all_given"` records only what you handed over.
+
+**The encoding was chosen by measurement.** Liver and lesion overlap, so
+`add_segmentation` measured the overlap graph and picked an encoding that can
+represent it. It returns which one:
+
+```python
+kind, stats = w.add_segmentation(...)   # ("layers", OverlapStats(...))
+```
+
+**The file is written atomically.** It appears complete or not at all; a
+crashed writer cannot leave a half-file where a valid one used to be.
 
 ## Read it back
 
 ```python
-from medh5.legacy import MEDH5File
+with medh5.open("case_0001.medh5") as s:
+    s.identity.subject_id                  # "DEMO-0001"
+    s.profiles                             # {"core", "seg"}
 
-sample = MEDH5File.read("sample.medh5")
+    ct = s.images["CT"].read(physical=True)          # HU
+    patch = s.images["CT"].read((slice(10, 20),) * 3)  # just that block
 
-print(sample.images.keys())         # dict_keys(['CT', 'PET'])
-print(sample.images["CT"].shape)    # (64, 128, 128)
-print(sample.meta.label)            # 1
-print(sample.meta.spatial.spacing)  # [1.0, 0.5, 0.5]
+    organs = s.annotations["organs"]
+    organs.kind                            # "layers"
+    organs.dense(["liver", "lesion"])      # (2, 64, 96, 96) bool
+    organs.labelmap()                      # (64, 96, 96) of class ids
+    organs.voxel_counts()                  # {1: 75000, 2: 0, 3: 600}
 ```
 
-For large volumes, read lazily instead:
+Reads are lazy. `medh5.open` parses the metadata document and nothing else;
+slicing an image reads only the chunks that slice touches.
+
+## Look at it from the shell
+
+```
+$ medh5 info case_0001.medh5
+$ medh5 tree case_0001.medh5
+$ medh5 validate case_0001.medh5 --level strict
+$ medh5 verify case_0001.medh5
+```
+
+`validate` checks the file against the specification and reports stable
+diagnostic codes; `verify` checks that every object still matches its digest.
+
+## Train on it
 
 ```python
-with MEDH5File("sample.medh5") as f:
-    patch = f.images["CT"][10:42, 20:84, 20:84]
-    if f.seg is not None:
-        mask_patch = f.seg["tumor"][10:42, 20:84, 20:84]
+from torch.utils.data import DataLoader
+from medh5.torch import PatchDataset, collate, worker_init_fn
+from medh5.sampling import PatchSampler
+
+sampler = PatchSampler((32, 32, 32), strategy="balanced",
+                       foreground_classes=["liver", "lesion"])
+dataset = PatchDataset(["case_0001.medh5"], sampler,
+                       images=["CT"], annotations={"organs": ["liver", "lesion"]},
+                       samples_per_volume=8)
+
+loader = DataLoader(dataset, batch_size=2, num_workers=4,
+                    worker_init_fn=worker_init_fn, collate_fn=collate)
 ```
 
-## Validate and verify
+Foreground sampling is O(1) in the volume if the file carries a sampling index.
+Build one with:
 
-```python
-from medh5.legacy import MEDH5File
-
-report = MEDH5File.validate("sample.medh5")
-assert report.ok()                  # no errors
-assert MEDH5File.verify("sample.medh5")  # SHA-256 matches
+```
+$ medh5 index build case_0001.medh5
 ```
 
-See [Python API](python-api.md) for the full surface and
-[File format](file-format.md) for the on-disk layout.
+## Where to go next
 
-## Next steps
-
-- Convert existing NIfTI / DICOM / nnU-Net v2 datasets → [Converters](converters.md)
-- Train a PyTorch model on `.medh5` files → [PyTorch integration](pytorch.md)
-- Build a dataset manifest and train/val/test splits → [Datasets and statistics](dataset-and-stats.md)
-- Do everything from the shell → [CLI reference](cli.md)
+- **[Concepts](concepts.md)** — the model behind the API.
+- **[Converters](converters.md)** — you probably have NIfTI or DICOM, not this.
+- **[Training](training.md)** — samplers, transforms, MONAI, and the numbers.
+- **[Specification](spec/medh5-1.0.md)** — when you need the normative answer.

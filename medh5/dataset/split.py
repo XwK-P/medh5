@@ -252,25 +252,45 @@ def make_splits(
         stratum = _stratum_of(entries, stratify_by)
         strata.setdefault(stratum, []).append((group, entries))
 
-    for stratum, members in sorted(strata.items(), key=lambda kv: str(kv[0])):
-        # Deal each stratum separately, in a stable pseudo-random order: that is
-        # what makes the strata balanced across partitions rather than each
-        # partition being balanced only on average.
-        ordered = sorted(members, key=lambda kv: _rank(set_id, seed, kv[0]))
-        if k_folds is not None:
-            for position, (group, entries) in enumerate(ordered):
-                fold = position % k_folds
-                split.assignments.append(
-                    Assignment(
-                        group=group,
-                        partition="holdout",
-                        fold=fold,
-                        stratum=stratum,
-                        entries=tuple(e.path for e in entries),
-                    )
+    # Order within each stratum, then interleave the strata round-robin.  Two
+    # things have to hold at once: each stratum must be spread across the
+    # partitions (that is what stratifying means), and the *global* ratios must
+    # still be met.  Dealing each stratum with its own tally satisfies the
+    # first and wrecks the second --- every small stratum rounds toward train,
+    # and a four-group cohort ends up entirely in train.  Interleaving, then
+    # dealing once against a single running tally, satisfies both.
+    ordered_strata = {
+        stratum: sorted(members, key=lambda kv: _rank(set_id, seed, kv[0]))
+        for stratum, members in sorted(strata.items(), key=lambda kv: str(kv[0]))
+    }
+    interleaved: list[tuple[str | None, str, list[Entry]]] = []
+    depth = max((len(v) for v in ordered_strata.values()), default=0)
+    names = list(ordered_strata)
+    for position in range(depth):
+        # Rotate which stratum leads each round.  Without it the stratum that
+        # sorts first always occupies the same positions in the deal, and the
+        # small partitions --- the ones with one or two groups to give away ---
+        # fill from that stratum every time.
+        for offset in range(len(names)):
+            stratum = names[(position + offset) % len(names)]
+            members = ordered_strata[stratum]
+            if position < len(members):
+                group, entries = members[position]
+                interleaved.append((stratum, group, entries))
+
+    if k_folds is not None:
+        for position, (stratum, group, entries) in enumerate(interleaved):
+            split.assignments.append(
+                Assignment(
+                    group=group,
+                    partition="holdout",
+                    fold=position % k_folds,
+                    stratum=stratum,
+                    entries=tuple(e.path for e in entries),
                 )
-            continue
-        for group, entries, partition in _deal(ordered, shares):
+            )
+    else:
+        for stratum, group, entries, partition in _deal(interleaved, shares):
             split.assignments.append(
                 Assignment(
                     group=group,
@@ -284,24 +304,25 @@ def make_splits(
 
 
 def _deal(
-    ordered: Sequence[tuple[str, list[Entry]]], shares: Mapping[str, float]
-) -> list[tuple[str, list[Entry], str]]:
+    ordered: Sequence[tuple[str | None, str, list[Entry]]],
+    shares: Mapping[str, float],
+) -> list[tuple[str | None, str, list[Entry], str]]:
     """Hand out groups by largest remaining deficit against the target shares.
 
-    Not "first 70% to train": with 3 groups and a 0.7/0.15/0.15 split, slicing
-    by index gives train everything and val and test nothing.  Dealing by
-    deficit gives 1 group to each, which is the closest a 3-group cohort can
-    come to those ratios --- and it says so in ``Split.balance``.
+    Not "first 70 % to train": with 6 groups and a 0.7/0.15/0.15 split, slicing
+    by index gives train everything.  Dealing by deficit gives the closest
+    integer allocation those ratios admit --- and ``Split.underfilled`` says so
+    when the closest is still zero for some partition.
     """
     names = [p for p in PARTITIONS if p in shares and shares[p] > 0]
-    assigned: dict[str, int] = {p: 0 for p in names}
-    out: list[tuple[str, list[Entry], str]] = []
-    for position, (group, entries) in enumerate(ordered):
+    assigned: dict[str, int] = dict.fromkeys(names, 0)
+    out: list[tuple[str | None, str, list[Entry], str]] = []
+    for position, (stratum, group, entries) in enumerate(ordered):
         done = position + 1
         target = {p: shares[p] * done for p in names}
         partition = max(names, key=lambda p: (target[p] - assigned[p], -names.index(p)))
         assigned[partition] += 1
-        out.append((group, entries, partition))
+        out.append((stratum, group, entries, partition))
     return out
 
 

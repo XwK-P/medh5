@@ -106,10 +106,29 @@ class TestManifest:
         )
         assert moved.sha256() == manifest.sha256()
 
-    def test_the_digest_changes_with_the_cohort(self, manifest):
+    def test_the_digest_survives_writing_the_claims_it_authorises(
+        self, manifest, cohort
+    ):
+        """A digest over content would be stale the instant a claim is written.
+
+        `write_claims` rewrites every file, so a content-covering digest could
+        never match a re-scan --- and `dataset check` would report C201 on the
+        split it had just made.
+        """
+        before = manifest.sha256()
+        write_claims(make_splits(manifest), manifest)
+        after, _ = scan(cohort)
+        assert after.sha256() == before
+        assert not [f for f in check(after).findings if f.code == "C201"]
+
+    def test_the_digest_changes_with_the_cohort(self, manifest, cohort, label_set):
         smaller = manifest.filter(lambda e: e.site_id == "site-A")
         assert len(smaller) == 3
         assert smaller.sha256() != manifest.sha256()
+
+        write_sample(cohort / "new.medh5", label_set=label_set, sample_id="new")
+        wider, _ = scan(cohort)
+        assert wider.sha256() != manifest.sha256()
 
     def test_staleness_is_noticed(self, manifest, cohort):
         assert not manifest.stale()
@@ -214,6 +233,34 @@ class TestSplits:
             partition: set(counts) for partition, counts in split.balance().items()
         }
         assert any(len(v) > 1 for v in sites.values()) or len(sites) > 1
+
+    def test_stratifying_does_not_starve_the_small_partitions(self, manifest):
+        """Per-stratum tallies round every small stratum toward train.
+
+        Four groups in two strata, dealt independently, put all four in train:
+        each stratum's own 0.7/0.15/0.15 rounds that way twice.  The tally has
+        to be global for the ratios to mean anything.
+        """
+        plain = make_splits(manifest, seed=0)
+        stratified = make_splits(manifest, stratify_by="site_id", seed=0)
+        assert set(stratified.counts) == set(plain.counts)
+        assert stratified.underfilled == plain.underfilled
+        assert stratified.counts["train"] < sum(stratified.counts.values())
+
+    def test_each_stratum_is_spread_across_the_partitions(
+        self, manifest, cohort, label_set
+    ):
+        """...and the strata still have to be spread, not merely counted."""
+        for extra in range(6):
+            path = cohort / f"more-{extra}.medh5"
+            write_sample(path, label_set=label_set, sample_id=f"more-{extra}")
+            with medh5.amend(path) as writer:
+                writer.identity(subject_id=f"subj-{extra}x")
+                writer.cohort(site_id="site-A" if extra % 2 else "site-B")
+        built, _ = scan(cohort)
+        split = make_splits(built, stratify_by="site_id", seed=0)
+        balance = split.balance()
+        assert len(balance["train"]) > 1, balance
 
     def test_a_groups_stratum_is_its_majority(self, manifest, cohort):
         """A group is indivisible, so a disagreeing group needs one answer."""
