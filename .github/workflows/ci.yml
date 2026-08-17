@@ -80,10 +80,13 @@ jobs:
           manifest = json.load(open("suite/expected.json"))
           results = []
           for case in manifest["cases"]:
+              # No `check=True`: `validate` exits non-zero for a file with
+              # errors, and 65 of the 103 cases are deliberately invalid. The
+              # exit code is the answer, not a failure.
               out = subprocess.run(
                   ["medh5", "validate", f"suite/{case['file']}",
                    "--level", case["level"], "--json"],
-                  capture_output=True, text=True, check=True,
+                  capture_output=True, text=True,
               ).stdout
               report = json.loads(out)[0]
               results.append({"file": case["file"], "diagnostics": report["diagnostics"]})
