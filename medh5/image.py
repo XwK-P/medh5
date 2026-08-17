@@ -207,7 +207,10 @@ class Image:
 
     @property
     def dtype(self) -> np.dtype[Any]:
-        return np.dtype(self.dataset.dtype)
+        # `h5py` is in the ignore-missing-imports list, so `dataset.dtype` is
+        # `Any`; name the result rather than letting it widen the return type.
+        out: np.dtype[Any] = np.dtype(self.dataset.dtype)
+        return out
 
     @property
     def nbytes(self) -> int:

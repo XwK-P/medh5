@@ -52,8 +52,10 @@ dependencies = [
 dev = [
   "pytest>=7.0",
   "pytest-cov>=4.0",
-  "ruff>=0.4",
-  "mypy>=1.0",
+  # Pinned, not floated: CI ran `pip install ruff` unpinned and broke when 0.16
+  # started formatting Markdown. A lint gate that changes under you is not a gate.
+  "ruff==0.16.3",
+  "mypy==1.18.2",
   "build>=1.0",
   "twine>=5.0",
   "jsonschema>=4.18",
@@ -120,6 +122,14 @@ target-version = "py310"
 # Reference/benchmark scripts published alongside the 1.0 spec. They are documentation
 # artifacts meant to be read next to the prose -- deliberately compact, not library code.
 extend-exclude = ["docs/design/benchmarks"]
+
+# ruff >= 0.16 formats Python inside Markdown code blocks. Not here: the snippets
+# in docs/ and README.md are prose examples, sized to be read on the page and
+# verified by being executed, and one-argument-per-line turns a four-line call
+# into eight without making it more correct. Source is formatted; documentation
+# about source is written.
+[tool.ruff.format]
+exclude = ["*.md"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]

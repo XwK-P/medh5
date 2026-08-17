@@ -14,7 +14,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install ruff
+      # From the dev extra, so CI and a developer's checkout run the same
+      # version by construction rather than by coincidence.
+      - run: pip install -e ".[dev]"
       - run: ruff check .
       - run: ruff format --check .
 
@@ -25,7 +27,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -e ".[dev]" mypy
+      - run: pip install -e ".[dev]"
       - run: mypy medh5
 
   test:
