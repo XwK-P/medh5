@@ -185,6 +185,153 @@ class TestScrubFinds:
             scrubber.scan(dirty, profile="paranoid")
 
 
+class TestScrubCoverage:
+    """What the sweep must not miss.  A false negative here is the worst
+    outcome this module has, because the file then carries an attestation."""
+
+    def _with(self, tmp_path, name, **acquisition):
+        path = tmp_path / f"{name}.medh5"
+        with medh5.create(path, sample_id="s", subject_id="subj-A") as w:
+            w.add_timepoint("tp0")
+            w.add_grid("g", shape=SHAPE, spacing=(1.0, 1.0, 1.0), timepoint="tp0")
+            w.add_image("CT", np.zeros(SHAPE, np.int16), grid="g", modality="CT")
+            w.acquisition("CT", **acquisition)
+        return path
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "PatientName",
+            "patientname",
+            "PATIENTNAME",
+            "patient_name",
+            "Patient Name",
+            "patient__name",
+        ],
+    )
+    def test_a_key_is_matched_however_it_is_spelled(self, tmp_path, key):
+        path = self._with(tmp_path, f"k{abs(hash(key))}", **{key: "Doe^Jane"})
+        assert scrubber.scan(path).actionable
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "AdditionalPatientHistory",
+            "PatientComments",
+            "Occupation",
+            "EthnicGroup",
+            "MilitaryRank",
+            "CountryOfResidence",
+            "StationName",
+            "DeviceSerialNumber",
+            "ClinicalTrialSubjectID",
+            "ContentCreatorName",
+            "VerifyingObserverName",
+            "RequestedProcedureID",
+            "InstitutionName",
+            "CurrentPatientLocation",
+            "PatientInstitutionResidence",
+        ],
+    )
+    def test_the_PS3_15_E1_attributes_are_reported(self, tmp_path, key):
+        """The denylist started far too short --- 7 of 43 probes were caught."""
+        path = self._with(tmp_path, f"e{abs(hash(key))}", **{key: "SENSITIVE"})
+        assert [f for f in scrubber.scan(path).findings if key in f.where], key
+
+    def test_a_quasi_identifier_is_reported_but_kept_under_basic(self, tmp_path):
+        """PatientWeight drives a PET SUV; removing it by default would break
+        quantitative imaging to buy privacy the caller may already have."""
+        path = self._with(tmp_path, "quasi", kvp=120, PatientWeight=82.0)
+        report = scrubber.scan(path)
+        assert [f.rule for f in report.findings] == ["quasi_identifier"]
+        assert not report.actionable
+
+        scrubber.apply(path, profile="basic")
+        with medh5.open(path) as sample:
+            assert sample.document.acquisition["CT"]["PatientWeight"] == 82.0
+            assert "retained for review" in sample.document.deidentification.profile
+
+    def test_strict_removes_it_and_says_so(self, tmp_path):
+        path = self._with(tmp_path, "quasi-strict", kvp=120, PatientWeight=82.0)
+        assert scrubber.scan(path, profile="strict").actionable
+        scrubber.apply(path, profile="strict")
+        with medh5.open(path) as sample:
+            acquisition = sample.document.acquisition["CT"]
+            assert "PatientWeight" not in acquisition
+            assert acquisition["kvp"] == 120
+            assert "quasi-identifiers removed" in (
+                sample.document.deidentification.profile
+            )
+
+    def test_a_uid_key_holding_a_non_uid_is_reported(self, tmp_path):
+        """It cannot be pseudonymised safely, so it must not pass silently."""
+        path = self._with(tmp_path, "uidkey", StudyInstanceUID="not-a-uid")
+        findings = scrubber.scan(path).findings
+        assert [f.rule for f in findings] == ["uid"]
+
+    def test_too_deep_is_reported_not_skipped(self, tmp_path):
+        """A silent stop would leave an attestation over uninspected data."""
+        payload = {"PatientName": "Doe^Jane"}
+        for _ in range(scrubber.MAX_DEPTH + 1):
+            payload = {"level": payload}
+        path = tmp_path / "deep.medh5"
+        with medh5.create(path, sample_id="s", subject_id="subj-A") as w:
+            w.add_timepoint("tp0")
+            w.add_grid("g", shape=SHAPE, spacing=(1.0, 1.0, 1.0), timepoint="tp0")
+            w.add_image("CT", np.zeros(SHAPE, np.int16), grid="g", modality="CT")
+            w.extra("src", payload)
+        report = scrubber.scan(path)
+        assert not report.clean
+        assert "too_deep" in {f.rule for f in report.findings}
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"items": [{"PatientName": "Doe^Jane"}]},
+            {"items": [[{"PatientName": "Doe^Jane"}]]},
+            {"1": {"PatientName": "Doe^Jane"}},
+            {"StudyDate": 20260203},
+            {"names": ["Doe^Jane"]},
+        ],
+    )
+    def test_the_walk_reaches_awkward_structures(self, tmp_path, payload):
+        path = tmp_path / f"w{abs(hash(str(payload)))}.medh5"
+        with medh5.create(path, sample_id="s", subject_id="subj-A") as w:
+            w.add_timepoint("tp0")
+            w.add_grid("g", shape=SHAPE, spacing=(1.0, 1.0, 1.0), timepoint="tp0")
+            w.add_image("CT", np.zeros(SHAPE, np.int16), grid="g", modality="CT")
+            w.extra("src", payload)
+        assert scrubber.scan(path).actionable
+
+    def test_nothing_actionable_survives_apply(self, tmp_path):
+        """The contract: after --apply, a re-scan finds nothing left to do."""
+        path = tmp_path / "full.medh5"
+        with medh5.create(path, sample_id="s", subject_id="Doe^Jane") as w:
+            w.add_timepoint("tp0", date="2026-02-03", study_uid="1.2.840.113619.2.1")
+            w.add_grid(
+                "g",
+                shape=SHAPE,
+                spacing=(1.0, 1.0, 1.0),
+                timepoint="tp0",
+                frame_uid="1.2.840.10008.3.1.2.9",
+            )
+            w.add_image("CT", np.zeros(SHAPE, np.int16), grid="g", modality="CT")
+            w.acquisition("CT", kvp=120, PatientName="Doe^Jane", StudyDate="20260203")
+            w.extra("src", {"AccessionNumber": "A-99213", "series": "1.2.3.4.5"})
+        assert len(scrubber.scan(path).actionable) >= 5
+
+        scrubber.apply(path, date_shift_days=-117)
+        assert not scrubber.scan(path).actionable
+
+    def test_a_swept_file_passes_scrub_as_a_gate(self, tmp_path):
+        """`scrub` exits non-zero on findings, so its own output must pass."""
+        path = self._with(
+            tmp_path, "gate", kvp=120, PatientName="Doe^Jane", StudyDate="20260203"
+        )
+        scrubber.apply(path, date_shift_days=-117)
+        assert not scrubber.scan(path).actionable
+
+
 class TestScrubApplies:
     @pytest.fixture
     def dirty(self, tmp_path: Path) -> Path:

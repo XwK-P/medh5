@@ -41,21 +41,46 @@ PROFILES = ("basic", "strict")
 
 IDENTIFYING_KEYS = frozenset(
     {
+        # --- the person -------------------------------------------------
         "patientname",
         "patientid",
         "patientbirthdate",
         "patientbirthtime",
         "patientaddress",
         "patienttelephonenumbers",
+        "patienttelecominformation",
         "otherpatientids",
+        "otherpatientidssequence",
         "otherpatientnames",
         "patientmothersbirthname",
-        "accessionnumber",
-        "institutionname",
-        "institutionaddress",
-        "institutionaldepartmentname",
+        "patientinsuranceplancodesequence",
+        "patientreligiouspreference",
+        "patientinstitutionresidence",
+        "currentpatientlocation",
+        "countryofresidence",
+        "regionofresidence",
+        "militaryrank",
+        "branchofservice",
+        "occupation",
+        "medicalrecordlocator",
+        "issuerofpatientid",
+        "patient_name",
+        "patient_id",
+        "mrn",
+        "nhs_number",
+        "ssn",
+        # --- free text that routinely carries names ---------------------
+        "patientcomments",
+        "additionalpatienthistory",
+        "medicalalerts",
+        "allergies",
+        "admittingdiagnosesdescription",
+        "specialneeds",
+        # --- staff ------------------------------------------------------
         "referringphysicianname",
         "referringphysicianaddress",
+        "referringphysiciantelephonenumbers",
+        "consultingphysicianname",
         "performingphysicianname",
         "operatorsname",
         "physiciansofrecord",
@@ -63,36 +88,128 @@ IDENTIFYING_KEYS = frozenset(
         "namesofintendedrecipientsofresults",
         "requestingphysician",
         "responsibleperson",
-        "medicalrecordlocator",
-        "issuerofpatientid",
+        "verifyingobservername",
+        "contentcreatorname",
+        "personname",
+        "reviewername",
+        "scheduledperformingphysicianname",
+        # --- the visit --------------------------------------------------
+        "accessionnumber",
         "studyid",
         "admissionid",
-        "patientinsuranceplancodesequence",
-        "patient_name",
-        "patient_id",
-        "mrn",
-        "nhs_number",
-        "ssn",
+        "issuerofadmissionid",
+        "performedprocedurestepid",
+        "performedprocedurestepdescription",
+        "requestedprocedureid",
+        "scheduledprocedurestepid",
+        "scheduledstudylocation",
+        "requestattributessequence",
+        # --- the site and the equipment ---------------------------------
+        "institutionname",
+        "institutionaddress",
+        "institutionaldepartmentname",
+        "institutioncodesequence",
+        "stationname",
+        "deviceserialnumber",
+        "plateid",
+        "cassetteid",
+        "detectorid",
+        "gantryid",
+        "generatorid",
+        # --- clinical trials --------------------------------------------
+        "clinicaltrialsubjectid",
+        "clinicaltrialsubjectreadingid",
+        "clinicaltrialsitename",
+        "clinicaltrialsiteid",
+        "clinicaltrialsponsorname",
+        "clinicaltrialprotocolid",
+        "clinicaltrialprotocolname",
+        "clinicaltrialtimepointid",
     }
 )
-"""Keys that identify a person by name.  Matched case- and underscore-insensitively."""
+"""Attributes to remove, from the DICOM PS3.15 E.1 basic profile.
+
+Matched case-, space- and underscore-insensitively, so ``PatientName``,
+``patient_name`` and ``Patient Name`` are one key.
+"""
+
+QUASI_IDENTIFYING_KEYS = frozenset(
+    {
+        "patientage",
+        "patientweight",
+        "patientsize",
+        "patientsex",
+        "patientsexneutered",
+        "ethnicgroup",
+        "patientspeciesdescription",
+        "patientstate",
+        "patientbreeddescription",
+        "pregnancystatus",
+        "smokingstatus",
+        "lastmenstrualdate",
+    }
+)
+"""Attributes that identify *in combination* --- and that some pipelines need.
+
+``PatientWeight`` and ``PatientSize`` are inputs to a PET SUV calculation, so
+removing them by default would break quantitative imaging to buy privacy the
+caller may already have obtained another way.  They are reported for a human
+decision under ``basic`` and removed under ``strict``.
+"""
 
 DATE_KEYS = frozenset(
     {
         "studydate",
         "seriesdate",
         "acquisitiondate",
+        "acquisitiondatetime",
         "contentdate",
         "instancecreationdate",
         "patientbirthdate",
         "admittingdate",
         "scheduledproceduredate",
+        "scheduledprocedurestepstartdate",
+        "performedprocedurestepstartdate",
+        "lastmenstrualdate",
         "study_date",
         "acquisition_date",
         "birth_date",
         "date_of_birth",
     }
 )
+
+UID_KEYS = frozenset(
+    {
+        "studyinstanceuid",
+        "seriesinstanceuid",
+        "sopinstanceuid",
+        "frameofreferenceuid",
+        "mediastoragesopinstanceuid",
+        "referencedsopinstanceuid",
+        "irradiationeventuid",
+        "concatenationuid",
+        "storagemediafilesetuid",
+        "study_uid",
+        "series_uid",
+        "frame_uid",
+    }
+)
+"""Keys that hold a UID.
+
+A UID-shaped *value* is pseudonymised wherever it appears, which is the real
+mechanism.  This set catches the other case: a UID key whose value is not
+UID-shaped.  That cannot be pseudonymised safely --- a stable pseudonym needs
+something recognisable to hash --- so it is reported for a person rather than
+guessed at.
+"""
+
+MAX_DEPTH = 8
+"""How deep the walk goes before it reports rather than descends.
+
+Real metadata does not nest this far; a payload that does is reported as
+unexaminable instead of skipped, because a silent stop in a tool that writes an
+attestation is the worst thing this module could do.
+"""
 
 PERSON_NAME = re.compile(r"^[A-Za-z' -]+\^[A-Za-z' -]+")
 """DICOM PN form ``Family^Given``: unambiguous enough to act on."""
@@ -239,6 +356,9 @@ def scan_document(document: Any, report: ScrubReport) -> ScrubReport:
     _scan_mapping(dict(identity.extra), "identity.extra", report)
     _scan_mapping(document.cohort.to_json(), "cohort", report)
 
+    shifted = document.deidentification is not None and (
+        document.deidentification.date_shift_days is not None
+    )
     for index, timepoint in enumerate(document.timepoints):
         where = f"timepoints[{index}]"
         if timepoint.study_uid and DICOM_UID.match(timepoint.study_uid):
@@ -258,9 +378,6 @@ def scan_document(document: Any, report: ScrubReport) -> ScrubReport:
                     value,
                     actionable=True,
                 )
-        shifted = document.deidentification is not None and (
-            document.deidentification.date_shift_days is not None
-        )
         if timepoint.date and not shifted:
             report.add(
                 "date",
@@ -272,9 +389,9 @@ def scan_document(document: Any, report: ScrubReport) -> ScrubReport:
             )
 
     for image_id, params in document.acquisition.items():
-        _scan_mapping(params, f"acquisition.{image_id}", report)
+        _scan_mapping(params, f"acquisition.{image_id}", report, dates_shifted=shifted)
     for namespace, payload in document.extra.items():
-        _scan_mapping(payload, f"extra.{namespace}", report)
+        _scan_mapping(payload, f"extra.{namespace}", report, dates_shifted=shifted)
 
     for agent in document.provenance.agents:
         if getattr(agent, "type", None) == "person" and agent.name:
@@ -289,10 +406,23 @@ def scan_document(document: Any, report: ScrubReport) -> ScrubReport:
 
 
 def _scan_mapping(
-    payload: Any, where: str, report: ScrubReport, depth: int = 0
+    payload: Any,
+    where: str,
+    report: ScrubReport,
+    depth: int = 0,
+    *,
+    dates_shifted: bool = False,
 ) -> None:
     """Walk arbitrary JSON, applying the key and value rules as it goes."""
-    if depth > 8:  # noqa: PLR2004 - a depth no real metadata reaches
+    if depth > MAX_DEPTH:
+        # Reported, not skipped.  A silent stop would leave the file carrying
+        # an attestation over a structure nothing ever looked at.
+        report.add(
+            "too_deep",
+            where,
+            f"nested more than {MAX_DEPTH} levels; this tool did not inspect "
+            "it, and a person must",
+        )
         return
     if isinstance(payload, Mapping):
         for key, value in payload.items():
@@ -308,20 +438,48 @@ def _scan_mapping(
                     actionable=True,
                 )
                 continue
+            if normal in UID_KEYS and not DICOM_UID.match(str(value)):
+                report.add(
+                    "uid",
+                    path,
+                    "a UID attribute whose value is not a UID; it cannot be "
+                    "pseudonymised safely, so a person must decide",
+                    value,
+                )
+                continue
+            if normal in QUASI_IDENTIFYING_KEYS:
+                report.add(
+                    "quasi_identifier",
+                    path,
+                    "identifying in combination with others, and sometimes "
+                    "needed (PatientWeight drives a PET SUV); removed under "
+                    "--profile strict, your decision under basic",
+                    value,
+                )
+                continue
             if normal in DATE_KEYS:
                 report.add(
                     "date",
                     path,
                     "a date attribute copied from the source",
                     value,
-                    actionable=True,
+                    # A file that already records a shift has had its dates
+                    # handled; flagging them again would make `scrub` as a
+                    # pipeline gate fail forever on its own output.
+                    actionable=not dates_shifted,
                 )
                 continue
-            _scan_mapping(value, path, report, depth + 1)
+            _scan_mapping(value, path, report, depth + 1, dates_shifted=dates_shifted)
         return
     if isinstance(payload, (list, tuple)):
         for index, value in enumerate(payload):
-            _scan_mapping(value, f"{where}[{index}]", report, depth + 1)
+            _scan_mapping(
+                value,
+                f"{where}[{index}]",
+                report,
+                depth + 1,
+                dates_shifted=dates_shifted,
+            )
         return
     if isinstance(payload, str):
         _scan_text(payload, where, report)
@@ -373,7 +531,12 @@ def scan(path: str | os.PathLike[str], *, profile: str = "basic") -> ScrubReport
                 )
     if profile == "strict":
         for finding in report.findings:
-            if finding.rule in ("free_text", "staff_name", "person_name"):
+            if finding.rule in (
+                "free_text",
+                "staff_name",
+                "person_name",
+                "quasi_identifier",
+            ):
                 finding.actionable = True
     return report
 
@@ -417,6 +580,7 @@ def apply(
                 salt=salt,
                 date_shift_days=None if shifted_before else date_shift_days,
                 keep_dates=shifted_before,
+                strict=profile == "strict",
             )
             document.extra[namespace] = cleaned
             removed.extend(actions)
@@ -428,6 +592,7 @@ def apply(
                 salt=salt,
                 date_shift_days=None if shifted_before else date_shift_days,
                 keep_dates=shifted_before,
+                strict=profile == "strict",
             )
             document.acquisition[image_id] = cleaned
             removed.extend(actions)
@@ -487,7 +652,14 @@ def apply(
         )
         writer.deidentification(
             method="medh5-scrub",
-            profile=f"medh5 scrub {profile}: container metadata only",
+            profile=(
+                f"medh5 scrub {profile}: container metadata only; "
+                + (
+                    "quasi-identifiers removed"
+                    if profile == "strict"
+                    else "quasi-identifiers retained for review"
+                )
+            ),
             date_shift_days=date_shift_days,
             # `external` only when a salt exists to be held externally.  An
             # unsalted hash is derivable by anyone holding the original UIDs, so
@@ -512,11 +684,15 @@ def _clean(
     salt: str,
     date_shift_days: int | None,
     keep_dates: bool = False,
+    strict: bool = False,
     depth: int = 0,
 ) -> tuple[Any, list[str]]:
     """Rebuild a JSON payload without its identifiers, listing what changed."""
     actions: list[str] = []
-    if depth > 8:  # noqa: PLR2004
+    if depth > MAX_DEPTH:
+        # Left intact and *reported*, to match the scan: this tool did not
+        # look here, so it must not imply that it did.
+        actions.append(f"{where} left untouched: nested deeper than {MAX_DEPTH}")
         return payload, actions
     if isinstance(payload, Mapping):
         out: dict[str, Any] = {}
@@ -525,6 +701,15 @@ def _clean(
             normal = _normalise(str(key))
             if normal in IDENTIFYING_KEYS:
                 actions.append(f"{path} removed")
+                continue
+            if normal in QUASI_IDENTIFYING_KEYS:
+                if strict:
+                    actions.append(f"{path} removed (quasi-identifier, strict)")
+                    continue
+                out[key] = value
+                continue
+            if normal in UID_KEYS and not DICOM_UID.match(str(value)):
+                out[key] = value
                 continue
             if normal in DATE_KEYS:
                 if keep_dates:
@@ -544,6 +729,7 @@ def _clean(
                 salt=salt,
                 date_shift_days=date_shift_days,
                 keep_dates=keep_dates,
+                strict=strict,
                 depth=depth + 1,
             )
             out[key] = cleaned
@@ -559,6 +745,7 @@ def _clean(
                 salt=salt,
                 date_shift_days=date_shift_days,
                 keep_dates=keep_dates,
+                strict=strict,
                 depth=depth + 1,
             )
             cleaned_list.append(cleaned)
@@ -615,6 +802,9 @@ def scrub_paths(
 __all__ = [
     "DATE_KEYS",
     "IDENTIFYING_KEYS",
+    "MAX_DEPTH",
+    "QUASI_IDENTIFYING_KEYS",
+    "UID_KEYS",
     "PROFILES",
     "Finding",
     "ScrubReport",
