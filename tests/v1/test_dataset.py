@@ -278,6 +278,18 @@ class TestSplits:
         assert folds == {0, 1}
         assert all(a.partition == "holdout" for a in split.assignments)
 
+    def test_more_folds_than_groups_says_so(self, manifest):
+        """A 5-fold CV that quietly runs 4 ways is not noticed until later."""
+        split = make_splits(manifest, k_folds=8, seed=0)
+        assert len(split.assignments) == 4
+        assert split.empty_folds == (4, 5, 6, 7)
+
+    def test_enough_groups_fills_every_fold(self, manifest):
+        assert make_splits(manifest, k_folds=2, seed=0).empty_folds == ()
+
+    def test_a_ratio_split_has_no_folds_to_report(self, manifest):
+        assert make_splits(manifest, seed=0).empty_folds == ()
+
     def test_k_folds_below_two_is_refused(self, manifest):
         with pytest.raises(MEDH5ValidationError, match="at least 2"):
             make_splits(manifest, k_folds=1)

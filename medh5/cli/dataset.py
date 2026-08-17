@@ -168,6 +168,12 @@ def _split(args: argparse.Namespace) -> int:
         )
         if written:
             print(f"wrote split claims into {len(written)} file(s)")
+        if split.empty_folds:
+            print(
+                f"WARNING: fold(s) {', '.join(str(f) for f in split.empty_folds)} "
+                f"got no groups --- {len(split.assignments)} group(s) cannot fill "
+                f"{split.k_folds} folds"
+            )
         if split.underfilled:
             print(
                 f"WARNING: {', '.join(split.underfilled)} got no groups --- "

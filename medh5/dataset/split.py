@@ -108,6 +108,19 @@ class Split:
         return {k: dict(sorted(v.items())) for k, v in sorted(out.items())}
 
     @property
+    def empty_folds(self) -> tuple[int, ...]:
+        """Folds that were asked for and got no groups.
+
+        `--k-folds 5` over three groups yields three folds, and a cross
+        validation that quietly runs three ways instead of five is not one
+        anybody would notice until they compared results with a colleague.
+        """
+        if self.k_folds is None:
+            return ()
+        filled = {a.fold for a in self.assignments if a.fold is not None}
+        return tuple(f for f in range(self.k_folds) if f not in filled)
+
+    @property
     def underfilled(self) -> tuple[str, ...]:
         """Partitions that were asked for and got nothing.
 
@@ -150,6 +163,7 @@ class Split:
             "ratios": dict(self.ratios),
             "counts": self.counts,
             "underfilled": list(self.underfilled),
+            "empty_folds": list(self.empty_folds),
             "balance": self.balance(),
             "assignments": [a.to_json() for a in self.assignments],
         }

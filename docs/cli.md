@@ -238,6 +238,12 @@ synthetic sample first.
 
 Every corpus case, the clause it tests, and the codes it expects.
 
+### `medh5 conformance build OUTDIR [--case NAME]`
+
+Write the corpus files and `expected.json`, and nothing else. Use this when you
+want the cases as fixtures; use `publish` when you want the whole distributable
+suite.
+
 ### `medh5 conformance run OUTDIR [--case NAME] [--json]`
 
 Build the corpus and check *this* validator against it.
