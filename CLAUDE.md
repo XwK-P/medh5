@@ -2,74 +2,129 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-This is a WIP project that has not been released yet — backward compatibility is not needed.
-
 ## Build & Test Commands
 
 ```bash
-# Install with all extras (dev + optional deps)
-pip install -e ".[dev,torch,nifti,dicom]"
+# Install with the extras the test suite needs
+pip install -e ".[dev,schema,torch,nifti,dicom,dicomseg,itk,interp]"
 
-# Run full test suite (90% coverage required)
+# Full suite (90% coverage floor)
 pytest tests/ --cov=medh5 --cov-report=term-missing --cov-fail-under=90
 
-# Run a single test file or test
-pytest tests/test_core.py -v
-pytest tests/test_core.py::TestMEDH5FileWrite::test_basic_write -v
+# A single file or test
+pytest tests/v1/test_sample.py -v
+pytest tests/v1/test_dataset.py::TestSplits -v
 
-# Lint and format
-ruff check .
-ruff format --check .
-ruff format .          # auto-fix formatting
+# Lint, format, types
+ruff check . && ruff format --check . && mypy medh5
 
-# Type checking (strict mode)
-mypy medh5
+# The conformance corpus must stay green
+medh5 conformance run /tmp/corpus
 ```
-
-## Architecture
-
-**Single-file-per-sample HDF5 format** with Blosc2 compression. Each `.medh5` file stores one patient/scan with co-registered multi-modality images, segmentation masks, bounding boxes, labels, and spatial metadata as HDF5 attributes.
-
-### Core module relationships
-
-- **`core.py`** — `MEDH5File` is the central API. Dual interface: static methods (`write`/`read`/`read_meta`/`verify`/`validate`/`update`/`update_meta`/`add_seg`) for one-shot operations, and context-manager instance (`with MEDH5File(path) as f`) for lazy typed access via `f.images`, `f.seg`, `f.meta`. Also defines `ValidationReport`/`ValidationIssue` for structured validation results. `update()` is the unified entry point for in-place mutations (metadata, seg add/replace/remove, bbox); `update_meta()` and `add_seg()` delegate to it.
-- **`chunks.py`** — L3 cache-aware chunk optimizer (from DKFZ mlarray). Called during `write()` to size HDF5 chunks for efficient patch reads.
-- **`meta.py`** — `SampleMeta` and `SpatialMeta` dataclasses that serialize to/from HDF5 attributes. Root attrs hold scalar/label/flag metadata; `shape` and spatial metadata are stored on the `images` group. Schema version is `"1"`. Exports `_ROOT_META_ATTRS` and `_IMAGE_META_ATTRS` tuples that canonically list which HDF5 attributes belong to the schema (also used by `integrity.py` for checksum hashing).
-- **`integrity.py`** — SHA-256 checksum computation/verification over image datasets, segmentation masks, bounding boxes, and critical metadata attributes. Reuses attribute-name tuples from `meta.py`.
-- **`torch.py`** — Two PyTorch datasets: `MEDH5TorchDataset` (eager full-volume) and `MEDH5PatchDataset` (lazy patch-based via `PatchSampler`). Both share a module-level `_HandleCache` (LRU, 32 handles) so repeated `__getitem__` calls reuse open h5py files.
-- **`sampling.py`** — `PatchSampler` with uniform/foreground/balanced strategies. Works with open `MEDH5File` instances, slicing lazily from h5py datasets.
-- **`transforms.py`** — Pure-numpy transforms (`Compose`, `Clip`, `Normalize`, `ZScore`, `RandomFlip`). Operate on sample dicts with `images` and `seg` keys.
-- **`stats.py`** — Streaming dataset statistics via Welford merge. Multi-process via `ProcessPoolExecutor`.
-- **`dataset/`** — `Dataset` (metadata-only manifest from `read_meta`, JSON persistence, staleness detection) and `make_splits` (stratified/grouped/k-fold splitting).
-- **`io/`** — NIfTI round-trip (`from_nifti`/`to_nifti`), `import_seg_nifti` for adding NIfTI masks to existing files, DICOM ingestion (`from_dicom`) with series selection, geometry validation, and modality LUT support, and nnU-Net v2 dataset round-trip (`from_nnunetv2`/`to_nnunetv2`) that bundles each case's channels + per-class seg masks into one `.medh5` file and stashes the parsed `dataset.json` in `extra["nnunetv2"]` for lossless export. Optional SimpleITK resampling for multi-resolution data. Lazy-imported via `__getattr__` so importing `medh5` doesn't require nibabel/pydicom.
-- **`cli/`** — Argparse-based CLI split across submodules by command group: `cli/inspect.py` (info/validate/validate-all/audit/recompress), `cli/dataset.py` (index/split/stats), `cli/convert.py` (import/export subgroups for NIfTI/DICOM/nnU-Net v2), `cli/review.py` (review subgroup). Each submodule exposes `register(sub)` and `dispatch(cmd, args) -> int | None`; `cli/__init__.py::main` composes them. Several commands support `--json` for machine-readable output.
-
-### Compression pipeline
-
-Three presets: `"fast"` (lz4/3), `"balanced"` (lz4hc/8, default), `"max"` (zstd/9). Applied via hdf5plugin Blosc2 filter on `h5py.create_dataset()`. Chunk sizes are computed by `optimize_chunks()` targeting ~1.4 MiB per L3 cache slice.
-
-### Lazy vs eager reads
-
-- **Eager:** `MEDH5File.read()` → loads everything into `MEDH5Sample` dataclass
-- **Lazy:** `MEDH5File(path)` context manager → `f.images["CT"][z0:z1, y0:y1, x0:x1]` slices directly from HDF5 chunks
-- **Metadata-only:** `MEDH5File.read_meta()` → reads HDF5 attributes without touching arrays
 
 ## Pre-commit checks
 
-All CI checks must pass before committing and pushing:
+All of these must pass before committing:
 
 ```bash
-ruff check . && ruff format --check . && mypy medh5 && pytest tests/ --cov=medh5 --cov-fail-under=90
+ruff check . && ruff format --check . && mypy medh5 \
+  && pytest tests/ --cov=medh5 --cov-fail-under=90 \
+  && medh5 conformance run /tmp/corpus
 ```
 
-## Linting & Style
+## The model
 
-- **ruff** with rules `E, F, I, UP, B, SIM` and `target-version = "py310"`
-- **mypy --strict** with `ignore_missing_imports` for h5py, hdf5plugin, torch, nibabel, pydicom, SimpleITK
-- Both `ruff check` and `ruff format` must pass in CI
+**Format 1.0.** A `.medh5` file is **one subject at one or more timepoints**,
+with every image, annotation, transform and curation record about them. Not one
+scan — one subject. Most of the design follows from that: splitting by file is
+subject-safe, a change annotation has a referent, and registration between
+visits is an object in the file rather than a convention between filenames.
 
-## Testing Patterns
+`docs/spec/medh5-1.0.md` is **normative**. Code implements it; when they
+disagree, one of them is a bug. Appendix C records the clauses corrected
+because implementing them showed the text was not implementable.
 
-- Optional deps guarded with `pytest.importorskip("nibabel")` / `pytest.importorskip("torch")`
-- CI matrix: Python 3.10, 3.11, 3.12 with `[dev,torch,nifti,dicom]` extras installed
-- Exception hierarchy: `MEDH5Error` → `MEDH5FileError`, `MEDH5SchemaError`, `MEDH5ValidationError`
+## Architecture
+
+Sub-packages map onto specification sections, so a spec change has one obvious
+home.
+
+- **`_hdf5.py`** — attribute codecs, identifier rules, atomic create, CoW amend.
+- **`sample.py`** — `Sample` (read) and `SampleWriter` (write); `medh5.open`,
+  `create`, `amend`. The central API.
+- **`document.py`** — the `/meta` sample document and its JSON Schema.
+- **`image.py`** — lazy reads, rescale, pyramid levels.
+- **`errors.py`** — the exception hierarchy and the §15.2 diagnostic code table.
+  A test asserts the table and the spec agree.
+- **`geometry/`** (§3) — `Grid`, index↔world affines, the half-voxel box rules,
+  multiscale derivation.
+- **`labels/`** (§5) — `LabelSet` as a DAG, canonical digests, bundled vocabularies.
+- **`annotations/`** (§6–§9) — `base.py` defines the
+  `contains`/`dense`/`labelmap`/`instances` contract; `voxel/` holds the five
+  encodings plus `select.py` (auto-selection by overlap graph) and
+  `transcode.py`; `geometric.py` and `classification.py` hold the rest.
+- **`transforms/`** (§10) — affine, displacement, B-spline, composite, plus
+  frame-graph resolution in `resolve.py`.
+- **`curation/`** (§11–§12) — provenance, quality, agreement, identity, splits,
+  tracking, timeline, and `scrub.py` (de-identification).
+- **`integrity/`** (§13) — per-object digests, `content_id`, verification, repair.
+- **`storage/`** (§14) — codec profiles, chunking, sampling index, recompression.
+- **`dataset/`** — cohort tools: manifests, splits, streaming stats, `C1xx` checks.
+- **`io/`** — converters, each lazily imported: NIfTI, DICOM, DICOM SEG,
+  RTSTRUCT, nnU-Net v2, and `legacy.py` (0.x → 1.0 migration).
+- **`torch/`**, **`sampling.py`**, **`monai.py`** — loaders. `sampling.py`
+  depends on no deep-learning framework, because where to read is geometry.
+- **`conformance/`** — the corpus is a *shipped artifact*, not a test fixture:
+  third-party implementations run it.
+- **`cli/`** — one module per command group, each exposing `register(sub)` and
+  `dispatch(cmd, args)`; `cli/__init__.py::main` composes them.
+
+## Invariants that are easy to break
+
+- **Coverage.** `class_ids` is what an annotation contains;
+  `annotated_class_ids` is what was *looked for*. A class examined and absent is
+  a usable negative; a class nobody examined is not. Never collapse the two.
+- **Boxes sit at voxel edges**, indices at voxel centres. `[a, b]` is the slice
+  `a+0.5 : b+0.5`. Every off-by-one in detection lives here.
+- **Digests cover decompressed content**, so recompression changes every stored
+  byte and no digest. `content_id` is a Merkle root over *stored digests*, so an
+  edited dataset breaks its object digest and leaves the root matching — verify
+  per object, never only the root.
+- **Geometry is never invented.** Converters refuse rather than resample, guess a
+  grid, or fabricate a transform. `transform_between` returns `None` when no path
+  exists.
+- **HDF5 handles must not cross `fork`.** The torch handle cache is PID-keyed and
+  a forked child *abandons* the parent's handles rather than closing them.
+- **`amend` is copy-on-write** and replaces the file, so anything holding an open
+  handle across it keeps reading the old inode.
+
+## Codec profiles
+
+`training` (lz4:1), `balanced` (zstd:3, default), `archive` (zstd:9),
+`portable` (gzip:4, readable without hdf5plugin). Labels get `bitshuffle` where
+images get `shuffle`. Chunks are sized by `optimize_chunks()` from the patch
+hint toward an L3-cache budget; stacked encodings chunk per plane so one layer
+reads without the others.
+
+## Linting & style
+
+- **ruff** with `E, F, I, UP, B, SIM`, `target-version = "py310"`.
+- **mypy --strict**, with `ignore_missing_imports` for h5py, hdf5plugin, torch,
+  nibabel, pydicom, SimpleITK, jsonschema, scipy, monai, highdicom.
+
+## Testing patterns
+
+- Tests live in `tests/v1/`. Optional deps are guarded with
+  `pytest.importorskip`.
+- Test names cite the clause they hold: `test_S8_1_boxes_shift_by_half_a_voxel`.
+- Fixtures are built by the **public writer**, so every reader test is also a
+  writer test.
+- CI matrix: Python 3.10–3.12, plus a macOS job specifically for the `spawn`
+  start method, plus a conformance job that publishes the suite and scores this
+  validator through the public `score` path.
+
+## 0.x
+
+Deleted at 1.0. `io/_legacy_reader.py` is a read-only reader of the old layout
+so `medh5 migrate` works; there is no 0.x writer, deliberately. 0.x files are
+converted once, and the migration reports every non-mechanical decision.

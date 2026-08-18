@@ -1,0 +1,79 @@
+{
+  "id": "brats-subregions",
+  "version": "2023.1",
+  "description": "BraTS glioma sub-regions: the three published voxel labels.",
+  "classes": [
+    {
+      "id": 1,
+      "key": "necrotic_tumor_core",
+      "name": "Necrotic Tumor Core",
+      "category": "lesion",
+      "color": [
+        255,
+        64,
+        64,
+        255
+      ],
+      "parents": [
+        4
+      ],
+      "properties": {
+        "is_lesion": true,
+        "abbrev": "NCR"
+      }
+    },
+    {
+      "id": 2,
+      "key": "peritumoral_edema",
+      "name": "Peritumoral Edematous/Invaded Tissue",
+      "category": "lesion",
+      "color": [
+        64,
+        200,
+        96,
+        255
+      ],
+      "parents": [
+        4
+      ],
+      "properties": {
+        "is_lesion": true,
+        "abbrev": "ED"
+      }
+    },
+    {
+      "id": 3,
+      "key": "enhancing_tumor",
+      "name": "GD-Enhancing Tumor",
+      "category": "lesion",
+      "color": [
+        255,
+        214,
+        64,
+        255
+      ],
+      "parents": [
+        4
+      ],
+      "properties": {
+        "is_lesion": true,
+        "abbrev": "ET"
+      }
+    },
+    {
+      "id": 4,
+      "key": "tumor",
+      "name": "Tumor",
+      "category": "lesion",
+      "color": [
+        200,
+        90,
+        200,
+        255
+      ],
+      "properties": {
+        "is_lesion": true
+      }
+    }
+  ]
+}

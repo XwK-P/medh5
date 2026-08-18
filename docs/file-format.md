@@ -1,132 +1,195 @@
-# File format
+# Storage
 
-`medh5` is plain HDF5 with a small, fixed schema. Any HDF5 reader can inspect
-a `.medh5` file — use `h5ls -v sample.medh5` or `h5dump -A sample.medh5`.
+The on-disk layout, how bytes get chosen, and how the file proves it is intact.
+The normative statement is [spec §2, §13 and §14](spec/medh5-1.0.md); this page
+is the operational half.
 
-## On-disk layout
+## Layout
+
+An ordinary HDF5 file. `h5ls`, HDFView, h5py, MATLAB and Julia all open it.
 
 ```
-sample.medh5
-├── images/            (group, required, >= 1 entry)
-│   ├── <name1>        (dataset, N-D, Blosc2-compressed, chunked)
-│   ├── <name2>        (dataset, N-D, Blosc2-compressed, chunked)
-│   └── ...            (all arrays share the same shape)
-├── seg/               (group, optional)
-│   ├── <mask1>        (dataset, N-D bool, Blosc2-compressed, chunked)
-│   └── ...            (all masks share the image shape)
-├── bboxes             (dataset, [n, ndims, 2], optional)
-├── bbox_scores        (dataset, [n], optional)
-└── bbox_labels        (dataset, [n] variable-length string, optional)
+case_0001.medh5                      (root attrs: medh5_version, medh5_kind,
+│                                     medh5_profiles, content_id, digest_algo)
+├── meta                             the sample document: JSON, UTF-8, one dataset
+├── grids/<grid_id>                  empty groups; geometry lives in attributes
+├── images/<image_id>                arrays, chunked and compressed
+├── annotations/<ann_id>/            per-kind datasets, plus a header in attributes
+├── transforms/<transform_id>/
+└── index/<ann_id>/                  derived: foreground coords, counts, bboxes
 ```
 
-### Root attributes
+```
+$ medh5 tree case_0001.medh5      # the same listing, annotated with spec roles
+```
 
-| Attribute         | Type                | Notes                                                          |
-|-------------------|---------------------|----------------------------------------------------------------|
-| `schema_version`  | str                 | Currently `"1"`. Readers must refuse unknown versions.         |
-| `image_names`     | JSON list of str    | Declared modality order. Must match `images/` children exactly.|
-| `label`           | int \| str          | Image-level label. Optional.                                   |
-| `label_name`      | str                 | Human-readable name for `label`. Optional.                     |
-| `has_seg`         | bool                | True iff `seg/` has at least one entry.                        |
-| `seg_names`       | JSON list of str    | Names of masks in `seg/`.                                      |
-| `has_bbox`        | bool                | True iff `bboxes` dataset exists.                              |
-| `extra`           | JSON string         | User-defined metadata dict.                                    |
-| `checksum_sha256` | str                 | Optional SHA-256 over images + seg + bboxes + critical attrs.  |
+`meta` is a **scalar variable-length UTF-8 string**, always. HDF5 filters do not
+apply to variable-length data — it lives in the global heap — so a compressed
+`meta` is not expressible. A vocabulary large enough for that to matter uses a
+referenced label set (`form: "ref"`, §5.1) instead.
 
-### `images/` group attributes
+Everything a reader needs to interpret an array is in `meta` plus the grid
+attributes. There is no sidecar and no dataset-wide schema to keep in sync.
 
-Spatial metadata lives on the `images` group (not on the root), because it
-describes the shared spatial grid of the image datasets.
+## Codec profiles
 
-| Attribute      | Type          | Notes                                                     |
-|----------------|---------------|-----------------------------------------------------------|
-| `shape`        | int array     | The shared voxel shape of all image datasets.             |
-| `spacing`      | float array   | Voxel spacing per axis (physical units).                  |
-| `origin`       | float array   | Origin of voxel (0, 0, …) in physical space.              |
-| `direction`    | float array   | `ndim × ndim` direction cosines, flattened row-major.     |
-| `axis_labels`  | string array  | Human labels (e.g. `["z", "y", "x"]`) — length `ndim`.    |
-| `coord_system` | str           | `"RAS"`, `"LPS"`, or similar. Informational.              |
-| `patch_size`   | int array     | Suggested patch size (informational; used for chunking).  |
+```
+$ medh5 recompress cohort/*.medh5 --profile training
+$ medh5 recompress cohort/*.medh5 --profile archive --out cold/
+```
 
-Both `direction` and `axis_labels` are dimension-checked on read; malformed
-values raise `MEDH5SchemaError`.
+| Profile | Images | Labels | For |
+|---|---|---|---|
+| `training` | blosc2 lz4:1 shuffle | blosc2 lz4:1 shuffle | fastest decompression; the hot dataloader path |
+| `balanced` | blosc2 zstd:3 shuffle | blosc2 zstd:3 bitshuffle | general use — the default |
+| `archive` | blosc2 zstd:9 bitshuffle | blosc2 zstd:9 bitshuffle | smallest on disk; cold storage and distribution |
+| `portable` | gzip:4 | gzip:4 | readable without `hdf5plugin` |
 
-## Compression presets
+Labels get `bitshuffle` where images get `shuffle`: label planes are low-entropy
+integers, and bit-level transposition compresses them much better than
+byte-level does.
 
-The `compression` parameter on `write()` picks a Blosc2 codec/level pair:
+`portable` exists because a collaborator with a plain h5py install should be
+able to open the file at all. Blosc2 needs the filter plugin; gzip is in every
+HDF5 build.
 
-| Preset       | Codec  | Level | Use case                             |
-|--------------|--------|-------|--------------------------------------|
-| `"fast"`     | lz4    | 3     | Quick writes, moderate ratio         |
-| `"balanced"` | lz4hc  | 8     | **Default** — good ratio + throughput |
-| `"max"`      | zstd   | 9     | Maximum ratio, slower writes         |
-
-Bounding-box arrays smaller than 64 entries are written uncompressed to avoid
-per-chunk filter overhead.
-
-## Chunk optimization
-
-Image and segmentation datasets are chunked with sizes computed by
-`medh5.optimize_chunks()`, ported from DKFZ `mlarray`. Targets ~1.4 MiB per
-chunk to fit comfortably in L3 cache during patch-based training reads.
+Datasets below a size threshold are stored **contiguous**: chunking and a filter
+pipeline cost more than they save at that size, and a contiguous read is one
+seek.
 
 ```python
-from medh5 import optimize_chunks
-
-chunks = optimize_chunks(
-    image_shape=(128, 256, 256),
-    patch_size=192,
-    bytes_per_element=4,      # float32
-)
+from medh5.storage.codecs import PROFILES, resolve_profile, dataset_kwargs
+PROFILES["archive"].description
 ```
 
-Chunk shape is chosen so that reads of the advertised patch size hit the
-minimum number of chunks possible.
+## Chunking
+
+The chunk is the real unit of I/O: reading one voxel reads a whole chunk. Two
+forces pull against each other — sizing to the L3 cache keeps a patch inside
+cache after decompression, sizing to the training patch keeps read
+amplification low — and the optimiser resolves them by starting at the patch,
+growing toward the cache budget, and stopping before the chunk is much larger
+than the patch.
+
+```python
+w.add_grid("ct", shape=..., spacing=..., patch_hint=(96, 96, 96))
+```
+
+`patch_hint` is how you tell it what you will read. Without one it assumes a
+reasonable default and you get a reasonable answer.
+
+L3 size is detected per-core where the platform allows and falls back to
+~1.375 MiB otherwise. Chunks are held between 512 KiB and 4 MiB.
+
+**Stacked encodings chunk per plane.** A `layers` or `bitmask` annotation is
+chunked `(1, *spatial_chunk)`, so reading one layer does not decompress the
+others. Combined with reading a multi-class `dense()` **by plane rather than by
+class**, a 200-class annotation packed into four layers is four reads and not
+two hundred — which is where the 64³ patch time went from 117 ms to 4 ms.
+
+```
+$ medh5 recompress case.medh5 --profile training --rechunk
+```
+
+`--rechunk` re-derives the chunk shape as well as the codec.
 
 ## Integrity
 
-When `write(..., checksum=True)`, a SHA-256 digest is stored in the
-`checksum_sha256` attribute. The digest covers:
+Every object carries a SHA-256 over its **decompressed** content, with the
+object's sample-root-relative path, dtype and shape fed into the hash first, so
+two arrays with the same bytes and different shapes do not collide.
 
-- all datasets under `images/`
-- all masks under `seg/`
-- `bboxes`, `bbox_scores`, `bbox_labels` (if present)
-- the attribute set in `meta._ROOT_META_ATTRS` / `_IMAGE_META_ATTRS`
+The root carries `content_id`: a Merkle digest over those object digests plus
+the metadata attributes that define the sample.
 
-`MEDH5File.verify(path)` recomputes and compares. `MEDH5File.update()` and
-its shortcuts (`update_meta`, `add_seg`, `set_review_status`) **verify the
-stored checksum before mutating**, so an already-corrupted file cannot
-silently get a fresh checksum stamped on top. Use `force=True` for
-intentional repairs.
+```
+$ medh5 verify cohort/*.medh5
+$ medh5 verify case.medh5 --partial images/CT_tp0
+```
+
+```python
+s.verify().ok
+s.verify(partial=["images/CT_tp0"])
+s.content_id
+s.compute_content_id()          # recompute rather than read
+```
+
+Two properties follow from digesting content rather than encoding:
+
+**Recompression preserves `content_id`.** Every stored byte changes; no digest
+does. A cohort re-encoded for training is still verifiably the same data.
+
+**The root is not a substitute for the objects.** Because `content_id` hashes
+*digests*, editing a dataset without restamping it breaks that object's digest
+and leaves the root matching. `verify` checks both, which is why it reports
+per-object mismatches rather than a single yes/no.
+
+```
+$ medh5 fix case.medh5                       # diagnose
+$ medh5 fix case.medh5 --rebuild-index
+$ medh5 fix case.medh5 --rewrite-digests --reason "rebuilt by an external tool"
+```
+
+`--rewrite-digests` is not repair — see [CLI](cli.md#medh5-fix-path--rebuild-index--rewrite-digests---reason-why---json).
 
 ## Atomic writes
 
-`MEDH5File.write()` writes to a sibling temp file, `fsync`s, and
-`os.replace`s into place. A crash, OOM, or Ctrl-C mid-write leaves the
-pre-existing file at the destination untouched — never a truncated `.medh5`
-at the target path.
+`medh5.create` and `medh5.amend` build a temporary file beside the target and
+`os.replace` it into position on a clean exit. A file appears complete or not
+at all; an exception aborts and leaves nothing behind.
 
-## Trust model
+`amend` is copy-on-write, and it copies through **every object it does not
+understand** — including ones written by a future minor version. Amending never
+silently drops what this reader cannot read.
 
-`extra` is arbitrary JSON. When reading `.medh5` files from untrusted
-sources, be aware that very large or deeply nested JSON can consume
-significant memory. Arrays are still bounded by your compression and chunk
-layout, not by user input.
+## The sampling index
 
-## Forward compatibility
+```
+$ medh5 index build cohort/*.medh5 --max-coords 4096
+```
 
-Readers see `schema_version` at the root and must refuse unknown values with
-`MEDH5SchemaError`. Additional attributes on the root or `images/` group that
-the current schema does not describe are ignored on read but preserved on
-`update_meta`.
+Per voxel annotation, per class: a bounded sample of foreground coordinates,
+the exact voxel count, and a tight bounding box. That makes foreground patch
+sampling O(1) in the volume instead of a scan, and gives `dataset stats` its
+class counts for a few hundred bytes instead of a decompression pass.
 
-## Multi-modality invariants
+An index carries the digest of the annotation it derives from. When they
+disagree the index is **stale**, readers must ignore it, and the validator
+raises `W905`:
 
-- `images/` is a group with one dataset per modality, all sharing the same
-  shape.
-- `seg/` is a group with one boolean dataset per mask, all matching the image
-  shape.
-- `bboxes` shape is `[n, ndims, 2]` — `[z_min, z_max], [y_min, y_max], ...`
-  ranges. `bbox_scores` length and `bbox_labels` length both equal `n`.
+```
+$ medh5 fix cohort/*.medh5 --rebuild-index
+```
 
-These invariants are enforced at write time and re-checked by `validate()`.
+A stale index is not a file error. It is a cache that needs rebuilding, and the
+format says so rather than making the file invalid.
+
+## Collections
+
+```
+$ medh5 pack cohort/*.medh5 -o shard.medh5c
+```
+
+A `.medh5c` holds many sample roots under `samples/<key>`. Each member **is** a
+sample root, so every reader works on it unchanged.
+
+Packing copies chunks as raw bytes — nothing is decompressed, and `content_id`
+is preserved. Unpacking reproduces the original files chunk for chunk. See
+[Curation](curation.md#collections).
+
+## Reading it without medh5
+
+The point of plain HDF5:
+
+```python
+import h5py, json
+
+with h5py.File("case_0001.medh5") as f:
+    doc = json.loads(f["meta"][()])
+    doc["identity"]["subject_id"]
+    dict(f["grids"]["ct_tp0"].attrs)       # spacing, origin, direction
+    f["images"]["CT_tp0"][10:20]           # needs hdf5plugin for blosc2
+```
+
+`import hdf5plugin` before opening if the file uses a blosc2 profile;
+`--profile portable` avoids that requirement entirely.

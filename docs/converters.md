@@ -1,143 +1,209 @@
 # Converters
 
-medh5 ships round-trip converters for the formats most medical imaging ML
-pipelines consume or produce: NIfTI, DICOM series, and raw nnU-Net v2
-dataset folders.
-
-All converter modules are lazy-imported from `medh5.io` — installing `medh5`
-alone does not pull in nibabel, pydicom, or SimpleITK. Install the
-appropriate extra:
+Every importer and exporter lives in `medh5.io` and behind `medh5 convert`.
 
 ```bash
-pip install "medh5[nifti]"    # from_nifti / to_nifti / import_seg_nifti / nnU-Net v2
-pip install "medh5[dicom]"    # from_dicom
-pip install "medh5[itk]"      # SimpleITK resampling for from_nifti
+pip install "medh5[nifti,dicom]"        # reading
+pip install "medh5[dicomseg]"           # writing DICOM SEG (highdicom)
 ```
+
+## Conversion reports
+
+Every conversion returns a report, because the interesting part of an import is
+not that it succeeded — it is what it had to work out.
+
+```python
+from medh5.io.nifti import from_nifti
+
+report = from_nifti({"CT": "ct.nii.gz"}, "case.medh5", masks={"liver": "liver.nii.gz"})
+report.ok
+report.of_kind("encoding")       # what encoding was chosen and why
+for note in report.notes:
+    note.severity                # "decision" | "guess" | "warning" | "info"
+    note.kind, note.message, note.detail
+```
+
+The distinction that matters:
+
+| | |
+|---|---|
+| **decision** | determined from the data — "the overlap graph has one edge, so `layers`" |
+| **guess** | assumed, because the source did not say — "timepoints ordered by file mtime" |
+| **warning** | something is wrong or lost |
+
+`--report FILE` writes it as JSON. A guess is not a failure; it is the thing
+you go back and check.
 
 ## NIfTI
 
-```python
-from medh5.io import from_nifti, to_nifti, import_seg_nifti
-
-from_nifti(
-    images={"CT": "ct.nii.gz", "PET": "pet.nii.gz"},
-    seg={"tumor": "tumor.nii.gz"},
-    out_path="sample.medh5",
-    label=1,
-    compression="balanced",
-    checksum=True,
-)
-
-# Export back for viewing in 3D Slicer / ITK-SNAP
-to_nifti("sample.medh5", out_dir="export/")
-# Writes export/image_CT.nii.gz, export/image_PET.nii.gz, export/seg_tumor.nii.gz
+```
+$ medh5 convert from-nifti case.medh5 --image CT=ct.nii.gz --mask liver=liver.nii.gz
+$ medh5 convert to-nifti case.medh5 CT out.nii.gz
+$ medh5 convert to-nifti case.medh5 CT liver.nii.gz --annotation organs --class liver
 ```
 
-Spacing, origin, direction, and coordinate system are extracted from the
-NIfTI affine automatically.
-
-### Resampling onto a shared grid
-
-If modalities live on different grids, `from_nifti` can resample them onto
-a reference grid using SimpleITK (requires `medh5[itk]`). Masks always use
-nearest-neighbor; images pick the interpolator you specify.
-
 ```python
-from_nifti(
-    images={"CT": "ct_1mm.nii.gz", "PET": "pet_2mm.nii.gz"},
-    seg={"tumor": "tumor_2mm.nii.gz"},
-    out_path="sample.medh5",
-    resample_to="CT",               # use CT grid as reference
-    interpolator="linear",          # "linear" | "nearest" | "bspline"
-)
+from medh5.io.nifti import from_nifti, to_nifti, import_seg_nifti
 ```
 
-### Importing an edited mask
+**Axis order.** NIfTI is `(x, y, z)`; medh5 is `(z, y, x)`. The array is
+transposed and the spacing and direction are permuted to match, so the affine
+still describes the same physical volume.
 
-Round-trip edits from external tools back into a `.medh5` file without
-rewriting images:
+**Coordinate system.** NIfTI is RAS+; medh5 defaults to LPS (as DICOM does).
+The conversion is a sign flip on the affine, `diag(-1, -1, 1, 1)`, and nothing
+else — no resampling, no reinterpretation. `--coord-system RAS` keeps RAS.
 
-```python
-import_seg_nifti(
-    "sample.medh5",
-    "edited_tumor.nii.gz",
-    name="tumor",
-    resample=True,      # reslice onto the file's grid if affines differ
-    replace=True,       # overwrite an existing mask of that name
-)
-```
+**Disagreeing grids are refused.** Two NIfTI files with different affines are
+not the same grid, and `from_nifti` will not resample one onto the other to
+make the import work. Resample them yourself, deliberately, and say so.
+
+Round trip: `from_nifti` → `to_nifti` reproduces the affine and the voxels
+bit-for-bit.
 
 ## DICOM
 
-```python
-from medh5.io import from_dicom
-
-from_dicom(
-    dicom_dir="path/to/series",
-    out_path="sample.medh5",
-    modality_name="CT",
-    series_uid="1.2.3.4.5",     # optional — otherwise the largest series is chosen deterministically
-    apply_modality_lut=True,     # apply RescaleSlope / RescaleIntercept (default)
-    extra_tags=["PatientID", "StudyDate"],
-)
+```
+$ medh5 convert from-dicom /studies out/ --group-by subject
+$ medh5 convert from-dicom /studies out/ --modality CT --series 1.2.840...
 ```
 
-Geometry is validated strictly — `ImageOrientationPatient`, `PixelSpacing`,
-and slice spacing must be consistent across the selected series. Multi-frame
-and non-grayscale DICOMs are rejected with clear errors.
+```python
+from medh5.io.dicom import scan_dicom, read_series, from_dicom, select_series
+```
 
-Provenance (selected series UID, all available UIDs, instance count, LUT
-application status) is recorded under `extra["dicom"]`.
+**Slices are ordered by geometry.** Position projected on the slice normal —
+not `InstanceNumber`, which is a display order and is regularly wrong. There is
+a test whose fixture numbers instances backwards on purpose.
+
+**Spacing is measured.** The gap between consecutive slice origins, not
+`SliceThickness` (which is the slab, and is regularly different). If the gaps
+disagree by more than a tolerance the stack is **refused**: it is not a regular
+grid, and pretending otherwise silently distorts every distance measured from
+it.
+
+**Modality LUT is stored, not applied.** `RescaleSlope` and `RescaleIntercept`
+become the image's `rescale`, so `read(physical=True)` gives HU and `read()`
+gives what the scanner stored. Baking the LUT in loses the stored values.
+
+**Tags are an explicit allow-list.** Imaging physics — kVp, exposure, kernel,
+TR/TE — goes to `acquisition`. Everything else stays out, per §11.4. A wholesale
+tag copy is how a "de-identified" export carries a patient name into a training
+set.
+
+**Grouping.** `--group-by subject` (the default) resolves patient identity
+across studies and emits one multi-timepoint sample per patient. When identity
+cannot be established — usually a de-identification pass that randomised
+`PatientID` — it falls back to one sample per study, warns, names the affected
+inputs, and records the fallback. It never infers identity from filenames,
+dates or accession numbers.
+
+## DICOM SEG
+
+```
+$ medh5 convert from-dicom-seg seg.dcm case.medh5 --id organs
+$ medh5 convert to-dicom-seg case.medh5 organs out.dcm --source ct/*.dcm
+```
+
+**Frames are placed by geometry**, from each frame's
+`PlanePositionSequence` — not by frame index. Overlapping segments and
+`FRACTIONAL` segmentations both survive the round trip.
+
+**Segments match by label, not by number.** DICOM numbers segments 1..N
+positionally. If your label set uses ids 1 and 3, importing by number would
+quietly turn "lesion" into whatever class holds id 2. `from_dicom_seg` matches
+on `SegmentLabel` and records the mapping as a decision.
+
+Writing needs `highdicom`, which is the reference implementation of the
+Segmentation IOD. Building per-frame functional groups by hand is how invalid
+SEGs get published.
+
+## RTSTRUCT
+
+```
+$ medh5 convert from-rtstruct plan.dcm case.medh5 --id contours
+$ medh5 convert from-rtstruct plan.dcm case.medh5 --rasterize
+$ medh5 convert to-rtstruct case.medh5 contours out.dcm --source ct/*.dcm
+```
+
+**Contours stay contours** (§8.6), in world coordinates. Rasterising is opt-in,
+and the rule it used — even-odd fill at voxel centres, holes excluded — goes
+into the provenance graph, because somebody will need to know a year later.
+
+Hole detection groups contours by plane in the grid's **index** space. In world
+space the *z* of a contour varies within its own slice under a real oblique
+orientation, so grouping there finds no holes at all.
+
+**Export refuses a mask.** `to-rtstruct` on a voxel annotation is an error, not
+a marching-squares fallback: the contours it would produce are not the contours
+anyone drew.
 
 ## nnU-Net v2
 
-Round-trip between a raw [nnU-Net v2](https://github.com/MIC-DKFZ/nnUNet)
-dataset folder and a directory of per-case `.medh5` files. Each case
-becomes one `.medh5` bundling every channel plus one boolean mask per
-foreground class declared in `dataset.json`. The parsed `dataset.json`
-payload is stashed in `extra["nnunetv2"]` so export reconstructs the exact
-source layout.
-
-```python
-from medh5.io import from_nnunetv2, to_nnunetv2
-
-# Raw nnU-Net v2 → directory of .medh5 files
-from_nnunetv2(
-    "Dataset042_BraTS/",
-    "medh5_out/",
-    include_test=True,          # also convert imagesTs/ (seg=None)
-    compression="balanced",
-    checksum=True,
-)
-# Writes medh5_out/imagesTr/{case}.medh5 (+ medh5_out/imagesTs/{case}.medh5)
-
-# Directory of .medh5 files → raw nnU-Net v2 layout
-to_nnunetv2(
-    "medh5_out/",
-    "Dataset042_BraTS_roundtrip/",
-    dataset_name="Dataset042_BraTS",
-    file_ending=".nii.gz",
-)
+```
+$ medh5 convert from-nnunet /Dataset001_Liver out/
+$ medh5 convert to-nnunet /out case1.medh5 case2.medh5 --dataset-name Dataset001_Liver
 ```
 
-Channel order, label integer values, and optional fields
-(`overwrite_image_reader_writer`, `regions_class_order`, `name`) all
-round-trip losslessly.
+Each case's channels and per-class masks are bundled into one sample.
 
-### Silent-data-loss guards
+**nnU-Net's class ids are kept**, so a model trained against the original
+dataset still means the same thing. **Region labels become §5.1 DAG parents**:
+a region that is the union of two components is a class whose components name
+it as a parent, which is exactly what the hierarchy is for.
 
-The converters reject silent-data-loss conditions rather than quietly
-dropping voxels or masks:
+The parsed `dataset.json` is stashed in `extra["nnunetv2"]`, so `to-nnunet`
+reproduces the original dataset definition rather than inventing one.
 
-- **Import** — `_split_label_volume` raises `MEDH5ValidationError` if the
-  label volume contains integer values that are not declared in
-  `dataset.json`'s `labels` map. Float label volumes whose values are all
-  integer-valued (`0.0`, `1.0`, …) are accepted; genuinely non-integer
-  voxels (e.g. `1.9`) are rejected.
-- **Export** — seg-mask names or image channels that disagree with the
-  nnU-Net metadata stored in `extra["nnunetv2"]` raise
-  `MEDH5ValidationError` with a missing/extra report. Fix the metadata in
-  `extra["nnunetv2"]["labels"]` or remove the extra mask/channel.
-- **Region-based labels** — list-valued `labels` in `dataset.json`
-  (overlapping region definitions) are rejected on import with a clear
-  error. Convert to integer labels first.
+## COCO
+
+Not supported, deliberately.
+
+COCO is a 2-D polygon/RLE format with no world geometry, no spacing and no
+frame of reference. Importing one means inventing a grid; exporting one means
+discarding the geometry that makes a medical annotation reproducible. Neither
+direction can be done without a silent lie, and every other converter here is
+built on not telling one.
+
+A 2-D-native path can be added in a minor version if a concrete need appears —
+§3.6 already supports 2-D grids.
+
+## Migrating from 0.x
+
+1.0 ships a *reader* for the 0.x layout, not an implementation of it. `medh5
+migrate` is the one-way door.
+
+```
+$ medh5 migrate old/*.medh5 -o new/ --write-labels labels.json
+# review labels.json, edit the keys and ids
+$ medh5 migrate old/*.medh5 -o new/ --label-set labels.json \
+      --group-by subject --subject-key extra.patient_id --report migration.json
+```
+
+Four things are not mechanical, and each is reported per file:
+
+**Voxel encoding.** 0.x stored one boolean volume per mask name. 1.0 measures
+the overlap graph and picks an encoding — which changes the size and nothing
+else.
+
+**Box corners.** 0.x boxes were slice-like integers `[min, max)`; 1.0 boxes sit
+at voxel edges. Every corner shifts by −0.5, which is a real change in the
+numbers, and it is reported as one. `[[2, 6]]` becomes `[[1.5, 5.5]]` and still
+slices `2:6`.
+
+**Label set.** 0.x had names, not classes. Mask names and box labels become
+keys with minted ids, written to a sidecar so you can review and correct them
+*before* converting the cohort — and ids are minted once for the whole cohort,
+not per file, so `liver` is not id 1 in one sample and id 2 in the next.
+
+**Grouping.** A 0.x file is study-scoped and carries no subject key, so the
+default is one sample per file with a single `tp0`. `--group-by subject` merges
+files sharing a key you name, ordering by date where there is one and by mtime
+otherwise — and says which it used.
+
+Instance correspondence is **never** inferred across merged files. Asserting
+that lesion 2 at baseline is lesion 2 at follow-up would fabricate exactly the
+tracking ground truth §7.4 exists to record.
+
+A 0.x reader opening a 1.0 file fails on the missing `schema_version`, which is
+the correct loud failure.

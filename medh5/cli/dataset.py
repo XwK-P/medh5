@@ -1,4 +1,8 @@
-"""Manifest operations: ``index`` / ``split`` / ``stats``."""
+"""``dataset`` --- the cohort commands: index, split, stats, check (plan §5).
+
+Every one of these reads metadata and nothing else unless told otherwise, which
+is what makes them usable on a cohort rather than on a demo.
+"""
 
 from __future__ import annotations
 
@@ -6,127 +10,271 @@ import argparse
 import json
 from pathlib import Path
 
-from medh5.cli._common import Handler
+from medh5.cli._common import (
+    EXIT_ERROR,
+    EXIT_OK,
+    add_json_flag,
+    emit,
+    fail,
+    table,
+)
+from medh5.dataset.check import check
+from medh5.dataset.manifest import GROUPABLE, Manifest, scan
+from medh5.dataset.split import DEFAULT_RATIOS, Split, make_splits, write_claims
+from medh5.dataset.stats import compute_stats
+from medh5.errors import MEDH5Error
 
 
-def _parse_ratios(spec: str) -> dict[str, float]:
-    parts = [float(p) for p in spec.split(",")]
-    if len(parts) == 2:
-        return {"train": parts[0], "val": parts[1]}
-    if len(parts) == 3:
-        return {"train": parts[0], "val": parts[1], "test": parts[2]}
-    raise SystemExit(f"--ratios must be 2 or 3 comma-separated floats, got '{spec}'")
+def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    parser = sub.add_parser("dataset", help="cohort manifests, splits and statistics")
+    group = parser.add_subparsers(dest="dataset_command", metavar="COMMAND")
 
-
-def _cmd_index(args: argparse.Namespace) -> int:
-    from medh5.dataset import Dataset
-
-    ds = Dataset.from_directory(
-        Path(args.dir), recursive=args.recursive, skip_invalid=args.skip_invalid
+    index = group.add_parser("index", help="metadata-only scan of a directory tree")
+    index.add_argument("root")
+    index.add_argument("-o", "--out", required=True, help="manifest JSON to write")
+    index.add_argument(
+        "--strict", action="store_true", help="stop at the first unreadable file"
     )
-    out = Path(args.output)
-    ds.save(out)
-    print(f"Indexed {len(ds)} files → {out}")
-    return 0
+    add_json_flag(index)
+
+    split = group.add_parser("split", help="assign groups to partitions or folds")
+    split.add_argument("manifest")
+    split.add_argument("-o", "--out", help="split JSON to write")
+    split.add_argument("--set-id", default="default")
+    split.add_argument(
+        "--group-by",
+        default="group_id",
+        help=f"never a file; one of {', '.join(GROUPABLE)}",
+    )
+    split.add_argument("--stratify-by")
+    split.add_argument("--k-folds", type=int)
+    split.add_argument(
+        "--ratios",
+        help=f"e.g. train=0.8,val=0.2 (default {_fmt_ratios(DEFAULT_RATIOS)})",
+    )
+    split.add_argument("--seed", type=int, default=0)
+    split.add_argument(
+        "--write-claims",
+        action="store_true",
+        help="stamp each sample with its partition and this manifest's digest",
+    )
+    split.add_argument(
+        "--fold", type=int, help="with --k-folds --write-claims: the validation fold"
+    )
+    split.add_argument("--assigned-by")
+    add_json_flag(split)
+
+    stats = group.add_parser("stats", help="streaming intensity and class statistics")
+    stats.add_argument("manifest")
+    stats.add_argument("-o", "--out", help="statistics JSON to write")
+    stats.add_argument("--image", action="append", dest="images")
+    stats.add_argument("--annotation", action="append", dest="annotations")
+    stats.add_argument("--workers", type=int, default=1)
+    stats.add_argument(
+        "--stride",
+        type=int,
+        default=1,
+        help="read every Nth slab along the first axis (approximate, opt-in)",
+    )
+    stats.add_argument("--partition", help="restrict to one partition of --set-id")
+    stats.add_argument("--set-id", default="default")
+    add_json_flag(stats)
+
+    checker = group.add_parser("check", help="cross-file consistency (C1xx codes)")
+    checker.add_argument("manifest")
+    checker.add_argument("--set-id")
+    checker.add_argument(
+        "--deep",
+        action="store_true",
+        help="re-read each content_id instead of trusting size and mtime",
+    )
+    add_json_flag(checker)
 
 
-def _cmd_split(args: argparse.Namespace) -> int:
-    from medh5.dataset import Dataset, make_splits
+def _fmt_ratios(ratios: dict[str, float]) -> str:
+    return ",".join(f"{k}={v}" for k, v in ratios.items())
 
-    ds = Dataset.load(Path(args.manifest))
-    if args.k_folds:
-        result = make_splits(
-            ds,
-            k_folds=args.k_folds,
-            stratify_by=args.stratify,
-            group_by=args.group,
-            seed=args.seed,
+
+def dispatch(command: str, args: argparse.Namespace) -> int | None:
+    if command != "dataset":
+        return None
+    handlers = {
+        "index": _index,
+        "split": _split,
+        "stats": _stats,
+        "check": _check,
+    }
+    handler = handlers.get(getattr(args, "dataset_command", None) or "")
+    if handler is None:
+        return fail("usage: medh5 dataset {index|split|stats|check} ... (see --help)")
+    try:
+        return handler(args)
+    except (MEDH5Error, OSError, json.JSONDecodeError) as exc:
+        return fail(str(exc))
+
+
+def _index(args: argparse.Namespace) -> int:
+    manifest, failures = scan(args.root, on_error="raise" if args.strict else "warn")
+    target = manifest.save(args.out)
+    payload = {
+        "manifest": str(target),
+        "samples": len(manifest),
+        "subjects": len(manifest.subjects),
+        "sha256": manifest.sha256(),
+        "failed": list(failures),
+    }
+    if args.json:
+        emit(payload, as_json=True)
+    else:
+        print(
+            f"{target}: {len(manifest)} sample(s), "
+            f"{len(manifest.subjects)} subject(s), sha256 {manifest.sha256()[:12]}"
         )
-        out_dir = Path(args.output)
-        out_dir.mkdir(parents=True, exist_ok=True)
-        assert isinstance(result, list)
-        for i, fm in enumerate(result):
-            for name, partition in fm.items():
-                partition.save(out_dir / f"fold{i}_{name}.json")
-        print(f"Wrote {len(result)} folds → {out_dir}")
-        return 0
+        for failure in failures:
+            print(f"  unreadable: {failure}")
+    return EXIT_OK if manifest.entries else EXIT_ERROR
 
-    ratios = _parse_ratios(args.ratios)
-    splits = make_splits(
-        ds,
+
+def _split(args: argparse.Namespace) -> int:
+    manifest = Manifest.load(args.manifest)
+    ratios = _parse_ratios(args.ratios) if args.ratios else None
+    split = make_splits(
+        manifest,
+        set_id=args.set_id,
+        group_by=args.group_by,
+        stratify_by=args.stratify_by,
         ratios=ratios,
-        stratify_by=args.stratify,
-        group_by=args.group,
+        k_folds=args.k_folds,
         seed=args.seed,
     )
-    assert isinstance(splits, dict)
-    out_dir = Path(args.output)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    for name, partition in splits.items():
-        partition.save(out_dir / f"{name}.json")
-        print(f"  {name}: {len(partition)} → {out_dir / f'{name}.json'}")
-    return 0
-
-
-def _cmd_stats(args: argparse.Namespace) -> int:
-    from medh5.dataset import Dataset
-    from medh5.stats import compute_stats
-
-    src_path = Path(args.source)
-    if src_path.is_dir():
-        ds = Dataset.from_directory(src_path)
-    elif src_path.suffix == ".json":
-        ds = Dataset.load(src_path)
+    written: tuple[str, ...] = ()
+    if args.write_claims:
+        written = write_claims(
+            split, manifest, assigned_by=args.assigned_by, fold=args.fold
+        )
+    if args.out:
+        Path(args.out).write_text(json.dumps(split.to_json(), indent=2) + "\n")
+    if args.json:
+        emit({**split.to_json(), "claims_written": list(written)}, as_json=True)
     else:
-        ds = Dataset.from_paths([src_path])
+        rows = [
+            [partition, str(n), _balance_cell(split, partition)]
+            for partition, n in split.counts.items()
+        ]
+        print(table(rows, ["partition", "samples", args.stratify_by or "-"]))
+        print(
+            f"{len(split.assignments)} group(s) by {args.group_by}, "
+            f"manifest {split.manifest_sha256[:12]}"
+        )
+        if written:
+            print(f"wrote split claims into {len(written)} file(s)")
+        if split.empty_folds:
+            print(
+                f"WARNING: fold(s) {', '.join(str(f) for f in split.empty_folds)} "
+                f"got no groups --- {len(split.assignments)} group(s) cannot fill "
+                f"{split.k_folds} folds"
+            )
+        if split.underfilled:
+            print(
+                f"WARNING: {', '.join(split.underfilled)} got no groups --- "
+                f"{len(split.assignments)} indivisible group(s) cannot be split "
+                f"in the ratios {_fmt_ratios(dict(split.ratios))}"
+            )
+        if split.leaks():
+            print(f"LEAK: {', '.join(split.leaks())}")
+    return EXIT_ERROR if split.leaks() else EXIT_OK
 
-    stats = compute_stats(
-        ds,
-        modalities=args.modality,
-        foreground_mask=args.foreground,
+
+def _balance_cell(split: Split, partition: str) -> str:
+    balance = split.balance().get(partition, {})
+    return ", ".join(f"{k}:{v}" for k, v in balance.items() if k != "-") or "-"
+
+
+def _parse_ratios(text: str) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for part in text.split(","):
+        if "=" not in part:
+            raise MEDH5Error(f"--ratios expects NAME=VALUE, got {part!r}")
+        name, _, value = part.partition("=")
+        out[name.strip()] = float(value)
+    return out
+
+
+def _stats(args: argparse.Namespace) -> int:
+    manifest = Manifest.load(args.manifest)
+    entries = manifest.entries
+    if args.partition:
+        entries = [
+            e
+            for e in entries
+            if any(
+                c.get("set_id") == args.set_id and c.get("partition") == args.partition
+                for c in e.splits
+            )
+        ]
+        if not entries:
+            return fail(
+                f"no sample claims partition {args.partition!r} of set "
+                f"{args.set_id!r} --- run `medh5 dataset split --write-claims` first"
+            )
+    result = compute_stats(
+        [e.path for e in entries],
+        images=args.images,
+        annotations=args.annotations,
         workers=args.workers,
+        sample_stride=args.stride,
     )
-    payload = stats.to_dict()
-    if args.output:
-        stats.save(Path(args.output))
-        print(f"Wrote stats → {args.output}")
-    if args.json or not args.output:
-        print(json.dumps(payload, indent=2))
-    return 0
+    if args.out:
+        Path(args.out).write_text(json.dumps(result.to_json(), indent=2) + "\n")
+    if args.json:
+        emit(result.to_json(), as_json=True)
+    else:
+        rows = [
+            [
+                key,
+                f"{m.mean:.4g}",
+                f"{m.std:.4g}",
+                f"{m.minimum:.4g}",
+                f"{m.maximum:.4g}",
+            ]
+            for key, m in sorted(result.images.items())
+        ]
+        print(table(rows, ["image", "mean", "std", "min", "max"]))
+        if result.classes:
+            rows = [
+                [
+                    str(s.class_id),
+                    f"{s.voxels:,}",
+                    f"{s.present_in}/{s.examined_in}",
+                    f"{s.prevalence:.0%}",
+                ]
+                for s in sorted(result.classes.values(), key=lambda s: s.class_id)
+            ]
+            print(table(rows, ["class", "voxels", "present/examined", "prevalence"]))
+        for failure in result.failures:
+            print(f"  unreadable: {failure}")
+    return EXIT_OK if result.samples else EXIT_ERROR
 
 
-HANDLERS: dict[str, Handler] = {
-    "index": _cmd_index,
-    "split": _cmd_split,
-    "stats": _cmd_stats,
-}
+def _check(args: argparse.Namespace) -> int:
+    manifest = Manifest.load(args.manifest)
+    report = check(manifest, set_id=args.set_id, deep=args.deep)
+    if args.json:
+        emit(report.to_json(), as_json=True)
+    else:
+        print(report.format())
+        if report.coverage:
+            rows = [
+                [
+                    str(class_id),
+                    str(v["examined_in"]),
+                    str(v["present_in"]),
+                    str(v["of"]),
+                ]
+                for class_id, v in sorted(report.coverage.items())
+            ]
+            print(table(rows, ["class", "examined in", "present in", "of"]))
+    return EXIT_OK if report.ok else EXIT_ERROR
 
 
-def register(sub: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
-    p = sub.add_parser("index", help="Scan a directory and write a manifest JSON")
-    p.add_argument("dir", help="Directory to scan")
-    p.add_argument("-o", "--output", required=True, help="Manifest output path")
-    p.add_argument("--recursive", action="store_true", default=True)
-    p.add_argument("--skip-invalid", action="store_true")
-
-    p = sub.add_parser("split", help="Split a manifest into partitions or k-fold")
-    p.add_argument("manifest", help="Manifest JSON path")
-    p.add_argument("--ratios", default="0.7,0.15,0.15")
-    p.add_argument("--k-folds", type=int, default=None)
-    p.add_argument("--stratify", default=None)
-    p.add_argument("--group", default=None)
-    p.add_argument("--seed", type=int, default=0)
-    p.add_argument("-o", "--output", required=True)
-
-    p = sub.add_parser("stats", help="Compute dataset statistics")
-    p.add_argument("source", help="Directory, manifest JSON, or single file")
-    p.add_argument("-o", "--output", default=None)
-    p.add_argument("--json", action="store_true")
-    p.add_argument("--modality", action="append", default=None)
-    p.add_argument("--foreground", default=None)
-    p.add_argument("--workers", type=int, default=1)
-
-
-def dispatch(cmd: str, args: argparse.Namespace) -> int | None:
-    handler = HANDLERS.get(cmd)
-    return handler(args) if handler else None
+__all__ = ["dispatch", "register"]

@@ -1,45 +1,59 @@
-"""Format converters between ``.medh5`` and external medical imaging formats.
+"""Converters (plan §7).
 
-Submodules:
+Every converter is lazy: ``import medh5`` never pulls in nibabel, pydicom,
+SimpleITK or highdicom, and a missing one produces a message naming the extra
+to install rather than an ``ImportError`` from three frames down.
 
-- :mod:`medh5.io.nifti` — NIfTI ⇄ medh5 (requires ``nibabel``).
-- :mod:`medh5.io.dicom` — DICOM series → medh5 (requires ``pydicom``).
-
-These submodules are import-guarded: importing :mod:`medh5.io` itself does
-**not** trigger heavy optional dependencies. The functions exposed here are
-imported lazily on first call.
+Each returns a :class:`~medh5.io.report.ConversionReport` recording what the
+source did not determine --- the encoding chosen, the class ids minted, the
+half-voxel box convention changed, the timepoint order inferred.  Those are the
+steps that are invisible in the output and expensive to discover later.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-if TYPE_CHECKING:
-    from medh5.io.dicom import from_dicom
-    from medh5.io.nifti import from_nifti, import_seg_nifti, to_nifti
-    from medh5.io.nnunetv2 import from_nnunetv2, to_nnunetv2
+from medh5.io.report import ConversionReport, Note, merge_reports
 
-__all__ = [
-    "from_dicom",
-    "from_nifti",
-    "from_nnunetv2",
-    "import_seg_nifti",
-    "to_nifti",
-    "to_nnunetv2",
-]
+_LAZY: dict[str, str] = {
+    "from_nifti": "medh5.io.nifti",
+    "to_nifti": "medh5.io.nifti",
+    "read_nifti": "medh5.io.nifti",
+    "import_seg_nifti": "medh5.io.nifti",
+    "convert_world": "medh5.io.nifti",
+    "from_dicom": "medh5.io.dicom",
+    "scan_dicom": "medh5.io.dicom",
+    "Series": "medh5.io.dicom",
+    "from_dicom_seg": "medh5.io.dicom_seg",
+    "to_dicom_seg": "medh5.io.dicom_seg",
+    "from_rtstruct": "medh5.io.rtstruct",
+    "to_rtstruct": "medh5.io.rtstruct",
+    "from_nnunetv2": "medh5.io.nnunetv2",
+    "to_nnunetv2": "medh5.io.nnunetv2",
+    # The module is `legacy`, not `migrate`: importing `medh5.io.legacy` would
+    # bind the *module* to that name on the package and shadow the function
+    # below, so `medh5.io.legacy(...)` would mean two different things
+    # depending on what had been imported first.
+    "migrate": "medh5.io.legacy",
+    "migrate_paths": "medh5.io.legacy",
+    "build_label_set": "medh5.io.legacy",
+    "group_by_subject": "medh5.io.grouping",
+    "SubjectGroup": "medh5.io.grouping",
+}
 
 
 def __getattr__(name: str) -> Any:
-    if name in ("from_nifti", "import_seg_nifti", "to_nifti"):
-        from medh5.io import nifti as _nifti
+    module = _LAZY.get(name)
+    if module is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
 
-        return getattr(_nifti, name)
-    if name in ("from_nnunetv2", "to_nnunetv2"):
-        from medh5.io import nnunetv2 as _nnu
+    return getattr(importlib.import_module(module), name)
 
-        return getattr(_nnu, name)
-    if name == "from_dicom":
-        from medh5.io import dicom as _dicom
 
-        return _dicom.from_dicom
-    raise AttributeError(f"module 'medh5.io' has no attribute {name!r}")
+def __dir__() -> list[str]:
+    return sorted({*globals(), *_LAZY})
+
+
+__all__ = ["ConversionReport", "Note", "merge_reports", *sorted(_LAZY)]

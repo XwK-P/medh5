@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "medh5"
-version = "0.6.0"
-description = "HDF5 + Blosc2 single-file format for medical-imaging ML workloads (multi-modality images + segmentation + bboxes + label)."
+version = "1.0.0"
+description = "Self-describing HDF5 container for one medical imaging sample and all of its ground truth: multi-timepoint, multi-modal images with segmentation, detection, classification and registration annotations, provenance and integrity."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
@@ -18,12 +18,18 @@ keywords = [
   "blosc2",
   "machine learning",
   "segmentation",
+  "detection",
+  "registration",
+  "longitudinal",
   "nifti",
   "dicom",
+  "rtstruct",
+  "nnunet",
   "pytorch",
+  "monai",
 ]
 classifiers = [
-  "Development Status :: 4 - Beta",
+  "Development Status :: 5 - Production/Stable",
   "Intended Audience :: Developers",
   "Intended Audience :: Science/Research",
   "License :: OSI Approved :: MIT License",
@@ -46,12 +52,26 @@ dependencies = [
 dev = [
   "pytest>=7.0",
   "pytest-cov>=4.0",
-  "ruff>=0.4",
-  "mypy>=1.0",
+  # Pinned, not floated: CI ran `pip install ruff` unpinned and broke when 0.16
+  # started formatting Markdown. A lint gate that changes under you is not a gate.
+  "ruff==0.16.3",
+  "mypy==1.18.2",
   "build>=1.0",
   "twine>=5.0",
+  "jsonschema>=4.18",
+]
+schema = [
+  # Without this the validator cannot check E005, and says so rather than
+  # reporting a clean document it never inspected.
+  "jsonschema>=4.18",
 ]
 torch = [
+  "torch>=2.0",
+]
+monai = [
+  # Only needed for `medh5.monai`; the affine and metadata it builds are
+  # computed without it, so the geometry is testable in a bare environment.
+  "monai>=1.3",
   "torch>=2.0",
 ]
 nifti = [
@@ -60,8 +80,20 @@ nifti = [
 dicom = [
   "pydicom>=2.4",
 ]
+dicomseg = [
+  # Reading DICOM SEG and RTSTRUCT needs only pydicom; *writing* a SEG needs
+  # highdicom, the reference implementation of the Segmentation IOD.  Building
+  # the per-frame functional groups by hand is how invalid SEGs get published.
+  "highdicom>=0.22",
+  "pydicom>=2.4",
+]
 itk = [
   "SimpleITK>=2.3",
+]
+interp = [
+  # Only needed to evaluate a displacement field that declares
+  # `interpolation: cubic`; linear interpolation is built in.
+  "scipy>=1.10",
 ]
 
 [project.urls]
@@ -69,6 +101,8 @@ Homepage = "https://github.com/XwK-P/medh5"
 Repository = "https://github.com/XwK-P/medh5"
 Issues = "https://github.com/XwK-P/medh5/issues"
 Changelog = "https://github.com/XwK-P/medh5/blob/main/CHANGELOG.md"
+Documentation = "https://github.com/XwK-P/medh5/blob/main/docs/index.md"
+Specification = "https://github.com/XwK-P/medh5/blob/main/docs/spec/medh5-1.0.md"
 
 [project.scripts]
 medh5 = "medh5.cli:main"
@@ -78,13 +112,24 @@ where = ["."]
 include = ["medh5*"]
 
 [tool.setuptools.package-data]
-medh5 = ["py.typed"]
+medh5 = ["py.typed", "schemas/*.json", "labels/vocabularies/*.json"]
 
 [tool.pytest.ini_options]
 addopts = "--cov=medh5 --cov-report=term-missing"
 
 [tool.ruff]
 target-version = "py310"
+# Reference/benchmark scripts published alongside the 1.0 spec. They are documentation
+# artifacts meant to be read next to the prose -- deliberately compact, not library code.
+extend-exclude = ["docs/design/benchmarks"]
+
+# ruff >= 0.16 formats Python inside Markdown code blocks. Not here: the snippets
+# in docs/ and README.md are prose examples, sized to be read on the page and
+# verified by being executed, and one-argument-per-line turns a four-line call
+# into eight without making it more correct. Source is formatted; documentation
+# about source is written.
+[tool.ruff.format]
+exclude = ["*.md"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
@@ -108,6 +153,14 @@ module = [
   "pydicom.*",
   "SimpleITK",
   "SimpleITK.*",
+  "jsonschema",
+  "jsonschema.*",
+  "scipy",
+  "scipy.*",
+  "monai",
+  "monai.*",
+  "highdicom",
+  "highdicom.*",
 ]
 ignore_missing_imports = true
 follow_imports = "skip"

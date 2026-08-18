@@ -4,6 +4,226 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.0.0] — MEDH5 format 1.0
+
+A clean-slate reimplementation of the format. **Not backward compatible with 0.x**, by design: a
+1.0 reader refuses a 0.x file rather than guessing, and a 0.x reader raises on the missing
+`schema_version`. See [the specification](docs/spec/medh5-1.0.md) and
+[the implementation plan](docs/design/medh5-1.0-implementation-plan.md).
+
+### The model
+
+A **sample is one subject at one or more timepoints**, each with one or more images. Longitudinal
+work — change detection, response assessment, lesion tracking, follow-up registration — lives in one
+file, and assigning whole files to train/val/test cannot leak a patient across partitions.
+
+### Added
+
+- `medh5.open` / `create` / `amend` and the `Sample` / `SampleWriter` API.
+- **Geometry as a first-class object.** Grids carry the full index→world affine, a frame of
+  reference and a timepoint; images and annotations inherit rather than repeat it. Multiscale
+  pyramids validate the half-voxel origin shift that silently misplaces predictions when omitted.
+- **Label sets** as DAGs with ontology bindings, explicit/implicit closure, canonical digests, and
+  three bundled vocabularies (`binary-foreground`, `brats-subregions`, `amos22-organs`).
+- **Five voxel encodings** — `labelmap`, `layers`, `bitmask`, `instances`, `probmap` — behind one
+  read contract (`contains`, `dense`, `labelmap`, `instances`). The encoding is chosen by measuring
+  the class overlap graph, and any pair transcodes losslessly, so it is a storage decision rather
+  than a data-model decision.
+- **The coverage contract.** `annotated_class_ids` records what the annotator committed to finding,
+  so `0` reads as "verified absent" only where that is true. Partially-labelled cohorts become
+  safely trainable instead of quietly mistrained.
+- **Content addressing.** Per-object SHA-256 digests over decompressed content plus a Merkle
+  `content_id`, so verification is incremental, partial and local, and recompression does not
+  invalidate anything.
+- **A sampling index** that answers foreground patch sampling in O(1) in volume size — 0.52 ms and
+  48 KiB against 9.2 ms and O(volume) for the 0.x `argwhere` path.
+- **A validator** with four levels and a stable diagnostic-code table, and a **103-case conformance
+  corpus** with per-code expectations that a third-party implementation can run. Every code in the
+  table has a case.
+- **Every geometric annotation** (§8): axis-aligned boxes that convert to numpy slices without
+  rounding, oriented boxes stored as rotation *matrices* (dimension-generic, no ordering convention,
+  no double cover), keypoints with per-slot classes and visibility, landmark point sets with
+  correspondence, planar contours for RTSTRUCT round-trips, and triangle surface meshes. Coordinates
+  live in a declared `space` — a grid's continuous index coordinates or a named frame — and readers
+  convert through the affine instead of assuming.
+- **Classification** (§9), including the three-state semantics that make partial labels safe
+  (positive / verified-negative / unknown), ordinal schemes stored verbatim rather than coerced to
+  numbers, and **change labels**: an ordinary classification whose `timepoints` names the visits
+  compared, so `["tp0","tp2"]` and `["tp1","tp2"]` are distinct assessments.
+- **Registration** (§10): identity, affine, dense displacement fields, B-spline free-form
+  deformations and composites. One direction convention, `x_M = T(x_F)`, with no attribute to
+  reverse it — ambiguity there is the leading cause of silently mirrored results. Displacement
+  fields store components on the leading axis so one component or one ROI reads without the rest,
+  and report their Jacobian determinant and folding fraction. `transform_between` resolves through
+  the **frame graph** rather than by name, uses inverses where they exist, and refuses to invent
+  one for a dense field — approximating it would report an accuracy nobody measured. Target
+  registration error is computed from paired landmark sets (§10.6).
+- **Curation** (§11, §12): a two-node PROV graph of agents and activities that describes the
+  dominant real workflow — a model pre-annotation corrected by a human — where a review-status field
+  cannot; quality records whose status is current state, with history living in the graph; and
+  `agreement` computed from the annotations themselves (per-class Dice/IoU, object-level F1), so a
+  number in a file is reproducible from that file. Classes one side never examined are reported as
+  *not scored* rather than scored zero, because a class nobody looked at is not a disagreement.
+- **Longitudinal tracking joins** (§7.4): `Sample.tracks()` groups objects on `instance_id` across
+  visits and reports per-visit volumes and growth. Absence resolves to **`resolved`** only where the
+  class is in that visit's `annotated_class_ids`, and to **`unexamined`** otherwise — a growth curve
+  that reads "not assessed" as volume zero reports a complete response that never happened. W909 is
+  sample-scoped, so it catches the conflict that matters: one lesion classed differently at two
+  visits, each annotation internally consistent and only the join wrong.
+- **A cross-file split audit** (§12.3). A per-file validator cannot see either failure that matters:
+  two files claiming one `set_id` against different manifests (W906), or one subject appearing in
+  two partitions — the leakage that inflates every reported metric in medical AI. `medh5 splits`
+  reports both, and keeps them separate because the remedies differ.
+- **Collections** (§2.2): `.medh5c` shards for cohorts where one file per sample is an operational
+  problem. `pack` and `unpack` move stored chunks rather than re-encoding them, so a round trip is
+  byte-identical and every `content_id` survives it — a shard is a container for samples, never a
+  second encoding of them. A packed sample root *is* a sample root: every reader, validator and
+  loader works on it unchanged.
+- **Loaders** (plan §2.3). `medh5.sampling` chooses patch windows and visit pairs and depends on no
+  deep-learning framework, because where to read is a geometry question. Foreground sampling reads
+  the cached coordinate subsample (§14.3) instead of scanning a mask — **0.90 ms and O(1) in volume
+  size**, against 9.2 ms and O(volume) for the 0.x `argwhere` path — and a file without an index
+  still works but says so on every patch it returns, since a silent 20× slowdown in a dataloader is
+  indistinguishable from a slow disk. `medh5.torch` adds `VolumeDataset`, `PatchDataset`,
+  `GridPatchDataset`, `PairedPatchDataset`, a collate that keeps ragged detection targets ragged,
+  and a **PID-keyed handle cache** (§14.4) — an HDF5 handle inherited across `fork` returns corrupt
+  reads that look like data errors, so the cache abandons its contents the moment it notices a new
+  process.
+- **Paired longitudinal sampling.** `align="transform"` maps the patch centre through the transform
+  relating two visits, so both patches cover the same anatomy; `align="none"` returns unregistered
+  pairs. A cross-sectional file contributes no pairs and is *counted*, not silently dropped.
+- **A MONAI adapter**: `to_metatensor` hands MONAI the correct affine, labelled with its world
+  convention rather than converted to RAS behind the caller's back. An ROI shifts the origin, so a
+  cropped tensor still lands where its anatomy is.
+- **`recompress`** (§14.2). Because digests cover *decompressed* content (§13.1), re-encoding
+  changes every stored byte and no `content_id`: a cache keyed on it stays valid, and moving a
+  cohort from `training` to `archive` is a storage decision rather than a data migration.
+- **Faster multi-class label reads.** `dense()` on `layers` and `bitmask` now groups by **plane
+  rather than by class**: a 200-class annotation packed into four layers costs four reads, not two
+  hundred. A 64³ multi-class patch read is **4.0 ms** against the 117 ms the 0.x layout needed.
+- **`medh5 bench`**, which reproduces every performance target in the plan on the reader's own
+  hardware. All are met: sustained patch throughput measures 600–850 patches/s against a target of
+  400.
+- **Converters** for NIfTI, DICOM, DICOM SEG, RTSTRUCT and nnU-Net v2, plus `migrate` from 0.x.
+  Each returns a report of what it *decided* and what it *guessed*, because the interesting part of
+  an import is never that it succeeded:
+  - **NIfTI**: RAS↔LPS is a sign flip on the affine, never on the voxels, and which convention was
+    written is recorded rather than assumed. Volumes that disagree on a grid are refused instead of
+    silently resampled.
+  - **DICOM**: slices are ordered by their projection on the slice normal, not by `InstanceNumber`
+    (a display hint that routinely disagrees with geometry); z spacing is *measured* between slice
+    origins rather than taken from `SliceThickness`, which is the slab and not the increment; an
+    irregular stack is refused, because it is not a grid. Rescale is stored, not applied (§4.2).
+    Only a named list of acquisition tags is copied — §11.4 forbids bulk-copying DICOM into a file
+    that claims to be de-identified.
+  - **DICOM SEG**: frames are placed by geometry, so a SEG that stores them out of order still
+    reads; overlapping segments and `FRACTIONAL` both survive, where flattening to a labelmap would
+    drop the tumour inside the organ. Segments match an existing label set by `SegmentLabel`, since
+    DICOM segment numbers are positional and carry no identity.
+  - **RTSTRUCT**: contours are stored as contours (§8.6) and round-trip exactly. Rasterisation is
+    opt-in and its rule is written into the provenance graph, because "does a boundary voxel count"
+    is a decision that belongs in the record. A contour enclosed by another on the same slice is a
+    hole, not a second region.
+  - **nnU-Net v2**: the dataset's own integer ids are kept, so a model's predictions map back with
+    no translation table; region labels become classes whose components are their children in the
+    §5.1 DAG; `dataset.json` is stashed verbatim, so an export reproduces the dataset rather than
+    reconstructing it.
+  - **`migrate`**: applies Appendix B and reports each non-mechanical step — the encoding chosen,
+    the ids minted (cohort-wide, into a reviewable sidecar), the **half-voxel box shift** from 0.x's
+    `[min, max)` integers to voxel edges, and whether a timepoint order was read from dates or
+    guessed from mtimes. Instance correspondence across merged files is never inferred.
+  - **Grouping**: identity comes from a declared key and never from a filename, a date or an
+    accession number. Where it cannot be established the converter falls back to one sample per
+    study, names the inputs, and records the fallback.
+- **A CLI**: `info`, `tree`, `validate`, `verify`, `timeline`, `track`, `labels`, `seg stats`,
+  `seg convert`, `index build`, `pack`, `unpack`, `ls`, `prov`, `agree`, `splits`, `recompress`,
+  `bench`, `convert`, `migrate`, `conformance`.
+
+- **Cohort tools** (`medh5.dataset`, `medh5 dataset`). A manifest is a metadata-only scan cached as
+  JSON, and it is the *authority* for splits (§12.3): its digest covers membership and grouping —
+  which samples, grouped how — and deliberately not content, because writing a claim into a file
+  changes the file, and a content-covering digest would make every claim stale the moment it was
+  written. Splitting groups before it splits, never by file, and is deterministic given
+  `(digest, seed, parameters)`. Groups are dealt by largest deficit against the target ratios
+  rather than sliced by index — slicing six groups at 70/15/15 gives train all of them — and where
+  an indivisible set of groups genuinely cannot meet the ratios, the split *says which partition got
+  nothing* instead of leaving an empty test set to be discovered after the results are written up.
+  Strata are interleaved with a rotating lead and dealt against one global tally, so stratifying
+  balances the cohort instead of starving val and test. Statistics stream with an exact
+  Chan-Golub-LeVeque merge weighted by voxel count, read class counts from the sampling index when
+  it is current, and never count an unexamined class as a zero. `dataset check` asks the questions
+  no single file can answer — one label set or several, a class id meaning two things, a claim from
+  another manifest, a subject in two partitions, a class examined in a tenth of the cohort — under
+  its own `C1xx` codes, because a file is not non-conforming because the cohort around it is.
+- **`medh5 fix`**, which separates rebuilding a derived cache from restamping a claim. Rebuilding
+  an index recomputes a cache from what it caches. Rewriting digests is *not* repair: a mismatch is
+  evidence the bytes changed, and recomputing it destroys the evidence. So `--rewrite-digests`
+  requires a reason, records an activity naming what it did not verify, and says so on stdout.
+- **`medh5 scrub`** (§11.4): a de-identification sweep over the container that attests to exactly
+  what it did. UIDs are pseudonymised rather than deleted, since a frame UID is how two files agree
+  they share a frame of reference, and the pseudonym is stable so a cohort scrubbed file by file
+  still joins. Only a *salted* run records `id_mapping: external` — an unsalted hash is recoverable
+  by anyone holding the original UIDs. Dates shift rather than vanish so intervals survive, and
+  running it twice does not shift them twice. It reads metadata and not pixels, so it writes
+  `burned_in_annotation_checked: false` and lists what it did not check, rather than writing
+  "de-identified".
+- **A publishable conformance suite.** `medh5 conformance publish` writes a standalone directory —
+  103 cases, `expected.json`, the §15.2 code table as data, the JSON Schema, `SHA256SUMS` and a
+  README — so an implementer needs nothing installed to be measured. `medh5 conformance score`
+  scores any validator, in any language, from `[{file, errors, warnings}, ...]`. `medh5 validate
+  --json` emits a superset of that shape, so the reference implementation is scored through exactly
+  the same door as everybody else, and a test asserts it.
+- **Thirteen documentation pages** written against the 1.0 API, every snippet executed against a
+  real sample rather than proofread.
+
+### Changed
+
+- **The 0.x implementation is gone.** 1.0 ships a *reader* for the old layout (~200 lines,
+  documenting the format in full) so `medh5 migrate` still works, but not an implementation of it:
+  shipping the old package inside the new one would let a curator keep writing the format they are
+  migrating away from. The `medh5-0x` console script is removed.
+- Eight specification clauses were corrected because implementing them showed the text was not
+  implementable, or contradicted itself: `/meta` cannot be compressed, the label-set canonical
+  serialization is now defined, `content_id` excludes `created`/`generator`, "the digest of an
+  annotation" is defined for a multi-dataset group, the `det` profile requires a *detection-task*
+  annotation rather than any §8 kind, §9's `class_ids` dataset and attribute are explicitly
+  distinguished, `E010` was added because §2.2 stated a MUST with no code to report it, and W909 is
+  stated to be sample-scoped. See Appendix C of the specification.
+- `add_segmentation` now keeps every class named in `annotated_classes` expressible, encoding an
+  empty one rather than dropping it. Without that, "searched for and not found" collapsed into
+  "never looked for" — the distinction §11.3 exists to preserve.
+
+- `writer.split()` now **replaces** a claim for the same `set_id` instead of appending one. Two
+  claims for one set is precisely the W906 conflict §12.3 defines, so appending on a re-split
+  manufactured the defect the validator exists to catch.
+- `set_quality(issues=[...])` accepts constructed `Issue` and `Agreement` records as readily as
+  JSON, instead of raising `TypeError: 'Issue' object is not subscriptable`.
+
+### Fixed
+
+- `medh5 dataset check` reported `C201` on the split it had just written, because the manifest
+  digest covered `content_id` and `--write-claims` rewrites every file. The digest now covers
+  membership and grouping; content drift is a separate question answered by `C401` and `--deep`.
+- Stratified splitting put every group in `train` on small cohorts: each stratum was dealt against
+  its own tally, and every small stratum rounds that way. Fixed by interleaving strata against one
+  global tally, with the lead stratum rotating per round so the small partitions do not fill from
+  the same stratum every time.
+
+### Notes
+
+- `content_id` is a Merkle digest over *stored object digests*, so editing a dataset without
+  restamping it breaks that object's digest and leaves the root matching. `verify` therefore checks
+  every object rather than only the root, and there is a test that says so.
+- Reading a case at a level deeper than the conformance manifest declares is **not** safe: 71 of
+  the invalid cases are built by editing a valid file, so an integrity pass adds a `content_id`
+  mismatch the case never claimed. The published README says so; it originally said the opposite,
+  and running it corrected that.
+
+**COCO was dropped from 1.0.** It has no world geometry, no spacing and no frame of reference, so
+importing one means inventing a grid and exporting one means discarding the geometry that makes a
+medical annotation reproducible. Every other converter here is built on not telling that kind of
+silent lie. A 2-D-native path can be added in a minor version — §3.6 already supports 2-D grids.
+
 ## [0.6.0]
 
 Hardening pass driven by the napari-medh5 plugin integration report:

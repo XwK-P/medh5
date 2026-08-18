@@ -1,366 +1,496 @@
-"""DICOM series → medh5 converter.
+"""DICOM import (spec §3, §4, §12).
 
-Requires ``pydicom`` (install with ``pip install medh5[dicom]``).
+A DICOM series is a pile of slices that *claims* to be a volume.  Turning it
+into a grid means answering three questions the files do not answer directly,
+and this converter answers each one by measurement rather than by assumption:
 
-The converter reads a directory of single-frame DICOM files belonging to
-one series, sorts them along the through-plane axis using
-``ImagePositionPatient`` projected onto the slice normal, and stacks them
-into a single 3D volume. Spatial metadata is reconstructed from
-``ImageOrientationPatient``, ``ImagePositionPatient``, and ``PixelSpacing``.
+**Slice order.**  ``InstanceNumber`` is unreliable --- it is a display hint and
+routinely disagrees with geometry.  Slices are ordered by their projection onto
+the normal of ``ImageOrientationPatient``, which is the only ordering the
+geometry itself defines.
 
-Selected DICOM tags can be preserved under ``extra["dicom"]`` for
-downstream curation.
+**Spacing along the normal.**  ``SliceThickness`` is the thickness of the *slab*,
+not the distance between slice origins; a series with 5 mm slices at 2.5 mm
+increments is common and using the thickness would halve the volume's extent.
+The z spacing is measured from consecutive positions, and a series whose gaps
+vary by more than a tolerance is refused rather than averaged --- an irregular
+stack is not a grid, and pretending otherwise puts every label at the wrong
+depth.
+
+**Values.**  ``RescaleSlope``/``RescaleIntercept`` are stored, never applied
+(§4.2), so ``read()`` returns what the file stored and ``read(physical=True)``
+returns HU.  A converter that bakes the rescale in makes the two indistinguishable
+afterwards.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from dataclasses import dataclass
+import os
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+import numpy.typing as npt
 
-from medh5.core import MEDH5File
-from medh5.exceptions import MEDH5ValidationError
-
-try:
-    import pydicom
-
-    _PYDICOM_AVAILABLE = True
-except ImportError:  # pragma: no cover
-    _PYDICOM_AVAILABLE = False
-
-
-_DEFAULT_TAGS: tuple[str, ...] = (
-    "PatientID",
-    "StudyInstanceUID",
-    "SeriesInstanceUID",
-    "SeriesDescription",
-    "Modality",
-    "StudyDate",
-    "Manufacturer",
-    "SOPClassUID",
-    "RescaleSlope",
-    "RescaleIntercept",
+from medh5.errors import MEDH5ValidationError
+from medh5.io.grouping import (
+    Occasion,
+    SubjectGroup,
+    group_by_subject,
+    note_instance_ids,
+    output_name,
 )
-_GEOMETRY_TOL = 1e-5
+from medh5.io.report import ConversionReport
+
+SPACING_TOLERANCE = 0.01
+"""Relative tolerance on gaps between consecutive slices before a stack is refused."""
+
+STORED_TAGS = (
+    "Modality",
+    "Manufacturer",
+    "ManufacturerModelName",
+    "KVP",
+    "XRayTubeCurrent",
+    "ExposureTime",
+    "ConvolutionKernel",
+    "SliceThickness",
+    "RepetitionTime",
+    "EchoTime",
+    "FlipAngle",
+    "MagneticFieldStrength",
+    "SequenceName",
+    "ContrastBolusAgent",
+    "PatientPosition",
+    "BodyPartExamined",
+)
+"""Acquisition parameters copied to ``/meta → acquisition`` (§4.5).
+
+An explicit list, because §11.4 forbids copying DICOM tags wholesale: a bulk
+copy carries names, dates and identifiers into a file that claims to be
+de-identified.
+"""
 
 
-@dataclass
-class _DicomInstance:
-    path: Path
-    dataset: Any
-
-
-def _require_pydicom() -> None:
-    if not _PYDICOM_AVAILABLE:  # pragma: no cover
+def require_pydicom() -> Any:
+    try:
+        import pydicom
+    except ImportError as exc:  # pragma: no cover - depends on the environment
         raise ImportError(
-            "pydicom is required for DICOM ingestion. "
-            "Install it with: pip install medh5[dicom]"
+            "pydicom is required for DICOM conversion. Install it with: "
+            "pip install 'medh5[dicom]'"
+        ) from exc
+    return pydicom
+
+
+@dataclass(slots=True)
+class Series:
+    """One DICOM series, resolved into a volume and its geometry."""
+
+    series_uid: str
+    study_uid: str
+    modality: str
+    patient_id: str | None
+    study_date: str | None
+    paths: list[str] = field(default_factory=list)
+    description: str = ""
+    frame_uid: str | None = None
+
+    @property
+    def n_slices(self) -> int:
+        return len(self.paths)
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "series_uid": self.series_uid,
+            "study_uid": self.study_uid,
+            "modality": self.modality,
+            "patient_id": self.patient_id,
+            "study_date": self.study_date,
+            "slices": self.n_slices,
+            "description": self.description,
+            "frame_uid": self.frame_uid,
+        }
+
+    def __repr__(self) -> str:
+        return (
+            f"Series({self.modality}, {self.n_slices} slices, "
+            f"{self.description or self.series_uid[:16]})"
         )
 
 
-def _json_friendly(value: Any) -> Any:
-    if value is None or isinstance(value, (int, float, str, bool)):
-        return value
-    if isinstance(value, bytes):
-        return value.decode("utf-8", errors="replace")
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
-        return [_json_friendly(v) for v in value]
-    return str(value)
-
-
-def _read_pixel_array(ds: Any, *, apply_modality_lut: bool) -> np.ndarray:
-    arr = np.asarray(ds.pixel_array)
-    if apply_modality_lut:
-        arr = np.asarray(pydicom.pixels.apply_modality_lut(arr, ds))
-    return arr
-
-
-def _read_candidates(dicom_dir: Path) -> list[_DicomInstance]:
-    paths = sorted(p for p in dicom_dir.rglob("*") if p.is_file())
-    if not paths:
-        raise MEDH5ValidationError(f"No DICOM files found under '{dicom_dir}'")
-
-    instances: list[_DicomInstance] = []
-    for p in paths:
+def scan_dicom(root: str | os.PathLike[str]) -> list[Series]:
+    """Walk a directory tree and collect its image series."""
+    pydicom = require_pydicom()
+    found: dict[str, Series] = {}
+    for path in sorted(Path(os.fspath(root)).rglob("*")):
+        if not path.is_file():
+            continue
         try:
-            ds = pydicom.dcmread(str(p), stop_before_pixels=False)
-        except Exception:  # pragma: no cover - pydicom raises many things
+            header = pydicom.dcmread(str(path), stop_before_pixels=True, force=False)
+        except Exception:  # noqa: BLE001 - a tree holds more than DICOM
             continue
-        if not hasattr(ds, "PixelData"):
+        uid = getattr(header, "SeriesInstanceUID", None)
+        if uid is None or not hasattr(header, "ImagePositionPatient"):
             continue
-        instances.append(_DicomInstance(path=p, dataset=ds))
-
-    if not instances:
-        raise MEDH5ValidationError(
-            f"No DICOM files with PixelData found under '{dicom_dir}'"
-        )
-    return instances
-
-
-def _group_series(
-    instances: list[_DicomInstance],
-) -> dict[str, list[_DicomInstance]]:
-    groups: dict[str, list[_DicomInstance]] = {}
-    for inst in instances:
-        uid = str(getattr(inst.dataset, "SeriesInstanceUID", "<missing-series-uid>"))
-        groups.setdefault(uid, []).append(inst)
-    return groups
-
-
-def _select_series(
-    groups: dict[str, list[_DicomInstance]],
-    *,
-    series_uid: str | None,
-) -> tuple[str, list[_DicomInstance], list[str]]:
-    available = sorted(groups)
-    if series_uid is not None:
-        if series_uid not in groups:
-            raise MEDH5ValidationError(
-                f"SeriesInstanceUID '{series_uid}' not found. Available: {available}"
+        series = found.get(uid)
+        if series is None:
+            series = Series(
+                series_uid=str(uid),
+                study_uid=str(getattr(header, "StudyInstanceUID", "")),
+                modality=str(getattr(header, "Modality", "OT")),
+                patient_id=_text(getattr(header, "PatientID", None)),
+                study_date=_text(getattr(header, "StudyDate", None)),
+                description=_text(getattr(header, "SeriesDescription", "")) or "",
+                frame_uid=_text(getattr(header, "FrameOfReferenceUID", None)),
             )
-        return series_uid, groups[series_uid], available
-    selected_uid = sorted(groups.items(), key=lambda item: (-len(item[1]), item[0]))[0][
-        0
-    ]
-    return selected_uid, groups[selected_uid], available
+            found[uid] = series
+        series.paths.append(str(path))
+    return sorted(found.values(), key=lambda s: (s.study_uid, s.series_uid))
 
 
-def _orientation(ds: Any) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    raw = getattr(ds, "ImageOrientationPatient", None)
-    if raw is None or len(raw) != 6:
-        raise MEDH5ValidationError(
-            "DICOM series is missing ImageOrientationPatient; cannot infer geometry"
-        )
-    row = np.asarray(raw[:3], dtype=np.float64)
-    col = np.asarray(raw[3:], dtype=np.float64)
-    row_norm = np.linalg.norm(row)
-    col_norm = np.linalg.norm(col)
-    if row_norm <= 0 or col_norm <= 0:
-        raise MEDH5ValidationError("Invalid ImageOrientationPatient vectors")
-    row = row / row_norm
-    col = col / col_norm
-    normal = np.cross(row, col)
-    normal_norm = np.linalg.norm(normal)
-    if normal_norm <= 0:
-        raise MEDH5ValidationError("Degenerate DICOM orientation vectors")
-    return row, col, normal / normal_norm
+def _text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
-def _slice_position(ds: Any, slice_normal: np.ndarray) -> float:
-    ipp = getattr(ds, "ImagePositionPatient", None)
-    if ipp is None or len(ipp) != 3:
-        raise MEDH5ValidationError(
-            "DICOM series is missing ImagePositionPatient; cannot infer slice order"
-        )
-    return float(np.dot(np.asarray(ipp, dtype=np.float64), slice_normal))
+def read_series(
+    series: Series, *, report: ConversionReport | None = None
+) -> tuple[npt.NDArray[Any], dict[str, Any]]:
+    """One series as ``(volume, geometry)``, ordered and measured (§3.3)."""
+    pydicom = require_pydicom()
+    if not series.paths:
+        raise MEDH5ValidationError(f"series {series.series_uid} has no files")
+    slices = [pydicom.dcmread(p) for p in series.paths]
+    orientation = np.asarray(
+        [float(v) for v in slices[0].ImageOrientationPatient], dtype=np.float64
+    )
+    row, column = orientation[:3], orientation[3:]
+    normal = np.cross(row, column)
+    positions = np.asarray(
+        [[float(v) for v in s.ImagePositionPatient] for s in slices], dtype=np.float64
+    )
+    # Geometry, not InstanceNumber: the projection onto the slice normal is the
+    # only ordering the files themselves define.
+    order = np.argsort(positions @ normal)
+    slices = [slices[i] for i in order]
+    positions = positions[order]
 
-
-def _read_series(
-    dicom_dir: Path,
-    *,
-    series_uid: str | None,
-    apply_modality_lut: bool,
-) -> tuple[
-    np.ndarray,
-    list[float],
-    list[float],
-    list[list[float]],
-    Any,
-    dict[str, Any],
-]:
-    """Load one validated DICOM series and return volume, geometry, and provenance."""
-    instances = _read_candidates(dicom_dir)
-    groups = _group_series(instances)
-    selected_uid, selected, available = _select_series(groups, series_uid=series_uid)
-
-    first = selected[0].dataset
-    row_cosine, col_cosine, slice_normal = _orientation(first)
-
-    pixel_spacing = getattr(first, "PixelSpacing", None)
-    if pixel_spacing is None or len(pixel_spacing) != 2:
-        raise MEDH5ValidationError(
-            "DICOM series is missing PixelSpacing; cannot infer in-plane spacing"
-        )
-    ref_pixel_spacing = np.asarray(pixel_spacing, dtype=np.float64)
-    if np.any(ref_pixel_spacing <= 0):
-        raise MEDH5ValidationError(f"Invalid PixelSpacing values: {pixel_spacing}")
-
-    ordered: list[tuple[float, np.ndarray, _DicomInstance]] = []
-    ref_shape: tuple[int, ...] | None = None
-    for inst in selected:
-        ds = inst.dataset
-        if int(getattr(ds, "NumberOfFrames", 1) or 1) != 1:
-            raise MEDH5ValidationError(
-                "Multi-frame DICOM is not supported; provide a single-frame series"
-            )
-        if int(getattr(ds, "SamplesPerPixel", 1) or 1) != 1:
-            raise MEDH5ValidationError(
-                "Only grayscale single-sample DICOM images are supported"
-            )
-        interpretation = str(getattr(ds, "PhotometricInterpretation", ""))
-        if interpretation not in {"MONOCHROME1", "MONOCHROME2"}:
-            raise MEDH5ValidationError(
-                f"Unsupported PhotometricInterpretation '{interpretation}'"
-            )
-
-        row_i, col_i, _ = _orientation(ds)
-        if not np.allclose(row_i, row_cosine, atol=_GEOMETRY_TOL) or not np.allclose(
-            col_i, col_cosine, atol=_GEOMETRY_TOL
-        ):
-            raise MEDH5ValidationError(
-                "Inconsistent ImageOrientationPatient across the selected series"
-            )
-
-        spacing_i = getattr(ds, "PixelSpacing", None)
-        if spacing_i is None or len(spacing_i) != 2:
-            raise MEDH5ValidationError("Missing PixelSpacing on one or more slices")
-        if not np.allclose(
-            np.asarray(spacing_i, dtype=np.float64),
-            ref_pixel_spacing,
-            atol=_GEOMETRY_TOL,
-        ):
-            raise MEDH5ValidationError(
-                "Inconsistent PixelSpacing across the selected series"
-            )
-
-        arr = _read_pixel_array(ds, apply_modality_lut=apply_modality_lut)
-        if arr.ndim != 2:
-            raise MEDH5ValidationError(
-                f"Only single-frame 2D slices are supported, got shape {arr.shape}"
-            )
-        if ref_shape is None:
-            ref_shape = arr.shape
-        elif arr.shape != ref_shape:
-            raise MEDH5ValidationError(
-                "In-plane shape mismatch in DICOM series: "
-                f"{arr.shape} vs reference {ref_shape}"
-            )
-        ordered.append((_slice_position(ds, slice_normal), arr, inst))
-
-    ordered.sort(key=lambda item: item[0])
-    positions = np.asarray([item[0] for item in ordered], dtype=np.float64)
-    if positions.size >= 2:
-        diffs = np.diff(positions)
-        if np.any(np.abs(diffs) <= _GEOMETRY_TOL):
-            raise MEDH5ValidationError(
-                "Duplicate or overlapping slice positions detected in the series"
-            )
-        spacing_abs = np.abs(diffs)
-        if not np.allclose(spacing_abs, spacing_abs[0], atol=1e-4, rtol=1e-4):
-            raise MEDH5ValidationError(
-                "Inconsistent slice spacing detected in the selected series"
-            )
-        slice_spacing = float(spacing_abs[0])
-    else:
-        slice_spacing = float(getattr(first, "SliceThickness", 1.0) or 1.0)
-        if slice_spacing <= 0:
-            raise MEDH5ValidationError(
-                "SliceThickness must be positive for single-slice import"
-            )
-
-    volume = np.stack([arr for _, arr, _ in ordered], axis=0)
-
-    first_ds = ordered[0][2].dataset
-    origin_raw = getattr(first_ds, "ImagePositionPatient", None)
-    if origin_raw is None or len(origin_raw) != 3:
-        raise MEDH5ValidationError("Missing ImagePositionPatient on the first slice")
-    spacing = [slice_spacing, float(ref_pixel_spacing[0]), float(ref_pixel_spacing[1])]
-    origin = [float(v) for v in origin_raw]
-    direction = [slice_normal.tolist(), row_cosine.tolist(), col_cosine.tolist()]
-    provenance = {
-        "selected_series_uid": selected_uid,
-        "available_series_uids": available,
-        "n_instances": len(ordered),
-        "applied_modality_lut": apply_modality_lut,
+    z_spacing, gaps = _slice_spacing(
+        positions,
+        normal,
+        series,
+        report,
+        _scalar(getattr(slices[0], "SliceThickness", None)),
+    )
+    pixel_spacing = [float(v) for v in getattr(slices[0], "PixelSpacing", (1.0, 1.0))]
+    volume = np.stack([np.asarray(s.pixel_array) for s in slices])
+    direction = np.stack([normal, column, row], axis=1)
+    geometry = {
+        "shape": tuple(int(v) for v in volume.shape),
+        "spacing": [z_spacing, pixel_spacing[0], pixel_spacing[1]],
+        "origin": [float(v) for v in positions[0]],
+        "direction": [[float(v) for v in r] for r in direction],
+        "coord_system": "LPS",
+        "units": "mm",
+        "frame_uid": series.frame_uid,
+        "rescale": _rescale(slices[0]),
+        "acquisition": {
+            tag: _scalar(getattr(slices[0], tag, None))
+            for tag in STORED_TAGS
+            if getattr(slices[0], tag, None) is not None
+        },
+        "gaps": gaps,
     }
-    return volume, spacing, origin, direction, first_ds, provenance
+    return volume, geometry
+
+
+def _slice_spacing(
+    positions: npt.NDArray[np.float64],
+    normal: npt.NDArray[np.float64],
+    series: Series,
+    report: ConversionReport | None,
+    thickness: Any = None,
+) -> tuple[float, list[float]]:
+    """Spacing measured between slice origins, refusing an irregular stack."""
+    if positions.shape[0] == 1:
+        # No neighbour to measure an increment against.  SliceThickness is the
+        # slab rather than the increment, which is why it is not trusted for a
+        # stack --- but for a lone slice it is the only physical extent the
+        # source states, and inventing 1 mm over a declared 5 mm gives the grid
+        # a wrong extent that later resampling and export propagate.
+        declared = _positive(thickness)
+        if declared is None:
+            if report is not None:
+                report.guess(
+                    "slice_spacing",
+                    "a single-slice series carries no increment to measure and "
+                    "declared no usable SliceThickness; 1 mm was assumed",
+                    {"spacing": 1.0, "thickness": thickness, "slices": 1},
+                )
+            return 1.0, []
+        if report is not None:
+            report.decision(
+                "slice_spacing",
+                "a single-slice series has no neighbouring position to measure "
+                f"against, so its declared SliceThickness ({declared:.4g} mm) "
+                "was used as the through-plane spacing",
+                {"spacing": declared, "thickness": declared, "slices": 1},
+            )
+        return declared, []
+    projected = positions @ normal
+    gaps = np.diff(projected)
+    spacing = float(np.median(np.abs(gaps)))
+    if spacing <= 0:
+        raise MEDH5ValidationError(
+            f"series {series.series_uid} has coincident slice positions",
+            code="E104",
+        )
+    spread = float(np.max(np.abs(np.abs(gaps) - spacing)))
+    if spread > SPACING_TOLERANCE * spacing:
+        raise MEDH5ValidationError(
+            f"series {series.series_uid} has irregular slice gaps "
+            f"(median {spacing:.4g} mm, worst deviation {spread:.4g} mm); an "
+            "irregular stack is not a grid --- resample it deliberately, or "
+            "convert the slices as separate images",
+            code="E104",
+        )
+    if report is not None:
+        report.decision(
+            "slice_spacing",
+            f"z spacing {spacing:.4g} mm was measured between slice origins, not "
+            "taken from SliceThickness (which is the slab, not the increment)",
+            {"spacing": spacing, "thickness": thickness, "slices": len(positions)},
+        )
+    return spacing, [float(g) for g in gaps]
+
+
+def _rescale(dataset: Any) -> tuple[float, float] | None:
+    slope = _scalar(getattr(dataset, "RescaleSlope", None))
+    intercept = _scalar(getattr(dataset, "RescaleIntercept", None))
+    if slope is None and intercept is None:
+        return None
+    return float(slope if slope is not None else 1.0), float(
+        intercept if intercept is not None else 0.0
+    )
+
+
+def _positive(value: Any) -> float | None:
+    """*value* as a usable physical length, or ``None`` if it is not one."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if np.isfinite(number) and number > 0 else None
+
+
+def _scalar(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, (int, float, str)):
+        return value
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return str(value)
 
 
 def from_dicom(
-    dicom_dir: str | Path,
-    out_path: str | Path,
+    root: str | os.PathLike[str],
+    out: str | os.PathLike[str],
     *,
-    modality_name: str = "CT",
-    series_uid: str | None = None,
-    apply_modality_lut: bool = True,
-    extra_tags: list[str] | None = None,
-    label: int | str | None = None,
-    label_name: str | None = None,
-    extra: dict[str, Any] | None = None,
-    compression: str | None = "balanced",
-    checksum: bool = False,
-) -> None:
-    """Convert a single DICOM series directory into a ``.medh5`` file.
+    group_by: str = "subject",
+    modalities: Sequence[str] | None = None,
+    series_uids: Sequence[str] | None = None,
+    codec: str = "balanced",
+    report: ConversionReport | None = None,
+) -> ConversionReport:
+    """Convert a DICOM tree into one sample per subject (or per study).
 
-    Parameters
-    ----------
-    dicom_dir : str or Path
-        Directory containing single-frame DICOM files for one series.
-        Files are auto-sorted along the slice normal.
-    out_path : str or Path
-        Destination ``.medh5`` file.
-    modality_name : str
-        Modality key under ``images/`` (default ``"CT"``).
-    series_uid : str, optional
-        Explicit ``SeriesInstanceUID`` to import when multiple series exist.
-    apply_modality_lut : bool
-        Apply DICOM modality LUT / rescale slope-intercept before writing.
-    extra_tags : list[str], optional
-        DICOM tag names to copy into ``extra["dicom"]``. Defaults to a
-        small set of identifying tags (PatientID, study/series UIDs,
-        Modality, StudyDate, Manufacturer).
-    label, label_name :
-        Image-level label/name forwarded to :meth:`MEDH5File.write`.
-    extra : dict, optional
-        User-supplied extra metadata. Merged with the DICOM tag dump under
-        the top-level key (DICOM tags live at ``extra["dicom"]``).
-    compression : str
-        Compression preset (default ``"balanced"``).
-    checksum : bool
-        If True, compute and store a SHA-256 checksum.
-
-    Raises
-    ------
-    MEDH5ValidationError
-        If no DICOM files are found, or in-plane shapes disagree.
+    *out* is a directory when more than one sample results, and a file path when
+    exactly one does.
     """
-    _require_pydicom()
+    log = report or ConversionReport(converter="from-dicom")
+    log.source = os.fspath(root)
+    series = scan_dicom(root)
+    if series_uids is not None:
+        wanted = set(series_uids)
+        series = [s for s in series if s.series_uid in wanted]
+    if modalities is not None:
+        allowed = {m.upper() for m in modalities}
+        series = [s for s in series if s.modality.upper() in allowed]
+    if not series:
+        raise MEDH5ValidationError(f"no DICOM image series found under {root}")
 
-    src = Path(dicom_dir)
-    if not src.is_dir():
-        raise MEDH5ValidationError(f"DICOM directory not found: '{src}'")
+    studies: dict[str, list[Series]] = {}
+    for entry in series:
+        studies.setdefault(entry.study_uid, []).append(entry)
+    occasions = [
+        Occasion(
+            key=study_uid,
+            subject_id=_consistent_patient(entries, log),
+            date=next((e.study_date for e in entries if e.study_date), None),
+            payload=entries,
+        )
+        for study_uid, entries in sorted(studies.items())
+    ]
+    groups = group_by_subject(occasions, mode=group_by, report=log)
+    target = Path(os.fspath(out))
+    multiple = len(groups) > 1
+    if multiple:
+        target.mkdir(parents=True, exist_ok=True)
+    used: set[str] = set()
+    for group in groups:
+        path = (
+            target / f"{output_name(group, used, safe=_safe)}.medh5"
+            if multiple
+            else target
+        )
+        _write_subject(group, path, codec=codec, log=log)
+    return log
 
-    volume, spacing, origin, direction, first_ds, provenance = _read_series(
-        src, series_uid=series_uid, apply_modality_lut=apply_modality_lut
-    )
 
-    tag_names = list(extra_tags) if extra_tags is not None else list(_DEFAULT_TAGS)
-    dicom_tags: dict[str, Any] = {}
-    for tag in tag_names:
-        value = getattr(first_ds, tag, None)
-        if value is None:
-            continue
-        try:
-            dicom_tags[tag] = _json_friendly(value)
-        except Exception:  # pragma: no cover
-            dicom_tags[tag] = repr(value)
+def _consistent_patient(entries: Sequence[Series], log: ConversionReport) -> str | None:
+    """One PatientID per study, or none --- never a majority vote."""
+    ids = {e.patient_id for e in entries if e.patient_id}
+    if len(ids) == 1:
+        return next(iter(ids))
+    if len(ids) > 1:
+        log.warn(
+            "identity",
+            f"study {entries[0].study_uid} carries {len(ids)} different "
+            "PatientIDs; it was left ungrouped rather than merged on a guess",
+            {"patient_ids": sorted(ids)},
+        )
+    return None
 
-    merged_extra: dict[str, Any] = dict(extra) if extra else {}
-    merged_extra["dicom"] = {**dicom_tags, **provenance}
 
-    MEDH5File.write(
-        out_path,
-        images={modality_name: volume},
-        label=label,
-        label_name=label_name,
-        spacing=spacing,
-        origin=origin,
-        direction=direction,
-        coord_system="LPS",  # DICOM patient coordinates
-        extra=merged_extra or None,
-        compression=compression,
-        checksum=checksum,
-    )
+def _safe(text: str) -> str:
+    return "".join(c if (c.isalnum() or c in "._-") else "_" for c in text)[:200]
+
+
+def _write_subject(
+    group: SubjectGroup,
+    path: Path,
+    *,
+    codec: str,
+    log: ConversionReport,
+) -> None:
+    import medh5
+
+    note_instance_ids(group, log)
+    days = group.days_from_baseline()
+    with medh5.create(
+        path,
+        sample_id=_safe(group.subject_id),
+        subject_id=group.subject_id,
+        codec=codec,
+    ) as writer:
+        tool = writer.software("medh5", medh5.__version__)
+        for index, occasion in enumerate(group.occasions):
+            tp = f"tp{index}"
+            entries: list[Series] = occasion.payload
+            writer.add_timepoint(
+                tp,
+                index=index,
+                date=_iso(occasion.date),
+                days_from_baseline=days[index],
+                study_uid=occasion.key,
+                series_uids={e.modality: e.series_uid for e in entries},
+            )
+        for index, occasion in enumerate(group.occasions):
+            tp = f"tp{index}"
+            entries = occasion.payload
+            for entry in entries:
+                volume, geometry = read_series(entry, report=log)
+                grid_id = f"{_safe(entry.modality).lower()}_{tp}"
+                image_id = f"{_safe(entry.modality)}_{tp}"
+                activity = writer.activity(
+                    "import",
+                    agent=tool,
+                    tool="medh5 convert from-dicom",
+                    inputs=[f"dicom:{entry.series_uid}"],
+                    params={"slices": entry.n_slices, "modality": entry.modality},
+                )
+                writer.add_grid(
+                    grid_id,
+                    shape=geometry["shape"],
+                    spacing=geometry["spacing"],
+                    origin=geometry["origin"],
+                    direction=geometry["direction"],
+                    coord_system=geometry["coord_system"],
+                    units=geometry["units"],
+                    timepoint=tp,
+                    frame_uid=geometry["frame_uid"],
+                )
+                rescale = geometry["rescale"]
+                writer.add_image(
+                    image_id,
+                    volume,
+                    grid=grid_id,
+                    modality=entry.modality,
+                    value_type="quantitative"
+                    if entry.modality == "CT"
+                    else "intensity",
+                    value_units="HU" if entry.modality == "CT" else None,
+                    rescale_slope=None if rescale is None else rescale[0],
+                    rescale_intercept=None if rescale is None else rescale[1],
+                    prov=activity,
+                )
+                if geometry["acquisition"]:
+                    writer.acquisition(image_id, **geometry["acquisition"])
+        log.decision(
+            "value_scale",
+            "RescaleSlope/Intercept were stored, not applied; read(physical=True) "
+            "returns HU and read() returns stored values (§4.2)",
+            {"subject": group.subject_id},
+        )
+        log.warn(
+            "deidentification",
+            "no de-identification record was written: this converter does not "
+            "de-identify, and a file without the record must be treated as "
+            "potentially identifying (§11.4, W903)",
+            {"subject": group.subject_id},
+        )
+    log.outputs.append(str(path))
+
+
+def _iso(value: str | None) -> str | None:
+    """A DICOM ``YYYYMMDD`` date as ISO ``YYYY-MM-DD``."""
+    if not value:
+        return None
+    text = str(value).strip()
+    if len(text) == 8 and text.isdigit():  # noqa: PLR2004 - DICOM DA length
+        return f"{text[:4]}-{text[4:6]}-{text[6:]}"
+    return text
+
+
+def select_series(
+    series: Iterable[Series], *, thinnest: bool = True
+) -> dict[str, Series]:
+    """One series per modality --- the thinnest, or the first seen.
+
+    "Thinnest" means most slices for the same anatomy, which is the usual proxy
+    for the reconstruction a reader wants when a study holds several.
+    """
+    best: dict[str, Series] = {}
+    for entry in series:
+        current = best.get(entry.modality)
+        if current is None or (thinnest and entry.n_slices > current.n_slices):
+            best[entry.modality] = entry
+    return best
+
+
+__all__ = [
+    "SPACING_TOLERANCE",
+    "STORED_TAGS",
+    "Series",
+    "from_dicom",
+    "read_series",
+    "require_pydicom",
+    "scan_dicom",
+    "select_series",
+]

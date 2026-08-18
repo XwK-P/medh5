@@ -1,473 +1,754 @@
-"""NIfTI ⇄ medh5 converters.
+"""NIfTI import and export (spec §3, §4, §7).
 
-Requires ``nibabel`` (install with ``pip install medh5[nifti]``).
-Resampling requires ``SimpleITK`` (install with ``pip install medh5[itk]``).
+The one thing this converter must not get wrong is the **handedness**.  NIfTI's
+affine is RAS+; MEDH5 grids declare their own ``coord_system`` and default to
+LPS, the DICOM convention.  Converting between them is a sign flip on the first
+two world axes --- applied to the affine, never to the voxels.
 
-The converters preserve the spatial geometry recorded in the NIfTI affine:
-``spacing`` is taken from the column norms, ``origin`` from the affine
-translation, and ``direction`` from the unit-length column vectors. The
-NIfTI canonical coordinate system (RAS+) is recorded as ``coord_system``.
+So the choice is made explicitly and recorded: ``coord_system="LPS"`` (the
+default) converts and says so in the report; ``coord_system="RAS"`` keeps
+NIfTI's own frame and stores that on the grid.  Either is correct; silently
+picking one and not writing it down is how a segmentation ends up mirrored
+against the image it was drawn on, which no unit test catches because both
+volumes flip together.
+
+Axis order is likewise stated rather than assumed.  NIfTI arrays are
+``(x, y, z)`` fastest-first; MEDH5 spatial axes are trailing and, for a 3-D
+volume written by a medical tool, conventionally ``(z, y, x)``.  ``transpose``
+controls it, defaults to reordering, and the resulting axis names are written
+onto the grid so a reader never has to infer them.
 """
 
 from __future__ import annotations
 
+import os
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+import numpy.typing as npt
 
-from medh5.core import MEDH5File
-from medh5.exceptions import MEDH5ValidationError
+from medh5.errors import MEDH5ValidationError
+from medh5.geometry.affine import ORTHONORMAL_TOL, build_affine, decompose_affine
+from medh5.io.report import ConversionReport
 
-try:
-    import nibabel as nib
+RAS_TO_LPS = np.diag([-1.0, -1.0, 1.0, 1.0])
+"""World-axis sign flip. ``LPS = RAS_TO_LPS @ RAS``, and it is its own inverse."""
 
-    _NIBABEL_AVAILABLE = True
-except ImportError:  # pragma: no cover
-    _NIBABEL_AVAILABLE = False
-
-try:
-    import SimpleITK as sitk
-
-    _SIMPLEITK_AVAILABLE = True
-except ImportError:  # pragma: no cover
-    _SIMPLEITK_AVAILABLE = False
+COORD_SYSTEMS = ("LPS", "RAS")
 
 
-def _require_nibabel() -> None:
-    if not _NIBABEL_AVAILABLE:  # pragma: no cover
-        raise ImportError(
-            "nibabel is required for NIfTI I/O. "
-            "Install it with: pip install medh5[nifti]"
-        )
-
-
-def _require_simpleitk() -> None:
-    if not _SIMPLEITK_AVAILABLE:  # pragma: no cover
-        raise ImportError(
-            "SimpleITK is required for resampling. "
-            "Install it with: pip install medh5[itk]"
-        )
-
-
-def _decompose_affine(
-    affine: np.ndarray,
-) -> tuple[list[float], list[float], list[list[float]]]:
-    """Split a 4x4 NIfTI affine into spacing / origin / direction."""
-    affine = np.asarray(affine, dtype=np.float64)
-    if affine.shape != (4, 4):
-        raise MEDH5ValidationError(
-            f"Expected a 4x4 NIfTI affine, got shape {affine.shape}"
-        )
-    rotation = affine[:3, :3]
-    spacing = np.linalg.norm(rotation, axis=0)
-    # Avoid division by zero on degenerate axes; treat them as unit-length.
-    safe_spacing = np.where(spacing > 0, spacing, 1.0)
-    direction = rotation / safe_spacing
-    origin = affine[:3, 3]
-    return (
-        spacing.astype(float).tolist(),
-        origin.astype(float).tolist(),
-        direction.astype(float).tolist(),
-    )
-
-
-def _compose_affine(
-    spacing: list[float] | None,
-    origin: list[float] | None,
-    direction: list[list[float]] | None,
-    ndim: int,
-) -> np.ndarray:
-    """Build a 4x4 NIfTI affine from spacing / origin / direction.
-
-    Falls back to an identity affine when components are missing. Only
-    3D volumes get a meaningful affine; lower-dimensional inputs are
-    embedded into the upper-left block.
-    """
-    affine = np.eye(4, dtype=np.float64)
-    if direction is not None:
-        d = np.asarray(direction, dtype=np.float64)
-        if d.shape == (ndim, ndim):
-            affine[:ndim, :ndim] = d
-    if spacing is not None:
-        s = np.asarray(spacing, dtype=np.float64)
-        if s.shape == (ndim,):
-            affine[:ndim, :ndim] = affine[:ndim, :ndim] * s
-    if origin is not None:
-        o = np.asarray(origin, dtype=np.float64)
-        if o.shape == (ndim,):
-            affine[:ndim, 3] = o
-    return affine
-
-
-def _load_nifti(
-    path: str | Path,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Load a NIfTI file and return ``(data, affine)``."""
-    img = nib.load(str(path))
-    data: np.ndarray = np.asarray(img.dataobj)
-    affine: np.ndarray = np.asarray(img.affine, dtype=np.float64)
-    return data, affine
-
-
-def _to_sitk_image(data: np.ndarray, affine: np.ndarray) -> Any:
-    """Create a SimpleITK image whose physical space matches *affine*."""
-    if data.ndim not in (2, 3):
-        raise MEDH5ValidationError(
-            f"SimpleITK resampling supports only 2D or 3D arrays, got ndim={data.ndim}"
-        )
-    spacing, origin, direction = _decompose_affine(affine)
-    ndim = data.ndim
-    arr_for_sitk = np.transpose(data, axes=tuple(reversed(range(ndim))))
-    img = sitk.GetImageFromArray(arr_for_sitk)
-    img.SetSpacing(tuple(float(v) for v in spacing[:ndim]))
-    img.SetOrigin(tuple(float(v) for v in origin[:ndim]))
-    img.SetDirection(tuple(np.asarray(direction[:ndim], dtype=np.float64).ravel()))
-    return img
-
-
-def _from_sitk_image(img: Any) -> np.ndarray:
-    arr = np.asarray(sitk.GetArrayFromImage(img))
-    return np.transpose(arr, axes=tuple(reversed(range(arr.ndim))))
-
-
-def _resolve_interpolator(name: str, *, is_mask: bool) -> int:
-    if is_mask:
-        return int(sitk.sitkNearestNeighbor)
-    table = {
-        "linear": int(sitk.sitkLinear),
-        "nearest": int(sitk.sitkNearestNeighbor),
-        "bspline": int(sitk.sitkBSpline),
-    }
+def require_nibabel() -> Any:
     try:
-        return table[name]
-    except KeyError as exc:
-        raise MEDH5ValidationError(
-            f"Unknown interpolator '{name}'. Choose from: {sorted(table)}"
+        import nibabel
+    except ImportError as exc:  # pragma: no cover - depends on the environment
+        raise ImportError(
+            "nibabel is required for NIfTI conversion. Install it with: "
+            "pip install 'medh5[nifti]'"
         ) from exc
+    return nibabel
 
 
-def _resample_array(
-    data: np.ndarray,
-    affine: np.ndarray,
-    *,
-    ref_shape: tuple[int, ...],
-    ref_affine: np.ndarray,
-    interpolator: str,
-    is_mask: bool,
-) -> np.ndarray:
-    _require_simpleitk()
-    moving = _to_sitk_image(np.asarray(data), affine)
-    reference = _to_sitk_image(np.zeros(ref_shape, dtype=np.float32), ref_affine)
-    resampled = sitk.Resample(
-        moving,
-        reference,
-        sitk.Transform(),
-        _resolve_interpolator(interpolator, is_mask=is_mask),
-        0.0,
-        (
-            moving.GetPixelID()
-            if (is_mask or np.issubdtype(data.dtype, np.floating))
-            else sitk.sitkFloat32
-        ),
-    )
-    out = _from_sitk_image(resampled)
-    if is_mask:
-        return out.astype(bool)
-    if np.issubdtype(data.dtype, np.floating):
-        return out.astype(data.dtype, copy=False)
-    if interpolator == "nearest":
-        return out.astype(data.dtype, copy=False)
-    return out.astype(np.float32, copy=False)
-
-
-def _load_nifti_mask_for_medh5(
-    nifti_path: str | Path,
-    *,
-    ref_shape: tuple[int, ...],
-    ref_affine: np.ndarray,
-    resample: bool,
-) -> np.ndarray:
-    data, affine = _load_nifti(nifti_path)
-    if data.shape != ref_shape or not np.allclose(affine, ref_affine, atol=1e-5):
-        if not resample:
+def convert_world(
+    affine: npt.ArrayLike, *, source: str, target: str
+) -> npt.NDArray[np.float64]:
+    """Re-express a 3-D index→world affine between RAS and LPS."""
+    for name in (source, target):
+        if name not in COORD_SYSTEMS:
             raise MEDH5ValidationError(
-                "Edited mask grid does not match the target medh5 sample. "
-                "Pass resample=True to align it with SimpleITK."
+                f"unknown coordinate system {name!r}; expected one of "
+                f"{list(COORD_SYSTEMS)}"
             )
-        return _resample_array(
-            data,
-            affine,
-            ref_shape=ref_shape,
-            ref_affine=ref_affine,
-            interpolator="nearest",
-            is_mask=True,
+    matrix = np.asarray(affine, dtype=np.float64)
+    if source == target:
+        return matrix
+    if matrix.shape != (4, 4):
+        raise MEDH5ValidationError(
+            f"RAS↔LPS conversion is defined for 3-D affines; got {matrix.shape}"
         )
-    return np.asarray(data).astype(bool)
+    return np.asarray(RAS_TO_LPS @ matrix, dtype=np.float64)
 
 
-def import_seg_nifti(
-    medh5_path: str | Path,
-    nifti_path: str | Path,
+def read_nifti(
+    path: str | os.PathLike[str],
     *,
-    name: str,
-    resample: bool = False,
-    replace: bool = False,
-) -> None:
-    """Import a NIfTI segmentation mask into an existing ``.medh5`` file."""
-    _require_nibabel()
-    src = Path(medh5_path)
-    meta = MEDH5File.read_meta(src)
-    if meta.shape is None:
-        raise MEDH5ValidationError(f"Missing image shape metadata in '{src}'")
-    ref_shape = tuple(meta.shape)
-    ref_affine = _compose_affine(
-        meta.spatial.spacing,
-        meta.spatial.origin,
-        meta.spatial.direction,
-        len(ref_shape),
+    coord_system: str = "LPS",
+    transpose: bool = True,
+    fourth_axis: str = "auto",
+) -> tuple[npt.NDArray[Any], dict[str, Any]]:
+    """One NIfTI file as ``(array, geometry)`` in MEDH5 conventions.
+
+    *fourth_axis* decides what a 4-D series' extra axis is --- ``"time"`` for
+    cine, DCE and 4-D CT, ``"channel"`` for multi-b-value DWI and multi-echo
+    (§3.6).  ``"auto"`` reads the answer out of the file where it can and
+    reports a guess where it cannot.
+    """
+    nib = require_nibabel()
+    image = nib.load(os.fspath(path))
+    data = np.asanyarray(image.dataobj)
+    # A trailing axis of extent 1 beyond the spatial block carries nothing:
+    # writers emit `dim[4] = 1` routinely, and keeping it turns a plain volume
+    # into a grid with a degenerate one-frame time axis --- and a 5-D
+    # `(x, y, z, 1, n)` multi-echo into something no grid can describe.
+    squeezed = [
+        axis
+        for axis in range(data.ndim - 1, 2, -1)  # noqa: PLR2004 - past x, y, z
+        if data.shape[axis] == 1
+    ]
+    for axis in squeezed:
+        data = np.squeeze(data, axis=axis)
+    affine = convert_world(image.affine, source="RAS", target=coord_system)
+    spacing, origin, direction = decompose_affine(affine)
+    order = tuple(range(data.ndim))
+    if transpose and data.ndim >= 3:  # noqa: PLR2004 - 3-D and up reorder
+        # NIfTI puts i, j, k *first* and time (dim[4]) after them, so the
+        # spatial block is the leading three axes, not the trailing three.
+        # Reversing the trailing three would move t into a spatial slot and
+        # hand the grid a spacing that belongs to a different axis --- silently,
+        # for every cine, DCE and 4-D CT series.
+        spatial = (2, 1, 0)
+        order = tuple(range(3, data.ndim)) + spatial
+        data = np.transpose(data, order)
+        spacing = spacing[list(spatial)]
+        direction = direction[:, list(spatial)]
+    if data.ndim == 2:  # noqa: PLR2004 - a radiograph (§3.6)
+        spacing, origin, direction = _reduce_plane(spacing, origin, direction)
+    times: tuple[float, ...] | None = None
+    time_units: str | None = None
+    measured = False
+    kind = "spatial"
+    b_values: tuple[float, ...] | None = None
+    if data.ndim == 4:  # noqa: PLR2004 - three spatial axes and one more
+        kind, stated = _fourth_axis(image, path, fourth_axis)
+        if kind == "time":
+            times, time_units, measured = _time_axis(image, int(data.shape[0]))
+        else:
+            sidecar = _bval_sidecar(path)
+            b_values = None if sidecar is None else _read_bvals(sidecar)
+        measured = measured if kind == "time" else stated
+    return np.ascontiguousarray(data), {
+        "spacing": [float(v) for v in spacing],
+        "origin": [float(v) for v in origin],
+        "direction": [[float(v) for v in row] for row in direction],
+        "coord_system": coord_system,
+        "shape": tuple(int(v) for v in data.shape),
+        "axis_order": order,
+        "time_values": None if times is None else list(times),
+        "time_units": time_units,
+        "time_measured": measured,
+        "leading_kind": kind,
+        "leading_stated": measured,
+        "b_values": None if b_values is None else list(b_values),
+        "squeezed": squeezed,
+        "units": _units(image),
+        "dtype": str(data.dtype),
+        "header": {
+            "descrip": _text(image.header.get("descrip")),
+            "scl_slope": _number(image.header.get("scl_slope")),
+            "scl_inter": _number(image.header.get("scl_inter")),
+        },
+    }
+
+
+# NIfTI intent codes whose extra dimension holds *components* rather than
+# frames --- §3.6's "channel" kind rather than its "time" kind.  The RGB and
+# RGBA vectors (2003, 2004) belong here as much as the numeric ones: they are
+# the "RGB / multi-echo" row, and without them that row fell through to the
+# time guess despite the header stating the answer.
+CHANNEL_INTENTS = frozenset({1001, 1004, 1005, 1006, 1007, 2003, 2004})
+TIME_SERIES_INTENT = 2001
+
+FOURTH_AXES = ("auto", "time", "channel")
+
+
+def _bval_sidecar(path: str | os.PathLike[str]) -> Path | None:
+    """The ``.bval`` file beside a NIfTI, which is what makes a series DWI.
+
+    NIfTI-1 says ``dim[4]`` is time, but every diffusion pipeline in practice
+    puts the gradient index there and writes the b-values alongside.  The
+    sidecar is the only reliable signal, because such files carry no intent
+    code and often a meaningless ``pixdim[4]``.
+    """
+    name = Path(os.fspath(path))
+    stem = name.name
+    for suffix in (".nii.gz", ".nii"):
+        if stem.endswith(suffix):
+            candidate = name.with_name(stem[: -len(suffix)] + ".bval")
+            return candidate if candidate.exists() else None
+    return None
+
+
+def _read_bvals(path: Path) -> tuple[float, ...]:
+    text = path.read_text().replace("\n", " ")
+    return tuple(float(v) for v in text.split())
+
+
+def _fourth_axis(
+    image: Any, path: str | os.PathLike[str], requested: str
+) -> tuple[str, bool]:
+    """Whether a 4-D NIfTI's leading axis is ``time`` or ``channel`` (§3.6).
+
+    §3.6 gives both a row --- cine/DCE/4-D CT under ``time``, multi-b-value DWI
+    and multi-echo under ``channel`` --- and NIfTI does not distinguish them in
+    ``dim[4]``.  Reading every 4-D series as time labelled every DWI gradient
+    axis a time axis and handed it invented per-frame timings.
+
+    Returns the kind and whether the source stated it.  A guess is reported as
+    one, and ``fourth_axis=`` overrides it outright.
+    """
+    if requested not in FOURTH_AXES:
+        raise MEDH5ValidationError(
+            f"unknown fourth_axis {requested!r}; expected one of {list(FOURTH_AXES)}"
+        )
+    if requested != "auto":
+        return requested, True
+    if _bval_sidecar(path) is not None:
+        return "channel", True
+    intent = int(image.header["intent_code"])
+    if intent in CHANNEL_INTENTS:
+        return "channel", True
+    if intent == TIME_SERIES_INTENT:
+        return "time", True
+    if _temporal(image)[3]:
+        return "time", True
+    return "time", False
+
+
+def _reduce_plane(
+    spacing: npt.NDArray[np.float64],
+    origin: npt.NDArray[np.float64],
+    direction: npt.NDArray[np.float64],
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """A 2-D radiograph's geometry reduced to two dimensions, or a refusal.
+
+    §3.6 gives a 2-D grid ``S = 2``: two spacings, a 2-D origin and a 2x2
+    ``direction``.  A NIfTI plane carries a 3-D affine regardless, so the
+    converter has to reduce it --- and can only do so where the two in-plane
+    axes have no component along the third world axis.  A plane tilted in 3-D
+    has no 2-D grid that describes it, and flattening it anyway would move
+    every pixel to somewhere it is not.
+    """
+    if float(np.max(np.abs(direction[2, :2]))) > ORTHONORMAL_TOL:
+        raise MEDH5ValidationError(
+            "this 2-D NIfTI is a plane tilted in 3-D, and §3.6 gives a 2-D grid "
+            "a 2x2 direction --- there is no 2-D grid that describes it; import "
+            "it as a single-slice 3-D volume instead",
+            code="E102",
+        )
+    return spacing[:2], origin[:2], direction[:2, :2]
+
+
+def grid_axes(
+    shape: Sequence[int], *, transposed: bool = True, leading_kind: str = "time"
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """``(axis_names, axis_kinds)`` for a grid built from a converted NIfTI array.
+
+    A grid of more than three axes has no unambiguous default (§3.1), so the
+    converter has to name the axes rather than let ``add_grid`` guess --- and
+    what it should name them depends on whether ``read_nifti`` reordered the
+    array, which is why *transposed* is not optional information.
+
+    Reordered, the spatial block trails and any NIfTI axis beyond the third
+    leads, so a 4-D series is ``(t, z, y, x)``.  Left alone, the array is still
+    in NIfTI order and the axes are ``(x, y, z)`` --- declaring the reordered
+    names over it labelled the x axis ``time`` and gave the grid a spacing
+    belonging to a different axis on every one.
+
+    Anything past a single time axis is refused rather than guessed at:
+    NIfTI's dim[5] carries vector or tensor components whose MEDH5 kind depends
+    on what the producer meant by them.
+    """
+    extra = len(shape) - 3
+    if not transposed:
+        if extra > 0:
+            raise MEDH5ValidationError(
+                f"a {len(shape)}-D NIfTI keeps its time axis last, and §3.1 "
+                "requires the spatial axes to be trailing and contiguous, so "
+                "this array cannot be declared as a grid without reordering it "
+                "--- drop `transpose=False` for 4-D input"
+            )
+        return ("x", "y", "z")[: len(shape)], ("spatial",) * len(shape)
+    if extra <= 0:
+        return ("z", "y", "x")[-len(shape) :], ("spatial",) * len(shape)
+    if extra == 1:
+        name = "t" if leading_kind == "time" else "c"
+        return (name, "z", "y", "x"), (leading_kind, "spatial", "spatial", "spatial")
+    raise MEDH5ValidationError(
+        f"a {len(shape)}-D NIfTI has {extra} axes beyond (x, y, z); only a "
+        "single trailing time axis converts without a decision about what the "
+        "others mean --- convert the volumes separately, or declare the axes"
     )
-    mask = _load_nifti_mask_for_medh5(
-        nifti_path,
-        ref_shape=ref_shape,
-        ref_affine=ref_affine,
-        resample=resample,
+
+
+def _temporal(image: Any) -> tuple[float, float, str, bool]:
+    """The temporal zoom, offset and unit, and whether the file states them.
+
+    ``pixdim[4]`` is 1.0 in a freshly built header, so a positive zoom on its
+    own is not a statement about timing --- it is the default.  The unit has to
+    be set as well before the number is the scanner's and not nibabel's, which
+    is what separates a frame time this converter read from one it assumed.
+    """
+    zooms = image.header.get_zooms()
+    step = float(zooms[3]) if len(zooms) > 3 else 0.0  # noqa: PLR2004 - dim[4]
+    try:
+        _, temporal = image.header.get_xyzt_units()
+    except Exception:  # noqa: BLE001 - a malformed header is not fatal
+        temporal = "unknown"
+    known = {"sec": ("s", 1.0), "msec": ("ms", 1.0), "usec": ("ms", 1e-3)}
+    if step <= 0 or str(temporal) not in known:
+        return 0.0, 0.0, "s", False
+    units, scale = known[str(temporal)]
+    try:
+        offset = float(image.header["toffset"])
+    except (KeyError, ValueError, TypeError):  # pragma: no cover - header variants
+        offset = 0.0
+    # Both scaled here, by the same factor.  `toffset` is in the header's own
+    # temporal unit, so converting the zoom and not the offset put a microsecond
+    # series a thousand frames from where it starts.
+    return step * scale, offset * scale, units, True
+
+
+def _time_axis(image: Any, frames: int) -> tuple[tuple[float, ...], str, bool]:
+    """Per-frame acquisition times, and whether they were read or assumed.
+
+    A grid carrying a time axis **MUST** carry ``time_values`` (§3.2), and §3.6
+    puts them "per frame" for exactly the cine, DCE and 4-D CT series this
+    path converts, so leaving a 4-D import with no frame timing at all was not
+    an option --- the source states a temporal zoom and the converter was
+    throwing it away.
+    """
+    step, offset, units, stated = _temporal(image)
+    if not stated:
+        # Nothing to read.  Frame indices are all that is left, and they are an
+        # assumption about timing rather than a measurement of it.
+        return tuple(float(k) for k in range(frames)), "s", False
+    return tuple(offset + k * step for k in range(frames)), units, True
+
+
+def _units(image: Any) -> str:
+    """The NIfTI spatial unit, mapped onto the §3.5 vocabulary."""
+    try:
+        spatial, _ = image.header.get_xyzt_units()
+    except Exception:  # noqa: BLE001 - a malformed header is not fatal
+        return "mm"
+    return {"meter": "m", "mm": "mm", "micron": "um", "unknown": "mm"}.get(
+        str(spatial), "mm"
     )
-    if replace:
-        MEDH5File.update(src, seg_ops={"replace": {name: mask}})
-    else:
-        MEDH5File.add_seg(src, name, mask)
+
+
+def _text(value: Any) -> str:
+    if value is None:
+        return ""
+    raw = (
+        bytes(value) if isinstance(value, (bytes, np.ndarray)) else str(value).encode()
+    )
+    return raw.split(b"\x00")[0].decode("utf-8", "replace")
+
+
+def _number(value: Any) -> float | None:
+    try:
+        out = float(np.asarray(value).reshape(-1)[0])
+    except Exception:  # noqa: BLE001 - absent or malformed
+        return None
+    return None if not np.isfinite(out) else out
+
+
+def _same_axis_kind(per_image: Mapping[str, Mapping[str, Any]]) -> None:
+    """Every volume on one grid must agree what its non-spatial axis is.
+
+    They share a single grid, and the grid states ``axis_kinds`` once.  A DWI
+    and a cine series of the same shape would otherwise both be written under
+    whichever kind the first file happened to have, so one of them ends up
+    declared as something it is not.
+    """
+    kinds = {
+        name: geo.get("leading_kind", "spatial") for name, geo in per_image.items()
+    }
+    distinct = sorted(set(kinds.values()))
+    if len(distinct) > 1:
+        listed = ", ".join(f"{n} is {k}" for n, k in sorted(kinds.items()))
+        raise MEDH5ValidationError(
+            f"these volumes share a grid but disagree about their non-spatial "
+            f"axis ({listed}); one grid states one set of `axis_kinds`, so "
+            "convert them separately or pass `fourth_axis=` to settle it",
+            code="E110",
+        )
 
 
 def from_nifti(
-    images: dict[str, str | Path],
-    out_path: str | Path,
+    images: Mapping[str, str | os.PathLike[str]],
+    out: str | os.PathLike[str],
     *,
-    seg: dict[str, str | Path] | None = None,
-    label: int | str | None = None,
-    label_name: str | None = None,
-    extra: dict[str, Any] | None = None,
-    compression: str | None = "balanced",
-    checksum: bool = False,
-    require_same_grid: bool = True,
-    resample_to: str | Path | None = None,
-    interpolator: str = "linear",
-) -> None:
-    """Convert one or more NIfTI volumes into a single ``.medh5`` file.
+    masks: Mapping[str, str | os.PathLike[str]] | None = None,
+    sample_id: str | None = None,
+    subject_id: str | None = None,
+    modalities: Mapping[str, str] | None = None,
+    coord_system: str = "LPS",
+    transpose: bool = True,
+    fourth_axis: str = "auto",
+    value_units: Mapping[str, str] | None = None,
+    codec: str = "balanced",
+    annotated_classes: Sequence[str] | str = "all_given",
+    report: ConversionReport | None = None,
+) -> ConversionReport:
+    """Write one sample from a set of co-registered NIfTI volumes.
 
-    Parameters
-    ----------
-    images : dict[str, path]
-        Modality name → NIfTI file path. All volumes must share the same
-        spatial grid (shape + affine) when ``require_same_grid=True``.
-    out_path : str or Path
-        Destination ``.medh5`` file.
-    seg : dict[str, path], optional
-        Mask name → NIfTI file path. Each mask is converted to ``bool``;
-        any non-zero voxel counts as foreground.
-    label, label_name, extra :
-        Forwarded to :meth:`MEDH5File.write`.
-    compression : str
-        Compression preset (default ``"balanced"``).
-    checksum : bool
-        If True, write a SHA-256 checksum.
-    require_same_grid : bool
-        If True (default), raise :class:`MEDH5ValidationError` when image
-        shapes or affines disagree across modalities/masks.
-    resample_to : str or Path, optional
-        When provided, resample every image/mask onto a shared reference grid
-        using SimpleITK. A string matching an image key uses that modality as
-        the target grid; otherwise the value is interpreted as a NIfTI path.
-    interpolator : {"linear", "nearest", "bspline"}
-        Resampling interpolator for image volumes. Segmentation masks always
-        use nearest-neighbor interpolation.
-
-    Raises
-    ------
-    MEDH5ValidationError
-        On grid mismatch (when ``require_same_grid=True``) or empty input.
+    Every volume must share one grid.  A disagreement is refused rather than
+    resampled: resampling changes the data, and a converter that does it
+    silently produces a file whose labels no longer sit on the voxels they were
+    drawn on.  Resample first, deliberately, with a tool that records it.
     """
-    _require_nibabel()
+    import medh5
 
+    log = report or ConversionReport(converter="from-nifti")
+    log.source = ", ".join(str(p) for p in images.values())
     if not images:
-        raise MEDH5ValidationError("images dict must contain at least one entry")
+        raise MEDH5ValidationError("from_nifti needs at least one image")
 
-    image_arrays: dict[str, np.ndarray] = {}
-    affines: dict[str, np.ndarray] = {}
-    ref_shape: tuple[int, ...] | None = None
-    ref_affine: np.ndarray | None = None
-    ref_name: str | None = None
+    arrays: dict[str, npt.NDArray[Any]] = {}
+    # Kept per image.  `_same_grid` compares the *grid*, which the volumes share
+    # by definition here; b-values and the leading axis kind belong to the file
+    # they came from, and reading them off the first geometry handed every DWI
+    # in the set the first one's gradients without noticing.
+    per_image: dict[str, dict[str, Any]] = {}
+    geometry: dict[str, Any] | None = None
+    for name, path in images.items():
+        data, geo = read_nifti(
+            path,
+            coord_system=coord_system,
+            transpose=transpose,
+            fourth_axis=fourth_axis,
+        )
+        geometry = _same_grid(geometry, geo, name, log) if geometry else geo
+        per_image[name] = geo
+        arrays[name] = data
+    assert geometry is not None
+    _same_axis_kind(per_image)
 
-    for name in sorted(images.keys()):
-        data, aff = _load_nifti(images[name])
-        if ref_shape is None:
-            ref_shape = data.shape
-            ref_affine = aff
-            ref_name = name
-        elif require_same_grid and resample_to is None:
-            if data.shape != ref_shape:
-                raise MEDH5ValidationError(
-                    f"NIfTI shape mismatch: '{ref_name}' has shape {ref_shape} "
-                    f"but '{name}' has shape {data.shape}"
-                )
-            if ref_affine is not None and not np.allclose(aff, ref_affine, atol=1e-5):
-                raise MEDH5ValidationError(
-                    f"NIfTI affine mismatch between '{ref_name}' and '{name}'. "
-                    "Pass require_same_grid=False to skip this check."
-                )
-        image_arrays[name] = data
-        affines[name] = aff
+    mask_arrays: dict[str, npt.NDArray[np.bool_]] = {}
+    for name, path in (masks or {}).items():
+        data, geo = read_nifti(path, coord_system=coord_system, transpose=transpose)
+        _same_grid(geometry, geo, name, log)
+        mask_arrays[name] = np.asarray(data) != 0
 
-    if resample_to is not None:
-        if isinstance(resample_to, str) and resample_to in affines:
-            ref_name = str(resample_to)
-            ref_shape = tuple(image_arrays[ref_name].shape)
-            ref_affine = affines[ref_name]
-        else:
-            ref_data, ref_affine = _load_nifti(Path(resample_to))
-            ref_shape = tuple(ref_data.shape)
-            ref_name = str(resample_to)
-
-    assert ref_affine is not None
-    assert ref_shape is not None
-
-    if resample_to is not None:
-        image_arrays = {
-            name: (
-                arr
-                if arr.shape == ref_shape and np.allclose(aff, ref_affine, atol=1e-5)
-                else _resample_array(
-                    arr,
-                    aff,
-                    ref_shape=ref_shape,
-                    ref_affine=ref_affine,
-                    interpolator=interpolator,
-                    is_mask=False,
-                )
-            )
-            for name, (arr, aff) in (
-                (name, (image_arrays[name], affines[name]))
-                for name in sorted(image_arrays)
-            )
+    if coord_system != "RAS":
+        log.decision(
+            "coord_system",
+            f"NIfTI is RAS+; the grid was written in {coord_system} "
+            "(sign flip on the first two world axes, applied to the affine only)",
+            {"source": "RAS", "target": coord_system},
+        )
+    if geometry.get("squeezed"):
+        log.decision(
+            "axis_order",
+            "trailing axes of extent 1 beyond (x, y, z) carry nothing and were "
+            "dropped, so the grid describes the data rather than the file",
+            {"axes": list(geometry["squeezed"])},
+        )
+    if geometry.get("leading_kind") == "channel":
+        detail = {
+            "channels": geometry["shape"][0],
+            "b_values": geometry.get("b_values"),
         }
+        log.decision(
+            "axis_kinds",
+            "the fourth axis holds components rather than frames, so it is a "
+            "`channel` axis (§3.6) --- b-values or an intent code said so",
+            detail,
+        )
+    elif geometry.get("leading_kind") == "time" and not geometry.get("leading_stated"):
+        log.guess(
+            "axis_kinds",
+            "the source does not say whether the fourth axis is time or channel; "
+            "it was read as time (§3.6) --- pass `fourth_axis=` to say otherwise",
+            {"frames": geometry["shape"][0]},
+        )
+    if geometry.get("time_values") is not None:
+        detail = {
+            "time_units": geometry["time_units"],
+            "frames": len(geometry["time_values"]),
+        }
+        if geometry.get("time_measured"):
+            log.decision(
+                "time_values",
+                "frame times were read from the NIfTI temporal zoom and toffset",
+                detail,
+            )
+        else:
+            log.guess(
+                "time_values",
+                "the NIfTI declares no temporal zoom, so frame indices were used "
+                "as times; §3.2 requires `time_values` where there is a time axis",
+                detail,
+            )
+    if transpose and len(geometry["shape"]) >= 3:  # noqa: PLR2004
+        log.decision(
+            "axis_order",
+            "NIfTI (x, y, z) was reordered to (z, y, x), any trailing time "
+            "axis moved in front of them, and the spacing, direction and axis "
+            "names follow",
+            {"order": list(geometry["axis_order"])},
+        )
 
-    seg_arrays: dict[str, np.ndarray] | None = None
-    if seg:
-        seg_arrays = {}
-        for name in sorted(seg.keys()):
-            data, aff = _load_nifti(seg[name])
-            if resample_to is not None:
-                if data.shape != ref_shape or not np.allclose(
-                    aff, ref_affine, atol=1e-5
-                ):
-                    data = _resample_array(
-                        data,
-                        aff,
-                        ref_shape=ref_shape,
-                        ref_affine=ref_affine,
-                        interpolator="nearest",
-                        is_mask=True,
-                    )
-                else:
-                    data = data.astype(bool)
-            elif require_same_grid:
-                if data.shape != ref_shape:
-                    raise MEDH5ValidationError(
-                        f"Segmentation '{name}' shape {data.shape} does not "
-                        f"match image shape {ref_shape}"
-                    )
-                if not np.allclose(aff, ref_affine, atol=1e-5):
-                    raise MEDH5ValidationError(
-                        f"Segmentation '{name}' affine does not match images. "
-                        "Pass require_same_grid=False to skip this check."
-                    )
-            seg_arrays[name] = data.astype(bool)
+    target = Path(os.fspath(out))
+    stem = sample_id or target.stem
+    label_set = None
+    if mask_arrays:
+        label_set = _mint_label_set(sorted(mask_arrays), log)
 
-    spacing, origin, direction = _decompose_affine(ref_affine)
-    ndim = len(ref_shape)
-    # Trim spatial metadata if the volume is < 3D (NIfTI affines are always 4x4).
-    spacing = spacing[:ndim]
-    origin = origin[:ndim]
-    direction = [row[:ndim] for row in direction[:ndim]]
+    with medh5.create(
+        target, sample_id=stem, subject_id=subject_id or stem, codec=codec
+    ) as writer:
+        tool = writer.software("medh5", medh5.__version__)
+        activity = writer.activity(
+            "import",
+            agent=tool,
+            tool="medh5 convert from-nifti",
+            inputs=[str(p) for p in images.values()],
+            params={"coord_system": coord_system, "transpose": bool(transpose)},
+        )
+        if label_set is not None:
+            writer.label_set(label_set)
+        # Whether the axes actually moved, read off what `read_nifti` recorded
+        # rather than re-derived from `transpose`: the two differ for arrays
+        # below 3-D, which are never reordered whatever the caller asked for.
+        order = tuple(geometry["axis_order"])
+        axis_names, axis_kinds = grid_axes(
+            geometry["shape"],
+            transposed=order != tuple(range(len(order))),
+            leading_kind=geometry.get("leading_kind", "time"),
+        )
+        writer.add_grid(
+            "ref",
+            shape=geometry["shape"],
+            spacing=geometry["spacing"],
+            origin=geometry["origin"],
+            direction=geometry["direction"],
+            axis_names=axis_names,
+            axis_kinds=axis_kinds,
+            coord_system=geometry["coord_system"],
+            units=geometry["units"],
+            time_values=geometry.get("time_values"),
+            time_units=geometry.get("time_units"),
+        )
+        for name, array in arrays.items():
+            b_values = per_image[name].get("b_values")
+            channel_names = (
+                tuple(f"b={v:g}" for v in b_values)
+                if b_values and len(b_values) == geometry["shape"][0]
+                else None
+            )
+            if b_values:
+                # §3.6 puts the b-values in `acquisition` (§4.5); they are what
+                # the channel axis *means*, and dropping them leaves a stack of
+                # unlabelled volumes.
+                writer.acquisition(name, b_values=list(b_values))
+            writer.add_image(
+                name,
+                array,
+                grid="ref",
+                modality=(modalities or {}).get(name, "OT"),
+                channel_names=channel_names,
+                value_units=(value_units or {}).get(name),
+                value_type="quantitative"
+                if (value_units or {}).get(name)
+                else "intensity",
+                prov=activity,
+            )
+        if mask_arrays and label_set is not None:
+            resolved = {label_set[key].id: mask for key, mask in mask_arrays.items()}
+            kind, stats = writer.add_segmentation(
+                "seg",
+                grid="ref",
+                masks=resolved,
+                annotated_classes=annotated_classes,
+                prov=activity,
+            )
+            log.decision(
+                "encoding",
+                f"{len(resolved)} mask(s) were measured and stored as {kind!r}",
+                {
+                    "kind": kind,
+                    "overlapping": None if stats is None else len(stats.edges),
+                },
+            )
+            log.guess(
+                "coverage",
+                "annotated_class_ids was set to the masks supplied; NIfTI cannot "
+                "say which classes were searched for and not found",
+                {"classes": sorted(mask_arrays)},
+            )
+    log.outputs.append(str(target))
+    return log
 
-    MEDH5File.write(
-        out_path,
-        images=image_arrays,
-        seg=seg_arrays,
-        label=label,
-        label_name=label_name,
-        spacing=spacing,
-        origin=origin,
-        direction=direction,
-        coord_system="RAS",
-        extra=extra,
-        compression=compression,
-        checksum=checksum,
+
+def _same_grid(
+    first: dict[str, Any], other: dict[str, Any], name: str, log: ConversionReport
+) -> dict[str, Any]:
+    """Refuse volumes that do not share a grid (spec §3.2)."""
+    if tuple(first["shape"]) != tuple(other["shape"]):
+        raise MEDH5ValidationError(
+            f"{name!r} has shape {other['shape']}, but the first volume has "
+            f"{first['shape']}; resample before converting",
+            code="E202",
+        )
+    for key in ("spacing", "origin", "direction"):
+        if not np.allclose(
+            np.asarray(first[key], dtype=np.float64),
+            np.asarray(other[key], dtype=np.float64),
+            atol=1e-4,
+        ):
+            raise MEDH5ValidationError(
+                f"{name!r} disagrees with the first volume on {key}; resample "
+                "before converting rather than letting a converter do it silently",
+                code="E101",
+            )
+    return first
+
+
+def _mint_label_set(keys: Sequence[str], log: ConversionReport) -> Any:
+    """Mask filenames become class keys with minted ids (Appendix B)."""
+    from medh5.labels.labelset import LabelClass, LabelSet
+
+    classes = [
+        LabelClass(i + 1, key, key.replace("_", " ").title())
+        for i, key in enumerate(keys)
+    ]
+    log.decision(
+        "label_set",
+        "class ids were minted from the mask names in sorted order; review the "
+        "generated label set before applying it cohort-wide",
+        {"ids": {c.key: c.id for c in classes}},
     )
+    return LabelSet("converted", version="1.0.0", classes=classes)
 
 
 def to_nifti(
-    path: str | Path,
-    out_dir: str | Path,
+    path: str | os.PathLike[str],
+    image_id: str,
+    out: str | os.PathLike[str],
     *,
-    modalities: list[str] | None = None,
-    seg: list[str] | None = None,
-    suffix: str = ".nii.gz",
-) -> dict[str, Path]:
-    """Export images and masks from a ``.medh5`` file as NIfTI files.
+    physical: bool = True,
+    annotation: str | None = None,
+    class_key: int | str | None = None,
+) -> Path:
+    """Export one image, or one class of one annotation, as a NIfTI file.
 
-    Useful for round-tripping into 3D Slicer or ITK-SNAP for human edits;
-    edited masks can be re-imported with :func:`medh5.MEDH5File.add_seg`
-    or via the ``medh5 review import-seg`` CLI.
-
-    Parameters
-    ----------
-    path : str or Path
-        Source ``.medh5`` file.
-    out_dir : str or Path
-        Destination directory (created if missing).
-    modalities : list[str], optional
-        Subset of modality names to export. Defaults to all.
-    seg : list[str], optional
-        Subset of mask names to export. Defaults to all.
-    suffix : str
-        File suffix for NIfTI outputs (``.nii`` or ``.nii.gz``).
-
-    Returns
-    -------
-    dict[str, Path]
-        Map from output key (``"image:CT"``, ``"seg:tumor"``) to written
-        file path.
+    The affine is converted back to RAS+ and the axes back to ``(x, y, z)``, so
+    the file opens in FSL, ITK-SNAP or 3D Slicer at the location it came from.
     """
-    _require_nibabel()
+    import medh5
 
-    src = Path(path)
-    out = Path(out_dir)
-    out.mkdir(parents=True, exist_ok=True)
+    nib = require_nibabel()
+    target = Path(os.fspath(out))
+    with medh5.open(path) as sample:
+        image = sample.images[image_id]
+        grid = image.grid
+        if annotation is not None:
+            ann = sample.annotations[annotation]
+            data = (
+                np.asarray(ann.labelmap(), dtype=np.uint16)
+                if class_key is None
+                else np.asarray(ann.dense([class_key])[0], dtype=np.uint8)
+            )
+        else:
+            data = np.asarray(image.read(physical=physical))
+        affine = convert_world(grid.affine, source=grid.coord_system, target="RAS")
+        spacing, origin, direction = decompose_affine(affine)
+        if data.ndim >= 3:  # noqa: PLR2004 - undo the (z, y, x) reordering
+            # MEDH5 leads with time and trails with (z, y, x); NIfTI is the
+            # other way round.  Reversing only the trailing three sent time to
+            # a *spatial* slot and left the affine describing (x, y, z), so a
+            # 4-D export carried geometry that was wrong on every axis.
+            spatial = (data.ndim - 1, data.ndim - 2, data.ndim - 3)
+            data = np.transpose(data, spatial + tuple(range(data.ndim - 3)))
+            index = [2, 1, 0]
+            spacing = spacing[index]
+            direction = direction[:, index]
+        out_affine = build_affine(spacing, origin, direction)
+    nib.save(nib.Nifti1Image(np.ascontiguousarray(data), out_affine), str(target))
+    return target
 
-    sample = MEDH5File.read(src)
-    s = sample.meta.spatial
-    ndim = next(iter(sample.images.values())).ndim
-    affine = _compose_affine(s.spacing, s.origin, s.direction, ndim)
 
-    written: dict[str, Path] = {}
+def import_seg_nifti(
+    path: str | os.PathLike[str],
+    masks: Mapping[str, str | os.PathLike[str]],
+    *,
+    ann_id: str = "seg",
+    grid: str | None = None,
+    coord_system: str | None = None,
+    transpose: bool = True,
+    annotated_classes: Sequence[str] | str = "all_given",
+    report: ConversionReport | None = None,
+) -> ConversionReport:
+    """Add NIfTI masks to an existing sample, checking they sit on its grid."""
+    import medh5
 
-    image_keys = modalities if modalities is not None else sorted(sample.images.keys())
-    for name in image_keys:
-        if name not in sample.images:
-            raise MEDH5ValidationError(f"Modality '{name}' not found in {src}")
-        out_path = out / f"image_{name}{suffix}"
-        nib.save(nib.Nifti1Image(np.asarray(sample.images[name]), affine), out_path)
-        written[f"image:{name}"] = out_path
+    log = report or ConversionReport(converter="import-seg-nifti")
+    log.source = ", ".join(str(p) for p in masks.values())
+    with medh5.open(path) as sample:
+        grid_id = grid or sample.reference_grid.grid_id
+        target_grid = sample.grids[grid_id]
+        system = coord_system or target_grid.coord_system
+        existing = sample.label_set
 
-    if sample.seg is not None:
-        seg_keys = seg if seg is not None else sorted(sample.seg.keys())
-        for name in seg_keys:
-            if name not in sample.seg:
-                raise MEDH5ValidationError(f"Segmentation '{name}' not found in {src}")
-            mask_u8 = np.asarray(sample.seg[name], dtype=np.uint8)
-            out_path = out / f"seg_{name}{suffix}"
-            nib.save(nib.Nifti1Image(mask_u8, affine), out_path)
-            written[f"seg:{name}"] = out_path
+    arrays: dict[str, npt.NDArray[np.bool_]] = {}
+    for name, mask_path in masks.items():
+        data, geo = read_nifti(mask_path, coord_system=system, transpose=transpose)
+        if tuple(geo["shape"]) != tuple(target_grid.spatial_shape):
+            raise MEDH5ValidationError(
+                f"mask {name!r} has shape {geo['shape']}, but grid {grid_id!r} is "
+                f"{target_grid.spatial_shape}",
+                code="E405",
+            )
+        if not np.allclose(
+            np.asarray(geo["spacing"]), np.asarray(target_grid.spacing), atol=1e-4
+        ):
+            log.warn(
+                "geometry",
+                f"mask {name!r} declares spacing {geo['spacing']}, the grid says "
+                f"{list(target_grid.spacing)}; the voxels were taken as aligned",
+                {"mask": name},
+            )
+        arrays[name] = np.asarray(data) != 0
 
-    return written
+    label_set = existing
+    if label_set is None:
+        label_set = _mint_label_set(sorted(arrays), log)
+    missing = [k for k in arrays if label_set.get(k) is None]
+    if missing:
+        raise MEDH5ValidationError(
+            f"the sample's label set has no class(es) {missing}; add them or "
+            "convert without an existing label set",
+            code="E402",
+        )
+    with medh5.amend(path) as writer:
+        if existing is None:
+            writer.label_set(label_set)
+        tool = writer.software("medh5", medh5.__version__)
+        activity = writer.activity(
+            "import", agent=tool, tool="medh5 convert import-seg-nifti"
+        )
+        kind, _ = writer.add_segmentation(
+            ann_id,
+            grid=grid_id,
+            masks={label_set[k].id: v for k, v in arrays.items()},
+            annotated_classes=annotated_classes,
+            prov=activity,
+        )
+        log.decision("encoding", f"masks were stored as {kind!r}", {"kind": kind})
+    log.outputs.append(str(path))
+    return log
+
+
+__all__ = [
+    "COORD_SYSTEMS",
+    "RAS_TO_LPS",
+    "convert_world",
+    "from_nifti",
+    "import_seg_nifti",
+    "read_nifti",
+    "require_nibabel",
+    "to_nifti",
+]

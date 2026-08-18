@@ -1,322 +1,330 @@
 # Python API
 
-All of medh5's public surface is re-exported from the top-level package:
+Everything in this page is reachable from the top-level `medh5` namespace.
+
+## Opening
 
 ```python
-from medh5 import (
-    MEDH5File,
-    MEDH5Sample,
-    SampleMeta,
-    SpatialMeta,
-    ValidationReport,
-    ReviewStatus,
-    optimize_chunks,
-    MEDH5Error, MEDH5FileError, MEDH5SchemaError, MEDH5ValidationError,
-)
+import medh5
+
+with medh5.open("case.medh5") as s:        # -> Sample
+    ...
+
+with medh5.open_collection("shard.medh5c") as c:   # -> Collection (Mapping[str, Sample])
+    for key, sample in c.items():
+        ...
+
+from medh5.collection import open_any
+with open_any(path, key=None) as opened:   # a Sample or a Collection, whichever it is
+    ...
 ```
 
-The central type is `MEDH5File`. It exposes two styles:
+`medh5.open` is lazy: it parses `/meta` and opens no arrays. Use it as a
+context manager, or call `.close()`.
 
-- **Static methods** (`write` / `read` / `read_meta` / `verify` / `validate`
-  / `update` / `update_meta` / `add_seg`) for one-shot operations.
-- **Context-manager instance** (`with MEDH5File(path) as f`) for lazy typed
-  access via `f.images`, `f.seg`, `f.meta`.
+## Sample
+
+### Identity and structure
+
+```python
+s.identity            # Identity: sample_id, subject_id, sex, laterality, bodypart
+s.cohort              # Cohort: dataset_id, site_id, scanner_id, group_id, protocol
+s.document            # SampleDocument — the whole /meta document
+s.profiles            # frozenset of conformance profiles
+s.version             # "1.0"
+s.kind                # "sample" or "collection"
+s.content_id          # "sha256:..." or None
+s.summary()           # JSON-safe description; what `medh5 info --json` prints
+```
+
+### Timepoints
+
+```python
+s.timepoints                       # Timeline — indexable by position or id
+s.timepoints[0].label              # "baseline"
+s.timepoints["tp1"].days_from_baseline
+s.is_longitudinal                  # len(timepoints) > 1
+
+view = s.at("tp1")                 # a timepoint-scoped view of the whole sample
+view.images                        # only tp1's images
+view.annotations                   # only tp1's annotations
+```
+
+### Geometry
+
+```python
+s.grids                    # {grid_id: Grid}
+s.reference_grid           # the sample's principal grid
+
+g = s.grids["ct_tp0"]
+g.shape, g.spacing, g.origin, g.direction
+g.affine                   # (n+1, n+1) index -> world
+g.spatial_shape            # spatial axes only, for a 4-D grid
+g.coord_system             # "LPS"
+g.timepoint                # "tp0"
+g.frame_uid                # frame of reference
+g.physical_size            # extent in mm
+```
+
+### Images
+
+```python
+img = s.images["CT_tp0"]
+img.shape, img.dtype, img.chunks, img.nbytes
+img.modality               # "CT"
+img.value_type             # "quantitative"
+img.value_units            # "HU"
+img.rescale                # (slope, intercept)
+img.levels                 # multiscale pyramid levels
+
+img.read()                                # whole array, stored values
+img.read(physical=True)                   # rescale applied
+img.read((slice(0, 16), slice(0, 64), slice(0, 64)))   # one block
+img.dataset                               # the underlying h5py dataset
+```
+
+`physical=True` applies `slope` and `intercept`. When an image declares
+neither, the stored values are already physical and the flag changes nothing.
+
+### Annotations
+
+Every annotation, whatever its kind:
+
+```python
+ann = s.annotations["organs_tp0"]
+ann.kind                   # "layers" | "labelmap" | "bitmask" | "instances" |
+                           # "probmap" | "boxes" | "obb" | "keypoints" |
+                           # "points" | "contours" | "mesh" | "classification"
+ann.task                   # "segmentation" | "detection" | "classification" | ...
+ann.grid_id, ann.grid
+ann.timepoints             # which visits it describes
+ann.class_ids              # classes it declares
+ann.annotated_class_ids    # classes that were examined (§11.3)
+ann.is_annotated("spleen") # was this class looked for?
+ann.is_fully_covered
+ann.classes                # LabelClass objects
+ann.quality_key, ann.prov
+```
+
+Voxel annotations add:
+
+```python
+ann.contains(class_id, (z, y, x))
+ann.dense(["liver", "lesion"])          # (C, *spatial) bool
+ann.dense(["liver"], roi=(slice(0,16),)*3)
+ann.labelmap()                           # (*spatial) of class ids
+ann.voxel_counts()                       # {class_id: count}
+ann.class_bboxes()                       # {class_id: (S, 2) or None}
+ann.instances()                          # needs instance identity — see below
+```
+
+See [Annotations](annotations.md) for the per-kind API.
+
+### Transforms
+
+```python
+s.transforms                       # {transform_id: Transform}
+t = s.transform_between("tp0", "tp1")   # resolved through the frame graph
+t.kind                             # "affine" | "displacement" | "bspline" | "composite"
+t.from_frame, t.to_frame
+t.is_invertible                    # the mapping is invertible
+t.inverse()                        # the *stored* inverse, when the file has one
+t.transform_points(points)         # world -> world, in mm
+
+from medh5.transforms.apply import jacobian_determinant, target_registration_error
+target_registration_error(t, fixed_points, moving_points)   # {"mean", "max", ...}
+jacobian_determinant(field, grid)                           # for a displacement field
+```
+
+`transform_between` searches the frame graph, composing chains and using
+inverses where a transform declares one. It returns `None` when no path
+exists — it does not invent one.
+
+### Tracking
+
+```python
+tracking = s.tracks("lesion")
+tracking.timepoints                     # ("tp0", "tp1")
+tracking.states(instance_id)            # {timepoint: present|resolved|unexamined}
+tracking.state_at(instance_id, "tp1")
+tracking.is_new(instance_id)
+tracking.is_resolved(instance_id)
+tracking.is_persistent(instance_id)
+tracking.class_conflicts()              # objects whose class changed between visits
+tracking.unexamined()                   # {timepoint: instance ids nobody looked for}
+tracking.coverage                       # {timepoint: class ids examined there}
+
+for instance_id, track in tracking.items():
+    track.volumes                       # {timepoint: mm^3}
+    track.relative_change("tp0", "tp1")
+    track.at("tp1")                     # the Observation, or None
+```
+
+See [Longitudinal](longitudinal.md).
+
+### Integrity
+
+```python
+s.verify()                    # VerifyResult
+s.verify(partial=["images/CT_tp0"])
+s.verify().ok
+s.compute_content_id()        # recompute rather than read the stored one
+```
 
 ## Writing
 
 ```python
-MEDH5File.write(
-    path,
-    images: dict[str, np.ndarray],
-    *,
-    seg: dict[str, np.ndarray] | None = None,
-    bboxes: np.ndarray | None = None,
-    bbox_scores: np.ndarray | None = None,
-    bbox_labels: list[str] | None = None,
-    label: int | str | None = None,
-    label_name: str | None = None,
-    spacing: Sequence[float] | None = None,
-    origin: Sequence[float] | None = None,
-    direction: Sequence[Sequence[float]] | None = None,
-    axis_labels: Sequence[str] | None = None,
-    coord_system: str | None = None,
-    patch_size: int | Sequence[int] | None = None,
-    extra: dict | None = None,
-    compression: str = "balanced",    # "fast" | "balanced" | "max"
-    checksum: bool = False,
+with medh5.create("out.medh5", sample_id="c1", subject_id="s1",
+                  codec="balanced") as w:
+    ...
+```
+
+The writer builds a temporary file and `os.replace`s it into position on a
+clean exit. An exception aborts and leaves nothing behind.
+
+### Document
+
+```python
+w.identity(sex="F", bodypart="abdomen")
+w.cohort(dataset_id="d", site_id="site-A", group_id="family-7")
+w.add_timepoint("tp1", index=1, label="fu1", days_from_baseline=92,
+                date="2026-05-04", study_uid="pseudo:...")
+w.label_set(label_set)
+w.extra("mytool", {"anything": "json-serialisable"})
+w.acquisition("CT_tp0", kvp=120, exposure_mas=180)   # imaging physics only
+w.deidentification(method="dicom-psi-profile", date_shift_days=-117)
+w.split(set_id="cv5", partition="train", fold=1)     # replaces the same set_id
+```
+
+### Provenance and quality
+
+```python
+tool = w.software("nnU-Net", "2.4.2")
+rad  = w.person("RAD-07")
+org  = w.organization("Site A")
+
+act = w.activity("predict", agent=tool, tool="nnUNetv2_predict",
+                 params={"fold": "all"}, inputs=["images/CT_tp0"])
+
+w.set_quality("organs_tp0", status="reviewed", reviewed_by=[rad.id])
+```
+
+Activity types: `import`, `annotate`, `review`, `predict`, `resample`,
+`register`, `derive`, `deidentify`, `transcode`, `other`.
+
+### Grids and images
+
+```python
+w.add_grid("ct_tp0", shape=(192, 256, 256), spacing=(1.5, 0.8, 0.8),
+           origin=(-144.0, -102.4, -102.4), direction=np.eye(3),
+           coord_system="LPS", timepoint="tp0",
+           frame_uid="pseudo:frame-a", patch_hint=(96, 96, 96))
+
+w.add_image("CT_tp0", array, grid="ct_tp0", modality="CT",
+            value_type="quantitative", value_units="HU",
+            rescale_slope=1.0, rescale_intercept=-1024.0, prov=act)
+
+w.add_pyramid("WSI", [level0, level1, level2],
+              grid_levels=["l0", "l1", "l2"], modality="SM")
+```
+
+`patch_hint` tells the chunk optimiser what shape you will read.
+
+### Annotations
+
+```python
+kind, stats = w.add_segmentation(
+    "organs_tp0", grid="ct_tp0",
+    masks={"liver": liver, "lesion": lesion},   # or probabilities= or instances=
+    encoding="auto",                            # or an explicit kind
+    annotated_classes=["liver", "spleen", "lesion"],
+    ignore=uncertain_mask,
+    prov=act, quality={"status": "approved"},
 )
+
+w.add_boxes("lesions", boxes, class_ids=["lesion"], grid="ct_tp0",
+            space="index", scores=[0.91], instance_ids=[7])
+w.add_obb("nodules", centers, sizes, rotations, class_ids=["nodule"], grid="ct")
+w.add_keypoints("landmarks", points, keypoint_classes, class_ids, grid="ct")
+w.add_points("fiducials", points, grid="ct", correspondence="paired")
+w.add_contours("rtstruct", polygons, grid="ct", space="world")
+w.add_mesh("surface", vertices, faces, space="world")
+w.add_classification("response", {"progressive": 1.0}, scope="sample",
+                     timepoints=["tp1"])
 ```
 
-All image arrays must share the same shape; all seg masks must match that
-shape. Writes are atomic (see [File format](file-format.md)).
-
-## Reading
-
-### Choosing the right read API
-
-| API | Returns | Reads arrays? | Holds a file handle? | Use when |
-|-----|---------|---------------|----------------------|----------|
-| `MEDH5File.read(path)` | `MEDH5Sample` dataclass with every image/mask materialised in memory | Yes, all of them | No (opens, reads, closes) | You want the whole sample in RAM for training/preprocessing. |
-| `MEDH5File.read_meta(path)` | `SampleMeta` only | No | No (opens, reads attrs, closes) | You need labels / shape / spatial metadata to build a manifest, without paying for array I/O. |
-| `with MEDH5File(path) as f:` | Context-manager `MEDH5File` instance; access via `f.images`, `f.seg`, `f.meta`, `f.bbox_arrays()` | Only the slices you index | Yes, until the `with` block exits | You want lazy slicing (viewer-style), repeated partial reads, or patch sampling on a large volume. |
-
-Rule of thumb: `read_meta` for catalog/index builders, the context manager
-for viewers and patch pipelines, `read` when you truly need the full sample
-as numpy arrays.
-
-Eager — load everything into a `MEDH5Sample` dataclass:
+### Transforms
 
 ```python
-sample = MEDH5File.read("sample.medh5")
+w.add_transform("tp0_to_tp1", kind="affine",
+                from_frame="pseudo:frame-a", to_frame="pseudo:frame-b",
+                matrix=matrix4x4, invertible=True)
 
-sample.images          # dict[str, np.ndarray]
-sample.seg             # dict[str, np.ndarray] | None
-sample.bboxes          # np.ndarray | None
-sample.meta            # SampleMeta
+w.add_transform("warp", kind="displacement",
+                from_frame="a", to_frame="b",
+                field=field, field_grid="ct_tp0", vector_space="world")
 ```
 
-Lazy — open the file once and slice h5py datasets directly:
+### Derived data
 
 ```python
-with MEDH5File("sample.medh5") as f:
-    patch = f.images["CT"][10:42, 20:84, 20:84]   # only this chunk is decompressed
-    if f.seg is not None:
-        mask_patch = f.seg["tumor"][10:42, 20:84, 20:84]
-    meta = f.meta        # no array reads
+w.build_index()                          # sampling indices for every voxel annotation
+w.build_index(["organs_tp0"], max_coords=8192)
+w.transcode_annotation("organs_tp0", "bitmask")
+w.remove_annotation("old_seg")           # takes its index with it
 ```
 
-Metadata-only — read attributes without touching arrays:
+## Amending
 
 ```python
-meta = MEDH5File.read_meta("sample.medh5")
-meta.label
-meta.image_names
-meta.spatial.spacing
+with medh5.amend("case.medh5") as w:
+    w.set_quality("organs", status="approved")
 ```
 
-## `SampleMeta` and `SpatialMeta`
-
-```python
-@dataclass
-class SampleMeta:
-    image_names: list[str]
-    label: int | str | None
-    label_name: str | None
-    has_seg: bool
-    seg_names: list[str]
-    has_bbox: bool
-    extra: dict
-    spatial: SpatialMeta
-    ...
-
-@dataclass
-class SpatialMeta:
-    shape: list[int]
-    spacing: list[float]
-    origin: list[float]
-    direction: list[list[float]]   # ndim × ndim
-    axis_labels: list[str]
-    coord_system: str | None
-    patch_size: list[int] | None
-    ...
-```
-
-Both serialize to HDF5 attributes round-trip. `SampleMeta.validate()` checks
-dimension consistency (`direction` is `ndim × ndim`, `axis_labels` length
-equals `ndim`, `patch_size` length and element types).
+Copy-on-write: a new file is built from the old and replaced atomically.
+Objects this reader does not understand — including ones written by a future
+minor version — are copied through untouched, so amending never silently drops
+what it cannot read.
 
 ## Validation
 
 ```python
-report = MEDH5File.validate("sample.medh5")
+from medh5.validate import validate_file, validate_paths
 
-report.ok()                # bool, no errors
-report.ok(strict=True)     # bool, no errors AND no warnings
-report.errors              # list[ValidationIssue(code, message, location)]
+report = validate_file("case.medh5", level="strict", profiles=["seg"])
+report.ok
+report.errors            # [Diagnostic]
 report.warnings
+report.diagnostics[0].code       # "E102"
+report.diagnostics[0].location
+print(report.format(verbose=True))
 ```
 
-Each `ValidationIssue` carries an optional `location` string (e.g.
-`"images/CT"`, `"seg/tumor"`, `"bboxes"`, `"checksum_sha256"`,
-`"extra.nnunetv2.labels"`). UIs can use it to highlight the offending
-dataset without re-parsing `message`. `ValidationIssue.to_dict()` omits
-the key when `location is None`, so the JSON shape stays compact for
-issues that don't have a natural location.
-
-Or, the one-call shortcut when you just want a boolean answer:
-
-```python
-MEDH5File.is_valid("sample.medh5")                # False if any errors
-MEDH5File.is_valid("sample.medh5", strict=True)   # also False on warnings
-```
-
-`validate()` intentionally does not take `strict` — strictness lives on the
-returned report, keeping validation policy out of the report-building layer.
-
-## Integrity
-
-`MEDH5File.verify()` returns a tri-state `VerifyResult` so callers can
-distinguish "no checksum was ever stored" from "checksum verified
-successfully" — the two cases previously both returned `True`, which
-made trustworthy audit UIs impossible to build.
-
-```python
-from medh5 import MEDH5File, VerifyResult
-
-match MEDH5File.verify("sample.medh5"):
-    case VerifyResult.OK:        ...   # stored checksum matches data
-    case VerifyResult.MISSING:   ...   # no checksum was stored (opt-in)
-    case VerifyResult.MISMATCH:  ...   # data has diverged from stored digest
-```
-
-Checksums are written opt-in via `MEDH5File.write(..., checksum=True)`.
-
-## Concurrent reads: `open_shared`
-
-HDF5 refuses to reopen a file already open elsewhere in the same
-process. Lazy-read consumers (napari plugins, dashboards, viewers) that
-need to hand out independent "handles" while keeping the underlying
-file single-open should use `open_shared`:
-
-```python
-from medh5 import open_shared
-
-with open_shared("sample.medh5") as f:
-    patch = f["images/CT"][10:42, 20:84, 20:84]
-```
-
-`open_shared` is a ref-counted context manager keyed by
-`Path.resolve()`: the first caller opens the file, subsequent callers
-(in any thread of the same process) receive the *same* `h5py.File`,
-and the handle closes when the last `with` block exits. Callers must
-treat the returned object as read-only.
-
-## Post-write callbacks: `on_reopened`
-
-Every mutating entry point — `MEDH5File.update`, `update_meta`,
-`add_seg`, and `set_review_status` — accepts `on_reopened`, invoked
-with the file `Path` after the HDF5 write handle has closed *and only
-when the operation succeeded*. This is the hook for lazy-read
-consumers to re-acquire handles or rebind cached views without
-inventing their own event system:
-
-```python
-def reopen(path):
-    # re-issue any cached dask arrays / layer.data bindings here
-    ...
-
-MEDH5File.update("sample.medh5", meta={"label": 2}, on_reopened=reopen)
-```
-
-## In-place updates
-
-The unified `update()` entry point handles metadata, segmentation, and bbox
-mutations in one call. It verifies any stored checksum before mutating (so
-a pre-corrupted file cannot silently get a fresh checksum stamped on top),
-re-syncs derived attributes (`image_names`, `shape`, `has_seg`, `seg_names`,
-`has_bbox`), and recomputes the checksum at the end when one is present.
-
-```python
-MEDH5File.update(
-    "sample.medh5",
-    meta={"label": 2, "extra": {"reviewed": True}, "spacing": [1.0, 0.5, 0.5]},
-    seg_ops={"add": {"organ": organ_mask}, "remove": ["old_mask"]},
-    bbox_ops={"bboxes": new_bboxes, "bbox_labels": ["tumor"]},
-    force=False,         # set True to skip pre-mutation checksum verify
-    on_reopened=None,    # callback for lazy-read consumers (see above)
-)
-```
-
-Convenience shortcuts delegate to `update()`:
-
-```python
-MEDH5File.update_meta("sample.medh5", label=2, extra={"reviewed": True})
-MEDH5File.add_seg("sample.medh5", "new_mask", mask_array)
-```
-
-`update()` (and therefore every shortcut) requires **exclusive write
-access**: close any open `MEDH5File(...)` context managers and drop
-lazy views first, or HDF5 raises an "already open" error. `medh5`
-detects that specific error and raises `MEDH5FileError` with a clear
-message pointing at the constraint.
-
-## Spatial affine composition
-
-Viewer-style consumers can ask `SpatialMeta` for a composed homogeneous
-affine matrix in one call:
-
-```python
-from medh5 import MEDH5File
-
-meta = MEDH5File.read_meta("sample.medh5")
-affine = meta.spatial.as_affine(ndim=3)
-if affine is None:
-    # Rotation is effectively identity — use simpler scale+translate
-    ...
-else:
-    # (ndim+1, ndim+1) matrix: direction · diag(spacing) + origin
-    assert affine.shape == (4, 4)
-```
-
-`as_affine` returns `None` when `direction` is absent or numerically
-close to identity, so consumers can pick the cheap path when a full
-affine isn't needed.
-
-## Bbox clamping
-
-`validate_bboxes` clamps out-of-range boxes to the sample's spatial
-bounds and reports every adjustment it made:
-
-```python
-from medh5 import validate_bboxes
-
-clamped, issues = validate_bboxes(boxes, sample_shape=(128, 256, 256))
-for i, axis, reason in issues:
-    # reason ∈ {"min<0", "max>shape", "min>max"}
-    print(f"box {i} axis {axis}: {reason}")
-```
-
-The input array is not mutated; `clamped` is always a fresh `int64`
-array shaped `(n, ndim, 2)`. Shape mismatches raise
-`MEDH5ValidationError`.
-
-## `extra` subsystem conventions
-
-Three `extra` sub-keys are well-known to medh5 and get light validation
-on read:
-
-| Key | Producer | Notes |
-|-----|---------|-------|
-| `extra["review"]` | `set_review_status` | Stamped with `schema_version: 1`. `status` must be a string. |
-| `extra["nnunetv2"]` | `medh5.io.from_nnunetv2` | Stamped with `schema_version: 1`. `labels` must be `dict[str, int]`. |
-| `extra["checksum"]` | reserved | Reserved for future structured checksum metadata. |
-
-`read_meta` emits a `UserWarning` for malformed shapes and for any
-`schema_version` newer than this library understands; the raw payload
-is preserved in `meta.extra` either way.
+Levels: `structural` → `semantic` → `integrity` → `strict`. Codes are stable
+API; see spec §15.2 and `medh5.CODES`.
 
 ## Exceptions
 
 ```
 MEDH5Error
-├── MEDH5FileError        # IO / HDF5 open failures
-├── MEDH5SchemaError      # unknown schema version, malformed spatial attrs
-└── MEDH5ValidationError  # content fails validate() or integrity check
+├── MEDH5FileError        (also OSError)
+├── MEDH5VersionError
+├── MEDH5SchemaError
+├── MEDH5ValidationError  (also ValueError) — carries .code
+└── MEDH5IntegrityError
 ```
 
-Catch `MEDH5Error` at the boundary to handle all medh5 failures uniformly.
+`MEDH5ValidationError.code` is the §15.2 diagnostic code where one applies,
+so a caller can branch on the defect rather than on the message text.
 
-## Chunk optimizer
+## Sub-packages
 
-```python
-from medh5 import optimize_chunks
-
-chunks = optimize_chunks(
-    image_shape=(128, 256, 256),
-    patch_size=192,
-    bytes_per_element=4,
-)
-```
-
-Called automatically by `write()`; exposed for callers that want to build
-HDF5 datasets manually outside `MEDH5File`.
+| | |
+|---|---|
+| `medh5.torch` | [Datasets and samplers](training.md) |
+| `medh5.monai` | [MetaTensor adapter](training.md#monai) |
+| `medh5.io` | [Converters](converters.md) |
+| `medh5.dataset` | [Cohort manifests, splits, statistics](cohorts.md) |
+| `medh5.curation` | [Provenance, agreement, tracking, de-identification](curation.md) |
+| `medh5.conformance` | [The conformance suite](conformance.md) |
+| `medh5.storage` | [Codecs, chunking, recompression](file-format.md) |

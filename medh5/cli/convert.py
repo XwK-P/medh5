@@ -1,219 +1,337 @@
-"""``import`` / ``export`` subgroups (NIfTI, DICOM, nnU-Net v2)."""
+"""``convert`` and ``migrate`` --- the importers and exporters (plan §7).
+
+Every command writes a conversion report, because the interesting part of an
+import is not that it succeeded but what it had to decide: which encoding, which
+class ids, whether a half-voxel convention changed, whether a timepoint order
+was read or guessed.  ``--report FILE`` keeps it; without it the guesses and
+warnings still print.
+"""
 
 from __future__ import annotations
 
 import argparse
-import sys
+import json
 from pathlib import Path
+from typing import Any
 
-from medh5.cli._common import Handler
+from medh5.cli._common import (
+    EXIT_ERROR,
+    EXIT_OK,
+    add_json_flag,
+    emit,
+    fail,
+)
+from medh5.errors import MEDH5Error
+from medh5.io.report import ConversionReport
+
+GROUPING = ("subject", "study")
 
 
-def _cmd_import_nifti(args: argparse.Namespace) -> int:
-    from medh5.io import from_nifti
+def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    convert = sub.add_parser("convert", help="import from and export to other formats")
+    group = convert.add_subparsers(dest="convert_command", metavar="COMMAND")
 
-    if not args.image:
-        print("--image NAME PATH is required (one or more)", file=sys.stderr)
-        return 2
-    images: dict[str, str | Path] = {name: Path(path) for name, path in args.image}
-    seg_d: dict[str, str | Path] = {name: Path(path) for name, path in (args.seg or [])}
-    from_nifti(
-        images=images,
-        seg=seg_d or None,
-        out_path=Path(args.output),
-        label=args.label,
-        label_name=args.label_name,
-        compression=args.compression,
-        checksum=args.checksum,
-        resample_to=args.resample_to,
-        interpolator=args.interpolator,
+    nifti = group.add_parser("from-nifti", help="NIfTI volumes -> one sample")
+    nifti.add_argument("out")
+    nifti.add_argument(
+        "--image",
+        action="append",
+        required=True,
+        metavar="NAME=PATH",
+        help="an image channel; repeatable",
     )
-    print(f"Wrote {args.output}")
-    return 0
-
-
-def _cmd_import_dicom(args: argparse.Namespace) -> int:
-    from medh5.io import from_dicom
-
-    from_dicom(
-        Path(args.dicom_dir),
-        Path(args.output),
-        modality_name=args.modality,
-        series_uid=args.series_uid,
-        apply_modality_lut=not args.no_modality_lut,
-        compression=args.compression,
-        checksum=args.checksum,
+    nifti.add_argument(
+        "--mask", action="append", metavar="NAME=PATH", help="a mask; repeatable"
     )
-    print(f"Wrote {args.output}")
-    return 0
-
-
-def _cmd_import_nnunetv2(args: argparse.Namespace) -> int:
-    from medh5.io import from_nnunetv2
-
-    written = from_nnunetv2(
-        Path(args.src),
-        Path(args.output),
-        include_test=not args.no_test,
-        compression=args.compression,
-        checksum=args.checksum,
+    nifti.add_argument("--modality", action="append", metavar="NAME=CODE")
+    nifti.add_argument("--coord-system", choices=("LPS", "RAS"), default="LPS")
+    nifti.add_argument(
+        "--fourth-axis",
+        choices=("auto", "time", "channel"),
+        default="auto",
+        help=(
+            "what a 4-D series' extra axis is: time (cine, DCE, 4-D CT) or "
+            "channel (multi-b-value DWI, multi-echo). auto reads the file and "
+            "reports a guess where it cannot tell"
+        ),
     )
-    print(
-        f"Wrote {len(written['train'])} train + {len(written['test'])} test "
-        f"files to {args.output}"
+    nifti.add_argument("--sample-id")
+    nifti.add_argument("--subject-id")
+    _common(nifti)
+
+    to_nifti = group.add_parser("to-nifti", help="one image or class -> NIfTI")
+    to_nifti.add_argument("path")
+    to_nifti.add_argument("image")
+    to_nifti.add_argument("out")
+    to_nifti.add_argument("--annotation")
+    to_nifti.add_argument("--class", dest="class_key")
+    to_nifti.add_argument("--stored", action="store_true", help="skip the rescale")
+
+    dicom = group.add_parser("from-dicom", help="a DICOM tree -> samples")
+    dicom.add_argument("root")
+    dicom.add_argument("out")
+    dicom.add_argument("--group-by", choices=GROUPING, default="subject")
+    dicom.add_argument("--modality", action="append", dest="modalities")
+    dicom.add_argument("--series", action="append", dest="series_uids")
+    _common(dicom)
+
+    seg_in = group.add_parser("from-dicom-seg", help="a DICOM SEG -> an annotation")
+    seg_in.add_argument("seg")
+    seg_in.add_argument("sample")
+    seg_in.add_argument("--id", dest="ann_id", default="seg")
+    seg_in.add_argument("--grid")
+    _common(seg_in)
+
+    seg_out = group.add_parser("to-dicom-seg", help="an annotation -> a DICOM SEG")
+    seg_out.add_argument("path")
+    seg_out.add_argument("annotation")
+    seg_out.add_argument("out")
+    seg_out.add_argument(
+        "--source", action="append", required=True, help="a source DICOM file"
     )
-    return 0
+    _common(seg_out)
+
+    rt_in = group.add_parser("from-rtstruct", help="an RTSTRUCT -> contours")
+    rt_in.add_argument("rtstruct")
+    rt_in.add_argument("sample")
+    rt_in.add_argument("--id", dest="ann_id", default="contours")
+    rt_in.add_argument("--grid")
+    rt_in.add_argument(
+        "--rasterize",
+        action="store_true",
+        help="also derive a voxel annotation; the rule is recorded in provenance",
+    )
+    _common(rt_in)
+
+    rt_out = group.add_parser("to-rtstruct", help="contours -> an RTSTRUCT")
+    rt_out.add_argument("path")
+    rt_out.add_argument("annotation")
+    rt_out.add_argument("out")
+    rt_out.add_argument("--source", action="append", required=True)
+    _common(rt_out)
+
+    nn_in = group.add_parser("from-nnunet", help="an nnU-Net v2 dataset -> samples")
+    nn_in.add_argument("root")
+    nn_in.add_argument("out")
+    nn_in.add_argument("--case", action="append", dest="case_ids")
+    _common(nn_in)
+
+    nn_out = group.add_parser("to-nnunet", help="samples -> an nnU-Net v2 dataset")
+    nn_out.add_argument("out")
+    nn_out.add_argument("paths", nargs="+")
+    nn_out.add_argument("--dataset-name", default="Dataset001_medh5")
+    nn_out.add_argument("--annotation", default="seg")
+    _common(nn_out)
+
+    migrate = sub.add_parser("migrate", help="0.x files -> 1.0 samples (Appendix B)")
+    migrate.add_argument("paths", nargs="+")
+    migrate.add_argument("-o", "--out", required=True, help="output directory")
+    migrate.add_argument("--group-by", choices=GROUPING, default="study")
+    migrate.add_argument(
+        "--subject-key",
+        help="dotted path to a subject key in 0.x extra, e.g. extra.patient_id",
+    )
+    migrate.add_argument(
+        "--label-set", help="a reviewed label-set sidecar to reuse (see --write-labels)"
+    )
+    migrate.add_argument(
+        "--write-labels",
+        metavar="FILE",
+        help="mint the cohort's label set, write it for review, and stop",
+    )
+    _common(migrate)
 
 
-def _cmd_export_nifti(args: argparse.Namespace) -> int:
-    from medh5.io import to_nifti
+def _common(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--report", metavar="FILE", help="write the report as JSON")
+    add_json_flag(parser)
+
+
+def dispatch(command: str, args: argparse.Namespace) -> int | None:
+    if command == "migrate":
+        return _migrate(args)
+    if command != "convert":
+        return None
+    handlers = {
+        "from-nifti": _from_nifti,
+        "to-nifti": _to_nifti,
+        "from-dicom": _from_dicom,
+        "from-dicom-seg": _from_dicom_seg,
+        "to-dicom-seg": _to_dicom_seg,
+        "from-rtstruct": _from_rtstruct,
+        "to-rtstruct": _to_rtstruct,
+        "from-nnunet": _from_nnunet,
+        "to-nnunet": _to_nnunet,
+    }
+    handler = handlers.get(getattr(args, "convert_command", None) or "")
+    if handler is None:
+        return fail("usage: medh5 convert COMMAND ... (see --help)")
+    try:
+        return handler(args)
+    except (MEDH5Error, ImportError, FileNotFoundError) as exc:
+        return fail(str(exc))
+
+
+def _pairs(values: list[str] | None, what: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for entry in values or []:
+        if "=" not in entry:
+            raise MEDH5Error(f"--{what} expects NAME=VALUE, got {entry!r}")
+        name, _, value = entry.partition("=")
+        out[name] = value
+    return out
+
+
+def _finish(report: ConversionReport, args: argparse.Namespace) -> int:
+    if getattr(args, "report", None):
+        Path(args.report).write_text(json.dumps(report.to_json(), indent=2) + "\n")
+    if getattr(args, "json", False):
+        emit(report.to_json(), as_json=True)
+    else:
+        print(report.format(verbose=True))
+    return EXIT_OK if report.ok else EXIT_ERROR
+
+
+# -- NIfTI -----------------------------------------------------------------
+
+
+def _from_nifti(args: argparse.Namespace) -> int:
+    from medh5.io.nifti import from_nifti
+
+    report = from_nifti(
+        _pairs(args.image, "image"),
+        args.out,
+        masks=_pairs(args.mask, "mask") or None,
+        modalities=_pairs(args.modality, "modality") or None,
+        coord_system=args.coord_system,
+        fourth_axis=args.fourth_axis,
+        sample_id=args.sample_id,
+        subject_id=args.subject_id,
+    )
+    return _finish(report, args)
+
+
+def _to_nifti(args: argparse.Namespace) -> int:
+    from medh5.io.nifti import to_nifti
 
     written = to_nifti(
-        Path(args.file),
-        Path(args.output),
+        args.path,
+        args.image,
+        args.out,
+        physical=not args.stored,
+        annotation=args.annotation,
+        class_key=args.class_key,
+    )
+    print(written)
+    return EXIT_OK
+
+
+# -- DICOM -----------------------------------------------------------------
+
+
+def _from_dicom(args: argparse.Namespace) -> int:
+    from medh5.io.dicom import from_dicom
+
+    report = from_dicom(
+        args.root,
+        args.out,
+        group_by=args.group_by,
         modalities=args.modalities,
-        seg=args.seg,
+        series_uids=args.series_uids,
     )
-    for key, path in written.items():
-        print(f"  {key}: {path}")
-    return 0
+    return _finish(report, args)
 
 
-def _cmd_export_nnunetv2(args: argparse.Namespace) -> int:
-    from medh5.io import to_nnunetv2
+def _from_dicom_seg(args: argparse.Namespace) -> int:
+    from medh5.io.dicom_seg import from_dicom_seg
 
-    dataset_json = to_nnunetv2(
-        Path(args.src),
-        Path(args.output),
+    report = from_dicom_seg(args.seg, args.sample, ann_id=args.ann_id, grid=args.grid)
+    return _finish(report, args)
+
+
+def _to_dicom_seg(args: argparse.Namespace) -> int:
+    from medh5.io.dicom_seg import to_dicom_seg
+
+    report = ConversionReport(converter="to-dicom-seg")
+    to_dicom_seg(args.path, args.annotation, args.source, args.out, report=report)
+    return _finish(report, args)
+
+
+# -- RTSTRUCT --------------------------------------------------------------
+
+
+def _from_rtstruct(args: argparse.Namespace) -> int:
+    from medh5.io.rtstruct import from_rtstruct
+
+    report = from_rtstruct(
+        args.rtstruct,
+        args.sample,
+        ann_id=args.ann_id,
+        grid=args.grid,
+        rasterize=args.rasterize,
+    )
+    return _finish(report, args)
+
+
+def _to_rtstruct(args: argparse.Namespace) -> int:
+    from medh5.io.rtstruct import to_rtstruct
+
+    report = ConversionReport(converter="to-rtstruct")
+    to_rtstruct(args.path, args.annotation, args.source, args.out, report=report)
+    return _finish(report, args)
+
+
+# -- nnU-Net ---------------------------------------------------------------
+
+
+def _from_nnunet(args: argparse.Namespace) -> int:
+    from medh5.io.nnunetv2 import from_nnunetv2
+
+    report = from_nnunetv2(args.root, args.out, case_ids=args.case_ids)
+    return _finish(report, args)
+
+
+def _to_nnunet(args: argparse.Namespace) -> int:
+    from medh5.io.nnunetv2 import to_nnunetv2
+
+    report = to_nnunetv2(
+        args.paths,
+        args.out,
         dataset_name=args.dataset_name,
-        file_ending=args.file_ending,
+        annotation=args.annotation,
     )
-    print(f"Wrote nnU-Net v2 dataset → {dataset_json.parent}")
-    return 0
+    return _finish(report, args)
 
 
-IMPORT_HANDLERS: dict[str, Handler] = {
-    "nifti": _cmd_import_nifti,
-    "dicom": _cmd_import_dicom,
-    "nnunetv2": _cmd_import_nnunetv2,
-}
-
-EXPORT_HANDLERS: dict[str, Handler] = {
-    "nifti": _cmd_export_nifti,
-    "nnunetv2": _cmd_export_nnunetv2,
-}
+# -- migrate ---------------------------------------------------------------
 
 
-def register(sub: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
-    p = sub.add_parser("import", help="Import external formats into .medh5")
-    isub = p.add_subparsers(dest="import_command")
+def _migrate(args: argparse.Namespace) -> int:
+    from medh5.io.legacy import (
+        build_label_set,
+        load_sidecar,
+        migrate_paths,
+        write_sidecar,
+    )
 
-    pn = isub.add_parser("nifti", help="Import NIfTI volumes")
-    pn.add_argument(
-        "--image",
-        nargs=2,
-        action="append",
-        metavar=("NAME", "PATH"),
-        help="Modality name and NIfTI path (repeatable)",
-    )
-    pn.add_argument(
-        "--seg",
-        nargs=2,
-        action="append",
-        metavar=("NAME", "PATH"),
-        help="Segmentation name and NIfTI path (repeatable)",
-    )
-    pn.add_argument("-o", "--output", required=True)
-    pn.add_argument("--label", default=None)
-    pn.add_argument("--label-name", default=None)
-    pn.add_argument(
-        "--resample-to",
-        default=None,
-        help="Reference modality name or NIfTI path for SimpleITK resampling",
-    )
-    pn.add_argument(
-        "--interpolator",
-        default="linear",
-        choices=["linear", "nearest", "bspline"],
-    )
-    pn.add_argument(
-        "--compression", default="balanced", choices=["fast", "balanced", "max"]
-    )
-    pn.add_argument("--checksum", action="store_true")
-
-    pd = isub.add_parser("dicom", help="Import a DICOM series directory")
-    pd.add_argument("dicom_dir")
-    pd.add_argument("-o", "--output", required=True)
-    pd.add_argument("--modality", default="CT")
-    pd.add_argument("--series-uid", default=None)
-    pd.add_argument("--no-modality-lut", action="store_true")
-    pd.add_argument(
-        "--compression", default="balanced", choices=["fast", "balanced", "max"]
-    )
-    pd.add_argument("--checksum", action="store_true")
-
-    pnu = isub.add_parser("nnunetv2", help="Import a raw nnU-Net v2 dataset folder")
-    pnu.add_argument(
-        "src", help="Path to Dataset###_NAME/ folder containing dataset.json"
-    )
-    pnu.add_argument(
-        "-o", "--output", required=True, help="Output directory for .medh5 files"
-    )
-    pnu.add_argument(
-        "--no-test",
-        action="store_true",
-        help="Skip imagesTs/ (test cases)",
-    )
-    pnu.add_argument(
-        "--compression", default="balanced", choices=["fast", "balanced", "max"]
-    )
-    pnu.add_argument("--checksum", action="store_true")
-
-    p = sub.add_parser("export", help="Export .medh5 to external formats")
-    esub = p.add_subparsers(dest="export_command")
-    pe = esub.add_parser("nifti", help="Export images and masks as NIfTI")
-    pe.add_argument("file", help="Source .medh5 file")
-    pe.add_argument("-o", "--output", required=True, help="Output directory")
-    pe.add_argument("--modalities", nargs="*", default=None)
-    pe.add_argument("--seg", nargs="*", default=None)
-
-    pen = esub.add_parser(
-        "nnunetv2", help="Export .medh5 files as a raw nnU-Net v2 dataset"
-    )
-    pen.add_argument(
-        "src",
-        help="Directory of .medh5 files (with optional imagesTr/ and imagesTs/)",
-    )
-    pen.add_argument(
-        "-o", "--output", required=True, help="Output DatasetXXX_NAME/ folder"
-    )
-    pen.add_argument(
-        "--dataset-name",
-        default=None,
-        help="Overrides 'name' field in dataset.json",
-    )
-    pen.add_argument("--file-ending", default=".nii.gz")
-
-
-def dispatch(cmd: str, args: argparse.Namespace) -> int | None:
-    if cmd == "import":
-        sub = getattr(args, "import_command", None)
-        if sub in IMPORT_HANDLERS:
-            return IMPORT_HANDLERS[sub](args)
-        print(
-            f"medh5 import: missing subcommand "
-            f"(choose from {', '.join(sorted(IMPORT_HANDLERS))})",
-            file=sys.stderr,
+    try:
+        if args.write_labels:
+            report = ConversionReport(converter="migrate")
+            label_set = build_label_set(args.paths, report=report)
+            written = write_sidecar(label_set, args.write_labels)
+            print(f"{written}: {len(label_set)} classes --- review before migrating")
+            return _finish(report, args)
+        reviewed: Any = load_sidecar(args.label_set) if args.label_set else None
+        report = migrate_paths(
+            args.paths,
+            args.out,
+            group_by=args.group_by,
+            subject_key=args.subject_key,
+            label_set=reviewed,
         )
-        return 2
-    if cmd == "export":
-        sub = getattr(args, "export_command", None)
-        if sub in EXPORT_HANDLERS:
-            return EXPORT_HANDLERS[sub](args)
-        print(
-            f"medh5 export: missing subcommand "
-            f"(choose from {', '.join(sorted(EXPORT_HANDLERS))})",
-            file=sys.stderr,
-        )
-        return 2
-    return None
+    except (MEDH5Error, FileNotFoundError) as exc:
+        return fail(str(exc))
+    return _finish(report, args)
+
+
+__all__ = ["dispatch", "register"]

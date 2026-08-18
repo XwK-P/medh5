@@ -4,581 +4,196 @@
 [![Python versions](https://img.shields.io/pypi/pyversions/medh5.svg)](https://pypi.org/project/medh5/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![CI](https://github.com/XwK-P/medh5/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/XwK-P/medh5/actions/workflows/ci.yml)
-[![Release](https://github.com/XwK-P/medh5/actions/workflows/release.yml/badge.svg)](https://github.com/XwK-P/medh5/actions/workflows/release.yml)
-[![Coverage](https://img.shields.io/badge/coverage-91%25-brightgreen.svg)](#)
+[![Coverage](https://img.shields.io/badge/coverage-93%25-brightgreen.svg)](#)
 [![Typed](https://img.shields.io/badge/typed-mypy%20strict-informational.svg)](medh5/py.typed)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 
-**HDF5 + Blosc2 multi-array format for Medical Imaging ML workloads.**
+**One medical imaging sample — a subject, at every timepoint, with all of its
+ground truth — in a single self-describing HDF5 file.**
 
-> **Status:** Beta (0.6.0) — API may still change between minor versions.
-> Backward compatibility is not guaranteed until 1.0.
+Multi-modality images, segmentation in five encodings, detection boxes,
+keypoints, contours, meshes, classification, registration between visits,
+provenance and quality records, and per-object integrity digests. Format
+version **1.0**, with a [normative specification](docs/spec/medh5-1.0.md) and a
+[103-case conformance suite](docs/conformance.md) any implementation can run.
 
-Store multiple co-registered images (e.g. CT, MRI, PET) + segmentation
-masks + bounding boxes + image-level label in a single `.medh5` file with
-Blosc2 compression, chunk-size optimization for patch-based training, and
-metadata as plain HDF5 attributes.
+```python
+import medh5
 
-## Documentation
+with medh5.open("case_0001.medh5") as s:
+    s.identity.subject_id                              # "BRATS-GLI-01234"
+    s.at("tp1").images["CT_tp1"].read(physical=True)   # HU, not raw counts
+    s.annotations["organs"].dense(["liver", "spleen"]) # any encoding, one API
+    s.transform_between("tp0", "tp1")                  # resolved via frames
+    s.tracks("lesion")                                 # lesions joined across visits
+```
 
-Full docs live under [`docs/`](docs/index.md):
-
-- [Getting started](docs/getting-started.md)
-- [File format](docs/file-format.md)
-- [Python API](docs/python-api.md)
-- [CLI reference](docs/cli.md)
-- [PyTorch integration](docs/pytorch.md)
-- [Converters (NIfTI / DICOM / nnU-Net v2)](docs/converters.md)
-- [Datasets and statistics](docs/dataset-and-stats.md)
-- [Review / QA workflow](docs/review.md)
-
-## Installation
+## Install
 
 ```bash
 pip install medh5
+pip install "medh5[torch,nifti,dicom]"
 ```
 
-With optional extras:
+Reading and writing needs only `h5py`, `hdf5plugin` and `numpy`. Extras:
+`torch`, `monai`, `nifti`, `dicom`, `dicomseg`, `itk`, `schema`, `interp`.
 
-```bash
-pip install medh5[torch]    # PyTorch dataset support
-pip install medh5[nifti]    # NIfTI import/export (nibabel)
-pip install medh5[dicom]    # DICOM import (pydicom)
-pip install medh5[itk]      # Resampling via SimpleITK
-```
+## Documentation
 
-Or install from source:
+[**docs/**](docs/index.md) · [Getting started](docs/getting-started.md) ·
+[Concepts](docs/concepts.md) · [Specification](docs/spec/medh5-1.0.md)
 
-```bash
-pip install -e ".[dev]"
-```
+[Python API](docs/python-api.md) · [CLI](docs/cli.md) ·
+[Annotations](docs/annotations.md) · [Longitudinal](docs/longitudinal.md) ·
+[Training](docs/training.md) · [Converters](docs/converters.md) ·
+[Curation](docs/curation.md) · [Cohorts](docs/cohorts.md) ·
+[Storage](docs/file-format.md) · [Conformance](docs/conformance.md)
 
-## Quick start
+## What the format is for
 
-### Write a sample
+**One file per subject, not per scan.** A sample is a *subject*, and a subject
+has visits. Longitudinal work — change detection, response assessment, lesion
+tracking, follow-up registration — lives inside one file, which also means
+assigning whole files to train and test cannot leak a patient between them.
+
+**Geometry is stated once and never guessed.** Every array is bound to a
+declared grid with spacing, origin and direction. A box sits at voxel edges and
+an integer index is a voxel centre, both written down. Converting to NIfTI or
+DICOM moves numbers between conventions explicitly, and refuses when it cannot.
+
+**Absence is not silence.** `class_ids` says what an annotation contains;
+`annotated_class_ids` says what was *looked for*. A class searched for and not
+found is a usable negative example; a class nobody examined is not. Collapsing
+the two is how a model learns a site's scans have no spleens.
+
+**Every claim is checkable.** Per-object SHA-256 over decompressed content and
+a Merkle `content_id` that survives recompression; a validator with a stable
+diagnostic-code table; and a conformance corpus with one case per code.
+
+**Reading a patch is fast.** A 64³ multi-class patch reads in 4 ms against
+117 ms in 0.x, and foreground sampling is O(1) in the volume. Reproduce it with
+`medh5 bench`.
+
+## Write a sample
 
 ```python
 import numpy as np
-from medh5 import MEDH5File
+import medh5
+from medh5 import LabelClass, LabelSet
 
-ct = np.random.random((128, 256, 256)).astype(np.float32)
-pet = np.random.random((128, 256, 256)).astype(np.float32)
-seg = {
-    "tumor": np.random.random(ct.shape) > 0.9,
-    "liver": np.random.random(ct.shape) > 0.5,
-}
-
-bboxes = np.array([
-    [[10, 30], [40, 80], [50, 90]],   # box 1: [z_min,z_max], [y_min,y_max], [x_min,x_max]
-    [[60, 90], [20, 50], [100, 130]],  # box 2
-])
-bbox_scores = np.array([0.97, 0.82])
-bbox_labels = ["tumor", "cyst"]
-
-MEDH5File.write(
-    "sample.medh5",
-    images={"CT": ct, "PET": pet},
-    seg=seg,
-    bboxes=bboxes,
-    bbox_scores=bbox_scores,
-    bbox_labels=bbox_labels,
-    label=1,
-    label_name="malignant",
-    spacing=[1.0, 0.5, 0.5],
-    origin=[0.0, 0.0, 0.0],
-    direction=[[1,0,0],[0,1,0],[0,0,1]],
-    coord_system="RAS",
-    patch_size=192,
-    extra={"patient_id": "P001"},
-    compression="balanced",  # or "fast", "max"
-    checksum=True,
-)
-```
-
-### Read a sample (eager)
-
-```python
-from medh5 import MEDH5File
-
-sample = MEDH5File.read("sample.medh5")
-
-print(sample.images.keys())             # dict_keys(['CT', 'PET'])
-print(sample.images["CT"].shape)         # (128, 256, 256)
-print(list(sample.seg.keys()))           # ['liver', 'tumor']
-print(sample.bboxes.shape)               # (2, 3, 2)
-print(sample.meta.label)                 # 1
-print(sample.meta.image_names)           # ['CT', 'PET']
-print(sample.meta.spatial.spacing)       # [1.0, 0.5, 0.5]
-```
-
-### Partial / patch read (lazy)
-
-For large datasets where loading the whole volume is impractical:
-
-```python
-from medh5 import MEDH5File
-
-with MEDH5File.open("sample.medh5") as f:
-    patch = f["images/CT"][10:42, 50:114, 50:114]
-    tumor_patch = f["seg/tumor"][10:42, 50:114, 50:114]
-```
-
-Or use the context-manager for typed access:
-
-```python
-from medh5 import MEDH5File
-
-with MEDH5File("sample.medh5") as f:
-    meta = f.meta
-    patch = f.images["CT"][10:42, 50:114, 50:114]
-    if f.seg is not None:
-        seg_patch = f.seg["tumor"][10:42, 50:114, 50:114]
-```
-
-### Metadata-only read
-
-Inspect metadata without touching the array data:
-
-```python
-from medh5 import MEDH5File
-
-meta = MEDH5File.read_meta("sample.medh5")
-print(meta.label)              # 1
-print(meta.image_names)        # ['CT', 'PET']
-print(meta.spatial.spacing)    # [1.0, 0.5, 0.5]
-```
-
-### In-place updates
-
-Update metadata or add segmentation masks without rewriting image data:
-
-```python
-from medh5 import MEDH5File
-
-# Simple convenience methods
-MEDH5File.update_meta("sample.medh5", label=2, extra={"reviewed": True})
-MEDH5File.add_seg("sample.medh5", "new_mask", mask_array)
-
-# Unified update API — metadata, seg, and bbox in one call
-MEDH5File.update(
-    "sample.medh5",
-    meta={"label": 3, "spacing": [1.0, 0.5, 0.5], "coord_system": "RAS"},
-    seg_ops={"add": {"organ": organ_mask}, "remove": ["old_mask"]},
-    bbox_ops={"bboxes": new_bboxes, "bbox_labels": ["tumor"]},
-)
-```
-
-### Validate file structure
-
-```python
-from medh5 import MEDH5File
-
-report = MEDH5File.validate("sample.medh5")
-print(report.is_valid)        # True if no errors
-print(report.errors)          # list of ValidationIssue(code=..., message=...)
-print(report.warnings)        # e.g. missing checksum
-print(report.ok(strict=True)) # False if any errors OR warnings
-```
-
-### Verify file integrity
-
-`verify()` returns a tri-state `VerifyResult` so audit UIs can
-distinguish "no checksum stored" from "verified good":
-
-```python
-from medh5 import MEDH5File, VerifyResult
-
-match MEDH5File.verify("sample.medh5"):
-    case VerifyResult.OK:       ...   # stored checksum matches
-    case VerifyResult.MISSING:  ...   # no checksum was stored (opt-in)
-    case VerifyResult.MISMATCH: ...   # data has diverged from digest
-```
-
-### Concurrent lazy reads (`open_shared`)
-
-Multiple consumers in the same process (viewers, dashboards, napari
-layers) can share a single underlying `h5py.File` via ref-counted
-`open_shared`. The handle closes when the last caller exits its `with`
-block:
-
-```python
-from medh5 import open_shared
-
-with open_shared("sample.medh5") as f:
-    patch = f["images/CT"][10:42, 20:84, 20:84]
-```
-
-Pair it with `on_reopened=` on any mutating call (`update`,
-`update_meta`, `add_seg`, `set_review_status`) to rebind cached views
-after a successful write.
-
-### PyTorch integration
-
-**Eager dataset** (full-volume read per sample):
-
-```python
-from medh5.torch import MEDH5TorchDataset
-
-dataset = MEDH5TorchDataset(["s1.medh5", "s2.medh5", "s3.medh5"])
-sample = dataset[0]
-print(sample["images"]["CT"].shape)  # torch.Size([128, 256, 256])
-print(sample["label"])               # 1
-```
-
-**Patch-based dataset** (lazy chunk-aligned reads):
-
-```python
-from medh5.sampling import PatchSampler
-from medh5.transforms import Compose, Clip, Normalize, RandomFlip
-from medh5.torch import MEDH5PatchDataset
-
-sampler = PatchSampler(
-    patch_size=(96, 96, 96),
-    strategy="foreground",     # "uniform" | "foreground" | "balanced"
-    foreground_seg="tumor",
-    foreground_prob=0.7,
-)
-
-transform = Compose([
-    Clip(min=-1000, max=1000),
-    Normalize(mean={"CT": -200.0}, std={"CT": 350.0}),
-    RandomFlip(axes=(1, 2), p=0.5),
+labels = LabelSet("demo-v1", version="1.0.0", classes=[
+    LabelClass(1, "liver", "Liver", category="organ"),
+    LabelClass(2, "spleen", "Spleen", category="organ"),
+    LabelClass(3, "lesion", "Lesion", parents=[1], category="lesion"),
 ])
 
-dataset = MEDH5PatchDataset(
-    paths=["s1.medh5", "s2.medh5"],
-    sampler=sampler,
-    transform=transform,
-    samples_per_volume=4,
-)
+with medh5.create("case_0001.medh5", sample_id="case_0001",
+                  subject_id="DEMO-0001") as w:
+    w.label_set(labels)
+    w.add_timepoint("tp0", label="baseline", days_from_baseline=0)
+    w.add_grid("ct", shape=ct.shape, spacing=(2.0, 0.8, 0.8),
+               origin=(-64.0, -38.4, -38.4), timepoint="tp0")
+    w.add_image("CT", ct, grid="ct", modality="CT",
+                value_type="quantitative", value_units="HU")
+    w.add_segmentation("organs", grid="ct",
+                       masks={"liver": liver, "lesion": lesion},
+                       annotated_classes=["liver", "spleen", "lesion"])
 ```
 
-Both dataset classes use a per-worker LRU file-handle cache, so repeated
-reads against the same file reuse one `h5py.File` handle instead of
-re-opening from scratch every call.
+`annotated_classes` names the spleen although there is no spleen mask: that
+records "we looked and found none". The encoding is chosen by measuring the
+class overlap graph — liver and lesion overlap, so it picks one that can
+represent that — and the write is atomic.
 
-**`DataLoader` with `num_workers > 0`**
-
-h5py is not fork-safe, and open `h5py.File` handles cannot be pickled for
-`multiprocessing_context="spawn"` (the default on macOS / Windows /
-Python 3.14+). medh5 handles this in two ways: the handle cache
-detects PID changes on access and transparently resets itself, and
-`medh5.torch.worker_init_fn` clears the cache at worker startup for
-belt-and-braces safety. Always pass `worker_init_fn=medh5.torch.worker_init_fn`
-when you use `num_workers > 0`:
+## Train on it
 
 ```python
 from torch.utils.data import DataLoader
-import medh5.torch as mt
+from medh5.torch import PatchDataset, collate, worker_init_fn
+from medh5.sampling import PatchSampler
 
-dataset = mt.MEDH5PatchDataset(paths, sampler=sampler)
+sampler = PatchSampler((96, 96, 96), strategy="balanced",
+                       foreground_classes=["liver", "lesion"])
+dataset = PatchDataset(paths, sampler, images=["CT"],
+                       annotations={"organs": ["liver", "lesion"]},
+                       samples_per_volume=8)
 
-loader = DataLoader(
-    dataset,
-    batch_size=4,
-    num_workers=4,
-    worker_init_fn=mt.worker_init_fn,   # <- required with num_workers > 0
-    # multiprocessing_context="spawn",  # optional, default on macOS/Windows
-)
-
-for batch in loader:
-    ...
+loader = DataLoader(dataset, batch_size=2, num_workers=8,
+                    worker_init_fn=worker_init_fn, collate_fn=collate)
 ```
 
-Without `worker_init_fn`, a forked worker would observe stale h5py state
-inherited from the parent process, which can deadlock or silently corrupt
-reads. See [h5py's documentation](https://docs.h5py.org/en/stable/faq.html#multiprocessing)
-for the underlying issue.
+`worker_init_fn` is required for `num_workers > 0`: HDF5 handles must not cross
+a `fork`, so the cache is PID-keyed and a forked child abandons the parent's
+handles rather than closing descriptors the parent still owns.
 
-### NIfTI / DICOM conversion
-
-Import NIfTI volumes into `.medh5`:
-
-```python
-from medh5.io import from_nifti, to_nifti
-
-from_nifti(
-    images={"CT": "ct.nii.gz", "PET": "pet.nii.gz"},
-    seg={"tumor": "tumor.nii.gz"},
-    out_path="sample.medh5",
-    label=1,
-    compression="balanced",
-)
-```
-
-Resample multi-resolution modalities onto a shared grid (requires `medh5[itk]`):
-
-```python
-from_nifti(
-    images={"CT": "ct_1mm.nii.gz", "PET": "pet_2mm.nii.gz"},
-    seg={"tumor": "tumor_2mm.nii.gz"},
-    out_path="sample.medh5",
-    resample_to="CT",          # use CT grid as reference
-    interpolator="linear",     # masks always use nearest-neighbor
-)
-```
-
-Import a segmentation mask into an existing file:
-
-```python
-from medh5.io import import_seg_nifti
-
-import_seg_nifti("sample.medh5", "edited_tumor.nii.gz", name="tumor", resample=True, replace=True)
-```
-
-Export back to NIfTI for editing in 3D Slicer / ITK-SNAP:
-
-```python
-to_nifti("sample.medh5", out_dir="export/")
-# Writes export/image_CT.nii.gz, export/image_PET.nii.gz, export/seg_tumor.nii.gz
-```
-
-Import a DICOM series:
-
-```python
-from medh5.io import from_dicom
-
-from_dicom(
-    dicom_dir="path/to/series",
-    out_path="sample.medh5",
-    modality_name="CT",
-    series_uid="1.2.3.4.5",    # optional: select specific series
-    apply_modality_lut=True,   # apply RescaleSlope/Intercept (default)
-    extra_tags=["PatientID", "StudyDate"],
-)
-```
-
-### nnU-Net v2 dataset conversion
-
-Convert a raw [nnU-Net v2](https://github.com/MIC-DKFZ/nnUNet) dataset folder
-(`imagesTr/`, `labelsTr/`, optional `imagesTs/`, `dataset.json`) into a
-directory of per-case `.medh5` files and back. Each case becomes one
-`.medh5` bundling every channel plus one boolean mask per foreground class
-declared in `dataset.json`. The parsed `dataset.json` payload is stashed in
-`extra["nnunetv2"]` so export reconstructs the exact source layout —
-including channel order and integer label values. Requires `medh5[nifti]`.
-
-```python
-from medh5.io import from_nnunetv2, to_nnunetv2
-
-# Raw nnU-Net v2 → directory of .medh5 files
-from_nnunetv2(
-    "Dataset042_BraTS/",
-    "medh5_out/",
-    include_test=True,     # also convert imagesTs/ (seg=None)
-    compression="balanced",
-    checksum=True,
-)
-# Writes medh5_out/imagesTr/{case}.medh5 (+ medh5_out/imagesTs/{case}.medh5)
-
-# Directory of .medh5 files → raw nnU-Net v2 layout
-to_nnunetv2("medh5_out/", "Dataset042_BraTS_roundtrip/")
-```
-
-The converters reject silent-data-loss conditions up front:
-
-- **Import**: label volumes containing integer values that aren't declared
-  in `dataset.json`'s `labels` map raise `MEDH5ValidationError` instead of
-  silently dropping those voxels.
-- **Export**: `.medh5` files whose seg-mask names or image channels do not
-  match the nnU-Net metadata stored in `extra["nnunetv2"]` are rejected
-  rather than silently omitted from the emitted dataset.
-- Region-based labels (list-valued `labels`) are rejected with a clear
-  error — convert to integer labels first.
-
-### Dataset operations
-
-Build a manifest, filter, and split:
-
-```python
-from medh5.dataset import Dataset, make_splits
-
-ds = Dataset.from_directory("data/", recursive=True)
-labeled = ds.filter(lambda r: r.label is not None)
-ds.save("manifest.json")
-
-splits = make_splits(
-    ds,
-    ratios={"train": 0.7, "val": 0.15, "test": 0.15},
-    stratify_by="label",
-    group_by="extra.patient_id",
-    seed=42,
-)
-splits["train"].save("train.json")
-```
-
-Compute dataset-level statistics:
-
-```python
-from medh5.stats import compute_stats
-
-stats = compute_stats(ds, workers=4)
-print(stats["CT"].mean, stats["CT"].std)
-print(stats.label_counts)
-```
-
-### Review / QA workflow
-
-Track annotation review status without a GUI:
-
-```python
-from medh5 import MEDH5File
-
-MEDH5File.set_review_status(
-    "sample.medh5",
-    status="reviewed",       # pending | reviewed | flagged | rejected
-    annotator="puyang",
-    notes="ok",
-)
-
-review = MEDH5File.get_review_status("sample.medh5")
-print(review.status, review.annotator, review.timestamp)
-```
-
-### CLI
+## Command line
 
 ```bash
-# Single-file operations
-medh5 info sample.medh5             # print metadata summary
-medh5 info sample.medh5 --json      # machine-readable JSON output
-medh5 validate sample.medh5         # check file structure
-medh5 validate sample.medh5 --strict --json  # warnings become errors
+medh5 info case.medh5                  # grids, images, annotations, coverage
+medh5 validate case.medh5 --level strict
+medh5 verify case.medh5                # digests and content_id
+medh5 timeline case.medh5              # visits and intervals
+medh5 track case.medh5 --class lesion  # per-lesion volumes across visits
 
-# Batch operations
-medh5 validate-all data/            # validate every .medh5 under a directory
-medh5 validate-all data/ --fail-fast --workers 4
-medh5 audit data/                   # verify SHA-256 checksums
-medh5 recompress data/ --compression max  # rewrite with different compression
+medh5 dataset index studies/ -o cohort.json
+medh5 dataset split cohort.json --group-by group_id --stratify-by site_id
+medh5 dataset stats cohort.json --partition train --workers 8
+medh5 dataset check cohort.json --deep
 
-# Dataset management
-medh5 index data/ -o manifest.json
-medh5 split manifest.json --ratios 0.7,0.15,0.15 --stratify label -o splits/
-medh5 stats data/ -o stats.json --json
+medh5 convert from-dicom /studies out/     # one sample per patient, all visits
+medh5 convert from-nifti case.medh5 --image CT=ct.nii.gz
+medh5 convert from-rtstruct plan.dcm case.medh5 --rasterize
+medh5 migrate old/*.medh5 -o new/ --group-by subject
 
-# NIfTI / DICOM / nnU-Net v2 conversion
-medh5 import nifti --image CT ct.nii.gz -o sample.medh5
-medh5 import nifti --image CT ct.nii.gz --image PET pet.nii.gz \
-      --resample-to CT --interpolator linear -o sample.medh5
-medh5 import dicom /path/to/series -o sample.medh5
-medh5 import dicom /path/to/series -o sample.medh5 \
-      --series-uid 1.2.3.4.5 --no-modality-lut
-medh5 import nnunetv2 Dataset042_BraTS/ -o medh5_out/
-medh5 import nnunetv2 Dataset042_BraTS/ -o medh5_out/ \
-      --no-test --compression max --checksum
-medh5 export nifti sample.medh5 -o export/
-medh5 export nnunetv2 medh5_out/ -o Dataset042_BraTS_roundtrip/
-
-# Review workflow
-medh5 review set sample.medh5 --status reviewed --annotator puyang
-medh5 review get sample.medh5
-medh5 review get sample.medh5 --json
-medh5 review list data/ --status pending
-medh5 review import-seg sample.medh5 --name tumor --from edited.nii.gz
-medh5 review import-seg sample.medh5 --name tumor --from edited.nii.gz --resample --replace
+medh5 scrub out/*.medh5 --apply --date-shift-days -117
+medh5 pack cohort/*.medh5 -o shard.medh5c
+medh5 recompress cohort/*.medh5 --profile training
+medh5 bench                                # reproduce the performance targets
+medh5 conformance publish suite/           # the suite, for another implementation
 ```
 
-### Inspect with standard HDF5 tools
+## Interoperability
 
-Since `.medh5` is plain HDF5, you can use any HDF5 viewer:
+| Format | |
+|---|---|
+| **NIfTI** | affine and voxels bit-identical on round trip; RAS↔LPS is a sign flip, never a resample |
+| **DICOM** | slices ordered by geometry, spacing measured between origins, modality LUT stored not applied, tags on an explicit allow-list |
+| **DICOM SEG** | frames placed by geometry; overlap and `FRACTIONAL` survive; segments matched by label, not number |
+| **RTSTRUCT** | contours stay contours; rasterisation is opt-in and recorded in provenance |
+| **nnU-Net v2** | class ids kept; region labels become label-set DAG parents; `dataset.json` round-trips |
+| **MONAI** | `to_metatensor` gives a `MetaTensor` with the correct affine |
+| **0.x** | `medh5 migrate`, reporting every decision and every guess |
 
-```bash
-h5ls -v sample.medh5
-h5dump -A sample.medh5          # show all attributes
-```
+Every conversion returns a report distinguishing what it **decided** from the
+data and where it **guessed** — the encoding chosen, the class ids minted, a
+half-voxel convention changed, a timepoint order inferred rather than read.
 
-## On-disk layout
+COCO is deliberately unsupported: it has no world geometry, spacing or frame of
+reference, so importing means inventing a grid and exporting means discarding
+the geometry that makes a medical annotation reproducible.
 
-```
-sample.medh5
-├── images/            (group, required, >= 1 entry)
-│   ├── CT             (dataset, N-D, Blosc2-compressed, chunked)
-│   ├── PET            (dataset, N-D, Blosc2-compressed, chunked)
-│   └── ...
-├── seg/               (group, optional)
-│   ├── tumor          (dataset, N-D bool, Blosc2-compressed, chunked)
-│   ├── liver          (dataset, N-D bool, Blosc2-compressed, chunked)
-│   └── ...
-├── bboxes             (dataset, [n, ndims, 2], optional)
-├── bbox_scores        (dataset, [n], optional)
-├── bbox_labels        (dataset, [n] variable-length string, optional)
-└── (root attrs)
-    ├── schema_version: "1"
-    ├── image_names: JSON list of modality names
-    ├── label: int or str
-    ├── label_name: str
-    ├── has_seg: bool
-    ├── seg_names: JSON list of mask names
-    ├── has_bbox: bool
-    ├── extra: JSON string
-    └── checksum_sha256: str (optional)
-
-images.attrs:
-    ├── shape: int array
-    ├── spacing: float array
-    ├── origin: float array
-    ├── direction: float array (flattened)
-    ├── axis_labels: string array
-    ├── coord_system: str
-    └── patch_size: int array
-```
-
-## Compression presets
-
-| Preset       | Compressor | Level | Use case                     |
-|-------------|------------|-------|------------------------------|
-| `"fast"`    | lz4        | 3     | Fast write, moderate ratio   |
-| `"balanced"`| lz4hc      | 8     | Default, good ratio + speed  |
-| `"max"`     | zstd       | 9     | Maximum compression ratio    |
-
-## Chunk optimization
-
-medh5 includes a chunk-size optimizer (ported from
-[mlarray](https://github.com/MIC-DKFZ/mlarray)) that sizes HDF5 chunks
-to fit L3 cache for efficient patch-based training reads:
+## Reading it without medh5
 
 ```python
-from medh5 import optimize_chunks
+import h5py, json, hdf5plugin       # hdf5plugin only for blosc2 profiles
 
-chunks = optimize_chunks(
-    image_shape=(128, 256, 256),
-    patch_size=192,
-    bytes_per_element=4,   # float32
-)
+with h5py.File("case_0001.medh5") as f:
+    doc = json.loads(f["meta"][()])
+    doc["identity"]["subject_id"]
+    dict(f["grids"]["ct"].attrs)     # spacing, origin, direction
+    f["images"]["CT"][10:20]
 ```
 
-## Design decisions
+`medh5 recompress --profile portable` writes gzip, readable by any HDF5 build.
 
-**Why HDF5?** HDF5 provides native chunking, compression filters, attribute
-metadata, and partial I/O -- all critical for efficient patch-based ML
-training on large volumes.  It is widely supported (h5py, HDFView, MATLAB,
-Julia) and inspectable without custom tooling.
+## Versioning
 
-**Why Blosc2?** Blosc2 is a high-performance meta-compressor optimized for
-binary data.  It supports multi-threaded compression, multiple codecs
-(lz4, zstd, etc.), and integrates with HDF5 via hdf5plugin.
+The **format** is 1.0. A minor version may add optional objects, profiles,
+encodings and diagnostic codes; it may not change what an existing one means
+(spec §16). The **package** follows semantic versioning from 1.0.0.
 
-**Why a single-sample file?** Each `.medh5` file represents one sample
-(patient/scan).  This maps naturally to medical imaging workflows where
-each scan is processed independently, and avoids the complexity of
-multi-sample container formats.
-
-**Multi-modality by default.** Medical imaging routinely involves multiple
-co-registered modalities (CT + PET, multi-sequence MRI).  All modalities
-share the same spatial grid, so they share spatial metadata and chunk layout.
-
-**Trust model.** The `extra` field stores arbitrary JSON.  When reading
-`.medh5` files from untrusted sources, be aware that very large or deeply
-nested JSON could consume significant memory.
-
-## Dependencies
-
-- `h5py >= 3.10`
-- `hdf5plugin >= 4.1`
-- `numpy >= 1.24`
-- `torch >= 2.0` (optional, for `medh5[torch]`)
-- `nibabel >= 5` (optional, for `medh5[nifti]`)
-- `pydicom >= 2.4` (optional, for `medh5[dicom]`)
-- `SimpleITK >= 2.3` (optional, for `medh5[itk]`)
+0.x files are not readable by 1.0 and are not meant to be — `medh5 migrate`
+converts them once. See [Converters](docs/converters.md#migrating-from-0x).
 
 ## License
 
