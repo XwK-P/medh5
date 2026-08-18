@@ -258,6 +258,7 @@ class Sample:
     __slots__ = (
         "_annotations",
         "_document",
+        "_fresh_indices",
         "_grids",
         "_handle",
         "_images",
@@ -282,6 +283,7 @@ class Sample:
         self._grids: dict[str, Grid] | None = None
         self._images: ImageCollection | None = None
         self._annotations: AnnotationCollection | None = None
+        self._fresh_indices: frozenset[str] | None = None
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -394,6 +396,26 @@ class Sample:
     @property
     def index(self) -> dict[str, SamplingIndex]:
         return read_indices(self.root)
+
+    @property
+    def fresh_indices(self) -> frozenset[str]:
+        """Index entries whose ``source_digest`` still matches their source (§13.3).
+
+        A stale entry is not a file error --- readers must ignore it and fall
+        back to the annotation itself, because counts and coordinates for the
+        mask as it was before somebody edited it are wrong rather than merely
+        old.  Computed once per handle: a reader cannot edit the file it holds
+        open, and re-digesting every annotation per patch draw would cost more
+        than the index saves.
+        """
+        if self._fresh_indices is None:
+            from medh5.integrity.verify import stale_index_entries
+
+            stale = set(stale_index_entries(self.root))
+            self._fresh_indices = frozenset(
+                name for name in self.index if name not in stale
+            )
+        return self._fresh_indices
 
     @property
     def transforms(self) -> _Collection:
@@ -606,6 +628,12 @@ class SampleWriter:
         for name in self._file.get("annotations", {}):
             self._annotation_kinds[name] = as_str(
                 self._file["annotations"][name].attrs.get("kind", "mask")
+            )
+        for name in self._file.get("transforms", {}):
+            node = self._file["transforms"][name]
+            self._transform_frames[name] = (
+                as_str(node.attrs.get("from_frame", "")),
+                as_str(node.attrs.get("to_frame", "")),
             )
         copy_unknown(source, self._file, _STANDARD_GROUPS)
         # Profiles are deliberately *not* inherited.  They are a derived fact,

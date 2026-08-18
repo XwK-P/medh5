@@ -198,6 +198,34 @@ class TestPatchSampler:
             "used_index",
         }
 
+    def test_S14_3_a_stale_index_is_not_trusted_for_foreground(self, indexed):
+        """§13.3: a stale index is ignored and rebuilt, never read.
+
+        Its coordinates describe the annotation as it was before somebody
+        edited it, so a centre drawn from one is silently not foreground --- the
+        training distribution shifts and the file says nothing about it.
+        """
+        import h5py
+
+        from medh5._hdf5 import encode_attr
+
+        sampler = PatchSampler(8, strategy="foreground")
+        with medh5.open(indexed) as sample:
+            assert sampler.draw(
+                sample, "organs_tp0", np.random.default_rng(0)
+            ).used_index
+
+        with h5py.File(indexed, "r+") as handle:
+            handle["index/organs_tp0"].attrs["source_digest"] = encode_attr(
+                "sha256:" + "0" * 64
+            )
+
+        with medh5.open(indexed) as sample:
+            drawn = sampler.draw(sample, "organs_tp0", np.random.default_rng(0))
+            assert not drawn.used_index, "a stale index is scanned past, not read"
+            mask = sample.annotations["organs_tp0"].dense([drawn.class_id])[0]
+            assert mask[drawn.center], "and the centre it fell back to is foreground"
+
 
 class TestGridPatches:
     def test_the_cover_is_complete(self):
@@ -261,6 +289,33 @@ class TestPairSampler:
     def test_unknown_mode_is_refused(self):
         with pytest.raises(MEDH5ValidationError):
             TimepointPairSampler("every-other-tuesday")
+
+    def test_S9_a_reversed_change_label_does_not_match_the_forward_pair(
+        self, tmp_path, label_set, masks
+    ):
+        """Timepoint order is what tells a change label from its opposite.
+
+        "grew 40 %" and "shrank 40 %" span the same two visits and differ only
+        in which is the baseline, so a label written ``(tp1, tp0)`` must not be
+        hung on the forward pair ``(tp0, tp1)`` --- that trains the example with
+        the label for the comparison nobody made.
+        """
+        path = write_sample(
+            tmp_path / "reversed.medh5",
+            label_set=label_set,
+            masks=masks,
+            timepoints=("tp0", "tp1"),
+        )
+        with medh5.amend(path) as w:
+            w.add_classification(
+                "regression",
+                labels={3: 1.0},
+                scope="sample",
+                timepoints=["tp1", "tp0"],
+            )
+        with medh5.open(path) as sample:
+            assert sample.annotations["regression"].timepoints == ("tp1", "tp0")
+            assert TimepointPairSampler().pairs(sample)[0].label is None
 
     def test_a_change_label_is_attached_to_its_pair(self, tmp_path, label_set, masks):
         path = write_sample(

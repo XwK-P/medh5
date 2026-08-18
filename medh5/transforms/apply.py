@@ -18,6 +18,34 @@ import numpy.typing as npt
 from medh5.errors import MEDH5ValidationError
 from medh5.geometry.grid import Grid
 
+EXTRAPOLATIONS = ("zero", "nearest", "error")
+
+
+def _check_extrapolation(extrapolation: str) -> None:
+    if extrapolation not in EXTRAPOLATIONS:
+        raise MEDH5ValidationError(f"unknown extrapolation {extrapolation!r}")
+
+
+def _inside_field(
+    field: npt.NDArray[Any], points: npt.NDArray[np.float64]
+) -> npt.NDArray[np.bool_]:
+    """Which *points* lie within the field's sampled domain, edges included."""
+    spatial = np.asarray(field.shape[1:], dtype=np.int64)
+    inside: npt.NDArray[np.bool_] = np.all(
+        (points >= -0.5) & (points <= spatial - 0.5), axis=1
+    )
+    return inside
+
+
+def _refuse_outside(inside: npt.NDArray[np.bool_]) -> None:
+    """``extrapolation='error'`` is a refusal, not a quieter fill value."""
+    if bool(inside.all()):
+        return
+    raise MEDH5ValidationError(
+        f"{int((~inside).sum())} point(s) fall outside the field and "
+        "extrapolation='error'"
+    )
+
 
 def linear_sample(
     field: npt.NDArray[Any],
@@ -36,14 +64,10 @@ def linear_sample(
     dim = spatial.size
     points = np.asarray(coords, dtype=np.float64).reshape(-1, dim)
 
-    inside = np.all((points >= -0.5) & (points <= spatial - 0.5), axis=1)
-    if extrapolation == "error" and not inside.all():
-        outside = int((~inside).sum())
-        raise MEDH5ValidationError(
-            f"{outside} point(s) fall outside the field and extrapolation='error'"
-        )
-    if extrapolation not in ("zero", "nearest", "error"):
-        raise MEDH5ValidationError(f"unknown extrapolation {extrapolation!r}")
+    _check_extrapolation(extrapolation)
+    inside = _inside_field(field, points)
+    if extrapolation == "error":
+        _refuse_outside(inside)
 
     clamped = np.clip(points, 0.0, spatial - 1.0)
     base = np.floor(clamped).astype(np.int64)
@@ -86,6 +110,14 @@ def cubic_sample(
         ) from exc
     dim = field.ndim - 1
     points = np.asarray(coords, dtype=np.float64).reshape(-1, dim)
+    _check_extrapolation(extrapolation)
+    if extrapolation == "error":
+        # SciPy has no raising mode, so the domain check happens here, against
+        # the same bounds `linear_sample` uses.  Folding 'error' into SciPy's
+        # constant-zero would answer an out-of-domain query with "no
+        # displacement" --- precisely the silence the declared contract exists
+        # to break, and only for cubic fields.
+        _refuse_outside(_inside_field(field, points))
     mode = {"zero": "constant", "nearest": "nearest", "error": "constant"}[
         extrapolation
     ]

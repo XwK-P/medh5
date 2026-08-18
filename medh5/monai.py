@@ -164,7 +164,12 @@ def to_metatensor(
     from monai.data import MetaTensor
 
     image = sample.images[image_id]
-    array = np.ascontiguousarray(image.read(roi, physical=physical, dtype=dtype))
+    # The affine and spatial_shape in `meta` describe *this* level, so the
+    # voxels have to come from it too: pairing full-resolution data with a
+    # downsampled affine puts every resampled batch and saved prediction in the
+    # wrong place, and nothing about the MetaTensor says so.
+    source = image.level(level) if level else image
+    array = np.ascontiguousarray(source.read(roi, physical=physical, dtype=dtype))
     meta = meta_dict(sample, image_id, space=space, level=level)
     if roi is not None:
         meta["affine"] = _shift_origin(meta["affine"], roi)

@@ -217,7 +217,30 @@ def _slice_spacing(
 ) -> tuple[float, list[float]]:
     """Spacing measured between slice origins, refusing an irregular stack."""
     if positions.shape[0] == 1:
-        return 1.0, []
+        # No neighbour to measure an increment against.  SliceThickness is the
+        # slab rather than the increment, which is why it is not trusted for a
+        # stack --- but for a lone slice it is the only physical extent the
+        # source states, and inventing 1 mm over a declared 5 mm gives the grid
+        # a wrong extent that later resampling and export propagate.
+        declared = _positive(thickness)
+        if declared is None:
+            if report is not None:
+                report.guess(
+                    "slice_spacing",
+                    "a single-slice series carries no increment to measure and "
+                    "declared no usable SliceThickness; 1 mm was assumed",
+                    {"spacing": 1.0, "thickness": thickness, "slices": 1},
+                )
+            return 1.0, []
+        if report is not None:
+            report.decision(
+                "slice_spacing",
+                "a single-slice series has no neighbouring position to measure "
+                f"against, so its declared SliceThickness ({declared:.4g} mm) "
+                "was used as the through-plane spacing",
+                {"spacing": declared, "thickness": declared, "slices": 1},
+            )
+        return declared, []
     projected = positions @ normal
     gaps = np.diff(projected)
     spacing = float(np.median(np.abs(gaps)))
@@ -253,6 +276,15 @@ def _rescale(dataset: Any) -> tuple[float, float] | None:
     return float(slope if slope is not None else 1.0), float(
         intercept if intercept is not None else 0.0
     )
+
+
+def _positive(value: Any) -> float | None:
+    """*value* as a usable physical length, or ``None`` if it is not one."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if np.isfinite(number) and number > 0 else None
 
 
 def _scalar(value: Any) -> Any:

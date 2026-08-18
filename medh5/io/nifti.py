@@ -84,12 +84,16 @@ def read_nifti(
     spacing, origin, direction = decompose_affine(affine)
     order = tuple(range(data.ndim))
     if transpose and data.ndim >= 3:  # noqa: PLR2004 - 3-D and up reorder
-        spatial = tuple(reversed(range(data.ndim - 3, data.ndim)))
-        order = tuple(range(data.ndim - 3)) + spatial
+        # NIfTI puts i, j, k *first* and time (dim[4]) after them, so the
+        # spatial block is the leading three axes, not the trailing three.
+        # Reversing the trailing three would move t into a spatial slot and
+        # hand the grid a spacing that belongs to a different axis --- silently,
+        # for every cine, DCE and 4-D CT series.
+        spatial = (2, 1, 0)
+        order = tuple(range(3, data.ndim)) + spatial
         data = np.transpose(data, order)
-        flip = [order[i] - (data.ndim - 3) for i in range(data.ndim - 3, data.ndim)]
-        spacing = spacing[flip]
-        direction = direction[:, flip]
+        spacing = spacing[list(spatial)]
+        direction = direction[:, list(spatial)]
     return np.ascontiguousarray(data), {
         "spacing": [float(v) for v in spacing],
         "origin": [float(v) for v in origin],
@@ -188,8 +192,9 @@ def from_nifti(
     if transpose and len(geometry["shape"]) >= 3:  # noqa: PLR2004
         log.decision(
             "axis_order",
-            "NIfTI (x, y, z) was reordered to (z, y, x) and the spacing, "
-            "direction and axis names follow",
+            "NIfTI (x, y, z) was reordered to (z, y, x), any trailing time "
+            "axis moved in front of them, and the spacing, direction and axis "
+            "names follow",
             {"order": list(geometry["axis_order"])},
         )
 

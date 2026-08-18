@@ -104,6 +104,45 @@ class _Base(_DatasetBase):  # type: ignore[misc,valid-type]
             return tuple(sorted(sample.at(self.timepoint).images))
         return tuple(sorted(sample.images))
 
+    @staticmethod
+    def _single_grid(sample: Sample, members: Mapping[str, str]) -> str:
+        """The one grid *members* share, or a refusal to guess across grids.
+
+        A patch is a window in a single grid's index space.  Reading a second
+        grid with those same slices assumes both index the same anatomy at the
+        same spacing, which nothing in the format guarantees, and a smaller grid
+        silently returns a truncated array because the padding was computed for
+        the first.  Converters refuse rather than resample (§3); so does the
+        loader --- narrowing the selection or resampling is the caller's call
+        to make deliberately.
+        """
+        grids = sorted(set(members.values()))
+        if len(grids) > 1:
+            listed = ", ".join(f"{k} on {v!r}" for k, v in sorted(members.items()))
+            raise MEDH5ValidationError(
+                f"{sample.path}: a patch is a window in one grid, but this "
+                f"selection spans {len(grids)} of them ({listed}); restrict "
+                "`images=`/`annotations=` to one grid, scope the dataset with "
+                "`timepoint=`, or resample the volumes onto a common grid first"
+            )
+        return grids[0]
+
+    def _check_patch_grid(self, sample: Sample) -> None:
+        """Everything a patch window will be read out of must sit on one grid."""
+        members = {
+            f"image {name!r}": sample.images[name].grid_id
+            for name in self._image_ids(sample)
+        }
+        if self.label_format != "none":
+            for name in self.annotations:
+                if name not in sample.annotations:
+                    continue
+                grid_id = sample.annotations[name].grid_id
+                if grid_id is not None:
+                    members[f"annotation {name!r}"] = grid_id
+        if members:
+            self._single_grid(sample, members)
+
     def _read_images(
         self, sample: Sample, patch: Patch | None
     ) -> dict[str, npt.NDArray[Any]]:
@@ -179,6 +218,8 @@ class _Base(_DatasetBase):  # type: ignore[misc,valid-type]
         patch: Patch | None,
         extra: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
+        if patch is not None:
+            self._check_patch_grid(sample)
         images = self._read_images(sample, patch)
         item: dict[str, Any] = {
             "images": {k: to_tensor(v) for k, v in images.items()},
@@ -396,7 +437,12 @@ class PairedPatchDataset(_Base):
     ) -> Patch:
         """The window in the second visit covering the same anatomy."""
         shape = self._grid_at(sample, pair.second).spatial_shape
-        size = tuple(s.stop - s.start for s in patch.slices)
+        # The *requested* size, not the clipped extent.  Where the first visit
+        # is smaller than the patch its window is short and gets padded back up
+        # to `patch.shape`; asking the second visit for the clipped extent would
+        # return a full, unpadded array of that smaller size and leave the pair
+        # with tensors of different shapes.
+        size = patch.shape
         if self.align == "none":
             from medh5.sampling import window_around
 
@@ -425,6 +471,20 @@ class PairedPatchDataset(_Base):
         target = self._grid_at(sample, pair.second)
         world = source.index_to_world(np.asarray([patch.center], dtype=np.float64))
         transform = sample.transform_between(pair.first, pair.second)
+        if transform is None and source.frame_uid != target.frame_uid:
+            # `transform_between` returns None for two different reasons: the
+            # grids already share a frame (nothing to apply), or no path exists
+            # between them.  Only the first makes the coordinates comparable.
+            # Treating the second as "no transform needed" feeds source-frame
+            # world coordinates straight into an unrelated grid and returns
+            # paired patches from different anatomy, which trains quietly.
+            raise MEDH5ValidationError(
+                f"{sample.path}: align='transform' needs a transform relating "
+                f"{pair.first!r} (frame {source.frame_uid!r}) to {pair.second!r} "
+                f"(frame {target.frame_uid!r}), and the file has none; register "
+                "the visits, or use align='none' to read the same index window "
+                "from both"
+            )
         if transform is not None:
             world = transform.transform_points(world)
         index = target.world_to_index(world)[0]
@@ -439,6 +499,10 @@ class PairedPatchDataset(_Base):
             if self.images is not None
             else sorted(view.images)
         )
+        if wanted:
+            self._single_grid(
+                sample, {f"image {n!r}": sample.images[n].grid_id for n in wanted}
+            )
         out: dict[str, npt.NDArray[Any]] = {}
         for image_id in wanted:
             array = sample.images[image_id].read(

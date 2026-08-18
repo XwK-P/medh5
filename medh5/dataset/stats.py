@@ -225,7 +225,7 @@ def stats_for(
             moments = out.images.setdefault(key, Moments())
             for block in _blocks(image, sample_stride):
                 moments.update(block)
-        fresh = _fresh_indices(sample)
+        fresh = sample.fresh_indices
         for key, annotation in sample.annotations.items():
             if annotations is not None and key not in annotations:
                 continue
@@ -242,14 +242,6 @@ def stats_for(
         for grid in sample.grids.values():
             out.total_voxels += int(np.prod(grid.spatial_shape))
     return out
-
-
-def _fresh_indices(sample: Any) -> frozenset[str]:
-    """Annotation ids whose sampling index is present and current."""
-    from medh5.integrity.verify import stale_index_entries
-
-    stale = set(stale_index_entries(sample.root))
-    return frozenset(name for name in sample.index if name not in stale)
 
 
 def _counts(

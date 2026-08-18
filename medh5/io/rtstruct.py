@@ -289,24 +289,41 @@ def _rasterize(
     every dataset the tool ever converts.
     """
     shape = grid.spatial_shape
-    masks: dict[int, npt.NDArray[np.bool_]] = {}
+    rows, columns = np.meshgrid(
+        np.arange(shape[1], dtype=np.float64),
+        np.arange(shape[2], dtype=np.float64),
+        indexing="ij",
+    )
+    centres = np.stack([rows.ravel(), columns.ravel()], axis=1)
+
+    # Outers and holes are collected per (class, plane) and combined only once
+    # that plane is complete.  DICOM does not require an outer contour to
+    # precede the hole it encloses, and subtracting a hole from a mask whose
+    # outer has not been drawn yet loses the cavity: the outer then fills it
+    # back in and the conversion silently turns holes into foreground.
+    seen: set[int] = set()
+    outers: dict[tuple[int, int], npt.NDArray[np.bool_]] = {}
+    holes: dict[tuple[int, int], npt.NDArray[np.bool_]] = {}
     for polygon in polygons:
         index = grid.world_to_index(np.asarray(polygon.vertices, dtype=np.float64))
         plane = int(round(float(np.median(index[:, 0]))))
         if not 0 <= plane < shape[0]:
             continue
-        mask = masks.setdefault(polygon.class_id, np.zeros(shape, dtype=bool))
-        rows, columns = np.meshgrid(
-            np.arange(shape[1], dtype=np.float64),
-            np.arange(shape[2], dtype=np.float64),
-            indexing="ij",
-        )
-        centres = np.stack([rows.ravel(), columns.ravel()], axis=1)
+        class_id = int(polygon.class_id)
+        seen.add(class_id)
         filled = _inside(index[:, 1:], centres).reshape(shape[1], shape[2])
-        if polygon.role == "hole":
-            mask[plane] &= ~filled
-        else:
-            mask[plane] |= filled
+        into = holes if polygon.role == "hole" else outers
+        key = (class_id, plane)
+        into[key] = filled if key not in into else (into[key] | filled)
+
+    # A class contributing only holes still gets its (empty) mask: "examined and
+    # absent" and "never looked at" are different facts (§6.4).
+    masks: dict[int, npt.NDArray[np.bool_]] = {
+        class_id: np.zeros(shape, dtype=bool) for class_id in sorted(seen)
+    }
+    for (class_id, plane), filled in outers.items():
+        hole = holes.get((class_id, plane))
+        masks[class_id][plane] |= filled if hole is None else filled & ~hole
     log.guess(
         "rasterization",
         "a rasterised mask is an approximation of the contours it came from; the "

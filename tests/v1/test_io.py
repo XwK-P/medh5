@@ -116,6 +116,25 @@ class TestNifti:
             assert grid.shape == tuple(reversed(SHAPE_XYZ))
             assert np.allclose(grid.spacing, [2.0, 0.9, 0.8])
 
+    def test_S3_1_a_4D_NIfTI_keeps_its_spatial_axes(self, tmp_path):
+        """NIfTI puts time *after* i, j, k, so the spatial block leads.
+
+        Reversing the trailing three axes instead moves t into a spatial slot
+        and gives the grid a spacing belonging to a different axis --- silently,
+        for every cine, DCE and 4-D CT series.
+        """
+        series = np.zeros((*SHAPE_XYZ, 5), dtype=np.int16)
+        series[1, 2, 3, 4] = 7
+        path = tmp_path / "cine.nii.gz"
+        nib.save(nib.Nifti1Image(series, AFFINE), str(path))
+
+        data, geometry = read_nifti(path)
+
+        assert data.shape == (5, *reversed(SHAPE_XYZ))
+        assert data[4, 3, 2, 1] == 7, "the voxel kept its (t, z, y, x) home"
+        assert np.allclose(geometry["spacing"], [2.0, 0.9, 0.8])
+        assert geometry["axis_order"] == (3, 2, 1, 0)
+
     def test_transpose_can_be_turned_off(self, volumes, tmp_path):
         from_nifti({"CT": volumes["ct"]}, tmp_path / "t.medh5", transpose=False)
         with medh5.open(tmp_path / "t.medh5") as sample:
@@ -692,6 +711,33 @@ class TestDicom:
         )
         return {"root": root, "ct0": ct0, "pt0": pt0, "ct1": ct1}
 
+    def test_S3_3_a_single_slice_series_uses_its_declared_thickness(self, tmp_path):
+        """One slice offers no increment to measure, but it does declare an extent.
+
+        Assuming 1 mm over a declared 5 mm gives the grid a physical size the
+        source never claimed, and every later resample or export inherits it.
+        """
+        from pydicom.uid import generate_uid
+
+        from medh5.io.dicom import read_series, scan_dicom
+        from medh5.io.report import ConversionReport
+        from tests.v1.conftest import write_dicom_series
+
+        root = tmp_path / "single"
+        write_dicom_series(
+            root,
+            patient_id="PSEUDO-004",
+            study_uid=generate_uid(),
+            study_date="20260101",
+            shape=(1, 16, 20),
+            spacing=(2.5, 0.8, 0.9),
+        )
+        report = ConversionReport(converter="test")
+        _, geometry = read_series(scan_dicom(root)[0], report=report)
+        # the fixture writes SliceThickness as twice the increment, so 5 mm
+        assert geometry["spacing"] == [5.0, 0.8, 0.9]
+        assert report.of_kind("slice_spacing"), "the fallback is recorded, not silent"
+
     def test_scan_finds_every_series(self, tree):
         from medh5.io.dicom import scan_dicom, select_series
 
@@ -965,8 +1011,14 @@ class TestRtstruct:
         from_dicom(root, path, group_by="study")
         return {"path": path, "series": series, "root": root}
 
-    def _rtstruct(self, prepared, tmp_path, *, hole: bool = True) -> Path:
-        """A square ROI on two slices, optionally with a square hole."""
+    def _rtstruct(
+        self, prepared, tmp_path, *, hole: bool = True, hole_first: bool = False
+    ) -> Path:
+        """A square ROI on two slices, optionally with a square hole.
+
+        ``hole_first`` lists the inner contour before its outer, which DICOM
+        permits and no ordering rule forbids.
+        """
         import pydicom
         from pydicom.dataset import Dataset, FileMetaDataset
         from pydicom.uid import ExplicitVRLittleEndian, generate_uid
@@ -1014,7 +1066,8 @@ class TestRtstruct:
         for plane in (2, 3):
             shapes = [square(8, 10, 5, plane)]
             if hole:
-                shapes.append(square(8, 10, 2, plane))
+                inner = square(8, 10, 2, plane)
+                shapes = [inner, *shapes] if hole_first else [*shapes, inner]
             for points in shapes:
                 contour = Dataset()
                 contour.ContourGeometricType = "CLOSED_PLANAR"
@@ -1051,6 +1104,26 @@ class TestRtstruct:
             assert mask[2, 5, 6], "the ring is filled"
             assert not mask[2, 8, 10], "the hole is not"
         assert report.of_kind("holes")
+
+    def test_S8_6_a_hole_listed_before_its_outer_is_still_a_hole(
+        self, prepared, tmp_path
+    ):
+        """DICOM does not order outer contours before the holes they enclose.
+
+        Subtracting a hole from a mask whose outer has not been drawn yet does
+        nothing, and the outer then fills the cavity back in --- a conversion
+        that turns holes into foreground without saying so.
+        """
+        from medh5.io.rtstruct import from_rtstruct
+
+        rt = self._rtstruct(prepared, tmp_path, hole=True, hole_first=True)
+        from_rtstruct(rt, prepared["path"], ann_id="rois", rasterize=True)
+        with medh5.open(prepared["path"]) as sample:
+            roles = [p.role for p in sample.annotations["rois"].polygons()]
+            assert roles.count("hole") == 2, "containment, not order, makes a hole"
+            mask = sample.annotations["rois_mask"].dense(["liver"])[0]
+            assert mask[2, 5, 6], "the ring is filled"
+            assert not mask[2, 8, 10], "and the hole was not filled back in"
 
     def test_rasterization_is_opt_in_and_recorded(self, prepared, tmp_path):
         from medh5.io.rtstruct import from_rtstruct

@@ -424,6 +424,39 @@ class TestComposite:
         assert exc.value.code == "E501"
 
 
+class TestAmend:
+    """An amend inherits the transforms, so it must inherit what it knows of them.
+
+    The writer's caches are what ``commit`` hashes and what ``infer_profiles``
+    reads; a cache that disagrees with the copied file produces a ``content_id``
+    over fewer objects than the reader later finds.
+    """
+
+    def test_S14_4_amend_keeps_the_file_verifiable(self, tmp_path):
+        path = registered(tmp_path / "reg.medh5")
+        with medh5.amend(path, codec="portable") as w:
+            w.add_image(
+                "CT2_tp0", np.zeros(SHAPE, dtype=np.int16), grid="ct_tp0", modality="CT"
+            )
+        with medh5.open(path) as sample:
+            assert sample.verify().ok
+            assert "reg" in sample.profiles
+
+    def test_S10_5_amend_can_compose_an_inherited_transform(self, tmp_path):
+        path = registered(tmp_path / "reg.medh5", displacement=True)
+        with medh5.amend(path, codec="portable") as w:
+            w.add_transform(
+                "chain",
+                kind="composite",
+                from_frame="F0",
+                to_frame="F2",
+                components=["tp0_to_tp1", "refine"],
+            )
+        with medh5.open(path) as sample:
+            assert sample.transforms["chain"].check_chain() == []
+            assert sample.verify().ok
+
+
 class TestResolution:
     def test_S10_resolves_between_timepoints_not_by_name(self, tmp_path):
         path = registered(tmp_path / "reg.medh5")
@@ -546,6 +579,28 @@ class TestInterpolation:
             linear_sample(field, outside, extrapolation="error")
         with pytest.raises(MEDH5ValidationError):
             linear_sample(field, outside, extrapolation="wing-it")
+
+    def test_S10_4_cubic_honours_error_extrapolation_like_linear(self):
+        """SciPy has no raising mode, so `error` must not become constant-zero.
+
+        Mapping it onto ``mode="constant"`` answers an out-of-domain query with
+        "no displacement" --- the silence the declared contract exists to break,
+        and only for cubic fields.
+        """
+        pytest.importorskip("scipy")
+        from medh5.transforms.apply import cubic_sample
+
+        field = np.ones((1, 4, 4))
+        outside = np.array([[-5.0, -5.0]])
+        assert cubic_sample(field, outside)[0, 0] == 0.0
+        # approx: the cubic spline prefilter is not exact on a constant field
+        assert cubic_sample(field, outside, extrapolation="nearest")[0, 0] == (
+            pytest.approx(1.0)
+        )
+        with pytest.raises(MEDH5ValidationError, match="outside"):
+            cubic_sample(field, outside, extrapolation="error")
+        with pytest.raises(MEDH5ValidationError):
+            cubic_sample(field, outside, extrapolation="wing-it")
 
     def test_folding_fraction_of_an_empty_field(self):
         assert folding_fraction(np.zeros(0)) == 0.0

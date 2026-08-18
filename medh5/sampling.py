@@ -254,7 +254,13 @@ class PatchSampler:
         classes = self._classes(ann)
         if not classes:
             return None
-        index = sample.index.get(annotation)
+        # A stale index is worse than no index: its coordinates point at
+        # foreground the annotation no longer has, so a centre drawn from it is
+        # silently not foreground and the training distribution shifts with
+        # nothing to show for it.  Scan instead, as the statistics path does.
+        index = (
+            sample.index.get(annotation) if annotation in sample.fresh_indices else None
+        )
         if index is not None:
             available = [c for c in classes if c in index.class_ids]
             counted = {c: index.voxel_counts.get(c, 0) for c in available}
@@ -373,11 +379,16 @@ class TimepointPairSampler:
 
 
 def _change_label(sample: Sample, first: str, second: str) -> str | None:
-    """The classification annotation whose ``timepoints`` is exactly this pair."""
+    """The classification annotation whose ``timepoints`` is exactly this pair.
+
+    Ordered, not as a set: "grew 40 %" and "shrank 40 %" span the same two
+    visits and differ only in which one is the baseline, so a label written
+    ``(tp1, tp0)`` does not describe the forward pair ``(tp0, tp1)``.
+    """
     for name, ann in sample.annotations.items():
         if ann.kind != "classification":
             continue
-        if set(ann.timepoints) == {first, second}:
+        if tuple(ann.timepoints) == (first, second):
             return name
     return None
 

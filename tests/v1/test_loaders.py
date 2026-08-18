@@ -13,7 +13,7 @@ import pytest
 import medh5
 from medh5.errors import MEDH5ValidationError
 from medh5.sampling import PatchSampler, TimepointPairSampler
-from tests.v1.conftest import SHAPE, write_sample
+from tests.v1.conftest import SHAPE, block, write_sample
 
 torch = pytest.importorskip("torch")
 
@@ -158,6 +158,50 @@ class TestPatchDataset:
             assert set(obj) == {"instance_id", "class_id", "box", "score"}
 
 
+class TestPatchGrids:
+    def test_S14_3_a_patch_is_not_read_out_of_two_grids(
+        self, tmp_path, label_set, masks
+    ):
+        """A patch is a window in one grid's index space, not a shared coordinate.
+
+        Reading a second grid with those same slices assumes both index the same
+        anatomy at the same spacing, and a smaller one quietly returns a
+        truncated tensor because the padding was computed for the first.
+        """
+        path = write_sample(
+            tmp_path / "two.medh5",
+            label_set=label_set,
+            masks=masks,
+            timepoints=("tp0", "tp1"),
+        )
+        spanning = PatchDataset(
+            [path], PatchSampler(8), annotations={"organs_tp0": [1]}
+        )
+        with pytest.raises(MEDH5ValidationError, match="one grid"):
+            spanning[0]
+
+        scoped = PatchDataset(
+            [path],
+            PatchSampler(8),
+            images=["CT_tp0"],
+            annotations={"organs_tp0": [1]},
+        )
+        assert tuple(scoped[0]["images"]["CT_tp0"].shape) == (8, 8, 8)
+
+    def test_a_whole_volume_read_still_spans_every_grid(
+        self, tmp_path, label_set, masks
+    ):
+        """The refusal is about the *window*: without one there is nothing to align."""
+        path = write_sample(
+            tmp_path / "two.medh5",
+            label_set=label_set,
+            masks=masks,
+            timepoints=("tp0", "tp1"),
+        )
+        item = VolumeDataset([path])[0]
+        assert set(item["images"]) == {"CT_tp0", "CT_tp1"}
+
+
 class TestGridPatchDataset:
     def test_the_plan_covers_every_file(self, cohort):
         ds = GridPatchDataset(cohort, 8, images=["CT_tp0"])
@@ -171,7 +215,15 @@ class TestPairedPatchDataset:
     @pytest.fixture
     def registered(self, tmp_path, label_set, masks) -> Path:
         """Two visits whose frames differ by a known +4-voxel shift."""
-        path = tmp_path / "pair.medh5"
+        return self._visits(tmp_path, label_set, masks, transform=True)
+
+    @pytest.fixture
+    def unregistered(self, tmp_path, label_set, masks) -> Path:
+        """The same two visits, with nothing in the file relating their frames."""
+        return self._visits(tmp_path, label_set, masks, transform=False)
+
+    def _visits(self, tmp_path, label_set, masks, *, transform: bool) -> Path:
+        path = tmp_path / ("pair.medh5" if transform else "unrelated.medh5")
         with medh5.create(path, codec="portable") as w:
             w.add_timepoint("tp0", days_from_baseline=0)
             w.add_timepoint("tp1", days_from_baseline=90)
@@ -191,15 +243,16 @@ class TestPairedPatchDataset:
                     modality="CT",
                 )
                 w.add_segmentation(f"organs_{tp}", grid=f"g_{tp}", masks=masks)
-            shift = np.eye(4)
-            shift[2, 3] = 4.0
-            w.add_transform(
-                "tp0_to_tp1",
-                kind="affine",
-                matrix=shift,
-                from_frame="pseudo:tp0",
-                to_frame="pseudo:tp1",
-            )
+            if transform:
+                shift = np.eye(4)
+                shift[2, 3] = 4.0
+                w.add_transform(
+                    "tp0_to_tp1",
+                    kind="affine",
+                    matrix=shift,
+                    from_frame="pseudo:tp0",
+                    to_frame="pseudo:tp1",
+                )
         return path
 
     def test_align_transform_moves_the_window_by_the_transform(self, registered):
@@ -241,6 +294,61 @@ class TestPairedPatchDataset:
         item = PairedPatchDataset([registered], PatchSampler(8))[0]
         assert item["label"]["response"] == {"lesion": 1.0}
         assert item["meta"]["label_annotation"] == "response"
+
+    def test_S10_2_align_transform_refuses_frames_it_cannot_relate(self, unregistered):
+        """`transform_between` returns None for "one frame" and "no path" alike.
+
+        Only the first makes the two index spaces comparable.  Reading the
+        second as "nothing to apply" feeds source-frame world coordinates into
+        an unrelated grid and pairs patches from different anatomy.
+        """
+        ds = PairedPatchDataset(
+            [unregistered], PatchSampler(8, strategy="foreground"), align="transform"
+        )
+        with pytest.raises(MEDH5ValidationError, match="needs a transform"):
+            ds[0]
+        # the same file pairs fine when the caller does not claim alignment
+        same = PairedPatchDataset([unregistered], PatchSampler(8), align="none")[0]
+        assert set(same["images"]) == {"tp0", "tp1"}
+
+    def test_S3_7_a_padded_first_visit_keeps_the_pair_one_shape(
+        self, tmp_path, label_set
+    ):
+        """The second visit is asked for the requested size, not the clipped one.
+
+        Where the first visit is smaller than the patch its window is short and
+        padded back up to the patch shape; asking the second for the clipped
+        extent returns a full, unpadded array of that smaller size, and the
+        paired tensors no longer stack.
+        """
+        path = tmp_path / "uneven.medh5"
+        with medh5.create(path, codec="portable") as w:
+            w.add_timepoint("tp0", days_from_baseline=0)
+            w.add_timepoint("tp1", days_from_baseline=90)
+            w.label_set(label_set)
+            for tp, shape in (("tp0", (8, 8, 8)), ("tp1", (24, 24, 24))):
+                w.add_grid(
+                    f"g_{tp}",
+                    shape=shape,
+                    spacing=(1.0, 1.0, 1.0),
+                    timepoint=tp,
+                    frame_uid=f"pseudo:{tp}",
+                )
+                w.add_image(
+                    f"CT_{tp}",
+                    np.zeros(shape, dtype=np.int16),
+                    grid=f"g_{tp}",
+                    modality="CT",
+                )
+                w.add_segmentation(
+                    f"organs_{tp}",
+                    grid=f"g_{tp}",
+                    masks={1: block(shape, (1, 1, 1), 4)},
+                )
+
+        item = PairedPatchDataset([path], PatchSampler(12), align="none")[0]
+        assert tuple(item["images"]["tp0"]["CT_tp0"].shape) == (12, 12, 12)
+        assert tuple(item["images"]["tp1"]["CT_tp1"].shape) == (12, 12, 12)
 
     def test_unknown_alignment_is_refused(self, registered):
         with pytest.raises(MEDH5ValidationError):
@@ -407,6 +515,51 @@ class TestMonai:
             shifted = _shift_origin(affine, roi)
         assert np.allclose(shifted[:3, 3], grid.index_to_world([[2, 4, 0]])[0])
         assert np.allclose(shifted[:3, :3], affine[:3, :3])
+
+    def test_S4_3_a_MetaTensor_reads_the_level_its_affine_describes(self, tmp_path):
+        """Level-0 voxels under a level-1 affine misplace every saved prediction.
+
+        `meta_dict` already selects the requested level's grid and affine, so the
+        array has to come from that level too; nothing about the MetaTensor
+        would say the two disagree.
+        """
+        pytest.importorskip("monai")
+        from medh5.geometry.multiscale import derive_level_grid
+        from medh5.monai import to_metatensor
+
+        shape = (16, 32, 32)
+        path = tmp_path / "pyr.medh5"
+        with medh5.create(path, codec="portable") as w:
+            base = w.add_grid(
+                "l0", shape=shape, spacing=(1.0, 1.0, 1.0), origin=(0.0, 0.0, 0.0)
+            )
+            level1 = derive_level_grid(base, (2, 2, 2), "l1")
+            w.add_grid(
+                "l1",
+                shape=level1.shape,
+                spacing=level1.spacing,
+                origin=level1.origin,
+                direction=level1.direction,
+            )
+            w.add_pyramid(
+                "CT",
+                [
+                    np.zeros(shape, dtype=np.int16),
+                    np.full((8, 16, 16), 7, dtype=np.int16),
+                ],
+                grid_levels=["l0", "l1"],
+                modality="CT",
+            )
+
+        with medh5.open(path) as sample:
+            tensor = to_metatensor(sample, "CT", level=1)
+            assert tuple(tensor.shape) == (8, 16, 16), "the level-1 array, not level 0"
+            assert float(np.asarray(tensor).flat[0]) == 7.0
+            assert list(tensor.meta["spatial_shape"]) == [8, 16, 16]
+            assert np.allclose(
+                np.asarray(tensor.meta["affine"]),
+                sample.images["CT"].level(1).grid.affine,
+            )
 
     def test_medh5_metadata_is_json_safe(self, cohort):
         from medh5.monai import meta_dict
