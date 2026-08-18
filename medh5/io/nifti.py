@@ -75,11 +75,29 @@ def read_nifti(
     *,
     coord_system: str = "LPS",
     transpose: bool = True,
+    fourth_axis: str = "auto",
 ) -> tuple[npt.NDArray[Any], dict[str, Any]]:
-    """One NIfTI file as ``(array, geometry)`` in MEDH5 conventions."""
+    """One NIfTI file as ``(array, geometry)`` in MEDH5 conventions.
+
+    *fourth_axis* decides what a 4-D series' extra axis is --- ``"time"`` for
+    cine, DCE and 4-D CT, ``"channel"`` for multi-b-value DWI and multi-echo
+    (§3.6).  ``"auto"`` reads the answer out of the file where it can and
+    reports a guess where it cannot.
+    """
     nib = require_nibabel()
     image = nib.load(os.fspath(path))
     data = np.asanyarray(image.dataobj)
+    # A trailing axis of extent 1 beyond the spatial block carries nothing:
+    # writers emit `dim[4] = 1` routinely, and keeping it turns a plain volume
+    # into a grid with a degenerate one-frame time axis --- and a 5-D
+    # `(x, y, z, 1, n)` multi-echo into something no grid can describe.
+    squeezed = [
+        axis
+        for axis in range(data.ndim - 1, 2, -1)  # noqa: PLR2004 - past x, y, z
+        if data.shape[axis] == 1
+    ]
+    for axis in squeezed:
+        data = np.squeeze(data, axis=axis)
     affine = convert_world(image.affine, source="RAS", target=coord_system)
     spacing, origin, direction = decompose_affine(affine)
     order = tuple(range(data.ndim))
@@ -99,8 +117,16 @@ def read_nifti(
     times: tuple[float, ...] | None = None
     time_units: str | None = None
     measured = False
-    if data.ndim == 4:  # noqa: PLR2004 - the leading axis is time
-        times, time_units, measured = _time_axis(image, int(data.shape[0]))
+    kind = "spatial"
+    b_values: tuple[float, ...] | None = None
+    if data.ndim == 4:  # noqa: PLR2004 - three spatial axes and one more
+        kind, stated = _fourth_axis(image, path, fourth_axis)
+        if kind == "time":
+            times, time_units, measured = _time_axis(image, int(data.shape[0]))
+        else:
+            sidecar = _bval_sidecar(path)
+            b_values = None if sidecar is None else _read_bvals(sidecar)
+        measured = measured if kind == "time" else stated
     return np.ascontiguousarray(data), {
         "spacing": [float(v) for v in spacing],
         "origin": [float(v) for v in origin],
@@ -111,6 +137,10 @@ def read_nifti(
         "time_values": None if times is None else list(times),
         "time_units": time_units,
         "time_measured": measured,
+        "leading_kind": kind,
+        "leading_stated": measured,
+        "b_values": None if b_values is None else list(b_values),
+        "squeezed": squeezed,
         "units": _units(image),
         "dtype": str(data.dtype),
         "header": {
@@ -119,6 +149,67 @@ def read_nifti(
             "scl_inter": _number(image.header.get("scl_inter")),
         },
     }
+
+
+# NIfTI intent codes whose extra dimension holds *components* rather than
+# frames --- §3.6's "channel" kind rather than its "time" kind.
+CHANNEL_INTENTS = frozenset({1001, 1004, 1005, 1006, 1007})
+TIME_SERIES_INTENT = 2001
+
+FOURTH_AXES = ("auto", "time", "channel")
+
+
+def _bval_sidecar(path: str | os.PathLike[str]) -> Path | None:
+    """The ``.bval`` file beside a NIfTI, which is what makes a series DWI.
+
+    NIfTI-1 says ``dim[4]`` is time, but every diffusion pipeline in practice
+    puts the gradient index there and writes the b-values alongside.  The
+    sidecar is the only reliable signal, because such files carry no intent
+    code and often a meaningless ``pixdim[4]``.
+    """
+    name = Path(os.fspath(path))
+    stem = name.name
+    for suffix in (".nii.gz", ".nii"):
+        if stem.endswith(suffix):
+            candidate = name.with_name(stem[: -len(suffix)] + ".bval")
+            return candidate if candidate.exists() else None
+    return None
+
+
+def _read_bvals(path: Path) -> tuple[float, ...]:
+    text = path.read_text().replace("\n", " ")
+    return tuple(float(v) for v in text.split())
+
+
+def _fourth_axis(
+    image: Any, path: str | os.PathLike[str], requested: str
+) -> tuple[str, bool]:
+    """Whether a 4-D NIfTI's leading axis is ``time`` or ``channel`` (§3.6).
+
+    §3.6 gives both a row --- cine/DCE/4-D CT under ``time``, multi-b-value DWI
+    and multi-echo under ``channel`` --- and NIfTI does not distinguish them in
+    ``dim[4]``.  Reading every 4-D series as time labelled every DWI gradient
+    axis a time axis and handed it invented per-frame timings.
+
+    Returns the kind and whether the source stated it.  A guess is reported as
+    one, and ``fourth_axis=`` overrides it outright.
+    """
+    if requested not in FOURTH_AXES:
+        raise MEDH5ValidationError(
+            f"unknown fourth_axis {requested!r}; expected one of {list(FOURTH_AXES)}"
+        )
+    if requested != "auto":
+        return requested, True
+    if _bval_sidecar(path) is not None:
+        return "channel", True
+    intent = int(image.header["intent_code"])
+    if intent in CHANNEL_INTENTS:
+        return "channel", True
+    if intent == TIME_SERIES_INTENT:
+        return "time", True
+    if _temporal(image)[2]:
+        return "time", True
+    return "time", False
 
 
 def _reduce_plane(
@@ -146,7 +237,7 @@ def _reduce_plane(
 
 
 def grid_axes(
-    shape: Sequence[int], *, transposed: bool = True
+    shape: Sequence[int], *, transposed: bool = True, leading_kind: str = "time"
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """``(axis_names, axis_kinds)`` for a grid built from a converted NIfTI array.
 
@@ -178,12 +269,34 @@ def grid_axes(
     if extra <= 0:
         return ("z", "y", "x")[-len(shape) :], ("spatial",) * len(shape)
     if extra == 1:
-        return ("t", "z", "y", "x"), ("time", "spatial", "spatial", "spatial")
+        name = "t" if leading_kind == "time" else "c"
+        return (name, "z", "y", "x"), (leading_kind, "spatial", "spatial", "spatial")
     raise MEDH5ValidationError(
         f"a {len(shape)}-D NIfTI has {extra} axes beyond (x, y, z); only a "
         "single trailing time axis converts without a decision about what the "
         "others mean --- convert the volumes separately, or declare the axes"
     )
+
+
+def _temporal(image: Any) -> tuple[float, str, bool]:
+    """The temporal zoom and unit, and whether the file actually states them.
+
+    ``pixdim[4]`` is 1.0 in a freshly built header, so a positive zoom on its
+    own is not a statement about timing --- it is the default.  The unit has to
+    be set as well before the number is the scanner's and not nibabel's, which
+    is what separates a frame time this converter read from one it assumed.
+    """
+    zooms = image.header.get_zooms()
+    step = float(zooms[3]) if len(zooms) > 3 else 0.0  # noqa: PLR2004 - dim[4]
+    try:
+        _, temporal = image.header.get_xyzt_units()
+    except Exception:  # noqa: BLE001 - a malformed header is not fatal
+        temporal = "unknown"
+    known = {"sec": ("s", 1.0), "msec": ("ms", 1.0), "usec": ("ms", 1e-3)}
+    if step <= 0 or str(temporal) not in known:
+        return 0.0, "s", False
+    units, scale = known[str(temporal)]
+    return step * scale, units, True
 
 
 def _time_axis(image: Any, frames: int) -> tuple[tuple[float, ...], str, bool]:
@@ -195,28 +308,16 @@ def _time_axis(image: Any, frames: int) -> tuple[tuple[float, ...], str, bool]:
     an option --- the source states a temporal zoom and the converter was
     throwing it away.
     """
-    zooms = image.header.get_zooms()
-    step = float(zooms[3]) if len(zooms) > 3 else 0.0  # noqa: PLR2004 - dim[4]
-    try:
-        _, temporal = image.header.get_xyzt_units()
-    except Exception:  # noqa: BLE001 - a malformed header is not fatal
-        temporal = "unknown"
-    units, scale = {"sec": ("s", 1.0), "msec": ("ms", 1.0), "usec": ("ms", 1e-3)}.get(
-        str(temporal), ("s", 1.0)
-    )
+    step, units, stated = _temporal(image)
+    if not stated:
+        # Nothing to read.  Frame indices are all that is left, and they are an
+        # assumption about timing rather than a measurement of it.
+        return tuple(float(k) for k in range(frames)), "s", False
     try:
         offset = float(image.header["toffset"])
     except (KeyError, ValueError, TypeError):  # pragma: no cover - header variants
         offset = 0.0
-    if step <= 0:
-        # No temporal zoom to read.  Frame indices are the only thing left, and
-        # they are a guess about timing rather than a measurement of it.
-        return tuple(float(k) for k in range(frames)), "s", False
-    return (
-        tuple((offset + k * step) * scale for k in range(frames)),
-        units,
-        True,
-    )
+    return tuple(offset + k * step for k in range(frames)), units, True
 
 
 def _units(image: Any) -> str:
@@ -257,6 +358,7 @@ def from_nifti(
     modalities: Mapping[str, str] | None = None,
     coord_system: str = "LPS",
     transpose: bool = True,
+    fourth_axis: str = "auto",
     value_units: Mapping[str, str] | None = None,
     codec: str = "balanced",
     annotated_classes: Sequence[str] | str = "all_given",
@@ -279,7 +381,12 @@ def from_nifti(
     arrays: dict[str, npt.NDArray[Any]] = {}
     geometry: dict[str, Any] | None = None
     for name, path in images.items():
-        data, geo = read_nifti(path, coord_system=coord_system, transpose=transpose)
+        data, geo = read_nifti(
+            path,
+            coord_system=coord_system,
+            transpose=transpose,
+            fourth_axis=fourth_axis,
+        )
         geometry = _same_grid(geometry, geo, name, log) if geometry else geo
         arrays[name] = data
     assert geometry is not None
@@ -296,6 +403,31 @@ def from_nifti(
             f"NIfTI is RAS+; the grid was written in {coord_system} "
             "(sign flip on the first two world axes, applied to the affine only)",
             {"source": "RAS", "target": coord_system},
+        )
+    if geometry.get("squeezed"):
+        log.decision(
+            "axis_order",
+            "trailing axes of extent 1 beyond (x, y, z) carry nothing and were "
+            "dropped, so the grid describes the data rather than the file",
+            {"axes": list(geometry["squeezed"])},
+        )
+    if geometry.get("leading_kind") == "channel":
+        detail = {
+            "channels": geometry["shape"][0],
+            "b_values": geometry.get("b_values"),
+        }
+        log.decision(
+            "axis_kinds",
+            "the fourth axis holds components rather than frames, so it is a "
+            "`channel` axis (§3.6) --- b-values or an intent code said so",
+            detail,
+        )
+    elif geometry.get("leading_kind") == "time" and not geometry.get("leading_stated"):
+        log.guess(
+            "axis_kinds",
+            "the source does not say whether the fourth axis is time or channel; "
+            "it was read as time (§3.6) --- pass `fourth_axis=` to say otherwise",
+            {"frames": geometry["shape"][0]},
         )
     if geometry.get("time_values") is not None:
         detail = {
@@ -348,7 +480,9 @@ def from_nifti(
         # below 3-D, which are never reordered whatever the caller asked for.
         order = tuple(geometry["axis_order"])
         axis_names, axis_kinds = grid_axes(
-            geometry["shape"], transposed=order != tuple(range(len(order)))
+            geometry["shape"],
+            transposed=order != tuple(range(len(order))),
+            leading_kind=geometry.get("leading_kind", "time"),
         )
         writer.add_grid(
             "ref",
@@ -363,12 +497,24 @@ def from_nifti(
             time_values=geometry.get("time_values"),
             time_units=geometry.get("time_units"),
         )
+        b_values = geometry.get("b_values")
+        channel_names = (
+            tuple(f"b={v:g}" for v in b_values)
+            if b_values and len(b_values) == geometry["shape"][0]
+            else None
+        )
         for name, array in arrays.items():
+            if b_values:
+                # §3.6 puts the b-values in `acquisition` (§4.5); they are what
+                # the channel axis *means*, and dropping them leaves a stack of
+                # unlabelled volumes.
+                writer.acquisition(name, b_values=list(b_values))
             writer.add_image(
                 name,
                 array,
                 grid="ref",
                 modality=(modalities or {}).get(name, "OT"),
+                channel_names=channel_names,
                 value_units=(value_units or {}).get(name),
                 value_type="quantitative"
                 if (value_units or {}).get(name)

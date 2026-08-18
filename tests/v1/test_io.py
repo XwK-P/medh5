@@ -370,6 +370,99 @@ class TestNifti:
         assert not validate_file(tmp_path / "v.medh5", level="integrity").errors
 
 
+class TestDimensionality:
+    """§3.6's table, walked row by row.
+
+    The rows are the specification: 2-D radiographs, 3-D volumes, 4-D
+    cine/DCE/CT under `time`, and multi-b-value DWI and multi-echo under
+    `channel`.  NIfTI puts the last two in the same `dim[4]` as the first, so
+    reading every 4-D series as time labelled every DWI gradient axis a time
+    axis and handed it invented frame timings.
+    """
+
+    def _write(
+        self, tmp_path, name, shape, *, intent=None, tr=None, units=None, bvals=None
+    ):
+        image = nib.Nifti1Image(np.zeros(shape, np.int16), AFFINE)
+        if intent is not None:
+            image.header.set_intent(intent)
+        if units is not None:
+            image.header.set_xyzt_units("mm", units)
+        if tr is not None:
+            image.header["pixdim"][4] = tr
+        source = tmp_path / f"{name}.nii.gz"
+        nib.save(image, str(source))
+        if bvals is not None:
+            (tmp_path / f"{name}.bval").write_text(" ".join(str(b) for b in bvals))
+        return source
+
+    @pytest.mark.parametrize(
+        ("name", "shape", "options", "kinds"),
+        [
+            ("radiograph", (32, 40), {}, ("spatial", "spatial")),
+            ("volume", (24, 20, 12), {}, ("spatial",) * 3),
+            (
+                "cine",
+                (24, 20, 12, 5),
+                {"tr": 2.5, "units": "sec"},
+                ("time", "spatial", "spatial", "spatial"),
+            ),
+            (
+                "dwi",
+                (24, 20, 12, 3),
+                {"bvals": [0, 1000, 2000]},
+                ("channel", "spatial", "spatial", "spatial"),
+            ),
+            (
+                "vector",
+                (24, 20, 12, 3),
+                {"intent": "vector"},
+                ("channel", "spatial", "spatial", "spatial"),
+            ),
+            ("singleton", (24, 20, 12, 1), {"tr": 1.0}, ("spatial",) * 3),
+        ],
+    )
+    def test_S3_6_each_row_of_the_table(self, tmp_path, name, shape, options, kinds):
+        source = self._write(tmp_path, name, shape, **options)
+        from_nifti({"IM": source}, tmp_path / f"{name}.medh5")
+        with medh5.open(tmp_path / f"{name}.medh5") as sample:
+            assert sample.grids["ref"].axis_kinds == kinds
+
+    def test_S3_6_a_DWI_carries_its_b_values(self, tmp_path):
+        """§3.6 puts them in `acquisition` (§4.5); they are what the axis means."""
+        source = self._write(tmp_path, "dwi", (24, 20, 12, 3), bvals=[0, 1000, 2000])
+        report = from_nifti({"DWI": source}, tmp_path / "dwi.medh5")
+        with medh5.open(tmp_path / "dwi.medh5") as sample:
+            assert sample.images["DWI"].channel_names == ("b=0", "b=1000", "b=2000")
+            assert sample.document.acquisition["DWI"]["b_values"] == [
+                0.0,
+                1000.0,
+                2000.0,
+            ]
+        assert [n.severity for n in report.of_kind("axis_kinds")] == ["decision"]
+
+    def test_S3_6_an_unmarked_fourth_axis_is_a_guess(self, tmp_path):
+        """`pixdim[4]` is 1.0 in a fresh header, so it states nothing on its own."""
+        source = self._write(tmp_path, "plain", (24, 20, 12, 3))
+        report = from_nifti({"IM": source}, tmp_path / "plain.medh5")
+        with medh5.open(tmp_path / "plain.medh5") as sample:
+            assert sample.grids["ref"].axis_kinds[0] == "time"
+        assert [n.severity for n in report.of_kind("axis_kinds")] == ["guess"]
+
+    def test_S3_6_the_caller_can_settle_it(self, tmp_path):
+        source = self._write(tmp_path, "echo", (24, 20, 12, 1, 4))
+        from_nifti({"IM": source}, tmp_path / "echo.medh5", fourth_axis="channel")
+        with medh5.open(tmp_path / "echo.medh5") as sample:
+            grid = sample.grids["ref"]
+            assert grid.shape == (4, 12, 20, 24), "the singleton axis carried nothing"
+            assert grid.axis_kinds == ("channel", "spatial", "spatial", "spatial")
+
+    def test_an_unknown_fourth_axis_is_refused(self, tmp_path):
+        source = self._write(tmp_path, "bad", (24, 20, 12, 3))
+        with pytest.raises(MEDH5ValidationError, match="fourth_axis"):
+            from_nifti({"IM": source}, tmp_path / "bad.medh5", fourth_axis="vibes")
+
+
 class TestGrouping:
     def test_S3_7_studies_of_one_subject_become_one_sample(self):
         groups = group_by_subject(
