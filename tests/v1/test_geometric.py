@@ -96,6 +96,44 @@ class TestBoxes:
         assert slices[0] == (slice(2, 8), slice(2, 10), slice(2, 10))
         assert slices[1] == (slice(7, 12), slice(11, 19), slice(5, 13))
 
+    @pytest.mark.parametrize("space", ["index", "world"])
+    def test_S8_2_an_annotation_with_no_objects_reads(self, tmp_path, label_set, space):
+        """The verified negative is the case the coverage contract exists for.
+
+        A detection that searched for a class and found nothing has zero boxes
+        and names the class in `annotated_class_ids` (§9).  `np.stack([])`
+        raises, so the one shape the model is designed to express crashed on
+        every world-space read.
+        """
+        path = tmp_path / f"empty-{space}.medh5"
+        with medh5.create(path, codec="portable") as w:
+            w.add_timepoint("tp0")
+            w.label_set(label_set)
+            w.add_grid(
+                "ct",
+                shape=SHAPE,
+                spacing=(1.5, 0.8, 0.8),
+                timepoint="tp0",
+                frame_uid="pseudo:frame-100",
+            )
+            w.add_image("CT", np.zeros(SHAPE, dtype=np.int16), grid="ct", modality="CT")
+            w.add_boxes(
+                "lesions",
+                np.zeros((0, 3, 2), dtype=np.float32),
+                [],
+                grid="ct",
+                space=space,
+                annotated_classes=["lesion"],
+            )
+        with medh5.open(path) as sample:
+            boxes = sample.annotations["lesions"]
+            assert len(boxes) == 0
+            assert boxes.annotated_class_ids == (3,), "searched for and not found"
+            assert boxes.as_world().shape == (0, 3, 2)
+            assert boxes.world_corners().shape == (0, 8, 3)
+            assert boxes.as_slices() == []
+            assert list(boxes) == []
+
     def test_S8_1_box_slice_box_is_the_identity(self):
         """The property the whole voxel-edge convention exists for."""
         rng = np.random.default_rng(0)

@@ -254,10 +254,31 @@ def encode_boxes(
     )
 
 
+def _stacked(
+    arrays: list[npt.NDArray[np.float64]], empty: tuple[int, ...]
+) -> npt.NDArray[np.float64]:
+    """``np.stack`` that survives an annotation holding no objects.
+
+    An empty detection annotation is not a degenerate input to guard against ---
+    it is the *verified negative* the coverage contract exists to record: no
+    objects, and ``annotated_class_ids`` naming the classes that were searched
+    for and not found (§6.4, §9).  ``np.stack([])`` raises, so the one case the
+    model is designed to express was the one that crashed on read.
+    """
+    if not arrays:
+        return np.empty(empty, dtype=np.float64)
+    return np.stack(arrays)
+
+
 class BoxesAnnotation(GeometricAnnotation):
     """Reader for ``kind = "boxes"``."""
 
     __slots__ = ()
+
+    @property
+    def ndim(self) -> int:
+        """Spatial dimensionality, readable from the stored ``(N, S, 2)`` shape."""
+        return int(self._dataset("boxes").shape[1])
 
     @property
     def boxes(self) -> npt.NDArray[np.float32]:
@@ -279,8 +300,12 @@ class BoxesAnnotation(GeometricAnnotation):
         ]
 
     def _boxes_in_index(self, grid: Grid) -> npt.NDArray[np.float64]:
-        return np.stack(
-            [self._bounds(self.to_index(box_corners(b), grid=grid)) for b in self.boxes]
+        return _stacked(
+            [
+                self._bounds(self.to_index(box_corners(b), grid=grid))
+                for b in self.boxes
+            ],
+            (0, self.ndim, 2),
         )
 
     @staticmethod
@@ -289,7 +314,10 @@ class BoxesAnnotation(GeometricAnnotation):
 
     def world_corners(self, grid: Grid | str | None = None) -> npt.NDArray[np.float64]:
         """Exact ``(N, 2**S, S)`` world corners of every box."""
-        return np.stack([self.to_world(box_corners(b), grid=grid) for b in self.boxes])
+        return _stacked(
+            [self.to_world(box_corners(b), grid=grid) for b in self.boxes],
+            (0, 2**self.ndim, self.ndim),
+        )
 
     def as_world(self, grid: Grid | str | None = None) -> npt.NDArray[np.float64]:
         """``(N, S, 2)`` **enclosing** world bounds.
@@ -301,7 +329,9 @@ class BoxesAnnotation(GeometricAnnotation):
         """
         if self.space == "world":
             return self.boxes.astype(np.float64)
-        return np.stack([self._bounds(c) for c in self.world_corners(grid)])
+        return _stacked(
+            [self._bounds(c) for c in self.world_corners(grid)], (0, self.ndim, 2)
+        )
 
     def __iter__(self) -> Iterator[Instance]:
         classes = self.object_class_ids

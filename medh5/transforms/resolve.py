@@ -48,6 +48,28 @@ class InverseTransform(Transform):
             inner._siblings,  # noqa: SLF001
         )
 
+    @staticmethod
+    def can_invert(inner: Transform) -> bool:
+        """Whether an inverse can be *evaluated*, not merely declared.
+
+        ``is_invertible`` is the file's claim; this is what ``transform_points``
+        below can actually carry out, and the two are not the same set.  A
+        composite of invertible affines reports ``True`` and carries no
+        ``inverse_id``, as does a displacement field written
+        ``invertible=True``, and neither has an analytic inverse here.
+        Resolution that trusted the claim handed back paths that raised the
+        moment they were used --- from a call documented to answer ``None`` when
+        no path exists.  The predicate lives next to the dispatch it mirrors so
+        the two cannot drift apart again.
+        """
+        from medh5.transforms.affine import AffineTransform, IdentityTransform
+
+        if not inner.is_invertible:
+            return False
+        if isinstance(inner, (IdentityTransform, AffineTransform)):
+            return True
+        return inner.inverse() is not None
+
     def transform_points(self, points: npt.ArrayLike) -> npt.NDArray[np.float64]:
         from medh5.transforms.affine import AffineTransform, IdentityTransform
 
@@ -120,7 +142,10 @@ def _edges(
     for transform in transforms.values():
         out.setdefault(transform.from_frame, []).append((transform.to_frame, transform))
         out.setdefault(transform.to_frame, [])
-        if transform.is_invertible:
+        # `can_invert`, not `is_invertible`: an edge the walker cannot evaluate
+        # is not an edge, and adding it turns "no path exists" into a path that
+        # raises when the caller uses it.
+        if InverseTransform.can_invert(transform):
             out[transform.to_frame].append(
                 (transform.from_frame, InverseTransform(transform))
             )

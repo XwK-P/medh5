@@ -7,6 +7,7 @@ import itertools
 import numpy as np
 import pytest
 
+import medh5
 from medh5.annotations.voxel import (
     InstanceInput,
     analyse,
@@ -26,6 +27,7 @@ from medh5.annotations.voxel import (
 from medh5.annotations.voxel.select import layers_from_colouring
 from medh5.annotations.voxel.transcode import TRANSCODABLE, masks_equal
 from medh5.errors import MEDH5ValidationError
+from medh5.labels.labelset import LabelClass, LabelSet
 
 SHAPE = (12, 16, 16)
 DENSE = ("labelmap", "layers", "bitmask", "instances", "probmap")
@@ -167,6 +169,55 @@ class TestEncoders:
         offsets = payload.datasets["mask_offsets"]
         assert np.all(np.diff(offsets.astype(np.int64)) > 0)
         assert offsets[-1] == payload.datasets["mask_data"].size
+
+    @pytest.mark.parametrize(
+        ("box", "extent", "fill", "expected"),
+        [
+            ([[-2.5, 9.5]], 12, slice(2, 5), [0, 1, 2]),
+            ([[5.5, 14.5]], 9, slice(0, 3), [6, 7, 8]),
+            ([[-1.5, 11.5]], 14, slice(1, 4), [0, 1, 2]),
+            ([[2.5, 5.5]], 3, slice(0, 3), [3, 4, 5]),
+        ],
+    )
+    def test_S7_4_a_crop_is_read_in_the_frame_it_was_cut_in(
+        self, tmp_path, box, extent, fill, expected
+    ):
+        """A box a resample pushed out of bounds still decodes where it belongs.
+
+        The crop's coordinates are its *unclipped* box.  Deriving the window
+        with the grid clip applied moved `start` for a box hanging off the near
+        edge, so the crop was read from its own element 0 rather than from the
+        first in-bounds one and the mask landed shifted by the overhang --- with
+        nothing raised and the right dtype and shape.
+        """
+        shape = (10, 10, 10)
+        full_box = np.array([box[0], [1.5, 4.5], [1.5, 4.5]], dtype=np.float32)
+        crop = np.zeros((extent, 3, 3), dtype=bool)
+        crop[fill] = True
+        path = tmp_path / "inst.medh5"
+        with medh5.create(path, codec="portable") as w:
+            w.add_grid("g", shape=shape, spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", np.zeros(shape, dtype=np.int16), grid="g", modality="CT")
+            w.label_set(
+                LabelSet(
+                    "t", version="1.0.0", classes=[LabelClass(3, "lesion", "Lesion")]
+                )
+            )
+            w.add_segmentation(
+                "objs",
+                grid="g",
+                encoding="instances",
+                instances=[InstanceInput(3, 1, box=full_box, crop=crop)],
+                annotated_classes=[3],
+            )
+        with medh5.open(path) as sample:
+            dense = sample.annotations["objs"].dense([3])[0]
+            rows = sorted(int(v) for v in np.unique(np.argwhere(dense)[:, 0]))
+            assert rows == expected
+            windowed = sample.annotations["objs"].dense(
+                [3], roi=[slice(0, 10), slice(0, 10), slice(0, 10)]
+            )[0]
+            assert np.array_equal(windowed, dense)
 
     def test_S7_5_probabilities_must_be_in_range(self):
         with pytest.raises(MEDH5ValidationError) as exc:

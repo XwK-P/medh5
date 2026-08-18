@@ -249,9 +249,16 @@ class InstancesAnnotation(VoxelAnnotation):
         out = np.zeros(shape, dtype=bool)
         classes = self.object_class_ids
         boxes = self.boxes
-        grid_shape = self.spatial_shape
         for index in np.flatnonzero(classes == class_id):
-            obj_slices = box_to_slices(boxes[index], grid_shape)
+            # Unclipped, deliberately: these slices are the coordinate frame the
+            # stored crop was cut in, and `box_to_slices(..., grid_shape)` moves
+            # `start` for a box hanging off the near edge.  The crop was then
+            # read from its own element 0 rather than from the first in-bounds
+            # one, shifting the decoded mask by exactly the overhang --- silently,
+            # for boxes a resample pushed slightly out of bounds, which is the
+            # case the clip was added for.  Intersecting with `roi` below does
+            # the clipping, because `roi` is already inside the array.
+            obj_slices = box_to_slices(boxes[index])
             local: list[slice] = []
             target: list[slice] = []
             empty = False

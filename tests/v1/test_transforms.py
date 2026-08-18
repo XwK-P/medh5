@@ -525,6 +525,95 @@ class TestResolution:
         with medh5.open(path) as sample:
             assert sample.transform_between("F2", "F1") is None
 
+    def _claimed(self, tmp_path, *, deformable: bool):
+        """A composite of two invertible steps that carries no `inverse_id`.
+
+        With *deformable* the second step is a dense field declaring
+        `invertible: true` --- a claim with nothing behind it.
+        """
+        path = tmp_path / f"claimed-{deformable}.medh5"
+        with medh5.create(
+            path, sample_id="s", subject_id="subj", codec="portable"
+        ) as w:
+            for index, frame in enumerate(("F0", "F1", "F2")):
+                w.add_grid(
+                    f"g{index}", shape=SHAPE, spacing=(1.0, 1.0, 1.0), frame_uid=frame
+                )
+            w.add_image("CT", np.zeros(SHAPE, dtype=np.int16), grid="g0", modality="CT")
+            first = np.eye(4)
+            first[0, 3] = 2.0
+            w.add_transform(
+                "A",
+                kind="affine",
+                matrix=first,
+                from_frame="F0",
+                to_frame="F1",
+                invertible=True,
+            )
+            if deformable:
+                field = np.zeros((3, *SHAPE), dtype=np.float32)
+                field[0] = 0.75
+                w.add_transform(
+                    "B",
+                    kind="displacement",
+                    field=field,
+                    from_frame="F1",
+                    to_frame="F2",
+                    field_grid="g1",
+                    invertible=True,
+                )
+            else:
+                second = np.eye(4)
+                second[1, 3] = 3.0
+                w.add_transform(
+                    "B",
+                    kind="affine",
+                    matrix=second,
+                    from_frame="F1",
+                    to_frame="F2",
+                    invertible=True,
+                )
+            w.add_transform(
+                "C",
+                kind="composite",
+                from_frame="F0",
+                to_frame="F2",
+                components=["A", "B"],
+            )
+        return path
+
+    def test_S10_a_resolved_path_is_one_that_can_be_evaluated(self, tmp_path):
+        """A declared inverse is not always an evaluable one.
+
+        A composite of invertible affines reports `is_invertible` and carries no
+        `inverse_id`, so walking it backwards produced a path that raised on
+        first use --- from a call documented to answer None when no path exists.
+        Resolution now routes around it through the components, which *are*
+        invertible, and takes the same points back to where they started.
+        """
+        path = self._claimed(tmp_path, deformable=False)
+        points = np.array([[3.0, 4.0, 5.0]])
+        with medh5.open(path) as sample:
+            assert sample.transforms["C"].is_invertible, "the file claims it"
+            assert sample.transforms["C"].inverse() is None, "and stores nothing"
+            back = sample.transform_between("F2", "F0")
+            assert back is not None
+            forward = sample.transforms["C"].transform_points(points)
+            assert np.allclose(back.transform_points(forward), points)
+
+    def test_S10_an_inverse_that_cannot_be_evaluated_is_not_a_path(self, tmp_path):
+        """`invertible: true` on a dense field without `inverse_id` is a claim only.
+
+        There is no analytic inverse of a displacement field here, and
+        approximating one would report an accuracy nobody measured, so the edge
+        does not exist --- and neither does any route that depended on it.
+        """
+        path = self._claimed(tmp_path, deformable=True)
+        with medh5.open(path) as sample:
+            assert sample.transform_between("F2", "F1") is None
+            assert sample.transform_between("F2", "F0") is None
+            assert sample.transform_between("F0", "F2") is not None, "forward is fine"
+
     def test_a_stored_inverse_is_used(self, tmp_path):
         path = registered(tmp_path / "reg.medh5", inverse=True)
         with medh5.open(path) as sample:
