@@ -451,13 +451,50 @@ class PairedPatchDataset(_Base):
 
     # -- internals ---------------------------------------------------------
 
-    def _annotation_at(self, sample: Sample, timepoint: str) -> str | None:
+    def _annotation_at(
+        self, sample: Sample, timepoint: str, grid: str | None = None
+    ) -> str | None:
+        """The annotation to draw *timepoint*'s foreground from, if there is one.
+
+        Auto-selection is confined to *grid* --- the space the images being read
+        live in --- so a visit holding both a CT and a PET grid picks the
+        annotation belonging to the modality that was asked for rather than
+        whichever annotation sorts first.
+        """
         if self.annotation is not None:
             return self.annotation
         for name in sorted(sample.at(timepoint).annotations):
-            if sample.annotations[name].kind != "classification":
-                return name
+            annotation = sample.annotations[name]
+            if annotation.kind == "classification":
+                continue
+            if grid is not None and annotation.grid_id != grid:
+                continue
+            return name
         return None
+
+    def _images_at(self, sample: Sample, timepoint: str) -> list[str]:
+        """The images this dataset reads at *timepoint*."""
+        view = sample.at(timepoint)
+        if self.images is None:
+            return sorted(view.images)
+        return [name for name in self.images if name in view.images]
+
+    def _window_grid_at(self, sample: Sample, timepoint: str) -> str:
+        """The grid every window for *timepoint* is measured in.
+
+        Taken from the data this dataset will actually read at that visit
+        rather than from whichever grid sorts first: a visit may legitimately
+        hold a CT grid and a PET grid, and pinning the window to the
+        alphabetical winner refused the PET pair instead of sampling it.  Both
+        ends of a pair go through here, so the window drawn in the first visit
+        and the one derived for the second agree about what they are measuring.
+        """
+        names = self._images_at(sample, timepoint)
+        if not names:
+            return str(self._grid_at(sample, timepoint).grid_id)
+        return self._single_grid(
+            sample, {f"image {n!r}": sample.images[n].grid_id for n in names}
+        )
 
     def _patch_for(
         self, sample: Sample, timepoint: str, rng: np.random.Generator
@@ -468,20 +505,20 @@ class PairedPatchDataset(_Base):
         answers `None` for a visit with no voxel annotation, and `None` on its
         own tells the sampler to go and find one anywhere in the sample --- so a
         pair whose follow-up is annotated and whose baseline is not drew the
-        baseline window in the follow-up's grid.
+        baseline window in the follow-up's grid.  It comes from the images
+        being read rather than from the visit's first grid, so a visit holding
+        more than one modality is sampled in the one that was asked for.
         """
+        grid = self._window_grid_at(sample, timepoint)
         return self.sampler.draw(
-            sample,
-            self._annotation_at(sample, timepoint),
-            rng,
-            grid=self._grid_at(sample, timepoint).grid_id,
+            sample, self._annotation_at(sample, timepoint, grid), rng, grid=grid
         )
 
     def _corresponding(
         self, sample: Sample, pair: TimepointPair, patch: Patch
     ) -> Patch:
         """The window in the second visit covering the same anatomy."""
-        target = self._grid_at(sample, pair.second)
+        target = sample.grids[self._window_grid_at(sample, pair.second)]
         shape = target.spatial_shape
         # The *requested* size, not the clipped extent.  Where the first visit
         # is smaller than the patch its window is short and gets padded back up
@@ -525,8 +562,8 @@ class PairedPatchDataset(_Base):
         self, sample: Sample, pair: TimepointPair, patch: Patch
     ) -> tuple[int, ...]:
         """Move the centre through the transform relating the two frames (§10.2)."""
-        source = self._grid_at(sample, pair.first)
-        target = self._grid_at(sample, pair.second)
+        source = sample.grids[patch.grid_id or self._window_grid_at(sample, pair.first)]
+        target = sample.grids[self._window_grid_at(sample, pair.second)]
         world = source.index_to_world(np.asarray([patch.center], dtype=np.float64))
         transform = sample.transform_between(pair.first, pair.second)
         if transform is None and source.frame_uid != target.frame_uid:
@@ -551,12 +588,7 @@ class PairedPatchDataset(_Base):
     def _read_at(
         self, sample: Sample, timepoint: str, patch: Patch
     ) -> dict[str, npt.NDArray[Any]]:
-        view = sample.at(timepoint)
-        wanted = (
-            [i for i in self.images if i in view.images]
-            if self.images is not None
-            else sorted(view.images)
-        )
+        wanted = self._images_at(sample, timepoint)
         if wanted:
             members = {f"image {n!r}": sample.images[n].grid_id for n in wanted}
             if patch.grid_id is not None:

@@ -461,6 +461,59 @@ class TestPairedPatchDataset:
         grids = {tp: p["grid_id"] for tp, p in item["meta"]["patches"].items()}
         assert grids == {"tp0": "g_tp0", "tp1": "g_tp1"}, "each in its own visit"
 
+    def test_S3_7_a_visit_with_two_grids_samples_the_one_that_was_asked_for(
+        self, tmp_path, label_set
+    ):
+        """A visit may hold a CT grid and a PET grid; neither is "the" grid.
+
+        The window was pinned to whichever sorted first, so selecting the PET
+        images drew in the CT grid and the pair was refused --- the guard from
+        the previous commit firing on a case it should have sampled.  The grid
+        comes from the data being read now.
+        """
+        shape = (12, 12, 12)
+        path = tmp_path / "multi.medh5"
+        with medh5.create(path, codec="portable") as w:
+            w.add_timepoint("tp0", days_from_baseline=0)
+            w.add_timepoint("tp1", days_from_baseline=90)
+            w.label_set(label_set)
+            for tp in ("tp0", "tp1"):
+                for prefix, modality in (("a_ct", "CT"), ("z_pet", "PT")):
+                    w.add_grid(
+                        f"{prefix}_{tp}",
+                        shape=shape,
+                        spacing=(1.0, 1.0, 1.0),
+                        timepoint=tp,
+                        frame_uid=f"F_{tp}",
+                    )
+                    w.add_image(
+                        f"{prefix.upper()}_{tp}",
+                        np.zeros(shape, dtype=np.int16),
+                        grid=f"{prefix}_{tp}",
+                        modality=modality,
+                    )
+                w.add_segmentation(
+                    f"pet_ann_{tp}",
+                    grid=f"z_pet_{tp}",
+                    masks={1: block(shape, (2, 2, 2), 4)},
+                )
+
+        for prefix in ("Z_PET", "A_CT"):
+            images = [f"{prefix}_tp0", f"{prefix}_tp1"]
+            item = PairedPatchDataset(
+                [path], PatchSampler(8), align="none", images=images
+            )[0]
+            grids = {tp: p["grid_id"] for tp, p in item["meta"]["patches"].items()}
+            assert grids == {
+                "tp0": f"{prefix.lower()}_tp0",
+                "tp1": f"{prefix.lower()}_tp1",
+            }
+            assert tuple(item["images"]["tp0"][images[0]].shape) == (8, 8, 8)
+
+        # Both modalities at once is still one window over two grids.
+        with pytest.raises(MEDH5ValidationError, match="one grid"):
+            PairedPatchDataset([path], PatchSampler(8), align="none")[0]
+
     def test_unknown_alignment_is_refused(self, registered):
         with pytest.raises(MEDH5ValidationError):
             PairedPatchDataset([registered], PatchSampler(8), align="telepathy")

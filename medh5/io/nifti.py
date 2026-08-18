@@ -30,7 +30,7 @@ import numpy as np
 import numpy.typing as npt
 
 from medh5.errors import MEDH5ValidationError
-from medh5.geometry.affine import build_affine, decompose_affine
+from medh5.geometry.affine import ORTHONORMAL_TOL, build_affine, decompose_affine
 from medh5.io.report import ConversionReport
 
 RAS_TO_LPS = np.diag([-1.0, -1.0, 1.0, 1.0])
@@ -94,6 +94,13 @@ def read_nifti(
         data = np.transpose(data, order)
         spacing = spacing[list(spatial)]
         direction = direction[:, list(spatial)]
+    if data.ndim == 2:  # noqa: PLR2004 - a radiograph (§3.6)
+        spacing, origin, direction = _reduce_plane(spacing, origin, direction)
+    times: tuple[float, ...] | None = None
+    time_units: str | None = None
+    measured = False
+    if data.ndim == 4:  # noqa: PLR2004 - the leading axis is time
+        times, time_units, measured = _time_axis(image, int(data.shape[0]))
     return np.ascontiguousarray(data), {
         "spacing": [float(v) for v in spacing],
         "origin": [float(v) for v in origin],
@@ -101,6 +108,9 @@ def read_nifti(
         "coord_system": coord_system,
         "shape": tuple(int(v) for v in data.shape),
         "axis_order": order,
+        "time_values": None if times is None else list(times),
+        "time_units": time_units,
+        "time_measured": measured,
         "units": _units(image),
         "dtype": str(data.dtype),
         "header": {
@@ -109,6 +119,30 @@ def read_nifti(
             "scl_inter": _number(image.header.get("scl_inter")),
         },
     }
+
+
+def _reduce_plane(
+    spacing: npt.NDArray[np.float64],
+    origin: npt.NDArray[np.float64],
+    direction: npt.NDArray[np.float64],
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """A 2-D radiograph's geometry reduced to two dimensions, or a refusal.
+
+    §3.6 gives a 2-D grid ``S = 2``: two spacings, a 2-D origin and a 2x2
+    ``direction``.  A NIfTI plane carries a 3-D affine regardless, so the
+    converter has to reduce it --- and can only do so where the two in-plane
+    axes have no component along the third world axis.  A plane tilted in 3-D
+    has no 2-D grid that describes it, and flattening it anyway would move
+    every pixel to somewhere it is not.
+    """
+    if float(np.max(np.abs(direction[2, :2]))) > ORTHONORMAL_TOL:
+        raise MEDH5ValidationError(
+            "this 2-D NIfTI is a plane tilted in 3-D, and §3.6 gives a 2-D grid "
+            "a 2x2 direction --- there is no 2-D grid that describes it; import "
+            "it as a single-slice 3-D volume instead",
+            code="E102",
+        )
+    return spacing[:2], origin[:2], direction[:2, :2]
 
 
 def grid_axes(
@@ -149,6 +183,39 @@ def grid_axes(
         f"a {len(shape)}-D NIfTI has {extra} axes beyond (x, y, z); only a "
         "single trailing time axis converts without a decision about what the "
         "others mean --- convert the volumes separately, or declare the axes"
+    )
+
+
+def _time_axis(image: Any, frames: int) -> tuple[tuple[float, ...], str, bool]:
+    """Per-frame acquisition times, and whether they were read or assumed.
+
+    A grid carrying a time axis **MUST** carry ``time_values`` (§3.2), and §3.6
+    puts them "per frame" for exactly the cine, DCE and 4-D CT series this
+    path converts, so leaving a 4-D import with no frame timing at all was not
+    an option --- the source states a temporal zoom and the converter was
+    throwing it away.
+    """
+    zooms = image.header.get_zooms()
+    step = float(zooms[3]) if len(zooms) > 3 else 0.0  # noqa: PLR2004 - dim[4]
+    try:
+        _, temporal = image.header.get_xyzt_units()
+    except Exception:  # noqa: BLE001 - a malformed header is not fatal
+        temporal = "unknown"
+    units, scale = {"sec": ("s", 1.0), "msec": ("ms", 1.0), "usec": ("ms", 1e-3)}.get(
+        str(temporal), ("s", 1.0)
+    )
+    try:
+        offset = float(image.header["toffset"])
+    except (KeyError, ValueError, TypeError):  # pragma: no cover - header variants
+        offset = 0.0
+    if step <= 0:
+        # No temporal zoom to read.  Frame indices are the only thing left, and
+        # they are a guess about timing rather than a measurement of it.
+        return tuple(float(k) for k in range(frames)), "s", False
+    return (
+        tuple((offset + k * step) * scale for k in range(frames)),
+        units,
+        True,
     )
 
 
@@ -230,6 +297,24 @@ def from_nifti(
             "(sign flip on the first two world axes, applied to the affine only)",
             {"source": "RAS", "target": coord_system},
         )
+    if geometry.get("time_values") is not None:
+        detail = {
+            "time_units": geometry["time_units"],
+            "frames": len(geometry["time_values"]),
+        }
+        if geometry.get("time_measured"):
+            log.decision(
+                "time_values",
+                "frame times were read from the NIfTI temporal zoom and toffset",
+                detail,
+            )
+        else:
+            log.guess(
+                "time_values",
+                "the NIfTI declares no temporal zoom, so frame indices were used "
+                "as times; §3.2 requires `time_values` where there is a time axis",
+                detail,
+            )
     if transpose and len(geometry["shape"]) >= 3:  # noqa: PLR2004
         log.decision(
             "axis_order",
@@ -275,6 +360,8 @@ def from_nifti(
             axis_kinds=axis_kinds,
             coord_system=geometry["coord_system"],
             units=geometry["units"],
+            time_values=geometry.get("time_values"),
+            time_units=geometry.get("time_units"),
         )
         for name, array in arrays.items():
             writer.add_image(

@@ -186,6 +186,66 @@ class TestNifti:
             assert grid.axis_names == ("x", "y", "z")
             assert np.allclose(grid.spacing, [0.8, 0.9, 2.0]), "and follow the axes"
 
+    def test_S3_2_a_time_axis_carries_the_frame_times(self, tmp_path):
+        """§3.2 requires `time_values` wherever there is a time axis.
+
+        The NIfTI states a temporal zoom and a `toffset`; the converter was
+        declaring the time axis and discarding both, so a cine series arrived
+        with no frame timing at all.
+        """
+        image = nib.Nifti1Image(np.zeros((*SHAPE_XYZ, 5), np.int16), AFFINE)
+        image.header.set_xyzt_units("mm", "sec")
+        image.header["pixdim"][4] = 2.5
+        source = tmp_path / "cine.nii.gz"
+        nib.save(image, str(source))
+
+        report = from_nifti({"CINE": source}, tmp_path / "cine.medh5")
+        with medh5.open(tmp_path / "cine.medh5") as sample:
+            grid = sample.grids["ref"]
+            assert grid.time_units == "s"
+            assert grid.time_values == (0.0, 2.5, 5.0, 7.5, 10.0)
+        assert [n.severity for n in report.of_kind("time_values")] == ["decision"]
+
+    def test_frame_times_the_source_never_stated_are_a_guess(self, tmp_path):
+        """A grid still needs `time_values`, so the fallback is recorded as one."""
+        image = nib.Nifti1Image(np.zeros((*SHAPE_XYZ, 3), np.int16), AFFINE)
+        image.header["pixdim"][4] = 0.0
+        source = tmp_path / "notr.nii.gz"
+        nib.save(image, str(source))
+
+        report = from_nifti({"CINE": source}, tmp_path / "notr.medh5")
+        with medh5.open(tmp_path / "notr.medh5") as sample:
+            assert sample.grids["ref"].time_values == (0.0, 1.0, 2.0)
+        assert [n.severity for n in report.of_kind("time_values")] == ["guess"]
+
+    def test_S3_6_a_2D_radiograph_converts(self, tmp_path):
+        """§3.6 gives a 2-D grid S = 2, and nibabel hands over a 3-D affine.
+
+        The converter passed the unreduced spacing and 3x3 direction straight
+        through, so `add_grid` raised E109 and the 2-D case the spec explicitly
+        supports could not be imported at all.
+        """
+        source = tmp_path / "xray.nii.gz"
+        nib.save(nib.Nifti1Image(np.zeros((32, 40), np.int16), AFFINE), str(source))
+
+        from_nifti({"XR": source}, tmp_path / "xray.medh5")
+        with medh5.open(tmp_path / "xray.medh5") as sample:
+            grid = sample.grids["ref"]
+            assert grid.shape == (32, 40)
+            assert grid.axis_kinds == ("spatial", "spatial")
+            assert np.allclose(grid.spacing, [0.8, 0.9])
+            assert np.asarray(grid.direction).shape == (2, 2)
+
+    def test_S3_6_a_plane_tilted_in_3D_is_refused(self, tmp_path):
+        """Flattening it would move every pixel to somewhere it is not."""
+        tilted = np.array(AFFINE, dtype=float, copy=True)
+        tilted[:3, :2] = [[0.8, 0.0], [0.0, 0.6], [0.0, 0.67]]
+        source = tmp_path / "tilt.nii.gz"
+        nib.save(nib.Nifti1Image(np.zeros((32, 40), np.int16), tilted), str(source))
+        with pytest.raises(MEDH5ValidationError) as exc:
+            from_nifti({"XR": source}, tmp_path / "tilt.medh5")
+        assert exc.value.code == "E102"
+
     def test_a_4D_series_cannot_keep_its_NIfTI_axis_order(self, tmp_path):
         """§3.1 wants the spatial axes trailing; NIfTI puts time there.
 
