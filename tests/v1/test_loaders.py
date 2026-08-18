@@ -479,6 +479,25 @@ class TestHandleCache:
         assert len(cache) == 0, "the child drops what it inherited"
         assert sample.identity.sample_id == "case0", "and leaves it open for the parent"
 
+    def test_S14_4_building_a_plan_does_not_evict_the_shared_cache(self, cohort):
+        """`CACHE` is process-global; a constructor must not spend it on a scan.
+
+        Walking a cohort through a 32-entry LRU to build the plan evicts what
+        training was about to reuse and leaves the cache holding the tail of the
+        cohort --- chosen by plan order, not by what is being read.  The
+        metadata pass itself is unavoidable: `__len__` needs one read per file.
+        """
+        CACHE.clear()
+        warm = open_cached(cohort[0])
+        opens = CACHE.opens
+
+        GridPatchDataset(cohort, 8)
+        PairedPatchDataset(cohort, PatchSampler(8))
+
+        assert len(CACHE) == 1, "the scan left the shared cache alone"
+        assert CACHE.opens == opens, "and opened nothing through it"
+        assert open_cached(cohort[0]) is warm
+
     def test_worker_init_clears_the_module_cache(self, cohort):
         open_cached(cohort[0])
         assert len(CACHE) >= 1

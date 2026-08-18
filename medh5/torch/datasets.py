@@ -23,14 +23,15 @@ a cohort whose files were written by different tools.
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from typing import Any
 
 import numpy as np
 import numpy.typing as npt
 
 from medh5.errors import MEDH5ValidationError
-from medh5.sample import Sample
+from medh5.sample import Sample, open_sample
 from medh5.sampling import (
     PairReport,
     Patch,
@@ -90,6 +91,25 @@ class _Base(_DatasetBase):  # type: ignore[misc,valid-type]
 
     def _sample(self, path: str) -> Sample:
         return open_cached(path)
+
+    @staticmethod
+    @contextmanager
+    def _scan(path: str) -> Iterator[Sample]:
+        """A short-lived open, for reading metadata while building a plan.
+
+        Deliberately not ``open_cached``.  ``CACHE`` is process-global and
+        shared by every dataset in the worker, so walking a 10 000-file cohort
+        through its 32-entry LRU evicts whatever training was about to reuse and
+        leaves it holding the tail of the cohort instead --- entries chosen by
+        the order the plan was built in rather than by what is being read.  The
+        pass itself is unavoidable: ``__len__`` is not knowable without one
+        metadata read per file.
+        """
+        sample = open_sample(path)
+        try:
+            yield sample
+        finally:
+            sample.close()
 
     def _image_ids(self, sample: Sample) -> tuple[str, ...]:
         if self.images is not None:
@@ -310,8 +330,8 @@ class GridPatchDataset(_Base):
         self.overlap = int(overlap)
         self._plan: list[tuple[str, Patch]] = []
         for path in self.paths:
-            sample = self._sample(path)
-            shape = sample.reference_grid.spatial_shape
+            with self._scan(path) as sample:
+                shape = sample.reference_grid.spatial_shape
             self._plan.extend(
                 (path, patch)
                 for patch in grid_patches(shape, patch_size, overlap=self.overlap)
@@ -367,9 +387,9 @@ class PairedPatchDataset(_Base):
         self.report = PairReport()
         self._plan: list[tuple[str, TimepointPair]] = []
         for path in self.paths:
-            sample = self._sample(path)
+            with self._scan(path) as sample:
+                pairs = self.pair_sampler.pairs(sample)
             self.report.files += 1
-            pairs = self.pair_sampler.pairs(sample)
             if not pairs:
                 self.report.add_skip(path)
                 continue

@@ -87,6 +87,10 @@ def encode_layers(
     )
 
 
+_SCAN_BYTES = 8 * 1024 * 1024
+"""Slab budget for scans that only need a yes/no answer."""
+
+
 class LayersAnnotation(VoxelAnnotation):
     """Reader for ``kind = "layers"``."""
 
@@ -187,7 +191,27 @@ class LayersAnnotation(VoxelAnnotation):
         return np.asarray(self.data[(layer, *window)])
 
     def _encodes_ignore(self) -> bool:
-        return bool(np.any(np.asarray(self.data[...]) == self.ignore_id))
+        """Whether any layer stores the ignore id, read in bounded slabs.
+
+        ``has_ignore_region`` reads like a header lookup, and materialising
+        every layer to answer it allocated ~1.3 GiB for a five-layer uint16
+        annotation over a 512³ grid --- enough to end a per-sample loop in a
+        dataloader or a CLI report on a property nobody expected to touch the
+        data.  Layers chunk one per plane (§14.1), so a slab read costs a
+        fraction of that, and the first hit ends the scan.
+        """
+        data = self.data
+        rows = int(data.shape[1]) if data.ndim > 1 else 0
+        if rows == 0:
+            return False
+        per_row = int(np.prod(data.shape[2:], dtype=np.int64)) * data.dtype.itemsize
+        step = max(1, min(rows, _SCAN_BYTES // max(int(per_row), 1)))
+        for layer in range(int(data.shape[0])):
+            for start in range(0, rows, step):
+                block = np.asarray(data[layer, start : start + step])
+                if bool(np.any(block == self.ignore_id)):
+                    return True
+        return False
 
     def summary(self) -> dict[str, Any]:
         out = super().summary()

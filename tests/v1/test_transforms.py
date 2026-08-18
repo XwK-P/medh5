@@ -505,6 +505,21 @@ class TestResolution:
                 ),
             )
 
+    def test_S10_the_transform_table_is_read_once_per_handle(self, tmp_path):
+        """`transform_between` re-read and re-opened every transform per call.
+
+        That is once per pair per training item in `PairedPatchDataset`, and the
+        resolver now asks each transform whether its inverse can be evaluated,
+        which opens the stored inverse.  A `Sample` is a read-only view and
+        `amend` replaces the inode, so an open handle cannot see an edit.
+        """
+        path = registered(tmp_path / "reg.medh5", displacement=True)
+        with medh5.open(path) as sample:
+            first = sample.transforms
+            assert sample.transforms is first
+            assert sample.index is sample.index
+            assert sample.transform_between("tp0", "tp1") is not None
+
     def test_same_frame_needs_no_transform(self, tmp_path):
         path = registered(tmp_path / "reg.medh5")
         with medh5.open(path) as sample:

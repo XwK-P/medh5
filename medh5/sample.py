@@ -263,7 +263,9 @@ class Sample:
         "_grids",
         "_handle",
         "_images",
+        "_index",
         "_owns_handle",
+        "_transforms",
         "path",
         "root",
     )
@@ -284,6 +286,8 @@ class Sample:
         self._grids: dict[str, Grid] | None = None
         self._images: ImageCollection | None = None
         self._annotations: AnnotationCollection | None = None
+        self._transforms: _Collection | None = None
+        self._index: dict[str, SamplingIndex] | None = None
         self._fresh_indices: frozenset[str] | None = None
 
     # -- lifecycle ---------------------------------------------------------
@@ -396,7 +400,9 @@ class Sample:
 
     @property
     def index(self) -> dict[str, SamplingIndex]:
-        return read_indices(self.root)
+        if self._index is None:
+            self._index = read_indices(self.root)
+        return self._index
 
     @property
     def fresh_indices(self) -> frozenset[str]:
@@ -420,7 +426,19 @@ class Sample:
 
     @property
     def transforms(self) -> _Collection:
-        return _Collection("transform", read_transforms(self.root, self.grids))
+        """The file's transforms, read once.
+
+        Memoized like ``grids``/``images``/``annotations``, and for the same
+        reason: a ``Sample`` is a read-only view, and ``amend`` is copy-on-write
+        --- it replaces the inode, so an open handle never sees an edit.
+        Rebuilding this per access re-opened every transform group on every
+        ``transform_between``, which is once per pair per training item.
+        """
+        if self._transforms is None:
+            self._transforms = _Collection(
+                "transform", read_transforms(self.root, self.grids)
+            )
+        return self._transforms
 
     def transform_between(self, source: str, target: str) -> Transform | None:
         """The transform relating two timepoints or two frames (spec §10).

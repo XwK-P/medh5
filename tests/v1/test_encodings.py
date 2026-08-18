@@ -28,6 +28,7 @@ from medh5.annotations.voxel.select import layers_from_colouring
 from medh5.annotations.voxel.transcode import TRANSCODABLE, masks_equal
 from medh5.errors import MEDH5ValidationError
 from medh5.labels.labelset import LabelClass, LabelSet
+from tests.v1.conftest import block
 
 SHAPE = (12, 16, 16)
 DENSE = ("labelmap", "layers", "bitmask", "instances", "probmap")
@@ -218,6 +219,50 @@ class TestEncoders:
                 [3], roi=[slice(0, 10), slice(0, 10), slice(0, 10)]
             )[0]
             assert np.array_equal(windowed, dense)
+
+    @pytest.mark.parametrize("plane", [None, 0, 15])
+    def test_S7_2_has_ignore_region_reads_in_slabs(self, tmp_path, monkeypatch, plane):
+        """A property that reads like a header lookup must not read the volume.
+
+        It materialised every layer to answer, which is ~1.3 GiB for five uint16
+        layers over a 512³ grid --- enough to end a per-sample loop on a question
+        nobody expected to touch the data.  Correct whether the ignore region
+        sits in the first slab, the last, or nowhere.
+        """
+        from medh5.annotations.voxel import layers as layers_module
+
+        shape = (16, 32, 32)
+        masks = {
+            1: block(shape, (1, 1, 1), 4),
+            2: block(shape, (1, 1, 1), 4),
+            3: block(shape, (8, 8, 8), 4),
+        }
+        ignore = None
+        if plane is not None:
+            ignore = np.zeros(shape, dtype=bool)
+            ignore[plane, 20:24, 20:24] = True
+
+        path = tmp_path / f"ign-{plane}.medh5"
+        with medh5.create(path, codec="portable") as w:
+            w.add_grid("g", shape=shape, spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", np.zeros(shape, dtype=np.int16), grid="g", modality="CT")
+            w.label_set(
+                LabelSet(
+                    "t",
+                    version="1.0.0",
+                    classes=[LabelClass(i, f"c{i}", f"C{i}") for i in (1, 2, 3)],
+                )
+            )
+            w.add_segmentation(
+                "objs", grid="g", masks=masks, encoding="layers", ignore=ignore
+            )
+
+        # One row per slab, so the scan cannot be reading the dataset whole.
+        monkeypatch.setattr(layers_module, "_SCAN_BYTES", 1)
+        with medh5.open(path) as sample:
+            annotation = sample.annotations["objs"]
+            assert annotation.kind == "layers"
+            assert annotation.has_ignore_region is (plane is not None)
 
     def test_S7_5_probabilities_must_be_in_range(self):
         with pytest.raises(MEDH5ValidationError) as exc:

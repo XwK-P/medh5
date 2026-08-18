@@ -17,7 +17,8 @@ rather than a special case inside the optimizer.
 from __future__ import annotations
 
 import math
-import os
+import subprocess
+import sys
 from collections.abc import Sequence
 from functools import lru_cache
 from typing import Any
@@ -40,13 +41,16 @@ DEFAULT_PATCH = 64
 
 @lru_cache(maxsize=1)
 def detect_l3_bytes() -> int:
-    """Best-effort L3-per-core detection, falling back to :data:`DEFAULT_L3_BYTES`."""
-    try:
-        raw = os.popen("sysctl -n hw.l3cachesize 2>/dev/null").read().strip()
-        if raw.isdigit() and int(raw) > 0:
-            return int(raw)
-    except OSError:  # pragma: no cover - platform dependent
-        pass
+    """Best-effort L3-per-core detection, falling back to :data:`DEFAULT_L3_BYTES`.
+
+    sysfs is read first because it answers on Linux without leaving the process.
+    ``sysctl`` is asked only on Darwin, where sysfs does not exist, and through
+    ``subprocess.run`` rather than ``os.popen``: the latter forks ``/bin/sh`` on
+    every platform before the read that would have answered, and signals failure
+    by returning empty output rather than by raising the ``OSError`` the handler
+    was catching.  Forking is worth avoiding on principle in a package whose
+    handle cache exists because HDF5 state must not cross one.
+    """
     try:
         with open("/sys/devices/system/cpu/cpu0/cache/index3/size") as fh:
             raw = fh.read().strip()
@@ -58,6 +62,20 @@ def detect_l3_bytes() -> int:
             return int(raw)
     except (OSError, ValueError):  # pragma: no cover - platform dependent
         pass
+    if sys.platform == "darwin":  # pragma: no cover - platform dependent
+        try:
+            probe = subprocess.run(
+                ["/usr/sbin/sysctl", "-n", "hw.l3cachesize"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False,
+            )
+            raw = probe.stdout.strip()
+            if raw.isdigit() and int(raw) > 0:
+                return int(raw)
+        except (OSError, ValueError, subprocess.SubprocessError):
+            pass
     return DEFAULT_L3_BYTES
 
 

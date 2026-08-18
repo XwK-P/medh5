@@ -49,6 +49,31 @@ class TestChunking:
         assert chunk[0] == 1
         assert len(chunk) == 4
 
+    def test_S14_1_l3_detection_spawns_nothing_where_sysfs_answers(self, monkeypatch):
+        """The probe used to fork `/bin/sh` on every platform, before the read.
+
+        On Linux that is a wasted fork+exec for a sysctl key that does not
+        exist, in a package whose handle cache exists because HDF5 state must
+        not cross a fork --- and `os.popen` signalled failure by returning empty
+        output rather than by raising the `OSError` the handler caught.
+        """
+        import os
+        import subprocess
+
+        from medh5.storage import chunking
+
+        def refuse(*args, **kwargs):
+            raise AssertionError("L3 detection must not spawn a process here")
+
+        monkeypatch.setattr(chunking.sys, "platform", "linux")
+        monkeypatch.setattr(os, "popen", refuse)
+        monkeypatch.setattr(subprocess, "run", refuse)
+        chunking.detect_l3_bytes.cache_clear()
+        try:
+            assert chunking.detect_l3_bytes() > 0
+        finally:
+            chunking.detect_l3_bytes.cache_clear()
+
     def test_axis_kinds_must_describe_the_shape(self):
         with pytest.raises(MEDH5ValidationError):
             optimize_chunks((4, 4), ("spatial",), (2,))
