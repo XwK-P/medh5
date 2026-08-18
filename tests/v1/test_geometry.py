@@ -141,6 +141,22 @@ class TestGrid:
             )
         assert exc.value.code == "E110"
 
+    def test_S3_1_a_grid_does_not_freeze_the_array_it_was_handed(self):
+        """`direction` is immutable *on the Grid*, not in the caller's scope.
+
+        `asarray` returns the caller's own array when the dtype and layout
+        already match, so marking it read-only in place reached back out of the
+        constructor: the caller's next write raised, and every other Grid built
+        from that array in the same scope was frozen along with it.
+        """
+        direction = np.eye(3)
+        built = grid(direction=direction)
+
+        direction[0, 0] = -1.0  # the caller still owns their array
+        assert built.direction[0, 0] == 1.0, "and the Grid kept its own copy"
+        with pytest.raises(ValueError, match="read-only"):
+            built.direction[0, 0] = 5.0
+
     def test_S3_2_spacing_must_be_positive(self):
         with pytest.raises(MEDH5ValidationError) as exc:
             grid(spacing=(1.5, 0.0, 0.8))

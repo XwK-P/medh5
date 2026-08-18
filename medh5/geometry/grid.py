@@ -72,9 +72,15 @@ class Grid:
         object.__setattr__(self, "axis_kinds", tuple(str(a) for a in self.axis_kinds))
         object.__setattr__(self, "spacing", tuple(float(v) for v in self.spacing))
         object.__setattr__(self, "origin", tuple(float(v) for v in self.origin))
-        direction = np.ascontiguousarray(np.asarray(self.direction, dtype=np.float64))
-        object.__setattr__(self, "direction", direction)
+        # Copied before it is frozen.  `asarray`/`ascontiguousarray` hand back the
+        # caller's own array when it already has the right dtype and layout, so
+        # marking it read-only in place reached out of the Grid and froze a
+        # variable the caller still owns: their next write raised, and every
+        # other Grid or affine built from that array in the same scope was
+        # frozen with it.  A 3x3 copy is not a cost worth that.
+        direction = np.array(self.direction, dtype=np.float64, order="C", copy=True)
         direction.flags.writeable = False
+        object.__setattr__(self, "direction", direction)
         if self.time_values is not None:
             object.__setattr__(
                 self, "time_values", tuple(float(v) for v in self.time_values)

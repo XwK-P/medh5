@@ -74,6 +74,16 @@ class HandleCache:
         self._owner_pid = os.getpid()
 
     def close_all(self) -> None:
+        """Close what *this* process opened, and abandon anything inherited.
+
+        The PID check is not optional here.  A forked child that exits through
+        normal interpreter shutdown runs the ``atexit`` hook below, and without
+        this it would call into HDF5 to close descriptors belonging to its
+        parent --- the one thing the module docstring says must never happen.
+        ``worker_init_fn`` prevents it only for callers who remember to pass it,
+        and a plain ``os.fork()`` never had the chance.
+        """
+        self._ensure_owner()
         while self._items:
             _, sample = self._items.popitem(last=True)
             with contextlib.suppress(Exception):  # pragma: no cover - best effort

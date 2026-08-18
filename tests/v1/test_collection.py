@@ -160,6 +160,36 @@ class TestUnpack:
         with medh5.open(target) as sample:
             assert sample.identity.sample_id == "case_1"
 
+    def test_S2_2_extract_touches_nothing_it_was_not_asked_to_write(
+        self, tmp_path, shard
+    ):
+        """Extracting to a new name must not go via the member's own name.
+
+        It used to unpack into the destination's parent --- where `unpack` names
+        its output after the key --- and move the result into place afterwards,
+        destroying any unrelated file already sitting under that name on the way
+        past.  There is no way to get it back.
+        """
+        outdir = tmp_path / "out"
+        outdir.mkdir()
+        bystander = outdir / "case_1.medh5"
+        bystander.write_bytes(b"someone else's data")
+
+        extract(shard, "case_1", outdir / "renamed.medh5")
+
+        assert bystander.read_bytes() == b"someone else's data"
+        with medh5.open(outdir / "renamed.medh5") as sample:
+            assert sample.identity.sample_id == "case_1"
+
+    def test_extract_creates_the_directory_it_was_given(self, tmp_path, shard):
+        target = tmp_path / "deep" / "nested" / "one.medh5"
+        assert extract(shard, "case_1", target).exists()
+
+    def test_extract_names_an_unknown_key(self, tmp_path, shard):
+        with pytest.raises(MEDH5ValidationError) as exc:
+            extract(shard, "ghost", tmp_path / "x.medh5")
+        assert exc.value.code == "E003"
+
 
 class TestOpening:
     def test_open_any_dispatches_on_kind(self, tmp_path, members, shard):

@@ -552,27 +552,39 @@ class SampleWriter:
     ) -> None:
         self.path = os.fspath(path)
         self.codec = resolve_profile(codec).name
+        self._committed = False
         self._stack = ExitStack()
         self._file = self._stack.enter_context(atomic_h5(self.path))
-        self._committed = False
-        self._grids: dict[str, Grid] = {}
-        self._images: dict[str, tuple[str, str]] = {}
-        self._image_multiscale: dict[str, bool] = {}
-        self._annotation_kinds: dict[str, str] = {}
-        self._transform_frames: dict[str, tuple[str, str]] = {}
-        self._declared_profiles = set(profiles)
-        self._default_timeline = True
-        default_id = sample_id or os.path.basename(self.path).split(".")[0]
-        self._document = SampleDocument(
-            identity=Identity(
-                sample_id=default_id, subject_id=subject_id or default_id
-            ),
-            timepoints=Timeline.single(),
-        )
-        for name in ("grids", "images", "annotations"):
-            self._file.create_group(name)
-        if source is not None:
-            self._inherit(source)
+        try:
+            self._grids: dict[str, Grid] = {}
+            self._images: dict[str, tuple[str, str]] = {}
+            self._image_multiscale: dict[str, bool] = {}
+            self._annotation_kinds: dict[str, str] = {}
+            self._transform_frames: dict[str, tuple[str, str]] = {}
+            self._declared_profiles = set(profiles)
+            self._default_timeline = True
+            default_id = sample_id or os.path.basename(self.path).split(".")[0]
+            self._document = SampleDocument(
+                identity=Identity(
+                    sample_id=default_id, subject_id=subject_id or default_id
+                ),
+                timepoints=Timeline.single(),
+            )
+            for name in ("grids", "images", "annotations"):
+                self._file.create_group(name)
+            if source is not None:
+                self._inherit(source)
+        except BaseException:
+            # A writer whose `__init__` raised is never returned, so nothing
+            # will ever call `abort()` or `commit()` on it and the `with`
+            # statement that would have was never entered.  The sibling
+            # `.<name>.medh5.tmp-<pid>` and its open HDF5 handle then survive
+            # for as long as the traceback does --- which is until the exception
+            # object is dropped, and in a notebook that is the rest of the
+            # session.  `amend` on a file with an unreadable `/meta` or a grid
+            # that fails `Grid.check` is the way in.
+            self.abort()
+            raise
 
     # -- lifecycle ---------------------------------------------------------
 

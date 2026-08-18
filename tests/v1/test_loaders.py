@@ -460,6 +460,25 @@ class TestHandleCache:
         cache.get(cohort[1])
         assert len(cache) == 1, "the inherited handle must be dropped, not reused"
 
+    def test_S14_4_close_all_abandons_handles_it_did_not_open(
+        self, cohort, monkeypatch
+    ):
+        """The `atexit` hook runs in forked children too.
+
+        A child that exits through normal interpreter shutdown would otherwise
+        call into HDF5 to close descriptors belonging to its parent --- the one
+        thing this module exists to prevent, and the one place the PID check was
+        missing.  `worker_init_fn` covers only callers who pass it.
+        """
+        cache = HandleCache()
+        sample = cache.get(cohort[0])
+        monkeypatch.setattr(os, "getpid", lambda: cache.owner_pid + 1)
+
+        cache.close_all()
+
+        assert len(cache) == 0, "the child drops what it inherited"
+        assert sample.identity.sample_id == "case0", "and leaves it open for the parent"
+
     def test_worker_init_clears_the_module_cache(self, cohort):
         open_cached(cohort[0])
         assert len(CACHE) >= 1

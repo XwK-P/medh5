@@ -12,7 +12,12 @@ import medh5
 from medh5._hdf5 import as_str, encode_attr, str_dtype
 from medh5.annotations.voxel import InstanceInput
 from medh5.curation.timeline import Timeline, Timepoint
-from medh5.errors import MEDH5FileError, MEDH5ValidationError, MEDH5VersionError
+from medh5.errors import (
+    MEDH5Error,
+    MEDH5FileError,
+    MEDH5ValidationError,
+    MEDH5VersionError,
+)
 from medh5.validate import validate_file
 from tests.v1.conftest import SHAPE, write_sample
 
@@ -65,6 +70,33 @@ class TestWriteRead:
         writer.add_grid("g", shape=SHAPE, spacing=(1.0, 1.0, 1.0))
         writer.abort()
         assert not path.exists()
+
+    def test_S14_4_a_writer_that_fails_to_open_leaves_no_temp_file(self, sample_path):
+        """Nothing will ever call `abort()` for a writer that never returned.
+
+        `amend` on a file whose `/meta` cannot be read raises out of
+        `SampleWriter.__init__`, so the `with` statement that would have closed
+        the ExitStack was never entered.  The sibling temp file and its open
+        HDF5 handle then survived for as long as the traceback did --- which is
+        as long as anything holds the exception, and in a notebook that is the
+        rest of the session.
+        """
+        directory = sample_path.parent
+        with h5py.File(sample_path, "r+") as handle:
+            del handle["meta"]
+            handle.create_dataset("meta", data=np.bytes_(b"{ not json"))
+        before = sample_path.read_bytes()
+
+        held: BaseException | None = None
+        try:
+            medh5.amend(sample_path)
+        except MEDH5Error as exc:
+            held = exc
+
+        assert held is not None, "the unreadable document must still be reported"
+        leftovers = [p.name for p in directory.iterdir() if p.name.startswith(".")]
+        assert leftovers == [], "the temp file outlived the writer"
+        assert sample_path.read_bytes() == before, "and the original is untouched"
 
     def test_S4_1_image_shape_must_match_its_grid(self, tmp_path):
         with (

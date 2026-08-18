@@ -266,13 +266,18 @@ def unpack(
         group = collection.group
         for key in wanted:
             destination = directory / f"{key}{suffix}"
-            with atomic_h5(destination) as handle:
-                _copy_root(group[key], handle)
-                handle.attrs["medh5_kind"] = "sample"
-                if "medh5_version" not in handle.attrs:
-                    handle.attrs["medh5_version"] = FORMAT_VERSION
+            _write_sample_root(group[key], destination)
             written.append(destination)
     return written
+
+
+def _write_sample_root(src: h5py.Group, destination: Path) -> None:
+    """Write one collection member out as a standalone sample file."""
+    with atomic_h5(destination) as handle:
+        _copy_root(src, handle)
+        handle.attrs["medh5_kind"] = "sample"
+        if "medh5_version" not in handle.attrs:
+            handle.attrs["medh5_version"] = FORMAT_VERSION
 
 
 def _copy_root(src: h5py.Group, dst: h5py.Group) -> None:
@@ -286,11 +291,25 @@ def _copy_root(src: h5py.Group, dst: h5py.Group) -> None:
 def extract(
     path: str | os.PathLike[str], key: str, out: str | os.PathLike[str]
 ) -> Path:
-    """Extract one member of a collection into a standalone sample file."""
-    written = unpack(path, Path(os.fspath(out)).parent, keys=[key])
+    """Extract one member of a collection into a standalone sample file.
+
+    Writes *out* and nothing else.  This used to go through ``unpack``, which
+    names its output after the member key, and then move the result into place
+    --- so extracting ``case1`` to ``renamed.medh5`` destroyed any unrelated
+    ``case1.medh5`` already sitting in the same directory, silently and
+    unrecoverably, on the way past.
+    """
     target = Path(os.fspath(out))
-    if written[0] != target:
-        os.replace(str(written[0]), str(target))
+    target.parent.mkdir(parents=True, exist_ok=True)
+    wanted = validate_sample_key(key)
+    with open_collection(path) as collection:
+        if wanted not in collection:
+            raise MEDH5ValidationError(
+                f"collection has no sample {wanted!r}; known keys: "
+                f"{sorted(collection)}",
+                code="E003",
+            )
+        _write_sample_root(collection.group[wanted], target)
     return target
 
 
