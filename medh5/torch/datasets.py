@@ -462,7 +462,20 @@ class PairedPatchDataset(_Base):
     def _patch_for(
         self, sample: Sample, timepoint: str, rng: np.random.Generator
     ) -> Patch:
-        return self.sampler.draw(sample, self._annotation_at(sample, timepoint), rng)
+        """A window in *timepoint*'s own grid, annotated or not.
+
+        The grid is named rather than left to the sampler.  `_annotation_at`
+        answers `None` for a visit with no voxel annotation, and `None` on its
+        own tells the sampler to go and find one anywhere in the sample --- so a
+        pair whose follow-up is annotated and whose baseline is not drew the
+        baseline window in the follow-up's grid.
+        """
+        return self.sampler.draw(
+            sample,
+            self._annotation_at(sample, timepoint),
+            rng,
+            grid=self._grid_at(sample, timepoint).grid_id,
+        )
 
     def _corresponding(
         self, sample: Sample, pair: TimepointPair, patch: Patch

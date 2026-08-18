@@ -199,11 +199,19 @@ class PatchSampler:
         sample: Sample,
         annotation: str | None = None,
         rng: np.random.Generator | None = None,
+        *,
+        grid: str | None = None,
     ) -> Patch:
-        """Draw one patch window from *sample*."""
+        """Draw one patch window from *sample*.
+
+        *grid* pins the grid the window is measured in, for a caller that wants
+        a window in a particular space whether or not an annotation happens to
+        live there --- ``annotation=None`` on its own means "find me one",
+        which for a longitudinal sample can find another visit's.
+        """
         generator = rng if rng is not None else np.random.default_rng()
-        ann = self._annotation(sample, annotation)
-        grid_id = self._window_grid(sample, ann)
+        ann = self._annotation(sample, annotation, grid)
+        grid_id = self._window_grid(sample, ann, grid)
         shape = sample.grids[grid_id].spatial_shape
         patch = coerce_patch_size(self.patch_size, len(shape))
         want_foreground = self.strategy == "foreground" or (
@@ -245,29 +253,50 @@ class PatchSampler:
 
     # -- internals ---------------------------------------------------------
 
-    def _annotation(self, sample: Sample, annotation: str | None) -> str | None:
+    def _annotation(
+        self, sample: Sample, annotation: str | None, grid: str | None = None
+    ) -> str | None:
+        """The annotation to draw foreground from, auto-selected if not named.
+
+        Auto-selection stays inside *grid* when the caller named one.  Without
+        that, a caller who wanted "no annotation, this grid" got "any
+        annotation anywhere in the sample" --- for a longitudinal file that is
+        another visit's, whose coordinates are in another visit's grid.
+        """
         if annotation is not None:
             return annotation
         for name, ann in sample.annotations.items():
-            if getattr(ann, "dense", None) is not None and ann.kind not in (
-                "classification",
-            ):
-                return name
+            if getattr(ann, "dense", None) is None or ann.kind == "classification":
+                continue
+            if grid is not None and ann.grid_id != grid:
+                continue
+            return name
         return None
 
-    def _window_grid(self, sample: Sample, annotation: str | None) -> str:
-        """The grid a draw for *annotation* is measured in.
+    def _window_grid(
+        self, sample: Sample, annotation: str | None, grid: str | None = None
+    ) -> str:
+        """The grid a draw is measured in.
 
         The annotation's own grid where it has one, because that is the space
-        its foreground coordinates are in; the sample's reference grid
+        its foreground coordinates are in; *grid* where the caller named one
+        and there is no annotation to defer to; the sample's reference grid
         otherwise.  Named on the patch so a consumer reading some *other* grid
         with the result can tell, instead of returning a window that indexes
         different anatomy.
         """
         if annotation is not None and annotation in sample.annotations:
-            grid_id = sample.annotations[annotation].grid_id
-            if grid_id is not None:
-                return str(grid_id)
+            declared = sample.annotations[annotation].grid_id
+            if declared is not None:
+                if grid is not None and str(declared) != grid:
+                    raise MEDH5ValidationError(
+                        f"annotation {annotation!r} is on grid {str(declared)!r}, so a "
+                        f"window drawn from its foreground cannot be measured in "
+                        f"grid {grid!r}"
+                    )
+                return str(declared)
+        if grid is not None:
+            return grid
         return str(sample.reference_grid.grid_id)
 
     def _foreground_center(

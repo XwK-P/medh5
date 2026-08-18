@@ -111,18 +111,36 @@ def read_nifti(
     }
 
 
-def grid_axes(shape: Sequence[int]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+def grid_axes(
+    shape: Sequence[int], *, transposed: bool = True
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """``(axis_names, axis_kinds)`` for a grid built from a converted NIfTI array.
 
-    ``read_nifti`` leaves the spatial block trailing and any NIfTI axis beyond
-    the third in front of it, so a 4-D series arrives as ``(t, z, y, x)``.  A
-    grid of more than three axes has no unambiguous default (§3.1), which is
-    why the converter has to say it rather than let ``add_grid`` guess --- and
-    why anything past a single leading time axis is refused instead of guessed
-    at: NIfTI's dim[5] carries vector or tensor components whose MEDH5 kind
-    depends on what the producer meant by them.
+    A grid of more than three axes has no unambiguous default (§3.1), so the
+    converter has to name the axes rather than let ``add_grid`` guess --- and
+    what it should name them depends on whether ``read_nifti`` reordered the
+    array, which is why *transposed* is not optional information.
+
+    Reordered, the spatial block trails and any NIfTI axis beyond the third
+    leads, so a 4-D series is ``(t, z, y, x)``.  Left alone, the array is still
+    in NIfTI order and the axes are ``(x, y, z)`` --- declaring the reordered
+    names over it labelled the x axis ``time`` and gave the grid a spacing
+    belonging to a different axis on every one.
+
+    Anything past a single time axis is refused rather than guessed at:
+    NIfTI's dim[5] carries vector or tensor components whose MEDH5 kind depends
+    on what the producer meant by them.
     """
     extra = len(shape) - 3
+    if not transposed:
+        if extra > 0:
+            raise MEDH5ValidationError(
+                f"a {len(shape)}-D NIfTI keeps its time axis last, and §3.1 "
+                "requires the spatial axes to be trailing and contiguous, so "
+                "this array cannot be declared as a grid without reordering it "
+                "--- drop `transpose=False` for 4-D input"
+            )
+        return ("x", "y", "z")[: len(shape)], ("spatial",) * len(shape)
     if extra <= 0:
         return ("z", "y", "x")[-len(shape) :], ("spatial",) * len(shape)
     if extra == 1:
@@ -240,7 +258,13 @@ def from_nifti(
         )
         if label_set is not None:
             writer.label_set(label_set)
-        axis_names, axis_kinds = grid_axes(geometry["shape"])
+        # Whether the axes actually moved, read off what `read_nifti` recorded
+        # rather than re-derived from `transpose`: the two differ for arrays
+        # below 3-D, which are never reordered whatever the caller asked for.
+        order = tuple(geometry["axis_order"])
+        axis_names, axis_kinds = grid_axes(
+            geometry["shape"], transposed=order != tuple(range(len(order)))
+        )
         writer.add_grid(
             "ref",
             shape=geometry["shape"],

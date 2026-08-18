@@ -174,9 +174,32 @@ class TestNifti:
             from_nifti({"DTI": source}, tmp_path / "dti.medh5")
 
     def test_transpose_can_be_turned_off(self, volumes, tmp_path):
+        """And the declared axes have to describe the array that was written.
+
+        The axis names came from the reordered layout regardless, so a file
+        left in NIfTI order was labelled `(z, y, x)` over an `(x, y, z)` array.
+        """
         from_nifti({"CT": volumes["ct"]}, tmp_path / "t.medh5", transpose=False)
         with medh5.open(tmp_path / "t.medh5") as sample:
-            assert sample.grids["ref"].shape == SHAPE_XYZ
+            grid = sample.grids["ref"]
+            assert grid.shape == SHAPE_XYZ
+            assert grid.axis_names == ("x", "y", "z")
+            assert np.allclose(grid.spacing, [0.8, 0.9, 2.0]), "and follow the axes"
+
+    def test_a_4D_series_cannot_keep_its_NIfTI_axis_order(self, tmp_path):
+        """§3.1 wants the spatial axes trailing; NIfTI puts time there.
+
+        Declaring the reordered axes over an untransposed 4-D array marked the
+        x axis `time` and handed every spatial axis a spacing belonging to a
+        different one.  There is no valid grid for this array, so it is refused
+        rather than described wrongly.
+        """
+        source = tmp_path / "cine.nii.gz"
+        nib.save(
+            nib.Nifti1Image(np.zeros((*SHAPE_XYZ, 5), np.int16), AFFINE), str(source)
+        )
+        with pytest.raises(MEDH5ValidationError, match="trailing"):
+            from_nifti({"CINE": source}, tmp_path / "x.medh5", transpose=False)
 
     def test_masks_become_an_annotation_with_a_minted_label_set(
         self, volumes, tmp_path

@@ -419,6 +419,48 @@ class TestPairedPatchDataset:
         assert tuple(item["images"]["tp0"]["CT_tp0"].shape) == (12, 12, 12)
         assert tuple(item["images"]["tp1"]["CT_tp1"].shape) == (12, 12, 12)
 
+    def test_S3_7_a_pair_annotated_at_only_one_visit_still_loads(
+        self, tmp_path, label_set
+    ):
+        """`annotation=None` told the sampler to find one *anywhere* in the file.
+
+        For a longitudinal sample that is another visit's, whose coordinates
+        are in another visit's grid --- so the baseline window was drawn in the
+        follow-up's space.  That used to be a silent misread and, once the
+        window carried its grid, a refusal of a perfectly good pair.  The
+        timepoint's grid is named explicitly now.
+        """
+        path = tmp_path / "partial.medh5"
+        shape = (12, 12, 12)
+        with medh5.create(path, codec="portable") as w:
+            w.add_timepoint("tp0", days_from_baseline=0)
+            w.add_timepoint("tp1", days_from_baseline=90)
+            w.label_set(label_set)
+            for tp, frame in (("tp0", "F0"), ("tp1", "F1")):
+                w.add_grid(
+                    f"g_{tp}",
+                    shape=shape,
+                    spacing=(1.0, 1.0, 1.0),
+                    timepoint=tp,
+                    frame_uid=frame,
+                )
+                w.add_image(
+                    f"CT_{tp}",
+                    np.zeros(shape, dtype=np.int16),
+                    grid=f"g_{tp}",
+                    modality="CT",
+                )
+            # Only the follow-up is annotated.
+            w.add_segmentation(
+                "ann_tp1", grid="g_tp1", masks={1: block(shape, (2, 2, 2), 4)}
+            )
+
+        item = PairedPatchDataset([path], PatchSampler(8), align="none")[0]
+        assert set(item["images"]) == {"tp0", "tp1"}
+        assert tuple(item["images"]["tp0"]["CT_tp0"].shape) == (8, 8, 8)
+        grids = {tp: p["grid_id"] for tp, p in item["meta"]["patches"].items()}
+        assert grids == {"tp0": "g_tp0", "tp1": "g_tp1"}, "each in its own visit"
+
     def test_unknown_alignment_is_refused(self, registered):
         with pytest.raises(MEDH5ValidationError):
             PairedPatchDataset([registered], PatchSampler(8), align="telepathy")
