@@ -188,6 +188,75 @@ class TestPatchGrids:
         )
         assert tuple(scoped[0]["images"]["CT_tp0"].shape) == (8, 8, 8)
 
+    def test_S14_3_the_window_grid_is_part_of_the_check(self, tmp_path, label_set):
+        """A single selected image agrees with itself; that is not the question.
+
+        A window drawn on the annotation's grid and applied to an image on a
+        different one looks like one grid to a check that only compares the
+        objects being read --- and comes back silently misregistered, truncated
+        wherever the target grid is the smaller of the two.  The window is a
+        member of the comparison now, so it carries the grid it was measured in.
+        """
+        path = tmp_path / "two.medh5"
+        big, small = (16, 16, 16), (10, 10, 10)
+        with medh5.create(path, codec="portable") as w:
+            w.add_timepoint("tp0")
+            w.add_timepoint("tp1")
+            w.label_set(label_set)
+            for tp, shape, frame in (("tp0", big, "F0"), ("tp1", small, "F1")):
+                w.add_grid(
+                    f"g_{tp}",
+                    shape=shape,
+                    spacing=(1.0, 1.0, 1.0),
+                    timepoint=tp,
+                    frame_uid=frame,
+                )
+                w.add_image(
+                    f"CT_{tp}",
+                    np.zeros(shape, dtype=np.int16),
+                    grid=f"g_{tp}",
+                    modality="CT",
+                )
+            w.add_segmentation(
+                "ann_A", grid="g_tp0", masks={1: block(big, (2, 2, 2), 6)}
+            )
+
+        sampler = PatchSampler(8, strategy="foreground")
+        crossed = PatchDataset(
+            [path], sampler, annotation="ann_A", images=["CT_tp1"], label_format="none"
+        )
+        with pytest.raises(MEDH5ValidationError, match="the patch window"):
+            crossed[0]
+
+        aligned = PatchDataset(
+            [path], sampler, annotation="ann_A", images=["CT_tp0"], label_format="none"
+        )
+        assert tuple(aligned[0]["images"]["CT_tp0"].shape) == (8, 8, 8)
+
+    def test_S14_3_a_grid_cover_refuses_an_image_off_the_reference_grid(
+        self, tmp_path, label_set
+    ):
+        """`grid_patches` measures its windows in the reference grid."""
+        path = tmp_path / "cover.medh5"
+        with medh5.create(path, codec="portable") as w:
+            w.add_timepoint("tp0")
+            w.add_timepoint("tp1")
+            w.label_set(label_set)
+            for tp, shape in (("tp0", (16, 16, 16)), ("tp1", (10, 10, 10))):
+                w.add_grid(
+                    f"g_{tp}", shape=shape, spacing=(1.0, 1.0, 1.0), timepoint=tp
+                )
+                w.add_image(
+                    f"CT_{tp}",
+                    np.zeros(shape, dtype=np.int16),
+                    grid=f"g_{tp}",
+                    modality="CT",
+                )
+        reference = GridPatchDataset([path], 8, images=["CT_tp0"])
+        assert tuple(reference[0]["images"]["CT_tp0"].shape) == (8, 8, 8)
+        with pytest.raises(MEDH5ValidationError, match="the patch window"):
+            GridPatchDataset([path], 8, images=["CT_tp1"])[0]
+
     def test_a_whole_volume_read_still_spans_every_grid(
         self, tmp_path, label_set, masks
     ):

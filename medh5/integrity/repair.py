@@ -40,7 +40,14 @@ class Diagnosis:
 
     @property
     def needs_index(self) -> bool:
-        return bool(self.stale_index or self.missing_index)
+        """A *stale* index is a defect.  An absent one is a choice.
+
+        A sampling index is optional per annotation (§14.3), so an annotation
+        without one cannot be told apart from one whose curator decided not to
+        build it.  ``missing_index`` is therefore reported and never acted on,
+        and it does not make a file "need attention".
+        """
+        return bool(self.stale_index)
 
     @property
     def needs_digests(self) -> bool:
@@ -108,7 +115,9 @@ def diagnose(path: str | os.PathLike[str]) -> Diagnosis:
             mismatched=tuple(result.mismatched),
             undigested=tuple(result.undigested),
             stale_index=tuple(stale_index_entries(sample.root)),
-            missing_index=tuple(sorted(indexable - present)) if present else (),
+            # Reported as it is, with no inference: an annotation without an
+            # index is not "missing" one merely because a sibling has one.
+            missing_index=tuple(sorted(indexable - present)),
             content_id_ok=result.content_id_ok,
         )
 
@@ -124,10 +133,12 @@ def fix(
 ) -> Repair:
     """Repair one file.  Neither flag means diagnose and change nothing.
 
-    ``missing_index`` is only rebuilt for annotations that already had one:
-    building an index where the curator never asked for one is a decision about
-    their storage budget, not a repair.  ``medh5 index build`` is the command
-    that adds one.
+    Only ``stale_index`` is rebuilt.  ``missing_index`` is reported and never
+    acted on: a sampling index is optional per annotation (§14.3), so an
+    annotation without one is indistinguishable from one whose curator chose
+    not to build it, and building it anyway is a decision about their storage
+    budget rather than a repair.  ``medh5 index build`` is the command that
+    adds one.
     """
     diagnosis = diagnose(path)
     repair = Repair(path=os.fspath(path), diagnosis=diagnosis)
@@ -160,16 +171,13 @@ def fix(
             "reason so the re-attestation is written into the file."
         )
 
-    # `stale_index` and `missing_index` together are the whole of what a repair
-    # may touch.  Passing an empty list through as `None` used to mean "every
-    # indexable annotation", so a curator who deliberately shipped a file with
-    # no index got one built for everything --- a decision about their storage
-    # budget, not a repair.  `medh5 index build` is the command that adds one.
-    names = (
-        sorted({*diagnosis.stale_index, *diagnosis.missing_index})
-        if rebuild_index
-        else []
-    )
+    # `stale_index` is the whole of what a repair may touch.  Passing an empty
+    # list through as `None` used to mean "every indexable annotation", so a
+    # curator who deliberately shipped a file with no index got one built for
+    # everything; adding `missing_index` here traded that for the same mistake
+    # one annotation at a time, since an absent entry says nothing about
+    # whether anybody wanted it.
+    names = sorted(diagnosis.stale_index) if rebuild_index else []
     if not names and not rewrite_digests:
         repair.notes.append("nothing to rebuild: no sampling index is stale or missing")
         return repair

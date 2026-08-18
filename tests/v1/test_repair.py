@@ -108,13 +108,45 @@ class TestFix:
             tmp_path / "bare.medh5", label_set=label_set, masks=masks, index=False
         )
         diagnosis = diagnose(path)
-        assert diagnosis.stale_index == () and diagnosis.missing_index == ()
+        assert diagnosis.stale_index == ()
+        # Reported, so a curator can see the option --- but not a defect, so it
+        # does not make the file "need attention" and `fix` will not act on it.
+        assert diagnosis.missing_index == ("organs_tp0",)
+        assert not diagnosis.needs_index
 
         repair = fix(path, rebuild_index=True)
         assert repair.rebuilt_index == ()
         assert not repair.changed
         with medh5.open(path) as sample:
             assert sorted(sample.index) == []
+
+    def test_S14_3_a_deliberately_partial_index_is_left_partial(
+        self, tmp_path, label_set, masks
+    ):
+        """One annotation indexed and another not is a choice, not a defect.
+
+        `present` being non-empty used to make every *other* indexable
+        annotation count as missing, and `fix` then built its cache --- deciding
+        the curator's storage budget for them one annotation at a time.
+        """
+        path = write_sample(
+            tmp_path / "partial.medh5",
+            label_set=label_set,
+            masks=masks,
+            timepoints=("tp0", "tp1"),
+        )
+        with medh5.amend(path) as writer:
+            writer.build_index(["organs_tp0"])
+
+        diagnosis = diagnose(path)
+        assert diagnosis.stale_index == ()
+        assert diagnosis.missing_index == ("organs_tp1",), "reported, not inferred away"
+        assert not diagnosis.needs_index, "an absent index is not a defect"
+
+        repair = fix(path, rebuild_index=True)
+        assert repair.rebuilt_index == ()
+        with medh5.open(path) as sample:
+            assert sorted(sample.index) == ["organs_tp0"]
 
     def test_removing_an_annotation_takes_its_index_with_it(self, indexed):
         """Not stale --- gone.  A stale index is a mismatch, not an absence."""

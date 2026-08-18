@@ -48,6 +48,14 @@ class Patch:
     class_id: int | None = None
     used_index: bool = True
     """``False`` when the foreground had to be scanned because no index was present."""
+    grid_id: str | None = None
+    """The grid whose index coordinates ``slices`` are in.
+
+    A window is only meaningful in the grid it was measured in, so a reader
+    that applies it to a different one is reading different anatomy --- and,
+    where that grid is smaller, silently getting a shorter array back.  Carried
+    on the patch so the consumer can check rather than assume.
+    """
 
     @property
     def shape(self) -> tuple[int, ...]:
@@ -83,6 +91,7 @@ class Patch:
             "strategy": self.strategy,
             "class_id": self.class_id,
             "used_index": self.used_index,
+            "grid_id": self.grid_id,
         }
 
     def __repr__(self) -> str:
@@ -194,7 +203,8 @@ class PatchSampler:
         """Draw one patch window from *sample*."""
         generator = rng if rng is not None else np.random.default_rng()
         ann = self._annotation(sample, annotation)
-        shape = self._shape(sample, ann)
+        grid_id = self._window_grid(sample, ann)
+        shape = sample.grids[grid_id].spatial_shape
         patch = coerce_patch_size(self.patch_size, len(shape))
         want_foreground = self.strategy == "foreground" or (
             self.strategy == "balanced" and generator.random() < self.foreground_prob
@@ -211,10 +221,17 @@ class PatchSampler:
                     strategy="foreground",
                     class_id=class_id,
                     used_index=used_index,
+                    grid_id=grid_id,
                 )
         center = tuple(int(generator.integers(0, max(1, n))) for n in shape)
         slices, pad = window_around(center, patch, shape)
-        return Patch(slices=slices, pad=pad, center=center, strategy="uniform")
+        return Patch(
+            slices=slices,
+            pad=pad,
+            center=center,
+            strategy="uniform",
+            grid_id=grid_id,
+        )
 
     def draws(
         self,
@@ -238,13 +255,20 @@ class PatchSampler:
                 return name
         return None
 
-    def _shape(self, sample: Sample, annotation: str | None) -> tuple[int, ...]:
+    def _window_grid(self, sample: Sample, annotation: str | None) -> str:
+        """The grid a draw for *annotation* is measured in.
+
+        The annotation's own grid where it has one, because that is the space
+        its foreground coordinates are in; the sample's reference grid
+        otherwise.  Named on the patch so a consumer reading some *other* grid
+        with the result can tell, instead of returning a window that indexes
+        different anatomy.
+        """
         if annotation is not None and annotation in sample.annotations:
-            ann = sample.annotations[annotation]
-            grid_id = ann.grid_id
+            grid_id = sample.annotations[annotation].grid_id
             if grid_id is not None:
-                return sample.grids[grid_id].spatial_shape
-        return sample.reference_grid.spatial_shape
+                return str(grid_id)
+        return str(sample.reference_grid.grid_id)
 
     def _foreground_center(
         self, sample: Sample, annotation: str, rng: np.random.Generator
@@ -434,7 +458,11 @@ def iter_patches(
 
 
 def grid_patches(
-    shape: Sequence[int], patch_size: int | Sequence[int], *, overlap: int = 0
+    shape: Sequence[int],
+    patch_size: int | Sequence[int],
+    *,
+    overlap: int = 0,
+    grid_id: str | None = None,
 ) -> list[Patch]:
     """Deterministic sliding-window cover of a volume --- the inference path.
 
@@ -471,6 +499,7 @@ def grid_patches(
                 pad=pad,
                 center=tuple(s.start + (s.stop - s.start) // 2 for s in slices),
                 strategy="grid",
+                grid_id=grid_id,
             )
         )
     return out

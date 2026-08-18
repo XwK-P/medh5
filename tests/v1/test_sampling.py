@@ -188,11 +188,13 @@ class TestPatchSampler:
     def test_json_round_trip(self, indexed):
         with medh5.open(indexed) as sample:
             payload = PatchSampler(4).draw(sample, "organs_tp0").to_json()
+        assert payload["grid_id"] == "ct_tp0", "the window names the grid it is in"
         assert set(payload) == {
             "start",
             "stop",
             "pad",
             "center",
+            "grid_id",
             "strategy",
             "class_id",
             "used_index",

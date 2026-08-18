@@ -135,6 +135,44 @@ class TestNifti:
         assert np.allclose(geometry["spacing"], [2.0, 0.9, 0.8])
         assert geometry["axis_order"] == (3, 2, 1, 0)
 
+    def test_S3_1_a_4D_series_converts_and_exports_unchanged(self, tmp_path):
+        """The 4-D path has to work end to end, not just in `read_nifti`.
+
+        `from_nifti` passed a 4-D shape with no `axis_kinds`, and `add_grid`
+        defaults only cover 2-D and 3-D, so a cine, DCE or 4-D CT conversion
+        raised before writing anything.  `to_nifti` then reversed only the
+        trailing three axes on the way out, sending time to a spatial slot
+        while the affine still described (x, y, z).
+        """
+        series = np.zeros((*SHAPE_XYZ, 5), dtype=np.int16)
+        series[1, 2, 3, 4] = 7
+        source = tmp_path / "cine.nii.gz"
+        nib.save(nib.Nifti1Image(series, AFFINE), str(source))
+
+        from_nifti({"CINE": source}, tmp_path / "cine.medh5")
+        with medh5.open(tmp_path / "cine.medh5") as sample:
+            grid = sample.grids["ref"]
+            assert grid.shape == (5, *reversed(SHAPE_XYZ))
+            assert grid.axis_kinds == ("time", "spatial", "spatial", "spatial")
+            assert grid.axis_names == ("t", "z", "y", "x")
+            assert np.allclose(grid.spacing, [2.0, 0.9, 0.8]), "spatial axes only"
+            assert sample.images["CINE"].read()[4, 3, 2, 1] == 7
+
+        back = to_nifti(tmp_path / "cine.medh5", "CINE", tmp_path / "back.nii.gz")
+        restored = nib.load(str(back))
+        assert restored.shape == (*SHAPE_XYZ, 5), "NIfTI puts time after x, y, z"
+        assert np.allclose(restored.header.get_zooms()[:3], [0.8, 0.9, 2.0])
+        assert np.array_equal(np.asanyarray(restored.dataobj), series)
+
+    def test_a_NIfTI_with_axes_past_time_is_refused(self, tmp_path):
+        """dim[5] carries components whose MEDH5 kind depends on the producer."""
+        source = tmp_path / "tensor.nii.gz"
+        nib.save(
+            nib.Nifti1Image(np.zeros((*SHAPE_XYZ, 2, 3), np.int16), AFFINE), str(source)
+        )
+        with pytest.raises(MEDH5ValidationError, match="beyond"):
+            from_nifti({"DTI": source}, tmp_path / "dti.medh5")
+
     def test_transpose_can_be_turned_off(self, volumes, tmp_path):
         from_nifti({"CT": volumes["ct"]}, tmp_path / "t.medh5", transpose=False)
         with medh5.open(tmp_path / "t.medh5") as sample:

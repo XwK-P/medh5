@@ -147,12 +147,21 @@ class _Base(_DatasetBase):  # type: ignore[misc,valid-type]
             )
         return grids[0]
 
-    def _check_patch_grid(self, sample: Sample) -> None:
-        """Everything a patch window will be read out of must sit on one grid."""
+    def _check_patch_grid(self, sample: Sample, patch: Patch) -> None:
+        """Everything a patch window is read out of must sit on the window's grid.
+
+        The window itself is a member of the comparison, not just the objects
+        being read.  Checking only the objects passes whenever they happen to
+        agree with each other --- a single image on grid B read with a window
+        drawn on annotation grid A looks like one grid and is silently
+        misregistered, and truncated wherever B is the smaller of the two.
+        """
         members = {
             f"image {name!r}": sample.images[name].grid_id
             for name in self._image_ids(sample)
         }
+        if patch.grid_id is not None:
+            members["the patch window"] = patch.grid_id
         if self.label_format != "none":
             for name in self.annotations:
                 if name not in sample.annotations:
@@ -239,7 +248,7 @@ class _Base(_DatasetBase):  # type: ignore[misc,valid-type]
         extra: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         if patch is not None:
-            self._check_patch_grid(sample)
+            self._check_patch_grid(sample, patch)
         images = self._read_images(sample, patch)
         item: dict[str, Any] = {
             "images": {k: to_tensor(v) for k, v in images.items()},
@@ -331,10 +340,13 @@ class GridPatchDataset(_Base):
         self._plan: list[tuple[str, Patch]] = []
         for path in self.paths:
             with self._scan(path) as sample:
-                shape = sample.reference_grid.spatial_shape
+                reference = sample.reference_grid
+                shape, grid_id = reference.spatial_shape, reference.grid_id
             self._plan.extend(
                 (path, patch)
-                for patch in grid_patches(shape, patch_size, overlap=self.overlap)
+                for patch in grid_patches(
+                    shape, patch_size, overlap=self.overlap, grid_id=grid_id
+                )
             )
 
     def __len__(self) -> int:
@@ -456,7 +468,8 @@ class PairedPatchDataset(_Base):
         self, sample: Sample, pair: TimepointPair, patch: Patch
     ) -> Patch:
         """The window in the second visit covering the same anatomy."""
-        shape = self._grid_at(sample, pair.second).spatial_shape
+        target = self._grid_at(sample, pair.second)
+        shape = target.spatial_shape
         # The *requested* size, not the clipped extent.  Where the first visit
         # is smaller than the patch its window is short and gets padded back up
         # to `patch.shape`; asking the second visit for the clipped extent would
@@ -467,12 +480,24 @@ class PairedPatchDataset(_Base):
             from medh5.sampling import window_around
 
             slices, pad = window_around(patch.center, size, shape)
-            return Patch(slices=slices, pad=pad, center=patch.center, strategy="paired")
+            return Patch(
+                slices=slices,
+                pad=pad,
+                center=patch.center,
+                strategy="paired",
+                grid_id=target.grid_id,
+            )
         center = self._map_center(sample, pair, patch)
         from medh5.sampling import window_around
 
         slices, pad = window_around(center, size, shape)
-        return Patch(slices=slices, pad=pad, center=center, strategy="paired")
+        return Patch(
+            slices=slices,
+            pad=pad,
+            center=center,
+            strategy="paired",
+            grid_id=target.grid_id,
+        )
 
     def _grid_at(self, sample: Sample, timepoint: str) -> Any:
         view = sample.at(timepoint)
@@ -520,9 +545,10 @@ class PairedPatchDataset(_Base):
             else sorted(view.images)
         )
         if wanted:
-            self._single_grid(
-                sample, {f"image {n!r}": sample.images[n].grid_id for n in wanted}
-            )
+            members = {f"image {n!r}": sample.images[n].grid_id for n in wanted}
+            if patch.grid_id is not None:
+                members["the patch window"] = patch.grid_id
+            self._single_grid(sample, members)
         out: dict[str, npt.NDArray[Any]] = {}
         for image_id in wanted:
             array = sample.images[image_id].read(

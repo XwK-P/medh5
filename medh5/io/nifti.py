@@ -111,6 +111,29 @@ def read_nifti(
     }
 
 
+def grid_axes(shape: Sequence[int]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """``(axis_names, axis_kinds)`` for a grid built from a converted NIfTI array.
+
+    ``read_nifti`` leaves the spatial block trailing and any NIfTI axis beyond
+    the third in front of it, so a 4-D series arrives as ``(t, z, y, x)``.  A
+    grid of more than three axes has no unambiguous default (§3.1), which is
+    why the converter has to say it rather than let ``add_grid`` guess --- and
+    why anything past a single leading time axis is refused instead of guessed
+    at: NIfTI's dim[5] carries vector or tensor components whose MEDH5 kind
+    depends on what the producer meant by them.
+    """
+    extra = len(shape) - 3
+    if extra <= 0:
+        return ("z", "y", "x")[-len(shape) :], ("spatial",) * len(shape)
+    if extra == 1:
+        return ("t", "z", "y", "x"), ("time", "spatial", "spatial", "spatial")
+    raise MEDH5ValidationError(
+        f"a {len(shape)}-D NIfTI has {extra} axes beyond (x, y, z); only a "
+        "single trailing time axis converts without a decision about what the "
+        "others mean --- convert the volumes separately, or declare the axes"
+    )
+
+
 def _units(image: Any) -> str:
     """The NIfTI spatial unit, mapped onto the §3.5 vocabulary."""
     try:
@@ -217,12 +240,15 @@ def from_nifti(
         )
         if label_set is not None:
             writer.label_set(label_set)
+        axis_names, axis_kinds = grid_axes(geometry["shape"])
         writer.add_grid(
             "ref",
             shape=geometry["shape"],
             spacing=geometry["spacing"],
             origin=geometry["origin"],
             direction=geometry["direction"],
+            axis_names=axis_names,
+            axis_kinds=axis_kinds,
             coord_system=geometry["coord_system"],
             units=geometry["units"],
         )
@@ -339,9 +365,13 @@ def to_nifti(
         affine = convert_world(grid.affine, source=grid.coord_system, target="RAS")
         spacing, origin, direction = decompose_affine(affine)
         if data.ndim >= 3:  # noqa: PLR2004 - undo the (z, y, x) reordering
-            flip = tuple(reversed(range(data.ndim - 3, data.ndim)))
-            data = np.transpose(data, tuple(range(data.ndim - 3)) + flip)
-            index = [f - (data.ndim - 3) for f in flip]
+            # MEDH5 leads with time and trails with (z, y, x); NIfTI is the
+            # other way round.  Reversing only the trailing three sent time to
+            # a *spatial* slot and left the affine describing (x, y, z), so a
+            # 4-D export carried geometry that was wrong on every axis.
+            spatial = (data.ndim - 1, data.ndim - 2, data.ndim - 3)
+            data = np.transpose(data, spatial + tuple(range(data.ndim - 3)))
+            index = [2, 1, 0]
             spacing = spacing[index]
             direction = direction[:, index]
         out_affine = build_affine(spacing, origin, direction)
