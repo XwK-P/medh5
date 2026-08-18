@@ -1095,6 +1095,32 @@ class TestPhase7Convert:
         assert code == EXIT_OK
         assert (tmp_path / "b.nii.gz").exists()
 
+    def test_S3_6_the_fourth_axis_can_be_settled_from_the_CLI(self, capsys, tmp_path):
+        """`auto` guesses `time` for an unmarked series and says to override it.
+
+        The override existed only in Python, so the one case the argument was
+        added for could not be corrected by the interface people convert with.
+        """
+        nib = pytest.importorskip("nibabel")
+        affine = np.diag([1.0, 1.0, 1.0, 1.0])
+        source = tmp_path / "echo.nii.gz"
+        nib.save(nib.Nifti1Image(np.zeros((8, 8, 4, 3), np.int16), affine), str(source))
+        out = tmp_path / "echo.medh5"
+
+        code, _ = run(
+            capsys,
+            "convert",
+            "from-nifti",
+            str(out),
+            "--image",
+            f"IM={source}",
+            "--fourth-axis",
+            "channel",
+        )
+        assert code == EXIT_OK
+        with medh5.open(out) as sample:
+            assert sample.grids["ref"].axis_kinds[0] == "channel"
+
     def test_the_report_is_written_and_machine_readable(self, capsys, tmp_path, nifti):
         report = tmp_path / "report.json"
         code, printed = run(

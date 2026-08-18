@@ -45,6 +45,16 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     )
     nifti.add_argument("--modality", action="append", metavar="NAME=CODE")
     nifti.add_argument("--coord-system", choices=("LPS", "RAS"), default="LPS")
+    nifti.add_argument(
+        "--fourth-axis",
+        choices=("auto", "time", "channel"),
+        default="auto",
+        help=(
+            "what a 4-D series' extra axis is: time (cine, DCE, 4-D CT) or "
+            "channel (multi-b-value DWI, multi-echo). auto reads the file and "
+            "reports a guess where it cannot tell"
+        ),
+    )
     nifti.add_argument("--sample-id")
     nifti.add_argument("--subject-id")
     _common(nifti)
@@ -194,6 +204,7 @@ def _from_nifti(args: argparse.Namespace) -> int:
         masks=_pairs(args.mask, "mask") or None,
         modalities=_pairs(args.modality, "modality") or None,
         coord_system=args.coord_system,
+        fourth_axis=args.fourth_axis,
         sample_id=args.sample_id,
         subject_id=args.subject_id,
     )

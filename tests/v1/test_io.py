@@ -381,7 +381,16 @@ class TestDimensionality:
     """
 
     def _write(
-        self, tmp_path, name, shape, *, intent=None, tr=None, units=None, bvals=None
+        self,
+        tmp_path,
+        name,
+        shape,
+        *,
+        intent=None,
+        tr=None,
+        units=None,
+        toffset=None,
+        bvals=None,
     ):
         image = nib.Nifti1Image(np.zeros(shape, np.int16), AFFINE)
         if intent is not None:
@@ -390,6 +399,8 @@ class TestDimensionality:
             image.header.set_xyzt_units("mm", units)
         if tr is not None:
             image.header["pixdim"][4] = tr
+        if toffset is not None:
+            image.header["toffset"] = toffset
         source = tmp_path / f"{name}.nii.gz"
         nib.save(image, str(source))
         if bvals is not None:
@@ -439,6 +450,60 @@ class TestDimensionality:
                 1000.0,
                 2000.0,
             ]
+        assert [n.severity for n in report.of_kind("axis_kinds")] == ["decision"]
+
+    def test_S3_6_b_values_stay_with_the_file_they_came_from(self, tmp_path):
+        """`_same_grid` compares the grid, which these volumes share by design.
+
+        The b-values and the axis kind belong to the *file*, and reading them
+        off the first geometry handed every DWI in the set the first one's
+        gradients --- a silent corruption of what the channel axis means, with
+        the conversion reporting success.
+        """
+        first = self._write(tmp_path, "dwiA", (24, 20, 12, 3), bvals=[0, 500, 1000])
+        second = self._write(tmp_path, "dwiB", (24, 20, 12, 3), bvals=[0, 1500, 3000])
+
+        from_nifti({"A": first, "B": second}, tmp_path / "two.medh5")
+        with medh5.open(tmp_path / "two.medh5") as sample:
+            assert sample.images["A"].channel_names == ("b=0", "b=500", "b=1000")
+            assert sample.images["B"].channel_names == ("b=0", "b=1500", "b=3000")
+            acquisition = sample.document.acquisition
+            assert acquisition["A"]["b_values"] == [0.0, 500.0, 1000.0]
+            assert acquisition["B"]["b_values"] == [0.0, 1500.0, 3000.0]
+
+    def test_S3_6_volumes_that_disagree_about_their_axis_are_refused(self, tmp_path):
+        """One grid states one set of `axis_kinds`, so they cannot both be right."""
+        dwi = self._write(tmp_path, "dwi", (24, 20, 12, 3), bvals=[0, 500, 1000])
+        cine = self._write(tmp_path, "cine", (24, 20, 12, 3), tr=2.0, units="sec")
+        with pytest.raises(MEDH5ValidationError) as exc:
+            from_nifti({"D": dwi, "C": cine}, tmp_path / "mix.medh5")
+        assert exc.value.code == "E110"
+
+    def test_S3_2_toffset_is_scaled_with_the_zoom(self, tmp_path):
+        """`toffset` is in the header's own temporal unit, like `pixdim[4]`.
+
+        Converting the zoom to milliseconds and leaving the offset in
+        microseconds started the series a thousand frames from where it does.
+        """
+        source = self._write(
+            tmp_path, "usec", (24, 20, 12, 3), units="usec", tr=500, toffset=1000
+        )
+        _, geometry = read_nifti(source)
+        assert geometry["time_units"] == "ms"
+        assert geometry["time_values"] == [1.0, 1.5, 2.0]
+
+    def test_S3_6_an_RGB_vector_is_a_channel_axis(self, tmp_path):
+        """Intents 2003/2004 state the answer as plainly as the numeric ones."""
+        image = nib.Nifti1Image(np.zeros((24, 20, 12, 1, 3), np.int16), AFFINE)
+        image.header["intent_code"] = 2003
+        source = tmp_path / "rgb.nii.gz"
+        nib.save(image, str(source))
+
+        report = from_nifti({"IM": source}, tmp_path / "rgb.medh5")
+        with medh5.open(tmp_path / "rgb.medh5") as sample:
+            grid = sample.grids["ref"]
+            assert grid.shape == (3, 12, 20, 24)
+            assert grid.axis_kinds == ("channel", "spatial", "spatial", "spatial")
         assert [n.severity for n in report.of_kind("axis_kinds")] == ["decision"]
 
     def test_S3_6_an_unmarked_fourth_axis_is_a_guess(self, tmp_path):

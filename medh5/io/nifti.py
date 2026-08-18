@@ -152,8 +152,11 @@ def read_nifti(
 
 
 # NIfTI intent codes whose extra dimension holds *components* rather than
-# frames --- §3.6's "channel" kind rather than its "time" kind.
-CHANNEL_INTENTS = frozenset({1001, 1004, 1005, 1006, 1007})
+# frames --- §3.6's "channel" kind rather than its "time" kind.  The RGB and
+# RGBA vectors (2003, 2004) belong here as much as the numeric ones: they are
+# the "RGB / multi-echo" row, and without them that row fell through to the
+# time guess despite the header stating the answer.
+CHANNEL_INTENTS = frozenset({1001, 1004, 1005, 1006, 1007, 2003, 2004})
 TIME_SERIES_INTENT = 2001
 
 FOURTH_AXES = ("auto", "time", "channel")
@@ -207,7 +210,7 @@ def _fourth_axis(
         return "channel", True
     if intent == TIME_SERIES_INTENT:
         return "time", True
-    if _temporal(image)[2]:
+    if _temporal(image)[3]:
         return "time", True
     return "time", False
 
@@ -278,8 +281,8 @@ def grid_axes(
     )
 
 
-def _temporal(image: Any) -> tuple[float, str, bool]:
-    """The temporal zoom and unit, and whether the file actually states them.
+def _temporal(image: Any) -> tuple[float, float, str, bool]:
+    """The temporal zoom, offset and unit, and whether the file states them.
 
     ``pixdim[4]`` is 1.0 in a freshly built header, so a positive zoom on its
     own is not a statement about timing --- it is the default.  The unit has to
@@ -294,9 +297,16 @@ def _temporal(image: Any) -> tuple[float, str, bool]:
         temporal = "unknown"
     known = {"sec": ("s", 1.0), "msec": ("ms", 1.0), "usec": ("ms", 1e-3)}
     if step <= 0 or str(temporal) not in known:
-        return 0.0, "s", False
+        return 0.0, 0.0, "s", False
     units, scale = known[str(temporal)]
-    return step * scale, units, True
+    try:
+        offset = float(image.header["toffset"])
+    except (KeyError, ValueError, TypeError):  # pragma: no cover - header variants
+        offset = 0.0
+    # Both scaled here, by the same factor.  `toffset` is in the header's own
+    # temporal unit, so converting the zoom and not the offset put a microsecond
+    # series a thousand frames from where it starts.
+    return step * scale, offset * scale, units, True
 
 
 def _time_axis(image: Any, frames: int) -> tuple[tuple[float, ...], str, bool]:
@@ -308,15 +318,11 @@ def _time_axis(image: Any, frames: int) -> tuple[tuple[float, ...], str, bool]:
     an option --- the source states a temporal zoom and the converter was
     throwing it away.
     """
-    step, units, stated = _temporal(image)
+    step, offset, units, stated = _temporal(image)
     if not stated:
         # Nothing to read.  Frame indices are all that is left, and they are an
         # assumption about timing rather than a measurement of it.
         return tuple(float(k) for k in range(frames)), "s", False
-    try:
-        offset = float(image.header["toffset"])
-    except (KeyError, ValueError, TypeError):  # pragma: no cover - header variants
-        offset = 0.0
     return tuple(offset + k * step for k in range(frames)), units, True
 
 
@@ -346,6 +352,28 @@ def _number(value: Any) -> float | None:
     except Exception:  # noqa: BLE001 - absent or malformed
         return None
     return None if not np.isfinite(out) else out
+
+
+def _same_axis_kind(per_image: Mapping[str, Mapping[str, Any]]) -> None:
+    """Every volume on one grid must agree what its non-spatial axis is.
+
+    They share a single grid, and the grid states ``axis_kinds`` once.  A DWI
+    and a cine series of the same shape would otherwise both be written under
+    whichever kind the first file happened to have, so one of them ends up
+    declared as something it is not.
+    """
+    kinds = {
+        name: geo.get("leading_kind", "spatial") for name, geo in per_image.items()
+    }
+    distinct = sorted(set(kinds.values()))
+    if len(distinct) > 1:
+        listed = ", ".join(f"{n} is {k}" for n, k in sorted(kinds.items()))
+        raise MEDH5ValidationError(
+            f"these volumes share a grid but disagree about their non-spatial "
+            f"axis ({listed}); one grid states one set of `axis_kinds`, so "
+            "convert them separately or pass `fourth_axis=` to settle it",
+            code="E110",
+        )
 
 
 def from_nifti(
@@ -379,6 +407,11 @@ def from_nifti(
         raise MEDH5ValidationError("from_nifti needs at least one image")
 
     arrays: dict[str, npt.NDArray[Any]] = {}
+    # Kept per image.  `_same_grid` compares the *grid*, which the volumes share
+    # by definition here; b-values and the leading axis kind belong to the file
+    # they came from, and reading them off the first geometry handed every DWI
+    # in the set the first one's gradients without noticing.
+    per_image: dict[str, dict[str, Any]] = {}
     geometry: dict[str, Any] | None = None
     for name, path in images.items():
         data, geo = read_nifti(
@@ -388,8 +421,10 @@ def from_nifti(
             fourth_axis=fourth_axis,
         )
         geometry = _same_grid(geometry, geo, name, log) if geometry else geo
+        per_image[name] = geo
         arrays[name] = data
     assert geometry is not None
+    _same_axis_kind(per_image)
 
     mask_arrays: dict[str, npt.NDArray[np.bool_]] = {}
     for name, path in (masks or {}).items():
@@ -497,13 +532,13 @@ def from_nifti(
             time_values=geometry.get("time_values"),
             time_units=geometry.get("time_units"),
         )
-        b_values = geometry.get("b_values")
-        channel_names = (
-            tuple(f"b={v:g}" for v in b_values)
-            if b_values and len(b_values) == geometry["shape"][0]
-            else None
-        )
         for name, array in arrays.items():
+            b_values = per_image[name].get("b_values")
+            channel_names = (
+                tuple(f"b={v:g}" for v in b_values)
+                if b_values and len(b_values) == geometry["shape"][0]
+                else None
+            )
             if b_values:
                 # §3.6 puts the b-values in `acquisition` (§4.5); they are what
                 # the channel axis *means*, and dropping them leaves a stack of
