@@ -442,6 +442,25 @@ class TestAmend:
             assert sample.verify().ok
             assert "reg" in sample.profiles
 
+    def test_S13_2_the_content_id_does_not_depend_on_the_writer_caches(self, tmp_path):
+        """The attribute map is derived from the file, not from bookkeeping.
+
+        While the writer built it from ``self._transform_frames``, an amend that
+        failed to repopulate that cache hashed a ``content_id`` over fewer
+        objects than a reader would find --- so the file verified on the way out
+        and reported E702 on the way back in.  Clearing the cache outright must
+        now change nothing about the identity the file is stamped with.
+        """
+        path = registered(tmp_path / "reg.medh5", displacement=True)
+        with medh5.amend(path, codec="portable") as w:
+            w.add_image(
+                "CT2_tp0", np.zeros(SHAPE, dtype=np.int16), grid="ct_tp0", modality="CT"
+            )
+            w._transform_frames.clear()
+        with medh5.open(path) as sample:
+            assert sample.verify().ok
+            assert sample.compute_content_id() == sample.content_id
+
     def test_S10_5_amend_can_compose_an_inherited_transform(self, tmp_path):
         path = registered(tmp_path / "reg.medh5", displacement=True)
         with medh5.amend(path, codec="portable") as w:

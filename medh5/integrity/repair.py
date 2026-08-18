@@ -140,13 +140,46 @@ def fix(
             "pass a reason, which is recorded in the file's provenance"
         )
 
+    if rebuild_index and not rewrite_digests and diagnosis.needs_digests:
+        # An amend restamps every digest from the bytes it copies, so rebuilding
+        # an index in a file that already has a mismatch would recompute the
+        # mismatched digest as a side effect --- destroying the evidence with no
+        # reason, no provenance and `rewrote_digests` reporting False.  The
+        # guard the module is built around belongs on this path too.
+        raise MEDH5ValidationError(
+            f"{os.fspath(path)}: cannot rebuild the index without restamping "
+            f"digests, and this file has {len(diagnosis.mismatched)} that no "
+            "longer match its bytes"
+            + (
+                ""
+                if diagnosis.content_id_ok is not False
+                else " (and a stale content_id)"
+            )
+            + ". Rebuilding would recompute them and the mismatch would vanish "
+            "unrecorded. Restore the content, or pass rewrite_digests with a "
+            "reason so the re-attestation is written into the file."
+        )
+
+    # `stale_index` and `missing_index` together are the whole of what a repair
+    # may touch.  Passing an empty list through as `None` used to mean "every
+    # indexable annotation", so a curator who deliberately shipped a file with
+    # no index got one built for everything --- a decision about their storage
+    # budget, not a repair.  `medh5 index build` is the command that adds one.
+    names = (
+        sorted({*diagnosis.stale_index, *diagnosis.missing_index})
+        if rebuild_index
+        else []
+    )
+    if not names and not rewrite_digests:
+        repair.notes.append("nothing to rebuild: no sampling index is stale or missing")
+        return repair
+
     with medh5.amend(path) as writer:
-        if rebuild_index:
-            names = list(diagnosis.stale_index)
+        if names:
             kwargs: dict[str, Any] = {}
             if max_coords is not None:
                 kwargs["max_coords"] = max_coords
-            repair.rebuilt_index = writer.build_index(names or None, **kwargs)
+            repair.rebuilt_index = writer.build_index(names, **kwargs)
         if rewrite_digests:
             agent = (
                 writer.person(performed_by)

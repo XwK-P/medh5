@@ -68,6 +68,54 @@ class TestFix:
             direct = sample.annotations["organs_tp0"].voxel_counts()
             assert counts == direct
 
+    def test_S13_3_rebuilding_an_index_will_not_launder_a_digest_mismatch(
+        self, indexed
+    ):
+        """An amend restamps every digest, so the rebuild path needs the guard too.
+
+        Recomputing a mismatched digest does not undo the edit that caused it,
+        it destroys the evidence of it --- and on this path it did so with no
+        reason, no provenance activity, and `rewrote_digests` reporting False.
+        """
+        _edit_mask_in_place(indexed)
+        assert diagnose(indexed).mismatched
+
+        with pytest.raises(MEDH5ValidationError, match="no longer match"):
+            fix(indexed, rebuild_index=True)
+        assert diagnose(indexed).mismatched, "the evidence survived the refusal"
+
+        # The deliberate path still works, and still says what it did not verify.
+        repair = fix(
+            indexed,
+            rebuild_index=True,
+            rewrite_digests=True,
+            reason="edited by an external tool, content confirmed",
+        )
+        assert repair.rewrote_digests
+        assert not diagnose(indexed).mismatched
+        assert any("asserts nothing" in note for note in repair.notes)
+
+    def test_S14_3_rebuilding_does_not_index_what_was_never_indexed(
+        self, tmp_path, label_set, masks
+    ):
+        """`fix` repairs; it does not decide a curator's storage budget for them.
+
+        An empty rebuild list used to reach `build_index` as None, which means
+        "every indexable annotation", so a file deliberately shipped without an
+        index got one built for everything.
+        """
+        path = write_sample(
+            tmp_path / "bare.medh5", label_set=label_set, masks=masks, index=False
+        )
+        diagnosis = diagnose(path)
+        assert diagnosis.stale_index == () and diagnosis.missing_index == ()
+
+        repair = fix(path, rebuild_index=True)
+        assert repair.rebuilt_index == ()
+        assert not repair.changed
+        with medh5.open(path) as sample:
+            assert sorted(sample.index) == []
+
     def test_removing_an_annotation_takes_its_index_with_it(self, indexed):
         """Not stale --- gone.  A stale index is a mismatch, not an absence."""
         with medh5.amend(indexed) as writer:
@@ -237,6 +285,75 @@ class TestScrubCoverage:
         """The denylist started far too short --- 7 of 43 probes were caught."""
         path = self._with(tmp_path, f"e{abs(hash(key))}", **{key: "SENSITIVE"})
         assert [f for f in scrubber.scan(path).findings if key in f.where], key
+
+    def test_S3_4_a_frame_uid_is_pseudonymised_everywhere_it_is_named(self, tmp_path):
+        """Grids are not the only place a FrameOfReferenceUID appears.
+
+        A world-space annotation names one and a transform names two.  Rewriting
+        the grids alone left the real UID in a file certified de-identified and
+        --- because the frame graph is keyed on the string --- disconnected the
+        grids from the transform relating them, so `transform_between` answered
+        None and every longitudinal loader silently dropped the pair.
+        """
+        import h5py
+
+        uid = "1.2.840.113619.2.55.3.604688119.868.1234567890.123"
+        later = uid + ".9"
+        path = tmp_path / "frames.medh5"
+        with medh5.create(path, sample_id="s", subject_id="subj-A") as w:
+            w.add_timepoint("tp0", days_from_baseline=0)
+            w.add_timepoint("tp1", days_from_baseline=90)
+            for tp, frame in (("tp0", uid), ("tp1", later)):
+                w.add_grid(
+                    f"g_{tp}",
+                    shape=SHAPE,
+                    spacing=(1.0, 1.0, 1.0),
+                    timepoint=tp,
+                    frame_uid=frame,
+                )
+                w.add_image(
+                    f"CT_{tp}", np.zeros(SHAPE, np.int16), grid=f"g_{tp}", modality="CT"
+                )
+            w.add_boxes(
+                "lesions",
+                boxes=[[[1.0, 3.0], [1.0, 3.0], [1.0, 3.0]]],
+                class_ids=[1],
+                space="world",
+                frame_uid=uid,
+            )
+            w.add_transform(
+                "t", kind="affine", matrix=np.eye(4), from_frame=uid, to_frame=later
+            )
+
+        reported = {f.where for f in scrubber.scan(path).findings if f.rule == "uid"}
+        assert reported == {
+            "grids.g_tp0.frame_uid",
+            "grids.g_tp1.frame_uid",
+            "annotations.lesions.frame_uid",
+            "transforms.t.from_frame",
+            "transforms.t.to_frame",
+        }
+
+        scrubber.apply(path, salt="pepper")
+
+        surviving = []
+        with h5py.File(path, "r") as handle:
+
+            def collect(name, obj):
+                for key, value in obj.attrs.items():
+                    text = value.decode() if isinstance(value, bytes) else str(value)
+                    if uid in text:
+                        surviving.append(f"{name}@{key}")
+
+            handle.visititems(collect)
+        assert surviving == [], "a certified file still holding the real UID"
+
+        with medh5.open(path) as sample:
+            assert sample.transform_between("tp0", "tp1") is not None, (
+                "the rename kept the frame graph connected"
+            )
+            assert sample.verify().ok
+            assert not scrubber.scan(path).actionable
 
     def test_a_quasi_identifier_is_reported_but_kept_under_basic(self, tmp_path):
         """PatientWeight drives a PET SUV; removing it by default would break

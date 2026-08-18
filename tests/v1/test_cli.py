@@ -406,12 +406,34 @@ class TestFixAndScrub:
         assert "rewrote digests" in out.out
         assert "asserts nothing" in out.out
 
-    def test_fix_rebuilds_an_index(self, capsys, longitudinal_path):
+    def test_fix_rebuilds_a_stale_index(self, capsys, longitudinal_path):
+        import h5py
+
+        from medh5._hdf5 import encode_attr
+
+        with h5py.File(longitudinal_path, "r+") as handle:
+            handle["index/organs_tp0"].attrs["source_digest"] = encode_attr(
+                "sha256:" + "0" * 64
+            )
         code, out = run(
             capsys, "fix", str(longitudinal_path), "--rebuild-index", "--json"
         )
         assert code == EXIT_OK
-        assert json.loads(out.out)[0]["changed"]
+        result = json.loads(out.out)[0]
+        assert result["changed"]
+        assert result["rebuilt_index"] == ["organs_tp0"]
+
+    def test_fix_leaves_a_healthy_file_alone(self, capsys, longitudinal_path):
+        """An amend replaces the file, so doing one for nothing is not free."""
+        before = longitudinal_path.stat().st_mtime_ns
+        code, out = run(
+            capsys, "fix", str(longitudinal_path), "--rebuild-index", "--json"
+        )
+        assert code == EXIT_OK
+        result = json.loads(out.out)[0]
+        assert not result["changed"]
+        assert result["rebuilt_index"] == []
+        assert longitudinal_path.stat().st_mtime_ns == before
 
     def test_scrub_finds_and_exits_non_zero(self, capsys, tmp_path):
         path = tmp_path / "dirty.medh5"

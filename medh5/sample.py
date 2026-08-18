@@ -30,6 +30,7 @@ from medh5._hdf5 import (
     atomic_h5,
     copy_object,
     copy_unknown,
+    encode_attr,
     open_h5,
     set_attrs,
     validate_id,
@@ -480,20 +481,7 @@ class Sample:
 
     def attr_name_map(self) -> dict[str, tuple[str, ...]]:
         """Object path -> spec-defined attribute names, for ``content_id``."""
-        out: dict[str, tuple[str, ...]] = {"": ROOT_DIGEST_ATTRS}
-        for gid in self.grids:
-            out[f"grids/{gid}"] = SPEC_GRID_ATTRS
-        for name in self.images:
-            out[f"images/{name}"] = tuple(a for a in SPEC_IMAGE_ATTRS if a != "digest")
-        for name in self.annotations:
-            out[f"annotations/{name}"] = tuple(
-                a for a in SPEC_ANNOTATION_ATTRS if a != "digest"
-            )
-        for name in self.transforms:
-            out[f"transforms/{name}"] = tuple(
-                a for a in SPEC_TRANSFORM_ATTRS if a != "digest"
-            )
-        return out
+        return attr_name_map_of(self.root)
 
     def verify(self, partial: Sequence[str] | None = None) -> Any:
         from medh5.integrity.verify import verify_root
@@ -793,20 +781,52 @@ class SampleWriter:
         """Grids declared so far, so a pass over them does not need internals."""
         return dict(self._grids)
 
-    def set_frame_uid(self, grid_id: str, frame_uid: str) -> Grid:
-        """Replace a grid's frame-of-reference UID, keeping everything else.
+    def remap_frame_uids(self, mapping: Mapping[str, str]) -> tuple[str, ...]:
+        """Rename frames of reference everywhere they are named (§3.4).
 
-        The one geometric field that is an *identifier* rather than a
-        measurement (§3.4): a de-identification pass has to be able to
-        pseudonymise it without rewriting the geometry around it.
+        The frame UID is the one geometric field that is an *identifier* rather
+        than a measurement, so a de-identification pass has to be able to
+        pseudonymise it without rewriting the geometry around it.  It is renamed
+        here for the whole file at once, and deliberately not per object: grids
+        declare a frame, world-space annotations name one, and transforms name
+        two, so renaming it on the grids alone leaves the original UID on the
+        other two --- in a file that has just been certified de-identified ---
+        *and* disconnects the grids from the transforms that relate them, which
+        makes ``transform_between`` answer ``None`` and every longitudinal
+        loader quietly drop the pair.  Half a rename is worse than none: it
+        loses the registration and keeps the identifier.
+
+        Returns the attributes it rewrote.  UIDs absent from *mapping* are left
+        alone, so a caller may pseudonymise the real ones and keep the rest.
         """
-        from dataclasses import replace as _replace
+        changed: list[str] = []
+        for group, attrs in FRAME_ATTRS:
+            if group not in self._file:
+                continue
+            for name in sorted(self._file[group]):
+                node = self._file[group][name]
+                for attr in attrs:
+                    raw = node.attrs.get(attr)
+                    current = as_str(raw) if raw is not None else ""
+                    replacement = mapping.get(current)
+                    if replacement is None or replacement == current:
+                        continue
+                    node.attrs[attr] = encode_attr(replacement)
+                    changed.append(f"{group}.{name}.{attr}")
+        if changed:
+            # Both caches are keyed on the strings that just moved.
+            self._grids = read_grids(self._file)
+            for name in self._transform_frames:
+                node = self._file["transforms"][name]
+                self._transform_frames[name] = (
+                    as_str(node.attrs.get("from_frame", "")),
+                    as_str(node.attrs.get("to_frame", "")),
+                )
+        return tuple(changed)
 
-        grid = _replace(self._grid(grid_id), frame_uid=frame_uid)
-        del self._file["grids"][grid_id]
-        write_grid(self._file["grids"], grid)
-        self._grids[grid_id] = grid
-        return grid
+    def frame_uids(self) -> dict[str, tuple[str, ...]]:
+        """Every frame UID in the file so far, and the attributes naming it."""
+        return frame_references(self._file)
 
     def _grid(self, grid_id: str) -> Grid:
         try:
@@ -2048,28 +2068,70 @@ class SampleWriter:
         content_id: str | None = None
         if digests:
             stamp_digests(self._file)
-            attr_names = self._attr_name_map()
-            content_id = compute_content_id(self._file, attr_names)
+            content_id = compute_content_id(self._file, attr_name_map_of(self._file))
             self._file.attrs["content_id"] = content_id
         self._committed = True
         self._stack.close()
         return content_id
 
-    def _attr_name_map(self) -> dict[str, tuple[str, ...]]:
-        out: dict[str, tuple[str, ...]] = {"": ROOT_DIGEST_ATTRS}
-        for gid in self._grids:
-            out[f"grids/{gid}"] = SPEC_GRID_ATTRS
-        for name in self._images:
-            out[f"images/{name}"] = tuple(a for a in SPEC_IMAGE_ATTRS if a != "digest")
-        for name in self._annotation_kinds:
-            out[f"annotations/{name}"] = tuple(
-                a for a in SPEC_ANNOTATION_ATTRS if a != "digest"
-            )
-        for name in self._transform_frames:
-            out[f"transforms/{name}"] = tuple(
-                a for a in SPEC_TRANSFORM_ATTRS if a != "digest"
-            )
-        return out
+
+FRAME_ATTRS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("grids", ("frame_uid",)),
+    ("annotations", ("frame_uid",)),
+    ("transforms", ("from_frame", "to_frame")),
+)
+
+
+def frame_references(root: h5py.Group) -> dict[str, tuple[str, ...]]:
+    """Every frame-of-reference UID in a file, and the attributes naming it.
+
+    A frame UID is a *shared* identifier rather than a property of one object:
+    grids declare it, a world-space annotation names the frame its coordinates
+    are in, and a transform names two of them (§3.4, §10.2).  Anything that
+    rewrites one has to rewrite all of them --- see
+    :meth:`SampleWriter.remap_frame_uids` for why half a rename is worse than
+    none.
+    """
+    out: dict[str, list[str]] = {}
+    for group, attrs in FRAME_ATTRS:
+        if group not in root:
+            continue
+        for name in sorted(root[group]):
+            node = root[group][name]
+            for attr in attrs:
+                raw = node.attrs.get(attr)
+                uid = as_str(raw) if raw is not None else ""
+                if uid:
+                    out.setdefault(uid, []).append(f"{group}.{name}.{attr}")
+    return {uid: tuple(where) for uid, where in sorted(out.items())}
+
+
+def attr_name_map_of(root: h5py.Group) -> dict[str, tuple[str, ...]]:
+    """Object path -> spec-defined attribute names, for ``content_id`` (§13.2).
+
+    Derived from the file, and shared by the reader and the writer, because the
+    two have to agree by construction rather than by maintenance.  The writer
+    used to build this from its own in-memory caches, so every object class it
+    forgot to restore in ``_inherit`` produced a ``content_id`` computed over
+    fewer objects than a reader would later find --- an amend that verified on
+    the way out and reported E702 on the way back in.  Four caches needed that
+    restore before a fifth was noticed; asking the file removes the class.
+    """
+    out: dict[str, tuple[str, ...]] = {"": ROOT_DIGEST_ATTRS}
+    for group, attrs in (
+        ("grids", SPEC_GRID_ATTRS),
+        ("images", SPEC_IMAGE_ATTRS),
+        ("annotations", SPEC_ANNOTATION_ATTRS),
+        ("transforms", SPEC_TRANSFORM_ATTRS),
+    ):
+        if group not in root:
+            continue
+        # The digest attribute is what the map is used to compute; hashing it
+        # into its own input is the one attribute that can never be included.
+        names = tuple(a for a in attrs if a != "digest")
+        for name in root[group]:
+            out[f"{group}/{name}"] = names
+    return out
 
 
 def _default_axis_kinds(ndim: int) -> tuple[str, ...]:

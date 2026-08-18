@@ -36,6 +36,7 @@ from typing import Any
 
 from medh5.curation.timeline import Timeline, Timepoint
 from medh5.errors import MEDH5ValidationError
+from medh5.sample import frame_references
 
 PROFILES = ("basic", "strict")
 
@@ -520,13 +521,18 @@ def scan(path: str | os.PathLike[str], *, profile: str = "basic") -> ScrubReport
     report = ScrubReport(path=os.fspath(path), profile=profile)
     with medh5.open(path) as sample:
         scan_document(sample.document, report)
-        for grid_id, grid in sample.grids.items():
-            if grid.frame_uid and DICOM_UID.match(grid.frame_uid):
+        # Grids are not the only place a frame UID appears: a world-space
+        # annotation names one and a transform names two.  Reporting only the
+        # grids made a partial scrub look complete.
+        for uid, where in frame_references(sample.root).items():
+            if not DICOM_UID.match(uid):
+                continue
+            for location in where:
                 report.add(
                     "uid",
-                    f"grids.{grid_id}.frame_uid",
+                    location,
                     "a real FrameOfReferenceUID; SHOULD be pseudonymised (§3.4)",
-                    grid.frame_uid,
+                    uid,
                     actionable=True,
                 )
     if profile == "strict":
@@ -597,13 +603,17 @@ def apply(
             document.acquisition[image_id] = cleaned
             removed.extend(actions)
 
-        for grid_id, grid in writer.grids.items():
-            uid = grid.frame_uid
-            if uid and DICOM_UID.match(uid):
-                replacement = pseudonymise(uid, salt)
-                report.uid_map[uid] = replacement
-                writer.set_frame_uid(grid_id, replacement)
-                removed.append(f"grids.{grid_id}.frame_uid -> {replacement}")
+        # One mapping, applied to every reference at once.  Pseudonymising the
+        # grids alone would leave the real UID on the transforms and annotations
+        # and break the frame graph joining them --- see `remap_frame_uids`.
+        frame_map = {
+            uid: pseudonymise(uid, salt)
+            for uid in writer.frame_uids()
+            if DICOM_UID.match(uid)
+        }
+        report.uid_map.update(frame_map)
+        for location in writer.remap_frame_uids(frame_map):
+            removed.append(f"{location} -> pseudonymised")
 
         # A Timepoint is frozen, so the timeline is rebuilt rather than edited:
         # the invariants §3.7 puts in `Timeline.check` are re-run on the result.
