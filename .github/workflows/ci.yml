@@ -60,6 +60,25 @@ jobs:
       - run: pip install -e ".[dev,schema,torch,nifti,dicom,dicomseg,itk,interp]"
       - run: pytest tests/ -v --cov=medh5 --cov-report=term-missing --cov-fail-under=90
 
+  test-monai:
+    # MONAI is a heavy dependency for a handful of tests, so it stays out of
+    # the matrix and gets its own job rather than the `dev` extra --- but it
+    # has to run *somewhere*.  `pytest.importorskip("monai")` skips silently
+    # when it is absent, so `medh5.monai`'s level handling shipped covered by
+    # a test that had never once executed.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev,nifti,monai]"
+      # The point of the job. Without this the run stays green when the import
+      # fails and every test skips, which is the state it exists to prevent.
+      - run: python -c "import monai, torch"
+      # Exit 5 if `-k` selects nothing, so a renamed class fails here too.
+      - run: pytest tests/ -v -k "Monai or monai" --no-cov
+
   conformance:
     # The corpus is a shipped artifact, not a test fixture: a third-party
     # implementation runs the same 103 cases, and is scored the same way.

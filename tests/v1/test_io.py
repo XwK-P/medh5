@@ -391,6 +391,7 @@ class TestDimensionality:
         units=None,
         toffset=None,
         bvals=None,
+        sidecar=None,
     ):
         image = nib.Nifti1Image(np.zeros(shape, np.int16), AFFINE)
         if intent is not None:
@@ -405,6 +406,8 @@ class TestDimensionality:
         nib.save(image, str(source))
         if bvals is not None:
             (tmp_path / f"{name}.bval").write_text(" ".join(str(b) for b in bvals))
+        if sidecar is not None:
+            (tmp_path / f"{name}.json").write_text(json.dumps(sidecar))
         return source
 
     @pytest.mark.parametrize(
@@ -431,6 +434,12 @@ class TestDimensionality:
                 ("channel", "spatial", "spatial", "spatial"),
             ),
             ("singleton", (24, 20, 12, 1), {"tr": 1.0}, ("spatial",) * 3),
+            (
+                "multiecho",
+                (24, 20, 12, 4),
+                {"sidecar": {"EchoTime": [0.005, 0.01, 0.015, 0.02]}},
+                ("channel", "spatial", "spatial", "spatial"),
+            ),
         ],
     )
     def test_S3_6_each_row_of_the_table(self, tmp_path, name, shape, options, kinds):
@@ -505,6 +514,103 @@ class TestDimensionality:
             assert grid.shape == (3, 12, 20, 24)
             assert grid.axis_kinds == ("channel", "spatial", "spatial", "spatial")
         assert [n.severity for n in report.of_kind("axis_kinds")] == ["decision"]
+
+    def test_S3_6_a_multi_echo_sidecar_states_the_axis(self, tmp_path):
+        """The multi-echo row of §3.6, which no header field distinguishes.
+
+        A multi-echo series carries no intent code and no temporal unit, so it
+        fell through to the time guess and was imported as a time series with
+        invented per-frame timings.  The BIDS sidecar is what the converters
+        that write these files already emit, and it states the answer.
+        """
+        source = self._write(
+            tmp_path,
+            "megre",
+            (24, 20, 12, 4),
+            sidecar={"EchoTime": [0.005, 0.01, 0.015, 0.02], "RepetitionTime": 0.05},
+        )
+        report = from_nifti({"ME": source}, tmp_path / "megre.medh5")
+        with medh5.open(tmp_path / "megre.medh5") as sample:
+            grid = sample.grids["ref"]
+            assert grid.axis_kinds == ("channel", "spatial", "spatial", "spatial")
+            assert grid.time_values is None
+            assert sample.images["ME"].channel_names == (
+                "TE=0.005",
+                "TE=0.01",
+                "TE=0.015",
+                "TE=0.02",
+            )
+            # §4.5 wants the DICOM keyword, and the echo times are what the
+            # channel axis *means* --- exactly as b-values are for a DWI.
+            assert sample.document.acquisition["ME"]["EchoTime"] == [
+                0.005,
+                0.01,
+                0.015,
+                0.02,
+            ]
+        assert [n.severity for n in report.of_kind("axis_kinds")] == ["decision"]
+
+    def test_S3_6_a_scalar_echo_time_states_nothing_about_the_axis(self, tmp_path):
+        """Per-volume is the whole test.
+
+        Every MRI sidecar ever written carries a scalar `EchoTime`.  Reading
+        the field's *presence* rather than its length would turn every cine and
+        DCE series into a channel axis --- the same bug in the other direction.
+        """
+        source = self._write(
+            tmp_path,
+            "dce",
+            (24, 20, 12, 4),
+            sidecar={"EchoTime": 0.03, "RepetitionTime": 2.0},
+        )
+        _, geometry = read_nifti(source)
+        assert geometry["leading_kind"] == "time"
+        assert geometry["leading_stated"] is False
+
+    def test_S3_6_a_list_that_is_not_per_volume_is_not_evidence(self, tmp_path):
+        """Two echo times beside four frames do not describe those four frames."""
+        source = self._write(
+            tmp_path, "short", (24, 20, 12, 4), sidecar={"EchoTime": [0.005, 0.01]}
+        )
+        _, geometry = read_nifti(source)
+        assert geometry["leading_kind"] == "time"
+        assert geometry["leading_stated"] is False
+
+    def test_S3_2_volume_timing_beats_a_ramp_rebuilt_from_pixdim(self, tmp_path):
+        """BIDS states each volume's acquisition time; `pixdim[4]` assumes evenly
+        spaced frames, which is the assumption sparse-sampled fMRI breaks."""
+        source = self._write(
+            tmp_path,
+            "sparse",
+            (24, 20, 12, 4),
+            tr=2.0,
+            units="sec",
+            sidecar={"VolumeTiming": [0.0, 2.5, 6.0, 9.0]},
+        )
+        _, geometry = read_nifti(source)
+        assert geometry["leading_kind"] == "time"
+        assert geometry["time_values"] == [0.0, 2.5, 6.0, 9.0]
+        assert geometry["time_measured"] is True
+
+    def test_S3_6_a_sidecar_claiming_both_kinds_is_refused(self, tmp_path):
+        """It says the axis is a channel axis and a time axis at once."""
+        source = self._write(
+            tmp_path,
+            "both",
+            (24, 20, 12, 4),
+            sidecar={"EchoTime": [1, 2, 3, 4], "VolumeTiming": [0, 1, 2, 3]},
+        )
+        with pytest.raises(MEDH5ValidationError, match="at once"):
+            read_nifti(source)
+        # And the advice the refusal gives has to actually work.
+        _, geometry = read_nifti(source, fourth_axis="time")
+        assert geometry["leading_kind"] == "time"
+
+    def test_S3_6_a_broken_sidecar_is_not_a_broken_nifti(self, tmp_path):
+        source = self._write(tmp_path, "bad", (24, 20, 12, 4))
+        (tmp_path / "bad.json").write_text("{not json")
+        _, geometry = read_nifti(source)
+        assert geometry["leading_kind"] == "time"
 
     def test_S3_6_an_unmarked_fourth_axis_is_a_guess(self, tmp_path):
         """`pixdim[4]` is 1.0 in a fresh header, so it states nothing on its own."""
