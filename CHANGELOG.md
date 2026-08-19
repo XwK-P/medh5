@@ -4,6 +4,42 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.0.1] — 2026-08-18
+
+Fixes against MEDH5 format 1.0. The **format version is unchanged**: 1.0.1 reads and writes exactly
+the files 1.0.0 does, and `__format_version__` stays `"1.0"`.
+
+### Fixed
+
+- **A multi-echo NIfTI is no longer imported as a time series** ([#9]). NIfTI-1 puts time in
+  `dim[4]`, but §3.6 gives that axis a `time` row and a `channel` row, and a multi-echo series
+  states neither an intent code nor a temporal unit — so it fell through to the guess and arrived
+  with per-frame timings the converter had invented. `from_nifti` now reads the BIDS JSON sidecar,
+  the same convention `.bval` already covers for DWI.
+
+  Evidence has to be **per volume**: a scalar `EchoTime` is in every MRI sidecar ever written, so
+  only a list whose length matches the frame count settles the axis. `EchoTime`, `EchoNumber`,
+  `InversionTime` and `FlipAngle` name a channel axis; `VolumeTiming` names a time axis *and*
+  supplies measured frame times, which beats a ramp rebuilt from `pixdim[4]` for sparse-sampled
+  acquisitions. Echo times are recorded in `acquisition` under the DICOM keyword §4.5 asks for.
+  A sidecar stating both kinds at once is refused, and `fourth_axis=` still overrides everything.
+
+- **`medh5.__version__` can no longer drift from the published wheel.** The release workflow
+  verified the tag against `pyproject.toml` alone, so a half-completed bump could publish a wheel
+  that stamped the wrong version into every file's `generator` and every dataset manifest. Both the
+  workflow and the test suite now check the two agree.
+
+### Changed
+
+- **The MONAI tests run in CI** ([#8]). They are guarded by `pytest.importorskip` and MONAI was in
+  neither the `dev` extra nor the test matrix, so `to_metatensor(level=...)` shipped covered by a
+  test that had never executed. A dedicated job installs the `monai` extra and asserts the import
+  before running pytest — without that assertion a failed install leaves the tests skipping and the
+  job green.
+
+[#8]: https://github.com/XwK-P/medh5/issues/8
+[#9]: https://github.com/XwK-P/medh5/issues/9
+
 ## [1.0.0] — MEDH5 format 1.0
 
 A clean-slate reimplementation of the format. **Not backward compatible with 0.x**, by design: a
