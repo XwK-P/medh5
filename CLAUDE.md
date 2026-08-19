@@ -20,6 +20,11 @@ ruff check . && ruff format --check . && mypy medh5
 
 # The conformance corpus must stay green
 medh5 conformance run /tmp/corpus
+
+# MONAI stays out of the line above --- it is heavy, and only a handful of
+# tests need it. Those tests `importorskip`, so they skip silently without it
+# and CI runs them in a dedicated job.
+pip install -e ".[monai]" && pytest tests/ -k "Monai or monai"
 ```
 
 ## Pre-commit checks
@@ -121,7 +126,10 @@ reads without the others.
   writer test.
 - CI matrix: Python 3.10–3.12, plus a macOS job specifically for the `spawn`
   start method, plus a conformance job that publishes the suite and scores this
-  validator through the public `score` path.
+  validator through the public `score` path, plus a MONAI job.
+- **A skipped test is not a passing test.** Anything guarded by
+  `pytest.importorskip` needs a CI job that installs the dependency, or it
+  reports coverage it does not have.
 
 ## 0.x
 

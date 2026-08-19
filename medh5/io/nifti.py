@@ -21,8 +21,9 @@ onto the grid so a reader never has to infer them.
 
 from __future__ import annotations
 
+import json
 import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -118,14 +119,23 @@ def read_nifti(
     time_units: str | None = None
     measured = False
     kind = "spatial"
+    stated_by: str | None = None
     b_values: tuple[float, ...] | None = None
+    channel_field: str | None = None
+    channel_values: tuple[float, ...] | None = None
     if data.ndim == 4:  # noqa: PLR2004 - three spatial axes and one more
-        kind, stated = _fourth_axis(image, path, fourth_axis)
+        frames = int(data.shape[0])
+        bids = _bids_axis(path, frames, fourth_axis)
+        kind, stated = _fourth_axis(image, path, fourth_axis, bids)
+        stated_by = bids[1] if bids is not None and bids[0] == kind else None
         if kind == "time":
-            times, time_units, measured = _time_axis(image, int(data.shape[0]))
+            stamps = None if bids is None or bids[0] != "time" else bids[2]
+            times, time_units, measured = _time_axis(image, frames, stamps)
         else:
             sidecar = _bval_sidecar(path)
             b_values = None if sidecar is None else _read_bvals(sidecar)
+            if bids is not None and bids[0] == "channel":
+                channel_field, channel_values = bids[1], bids[2]
         measured = measured if kind == "time" else stated
     return np.ascontiguousarray(data), {
         "spacing": [float(v) for v in spacing],
@@ -140,6 +150,9 @@ def read_nifti(
         "leading_kind": kind,
         "leading_stated": measured,
         "b_values": None if b_values is None else list(b_values),
+        "channel_field": channel_field,
+        "channel_values": None if channel_values is None else list(channel_values),
+        "stated_by": stated_by,
         "squeezed": squeezed,
         "units": _units(image),
         "dtype": str(data.dtype),
@@ -162,6 +175,17 @@ TIME_SERIES_INTENT = 2001
 FOURTH_AXES = ("auto", "time", "channel")
 
 
+def _sidecar(path: str | os.PathLike[str], suffix: str) -> Path | None:
+    """The file beside a NIfTI sharing its stem and ending in *suffix*."""
+    name = Path(os.fspath(path))
+    stem = name.name
+    for extension in (".nii.gz", ".nii"):
+        if stem.endswith(extension):
+            candidate = name.with_name(stem[: -len(extension)] + suffix)
+            return candidate if candidate.exists() else None
+    return None
+
+
 def _bval_sidecar(path: str | os.PathLike[str]) -> Path | None:
     """The ``.bval`` file beside a NIfTI, which is what makes a series DWI.
 
@@ -170,13 +194,7 @@ def _bval_sidecar(path: str | os.PathLike[str]) -> Path | None:
     sidecar is the only reliable signal, because such files carry no intent
     code and often a meaningless ``pixdim[4]``.
     """
-    name = Path(os.fspath(path))
-    stem = name.name
-    for suffix in (".nii.gz", ".nii"):
-        if stem.endswith(suffix):
-            candidate = name.with_name(stem[: -len(suffix)] + ".bval")
-            return candidate if candidate.exists() else None
-    return None
+    return _sidecar(path, ".bval")
 
 
 def _read_bvals(path: Path) -> tuple[float, ...]:
@@ -184,8 +202,92 @@ def _read_bvals(path: Path) -> tuple[float, ...]:
     return tuple(float(v) for v in text.split())
 
 
+# BIDS sidecar fields carrying **one entry per volume**, mapped onto the DICOM
+# keyword `acquisition` wants (§4.5) and a short channel label.
+#
+# Per-volume is the whole test.  A scalar ``EchoTime`` sits in the sidecar of
+# every MRI ever converted and says nothing about the fourth axis; a list of
+# four of them beside a four-frame file says what those four frames *are*.
+# Matching on length is what separates the two, and it is why this reads the
+# sidecar's shape rather than merely noting that a sidecar exists.
+PER_VOLUME_CHANNEL = {
+    "EchoTime": ("EchoTime", "TE"),
+    "EchoTimes": ("EchoTime", "TE"),
+    "EchoNumber": ("EchoNumbers", "echo"),
+    "InversionTime": ("InversionTime", "TI"),
+    "FlipAngle": ("FlipAngle", "FA"),
+}
+PER_VOLUME_TIME = ("VolumeTiming",)
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    """A BIDS sidecar as a mapping; malformed or unreadable reads as absent."""
+    try:
+        loaded = json.loads(path.read_text())
+    except (OSError, ValueError):  # a broken sidecar is not a broken NIfTI
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def _per_volume(
+    sidecar: Mapping[str, Any], fields: Iterable[str], frames: int
+) -> tuple[str, tuple[float, ...]] | None:
+    """The first *field* holding exactly *frames* numbers, and its values."""
+    for field_name in fields:
+        value = sidecar.get(field_name)
+        if not isinstance(value, (list, tuple)) or len(value) != frames:
+            continue
+        try:
+            return field_name, tuple(float(v) for v in value)
+        except (TypeError, ValueError):  # a list of something else
+            continue
+    return None
+
+
+def _bids_axis(
+    path: str | os.PathLike[str], frames: int, requested: str
+) -> tuple[str, str, tuple[float, ...]] | None:
+    """What a BIDS JSON sidecar states the fourth axis is, if anything.
+
+    Returns ``(kind, field, values)`` --- the §3.6 kind, the sidecar field that
+    settled it, and its per-volume numbers, which are the frame times for a
+    time axis and what the channels *mean* for a channel one.
+
+    This is the multi-echo counterpart of the ``.bval`` rule above.  Both rows
+    of §3.6's fourth-axis entry are written by the same converters, and the
+    JSON sidecar is the convention those converters already emit, so reading it
+    needs no new argument and no new guess.
+    """
+    beside = _sidecar(path, ".json")
+    if beside is None:
+        return None
+    fields = _read_json(beside)
+    channel = _per_volume(fields, PER_VOLUME_CHANNEL, frames)
+    timing = _per_volume(fields, PER_VOLUME_TIME, frames)
+    if channel is not None and timing is not None:
+        if requested == "auto":
+            raise MEDH5ValidationError(
+                f"the sidecar beside {Path(os.fspath(path)).name} states both "
+                f"{channel[0]} and {timing[0]} per volume, so it says the "
+                "fourth axis is a channel axis and a time axis at once (§3.6) "
+                "--- pass `fourth_axis=` to settle it"
+            )
+        # The caller has settled it, so the refusal above would contradict the
+        # advice it gives.  Keep only the evidence that agrees with them.
+        channel = channel if requested == "channel" else None
+        timing = timing if requested == "time" else None
+    if channel is not None:
+        return "channel", channel[0], channel[1]
+    if timing is not None:
+        return "time", timing[0], timing[1]
+    return None
+
+
 def _fourth_axis(
-    image: Any, path: str | os.PathLike[str], requested: str
+    image: Any,
+    path: str | os.PathLike[str],
+    requested: str,
+    bids: tuple[str, str, tuple[float, ...]] | None,
 ) -> tuple[str, bool]:
     """Whether a 4-D NIfTI's leading axis is ``time`` or ``channel`` (§3.6).
 
@@ -196,6 +298,11 @@ def _fourth_axis(
 
     Returns the kind and whether the source stated it.  A guess is reported as
     one, and ``fourth_axis=`` overrides it outright.
+
+    Sidecars rank above the header intent because they are what the converters
+    that write these files actually populate: a DWI or multi-echo series
+    normally carries ``intent_code = 0``, and the sidecar is derived from the
+    DICOM the series came from.
     """
     if requested not in FOURTH_AXES:
         raise MEDH5ValidationError(
@@ -205,6 +312,8 @@ def _fourth_axis(
         return requested, True
     if _bval_sidecar(path) is not None:
         return "channel", True
+    if bids is not None:
+        return bids[0], True
     intent = int(image.header["intent_code"])
     if intent in CHANNEL_INTENTS:
         return "channel", True
@@ -309,7 +418,9 @@ def _temporal(image: Any) -> tuple[float, float, str, bool]:
     return step * scale, offset * scale, units, True
 
 
-def _time_axis(image: Any, frames: int) -> tuple[tuple[float, ...], str, bool]:
+def _time_axis(
+    image: Any, frames: int, stamps: tuple[float, ...] | None = None
+) -> tuple[tuple[float, ...], str, bool]:
     """Per-frame acquisition times, and whether they were read or assumed.
 
     A grid carrying a time axis **MUST** carry ``time_values`` (§3.2), and §3.6
@@ -318,6 +429,12 @@ def _time_axis(image: Any, frames: int) -> tuple[tuple[float, ...], str, bool]:
     an option --- the source states a temporal zoom and the converter was
     throwing it away.
     """
+    if stamps is not None:
+        # BIDS `VolumeTiming` is the acquisition time of each volume in
+        # seconds.  It is a measurement of exactly what §3.2 asks for, so it
+        # beats a ramp rebuilt from `pixdim[4]`, which assumes frames are
+        # evenly spaced --- the assumption sparse-sampled fMRI breaks.
+        return stamps, "s", True
     step, offset, units, stated = _temporal(image)
     if not stated:
         # Nothing to read.  Frame indices are all that is left, and they are an
@@ -450,11 +567,13 @@ def from_nifti(
         detail = {
             "channels": geometry["shape"][0],
             "b_values": geometry.get("b_values"),
+            "stated_by": geometry.get("stated_by"),
         }
         log.decision(
             "axis_kinds",
             "the fourth axis holds components rather than frames, so it is a "
-            "`channel` axis (§3.6) --- b-values or an intent code said so",
+            "`channel` axis (§3.6) --- b-values, a sidecar field or an intent "
+            "code said so",
             detail,
         )
     elif geometry.get("leading_kind") == "time" and not geometry.get("leading_stated"):
@@ -534,16 +653,26 @@ def from_nifti(
         )
         for name, array in arrays.items():
             b_values = per_image[name].get("b_values")
-            channel_names = (
-                tuple(f"b={v:g}" for v in b_values)
-                if b_values and len(b_values) == geometry["shape"][0]
-                else None
-            )
+            field = per_image[name].get("channel_field")
+            values = per_image[name].get("channel_values")
+            frames = geometry["shape"][0]
+            channel_names = None
+            if b_values and len(b_values) == frames:
+                channel_names = tuple(f"b={v:g}" for v in b_values)
+            elif field and values and len(values) == frames:
+                channel_names = tuple(
+                    f"{PER_VOLUME_CHANNEL[field][1]}={v:g}" for v in values
+                )
             if b_values:
                 # §3.6 puts the b-values in `acquisition` (§4.5); they are what
                 # the channel axis *means*, and dropping them leaves a stack of
                 # unlabelled volumes.
                 writer.acquisition(name, b_values=list(b_values))
+            if field and values:
+                # Same reasoning, same place, under the DICOM keyword §4.5 asks
+                # for: echo times are to a multi-echo stack what b-values are
+                # to a DWI one.
+                writer.acquisition(name, **{PER_VOLUME_CHANNEL[field][0]: list(values)})
             writer.add_image(
                 name,
                 array,
