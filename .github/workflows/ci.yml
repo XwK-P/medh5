@@ -34,7 +34,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -78,6 +78,28 @@ jobs:
       - run: python -c "import monai, torch"
       # Exit 5 if `-k` selects nothing, so a renamed class fails here too.
       - run: pytest tests/ -v -k "Monai or monai" --no-cov
+
+  prototype:
+    # Appendix C.2 publishes a table of results from the executable prototype
+    # next to the spec.  Nothing referenced it, so that table was an ungated
+    # claim -- unlike the corpus beside it, which CI runs on every push.  It is
+    # deliberately dependency-light, so this job is cheap.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev,schema]"
+      - run: |
+          mkdir -p "$RUNNER_TEMP/prototype"
+          cd "$RUNNER_TEMP/prototype"
+          python "$GITHUB_WORKSPACE/docs/design/benchmarks/reference_writer.py"
+      # The prototype prints "[ok] ..." per check and raises otherwise, so a
+      # non-zero exit above is the gate. Confirm it wrote where it was told,
+      # rather than into the checkout.
+      - run: test -f "$RUNNER_TEMP/prototype/case_0001.medh5"
+      - run: git diff --exit-code
 
   conformance:
     # The corpus is a shipped artifact, not a test fixture: a third-party

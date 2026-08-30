@@ -7,6 +7,8 @@ consumer's training loop.
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import pytest
 
@@ -342,3 +344,44 @@ class TestErrorPaths:
     def test_an_annotation_without_a_grid_says_so(self):
         header = AnnotationHeader(kind="classification", task="classification")
         assert header.grid is None
+
+
+class TestLabelmapWarnsOnOverlap:
+    def test_S7_0_flattening_an_overlapping_annotation_says_so(
+        self, tmp_path, label_set
+    ):
+        """`layers` exists because classes overlap; one integer volume cannot.
+
+        Three exits flatten on the way out -- NIfTI export, the torch loader's
+        `labelmap` format, and the MONAI bridge -- and each was deleting the
+        overlap region silently: a lesion inside a liver stopped being liver.
+        """
+        shape = (8, 16, 16)
+        liver = np.zeros(shape, bool)
+        liver[2:6, 4:12, 4:12] = True
+        lesion = np.zeros(shape, bool)
+        lesion[3:5, 6:10, 6:10] = True
+        path = tmp_path / "overlap.medh5"
+        with medh5.create(path, codec="portable") as w:
+            w.label_set(label_set)
+            w.add_grid("g", shape=shape, spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", np.zeros(shape, np.int16), grid="g", modality="CT")
+            w.add_segmentation(
+                "seg", grid="g", masks={1: liver, 3: lesion}, annotated_classes=[1, 3]
+            )
+
+        with medh5.open(path) as sample:
+            annotation = sample.annotations["seg"]
+            dense = annotation.dense([1, 3])
+            overlap = int((dense[0] & dense[1]).sum())
+            assert overlap > 0, "the fixture must actually overlap"
+
+            with pytest.warns(UserWarning, match="overlapping voxel"):
+                flat = annotation.labelmap()
+            assert int((flat == 1).sum()) == int(dense[0].sum()) - overlap
+
+            # An explicit priority is the caller making the decision, so it is
+            # not a surprise and does not warn.
+            with warnings.catch_warnings():
+                warnings.simplefilter("error")
+                annotation.labelmap(priority=[3])

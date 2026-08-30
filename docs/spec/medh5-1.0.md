@@ -791,8 +791,12 @@ voxel **edges**. Therefore:
 
 ```
 numpy slice a:b   ⟺   lo = a − 0.5 ,  hi = b − 0.5      (extent hi − lo = b − a voxels)
-box → slice       :    start = round(lo + 0.5) , stop = round(hi + 0.5)
+box → slice       :    start = floor(lo + 0.5) , stop = floor(hi + 0.5)
 ```
+
+The rounding is **half-up**: `floor(x + 0.5)`, not a language's default `round`. Half-to-even —
+which is what Python's `round` and NumPy's `rint` do — breaks the extent identity above for a box on
+integer edge coordinates, because `lo + 0.5` and `hi + 0.5` then round in opposite directions.
 
 Boxes **MUST** be `float32` or `float64` and **MUST** satisfy `lo ≤ hi`. Writers **MUST NOT** store
 integer boxes: rounding a box on resample or on world↔index conversion is lossy, and 0.x's
@@ -1204,6 +1208,11 @@ H( object_path ‖ 0x00 ‖ dtype_str ‖ 0x00 ‖ shape_csv ‖ 0x00 ‖ raw C-
 (`"<i2"`, `"<u8"`, `"|b1"`). Variable-length string datasets hash the UTF-8 payloads separated by
 `0x00`. The digest covers **decompressed** content, so recompression does not invalidate it.
 
+Datasets under `index/` (§14.3) are **excluded**: they carry no `digest`, and writers **MUST NOT**
+stamp one. An index is derived, regenerable, and already bound to its source by `source_digest`
+(§13.3). The exclusion is normative because it is not merely an omission a writer may make up its
+own mind about — see §13.2.
+
 ### 13.2 Content id
 
 The sample root **SHOULD** carry `content_id`, the Merkle root over the sorted digest list:
@@ -1219,6 +1228,15 @@ content_id = "<algo>:" + hex( H( "".join(lines) ) )
 nested lists and floats in `repr` shortest round-trip form. Each of the three groups of lines is
 sorted independently and they are concatenated in the order shown. Paths are relative to the **sample
 root**, so a sample extracted from a collection keeps its `content_id` (§2.2).
+
+**`index/` is outside `content_id` entirely** — neither its datasets (they carry no digest, §13.1)
+nor its attributes contribute a line. This is normative, not incidental: `content_id` is advertised
+as a cache and dedup key *across implementations*, so two writers that disagree about whether a
+derived cache is part of a sample's identity would compute different addresses for the same file and
+the key would be worthless. It also means building, rebuilding or dropping an index does not change
+the address of the sample it was built from, which is the property that makes the cache safe to
+regenerate. A corrupted index is therefore **not** detectable through `content_id`; it is guarded by
+`source_digest` (§13.3) against staleness, and is regenerable by definition.
 
 At the root, the covered attributes are exactly `medh5_version`, `medh5_kind` and `medh5_profiles`.
 `created` and `generator` are **excluded**, and `content_id` obviously cannot cover itself: two
@@ -1518,7 +1536,7 @@ any machine. On a 192×256×256 synthetic CT with eight classes, a multi-class 6
 4.0 ms, foreground centre sampling 0.90 ms (O(1) in volume size, via §14.3), a metadata-only read
 0.21 ms, and `open()` → first patch 2.4 ms.
 
-Eight clauses were corrected during implementation, each because writing the code showed the text was
+Ten clauses were corrected during implementation, each because writing the code showed the text was
 not implementable, or not unambiguous, as written:
 
 | Clause | Correction |
@@ -1531,6 +1549,8 @@ not implementable, or not unambiguous, as written:
 | §9 | The `class_ids` *dataset* (asserted classes) and the same-named §6.2 *attribute* (classes the annotation can express) are now explicitly distinguished, since `annotated_class_ids ⊆ class_ids` would otherwise make "looked for and not found" inexpressible. |
 | §2.2 | §2.2 requires every sample root in a collection to carry its own `content_id`, but §15.2 had no code to report a missing one. `E010` was added. |
 | §7.4 | W909 is **sample-scoped**, matching the scope of `instance_id` itself. Checking it per annotation would miss the case it exists for: one lesion classified differently at two visits, each annotation internally consistent. |
+| §8.1 | The box↔slice rounding is `floor(x + 0.5)`, stated explicitly. "round" was read as a language's default, and both Python's `round` and NumPy's `rint` round half to **even** — under which `lo + 0.5` and `hi + 0.5` round in opposite directions, so a one-voxel box on integer edges became empty or two voxels wide depending on its parity. The extent identity in the same clause was the thing being violated. |
+| §13.1, §13.2 | `index/` is **excluded** from object digests and from `content_id`, normatively rather than by convention. The reference implementation had always skipped it — a derived cache should not change the address of the sample it derives from — but the text did not say so, so a conforming implementation that stamped index digests would compute a different `content_id` for the same bytes, and `content_id` is only useful as a cross-implementation key if every implementation agrees on what it covers. |
 
 ### C.2 Prototype checks
 

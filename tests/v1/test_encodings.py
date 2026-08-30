@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 import medh5
+from medh5.annotations.geometric import encode_obb
 from medh5.annotations.voxel import (
     InstanceInput,
     analyse,
@@ -330,6 +331,91 @@ class TestTranscoding:
         assert exc.value.code == "E405"
 
 
+class TestTranscodingRefusesWhatItCannotCarry:
+    """§7.6 calls transcoding lossless, so anything it cannot carry must stop it."""
+
+    SHAPE = (6, 12, 12)
+
+    def _sample(self, tmp_path, **kwargs):
+        labels = LabelSet(
+            "v",
+            version="1.0.0",
+            classes=[
+                LabelClass(1, "liver", "Liver"),
+                LabelClass(3, "lesion", "Lesion"),
+            ],
+        )
+        path = tmp_path / "t.medh5"
+        with medh5.create(path, codec="portable") as w:
+            w.label_set(labels)
+            w.add_grid("g", shape=self.SHAPE, spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", np.zeros(self.SHAPE, np.int16), grid="g", modality="CT")
+            w.add_segmentation("seg", grid="g", annotated_classes=[1, 3], **kwargs)
+        return path
+
+    def test_S7_7_an_in_band_ignore_region_blocks_a_target_that_cannot_hold_it(
+        self, tmp_path
+    ):
+        """`0` means "verified absent", not "unknown" -- §7.7's central point.
+
+        `bitmask` and `probmap` express ignore as a separate `mask` annotation,
+        which a payload-returning function cannot create, so the region was
+        simply dropped: unexamined voxels silently became verified background
+        for every annotated class, with W904 unable to fire because
+        `annotated_class_ids == class_ids`.
+        """
+        liver = np.zeros(self.SHAPE, bool)
+        liver[1:3, 1:5, 1:5] = True
+        lesion = np.zeros(self.SHAPE, bool)
+        lesion[4:5, 6:9, 6:9] = True
+        ignore = np.zeros(self.SHAPE, bool)
+        ignore[5:6, :, :] = True
+        path = self._sample(tmp_path, masks={1: liver, 3: lesion}, ignore=ignore)
+
+        with medh5.open(path) as sample:
+            assert sample.annotations["seg"].has_ignore_region
+
+        for target in ("bitmask", "probmap"):
+            with (
+                medh5.amend(path) as writer,
+                pytest.raises(MEDH5ValidationError, match="ignore region"),
+            ):
+                writer.transcode_annotation("seg", target)
+
+        # `layers` can hold it in band, so it is carried rather than refused.
+        with medh5.amend(path) as writer:
+            writer.transcode_annotation("seg", "layers")
+        with medh5.open(path) as sample:
+            assert sample.annotations["seg"].has_ignore_region
+
+    def test_S7_4_a_dense_encoding_will_not_be_transcoded_to_instances(self, tmp_path):
+        """A dense encoding knows which voxels; it never knew which object.
+
+        Going to `instances` merged every object of a class into one mask and
+        minted a fresh `instance_id` for it, so two lesions came back as one
+        object carrying an id neither of them had -- in the field §7.4 makes
+        the entire longitudinal join.
+        """
+        first = np.zeros(self.SHAPE, bool)
+        first[0:2, 0:2, 0:2] = True
+        second = np.zeros(self.SHAPE, bool)
+        second[5:6, 8:10, 8:10] = True
+        path = self._sample(
+            tmp_path,
+            instances=[
+                InstanceInput(class_id=3, instance_id=101, mask=first),
+                InstanceInput(class_id=3, instance_id=202, mask=second),
+            ],
+        )
+        with medh5.amend(path) as writer:
+            writer.transcode_annotation("seg", "layers")
+        with (
+            medh5.amend(path) as writer,
+            pytest.raises(MEDH5ValidationError, match="no object identity"),
+        ):
+            writer.transcode_annotation("seg", "instances")
+
+
 class TestCostModel:
     def test_instances_beat_dense_for_sparse_data(self):
         masks = {1: np.zeros(SHAPE, dtype=bool)}
@@ -346,3 +432,70 @@ class TestCostModel:
         assert stats.fill == 0.0
         assert stats.depth == 0.0
         assert stats.mean_degree == 0.0
+
+
+class TestPayloadEncoderGuards:
+    """The encoders are exported, so a third-party converter calls them direct."""
+
+    SHAPE = (4, 6, 6)
+
+    def test_S5_3_reserved_and_out_of_range_class_ids_are_refused(self):
+        """Unchecked, each of these was cast into the label dtype and wrapped.
+
+        0 became background, -1 became 255, 65535 became the ignore value and
+        70000 became 4464 -- every one of them decoding as a different class
+        than the caller asked for, with nothing raised. The public writer
+        already caught these; the encoders under it did not.
+        """
+        mask = np.zeros(self.SHAPE, bool)
+        mask[1] = True
+        for bad in (0, -1, 65535, 70000):
+            with pytest.raises(MEDH5ValidationError) as exc:
+                encode_labelmap({bad: mask}, self.SHAPE)
+            assert exc.value.code == "E303"
+        assert encode_labelmap({1: mask}, self.SHAPE).class_ids == (1,)
+        assert encode_labelmap({65534: mask}, self.SHAPE).class_ids == (65534,)
+
+    def test_S7_4_an_instance_id_beyond_uint32_keeps_its_value(self):
+        """§7.4 permits uint64; hard-casting silently gave one object another's id."""
+        mask = np.zeros(self.SHAPE, bool)
+        mask[1] = True
+        big = 2**32 + 7
+        payload = encode_instances(
+            [InstanceInput(class_id=1, instance_id=big, mask=mask)], self.SHAPE
+        )
+        stored = np.asarray(payload.datasets["instance_ids"])
+        assert int(stored[0]) == big
+        # Narrow ids keep the narrow dtype; the width follows the data.
+        small = encode_instances(
+            [InstanceInput(class_id=1, instance_id=7, mask=mask)], self.SHAPE
+        )
+        assert small.datasets["instance_ids"].dtype == np.uint32
+
+    def test_S11_3_a_class_examined_and_absent_survives_the_instances_decode(self):
+        """`payload_to_masks` keyed off the objects present, not the declared set.
+
+        A class searched for and not found has no object, so it vanished on
+        decode -- turning "verified absent" into "never looked for". The same
+        path is what `check_roundtrip` uses to decode the original, so the
+        module's own losslessness check could never see the loss.
+        """
+        present = np.zeros(self.SHAPE, bool)
+        present[1] = True
+        payload = encode_masks(
+            {1: present, 5: np.zeros(self.SHAPE, bool)}, "instances", self.SHAPE
+        )
+        assert payload.class_ids == (1, 5)
+        decoded = payload_to_masks(payload, spatial_shape=self.SHAPE)
+        assert sorted(decoded) == [1, 5]
+        assert not decoded[5].any()
+        onward = transcode_payload(payload, "layers", spatial_shape=self.SHAPE)
+        assert onward.class_ids == (1, 5)
+
+    def test_an_empty_obb_collection_is_refused_with_a_coded_error(self):
+        """`boxes`, `mesh` and `instances` all raise E405 here; `obb` did not."""
+        with pytest.raises(MEDH5ValidationError) as exc:
+            encode_obb([], [], [], [])
+        assert exc.value.code == "E405"
+        empty = encode_obb(np.empty((0, 3)), np.empty((0, 3)), np.empty((0, 3, 3)), [])
+        assert empty.class_ids == ()

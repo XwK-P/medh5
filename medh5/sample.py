@@ -29,6 +29,7 @@ from medh5._hdf5 import (
     as_str_tuple,
     atomic_h5,
     copy_object,
+    copy_root_attrs,
     copy_unknown,
     encode_attr,
     open_h5,
@@ -122,6 +123,22 @@ PROFILES = (
 )
 
 ROOT_DIGEST_ATTRS = ("medh5_version", "medh5_kind", "medh5_profiles")
+
+_MANAGED_ROOT_ATTRS = (
+    "medh5_version",
+    "medh5_kind",
+    "medh5_profiles",
+    "created",
+    "generator",
+    "digest_algo",
+    "content_id",
+)
+"""Root attributes ``commit`` writes itself, so an amend must not copy them.
+
+Everything else on the root is copied through: §16 permits a minor version to
+add root attributes, and a 1.0 tool amending such a file must preserve what it
+does not understand rather than silently dropping it.
+"""
 """Root attributes covered by ``content_id``.
 
 ``created`` and ``generator`` are deliberately excluded: two byte-identical
@@ -654,6 +671,13 @@ class SampleWriter:
                 as_str(node.attrs.get("to_frame", "")),
             )
         copy_unknown(source, self._file, _STANDARD_GROUPS)
+        # Root attributes too, not just objects.  §16 lets a minor version add
+        # attributes and requires readers to ignore ones they do not recognise,
+        # so dropping them here would make a 1.0 amend quietly destroy what a
+        # 1.1 writer put on the root -- every other level already survives.
+        # The six `commit` manages are skipped because it rewrites them from the
+        # amended state; `content_id` is skipped because it is restamped there too.
+        copy_root_attrs(source, self._file, skip=_MANAGED_ROOT_ATTRS)
         # Profiles are deliberately *not* inherited.  They are a derived fact,
         # and an amend that removes what justified one (dropping a stale index,
         # say) must stop claiming it --- a flag that can disagree with the data
@@ -1217,10 +1241,28 @@ class SampleWriter:
         return label_set[key].id
 
     def _named_classes(self, annotated: str | Sequence[int | str]) -> tuple[int, ...]:
-        """The classes an explicit ``annotated_classes=`` names, resolved to ids."""
+        """The classes an explicit ``annotated_classes=`` names, resolved to ids.
+
+        ``"all"`` names the whole label set, and has to do so *here* as well as in
+        :meth:`_resolve_annotated`: this is the list ``_encode_segmentation``
+        injects zero masks for, so a class that was searched for and not found
+        reaches ``class_ids`` instead of being dropped for having no voxels.
+        Returning ``()`` for it made ``"all"`` a synonym for ``"all_given"`` and
+        silently destroyed every "examined and absent" negative in the file.
+        """
+        if annotated == "all":
+            return self._label_set_ids()
         if isinstance(annotated, str):
             return ()
         return tuple(self._class_id(k) for k in annotated)
+
+    def _label_set_ids(self) -> tuple[int, ...]:
+        label_set = self._document.label_set
+        if label_set is None:
+            raise MEDH5ValidationError(
+                "annotated_classes='all' needs a declared label set"
+            )
+        return tuple(label_set.ids)
 
     def _resolve_annotated(
         self, annotated: str | Sequence[int | str], class_ids: Sequence[int]
@@ -1228,12 +1270,11 @@ class SampleWriter:
         if annotated == "all_given":
             return tuple(class_ids)
         if annotated == "all":
-            label_set = self._document.label_set
-            if label_set is None:
-                raise MEDH5ValidationError(
-                    "annotated_classes='all' needs a declared label set"
-                )
-            return tuple(c for c in label_set.ids if c in set(class_ids))
+            # Not intersected with `class_ids`: "all" claims the whole label set,
+            # which is the entire difference between it and "all_given".  The
+            # intersection made the two identical and turned every examined-but-
+            # absent class back into "never looked for" (§11.3).
+            return self._label_set_ids()
         return tuple(self._class_id(k) for k in annotated)
 
     def _quality_key(
@@ -1287,6 +1328,18 @@ class SampleWriter:
         grid = self._grid(header.grid or "")
         self.remove_annotation(ann_id)
         header.kind = to_kind
+        # The header's `class_ids` is the encoding order (§6.2), and the new
+        # payload sets its own -- `probmap` in particular carries plane order
+        # *only* there, and its encoder always emits ascending.  Keeping the old
+        # header over the new payload therefore mislabels every plane whenever
+        # the source order was not ascending, which §6.2 permits and §7.3 makes
+        # explicit for `bitmask` via `bit_class_ids`.  The result read back with
+        # each class's mask under a different class's name, per-class voxel
+        # counts unchanged, and nothing to see in the validator.
+        header.class_ids = tuple(payload.class_ids)
+        header.annotated_class_ids = tuple(
+            c for c in header.annotated_class_ids if c in set(payload.class_ids)
+        )
         header.extra = {**dict(header.extra), **payload.attrs}
         self._write_annotation(ann_id, header, payload, grid, codec)
         return to_kind

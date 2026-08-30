@@ -84,6 +84,68 @@ class TestReport:
         assert first.of_kind("k")
 
 
+class TestNiftiGeometryIsNeverInvented:
+    """§3.3: a grid this converter made up is indistinguishable from a measured one."""
+
+    def _write(self, path, sform_code, qform_code, sform=None, qform=None):
+        data = np.zeros((6, 7, 8), np.int16)
+        image = nib.Nifti1Image(data, np.diag([2.0, 2.0, 2.0, 1.0]))
+        image.set_sform(sform, code=sform_code)
+        image.set_qform(qform, code=qform_code)
+        nib.save(image, str(path))
+        return path
+
+    def test_a_file_declaring_no_spatial_mapping_is_refused(self, tmp_path):
+        """`sform_code == qform_code == 0` means "voxel indices only".
+
+        nibabel still returns an affine, rebuilt from pixdim, and importing it
+        mints a world grid nobody measured -- silently, with the conversion
+        report saying "0 guesses".
+        """
+        src = self._write(tmp_path / "nocode.nii.gz", 0, 0)
+        with pytest.raises(MEDH5ValidationError, match="no spatial mapping"):
+            from_nifti({"IMG": src}, tmp_path / "out.medh5", sample_id="s")
+
+    def test_the_pixdim_fallback_is_available_but_recorded_as_a_guess(self, tmp_path):
+        src = self._write(tmp_path / "nocode.nii.gz", 0, 0)
+        report = from_nifti(
+            {"IMG": src},
+            tmp_path / "out.medh5",
+            sample_id="s",
+            assume_geometry=True,
+        )
+        assert any("no spatial mapping" in n.message for n in report.guesses)
+
+    def test_an_sform_qform_disagreement_is_reported(self, tmp_path):
+        """The classic signature of a file one tool updated and another did not.
+
+        Preferring the sform is conventional and defensible; reporting it as no
+        decision at all is not -- a reader preferring the qform puts the volume
+        somewhere else, and a cohort conversion never surfaced that some files
+        carried contradictory geometry.
+        """
+        src = self._write(
+            tmp_path / "disagree.nii.gz",
+            2,
+            1,
+            sform=np.diag([2.0, 2.0, 2.0, 1.0]),
+            qform=np.diag([3.0, 3.0, 3.0, 1.0]),
+        )
+        report = from_nifti({"IMG": src}, tmp_path / "out.medh5", sample_id="s")
+        assert any("sform and qform" in n.message for n in report.guesses)
+
+    def test_a_well_formed_file_reports_no_geometry_guess(self, tmp_path):
+        src = self._write(
+            tmp_path / "ok.nii.gz",
+            2,
+            2,
+            sform=np.diag([2.0, 0.8, 0.8, 1.0]),
+            qform=np.diag([2.0, 0.8, 0.8, 1.0]),
+        )
+        report = from_nifti({"IMG": src}, tmp_path / "out.medh5", sample_id="s")
+        assert not [n for n in report.guesses if n.kind == "geometry"]
+
+
 class TestNifti:
     def test_S3_1_RAS_becomes_LPS_by_flipping_the_affine_not_the_voxels(
         self, volumes, tmp_path

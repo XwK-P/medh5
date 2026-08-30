@@ -585,4 +585,4 @@ class TestSpace:
         path = detection_sample(tmp_path / "det.medh5", label_set)
         with medh5.open(path) as sample:
             json.dumps(sample.annotations["lesions"].summary())
-            json.dumps(sample.summary(), default=str)
+            json.dumps(sample.summary())

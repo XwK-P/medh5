@@ -372,6 +372,18 @@ def encode_obb(
     c = np.asarray(centers, dtype=np.float32)
     s = np.asarray(sizes, dtype=np.float32)
     r = np.asarray(rotations, dtype=np.float32)
+    if c.ndim != 2:  # noqa: PLR2004 - (n, dim)
+        # `boxes`, `mesh` and `instances` all raise a coded error here; `obb`
+        # unpacked the shape first and died with a bare ValueError about tuple
+        # lengths.  An empty detection annotation is the verified negative the
+        # coverage contract exists to record, so the caller needs to be told
+        # what shape to pass, not handed an unpacking failure.
+        raise MEDH5ValidationError(
+            f"obb centers must have shape (n, dim), got {c.shape}; for an empty "
+            "collection pass correctly-shaped empty arrays, e.g. "
+            "np.empty((0, 3)) with np.empty((0, 3, 3)) rotations",
+            code="E405",
+        )
     n, dim = c.shape
     if s.shape != (n, dim) or r.shape != (n, dim, dim):
         raise MEDH5ValidationError(

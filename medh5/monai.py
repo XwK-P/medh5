@@ -38,12 +38,18 @@ _LPS_TO_RAS = np.diag([-1.0, -1.0, 1.0, 1.0])
 
 
 def available() -> bool:
-    """Whether MONAI can be imported."""
-    try:  # pragma: no cover - depends on the environment
+    """Whether MONAI can be imported.
+
+    Both branches are reachable and both are measured -- the blanket
+    ``pragma: no cover`` this used to carry excluded even the ``return True``
+    that runs wherever the extra is installed, which is the same "covered by a
+    test that never executed" failure the MONAI CI job exists to prevent.
+    """
+    try:
         import monai  # noqa: F401
-    except Exception:  # pragma: no cover
+    except ImportError:
         return False
-    return True  # pragma: no cover
+    return True
 
 
 def require_monai() -> Any:
@@ -161,7 +167,6 @@ def to_metatensor(
     prediction lands centimetres from the anatomy it describes.
     """
     require_monai()
-    from monai.data import MetaTensor
 
     image = sample.images[image_id]
     # The affine and spatial_shape in `meta` describe *this* level, so the
@@ -175,11 +180,22 @@ def to_metatensor(
         meta["affine"] = _shift_origin(meta["affine"], roi)
         meta["spatial_shape"] = np.asarray(array.shape, dtype=np.int64)
         meta["medh5"]["roi"] = [[s.start, s.stop] for s in roi]
-    import torch
 
-    return MetaTensor(
-        torch.from_numpy(array), affine=torch.as_tensor(meta["affine"]), meta=meta
-    )
+    return _metatensor(array, meta)
+
+
+def _metatensor(array: npt.NDArray[Any], meta: dict[str, Any]) -> Any:
+    """``MetaTensor`` from an array and its meta, without the redundant affine.
+
+    ``meta`` already carries ``affine``; passing it again as ``affine=`` makes
+    MONAI warn that it is overwriting the one in the meta with the identical
+    value, so every caller saw a warning telling them their geometry was wrong
+    when it was not.
+    """
+    import torch
+    from monai.data import MetaTensor
+
+    return MetaTensor(torch.from_numpy(np.ascontiguousarray(array)), meta=meta)
 
 
 def _shift_origin(
@@ -229,13 +245,19 @@ def to_dict(
 ) -> dict[str, Any]:
     """A MONAI dictionary-transform item: ``{image_id: MetaTensor, ...}``.
 
-    Annotations come through as label tensors sharing the image's affine, which
-    is what ``Spacingd(keys=["CT", "organs"], mode=["bilinear", "nearest"])``
-    needs in order to resample both consistently.
+    Annotations come through as label tensors carrying **their own grid's**
+    affine, which is what ``Spacingd(keys=["CT", "organs"], mode=["bilinear",
+    "nearest"])`` needs in order to resample both consistently.
+
+    The annotation's grid is not assumed to be the first image's.  A sample
+    holding CT and PET on different grids --- the case this format exists for ---
+    has annotations bound to whichever grid they were drawn on, and handing one
+    of them another image's affine silently places the ground truth somewhere
+    the anatomy is not.  Where an annotation's grid cannot be resolved this
+    refuses rather than substituting an identity affine: an invented affine is
+    indistinguishable from a measured one downstream (§3.3).
     """
     require_monai()
-    import torch
-    from monai.data import MetaTensor
 
     wanted = list(images) if images is not None else sorted(sample.images)
     item: dict[str, Any] = {}
@@ -243,14 +265,37 @@ def to_dict(
         item[image_id] = to_metatensor(sample, image_id, physical=physical, space=space)
     for ann_id in annotations:
         ann = sample.annotations[ann_id]
-        meta = meta_dict(sample, wanted[0], space=space) if wanted else {}
         planes = np.asarray(ann.labelmap(), dtype=np.int16)
-        item[ann_id] = MetaTensor(
-            torch.from_numpy(np.ascontiguousarray(planes)),
-            affine=torch.as_tensor(meta.get("affine", np.eye(planes.ndim + 1))),
-            meta=meta,
-        )
+        item[ann_id] = _metatensor(planes, _annotation_meta(sample, ann, space=space))
     return item
+
+
+def _annotation_meta(
+    sample: Sample, ann: Any, *, space: str | None = None
+) -> dict[str, Any]:
+    """Meta for an annotation, built from the grid the annotation is bound to."""
+    grid = ann.grid
+    affine = (
+        grid.affine
+        if space is None or space == grid.coord_system
+        else convert_affine(grid.affine, source=grid.coord_system, target=space)
+    )
+    return {
+        "affine": affine,
+        "original_affine": affine,
+        "spatial_shape": np.asarray(grid.spatial_shape, dtype=np.int64),
+        "space": space or grid.coord_system,
+        "original_channel_dim": "no_channel",
+        "medh5": {
+            "path": sample.path,
+            "sample_id": sample.identity.sample_id,
+            "subject_id": sample.identity.subject_id,
+            "annotation_id": ann.ann_id,
+            "grid_id": ann.grid_id,
+            "coord_system": grid.coord_system,
+            "units": grid.units,
+        },
+    }
 
 
 __all__ = [

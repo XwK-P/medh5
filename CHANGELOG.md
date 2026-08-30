@@ -4,6 +4,200 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.1.0] — 2026-08-30
+
+A correctness release from a full review of the library. The **format version is unchanged**: 1.1.0
+reads and writes exactly the files 1.0 does, and `__format_version__` stays `"1.0"`. The package
+takes a **minor** bump rather than a patch because several fixes change what existing code produces
+or accepts — see **Behaviour changes** below before upgrading a pipeline.
+
+Two clauses of the specification were corrected (Appendix C now lists ten), and neither changes what
+a conforming file looks like: one pins a rounding rule that was under-specified, the other writes
+down an exclusion the reference implementation already applied.
+
+### Fixed — silent loss of ground truth
+
+- **A box on integer edge coordinates lost or gained voxels according to its parity.**
+  `box_to_slices` rounded with `np.rint`, which rounds half to **even**, so `lo + 0.5` and
+  `hi + 0.5` rounded in opposite directions: a one-voxel box at `[1.0, 2.0]` became an *empty*
+  slice and one at `[2.0, 3.0]` became two voxels wide. Boxes built from `slices_to_box` are
+  half-integer and never reach the tie, which is why the round-trip tests could not see it; boxes
+  from a world→index conversion, an even-factor resample or a pyramid level change are
+  integer-valued and reach it constantly. Five call sites depended on it, including
+  `curation/tracking.py`, where a lesion's volume is `prod(stop − start) × voxel_volume` — so the
+  same lesion measured 0 mm³ or 8× across visits, in the longitudinal measurement the format exists
+  for. §8.1 now states `floor(x + 0.5)` explicitly.
+
+- **`labelmap()` deleted overlapping voxels without saying so, on three exits.** `to_nifti(annotation=...)`,
+  `VolumeDataset(label_format="labelmap")` and `medh5.monai.to_dict` all flatten on the way out, and
+  each silently dropped the overlap region: with a lesion inside a liver, the liver came back 224
+  voxels instead of 256. One integer volume cannot hold overlapping classes — which is why `layers`,
+  `bitmask` and `probmap` exist (§7.0) — so `labelmap()` now warns, naming the count, unless the
+  caller passed an explicit `priority`.
+
+- **`annotated_classes="all"` was byte-identical to `"all_given"`.** `_resolve_annotated` intersected
+  the label set back down to `class_ids`, so it could never claim a class that had no mask. Every
+  class the annotator searched for and did not find was recorded as *never looked for* instead of
+  *verified absent* — the one distinction the coverage contract exists to keep (§11.3) — and no
+  validator fired, because W904 only warns when `annotated_class_ids` is a strict subset and this
+  made the two equal.
+
+- **Transcoding destroyed an in-band ignore region.** `labelmap`/`layers` carry ignore in the data;
+  `bitmask` and `probmap` express it as a separate `mask` annotation (§7.7), which a
+  payload-returning function cannot create. The region was simply dropped, turning "nobody examined
+  these voxels" into "verified absent for every annotated class" — what §7.7 names as the most
+  common cause of a silently mistrained segmentation model. Transcoding to an encoding that cannot
+  hold it is now refused, with the two ways forward in the message.
+
+- **Transcoding *to* `instances` merged every object of a class into one.** A dense encoding records
+  which voxels belong to a class and never which object, so the conversion collapsed two lesions
+  into a single object carrying a freshly minted `instance_id` that belonged to neither — in the
+  field §7.4 makes the entire longitudinal join. Refused now, for the same reason
+  `instances_from_masks` already refuses to *split* components.
+
+- **The MONAI bridge gave annotations another image's geometry.** `to_dict` took the affine from the
+  first requested image rather than from the grid the annotation was bound to. On a sample holding
+  CT and PET on different grids — the case this format exists for — the label tensor arrived with
+  PET's shape and CT's affine: 70 mm off in z, at half the true spacing, against a docstring
+  promising the opposite. It also fabricated an identity affine when no image was requested. The
+  affine now comes from the annotation's own grid, and `to_dict` has a test; it had none, and its
+  body had never executed even in the dedicated MONAI CI job.
+
+- **`class_ids` and the payload disagreed after transcoding to `probmap`.** `probmap` carries plane
+  order only in the §6.2 `class_ids` attribute and its encoder always emits ascending, while
+  `transcode_annotation` kept the source header verbatim. A file whose encoding order was not
+  ascending — which §6.2 permits, and §7.3 makes explicit for `bitmask` via `bit_class_ids` — read
+  back with each class's mask under a different class's name, per-class voxel counts unchanged and
+  nothing for the validator to see. Not reachable through this writer, which normalises to
+  ascending; reachable through a conforming third-party file.
+
+- **A class examined and found empty vanished on the `instances` decode.** `payload_to_masks` keyed
+  off the objects present rather than the declared `class_ids`, and `check_roundtrip` decodes
+  through that same path — so the module's own losslessness check could not see the loss.
+
+### Fixed — de-identification and access control
+
+- **A scrubbed file still contained the DICOM UID it had pseudonymised.** `scrub --apply` runs
+  inside the copy-on-write amend, which copies each object and *then* rewrites the attribute; HDF5
+  never reclaims what it supersedes, so the released file carried the original
+  `FrameOfReferenceUID` in freed space — recoverable with `strings` while every API read returned
+  the pseudonym and the file attested `id_mapping: "external"`. A UID links back to the originating
+  study in the source PACS. `--apply` now compacts the file before returning; digests and
+  `content_id` are unaffected, since this rewrites storage and not content.
+
+- **`id_mapping: "external"` was attested whenever a salt was given**, even when no UID matched and
+  the mapping was empty. It is §11.4's strongest claim; it is now recorded only when something was
+  actually mapped.
+
+- **Every copy-on-write command widened file permissions.** `amend`, `scrub --apply`, `fix` and
+  `recompress` replace the file, and the replacement was created under the process umask — so a
+  `0o600` sample came back `0o644` and world-readable, in the commands most likely to be pointed at
+  sensitive data on a shared filesystem. The mode of the file being replaced is now carried across.
+
+### Fixed — tools that must not lie or crash
+
+- **`medh5 validate` crashed on roughly a third of corrupted files.** Bytes damaged past the header
+  raise out of h5py's traversal or its decompressor; the command exited with a traceback, printed
+  nothing on stdout, and `--json` emitted no JSON at all. Failing to read an object is a finding
+  about the file, not a crash of the tool: it is reported as `E001` now, per rule, so one unreadable
+  object does not hide everything else. 120 randomly corrupted files, up to ten byte flips each, now
+  all produce a valid report.
+
+- **`--level strict` promoted warnings in the verdict but not in the counts**, so a report read
+  `FAILED … (0 errors, 2 warnings)` and a CI job gating on `errors == 0` passed a file the same
+  payload called not-ok. §15.1 defines strict as the other levels with warnings promoted, so at
+  strict there are no warnings; each diagnostic keeps its measured `severity`, and the JSON gains a
+  `promoted` count.
+
+- **`amend` dropped unknown attributes on the sample root.** Grids, images, annotations and unknown
+  groups already kept theirs; the root was the one level that did not, so a 1.0 tool amending a 1.1
+  file silently discarded what 1.1 had added — against §16, which permits a minor version to add
+  attributes and requires readers to ignore ones they do not recognise.
+
+- **`from_nifti` invented geometry and reported no doubt.** A NIfTI with `sform_code == qform_code
+  == 0` states that it carries *no* spatial mapping; nibabel still returns an affine rebuilt from
+  `pixdim`, and importing it minted a world grid nobody measured, with the report saying "0
+  guesses". It is refused now unless `assume_geometry=True` (CLI: `--assume-geometry`), which
+  records it as a guess. An sform and qform that *disagree* — the signature of a file one tool
+  updated and another did not — is likewise recorded rather than resolved in silence.
+
+- **The exported payload encoders accepted reserved and out-of-range class ids** and wrapped them
+  into the label dtype: `0` became background, `-1` became 255, `65535` became the ignore value,
+  `70000` became 4464. The public writer already refused these; the encoders under it, which a
+  third-party converter calls directly, now raise `E303` too.
+
+- **`instance_id` was hard-cast to `uint32`**, so an id minted from a 64-bit key wrapped — `2³² + 7`
+  became `7`, taking another object's identity. §7.4 permits `uint64`; the width now follows the
+  data.
+
+- **`encode_obb` raised a bare `ValueError`** on an empty collection where `boxes`, `mesh` and
+  `instances` all raise a coded `E405`. An empty detection annotation is the verified negative the
+  coverage contract records, not a degenerate input.
+
+- **`medh5 conformance` with no subcommand** printed its usage to stdout; the other six group
+  commands write to stderr.
+
+- **`to_metatensor` emitted a spurious MONAI warning on every call**, passing the affine both
+  positionally and inside `meta`. The affine was correct; the warning said otherwise.
+
+### Behaviour changes
+
+Read these before upgrading a pipeline. Each is a correction, and each can change what existing code
+produces or accepts:
+
+- Boxes on integer edge coordinates now yield the extent they describe. ROIs derived from
+  `box_to_slices` — crops, instance decoding, `as_slices`, tracked lesion volumes — change where
+  they were previously off.
+- `annotated_classes="all"` now records the whole label set, so files written with it gain
+  `class_ids` and `annotated_class_ids` entries (and the zero masks behind them).
+- `from_nifti` refuses a NIfTI declaring no spatial mapping; pass `--assume-geometry` to keep the
+  old behaviour, now reported as a guess.
+- Transcoding refuses two conversions it used to perform silently: to an encoding that cannot hold
+  an in-band ignore region, and from a dense encoding to `instances`.
+- `labelmap()` warns when it flattens real overlap and no `priority` was given.
+- The payload encoders raise `E303` for class ids the public writer already rejected.
+- `validate --level strict` reports promoted warnings in `errors` rather than in `warnings`.
+
+### Changed
+
+- **`medh5 tree` gained `--json`.** It was the only inspection command without a machine-readable
+  form, and naming each object with the spec clause that gives it its role is exactly what a cohort
+  audit wants.
+- **Python 3.13 is tested.** `requires-python` has always admitted it; the matrix and the classifiers
+  stopped at 3.12.
+- **The specification's executable prototype runs in CI.** Appendix C.2 publishes a table of its
+  results, and nothing referenced it — unlike the conformance corpus beside it. It also writes its
+  output to the working directory now, rather than next to its own source, so running it does not
+  dirty a checkout.
+- `medh5.monai.available()` is measured rather than excluded from coverage by a blanket pragma —
+  the same shape as the untested-because-skipped problem the MONAI CI job was added to prevent.
+
+### Removed
+
+- `medh5.storage.index.index_attrs()`, a stub returning `{}` that nothing called. It was the
+  unfinished half of putting `index/` attributes into `content_id`; §13.2 now states the exclusion
+  instead.
+
+### Specification
+
+- **§8.1** pins the box↔slice rounding to `floor(x + 0.5)`. "round" was read as a language default,
+  and both Python's `round` and NumPy's `rint` round half to even — under which the extent identity
+  in the same clause does not hold.
+- **§13.1, §13.2** state normatively that `index/` is excluded from object digests and from
+  `content_id`. The reference implementation always skipped it, on the grounds that a derived cache
+  should not change the address of the sample it derives from; the text did not say so, so a
+  conforming implementation that stamped index digests would compute a different `content_id` for
+  the same bytes — and `content_id` is only useful as a cross-implementation key if every
+  implementation agrees on what it covers.
+
+### Internal
+
+- Test suite 924 → 946, coverage 93% → 93.5%. Two tests that could not fail were repaired:
+  `json.dumps(..., default=str)` coerces anything, so two "is JSON-safe" assertions were vacuous.
+  `test_the_format_version_is_not_the_package_version` asserted the package version starts with
+  `"1.0"`, tying it to the format version in exactly the way its own docstring forbids; it only
+  looked right while the package sat on 1.0.x.
+
 ## [1.0.1] — 2026-08-18
 
 Fixes against MEDH5 format 1.0. The **format version is unchanged**: 1.0.1 reads and writes exactly

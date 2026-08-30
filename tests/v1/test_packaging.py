@@ -48,10 +48,21 @@ def test_the_wheel_version_and_the_stamped_version_agree():
 
 
 def test_the_format_version_is_not_the_package_version():
-    """§1: the *format* is 1.0. The package ships fixes against it.
+    """§1: the *format* is 1.0. The package ships releases against it.
 
-    Tying them together would force a format-version bump for every patch
-    release, which is what tells a reader whether it can open the file at all.
+    Tying them together would force a format-version bump for every package
+    release, and the format version is what tells a reader whether it can open
+    the file at all.
+
+    The assertion used to be ``_declared().startswith("1.0")``, which tied the
+    two together in exactly the way the paragraph above forbids -- it only
+    looked correct while the package happened to sit on 1.0.x, and the first
+    package minor bump against an unchanged format failed it. What actually
+    has to hold is that the format version is 1.0 and the package version is a
+    well-formed release of its own.
     """
     assert medh5.__format_version__ == "1.0"
-    assert _declared().startswith("1.0")
+    assert re.fullmatch(r"\d+\.\d+\.\d+(?:[.-]?[0-9A-Za-z.]+)?", _declared())
+    # The package's MAJOR tracks the format's MAJOR: a 1.x package writes and
+    # reads 1.x files (§16 -- readers reject an unknown MAJOR).
+    assert _declared().split(".")[0] == medh5.__format_version__.split(".")[0]

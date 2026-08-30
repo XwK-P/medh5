@@ -85,11 +85,17 @@ $ medh5 seg convert case.medh5 organs --to bitmask --dry-run
 ```
 
 ```python
-w.transcode_annotation("organs", "instances")
+w.transcode_annotation("organs", "bitmask")
 ```
 
-Going to an encoding that cannot represent something — instance identity into
-`layers` — is refused, not silently dropped.
+Going to an encoding that cannot represent something is **refused, not silently
+dropped**. Three cases:
+
+| From → to | Why it is refused |
+|---|---|
+| anything dense → `instances` | A dense encoding records which voxels belong to a class, never which object. The conversion would merge every object of a class into one and mint an `instance_id` belonging to none of them (§7.4). |
+| `labelmap`/`layers` carrying an in-band ignore region → `bitmask`/`probmap` | Those express ignore as a separate `mask` annotation (§7.7). Dropping it turns "nobody examined these voxels" into "verified absent". Write the ignore region as its own `mask` and reference it with `ignore_mask=` first. |
+| `instances` → dense | Allowed, and one-way: identity is not recoverable afterwards. |
 
 ### Instances
 
@@ -106,7 +112,10 @@ Ask a `layers` annotation and it tells you what to do instead:
 
 ```
 MEDH5ValidationError: annotation 'organs' of kind 'layers' does not carry
-instance identity; transcode it to `instances` first
+instance identity, and it cannot be recovered from a dense encoding:
+transcoding to `instances` would merge every object of a class into one and
+mint an id that belongs to none of them (§7.4). Re-derive the objects from
+whatever source had them.
 ```
 
 `instance_id` is **sample-scoped**, which is what makes it a longitudinal join:

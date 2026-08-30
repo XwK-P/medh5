@@ -52,6 +52,11 @@ def _tight_slices(mask: npt.NDArray[np.bool_]) -> tuple[slice, ...] | None:
     return tuple(slices)
 
 
+def _instance_dtype(ids: Sequence[int]) -> Any:
+    """`uint32` unless an id needs the wider form (spec §7.4)."""
+    return np.uint64 if any(int(i) > 0xFFFFFFFF for i in ids) else np.uint32
+
+
 def encode_instances(
     objects: Sequence[InstanceInput],
     spatial_shape: tuple[int, ...] | None = None,
@@ -125,7 +130,11 @@ def encode_instances(
     datasets: dict[str, npt.NDArray[Any]] = {
         "boxes": np.stack(boxes).astype(np.float32),
         "class_ids": np.asarray(object_classes, dtype=np.uint16),
-        "instance_ids": np.asarray(instance_ids, dtype=np.uint32),
+        # §7.4 permits uint32 or uint64; the width follows the data.  Hard-casting
+        # to uint32 silently wrapped an id minted from a 64-bit key -- 2**32 + 7
+        # became 7 -- so one object took another's identity in the field that is
+        # the entire longitudinal join.
+        "instance_ids": np.asarray(instance_ids, dtype=_instance_dtype(instance_ids)),
     }
     if has_scores:
         datasets["scores"] = np.asarray(scores, dtype=np.float32)

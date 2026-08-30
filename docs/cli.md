@@ -14,7 +14,7 @@ writes a machine-readable document to stdout.
 
 Grids, images, annotations, coverage, quality, codecs and content id.
 
-### `medh5 tree PATH`
+### `medh5 tree PATH [--json]`
 
 An annotated object listing — `h5ls` with each object's role in the spec.
 

@@ -94,6 +94,30 @@ class TestBoxConvention:
             assert box[0].tolist() == [start - 0.5, stop - 0.5]
             assert box_to_slices(box) == (slice(start, stop),)
 
+    def test_S8_1_integer_edge_boxes_keep_their_extent(self):
+        """§8.1: half-up rounding, so extent survives a box on integer edges.
+
+        Every other box test starts from ``slices_to_box``, which emits
+        half-integer coordinates -- ``lo + 0.5`` is then an exact integer and no
+        rounding tie is ever reached.  A box that came from a world->index
+        conversion, an even-factor resample or a pyramid level change is
+        integer-valued and hits the tie on every axis.  Under half-to-even
+        rounding a one-voxel box alternated between empty and two voxels wide
+        with the parity of its position.
+        """
+        for lo in (-0.5, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0):
+            box = np.array([[lo, lo + 1.0]] * 3)
+            slices = box_to_slices(box)
+            voxels = int(np.prod([s.stop - s.start for s in slices]))
+            assert voxels == 1, f"box [{lo}, {lo + 1}] covered {voxels} voxels"
+
+    def test_S8_1_extent_is_preserved_for_every_integer_box(self):
+        for lo in range(0, 6):
+            for width in range(1, 5):
+                box = np.array([[float(lo), float(lo + width)]])
+                (s,) = box_to_slices(box)
+                assert s.stop - s.start == width
+
     def test_S8_1_extent_is_voxel_count(self):
         box = slices_to_box([slice(12, 40), slice(0, 3)])
         extents = box[:, 1] - box[:, 0]
