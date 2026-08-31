@@ -109,6 +109,18 @@ file that looks entirely well-formed.
 
 ### Added
 
+- **A property-based sweep over the annotation encoders.** Four findings in this release were one
+  shape — a column or tag whose length or rank did not match the elements it described — and each was
+  found by inspection, one encoder at a time, with the sibling columns beside it turning out to have
+  the same hole. `tests/v1/test_properties.py` enumerates the mismatches instead, holding every
+  geometric encoder to one contract (succeed with self-consistent columns, or raise `MEDH5Error` —
+  never a bare `IndexError` or `TypeError`), round-tripping masks through `labelmap`, `layers` and
+  `bitmask` including the empty, full and overlapping cases, and checking that every transcode pair
+  either preserves the masks exactly or refuses. Checked for teeth rather than assumed: run against
+  the tree at `6c8da0b` it independently reproduces the `slice_index`, `points.class_ids` and
+  `mesh.vertex_class_ids` defects. Against the current tree it finds nothing further. `hypothesis`
+  joins the `dev` extra.
+
 - **A corpus smoke test over the whole public read surface.** The conformance corpus checked that
   each case reports its expected diagnostic codes but never called `summary()`, `verify()` or the
   grid/image/annotation/transform accessors on those files. Two contracts now hold across all 103
