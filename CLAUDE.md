@@ -25,6 +25,12 @@ medh5 conformance run /tmp/corpus
 # tests need it. Those tests `importorskip`, so they skip silently without it
 # and CI runs them in a dedicated job.
 pip install -e ".[monai]" && pytest tests/ -k "Monai or monai"
+
+# The documentation site. `--strict` makes an unresolved cross-reference a
+# build failure, which is the gate CI runs; `serve` live-reloads on :8000.
+pip install -r docs/requirements.txt
+mkdocs build --strict
+mkdocs serve
 ```
 
 ## Pre-commit checks
@@ -34,7 +40,8 @@ All of these must pass before committing:
 ```bash
 ruff check . && ruff format --check . && mypy medh5 \
   && pytest tests/ --cov=medh5 --cov-fail-under=90 \
-  && medh5 conformance run /tmp/corpus
+  && medh5 conformance run /tmp/corpus \
+  && mkdocs build --strict
 ```
 
 ## The model

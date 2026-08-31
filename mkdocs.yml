@@ -1,0 +1,128 @@
+site_name: medh5
+site_description: >-
+  Self-describing HDF5 container for one medical imaging subject and all of its
+  ground truth: multi-timepoint images with segmentation, detection,
+  classification and registration annotations, provenance and integrity.
+site_url: https://medh5.readthedocs.io/
+repo_url: https://github.com/XwK-P/medh5
+repo_name: XwK-P/medh5
+edit_uri: edit/main/docs/
+copyright: MIT-licensed. The specification is normative; the code implements it.
+
+docs_dir: docs
+
+# MkDocs publishes everything under `docs_dir` that is not a page, which is what
+# puts `design/benchmarks/*.py` on the site --- deliberately, since the
+# specification links to them as runnable scripts. The build's own requirements
+# file is not documentation and is excluded; it only lives here because that is
+# where Read the Docs looks for it.
+exclude_docs: |
+  requirements.txt
+
+# A broken cross-reference in a normative specification is a defect, not a
+# cosmetic problem: 61 of the links below point between clauses.  `strict`
+# turns MkDocs' link warnings into build failures, and CI builds with it.
+strict: true
+
+# CHANGELOG.md lives at the repository root, where packaging and GitHub expect
+# it.  Copying it into `docs/` would leave two copies to drift apart, so it is
+# pulled into the build instead --- one source, rendered in both places.
+# The hook sits outside `docs/` because MkDocs copies everything in `docs_dir`
+# that is not a page: from inside it, the hook shipped itself and a
+# `__pycache__` directory to the published site.
+hooks:
+  - hooks/mkdocs_hooks.py
+
+theme:
+  name: material
+  language: en
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.top
+    - navigation.indexes
+    - toc.follow
+    - search.highlight
+    - search.suggest
+    - content.code.copy
+    - content.action.edit
+  palette:
+    - media: "(prefers-color-scheme)"
+      toggle:
+        icon: material/brightness-auto
+        name: Follow the system theme
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: teal
+      accent: teal
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: teal
+      accent: teal
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  icon:
+    repo: fontawesome/brands/github
+
+markdown_extensions:
+  # Only what the documentation actually uses.  It is plain Markdown: fenced
+  # code in python/json/bash, tables, and bold lead-ins.
+  - tables
+  - attr_list
+  - toc:
+      permalink: true
+      # The specification is one 1,589-line file with 88 headings; without a
+      # deeper sidebar its clauses are unreachable except by scrolling.
+      toc_depth: 3
+      # GitHub's slug algorithm, not Python-Markdown's. The two disagree on
+      # headings containing punctuation --- `### medh5 fix PATH... [--json]`
+      # anchors as `...path---rebuild...` on GitHub and `...path-rebuild...`
+      # here --- so without this every cross-document anchor link would have to
+      # be correct in one renderer and broken in the other. The docs are read in
+      # both places; one set of links has to work in both.
+      slugify: !!python/object/apply:pymdownx.slugs.slugify {kwds: {case: lower}}
+  - pymdownx.highlight:
+      anchor_linenums: true
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+  - pymdownx.snippets
+
+plugins:
+  - search
+
+nav:
+  - Home: index.md
+  - Start here:
+      - Getting started: getting-started.md
+      - Concepts: concepts.md
+  - Specification: spec/medh5-1.0.md
+  - Reference:
+      - Python API: python-api.md
+      - CLI: cli.md
+      - Annotations: annotations.md
+      - Longitudinal: longitudinal.md
+      - Training: training.md
+      - Converters: converters.md
+      - Curation: curation.md
+      - Cohorts: cohorts.md
+      - Storage: file-format.md
+      - Conformance: conformance.md
+  - Design:
+      - Proposal: design/medh5-1.0-proposal.md
+      - Implementation plan: design/medh5-1.0-implementation-plan.md
+      - Benchmarks: design/benchmarks/README.md
+  - Changelog: changelog.md
+
+extra:
+  social:
+    - icon: fontawesome/brands/python
+      link: https://pypi.org/project/medh5/
+      name: medh5 on PyPI
+    - icon: fontawesome/brands/github
+      link: https://github.com/XwK-P/medh5
+      name: medh5 on GitHub

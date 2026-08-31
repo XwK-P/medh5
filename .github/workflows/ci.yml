@@ -20,6 +20,23 @@ jobs:
       - run: ruff check .
       - run: ruff format --check .
 
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # The same pinned versions Read the Docs builds with, so a green build
+      # here means a green build there.
+      - run: pip install -r docs/requirements.txt
+      # `--strict` turns MkDocs' link warnings into failures. The docs carry 61
+      # relative links between pages and a normative specification with 88
+      # clause headings; a cross-reference that stopped resolving is a defect in
+      # the specification, and this is the gate that catches it on the pull
+      # request rather than after publication.
+      - run: mkdocs build --strict
+
   typecheck:
     runs-on: ubuntu-latest
     steps:

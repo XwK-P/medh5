@@ -11,3 +11,5 @@ build/
 .coverage
 htmlcov/
 .DS_Store
+# `mkdocs build` output
+site/

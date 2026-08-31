@@ -103,7 +103,7 @@ Homepage = "https://github.com/XwK-P/medh5"
 Repository = "https://github.com/XwK-P/medh5"
 Issues = "https://github.com/XwK-P/medh5/issues"
 Changelog = "https://github.com/XwK-P/medh5/blob/main/CHANGELOG.md"
-Documentation = "https://github.com/XwK-P/medh5/blob/main/docs/index.md"
+Documentation = "https://medh5.readthedocs.io/"
 Specification = "https://github.com/XwK-P/medh5/blob/main/docs/spec/medh5-1.0.md"
 
 [project.scripts]
@@ -123,7 +123,11 @@ addopts = "--cov=medh5 --cov-report=term-missing"
 target-version = "py310"
 # Reference/benchmark scripts published alongside the 1.0 spec. They are documentation
 # artifacts meant to be read next to the prose -- deliberately compact, not library code.
-extend-exclude = ["docs/design/benchmarks"]
+#
+# `site` is the `mkdocs build` output. MkDocs copies those same benchmark scripts into
+# it, so without this a local docs build makes `ruff check .` fail on copies of files
+# the line above already excludes.
+extend-exclude = ["docs/design/benchmarks", "site"]
 
 # ruff >= 0.16 formats Python inside Markdown code blocks. Not here: the snippets
 # in docs/ and README.md are prose examples, sized to be read on the page and

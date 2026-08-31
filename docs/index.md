@@ -87,7 +87,7 @@ $ medh5 bench                            # reproduce the performance targets
 - **[Implementation plan](design/medh5-1.0-implementation-plan.md)** — package
   layout, public API, phased delivery, test strategy.
 - **[Benchmarks](design/benchmarks/README.md)** — the scripts behind every number.
-- **[JSON Schema](../schemas/medh5-sample-1.0.schema.json)** — machine validation
+- **[JSON Schema](https://github.com/XwK-P/medh5/blob/main/schemas/medh5-sample-1.0.schema.json)** — machine validation
   of the `/meta` document.
 
 ## Versioning

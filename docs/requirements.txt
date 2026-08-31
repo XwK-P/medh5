@@ -1,0 +1,9 @@
+# Documentation build only.  The package itself is deliberately not installed:
+# the site is hand-written Markdown, so a build needs no h5py, torch or pydicom.
+#
+# Pinned, not floated, for the same reason `ruff` and `mypy` are pinned in
+# pyproject.toml: CI builds with `--strict`, so a link-resolution or renderer
+# change in a new release turns into a red build on an unrelated commit. A gate
+# that changes under you is not a gate. Bump deliberately.
+mkdocs==1.6.1
+mkdocs-material==9.7.7

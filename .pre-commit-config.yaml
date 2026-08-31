@@ -5,6 +5,12 @@ repos:
       - id: trailing-whitespace
       - id: end-of-file-fixer
       - id: check-yaml
+        # `mkdocs.yml` carries a `!!python/object/apply:` tag to give MkDocs
+        # GitHub's heading-slug function (see the comment there). `check-yaml`
+        # parses with `yaml.safe_load`, which refuses that tag by design.
+        # Excluding the one file keeps the check strict everywhere else --- the
+        # alternative, `--unsafe`, would weaken it for every workflow too.
+        exclude: ^mkdocs\.yml$
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.4.8

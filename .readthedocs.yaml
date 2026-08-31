@@ -1,0 +1,23 @@
+# Read the Docs build configuration.
+# https://docs.readthedocs.io/en/stable/config-file/v2.html
+#
+# The site is MkDocs, not Sphinx: the documentation is Markdown throughout, with
+# 61 relative links between pages that MkDocs resolves natively.  It is also
+# hand-written rather than generated --- `docs/python-api.md` is a better
+# reference than autodoc would build from these docstrings --- so the package
+# itself is not installed here.  A pure-Markdown build does not need h5py,
+# torch or pydicom, and not pulling them keeps builds to seconds.
+
+version: 2
+
+build:
+  os: ubuntu-24.04
+  tools:
+    python: "3.12"
+
+mkdocs:
+  configuration: mkdocs.yml
+
+python:
+  install:
+    - requirements: docs/requirements.txt
