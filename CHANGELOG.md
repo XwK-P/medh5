@@ -29,6 +29,22 @@ down an exclusion the reference implementation already applied.
   `slice_index` (`E405`), `as_slices()` refuses rather than skipping so files written before the
   check are caught, and a new semantic rule reports it from `medh5 validate`.
 
+- **A `slice_index` naming a plane outside the grid was clamped to its edge.** On an 8-slice grid,
+  `-1` became slice 0 and `99` became slice 7 — so a box recorded against a plane the grid does not
+  have was silently moved to a plane nobody drew on, written without complaint and validating clean.
+  Clamping is the same class of mistake as the bounds guard above: it makes a wrong input look like a
+  valid one. The plane is refused now, at all three layers.
+
+- **A `slice_index` of shape `(N, K)` passed the length check and raised a raw `TypeError`.** The
+  check read only the leading axis, so `[[3, 4], [6, 7]]` for two boxes wrote and validated clean,
+  then `int(planes[i])` failed on a whole row. §8.2 gives `slice_index` shape `(N,)`; the full shape
+  is checked now.
+
+- **The rule is stated once.** The writer, `as_slices()` and the semantic validator each enforced
+  "one entry per box" separately, which is exactly how `check_chain()` and the validator came to
+  disagree about composite units. All three call `check_slice_index` now, and a test drives a file
+  the writer never saw through the reader and the validator to hold them to the same answer.
+
 - **Four more per-element columns had the same hole.** Chasing the cause rather than the report
   found that `slice_index` was not special: every column appended *after* `_object_columns` escaped
   its length loop, and only the two somebody happened to write a check for — `names` on points,

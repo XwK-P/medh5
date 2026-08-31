@@ -957,20 +957,39 @@ def _check_geometric(
         if boxes.ndim == 3 and boxes.size and np.any(boxes[..., 0] > boxes[..., 1]):  # noqa: PLR2004
             bad = int(np.sum(np.any(boxes[..., 0] > boxes[..., 1], axis=1)))
             yield ctx.err("E406", location, f"{bad} box(es) have lo > hi")
-        # `slice_index` names the plane each 2-D box sits on (§8.2), so it is a
-        # per-box column like `class_ids` and has to be as long. A short one
-        # read as valid, and every box past its end stayed a zero-thickness
-        # slice selecting no voxels --- objects present in the file that no
-        # reader returned.
+        # `slice_index` names the plane each 2-D box sits on (§8.2). The rule
+        # lives in `check_slice_index` and the writer and `as_slices` call the
+        # same function, so this cannot drift from what they enforce.
         if "slice_index" in group and boxes.ndim == 3:  # noqa: PLR2004
+            from medh5.annotations.geometric import check_slice_index
+
             planes = np.asarray(group["slice_index"][...])
-            if planes.shape[0] != boxes.shape[0]:
-                yield ctx.err(
-                    "E405",
-                    location,
-                    f"`slice_index` has {planes.shape[0]} entries for "
-                    f"{boxes.shape[0]} boxes; it needs one per box",
-                )
+            # The range half needs index-space boxes and the grid they index.
+            # A world-space box's plane is not known until the affine has been
+            # applied, so those are range-checked on the way out instead; the
+            # shape half applies either way.
+            spatial: tuple[int, ...] | None = None
+            if (
+                space == "index"
+                and grid_id is not None
+                and grids_node is not None
+                and grid_id in grids_node
+                and boxes.ndim == 3  # noqa: PLR2004
+            ):
+                full = [
+                    int(v) for v in np.atleast_1d(grids_node[grid_id].attrs["shape"])
+                ]
+                dims = int(boxes.shape[1])
+                if len(full) >= dims:
+                    spatial = tuple(full[-dims:])
+            problem = check_slice_index(
+                planes,
+                boxes.shape[0],
+                boxes=boxes.astype(np.float64) if spatial else None,
+                shape=spatial,
+            )
+            if problem:
+                yield ctx.err("E405", location, problem)
     if kind == "obb" and "rotations" in group:
         rotations = np.asarray(group["rotations"][...], dtype=np.float64)
         offenders = [

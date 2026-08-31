@@ -275,9 +275,10 @@ def encode_boxes(
         # used to be accepted, and every box past its end stayed a degenerate
         # zero-thickness slice selecting no voxels at all --- ground truth
         # dropped by a writer that raised nothing (§8.2).
-        datasets["slice_index"] = _per_element(
-            "slice_index", slice_index, array.shape[0], np.int32, "boxes"
-        )
+        problem = check_slice_index(slice_index, array.shape[0])
+        if problem:
+            raise MEDH5ValidationError(problem, code="E405")
+        datasets["slice_index"] = np.asarray(slice_index, dtype=np.int32)
     return AnnotationPayload(
         kind="boxes",
         datasets=datasets,
@@ -301,6 +302,58 @@ def _stacked(
     return np.stack(arrays)
 
 
+def _degenerate_axis(box: npt.NDArray[np.float64]) -> int | None:
+    """The single axis a box has no extent on, or ``None``.
+
+    ``slice_index`` on a box with genuine extent everywhere is not §8.2's
+    2D-on-a-slice form, and is left alone rather than reinterpreted.
+    """
+    flat = [axis for axis in range(len(box)) if box[axis][0] == box[axis][1]]
+    return flat[0] if len(flat) == 1 else None
+
+
+def check_slice_index(
+    planes: Any,
+    n_boxes: int,
+    *,
+    boxes: npt.NDArray[np.float64] | None = None,
+    shape: Sequence[int] | None = None,
+) -> str | None:
+    """What a ``slice_index`` must be, stated once (§8.2).
+
+    The writer, :meth:`BoxesAnnotation.as_slices` and the semantic validator all
+    enforce this, and three hand-written copies of one rule is exactly how
+    ``check_chain()`` and the validator came to disagree about composite units.
+    They call this instead, so the three cannot drift apart.
+
+    Shape is checked always.  The *range* needs the grid the plane indexes, so
+    it is checked wherever the caller has the index-space boxes and the grid
+    extent; a world-space box at write time does not (its mapping needs the
+    affine) and is checked on the way out instead.
+    """
+    array = np.asarray(planes)
+    if array.ndim != 1 or array.shape[0] != n_boxes:
+        return (
+            f"`slice_index` has shape {array.shape}, but it names one plane for "
+            f"each of {n_boxes} box(es), so its shape must be ({n_boxes},)"
+        )
+    if boxes is None or shape is None:
+        return None
+    for i in range(n_boxes):
+        axis = _degenerate_axis(boxes[i])
+        if axis is None:
+            continue
+        extent = int(shape[axis])
+        plane = int(array[i])
+        if not 0 <= plane < extent:
+            return (
+                f"box {i} names slice {plane} on an axis {extent} voxels deep; "
+                f"a plane outside the grid was clamped to the nearest edge, "
+                f"which silently moves the annotation to a different plane"
+            )
+    return None
+
+
 def _thicken_named_slice(
     slices: tuple[slice, ...],
     box: npt.NDArray[np.float64],
@@ -309,19 +362,22 @@ def _thicken_named_slice(
 ) -> tuple[slice, ...]:
     """Give the axis a `slice_index` names one voxel of thickness (§8.2).
 
-    Only the degenerate axis is touched, and only when the box really is
-    degenerate there --- ``slice_index`` on a box with genuine extent on every
-    axis is not the 2D-on-a-slice form and is left alone rather than
-    reinterpreted.
+    Only the degenerate axis is touched.  The plane is *not* clamped to the
+    grid: `check_slice_index` has already rejected one that falls outside it,
+    and clamping is what silently relocated a box annotated on slice 99 of an
+    8-slice grid to slice 7.
     """
-    degenerate = [axis for axis in range(len(slices)) if box[axis][0] == box[axis][1]]
-    if len(degenerate) != 1:
+    axis = _degenerate_axis(box)
+    if axis is None:
         return slices
-    axis = degenerate[0]
     extent = int(shape[axis])
-    start = max(0, min(int(plane), extent - 1)) if extent else 0
+    if not 0 <= plane < extent:
+        raise MEDH5ValidationError(
+            f"slice_index names slice {plane} on an axis {extent} voxels deep",
+            code="E405",
+        )
     out = list(slices)
-    out[axis] = slice(start, min(start + 1, extent))
+    out[axis] = slice(plane, plane + 1)
     return tuple(out)
 
 
@@ -358,18 +414,17 @@ class BoxesAnnotation(GeometricAnnotation):
         else:
             boxes = self._boxes_in_index(target)
         planes = self.slice_index
-        if planes is not None and len(planes) != len(boxes):
-            # The writer refuses this now, but files predating that check
-            # exist. Skipping the boxes `slice_index` does not reach --- which
-            # is what the bounds guard here used to do --- leaves each of them a
-            # zero-thickness slice selecting nothing, so the annotation quietly
-            # returns fewer objects than it holds.
-            raise MEDH5ValidationError(
-                f"annotation {self.ann_id!r} has {len(planes)} slice_index "
-                f"entries for {len(boxes)} boxes; every box past the end would "
-                f"stay a zero-thickness slice and select no voxels",
-                code="E405",
+        if planes is not None:
+            # Files predating the writer's check exist, and the range check can
+            # only happen here for a world-space box --- its plane is not known
+            # until the box is in index space.
+            problem = check_slice_index(
+                planes, len(boxes), boxes=boxes, shape=target.spatial_shape
             )
+            if problem:
+                raise MEDH5ValidationError(
+                    f"annotation {self.ann_id!r}: {problem}", code="E405"
+                )
         out: list[tuple[slice, ...]] = []
         for i in range(len(boxes)):
             slices = box_to_slices(boxes[i], target.spatial_shape)
@@ -965,6 +1020,7 @@ __all__ = [
     "ObbAnnotation",
     "PointsAnnotation",
     "Polygon",
+    "check_slice_index",
     "check_space",
     "encode_boxes",
     "encode_contours",

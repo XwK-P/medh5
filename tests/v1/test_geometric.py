@@ -625,7 +625,7 @@ class TestSliceIndexBoxes:
         """
         shape = (8, 16, 16)
         with (
-            pytest.raises(MEDH5ValidationError, match="one value for each") as caught,
+            pytest.raises(MEDH5ValidationError, match="one plane for each") as caught,
             medh5.create(tmp_path / "short.medh5", codec="portable") as w,
         ):
             w.label_set(label_set)
@@ -700,6 +700,103 @@ class TestSliceIndexBoxes:
                     **kwargs,
                 )
         assert caught.value.code == "E405"
+
+    @pytest.mark.parametrize("plane", [-1, 99])
+    def test_S8_2_a_plane_outside_the_grid_is_refused_not_clamped(
+        self, tmp_path, label_set, plane
+    ):
+        """Clamping moved the annotation to a plane nobody drew on.
+
+        On an 8-slice grid `-1` became slice 0 and `99` became slice 7, and the
+        file validated clean --- so a box recorded against the wrong plane was
+        consumable as ground truth with no diagnostic anywhere.
+        """
+        shape = (8, 16, 16)
+        with (
+            pytest.raises(MEDH5ValidationError, match="voxels deep") as caught,
+            medh5.create(tmp_path / "oob.medh5", codec="portable") as w,
+        ):
+            w.label_set(label_set)
+            w.add_grid("g", shape=shape, spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", np.zeros(shape, np.int16), grid="g", modality="CT")
+            w.add_boxes(
+                "det",
+                grid="g",
+                space="index",
+                boxes=[[[3.0, 3.0], [1.5, 5.5], [1.5, 5.5]]],
+                class_ids=[3],
+                slice_index=[plane],
+            )
+        assert caught.value.code == "E405"
+
+    def test_S8_2_a_two_dimensional_slice_index_is_refused(self, tmp_path, label_set):
+        """§8.2 gives `slice_index` shape `(N,)`.
+
+        The length check read only the leading axis, so `(N, K)` passed it and
+        `int(planes[i])` then raised a raw `TypeError` on a whole row.
+        """
+        shape = (8, 16, 16)
+        with (
+            pytest.raises(MEDH5ValidationError, match="shape") as caught,
+            medh5.create(tmp_path / "twod.medh5", codec="portable") as w,
+        ):
+            w.label_set(label_set)
+            w.add_grid("g", shape=shape, spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", np.zeros(shape, np.int16), grid="g", modality="CT")
+            w.add_boxes(
+                "det",
+                grid="g",
+                space="index",
+                boxes=[
+                    [[3.0, 3.0], [1.5, 5.5], [1.5, 5.5]],
+                    [[6.0, 6.0], [8.5, 12.5], [8.5, 12.5]],
+                ],
+                class_ids=[3, 3],
+                slice_index=[[3, 4], [6, 7]],
+            )
+        assert caught.value.code == "E405"
+
+    @pytest.mark.parametrize(
+        ("bad", "tag"), [([99], "out of range"), ([[3, 4]], "two-dimensional")]
+    )
+    def test_S8_2_writer_reader_and_validator_agree(
+        self, tmp_path, label_set, bad, tag
+    ):
+        """One rule, three enforcement points, checked against each other.
+
+        `check_chain()` and the semantic validator once disagreed about
+        composite units because each had its own copy of the rule. These three
+        call one function, and this holds them to the same answer on a file the
+        writer never saw.
+        """
+        import h5py
+
+        from medh5.validate import validate_file
+
+        shape = (8, 16, 16)
+        path = tmp_path / f"{tag.replace(' ', '_')}.medh5"
+        with medh5.create(path, codec="portable") as w:
+            w.label_set(label_set)
+            w.add_grid("g", shape=shape, spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", np.zeros(shape, np.int16), grid="g", modality="CT")
+            w.add_boxes(
+                "det",
+                grid="g",
+                space="index",
+                boxes=[[[3.0, 3.0], [1.5, 5.5], [1.5, 5.5]]],
+                class_ids=[3],
+                slice_index=[3],
+            )
+        with h5py.File(path, "a") as handle:
+            group = handle["annotations/det"]
+            del group["slice_index"]
+            group.create_dataset("slice_index", data=np.array(bad, np.int32))
+
+        report = validate_file(path)
+        assert [e.code for e in report.errors] == ["E405"], tag
+        with medh5.open(path) as sample, pytest.raises(MEDH5ValidationError) as caught:
+            sample.annotations["det"].as_slices()
+        assert caught.value.code == "E405", tag
 
     def test_S8_2_a_short_slice_index_already_in_a_file_is_refused(
         self, tmp_path, label_set

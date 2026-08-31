@@ -47,6 +47,7 @@ from medh5.annotations.base import (
 from medh5.annotations.classification import encode_classification
 from medh5.annotations.geometric import (
     Polygon,
+    check_slice_index,
     check_space,
     encode_boxes,
     encode_contours,
@@ -1458,6 +1459,24 @@ class SampleWriter:
             attributes=attributes,
             slice_index=slice_index,
         )
+        if slice_index is not None and space == "index" and grid is not None:
+            # `encode_boxes` checks the shape but has no grid, so the plane's
+            # *range* is checked here, where one is named. Writing a plane the
+            # grid does not have used to be accepted and clamped to the nearest
+            # edge on the way out, silently moving the box to another plane.
+            known = self._grids.get(grid)
+            problem = (
+                None
+                if known is None
+                else check_slice_index(
+                    slice_index,
+                    len(payload.datasets["boxes"]),
+                    boxes=np.asarray(payload.datasets["boxes"], dtype=np.float64),
+                    shape=known.spatial_shape,
+                )
+            )
+            if problem:
+                raise MEDH5ValidationError(f"{ann_id!r}: {problem}", code="E405")
         return self._add_object_annotation(
             ann_id,
             payload,
