@@ -15,6 +15,60 @@ Two clauses of the specification were corrected (Appendix C now lists ten), and 
 a conforming file looks like: one pins a rounding rule that was under-specified, the other writes
 down an exclusion the reference implementation already applied.
 
+### Fixed — converters that assumed instead of checking
+
+A second review pass covered the three subsystems the first one never reached: the DICOM family,
+the cohort tooling, and the §14 storage claims. The converter findings share one shape — read an
+attribute from element zero, assume the rest of the stack agrees, never check — and each produces a
+file that looks entirely well-formed.
+
+- **nnU-Net channels and label volumes were filed onto the first channel's grid, whatever their own
+  geometry.** `from_nnunetv2` kept `geometry or geo`, so a second channel at a different spacing or
+  origin — or a label volume resampled by some other tool — was written onto channel 0's grid with
+  its voxels intact and its position silently wrong. Both now go through the same `_same_grid`
+  refusal `from_nifti` has always used (§3.2, E101/E202).
+
+- **nnU-Net export wrote an all-background label volume for most real datasets.** `_labelmap_for`
+  matched classes by their `dataset.json` name, but the import sanitises that name into the label-set
+  key, so any dataset naming a class `"Tumour Core"` or `"GTV"` resolved nothing — and the failure
+  fell into a bare `except: continue`. `dataset.json` was written listing every class, the label
+  files were the right shape, and every voxel was 0. Classes are matched by id now (the import keeps
+  nnU-Net's own integers precisely so they can be), and a class genuinely absent is refused (E402)
+  rather than dropped. The round-trip test missed it because its fixture's labels — `edema`,
+  `enhancing` — are already valid keys, so sanitising was a no-op.
+
+- **A DICOM series took its modality LUT, orientation and pixel spacing from slice 0 alone.** A
+  per-slice `RescaleSlope` — ordinary in PET — was collapsed to the first slice's, reporting a value
+  1740 HU out on every slice it did not apply to; a single rotated slice was placed on the first
+  slice's direction matrix. All three are now checked across the stack and refused, naming the
+  offending SOPInstanceUID (§3.1/§3.2/§4.2).
+
+- **A split could put one subject in two partitions.** `group_id` is declared per file and defaults
+  to the subject, so two visits curated at different times can disagree about it — the subject then
+  becomes two groups, dealt independently, and the same anatomy lands in train and val. `Split.leaks`
+  cannot see this: each group really was assigned once, which is all it can know from the assignments.
+  `make_splits` now refuses a grouping finer than the subject it is meant to contain (new cohort code
+  `C204`), which is where the entries are still in hand. The existing coverage passed because its
+  fixture gives every file of a subject the same `group_id`.
+
+### Verified — no change needed
+
+- **§14's storage claims hold as written.** Measured rather than assumed: every image and voxel
+  annotation is chunked, stacked encodings use `(1, *spatial)` so one plane reads without the others,
+  chunks land inside the 0.5–4 MiB target, and `portable` uses only native `shuffle`+`gzip` while the
+  other profiles use Blosc2 as documented. Recompression across `training`/`archive`/`portable` left
+  `content_id` and every voxel unchanged with `verify()` passing, and a forked child read correctly
+  with the parent uncorrupted.
+
+### Added
+
+- **A corpus smoke test over the whole public read surface.** The conformance corpus checked that
+  each case reports its expected diagnostic codes but never called `summary()`, `verify()` or the
+  grid/image/annotation/transform accessors on those files. Two contracts now hold across all 103
+  cases: a valid case survives the full read surface, and *any* case — including the deliberately
+  malformed ones — fails only through `MEDH5Error`, never an `AttributeError` or `KeyError` a caller
+  cannot catch by the documented type.
+
 ### Fixed — silent loss of ground truth
 
 - **A box on integer edge coordinates lost or gained voxels according to its parity.**

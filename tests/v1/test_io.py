@@ -880,6 +880,93 @@ class TestNnunet:
         with pytest.raises(MEDH5ValidationError, match="not found"):
             read_dataset_json(tmp_path / "nope")
 
+    def test_S3_2_a_channel_on_another_grid_is_refused(self, dataset, tmp_path):
+        """A second channel is written onto the first one's grid, so it has to
+        share it.  Same shape, different spacing: nothing in the array reveals
+        that these are different volumes of the patient."""
+        from medh5.io.nnunetv2 import from_nnunetv2
+
+        odd = np.diag([2.0, 2.0, 2.0, 1.0])
+        odd[:3, 3] = [50.0, 0.0, 0.0]
+        nib.save(
+            nib.Nifti1Image(np.zeros((12, 10, 6), np.int16), odd),
+            str(dataset / "imagesTr" / "CASE_001_0001.nii.gz"),
+        )
+        with pytest.raises(MEDH5ValidationError, match="spacing"):
+            from_nnunetv2(dataset, tmp_path / "out", case_ids=["CASE_001"])
+
+    def test_S3_2_a_label_volume_on_another_grid_is_refused(self, dataset, tmp_path):
+        from medh5.io.nnunetv2 import from_nnunetv2
+
+        shifted = np.eye(4)
+        shifted[:3, 3] = [0.0, 0.0, 9.0]
+        nib.save(
+            nib.Nifti1Image(np.zeros((12, 10, 6), np.uint8), shifted),
+            str(dataset / "labelsTr" / "CASE_001.nii.gz"),
+        )
+        with pytest.raises(MEDH5ValidationError, match="origin"):
+            from_nnunetv2(dataset, tmp_path / "out", case_ids=["CASE_001"])
+
+    def test_a_label_named_with_spaces_survives_the_round_trip(self, tmp_path):
+        """`dataset.json` names are free text; the label set key is sanitised
+        from them.  Matching classes back by name therefore finds nothing for
+        any dataset that capitalises, and the export silently wrote an
+        all-background volume.  Classes are matched by id instead."""
+        from medh5.io.nnunetv2 import from_nnunetv2, to_nnunetv2
+
+        root = tmp_path / "Dataset002_Named"
+        (root / "imagesTr").mkdir(parents=True)
+        (root / "labelsTr").mkdir()
+        shape = (8, 8, 4)
+        nib.save(
+            nib.Nifti1Image(np.zeros(shape, np.int16), np.eye(4)),
+            str(root / "imagesTr" / "CASE_0000.nii.gz"),
+        )
+        volume = np.zeros(shape, np.uint8)
+        volume[1:4, 1:4, 1:3] = 1
+        volume[5:7, 5:7, 1:3] = 2
+        nib.save(
+            nib.Nifti1Image(volume, np.eye(4)),
+            str(root / "labelsTr" / "CASE.nii.gz"),
+        )
+        (root / "dataset.json").write_text(
+            json.dumps(
+                {
+                    "channel_names": {"0": "CT"},
+                    "labels": {"background": 0, "Tumour Core": 1, "GTV": 2},
+                    "numTraining": 1,
+                    "file_ending": ".nii.gz",
+                }
+            )
+        )
+        imported = tmp_path / "imported"
+        from_nnunetv2(root, imported)
+        to_nnunetv2([imported / "CASE.medh5"], tmp_path / "back")
+        written = np.asarray(
+            nib.load(
+                str(tmp_path / "back" / "Dataset001_medh5" / "labelsTr" / "CASE.nii.gz")
+            ).dataobj
+        )
+        assert int((written == 1).sum()) == int((volume == 1).sum())
+        assert int((written == 2).sum()) == int((volume == 2).sum())
+
+    def test_a_class_the_sample_lacks_is_refused_not_dropped(self, tmp_path):
+        from medh5.io.nnunetv2 import _labelmap_for
+
+        class _Stub:
+            ann_id = "seg"
+            class_ids = (1,)
+            spatial_shape = (2, 2, 2)
+
+            def dense(self, ids):
+                return np.zeros((1, 2, 2, 2), bool)
+
+            def resolve_class(self, key):
+                raise KeyError(key)
+
+        with pytest.raises(MEDH5ValidationError, match="carries no class"):
+            _labelmap_for(_Stub(), {"background": 0, "kidney": 1, "spleen": 7})
+
     def test_a_missing_channel_is_named(self, dataset, tmp_path):
         from medh5.io.nnunetv2 import from_nnunetv2
 
@@ -1222,6 +1309,54 @@ class TestDicom:
         assert np.isclose(geometry["spacing"][0], 2.5)
         note = report.of_kind("slice_spacing")[0]
         assert note.detail["thickness"] == 5.0, "the slab is twice the increment"
+
+    def test_S4_2_a_per_slice_rescale_is_refused_not_taken_from_slice_zero(self, tree):
+        """§4.2 stores one modality LUT for the series, so there has to be one.
+
+        A PET series with a per-slice rescale is ordinary, and collapsing it to
+        slice 0's slope reports the wrong activity on every other slice with
+        nothing in the file to say so.
+        """
+        import pydicom
+
+        from medh5.io.dicom import read_series, scan_dicom
+
+        target = sorted((tree["root"] / "v1" / "ct").glob("*.dcm"))[3]
+        ds = pydicom.dcmread(str(target))
+        ds.RescaleSlope, ds.RescaleIntercept = 2.0, 0.0
+        ds.save_as(str(target))
+        wanted = tree["ct0"]["series_uid"]
+        series = next(s for s in scan_dicom(tree["root"]) if s.series_uid == wanted)
+        with pytest.raises(MEDH5ValidationError, match="RescaleSlope"):
+            read_series(series)
+
+    def test_S3_1_a_slice_rotated_from_the_rest_is_refused(self, tree):
+        import pydicom
+
+        from medh5.io.dicom import read_series, scan_dicom
+
+        target = sorted((tree["root"] / "v1" / "ct").glob("*.dcm"))[3]
+        ds = pydicom.dcmread(str(target))
+        ds.ImageOrientationPatient = [0, 1, 0, 0, 0, 1]
+        ds.save_as(str(target))
+        wanted = tree["ct0"]["series_uid"]
+        series = next(s for s in scan_dicom(tree["root"]) if s.series_uid == wanted)
+        with pytest.raises(MEDH5ValidationError, match="ImageOrientationPatient"):
+            read_series(series)
+
+    def test_S3_2_a_slice_with_its_own_pixel_spacing_is_refused(self, tree):
+        import pydicom
+
+        from medh5.io.dicom import read_series, scan_dicom
+
+        target = sorted((tree["root"] / "v1" / "ct").glob("*.dcm"))[2]
+        ds = pydicom.dcmread(str(target))
+        ds.PixelSpacing = [1.5, 1.5]
+        ds.save_as(str(target))
+        wanted = tree["ct0"]["series_uid"]
+        series = next(s for s in scan_dicom(tree["root"]) if s.series_uid == wanted)
+        with pytest.raises(MEDH5ValidationError, match="PixelSpacing"):
+            read_series(series)
 
     def test_an_irregular_stack_is_refused(self, tmp_path):
         import pydicom

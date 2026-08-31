@@ -352,3 +352,106 @@ class TestPublication:
     def test_scoring_without_a_manifest_says_so(self, tmp_path):
         with pytest.raises(MEDH5ValidationError, match="conformance publish"):
             score(tmp_path, [])
+
+
+class TestCorpusSmoke:
+    """Every public read path, over every corpus case.
+
+    The corpus checks that each case reports exactly its expected diagnostic
+    codes.  It does not check that the rest of the read surface *survives* those
+    files, and the surface is wide: `summary()`, `verify()`, and the grid, image,
+    annotation and transform accessors are all documented entry points that no
+    corpus test calls.  These hold two contracts over them --- a valid case is
+    fully readable, and *any* case, including the deliberately malformed ones,
+    fails only through `MEDH5Error`.  An `AttributeError` or a `KeyError` out of
+    a public entry point is a bug even on invalid input, because it tells a
+    caller nothing and cannot be caught by the documented exception type.
+
+    What this is **not**: a guard against the `medh5 info` regression that
+    prompted it.  That bug needed a class carrying two assertions, which is
+    valid and so raises no diagnostic code and has no corpus case --- the corpus
+    is organised one case per code.  Checked by re-introducing the regression:
+    these pass with it in place.  It is guarded directly, in
+    `TestMultiAssertionScopes`; the value here is breadth over 103 adversarial
+    files, not that particular bug.
+    """
+
+    @pytest.fixture(scope="class")
+    def built(self, tmp_path_factory) -> Path:
+        out = tmp_path_factory.mktemp("smoke")
+        build_corpus(out)
+        return Path(out)
+
+    def _read_surface(self, sample) -> None:
+        """Everything a consumer is documented to be able to call."""
+        touched: list[object] = [
+            sample.document.summary(),
+            sample.summary(),
+            sample.verify(),
+            sample.identity,
+            sample.profiles,
+            sample.content_id,
+        ]
+        for grid in sample.grids.values():
+            touched += [grid.affine, grid.shape, grid.spacing]
+        for image in sample.images.values():
+            touched += [image.grid, image.summary()]
+        for ann in sample.annotations.values():
+            touched += [
+                ann.summary(),
+                ann.class_ids,
+                ann.annotated_class_ids,
+                ann.classes,
+            ]
+        for transform in sample.transforms.values():
+            touched.append(transform.summary())
+        assert touched
+
+    def test_every_valid_case_survives_the_whole_read_surface(self, built):
+        cases = [c for c in CASES if c.valid]
+        assert len(cases) >= 10
+        for case in cases:
+            path = built / f"{case.name}{case.suffix}"
+            for sample in _samples_of(path):
+                try:
+                    self._read_surface(sample)
+                except Exception as exc:  # noqa: BLE001 - the point of the test
+                    raise AssertionError(
+                        f"{case.name}: {type(exc).__name__}: {exc}"
+                    ) from exc
+
+    def test_no_case_fails_through_an_undocumented_exception(self, built):
+        """Invalid cases included: they are the adversarial inputs."""
+        from medh5.errors import MEDH5Error
+
+        bad: list[str] = []
+        for case in CASES:
+            path = built / f"{case.name}{case.suffix}"
+            try:
+                for sample in _samples_of(path):
+                    self._read_surface(sample)
+                    validate_file(path)
+            except MEDH5Error:
+                continue  # a documented refusal is the correct outcome
+            except Exception as exc:  # noqa: BLE001 - the point of the test
+                bad.append(f"{case.name}: {type(exc).__name__}: {exc}")
+        assert not bad, (
+            "public read paths raised undocumented exceptions:\n" + "\n".join(bad)
+        )
+
+    def test_medh5_info_succeeds_on_every_valid_case(self, built):
+        """`info` is the command a user runs first; it must not exit non-zero.
+
+        Collections are excluded because `info` refuses them deliberately, and
+        says to use `open_collection()` instead.
+        """
+        from medh5.cli import main
+
+        cases = [c for c in CASES if c.valid and c.suffix == ".medh5"]
+        assert len(cases) >= 10
+        failed = [
+            case.name
+            for case in cases
+            if main(["info", str(built / f"{case.name}{case.suffix}")]) != 0
+        ]
+        assert not failed, f"`medh5 info` exited non-zero on: {failed}"

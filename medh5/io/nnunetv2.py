@@ -104,7 +104,7 @@ def from_nnunetv2(
 ) -> ConversionReport:
     """Convert an nnU-Net v2 dataset into one ``.medh5`` per case."""
     import medh5
-    from medh5.io.nifti import read_nifti
+    from medh5.io.nifti import _same_grid, read_nifti
 
     log = report or ConversionReport(converter="from-nnunet")
     log.source = os.fspath(root)
@@ -125,13 +125,23 @@ def from_nnunetv2(
             if not path.exists():
                 raise MEDH5ValidationError(f"case {case!r} has no channel {index}")
             data, geo = read_nifti(path, coord_system=coord_system)
-            geometry = geometry or geo
+            # Every channel is written onto one grid, so a channel that does not
+            # share it must be refused rather than filed under it.  nnU-Net
+            # requires co-registered channels and most datasets are, but "the
+            # inputs were already correct" is not a check: an unchecked channel
+            # at a different spacing lands on the first channel's grid with its
+            # voxels intact and its position silently wrong.
+            geometry = _same_grid(geometry, geo, name, log) if geometry else geo
             images[name] = data
         assert geometry is not None
         label_path = source / "labelsTr" / f"{case}{ending}"
         masks: dict[int, npt.NDArray[np.bool_]] | None = None
         if label_path.exists():
-            volume, _ = read_nifti(label_path, coord_system=coord_system)
+            volume, label_geo = read_nifti(label_path, coord_system=coord_system)
+            # The label volume above all: a label resampled onto a different grid
+            # by some other tool is the ordinary way this goes wrong, and the
+            # result annotates voxels nobody drew on.
+            _same_grid(geometry, label_geo, f"{case} labels", log)
             masks = _masks_from(volume, label_set, regions)
 
         target = directory / f"{case}.medh5"
@@ -398,22 +408,50 @@ def _labelmap_for(ann: Any, labels: Mapping[str, Any]) -> npt.NDArray[np.uint16]
 
     Region labels are *not* written as their own value: nnU-Net derives them
     from their components, and writing both would double-count every voxel.
+
+    Classes are matched by **id, not by name**.  The import keeps nnU-Net's own
+    integers as class ids precisely so no translation table is needed, and the
+    name in ``dataset.json`` is free text that ``_key`` sanitises on the way in
+    --- so a dataset naming a class ``"Tumour Core"`` stores the key
+    ``tumour_core``, and looking the original name back up finds nothing.  That
+    lookup used to fail into a bare ``continue``, so every class of any dataset
+    whose labels are not already lowercase identifiers was dropped and the
+    export wrote an all-background volume with no indication anything was lost.
     """
     scalar = {
         name: int(value)
         for name, value in labels.items()
         if not isinstance(value, list)
     }
+    known = set(ann.class_ids)
     out = np.zeros(ann.spatial_shape, dtype=np.uint16)
+    missing: list[str] = []
     for name, value in sorted(scalar.items(), key=lambda kv: kv[1]):
         if value == BACKGROUND:
             continue
-        try:
-            class_id = ann.resolve_class(name)
-        except Exception:  # noqa: BLE001 - a name the annotation does not carry
+        class_id = value if value in known else _resolve_or_none(ann, name)
+        if class_id is None:
+            missing.append(name)
             continue
         out[ann.dense([class_id])[0]] = value
+    if missing:
+        raise MEDH5ValidationError(
+            f"annotation {ann.ann_id!r} carries no class for {missing}, which "
+            f"dataset.json names; exporting would write a label volume missing "
+            f"those structures without saying so",
+            code="E402",
+        )
     return out
+
+
+def _resolve_or_none(ann: Any, name: str) -> int | None:
+    """Fall back to name resolution for a label set that renumbered."""
+    for candidate in (name, _key(name)):
+        try:
+            return int(ann.resolve_class(candidate))
+        except Exception:  # noqa: BLE001 - try the next spelling
+            continue
+    return None
 
 
 def _save(

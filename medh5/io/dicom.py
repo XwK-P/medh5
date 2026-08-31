@@ -26,7 +26,7 @@ afterwards.
 from __future__ import annotations
 
 import os
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -166,7 +166,14 @@ def read_series(
         raise MEDH5ValidationError(f"series {series.series_uid} has no files")
     slices = [pydicom.dcmread(p) for p in series.paths]
     orientation = np.asarray(
-        [float(v) for v in slices[0].ImageOrientationPatient], dtype=np.float64
+        _agreed(
+            slices,
+            lambda s: [float(v) for v in s.ImageOrientationPatient],
+            "ImageOrientationPatient",
+            series,
+            code="E102",
+        ),
+        dtype=np.float64,
     )
     row, column = orientation[:3], orientation[3:]
     normal = np.cross(row, column)
@@ -186,7 +193,13 @@ def read_series(
         report,
         _scalar(getattr(slices[0], "SliceThickness", None)),
     )
-    pixel_spacing = [float(v) for v in getattr(slices[0], "PixelSpacing", (1.0, 1.0))]
+    pixel_spacing = _agreed(
+        slices,
+        lambda s: [float(v) for v in getattr(s, "PixelSpacing", (1.0, 1.0))],
+        "PixelSpacing",
+        series,
+        code="E104",
+    )
     volume = np.stack([np.asarray(s.pixel_array) for s in slices])
     direction = np.stack([normal, column, row], axis=1)
     geometry = {
@@ -197,7 +210,7 @@ def read_series(
         "coord_system": "LPS",
         "units": "mm",
         "frame_uid": series.frame_uid,
-        "rescale": _rescale(slices[0]),
+        "rescale": _agreed(slices, _rescale, "RescaleSlope/Intercept", series),
         "acquisition": {
             tag: _scalar(getattr(slices[0], tag, None))
             for tag in STORED_TAGS
@@ -266,6 +279,57 @@ def _slice_spacing(
             {"spacing": spacing, "thickness": thickness, "slices": len(positions)},
         )
     return spacing, [float(g) for g in gaps]
+
+
+def _agreed(
+    slices: Sequence[Any],
+    extract: Callable[[Any], Any],
+    what: str,
+    series: Series,
+    *,
+    code: str = "E204",
+) -> Any:
+    """The value every slice agrees on, or a refusal.
+
+    A series is one volume with one geometry and one modality LUT, so each of
+    these is read once --- but reading it from ``slices[0]`` *without* checking
+    is what makes that assumption dangerous.  A stack whose slices disagree then
+    silently takes the first slice's answer for all of them: a PET series with a
+    per-slice rescale (which is ordinary) reports the wrong activity everywhere
+    slice 0's LUT does not apply, and a stack with one rotated slice places that
+    slice's voxels somewhere the scanner never put them.  Neither is visible in
+    the output, so both are refused here rather than averaged or assumed.
+    """
+    values = [extract(s) for s in slices]
+    first = values[0]
+    for slice_, value in zip(slices[1:], values[1:], strict=True):
+        if _differs(first, value):
+            # Named by SOPInstanceUID, not by position: these checks run either
+            # side of the geometric sort, so an index would mean two things.
+            uid = getattr(slice_, "SOPInstanceUID", "?")
+            raise MEDH5ValidationError(
+                f"series {series.series_uid}: instance {uid} declares "
+                f"{what} {value!r}, but the first slice declares {first!r}. "
+                f"A series is "
+                f"one volume with one geometry and one modality LUT; storing the "
+                f"first slice's value for all of them would misplace or misscale "
+                f"the rest without saying so. Split the series, or resample it "
+                f"deliberately with a tool that records what it did.",
+                code=code,
+            )
+    return first
+
+
+def _differs(first: Any, other: Any) -> bool:
+    if (first is None) != (other is None):
+        return True
+    if first is None:
+        return False
+    return not np.allclose(
+        np.asarray(first, dtype=np.float64),
+        np.asarray(other, dtype=np.float64),
+        atol=1e-6,
+    )
 
 
 def _rescale(dataset: Any) -> tuple[float, float] | None:

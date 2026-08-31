@@ -191,6 +191,24 @@ class TestSplits:
         assert all(len(v) == 1 for v in by_subject.values())
         assert sum(len(a.entries) for a in split.assignments) == 6
 
+    def test_S12_3_a_subject_split_across_two_groups_is_refused(self, manifest):
+        """`group_id` is declared per file, so two visits can disagree about it.
+
+        The subject is then two groups, they are dealt independently, and the
+        same anatomy lands in two partitions. `leaks()` cannot see it --- each
+        group really was assigned once --- so it is refused at construction.
+        """
+        entries = list(manifest.entries)
+        subject = entries[0].subject_id
+        twin = next(e for e in entries[1:] if e.subject_id == subject)
+        moved = replace(twin, group_id="OTHER-COHORT")
+        split_manifest = Manifest(
+            entries=[e for e in entries if e is not twin] + [moved]
+        )
+        with pytest.raises(MEDH5ValidationError, match="C204") as caught:
+            make_splits(split_manifest, seed=3)
+        assert subject in str(caught.value)
+
     def test_the_same_inputs_give_the_same_split(self, manifest):
         first = make_splits(manifest, seed=11)
         second = make_splits(manifest, seed=11)
