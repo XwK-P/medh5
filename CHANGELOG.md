@@ -62,6 +62,14 @@ project page through a release.
   `python` block. The attributes are real; the syntax was not. It was the only fenced
   `python` block in the docs that would not parse.
 - The `medh5 fix` link from `docs/file-format.md` pointed at a mis-generated anchor.
+- **1.1.0's own changelog attributed `E101`/`E202` to a refusal that deliberately carries no
+  code.** `_same_grid` was made uncoded in the same release that gave nnU-Net import its
+  `_same_grid` check, so the entry describing that change was wrong the day it shipped. It is
+  corrected in place, and the codes are named in `docs/converters.md` only to say which
+  conditions they are *not*. Worth recording because the sweep for this release reproduced the
+  error before catching it: the first draft of the converter documentation copied the codes
+  straight out of the changelog. A wrong code in prose propagates the way a wrong constant
+  does.
 
 ### Verified — no change needed
 
@@ -137,7 +145,7 @@ file that looks entirely well-formed.
   geometry.** `from_nnunetv2` kept `geometry or geo`, so a second channel at a different spacing or
   origin — or a label volume resampled by some other tool — was written onto channel 0's grid with
   its voxels intact and its position silently wrong. Both now go through the same `_same_grid`
-  refusal `from_nifti` has always used (§3.2, E101/E202).
+  refusal `from_nifti` has always used (§3.2, uncoded — see 1.1.1).
 
 - **nnU-Net export wrote an all-background label volume for most real datasets.** `_labelmap_for`
   matched classes by their `dataset.json` name, but the import sanitises that name into the label-set

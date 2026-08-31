@@ -198,10 +198,14 @@ reproduces the original dataset definition rather than inventing one.
 **Every channel and label volume must share one grid.** A case's channels are
 registered to each other by construction — that is what makes them channels —
 so a second channel at a different spacing or origin, or a label volume some
-other tool resampled, is refused rather than filed onto channel 0's grid
-(§3.2, `E101`/`E202`). This is the same `_same_grid` check `from_nifti` has
-always applied; import used to keep whichever grid it saw first, which wrote the
-later volumes' voxels intact and their position silently wrong.
+other tool resampled, is refused rather than filed onto channel 0's grid (§3.2).
+This is the same `_same_grid` check `from_nifti` has always applied; import used
+to keep whichever grid it saw first, which wrote the later volumes' voxels intact
+and their position silently wrong. Like the DICOM refusals above it is
+**uncoded**: two NIfTI volumes that disagree are not yet a MEDH5 file, so neither
+`E202` (an image disagreeing with its grid — neither of these is a grid) nor
+`E101` (a reference to a grid that does not exist — nothing here is referenced)
+describes what went wrong.
 
 **Export refuses a class the sample does not have.** `to-nnunet` matches classes
 by **id**, not by name — import keeps nnU-Net's own integers precisely so that it
