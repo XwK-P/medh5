@@ -1358,6 +1358,50 @@ class TestDicom:
         with pytest.raises(MEDH5ValidationError, match="PixelSpacing"):
             read_series(series)
 
+    def test_a_slice_missing_a_tag_refuses_rather_than_raising_raw(self, tree):
+        """`scan_dicom` groups by series without requiring these tags.
+
+        A slice can therefore reach the agreement check missing one outright,
+        and the raw `AttributeError` that produced was both a CLI traceback and
+        an exception no caller could catch as `MEDH5Error` like every other
+        input problem this converter reports.
+        """
+        import pydicom
+
+        from medh5.errors import MEDH5Error
+        from medh5.io.dicom import read_series, scan_dicom
+
+        target = sorted((tree["root"] / "v1" / "ct").glob("*.dcm"))[3]
+        ds = pydicom.dcmread(str(target))
+        del ds.ImageOrientationPatient
+        ds.save_as(str(target))
+        wanted = tree["ct0"]["series_uid"]
+        series = next(s for s in scan_dicom(tree["root"]) if s.series_uid == wanted)
+        with pytest.raises(MEDH5Error, match="no usable ImageOrientationPatient"):
+            read_series(series)
+
+    def test_a_converter_refusal_does_not_borrow_a_format_code(self, tree):
+        """§15.2's codes describe conditions in a MEDH5 file.
+
+        A DICOM series is not one yet, and no code in the table means "these
+        slices disagree" --- borrowing E204 would have reported a modality-LUT
+        problem as malformed `channel_names`.
+        """
+        import pydicom
+
+        from medh5.errors import MEDH5ValidationError
+        from medh5.io.dicom import read_series, scan_dicom
+
+        target = sorted((tree["root"] / "v1" / "ct").glob("*.dcm"))[3]
+        ds = pydicom.dcmread(str(target))
+        ds.RescaleSlope = 2.0
+        ds.save_as(str(target))
+        wanted = tree["ct0"]["series_uid"]
+        series = next(s for s in scan_dicom(tree["root"]) if s.series_uid == wanted)
+        with pytest.raises(MEDH5ValidationError) as caught:
+            read_series(series)
+        assert caught.value.code is None
+
     def test_an_irregular_stack_is_refused(self, tmp_path):
         import pydicom
         from pydicom.uid import generate_uid

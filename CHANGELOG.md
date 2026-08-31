@@ -41,7 +41,11 @@ file that looks entirely well-formed.
   per-slice `RescaleSlope` — ordinary in PET — was collapsed to the first slice's, reporting a value
   1740 HU out on every slice it did not apply to; a single rotated slice was placed on the first
   slice's direction matrix. All three are now checked across the stack and refused, naming the
-  offending SOPInstanceUID (§3.1/§3.2/§4.2).
+  offending SOPInstanceUID. These refusals carry **no diagnostic code**: §15.2's table describes
+  conditions in a MEDH5 file, and a DICOM series is not one yet — no code in it means "these slices
+  disagree", so borrowing one would have reported a modality-LUT problem as malformed `channel_names`.
+  A slice missing one of these tags outright is refused the same way, rather than surfacing the raw
+  `AttributeError` that `scan_dicom` (which does not require the tags) makes reachable.
 
 - **A split could put one subject in two partitions.** `group_id` is declared per file and defaults
   to the subject, so two visits curated at different times can disagree about it — the subject then

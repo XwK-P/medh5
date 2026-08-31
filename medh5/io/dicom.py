@@ -171,7 +171,6 @@ def read_series(
             lambda s: [float(v) for v in s.ImageOrientationPatient],
             "ImageOrientationPatient",
             series,
-            code="E102",
         ),
         dtype=np.float64,
     )
@@ -198,7 +197,6 @@ def read_series(
         lambda s: [float(v) for v in getattr(s, "PixelSpacing", (1.0, 1.0))],
         "PixelSpacing",
         series,
-        code="E104",
     )
     volume = np.stack([np.asarray(s.pixel_array) for s in slices])
     direction = np.stack([normal, column, row], axis=1)
@@ -286,8 +284,6 @@ def _agreed(
     extract: Callable[[Any], Any],
     what: str,
     series: Series,
-    *,
-    code: str = "E204",
 ) -> Any:
     """The value every slice agrees on, or a refusal.
 
@@ -300,7 +296,7 @@ def _agreed(
     slice's voxels somewhere the scanner never put them.  Neither is visible in
     the output, so both are refused here rather than averaged or assumed.
     """
-    values = [extract(s) for s in slices]
+    values = [_extracted(s, extract, what, series) for s in slices]
     first = values[0]
     for slice_, value in zip(slices[1:], values[1:], strict=True):
         if _differs(first, value):
@@ -314,10 +310,33 @@ def _agreed(
                 f"one volume with one geometry and one modality LUT; storing the "
                 f"first slice's value for all of them would misplace or misscale "
                 f"the rest without saying so. Split the series, or resample it "
-                f"deliberately with a tool that records what it did.",
-                code=code,
+                f"deliberately with a tool that records what it did."
             )
     return first
+
+
+def _extracted(
+    slice_: Any, extract: Callable[[Any], Any], what: str, series: Series
+) -> Any:
+    """*what*, read off one slice, or a refusal naming that slice.
+
+    ``scan_dicom`` groups files by series without requiring any of these tags,
+    so a slice reaches here missing one outright, or carrying a value that will
+    not parse.  Letting that surface as the raw ``AttributeError`` gives a CLI
+    traceback where the refusal below would have named the instance --- and an
+    exception a caller cannot catch as ``MEDH5Error`` like every other input
+    problem this converter reports.
+    """
+    try:
+        return extract(slice_)
+    except (AttributeError, KeyError, IndexError, TypeError, ValueError) as exc:
+        uid = getattr(slice_, "SOPInstanceUID", "?")
+        raise MEDH5ValidationError(
+            f"series {series.series_uid}: instance {uid} has no usable {what} "
+            f"({type(exc).__name__}: {exc}). Every slice of a series has to "
+            f"declare it, because the volume is written with one value for all "
+            f"of them."
+        ) from exc
 
 
 def _differs(first: Any, other: Any) -> bool:
