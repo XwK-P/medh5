@@ -45,7 +45,11 @@ file that looks entirely well-formed.
   conditions in a MEDH5 file, and a DICOM series is not one yet — no code in it means "these slices
   disagree", so borrowing one would have reported a modality-LUT problem as malformed `channel_names`.
   A slice missing one of these tags outright is refused the same way, rather than surfacing the raw
-  `AttributeError` that `scan_dicom` (which does not require the tags) makes reachable.
+  `AttributeError` that `scan_dicom` (which does not require the tags) makes reachable — as is a tag
+  of the wrong *length*, which extracts perfectly well and so passed the agreement check when every
+  slice carried the same wrong length. A five-value `ImageOrientationPatient` then reached
+  `np.cross`; a three-value `PixelSpacing` was silently read as its first two elements, giving the
+  grid an in-plane size nobody wrote down.
 
 - **A split could put one subject in two partitions.** `group_id` is declared per file and defaults
   to the subject, so two visits curated at different times can disagree about it — the subject then

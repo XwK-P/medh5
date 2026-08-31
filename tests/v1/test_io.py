@@ -1444,6 +1444,43 @@ class TestDicom:
         with pytest.raises(MEDH5Error, match="no usable PixelSpacing"):
             read_series(series)
 
+    @pytest.mark.parametrize(
+        ("tag", "value"),
+        [
+            ("ImageOrientationPatient", [0, 0, 1, 0, 1]),
+            ("ImageOrientationPatient", [0, 0, 1, 0, 1, 0, 5]),
+            ("PixelSpacing", [0.8]),
+            ("PixelSpacing", [0.8, 0.9, 1.0]),
+        ],
+    )
+    def test_a_tag_of_the_wrong_length_is_refused(self, tree, tag, value):
+        """Cardinality, not just parseability.
+
+        These extract perfectly well, and every slice carries the same wrong
+        length -- so the agreement check sees nothing to disagree about. What
+        followed was either a raw exception outside `MEDH5Error` (five values
+        reach `np.cross`) or, for a three-value `PixelSpacing`, silence: it was
+        read as its first two elements and the third discarded, giving the grid
+        an in-plane size nobody wrote down.
+        """
+        import pydicom
+
+        from medh5.errors import MEDH5Error
+        from medh5.io.dicom import read_series, scan_dicom
+
+        for path in sorted((tree["root"] / "v1" / "ct").glob("*.dcm")):
+            ds = pydicom.dcmread(str(path))
+            setattr(ds, tag, value)
+            ds.save_as(str(path))
+        wanted = tree["ct0"]["series_uid"]
+        series = next(s for s in scan_dicom(tree["root"]) if s.series_uid == wanted)
+        # A single-value tag arrives from pydicom as a scalar rather than a
+        # one-element sequence, so it is refused by the extraction guard rather
+        # than the length check. Either way it names the tag and is a
+        # `MEDH5Error`, which is the contract under test.
+        with pytest.raises(MEDH5Error, match=tag):
+            read_series(series)
+
     def test_an_irregular_stack_is_refused(self, tmp_path):
         import pydicom
         from pydicom.uid import generate_uid

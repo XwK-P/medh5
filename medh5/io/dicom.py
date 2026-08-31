@@ -171,6 +171,7 @@ def read_series(
             lambda s: [float(v) for v in s.ImageOrientationPatient],
             "ImageOrientationPatient",
             series,
+            expect=6,
         ),
         dtype=np.float64,
     )
@@ -204,6 +205,7 @@ def read_series(
         lambda s: [float(v) for v in s.PixelSpacing],
         "PixelSpacing",
         series,
+        expect=2,
     )
     volume = np.stack([np.asarray(s.pixel_array) for s in slices])
     direction = np.stack([normal, column, row], axis=1)
@@ -291,6 +293,8 @@ def _agreed(
     extract: Callable[[Any], Any],
     what: str,
     series: Series,
+    *,
+    expect: int | None = None,
 ) -> Any:
     """The value every slice agrees on, or a refusal.
 
@@ -303,7 +307,7 @@ def _agreed(
     slice's voxels somewhere the scanner never put them.  Neither is visible in
     the output, so both are refused here rather than averaged or assumed.
     """
-    values = [_extracted(s, extract, what, series) for s in slices]
+    values = [_extracted(s, extract, what, series, expect) for s in slices]
     first = values[0]
     for slice_, value in zip(slices[1:], values[1:], strict=True):
         if _differs(first, value):
@@ -323,7 +327,11 @@ def _agreed(
 
 
 def _extracted(
-    slice_: Any, extract: Callable[[Any], Any], what: str, series: Series
+    slice_: Any,
+    extract: Callable[[Any], Any],
+    what: str,
+    series: Series,
+    expect: int | None = None,
 ) -> Any:
     """*what*, read off one slice, or a refusal naming that slice.
 
@@ -335,7 +343,7 @@ def _extracted(
     problem this converter reports.
     """
     try:
-        return extract(slice_)
+        value = extract(slice_)
     except (AttributeError, KeyError, IndexError, TypeError, ValueError) as exc:
         uid = getattr(slice_, "SOPInstanceUID", "?")
         raise MEDH5ValidationError(
@@ -344,6 +352,22 @@ def _extracted(
             f"declare it, because the volume is written with one value for all "
             f"of them."
         ) from exc
+    # Cardinality, not just parseability.  A tag can extract perfectly well and
+    # still be the wrong length, and every slice can carry the same wrong
+    # length --- so the agreement check above sees no disagreement and passes it
+    # through.  Downstream that is either a raw exception (a five-value
+    # `ImageOrientationPatient` reaches `np.cross`) or, worse, silence (a
+    # three-value `PixelSpacing` is read as its first two elements and the third
+    # is discarded, giving the grid an in-plane size nobody wrote down).
+    if expect is not None and len(value) != expect:
+        uid = getattr(slice_, "SOPInstanceUID", "?")
+        raise MEDH5ValidationError(
+            f"series {series.series_uid}: instance {uid} declares {what} with "
+            f"{len(value)} value(s), but it is defined as {expect}. A tag of the "
+            f"wrong length is a malformed series, not one to read the first "
+            f"{expect} values out of."
+        )
+    return value
 
 
 def _differs(first: Any, other: Any) -> bool:
