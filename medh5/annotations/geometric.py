@@ -220,6 +220,30 @@ def _object_columns(
     return out
 
 
+def _per_element(
+    name: str, values: Any, n: int, dtype: Any, unit: str
+) -> npt.NDArray[Any]:
+    """A per-element column, checked against the elements it labels.
+
+    ``_object_columns`` validates the columns *it* builds, but several encoders
+    append their own afterwards and so never reached that loop.  Each one that
+    skipped the check let a short column through to a file that read as valid,
+    with every element past its end silently unlabelled --- and for a
+    ``slice_index`` the effect was worse still, since a box it did not reach
+    stayed a zero-thickness slice and selected no voxels at all (§8.2).  One
+    helper rather than a check per call site, because the checks that existed
+    were exactly the ones somebody remembered to write.
+    """
+    array = np.asarray(values, dtype=dtype)
+    if array.shape[0] != n:
+        raise MEDH5ValidationError(
+            f"{name} has length {array.shape[0]}, but the annotation holds {n} "
+            f"{unit}; it carries one value for each of them",
+            code="E405",
+        )
+    return array
+
+
 def encode_boxes(
     boxes: npt.ArrayLike,
     class_ids: Sequence[int],
@@ -251,15 +275,9 @@ def encode_boxes(
         # used to be accepted, and every box past its end stayed a degenerate
         # zero-thickness slice selecting no voxels at all --- ground truth
         # dropped by a writer that raised nothing (§8.2).
-        planes = np.asarray(slice_index, dtype=np.int32)
-        if planes.shape[0] != array.shape[0]:
-            raise MEDH5ValidationError(
-                f"slice_index has {planes.shape[0]} entries for "
-                f"{array.shape[0]} boxes; it names the plane each box sits on, "
-                f"so it needs one entry per box",
-                code="E405",
-            )
-        datasets["slice_index"] = planes
+        datasets["slice_index"] = _per_element(
+            "slice_index", slice_index, array.shape[0], np.int32, "boxes"
+        )
     return AnnotationPayload(
         kind="boxes",
         datasets=datasets,
@@ -638,17 +656,15 @@ def encode_points(
             f"points must have shape (N, S), got {array.shape}", code="E405"
         )
     datasets: dict[str, npt.NDArray[Any]] = {"points": array}
+    n = array.shape[0]
     if class_ids is not None:
-        datasets["class_ids"] = np.asarray(class_ids, dtype=np.uint16)
+        datasets["class_ids"] = _per_element(
+            "class_ids", class_ids, n, np.uint16, "points"
+        )
     if names is not None:
-        if len(names) != array.shape[0]:
-            raise MEDH5ValidationError(
-                f"names has {len(names)} entries for {array.shape[0]} points",
-                code="E405",
-            )
-        datasets["names"] = np.array(list(names), dtype=str_dtype())
+        datasets["names"] = _per_element("names", list(names), n, str_dtype(), "points")
     if weights is not None:
-        datasets["weights"] = np.asarray(weights, dtype=np.float32)
+        datasets["weights"] = _per_element("weights", weights, n, np.float32, "points")
     return AnnotationPayload(
         kind="points",
         datasets=datasets,
@@ -857,11 +873,18 @@ def encode_mesh(
             )
         datasets["normals"] = n
     if vertex_class_ids is not None:
-        datasets["vertex_class_ids"] = np.asarray(vertex_class_ids, dtype=np.uint16)
+        datasets["vertex_class_ids"] = _per_element(
+            "vertex_class_ids", vertex_class_ids, v.shape[0], np.uint16, "vertices"
+        )
     if mesh_offsets is not None:
         datasets["mesh_offsets"] = np.asarray(mesh_offsets, dtype=np.int64)
     if mesh_class_ids is not None:
-        datasets["mesh_class_ids"] = np.asarray(mesh_class_ids, dtype=np.uint16)
+        # `mesh_offsets` is (M+1,) and `mesh_class_ids` is (M,) --- §8.7's table
+        # --- so the offsets name one more boundary than there are meshes.
+        meshes = 1 if mesh_offsets is None else len(mesh_offsets) - 1
+        datasets["mesh_class_ids"] = _per_element(
+            "mesh_class_ids", mesh_class_ids, meshes, np.uint16, "meshes"
+        )
     declared = set()
     if vertex_class_ids is not None:
         declared |= {int(c) for c in vertex_class_ids}

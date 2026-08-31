@@ -625,7 +625,7 @@ class TestSliceIndexBoxes:
         """
         shape = (8, 16, 16)
         with (
-            pytest.raises(MEDH5ValidationError, match="one entry per box") as caught,
+            pytest.raises(MEDH5ValidationError, match="one value for each") as caught,
             medh5.create(tmp_path / "short.medh5", codec="portable") as w,
         ):
             w.label_set(label_set)
@@ -642,6 +642,63 @@ class TestSliceIndexBoxes:
                 space="index",
                 slice_index=[3],
             )
+        assert caught.value.code == "E405"
+
+    @pytest.mark.parametrize(
+        ("kind", "kwargs", "column"),
+        [
+            ("points", {"class_ids": [3]}, "class_ids"),
+            ("points", {"class_ids": [3, 3, 3], "weights": [0.5]}, "weights"),
+            ("points", {"class_ids": [3, 3, 3], "names": ["a"]}, "names"),
+            ("mesh", {"vertex_class_ids": [3]}, "vertex_class_ids"),
+            (
+                "mesh",
+                {"mesh_offsets": [0, 1, 2], "mesh_class_ids": [3]},
+                "mesh_class_ids",
+            ),
+        ],
+    )
+    def test_S8_every_per_element_column_is_checked(
+        self, tmp_path, label_set, kind, kwargs, column
+    ):
+        """`slice_index` was unchecked because it is written after
+        `_object_columns`, which validates only the columns it builds itself.
+
+        Five more columns were added the same way and went the same way: a short
+        one wrote cleanly and validated clean, leaving every element past its end
+        silently unlabelled. They all route through one helper now, because the
+        checks that existed were exactly the ones somebody remembered to write.
+        """
+        shape = (8, 16, 16)
+        with (
+            pytest.raises(MEDH5ValidationError, match=column) as caught,
+            medh5.create(tmp_path / f"{column}.medh5", codec="portable") as w,
+        ):
+            w.label_set(label_set)
+            w.add_grid("g", shape=shape, spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", np.zeros(shape, np.int16), grid="g", modality="CT")
+            if kind == "points":
+                w.add_points(
+                    "p",
+                    grid="g",
+                    space="index",
+                    points=[[1.0, 1.0, 1.0], [2.0, 2.0, 2.0], [3.0, 3.0, 3.0]],
+                    **kwargs,
+                )
+            else:
+                w.add_mesh(
+                    "m",
+                    grid="g",
+                    space="index",
+                    vertices=[
+                        [0.0, 0.0, 0.0],
+                        [1.0, 0.0, 0.0],
+                        [0.0, 1.0, 0.0],
+                        [1.0, 1.0, 0.0],
+                    ],
+                    faces=[[0, 1, 2], [1, 2, 3]],
+                    **kwargs,
+                )
         assert caught.value.code == "E405"
 
     def test_S8_2_a_short_slice_index_already_in_a_file_is_refused(

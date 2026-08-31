@@ -29,6 +29,15 @@ down an exclusion the reference implementation already applied.
   `slice_index` (`E405`), `as_slices()` refuses rather than skipping so files written before the
   check are caught, and a new semantic rule reports it from `medh5 validate`.
 
+- **Four more per-element columns had the same hole.** Chasing the cause rather than the report
+  found that `slice_index` was not special: every column appended *after* `_object_columns` escaped
+  its length loop, and only the two somebody happened to write a check for — `names` on points,
+  `normals` on a mesh — were guarded. `class_ids` and `weights` on a point set, and
+  `vertex_class_ids` and `mesh_class_ids` on a mesh, were not. A three-point annotation carrying one
+  `class_id` wrote cleanly and validated clean, leaving two landmarks silently unlabelled. All six
+  columns now route through one `_per_element` helper, so a new column cannot be added without the
+  check — the previous arrangement guarded exactly the columns someone remembered to guard.
+
 ### Fixed — converters that assumed instead of checking
 
 A second review pass covered the three subsystems the first one never reached: the DICOM family,
