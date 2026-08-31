@@ -34,6 +34,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any
 
+from medh5._hdf5 import repack
 from medh5.curation.timeline import Timeline, Timepoint
 from medh5.errors import MEDH5ValidationError
 from medh5.sample import frame_references
@@ -675,7 +676,7 @@ def apply(
             # unsalted hash is derivable by anyone holding the original UIDs, so
             # claiming a protected mapping would be the overclaim this module
             # is written to avoid.
-            id_mapping="external" if salt else "none",
+            id_mapping="external" if salt and report.uid_map else "none",
             performed_by=agent.id,
             # Not a claim that no burned-in text exists: a claim that this tool
             # did not look, which is what §11.4's field is for.
@@ -683,6 +684,14 @@ def apply(
         )
         report.actions = removed
         report.applied = True
+    # The amend copied every object and *then* rewrote the pseudonymised
+    # attributes, and HDF5 does not reclaim what it supersedes --- so the file
+    # it just produced still contains the original `frame_uid` in freed space,
+    # recoverable with `strings` while every API read returns the pseudonym.
+    # For a de-identification tool that is not a wasted-bytes problem, so the
+    # output is compacted before it is handed back.  Digests and `content_id`
+    # are unaffected: this rewrites storage, not content (§13.1).
+    repack(path)
     return report
 
 

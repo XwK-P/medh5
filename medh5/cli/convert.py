@@ -55,6 +55,15 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
             "reports a guess where it cannot tell"
         ),
     )
+    nifti.add_argument(
+        "--assume-geometry",
+        action="store_true",
+        help=(
+            "import a NIfTI that declares no spatial mapping (sform_code = "
+            "qform_code = 0) by taking the pixdim fallback. Off by default: "
+            "that grid is assumed, not measured. Recorded as a guess."
+        ),
+    )
     nifti.add_argument("--sample-id")
     nifti.add_argument("--subject-id")
     _common(nifti)
@@ -205,6 +214,7 @@ def _from_nifti(args: argparse.Namespace) -> int:
         modalities=_pairs(args.modality, "modality") or None,
         coord_system=args.coord_system,
         fourth_axis=args.fourth_axis,
+        assume_geometry=args.assume_geometry,
         sample_id=args.sample_id,
         subject_id=args.subject_id,
     )

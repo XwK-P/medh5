@@ -12,6 +12,7 @@ import pytest
 
 import medh5
 from medh5.errors import MEDH5ValidationError
+from medh5.labels import LabelClass, LabelSet
 from medh5.sampling import PatchSampler, TimepointPairSampler
 from tests.v1.conftest import SHAPE, block, write_sample
 
@@ -678,6 +679,77 @@ class TestHandleCache:
 
 
 class TestMonai:
+    def test_available_reports_whether_monai_imports(self):
+        """Both branches are real; neither may be excluded from coverage.
+
+        This carried a blanket `pragma: no cover`, including on the `return
+        True` that runs wherever the extra is installed -- the same shape as
+        the untested-because-skipped problem the MONAI CI job was added for.
+        """
+        from medh5.monai import available
+
+        pytest.importorskip("monai")
+        assert available() is True
+
+    def test_an_annotation_carries_its_own_grids_affine_not_an_images(self, tmp_path):
+        """`to_dict` binds each label tensor to the grid it was drawn on.
+
+        A sample holding CT and PET on different grids is the case this format
+        exists for.  Taking the affine from the first *image* handed the
+        annotation geometry belonging to something else --- here a 70 mm origin
+        shift and a 2x spacing error --- so `Spacingd` resampled the label
+        against the wrong frame and the ground truth moved.
+        """
+        pytest.importorskip("monai")
+        from medh5.monai import affine_for, to_dict
+
+        ct = np.zeros((16, 32, 32), np.int16)
+        pet = np.zeros((8, 16, 16), np.int16)
+        seg = np.zeros((8, 16, 16), bool)
+        seg[2:6, 4:12, 4:12] = True
+        path = tmp_path / "twogrid.medh5"
+        with medh5.create(path, codec="portable") as w:
+            w.label_set(
+                LabelSet(
+                    "v", version="1.0.0", classes=[LabelClass(1, "tumour", "Tumour")]
+                )
+            )
+            w.add_timepoint("tp0")
+            w.add_grid(
+                "gct",
+                shape=ct.shape,
+                spacing=(1.0, 1.0, 1.0),
+                origin=(0.0, 0.0, 0.0),
+                timepoint="tp0",
+            )
+            w.add_grid(
+                "gpet",
+                shape=pet.shape,
+                spacing=(2.0, 2.0, 2.0),
+                origin=(50.0, 60.0, 70.0),
+                timepoint="tp0",
+            )
+            w.add_image("CT", ct, grid="gct", modality="CT")
+            w.add_image("PET", pet, grid="gpet", modality="PT")
+            w.add_segmentation(
+                "tumour",
+                grid="gpet",
+                masks={"tumour": seg},
+                annotated_classes=["tumour"],
+            )
+
+        with medh5.open(path) as sample:
+            item = to_dict(sample, images=["CT", "PET"], annotations=["tumour"])
+            got = np.asarray(item["tumour"].affine)
+            assert np.allclose(got, affine_for(sample, "PET"))
+            assert not np.allclose(got, affine_for(sample, "CT"))
+            assert item["tumour"].meta["medh5"]["grid_id"] == "gpet"
+            # No image requested must not mean an invented identity affine.
+            only = to_dict(sample, images=[], annotations=["tumour"])
+            assert np.allclose(
+                np.asarray(only["tumour"].affine), affine_for(sample, "PET")
+            )
+
     def test_the_affine_is_the_grid_affine(self, cohort):
         from medh5.monai import affine_for, meta_dict
 

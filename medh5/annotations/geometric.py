@@ -220,6 +220,30 @@ def _object_columns(
     return out
 
 
+def _per_element(
+    name: str, values: Any, n: int, dtype: Any, unit: str
+) -> npt.NDArray[Any]:
+    """A per-element column, checked against the elements it labels.
+
+    ``_object_columns`` validates the columns *it* builds, but several encoders
+    append their own afterwards and so never reached that loop.  Each one that
+    skipped the check let a short column through to a file that read as valid,
+    with every element past its end silently unlabelled --- and for a
+    ``slice_index`` the effect was worse still, since a box it did not reach
+    stayed a zero-thickness slice and selected no voxels at all (§8.2).  One
+    helper rather than a check per call site, because the checks that existed
+    were exactly the ones somebody remembered to write.
+    """
+    array = np.asarray(values, dtype=dtype)
+    if array.shape[0] != n:
+        raise MEDH5ValidationError(
+            f"{name} has length {array.shape[0]}, but the annotation holds {n} "
+            f"{unit}; it carries one value for each of them",
+            code="E405",
+        )
+    return array
+
+
 def encode_boxes(
     boxes: npt.ArrayLike,
     class_ids: Sequence[int],
@@ -241,11 +265,19 @@ def encode_boxes(
             f"{bad} box(es) have lo > hi; boxes are stored [lo, hi] at voxel edges",
             code="E406",
         )
-    datasets = {"boxes": array}
+    datasets: dict[str, npt.NDArray[Any]] = {"boxes": array}
     datasets.update(
         _object_columns(array.shape[0], class_ids, instance_ids, scores, attributes)
     )
     if slice_index is not None:
+        # Checked here rather than left to `_object_columns`, which validates
+        # the columns it builds and never sees this one. A short `slice_index`
+        # used to be accepted, and every box past its end stayed a degenerate
+        # zero-thickness slice selecting no voxels at all --- ground truth
+        # dropped by a writer that raised nothing (§8.2).
+        problem = check_slice_index(slice_index, array.shape[0])
+        if problem:
+            raise MEDH5ValidationError(problem, code="E405")
         datasets["slice_index"] = np.asarray(slice_index, dtype=np.int32)
     return AnnotationPayload(
         kind="boxes",
@@ -270,6 +302,85 @@ def _stacked(
     return np.stack(arrays)
 
 
+def _degenerate_axis(box: npt.NDArray[np.float64]) -> int | None:
+    """The single axis a box has no extent on, or ``None``.
+
+    ``slice_index`` on a box with genuine extent everywhere is not §8.2's
+    2D-on-a-slice form, and is left alone rather than reinterpreted.
+    """
+    flat = [axis for axis in range(len(box)) if box[axis][0] == box[axis][1]]
+    return flat[0] if len(flat) == 1 else None
+
+
+def check_slice_index(
+    planes: Any,
+    n_boxes: int,
+    *,
+    boxes: npt.NDArray[np.float64] | None = None,
+    shape: Sequence[int] | None = None,
+) -> str | None:
+    """What a ``slice_index`` must be, stated once (§8.2).
+
+    The writer, :meth:`BoxesAnnotation.as_slices` and the semantic validator all
+    enforce this, and three hand-written copies of one rule is exactly how
+    ``check_chain()`` and the validator came to disagree about composite units.
+    They call this instead, so the three cannot drift apart.
+
+    Shape is checked always.  The *range* needs the grid the plane indexes, so
+    it is checked wherever the caller has the index-space boxes and the grid
+    extent; a world-space box at write time does not (its mapping needs the
+    affine) and is checked on the way out instead.
+    """
+    array = np.asarray(planes)
+    if array.ndim != 1 or array.shape[0] != n_boxes:
+        return (
+            f"`slice_index` has shape {array.shape}, but it names one plane for "
+            f"each of {n_boxes} box(es), so its shape must be ({n_boxes},)"
+        )
+    if boxes is None or shape is None:
+        return None
+    for i in range(n_boxes):
+        axis = _degenerate_axis(boxes[i])
+        if axis is None:
+            continue
+        extent = int(shape[axis])
+        plane = int(array[i])
+        if not 0 <= plane < extent:
+            return (
+                f"box {i} names slice {plane} on an axis {extent} voxels deep; "
+                f"a plane outside the grid was clamped to the nearest edge, "
+                f"which silently moves the annotation to a different plane"
+            )
+    return None
+
+
+def _thicken_named_slice(
+    slices: tuple[slice, ...],
+    box: npt.NDArray[np.float64],
+    plane: int,
+    shape: Sequence[int],
+) -> tuple[slice, ...]:
+    """Give the axis a `slice_index` names one voxel of thickness (§8.2).
+
+    Only the degenerate axis is touched.  The plane is *not* clamped to the
+    grid: `check_slice_index` has already rejected one that falls outside it,
+    and clamping is what silently relocated a box annotated on slice 99 of an
+    8-slice grid to slice 7.
+    """
+    axis = _degenerate_axis(box)
+    if axis is None:
+        return slices
+    extent = int(shape[axis])
+    if not 0 <= plane < extent:
+        raise MEDH5ValidationError(
+            f"slice_index names slice {plane} on an axis {extent} voxels deep",
+            code="E405",
+        )
+    out = list(slices)
+    out[axis] = slice(plane, plane + 1)
+    return tuple(out)
+
+
 class BoxesAnnotation(GeometricAnnotation):
     """Reader for ``kind = "boxes"``."""
 
@@ -289,15 +400,40 @@ class BoxesAnnotation(GeometricAnnotation):
         return self._optional("slice_index", np.int32)
 
     def as_slices(self, grid: Grid | str | None = None) -> list[tuple[slice, ...]]:
-        """Each box as a numpy index tuple, clipped to the grid."""
+        """Each box as a numpy index tuple, clipped to the grid.
+
+        A box carrying ``slice_index`` with a degenerate axis is §8.2's "2D box
+        on slice k", the common radiology annotation.  ``slice_index`` was never
+        read here, and a degenerate axis converts to a zero-thickness slice, so
+        the canonical form selected **no voxels at all**.  The named slice is
+        given one voxel of thickness instead.
+        """
         target = self._resolve_grid(grid)
         if self.space == "index":
             boxes = self.boxes.astype(np.float64)
         else:
             boxes = self._boxes_in_index(target)
-        return [
-            box_to_slices(boxes[i], target.spatial_shape) for i in range(len(boxes))
-        ]
+        planes = self.slice_index
+        if planes is not None:
+            # Files predating the writer's check exist, and the range check can
+            # only happen here for a world-space box --- its plane is not known
+            # until the box is in index space.
+            problem = check_slice_index(
+                planes, len(boxes), boxes=boxes, shape=target.spatial_shape
+            )
+            if problem:
+                raise MEDH5ValidationError(
+                    f"annotation {self.ann_id!r}: {problem}", code="E405"
+                )
+        out: list[tuple[slice, ...]] = []
+        for i in range(len(boxes)):
+            slices = box_to_slices(boxes[i], target.spatial_shape)
+            if planes is not None:
+                slices = _thicken_named_slice(
+                    slices, boxes[i], int(planes[i]), target.spatial_shape
+                )
+            out.append(slices)
+        return out
 
     def _boxes_in_index(self, grid: Grid) -> npt.NDArray[np.float64]:
         return _stacked(
@@ -372,6 +508,18 @@ def encode_obb(
     c = np.asarray(centers, dtype=np.float32)
     s = np.asarray(sizes, dtype=np.float32)
     r = np.asarray(rotations, dtype=np.float32)
+    if c.ndim != 2:  # noqa: PLR2004 - (n, dim)
+        # `boxes`, `mesh` and `instances` all raise a coded error here; `obb`
+        # unpacked the shape first and died with a bare ValueError about tuple
+        # lengths.  An empty detection annotation is the verified negative the
+        # coverage contract exists to record, so the caller needs to be told
+        # what shape to pass, not handed an unpacking failure.
+        raise MEDH5ValidationError(
+            f"obb centers must have shape (n, dim), got {c.shape}; for an empty "
+            "collection pass correctly-shaped empty arrays, e.g. "
+            "np.empty((0, 3)) with np.empty((0, 3, 3)) rotations",
+            code="E405",
+        )
     n, dim = c.shape
     if s.shape != (n, dim) or r.shape != (n, dim, dim):
         raise MEDH5ValidationError(
@@ -563,17 +711,15 @@ def encode_points(
             f"points must have shape (N, S), got {array.shape}", code="E405"
         )
     datasets: dict[str, npt.NDArray[Any]] = {"points": array}
+    n = array.shape[0]
     if class_ids is not None:
-        datasets["class_ids"] = np.asarray(class_ids, dtype=np.uint16)
+        datasets["class_ids"] = _per_element(
+            "class_ids", class_ids, n, np.uint16, "points"
+        )
     if names is not None:
-        if len(names) != array.shape[0]:
-            raise MEDH5ValidationError(
-                f"names has {len(names)} entries for {array.shape[0]} points",
-                code="E405",
-            )
-        datasets["names"] = np.array(list(names), dtype=str_dtype())
+        datasets["names"] = _per_element("names", list(names), n, str_dtype(), "points")
     if weights is not None:
-        datasets["weights"] = np.asarray(weights, dtype=np.float32)
+        datasets["weights"] = _per_element("weights", weights, n, np.float32, "points")
     return AnnotationPayload(
         kind="points",
         datasets=datasets,
@@ -782,11 +928,18 @@ def encode_mesh(
             )
         datasets["normals"] = n
     if vertex_class_ids is not None:
-        datasets["vertex_class_ids"] = np.asarray(vertex_class_ids, dtype=np.uint16)
+        datasets["vertex_class_ids"] = _per_element(
+            "vertex_class_ids", vertex_class_ids, v.shape[0], np.uint16, "vertices"
+        )
     if mesh_offsets is not None:
         datasets["mesh_offsets"] = np.asarray(mesh_offsets, dtype=np.int64)
     if mesh_class_ids is not None:
-        datasets["mesh_class_ids"] = np.asarray(mesh_class_ids, dtype=np.uint16)
+        # `mesh_offsets` is (M+1,) and `mesh_class_ids` is (M,) --- §8.7's table
+        # --- so the offsets name one more boundary than there are meshes.
+        meshes = 1 if mesh_offsets is None else len(mesh_offsets) - 1
+        datasets["mesh_class_ids"] = _per_element(
+            "mesh_class_ids", mesh_class_ids, meshes, np.uint16, "meshes"
+        )
     declared = set()
     if vertex_class_ids is not None:
         declared |= {int(c) for c in vertex_class_ids}
@@ -867,6 +1020,7 @@ __all__ = [
     "ObbAnnotation",
     "PointsAnnotation",
     "Polygon",
+    "check_slice_index",
     "check_space",
     "encode_boxes",
     "encode_contours",

@@ -201,6 +201,40 @@ def _rank(set_id: str, seed: int, group: str) -> str:
     return hashlib.sha256(f"{set_id}:{seed}:{group}".encode()).hexdigest()
 
 
+def _refuse_split_subjects(
+    grouped: Mapping[str, Sequence[Entry]], group_by: str
+) -> None:
+    """Refuse a grouping finer than the subject it is supposed to contain.
+
+    Rule 1 of this module holds only if a group is *coarser* than a subject.
+    ``group_id`` defaults to the subject, so it usually is --- but it is a field
+    each file declares for itself, and two visits of one subject curated at
+    different times can disagree about it (§12.2).  The subject is then split
+    across two groups, the two groups are dealt independently, and the same
+    anatomy lands in train and test.  ``Split.leaks`` does not see it: a group
+    really was assigned once, which is all that check can know from the
+    assignments alone.  It is caught here, where the entries are still in hand.
+    """
+    subjects: dict[str, set[str]] = {}
+    for group, entries in grouped.items():
+        for entry in entries:
+            subjects.setdefault(entry.subject_id, set()).add(group)
+    straddling = {s: sorted(g) for s, g in subjects.items() if len(g) > 1}
+    if not straddling:
+        return
+    detail = "; ".join(
+        f"{subject!r} in {groups}" for subject, groups in sorted(straddling.items())
+    )
+    raise MEDH5ValidationError(
+        f"grouping by {group_by!r} puts {len(straddling)} subject(s) in more than "
+        f"one group: {detail}. A group has to contain whole subjects or the "
+        f"split is not subject-safe --- these would be dealt independently and "
+        f"the same subject could land in two partitions. Give every file of a "
+        f"subject the same {group_by}, or split on 'subject_id'.",
+        code="C204",
+    )
+
+
 def _stratum_of(entries: Sequence[Entry], by: str | None) -> str | None:
     """A group's stratum: the majority value among its samples.
 
@@ -250,6 +284,7 @@ def make_splits(
         raise MEDH5ValidationError("k_folds must be at least 2")
 
     grouped = manifest.groups(group_by)
+    _refuse_split_subjects(grouped, group_by)
     digest = manifest.sha256()
     split = Split(
         set_id=set_id,

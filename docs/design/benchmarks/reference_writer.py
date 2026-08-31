@@ -13,9 +13,13 @@ import h5py
 import hdf5plugin
 import numpy as np
 
-OUT = os.path.dirname(os.path.abspath(__file__))
-PATH = f"{OUT}/case_0001.medh5"
-SCHEMA = os.path.join(OUT, "..", "..", "..", "schemas", "medh5-sample-1.0.schema.json")
+# The current directory, not the script's: running the prototype should not drop
+# a 7 MB artefact into the source tree it is being read from.  `MEDH5_PROTOTYPE_OUT`
+# lets CI put it somewhere disposable.
+OUT = os.environ.get("MEDH5_PROTOTYPE_OUT", os.getcwd())
+PATH = os.path.join(OUT, "case_0001.medh5")
+HERE = os.path.dirname(os.path.abspath(__file__))
+SCHEMA = os.path.join(HERE, "..", "..", "..", "schemas", "medh5-sample-1.0.schema.json")
 S = h5py.string_dtype()
 FRAME0 = "pseudo:1.2.826.0.1.3680043.9.7.100"   # baseline study frame
 FRAME1 = "pseudo:1.2.826.0.1.3680043.9.7.101"   # follow-up: a NEW frame (spec 3.4)

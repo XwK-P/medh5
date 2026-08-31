@@ -85,7 +85,14 @@ def _instances_to_masks(
 ) -> dict[int, npt.NDArray[np.bool_]]:
     boxes = payload.datasets["boxes"]
     classes = payload.datasets["class_ids"]
-    out = {int(c): np.zeros(spatial_shape, dtype=bool) for c in np.unique(classes)}
+    # Seeded from `payload.class_ids`, not from the objects present.  A class
+    # searched for and not found has no object and must still decode to an empty
+    # mask: dropping it turns "verified absent" into "never looked for" (§11.3),
+    # which is exactly what `encode_instances` keeps `class_ids` for.  It also
+    # made `check_roundtrip` blind to the loss, since it decodes the original
+    # through this same path before comparing.
+    declared = tuple(payload.class_ids) or tuple(int(c) for c in np.unique(classes))
+    out = {int(c): np.zeros(spatial_shape, dtype=bool) for c in declared}
     has_masks = "mask_data" in payload.datasets
     for index in range(boxes.shape[0]):
         slices = box_to_slices(boxes[index], spatial_shape)
@@ -175,18 +182,94 @@ def transcode_payload(
     return encode_masks(masks, to_kind, tuple(shape), **kwargs)
 
 
+IN_BAND_IGNORE_KINDS = ("labelmap", "layers")
+"""Encodings that can hold an ignore region in the data itself (spec §7.7)."""
+
+
 def transcode(
     annotation: VoxelAnnotation, to_kind: str, **kwargs: Any
 ) -> AnnotationPayload:
-    """Convert an open annotation to another encoding."""
+    """Convert an open annotation to another encoding.
+
+    Refuses rather than silently dropping what the target cannot express: an
+    in-band ignore region, and object identity.  §7.6 calls transcoding
+    lossless, so anything it cannot carry has to stop it.
+    """
     if to_kind not in TRANSCODABLE and to_kind != "mask":
         raise MEDH5ValidationError(
             f"{to_kind!r} is not a voxel encoding; expected one of "
             f"{list(TRANSCODABLE)}",
             code="E401",
         )
+    if to_kind == "instances" and annotation.kind != "instances":
+        # A dense encoding records which voxels belong to a class, never which
+        # object they belong to.  Going to `instances` from one merged every
+        # object of a class into a single mask and minted a fresh
+        # `instance_id` for it, so two lesions came back as one with an id
+        # neither of them had -- in the field §7.4 makes the whole longitudinal
+        # join.  `instances_from_masks` already refuses to split components for
+        # the same reason; merging them is the same invention.
+        raise MEDH5ValidationError(
+            f"cannot transcode {annotation.kind!r} to 'instances': a dense "
+            "encoding carries no object identity, so every object of a class "
+            "would merge into one with a newly minted instance_id (spec §7.4). "
+            "Re-derive the objects from the source that had them.",
+            code="E404",
+        )
+    ignore = _ignore_region(annotation)
+    if ignore is not None:
+        if to_kind not in IN_BAND_IGNORE_KINDS:
+            # §7.7: `bitmask` and `probmap` express ignore as a separate
+            # `mask`-kind annotation, which this function cannot create -- it
+            # returns one payload.  Dropping it turned "nobody examined these
+            # voxels" into "verified absent for every annotated class", which
+            # §7.7 names as the single most common cause of silently
+            # mistrained segmentation models.
+            raise MEDH5ValidationError(
+                f"cannot transcode {annotation.kind!r} to {to_kind!r}: this "
+                f"annotation carries an in-band ignore region, which "
+                f"{to_kind!r} cannot hold (spec §7.7). Write the ignore region "
+                "as a separate `mask` annotation and reference it with "
+                "`ignore_mask=` first, or transcode to "
+                f"{' or '.join(map(repr, IN_BAND_IGNORE_KINDS))} instead.",
+                code="E404",
+            )
+        kwargs.setdefault("ignore", ignore)
+        # The id as well as the mask.  `transcode_annotation` carries the source
+        # header forward, so a non-default `ignore_id` survives there --- while
+        # the target encoder, told only the mask, wrote the global default.  The
+        # header then named a value the data did not contain, `_encodes_ignore`
+        # went False, and the region this branch exists to protect read as
+        # ordinary background again.
+        kwargs.setdefault("ignore_id", annotation.header.ignore_id)
     masks = annotation_to_masks(annotation)
     return encode_masks(masks, to_kind, annotation.spatial_shape, **kwargs)
+
+
+def _ignore_region(annotation: VoxelAnnotation) -> npt.NDArray[np.bool_] | None:
+    """The annotation's **in-band** ignore region, if it carries one (§7.7).
+
+    Only the in-band case matters here.  An annotation whose header names a
+    separate `mask` annotation via `ignore_mask` keeps that reference through
+    the header, so nothing is lost; it is the voxels written as `ignore_id`
+    inside `labelmap`/`layers` data that have nowhere to go in `bitmask` or
+    `probmap`.
+    """
+    if not annotation._encodes_ignore():  # noqa: SLF001 - same-package internal
+        return None
+    reader = getattr(annotation, "ignore_mask", None)
+    if reader is None:
+        # An encoding that says it holds an ignore region and offers no way to
+        # read it cannot be transcoded safely by definition -- refusing beats
+        # the `getattr` default of None, which read as "no ignore region" and
+        # let the region be dropped by the very branch that exists to stop it.
+        raise MEDH5ValidationError(
+            f"annotation {annotation.ann_id!r} of kind {annotation.kind!r} "
+            "reports an in-band ignore region but exposes no ignore_mask() to "
+            "read it, so transcoding cannot carry it across (spec §7.7)",
+            code="E404",
+        )
+    return np.asarray(reader(), dtype=bool)
 
 
 def masks_equal(

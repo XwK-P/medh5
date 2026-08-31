@@ -98,8 +98,7 @@ def dispatch(command: str, args: argparse.Namespace) -> int | None:
             for name in stale:
                 print(f"  changed: {name}")
         return _report(results, args)
-    print("usage: medh5 conformance {list|build|run|publish|score}")
-    return EXIT_ERROR
+    return fail("usage: medh5 conformance {list|build|run|publish|score}")
 
 
 def _report(results: list[CaseResult], args: argparse.Namespace) -> int:

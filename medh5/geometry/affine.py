@@ -133,17 +133,27 @@ def box_to_slices(
 ) -> tuple[slice, ...]:
     """Convert one ``(S, 2)`` box in continuous index coordinates to numpy slices.
 
-    ``start = round(lo + 0.5)``, ``stop = round(hi + 0.5)``.  When *shape* is
-    given the result is clipped to the array, which is what a reader wants for a
-    box that a resample pushed slightly out of bounds.
+    ``start = floor(lo + 0.5)``, ``stop = floor(hi + 0.5)`` (spec §8.1).  When
+    *shape* is given the result is clipped to the array, which is what a reader
+    wants for a box that a resample pushed slightly out of bounds.
+
+    The rounding rule is **half-up, not half-to-even**, and the difference is not
+    cosmetic.  ``np.rint`` rounds half to even, so for a box sitting on integer
+    edge coordinates ``lo + 0.5`` and ``hi + 0.5`` land on opposite sides of the
+    tie and the extent identity three lines above stops holding: a one-voxel box
+    at ``[1.0, 2.0]`` became an *empty* slice and one at ``[2.0, 3.0]`` became two
+    voxels wide.  Boxes derived from ``slices_to_box`` are half-integer and never
+    hit the tie, which is why the round-trip tests could not see it; boxes from a
+    world→index conversion, an even-factor resample or a pyramid level change are
+    integer-valued and hit it constantly.
     """
     arr = np.asarray(box, dtype=np.float64)
     if arr.ndim != 2 or arr.shape[1] != 2:
         raise MEDH5ValidationError(f"box must have shape (S, 2), got {arr.shape}")
     if np.any(arr[:, 0] > arr[:, 1]):
         raise MEDH5ValidationError("box has lo > hi on at least one axis", code="E406")
-    start = np.rint(arr[:, 0] + 0.5).astype(np.int64)
-    stop = np.rint(arr[:, 1] + 0.5).astype(np.int64)
+    start = np.floor(arr[:, 0] + 0.5).astype(np.int64)
+    stop = np.floor(arr[:, 1] + 0.5).astype(np.int64)
     if shape is not None:
         extent = np.asarray(shape, dtype=np.int64)
         start = np.clip(start, 0, extent)

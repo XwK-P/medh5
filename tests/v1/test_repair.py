@@ -508,6 +508,40 @@ class TestScrubApplies:
             assert acquisition["kvp"] == 120
             assert "AccessionNumber" not in sample.document.extra["source"]
 
+    def test_S11_4_the_original_uid_does_not_survive_in_freed_space(self, dirty):
+        """A scrubbed file must not still contain the UID it pseudonymised.
+
+        The amend copies each object and *then* rewrites the attribute, and HDF5
+        never reclaims what it supersedes -- so the released file carried the
+        real FrameOfReferenceUID in freed space, findable with ``strings``,
+        while every API read returned the pseudonym.  A UID links back to the
+        originating study in the source PACS, so this is the difference between
+        a de-identified file and one that only looks it.
+        """
+        original = b"1.2.840.10008.3.1.2.9"
+        assert original in dirty.read_bytes()
+        scrubber.apply(dirty)
+        assert original not in dirty.read_bytes()
+        with medh5.open(dirty) as sample:
+            assert sample.grids["g"].frame_uid.startswith("pseudo:")
+
+    def test_S11_4_id_mapping_is_external_only_when_uids_were_mapped(self, tmp_path):
+        """`external` is the strongest claim §11.4 offers; don't make it for free."""
+        path = tmp_path / "nouid.medh5"
+        with medh5.create(path, sample_id="s1", subject_id="subj-A") as w:
+            w.add_timepoint("tp0", date="2026-02-03")
+            w.add_grid(
+                "g",
+                shape=SHAPE,
+                spacing=(1.0, 1.0, 1.0),
+                timepoint="tp0",
+                frame_uid="not-a-dicom-uid",
+            )
+            w.add_image("CT", np.zeros(SHAPE, np.int16), grid="g", modality="CT")
+        scrubber.apply(path, salt="pepper", date_shift_days=-117)
+        with medh5.open(path) as sample:
+            assert sample.document.deidentification.id_mapping == "none"
+
     def test_uids_are_pseudonymised_not_deleted(self, dirty):
         """Deleting a frame UID would break registration; a pseudonym does not."""
         report = scrubber.apply(dirty)

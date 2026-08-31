@@ -84,6 +84,68 @@ class TestReport:
         assert first.of_kind("k")
 
 
+class TestNiftiGeometryIsNeverInvented:
+    """§3.3: a grid this converter made up is indistinguishable from a measured one."""
+
+    def _write(self, path, sform_code, qform_code, sform=None, qform=None):
+        data = np.zeros((6, 7, 8), np.int16)
+        image = nib.Nifti1Image(data, np.diag([2.0, 2.0, 2.0, 1.0]))
+        image.set_sform(sform, code=sform_code)
+        image.set_qform(qform, code=qform_code)
+        nib.save(image, str(path))
+        return path
+
+    def test_a_file_declaring_no_spatial_mapping_is_refused(self, tmp_path):
+        """`sform_code == qform_code == 0` means "voxel indices only".
+
+        nibabel still returns an affine, rebuilt from pixdim, and importing it
+        mints a world grid nobody measured -- silently, with the conversion
+        report saying "0 guesses".
+        """
+        src = self._write(tmp_path / "nocode.nii.gz", 0, 0)
+        with pytest.raises(MEDH5ValidationError, match="no spatial mapping"):
+            from_nifti({"IMG": src}, tmp_path / "out.medh5", sample_id="s")
+
+    def test_the_pixdim_fallback_is_available_but_recorded_as_a_guess(self, tmp_path):
+        src = self._write(tmp_path / "nocode.nii.gz", 0, 0)
+        report = from_nifti(
+            {"IMG": src},
+            tmp_path / "out.medh5",
+            sample_id="s",
+            assume_geometry=True,
+        )
+        assert any("no spatial mapping" in n.message for n in report.guesses)
+
+    def test_an_sform_qform_disagreement_is_reported(self, tmp_path):
+        """The classic signature of a file one tool updated and another did not.
+
+        Preferring the sform is conventional and defensible; reporting it as no
+        decision at all is not -- a reader preferring the qform puts the volume
+        somewhere else, and a cohort conversion never surfaced that some files
+        carried contradictory geometry.
+        """
+        src = self._write(
+            tmp_path / "disagree.nii.gz",
+            2,
+            1,
+            sform=np.diag([2.0, 2.0, 2.0, 1.0]),
+            qform=np.diag([3.0, 3.0, 3.0, 1.0]),
+        )
+        report = from_nifti({"IMG": src}, tmp_path / "out.medh5", sample_id="s")
+        assert any("sform and qform" in n.message for n in report.guesses)
+
+    def test_a_well_formed_file_reports_no_geometry_guess(self, tmp_path):
+        src = self._write(
+            tmp_path / "ok.nii.gz",
+            2,
+            2,
+            sform=np.diag([2.0, 0.8, 0.8, 1.0]),
+            qform=np.diag([2.0, 0.8, 0.8, 1.0]),
+        )
+        report = from_nifti({"IMG": src}, tmp_path / "out.medh5", sample_id="s")
+        assert not [n for n in report.guesses if n.kind == "geometry"]
+
+
 class TestNifti:
     def test_S3_1_RAS_becomes_LPS_by_flipping_the_affine_not_the_voxels(
         self, volumes, tmp_path
@@ -244,7 +306,9 @@ class TestNifti:
         nib.save(nib.Nifti1Image(np.zeros((32, 40), np.int16), tilted), str(source))
         with pytest.raises(MEDH5ValidationError) as exc:
             from_nifti({"XR": source}, tmp_path / "tilt.medh5")
-        assert exc.value.code == "E102"
+        # Uncoded: E102 is `direction` not orthonormal, and this direction is
+        # perfectly orthonormal -- it just cannot be reduced to a 2x2.
+        assert exc.value.code is None
 
     def test_a_4D_series_cannot_keep_its_NIfTI_axis_order(self, tmp_path):
         """§3.1 wants the spatial axes trailing; NIfTI puts time there.
@@ -292,6 +356,27 @@ class TestNifti:
         nib.save(nib.Nifti1Image(np.zeros(SHAPE_XYZ, np.int16), shifted), str(other))
         with pytest.raises(MEDH5ValidationError, match="origin"):
             from_nifti({"CT": volumes["ct"], "PET": other}, tmp_path / "y.medh5")
+
+    def test_a_grid_disagreement_does_not_borrow_a_format_code(self, volumes, tmp_path):
+        """§15.2's codes describe a MEDH5 file; these are two NIfTI volumes.
+
+        The shape mismatch is not `E202` (an image disagreeing with its grid --
+        neither of these is a grid) and the geometry mismatch is not `E101` (a
+        reference to a grid that does not exist -- nothing here is referenced).
+        """
+        odd = tmp_path / "odd.nii.gz"
+        nib.save(nib.Nifti1Image(np.zeros((4, 4, 4), np.int16), AFFINE), str(odd))
+        with pytest.raises(MEDH5ValidationError) as shape_error:
+            from_nifti({"CT": volumes["ct"], "PET": odd}, tmp_path / "x.medh5")
+        assert shape_error.value.code is None
+
+        shifted = np.array(AFFINE)
+        shifted[0, 3] += 3.0
+        other = tmp_path / "shift.nii.gz"
+        nib.save(nib.Nifti1Image(np.zeros(SHAPE_XYZ, np.int16), shifted), str(other))
+        with pytest.raises(MEDH5ValidationError) as geometry_error:
+            from_nifti({"CT": volumes["ct"], "PET": other}, tmp_path / "y.medh5")
+        assert geometry_error.value.code is None
 
     def test_an_empty_image_set_is_refused(self, tmp_path):
         with pytest.raises(MEDH5ValidationError):
@@ -486,7 +571,9 @@ class TestDimensionality:
         cine = self._write(tmp_path, "cine", (24, 20, 12, 3), tr=2.0, units="sec")
         with pytest.raises(MEDH5ValidationError) as exc:
             from_nifti({"D": dwi, "C": cine}, tmp_path / "mix.medh5")
-        assert exc.value.code == "E110"
+        # Uncoded: E110 is an invalid `axis_kinds` in a file, and nothing here
+        # has one -- two inputs disagree about what the axis is.
+        assert exc.value.code is None
 
     def test_S3_2_toffset_is_scaled_with_the_zoom(self, tmp_path):
         """`toffset` is in the header's own temporal unit, like `pixdim[4]`.
@@ -817,6 +904,93 @@ class TestNnunet:
             read_dataset_json(tmp_path)
         with pytest.raises(MEDH5ValidationError, match="not found"):
             read_dataset_json(tmp_path / "nope")
+
+    def test_S3_2_a_channel_on_another_grid_is_refused(self, dataset, tmp_path):
+        """A second channel is written onto the first one's grid, so it has to
+        share it.  Same shape, different spacing: nothing in the array reveals
+        that these are different volumes of the patient."""
+        from medh5.io.nnunetv2 import from_nnunetv2
+
+        odd = np.diag([2.0, 2.0, 2.0, 1.0])
+        odd[:3, 3] = [50.0, 0.0, 0.0]
+        nib.save(
+            nib.Nifti1Image(np.zeros((12, 10, 6), np.int16), odd),
+            str(dataset / "imagesTr" / "CASE_001_0001.nii.gz"),
+        )
+        with pytest.raises(MEDH5ValidationError, match="spacing"):
+            from_nnunetv2(dataset, tmp_path / "out", case_ids=["CASE_001"])
+
+    def test_S3_2_a_label_volume_on_another_grid_is_refused(self, dataset, tmp_path):
+        from medh5.io.nnunetv2 import from_nnunetv2
+
+        shifted = np.eye(4)
+        shifted[:3, 3] = [0.0, 0.0, 9.0]
+        nib.save(
+            nib.Nifti1Image(np.zeros((12, 10, 6), np.uint8), shifted),
+            str(dataset / "labelsTr" / "CASE_001.nii.gz"),
+        )
+        with pytest.raises(MEDH5ValidationError, match="origin"):
+            from_nnunetv2(dataset, tmp_path / "out", case_ids=["CASE_001"])
+
+    def test_a_label_named_with_spaces_survives_the_round_trip(self, tmp_path):
+        """`dataset.json` names are free text; the label set key is sanitised
+        from them.  Matching classes back by name therefore finds nothing for
+        any dataset that capitalises, and the export silently wrote an
+        all-background volume.  Classes are matched by id instead."""
+        from medh5.io.nnunetv2 import from_nnunetv2, to_nnunetv2
+
+        root = tmp_path / "Dataset002_Named"
+        (root / "imagesTr").mkdir(parents=True)
+        (root / "labelsTr").mkdir()
+        shape = (8, 8, 4)
+        nib.save(
+            nib.Nifti1Image(np.zeros(shape, np.int16), np.eye(4)),
+            str(root / "imagesTr" / "CASE_0000.nii.gz"),
+        )
+        volume = np.zeros(shape, np.uint8)
+        volume[1:4, 1:4, 1:3] = 1
+        volume[5:7, 5:7, 1:3] = 2
+        nib.save(
+            nib.Nifti1Image(volume, np.eye(4)),
+            str(root / "labelsTr" / "CASE.nii.gz"),
+        )
+        (root / "dataset.json").write_text(
+            json.dumps(
+                {
+                    "channel_names": {"0": "CT"},
+                    "labels": {"background": 0, "Tumour Core": 1, "GTV": 2},
+                    "numTraining": 1,
+                    "file_ending": ".nii.gz",
+                }
+            )
+        )
+        imported = tmp_path / "imported"
+        from_nnunetv2(root, imported)
+        to_nnunetv2([imported / "CASE.medh5"], tmp_path / "back")
+        written = np.asarray(
+            nib.load(
+                str(tmp_path / "back" / "Dataset001_medh5" / "labelsTr" / "CASE.nii.gz")
+            ).dataobj
+        )
+        assert int((written == 1).sum()) == int((volume == 1).sum())
+        assert int((written == 2).sum()) == int((volume == 2).sum())
+
+    def test_a_class_the_sample_lacks_is_refused_not_dropped(self, tmp_path):
+        from medh5.io.nnunetv2 import _labelmap_for
+
+        class _Stub:
+            ann_id = "seg"
+            class_ids = (1,)
+            spatial_shape = (2, 2, 2)
+
+            def dense(self, ids):
+                return np.zeros((1, 2, 2, 2), bool)
+
+            def resolve_class(self, key):
+                raise KeyError(key)
+
+        with pytest.raises(MEDH5ValidationError, match="carries no class"):
+            _labelmap_for(_Stub(), {"background": 0, "kidney": 1, "spleen": 7})
 
     def test_a_missing_channel_is_named(self, dataset, tmp_path):
         from medh5.io.nnunetv2 import from_nnunetv2
@@ -1160,6 +1334,156 @@ class TestDicom:
         assert np.isclose(geometry["spacing"][0], 2.5)
         note = report.of_kind("slice_spacing")[0]
         assert note.detail["thickness"] == 5.0, "the slab is twice the increment"
+
+    def test_S4_2_a_per_slice_rescale_is_refused_not_taken_from_slice_zero(self, tree):
+        """§4.2 stores one modality LUT for the series, so there has to be one.
+
+        A PET series with a per-slice rescale is ordinary, and collapsing it to
+        slice 0's slope reports the wrong activity on every other slice with
+        nothing in the file to say so.
+        """
+        import pydicom
+
+        from medh5.io.dicom import read_series, scan_dicom
+
+        target = sorted((tree["root"] / "v1" / "ct").glob("*.dcm"))[3]
+        ds = pydicom.dcmread(str(target))
+        ds.RescaleSlope, ds.RescaleIntercept = 2.0, 0.0
+        ds.save_as(str(target))
+        wanted = tree["ct0"]["series_uid"]
+        series = next(s for s in scan_dicom(tree["root"]) if s.series_uid == wanted)
+        with pytest.raises(MEDH5ValidationError, match="RescaleSlope"):
+            read_series(series)
+
+    def test_S3_1_a_slice_rotated_from_the_rest_is_refused(self, tree):
+        import pydicom
+
+        from medh5.io.dicom import read_series, scan_dicom
+
+        target = sorted((tree["root"] / "v1" / "ct").glob("*.dcm"))[3]
+        ds = pydicom.dcmread(str(target))
+        ds.ImageOrientationPatient = [0, 1, 0, 0, 0, 1]
+        ds.save_as(str(target))
+        wanted = tree["ct0"]["series_uid"]
+        series = next(s for s in scan_dicom(tree["root"]) if s.series_uid == wanted)
+        with pytest.raises(MEDH5ValidationError, match="ImageOrientationPatient"):
+            read_series(series)
+
+    def test_S3_2_a_slice_with_its_own_pixel_spacing_is_refused(self, tree):
+        import pydicom
+
+        from medh5.io.dicom import read_series, scan_dicom
+
+        target = sorted((tree["root"] / "v1" / "ct").glob("*.dcm"))[2]
+        ds = pydicom.dcmread(str(target))
+        ds.PixelSpacing = [1.5, 1.5]
+        ds.save_as(str(target))
+        wanted = tree["ct0"]["series_uid"]
+        series = next(s for s in scan_dicom(tree["root"]) if s.series_uid == wanted)
+        with pytest.raises(MEDH5ValidationError, match="PixelSpacing"):
+            read_series(series)
+
+    def test_a_slice_missing_a_tag_refuses_rather_than_raising_raw(self, tree):
+        """`scan_dicom` groups by series without requiring these tags.
+
+        A slice can therefore reach the agreement check missing one outright,
+        and the raw `AttributeError` that produced was both a CLI traceback and
+        an exception no caller could catch as `MEDH5Error` like every other
+        input problem this converter reports.
+        """
+        import pydicom
+
+        from medh5.errors import MEDH5Error
+        from medh5.io.dicom import read_series, scan_dicom
+
+        target = sorted((tree["root"] / "v1" / "ct").glob("*.dcm"))[3]
+        ds = pydicom.dcmread(str(target))
+        del ds.ImageOrientationPatient
+        ds.save_as(str(target))
+        wanted = tree["ct0"]["series_uid"]
+        series = next(s for s in scan_dicom(tree["root"]) if s.series_uid == wanted)
+        with pytest.raises(MEDH5Error, match="no usable ImageOrientationPatient"):
+            read_series(series)
+
+    def test_a_converter_refusal_does_not_borrow_a_format_code(self, tree):
+        """§15.2's codes describe conditions in a MEDH5 file.
+
+        A DICOM series is not one yet, and no code in the table means "these
+        slices disagree" --- borrowing E204 would have reported a modality-LUT
+        problem as malformed `channel_names`.
+        """
+        import pydicom
+
+        from medh5.errors import MEDH5ValidationError
+        from medh5.io.dicom import read_series, scan_dicom
+
+        target = sorted((tree["root"] / "v1" / "ct").glob("*.dcm"))[3]
+        ds = pydicom.dcmread(str(target))
+        ds.RescaleSlope = 2.0
+        ds.save_as(str(target))
+        wanted = tree["ct0"]["series_uid"]
+        series = next(s for s in scan_dicom(tree["root"]) if s.series_uid == wanted)
+        with pytest.raises(MEDH5ValidationError) as caught:
+            read_series(series)
+        assert caught.value.code is None
+
+    def test_S3_2_a_series_with_no_pixel_spacing_is_refused_not_assumed(self, tree):
+        """Every slice omitting `PixelSpacing` used to be the dangerous case.
+
+        One slice omitting it disagrees with the others and was caught; *all*
+        of them omitting it meant they agreed on the 1 mm default, so the stack
+        was written with an in-plane size the source never stated.
+        """
+        import pydicom
+
+        from medh5.errors import MEDH5Error
+        from medh5.io.dicom import read_series, scan_dicom
+
+        for path in sorted((tree["root"] / "v1" / "ct").glob("*.dcm")):
+            ds = pydicom.dcmread(str(path))
+            del ds.PixelSpacing
+            ds.save_as(str(path))
+        wanted = tree["ct0"]["series_uid"]
+        series = next(s for s in scan_dicom(tree["root"]) if s.series_uid == wanted)
+        with pytest.raises(MEDH5Error, match="no usable PixelSpacing"):
+            read_series(series)
+
+    @pytest.mark.parametrize(
+        ("tag", "value"),
+        [
+            ("ImageOrientationPatient", [0, 0, 1, 0, 1]),
+            ("ImageOrientationPatient", [0, 0, 1, 0, 1, 0, 5]),
+            ("PixelSpacing", [0.8]),
+            ("PixelSpacing", [0.8, 0.9, 1.0]),
+        ],
+    )
+    def test_a_tag_of_the_wrong_length_is_refused(self, tree, tag, value):
+        """Cardinality, not just parseability.
+
+        These extract perfectly well, and every slice carries the same wrong
+        length -- so the agreement check sees nothing to disagree about. What
+        followed was either a raw exception outside `MEDH5Error` (five values
+        reach `np.cross`) or, for a three-value `PixelSpacing`, silence: it was
+        read as its first two elements and the third discarded, giving the grid
+        an in-plane size nobody wrote down.
+        """
+        import pydicom
+
+        from medh5.errors import MEDH5Error
+        from medh5.io.dicom import read_series, scan_dicom
+
+        for path in sorted((tree["root"] / "v1" / "ct").glob("*.dcm")):
+            ds = pydicom.dcmread(str(path))
+            setattr(ds, tag, value)
+            ds.save_as(str(path))
+        wanted = tree["ct0"]["series_uid"]
+        series = next(s for s in scan_dicom(tree["root"]) if s.series_uid == wanted)
+        # A single-value tag arrives from pydicom as a scalar rather than a
+        # one-element sequence, so it is refused by the extraction guard rather
+        # than the length check. Either way it names the tag and is a
+        # `MEDH5Error`, which is the contract under test.
+        with pytest.raises(MEDH5Error, match=tag):
+            read_series(series)
 
     def test_an_irregular_stack_is_refused(self, tmp_path):
         import pydicom
@@ -1569,6 +1893,57 @@ class TestRtstruct:
 
         with pytest.raises(MEDH5ValidationError, match="not 'RTSTRUCT'"):
             read_rtstruct(prepared["series"]["paths"][0])
+
+
+class TestConverterDiagnosticCodes:
+    """A converter refusal about its *input* carries no diagnostic code.
+
+    §15.2's table describes conditions found in a MEDH5 file. A NIfTI volume or
+    a DICOM series is not one yet, so a code applied to it tells anything
+    branching on `exc.code` an untrue story --- an irregular DICOM stack read as
+    a non-positive grid spacing, a tilted 2-D plane as a non-orthonormal
+    `direction`, a modality-LUT disagreement as malformed `channel_names`.
+
+    A refusal about the sample being written or targeted is different and keeps
+    its code: a SEG naming a grid the sample does not have really is `E101`, and
+    a class absent from the sample's label set really is `E402`.
+
+    This mistake reached six separate sites before it was found, one at a time,
+    so the allow-list below is exhaustive: a new coded refusal in `medh5.io` has
+    to be added here deliberately, with the reason it is about the sample rather
+    than the input.
+    """
+
+    ALLOWED = {
+        ("dicom_seg.py", "E101"),  # SEG names no grid the sample has
+        ("dicom_seg.py", "E402"),  # segment absent from the sample's label set
+        ("dicom_seg.py", "E405"),  # SEG shape vs. the target grid's
+        ("nifti.py", "E402"),  # mask name absent from the sample's label set
+        ("nifti.py", "E405"),  # mask shape vs. the target grid's
+        ("nnunetv2.py", "E402"),  # class absent from the annotation
+        ("rtstruct.py", "E101"),  # RTSTRUCT names no grid the sample has
+        ("rtstruct.py", "E402"),  # ROI absent from the sample's label set
+        ("rtstruct.py", "E401"),  # the sample's annotation is the wrong kind
+        ("rtstruct.py", "E414"),  # the sample's annotation has no usable space
+    }
+
+    def test_no_converter_refusal_borrows_a_format_code(self):
+        import re
+
+        import medh5.io
+
+        root = Path(medh5.io.__file__).parent
+        found = {
+            (path.name, code)
+            for path in sorted(root.glob("*.py"))
+            for code in re.findall(r'code="(E\d{3})"', path.read_text())
+        }
+        assert found <= self.ALLOWED, (
+            "new coded refusal(s) in medh5.io: "
+            f"{sorted(found - self.ALLOWED)}. If the refusal describes the "
+            "MEDH5 sample, add it to ALLOWED with a reason; if it describes the "
+            "converter's input, leave it uncoded."
+        )
 
 
 class TestLazyImports:

@@ -139,7 +139,10 @@ says what to do:
 
 ```
 MEDH5ValidationError: annotation 'organs' of kind 'layers' does not carry
-instance identity; transcode it to `instances` first
+instance identity, and it cannot be recovered from a dense encoding:
+transcoding to `instances` would merge every object of a class into one and
+mint an id that belongs to none of them (§7.4). Re-derive the objects from
+whatever source had them.
 ```
 
 Overlapping classes (a lesion inside the liver) are expressible in every

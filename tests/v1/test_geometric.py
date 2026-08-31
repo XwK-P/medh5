@@ -585,4 +585,279 @@ class TestSpace:
         path = detection_sample(tmp_path / "det.medh5", label_set)
         with medh5.open(path) as sample:
             json.dumps(sample.annotations["lesions"].summary())
-            json.dumps(sample.summary(), default=str)
+            json.dumps(sample.summary())
+
+
+class TestSliceIndexBoxes:
+    def test_S8_2_a_2d_box_on_a_slice_selects_that_slice(self, tmp_path, label_set):
+        """§8.2's canonical form selected no voxels at all.
+
+        `slice_index` with a degenerate axis expresses "a 2D box on slice k",
+        the common radiology annotation -- and `as_slices` never read
+        `slice_index`, so the degenerate axis became a zero-thickness slice.
+        """
+        shape = (8, 16, 16)
+        path = tmp_path / "sliced.medh5"
+        with medh5.create(path, codec="portable") as w:
+            w.label_set(label_set)
+            w.add_grid("g", shape=shape, spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", np.zeros(shape, np.int16), grid="g", modality="CT")
+            w.add_boxes(
+                "det",
+                grid="g",
+                boxes=[[[3.0, 3.0], [1.5, 5.5], [1.5, 5.5]]],
+                class_ids=[3],
+                space="index",
+                slice_index=[3],
+            )
+        with medh5.open(path) as sample:
+            slices = sample.annotations["det"].as_slices()[0]
+        assert slices[0] == slice(3, 4), "the named slice, one voxel thick"
+        assert int(np.prod([s.stop - s.start for s in slices])) == 16
+
+    def test_S8_2_a_short_slice_index_is_refused_at_write(self, tmp_path, label_set):
+        """One entry per box, or the boxes past the end vanish.
+
+        `slice_index` is appended after `_object_columns`, which validates the
+        per-box columns it builds and never sees this one -- so a short one was
+        written without complaint, and every box it did not reach stayed a
+        degenerate zero-thickness slice selecting no voxels.
+        """
+        shape = (8, 16, 16)
+        with (
+            pytest.raises(MEDH5ValidationError, match="one plane for each") as caught,
+            medh5.create(tmp_path / "short.medh5", codec="portable") as w,
+        ):
+            w.label_set(label_set)
+            w.add_grid("g", shape=shape, spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", np.zeros(shape, np.int16), grid="g", modality="CT")
+            w.add_boxes(
+                "det",
+                grid="g",
+                boxes=[
+                    [[3.0, 3.0], [1.5, 5.5], [1.5, 5.5]],
+                    [[6.0, 6.0], [8.5, 12.5], [8.5, 12.5]],
+                ],
+                class_ids=[3, 3],
+                space="index",
+                slice_index=[3],
+            )
+        assert caught.value.code == "E405"
+
+    @pytest.mark.parametrize(
+        ("kind", "kwargs", "column"),
+        [
+            ("points", {"class_ids": [3]}, "class_ids"),
+            ("points", {"class_ids": [3, 3, 3], "weights": [0.5]}, "weights"),
+            ("points", {"class_ids": [3, 3, 3], "names": ["a"]}, "names"),
+            ("mesh", {"vertex_class_ids": [3]}, "vertex_class_ids"),
+            (
+                "mesh",
+                {"mesh_offsets": [0, 1, 2], "mesh_class_ids": [3]},
+                "mesh_class_ids",
+            ),
+        ],
+    )
+    def test_S8_every_per_element_column_is_checked(
+        self, tmp_path, label_set, kind, kwargs, column
+    ):
+        """`slice_index` was unchecked because it is written after
+        `_object_columns`, which validates only the columns it builds itself.
+
+        Five more columns were added the same way and went the same way: a short
+        one wrote cleanly and validated clean, leaving every element past its end
+        silently unlabelled. They all route through one helper now, because the
+        checks that existed were exactly the ones somebody remembered to write.
+        """
+        shape = (8, 16, 16)
+        with (
+            pytest.raises(MEDH5ValidationError, match=column) as caught,
+            medh5.create(tmp_path / f"{column}.medh5", codec="portable") as w,
+        ):
+            w.label_set(label_set)
+            w.add_grid("g", shape=shape, spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", np.zeros(shape, np.int16), grid="g", modality="CT")
+            if kind == "points":
+                w.add_points(
+                    "p",
+                    grid="g",
+                    space="index",
+                    points=[[1.0, 1.0, 1.0], [2.0, 2.0, 2.0], [3.0, 3.0, 3.0]],
+                    **kwargs,
+                )
+            else:
+                w.add_mesh(
+                    "m",
+                    grid="g",
+                    space="index",
+                    vertices=[
+                        [0.0, 0.0, 0.0],
+                        [1.0, 0.0, 0.0],
+                        [0.0, 1.0, 0.0],
+                        [1.0, 1.0, 0.0],
+                    ],
+                    faces=[[0, 1, 2], [1, 2, 3]],
+                    **kwargs,
+                )
+        assert caught.value.code == "E405"
+
+    @pytest.mark.parametrize("plane", [-1, 99])
+    def test_S8_2_a_plane_outside_the_grid_is_refused_not_clamped(
+        self, tmp_path, label_set, plane
+    ):
+        """Clamping moved the annotation to a plane nobody drew on.
+
+        On an 8-slice grid `-1` became slice 0 and `99` became slice 7, and the
+        file validated clean --- so a box recorded against the wrong plane was
+        consumable as ground truth with no diagnostic anywhere.
+        """
+        shape = (8, 16, 16)
+        with (
+            pytest.raises(MEDH5ValidationError, match="voxels deep") as caught,
+            medh5.create(tmp_path / "oob.medh5", codec="portable") as w,
+        ):
+            w.label_set(label_set)
+            w.add_grid("g", shape=shape, spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", np.zeros(shape, np.int16), grid="g", modality="CT")
+            w.add_boxes(
+                "det",
+                grid="g",
+                space="index",
+                boxes=[[[3.0, 3.0], [1.5, 5.5], [1.5, 5.5]]],
+                class_ids=[3],
+                slice_index=[plane],
+            )
+        assert caught.value.code == "E405"
+
+    def test_S8_2_a_two_dimensional_slice_index_is_refused(self, tmp_path, label_set):
+        """§8.2 gives `slice_index` shape `(N,)`.
+
+        The length check read only the leading axis, so `(N, K)` passed it and
+        `int(planes[i])` then raised a raw `TypeError` on a whole row.
+        """
+        shape = (8, 16, 16)
+        with (
+            pytest.raises(MEDH5ValidationError, match="shape") as caught,
+            medh5.create(tmp_path / "twod.medh5", codec="portable") as w,
+        ):
+            w.label_set(label_set)
+            w.add_grid("g", shape=shape, spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", np.zeros(shape, np.int16), grid="g", modality="CT")
+            w.add_boxes(
+                "det",
+                grid="g",
+                space="index",
+                boxes=[
+                    [[3.0, 3.0], [1.5, 5.5], [1.5, 5.5]],
+                    [[6.0, 6.0], [8.5, 12.5], [8.5, 12.5]],
+                ],
+                class_ids=[3, 3],
+                slice_index=[[3, 4], [6, 7]],
+            )
+        assert caught.value.code == "E405"
+
+    @pytest.mark.parametrize(
+        ("bad", "tag"), [([99], "out of range"), ([[3, 4]], "two-dimensional")]
+    )
+    def test_S8_2_writer_reader_and_validator_agree(
+        self, tmp_path, label_set, bad, tag
+    ):
+        """One rule, three enforcement points, checked against each other.
+
+        `check_chain()` and the semantic validator once disagreed about
+        composite units because each had its own copy of the rule. These three
+        call one function, and this holds them to the same answer on a file the
+        writer never saw.
+        """
+        import h5py
+
+        from medh5.validate import validate_file
+
+        shape = (8, 16, 16)
+        path = tmp_path / f"{tag.replace(' ', '_')}.medh5"
+        with medh5.create(path, codec="portable") as w:
+            w.label_set(label_set)
+            w.add_grid("g", shape=shape, spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", np.zeros(shape, np.int16), grid="g", modality="CT")
+            w.add_boxes(
+                "det",
+                grid="g",
+                space="index",
+                boxes=[[[3.0, 3.0], [1.5, 5.5], [1.5, 5.5]]],
+                class_ids=[3],
+                slice_index=[3],
+            )
+        with h5py.File(path, "a") as handle:
+            group = handle["annotations/det"]
+            del group["slice_index"]
+            group.create_dataset("slice_index", data=np.array(bad, np.int32))
+
+        report = validate_file(path)
+        assert [e.code for e in report.errors] == ["E405"], tag
+        with medh5.open(path) as sample, pytest.raises(MEDH5ValidationError) as caught:
+            sample.annotations["det"].as_slices()
+        assert caught.value.code == "E405", tag
+
+    def test_S8_2_a_short_slice_index_already_in_a_file_is_refused(
+        self, tmp_path, label_set
+    ):
+        """Files predating the writer check exist, so reading refuses too.
+
+        Skipping the boxes `slice_index` does not reach -- the bounds guard the
+        reader used to carry -- returns each of them as a zero-thickness slice,
+        so the annotation quietly yields fewer objects than it holds.
+        """
+        import h5py
+
+        from medh5.validate import validate_file
+
+        shape = (8, 16, 16)
+        path = tmp_path / "legacy.medh5"
+        with medh5.create(path, codec="portable") as w:
+            w.label_set(label_set)
+            w.add_grid("g", shape=shape, spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", np.zeros(shape, np.int16), grid="g", modality="CT")
+            w.add_boxes(
+                "det",
+                grid="g",
+                boxes=[
+                    [[3.0, 3.0], [1.5, 5.5], [1.5, 5.5]],
+                    [[6.0, 6.0], [8.5, 12.5], [8.5, 12.5]],
+                ],
+                class_ids=[3, 3],
+                space="index",
+                slice_index=[3, 6],
+            )
+        with h5py.File(path, "a") as handle:
+            group = handle["annotations/det"]
+            del group["slice_index"]
+            group.create_dataset("slice_index", data=np.array([3], np.int32))
+
+        report = validate_file(path)
+        assert not report.ok
+        assert [e.code for e in report.errors] == ["E405"]
+        with medh5.open(path) as sample, pytest.raises(MEDH5ValidationError) as caught:
+            sample.annotations["det"].as_slices()
+        assert caught.value.code == "E405"
+
+    def test_S8_2_slice_index_does_not_touch_a_box_with_real_extent(
+        self, tmp_path, label_set
+    ):
+        """Only the 2D-on-a-slice form is reinterpreted, never a 3D box."""
+        shape = (8, 16, 16)
+        path = tmp_path / "solid.medh5"
+        with medh5.create(path, codec="portable") as w:
+            w.label_set(label_set)
+            w.add_grid("g", shape=shape, spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", np.zeros(shape, np.int16), grid="g", modality="CT")
+            w.add_boxes(
+                "det",
+                grid="g",
+                boxes=[[[1.5, 4.5], [1.5, 5.5], [1.5, 5.5]]],
+                class_ids=[3],
+                space="index",
+                slice_index=[3],
+            )
+        with medh5.open(path) as sample:
+            slices = sample.annotations["det"].as_slices()[0]
+        assert slices[0] == slice(2, 5)

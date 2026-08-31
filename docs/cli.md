@@ -14,7 +14,7 @@ writes a machine-readable document to stdout.
 
 Grids, images, annotations, coverage, quality, codecs and content id.
 
-### `medh5 tree PATH`
+### `medh5 tree PATH [--json]`
 
 An annotated object listing — `h5ls` with each object's role in the spec.
 
@@ -169,6 +169,7 @@ Cross-file consistency, under `C1xx` codes:
 | `C201` | a claim whose manifest digest is not this manifest's |
 | `C202` | a subject in two partitions of one split |
 | `C203` | samples with no claim |
+| `C204` | a group holding part of a subject (refused when splitting) |
 | `C301` / `C302` | a class examined in only part of the cohort; a class never seen |
 | `C401` / `C402` | a file changed, or vanished, since the scan |
 | `C501` | a partly de-identified cohort |

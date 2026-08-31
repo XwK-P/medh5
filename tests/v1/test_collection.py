@@ -228,7 +228,7 @@ class TestOpening:
         import json
 
         with open_collection(shard) as collection:
-            json.dumps(collection.summary(), default=str)
+            json.dumps(collection.summary())
 
 
 class TestValidation:

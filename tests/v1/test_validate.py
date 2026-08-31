@@ -8,6 +8,7 @@ import h5py
 import numpy as np
 import pytest
 
+import medh5
 from medh5._hdf5 import encode_attr, str_dtype
 from medh5.errors import CODES
 from medh5.validate import validate_file, validate_paths, validate_root
@@ -181,3 +182,134 @@ class TestRules:
             group.create_dataset("data", data=wide)
             group.create_dataset("layer_class_ids", data=new_table)
         assert "W908" in codes(sample_path)
+
+
+class TestCorruptFiles:
+    """A validator is pointed at files of unknown provenance; it may not crash."""
+
+    def test_S15_random_corruption_yields_a_diagnostic_not_a_traceback(
+        self, sample_path, tmp_path
+    ):
+        """Bytes damaged past the header raise from inside h5py's traversal.
+
+        Missing, truncated and non-HDF5 files were already handled as E001, but
+        corruption that survives the open surfaced from the decompressor or the
+        object walk instead -- so the command exited with a traceback, printed
+        nothing on stdout, and `--json` produced no JSON for a pipeline to read.
+        Failing to read an object is a finding about the file, not a crash.
+        """
+        import random
+
+        rng = random.Random(11)
+        size = sample_path.stat().st_size
+        crashed = []
+        for i in range(40):
+            victim = tmp_path / f"corrupt{i}.medh5"
+            victim.write_bytes(sample_path.read_bytes())
+            with victim.open("r+b") as handle:
+                for _ in range(rng.randint(1, 6)):
+                    handle.seek(rng.randrange(size))
+                    handle.write(bytes([rng.randrange(256)]))
+            try:
+                report = validate_file(victim, level="strict")
+            except Exception as exc:  # noqa: BLE001 - that is the bug under test
+                crashed.append(f"{victim.name}: {type(exc).__name__}: {exc}")
+                continue
+            # Whatever it found, it has to be reportable and serialisable.
+            json.loads(report.dumps())
+        assert not crashed, "validate raised instead of reporting:\n" + "\n".join(
+            crashed
+        )
+
+
+class TestStrictPromotion:
+    def test_S15_1_strict_promotes_warnings_in_the_counts_not_only_the_verdict(
+        self, sample_path
+    ):
+        """§15.1: strict is the other levels "with warnings promoted to errors".
+
+        The promotion reached `ok` and the exit code but not the counts, so the
+        report said `FAILED ... (0 errors, 2 warnings)` -- self-contradictory on
+        its face, and a CI job gating on `errors == 0` passed a file the same
+        payload called not-ok.
+        """
+        lenient = validate_file(sample_path, level="semantic")
+        strict = validate_file(sample_path, level="strict")
+        assert lenient.warnings, "the fixture must carry at least one warning"
+
+        assert lenient.ok and not lenient.errors
+        assert not strict.ok
+        assert len(strict.errors) == len(lenient.warnings) + len(lenient.errors)
+        assert strict.warnings == ()
+        assert len(strict.promoted) == len(lenient.warnings)
+
+        payload = json.loads(strict.dumps())
+        assert payload["ok"] is False
+        assert payload["errors"] == len(strict.errors)
+        assert payload["warnings"] == 0
+        # The measured severity is still on each diagnostic, so what the §15.2
+        # table says about a code is not lost.
+        assert any(d["severity"] == "warning" for d in payload["diagnostics"])
+
+
+class TestCompositeUnits:
+    def test_S10_1_the_validator_rejects_a_mixed_unit_composite(self, tmp_path):
+        """`check_chain()` rejected it while `validate` reported OK.
+
+        The validator has its own composite rule, and it compared components and
+        frames but not units -- so the advertised conformance check passed a
+        chain the object model refuses, which is the one place the two must not
+        disagree.
+        """
+        shape = (4, 8, 8)
+        step = np.eye(4)
+        step[:3, 3] = [1.0, 0.0, 0.0]
+        path = tmp_path / "units.medh5"
+        with medh5.create(path, codec="portable") as w:
+            w.add_timepoint("tp0")
+            w.add_timepoint("tp1", index=1)
+            for gid, frame, tp in (
+                ("g0", "F0", "tp0"),
+                ("gA", "FA", "tp0"),
+                ("g1", "F1", "tp1"),
+            ):
+                w.add_grid(
+                    gid,
+                    shape=shape,
+                    spacing=(1.0, 1.0, 1.0),
+                    timepoint=tp,
+                    frame_uid=frame,
+                    units="mm",
+                )
+                w.add_image(
+                    f"CT_{gid}", np.zeros(shape, np.int16), grid=gid, modality="CT"
+                )
+            w.add_transform(
+                "t1",
+                kind="affine",
+                matrix=step,
+                from_frame="F0",
+                to_frame="FA",
+                units="mm",
+            )
+            w.add_transform(
+                "t2",
+                kind="affine",
+                matrix=step,
+                from_frame="FA",
+                to_frame="F1",
+                units="um",
+            )
+            w.add_transform(
+                "comp",
+                kind="composite",
+                components=["t1", "t2"],
+                from_frame="F0",
+                to_frame="F1",
+                units="mm",
+            )
+
+        report = validate_file(path, level="semantic")
+        assert not report.ok
+        assert "E501" in report.codes
+        assert any("units" in d.message for d in report.diagnostics)

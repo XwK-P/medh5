@@ -213,6 +213,24 @@ class LayersAnnotation(VoxelAnnotation):
                     return True
         return False
 
+    def ignore_mask(self, roi: Sequence[slice] | None = None) -> npt.NDArray[np.bool_]:
+        """The in-band ignore region (§7.7), as ``labelmap`` also exposes it.
+
+        A voxel is ignored where *any* layer marks it: the encoder writes the
+        ignore id into every layer it is not already claimed in, and a caller
+        asking "was this examined?" wants one answer for the voxel, not one per
+        plane.
+
+        This existed on ``labelmap`` and not here, so a ``layers`` annotation
+        could report ``has_ignore_region`` while offering no way to read the
+        region --- and callers written to `getattr(..., "ignore_mask", None)`
+        silently concluded there was none.
+        """
+        window = self._roi(roi)
+        block = np.asarray(self.data[(slice(None), *window)])
+        out: npt.NDArray[np.bool_] = np.any(block == self.ignore_id, axis=0)
+        return out
+
     def summary(self) -> dict[str, Any]:
         out = super().summary()
         out["layers"] = self.n_layers

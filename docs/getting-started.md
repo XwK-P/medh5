@@ -66,7 +66,9 @@ it. They cannot drift apart.
 
 **`annotated_classes` names the spleen** even though there is no spleen mask.
 That records "we looked and found none", which is a usable negative example.
-Leave it out and the default `"all_given"` records only what you handed over.
+Leave it out and the default `"all_given"` records only what you handed over;
+pass `annotated_classes="all"` to claim the whole label set, which records every
+class in it as examined.
 
 **The encoding was chosen by measurement.** Liver and lesion overlap, so
 `add_segmentation` measured the overlap graph and picked an encoding that can

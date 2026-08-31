@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+
+import h5py
 import numpy as np
 import pytest
 
@@ -208,3 +211,107 @@ class TestAssertionRecord:
         assert Assertion(1, 0.0).is_negative
         assert not Assertion(1, 0.0).is_positive
         assert "Assertion(1=0.5" in repr(Assertion(1, 0.5))
+
+
+class TestMultiAssertionScopes:
+    """§9: `scope_ids` is per assertion, so one class can be asserted many times."""
+
+    def _multi(self, tmp_path, label_set):
+        shape = (4, 8, 8)
+        path = tmp_path / "cls.medh5"
+        with medh5.create(path, codec="portable") as w:
+            w.label_set(label_set)
+            w.add_grid("g", shape=shape, spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", np.zeros(shape, np.int16), grid="g", modality="CT")
+            w.add_classification("cls", labels={3: 0.0}, scope="slice", scope_ids=[0])
+        # The writer takes a Mapping, so it cannot express two assertions for
+        # one class; a conforming third-party writer can, and §9 describes it.
+        with h5py.File(path, "r+") as handle:
+            group = handle["annotations/cls"]
+            for name, value in (
+                ("class_ids", np.array([3, 3], np.uint16)),
+                ("values", np.array([0.0, 1.0], np.float32)),
+                ("scope_ids", np.array([0, 9], np.int64)),
+            ):
+                del group[name]
+                group.create_dataset(name, data=value)
+        return path
+
+    def test_S9_collapsing_accessors_refuse_rather_than_contradict(
+        self, tmp_path, label_set
+    ):
+        """`value` took the first row and `labels` the last, on the same file.
+
+        So `state()` answered "negative" for a class `positives` listed as
+        positive. Neither row is more authoritative than the other.
+        """
+        path = self._multi(tmp_path, label_set)
+        with medh5.open(path) as sample:
+            annotation = sample.annotations["cls"]
+            assert [
+                (a.class_id, a.value, a.scope_id) for a in annotation.assertions()
+            ] == [
+                (3, 0.0, 0),
+                (3, 1.0, 9),
+            ]
+            for call in (
+                lambda a: a.value(3),
+                lambda a: a.state(3),
+                lambda a: a.labels,
+                lambda a: a.positives,
+            ):
+                with pytest.raises(MEDH5ValidationError) as exc:
+                    call(annotation)
+                assert exc.value.code == "E412"
+
+    def test_S9_a_scope_id_selects_the_assertion(self, tmp_path, label_set):
+        path = self._multi(tmp_path, label_set)
+        with medh5.open(path) as sample:
+            annotation = sample.annotations["cls"]
+            assert annotation.value(3, scope_id=0) == 0.0
+            assert annotation.value(3, scope_id=9) == 1.0
+            assert annotation.state(3, scope_id=0) == "negative"
+            assert annotation.state(3, scope_id=9) == "positive"
+
+    def test_an_ordinary_single_assertion_file_is_unaffected(self, tmp_path, label_set):
+        shape = (4, 8, 8)
+        path = tmp_path / "plain.medh5"
+        with medh5.create(path, codec="portable") as w:
+            w.label_set(label_set)
+            w.add_grid("g", shape=shape, spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", np.zeros(shape, np.int16), grid="g", modality="CT")
+            w.add_classification("cls", labels={3: 1.0})
+        with medh5.open(path) as sample:
+            annotation = sample.annotations["cls"]
+            assert annotation.value(3) == 1.0
+            assert annotation.state(3) == "positive"
+            assert annotation.positives == ("lesion",)
+
+    def test_S9_a_multi_assertion_file_still_summarises(self, tmp_path, label_set):
+        """`summary()` must describe every file, including the ambiguous ones.
+
+        It read the collapsing `labels`, so the refusal added for the public
+        accessors also took out `Sample.summary()` and `medh5 info` -- on
+        exactly the multi-assertion files §9 makes ordinary and this change set
+        out to support.
+        """
+        path = self._multi(tmp_path, label_set)
+        with medh5.open(path) as sample:
+            summary = sample.annotations["cls"].summary()
+            # Per scope unit, because one value per class would lose an assertion.
+            assert summary["labels"] == {"lesion": {"0": 0.0, "9": 1.0}}
+            assert summary["assertions"] == 2
+            json.dumps(sample.summary())
+
+    def test_a_single_assertion_file_keeps_the_flat_summary_shape(
+        self, tmp_path, label_set
+    ):
+        shape = (4, 8, 8)
+        path = tmp_path / "flat.medh5"
+        with medh5.create(path, codec="portable") as w:
+            w.label_set(label_set)
+            w.add_grid("g", shape=shape, spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", np.zeros(shape, np.int16), grid="g", modality="CT")
+            w.add_classification("cls", labels={3: 1.0})
+        with medh5.open(path) as sample:
+            assert sample.annotations["cls"].summary()["labels"] == {"lesion": 1.0}

@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
+from unittest import mock
 
 import h5py
 import numpy as np
@@ -357,6 +360,74 @@ class TestCoverage:
             assert sample.annotations["s"].is_fully_covered
 
 
+class TestAnnotatedClassesAll:
+    def test_S11_3_all_claims_the_whole_label_set_not_just_what_was_given(
+        self, tmp_path, label_set
+    ):
+        """`"all"` and `"all_given"` were byte-identical; only one is documented so.
+
+        `_resolve_annotated` intersected the label set back down to `class_ids`,
+        so a class the annotator searched for and did not find never reached the
+        file -- the "examined and absent" negative became "never looked for",
+        which is the one distinction the coverage contract exists to keep. No
+        validator fires either, because W904 only warns when
+        `annotated_class_ids` is a strict subset, and this made them equal.
+        """
+        shape = SHAPE
+        liver = np.zeros(shape, bool)
+        liver[2:6, 4:12, 4:12] = True
+        made = {}
+        for mode in ("all", "all_given"):
+            path = tmp_path / f"{mode}.medh5"
+            with medh5.create(path, codec="portable") as w:
+                w.label_set(label_set)
+                w.add_grid("g", shape=shape, spacing=(1.0, 1.0, 1.0))
+                w.add_image("CT", np.zeros(shape, np.int16), grid="g", modality="CT")
+                w.add_segmentation(
+                    "seg", grid="g", masks={1: liver}, annotated_classes=mode
+                )
+            with medh5.open(path) as sample:
+                annotation = sample.annotations["seg"]
+                made[mode] = (
+                    annotation.class_ids,
+                    annotation.annotated_class_ids,
+                )
+
+        assert made["all_given"] == ((1,), (1,))
+        assert set(made["all"][1]) == set(label_set.ids)
+        assert made["all"] != made["all_given"], (
+            "'all' must not collapse onto 'all_given'"
+        )
+
+    def test_S11_3_all_works_for_a_partial_probability_map(self, tmp_path, label_set):
+        """The probability branch ignored `examined`, so `"all"` could not be used.
+
+        `class_ids` held only the planes supplied while `annotated_class_ids`
+        named the whole label set, and `AnnotationHeader` rejected the write
+        with E403 -- so the corrected `"all"` was unusable for exactly the
+        ordinary case of a partial probability map. Absent classes need a
+        zero-valued plane, as absent masks get an empty mask.
+        """
+        shape = SHAPE
+        probabilities = {1: np.full(shape, 0.9, np.float32)}
+        path = tmp_path / "probs.medh5"
+        with medh5.create(path, codec="portable") as w:
+            w.label_set(label_set)
+            w.add_grid("g", shape=shape, spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", np.zeros(shape, np.int16), grid="g", modality="CT")
+            w.add_segmentation(
+                "seg", grid="g", probabilities=probabilities, annotated_classes="all"
+            )
+        with medh5.open(path) as sample:
+            annotation = sample.annotations["seg"]
+            assert set(annotation.class_ids) == set(label_set.ids)
+            assert set(annotation.annotated_class_ids) == set(label_set.ids)
+            # The supplied plane is untouched; the injected ones are empty.
+            assert annotation.dense([1])[0].all()
+            absent = next(c for c in label_set.ids if c != 1)
+            assert not annotation.dense([absent])[0].any()
+
+
 class TestTracking:
     def test_S7_4_instance_ids_join_across_timepoints(self, tmp_path, label_set):
         path = tmp_path / "track.medh5"
@@ -462,6 +533,122 @@ class TestAmend:
         with medh5.open(longitudinal_path) as sample:
             assert "training" not in sample.profiles
             assert "seg" not in sample.profiles
+
+
+class TestAmendPreservesWhatItDoesNotOwn:
+    def test_S16_unknown_root_attributes_survive_an_amend(self, tmp_path):
+        """§16 lets a minor version add attributes; a 1.0 amend must keep them.
+
+        Unknown attributes on grids, images, annotations and unknown groups all
+        survived already -- the root was the one level that dropped them, so a
+        1.0 tool amending a 1.1 file silently discarded whatever 1.1 put there.
+        """
+        path = tmp_path / "roots.medh5"
+        with medh5.create(path, codec="portable") as w:
+            w.add_grid("g", shape=SHAPE, spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", np.zeros(SHAPE, np.int16), grid="g", modality="CT")
+        with h5py.File(path, "r+") as handle:
+            handle.attrs["x_future_root"] = "keep-me"
+            handle.attrs["medh5_future_thing"] = "also-keep"
+
+        with medh5.amend(path) as writer:
+            writer.add_image("CT2", np.zeros(SHAPE, np.int16), grid="g", modality="MR")
+
+        with h5py.File(path) as handle:
+            assert handle.attrs["x_future_root"] == "keep-me"
+            assert handle.attrs["medh5_future_thing"] == "also-keep"
+            # The ones `commit` owns are still rewritten from the amended state,
+            # and `profiles` is still derived rather than inherited.
+            assert handle.attrs["medh5_version"] == medh5.__format_version__
+            assert "images" in handle and "CT2" in handle["images"]
+
+    def test_S14_4_permissions_survive_the_copy_on_write_replace(self, tmp_path):
+        """The mode is the access control on a shared research filesystem.
+
+        Every copy-on-write command -- amend, scrub --apply, fix, recompress --
+        replaces the file, and the replacement was created with the process
+        umask, so a 0o600 sample came back 0o644 and world-readable.
+        """
+        path = tmp_path / "perm.medh5"
+        with medh5.create(path, codec="portable") as w:
+            w.add_grid("g", shape=SHAPE, spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", np.zeros(SHAPE, np.int16), grid="g", modality="CT")
+        for mode in (0o600, 0o640, 0o660):
+            path.chmod(mode)
+            with medh5.amend(path) as writer:
+                writer.add_image(
+                    f"X{mode:o}", np.zeros(SHAPE, np.int16), grid="g", modality="MR"
+                )
+            assert stat.S_IMODE(path.stat().st_mode) == mode
+
+
+class TestAtomicRewrite:
+    def test_the_source_is_closed_before_the_replace(self, tmp_path):
+        """`with open_h5(...) as src, atomic_h5(...) as dst:` exits right-to-left.
+
+        The replace therefore ran while the source was still open. POSIX allows
+        that, so it passed here and on CI; Windows refuses to replace an open
+        file, so every rewrite-in-place -- `repack`, and `recompress` without
+        `out=` -- failed there. This asserts the ordering directly rather than
+        relying on a platform to notice.
+        """
+        from medh5._hdf5 import atomic_rewrite
+
+        path = tmp_path / "rw.medh5"
+        with medh5.create(path, codec="portable") as w:
+            w.add_grid("g", shape=SHAPE, spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", np.zeros(SHAPE, np.int16), grid="g", modality="CT")
+
+        seen = {}
+        real_replace = os.replace
+
+        def spy(a, b, *args, **kwargs):
+            seen["src_open_at_replace"] = bool(source_handle[0])
+            return real_replace(a, b, *args, **kwargs)
+
+        source_handle = [True]
+        with (
+            mock.patch("medh5._hdf5.os.replace", spy),
+            atomic_rewrite(path) as (
+                src,
+                dst,
+            ),
+        ):
+            for name in src:
+                dst.copy(src[name], name)
+            for key, value in src.attrs.items():
+                dst.attrs[key] = value
+            # Flip once the body is done; the manager closes `src` after this
+            # and before it replaces.
+            source_handle[0] = False
+
+        assert seen["src_open_at_replace"] is False
+        with medh5.open(path) as sample:
+            assert "CT" in sample.images
+
+    def test_repack_preserves_content_and_permissions(self, tmp_path):
+        from medh5._hdf5 import repack
+
+        path = tmp_path / "pack.medh5"
+        with medh5.create(path, codec="portable") as w:
+            w.add_grid("g", shape=SHAPE, spacing=(1.0, 1.0, 1.0))
+            w.add_image(
+                "CT",
+                np.arange(np.prod(SHAPE), dtype=np.int16).reshape(SHAPE),
+                grid="g",
+                modality="CT",
+            )
+        path.chmod(0o600)
+        with medh5.open(path) as sample:
+            before = sample.content_id
+            data = sample.images["CT"].read()
+
+        repack(path)
+
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        with medh5.open(path) as sample:
+            assert sample.content_id == before, "a repack rewrites storage, not content"
+            assert np.array_equal(sample.images["CT"].read(), data)
 
 
 class TestOpen:

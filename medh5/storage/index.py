@@ -14,7 +14,7 @@ a file error, and there is no invalidation protocol to get wrong (§13.3).
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -270,10 +270,6 @@ def read_indices(root: h5py.Group) -> dict[str, SamplingIndex]:
         return {}
     node = root["index"]
     return {name: SamplingIndex(name, node[name]) for name in sorted(node)}
-
-
-def index_attrs() -> Mapping[str, Sequence[str]]:  # pragma: no cover - trivial
-    return {}
 
 
 __all__ = [

@@ -24,6 +24,7 @@ import numpy as np
 import numpy.typing as npt
 
 from medh5.errors import MEDH5ValidationError
+from medh5.geometry.affine import ORTHONORMAL_TOL
 from medh5.geometry.grid import Grid
 
 DOWNSAMPLE_METHODS = ("mean", "nearest", "gaussian", "max")
@@ -155,6 +156,40 @@ def check_pyramid(
                 problems.append(
                     f"level {level} axis {axis}: origin {got_o:g} != {want_o:g} "
                     "(half-voxel shift missing?)"
+                )
+        # `direction` is checked against the base, not against `expected`:
+        # `derive_level_grid` builds the level *from* the base's direction, so
+        # comparing the two would compare a value with itself and pass for any
+        # level whatsoever.  A level whose axes are permuted relative to level 0
+        # is the failure this module's docstring describes -- predictions made
+        # at level 2 mapped back to level 0 land transposed -- and it passed
+        # both existing checks, because the expected origin was computed from
+        # the base's direction rather than the level's.
+        if not np.allclose(grid.direction, base.direction, atol=ORTHONORMAL_TOL):
+            problems.append(
+                f"level {level}: direction differs from level 0; a pyramid "
+                "level shares its parent's orientation, only its sampling changes"
+            )
+        if tuple(grid.axis_kinds) != tuple(base.axis_kinds):
+            problems.append(f"level {level}: axis_kinds differ from level 0")
+        # Bounded, not equal.  `derive_level_grid` was handed `shape=grid.shape`
+        # above, so `expected.shape` is the level's own shape and comparing the
+        # two compares a value with itself.  The rule cannot be exact equality
+        # either: only the spacing/origin relation is normative, and a writer
+        # may round a level's extent down where this module rounds up.  So the
+        # bound is one voxel either side of n/f, which admits both conventions
+        # and still rejects a level that is not a resampling of its parent at
+        # all -- (3, 3, 3) at factor 2 of a 16-voxel axis.
+        for axis in range(base.n_spatial):
+            n = base.spatial_shape[axis]
+            got_n = grid.spatial_shape[axis]
+            low = max(1, math.floor(n / f[axis]))
+            high = max(1, math.ceil(n / f[axis]))
+            if not low <= got_n <= high:
+                problems.append(
+                    f"level {level} axis {axis}: extent {got_n} is not a "
+                    f"factor-{f[axis]:g} resampling of {n} (expected "
+                    f"{low} or {high})"
                 )
         if grid.coord_system != base.coord_system or grid.units != base.units:
             problems.append(f"level {level}: coord_system/units differ from level 0")

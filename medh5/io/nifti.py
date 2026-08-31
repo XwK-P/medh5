@@ -71,12 +71,83 @@ def convert_world(
     return np.asarray(RAS_TO_LPS @ matrix, dtype=np.float64)
 
 
+def _geometry_notes(
+    image: Any, path: str | os.PathLike[str], *, assume_geometry: bool
+) -> list[tuple[str, str, dict[str, Any]]]:
+    """What the header left ambiguous, as ``(kind, message, detail)`` triples.
+
+    Two cases, both of which used to pass silently with the report saying "0
+    guesses":
+
+    ``sform_code == qform_code == 0`` is NIfTI stating that the file carries no
+    spatial mapping at all --- the data has voxel indices and nothing else.
+    nibabel still hands back an affine, built from ``pixdim``, and importing
+    that mints a world grid nobody measured.  Refused unless the caller says
+    otherwise, because "geometry is never invented" is the rule this converter
+    exists to keep.
+
+    An sform and a qform that *disagree* is the classic signature of a file
+    edited by a tool that updated one and not the other.  Preferring the sform
+    is conventional and is what nibabel does; it is still a decision made from
+    contradictory data, and the file that records it should say so, because a
+    downstream tool preferring the qform will place the volume somewhere else.
+    """
+    header = image.header
+    sform_code = int(header["sform_code"])
+    qform_code = int(header["qform_code"])
+    notes: list[tuple[str, str, dict[str, Any]]] = []
+    if sform_code == 0 and qform_code == 0:
+        if not assume_geometry:
+            raise MEDH5ValidationError(
+                f"{os.fspath(path)!r} declares no spatial mapping "
+                "(sform_code = qform_code = 0), so it has no world geometry to "
+                "import; nibabel's fallback affine is built from pixdim and is "
+                "not a measurement. Pass assume_geometry=True (CLI: "
+                "--assume-geometry) to accept that fallback deliberately, and "
+                "it will be recorded as a guess."
+            )
+        notes.append(
+            (
+                "geometry",
+                "the file declares no spatial mapping (sform_code = qform_code "
+                "= 0); the grid was taken from pixdim and is assumed, not measured",
+                {"sform_code": 0, "qform_code": 0},
+            )
+        )
+        return notes
+    if sform_code and qform_code:
+        sform = np.asarray(header.get_sform(), dtype=np.float64)
+        qform = np.asarray(header.get_qform(), dtype=np.float64)
+        if not np.allclose(sform, qform, atol=1e-4, rtol=0):
+            notes.append(
+                (
+                    "geometry",
+                    "sform and qform describe different geometry; the sform was "
+                    "used. A reader preferring the qform will place this volume "
+                    "elsewhere.",
+                    {
+                        "sform_code": sform_code,
+                        "qform_code": qform_code,
+                        "max_abs_difference": float(np.abs(sform - qform).max()),
+                    },
+                )
+            )
+    return notes
+
+
+def _replay_notes(log: ConversionReport, name: str, geo: Mapping[str, Any]) -> None:
+    """Put `read_nifti`'s geometry notes into the conversion report."""
+    for kind, message, detail in geo.get("notes", ()):
+        log.guess(kind, f"{name}: {message}", detail)
+
+
 def read_nifti(
     path: str | os.PathLike[str],
     *,
     coord_system: str = "LPS",
     transpose: bool = True,
     fourth_axis: str = "auto",
+    assume_geometry: bool = False,
 ) -> tuple[npt.NDArray[Any], dict[str, Any]]:
     """One NIfTI file as ``(array, geometry)`` in MEDH5 conventions.
 
@@ -84,9 +155,19 @@ def read_nifti(
     cine, DCE and 4-D CT, ``"channel"`` for multi-b-value DWI and multi-echo
     (§3.6).  ``"auto"`` reads the answer out of the file where it can and
     reports a guess where it cannot.
+
+    *assume_geometry* allows a file that declares **no** spatial mapping
+    (``sform_code == qform_code == 0``) to be imported anyway, taking nibabel's
+    fallback from ``pixdim``.  It is off by default because that fallback is an
+    invented grid, and a grid this library invented is indistinguishable
+    downstream from one a scanner measured (§3.3).
+
+    The returned geometry carries ``notes``: what the reader had to decide from
+    ambiguous headers, for the caller to put in its conversion report.
     """
     nib = require_nibabel()
     image = nib.load(os.fspath(path))
+    notes = _geometry_notes(image, path, assume_geometry=assume_geometry)
     data = np.asanyarray(image.dataobj)
     # A trailing axis of extent 1 beyond the spatial block carries nothing:
     # writers emit `dim[4] = 1` routinely, and keeping it turns a plain volume
@@ -138,6 +219,7 @@ def read_nifti(
                 channel_field, channel_values = bids[1], bids[2]
         measured = measured if kind == "time" else stated
     return np.ascontiguousarray(data), {
+        "notes": notes,
         "spacing": [float(v) for v in spacing],
         "origin": [float(v) for v in origin],
         "direction": [[float(v) for v in row] for row in direction],
@@ -342,8 +424,7 @@ def _reduce_plane(
         raise MEDH5ValidationError(
             "this 2-D NIfTI is a plane tilted in 3-D, and §3.6 gives a 2-D grid "
             "a 2x2 direction --- there is no 2-D grid that describes it; import "
-            "it as a single-slice 3-D volume instead",
-            code="E102",
+            "it as a single-slice 3-D volume instead"
         )
     return spacing[:2], origin[:2], direction[:2, :2]
 
@@ -488,8 +569,7 @@ def _same_axis_kind(per_image: Mapping[str, Mapping[str, Any]]) -> None:
         raise MEDH5ValidationError(
             f"these volumes share a grid but disagree about their non-spatial "
             f"axis ({listed}); one grid states one set of `axis_kinds`, so "
-            "convert them separately or pass `fourth_axis=` to settle it",
-            code="E110",
+            "convert them separately or pass `fourth_axis=` to settle it"
         )
 
 
@@ -507,6 +587,7 @@ def from_nifti(
     value_units: Mapping[str, str] | None = None,
     codec: str = "balanced",
     annotated_classes: Sequence[str] | str = "all_given",
+    assume_geometry: bool = False,
     report: ConversionReport | None = None,
 ) -> ConversionReport:
     """Write one sample from a set of co-registered NIfTI volumes.
@@ -536,7 +617,9 @@ def from_nifti(
             coord_system=coord_system,
             transpose=transpose,
             fourth_axis=fourth_axis,
+            assume_geometry=assume_geometry,
         )
+        _replay_notes(log, name, geo)
         geometry = _same_grid(geometry, geo, name, log) if geometry else geo
         per_image[name] = geo
         arrays[name] = data
@@ -545,7 +628,13 @@ def from_nifti(
 
     mask_arrays: dict[str, npt.NDArray[np.bool_]] = {}
     for name, path in (masks or {}).items():
-        data, geo = read_nifti(path, coord_system=coord_system, transpose=transpose)
+        data, geo = read_nifti(
+            path,
+            coord_system=coord_system,
+            transpose=transpose,
+            assume_geometry=assume_geometry,
+        )
+        _replay_notes(log, name, geo)
         _same_grid(geometry, geo, name, log)
         mask_arrays[name] = np.asarray(data) != 0
 
@@ -715,12 +804,20 @@ def from_nifti(
 def _same_grid(
     first: dict[str, Any], other: dict[str, Any], name: str, log: ConversionReport
 ) -> dict[str, Any]:
-    """Refuse volumes that do not share a grid (spec §3.2)."""
+    """Refuse volumes that do not share a grid (spec §3.2).
+
+    Uncoded, deliberately.  §15.2's table describes conditions found *in a MEDH5
+    file*, and these are two NIfTI volumes that are not one yet: the shape
+    mismatch is not `E202` (an image disagreeing with its grid --- neither of
+    these is a grid), and the geometry mismatch is not `E101` (a reference to a
+    grid that does not exist --- nothing here is referenced). Reporting them
+    under those codes told anything branching on the code an untrue story about
+    what had gone wrong.
+    """
     if tuple(first["shape"]) != tuple(other["shape"]):
         raise MEDH5ValidationError(
             f"{name!r} has shape {other['shape']}, but the first volume has "
-            f"{first['shape']}; resample before converting",
-            code="E202",
+            f"{first['shape']}; resample before converting"
         )
     for key in ("spacing", "origin", "direction"):
         if not np.allclose(
@@ -730,8 +827,7 @@ def _same_grid(
         ):
             raise MEDH5ValidationError(
                 f"{name!r} disagrees with the first volume on {key}; resample "
-                "before converting rather than letting a converter do it silently",
-                code="E101",
+                "before converting rather than letting a converter do it silently"
             )
     return first
 

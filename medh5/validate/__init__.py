@@ -64,7 +64,29 @@ def validate_root(
         ctx.notes["attr_names"] = attr_names
     report = Report(path=path, level=level, profiles=declared)
     for rule in rules_for(level):
-        report.extend(rule(ctx))
+        # A rule that cannot read what it is checking must still produce a
+        # diagnostic.  `validate` is the tool you point at a file of unknown
+        # provenance, and on a file whose bytes were corrupted past the header
+        # h5py raises from inside the traversal or the decompressor -- so the
+        # command exited with a traceback, printed nothing on stdout, and
+        # `--json` emitted no JSON at all.  Failing to read an object is a
+        # finding about the file, not a crash of the tool; the remaining rules
+        # still run, so one unreadable object does not hide everything else.
+        try:
+            report.extend(rule(ctx))
+        except (OSError, RuntimeError, KeyError, ValueError) as exc:
+            report.add(
+                Diagnostic(
+                    code="E001",
+                    location="/",
+                    message=(
+                        f"{rule.__name__} could not read the file: "
+                        f"{type(exc).__name__}: {exc}"
+                    ),
+                    severity="error",
+                    level=level,
+                )
+            )
     report.checked = {
         "rules": [rule.__name__ for rule in rules_for(level)],
         "schema_checked": ctx.notes.get("schema_checked", False),
@@ -152,17 +174,37 @@ def validate_file(
     with handle:
         from medh5.collection import is_collection
 
-        if is_collection(handle):
-            return validate_collection(
-                handle, path=text_path, level=level, profiles=profiles
+        # Everything from here reads the file, and on a file corrupted past the
+        # header any of it can raise out of h5py -- deciding whether the root is
+        # a collection, reading `medh5_profiles`, walking the members.  The rule
+        # loop guards itself; this guards the scaffolding around it, so the
+        # command always returns a report rather than a traceback.
+        try:
+            if is_collection(handle):
+                return validate_collection(
+                    handle, path=text_path, level=level, profiles=profiles
+                )
+            return validate_root(
+                handle,
+                path=text_path,
+                level=level,
+                profiles=profiles,
+                attr_names=_attr_names(handle, level),
             )
-        return validate_root(
-            handle,
-            path=text_path,
-            level=level,
-            profiles=profiles,
-            attr_names=_attr_names(handle, level),
-        )
+        except (OSError, RuntimeError, KeyError, ValueError) as exc:
+            report = Report(path=text_path, level=level)
+            report.add(
+                Diagnostic(
+                    code="E001",
+                    location="/",
+                    message=(
+                        f"the file could not be read: {type(exc).__name__}: {exc}"
+                    ),
+                    severity="error",
+                    level=level,
+                )
+            )
+            return report
 
 
 def validate_paths(

@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import os
 import re
+import stat
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
@@ -209,6 +210,14 @@ def _fsync_dir(directory: Path) -> None:
         os.close(fd)
 
 
+def _existing_mode(target: Path) -> int | None:
+    """The permission bits of *target*, or ``None`` when it does not exist."""
+    try:
+        return stat.S_IMODE(os.stat(target).st_mode)
+    except OSError:
+        return None
+
+
 @contextmanager
 def atomic_h5(
     path: str | os.PathLike[str], *, libver: str | tuple[str, str] = "latest"
@@ -218,16 +227,27 @@ def atomic_h5(
     Writes to a sibling temporary file, fsyncs it, then ``os.replace``s it onto
     *path* and fsyncs the directory.  A reader therefore never observes a
     partially written file, and a crash leaves the previous file intact.
+
+    When *path* already exists its permission bits are carried onto the
+    replacement.  Every copy-on-write command --- ``amend``, ``scrub --apply``,
+    ``fix``, ``recompress`` --- goes through here, and these are the commands
+    most likely to be pointed at data whose mode *is* its access control: a
+    ``0o600`` sample came back ``0o644`` and became world-readable, which is a
+    quiet way to widen access to exactly the files a site restricted on purpose.
     """
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_name(f".{target.name}.tmp-{os.getpid()}")
+    mode = _existing_mode(target)
     handle = None
     try:
         handle = h5py.File(str(tmp), "w", libver=libver)
         yield handle
         handle.close()
         handle = None
+        if mode is not None:
+            with contextlib.suppress(OSError):  # best effort; not every FS obeys
+                os.chmod(tmp, mode)
         _fsync_path(tmp)
         os.replace(str(tmp), str(target))
         _fsync_dir(target.parent)
@@ -243,6 +263,77 @@ def atomic_h5(
 def copy_object(src: h5py.Group, name: str, dst: h5py.Group) -> None:
     """Copy one object (group or dataset), attributes included, into *dst*."""
     src.copy(name, dst, name=name, expand_soft=True, expand_external=True)
+
+
+@contextmanager
+def atomic_rewrite(
+    source: str | os.PathLike[str],
+    target: str | os.PathLike[str] | None = None,
+    *,
+    libver: str | tuple[str, str] = "latest",
+) -> Iterator[tuple[h5py.File, h5py.File]]:
+    """Rebuild a file from an existing one, atomically.  Yields ``(src, dst)``.
+
+    The source handle is closed **before** the replace, which
+    ``with open_h5(...) as src, atomic_h5(...) as dst:`` cannot do --- context
+    managers exit right-to-left, so the replace ran while the source was still
+    open.  POSIX allows that; Windows does not, so every rewrite of a file onto
+    itself (`repack`, and `recompress` without ``out=``) failed there.
+
+    *target* defaults to *source*, which is the rewrite-in-place case.
+    """
+    src_path = Path(os.fspath(source))
+    dst_path = Path(os.fspath(target)) if target is not None else src_path
+    dst_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst_path.with_name(f".{dst_path.name}.tmp-{os.getpid()}")
+    mode = _existing_mode(dst_path)
+    src: h5py.File | None = None
+    dst: h5py.File | None = None
+    try:
+        src = open_h5(src_path, "r")
+        dst = h5py.File(str(tmp), "w", libver=libver)
+        yield src, dst
+        dst.close()
+        dst = None
+        src.close()
+        src = None
+        if mode is not None:
+            with contextlib.suppress(OSError):
+                os.chmod(tmp, mode)
+        _fsync_path(tmp)
+        os.replace(str(tmp), str(dst_path))
+        _fsync_dir(dst_path.parent)
+    except BaseException:
+        for handle in (dst, src):
+            if handle is not None:
+                with contextlib.suppress(Exception):
+                    handle.close()
+        if tmp.exists():
+            with contextlib.suppress(OSError):
+                tmp.unlink()
+        raise
+
+
+def repack(path: str | os.PathLike[str]) -> None:
+    """Rewrite *path* so freed space is not carried forward (spec §14.4).
+
+    HDF5 does not reclaim storage.  An amend that copies an object and *then*
+    rewrites one of its attributes leaves the superseded value physically in the
+    new file, where ``strings`` still finds it even though every API read
+    returns the new one.  For most edits that is only wasted bytes; for
+    de-identification it is the difference between a pseudonymised file and one
+    that still carries the original DICOM UID.
+
+    This copies each top-level object into a fresh file, so only current values
+    are written.  Filters, chunking and attributes come across untouched --- it
+    is a compaction, not a re-encode, so every digest and the ``content_id``
+    survive it.
+    """
+    with atomic_rewrite(path) as (src, dst):
+        for name in src:
+            copy_object(src, name, dst)
+        for key, value in src.attrs.items():
+            dst.attrs[key] = value
 
 
 def copy_unknown(
@@ -281,12 +372,14 @@ __all__ = [
     "as_str",
     "as_str_tuple",
     "atomic_h5",
+    "atomic_rewrite",
     "copy_object",
     "copy_root_attrs",
     "copy_unknown",
     "encode_attr",
     "has_attr",
     "open_h5",
+    "repack",
     "require_attr",
     "set_attrs",
     "str_dtype",

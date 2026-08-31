@@ -58,6 +58,20 @@ else — no resampling, no reinterpretation. `--coord-system RAS` keeps RAS.
 not the same grid, and `from_nifti` will not resample one onto the other to
 make the import work. Resample them yourself, deliberately, and say so.
 
+**A file that declares no geometry is refused.** `sform_code == qform_code == 0`
+is NIfTI stating that the file carries no spatial mapping — it has voxel indices
+and nothing else. nibabel still hands back an affine, rebuilt from `pixdim`, and
+importing that mints a world grid nobody measured. Pass `--assume-geometry`
+(Python: `assume_geometry=True`) to take that fallback deliberately; it is then
+recorded as a **guess** in the report.
+
+**An sform/qform disagreement is recorded, not resolved in silence.** When both
+codes are set and the two matrices describe different geometry — the signature of
+a file one tool updated and another did not — the sform is used, as is
+conventional, and the report carries a guess naming the difference. A reader that
+prefers the qform will place that volume somewhere else, and you want to know
+which files those are before you train on them.
+
 Round trip: `from_nifti` → `to_nifti` reproduces the affine and the voxels
 bit-for-bit.
 

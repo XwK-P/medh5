@@ -65,12 +65,38 @@ class Report:
     def extend(self, diagnostics: Iterable[Diagnostic]) -> None:
         self.diagnostics.extend(diagnostics)
 
+    def _effective_severity(self, diagnostic: Diagnostic) -> Severity:
+        """Severity *at this level*, which is not always the table's severity.
+
+        §15.1 defines ``strict`` as the other levels "with warnings promoted to
+        errors", so at ``strict`` there are no warnings.  The promotion has to
+        reach the counts, not just the verdict: reporting ``FAILED ... (0 errors,
+        2 warnings)`` contradicts itself, and a CI job gating on ``errors == 0``
+        --- with the count right there in the JSON --- passed files the same
+        payload called not-ok.  Each diagnostic keeps its measured
+        ``severity``, so what the table says is still visible.
+        """
+        if self.level == "strict":
+            return "error"
+        return diagnostic.severity
+
     @property
     def errors(self) -> tuple[Diagnostic, ...]:
-        return tuple(d for d in self.diagnostics if d.severity == "error")
+        return tuple(
+            d for d in self.diagnostics if self._effective_severity(d) == "error"
+        )
 
     @property
     def warnings(self) -> tuple[Diagnostic, ...]:
+        return tuple(
+            d for d in self.diagnostics if self._effective_severity(d) == "warning"
+        )
+
+    @property
+    def promoted(self) -> tuple[Diagnostic, ...]:
+        """Diagnostics the table calls warnings and this level treats as errors."""
+        if self.level != "strict":
+            return ()
         return tuple(d for d in self.diagnostics if d.severity == "warning")
 
     @property
@@ -83,9 +109,9 @@ class Report:
         """Whether the file conforms.
 
         At ``strict`` a warning is a failure; at every other level it is advice.
+        Both cases fall out of `errors`, which already applies the level's
+        promotion, so the verdict and the counts cannot disagree.
         """
-        if self.level == "strict":
-            return not self.diagnostics
         return not self.errors
 
     def to_json(self) -> dict[str, Any]:
@@ -96,6 +122,7 @@ class Report:
             "ok": self.ok,
             "errors": len(self.errors),
             "warnings": len(self.warnings),
+            "promoted": len(self.promoted),
             "diagnostics": [d.to_json() for d in self.diagnostics],
             "checked": self.checked,
         }

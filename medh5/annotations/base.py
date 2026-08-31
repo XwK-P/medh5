@@ -19,6 +19,7 @@ from the file, so ``0`` at a voxel means "verified absent" only for classes in
 
 from __future__ import annotations
 
+import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -484,9 +485,17 @@ class VoxelAnnotation(Annotation):
         """Flatten to one integer volume, breaking overlap ties **explicitly**.
 
         *priority* is ordered highest-precedence first; classes it omits are
-        painted first, in ``class_ids`` order.  There is no implicit tie-break:
-        flattening an overlapping annotation is lossy, and which class survives
-        is the caller's decision, not the format's.
+        painted first, in ``class_ids`` order.  Flattening an overlapping
+        annotation is lossy, and which class survives is the caller's decision,
+        not the format's --- so when voxels are actually lost and the caller
+        expressed no preference, this warns rather than picking silently.
+
+        The warning is the whole point.  ``layers``, ``bitmask`` and ``probmap``
+        exist because §7.0 classes overlap, and three callers inside this package
+        (NIfTI export, the torch loader's ``labelmap`` format, and the MONAI
+        bridge) flatten on the way out.  Each one was quietly deleting the
+        overlap region --- a lesion inside a liver stopped being liver --- and
+        nothing in the output said so.
         """
         window = self._roi(roi)
         out = np.zeros(self._roi_shape(window), dtype=dtype)
@@ -495,9 +504,21 @@ class VoxelAnnotation(Annotation):
             ranked = list(self.resolve_classes(priority))
             rest = [c for c in ordered if c not in ranked]
             ordered = rest + list(reversed(ranked))
+        overwritten = 0
         for class_id in ordered:
             mask = self._dense_class(class_id, window)
+            if priority is None:
+                overwritten += int(np.count_nonzero(mask & (out != 0)))
             out[mask] = class_id
+        if overwritten:
+            warnings.warn(
+                f"labelmap() flattened {overwritten} overlapping voxel(s) in "
+                f"{self.ann_id!r}: classes {list(ordered)} overlap and one integer "
+                "volume cannot hold both, so later classes overwrote earlier "
+                "ones. Pass priority=[...] to choose which class survives, or "
+                "use dense()/contains() to keep the overlap.",
+                stacklevel=2,
+            )
         return out
 
     def voxel_counts(
@@ -535,8 +556,11 @@ class VoxelAnnotation(Annotation):
     def instances(self) -> Iterator[Instance]:
         """Iterate objects, where the encoding carries object identity."""
         raise MEDH5ValidationError(
-            f"annotation {self.ann_id!r} of kind {self.kind!r} does not carry instance "
-            "identity; transcode it to `instances` first"
+            f"annotation {self.ann_id!r} of kind {self.kind!r} does not carry "
+            "instance identity, and it cannot be recovered from a dense "
+            "encoding: transcoding to `instances` would merge every object of a "
+            "class into one and mint an id that belongs to none of them (§7.4). "
+            "Re-derive the objects from whatever source had them."
         )
 
     def summary(self) -> dict[str, Any]:

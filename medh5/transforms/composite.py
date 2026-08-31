@@ -78,6 +78,23 @@ class CompositeTransform(Transform):
                     f"{left.transform_id!r} ends in {left.to_frame!r} but "
                     f"{right.transform_id!r} starts in {right.from_frame!r}"
                 )
+        # Units, not just frames.  §10.1 makes `units` a MUST --- "coordinate
+        # units, matching the frames' grids" --- and only the frames were
+        # checked, so a composite of an `mm` leg and a `um` leg chained cleanly
+        # and applied a 1000x error to the second half of the transform. The
+        # frames agreeing says the legs meet; the units agreeing says they meet
+        # in the same space.
+        mismatched = [t.transform_id for t in chain if t.units != self.units]
+        if mismatched:
+            listed = ", ".join(
+                f"{t.transform_id!r} in {t.units!r}"
+                for t in chain
+                if t.units != self.units
+            )
+            problems.append(
+                f"composite declares units {self.units!r} but {listed} --- a "
+                "chain whose legs are in different units does not compose"
+            )
         return problems
 
     def transform_points(self, points: npt.ArrayLike) -> npt.NDArray[np.float64]:

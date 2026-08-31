@@ -15,7 +15,6 @@ a registration pipeline reports errors it never measured.
 
 from __future__ import annotations
 
-from collections import deque
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -99,6 +98,18 @@ class ChainTransform(Transform):
     def __init__(self, chain: Sequence[Transform]) -> None:
         if not chain:
             raise MEDH5ValidationError("a transform chain needs at least one step")
+        # A resolved path is assembled from whatever transforms the file holds,
+        # so its steps can disagree about units even when each is internally
+        # consistent.  The header below takes its units from the first step, so
+        # without this the chain would silently claim one unit and evaluate in
+        # several (§10.1).
+        units = {t.units for t in chain}
+        if len(units) > 1:
+            raise MEDH5ValidationError(
+                "cannot chain transforms in different units: "
+                + ", ".join(f"{t.transform_id!r} in {t.units!r}" for t in chain),
+                code="E501",
+            )
         self._chain = tuple(chain)
         header = TransformHeader(
             kind="composite",
@@ -134,6 +145,10 @@ class ChainTransform(Transform):
         return out
 
 
+_AMBIGUITY_EVIDENCE = 2
+"""Distinct routes to keep per frame --- two is enough to prove a tie."""
+
+
 def _edges(
     transforms: Mapping[str, Transform],
 ) -> dict[str, list[tuple[str, Transform]]]:
@@ -159,25 +174,79 @@ def resolve_between(
 
     Returns the transform itself for a single hop and a :class:`ChainTransform`
     for several, so the caller's code is the same either way.
+
+    **Ambiguity is refused, not resolved.**  A file may legitimately hold more
+    than one registration between the same pair of frames --- a rigid and a
+    deformable one, each with its own ``metrics`` (§10.1) --- so this does not
+    treat that as a malformed file.  What it will not do is pick one.  The
+    choice used to fall out of dict iteration order, which meant lexicographic
+    transform id: two registrations disagreeing by 109 mm resolved to whichever
+    was named first, silently, and §10.2 exists because "ambiguity here is the
+    leading cause of silently mirrored registration results".  Ask for the one
+    you want by id through ``sample.transforms`` instead.
     """
     if from_frame == to_frame:
         return None
     graph = _edges(transforms)
     if from_frame not in graph:
         return None
-    queue: deque[tuple[str, list[Transform]]] = deque([(from_frame, [])])
+    # One BFS level at a time, holding **every** minimal-length path rather than
+    # one per frame.  Marking a frame seen as soon as any path reaches it drops
+    # the others, and two routes that converge before the destination ---
+    # `A→B→D→T` and `A→C→D→T` --- then arrive as one, so the ambiguity check
+    # below never fires and the walker silently returns whichever route it met
+    # first.  `seen` therefore rules out only frames reached at a *shallower*
+    # depth, which is what keeps the search finite without hiding a tie.
+    frontier: dict[str, list[list[Transform]]] = {from_frame: [[]]}
     seen = {from_frame}
-    while queue:
-        frame, path = queue.popleft()
-        for neighbour, step in graph.get(frame, ()):
-            if neighbour in seen:
-                continue
-            extended = [*path, step]
-            if neighbour == to_frame:
-                return extended[0] if len(extended) == 1 else ChainTransform(extended)
-            seen.add(neighbour)
-            queue.append((neighbour, extended))
+    while frontier:
+        arrivals: list[list[Transform]] = []
+        nxt: dict[str, list[list[Transform]]] = {}
+        for frame, paths in frontier.items():
+            for neighbour, step in graph.get(frame, ()):
+                for path in paths:
+                    extended = [*path, step]
+                    if neighbour == to_frame:
+                        arrivals.append(extended)
+                        continue
+                    if neighbour in seen:
+                        continue
+                    routes = nxt.setdefault(neighbour, [])
+                    # Two distinct routes to a frame are enough to prove a tie;
+                    # keeping every one of them would grow combinatorially on a
+                    # densely connected graph for no extra information.
+                    if len(routes) < _AMBIGUITY_EVIDENCE:
+                        routes.append(extended)
+        if arrivals:
+            _reject_ambiguous(arrivals, from_frame, to_frame)
+            best = arrivals[0]
+            return best[0] if len(best) == 1 else ChainTransform(best)
+        seen.update(nxt)
+        frontier = nxt
     return None
+
+
+def _reject_ambiguous(
+    arrivals: list[list[Transform]], from_frame: str, to_frame: str
+) -> None:
+    """Raise when two distinct minimal-length routes reach the same frame."""
+    routes = {tuple(_step_id(step) for step in path): path for path in arrivals}
+    if len(routes) < 2:  # noqa: PLR2004 - one route, or the same route twice
+        return
+    named = sorted(" -> ".join(route) for route in routes)
+    raise MEDH5ValidationError(
+        f"{len(named)} equally short transform paths relate frame "
+        f"{from_frame!r} to {to_frame!r}: {'; '.join(named)}. They need not "
+        "agree, and nothing in the file says which one is authoritative, so "
+        "picking one here would assert an alignment no one chose (§10.2). "
+        "Select the transform you want by id from `sample.transforms`.",
+        code="E501",
+    )
+
+
+def _step_id(step: Transform) -> str:
+    """A stable name for one hop; `InverseTransform` already suffixes its id."""
+    return str(step.transform_id)
 
 
 def frames_of_timepoint(grids: Mapping[str, Any], timepoint: str) -> tuple[str, ...]:

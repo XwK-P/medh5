@@ -31,6 +31,7 @@ CHECK_CODES = {
     "C201": "a split claim's manifest digest is not this manifest's",
     "C202": "one subject's samples claim different partitions of one split",
     "C203": "a sample carries no split claim",
+    "C204": "a group holds part of a subject, so the split is not subject-safe",
     "C301": "a class is examined in only part of the cohort",
     "C302": "a class appears in no sample",
     "C401": "a file changed after the manifest was written",

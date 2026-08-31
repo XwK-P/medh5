@@ -31,6 +31,7 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
 
     tree = sub.add_parser("tree", help="annotated object listing with spec roles")
     tree.add_argument("path")
+    add_json_flag(tree)
 
     validate = sub.add_parser("validate", help="check conformance (spec §15)")
     add_paths(validate)
@@ -336,8 +337,14 @@ _ROLES = {
 def _tree(args: argparse.Namespace) -> int:
     try:
         with medh5.open(args.path) as sample:
-            print(args.path)
             root = sample.root
+            if args.json:
+                emit(
+                    {"path": args.path, "objects": _tree_json(root)},
+                    as_json=True,
+                )
+                return EXIT_OK
+            print(args.path)
             for name in sorted(root, key=lambda n: (n != "meta", n)):
                 role = _ROLES.get(name, "extension object (§16)")
                 node = root[name]
@@ -354,6 +361,34 @@ def _tree(args: argparse.Namespace) -> int:
             return EXIT_OK
     except MEDH5Error as exc:
         return fail(str(exc))
+
+
+def _tree_json(node: Any, prefix: str = "") -> list[dict[str, Any]]:
+    """The same listing `tree` prints, as data.
+
+    `tree` names each object and the spec clause that gives it its role, which
+    is exactly what a tool auditing a cohort wants -- and it was the one
+    inspection command with no machine-readable form.
+    """
+    out: list[dict[str, Any]] = []
+    for name in sorted(node, key=lambda n: (n != "meta", n)):
+        child = node[name]
+        path = f"{prefix}{name}"
+        entry: dict[str, Any] = {
+            "path": path,
+            "name": name,
+            "kind": "dataset" if isinstance(child, h5py.Dataset) else "group",
+            "describe": _describe(child),
+        }
+        if not prefix:
+            entry["role"] = _ROLES.get(name, "extension object (§16)")
+        if isinstance(child, h5py.Dataset):
+            entry["shape"] = [int(v) for v in child.shape]
+            entry["dtype"] = str(child.dtype)
+        else:
+            entry["children"] = _tree_json(child, f"{path}/")
+        out.append(entry)
+    return out
 
 
 def _describe(node: Any) -> str:

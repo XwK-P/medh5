@@ -727,3 +727,234 @@ class TestInterpolation:
 
     def test_folding_fraction_of_an_empty_field(self):
         assert folding_fraction(np.zeros(0)) == 0.0
+
+
+class TestAmbiguousResolution:
+    """§10.2 exists because ambiguity here mirrors registrations silently."""
+
+    def _pair(self, path, *, second: bool):
+        shape = (4, 8, 8)
+        first = np.eye(4)
+        first[:3, 3] = [10.0, 0.0, 0.0]
+        other = np.eye(4)
+        other[:3, 3] = [-99.0, 0.0, 0.0]
+        with medh5.create(path, codec="portable") as w:
+            w.add_timepoint("tp0")
+            w.add_timepoint("tp1", index=1)
+            w.add_grid(
+                "g0",
+                shape=shape,
+                spacing=(1.0, 1.0, 1.0),
+                timepoint="tp0",
+                frame_uid="F0",
+            )
+            w.add_grid(
+                "g1",
+                shape=shape,
+                spacing=(1.0, 1.0, 1.0),
+                timepoint="tp1",
+                frame_uid="F1",
+            )
+            w.add_image("CT0", np.zeros(shape, np.int16), grid="g0", modality="CT")
+            w.add_image("CT1", np.zeros(shape, np.int16), grid="g1", modality="CT")
+            w.add_transform(
+                "aaa", kind="affine", matrix=first, from_frame="F0", to_frame="F1"
+            )
+            if second:
+                w.add_transform(
+                    "zzz", kind="affine", matrix=other, from_frame="F0", to_frame="F1"
+                )
+        return path
+
+    def test_one_route_still_resolves(self, tmp_path):
+        path = self._pair(tmp_path / "one.medh5", second=False)
+        with medh5.open(path) as sample:
+            transform = sample.transform_between("tp0", "tp1")
+            assert transform is not None
+            assert np.allclose(
+                transform.transform_points([[0.0, 0.0, 0.0]])[0], [10.0, 0.0, 0.0]
+            )
+
+    def test_S10_2_two_equally_short_routes_are_refused_not_picked(self, tmp_path):
+        """Two registrations between one frame pair is legal; choosing is not.
+
+        The pick fell out of dict iteration order -- lexicographic transform id
+        -- so two registrations 109 mm apart resolved to whichever was named
+        first, with nothing in the file saying that one was authoritative.
+        """
+        path = self._pair(tmp_path / "two.medh5", second=True)
+        with medh5.open(path) as sample:
+            with pytest.raises(MEDH5ValidationError) as exc:
+                sample.transform_between("tp0", "tp1")
+            assert exc.value.code == "E501"
+            assert "aaa" in str(exc.value) and "zzz" in str(exc.value)
+            # Both remain reachable by id -- the file is not malformed.
+            assert sorted(sample.transforms) == ["aaa", "zzz"]
+
+    def test_S10_1_a_chain_in_mixed_units_is_refused(self, tmp_path):
+        """§10.1 makes `units` a MUST; only the frames were ever checked."""
+        shape = (4, 8, 8)
+        step = np.eye(4)
+        step[:3, 3] = [1.0, 0.0, 0.0]
+        path = tmp_path / "units.medh5"
+        with medh5.create(path, codec="portable") as w:
+            w.add_timepoint("tp0")
+            w.add_timepoint("tp1", index=1)
+            for gid, frame, tp in (
+                ("g0", "F0", "tp0"),
+                ("gA", "FA", "tp0"),
+                ("g1", "F1", "tp1"),
+            ):
+                w.add_grid(
+                    gid,
+                    shape=shape,
+                    spacing=(1.0, 1.0, 1.0),
+                    timepoint=tp,
+                    frame_uid=frame,
+                    units="mm",
+                )
+                w.add_image(
+                    f"CT_{gid}", np.zeros(shape, np.int16), grid=gid, modality="CT"
+                )
+            w.add_transform(
+                "t1",
+                kind="affine",
+                matrix=step,
+                from_frame="F0",
+                to_frame="FA",
+                units="mm",
+            )
+            w.add_transform(
+                "t2",
+                kind="affine",
+                matrix=step,
+                from_frame="FA",
+                to_frame="F1",
+                units="um",
+            )
+            w.add_transform(
+                "comp",
+                kind="composite",
+                components=["t1", "t2"],
+                from_frame="F0",
+                to_frame="F1",
+                units="mm",
+            )
+        with medh5.open(path) as sample:
+            problems = sample.transforms["comp"].check_chain()
+            assert any("units" in p for p in problems)
+            with pytest.raises(MEDH5ValidationError) as exc:
+                sample.transforms["comp"].transform_points([[0.0, 0.0, 0.0]])
+            assert exc.value.code == "E501"
+
+    def test_S10_2_equal_routes_that_converge_are_still_ambiguous(self, tmp_path):
+        """`A→B→D→T` and `A→C→D→T` are two routes, not one.
+
+        Marking `D` seen as soon as the first predecessor reached it discarded
+        the second path, so only one arrival was ever collected and the tie went
+        undetected -- the walker returned x=3 where the other route gives x=300.
+        """
+        shape = (4, 8, 8)
+
+        def shift(dx):
+            matrix = np.eye(4)
+            matrix[:3, 3] = [dx, 0.0, 0.0]
+            return matrix
+
+        path = tmp_path / "converge.medh5"
+        with medh5.create(path, codec="portable") as w:
+            w.add_timepoint("tp0")
+            w.add_timepoint("tp1", index=1)
+            w.add_grid(
+                "gA",
+                shape=shape,
+                spacing=(1.0, 1.0, 1.0),
+                timepoint="tp0",
+                frame_uid="A",
+            )
+            w.add_grid(
+                "gT",
+                shape=shape,
+                spacing=(1.0, 1.0, 1.0),
+                timepoint="tp1",
+                frame_uid="T",
+            )
+            for frame in ("B", "C", "D"):
+                w.add_grid(
+                    f"g{frame}",
+                    shape=shape,
+                    spacing=(1.0, 1.0, 1.0),
+                    timepoint="tp0",
+                    frame_uid=frame,
+                )
+            for gid in ("gA", "gT", "gB", "gC", "gD"):
+                w.add_image(
+                    f"CT_{gid}", np.zeros(shape, np.int16), grid=gid, modality="CT"
+                )
+            w.add_transform(
+                "ab", kind="affine", matrix=shift(1.0), from_frame="A", to_frame="B"
+            )
+            w.add_transform(
+                "bd", kind="affine", matrix=shift(2.0), from_frame="B", to_frame="D"
+            )
+            w.add_transform(
+                "ac", kind="affine", matrix=shift(100.0), from_frame="A", to_frame="C"
+            )
+            w.add_transform(
+                "cd", kind="affine", matrix=shift(200.0), from_frame="C", to_frame="D"
+            )
+            w.add_transform(
+                "dt", kind="affine", matrix=shift(0.0), from_frame="D", to_frame="T"
+            )
+
+        with medh5.open(path) as sample:
+            with pytest.raises(MEDH5ValidationError) as exc:
+                sample.transform_between("tp0", "tp1")
+            assert exc.value.code == "E501"
+
+    def test_a_longer_unambiguous_route_still_resolves(self, tmp_path):
+        """Only *equal-length* routes are a tie; a single chain must still work."""
+        shape = (4, 8, 8)
+        step = np.eye(4)
+        step[:3, 3] = [1.0, 0.0, 0.0]
+        path = tmp_path / "chain.medh5"
+        with medh5.create(path, codec="portable") as w:
+            w.add_timepoint("tp0")
+            w.add_timepoint("tp1", index=1)
+            w.add_grid(
+                "gA",
+                shape=shape,
+                spacing=(1.0, 1.0, 1.0),
+                timepoint="tp0",
+                frame_uid="A",
+            )
+            w.add_grid(
+                "gB",
+                shape=shape,
+                spacing=(1.0, 1.0, 1.0),
+                timepoint="tp0",
+                frame_uid="B",
+            )
+            w.add_grid(
+                "gT",
+                shape=shape,
+                spacing=(1.0, 1.0, 1.0),
+                timepoint="tp1",
+                frame_uid="T",
+            )
+            for gid in ("gA", "gB", "gT"):
+                w.add_image(
+                    f"CT_{gid}", np.zeros(shape, np.int16), grid=gid, modality="CT"
+                )
+            w.add_transform(
+                "ab", kind="affine", matrix=step, from_frame="A", to_frame="B"
+            )
+            w.add_transform(
+                "bt", kind="affine", matrix=step, from_frame="B", to_frame="T"
+            )
+        with medh5.open(path) as sample:
+            transform = sample.transform_between("tp0", "tp1")
+            assert transform is not None
+            assert np.allclose(
+                transform.transform_points([[0.0, 0.0, 0.0]])[0], [2.0, 0.0, 0.0]
+            )

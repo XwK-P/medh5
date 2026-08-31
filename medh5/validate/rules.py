@@ -957,6 +957,39 @@ def _check_geometric(
         if boxes.ndim == 3 and boxes.size and np.any(boxes[..., 0] > boxes[..., 1]):  # noqa: PLR2004
             bad = int(np.sum(np.any(boxes[..., 0] > boxes[..., 1], axis=1)))
             yield ctx.err("E406", location, f"{bad} box(es) have lo > hi")
+        # `slice_index` names the plane each 2-D box sits on (§8.2). The rule
+        # lives in `check_slice_index` and the writer and `as_slices` call the
+        # same function, so this cannot drift from what they enforce.
+        if "slice_index" in group and boxes.ndim == 3:  # noqa: PLR2004
+            from medh5.annotations.geometric import check_slice_index
+
+            planes = np.asarray(group["slice_index"][...])
+            # The range half needs index-space boxes and the grid they index.
+            # A world-space box's plane is not known until the affine has been
+            # applied, so those are range-checked on the way out instead; the
+            # shape half applies either way.
+            spatial: tuple[int, ...] | None = None
+            if (
+                space == "index"
+                and grid_id is not None
+                and grids_node is not None
+                and grid_id in grids_node
+                and boxes.ndim == 3  # noqa: PLR2004
+            ):
+                full = [
+                    int(v) for v in np.atleast_1d(grids_node[grid_id].attrs["shape"])
+                ]
+                dims = int(boxes.shape[1])
+                if len(full) >= dims:
+                    spatial = tuple(full[-dims:])
+            problem = check_slice_index(
+                planes,
+                boxes.shape[0],
+                boxes=boxes.astype(np.float64) if spatial else None,
+                shape=spatial,
+            )
+            if problem:
+                yield ctx.err("E405", location, problem)
     if kind == "obb" and "rotations" in group:
         rotations = np.asarray(group["rotations"][...], dtype=np.float64)
         offenders = [
@@ -1417,6 +1450,27 @@ def _check_composite(
                 "E501",
                 location,
                 f"{left!r} ends in {a[1]!r} but {right!r} starts in {b[0]!r}",
+            )
+    # Units, alongside the frames.  §10.1 makes `units` a MUST, and this rule is
+    # what `medh5 validate` reports -- so while `CompositeTransform.check_chain`
+    # rejected an `mm` leg chained to a `um` leg, the advertised conformance
+    # check still passed the same file. The two implementations have to agree
+    # about what a sound chain is.
+    declared_units = as_str(group.attrs["units"]) if "units" in group.attrs else None
+    if declared_units is not None:
+        mixed = [
+            (component, as_str(node[component].attrs["units"]))
+            for component in components
+            if "units" in node[component].attrs
+            and as_str(node[component].attrs["units"]) != declared_units
+        ]
+        if mixed:
+            listed = ", ".join(f"{c!r} in {u!r}" for c, u in mixed)
+            yield ctx.err(
+                "E501",
+                location,
+                f"declares units {declared_units!r} but {listed} --- a chain "
+                "whose legs are in different units does not compose",
             )
     del declared
 
