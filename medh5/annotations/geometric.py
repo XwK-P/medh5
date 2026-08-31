@@ -241,12 +241,25 @@ def encode_boxes(
             f"{bad} box(es) have lo > hi; boxes are stored [lo, hi] at voxel edges",
             code="E406",
         )
-    datasets = {"boxes": array}
+    datasets: dict[str, npt.NDArray[Any]] = {"boxes": array}
     datasets.update(
         _object_columns(array.shape[0], class_ids, instance_ids, scores, attributes)
     )
     if slice_index is not None:
-        datasets["slice_index"] = np.asarray(slice_index, dtype=np.int32)
+        # Checked here rather than left to `_object_columns`, which validates
+        # the columns it builds and never sees this one. A short `slice_index`
+        # used to be accepted, and every box past its end stayed a degenerate
+        # zero-thickness slice selecting no voxels at all --- ground truth
+        # dropped by a writer that raised nothing (§8.2).
+        planes = np.asarray(slice_index, dtype=np.int32)
+        if planes.shape[0] != array.shape[0]:
+            raise MEDH5ValidationError(
+                f"slice_index has {planes.shape[0]} entries for "
+                f"{array.shape[0]} boxes; it names the plane each box sits on, "
+                f"so it needs one entry per box",
+                code="E405",
+            )
+        datasets["slice_index"] = planes
     return AnnotationPayload(
         kind="boxes",
         datasets=datasets,
@@ -327,10 +340,22 @@ class BoxesAnnotation(GeometricAnnotation):
         else:
             boxes = self._boxes_in_index(target)
         planes = self.slice_index
+        if planes is not None and len(planes) != len(boxes):
+            # The writer refuses this now, but files predating that check
+            # exist. Skipping the boxes `slice_index` does not reach --- which
+            # is what the bounds guard here used to do --- leaves each of them a
+            # zero-thickness slice selecting nothing, so the annotation quietly
+            # returns fewer objects than it holds.
+            raise MEDH5ValidationError(
+                f"annotation {self.ann_id!r} has {len(planes)} slice_index "
+                f"entries for {len(boxes)} boxes; every box past the end would "
+                f"stay a zero-thickness slice and select no voxels",
+                code="E405",
+            )
         out: list[tuple[slice, ...]] = []
         for i in range(len(boxes)):
             slices = box_to_slices(boxes[i], target.spatial_shape)
-            if planes is not None and i < len(planes):
+            if planes is not None:
                 slices = _thicken_named_slice(
                     slices, boxes[i], int(planes[i]), target.spatial_shape
                 )

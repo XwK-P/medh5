@@ -15,6 +15,20 @@ Two clauses of the specification were corrected (Appendix C now lists ten), and 
 a conforming file looks like: one pins a rounding rule that was under-specified, the other writes
 down an exclusion the reference implementation already applied.
 
+### Fixed — `slice_index` shorter than its boxes dropped objects
+
+- **A `slice_index` naming fewer planes than there are boxes silently lost every box past its end.**
+  `slice_index` records the plane each 2-D box sits on (§8.2), so it is a per-box column like
+  `class_ids` — but it is written after `_object_columns`, which validates the columns it builds and
+  never sees this one. A short one was written without complaint, `medh5 validate` reported no error,
+  and `as_slices()` skipped the boxes it did not reach, leaving each of them a degenerate
+  zero-thickness slice that selects **no voxels at all**. Two boxes with `slice_index=[5]` returned
+  one object and an empty region, with nothing anywhere saying an object had been dropped. The bounds
+  guard that produced this was defensive — it existed to avoid an `IndexError` — and turned a crash
+  into silent loss of ground truth. Now refused at all three layers: the writer rejects a mismatched
+  `slice_index` (`E405`), `as_slices()` refuses rather than skipping so files written before the
+  check are caught, and a new semantic rule reports it from `medh5 validate`.
+
 ### Fixed — converters that assumed instead of checking
 
 A second review pass covered the three subsystems the first one never reached: the DICOM family,

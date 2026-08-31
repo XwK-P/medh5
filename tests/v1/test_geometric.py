@@ -615,6 +615,77 @@ class TestSliceIndexBoxes:
         assert slices[0] == slice(3, 4), "the named slice, one voxel thick"
         assert int(np.prod([s.stop - s.start for s in slices])) == 16
 
+    def test_S8_2_a_short_slice_index_is_refused_at_write(self, tmp_path, label_set):
+        """One entry per box, or the boxes past the end vanish.
+
+        `slice_index` is appended after `_object_columns`, which validates the
+        per-box columns it builds and never sees this one -- so a short one was
+        written without complaint, and every box it did not reach stayed a
+        degenerate zero-thickness slice selecting no voxels.
+        """
+        shape = (8, 16, 16)
+        with (
+            pytest.raises(MEDH5ValidationError, match="one entry per box") as caught,
+            medh5.create(tmp_path / "short.medh5", codec="portable") as w,
+        ):
+            w.label_set(label_set)
+            w.add_grid("g", shape=shape, spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", np.zeros(shape, np.int16), grid="g", modality="CT")
+            w.add_boxes(
+                "det",
+                grid="g",
+                boxes=[
+                    [[3.0, 3.0], [1.5, 5.5], [1.5, 5.5]],
+                    [[6.0, 6.0], [8.5, 12.5], [8.5, 12.5]],
+                ],
+                class_ids=[3, 3],
+                space="index",
+                slice_index=[3],
+            )
+        assert caught.value.code == "E405"
+
+    def test_S8_2_a_short_slice_index_already_in_a_file_is_refused(
+        self, tmp_path, label_set
+    ):
+        """Files predating the writer check exist, so reading refuses too.
+
+        Skipping the boxes `slice_index` does not reach -- the bounds guard the
+        reader used to carry -- returns each of them as a zero-thickness slice,
+        so the annotation quietly yields fewer objects than it holds.
+        """
+        import h5py
+
+        from medh5.validate import validate_file
+
+        shape = (8, 16, 16)
+        path = tmp_path / "legacy.medh5"
+        with medh5.create(path, codec="portable") as w:
+            w.label_set(label_set)
+            w.add_grid("g", shape=shape, spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", np.zeros(shape, np.int16), grid="g", modality="CT")
+            w.add_boxes(
+                "det",
+                grid="g",
+                boxes=[
+                    [[3.0, 3.0], [1.5, 5.5], [1.5, 5.5]],
+                    [[6.0, 6.0], [8.5, 12.5], [8.5, 12.5]],
+                ],
+                class_ids=[3, 3],
+                space="index",
+                slice_index=[3, 6],
+            )
+        with h5py.File(path, "a") as handle:
+            group = handle["annotations/det"]
+            del group["slice_index"]
+            group.create_dataset("slice_index", data=np.array([3], np.int32))
+
+        report = validate_file(path)
+        assert not report.ok
+        assert [e.code for e in report.errors] == ["E405"]
+        with medh5.open(path) as sample, pytest.raises(MEDH5ValidationError) as caught:
+            sample.annotations["det"].as_slices()
+        assert caught.value.code == "E405"
+
     def test_S8_2_slice_index_does_not_touch_a_box_with_real_extent(
         self, tmp_path, label_set
     ):

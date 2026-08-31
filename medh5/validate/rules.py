@@ -957,6 +957,20 @@ def _check_geometric(
         if boxes.ndim == 3 and boxes.size and np.any(boxes[..., 0] > boxes[..., 1]):  # noqa: PLR2004
             bad = int(np.sum(np.any(boxes[..., 0] > boxes[..., 1], axis=1)))
             yield ctx.err("E406", location, f"{bad} box(es) have lo > hi")
+        # `slice_index` names the plane each 2-D box sits on (§8.2), so it is a
+        # per-box column like `class_ids` and has to be as long. A short one
+        # read as valid, and every box past its end stayed a zero-thickness
+        # slice selecting no voxels --- objects present in the file that no
+        # reader returned.
+        if "slice_index" in group and boxes.ndim == 3:  # noqa: PLR2004
+            planes = np.asarray(group["slice_index"][...])
+            if planes.shape[0] != boxes.shape[0]:
+                yield ctx.err(
+                    "E405",
+                    location,
+                    f"`slice_index` has {planes.shape[0]} entries for "
+                    f"{boxes.shape[0]} boxes; it needs one per box",
+                )
     if kind == "obb" and "rotations" in group:
         rotations = np.asarray(group["rotations"][...], dtype=np.float64)
         offenders = [
