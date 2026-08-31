@@ -727,3 +727,122 @@ class TestInterpolation:
 
     def test_folding_fraction_of_an_empty_field(self):
         assert folding_fraction(np.zeros(0)) == 0.0
+
+
+class TestAmbiguousResolution:
+    """§10.2 exists because ambiguity here mirrors registrations silently."""
+
+    def _pair(self, path, *, second: bool):
+        shape = (4, 8, 8)
+        first = np.eye(4)
+        first[:3, 3] = [10.0, 0.0, 0.0]
+        other = np.eye(4)
+        other[:3, 3] = [-99.0, 0.0, 0.0]
+        with medh5.create(path, codec="portable") as w:
+            w.add_timepoint("tp0")
+            w.add_timepoint("tp1", index=1)
+            w.add_grid(
+                "g0",
+                shape=shape,
+                spacing=(1.0, 1.0, 1.0),
+                timepoint="tp0",
+                frame_uid="F0",
+            )
+            w.add_grid(
+                "g1",
+                shape=shape,
+                spacing=(1.0, 1.0, 1.0),
+                timepoint="tp1",
+                frame_uid="F1",
+            )
+            w.add_image("CT0", np.zeros(shape, np.int16), grid="g0", modality="CT")
+            w.add_image("CT1", np.zeros(shape, np.int16), grid="g1", modality="CT")
+            w.add_transform(
+                "aaa", kind="affine", matrix=first, from_frame="F0", to_frame="F1"
+            )
+            if second:
+                w.add_transform(
+                    "zzz", kind="affine", matrix=other, from_frame="F0", to_frame="F1"
+                )
+        return path
+
+    def test_one_route_still_resolves(self, tmp_path):
+        path = self._pair(tmp_path / "one.medh5", second=False)
+        with medh5.open(path) as sample:
+            transform = sample.transform_between("tp0", "tp1")
+            assert transform is not None
+            assert np.allclose(
+                transform.transform_points([[0.0, 0.0, 0.0]])[0], [10.0, 0.0, 0.0]
+            )
+
+    def test_S10_2_two_equally_short_routes_are_refused_not_picked(self, tmp_path):
+        """Two registrations between one frame pair is legal; choosing is not.
+
+        The pick fell out of dict iteration order -- lexicographic transform id
+        -- so two registrations 109 mm apart resolved to whichever was named
+        first, with nothing in the file saying that one was authoritative.
+        """
+        path = self._pair(tmp_path / "two.medh5", second=True)
+        with medh5.open(path) as sample:
+            with pytest.raises(MEDH5ValidationError) as exc:
+                sample.transform_between("tp0", "tp1")
+            assert exc.value.code == "E501"
+            assert "aaa" in str(exc.value) and "zzz" in str(exc.value)
+            # Both remain reachable by id -- the file is not malformed.
+            assert sorted(sample.transforms) == ["aaa", "zzz"]
+
+    def test_S10_1_a_chain_in_mixed_units_is_refused(self, tmp_path):
+        """§10.1 makes `units` a MUST; only the frames were ever checked."""
+        shape = (4, 8, 8)
+        step = np.eye(4)
+        step[:3, 3] = [1.0, 0.0, 0.0]
+        path = tmp_path / "units.medh5"
+        with medh5.create(path, codec="portable") as w:
+            w.add_timepoint("tp0")
+            w.add_timepoint("tp1", index=1)
+            for gid, frame, tp in (
+                ("g0", "F0", "tp0"),
+                ("gA", "FA", "tp0"),
+                ("g1", "F1", "tp1"),
+            ):
+                w.add_grid(
+                    gid,
+                    shape=shape,
+                    spacing=(1.0, 1.0, 1.0),
+                    timepoint=tp,
+                    frame_uid=frame,
+                    units="mm",
+                )
+                w.add_image(
+                    f"CT_{gid}", np.zeros(shape, np.int16), grid=gid, modality="CT"
+                )
+            w.add_transform(
+                "t1",
+                kind="affine",
+                matrix=step,
+                from_frame="F0",
+                to_frame="FA",
+                units="mm",
+            )
+            w.add_transform(
+                "t2",
+                kind="affine",
+                matrix=step,
+                from_frame="FA",
+                to_frame="F1",
+                units="um",
+            )
+            w.add_transform(
+                "comp",
+                kind="composite",
+                components=["t1", "t2"],
+                from_frame="F0",
+                to_frame="F1",
+                units="mm",
+            )
+        with medh5.open(path) as sample:
+            problems = sample.transforms["comp"].check_chain()
+            assert any("units" in p for p in problems)
+            with pytest.raises(MEDH5ValidationError) as exc:
+                sample.transforms["comp"].transform_points([[0.0, 0.0, 0.0]])
+            assert exc.value.code == "E501"

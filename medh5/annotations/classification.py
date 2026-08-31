@@ -213,25 +213,79 @@ class ClassificationAnnotation(Annotation):
 
     @property
     def labels(self) -> dict[str, float]:
-        """``key -> value`` for every assertion, keyed by label-set key when known."""
+        """``key -> value`` for every assertion, keyed by label-set key when known.
+
+        One entry per class, so it is only well defined when each class is
+        asserted once.  §9 makes the opposite case ordinary --- ``scope_ids`` is
+        "per assertion", and ``scope = "timepoint"`` means one assertion per
+        visit --- and this comprehension silently kept the last of them, while
+        :meth:`value` returned the first.  The two then disagreed about the same
+        file: ``state()`` answered "negative" for a class ``positives`` listed.
+        Ask :meth:`assertions` or :meth:`by_scope_id` when a class is asserted
+        more than once.
+        """
+        self._require_unambiguous("labels")
         return {
             self.class_key(int(c)): float(v)
             for c, v in zip(self.asserted_class_ids, self.values, strict=True)
         }
 
+    def _duplicated_classes(self) -> dict[int, int]:
+        """Class id -> how many assertions carry it, for the repeated ones."""
+        counts: dict[int, int] = {}
+        for class_id in self.asserted_class_ids:
+            counts[int(class_id)] = counts.get(int(class_id), 0) + 1
+        return {c: n for c, n in counts.items() if n > 1}
+
+    def _require_unambiguous(self, what: str, target: int | None = None) -> None:
+        repeated = self._duplicated_classes()
+        if target is not None:
+            repeated = {c: n for c, n in repeated.items() if c == target}
+        if not repeated:
+            return
+        named = ", ".join(
+            f"{self.class_key(c)!r} ({n} assertions)"
+            for c, n in sorted(repeated.items())
+        )
+        raise MEDH5ValidationError(
+            f"annotation {self.ann_id!r}: {what} collapses one value per class, "
+            f"but {named} with scope {self.scope!r}. §9 makes that ordinary --- "
+            "`scope_ids` is per assertion --- so there is no single answer to "
+            "give. Pass scope_id=, or read `assertions()` / `by_scope_id()`.",
+            code="E412",
+        )
+
     @property
     def positives(self) -> tuple[str, ...]:
         return tuple(key for key, value in self.labels.items() if value > 0.0)
 
-    def value(self, class_key: int | str) -> float | None:
-        """The asserted value, or ``None`` when the class was not asserted."""
+    def value(
+        self, class_key: int | str, *, scope_id: int | None = None
+    ) -> float | None:
+        """The asserted value, or ``None`` when the class was not asserted.
+
+        *scope_id* selects the assertion when a class is asserted for several
+        scope units (§9).  Without it, a class carrying more than one assertion
+        is an error rather than a silent first-match: the first row is not more
+        authoritative than the second.
+        """
         target = self.resolve_class(class_key)
-        for class_id, value in zip(self.asserted_class_ids, self.values, strict=True):
-            if int(class_id) == target:
-                return float(value)
+        if scope_id is None:
+            self._require_unambiguous("value()", target)
+        scope_ids = self.scope_ids
+        for i, (class_id, value) in enumerate(
+            zip(self.asserted_class_ids, self.values, strict=True)
+        ):
+            if int(class_id) != target:
+                continue
+            if scope_id is not None and (
+                scope_ids is None or int(scope_ids[i]) != scope_id
+            ):
+                continue
+            return float(value)
         return None
 
-    def state(self, class_key: int | str) -> str:
+    def state(self, class_key: int | str, *, scope_id: int | None = None) -> str:
         """``"positive"``, ``"negative"`` or ``"unknown"`` for one class (§9).
 
         ``unknown`` is the answer whenever the class is outside
@@ -239,7 +293,7 @@ class ClassificationAnnotation(Annotation):
         information and training code must not treat it as a negative.
         """
         target = self.resolve_class(class_key)
-        value = self.value(target)
+        value = self.value(target, scope_id=scope_id)
         if value is not None:
             return "positive" if value > 0.0 else "negative"
         return "negative" if self.is_annotated(target) else "unknown"

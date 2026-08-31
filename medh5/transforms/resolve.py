@@ -99,6 +99,18 @@ class ChainTransform(Transform):
     def __init__(self, chain: Sequence[Transform]) -> None:
         if not chain:
             raise MEDH5ValidationError("a transform chain needs at least one step")
+        # A resolved path is assembled from whatever transforms the file holds,
+        # so its steps can disagree about units even when each is internally
+        # consistent.  The header below takes its units from the first step, so
+        # without this the chain would silently claim one unit and evaluate in
+        # several (§10.1).
+        units = {t.units for t in chain}
+        if len(units) > 1:
+            raise MEDH5ValidationError(
+                "cannot chain transforms in different units: "
+                + ", ".join(f"{t.transform_id!r} in {t.units!r}" for t in chain),
+                code="E501",
+            )
         self._chain = tuple(chain)
         header = TransformHeader(
             kind="composite",
@@ -159,6 +171,16 @@ def resolve_between(
 
     Returns the transform itself for a single hop and a :class:`ChainTransform`
     for several, so the caller's code is the same either way.
+
+    **Ambiguity is refused, not resolved.**  A file may legitimately hold more
+    than one registration between the same pair of frames --- a rigid and a
+    deformable one, each with its own ``metrics`` (§10.1) --- so this does not
+    treat that as a malformed file.  What it will not do is pick one.  The
+    choice used to fall out of dict iteration order, which meant lexicographic
+    transform id: two registrations disagreeing by 109 mm resolved to whichever
+    was named first, silently, and §10.2 exists because "ambiguity here is the
+    leading cause of silently mirrored registration results".  Ask for the one
+    you want by id through ``sample.transforms`` instead.
     """
     if from_frame == to_frame:
         return None
@@ -168,16 +190,49 @@ def resolve_between(
     queue: deque[tuple[str, list[Transform]]] = deque([(from_frame, [])])
     seen = {from_frame}
     while queue:
-        frame, path = queue.popleft()
-        for neighbour, step in graph.get(frame, ()):
-            if neighbour in seen:
-                continue
-            extended = [*path, step]
-            if neighbour == to_frame:
-                return extended[0] if len(extended) == 1 else ChainTransform(extended)
-            seen.add(neighbour)
-            queue.append((neighbour, extended))
+        # One BFS level at a time, so every minimal-length path is in hand
+        # before any of them is returned.  Returning on the first hit could not
+        # see a second route of the same length.
+        arrivals: list[list[Transform]] = []
+        for _ in range(len(queue)):
+            frame, path = queue.popleft()
+            for neighbour, step in graph.get(frame, ()):
+                extended = [*path, step]
+                if neighbour == to_frame:
+                    arrivals.append(extended)
+                    continue
+                if neighbour in seen:
+                    continue
+                seen.add(neighbour)
+                queue.append((neighbour, extended))
+        if arrivals:
+            _reject_ambiguous(arrivals, from_frame, to_frame)
+            best = arrivals[0]
+            return best[0] if len(best) == 1 else ChainTransform(best)
     return None
+
+
+def _reject_ambiguous(
+    arrivals: list[list[Transform]], from_frame: str, to_frame: str
+) -> None:
+    """Raise when two distinct minimal-length routes reach the same frame."""
+    routes = {tuple(_step_id(step) for step in path): path for path in arrivals}
+    if len(routes) < 2:  # noqa: PLR2004 - one route, or the same route twice
+        return
+    named = sorted(" -> ".join(route) for route in routes)
+    raise MEDH5ValidationError(
+        f"{len(named)} equally short transform paths relate frame "
+        f"{from_frame!r} to {to_frame!r}: {'; '.join(named)}. They need not "
+        "agree, and nothing in the file says which one is authoritative, so "
+        "picking one here would assert an alignment no one chose (§10.2). "
+        "Select the transform you want by id from `sample.transforms`.",
+        code="E501",
+    )
+
+
+def _step_id(step: Transform) -> str:
+    """A stable name for one hop; `InverseTransform` already suffixes its id."""
+    return str(step.transform_id)
 
 
 def frames_of_timepoint(grids: Mapping[str, Any], timepoint: str) -> tuple[str, ...]:

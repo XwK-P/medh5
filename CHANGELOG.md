@@ -84,6 +84,52 @@ down an exclusion the reference implementation already applied.
   off the objects present rather than the declared `class_ids`, and `check_roundtrip` decodes
   through that same path — so the module's own losslessness check could not see the loss.
 
+### Fixed — geometry, registration and sampling
+
+- **An ambiguous frame path resolved silently.** Two registrations between the same pair of
+  frames — which §10.1 permits, and which a rigid plus a deformable pair makes ordinary —
+  left `transform_between` picking by dict iteration order, i.e. lexicographic transform id.
+  Two affines disagreeing by 109 mm resolved to whichever was named first, with the
+  validator silent. §10.2 exists because "ambiguity here is the leading cause of silently
+  mirrored registration results", so resolution now refuses, names both candidates, and
+  points at `sample.transforms` to select one. A single route resolves exactly as before.
+
+- **`check_pyramid` never compared a level's `direction` to level 0.** Spacing, origin,
+  `coord_system`, `units` and `frame_uid` were checked; orientation was not — and because
+  the *expected* origin is derived from the base's direction, a level with permuted axes
+  passed both remaining checks. That is precisely the failure §4.3 exists to prevent: a
+  model trained at level 2 has its predictions mapped back to level 0 and they land
+  transposed. Level extent is now bounded too — one voxel either side of `n / f`, which
+  admits both rounding conventions and still rejects a level that is not a resampling of
+  its parent.
+
+- **A transform's `units` were never checked against the chain it sits in.** §10.1 makes
+  `units` a MUST — "coordinate units, matching the frames' grids" — but only frames were
+  compared, so a composite chaining an `mm` leg to a `um` leg validated clean and applied a
+  1000× error to half the transform. `check_chain` compares units, and a resolved
+  `ChainTransform` refuses to assemble steps that disagree.
+
+- **`strategy="uniform"` was not uniform.** Centres were drawn over every voxel and then
+  clamped inward, so every centre in the leading half-patch collapsed onto window start 0 —
+  measured at 3.6× the uniform share for the first window and 2.8× for the last, on a
+  24-voxel axis with an 8-voxel patch, and worse as the patch grows. Border-heavy training
+  data from a strategy named for the opposite. The centre is now drawn from the range that
+  maps one-to-one onto valid window starts; clamping stays on the foreground path, where the
+  centre is a voxel the caller specifically wants included.
+
+- **`as_slices()` ignored `slice_index`**, so §8.2's canonical "2D box on slice k" — the
+  common radiology annotation — selected **no voxels at all**: a degenerate axis converts to
+  a zero-thickness slice. The named slice now gets one voxel of thickness. A box with real
+  extent on every axis is left alone rather than reinterpreted.
+
+- **The classification accessors contradicted each other on multi-assertion scopes.** §9
+  makes several assertions per class ordinary — `scope_ids` is "per assertion", and
+  `scope = "timepoint"` means one per visit — but `value()` returned the first matching row
+  while `labels` kept the last, so `state()` answered "negative" for a class `positives`
+  listed as positive, on one file. `value()` and `state()` take `scope_id=` to select, and
+  every collapsing accessor refuses rather than picking when a class carries more than one
+  assertion. Single-assertion files are unaffected.
+
 ### Fixed — de-identification and access control
 
 - **A scrubbed file still contained the DICOM UID it had pseudonymised.** `scrub --apply` runs
@@ -166,6 +212,15 @@ produces or accepts:
 - `labelmap()` warns when it flattens real overlap and no `priority` was given.
 - The payload encoders raise `E303` for class ids the public writer already rejected.
 - `validate --level strict` reports promoted warnings in `errors` rather than in `warnings`.
+- `transform_between` raises rather than choosing when two equally short routes exist; select
+  one by id from `sample.transforms`.
+- `strategy="uniform"` places windows uniformly, so **the same seed now draws different
+  patches**. The change removes a border bias; it does not make previous runs invalid, but it
+  does mean a run is not bit-reproducible across this upgrade.
+- The classification accessors (`value`, `state`, `labels`, `positives`) raise on a file that
+  asserts one class more than once; pass `scope_id=` or read `assertions()`.
+- `check_pyramid` — and therefore `E105` — now fires on a level whose `direction` or extent
+  disagrees with level 0.
 
 ### Changed
 
@@ -201,7 +256,7 @@ produces or accepts:
 
 ### Internal
 
-- Test suite 924 → 951, coverage 93% → 93.5%. Two tests that could not fail were repaired:
+- Test suite 924 → 964, coverage 93% → 93.5%. Two tests that could not fail were repaired:
   `json.dumps(..., default=str)` coerces anything, so two "is JSON-safe" assertions were vacuous.
   `test_the_format_version_is_not_the_package_version` asserted the package version starts with
   `"1.0"`, tying it to the format version in exactly the way its own docstring forbids; it only

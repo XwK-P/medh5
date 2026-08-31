@@ -586,3 +586,53 @@ class TestSpace:
         with medh5.open(path) as sample:
             json.dumps(sample.annotations["lesions"].summary())
             json.dumps(sample.summary())
+
+
+class TestSliceIndexBoxes:
+    def test_S8_2_a_2d_box_on_a_slice_selects_that_slice(self, tmp_path, label_set):
+        """§8.2's canonical form selected no voxels at all.
+
+        `slice_index` with a degenerate axis expresses "a 2D box on slice k",
+        the common radiology annotation -- and `as_slices` never read
+        `slice_index`, so the degenerate axis became a zero-thickness slice.
+        """
+        shape = (8, 16, 16)
+        path = tmp_path / "sliced.medh5"
+        with medh5.create(path, codec="portable") as w:
+            w.label_set(label_set)
+            w.add_grid("g", shape=shape, spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", np.zeros(shape, np.int16), grid="g", modality="CT")
+            w.add_boxes(
+                "det",
+                grid="g",
+                boxes=[[[3.0, 3.0], [1.5, 5.5], [1.5, 5.5]]],
+                class_ids=[3],
+                space="index",
+                slice_index=[3],
+            )
+        with medh5.open(path) as sample:
+            slices = sample.annotations["det"].as_slices()[0]
+        assert slices[0] == slice(3, 4), "the named slice, one voxel thick"
+        assert int(np.prod([s.stop - s.start for s in slices])) == 16
+
+    def test_S8_2_slice_index_does_not_touch_a_box_with_real_extent(
+        self, tmp_path, label_set
+    ):
+        """Only the 2D-on-a-slice form is reinterpreted, never a 3D box."""
+        shape = (8, 16, 16)
+        path = tmp_path / "solid.medh5"
+        with medh5.create(path, codec="portable") as w:
+            w.label_set(label_set)
+            w.add_grid("g", shape=shape, spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", np.zeros(shape, np.int16), grid="g", modality="CT")
+            w.add_boxes(
+                "det",
+                grid="g",
+                boxes=[[[1.5, 4.5], [1.5, 5.5], [1.5, 5.5]]],
+                class_ids=[3],
+                space="index",
+                slice_index=[3],
+            )
+        with medh5.open(path) as sample:
+            slices = sample.annotations["det"].as_slices()[0]
+        assert slices[0] == slice(2, 5)

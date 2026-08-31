@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 import numpy as np
 import pytest
 
@@ -262,3 +264,59 @@ class TestMultiscale:
                 downsample_method="mean",
                 grid_levels=("l0",),
             )
+
+
+class TestPyramidChecks:
+    """§4.3: a level's geometry is derived from level 0, and checked against it."""
+
+    def _base(self):
+        return Grid(
+            "l0",
+            (16, 16, 16),
+            ("z", "y", "x"),
+            ("spatial",) * 3,
+            (1.0, 1.0, 1.0),
+            (0.0, 0.0, 0.0),
+            np.eye(3),
+        )
+
+    def test_S4_3_a_transposed_level_direction_is_caught(self):
+        """The expected origin is computed from the *base* direction.
+
+        So a level whose axes are permuted passed both the spacing and the
+        origin check, and `direction` was never compared at all -- exactly the
+        failure the module docstring describes, where predictions made at level
+        2 are mapped back to level 0 and land transposed.
+        """
+        base = self._base()
+        level = derive_level_grid(base, (2, 2, 2), "l1")
+        permuted = dataclasses.replace(
+            level,
+            direction=np.array([[0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]),
+        )
+        assert check_pyramid(base, [base, level], [[1, 1, 1], [2, 2, 2]]) == []
+        problems = check_pyramid(base, [base, permuted], [[1, 1, 1], [2, 2, 2]])
+        assert any("direction" in p for p in problems)
+
+    def test_S4_3_a_level_extent_that_is_not_a_resampling_is_caught(self):
+        base = self._base()
+        level = derive_level_grid(base, (2, 2, 2), "l1")
+        stunted = dataclasses.replace(level, shape=(3, 3, 3))
+        problems = check_pyramid(base, [base, stunted], [[1, 1, 1], [2, 2, 2]])
+        assert any("resampling" in p for p in problems)
+
+    def test_S4_3_both_rounding_conventions_are_accepted(self):
+        """Only the spacing/origin relation is normative, so 15/2 may be 7 or 8."""
+        odd = Grid(
+            "l0",
+            (15, 15, 15),
+            ("z", "y", "x"),
+            ("spatial",) * 3,
+            (1.0, 1.0, 1.0),
+            (0.0, 0.0, 0.0),
+            np.eye(3),
+        )
+        ceiled = derive_level_grid(odd, (2, 2, 2), "l1")
+        floored = dataclasses.replace(ceiled, shape=(7, 7, 7))
+        assert check_pyramid(odd, [odd, ceiled], [[1, 1, 1], [2, 2, 2]]) == []
+        assert check_pyramid(odd, [odd, floored], [[1, 1, 1], [2, 2, 2]]) == []

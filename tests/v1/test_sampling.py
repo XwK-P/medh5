@@ -335,3 +335,49 @@ class TestPairSampler:
             )
         with medh5.open(path) as sample:
             assert TimepointPairSampler().pairs(sample)[0].label == "response"
+
+
+class TestUniformIsUniform:
+    def test_S14_3_window_placement_is_uniform_not_just_the_centre(self, tmp_path):
+        """Drawing a centre over every voxel and clamping is not uniform.
+
+        Every centre in the leading half-patch collapses onto window start 0 and
+        every centre in the trailing half onto the last start, so on a 24-voxel
+        axis with an 8-voxel patch the first window took 3.6x its share and the
+        last 2.8x -- border-heavy training data from a strategy named `uniform`.
+        The skew grows with patch size.
+        """
+        shape = (24, 24, 24)
+        path = tmp_path / "uniform.medh5"
+        with medh5.create(path, codec="portable") as w:
+            w.add_grid("g", shape=shape, spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", np.zeros(shape, np.int16), grid="g", modality="CT")
+
+        sampler = PatchSampler((8, 8, 8), strategy="uniform")
+        counts: dict[int, int] = {}
+        draws = 20_000
+        with medh5.open(path) as sample:
+            rng = np.random.default_rng(0)
+            for _ in range(draws):
+                start = sampler.draw(sample, rng=rng).slices[0].start
+                counts[start] = counts.get(start, 0) + 1
+
+        starts = sorted(counts)
+        assert starts == list(range(0, 24 - 8 + 1)), "every valid start must occur"
+        expected = draws / len(starts)
+        worst = max(abs(counts[s] - expected) for s in starts) / expected
+        assert worst < 0.25, f"window placement is {worst:.1%} off uniform"
+
+    def test_a_patch_larger_than_the_volume_still_pads(self, tmp_path):
+        """The oversized-patch path is unchanged: whole axis plus padding."""
+        shape = (24, 24, 24)
+        path = tmp_path / "small.medh5"
+        with medh5.create(path, codec="portable") as w:
+            w.add_grid("g", shape=shape, spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", np.zeros(shape, np.int16), grid="g", modality="CT")
+        with medh5.open(path) as sample:
+            patch = PatchSampler((64, 64, 64), strategy="uniform").draw(
+                sample, rng=np.random.default_rng(0)
+            )
+        assert all(s == slice(0, 24) for s in patch.slices)
+        assert all(pad == (20, 20) for pad in patch.pad)

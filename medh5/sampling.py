@@ -141,6 +141,35 @@ def window_around(
     return tuple(slices), tuple(pads)
 
 
+def _uniform_center(
+    shape: Sequence[int], patch: Sequence[int], generator: np.random.Generator
+) -> tuple[int, ...]:
+    """A centre whose window lands uniformly over the volume.
+
+    Drawing the centre uniformly over *every* voxel and letting
+    :func:`window_around` clamp is not uniform in the thing that matters: every
+    centre in the leading half-patch collapses onto window start 0, and every
+    centre in the trailing half onto the last start.  On a 24-voxel axis with an
+    8-voxel patch that put 3.6x the uniform share on the first window and 2.8x
+    on the last, and the skew grows with patch size --- border-heavy training
+    data, from a strategy named ``uniform``.
+
+    Drawing from the range that maps one-to-one onto the valid window starts
+    makes the *window* uniform, which is what a caller asking for uniform
+    coverage means.  Clamping stays in ``window_around`` for the foreground
+    path, where the centre is a voxel the caller specifically wants included.
+    """
+    center: list[int] = []
+    for extent, size in zip(shape, patch, strict=True):
+        if size >= extent:
+            center.append(int(extent) // 2)
+            continue
+        lead = size // 2
+        # Valid starts are 0 .. extent - size; start s has centre s + lead.
+        center.append(int(generator.integers(0, extent - size + 1)) + lead)
+    return tuple(center)
+
+
 class PatchSampler:
     """Choose patch windows in a volume (spec §14.3).
 
@@ -231,7 +260,7 @@ class PatchSampler:
                     used_index=used_index,
                     grid_id=grid_id,
                 )
-        center = tuple(int(generator.integers(0, max(1, n))) for n in shape)
+        center = _uniform_center(shape, patch, generator)
         slices, pad = window_around(center, patch, shape)
         return Patch(
             slices=slices,

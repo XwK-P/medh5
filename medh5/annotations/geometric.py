@@ -270,6 +270,30 @@ def _stacked(
     return np.stack(arrays)
 
 
+def _thicken_named_slice(
+    slices: tuple[slice, ...],
+    box: npt.NDArray[np.float64],
+    plane: int,
+    shape: Sequence[int],
+) -> tuple[slice, ...]:
+    """Give the axis a `slice_index` names one voxel of thickness (§8.2).
+
+    Only the degenerate axis is touched, and only when the box really is
+    degenerate there --- ``slice_index`` on a box with genuine extent on every
+    axis is not the 2D-on-a-slice form and is left alone rather than
+    reinterpreted.
+    """
+    degenerate = [axis for axis in range(len(slices)) if box[axis][0] == box[axis][1]]
+    if len(degenerate) != 1:
+        return slices
+    axis = degenerate[0]
+    extent = int(shape[axis])
+    start = max(0, min(int(plane), extent - 1)) if extent else 0
+    out = list(slices)
+    out[axis] = slice(start, min(start + 1, extent))
+    return tuple(out)
+
+
 class BoxesAnnotation(GeometricAnnotation):
     """Reader for ``kind = "boxes"``."""
 
@@ -289,15 +313,29 @@ class BoxesAnnotation(GeometricAnnotation):
         return self._optional("slice_index", np.int32)
 
     def as_slices(self, grid: Grid | str | None = None) -> list[tuple[slice, ...]]:
-        """Each box as a numpy index tuple, clipped to the grid."""
+        """Each box as a numpy index tuple, clipped to the grid.
+
+        A box carrying ``slice_index`` with a degenerate axis is §8.2's "2D box
+        on slice k", the common radiology annotation.  ``slice_index`` was never
+        read here, and a degenerate axis converts to a zero-thickness slice, so
+        the canonical form selected **no voxels at all**.  The named slice is
+        given one voxel of thickness instead.
+        """
         target = self._resolve_grid(grid)
         if self.space == "index":
             boxes = self.boxes.astype(np.float64)
         else:
             boxes = self._boxes_in_index(target)
-        return [
-            box_to_slices(boxes[i], target.spatial_shape) for i in range(len(boxes))
-        ]
+        planes = self.slice_index
+        out: list[tuple[slice, ...]] = []
+        for i in range(len(boxes)):
+            slices = box_to_slices(boxes[i], target.spatial_shape)
+            if planes is not None and i < len(planes):
+                slices = _thicken_named_slice(
+                    slices, boxes[i], int(planes[i]), target.spatial_shape
+                )
+            out.append(slices)
+        return out
 
     def _boxes_in_index(self, grid: Grid) -> npt.NDArray[np.float64]:
         return _stacked(
