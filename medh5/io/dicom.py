@@ -194,7 +194,14 @@ def read_series(
     )
     pixel_spacing = _agreed(
         slices,
-        lambda s: [float(v) for v in getattr(s, "PixelSpacing", (1.0, 1.0))],
+        # No default: a series whose slices all omit `PixelSpacing` used to fall
+        # through to 1 mm, which every slice then agreed on, so the stack was
+        # written with an in-plane size the source never stated and nothing
+        # recorded the assumption. Files reaching here carry
+        # `ImagePositionPatient` (`scan_dicom` skips those that do not), so they
+        # are cross-sectional images, for which `PixelSpacing` is mandatory ---
+        # its absence is a broken series, not a series to guess about.
+        lambda s: [float(v) for v in s.PixelSpacing],
         "PixelSpacing",
         series,
     )

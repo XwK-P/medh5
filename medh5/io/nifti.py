@@ -806,12 +806,20 @@ def from_nifti(
 def _same_grid(
     first: dict[str, Any], other: dict[str, Any], name: str, log: ConversionReport
 ) -> dict[str, Any]:
-    """Refuse volumes that do not share a grid (spec §3.2)."""
+    """Refuse volumes that do not share a grid (spec §3.2).
+
+    Uncoded, deliberately.  §15.2's table describes conditions found *in a MEDH5
+    file*, and these are two NIfTI volumes that are not one yet: the shape
+    mismatch is not `E202` (an image disagreeing with its grid --- neither of
+    these is a grid), and the geometry mismatch is not `E101` (a reference to a
+    grid that does not exist --- nothing here is referenced). Reporting them
+    under those codes told anything branching on the code an untrue story about
+    what had gone wrong.
+    """
     if tuple(first["shape"]) != tuple(other["shape"]):
         raise MEDH5ValidationError(
             f"{name!r} has shape {other['shape']}, but the first volume has "
-            f"{first['shape']}; resample before converting",
-            code="E202",
+            f"{first['shape']}; resample before converting"
         )
     for key in ("spacing", "origin", "direction"):
         if not np.allclose(
@@ -821,8 +829,7 @@ def _same_grid(
         ):
             raise MEDH5ValidationError(
                 f"{name!r} disagrees with the first volume on {key}; resample "
-                "before converting rather than letting a converter do it silently",
-                code="E101",
+                "before converting rather than letting a converter do it silently"
             )
     return first
 

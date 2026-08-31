@@ -263,6 +263,22 @@ file that looks entirely well-formed.
 Read these before upgrading a pipeline. Each is a correction, and each can change what existing code
 produces or accepts:
 
+- **Converter refusals no longer carry a format diagnostic code.** `from_nifti`'s grid-disagreement
+  refusals raised `E202` (shape) and `E101` (spacing/origin/direction), and the new DICOM per-slice
+  checks initially borrowed `E102`/`E104`/`E204`. §15.2's table describes conditions found *in a
+  MEDH5 file*, and a NIfTI volume or DICOM series is not one yet: none of those codes means "these
+  inputs disagree", so a caller branching on the code was told an untrue story — a modality-LUT
+  problem read as malformed `channel_names`, a grid disagreement as a dangling grid reference. These
+  refusals are now uncoded. **Code branching on `exc.code` for a converter refusal must switch to the
+  exception type**; the messages are unchanged and still name what disagreed.
+
+- **A DICOM series that declares no `PixelSpacing` at all is now refused.** One slice omitting it was
+  already caught, because it disagreed with the others; *every* slice omitting it meant they all
+  agreed on a 1 mm default, and the stack was written with an in-plane size the source never stated.
+  Files reaching this path carry `ImagePositionPatient`, so they are cross-sectional images for which
+  `PixelSpacing` is mandatory — its absence is a broken series, not one to guess about. A series that
+  previously converted with assumed 1 mm spacing will now refuse; that spacing was never the source's.
+
 - Boxes on integer edge coordinates now yield the extent they describe. ROIs derived from
   `box_to_slices` — crops, instance decoding, `as_slices`, tracked lesion volumes — change where
   they were previously off.

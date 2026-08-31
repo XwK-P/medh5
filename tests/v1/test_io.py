@@ -355,6 +355,27 @@ class TestNifti:
         with pytest.raises(MEDH5ValidationError, match="origin"):
             from_nifti({"CT": volumes["ct"], "PET": other}, tmp_path / "y.medh5")
 
+    def test_a_grid_disagreement_does_not_borrow_a_format_code(self, volumes, tmp_path):
+        """§15.2's codes describe a MEDH5 file; these are two NIfTI volumes.
+
+        The shape mismatch is not `E202` (an image disagreeing with its grid --
+        neither of these is a grid) and the geometry mismatch is not `E101` (a
+        reference to a grid that does not exist -- nothing here is referenced).
+        """
+        odd = tmp_path / "odd.nii.gz"
+        nib.save(nib.Nifti1Image(np.zeros((4, 4, 4), np.int16), AFFINE), str(odd))
+        with pytest.raises(MEDH5ValidationError) as shape_error:
+            from_nifti({"CT": volumes["ct"], "PET": odd}, tmp_path / "x.medh5")
+        assert shape_error.value.code is None
+
+        shifted = np.array(AFFINE)
+        shifted[0, 3] += 3.0
+        other = tmp_path / "shift.nii.gz"
+        nib.save(nib.Nifti1Image(np.zeros(SHAPE_XYZ, np.int16), shifted), str(other))
+        with pytest.raises(MEDH5ValidationError) as geometry_error:
+            from_nifti({"CT": volumes["ct"], "PET": other}, tmp_path / "y.medh5")
+        assert geometry_error.value.code is None
+
     def test_an_empty_image_set_is_refused(self, tmp_path):
         with pytest.raises(MEDH5ValidationError):
             from_nifti({}, tmp_path / "x.medh5")
@@ -1401,6 +1422,27 @@ class TestDicom:
         with pytest.raises(MEDH5ValidationError) as caught:
             read_series(series)
         assert caught.value.code is None
+
+    def test_S3_2_a_series_with_no_pixel_spacing_is_refused_not_assumed(self, tree):
+        """Every slice omitting `PixelSpacing` used to be the dangerous case.
+
+        One slice omitting it disagrees with the others and was caught; *all*
+        of them omitting it meant they agreed on the 1 mm default, so the stack
+        was written with an in-plane size the source never stated.
+        """
+        import pydicom
+
+        from medh5.errors import MEDH5Error
+        from medh5.io.dicom import read_series, scan_dicom
+
+        for path in sorted((tree["root"] / "v1" / "ct").glob("*.dcm")):
+            ds = pydicom.dcmread(str(path))
+            del ds.PixelSpacing
+            ds.save_as(str(path))
+        wanted = tree["ct0"]["series_uid"]
+        series = next(s for s in scan_dicom(tree["root"]) if s.series_uid == wanted)
+        with pytest.raises(MEDH5Error, match="no usable PixelSpacing"):
+            read_series(series)
 
     def test_an_irregular_stack_is_refused(self, tmp_path):
         import pydicom
