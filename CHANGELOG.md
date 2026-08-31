@@ -273,8 +273,18 @@ produces or accepts:
   MEDH5 file*, and a NIfTI volume or DICOM series is not one yet: none of those codes means "these
   inputs disagree", so a caller branching on the code was told an untrue story — a modality-LUT
   problem read as malformed `channel_names`, a grid disagreement as a dangling grid reference. These
-  refusals are now uncoded. **Code branching on `exc.code` for a converter refusal must switch to the
-  exception type**; the messages are unchanged and still name what disagreed.
+  refusals are now uncoded — six sites in total, found one at a time across four review rounds: the
+  irregular-stack and coincident-slice refusals in `io/dicom.py` (`E104`, which means *spacing not
+  strictly positive* — an irregular stack's median spacing is positive, it is merely nonuniform), the
+  two SEG placement refusals in `io/dicom_seg.py` (`E109`, a missing *grid* attribute, where a SEG is
+  not a grid), the tilted 2-D plane in `io/nifti.py` (`E102`, a non-orthonormal `direction`, where
+  that direction is perfectly orthonormal and simply cannot reduce to a 2×2), and the axis-kind
+  disagreement (`E110`, an invalid `axis_kinds` in a file, where nothing here has one). Refusals that
+  really do describe the sample being written or targeted keep their codes — a SEG naming a grid the
+  sample lacks is genuinely `E101`, a class absent from its label set genuinely `E402` — and a test
+  now pins the exhaustive list, so a new coded refusal in `medh5.io` has to be added deliberately.
+  **Code branching on `exc.code` for a converter refusal must switch to the exception type**; the
+  messages are unchanged and still name what disagreed.
 
 - **A DICOM series that declares no `PixelSpacing` at all is now refused.** One slice omitting it was
   already caught, because it disagreed with the others; *every* slice omitting it meant they all

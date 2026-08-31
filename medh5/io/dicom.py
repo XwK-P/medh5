@@ -266,8 +266,7 @@ def _slice_spacing(
     spacing = float(np.median(np.abs(gaps)))
     if spacing <= 0:
         raise MEDH5ValidationError(
-            f"series {series.series_uid} has coincident slice positions",
-            code="E104",
+            f"series {series.series_uid} has coincident slice positions"
         )
     spread = float(np.max(np.abs(np.abs(gaps) - spacing)))
     if spread > SPACING_TOLERANCE * spacing:
@@ -275,8 +274,7 @@ def _slice_spacing(
             f"series {series.series_uid} has irregular slice gaps "
             f"(median {spacing:.4g} mm, worst deviation {spread:.4g} mm); an "
             "irregular stack is not a grid --- resample it deliberately, or "
-            "convert the slices as separate images",
-            code="E104",
+            "convert the slices as separate images"
         )
     if report is not None:
         report.decision(

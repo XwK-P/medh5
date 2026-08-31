@@ -306,7 +306,9 @@ class TestNifti:
         nib.save(nib.Nifti1Image(np.zeros((32, 40), np.int16), tilted), str(source))
         with pytest.raises(MEDH5ValidationError) as exc:
             from_nifti({"XR": source}, tmp_path / "tilt.medh5")
-        assert exc.value.code == "E102"
+        # Uncoded: E102 is `direction` not orthonormal, and this direction is
+        # perfectly orthonormal -- it just cannot be reduced to a 2x2.
+        assert exc.value.code is None
 
     def test_a_4D_series_cannot_keep_its_NIfTI_axis_order(self, tmp_path):
         """§3.1 wants the spatial axes trailing; NIfTI puts time there.
@@ -569,7 +571,9 @@ class TestDimensionality:
         cine = self._write(tmp_path, "cine", (24, 20, 12, 3), tr=2.0, units="sec")
         with pytest.raises(MEDH5ValidationError) as exc:
             from_nifti({"D": dwi, "C": cine}, tmp_path / "mix.medh5")
-        assert exc.value.code == "E110"
+        # Uncoded: E110 is an invalid `axis_kinds` in a file, and nothing here
+        # has one -- two inputs disagree about what the axis is.
+        assert exc.value.code is None
 
     def test_S3_2_toffset_is_scaled_with_the_zoom(self, tmp_path):
         """`toffset` is in the header's own temporal unit, like `pixdim[4]`.
@@ -1889,6 +1893,57 @@ class TestRtstruct:
 
         with pytest.raises(MEDH5ValidationError, match="not 'RTSTRUCT'"):
             read_rtstruct(prepared["series"]["paths"][0])
+
+
+class TestConverterDiagnosticCodes:
+    """A converter refusal about its *input* carries no diagnostic code.
+
+    §15.2's table describes conditions found in a MEDH5 file. A NIfTI volume or
+    a DICOM series is not one yet, so a code applied to it tells anything
+    branching on `exc.code` an untrue story --- an irregular DICOM stack read as
+    a non-positive grid spacing, a tilted 2-D plane as a non-orthonormal
+    `direction`, a modality-LUT disagreement as malformed `channel_names`.
+
+    A refusal about the sample being written or targeted is different and keeps
+    its code: a SEG naming a grid the sample does not have really is `E101`, and
+    a class absent from the sample's label set really is `E402`.
+
+    This mistake reached six separate sites before it was found, one at a time,
+    so the allow-list below is exhaustive: a new coded refusal in `medh5.io` has
+    to be added here deliberately, with the reason it is about the sample rather
+    than the input.
+    """
+
+    ALLOWED = {
+        ("dicom_seg.py", "E101"),  # SEG names no grid the sample has
+        ("dicom_seg.py", "E402"),  # segment absent from the sample's label set
+        ("dicom_seg.py", "E405"),  # SEG shape vs. the target grid's
+        ("nifti.py", "E402"),  # mask name absent from the sample's label set
+        ("nifti.py", "E405"),  # mask shape vs. the target grid's
+        ("nnunetv2.py", "E402"),  # class absent from the annotation
+        ("rtstruct.py", "E101"),  # RTSTRUCT names no grid the sample has
+        ("rtstruct.py", "E402"),  # ROI absent from the sample's label set
+        ("rtstruct.py", "E401"),  # the sample's annotation is the wrong kind
+        ("rtstruct.py", "E414"),  # the sample's annotation has no usable space
+    }
+
+    def test_no_converter_refusal_borrows_a_format_code(self):
+        import re
+
+        import medh5.io
+
+        root = Path(medh5.io.__file__).parent
+        found = {
+            (path.name, code)
+            for path in sorted(root.glob("*.py"))
+            for code in re.findall(r'code="(E\d{3})"', path.read_text())
+        }
+        assert found <= self.ALLOWED, (
+            "new coded refusal(s) in medh5.io: "
+            f"{sorted(found - self.ALLOWED)}. If the refusal describes the "
+            "MEDH5 sample, add it to ALLOWED with a reason; if it describes the "
+            "converter's input, leave it uncoded."
+        )
 
 
 class TestLazyImports:

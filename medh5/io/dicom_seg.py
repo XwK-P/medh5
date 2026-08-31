@@ -180,8 +180,7 @@ def _orientation(shared: Any, per_frame: Sequence[Any]) -> npt.NDArray[np.float6
                 [float(v) for v in group.ImageOrientationPatient], dtype=np.float64
             )
     raise MEDH5ValidationError(
-        "the SEG carries no ImageOrientationPatient, so its frames cannot be placed",
-        code="E109",
+        "the SEG carries no ImageOrientationPatient, so its frames cannot be placed"
     )
 
 
@@ -192,9 +191,7 @@ def _position(group: Any, shared: Any) -> npt.NDArray[np.float64]:
             return np.asarray(
                 [float(v) for v in plane.ImagePositionPatient], dtype=np.float64
             )
-    raise MEDH5ValidationError(
-        "a SEG frame carries no ImagePositionPatient", code="E109"
-    )
+    raise MEDH5ValidationError("a SEG frame carries no ImagePositionPatient")
 
 
 def _segment_number(group: Any) -> int:

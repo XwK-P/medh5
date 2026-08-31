@@ -424,8 +424,7 @@ def _reduce_plane(
         raise MEDH5ValidationError(
             "this 2-D NIfTI is a plane tilted in 3-D, and §3.6 gives a 2-D grid "
             "a 2x2 direction --- there is no 2-D grid that describes it; import "
-            "it as a single-slice 3-D volume instead",
-            code="E102",
+            "it as a single-slice 3-D volume instead"
         )
     return spacing[:2], origin[:2], direction[:2, :2]
 
@@ -570,8 +569,7 @@ def _same_axis_kind(per_image: Mapping[str, Mapping[str, Any]]) -> None:
         raise MEDH5ValidationError(
             f"these volumes share a grid but disagree about their non-spatial "
             f"axis ({listed}); one grid states one set of `axis_kinds`, so "
-            "convert them separately or pass `fourth_axis=` to settle it",
-            code="E110",
+            "convert them separately or pass `fourth_axis=` to settle it"
         )
 
 
