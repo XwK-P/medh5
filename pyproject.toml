@@ -60,6 +60,7 @@ dev = [
   "build>=1.0",
   "twine>=5.0",
   "jsonschema>=4.18",
+  "hypothesis>=6.100",
 ]
 schema = [
   # Without this the validator cannot check E005, and says so rather than
