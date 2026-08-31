@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "medh5"
-version = "1.1.0"
+version = "1.1.1"
 description = "Self-describing HDF5 container for one medical imaging sample and all of its ground truth: multi-timepoint, multi-modal images with segmentation, detection, classification and registration annotations, provenance and integrity."
 readme = "README.md"
 requires-python = ">=3.10"

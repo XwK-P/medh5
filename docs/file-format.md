@@ -130,7 +130,7 @@ $ medh5 fix case.medh5 --rebuild-index
 $ medh5 fix case.medh5 --rewrite-digests --reason "rebuilt by an external tool"
 ```
 
-`--rewrite-digests` is not repair — see [CLI](cli.md#medh5-fix-path--rebuild-index--rewrite-digests---reason-why---json).
+`--rewrite-digests` is not repair — see [CLI](cli.md#medh5-fix-path---rebuild-index---rewrite-digests---reason-why---json).
 
 ## Atomic writes
 

@@ -100,6 +100,32 @@ it.
 become the image's `rescale`, so `read(physical=True)` gives HU and `read()`
 gives what the scanner stored. Baking the LUT in loses the stored values.
 
+**The stack must agree with itself.** A series is one volume with one geometry
+and one modality LUT, so `ImageOrientationPatient`, `PixelSpacing` and
+`RescaleSlope`/`RescaleIntercept` are read once — but they are read from *every*
+slice and checked, not taken from slice 0. A stack whose slices disagree is
+refused, naming the offending `SOPInstanceUID`.
+
+Taking the first slice's answer is not a smaller version of this behaviour; it
+is a different, silent one. A per-slice rescale is ordinary in PET, and
+collapsing it to slice 0's reports the wrong activity everywhere that LUT does
+not apply. One rotated slice placed on the first slice's direction matrix puts
+those voxels where the scanner never did. Neither shows up in the output.
+
+**A missing or malformed tag is refused too**, rather than defaulted or left to
+surface as a `TypeError` from inside numpy. A series whose slices all omit
+`PixelSpacing` used to fall through to 1 mm — which every slice then agreed on,
+so the stack was written with an in-plane size the source never stated and
+nothing recorded the assumption. Cardinality is checked as well as presence: a
+`PixelSpacing` of three values reads perfectly well as its first two, and a
+stack where every slice carries the same wrong length passes an agreement check
+that only compares slices to each other.
+
+These refusals carry **no diagnostic code**. §15.2's table describes conditions
+found in a MEDH5 file, and a DICOM series is not one yet — no code in it means
+"these slices disagree", so borrowing one would report a modality-LUT problem as
+malformed `channel_names`.
+
 **Tags are an explicit allow-list.** Imaging physics — kVp, exposure, kernel,
 TR/TE — goes to `acquisition`. Everything else stays out, per §11.4. A wholesale
 tag copy is how a "de-identified" export carries a patient name into a training
@@ -168,6 +194,23 @@ it as a parent, which is exactly what the hierarchy is for.
 
 The parsed `dataset.json` is stashed in `extra["nnunetv2"]`, so `to-nnunet`
 reproduces the original dataset definition rather than inventing one.
+
+**Every channel and label volume must share one grid.** A case's channels are
+registered to each other by construction — that is what makes them channels —
+so a second channel at a different spacing or origin, or a label volume some
+other tool resampled, is refused rather than filed onto channel 0's grid
+(§3.2, `E101`/`E202`). This is the same `_same_grid` check `from_nifti` has
+always applied; import used to keep whichever grid it saw first, which wrote the
+later volumes' voxels intact and their position silently wrong.
+
+**Export refuses a class the sample does not have.** `to-nnunet` matches classes
+by **id**, not by name — import keeps nnU-Net's own integers precisely so that it
+can. Matching by name looks equivalent and is not: import sanitises
+`dataset.json` names into label-set keys, so a dataset naming a class
+`"Tumour Core"` or `"GTV"` resolved nothing, and the miss fell into a bare
+`except: continue`. `dataset.json` came out listing every class, the label files
+were the right shape, and every voxel was 0. A class that genuinely is not in the
+sample is now refused (`E402`).
 
 ## COCO
 

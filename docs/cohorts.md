@@ -98,6 +98,14 @@ the subject — never a file. A subject with a baseline and two follow-ups is on
 unit. Since a sample is already a subject, this is mostly free; `group_id`
 exists for the coarser cases (a family, an enrolling site).
 
+A `--group-by` field that *cuts across* a subject is refused (`C204`) rather
+than split. Grouping by `site_id` when one subject was scanned at two sites puts
+that subject's samples in two groups, and two groups can land in different
+partitions — the leak the grouping exists to prevent, reintroduced by the
+grouping key. `dataset check` reports the realised version of the same problem
+as `C202`; `C204` catches it while the split is being made, which is before it
+can be trained on.
+
 **Stratify on what you can see.** Groups are indivisible and a group's stratum
 is its majority, so exact balance is not always reachable. `balance()` reports
 what was actually achieved rather than what was asked for.
@@ -149,8 +157,13 @@ from medh5.dataset import compute_stats
 stats = compute_stats(paths, images=["CT"], workers=8)
 stats.normalization("CT")          # (mean, std) for a z-score
 stats.class_weights(scheme="inverse_frequency")
-stats.images["CT"].mean, .std, .minimum, .maximum
-stats.classes[3].voxels, .present_in, .examined_in, .prevalence
+
+ct = stats.images["CT"]
+ct.mean, ct.std, ct.minimum, ct.maximum
+
+lesion = stats.classes[3]
+lesion.voxels, lesion.present_in, lesion.examined_in, lesion.prevalence
+
 stats.failures
 ```
 
@@ -198,7 +211,7 @@ report.coverage      # {class_id: {"examined_in": n, "present_in": m, "of": tota
 | `C201` | a split claim's manifest digest is not this manifest's |
 | `C202` | one subject's samples claim different partitions of one split |
 | `C203` | a sample carries no split claim |
-| `C204` | a group holds part of a subject, so the split is not subject-safe |
+| `C204` | a group holds part of a subject, so the split is not subject-safe — raised by `make_splits`, see below |
 | `C301` | a class is examined in only part of the cohort |
 | `C302` | a class appears in no sample |
 | `C401` | a file changed after the manifest was written |

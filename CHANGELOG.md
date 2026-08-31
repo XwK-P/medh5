@@ -4,6 +4,78 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.1.1] — 2026-08-30
+
+A documentation release. **No code changes**: the library, the format and every
+diagnostic code are identical to 1.1.0. It exists because `README.md` is the package's
+PyPI long description, so the corrected performance claim below could only reach the
+project page through a release.
+
+### Fixed — claims that were true only under a condition nobody stated
+
+- **"Foreground sampling is O(1) in the volume" needed an index, and no page said so.**
+  The claim holds only after `build_index()`, which `README.md` never mentioned and its
+  own write example did not call. `medh5 bench` reports 0.9 ms because it builds an index
+  on the sample it generates; a reader following the README got the unindexed path, which
+  scans the labels — 30 ms on the benchmark's own 12.6 Mvox volume, 312 ms at 512³, growing
+  with the volume while the indexed draw stays flat at 0.92 ms. `README.md`, `docs/index.md`
+  and the `docs/training.md` performance table now state the precondition and give both
+  numbers. `docs/training.md`'s prose already did.
+
+- **`medh5 bench` prints "all targets met" while reporting a number below a documented
+  target.** Four of the five rows in the performance table carry a target `bench` verifies;
+  sustained throughput depends on worker count, so it is measured and printed without one.
+  A default run reports ~330 patches/s against a table listing ≥ 400, then declares success —
+  a statement about the four checked rows that reads as one about all five. The table now
+  says which rows are checked and that the documented figure needs `--workers 4`.
+
+- **"Reproduce it with `medh5 bench`" was attached to a two-part claim `bench` half
+  reproduces.** The 0.x comparison figures cannot be rerun: there is no 0.x code left in the
+  package. Scoped to what `bench` actually measures.
+
+### Fixed — behaviour changed in 1.1.0 that the docs still described as it was
+
+- **`docs/converters.md` documented none of 1.1.0's converter refusals.** The DICOM
+  per-slice agreement checks on `ImageOrientationPatient`, `PixelSpacing` and
+  `RescaleSlope`/`RescaleIntercept`, the refusal of a missing or wrong-length tag, and the
+  reason those refusals carry no diagnostic code were all absent — as were nnU-Net's
+  `_same_grid` check on channels and label volumes, and the `E402` export refusal. A reader
+  hitting one of these had nothing to consult.
+
+- **`slice_index` was undocumented outside the specification.** 1.1.0 added enforcement at
+  three layers; `docs/annotations.md` did not mention the column at all. It now documents the
+  per-box rule and the 2-D-box idiom it exists for.
+
+### Fixed — statements that did not match the code
+
+- `docs/annotations.md` said "Twelve kinds"; `ANNOTATION_KINDS` has thirteen. `mask` (§4.4)
+  was the one missing, and `docs/python-api.md` omitted it from `ann.kind` as well.
+- `docs/curation.md` listed nine activity types; `ACTIVITY_TYPES` has ten. `transcode` was
+  missing. `docs/python-api.md` had all ten.
+- `docs/conformance.md` described the published corpus as "samples, and one collection". It
+  ships four collection cases out of 103.
+- `docs/cohorts.md` listed `C204` in its cross-file-check table, under `medh5 dataset check`,
+  which never emits it — it is raised by `make_splits` when a `--group-by` field cuts across
+  a subject. `check` reports the realised leak as `C202`. Both are now described where they
+  belong.
+- A `docs/cohorts.md` example used `stats.images["CT"].mean, .std, ...` shorthand inside a
+  `python` block. The attributes are real; the syntax was not. It was the only fenced
+  `python` block in the docs that would not parse.
+- The `medh5 fix` link from `docs/file-format.md` pointed at a mis-generated anchor.
+
+### Verified — no change needed
+
+Checked mechanically against the code rather than read for plausibility: 103 documented CLI
+invocations parse against the real parser with every flag existing on the command it is shown
+with; every documented import resolves and every `python` block parses; the writer's 24
+documented methods, `Sample`'s 15 members and the `Grid`/`Image`/`Transform`/`Tracking`
+surfaces all exist; the §15.2 table and `medh5.errors.CODES` agree on all 71 codes, and
+`CHECK_CODES` matches `docs/cohorts.md` on all 12 including their wording; the conformance
+counts (103 cases, 38 valid, 65 invalid, 71 mutated) are exact; the codec profile table, the
+L3 fallback and the chunk bounds match `medh5/storage/`; every internal doc link and anchor
+resolves; and the getting-started example reproduces its documented output exactly, down to
+the voxel counts.
+
 ## [1.1.0] — 2026-08-30
 
 A correctness release from a full review of the library. The **format version is unchanged**: 1.1.0

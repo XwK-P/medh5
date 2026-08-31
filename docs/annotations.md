@@ -1,6 +1,6 @@
 # Annotations
 
-Twelve kinds, one contract. This page is what each stores and how to read it;
+Thirteen kinds, one contract. This page is what each stores and how to read it;
 spec §6–§9 is the normative version.
 
 ## The common header
@@ -143,6 +143,22 @@ b.class_ids, b.scores, b.instance_ids
 `space="index"` or `space="world"`. The half-voxel offset between a box edge
 and a slice bound is the convention written down in spec §8.1, and it is the
 one thing to get right when writing a detector.
+
+**2-D boxes on a slice.** A box with a degenerate axis (`lo == hi`) plus
+`slice_index` is the common radiology annotation — a lesion drawn on one slice
+of a 3-D study (§8.2):
+
+```python
+w.add_boxes("lesions", boxes, class_ids=["lesion"], grid="ct",
+            space="index", slice_index=[37, 41])
+```
+
+`slice_index` is a **per-box column**: one plane for each box, shape `(N,)`, and
+each plane inside the grid. All three are enforced by the writer, by
+`as_slices()` on read, and by `medh5 validate` — the same rule at all three, so
+a file written before the check still fails the same way (`E405`). A short
+`slice_index` used to drop the boxes past its end and a plane outside the grid
+used to be clamped to the edge, both silently.
 
 ### Oriented boxes
 

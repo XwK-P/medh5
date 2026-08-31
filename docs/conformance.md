@@ -32,7 +32,7 @@ wrote the suite to suite/: 103 cases, see suite/README.md
 
 | File | |
 |---|---|
-| `*.medh5`, `*.medh5c` | the cases: samples, and one collection |
+| `*.medh5`, `*.medh5c` | the cases: 99 samples, and four collections |
 | `expected.json` | per case: the clause, the level, and the expected codes |
 | `codes.json` | the §15.2 diagnostic code table as data |
 | `medh5-sample-1.0.schema.json` | the JSON Schema for `/meta` |

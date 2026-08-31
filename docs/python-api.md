@@ -93,8 +93,9 @@ Every annotation, whatever its kind:
 ```python
 ann = s.annotations["organs_tp0"]
 ann.kind                   # "layers" | "labelmap" | "bitmask" | "instances" |
-                           # "probmap" | "boxes" | "obb" | "keypoints" |
-                           # "points" | "contours" | "mesh" | "classification"
+                           # "probmap" | "mask" | "boxes" | "obb" |
+                           # "keypoints" | "points" | "contours" | "mesh" |
+                           # "classification"
 ann.task                   # "segmentation" | "detection" | "classification" | ...
 ann.grid_id, ann.grid
 ann.timepoints             # which visits it describes

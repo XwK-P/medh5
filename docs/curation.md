@@ -21,7 +21,7 @@ w.add_segmentation("organs_pred", grid="ct_tp0", masks=masks, prov=act)
 ```
 
 Activity types: `import`, `annotate`, `review`, `predict`, `resample`,
-`register`, `derive`, `deidentify`, `other`.
+`register`, `derive`, `deidentify`, `transcode`, `other`.
 
 ```python
 s.document.provenance.agents

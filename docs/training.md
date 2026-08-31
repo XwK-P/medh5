@@ -175,13 +175,12 @@ so the geometry is testable — and tested — in an environment without it.
 
 ## Performance
 
-Measured on a 192×256×256 synthetic CT with eight classes; reproduce with
-`medh5 bench`.
+Measured on a 192×256×256 synthetic CT with eight classes.
 
 | Metric | Target | 0.x | Measured |
 |---|---|---|---|
 | 64³ patch, multi-class labels only | ≤ 10 ms | 117 ms | **4.0 ms** |
-| Foreground centre sampling | ≤ 1 ms, O(1) memory | 9.2 ms, O(volume) | **0.90 ms** |
+| Foreground centre sampling *(indexed)* | ≤ 1 ms, O(1) memory | 9.2 ms, O(volume) | **0.90 ms** |
 | Metadata-only read | ≤ 2 ms | ~1.5 ms | **0.21 ms** |
 | Full `open()` → first patch | ≤ 15 ms | ~120 ms | **2.4 ms** |
 | Sustained 96³ throughput | ≥ 400 patches/s | ~60 | **600–850** (4 workers) |
@@ -190,6 +189,22 @@ Measured on a 192×256×256 synthetic CT with eight classes; reproduce with
 $ medh5 bench                       # builds a synthetic sample and measures
 $ medh5 bench case.medh5 --patch 64 --repeats 20 --workers 4 --json
 ```
+
+Two things to know before quoting these.
+
+**The sampling row needs an index.** `bench` calls `build_index()` on the
+sample it builds, so 0.90 ms is the indexed path — the one you get after
+`medh5 index build`, not the one you get by default. Unindexed, the same draw
+scans the labels: 30 ms on this volume, 312 ms at 512³, growing with the volume
+while the indexed draw stays flat. `used_index` in the batch metadata says which
+you measured.
+
+**`bench` does not check the throughput target.** The first four rows carry a
+target it verifies and reports against; throughput depends on worker count, so
+it is measured and printed without one. `medh5 bench` with no `--workers` runs
+single-process and reports around 330 patches/s — below the 400 in the table,
+and still followed by *all targets met*, which is a statement about the four
+checked rows. Pass `--workers 4` to reproduce the number above.
 
 Two decisions are behind the label-read number: each stacked plane is chunked
 separately, so one layer reads without the others; and a multi-class `dense()`
