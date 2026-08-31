@@ -70,9 +70,12 @@ the two is how a model learns a site's scans have no spleens.
 a Merkle `content_id` that survives recompression; a validator with a stable
 diagnostic-code table; and a conformance corpus with one case per code.
 
-**Reading a patch is fast.** A 64³ multi-class patch reads in 4 ms against
-117 ms in 0.x, and foreground sampling is O(1) in the volume. Reproduce it with
-`medh5 bench`.
+**Reading a patch is fast.** A 64³ multi-class patch reads in ~4 ms, against
+117 ms measured on 0.x before chunk sizing and the sampling index existed.
+Foreground sampling is O(1) in the volume — 0.09 ms at 1 Mvox and at 20 Mvox —
+but only once `build_index()` has written the index; without one the same draw
+scans the labels, and costs 1.4 ms and 21 ms. `medh5 bench` reproduces the
+current figures against their targets on your own hardware.
 
 ## Write a sample
 
@@ -98,6 +101,7 @@ with medh5.create("case_0001.medh5", sample_id="case_0001",
     w.add_segmentation("organs", grid="ct",
                        masks={"liver": liver, "lesion": lesion},
                        annotated_classes=["liver", "spleen", "lesion"])
+    w.build_index()   # optional; foreground sampling is O(1) only with it
 ```
 
 `annotated_classes` names the spleen although there is no spleen mask: that
@@ -157,7 +161,7 @@ medh5 conformance publish suite/           # the suite, for another implementati
 | Format | |
 |---|---|
 | **NIfTI** | affine and voxels bit-identical on round trip; RAS↔LPS is a sign flip, never a resample |
-| **DICOM** | slices ordered by geometry, spacing measured between origins, modality LUT stored not applied, tags on an explicit allow-list |
+| **DICOM** | slices ordered by geometry, spacing measured between origins, modality LUT stored not applied, tags on an explicit allow-list; slices that disagree about orientation, spacing or rescale are refused rather than read off the first one |
 | **DICOM SEG** | frames placed by geometry; overlap and `FRACTIONAL` survive; segments matched by label, not number |
 | **RTSTRUCT** | contours stay contours; rasterisation is opt-in and recorded in provenance |
 | **nnU-Net v2** | class ids kept; region labels become label-set DAG parents; `dataset.json` round-trips |

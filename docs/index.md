@@ -60,9 +60,12 @@ a Merkle `content_id` that survives recompression; a validator with a stable
 diagnostic-code table; and a 103-case conformance corpus, one case per code,
 that any implementation can run.
 
-**Reading a patch is fast.** A 64³ multi-class patch reads in 4 ms against
-117 ms in 0.x, because chunks are sized for it and the sampling index makes
-foreground sampling O(1) in the volume. Run `medh5 bench` on your own hardware.
+**Reading a patch is fast.** A 64³ multi-class patch reads in ~4 ms, against
+117 ms measured on 0.x, because chunks are sized for it and the sampling index
+makes foreground sampling O(1) in the volume — 0.09 ms at 1 Mvox and at 20
+Mvox. The index is written by `build_index()` and is not automatic: without one
+the same draw scans the labels and costs 1.4 ms and 21 ms. Run `medh5 bench` on
+your own hardware.
 
 ## The command line
 
