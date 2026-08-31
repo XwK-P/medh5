@@ -1147,6 +1147,15 @@ class SampleWriter:
             return payload, None, payload.class_ids
         if probabilities is not None:
             resolved = {self._class_id(k): v for k, v in probabilities.items()}
+            # Examined-but-absent classes get an all-zero plane, exactly as the
+            # mask branch below gives them an empty mask.  Without it a partial
+            # probability map could not state coverage at all: `class_ids` held
+            # only the planes supplied while `annotated_class_ids` named more,
+            # and `AnnotationHeader` rejected the write with E403.
+            for class_id in examined:
+                resolved.setdefault(
+                    class_id, np.zeros(grid.spatial_shape, dtype=np.float32)
+                )
             payload = encode_probmap(resolved, grid.spatial_shape)
             return payload, None, payload.class_ids
         if masks is None:

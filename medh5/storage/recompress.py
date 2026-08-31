@@ -27,7 +27,7 @@ from typing import Any
 import h5py
 import numpy as np
 
-from medh5._hdf5 import atomic_h5, open_h5
+from medh5._hdf5 import atomic_rewrite, open_h5
 from medh5.errors import MEDH5ValidationError
 from medh5.storage.codecs import PROFILES, Role, dataset_kwargs, describe_filters
 
@@ -95,12 +95,14 @@ def recompress(
     # File size, not the sum of `get_storage_size()`: a dataset in a file that
     # is still open reports whatever has been flushed, which is not its size.
     result.bytes_before = source_path.stat().st_size
-    with open_h5(source_path, "r") as src:
+    # `atomic_rewrite`, not `open_h5` + `atomic_h5`: nesting those exits
+    # right-to-left, so the replace ran while the source was still open, which
+    # Windows refuses when the target is the source.
+    with atomic_rewrite(source_path, target) as (src, dst):
         before = src.attrs.get("content_id")
-        with atomic_h5(target) as dst:
-            for key, value in src.attrs.items():
-                dst.attrs[key] = value
-            _copy_group(src, dst, profile, rechunk, result)
+        for key, value in src.attrs.items():
+            dst.attrs[key] = value
+        _copy_group(src, dst, profile, rechunk, result)
     result.bytes_after = target.stat().st_size
     with open_h5(target, "r") as check:
         after = check.attrs.get("content_id")

@@ -265,6 +265,55 @@ def copy_object(src: h5py.Group, name: str, dst: h5py.Group) -> None:
     src.copy(name, dst, name=name, expand_soft=True, expand_external=True)
 
 
+@contextmanager
+def atomic_rewrite(
+    source: str | os.PathLike[str],
+    target: str | os.PathLike[str] | None = None,
+    *,
+    libver: str | tuple[str, str] = "latest",
+) -> Iterator[tuple[h5py.File, h5py.File]]:
+    """Rebuild a file from an existing one, atomically.  Yields ``(src, dst)``.
+
+    The source handle is closed **before** the replace, which
+    ``with open_h5(...) as src, atomic_h5(...) as dst:`` cannot do --- context
+    managers exit right-to-left, so the replace ran while the source was still
+    open.  POSIX allows that; Windows does not, so every rewrite of a file onto
+    itself (`repack`, and `recompress` without ``out=``) failed there.
+
+    *target* defaults to *source*, which is the rewrite-in-place case.
+    """
+    src_path = Path(os.fspath(source))
+    dst_path = Path(os.fspath(target)) if target is not None else src_path
+    dst_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst_path.with_name(f".{dst_path.name}.tmp-{os.getpid()}")
+    mode = _existing_mode(dst_path)
+    src: h5py.File | None = None
+    dst: h5py.File | None = None
+    try:
+        src = open_h5(src_path, "r")
+        dst = h5py.File(str(tmp), "w", libver=libver)
+        yield src, dst
+        dst.close()
+        dst = None
+        src.close()
+        src = None
+        if mode is not None:
+            with contextlib.suppress(OSError):
+                os.chmod(tmp, mode)
+        _fsync_path(tmp)
+        os.replace(str(tmp), str(dst_path))
+        _fsync_dir(dst_path.parent)
+    except BaseException:
+        for handle in (dst, src):
+            if handle is not None:
+                with contextlib.suppress(Exception):
+                    handle.close()
+        if tmp.exists():
+            with contextlib.suppress(OSError):
+                tmp.unlink()
+        raise
+
+
 def repack(path: str | os.PathLike[str]) -> None:
     """Rewrite *path* so freed space is not carried forward (spec §14.4).
 
@@ -280,8 +329,7 @@ def repack(path: str | os.PathLike[str]) -> None:
     is a compaction, not a re-encode, so every digest and the ``content_id``
     survive it.
     """
-    target = Path(os.fspath(path))
-    with open_h5(target, "r") as src, atomic_h5(target) as dst:
+    with atomic_rewrite(path) as (src, dst):
         for name in src:
             copy_object(src, name, dst)
         for key, value in src.attrs.items():
@@ -324,6 +372,7 @@ __all__ = [
     "as_str",
     "as_str_tuple",
     "atomic_h5",
+    "atomic_rewrite",
     "copy_object",
     "copy_root_attrs",
     "copy_unknown",

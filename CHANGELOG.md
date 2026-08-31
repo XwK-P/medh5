@@ -40,14 +40,23 @@ down an exclusion the reference implementation already applied.
   class the annotator searched for and did not find was recorded as *never looked for* instead of
   *verified absent* — the one distinction the coverage contract exists to keep (§11.3) — and no
   validator fired, because W904 only warns when `annotated_class_ids` is a strict subset and this
-  made the two equal.
+  made the two equal. `"all"` now also works with `probabilities=`, which needed
+  zero-valued planes injected for the absent classes the same way absent masks get an
+  empty mask; without them the write failed `E403`, since `annotated_class_ids` named
+  more than `class_ids` held.
 
 - **Transcoding destroyed an in-band ignore region.** `labelmap`/`layers` carry ignore in the data;
   `bitmask` and `probmap` express it as a separate `mask` annotation (§7.7), which a
   payload-returning function cannot create. The region was simply dropped, turning "nobody examined
   these voxels" into "verified absent for every annotated class" — what §7.7 names as the most
   common cause of a silently mistrained segmentation model. Transcoding to an encoding that cannot
-  hold it is now refused, with the two ways forward in the message.
+  hold it is now refused, with the two ways forward in the message. A non-default
+  `ignore_id` is carried to the target encoder along with the mask — passing only the
+  mask left the header naming a value the data did not contain, which put the region
+  right back to reading as background. `LayersAnnotation` gained the `ignore_mask()`
+  that `labelmap` already had: it could report `has_ignore_region` while offering no way
+  to read the region, so a caller written as `getattr(a, "ignore_mask", None)` — the
+  refusal above among them — concluded there was none.
 
 - **Transcoding *to* `instances` merged every object of a class into one.** A dense encoding records
   which voxels belong to a class and never which object, so the conversion collapsed two lesions
@@ -192,7 +201,7 @@ produces or accepts:
 
 ### Internal
 
-- Test suite 924 → 946, coverage 93% → 93.5%. Two tests that could not fail were repaired:
+- Test suite 924 → 951, coverage 93% → 93.5%. Two tests that could not fail were repaired:
   `json.dumps(..., default=str)` coerces anything, so two "is JSON-safe" assertions were vacuous.
   `test_the_format_version_is_not_the_package_version` asserted the package version starts with
   `"1.0"`, tying it to the format version in exactly the way its own docstring forbids; it only

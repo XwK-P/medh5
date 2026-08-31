@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import itertools
 
+import h5py
 import numpy as np
 import pytest
 
@@ -387,6 +388,68 @@ class TestTranscodingRefusesWhatItCannotCarry:
             writer.transcode_annotation("seg", "layers")
         with medh5.open(path) as sample:
             assert sample.annotations["seg"].has_ignore_region
+
+    def test_S7_7_a_custom_ignore_id_survives_the_transcode(self, tmp_path):
+        """The header carries `ignore_id` forward; the data has to agree with it.
+
+        The target encoder was told the ignore *mask* and not the *id*, so it
+        wrote the global default 65535 while the header still named the
+        source's value. The header then pointed at a value the data did not
+        contain, `_encodes_ignore` went False, and the region read as ordinary
+        background -- the exact loss the refusal above exists to prevent.
+        """
+        liver = np.zeros(self.SHAPE, bool)
+        liver[1:3, 1:5, 1:5] = True
+        ignore = np.zeros(self.SHAPE, bool)
+        ignore[5:6, :, :] = True
+        path = self._sample(tmp_path, masks={1: liver}, ignore=ignore)
+
+        with h5py.File(path, "r+") as handle:
+            group = handle["annotations/seg"]
+            data = np.asarray(group["data"])
+            data[data == 65535] = 200
+            group["data"][...] = data
+            group.attrs["ignore_id"] = np.int64(200)
+
+        with medh5.amend(path) as writer:
+            writer.transcode_annotation("seg", "layers")
+
+        with medh5.open(path) as sample:
+            annotation = sample.annotations["seg"]
+            assert annotation.header.ignore_id == 200
+            assert annotation.has_ignore_region
+            assert int(annotation.ignore_mask().sum()) == int(ignore.sum())
+        with h5py.File(path) as handle:
+            values = np.asarray(handle["annotations/seg"]["data"])
+            assert 65535 not in np.unique(values), "the default id leaked back in"
+
+    def test_S7_7_layers_exposes_the_ignore_region_it_reports_holding(self, tmp_path):
+        """`labelmap` had `ignore_mask()`; `layers` reported one and offered none.
+
+        A caller written as `getattr(annotation, "ignore_mask", None)` then read
+        "no ignore region" from an annotation that had one, so the refusal above
+        never fired for a `layers` source and the region was dropped anyway.
+        """
+        liver = np.zeros(self.SHAPE, bool)
+        liver[1:3, 1:5, 1:5] = True
+        lesion = np.zeros(self.SHAPE, bool)
+        lesion[3:4, 6:9, 6:9] = True
+        ignore = np.zeros(self.SHAPE, bool)
+        ignore[5:6, :, :] = True
+        path = self._sample(
+            tmp_path, masks={1: liver, 3: lesion}, ignore=ignore, encoding="layers"
+        )
+        with medh5.open(path) as sample:
+            annotation = sample.annotations["seg"]
+            assert type(annotation).__name__ == "LayersAnnotation"
+            assert annotation.has_ignore_region
+            assert int(annotation.ignore_mask().sum()) == int(ignore.sum())
+
+        with (
+            medh5.amend(path) as writer,
+            pytest.raises(MEDH5ValidationError, match="ignore region"),
+        ):
+            writer.transcode_annotation("seg", "bitmask")
 
     def test_S7_4_a_dense_encoding_will_not_be_transcoded_to_instances(self, tmp_path):
         """A dense encoding knows which voxels; it never knew which object.

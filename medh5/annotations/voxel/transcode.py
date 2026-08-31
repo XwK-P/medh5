@@ -235,6 +235,13 @@ def transcode(
                 code="E404",
             )
         kwargs.setdefault("ignore", ignore)
+        # The id as well as the mask.  `transcode_annotation` carries the source
+        # header forward, so a non-default `ignore_id` survives there --- while
+        # the target encoder, told only the mask, wrote the global default.  The
+        # header then named a value the data did not contain, `_encodes_ignore`
+        # went False, and the region this branch exists to protect read as
+        # ordinary background again.
+        kwargs.setdefault("ignore_id", annotation.header.ignore_id)
     masks = annotation_to_masks(annotation)
     return encode_masks(masks, to_kind, annotation.spatial_shape, **kwargs)
 
@@ -252,7 +259,16 @@ def _ignore_region(annotation: VoxelAnnotation) -> npt.NDArray[np.bool_] | None:
         return None
     reader = getattr(annotation, "ignore_mask", None)
     if reader is None:
-        return None
+        # An encoding that says it holds an ignore region and offers no way to
+        # read it cannot be transcoded safely by definition -- refusing beats
+        # the `getattr` default of None, which read as "no ignore region" and
+        # let the region be dropped by the very branch that exists to stop it.
+        raise MEDH5ValidationError(
+            f"annotation {annotation.ann_id!r} of kind {annotation.kind!r} "
+            "reports an in-band ignore region but exposes no ignore_mask() to "
+            "read it, so transcoding cannot carry it across (spec §7.7)",
+            code="E404",
+        )
     return np.asarray(reader(), dtype=bool)
 
 
