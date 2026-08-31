@@ -15,7 +15,6 @@ a registration pipeline reports errors it never measured.
 
 from __future__ import annotations
 
-from collections import deque
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -146,6 +145,10 @@ class ChainTransform(Transform):
         return out
 
 
+_AMBIGUITY_EVIDENCE = 2
+"""Distinct routes to keep per frame --- two is enough to prove a tie."""
+
+
 def _edges(
     transforms: Mapping[str, Transform],
 ) -> dict[str, list[tuple[str, Transform]]]:
@@ -187,28 +190,39 @@ def resolve_between(
     graph = _edges(transforms)
     if from_frame not in graph:
         return None
-    queue: deque[tuple[str, list[Transform]]] = deque([(from_frame, [])])
+    # One BFS level at a time, holding **every** minimal-length path rather than
+    # one per frame.  Marking a frame seen as soon as any path reaches it drops
+    # the others, and two routes that converge before the destination ---
+    # `A→B→D→T` and `A→C→D→T` --- then arrive as one, so the ambiguity check
+    # below never fires and the walker silently returns whichever route it met
+    # first.  `seen` therefore rules out only frames reached at a *shallower*
+    # depth, which is what keeps the search finite without hiding a tie.
+    frontier: dict[str, list[list[Transform]]] = {from_frame: [[]]}
     seen = {from_frame}
-    while queue:
-        # One BFS level at a time, so every minimal-length path is in hand
-        # before any of them is returned.  Returning on the first hit could not
-        # see a second route of the same length.
+    while frontier:
         arrivals: list[list[Transform]] = []
-        for _ in range(len(queue)):
-            frame, path = queue.popleft()
+        nxt: dict[str, list[list[Transform]]] = {}
+        for frame, paths in frontier.items():
             for neighbour, step in graph.get(frame, ()):
-                extended = [*path, step]
-                if neighbour == to_frame:
-                    arrivals.append(extended)
-                    continue
-                if neighbour in seen:
-                    continue
-                seen.add(neighbour)
-                queue.append((neighbour, extended))
+                for path in paths:
+                    extended = [*path, step]
+                    if neighbour == to_frame:
+                        arrivals.append(extended)
+                        continue
+                    if neighbour in seen:
+                        continue
+                    routes = nxt.setdefault(neighbour, [])
+                    # Two distinct routes to a frame are enough to prove a tie;
+                    # keeping every one of them would grow combinatorially on a
+                    # densely connected graph for no extra information.
+                    if len(routes) < _AMBIGUITY_EVIDENCE:
+                        routes.append(extended)
         if arrivals:
             _reject_ambiguous(arrivals, from_frame, to_frame)
             best = arrivals[0]
             return best[0] if len(best) == 1 else ChainTransform(best)
+        seen.update(nxt)
+        frontier = nxt
     return None
 
 

@@ -329,6 +329,24 @@ class ClassificationAnnotation(Annotation):
             else ()
         )
 
+    def _summary_labels(self) -> dict[str, Any]:
+        """Labels for a summary: flat when unambiguous, per scope unit when not.
+
+        `labels` is the right answer for the ordinary one-assertion-per-class
+        file and stays that shape here, so existing consumers see no change.
+        Where a class carries several assertions the value becomes a mapping
+        from scope id to value, which is what §9's `scope_ids` describes and is
+        json-safe either way.
+        """
+        if not self._duplicated_classes():
+            return dict(self.labels)
+        out: dict[str, Any] = {}
+        for assertion in self.assertions():
+            key = self.class_key(assertion.class_id)
+            unit = "-" if assertion.scope_id is None else str(assertion.scope_id)
+            out.setdefault(key, {})[unit] = assertion.value
+        return out
+
     def summary(self) -> dict[str, Any]:
         return {
             "id": self.ann_id,
@@ -339,7 +357,14 @@ class ClassificationAnnotation(Annotation):
             "multilabel": self.multilabel,
             "timepoints": list(self.timepoints),
             "change_label": self.is_change_label,
-            "labels": self.labels,
+            # Not `labels`, which collapses one value per class and now refuses
+            # when that would lose an assertion.  A summary must describe every
+            # file it is handed, including the multi-assertion ones §9 makes
+            # ordinary -- routing it through the collapsing accessor made
+            # `Sample.summary()` and `medh5 info` fail on exactly the files this
+            # release set out to support.
+            "labels": self._summary_labels(),
+            "assertions": len(self),
             "classes": len(self.class_ids),
             "annotated_classes": len(self.annotated_class_ids),
             "fully_covered": self.is_fully_covered,

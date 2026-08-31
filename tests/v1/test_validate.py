@@ -8,6 +8,7 @@ import h5py
 import numpy as np
 import pytest
 
+import medh5
 from medh5._hdf5 import encode_attr, str_dtype
 from medh5.errors import CODES
 from medh5.validate import validate_file, validate_paths, validate_root
@@ -249,3 +250,66 @@ class TestStrictPromotion:
         # The measured severity is still on each diagnostic, so what the §15.2
         # table says about a code is not lost.
         assert any(d["severity"] == "warning" for d in payload["diagnostics"])
+
+
+class TestCompositeUnits:
+    def test_S10_1_the_validator_rejects_a_mixed_unit_composite(self, tmp_path):
+        """`check_chain()` rejected it while `validate` reported OK.
+
+        The validator has its own composite rule, and it compared components and
+        frames but not units -- so the advertised conformance check passed a
+        chain the object model refuses, which is the one place the two must not
+        disagree.
+        """
+        shape = (4, 8, 8)
+        step = np.eye(4)
+        step[:3, 3] = [1.0, 0.0, 0.0]
+        path = tmp_path / "units.medh5"
+        with medh5.create(path, codec="portable") as w:
+            w.add_timepoint("tp0")
+            w.add_timepoint("tp1", index=1)
+            for gid, frame, tp in (
+                ("g0", "F0", "tp0"),
+                ("gA", "FA", "tp0"),
+                ("g1", "F1", "tp1"),
+            ):
+                w.add_grid(
+                    gid,
+                    shape=shape,
+                    spacing=(1.0, 1.0, 1.0),
+                    timepoint=tp,
+                    frame_uid=frame,
+                    units="mm",
+                )
+                w.add_image(
+                    f"CT_{gid}", np.zeros(shape, np.int16), grid=gid, modality="CT"
+                )
+            w.add_transform(
+                "t1",
+                kind="affine",
+                matrix=step,
+                from_frame="F0",
+                to_frame="FA",
+                units="mm",
+            )
+            w.add_transform(
+                "t2",
+                kind="affine",
+                matrix=step,
+                from_frame="FA",
+                to_frame="F1",
+                units="um",
+            )
+            w.add_transform(
+                "comp",
+                kind="composite",
+                components=["t1", "t2"],
+                from_frame="F0",
+                to_frame="F1",
+                units="mm",
+            )
+
+        report = validate_file(path, level="semantic")
+        assert not report.ok
+        assert "E501" in report.codes
+        assert any("units" in d.message for d in report.diagnostics)

@@ -93,6 +93,9 @@ down an exclusion the reference implementation already applied.
   validator silent. §10.2 exists because "ambiguity here is the leading cause of silently
   mirrored registration results", so resolution now refuses, names both candidates, and
   points at `sample.transforms` to select one. A single route resolves exactly as before.
+  Routes that *converge* before the destination count as two: marking a frame seen on the
+  first path to reach it discarded the second, so `A→B→D→T` and `A→C→D→T` arrived as one
+  and the tie went undetected.
 
 - **`check_pyramid` never compared a level's `direction` to level 0.** Spacing, origin,
   `coord_system`, `units` and `frame_uid` were checked; orientation was not — and because
@@ -128,7 +131,9 @@ down an exclusion the reference implementation already applied.
   while `labels` kept the last, so `state()` answered "negative" for a class `positives`
   listed as positive, on one file. `value()` and `state()` take `scope_id=` to select, and
   every collapsing accessor refuses rather than picking when a class carries more than one
-  assertion. Single-assertion files are unaffected.
+  assertion. Single-assertion files are unaffected — including in `summary()`, which keeps
+  its flat shape there and reports per scope unit only where a class is asserted more than
+  once, so `Sample.summary()` and `medh5 info` keep working on the very files this supports.
 
 ### Fixed — de-identification and access control
 
@@ -256,7 +261,7 @@ produces or accepts:
 
 ### Internal
 
-- Test suite 924 → 964, coverage 93% → 93.5%. Two tests that could not fail were repaired:
+- Test suite 924 → 969, coverage 93% → 93.5%. Two tests that could not fail were repaired:
   `json.dumps(..., default=str)` coerces anything, so two "is JSON-safe" assertions were vacuous.
   `test_the_format_version_is_not_the_package_version` asserted the package version starts with
   `"1.0"`, tying it to the format version in exactly the way its own docstring forbids; it only

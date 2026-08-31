@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import h5py
 import numpy as np
 import pytest
@@ -284,3 +286,32 @@ class TestMultiAssertionScopes:
             assert annotation.value(3) == 1.0
             assert annotation.state(3) == "positive"
             assert annotation.positives == ("lesion",)
+
+    def test_S9_a_multi_assertion_file_still_summarises(self, tmp_path, label_set):
+        """`summary()` must describe every file, including the ambiguous ones.
+
+        It read the collapsing `labels`, so the refusal added for the public
+        accessors also took out `Sample.summary()` and `medh5 info` -- on
+        exactly the multi-assertion files §9 makes ordinary and this change set
+        out to support.
+        """
+        path = self._multi(tmp_path, label_set)
+        with medh5.open(path) as sample:
+            summary = sample.annotations["cls"].summary()
+            # Per scope unit, because one value per class would lose an assertion.
+            assert summary["labels"] == {"lesion": {"0": 0.0, "9": 1.0}}
+            assert summary["assertions"] == 2
+            json.dumps(sample.summary())
+
+    def test_a_single_assertion_file_keeps_the_flat_summary_shape(
+        self, tmp_path, label_set
+    ):
+        shape = (4, 8, 8)
+        path = tmp_path / "flat.medh5"
+        with medh5.create(path, codec="portable") as w:
+            w.label_set(label_set)
+            w.add_grid("g", shape=shape, spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", np.zeros(shape, np.int16), grid="g", modality="CT")
+            w.add_classification("cls", labels={3: 1.0})
+        with medh5.open(path) as sample:
+            assert sample.annotations["cls"].summary()["labels"] == {"lesion": 1.0}

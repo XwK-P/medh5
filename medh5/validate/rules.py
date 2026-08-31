@@ -1418,6 +1418,27 @@ def _check_composite(
                 location,
                 f"{left!r} ends in {a[1]!r} but {right!r} starts in {b[0]!r}",
             )
+    # Units, alongside the frames.  §10.1 makes `units` a MUST, and this rule is
+    # what `medh5 validate` reports -- so while `CompositeTransform.check_chain`
+    # rejected an `mm` leg chained to a `um` leg, the advertised conformance
+    # check still passed the same file. The two implementations have to agree
+    # about what a sound chain is.
+    declared_units = as_str(group.attrs["units"]) if "units" in group.attrs else None
+    if declared_units is not None:
+        mixed = [
+            (component, as_str(node[component].attrs["units"]))
+            for component in components
+            if "units" in node[component].attrs
+            and as_str(node[component].attrs["units"]) != declared_units
+        ]
+        if mixed:
+            listed = ", ".join(f"{c!r} in {u!r}" for c, u in mixed)
+            yield ctx.err(
+                "E501",
+                location,
+                f"declares units {declared_units!r} but {listed} --- a chain "
+                "whose legs are in different units does not compose",
+            )
     del declared
 
 
