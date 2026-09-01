@@ -1,10 +1,16 @@
-# Longitudinal
+# Longitudinal studies
 
-A sample is a subject, and a subject has visits. This page is what follows from
-that: timepoints, registration between them, change labels, and joining objects
-across visits.
+You have a baseline and one or more follow-ups for the same subject. This is how
+to get them into one file, join a lesion across the visits, and train on the
+pairs.
 
-## Timepoints
+The reason all of this is straightforward is the one decision underneath the
+format: a sample is a *subject*, not a scan. Both visits are already in scope,
+so a change label has a referent, a registration is an object rather than a
+convention between two filenames, and assigning whole files to train and test
+cannot leak a patient between them.
+
+## Declare the timepoints
 
 Declared once on the sample, in acquisition order:
 
@@ -41,63 +47,14 @@ view.annotations
 $ medh5 timeline case.medh5
 ```
 
-## Registration between visits
+## Relate the visits
 
-Two visits are two frames of reference. A transform relates them, and it is an
-object in the file:
+Two visits are two frames of reference, and a transform between them is an
+object in the file. See **[Registration between visits](registration.md)** for
+writing one, resolving it through the frame graph, and what to do when
+`transform_between` returns `None`.
 
-```python
-w.add_transform("tp0_to_tp1", kind="affine",
-                from_frame="pseudo:frame-tp0", to_frame="pseudo:frame-tp1",
-                matrix=matrix, invertible=True)
-```
-
-Kinds: `affine`, `displacement`, `bspline`, `composite`.
-
-```python
-t = s.transform_between("tp0", "tp1")
-t.kind, t.from_frame, t.to_frame, t.is_invertible
-t.transform_points(points)         # world -> world, in mm
-t.inverse()                        # the *stored* inverse, when the file has one
-```
-
-`is_invertible` says the mapping is invertible; `inverse()` returns another
-transform only when the file stores one under `inverse_id`. An affine computes
-its own inverse (`AffineTransform.inverse_matrix()`, `inverse_points()`); a
-displacement field does not, which is why the distinction exists.
-
-`transform_between` searches the frame graph. It composes chains, uses an
-inverse where a transform declares one, and returns `None` when no path exists.
-It never fabricates a transform to make a call succeed.
-
-```python
-from medh5.transforms.apply import target_registration_error
-target_registration_error(t, fixed_points, moving_points)   # {"mean", "max", ...}
-```
-
-A registration with no landmark pair has no TRE, and the file says so rather
-than reporting zero.
-
-## Change
-
-A label that describes a *difference* is a classification naming both visits:
-
-```python
-w.add_classification("response", {"progressive_disease": 1.0},
-                     scope="sample", timepoints=["tp0", "tp1"],
-                     schemes=["RECIST 1.1"])
-```
-
-```python
-c = s.annotations["response"]
-c.timepoints        # ("tp0", "tp1") — a statement about the interval
-c.labels
-```
-
-Because both visits are in one file, a change label has a referent. Split
-across two files it would be a claim about a filename.
-
-## Tracking objects across visits
+## Join the objects
 
 `instance_id` is **sample-scoped**: object 7 at baseline and object 7 at
 follow-up are the same lesion, asserted by whoever wrote the file.
@@ -165,7 +122,7 @@ knowing about or a mistake worth finding. The validator raises `W909` for it,
 sample-scoped, because the costly case is a disagreement *between* two visits'
 annotations rather than within one.
 
-## Paired sampling for training
+## Train on the pairs
 
 `PairedPatchDataset` draws the same anatomical location at two visits, mapping
 the patch centre through the registration:
@@ -192,8 +149,14 @@ only when the visits are already resampled onto a common grid.
 had none available, so a silent fallback cannot look like a successful
 alignment.
 
-## Cohort-level
+## Label the change
 
-A sample is one subject, so assigning whole files to partitions cannot leak a
-patient between train and test. That is the property the whole design buys, and
-[Cohorts](cohorts.md) is where it is used.
+A label that describes a *difference* names both visits it spans. See
+**[Classification and change labels](classification.md)**.
+
+## Related
+
+- **[Registration between visits](registration.md)** — transforms and the frame graph.
+- **[Classification and change labels](classification.md)** — response, progression, interval labels.
+- **[PyTorch and MONAI](../reference/torch.md)** — `PairedPatchDataset` in full.
+- **[Build and split a cohort](cohorts.md)** — splitting a longitudinal cohort without leaking a subject.

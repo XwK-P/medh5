@@ -230,7 +230,7 @@ c.scope_ids
 
 A **change** label — one that describes a difference between two visits — is a
 classification whose `timepoints` names both. See
-[Longitudinal](../guides/longitudinal.md#change).
+[Longitudinal](../guides/classification.md#change-labels-span-an-interval).
 
 ## Label sets
 

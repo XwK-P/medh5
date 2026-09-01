@@ -71,7 +71,7 @@ ds = PairedPatchDataset(paths, sampler,
 ds.report      # how many pairs were aligned by a transform, how many had none
 ```
 
-See [Longitudinal](../guides/longitudinal.md#paired-sampling-for-training).
+See [Longitudinal](../guides/longitudinal.md#train-on-the-pairs).
 
 ## A batch
 

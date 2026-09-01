@@ -119,6 +119,8 @@ nav:
   - How-to guides:
       - guides/index.md
       - Longitudinal studies: guides/longitudinal.md
+      - Registration between visits: guides/registration.md
+      - Classification and change labels: guides/classification.md
       - Import from DICOM: guides/import-dicom.md
       - Import from NIfTI and nnU-Net: guides/import-nifti.md
       - Export to other formats: guides/export.md

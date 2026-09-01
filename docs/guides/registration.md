@@ -1,0 +1,77 @@
+# Registration between visits
+
+Relate two frames of reference so you can move points, boxes and predictions
+between them.
+
+Two visits are two frames. A transform relates them, and — because both visits
+live in the same file — it is an object in that file rather than a convention
+between two filenames.
+
+## Write one
+
+```python
+w.add_transform("tp0_to_tp1", kind="affine",
+                from_frame="pseudo:frame-tp0", to_frame="pseudo:frame-tp1",
+                matrix=matrix, invertible=True)
+```
+
+Kinds: `affine`, `displacement`, `bspline`, `composite`.
+
+```python
+t = s.transform_between("tp0", "tp1")
+t.kind, t.from_frame, t.to_frame, t.is_invertible
+t.transform_points(points)         # world -> world, in mm
+t.inverse()                        # the *stored* inverse, when the file has one
+```
+
+`is_invertible` says the mapping is invertible; `inverse()` returns another
+transform only when the file stores one under `inverse_id`. An affine computes
+its own inverse (`AffineTransform.inverse_matrix()`, `inverse_points()`); a
+displacement field does not, which is why the distinction exists.
+
+`transform_between` searches the frame graph. It composes chains, uses an
+inverse where a transform declares one, and returns `None` when no path exists.
+It never fabricates a transform to make a call succeed.
+
+```python
+from medh5.transforms.apply import target_registration_error
+target_registration_error(t, fixed_points, moving_points)   # {"mean", "max", ...}
+```
+
+A registration with no landmark pair has no TRE, and the file says so rather
+than reporting zero.
+
+## When there is no path
+
+`transform_between` returns `None` rather than raising, and rather than
+composing something plausible. That is the answer to "are these two frames
+related in this file?", and `None` means no — the two grids are not comparable
+and any downstream number that pretends otherwise is invented.
+
+```python
+t = s.transform_between("tp0", "tp1")
+if t is None:
+    ...        # register them yourself, or work per-visit
+```
+
+Three things make the difference between a file that resolves and one that does
+not: whether a transform was stored at all, whether its `from_frame` and
+`to_frame` name frames that exist, and — for a chain — whether each link
+declares `invertible=True` or stores an explicit `inverse_id`.
+
+## When to store an inverse
+
+`is_invertible` is a claim about the mapping; `inverse()` returns a transform
+only when the file actually stores one under `inverse_id`.
+
+An affine computes its own inverse, so storing one is optional. A **displacement
+field does not** — inverting one is an optimisation, not an algebraic step — so
+if you need the reverse direction for a non-affine registration, compute it once
+at write time and store it. Otherwise every reader that needs it either
+recomputes it or silently goes without.
+
+## Related
+
+- **[Longitudinal studies](longitudinal.md)** — the task this fits into.
+- **[Python API](../reference/python-api.md)** — `transform_between`, the transform classes.
+- **[Specification §10](../spec/medh5-1.0.md)** — the normative model.

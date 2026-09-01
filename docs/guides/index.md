@@ -18,6 +18,8 @@ minutes.
 |---|---|
 | **[Build and split a cohort](cohorts.md)** | Manifests, leakage-free splits, streaming statistics, cross-file checks. |
 | **[Longitudinal studies](longitudinal.md)** | Timepoints, tracking one lesion across visits, paired sampling. |
+| **[Registration between visits](registration.md)** | Transforms, the frame graph, and what `None` means. |
+| **[Classification and change labels](classification.md)** | Choosing a scope; labels that span an interval. |
 
 ## Getting data out
 
