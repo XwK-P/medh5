@@ -23,12 +23,19 @@ medh5 validate case.medh5 --level strict
 
 | Level | Reads | Use for |
 |---|---|---|
-| `structural` | metadata | a fast "is this even a medh5 file" |
-| `semantic` *(default)* | metadata | day-to-day; the strongest check that touches no voxel |
+| `structural` | metadata + bounded payload scans | a fast "is this even a medh5 file" |
+| `semantic` *(default)* | the same, plus layer data | day-to-day |
 | `integrity` | every byte | after a file has moved between machines |
 | `strict` | every byte | CI, where a warning should stop a build |
 
-`strict` runs no extra rules — it promotes warnings to errors. Full table in
+**None of them is free.** Even `structural` decompresses voxels — it reads an
+image to test int16-losslessness and scans annotation payloads for an ignore
+region, both capped, but neither is metadata. On a 12.6 Mvox sample: 62 ms for
+`structural` and `semantic`, 143 ms for `integrity`, against 0.5 ms for a
+metadata-only `open()`. Do not put one in a hot path.
+
+`strict` runs no extra rules — it promotes warnings to errors. Full table and
+measurements in
 [Profiles and validation levels](../reference/profiles-and-levels.md).
 
 ## Read the output

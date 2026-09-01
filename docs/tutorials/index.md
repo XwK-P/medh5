@@ -7,7 +7,7 @@ purpose.
 | | |
 |---|---|
 | **[Write and read your first sample](first-sample.md)** | Install, write a CT with two labelled structures, read it back, look at it from the shell. |
-| **[Your first training run](first-training-run.md)** | Sampler, dataset, `DataLoader`, and the one argument you must not omit. |
+| **[Your first training run](first-training-run.md)** | Sampler, dataset, `DataLoader`, and reading `used_index` to tell whether you are scanning. |
 
 When you know the shape of the thing, [the how-to guides](../guides/index.md)
 answer specific questions and [the reference](../reference/index.md) lists

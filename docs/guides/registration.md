@@ -75,14 +75,28 @@ declares `invertible=True` or stores an explicit `inverse_id`.
 
 ## When to store an inverse
 
-`is_invertible` is a claim about the mapping; `inverse()` returns a transform
-only when the file actually stores one under `inverse_id`.
+`invertible=True` is the file's *claim*. What resolution needs is an inverse it
+can actually **evaluate**, and the two are not the same set.
 
-An affine computes its own inverse, so storing one is optional. A **displacement
-field does not** — inverting one is an optimisation, not an algebraic step — so
-if you need the reverse direction for a non-affine registration, compute it once
-at write time and store it. Otherwise every reader that needs it either
-recomputes it or silently goes without.
+A forward chain resolves whatever you declare. Going the other way, an affine or
+identity is inverted analytically, so nothing needs storing. **A displacement or
+B-spline is not** — inverting one is an optimisation, not an algebraic step — so
+`invertible=True` on a displacement field contributes no reverse edge at all, and
+the reverse direction comes back `None`:
+
+| Transform | `invertible=True`, no `inverse_id` | forward | reverse |
+|---|---|---|---|
+| affine | analytic inverse | resolves | resolves |
+| displacement / B-spline | claim only | resolves | **`None`** |
+
+So if you need the reverse direction for a non-affine registration, compute it at
+write time and store it under `inverse_id`. Otherwise every reader that needs it
+either recomputes it or silently goes without.
+
+One thing to know when you do: a stored inverse is itself an edge in the frame
+graph, so it can give two equally short paths between the same pair of frames.
+Resolution refuses to choose (`E501`) rather than assert an alignment nobody
+picked — select the one you want by id from `sample.transforms`.
 
 ## Related
 

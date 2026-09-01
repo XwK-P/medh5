@@ -151,7 +151,7 @@ medh5 conformance publish suite/           # the suite, for another implementati
 |---|---|
 | **NIfTI** | affine and voxels bit-identical on round trip; RAS↔LPS is a sign flip, never a resample |
 | **DICOM** | slices ordered by geometry, spacing measured between origins, modality LUT stored not applied, tags on an explicit allow-list; slices that disagree about orientation, spacing or rescale are refused rather than read off the first one |
-| **DICOM SEG** | frames placed by geometry; overlap and `FRACTIONAL` survive; segments matched by label, not number |
+| **DICOM SEG** | frames placed by geometry; segments matched by label, not number; import preserves overlap and `FRACTIONAL`, export writes `BINARY` |
 | **RTSTRUCT** | contours stay contours; rasterisation is opt-in and recorded in provenance |
 | **nnU-Net v2** | class ids kept; region labels become label-set DAG parents; `dataset.json` round-trips |
 | **MONAI** | `to_metatensor` gives a `MetaTensor` with the correct affine |
