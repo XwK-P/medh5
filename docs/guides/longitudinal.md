@@ -163,25 +163,35 @@ construction. To find those before you start, resolve them yourself:
 ```python
 import medh5
 
-def frame(sample, timepoint):
-    grids = sorted(sample.at(timepoint).grids)
-    return sample.grids[grids[0]].frame_uid if grids else None
+def grid_of(sample, timepoint, image):
+    """The grid the dataset will read at this visit, for this image."""
+    return sample.at(timepoint).images[image].grid_id
 
 for path in paths:
     with medh5.open(path) as s:
         for pair in TimepointPairSampler("consecutive").pairs(s):
-            if s.transform_between(pair.first, pair.second) is not None:
-                continue                      # a transform relates them
-            if frame(s, pair.first) == frame(s, pair.second):
+            first = grid_of(s, pair.first, f"CT_{pair.first}")
+            second = grid_of(s, pair.second, f"CT_{pair.second}")
+            if s.transform_between(first, second) is not None:
+                continue                      # a transform relates those grids
+            if s.grids[first].frame_uid == s.grids[second].frame_uid:
                 continue                      # same frame, none needed
-            print(f"{path}: {pair.first} -> {pair.second} has no transform")
+            print(f"{path}: {first} -> {second} has no transform")
 ```
 
-The frame comparison is not optional. `transform_between` answers `None` for two
-different situations, and only one of them is a problem: two visits already on
-one frame of reference need no transform, and `PairedPatchDataset` accepts them.
-Checking for `None` alone reports those as missing registrations, which is how
-you end up registering data that is already aligned.
+Two details decide whether this check is worth running.
+
+**Resolve between the grids, not the timepoints.** A visit may hold a CT grid and
+a PET grid on different frames. `transform_between("tp0", "tp1")` searches every
+frame of the first visit against every frame of the second and returns the first
+path it finds, so a CT registration makes the timepoint-level question answer
+"yes" for a PET dataset that has no registration of its own. Ask about the grids
+your images are actually on.
+
+**Compare the frames too.** `transform_between` answers `None` both when nothing
+relates the grids and when they already share a frame and need nothing. Checking
+for `None` alone reports already-aligned visits as unregistered, which is how you
+end up registering data that is already aligned.
 
 ## Label the change
 
