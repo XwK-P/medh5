@@ -51,6 +51,32 @@ INCLUDED: tuple[tuple[str, str], ...] = (("CHANGELOG.md", "changelog.md"),)
 SCHEMA_SOURCE = "schemas/medh5-sample-1.0.schema.json"
 SCHEMA_TARGET = "reference/medh5-sample-1.0.schema.json"
 
+# Pages that used to be published at one URL and are now served at another.
+# Read the Docs, PyPI, search engines and other people's bookmarks all point at
+# the old ones, and a documentation site that answers a stale link with a 404
+# has broken the very thing it exists to provide.  Each entry generates a
+# redirecting stub at the *old* path.
+#
+# `mkdocs-redirects` does exactly this, and is not used: `docs/requirements.txt`
+# pins two packages and explains why, and a third pinned dependency --- a third
+# thing to bump, a third way for a Read the Docs build to fail --- to emit a
+# handful of four-line HTML files is not the trade this project makes when it
+# already owns `File.generated`.
+#
+# (old site path, page it now lives at) --- or an absolute URL, for a page that
+# has left the site entirely.
+REDIRECTS: tuple[tuple[str, str], ...] = (
+    (
+        "design/medh5-1.0-proposal.md",
+        "https://github.com/XwK-P/medh5/blob/main/design/medh5-1.0-proposal.md",
+    ),
+    (
+        "design/medh5-1.0-implementation-plan.md",
+        "https://github.com/XwK-P/medh5/blob/main/design/medh5-1.0-implementation-plan.md",
+    ),
+    ("design/benchmarks/README.md", "examples/index.md"),
+)
+
 # A Markdown link target beginning `docs/`, which is repository-root-relative.
 _DOCS_LINK = re.compile(r"(?<=]\()docs/")
 
@@ -324,6 +350,62 @@ def _root(config: Any) -> Path:
     return Path(config["config_file_path"]).parent
 
 
+_REDIRECT_HTML = (
+    "<!doctype html>\n"
+    '<html><head><meta charset="utf-8">\n'
+    '<meta http-equiv="refresh" content="0; url={target}">\n'
+    '<link rel="canonical" href="{target}">\n'
+    "<title>Moved</title>\n"
+    '</head><body><p>This page has moved to <a href="{target}">{target}</a>.'
+    "</p></body></html>\n"
+)
+
+
+def _redirect_stubs(files: Files, config: Any) -> None:
+    """Emit a redirecting stub at every URL a page used to be served at."""
+    for old, new in REDIRECTS:
+        if new.startswith("http"):
+            target = new
+        else:
+            destination = files.get_file_from_path(new)
+            if destination is None:
+                # `strict` cannot catch this: a stub is an HTML media file, not
+                # a page, so nothing validates where it points.  Check here.
+                raise ValueError(
+                    f"the redirect {old!r} -> {new!r} in hooks/mkdocs_hooks.py:"
+                    f"REDIRECTS points at a page that is not in the build"
+                )
+            # Relative, not absolute: Read the Docs serves this site under
+            # `/en/latest/`, and pull-request previews under another prefix
+            # again, so a URL built from `site_url` would send the reader out of
+            # the version they are actually in.
+            target = "../" * _old_url(old).count("/") + destination.url
+        files.append(
+            File.generated(
+                config,
+                _old_url(old) + "index.html",
+                content=_REDIRECT_HTML.format(target=target),
+            )
+        )
+
+
+def _old_url(source: str) -> str:
+    """The URL a source path used to be published at, with a trailing slash.
+
+    `use_directory_urls` is on, so `cli.md` was served at `/cli/`.  `index.md`
+    and `README.md` are both directory indexes, so `a/b/README.md` was served at
+    `/a/b/` --- not `/a/b/README/`, which is the mistake that makes a stub land
+    somewhere nobody ever linked to.
+    """
+    path = source.removesuffix(".md")
+    stem = path.rsplit("/", 1)[-1]
+    if stem in ("index", "README"):
+        path = path[: -len(stem)]
+    elif path:
+        path += "/"
+    return path
+
+
 def on_files(files: Files, config: Any) -> Files:
     """Add repository-root files to the build without copying them into `docs/`."""
     root = _root(config)
@@ -347,6 +429,8 @@ def on_files(files: Files, config: Any) -> Files:
     if not schema.is_file():
         raise FileNotFoundError(f"the sample-document schema is not at {schema}")
     files.append(File.generated(config, SCHEMA_TARGET, content=schema.read_bytes()))
+
+    _redirect_stubs(files, config)
     return files
 
 

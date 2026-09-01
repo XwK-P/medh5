@@ -1,7 +1,7 @@
 # Benchmarks and reference prototype
 
-Scripts backing the measured claims in [the design proposal](../medh5-1.0-proposal.md) §5 and in the
-[specification](../../spec/medh5-1.0.md) §7.0, §14.2, §14.3.
+Scripts backing the measured claims in [the design proposal](https://github.com/XwK-P/medh5/blob/main/design/medh5-1.0-proposal.md) §5 and in the
+[specification](../spec/medh5-1.0.md) §7.0, §14.2, §14.3.
 
 | Script | Produces |
 |---|---|
@@ -12,7 +12,7 @@ Scripts backing the measured claims in [the design proposal](../medh5-1.0-propos
 
 ```bash
 pip install numpy h5py hdf5plugin jsonschema
-cd docs/design/benchmarks
+cd docs/examples
 python bench_encodings.py     # ~15 s
 python bench_query.py         # ~30 s
 python bench_io.py            # ~20 s

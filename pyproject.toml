@@ -127,7 +127,7 @@ target-version = "py310"
 # `site` is the `mkdocs build` output. MkDocs copies those same benchmark scripts into
 # it, so without this a local docs build makes `ruff check .` fail on copies of files
 # the line above already excludes.
-extend-exclude = ["docs/design/benchmarks", "site"]
+extend-exclude = ["docs/examples", "site"]
 
 # ruff >= 0.16 formats Python inside Markdown code blocks. Not here: the snippets
 # in docs/ and README.md are prose examples, sized to be read on the page and

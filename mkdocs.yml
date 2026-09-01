@@ -12,10 +12,10 @@ copyright: MIT-licensed. The specification is normative; the code implements it.
 docs_dir: docs
 
 # MkDocs publishes everything under `docs_dir` that is not a page, which is what
-# puts `design/benchmarks/*.py` on the site --- deliberately, since the
-# specification links to them as runnable scripts. The build's own requirements
-# file is not documentation and is excluded; it only lives here because that is
-# where Read the Docs looks for it.
+# puts `examples/*.py` on the site --- deliberately, since the specification and
+# the examples page link to them as runnable scripts. The build's own
+# requirements file is not documentation and is excluded; it only lives here
+# because that is where Read the Docs looks for it.
 exclude_docs: |
   requirements.txt
 
@@ -130,10 +130,7 @@ nav:
       - Diagnostic codes: reference/diagnostic-codes.md
       - Cohort check codes: reference/cohort-checks.md
       - Conformance: conformance.md
-  - Design:
-      - Proposal: design/medh5-1.0-proposal.md
-      - Implementation plan: design/medh5-1.0-implementation-plan.md
-      - Benchmarks: design/benchmarks/README.md
+      - Runnable examples: examples/index.md
   - Changelog: changelog.md
 
 extra:

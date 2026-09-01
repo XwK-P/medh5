@@ -80,15 +80,16 @@ $ medh5 scrub out/*.medh5 --apply --date-shift-days -117
 $ medh5 bench                            # reproduce the performance targets
 ```
 
-## Design documents
+## Going deeper
 
-- **[Design proposal](design/medh5-1.0-proposal.md)** — what broke in 0.6.0, with
-  measurements; principles, alternatives, costs, risks, decisions taken.
-- **[Implementation plan](design/medh5-1.0-implementation-plan.md)** — package
-  layout, public API, phased delivery, test strategy.
-- **[Benchmarks](design/benchmarks/README.md)** — the scripts behind every number.
-- **[JSON Schema](https://github.com/XwK-P/medh5/blob/main/schemas/medh5-sample-1.0.schema.json)** — machine validation
-  of the `/meta` document.
+- **[Runnable examples](examples/index.md)** — a complete two-timepoint sample
+  written by following the specification literally, and the benchmark scripts
+  behind every number quoted here.
+- **[Sample document schema](reference/schema.md)** — every field of `/meta`,
+  with the machine-readable schema itself.
+- **[Design records](https://github.com/XwK-P/medh5/tree/main/design)** — how
+  1.0 was arrived at: what broke in 0.6.0, the alternatives weighed, the plan
+  delivered against. Historical, and kept in the repository rather than here.
 
 ## Versioning
 

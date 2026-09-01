@@ -1,6 +1,6 @@
 # medh5 1.0 — Implementation Plan
 
-**Companion documents:** [Specification](../spec/medh5-1.0.md) · [Design proposal](medh5-1.0-proposal.md)
+**Companion documents:** [Specification](../docs/spec/medh5-1.0.md) · [Design proposal](medh5-1.0-proposal.md)
 
 **Status: phases 0–7 are complete.** The core container, the label space, all five voxel encodings,
 every geometric annotation, classification (including change labels), registration, curation,
@@ -343,7 +343,7 @@ deferring `rle` returns half a week in Phase 2.
 | **Property-based** (Hypothesis) | Randomised grids (2D/3D/4D, anisotropic, oblique, negative determinant) and randomised class-overlap graphs. Invariants: (a) `write → read` is identity; (b) `transcode(A→B→A)` is identity for every ordered pair of the five voxel encodings; (c) `box → slices → box` round-trips within a half voxel; (c2) timepoint inheritance agrees with explicit annotation for every object; (c3) an instance id joined across timepoints yields the same object set as a brute-force scan; (d) `T ∘ T⁻¹ ≈ identity` for invertible transforms; (e) `content_id` is stable under recompression and unstable under any content change. |
 | **Conformance corpus** | ~40 golden files, each targeting spec clauses, with expected validator output as JSON. Third-party implementations run the same corpus. Includes deliberately-invalid files, one per error code. |
 | **Interop round-trips** | NIfTI, DICOM-SEG, RTSTRUCT, nnU-Net v2. Assert geometry, class identity and voxel equality; assert the failure is *loud* where a source cannot express a MEDH5 feature. |
-| **Benchmarks in CI** | §5 of the proposal, run on every PR with a regression threshold (fail at > 20 % slower or > 10 % larger). Committed as `docs/design/benchmarks/`. |
+| **Benchmarks in CI** | §5 of the proposal, run on every PR with a regression threshold (fail at > 20 % slower or > 10 % larger). Committed as `docs/examples/`. |
 | **Longitudinal fixtures** | Hand-built samples covering: 1 timepoint; 2 timepoints with a persisting, a resolved and a new lesion; a timepoint annotated for fewer classes than another; a frame reused across timepoints (W910); a multi-timepoint sample with no relating transform (W911). Expected validator output committed alongside. |
 | **Soak** | 10-epoch dataloader run over ≥ 1 000 files × 8 workers; assert flat RSS, no fd leaks, no handle-cache growth across `fork`. |
 
@@ -362,7 +362,7 @@ normative **MUST** in the spec maps to at least one test id (`test_spec.py::test
 | Metadata-only read (`/meta` parse) | ≤ 2 ms | ~1.5 ms (attribute reconstruction) | **0.21 ms** |
 | Full `open()` → first patch | ≤ 15 ms | ~120 ms with labels | **2.4 ms** |
 | Sustained 96³ patch throughput | ≥ 400 patches/s | ~60 patches/s | **600–850 patches/s** (4 workers) |
-| Storage vs 0.x, 200-class cohort | ≤ 0.25× | 1.0× | see `docs/design/benchmarks/` |
+| Storage vs 0.x, 200-class cohort | ≤ 0.25× | 1.0× | see `docs/examples/` |
 
 Measured with `medh5 bench` on a 192×256×256 synthetic CT with eight classes, Apple M-series, and
 reproducible on other hardware by running the same command. Two decisions are behind the label-read
@@ -471,7 +471,7 @@ concrete need appears; nothing in the format prevents it (§3.6 already supports
 | Document | Audience |
 |---|---|
 | `docs/spec/medh5-1.0.md` | Implementers of readers/writers in any language |
-| `docs/design/*` (this set) | Reviewers and maintainers |
+| `design/*` (this set) | Reviewers and maintainers |
 | `schemas/medh5-sample-1.0.schema.json` | Machine validation of `/meta` |
 | `docs/getting-started.md` | New users — 20 lines to a written file |
 | `docs/guides/segmentation.md`, `detection.md`, `classification.md`, `registration.md` | Task-oriented recipes, one per profile |
