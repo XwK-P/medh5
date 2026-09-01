@@ -19,11 +19,24 @@ The round trip from `from_nifti` is exact — affine and voxels bit-for-bit.
 
 ```bash
 pip install "medh5[dicomseg]"
-medh5 convert to-dicom-seg case.medh5 organs out.dcm --source ct/*.dcm
+medh5 convert to-dicom-seg case.medh5 organs out.dcm \
+    --source ct/1.dcm --source ct/2.dcm ...
 ```
 
 `--source` is the original series the segmentation refers to; a SEG is only
-meaningful against one. Overlapping segments survive.
+meaningful against one.
+
+**Repeat the flag once per file.** `--source` takes exactly one value per
+occurrence, so a glob like `--source ct/*.dcm` expands to several arguments and
+the command exits with `unrecognized arguments` before it does anything. In a
+shell, build the repetition:
+
+```bash
+args=(); for f in ct/*.dcm; do args+=(--source "$f"); done
+medh5 convert to-dicom-seg case.medh5 organs out.dcm "${args[@]}"
+```
+
+Overlapping segments survive.
 
 **Export is binary.** `to-dicom-seg` casts the annotation to boolean and writes
 `SegmentationTypeValues.BINARY`, so a `probmap` — or anything imported from a
@@ -38,7 +51,8 @@ is how invalid SEGs get published.
 ## RTSTRUCT
 
 ```bash
-medh5 convert to-rtstruct case.medh5 contours out.dcm --source ct/*.dcm
+medh5 convert to-rtstruct case.medh5 contours out.dcm \
+    --source ct/1.dcm --source ct/2.dcm ...
 ```
 
 **This refuses a voxel annotation.** `to-rtstruct` on a mask is an error, not a

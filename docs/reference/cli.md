@@ -269,10 +269,10 @@ medh5 convert from-dicom ROOT OUT [--group-by subject|study]
                                   [--modality M] [--series UID]
 
 medh5 convert from-dicom-seg SEG SAMPLE [--id ANN] [--grid G]
-medh5 convert to-dicom-seg PATH ANNOTATION OUT --source DICOM...
+medh5 convert to-dicom-seg PATH ANNOTATION OUT --source DICOM [--source DICOM ...]
 
 medh5 convert from-rtstruct RTSTRUCT SAMPLE [--id ANN] [--grid G] [--rasterize]
-medh5 convert to-rtstruct PATH ANNOTATION OUT --source DICOM...
+medh5 convert to-rtstruct PATH ANNOTATION OUT --source DICOM [--source DICOM ...]
 
 medh5 convert from-nnunet ROOT OUT [--case ID]
 medh5 convert to-nnunet OUT PATH... [--dataset-name NAME] [--annotation A]

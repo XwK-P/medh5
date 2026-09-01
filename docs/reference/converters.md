@@ -98,7 +98,8 @@ study — with a warning and a record — when identity cannot be established.
 
 ```
 $ medh5 convert from-dicom-seg seg.dcm case.medh5 --id organs
-$ medh5 convert to-dicom-seg case.medh5 organs out.dcm --source ct/*.dcm
+$ medh5 convert to-dicom-seg case.medh5 organs out.dcm \
+    --source ct/1.dcm --source ct/2.dcm ...
 ```
 
 **Frames are placed by geometry**, from each frame's `PlanePositionSequence` —
@@ -115,7 +116,8 @@ Writing needs `highdicom` (`pip install "medh5[dicomseg]"`).
 ```
 $ medh5 convert from-rtstruct plan.dcm case.medh5 --id contours
 $ medh5 convert from-rtstruct plan.dcm case.medh5 --rasterize
-$ medh5 convert to-rtstruct case.medh5 contours out.dcm --source ct/*.dcm
+$ medh5 convert to-rtstruct case.medh5 contours out.dcm \
+    --source ct/1.dcm --source ct/2.dcm ...
 ```
 
 **Contours stay contours** (§8.6), in world coordinates. `--rasterize` is opt-in,

@@ -42,12 +42,34 @@ the affected inputs. It never infers identity from filenames, dates or accession
 numbers.
 
 If that fallback happened, you have one file per *study*, not per subject, and
-splitting by file is no longer subject-safe. Either supply the identity you know,
-or carry it in `group_id` when you split:
+splitting by file is no longer subject-safe.
+
+**`--group-by group_id` does not fix this**, although it looks as though it
+should. The fallback gives each output a distinct synthetic subject
+(`study:<StudyInstanceUID>`) and sets no `cohort.group_id`, and `group_id`
+falls back to `subject_id` when unset — so grouping by it groups by values that
+are already distinct, and two visits of one patient can still land on opposite
+sides of the split. Silently: nothing warns.
+
+Stamp the grouping you know, then re-scan:
+
+```python
+import medh5
+
+for path, patient in known_identities.items():     # from your own records
+    with medh5.amend(path) as w:
+        w.cohort(group_id=patient)
+```
 
 ```bash
+medh5 dataset index out/ -o cohort.json      # re-scan, so the manifest sees it
 medh5 dataset split cohort.json --group-by group_id
+medh5 dataset check cohort.json              # C204 if a group still splits a subject
 ```
+
+Amending rewrites each file, so this is not free — but it is the only thing that
+makes the split subject-safe, and there is no way to recover the identity from
+the files alone once DICOM has lost it.
 
 ## 3. Expect refusals, and read them
 

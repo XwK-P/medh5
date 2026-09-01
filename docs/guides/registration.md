@@ -30,8 +30,9 @@ its own inverse (`AffineTransform.inverse_matrix()`, `inverse_points()`); a
 displacement field does not, which is why the distinction exists.
 
 `transform_between` searches the frame graph. It composes chains, uses an
-inverse where a transform declares one, and returns `None` when no path exists.
-It never fabricates a transform to make a call succeed.
+inverse where one can be **evaluated** — not merely where a transform declares
+`invertible=True`; see [below](#when-to-store-an-inverse) — and returns `None`
+when no path exists. It never fabricates a transform to make a call succeed.
 
 ```python
 from medh5.transforms.apply import target_registration_error
