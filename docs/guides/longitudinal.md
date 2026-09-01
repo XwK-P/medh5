@@ -136,18 +136,39 @@ dataset = PairedPatchDataset(
     PatchSampler((96, 96, 96), strategy="foreground", foreground_classes=["lesion"]),
     pair_sampler=TimepointPairSampler("consecutive"),   # or baseline_vs_all, all_pairs
     align="transform",                                  # or "none"
-    annotation="lesions",
+    annotation="lesions_tp0",   # an id that exists; omit it to pick per visit
 )
 ```
+
+`annotation` names an annotation **in the file**, not a family across visits.
+The example above wrote `lesions_tp0` and `lesions_tp1`, so passing `"lesions"`
+raises `KeyError` on the first item. Omitting it lets the dataset select the
+one belonging to each visit, which is usually what you want.
 
 `align="transform"` means the second patch is centred where the registration
 says the first patch's centre went — a +4-voxel shift moves the paired patch by
 exactly 4 voxels. `align="none"` takes the same index in both, which is right
 only when the visits are already resampled onto a common grid.
 
-`dataset.report` says how many pairs were aligned by a transform and how many
-had none available, so a silent fallback cannot look like a successful
-alignment.
+`dataset.report` counts files, pairs and the cross-sectional files that
+contributed none. It does **not** check registrations: it resolves no
+transforms, so a file that needs one and lacks it is counted as a perfectly good
+pair.
+
+There is no silent fallback — but the failure is deferred. `align="transform"`
+on a pair with no transform between its frames raises `MEDH5ValidationError`
+from `__getitem__`, which means part way into an epoch rather than at
+construction. To find those before you start, resolve them yourself:
+
+```python
+import medh5
+
+for path in paths:
+    with medh5.open(path) as s:
+        for pair in TimepointPairSampler("consecutive").pairs(s):
+            if s.transform_between(pair.first, pair.second) is None:
+                print(f"{path}: {pair.first} -> {pair.second} has no transform")
+```
 
 ## Label the change
 

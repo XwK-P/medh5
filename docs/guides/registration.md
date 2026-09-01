@@ -9,11 +9,24 @@ between two filenames.
 
 ## Write one
 
+A transform relates two **frames**, and a timepoint has a frame only because
+its grids say so. Set `frame_uid` when you write the grids, and use those same
+values on the transform:
+
 ```python
+w.add_grid("ct_tp0", shape=..., spacing=..., timepoint="tp0",
+           frame_uid="pseudo:frame-tp0")
+w.add_grid("ct_tp1", shape=..., spacing=..., timepoint="tp1",
+           frame_uid="pseudo:frame-tp1")
+
 w.add_transform("tp0_to_tp1", kind="affine",
                 from_frame="pseudo:frame-tp0", to_frame="pseudo:frame-tp1",
-                matrix=matrix, invertible=True)
+                matrix=matrix)
 ```
+
+Without `frame_uid` on the grids, a timepoint resolves to no frames at all and
+`transform_between("tp0", "tp1")` returns `None` however carefully the transform
+was written — the transform names endpoints nothing else refers to.
 
 Kinds: `affine`, `displacement`, `bspline`, `composite`.
 
