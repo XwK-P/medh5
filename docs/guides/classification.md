@@ -17,8 +17,17 @@ common mistake, because every scope reads the same at the call site.
 
 ```python
 w.add_classification("quality", {"non_diagnostic": 1.0},
-                     scope="timepoint", timepoints=["tp1"])
+                     scope="timepoint", timepoints=["tp1"], scope_ids=[1])
 ```
+
+**A scope needs a `scope_ids` to point at.** `timepoints` records which visits
+the annotation concerns; `scope_ids` is what keys each assertion to one of them,
+by timepoint index. Give only `timepoints` and the assertion comes back with
+`scope_id=None`, so `assertions()` and `by_scope_id()` cannot tell you which
+visit it was about — which is the entire point of a timepoint scope.
+
+The same applies to `instance` and `slice`: the scope names the *kind* of thing,
+`scope_ids` names the thing.
 
 ## Change labels span an interval
 

@@ -613,9 +613,30 @@ def on_page_markdown(markdown: str, page: Any, config: Any, files: Files) -> str
         # a guard that advertises "exactly once" and does not enforce it.
         found = markdown.count(marker)
         if found:
+            # Render first, count second.  A source that is temporarily invalid
+            # --- malformed schema JSON, say --- raises here, and a count already
+            # committed would survive into the next `mkdocs serve` rebuild.
+            rendered = render(root)
             _SEEN[marker] += found
-            markdown = markdown.replace(marker, render(root))
+            markdown = markdown.replace(marker, rendered)
     return markdown
+
+
+def on_build_error(error: Exception) -> None:  # noqa: ARG001 - MkDocs signature
+    """Clear the counts when a build fails anywhere.
+
+    `on_post_build` is not reached when MkDocs takes the build-error path, so
+    without this a failure elsewhere --- an invalid source, another hook raising
+    --- leaves the counts standing.  Under `mkdocs serve` the next rebuild then
+    adds to them, and an otherwise-correct site fails the check below with a
+    count of 2 until the server is restarted.
+    """
+    _reset_seen()
+
+
+def _reset_seen() -> None:
+    for marker in _SEEN:
+        _SEEN[marker] = 0
 
 
 def on_post_build(config: Any) -> None:
@@ -632,8 +653,7 @@ def on_post_build(config: Any) -> None:
     # the next one --- every marker then reads 2, and the server keeps failing
     # after the developer has already fixed the thing it complained about.
     counts = dict(_SEEN)
-    for marker in _SEEN:
-        _SEEN[marker] = 0
+    _reset_seen()
     if missing:
         raise RuntimeError(
             f"generated-table marker(s) {missing} did not appear exactly once "

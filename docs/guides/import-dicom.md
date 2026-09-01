@@ -62,10 +62,18 @@ for path, patient in known_identities.items():     # from your own records
 ```
 
 ```bash
-medh5 dataset index out/ -o cohort.json      # re-scan, so the manifest sees it
-medh5 dataset split cohort.json --group-by group_id
-medh5 dataset check cohort.json              # C204 if a group still splits a subject
+medh5 dataset index out/ -o cohort.json   # re-scan, so the manifest sees it
+medh5 dataset split cohort.json --group-by group_id   # C204 if a group splits a subject
+medh5 dataset check cohort.json           # C202 if the written claims disagree
 ```
+
+`C204` comes from **`split`**, not from `check` — it is refused while the split
+is being made, which is before anything is written. `check` reads what is on
+disk: it catches a subject whose samples claim different partitions (`C202`),
+not a grouping that was wrong to begin with.
+
+Neither can recover an identity DICOM has lost. If the mapping you stamped above
+was wrong, both commands will agree with it.
 
 Amending rewrites each file, so this is not free — but it is the only thing that
 makes the split subject-safe, and there is no way to recover the identity from
