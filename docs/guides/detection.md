@@ -70,8 +70,18 @@ way rather than reading differently.
 medh5 validate case.medh5 --level strict --profile det
 ```
 
-`--profile det` holds the file to having a geometric annotation, so a pipeline
-that needs boxes gets a diagnostic instead of a `KeyError` three layers down.
+`--profile det` holds the file to having **some** detection annotation — the
+check is `task='detection'`, which keypoints, points, contours and meshes satisfy
+as well as boxes. A file carrying only keypoints passes `--profile det`, so a
+pipeline that specifically needs boxes still gets its `KeyError`. Check for the
+annotation you are going to read:
+
+```python
+with medh5.open(path) as s:
+    ann = s.annotations.get("lesions")
+    if ann is None or ann.kind != "boxes":
+        raise SystemExit(f"{path}: no box annotation named 'lesions'")
+```
 
 ## Related
 

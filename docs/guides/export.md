@@ -38,12 +38,22 @@ medh5 convert to-dicom-seg case.medh5 organs out.dcm "${args[@]}"
 
 Overlapping segments survive.
 
-**Export is binary.** `to-dicom-seg` casts the annotation to boolean and writes
-`SegmentationTypeValues.BINARY`, so a `probmap` — or anything imported from a
-`FRACTIONAL` SEG — leaves as foreground/background, and every nonzero
-probability becomes 1. Fractional values survive the *import* direction, not
-this one. Threshold deliberately before exporting, or keep the probabilities in
-the `.medh5` and export something else.
+**Export is binary, and it thresholds.** `to-dicom-seg` writes
+`SegmentationTypeValues.BINARY` from `annotation.dense()`, and for a `probmap`
+`dense()` already applies the annotation's stored `threshold` (default `0.5`).
+So a probability of 0.49 does not become 1 — it becomes **background**, and is
+gone from the exported SEG:
+
+```python
+ann.threshold                    # 0.5 unless the file says otherwise
+# probabilities  0.0  0.1  0.3  0.49  0.5  0.7  0.9  1.0
+# exported       0    0    0    0     1    1    1    1
+```
+
+Fractional values survive the *import* direction, not this one. Check
+`ann.threshold` before exporting, and set it deliberately if the default is not
+the operating point you want — or keep the probabilities in the `.medh5` and
+export something else.
 
 Writing goes through `highdicom` rather than assembling the IOD by hand, which
 is how invalid SEGs get published.

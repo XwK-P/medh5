@@ -76,9 +76,13 @@ s.profiles   # {"core", "seg", "det", "curation", "longitudinal"}
 | `longitudinal` | more than one timepoint, related |
 
 `--profile` **overrides** what the file claims, which is the useful direction: a
-tool that needs boxes can require `det` and get a specific diagnostic
-(`E401`-class) rather than a `KeyError` three layers down, whether or not the
-file thought to claim it.
+tool can require `det` and get a diagnostic whether or not the file thought to
+claim it.
+
+A profile is coarser than a kind, though. `det` is satisfied by any annotation
+whose task is `detection` — keypoints, points, contours and meshes as well as
+boxes — so requiring it does not guarantee the annotation your code is about to
+read. Check the kind you need in your own code as well.
 
 `w.infer_profiles()` sets them from what was actually written, so a writer
 rarely declares them by hand.

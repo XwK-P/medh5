@@ -147,6 +147,21 @@ STALE_CLAIMS: tuple[tuple[str, str, str, str | None], ...] = (
         None,
     ),
     (
+        "probmap export described as keeping every nonzero value",
+        r"every nonzero\s+probability becomes 1",
+        "`dense()` applies the stored threshold (default 0.5), so sub-threshold "
+        "voxels become background.",
+        None,
+    ),
+    (
+        "det profile presented as requiring boxes",
+        r"(needs boxes can require `det`|require `det`[^.]{0,60}(instead of|rather "
+        r"than) a `KeyError`|`det`[^.\n]{0,40}(guarantees|means) boxes)",
+        "the check is task='detection'; keypoints and contours satisfy it too, so "
+        "requiring `det` does not guarantee a box annotation.",
+        None,
+    ),
+    (
         "ignore_mask() promised on every encoding",
         r"ignore_mask\(\)[^.\n]{0,60}(every encoding|all encodings|any encoding)",
         "only labelmap and layers implement it; bitmask and probmap reference a "
