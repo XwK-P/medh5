@@ -160,19 +160,8 @@ without looking at your test set.
 
 ### `medh5 dataset check manifest.json [--set-id ID] [--deep] [--json]`
 
-Cross-file consistency, under `C1xx` codes:
-
-| Code | |
-|---|---|
-| `C101` / `C102` | more than one label set; a class id meaning two things |
-| `C103` | a sample with no label set |
-| `C201` | a claim whose manifest digest is not this manifest's |
-| `C202` | a subject in two partitions of one split |
-| `C203` | samples with no claim |
-| `C204` | a group holding part of a subject (refused when splitting) |
-| `C301` / `C302` | a class examined in only part of the cohort; a class never seen |
-| `C401` / `C402` | a file changed, or vanished, since the scan |
-| `C501` | a partly de-identified cohort |
+Cross-file consistency. Findings carry
+[`C1xx`–`C5xx` codes](reference/cohort-checks.md).
 
 `--deep` re-reads each `content_id` instead of trusting size and mtime.
 

@@ -133,41 +133,18 @@ them:
 $ medh5 validate case.medh5 --profile det --profile seg
 ```
 
-| Profile | Requires |
-|---|---|
-| `core` | the container, geometry, at least one image |
-| `seg` | at least one voxel annotation |
-| `det` | at least one geometric annotation |
-| `cls` | at least one classification |
-| `reg` | at least one transform |
-| `curation` | provenance and quality records |
-| `multiscale` | a valid image pyramid |
-| `training` | a current sampling index |
-| `longitudinal` | more than one timepoint, related |
-
-A tool that needs boxes can require `det` and get a specific diagnostic rather
-than a `KeyError` three layers down.
+The nine profiles and the four validation levels are in
+[Profiles and validation levels](reference/profiles-and-levels.md).
 
 ## Diagnostic codes
 
-Stable API, and part of the specification (§15.2).
-
-| Range | Domain |
-|---|---|
-| `E0xx` | container |
-| `E1xx` | geometry |
-| `E2xx` | images |
-| `E3xx` | labels |
-| `E4xx` | annotations |
-| `E5xx` | transforms |
-| `E6xx` | curation |
-| `E7xx` | integrity |
-| `W9xx` | warnings |
+Stable API, and part of the specification (§15.2): a code's meaning never
+changes and codes are never reused, so the corpus can assert exact code sets.
+All 71 are listed in [Diagnostic codes](reference/diagnostic-codes.md).
 
 ```python
 from medh5 import CODES
 CODES["E102"].summary     # "`direction` is not orthonormal to 1e-4"
-CODES["E102"].domain      # "geometry"
 ```
 
 A minor version may add codes. It may not change what an existing one means.

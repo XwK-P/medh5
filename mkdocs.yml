@@ -125,6 +125,10 @@ nav:
       - Curation: curation.md
       - Cohorts: cohorts.md
       - Storage: file-format.md
+      - Profiles and validation levels: reference/profiles-and-levels.md
+      - Sample document schema: reference/schema.md
+      - Diagnostic codes: reference/diagnostic-codes.md
+      - Cohort check codes: reference/cohort-checks.md
       - Conformance: conformance.md
   - Design:
       - Proposal: design/medh5-1.0-proposal.md

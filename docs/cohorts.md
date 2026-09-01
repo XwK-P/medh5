@@ -203,24 +203,9 @@ report.ok, report.errors, report.warnings
 report.coverage      # {class_id: {"examined_in": n, "present_in": m, "of": total}}
 ```
 
-| Code | |
-|---|---|
-| `C101` | the cohort uses more than one label set |
-| `C102` | a class id means different things in different label sets |
-| `C103` | a sample declares no label set |
-| `C201` | a split claim's manifest digest is not this manifest's |
-| `C202` | one subject's samples claim different partitions of one split |
-| `C203` | a sample carries no split claim |
-| `C204` | a group holds part of a subject, so the split is not subject-safe — raised by `make_splits`, see below |
-| `C301` | a class is examined in only part of the cohort |
-| `C302` | a class appears in no sample |
-| `C401` | a file changed after the manifest was written |
-| `C402` | a file in the manifest no longer exists |
-| `C501` | the cohort mixes de-identified and non-de-identified samples |
-
-These are **cohort** codes, deliberately distinct from the format's `E`/`W`
-table: a file is not non-conforming because the cohort around it is
-inconsistent.
+Findings carry `C1xx`–`C5xx` codes; the full table is in
+[Cohort check codes](reference/cohort-checks.md), which also says why they
+are a separate space from the format's `E`/`W` codes.
 
 `--deep` re-reads each `content_id` instead of trusting size and mtime, which
 is the difference between "somebody touched this file" and "somebody changed

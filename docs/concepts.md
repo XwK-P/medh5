@@ -185,6 +185,5 @@ be asked to hold it to them.
 s.profiles   # {"core", "seg", "det", "curation", "longitudinal"}
 ```
 
-`core`, `seg`, `det`, `cls`, `reg`, `curation`, `multiscale`, `training`,
-`longitudinal`. A tool that needs boxes can require `det` and get a specific
-diagnostic instead of a `KeyError` three layers down.
+The nine profiles, and the four validation levels that go with them, are in
+[Profiles and validation levels](reference/profiles-and-levels.md).
