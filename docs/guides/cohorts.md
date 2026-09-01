@@ -183,8 +183,26 @@ Class counts come from the §14.3 sampling index when it is current — a few
 hundred bytes per annotation instead of decompressing every mask. A stale index
 is not trusted.
 
+### Normalisation from the training split only
+
 `--partition train` is how you compute normalisation constants without looking
-at your test set.
+at your test set. From Python, select the partition off the manifest and pass
+only those paths:
+
+```python
+from medh5.dataset import Manifest, compute_stats
+
+manifest = Manifest.load("cohort.json")
+train = [e.path for e in manifest
+         if any(c["set_id"] == "cv5" and c["partition"] == "train" for c in e.splits)]
+stats = compute_stats(train, images=["CT"], workers=8)
+mean, std = stats.normalization("CT")
+weights = stats.class_weights(scheme="inverse_frequency")
+```
+
+Constants derived from the whole cohort leak the test set into training, which
+is the kind of leak that does not show up as a bug — it shows up as a model that
+scores better than it deserves to.
 
 ## Cross-file checks
 

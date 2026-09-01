@@ -120,6 +120,7 @@ nav:
       - guides/index.md
       - Longitudinal studies: guides/longitudinal.md
       - Build and split a cohort: guides/cohorts.md
+      - Tune performance: guides/performance.md
 
   - Reference:
       - reference/index.md
