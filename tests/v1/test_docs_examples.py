@@ -140,6 +140,18 @@ STALE_CLAIMS: tuple[tuple[str, str, str], ...] = (
         "a label describing an interval names both visits, in acquisition order.",
     ),
     (
+        "entry-level coverage used as a loss mask",
+        r"e\.annotated_class_ids for e in manifest",
+        "`Entry.annotated_class_ids` unions every annotation; a loss mask needs "
+        "the one being trained on.",
+    ),
+    (
+        "registration preflight resolved per timepoint",
+        r"transform_between\(pair\.first, pair\.second\)",
+        "a visit may hold several grids on different frames; resolve between the "
+        "grids the images are on.",
+    ),
+    (
         "inverse_id offered for graph resolution",
         r"store it under `inverse_id`",
         "`inverse_id` adds a second one-hop path and makes the reverse "

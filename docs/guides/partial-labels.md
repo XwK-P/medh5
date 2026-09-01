@@ -98,17 +98,40 @@ as metadata and therefore costs nothing to consult:
 ```python
 from medh5.dataset import Manifest
 
+ANN = "organs"          # the annotation the loader is reading
+
 manifest = Manifest.load("cohort.json")
-coverage = {e.path: e.annotated_class_ids for e in manifest}
+coverage = {
+    e.path: set(e.annotations[ANN]["annotated_classes"])
+    for e in manifest
+    if ANN in e.annotations
+}
 
 for batch in loader:
     for path in batch["meta"]["path"]:
         examined = coverage[path]     # mask the loss to these class ids
 ```
 
-`ManifestEntry` has the same distinction as an annotation does:
-`has_class(class_id)` is what is present, `examined(class_id)` is what was looked
-for.
+**Take the coverage from the annotation you are training on, not from the
+entry.** `Entry.annotated_class_ids` is the *union* across every annotation in
+the sample, which is the right answer for a cohort-level question and the wrong
+one for a loss mask. A sample whose `organs` examined liver and spleen and whose
+`vessels` examined vessel reports `(1, 2, 4)` at entry level:
+
+```python
+e.annotated_class_ids                            # (1, 2, 4)
+e.annotations["organs"]["annotated_classes"]     # [1, 2]
+e.annotations["vessels"]["annotated_classes"]    # [4]
+```
+
+Mask with the union and class 4 becomes a negative for a model reading `organs`,
+which never looked for it — the exact substitution this page exists to prevent.
+`e.annotations[name]["timepoints"]` narrows it further when a sample carries
+per-visit annotations.
+
+`ManifestEntry`'s own pair — `has_class(class_id)` for what is present,
+`examined(class_id)` for what was looked for — draws the same distinction as an
+annotation does, at sample scope.
 
 Straight off a sample, when you are not working from a manifest:
 
