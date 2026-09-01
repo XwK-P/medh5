@@ -607,8 +607,13 @@ def on_page_markdown(markdown: str, page: Any, config: Any, files: Files) -> str
     """Replace each table marker with the table rendered from its source."""
     root = _root(config)
     for marker, render in _MARKERS.items():
-        if marker in markdown:
-            _SEEN[marker] += 1
+        # Count occurrences, not pages.  `replace` expands every one of them, so
+        # counting pages lets a marker pasted twice into a single page render its
+        # table twice while the check below still sees the required count of 1 ---
+        # a guard that advertises "exactly once" and does not enforce it.
+        found = markdown.count(marker)
+        if found:
+            _SEEN[marker] += found
             markdown = markdown.replace(marker, render(root))
     return markdown
 

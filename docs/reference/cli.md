@@ -306,7 +306,8 @@ medh5 migrate PATH... -o OUTDIR [options]
 ### `medh5 recompress`
 
 ```
-medh5 recompress PATH... --profile P [--out DIR] [--rechunk] [--json]
+medh5 recompress PATH... --profile P [--rechunk] [--json]
+medh5 recompress PATH --profile P --out FILE [--rechunk] [--json]
 ```
 
 Re-encode bulk data under `training`, `balanced`, `archive` or `portable`.

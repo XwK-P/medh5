@@ -34,8 +34,19 @@ attributes. There is no sidecar and no dataset-wide schema to keep in sync.
 ## Codec profiles
 
 ```
-$ medh5 recompress cohort/*.medh5 --profile training
-$ medh5 recompress cohort/*.medh5 --profile archive --out cold/
+$ medh5 recompress cohort/*.medh5 --profile archive
+```
+
+Recompression is **in place** by default: each file is rewritten atomically
+under the new profile. `--out` writes beside the source instead, and takes a
+single input and a destination **filename** — not a directory, and not several
+files:
+
+```
+$ medh5 recompress case.medh5 --profile archive --out cold/case.medh5
+$ for f in cohort/*.medh5; do
+      medh5 recompress "$f" --profile archive --out "cold/$(basename "$f")"
+  done
 ```
 
 | Profile | Images | Labels | For |

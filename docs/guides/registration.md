@@ -69,10 +69,15 @@ For timepoints rather than grids, `frames_of_timepoint` gives the frames a visit
 spans; a timepoint whose grids share a frame with the other visit's needs no
 transform either.
 
-Three things make the difference between a file that resolves and one that does
-not: whether a transform was stored at all, whether its `from_frame` and
-`to_frame` name frames that exist, and — for a chain — whether each link
-declares `invertible=True` or stores an explicit `inverse_id`.
+What decides whether a path resolves depends on the direction.
+
+**Forward**, along the way the transforms were written, needs only that they
+exist and that their `from_frame` and `to_frame` name frames that exist. No link
+has to declare anything about inversion.
+
+**Backwards**, across any link traversed against its direction, needs an inverse
+that can be *evaluated* — analytic for an affine or identity, otherwise a stored
+`inverse_id`. `invertible=True` on its own is not enough; see below.
 
 ## When to store an inverse
 
