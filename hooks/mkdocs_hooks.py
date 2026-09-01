@@ -190,8 +190,28 @@ _CELL_ESCAPES = str.maketrans({"|": r"\|", "{": r"\{", "}": r"\}"})
 
 
 def _cell(text: str) -> str:
-    """Escape one table cell's worth of prose."""
+    """Escape one table cell's worth of **prose**.
+
+    Not for anything already containing a code span: a backslash is literal
+    inside backticks, so escaping a brace there puts the backslash on the page
+    and turns `^[0-9a-f]{64}$` into a pattern that no longer means what it says.
+    Use :func:`_code` for values, and escape prose before formatting it, never
+    after.
+    """
     return text.translate(_CELL_ESCAPES)
+
+
+def _code(value: Any) -> str:
+    """One JSON value as a code span, safe inside a table cell.
+
+    Only the pipe is escaped --- it would otherwise end the cell --- because
+    everything else must survive verbatim for the value to still be the value.
+    JSON rather than `repr`, so a null reads `null` and not `None`.
+    """
+    literal = json.dumps(value)
+    if isinstance(value, str):
+        literal = value
+    return "`" + literal.replace("|", r"\|") + "`"
 
 
 _DOMAIN_TITLES: tuple[tuple[str, str], ...] = (
@@ -259,6 +279,9 @@ def _type_of(schema: dict[str, Any]) -> str:
         name = ref.rsplit("/", 1)[-1]
         return f"[`{name}`](#{name.lower()})"
     kind = schema.get("type", "")
+    if isinstance(kind, list):
+        # `["string", "null"]` is a nullable string, not a list-typed value.
+        return " or ".join(f"`{k}`" for k in kind)
     if kind == "array":
         item = schema.get("items", {})
         return f"array of {_type_of(item)}" if item else "array"
@@ -279,19 +302,24 @@ _CONSTRAINTS = (
 
 
 def _constraints_of(schema: dict[str, Any]) -> str:
-    """Every constraint keyword the schema actually uses, as one cell."""
+    """Every constraint keyword the schema actually uses, as one cell.
+
+    The result is already Markdown --- code spans included --- so it must not be
+    passed through :func:`_cell` afterwards. Escaping after formatting is what
+    dropped three of the five values `identity.sex` allows.
+    """
     parts: list[str] = []
     for key in _CONSTRAINTS:
         if key not in schema:
             continue
         value = schema[key]
         if key == "enum":
-            parts.append(" \\| ".join(f"`{v}`" for v in value))
+            parts.append(", ".join(_code(v) for v in value))
         elif key == "const":
-            parts.append(f"`{value}`")
+            parts.append(_code(value))
         else:
-            parts.append(f"{key} `{value}`")
-    return _cell("; ".join(parts)) if parts else ""
+            parts.append(f"{key} {_code(value)}")
+    return "; ".join(parts)
 
 
 def _conditional_requirements(schema: dict[str, Any]) -> dict[str, list[str]]:
@@ -558,12 +586,17 @@ def on_post_build(config: Any) -> None:
     count is checked here instead.
     """
     missing = sorted(marker for marker, count in _SEEN.items() if count != 1)
+    # Reset before raising, not after.  `mkdocs serve` keeps this module loaded
+    # across rebuilds, so counts left standing from a failed build are added to
+    # the next one --- every marker then reads 2, and the server keeps failing
+    # after the developer has already fixed the thing it complained about.
+    counts = dict(_SEEN)
+    for marker in _SEEN:
+        _SEEN[marker] = 0
     if missing:
         raise RuntimeError(
             f"generated-table marker(s) {missing} did not appear exactly once "
-            f"across the site (counts: { {m: _SEEN[m] for m in missing} }). A page "
+            f"across the site (counts: { {m: counts[m] for m in missing} }). A page "
             "was renamed, deleted, or had its marker edited, and its table "
             "silently vanished."
         )
-    for marker in _SEEN:
-        _SEEN[marker] = 0
