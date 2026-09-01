@@ -74,8 +74,16 @@ direction:
 
 ```python
 ann.has_ignore_region
-ann.dense([65535])          # the mask to exclude from the loss
+ann.ignore_mask()           # the mask to exclude from the loss
+ann.ignore_mask(roi=roi)    # or just the patch you read
 ```
+
+**Read it with `ignore_mask()`, not `dense([65535])`.** The ignore id is not an
+ordinary class: under `layers` — the encoding chosen whenever your classes
+overlap — it is written *into* the layers rather than carried as its own plane,
+so `dense([65535])` finds nothing in the class map and hands back an all-zero
+mask. Nothing errors; the ignored voxels simply go into your loss.
+`ignore_mask()` gives one answer per voxel on every encoding.
 
 Use it for a truncated field of view, an unreadable region, a structure a rater
 declined to call. Do not use it for "background": background is a positive

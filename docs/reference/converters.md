@@ -102,8 +102,11 @@ $ medh5 convert to-dicom-seg case.medh5 organs out.dcm --source ct/*.dcm
 ```
 
 **Frames are placed by geometry**, from each frame's `PlanePositionSequence` —
-not by frame index. Overlapping segments and `FRACTIONAL` segmentations both
-survive the round trip. **Segments match by label, not by number.**
+not by frame index. **Segments match by label, not by number.**
+
+Import preserves overlapping segments and `FRACTIONAL` values. **Export does
+not**: `to_dicom_seg` casts to boolean and writes `BINARY`, so fractional data
+is thresholded on the way out.
 
 Writing needs `highdicom` (`pip install "medh5[dicomseg]"`).
 

@@ -23,8 +23,14 @@ medh5 convert to-dicom-seg case.medh5 organs out.dcm --source ct/*.dcm
 ```
 
 `--source` is the original series the segmentation refers to; a SEG is only
-meaningful against one. Overlapping segments and `FRACTIONAL` segmentations both
-survive.
+meaningful against one. Overlapping segments survive.
+
+**Export is binary.** `to-dicom-seg` casts the annotation to boolean and writes
+`SegmentationTypeValues.BINARY`, so a `probmap` — or anything imported from a
+`FRACTIONAL` SEG — leaves as foreground/background, and every nonzero
+probability becomes 1. Fractional values survive the *import* direction, not
+this one. Threshold deliberately before exporting, or keep the probabilities in
+the `.medh5` and export something else.
 
 Writing goes through `highdicom` rather than assembling the IOD by hand, which
 is how invalid SEGs get published.

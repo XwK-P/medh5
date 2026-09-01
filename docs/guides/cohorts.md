@@ -8,8 +8,12 @@ carry: which label set everyone agrees on, which subject is in which partition,
 what the intensity distribution is, whether a class was examined everywhere or
 only where somebody got around to it.
 
-`medh5.dataset` computes all of it from metadata alone, so the answers cost
-milliseconds rather than a pass over every voxel in the study.
+Manifests, splits and the cross-file checks come **from metadata alone**, so
+they cost milliseconds over a large cohort rather than a pass over every voxel.
+Statistics are the exception and are priced differently: `medh5 dataset stats`
+streams one pass per file, and reads class counts from the sampling index only
+where one is current --- otherwise it decompresses the annotations to count
+them. Build the index first if you are running it over a large study.
 
 ## Index the directory
 

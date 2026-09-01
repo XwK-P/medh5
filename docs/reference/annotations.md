@@ -37,8 +37,14 @@ loss in either direction:
 
 ```python
 ann.has_ignore_region
-ann.dense([65535])
+ann.ignore_mask()          # one answer per voxel, on every encoding
+ann.ignore_mask(roi=roi)
 ```
+
+Read it through `ignore_mask()` rather than `dense([65535])`. The ignore id is
+not an ordinary class: `layers` writes it *into* the layers rather than carrying
+it as its own plane, so asking `dense()` for it returns an all-zero mask with no
+error --- and the ignored voxels end up in the loss.
 
 ## Voxel annotations
 
