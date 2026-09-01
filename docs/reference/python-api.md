@@ -161,7 +161,7 @@ for instance_id, track in tracking.items():
     track.at("tp1")                     # the Observation, or None
 ```
 
-See [Longitudinal](longitudinal.md).
+See [Longitudinal](../guides/longitudinal.md).
 
 ### Integrity
 
@@ -322,10 +322,10 @@ so a caller can branch on the defect rather than on the message text.
 
 | | |
 |---|---|
-| `medh5.torch` | [Datasets and samplers](training.md) |
-| `medh5.monai` | [MetaTensor adapter](training.md#monai) |
+| `medh5.torch` | [Datasets and samplers](torch.md) |
+| `medh5.monai` | [MetaTensor adapter](torch.md#monai) |
 | `medh5.io` | [Converters](converters.md) |
-| `medh5.dataset` | [Cohort manifests, splits, statistics](cohorts.md) |
+| `medh5.dataset` | [Cohort manifests, splits, statistics](../guides/cohorts.md) |
 | `medh5.curation` | [Provenance, agreement, tracking, de-identification](curation.md) |
-| `medh5.conformance` | [The conformance suite](conformance.md) |
-| `medh5.storage` | [Codecs, chunking, recompression](file-format.md) |
+| `medh5.conformance` | [The conformance suite](../spec/conformance.md) |
+| `medh5.storage` | [Codecs, chunking, recompression](storage.md) |

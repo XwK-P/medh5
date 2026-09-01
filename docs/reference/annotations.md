@@ -120,7 +120,7 @@ whatever source had them.
 
 `instance_id` is **sample-scoped**, which is what makes it a longitudinal join:
 object 7 at baseline and object 7 at follow-up are the same lesion. See
-[Longitudinal](longitudinal.md).
+[Longitudinal](../guides/longitudinal.md).
 
 ## Geometric annotations
 
@@ -230,7 +230,7 @@ c.scope_ids
 
 A **change** label — one that describes a difference between two visits — is a
 classification whose `timepoints` names both. See
-[Longitudinal](longitudinal.md#change).
+[Longitudinal](../guides/longitudinal.md#change).
 
 ## Label sets
 

@@ -14,8 +14,8 @@ ground truth — in a single self-describing HDF5 file.**
 Multi-modality images, segmentation in five encodings, detection boxes,
 keypoints, contours, meshes, classification, registration between visits,
 provenance and quality records, and per-object integrity digests. Format
-version **1.0**, with a [normative specification](docs/spec/medh5-1.0.md) and a
-[103-case conformance suite](docs/conformance.md) any implementation can run.
+version **1.0**, with a [normative specification](https://medh5.readthedocs.io/en/latest/spec/medh5-1.0/) and a
+[103-case conformance suite](https://medh5.readthedocs.io/en/latest/spec/conformance/) any implementation can run.
 
 ```python
 import medh5
@@ -40,14 +40,14 @@ Reading and writing needs only `h5py`, `hdf5plugin` and `numpy`. Extras:
 
 ## Documentation
 
-[**docs/**](docs/index.md) · [Getting started](docs/getting-started.md) ·
-[Concepts](docs/concepts.md) · [Specification](docs/spec/medh5-1.0.md)
+[**docs/**](https://medh5.readthedocs.io/en/latest/) · [Getting started](https://medh5.readthedocs.io/en/latest/tutorials/first-sample/) ·
+[Concepts](https://medh5.readthedocs.io/en/latest/explanation/data-model/) · [Specification](https://medh5.readthedocs.io/en/latest/spec/medh5-1.0/)
 
-[Python API](docs/python-api.md) · [CLI](docs/cli.md) ·
-[Annotations](docs/annotations.md) · [Longitudinal](docs/longitudinal.md) ·
-[Training](docs/training.md) · [Converters](docs/converters.md) ·
-[Curation](docs/curation.md) · [Cohorts](docs/cohorts.md) ·
-[Storage](docs/file-format.md) · [Conformance](docs/conformance.md)
+[Python API](https://medh5.readthedocs.io/en/latest/reference/python-api/) · [CLI](https://medh5.readthedocs.io/en/latest/reference/cli/) ·
+[Annotations](https://medh5.readthedocs.io/en/latest/reference/annotations/) · [Longitudinal](https://medh5.readthedocs.io/en/latest/guides/longitudinal/) ·
+[Training](https://medh5.readthedocs.io/en/latest/reference/torch/) · [Converters](https://medh5.readthedocs.io/en/latest/reference/converters/) ·
+[Curation](https://medh5.readthedocs.io/en/latest/reference/curation/) · [Cohorts](https://medh5.readthedocs.io/en/latest/guides/cohorts/) ·
+[Storage](https://medh5.readthedocs.io/en/latest/reference/storage/) · [Conformance](https://medh5.readthedocs.io/en/latest/spec/conformance/)
 
 ## What the format is for
 
@@ -197,7 +197,7 @@ encodings and diagnostic codes; it may not change what an existing one means
 (spec §16). The **package** follows semantic versioning from 1.0.0.
 
 0.x files are not readable by 1.0 and are not meant to be — `medh5 migrate`
-converts them once. See [Converters](docs/converters.md#migrating-from-0x).
+converts them once. See [Converters](https://medh5.readthedocs.io/en/latest/reference/converters/#migrating-from-0x).
 
 ## License
 

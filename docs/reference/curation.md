@@ -139,7 +139,7 @@ $ medh5 splits cohort/*.medh5        # conflicting claims and subject leakage
 ```
 
 That check needs the whole cohort, which is why it is not part of `validate`.
-See [Cohorts](cohorts.md).
+See [Cohorts](../guides/cohorts.md).
 
 ## De-identification
 

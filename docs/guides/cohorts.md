@@ -204,7 +204,7 @@ report.coverage      # {class_id: {"examined_in": n, "present_in": m, "of": tota
 ```
 
 Findings carry `C1xx`–`C5xx` codes; the full table is in
-[Cohort check codes](reference/cohort-checks.md), which also says why they
+[Cohort check codes](../reference/cohort-checks.md), which also says why they
 are a separate space from the format's `E`/`W` codes.
 
 `--deep` re-reads each `content_id` instead of trusting size and mtime, which
@@ -221,4 +221,4 @@ $ medh5 splits cohort/*.medh5
 ```
 
 It reports conflicting claims (`W906`) and subject leakage. See
-[Curation](curation.md#split-claims).
+[Curation](../reference/curation.md#split-claims).

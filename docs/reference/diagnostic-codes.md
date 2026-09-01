@@ -52,4 +52,4 @@ their own, so everything about geometry is in one place.
 
 - [Profiles and validation levels](profiles-and-levels.md) — which of these get checked, and when.
 - [Cohort check codes](cohort-checks.md) — the `C1xx` codes, which are a *different* space: they describe a cohort, not a file.
-- [Conformance suite](../conformance.md) — one corpus case per code on this page.
+- [Conformance suite](../spec/conformance.md) — one corpus case per code on this page.

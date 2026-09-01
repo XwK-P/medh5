@@ -1,7 +1,7 @@
 # Storage
 
 The on-disk layout, how bytes get chosen, and how the file proves it is intact.
-The normative statement is [spec §2, §13 and §14](spec/medh5-1.0.md); this page
+The normative statement is [spec §2, §13 and §14](../spec/medh5-1.0.md); this page
 is the operational half.
 
 ## Layout
@@ -130,7 +130,7 @@ $ medh5 fix case.medh5 --rebuild-index
 $ medh5 fix case.medh5 --rewrite-digests --reason "rebuilt by an external tool"
 ```
 
-`--rewrite-digests` is not repair — see [CLI](cli.md#medh5-fix-path---rebuild-index---rewrite-digests---reason-why---json).
+`--rewrite-digests` is not repair — see [CLI](cli.md#medh5-fix).
 
 ## Atomic writes
 

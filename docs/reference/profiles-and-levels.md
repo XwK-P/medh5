@@ -71,5 +71,5 @@ rarely declares them by hand.
 ## Related
 
 - [Diagnostic codes](diagnostic-codes.md) — what a failure at any level reports.
-- [Check a file before training on it](../cli.md) — choosing a level for a job.
-- [`medh5 validate`](../cli.md) — every flag.
+- [Check a file before training on it](cli.md) — choosing a level for a job.
+- [`medh5 validate`](cli.md) — every flag.

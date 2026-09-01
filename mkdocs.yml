@@ -111,26 +111,39 @@ plugins:
 
 nav:
   - Home: index.md
-  - Start here:
-      - Getting started: getting-started.md
-      - Concepts: concepts.md
-  - Specification: spec/medh5-1.0.md
+
+  - Tutorials:
+      - tutorials/index.md
+      - Write and read your first sample: tutorials/first-sample.md
+
+  - How-to guides:
+      - guides/index.md
+      - Longitudinal studies: guides/longitudinal.md
+      - Build and split a cohort: guides/cohorts.md
+
   - Reference:
-      - Python API: python-api.md
-      - CLI: cli.md
-      - Annotations: annotations.md
-      - Longitudinal: longitudinal.md
-      - Training: training.md
-      - Converters: converters.md
-      - Curation: curation.md
-      - Cohorts: cohorts.md
-      - Storage: file-format.md
+      - reference/index.md
+      - Python API: reference/python-api.md
+      - Command line: reference/cli.md
+      - PyTorch and MONAI: reference/torch.md
+      - Annotation kinds: reference/annotations.md
+      - Converters: reference/converters.md
+      - Curation records: reference/curation.md
+      - Storage: reference/storage.md
       - Profiles and validation levels: reference/profiles-and-levels.md
       - Sample document schema: reference/schema.md
       - Diagnostic codes: reference/diagnostic-codes.md
       - Cohort check codes: reference/cohort-checks.md
-      - Conformance: conformance.md
       - Runnable examples: examples/index.md
+
+  - Explanation:
+      - explanation/index.md
+      - The data model: explanation/data-model.md
+
+  - Specification:
+      - Format specification 1.0: spec/medh5-1.0.md
+      - Conformance suite: spec/conformance.md
+
   - Changelog: changelog.md
 
 extra:

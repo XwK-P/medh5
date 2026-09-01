@@ -1,7 +1,7 @@
 # Concepts
 
 Ten minutes on the data model. The normative statement of all of this is the
-[specification](spec/medh5-1.0.md); this page is the shape of it.
+[specification](../spec/medh5-1.0.md); this page is the shape of it.
 
 ## A sample is a subject
 
@@ -147,7 +147,7 @@ whatever source had them.
 
 Overlapping classes (a lesion inside the liver) are expressible in every
 encoding that supports them, and transcoding between any pair is lossless.
-See [Annotations](annotations.md).
+See [Annotations](../reference/annotations.md).
 
 ## Provenance and quality
 
@@ -186,4 +186,4 @@ s.profiles   # {"core", "seg", "det", "curation", "longitudinal"}
 ```
 
 The nine profiles, and the four validation levels that go with them, are in
-[Profiles and validation levels](reference/profiles-and-levels.md).
+[Profiles and validation levels](../reference/profiles-and-levels.md).

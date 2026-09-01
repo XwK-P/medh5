@@ -19,24 +19,24 @@ with medh5.open("case_0001.medh5") as s:
 
 | | |
 |---|---|
-| **[Getting started](getting-started.md)** | Install, write a sample, read it back. |
-| **[Concepts](concepts.md)** | The data model in ten minutes: samples, grids, timepoints, coverage. |
+| **[Getting started](tutorials/first-sample.md)** | Install, write a sample, read it back. |
+| **[Concepts](explanation/data-model.md)** | The data model in ten minutes: samples, grids, timepoints, coverage. |
 | **[Specification](spec/medh5-1.0.md)** | The normative format. Everything else is commentary. |
 
 ## Reference
 
 | | |
 |---|---|
-| **[Python API](python-api.md)** | Reading, writing, amending. |
-| **[CLI](cli.md)** | Every `medh5` command. |
-| **[Annotations](annotations.md)** | The five voxel encodings, boxes, contours, keypoints, meshes, labels. |
-| **[Longitudinal](longitudinal.md)** | Timepoints, registration, change, instance tracking. |
-| **[Training](training.md)** | PyTorch datasets, samplers, MONAI, performance. |
-| **[Converters](converters.md)** | NIfTI, DICOM, DICOM SEG, RTSTRUCT, nnU-Net v2, and 0.x migration. |
-| **[Curation](curation.md)** | Provenance, quality, agreement, de-identification, collections. |
-| **[Cohorts](cohorts.md)** | Manifests, leakage-free splits, streaming statistics, cross-file checks. |
-| **[Storage](file-format.md)** | On-disk layout, codecs, chunking, integrity. |
-| **[Conformance](conformance.md)** | The suite, and how to run it against your own implementation. |
+| **[Python API](reference/python-api.md)** | Reading, writing, amending. |
+| **[CLI](reference/cli.md)** | Every `medh5` command. |
+| **[Annotations](reference/annotations.md)** | The five voxel encodings, boxes, contours, keypoints, meshes, labels. |
+| **[Longitudinal](guides/longitudinal.md)** | Timepoints, registration, change, instance tracking. |
+| **[Training](reference/torch.md)** | PyTorch datasets, samplers, MONAI, performance. |
+| **[Converters](reference/converters.md)** | NIfTI, DICOM, DICOM SEG, RTSTRUCT, nnU-Net v2, and 0.x migration. |
+| **[Curation](reference/curation.md)** | Provenance, quality, agreement, de-identification, collections. |
+| **[Cohorts](guides/cohorts.md)** | Manifests, leakage-free splits, streaming statistics, cross-file checks. |
+| **[Storage](reference/storage.md)** | On-disk layout, codecs, chunking, integrity. |
+| **[Conformance](spec/conformance.md)** | The suite, and how to run it against your own implementation. |
 
 ## What the format is for
 
@@ -102,4 +102,4 @@ the package; `medh5.FORMAT_VERSION` is the format.
 
 0.x files are not readable by 1.0 and are not meant to be: `medh5 migrate`
 converts them once, reporting every decision it took. See
-[Converters](converters.md#migrating-from-0x).
+[Converters](reference/converters.md#migrating-from-0x).

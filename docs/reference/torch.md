@@ -71,7 +71,7 @@ ds = PairedPatchDataset(paths, sampler,
 ds.report      # how many pairs were aligned by a transform, how many had none
 ```
 
-See [Longitudinal](longitudinal.md#paired-sampling-for-training).
+See [Longitudinal](../guides/longitudinal.md#paired-sampling-for-training).
 
 ## A batch
 
@@ -151,7 +151,7 @@ Or from the shell:
 $ medh5 dataset stats cohort.json --partition train --set-id cv5 -o stats.json
 ```
 
-See [Cohorts](cohorts.md).
+See [Cohorts](../guides/cohorts.md).
 
 ## MONAI
 
@@ -222,4 +222,4 @@ $ medh5 recompress cohort/*.medh5 --profile training
 
 Every stored byte changes and no `content_id` does — the digest is over
 content, not over its encoding — so a recompressed cohort is still verifiably
-the same data. See [Storage](file-format.md).
+the same data. See [Storage](storage.md).

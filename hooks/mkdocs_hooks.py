@@ -75,6 +75,18 @@ REDIRECTS: tuple[tuple[str, str], ...] = (
         "https://github.com/XwK-P/medh5/blob/main/design/medh5-1.0-implementation-plan.md",
     ),
     ("design/benchmarks/README.md", "examples/index.md"),
+    ("getting-started.md", "tutorials/first-sample.md"),
+    ("concepts.md", "explanation/data-model.md"),
+    ("python-api.md", "reference/python-api.md"),
+    ("cli.md", "reference/cli.md"),
+    ("annotations.md", "reference/annotations.md"),
+    ("file-format.md", "reference/storage.md"),
+    ("converters.md", "reference/converters.md"),
+    ("curation.md", "reference/curation.md"),
+    ("training.md", "reference/torch.md"),
+    ("conformance.md", "spec/conformance.md"),
+    ("cohorts.md", "guides/cohorts.md"),
+    ("longitudinal.md", "guides/longitudinal.md"),
 )
 
 # A Markdown link target beginning `docs/`, which is repository-root-relative.

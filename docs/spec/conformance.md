@@ -134,13 +134,13 @@ $ medh5 validate case.medh5 --profile det --profile seg
 ```
 
 The nine profiles and the four validation levels are in
-[Profiles and validation levels](reference/profiles-and-levels.md).
+[Profiles and validation levels](../reference/profiles-and-levels.md).
 
 ## Diagnostic codes
 
 Stable API, and part of the specification (§15.2): a code's meaning never
 changes and codes are never reused, so the corpus can assert exact code sets.
-All 71 are listed in [Diagnostic codes](reference/diagnostic-codes.md).
+All 71 are listed in [Diagnostic codes](../reference/diagnostic-codes.md).
 
 ```python
 from medh5 import CODES
