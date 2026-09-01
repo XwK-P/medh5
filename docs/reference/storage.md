@@ -211,3 +211,9 @@ with h5py.File("case_0001.medh5") as f:
 
 `import hdf5plugin` before opening if the file uses a blosc2 profile;
 `--profile portable` avoids that requirement entirely.
+
+## Related
+
+- **[Tune performance](../guides/performance.md)** — chunking, codecs and the index as levers.
+- **[Check a file before training on it](../guides/validate.md)** — `verify` and `medh5 fix`.
+- **[Specification §2, §13, §14](../spec/medh5-1.0.md)** — the normative statement.

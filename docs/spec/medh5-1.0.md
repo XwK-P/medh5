@@ -1,6 +1,6 @@
 # MEDH5 Format Specification — Version 1.0
 
-**Status:** Draft for review · **Schema version:** `1.0` · **Supersedes:** medh5 0.x (`schema_version = "1"`)
+**Status:** Final · **Schema version:** `1.0` · **Supersedes:** medh5 0.x (`schema_version = "1"`)
 **Container:** HDF5 ≥ 1.10 · **Media type:** `application/x-medh5` · **Extensions:** `.medh5` (sample), `.medh5c` (collection)
 
 ---

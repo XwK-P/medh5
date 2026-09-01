@@ -187,3 +187,10 @@ s.profiles   # {"core", "seg", "det", "curation", "longitudinal"}
 
 The nine profiles, and the four validation levels that go with them, are in
 [Profiles and validation levels](../reference/profiles-and-levels.md).
+
+## Related
+
+- **[Partial labels and coverage](../guides/partial-labels.md)** — the coverage contract as a task.
+- **[Longitudinal studies](../guides/longitudinal.md)** — what one-file-per-subject buys.
+- **[What the converters refuse, and why](refusals.md)** — geometry never being guessed.
+- **[Specification](../spec/medh5-1.0.md)** — the normative statement of all of it.

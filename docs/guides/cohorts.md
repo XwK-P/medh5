@@ -1,14 +1,17 @@
-# Cohorts
+# Build and split a cohort
 
-Everything above the single file. A sample is self-describing, but a *cohort*
-has properties no file can carry: which label set everyone agrees on, which
-subject is in which partition, what the intensity distribution is, whether a
-class was examined everywhere or only where somebody got around to it.
+Turn a directory of `.medh5` files into a manifest, a leakage-free split, the
+normalisation constants for it, and a check that the whole thing is coherent.
 
-`medh5.dataset` computes those from metadata alone, so the answers cost
+A sample is self-describing, but a *cohort* has properties no single file can
+carry: which label set everyone agrees on, which subject is in which partition,
+what the intensity distribution is, whether a class was examined everywhere or
+only where somebody got around to it.
+
+`medh5.dataset` computes all of it from metadata alone, so the answers cost
 milliseconds rather than a pass over every voxel in the study.
 
-## Manifests
+## Index the directory
 
 ```
 $ medh5 dataset index studies/ -o cohort.json
@@ -46,7 +49,7 @@ e.splits, e.quality, e.deidentified
 e.field("cohort.site_id")     # dotted or bare — same value
 ```
 
-### The digest
+### What the digest covers
 
 ```python
 manifest.sha256()
@@ -69,7 +72,7 @@ mistaken for one made from the whole.
 
 This is the link the spec's `SplitClaim.manifest_sha256` was designed around.
 
-## Splits
+## Split it
 
 ```
 $ medh5 dataset split cohort.json --group-by group_id --stratify-by site_id \
@@ -145,7 +148,7 @@ $ medh5 dataset split cohort.json --k-folds 5 --set-id cv5 --write-claims --fold
 `--fold N` says which fold is the validation set for the claims being written;
 every other fold becomes `train`.
 
-## Statistics
+## Compute the statistics
 
 ```
 $ medh5 dataset stats cohort.json --partition train --set-id cv5 --workers 8 -o stats.json
@@ -204,7 +207,7 @@ Constants derived from the whole cohort leak the test set into training, which
 is the kind of leak that does not show up as a bug — it shows up as a model that
 scores better than it deserves to.
 
-## Cross-file checks
+## Check the cohort
 
 ```
 $ medh5 dataset check cohort.json --deep
@@ -229,7 +232,7 @@ are a separate space from the format's `E`/`W` codes.
 is the difference between "somebody touched this file" and "somebody changed
 it".
 
-## Split claims in files, without a manifest
+## Audit claims without a manifest
 
 `medh5 splits` audits claims across files directly, for when you have the
 cohort but not the manifest that produced it:
@@ -240,3 +243,10 @@ $ medh5 splits cohort/*.medh5
 
 It reports conflicting claims (`W906`) and subject leakage. See
 [Curation](../reference/curation.md#split-claims).
+
+## Related
+
+- **[Cohort check codes](../reference/cohort-checks.md)** — every `C1xx`–`C5xx` finding.
+- **[Partial labels and coverage](partial-labels.md)** — what `C301` is telling you.
+- **[Curation records](../reference/curation.md#split-claims)** — the `w.split()` API.
+- **[`medh5 dataset`](../reference/cli.md#medh5-dataset-index)** — every flag.

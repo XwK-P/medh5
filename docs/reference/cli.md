@@ -367,3 +367,10 @@ medh5 conformance score SUITE RESULTS.json [--json]
 
 Score any implementation's results against a published suite. See
 [Conformance](../spec/conformance.md).
+
+## Related
+
+- **[Check a file before training on it](../guides/validate.md)** — `validate` versus `verify`.
+- **[Diagnostic codes](diagnostic-codes.md)** — every code these commands report.
+- **[Cohort check codes](cohort-checks.md)** — what `medh5 dataset check` reports.
+- **[How-to guides](../guides/index.md)** — these commands in the tasks they belong to.

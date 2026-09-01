@@ -263,3 +263,11 @@ load("brats-subregions")
 ```
 
 Ids `0` (background) and `65535` (ignore) are reserved.
+
+## Related
+
+- **[Segmentation](../guides/segmentation.md)** — writing and reading masks.
+- **[Detection and boxes](../guides/detection.md)** — boxes without an off-by-one.
+- **[Classification and change labels](../guides/classification.md)** — choosing a scope.
+- **[Partial labels and coverage](../guides/partial-labels.md)** — `annotated_classes` in full.
+- **[Specification §6–§9](../spec/medh5-1.0.md)** — the normative model.

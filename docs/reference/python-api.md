@@ -329,3 +329,10 @@ so a caller can branch on the defect rather than on the message text.
 | `medh5.curation` | [Provenance, agreement, tracking, de-identification](curation.md) |
 | `medh5.conformance` | [The conformance suite](../spec/conformance.md) |
 | `medh5.storage` | [Codecs, chunking, recompression](storage.md) |
+
+## Related
+
+- **[Write and read your first sample](../tutorials/first-sample.md)** — this API end to end.
+- **[How-to guides](../guides/index.md)** — the same calls, arranged by task.
+- **[Sample document schema](schema.md)** — the fields the writer writes.
+- **[Specification](../spec/medh5-1.0.md)** — the normative model behind it.
