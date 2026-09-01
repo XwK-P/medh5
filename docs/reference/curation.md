@@ -153,94 +153,19 @@ w.deidentification(method="dicom-psi-profile",
 **A file with no de-identification record must be treated as potentially
 identifying.** Absence is never evidence.
 
-### `medh5 scrub`
+`medh5 scrub` finds identifiers and writes this record for you. The procedure —
+including, importantly, what it cannot do — is
+[De-identify and publish](../guides/deidentify.md).
 
-```
-$ medh5 scrub out/*.medh5                                   # find, change nothing
-$ medh5 scrub out/*.medh5 --apply --date-shift-days -117 --by RAD-07
-```
+## Collections and integrity
 
-```python
-from medh5.curation import scrub
+Collections (`.medh5c`), per-object digests and `content_id` are container
+concerns rather than curation ones. They are documented together in
+[Storage](storage.md#collections).
 
-report = scrub.scan(path)                # find
-report.actionable                        # what --apply would change
-report.needs_review                      # what a person has to judge
-print(report.format())
+## Related
 
-report = scrub.apply(path, date_shift_days=-117, salt="")   # act, and attest
-```
-
-Rules: identifying DICOM keywords anywhere in `extra` or `acquisition`, DICOM
-person names, real DICOM UIDs in place of pseudonyms, unshifted dates, and free
-text no rule can judge.
-
-**UIDs are pseudonymised, not deleted.** A frame UID is how two files agree
-they share a frame of reference (§3.4); deleting it breaks registration.
-`pseudonymise(uid, salt)` is stable, so a cohort scrubbed file by file — even
-on different machines — still joins. Only a *salted* run records
-`id_mapping: external`; an unsalted hash is recoverable by anyone holding the
-original UIDs, and claiming otherwise would be the overclaim this tool exists
-to avoid.
-
-**Dates shift rather than vanish**, so intervals survive. Running scrub twice
-does not shift them twice.
-
-**What it cannot do, and says so.** It reads metadata. It does not look at
-voxels, so burned-in text, an identifiable face in a head CT and an accession
-number photographed onto a film are all outside it. The record it writes sets
-`burned_in_annotation_checked: false` and the report lists what was not
-checked. A file this tool calls clean may still be identifying.
-
-## Collections
-
-One `.medh5c` shard holding many samples, for filesystems that dislike a
-million small files:
-
-```
-$ medh5 pack cohort/*.medh5 -o shard.medh5c
-$ medh5 ls shard.medh5c
-$ medh5 unpack shard.medh5c -o restored/
-```
-
-```python
-import medh5
-
-medh5.pack(paths, "shard.medh5c")
-with medh5.open_collection("shard.medh5c") as c:
-    c["case_0001"].images["CT"].read()      # an ordinary Sample
-```
-
-Each member **is** a sample root, so every reader, validator and loader works
-on it unchanged.
-
-Packing is a container operation: chunks move as raw bytes, nothing is
-decompressed, and `content_id` is preserved. Unpacking reproduces the original
-files chunk for chunk — there is a test that compares them at that level,
-because comparing through the value API would decompress and recompress and
-prove nothing.
-
-`sample ⊂ collection` is strict containment: a collection is not a sample and
-does not pretend to be one. `medh5 validate` dispatches on the kind.
-
-## Integrity
-
-```python
-s.verify().ok
-s.verify(partial=["images/CT_tp0"])
-s.content_id
-```
-
-Every object carries a SHA-256 over its **decompressed** content; the root
-carries a Merkle `content_id` over those digests.
-
-```
-$ medh5 verify cohort/*.medh5
-$ medh5 recompress cohort/*.medh5 --profile archive     # content_id survives
-```
-
-Because the root hashes *digests*, editing a dataset without restamping it
-breaks the object digest and leaves the root matching — which is why `verify`
-checks every object and not only the root. `medh5 fix --rewrite-digests` exists
-for the case where an external tool made the edit, and it will not run without
-a reason it can record.
+- **[De-identify and publish](../guides/deidentify.md)** — the procedure.
+- **[Build and split a cohort](../guides/cohorts.md)** — where split claims come from.
+- **[Sample document schema](schema.md)** — the fields these calls write.
+- **[Storage](storage.md)** — collections, digests, `content_id`.

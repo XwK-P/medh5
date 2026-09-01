@@ -11,6 +11,12 @@ minutes.
 | **[Build and split a cohort](cohorts.md)** | Manifests, leakage-free splits, streaming statistics, cross-file checks. |
 | **[Longitudinal studies](longitudinal.md)** | Timepoints, tracking one lesion across visits, paired sampling. |
 
+## Publishing
+
+| | |
+|---|---|
+| **[De-identify and publish](deidentify.md)** | Find identifiers, apply the shift, record what was done — and what the tool cannot see. |
+
 ## Making it fast
 
 | | |

@@ -166,16 +166,34 @@ format says so rather than making the file invalid.
 
 ## Collections
 
+One `.medh5c` shard holding many samples, for filesystems that dislike a million
+small files:
+
 ```
 $ medh5 pack cohort/*.medh5 -o shard.medh5c
+$ medh5 ls shard.medh5c
+$ medh5 unpack shard.medh5c -o restored/
+```
+
+```python
+import medh5
+
+medh5.pack(paths, "shard.medh5c")
+with medh5.open_collection("shard.medh5c") as c:
+    c["case_0001"].images["CT"].read()      # an ordinary Sample
 ```
 
 A `.medh5c` holds many sample roots under `samples/<key>`. Each member **is** a
-sample root, so every reader works on it unchanged.
+sample root, so every reader, validator and loader works on it unchanged.
 
-Packing copies chunks as raw bytes — nothing is decompressed, and `content_id`
-is preserved. Unpacking reproduces the original files chunk for chunk. See
-[Curation](curation.md#collections).
+Packing is a container operation: chunks move as raw bytes, nothing is
+decompressed, and `content_id` is preserved. Unpacking reproduces the original
+files chunk for chunk — there is a test that compares them at that level,
+because comparing through the value API would decompress and recompress and
+prove nothing.
+
+`sample ⊂ collection` is strict containment: a collection is not a sample and
+does not pretend to be one. `medh5 validate` dispatches on the kind.
 
 ## Reading it without medh5
 

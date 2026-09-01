@@ -121,6 +121,7 @@ nav:
       - Longitudinal studies: guides/longitudinal.md
       - Build and split a cohort: guides/cohorts.md
       - Tune performance: guides/performance.md
+      - De-identify and publish: guides/deidentify.md
 
   - Reference:
       - reference/index.md
