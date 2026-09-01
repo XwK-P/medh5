@@ -98,72 +98,92 @@ def test_documented_cli_flags_exist(path: Path, line: str) -> None:
 
 # Claims corrected during review, each with the shape that was wrong.  A pattern
 # here is cheaper than the round trip that found it the first time.
-STALE_CLAIMS: tuple[tuple[str, str, str], ...] = (
+STALE_CLAIMS: tuple[tuple[str, str, str, str | None], ...] = (
     (
         "ignore region read as a class",
         r"dense\(\[?65535",
         "the ignore id is not a class; `layers` gives an all-zero plane. "
         "Use ignore_mask().",
+        None,
     ),
     (
         "worker_init_fn called mandatory",
         r"worker_init_fn[^.]{0,80}?(required|mandatory|not optional|must not omit)",
         "the handle cache is PID-keyed, so the callback is an eager reset, "
         "not a requirement.",
+        None,
     ),
     (
         "validation described as metadata-only",
         r"touches no voxel|never touches a voxel|costs nothing to run",
         "`structural` and `semantic` do bounded payload scans; "
         "measured 62 ms on 12.6 Mvox.",
+        None,
     ),
     (
         "glob passed to --source",
         r"--source [^\s]*\*\.dcm",
         "`--source` takes one value per occurrence; a glob is rejected "
         "as extra arguments.",
+        None,
     ),
     (
         "recompress --out given a directory",
         r"--out [^\s]*/(\s|$)",
         "`--out` is a single destination filename, not a directory.",
+        None,
     ),
     (
         "PairReport credited with resolving transforms",
         r"aligned by a transform",
         "`PairReport` holds files, pairs and cross-sectional skips; "
         "it resolves nothing.",
+        None,
     ),
     (
         "change label naming one endpoint",
         r'"response"[^)]*timepoints=\["tp[01]"\]',
         "a label describing an interval names both visits, in acquisition order.",
+        None,
+    ),
+    (
+        "cohort checked against a pre-scrub manifest",
+        r"medh5 dataset check[^\n]*# C501",
+        "`deidentified` is captured at index time; re-index after `scrub --apply` "
+        "or C501 cannot fire.",
+        # Legitimate when the block re-indexes first, which is the fix.
+        r"dataset index",
     ),
     (
         "entry-level coverage used as a loss mask",
         r"e\.annotated_class_ids for e in manifest",
         "`Entry.annotated_class_ids` unions every annotation; a loss mask needs "
         "the one being trained on.",
+        None,
     ),
     (
         "registration preflight resolved per timepoint",
         r"transform_between\(pair\.first, pair\.second\)",
         "a visit may hold several grids on different frames; resolve between the "
         "grids the images are on.",
+        None,
     ),
     (
         "inverse_id offered for graph resolution",
         r"store it under `inverse_id`",
         "`inverse_id` adds a second one-hop path and makes the reverse "
         "direction raise E501.",
+        None,
     ),
 )
 
 
 @pytest.mark.parametrize(
-    ("label", "pattern", "why"), STALE_CLAIMS, ids=lambda v: str(v)[:40]
+    ("label", "pattern", "why", "unless"), STALE_CLAIMS, ids=lambda v: str(v)[:40]
 )
-def test_corrected_claims_stay_corrected(label: str, pattern: str, why: str) -> None:
+def test_corrected_claims_stay_corrected(
+    label: str, pattern: str, why: str, unless: str | None
+) -> None:
     """Each of these was true of the documentation once, and is not true of the code.
 
     They recur because a correction lands on the page that was reported and not
@@ -183,6 +203,9 @@ def test_corrected_claims_stay_corrected(label: str, pattern: str, why: str) -> 
         text = path.read_text()
         offset = 0
         for para in text.split("\n\n"):
+            if unless and re.search(unless, para, re.I):
+                offset += len(para) + 2
+                continue
             if re.search(pattern, para, re.I) and not disclaimed.search(para):
                 line_no = text.count("\n", 0, offset) + 1
                 first = next(

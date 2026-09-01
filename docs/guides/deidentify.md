@@ -104,14 +104,30 @@ only if you actually checked — `scrub` sets it `false`, because it did not.
 **A file with no de-identification record must be treated as potentially
 identifying.** Absence is never evidence.
 
-## 4. Check the cohort, not just the files
+## 4. Re-index, then check the cohort
 
 A cohort that mixes de-identified and non-de-identified samples is the failure
-this catches, and no per-file check can see it:
+this catches, and no per-file check can see it. **Re-index first**, or it will
+not see it either:
 
 ```bash
-medh5 dataset check cohort.json        # C501 if the cohort is mixed
+medh5 dataset index out/ -o cohort.json    # scrub changed the files; re-read them
+medh5 dataset check cohort.json            # C501 if the cohort is mixed
 ```
+
+`dataset check` reads the manifest, not the samples: `deidentified` is recorded
+when the directory is indexed, and `--apply` amends the files without touching
+`cohort.json`. Check against a manifest built before the scrub and every entry
+still says "not de-identified", so a *partial* pass looks uniform and `C501` never
+fires. Measured on three samples with two scrubbed:
+
+| | |
+|---|---|
+| stale manifest | `C401` — a file changed since the scan |
+| after re-indexing | **`C501`** — the cohort is partly de-identified |
+
+`C401` is the only hint you get, and it says the files moved, not that half of
+them are still identifying.
 
 ## Related
 
