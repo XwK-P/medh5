@@ -45,8 +45,19 @@ what happened *between* them, so it is neither `tp0`'s label nor `tp1`'s, and
 reading it as either is how a progression label gets attributed to the baseline
 scan that predates it.
 
-The pair is ordered, and the order is the acquisition order declared on the
-sample — not the order you pass.
+**Pass them in acquisition order.** The writer stores the sequence you give it
+verbatim — it does not sort or normalise — and `TimepointPairSampler` matches a
+change label to a visit pair by comparing the tuples exactly. Pass
+`["tp1", "tp0"]` and the label is stored reversed, the sampler's forward pair
+finds nothing, and paired training silently sees no label at all:
+
+```python
+w.add_classification("response", {...}, timepoints=["tp1", "tp0"])   # reversed
+# sampler pair ("tp0", "tp1") -> label None.  No error, no warning.
+```
+
+Order the pair the way the sample declares its timepoints — `s.timepoints.ids`
+is that order.
 
 ## Read them back
 

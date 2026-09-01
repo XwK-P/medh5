@@ -306,12 +306,43 @@ def _schema_markdown(root: Path) -> str:
 
     out: list[str] = ["## The document", ""]
     out += _property_table(doc)
+    # Which objects accept keys the schema does not name.  Asserting a blanket
+    # policy here would be wrong --- the root is closed, but `identity` and
+    # `cohort` are deliberately open --- and asserting it *by hand* would go
+    # stale the first time that changed.  Derive it.
+    open_defs = [
+        n for n, sub in defs.items() if sub.get("additionalProperties") is True
+    ]
+    open_maps = [
+        n
+        for n, prop in doc.get("properties", {}).items()
+        if prop.get("type") == "object"
+        and prop.get("additionalProperties") not in (False, None)
+    ]
+    closed = (
+        "The document itself is **closed**: `additionalProperties` is `false`, so a "
+        "key the schema does not name is a schema failure (`E005`) rather than a "
+        "silently ignored extension. Use `extra` for anything the schema does not "
+        "define."
+    )
+    out += ["", closed, ""]
+    if open_defs:
+        out += [
+            "**Not every object is closed.** "
+            + ", ".join(f"[`{n}`](#{n.lower()})" for n in open_defs)
+            + (" sets" if len(open_defs) == 1 else " set")
+            + " `additionalProperties: true`, so site- or study-specific keys may "
+            "be added there directly.",
+            "",
+        ]
+    if open_maps:
+        out += [
+            ", ".join(f"`{n}`" for n in open_maps)
+            + (" is an open map" if len(open_maps) == 1 else " are open maps")
+            + ": the keys are yours, and the schema constrains the values.",
+            "",
+        ]
     out += [
-        "",
-        "`additionalProperties` is `false` at every level: an unrecognised key "
-        "is a schema failure, not a silently ignored extension. Use `extra` for "
-        "anything the schema does not define.",
-        "",
         "## Definitions",
         "",
         f"{len(defs)} shared definitions, referenced by `$ref` above and by each "
@@ -322,6 +353,11 @@ def _schema_markdown(root: Path) -> str:
         out += [f"### {name}", ""]
         if description := sub.get("description"):
             out += [description, ""]
+        if sub.get("additionalProperties") is True:
+            out += [
+                "Open: accepts keys beyond those listed below.",
+                "",
+            ]
         if "properties" in sub:
             out += _property_table(sub)
         else:

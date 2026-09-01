@@ -44,15 +44,29 @@ than reporting zero.
 ## When there is no path
 
 `transform_between` returns `None` rather than raising, and rather than
-composing something plausible. That is the answer to "are these two frames
-related in this file?", and `None` means no — the two grids are not comparable
-and any downstream number that pretends otherwise is invented.
+composing something plausible. But `None` is **two different answers**, and they
+call for opposite responses:
+
+- **The frames are already the same** — nothing to apply, because the arrays are
+  co-registered by construction. Two images acquired at one visit on one scanner
+  usually land here.
+- **No path exists** — the frames are unrelated in this file, and any downstream
+  number that treats them as comparable is invented.
+
+The return value cannot tell them apart, so compare the frames first:
 
 ```python
-t = s.transform_between("tp0", "tp1")
+t = s.transform_between("ct", "pet")
 if t is None:
-    ...        # register them yourself, or work per-visit
+    if s.grids["ct"].frame_uid == s.grids["pet"].frame_uid:
+        pass       # already aligned — use the arrays directly
+    else:
+        ...        # register them yourself, or work per-frame
 ```
+
+For timepoints rather than grids, `frames_of_timepoint` gives the frames a visit
+spans; a timepoint whose grids share a frame with the other visit's needs no
+transform either.
 
 Three things make the difference between a file that resolves and one that does
 not: whether a transform was stored at all, whether its `from_frame` and
