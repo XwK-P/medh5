@@ -68,8 +68,15 @@ ds = PairedPatchDataset(paths, sampler,
                         pair_sampler=TimepointPairSampler("consecutive"),
                         align="transform",
                         annotation="lesions")
-ds.report      # how many pairs were aligned by a transform, how many had none
+ds.report      # files, pairs, and cross-sectional files that contributed none
 ```
+
+`report` does **not** resolve transforms. With `align="transform"`, a pair whose
+frames have no registration is still counted as a pair, and the failure surfaces
+from `__getitem__` as `MEDH5ValidationError` — part way into an epoch. See
+[Longitudinal studies](../guides/longitudinal.md#train-on-the-pairs) for a
+preflight that resolves the pairs itself.
+
 
 See [Longitudinal](../guides/longitudinal.md#train-on-the-pairs).
 

@@ -251,7 +251,7 @@ w.add_points("fiducials", points, grid="ct", correspondence="paired")
 w.add_contours("rtstruct", polygons, grid="ct", space="world")
 w.add_mesh("surface", vertices, faces, space="world")
 w.add_classification("response", {"progressive": 1.0}, scope="sample",
-                     timepoints=["tp1"])
+                     timepoints=["tp0", "tp1"])   # the interval, not one visit
 ```
 
 ### Transforms

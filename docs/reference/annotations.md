@@ -222,7 +222,7 @@ Sample-level, per-timepoint, per-instance, or per-slice:
 
 ```python
 w.add_classification("response", {"progressive": 1.0},
-                     scope="sample", timepoints=["tp1"])
+                     scope="sample", timepoints=["tp0", "tp1"])
 w.add_classification("birads", {"birads_4": 1.0}, scope="instance",
                      scope_ids=[7], schemes=["BI-RADS"])
 ```
