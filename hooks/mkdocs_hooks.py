@@ -65,6 +65,22 @@ SCHEMA_TARGET = "reference/medh5-sample-1.0.schema.json"
 #
 # (old site path, page it now lives at) --- or an absolute URL, for a page that
 # has left the site entirely.
+# Files that were published verbatim at one path and now live at another.
+#
+# These are *not* redirects.  A meta-refresh page served where a reader asked
+# for `bench_io.py` breaks anyone who reached the URL with `curl`, and the
+# specification links to these as runnable scripts --- so the bytes are served
+# at both paths instead.  MkDocs publishes everything under `docs_dir` that is
+# not a page, which is what put them on the site in the first place.
+#
+# (old site path, path in `docs/` it now lives at)
+ASSET_ALIASES: tuple[tuple[str, str], ...] = (
+    ("design/benchmarks/bench_encodings.py", "examples/bench_encodings.py"),
+    ("design/benchmarks/bench_io.py", "examples/bench_io.py"),
+    ("design/benchmarks/bench_query.py", "examples/bench_query.py"),
+    ("design/benchmarks/reference_writer.py", "examples/reference_writer.py"),
+)
+
 REDIRECTS: tuple[tuple[str, str], ...] = (
     (
         "design/medh5-1.0-proposal.md",
@@ -278,17 +294,49 @@ def _constraints_of(schema: dict[str, Any]) -> str:
     return _cell("; ".join(parts)) if parts else ""
 
 
+def _conditional_requirements(schema: dict[str, Any]) -> dict[str, list[str]]:
+    """Property -> the conditions under which `allOf`/`if`/`then` requires it.
+
+    A property named only inside an `if`/`then` is *conditionally* required, and
+    reading requiredness off the enclosing `required` array alone leaves it blank
+    --- which documents `labelSet.classes` as optional when an inline label set
+    without it is rejected.  A reader building a document from the table would
+    build one the schema refuses.
+    """
+    out: dict[str, list[str]] = {}
+    for clause in schema.get("allOf", ()):
+        condition = clause.get("if", {}).get("properties", {})
+        needed = clause.get("then", {}).get("required", ())
+        if not condition or not needed:
+            continue
+        when = ", ".join(
+            f"`{key}` is `{spec['const']}`"
+            for key, spec in condition.items()
+            if "const" in spec
+        )
+        for name in needed:
+            out.setdefault(name, []).append(when or "a condition applies")
+    return out
+
+
 def _property_table(schema: dict[str, Any]) -> list[str]:
     """A `name | type | required | constraints | description` table."""
     required = set(schema.get("required", ()))
+    conditional = _conditional_requirements(schema)
     rows = [
         "| Property | Type | Required | Constraints | Description |",
         "|---|---|---|---|---|",
     ]
     for name, prop in schema.get("properties", {}).items():
+        if name in required:
+            req = "yes"
+        elif name in conditional:
+            req = "when " + " or ".join(conditional[name])
+        else:
+            req = ""
         rows.append(
             f"| `{name}` | {_type_of(prop)} "
-            f"| {'yes' if name in required else ''} "
+            f"| {req} "
             f"| {_constraints_of(prop)} "
             f"| {_cell(prop.get('description', ''))} |"
         )
@@ -477,6 +525,15 @@ def on_files(files: Files, config: Any) -> Files:
     if not schema.is_file():
         raise FileNotFoundError(f"the sample-document schema is not at {schema}")
     files.append(File.generated(config, SCHEMA_TARGET, content=schema.read_bytes()))
+
+    for old, new in ASSET_ALIASES:
+        source = root / "docs" / new
+        if not source.is_file():
+            raise FileNotFoundError(
+                f"{new} is listed in hooks/mkdocs_hooks.py:ASSET_ALIASES but is not "
+                f"in the documentation at {source}"
+            )
+        files.append(File.generated(config, old, content=source.read_bytes()))
 
     _redirect_stubs(files, config)
     return files
