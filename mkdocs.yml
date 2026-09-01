@@ -24,6 +24,20 @@ exclude_docs: |
 # turns MkDocs' link warnings into build failures, and CI builds with it.
 strict: true
 
+# Anchor and link validation.  MkDocs defaults `anchors` to `info`, which means
+# a link to a heading that no longer exists prints a line nobody reads and the
+# build stays green.  With `strict` above, raising these to `warn` makes every
+# broken `#fragment` a build failure --- which is what makes it safe to move a
+# page: the machine, not a reviewer, checks the 60-odd cross-document links.
+validation:
+  nav:
+    omitted_files: warn
+    not_found: warn
+  links:
+    not_found: warn
+    anchors: warn
+    unrecognized_links: warn
+
 # CHANGELOG.md lives at the repository root, where packaging and GitHub expect
 # it.  Copying it into `docs/` would leave two copies to drift apart, so it is
 # pulled into the build instead --- one source, rendered in both places.
