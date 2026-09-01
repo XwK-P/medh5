@@ -301,13 +301,8 @@ _CONSTRAINTS = (
 )
 
 
-def _constraints_of(schema: dict[str, Any]) -> str:
-    """Every constraint keyword the schema actually uses, as one cell.
-
-    The result is already Markdown --- code spans included --- so it must not be
-    passed through :func:`_cell` afterwards. Escaping after formatting is what
-    dropped three of the five values `identity.sex` allows.
-    """
+def _own_constraints(schema: dict[str, Any]) -> list[str]:
+    """The constraint keywords on this schema node, ignoring its children."""
     parts: list[str] = []
     for key in _CONSTRAINTS:
         if key not in schema:
@@ -319,6 +314,47 @@ def _constraints_of(schema: dict[str, Any]) -> str:
             parts.append(_code(value))
         else:
             parts.append(f"{key} {_code(value)}")
+    return parts
+
+
+def _constraints_of(schema: dict[str, Any]) -> str:
+    """Every constraint on a property, including the ones on its contents.
+
+    A rule reached through `items`, `additionalProperties` or `patternProperties`
+    binds the document just as tightly as one written on the property itself ---
+    `labelClass.color` caps each element at 255, and `agreement.per_class` admits
+    only numeric keys --- and reporting only the outer node documented both as
+    unconstrained.  A reader building from the table would produce a document
+    rejected with `E005` by the very schema the page renders.
+
+    The result is already Markdown, code spans included, so it must not be passed
+    through :func:`_cell` afterwards.  Escaping after formatting is what dropped
+    three of the five values `identity.sex` allows.
+    """
+    parts = _own_constraints(schema)
+
+    if inner := _own_constraints(schema.get("items") or {}):
+        parts.append("each item: " + "; ".join(inner))
+
+    extra = schema.get("additionalProperties")
+    if isinstance(extra, dict):
+        described = _type_of(extra)
+        inner = _own_constraints(extra)
+        detail = ", ".join(x for x in (described, "; ".join(inner)) if x)
+        if detail:
+            parts.append(f"each value: {detail}")
+
+    for pattern, sub in (schema.get("patternProperties") or {}).items():
+        described = _type_of(sub)
+        inner = _own_constraints(sub)
+        detail = ", ".join(x for x in (described, "; ".join(inner)) if x)
+        parts.append(f"keys matching {_code(pattern)}: {detail or 'any'}")
+
+    if schema.get("additionalProperties") is False and (
+        schema.get("patternProperties") or schema.get("properties")
+    ):
+        parts.append("no other keys")
+
     return "; ".join(parts)
 
 

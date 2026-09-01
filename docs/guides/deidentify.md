@@ -32,12 +32,18 @@ DICOM person names, real DICOM UIDs where a pseudonym belongs, unshifted dates,
 and free text no rule can judge. That last category is why the read-only pass
 exists: `needs_review` is the part no tool should decide for you.
 
-The exit code is non-zero when anything is actionable, so this doubles as a
-pipeline gate before a publication step:
+The exit code is non-zero when the scan found **anything at all** — not only
+what `--apply` could fix — so this works as a pipeline gate before a publication
+step:
 
 ```bash
-medh5 scrub out/*.medh5 || { echo "identifiers remain"; exit 1; }
+medh5 scrub out/*.medh5 || { echo "review before publishing"; exit 1; }
 ```
+
+That includes `needs_review` findings, which no `--apply` run will clear: free
+text a rule cannot judge stays a finding until a person looks at it and removes
+or approves it. The gate is deliberately "a human has signed this off", not
+"the tool ran" — so do not expect `--apply` to make it green.
 
 ## 2. Apply, with a salt
 

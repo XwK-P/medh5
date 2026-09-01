@@ -13,15 +13,30 @@ Each level includes the ones before it, so `strict` runs everything.
 
 | Level | Checks | Reads |
 |---|---|---|
-| `structural` | layout, required attributes, dtypes, shapes, identifier syntax, the [JSON Schema](schema.md) | metadata |
-| `semantic` *(default)* | cross-references resolve, geometry consistency, class ids in the label set, encoding invariants, profile requirements | metadata |
+| `structural` | layout, required attributes, dtypes, shapes, identifier syntax, the [JSON Schema](schema.md) | metadata, plus bounded payload scans |
+| `semantic` *(default)* | cross-references resolve, geometry consistency, class ids in the label set, encoding invariants, profile requirements | the same, plus layer data |
 | `integrity` | per-object digests, `content_id`, sampling-index `source_digest` currency | every byte |
 | `strict` | the same rules as `integrity`, with warnings promoted to errors | every byte |
 
-`semantic` is the default because it is the strongest check that still costs
-nothing to run: it never touches a voxel. `integrity` is the one that reads the
-whole file, so it is what to run when a file has moved between machines — not
-what to run in a training loop.
+**None of the levels is free.** Even `structural` decompresses voxels: it reads
+an image to decide whether a float array would be lossless as `int16` (capped at
+4 M values), and scans a labelmap or layers payload to find an in-band ignore
+region (capped at 64 M). `semantic` additionally reads layer data to judge
+encoding optimality, under the same 64 M cap. The caps bound the work on a large
+volume; they do not make it metadata.
+
+Measured on a 12.6 Mvox, 18.7 MB sample — against a metadata-only `open()` of
+0.5 ms:
+
+| | |
+|---|---|
+| `structural` | 62 ms |
+| `semantic` | 62 ms |
+| `integrity` | 143 ms |
+
+So `semantic` is the right default and `integrity` is what to run after a file
+has moved between machines — but neither belongs in a hot path, and a
+per-iteration `validate` will cost you.
 
 `strict` runs **no additional rules**. It changes what counts as failure: every
 `W9xx` is reported as an error, and the promotion reaches the counts, not just
