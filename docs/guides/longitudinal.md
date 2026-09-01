@@ -163,12 +163,25 @@ construction. To find those before you start, resolve them yourself:
 ```python
 import medh5
 
+def frame(sample, timepoint):
+    grids = sorted(sample.at(timepoint).grids)
+    return sample.grids[grids[0]].frame_uid if grids else None
+
 for path in paths:
     with medh5.open(path) as s:
         for pair in TimepointPairSampler("consecutive").pairs(s):
-            if s.transform_between(pair.first, pair.second) is None:
-                print(f"{path}: {pair.first} -> {pair.second} has no transform")
+            if s.transform_between(pair.first, pair.second) is not None:
+                continue                      # a transform relates them
+            if frame(s, pair.first) == frame(s, pair.second):
+                continue                      # same frame, none needed
+            print(f"{path}: {pair.first} -> {pair.second} has no transform")
 ```
+
+The frame comparison is not optional. `transform_between` answers `None` for two
+different situations, and only one of them is a problem: two visits already on
+one frame of reference need no transform, and `PairedPatchDataset` accepts them.
+Checking for `None` alone reports those as missing registrations, which is how
+you end up registering data that is already aligned.
 
 ## Label the change
 
