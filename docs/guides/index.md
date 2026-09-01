@@ -4,6 +4,15 @@ Answers to specific questions, assuming you already know roughly what a sample
 is. If you do not, [the tutorial](../tutorials/first-sample.md) is twenty
 minutes.
 
+## Annotating
+
+| | |
+|---|---|
+| **[Segmentation](segmentation.md)** | Write masks, let the encoding be chosen, read them back for a loss. |
+| **[Detection and boxes](detection.md)** | Boxes at voxel edges, cropping without an off-by-one, 2-D on a slice. |
+| **[Classification and change labels](classification.md)** | Choosing a scope; labels that span an interval. |
+| **[Partial labels and coverage](partial-labels.md)** | Recording what you looked for, not just what you found. |
+
 ## Getting data in
 
 | | |
@@ -12,14 +21,19 @@ minutes.
 | **[Import from NIfTI and nnU-Net](import-nifti.md)** | Volumes and masks as separate files; nnU-Net v2 datasets. |
 | **[Migrate from 0.x](migrate-0x.md)** | The one-way door, and the four decisions it cannot make for you. |
 
+## Working across visits
+
+| | |
+|---|---|
+| **[Longitudinal studies](longitudinal.md)** | Timepoints, tracking one lesion across visits, paired sampling. |
+| **[Registration between visits](registration.md)** | Transforms, the frame graph, and what `None` means. |
+
 ## Working with a cohort
 
 | | |
 |---|---|
 | **[Build and split a cohort](cohorts.md)** | Manifests, leakage-free splits, streaming statistics, cross-file checks. |
-| **[Longitudinal studies](longitudinal.md)** | Timepoints, tracking one lesion across visits, paired sampling. |
-| **[Registration between visits](registration.md)** | Transforms, the frame graph, and what `None` means. |
-| **[Classification and change labels](classification.md)** | Choosing a scope; labels that span an interval. |
+| **[Check a file before training on it](validate.md)** | `validate` versus `verify`, choosing a level, reading a code. |
 
 ## Getting data out
 

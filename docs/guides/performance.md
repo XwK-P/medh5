@@ -31,7 +31,19 @@ class counts for a few hundred bytes rather than a decompression pass.
 scanning the labels and records what it did:
 
 ```python
-batch["meta"]["used_index"]        # False -> you are paying for a scan
+patch = batch["meta"]["patch"]
+patch["strategy"]       # "foreground" or "uniform"
+patch["used_index"]     # only meaningful when strategy == "foreground"
+```
+
+Read the two together. A **uniform** draw never consults an index, and reports
+`used_index=True` because that is the field's default — not because an index was
+used. It is the `foreground` draws reporting `False` that mean you are paying
+for a scan:
+
+```python
+scanning = [p for p in patches
+            if p["strategy"] == "foreground" and not p["used_index"]]
 ```
 
 An index carries the digest of the annotation it derives from, so it goes

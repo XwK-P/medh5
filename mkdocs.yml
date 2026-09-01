@@ -115,9 +115,13 @@ nav:
   - Tutorials:
       - tutorials/index.md
       - Write and read your first sample: tutorials/first-sample.md
+      - Your first training run: tutorials/first-training-run.md
 
   - How-to guides:
       - guides/index.md
+      - Segmentation: guides/segmentation.md
+      - Detection and boxes: guides/detection.md
+      - Partial labels and coverage: guides/partial-labels.md
       - Longitudinal studies: guides/longitudinal.md
       - Registration between visits: guides/registration.md
       - Classification and change labels: guides/classification.md
@@ -126,6 +130,7 @@ nav:
       - Export to other formats: guides/export.md
       - Migrate from 0.x: guides/migrate-0x.md
       - Build and split a cohort: guides/cohorts.md
+      - Check a file before training on it: guides/validate.md
       - De-identify and publish: guides/deidentify.md
       - Tune performance: guides/performance.md
 
