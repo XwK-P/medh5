@@ -102,4 +102,4 @@ the package; `medh5.FORMAT_VERSION` is the format.
 
 0.x files are not readable by 1.0 and are not meant to be: `medh5 migrate`
 converts them once, reporting every decision it took. See
-[Converters](reference/converters.md#migrating-from-0x).
+[Converters](guides/migrate-0x.md).

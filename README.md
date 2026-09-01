@@ -197,7 +197,7 @@ encodings and diagnostic codes; it may not change what an existing one means
 (spec §16). The **package** follows semantic versioning from 1.0.0.
 
 0.x files are not readable by 1.0 and are not meant to be — `medh5 migrate`
-converts them once. See [Converters](https://medh5.readthedocs.io/en/latest/reference/converters/#migrating-from-0x).
+converts them once. See [Converters](https://medh5.readthedocs.io/en/latest/guides/migrate-0x/).
 
 ## License
 
