@@ -96,13 +96,32 @@ the reverse direction comes back `None`:
 | displacement / B-spline | claim only | resolves | **`None`** |
 
 So if you need the reverse direction for a non-affine registration, compute it at
-write time and store it under `inverse_id`. Otherwise every reader that needs it
-either recomputes it or silently goes without.
+write time and **store it as its own transform** — a second `add_transform` with
+`from_frame` and `to_frame` swapped. It is then an ordinary forward edge, and
+both directions resolve:
 
-One thing to know when you do: a stored inverse is itself an edge in the frame
-graph, so it can give two equally short paths between the same pair of frames.
-Resolution refuses to choose (`E501`) rather than assert an alignment nobody
-picked — select the one you want by id from `sample.transforms`.
+```python
+w.add_transform("tp0_to_tp1", kind="displacement", field=fwd,
+                from_frame="frame-tp0", to_frame="frame-tp1", field_grid="ct_tp0")
+w.add_transform("tp1_to_tp0", kind="displacement", field=back,
+                from_frame="frame-tp1", to_frame="frame-tp0", field_grid="ct_tp1")
+```
+
+**Do not link them with `inverse_id`.** That makes `can_invert()` true for the
+forward transform, so the graph gains an `InverseTransform` edge *in addition to*
+the sibling's own edge — two distinct one-hop paths between the same frames, and
+resolution refuses to choose between them:
+
+| what you write | forward | reverse |
+|---|---|---|
+| `invertible=True` only | resolves | `None` |
+| **two independent transforms** | **resolves** | **resolves** |
+| linked with `inverse_id` | resolves | raises `E501` |
+
+`inverse_id` is for `t.inverse()` — retrieving the stored inverse directly from a
+transform you already hold. It is not a way to make `transform_between` work
+backwards, and using it for that makes the reverse direction worse than leaving
+it out.
 
 ## Related
 

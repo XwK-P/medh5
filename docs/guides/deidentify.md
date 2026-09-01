@@ -41,9 +41,26 @@ medh5 scrub out/*.medh5 || { echo "review before publishing"; exit 1; }
 ```
 
 That includes `needs_review` findings, which no `--apply` run will clear: free
-text a rule cannot judge stays a finding until a person looks at it and removes
-or approves it. The gate is deliberately "a human has signed this off", not
-"the tool ran" — so do not expect `--apply` to make it green.
+text a rule cannot judge stays a finding until the metadata itself changes.
+
+**There is no approval state.** A report records findings, not decisions about
+them, so a benign free-text field keeps this gate red on every future scan no
+matter who has looked at it. Only editing or removing the flagged metadata makes
+it green.
+
+If you want a gate that fails on what can be fixed and merely reports the rest,
+build it on `actionable` rather than on the exit code:
+
+```python
+from medh5.curation import scrub
+
+reports = [scrub.scan(p) for p in paths]
+blocking = [r for r in reports if r.actionable]
+for r in reports:
+    for f in r.needs_review:
+        print(f"review: {r.path}: {f}")
+raise SystemExit(1 if blocking else 0)
+```
 
 ## 2. Apply, with a salt
 
