@@ -69,10 +69,22 @@ for batch in loader:
     break
 ```
 
-**`worker_init_fn` is not optional** with `num_workers > 0`. HDF5 handles must
-not cross a `fork`, so the handle cache is keyed by process id and a forked child
-abandons the parent's handles rather than closing descriptors the parent still
-owns. Leave it out and you get corruption that looks like a data bug.
+`worker_init_fn` drops handles inherited across a `fork`. It is **recommended
+but not required for correctness**: the handle cache is PID-keyed and re-checks
+ownership on every access, so a forked worker abandons the parent's handles on
+first use rather than reading through or closing them. The callback just does
+that reset eagerly, at worker start, instead of lazily.
+
+If you need your one `worker_init_fn` slot for seeding or other setup, call it
+from your own:
+
+```python
+from medh5.torch import worker_init_fn as medh5_worker_init
+
+def init(worker_id):
+    medh5_worker_init(worker_id)
+    seed_everything(worker_id)
+```
 
 `collate` stacks tensors and leaves everything else as lists — which is why
 `subject_id` comes back as a list of strings rather than failing inside

@@ -106,10 +106,22 @@ loader = DataLoader(ds, batch_size=2, num_workers=8,
                     persistent_workers=True)
 ```
 
-`worker_init_fn` is required for `num_workers > 0`. HDF5 handles must not cross
-a `fork`: the handle cache is keyed by PID, and a forked child **abandons** the
-parent's handles rather than closing them — closing a descriptor the parent
-still owns is how a dataloader corrupts a file it is only reading.
+`worker_init_fn` drops handles inherited across a `fork`. It is **recommended
+but not required for correctness**: the handle cache is PID-keyed and re-checks
+ownership on every access, so a forked worker abandons the parent's handles on
+first use rather than reading through or closing them. The callback just does
+that reset eagerly, at worker start, instead of lazily.
+
+If you need your one `worker_init_fn` slot for seeding or other setup, call it
+from your own:
+
+```python
+from medh5.torch import worker_init_fn as medh5_worker_init
+
+def init(worker_id):
+    medh5_worker_init(worker_id)
+    seed_everything(worker_id)
+```
 
 A 10-epoch soak over the cache leaves the handle count and the descriptor count
 flat; there is a test that asserts it.

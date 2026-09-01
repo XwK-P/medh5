@@ -189,19 +189,35 @@ is not trusted.
 ### Normalisation from the training split only
 
 `--partition train` is how you compute normalisation constants without looking
-at your test set. From Python, select the partition off the manifest and pass
-only those paths:
+at your test set. From Python, select the partition off the **split** — it is
+what knows the assignment — using the same `split` object you made above:
 
 ```python
-from medh5.dataset import Manifest, compute_stats
+from medh5.dataset import compute_stats
 
-manifest = Manifest.load("cohort.json")
-train = [e.path for e in manifest
-         if any(c["set_id"] == "cv5" and c["partition"] == "train" for c in e.splits)]
+train = [e.path for e in manifest if split.partition_of(e) == "train"]
 stats = compute_stats(train, images=["CT"], workers=8)
 mean, std = stats.normalization("CT")
 weights = stats.class_weights(scheme="inverse_frequency")
 ```
+
+**Do not read the partition off `entry.splits` straight after `--write-claims`.**
+Writing claims amends the *sample files*; it does not update the manifest you
+loaded, or the `cohort.json` on disk. `entry.splits` still holds whatever the
+scan saw, so the filter matches nothing and you silently compute statistics over
+an empty set. Either use `split.partition_of()` as above, or re-scan the
+directory first:
+
+```python
+from medh5.dataset import scan
+
+manifest, _ = scan("studies/")     # now entry.splits reflects the claims
+```
+
+If you are re-deriving the split in a later session rather than reusing the
+object, pass `make_splits` **exactly** the arguments that produced it — set id,
+`group_by`, `stratify_by`, ratios or folds, and seed. It is deterministic given
+those, and quietly a different split without them.
 
 Constants derived from the whole cohort leak the test set into training, which
 is the kind of leak that does not show up as a bug — it shows up as a model that

@@ -114,9 +114,10 @@ loader = DataLoader(dataset, batch_size=2, num_workers=8,
                     worker_init_fn=worker_init_fn, collate_fn=collate)
 ```
 
-`worker_init_fn` is required for `num_workers > 0`: HDF5 handles must not cross
-a `fork`, so the cache is PID-keyed and a forked child abandons the parent's
-handles rather than closing descriptors the parent still owns.
+`worker_init_fn` drops handles inherited across a `fork`. It is recommended
+rather than required: the handle cache is PID-keyed and re-checks ownership on
+every access, so a forked worker abandons the parent's handles on first use
+rather than reading through or closing them.
 
 ## Command line
 

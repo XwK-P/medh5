@@ -101,8 +101,9 @@ loader = DataLoader(dataset, batch_size=2, num_workers=8,
                     worker_init_fn=worker_init_fn, collate_fn=collate)
 ```
 
-`worker_init_fn` is **required** for `num_workers > 0`: HDF5 handles must not
-cross a `fork`. See [PyTorch and MONAI](../reference/torch.md#the-dataloader).
+`worker_init_fn` drops handles inherited across a `fork`. It is recommended
+rather than required — the cache is PID-keyed and resets on first use in a
+forked worker either way. See [PyTorch and MONAI](../reference/torch.md#the-dataloader).
 
 ## The numbers
 
