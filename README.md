@@ -40,42 +40,30 @@ Reading and writing needs only `h5py`, `hdf5plugin` and `numpy`. Extras:
 
 ## Documentation
 
-[**docs/**](https://medh5.readthedocs.io/en/latest/) · [Getting started](https://medh5.readthedocs.io/en/latest/tutorials/first-sample/) ·
-[Concepts](https://medh5.readthedocs.io/en/latest/explanation/data-model/) · [Specification](https://medh5.readthedocs.io/en/latest/spec/medh5-1.0/)
+**[medh5.readthedocs.io](https://medh5.readthedocs.io/)** — tutorials, how-to
+guides, the Python and CLI reference, and the normative specification.
 
-[Python API](https://medh5.readthedocs.io/en/latest/reference/python-api/) · [CLI](https://medh5.readthedocs.io/en/latest/reference/cli/) ·
-[Annotations](https://medh5.readthedocs.io/en/latest/reference/annotations/) · [Longitudinal](https://medh5.readthedocs.io/en/latest/guides/longitudinal/) ·
-[Training](https://medh5.readthedocs.io/en/latest/reference/torch/) · [Converters](https://medh5.readthedocs.io/en/latest/reference/converters/) ·
-[Curation](https://medh5.readthedocs.io/en/latest/reference/curation/) · [Cohorts](https://medh5.readthedocs.io/en/latest/guides/cohorts/) ·
-[Storage](https://medh5.readthedocs.io/en/latest/reference/storage/) · [Conformance](https://medh5.readthedocs.io/en/latest/spec/conformance/)
+[Write your first sample](https://medh5.readthedocs.io/en/latest/tutorials/first-sample/) ·
+[How-to guides](https://medh5.readthedocs.io/en/latest/guides/) ·
+[Python API](https://medh5.readthedocs.io/en/latest/reference/python-api/) ·
+[CLI](https://medh5.readthedocs.io/en/latest/reference/cli/) ·
+[Specification](https://medh5.readthedocs.io/en/latest/spec/medh5-1.0/)
 
 ## What the format is for
 
-**One file per subject, not per scan.** A sample is a *subject*, and a subject
-has visits. Longitudinal work — change detection, response assessment, lesion
-tracking, follow-up registration — lives inside one file, which also means
-assigning whole files to train and test cannot leak a patient between them.
+- **One file per subject, not per scan** — every visit in one place, so
+  longitudinal work has a referent and splitting by file cannot leak a patient.
+- **Geometry is stated once and never guessed** — declared grids, boxes at voxel
+  edges, and converters that refuse rather than invent.
+- **Absence is not silence** — a class examined and not found is recorded as
+  such, which is a different training signal from one nobody examined.
+- **Every claim is checkable** — per-object digests, a Merkle `content_id` that
+  survives recompression, a stable diagnostic-code table, and a 103-case
+  conformance corpus.
+- **Reading a patch is fast** — a 64³ multi-class patch in ~4 ms, and O(1)
+  foreground sampling once `build_index()` has run.
 
-**Geometry is stated once and never guessed.** Every array is bound to a
-declared grid with spacing, origin and direction. A box sits at voxel edges and
-an integer index is a voxel centre, both written down. Converting to NIfTI or
-DICOM moves numbers between conventions explicitly, and refuses when it cannot.
-
-**Absence is not silence.** `class_ids` says what an annotation contains;
-`annotated_class_ids` says what was *looked for*. A class searched for and not
-found is a usable negative example; a class nobody examined is not. Collapsing
-the two is how a model learns a site's scans have no spleens.
-
-**Every claim is checkable.** Per-object SHA-256 over decompressed content and
-a Merkle `content_id` that survives recompression; a validator with a stable
-diagnostic-code table; and a conformance corpus with one case per code.
-
-**Reading a patch is fast.** A 64³ multi-class patch reads in ~4 ms, against
-117 ms measured on 0.x before chunk sizing and the sampling index existed.
-Foreground sampling is O(1) in the volume — 0.09 ms at 1 Mvox and at 20 Mvox —
-but only once `build_index()` has written the index; without one the same draw
-scans the labels, and costs 1.4 ms and 21 ms. `medh5 bench` reproduces the
-current figures against their targets on your own hardware.
+[The reasoning behind each](https://medh5.readthedocs.io/en/latest/).
 
 ## Write a sample
 
