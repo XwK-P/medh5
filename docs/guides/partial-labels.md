@@ -73,17 +73,34 @@ background. It marks voxels that must not contribute to a loss in *either*
 direction:
 
 ```python
-ann.has_ignore_region
-ann.ignore_mask()           # the mask to exclude from the loss
-ann.ignore_mask(roi=roi)    # or just the patch you read
+ann.has_ignore_region       # is there one at all?
 ```
 
-**Read it with `ignore_mask()`, not `dense([65535])`.** The ignore id is not an
-ordinary class: under `layers` — the encoding chosen whenever your classes
-overlap — it is written *into* the layers rather than carried as its own plane,
-so `dense([65535])` finds nothing in the class map and hands back an all-zero
-mask. Nothing errors; the ignored voxels simply go into your loss.
-`ignore_mask()` gives one answer per voxel on every encoding.
+**Do not read it with `dense([65535])`.** The ignore id is not an ordinary
+class: under `layers` — the encoding chosen whenever your classes overlap — it
+is written *into* the layers rather than carried as its own plane, so
+`dense([65535])` finds nothing in the class map and hands back an all-zero mask.
+Nothing errors; the ignored voxels simply go into your loss.
+
+**Where the region lives depends on the encoding**, so read it through both
+routes. `labelmap` and `layers` carry it in band and expose `ignore_mask()`;
+`bitmask` and `probmap` cannot represent a reserved id in band, so theirs is a
+separate `mask` annotation named by `header.ignore_mask`. Ask a `bitmask` for
+`ignore_mask()` and you get `AttributeError`, with `has_ignore_region` already
+True:
+
+```python
+def ignore_region(sample, ann, roi=None):
+    """The ignore region, wherever this encoding keeps it."""
+    referenced = ann.header.ignore_mask
+    if referenced:                                 # a separate mask annotation
+        return sample.annotations[referenced].dense(roi=roi)
+    reader = getattr(ann, "ignore_mask", None)     # in band: labelmap, layers
+    return reader(roi=roi) if reader else None
+```
+
+Verified across all three: the same 64 ignored voxels from `labelmap`, `layers`
+and `bitmask`.
 
 Use it for a truncated field of view, an unreadable region, a structure a rater
 declined to call. Do not use it for "background": background is a positive

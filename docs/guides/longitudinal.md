@@ -155,10 +155,16 @@ contributed none. It does **not** check registrations: it resolves no
 transforms, so a file that needs one and lacks it is counted as a perfectly good
 pair.
 
-There is no silent fallback — but the failure is deferred. `align="transform"`
-on a pair with no transform between its frames raises `MEDH5ValidationError`
-from `__getitem__`, which means part way into an epoch rather than at
-construction. To find those before you start, resolve them yourself:
+The failure is also deferred, and in one case absent. `align="transform"` on a
+pair whose visits share no transform at all raises `MEDH5ValidationError` from
+`__getitem__` — part way into an epoch rather than at construction.
+
+**And a visit with several frames can misalign silently.** `_map_center`
+resolves the transform per *timepoint* while reading per *grid*, so when a visit
+holds a CT grid and a PET grid on different frames and only the CT pair is
+registered, a PET dataset is moved by the CT registration. The patches come back
+the right shape from the wrong place, and nothing raises. Until that is fixed,
+run the preflight below rather than relying on the exception:
 
 ```python
 import medh5

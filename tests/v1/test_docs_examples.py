@@ -147,6 +147,13 @@ STALE_CLAIMS: tuple[tuple[str, str, str, str | None], ...] = (
         None,
     ),
     (
+        "ignore_mask() promised on every encoding",
+        r"ignore_mask\(\)[^.\n]{0,60}(every encoding|all encodings|any encoding)",
+        "only labelmap and layers implement it; bitmask and probmap reference a "
+        "separate mask annotation.",
+        None,
+    ),
+    (
         "cohort checked against a pre-scrub manifest",
         r"medh5 dataset check[^\n]*# C501",
         "`deidentified` is captured at index time; re-index after `scrub --apply` "

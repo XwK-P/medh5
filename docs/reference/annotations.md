@@ -36,15 +36,23 @@ An **ignore** region (class `65535`) marks voxels that must not contribute to a
 loss in either direction:
 
 ```python
-ann.has_ignore_region
-ann.ignore_mask()          # one answer per voxel, on every encoding
-ann.ignore_mask(roi=roi)
+ann.has_ignore_region      # is there one at all?
+ann.header.ignore_mask     # the id of a separate mask annotation, or None
+ann.ignore_mask(roi=roi)   # labelmap and layers only --- see below
 ```
 
-Read it through `ignore_mask()` rather than `dense([65535])`. The ignore id is
-not an ordinary class: `layers` writes it *into* the layers rather than carrying
-it as its own plane, so asking `dense()` for it returns an all-zero mask with no
-error --- and the ignored voxels end up in the loss.
+Do not read it through `dense([65535])`. The ignore id is not an ordinary class:
+`layers` writes it *into* the layers rather than carrying it as its own plane, so
+asking `dense()` for it returns an all-zero mask with no error --- and the
+ignored voxels end up in the loss.
+
+Where the region lives depends on the encoding. `labelmap` and `layers` hold it
+in band and expose `ignore_mask()`; `bitmask` and `probmap` cannot represent a
+reserved id in band, so theirs is a separate `mask` annotation named by
+`header.ignore_mask`, and `ignore_mask()` is not defined on them ---
+`has_ignore_region` is `True` and the call raises `AttributeError`.
+[Partial labels and coverage](../guides/partial-labels.md#some-voxels-i-cannot-label-either-way)
+has a reader that handles both.
 
 ## Voxel annotations
 
