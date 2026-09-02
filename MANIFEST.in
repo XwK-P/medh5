@@ -6,6 +6,7 @@ include README.md
 include CHANGELOG.md
 include CLAUDE.md
 recursive-include docs *.md *.json *.py
+recursive-include design *.md
 recursive-include schemas *.json
 recursive-include tests *.py
 recursive-include medh5 py.typed *.json

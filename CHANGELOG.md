@@ -527,7 +527,7 @@ the files 1.0.0 does, and `__format_version__` stays `"1.0"`.
 A clean-slate reimplementation of the format. **Not backward compatible with 0.x**, by design: a
 1.0 reader refuses a 0.x file rather than guessing, and a 0.x reader raises on the missing
 `schema_version`. See [the specification](docs/spec/medh5-1.0.md) and
-[the implementation plan](docs/design/medh5-1.0-implementation-plan.md).
+[the implementation plan](design/medh5-1.0-implementation-plan.md).
 
 ### The model
 

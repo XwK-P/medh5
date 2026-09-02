@@ -19,7 +19,11 @@ import numpy as np
 OUT = os.environ.get("MEDH5_PROTOTYPE_OUT", os.getcwd())
 PATH = os.path.join(OUT, "case_0001.medh5")
 HERE = os.path.dirname(os.path.abspath(__file__))
-SCHEMA = os.path.join(HERE, "..", "..", "..", "schemas", "medh5-sample-1.0.schema.json")
+# `docs/examples/` -> repository root is two levels, not three.  Deriving it
+# from HERE rather than hard-coding the hops keeps this working if the
+# directory moves again.
+ROOT = os.path.dirname(os.path.dirname(HERE))
+SCHEMA = os.path.join(ROOT, "schemas", "medh5-sample-1.0.schema.json")
 S = h5py.string_dtype()
 FRAME0 = "pseudo:1.2.826.0.1.3680043.9.7.100"   # baseline study frame
 FRAME1 = "pseudo:1.2.826.0.1.3680043.9.7.101"   # follow-up: a NEW frame (spec 3.4)

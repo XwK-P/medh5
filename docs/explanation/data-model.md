@@ -1,7 +1,7 @@
 # Concepts
 
 Ten minutes on the data model. The normative statement of all of this is the
-[specification](spec/medh5-1.0.md); this page is the shape of it.
+[specification](../spec/medh5-1.0.md); this page is the shape of it.
 
 ## A sample is a subject
 
@@ -147,7 +147,7 @@ whatever source had them.
 
 Overlapping classes (a lesion inside the liver) are expressible in every
 encoding that supports them, and transcoding between any pair is lossless.
-See [Annotations](annotations.md).
+See [Annotations](../reference/annotations.md).
 
 ## Provenance and quality
 
@@ -185,6 +185,12 @@ be asked to hold it to them.
 s.profiles   # {"core", "seg", "det", "curation", "longitudinal"}
 ```
 
-`core`, `seg`, `det`, `cls`, `reg`, `curation`, `multiscale`, `training`,
-`longitudinal`. A tool that needs boxes can require `det` and get a specific
-diagnostic instead of a `KeyError` three layers down.
+The nine profiles, and the four validation levels that go with them, are in
+[Profiles and validation levels](../reference/profiles-and-levels.md).
+
+## Related
+
+- **[Partial labels and coverage](../guides/partial-labels.md)** — the coverage contract as a task.
+- **[Longitudinal studies](../guides/longitudinal.md)** — what one-file-per-subject buys.
+- **[What the converters refuse, and why](refusals.md)** — geometry never being guessed.
+- **[Specification](../spec/medh5-1.0.md)** — the normative statement of all of it.

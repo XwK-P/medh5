@@ -14,8 +14,8 @@ ground truth — in a single self-describing HDF5 file.**
 Multi-modality images, segmentation in five encodings, detection boxes,
 keypoints, contours, meshes, classification, registration between visits,
 provenance and quality records, and per-object integrity digests. Format
-version **1.0**, with a [normative specification](docs/spec/medh5-1.0.md) and a
-[103-case conformance suite](docs/conformance.md) any implementation can run.
+version **1.0**, with a [normative specification](https://medh5.readthedocs.io/en/latest/spec/medh5-1.0/) and a
+[103-case conformance suite](https://medh5.readthedocs.io/en/latest/spec/conformance/) any implementation can run.
 
 ```python
 import medh5
@@ -40,42 +40,30 @@ Reading and writing needs only `h5py`, `hdf5plugin` and `numpy`. Extras:
 
 ## Documentation
 
-[**docs/**](docs/index.md) · [Getting started](docs/getting-started.md) ·
-[Concepts](docs/concepts.md) · [Specification](docs/spec/medh5-1.0.md)
+**[medh5.readthedocs.io](https://medh5.readthedocs.io/)** — tutorials, how-to
+guides, the Python and CLI reference, and the normative specification.
 
-[Python API](docs/python-api.md) · [CLI](docs/cli.md) ·
-[Annotations](docs/annotations.md) · [Longitudinal](docs/longitudinal.md) ·
-[Training](docs/training.md) · [Converters](docs/converters.md) ·
-[Curation](docs/curation.md) · [Cohorts](docs/cohorts.md) ·
-[Storage](docs/file-format.md) · [Conformance](docs/conformance.md)
+[Write your first sample](https://medh5.readthedocs.io/en/latest/tutorials/first-sample/) ·
+[How-to guides](https://medh5.readthedocs.io/en/latest/guides/) ·
+[Python API](https://medh5.readthedocs.io/en/latest/reference/python-api/) ·
+[CLI](https://medh5.readthedocs.io/en/latest/reference/cli/) ·
+[Specification](https://medh5.readthedocs.io/en/latest/spec/medh5-1.0/)
 
 ## What the format is for
 
-**One file per subject, not per scan.** A sample is a *subject*, and a subject
-has visits. Longitudinal work — change detection, response assessment, lesion
-tracking, follow-up registration — lives inside one file, which also means
-assigning whole files to train and test cannot leak a patient between them.
+- **One file per subject, not per scan** — every visit in one place, so
+  longitudinal work has a referent and splitting by file cannot leak a patient.
+- **Geometry is stated once and never guessed** — declared grids, boxes at voxel
+  edges, and converters that refuse rather than invent.
+- **Absence is not silence** — a class examined and not found is recorded as
+  such, which is a different training signal from one nobody examined.
+- **Every claim is checkable** — per-object digests, a Merkle `content_id` that
+  survives recompression, a stable diagnostic-code table, and a 103-case
+  conformance corpus.
+- **Reading a patch is fast** — a 64³ multi-class patch in ~4 ms, and O(1)
+  foreground sampling once `build_index()` has run.
 
-**Geometry is stated once and never guessed.** Every array is bound to a
-declared grid with spacing, origin and direction. A box sits at voxel edges and
-an integer index is a voxel centre, both written down. Converting to NIfTI or
-DICOM moves numbers between conventions explicitly, and refuses when it cannot.
-
-**Absence is not silence.** `class_ids` says what an annotation contains;
-`annotated_class_ids` says what was *looked for*. A class searched for and not
-found is a usable negative example; a class nobody examined is not. Collapsing
-the two is how a model learns a site's scans have no spleens.
-
-**Every claim is checkable.** Per-object SHA-256 over decompressed content and
-a Merkle `content_id` that survives recompression; a validator with a stable
-diagnostic-code table; and a conformance corpus with one case per code.
-
-**Reading a patch is fast.** A 64³ multi-class patch reads in ~4 ms, against
-117 ms measured on 0.x before chunk sizing and the sampling index existed.
-Foreground sampling is O(1) in the volume — 0.09 ms at 1 Mvox and at 20 Mvox —
-but only once `build_index()` has written the index; without one the same draw
-scans the labels, and costs 1.4 ms and 21 ms. `medh5 bench` reproduces the
-current figures against their targets on your own hardware.
+[The reasoning behind each](https://medh5.readthedocs.io/en/latest/).
 
 ## Write a sample
 
@@ -126,9 +114,10 @@ loader = DataLoader(dataset, batch_size=2, num_workers=8,
                     worker_init_fn=worker_init_fn, collate_fn=collate)
 ```
 
-`worker_init_fn` is required for `num_workers > 0`: HDF5 handles must not cross
-a `fork`, so the cache is PID-keyed and a forked child abandons the parent's
-handles rather than closing descriptors the parent still owns.
+`worker_init_fn` drops handles inherited across a `fork`. It is recommended
+rather than required: the handle cache is PID-keyed and re-checks ownership on
+every access, so a forked worker abandons the parent's handles on first use
+rather than reading through or closing them.
 
 ## Command line
 
@@ -162,7 +151,7 @@ medh5 conformance publish suite/           # the suite, for another implementati
 |---|---|
 | **NIfTI** | affine and voxels bit-identical on round trip; RAS↔LPS is a sign flip, never a resample |
 | **DICOM** | slices ordered by geometry, spacing measured between origins, modality LUT stored not applied, tags on an explicit allow-list; slices that disagree about orientation, spacing or rescale are refused rather than read off the first one |
-| **DICOM SEG** | frames placed by geometry; overlap and `FRACTIONAL` survive; segments matched by label, not number |
+| **DICOM SEG** | frames placed by geometry; segments matched by label, not number; import preserves overlap and `FRACTIONAL`, export writes `BINARY` |
 | **RTSTRUCT** | contours stay contours; rasterisation is opt-in and recorded in provenance |
 | **nnU-Net v2** | class ids kept; region labels become label-set DAG parents; `dataset.json` round-trips |
 | **MONAI** | `to_metatensor` gives a `MetaTensor` with the correct affine |
@@ -197,7 +186,7 @@ encodings and diagnostic codes; it may not change what an existing one means
 (spec §16). The **package** follows semantic versioning from 1.0.0.
 
 0.x files are not readable by 1.0 and are not meant to be — `medh5 migrate`
-converts them once. See [Converters](docs/converters.md#migrating-from-0x).
+converts them once. See [Converters](https://medh5.readthedocs.io/en/latest/guides/migrate-0x/).
 
 ## License
 

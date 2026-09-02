@@ -139,7 +139,7 @@ $ medh5 index build case_0001.medh5
 
 ## Where to go next
 
-- **[Concepts](concepts.md)** — the model behind the API.
-- **[Converters](converters.md)** — you probably have NIfTI or DICOM, not this.
-- **[Training](training.md)** — samplers, transforms, MONAI, and the numbers.
-- **[Specification](spec/medh5-1.0.md)** — when you need the normative answer.
+- **[Concepts](../explanation/data-model.md)** — the model behind the API.
+- **[Converters](../reference/converters.md)** — you probably have NIfTI or DICOM, not this.
+- **[Training](../reference/torch.md)** — samplers, transforms, MONAI, and the numbers.
+- **[Specification](../spec/medh5-1.0.md)** — when you need the normative answer.

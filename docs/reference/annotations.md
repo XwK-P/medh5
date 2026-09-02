@@ -36,9 +36,23 @@ An **ignore** region (class `65535`) marks voxels that must not contribute to a
 loss in either direction:
 
 ```python
-ann.has_ignore_region
-ann.dense([65535])
+ann.has_ignore_region      # is there one at all?
+ann.header.ignore_mask     # the id of a separate mask annotation, or None
+ann.ignore_mask(roi=roi)   # labelmap and layers only --- see below
 ```
+
+Do not read it through `dense([65535])`. The ignore id is not an ordinary class:
+`layers` writes it *into* the layers rather than carrying it as its own plane, so
+asking `dense()` for it returns an all-zero mask with no error --- and the
+ignored voxels end up in the loss.
+
+Where the region lives depends on the encoding. `labelmap` and `layers` hold it
+in band and expose `ignore_mask()`; `bitmask` and `probmap` cannot represent a
+reserved id in band, so theirs is a separate `mask` annotation named by
+`header.ignore_mask`, and `ignore_mask()` is not defined on them ---
+`has_ignore_region` is `True` and the call raises `AttributeError`.
+[Partial labels and coverage](../guides/partial-labels.md#some-voxels-i-cannot-label-either-way)
+has a reader that handles both.
 
 ## Voxel annotations
 
@@ -120,7 +134,7 @@ whatever source had them.
 
 `instance_id` is **sample-scoped**, which is what makes it a longitudinal join:
 object 7 at baseline and object 7 at follow-up are the same lesion. See
-[Longitudinal](longitudinal.md).
+[Longitudinal](../guides/longitudinal.md).
 
 ## Geometric annotations
 
@@ -216,7 +230,7 @@ Sample-level, per-timepoint, per-instance, or per-slice:
 
 ```python
 w.add_classification("response", {"progressive": 1.0},
-                     scope="sample", timepoints=["tp1"])
+                     scope="sample", timepoints=["tp0", "tp1"])
 w.add_classification("birads", {"birads_4": 1.0}, scope="instance",
                      scope_ids=[7], schemes=["BI-RADS"])
 ```
@@ -230,7 +244,7 @@ c.scope_ids
 
 A **change** label — one that describes a difference between two visits — is a
 classification whose `timepoints` names both. See
-[Longitudinal](longitudinal.md#change).
+[Longitudinal](../guides/classification.md#change-labels-span-an-interval).
 
 ## Label sets
 
@@ -263,3 +277,11 @@ load("brats-subregions")
 ```
 
 Ids `0` (background) and `65535` (ignore) are reserved.
+
+## Related
+
+- **[Segmentation](../guides/segmentation.md)** — writing and reading masks.
+- **[Detection and boxes](../guides/detection.md)** — boxes without an off-by-one.
+- **[Classification and change labels](../guides/classification.md)** — choosing a scope.
+- **[Partial labels and coverage](../guides/partial-labels.md)** — `annotated_classes` in full.
+- **[Specification §6–§9](../spec/medh5-1.0.md)** — the normative model.

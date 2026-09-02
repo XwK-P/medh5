@@ -1,7 +1,7 @@
 # Storage
 
 The on-disk layout, how bytes get chosen, and how the file proves it is intact.
-The normative statement is [spec §2, §13 and §14](spec/medh5-1.0.md); this page
+The normative statement is [spec §2, §13 and §14](../spec/medh5-1.0.md); this page
 is the operational half.
 
 ## Layout
@@ -34,8 +34,19 @@ attributes. There is no sidecar and no dataset-wide schema to keep in sync.
 ## Codec profiles
 
 ```
-$ medh5 recompress cohort/*.medh5 --profile training
-$ medh5 recompress cohort/*.medh5 --profile archive --out cold/
+$ medh5 recompress cohort/*.medh5 --profile archive
+```
+
+Recompression is **in place** by default: each file is rewritten atomically
+under the new profile. `--out` writes beside the source instead, and takes a
+single input and a destination **filename** — not a directory, and not several
+files:
+
+```
+$ medh5 recompress case.medh5 --profile archive --out cold/case.medh5
+$ for f in cohort/*.medh5; do
+      medh5 recompress "$f" --profile archive --out "cold/$(basename "$f")"
+  done
 ```
 
 | Profile | Images | Labels | For |
@@ -130,7 +141,7 @@ $ medh5 fix case.medh5 --rebuild-index
 $ medh5 fix case.medh5 --rewrite-digests --reason "rebuilt by an external tool"
 ```
 
-`--rewrite-digests` is not repair — see [CLI](cli.md#medh5-fix-path---rebuild-index---rewrite-digests---reason-why---json).
+`--rewrite-digests` is not repair — see [CLI](cli.md#medh5-fix).
 
 ## Atomic writes
 
@@ -166,16 +177,34 @@ format says so rather than making the file invalid.
 
 ## Collections
 
+One `.medh5c` shard holding many samples, for filesystems that dislike a million
+small files:
+
 ```
 $ medh5 pack cohort/*.medh5 -o shard.medh5c
+$ medh5 ls shard.medh5c
+$ medh5 unpack shard.medh5c -o restored/
+```
+
+```python
+import medh5
+
+medh5.pack(paths, "shard.medh5c")
+with medh5.open_collection("shard.medh5c") as c:
+    c["case_0001"].images["CT"].read()      # an ordinary Sample
 ```
 
 A `.medh5c` holds many sample roots under `samples/<key>`. Each member **is** a
-sample root, so every reader works on it unchanged.
+sample root, so every reader, validator and loader works on it unchanged.
 
-Packing copies chunks as raw bytes — nothing is decompressed, and `content_id`
-is preserved. Unpacking reproduces the original files chunk for chunk. See
-[Curation](curation.md#collections).
+Packing is a container operation: chunks move as raw bytes, nothing is
+decompressed, and `content_id` is preserved. Unpacking reproduces the original
+files chunk for chunk — there is a test that compares them at that level,
+because comparing through the value API would decompress and recompress and
+prove nothing.
+
+`sample ⊂ collection` is strict containment: a collection is not a sample and
+does not pretend to be one. `medh5 validate` dispatches on the kind.
 
 ## Reading it without medh5
 
@@ -193,3 +222,9 @@ with h5py.File("case_0001.medh5") as f:
 
 `import hdf5plugin` before opening if the file uses a blosc2 profile;
 `--profile portable` avoids that requirement entirely.
+
+## Related
+
+- **[Tune performance](../guides/performance.md)** — chunking, codecs and the index as levers.
+- **[Check a file before training on it](../guides/validate.md)** — `verify` and `medh5 fix`.
+- **[Specification §2, §13, §14](../spec/medh5-1.0.md)** — the normative statement.

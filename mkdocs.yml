@@ -12,10 +12,10 @@ copyright: MIT-licensed. The specification is normative; the code implements it.
 docs_dir: docs
 
 # MkDocs publishes everything under `docs_dir` that is not a page, which is what
-# puts `design/benchmarks/*.py` on the site --- deliberately, since the
-# specification links to them as runnable scripts. The build's own requirements
-# file is not documentation and is excluded; it only lives here because that is
-# where Read the Docs looks for it.
+# puts `examples/*.py` on the site --- deliberately, since the specification and
+# the examples page link to them as runnable scripts. The build's own
+# requirements file is not documentation and is excluded; it only lives here
+# because that is where Read the Docs looks for it.
 exclude_docs: |
   requirements.txt
 
@@ -23,6 +23,20 @@ exclude_docs: |
 # cosmetic problem: 61 of the links below point between clauses.  `strict`
 # turns MkDocs' link warnings into build failures, and CI builds with it.
 strict: true
+
+# Anchor and link validation.  MkDocs defaults `anchors` to `info`, which means
+# a link to a heading that no longer exists prints a line nobody reads and the
+# build stays green.  With `strict` above, raising these to `warn` makes every
+# broken `#fragment` a build failure --- which is what makes it safe to move a
+# page: the machine, not a reviewer, checks the 60-odd cross-document links.
+validation:
+  nav:
+    omitted_files: warn
+    not_found: warn
+  links:
+    not_found: warn
+    anchors: warn
+    unrecognized_links: warn
 
 # CHANGELOG.md lives at the repository root, where packaging and GitHub expect
 # it.  Copying it into `docs/` would leave two copies to drift apart, so it is
@@ -97,25 +111,53 @@ plugins:
 
 nav:
   - Home: index.md
-  - Start here:
-      - Getting started: getting-started.md
-      - Concepts: concepts.md
-  - Specification: spec/medh5-1.0.md
+
+  - Tutorials:
+      - tutorials/index.md
+      - Write and read your first sample: tutorials/first-sample.md
+      - Your first training run: tutorials/first-training-run.md
+
+  - How-to guides:
+      - guides/index.md
+      - Segmentation: guides/segmentation.md
+      - Detection and boxes: guides/detection.md
+      - Partial labels and coverage: guides/partial-labels.md
+      - Longitudinal studies: guides/longitudinal.md
+      - Registration between visits: guides/registration.md
+      - Classification and change labels: guides/classification.md
+      - Import from DICOM: guides/import-dicom.md
+      - Import from NIfTI and nnU-Net: guides/import-nifti.md
+      - Export to other formats: guides/export.md
+      - Migrate from 0.x: guides/migrate-0x.md
+      - Build and split a cohort: guides/cohorts.md
+      - Check a file before training on it: guides/validate.md
+      - De-identify and publish: guides/deidentify.md
+      - Tune performance: guides/performance.md
+
   - Reference:
-      - Python API: python-api.md
-      - CLI: cli.md
-      - Annotations: annotations.md
-      - Longitudinal: longitudinal.md
-      - Training: training.md
-      - Converters: converters.md
-      - Curation: curation.md
-      - Cohorts: cohorts.md
-      - Storage: file-format.md
-      - Conformance: conformance.md
-  - Design:
-      - Proposal: design/medh5-1.0-proposal.md
-      - Implementation plan: design/medh5-1.0-implementation-plan.md
-      - Benchmarks: design/benchmarks/README.md
+      - reference/index.md
+      - Python API: reference/python-api.md
+      - Command line: reference/cli.md
+      - PyTorch and MONAI: reference/torch.md
+      - Annotation kinds: reference/annotations.md
+      - Converters: reference/converters.md
+      - Curation records: reference/curation.md
+      - Storage: reference/storage.md
+      - Profiles and validation levels: reference/profiles-and-levels.md
+      - Sample document schema: reference/schema.md
+      - Diagnostic codes: reference/diagnostic-codes.md
+      - Cohort check codes: reference/cohort-checks.md
+      - Runnable examples: examples/index.md
+
+  - Explanation:
+      - explanation/index.md
+      - The data model: explanation/data-model.md
+      - What the converters refuse, and why: explanation/refusals.md
+
+  - Specification:
+      - Format specification 1.0: spec/medh5-1.0.md
+      - Conformance suite: spec/conformance.md
+
   - Changelog: changelog.md
 
 extra:

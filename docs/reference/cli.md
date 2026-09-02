@@ -10,15 +10,27 @@ writes a machine-readable document to stdout.
 
 ## Inspecting
 
-### `medh5 info PATH [--json]`
+### `medh5 info`
+
+```
+medh5 info PATH [--json]
+```
 
 Grids, images, annotations, coverage, quality, codecs and content id.
 
-### `medh5 tree PATH [--json]`
+### `medh5 tree`
+
+```
+medh5 tree PATH [--json]
+```
 
 An annotated object listing — `h5ls` with each object's role in the spec.
 
-### `medh5 validate PATH... [--level L] [--profile P] [-v] [--json]`
+### `medh5 validate`
+
+```
+medh5 validate PATH... [--level L] [--profile P] [-v] [--json]
+```
 
 Check against the specification. `--level` is `structural`, `semantic`
 (default), `integrity` or `strict`; each includes the ones before it.
@@ -31,13 +43,21 @@ case.medh5: FAILED [strict] profiles=core,seg (1 errors, 0 warnings)
   ERROR   E102 grids/ct: `direction` is not orthonormal to 1e-4
 ```
 
-### `medh5 verify PATH... [--partial OBJ] [--json]`
+### `medh5 verify`
+
+```
+medh5 verify PATH... [--partial OBJ] [--json]
+```
 
 Recompute every object's digest and the root `content_id`. `--partial` limits
 it to named objects — useful when you only want to know whether one image
 changed.
 
-### `medh5 fix PATH... [--rebuild-index] [--rewrite-digests --reason WHY] [--json]`
+### `medh5 fix`
+
+```
+medh5 fix PATH... [--rebuild-index] [--rewrite-digests --reason WHY] [--json]
+```
 
 With no flags: diagnose and change nothing. Exit 1 if anything needs attention.
 
@@ -50,55 +70,97 @@ fact that the tool did not verify the content it just re-attested.
 
 ## Longitudinal
 
-### `medh5 timeline PATH [--json]`
+### `medh5 timeline`
+
+```
+medh5 timeline PATH [--json]
+```
 
 Timepoints, their intervals, and what belongs to each visit.
 
-### `medh5 track PATH [--class KEY] [--json]`
+### `medh5 track`
+
+```
+medh5 track PATH [--class KEY] [--json]
+```
 
 Join instance ids across visits: per object, its volume at each timepoint, the
 relative change, and whether it is `present`, `resolved` or `unexamined`.
 
 ## Annotations
 
-### `medh5 seg stats PATH ANNOTATION [--json]`
+### `medh5 seg stats`
+
+```
+medh5 seg stats PATH ANNOTATION [--json]
+```
 
 Per-class voxel counts, the class overlap graph, and what the encoding
 auto-selector would cost for each candidate encoding.
 
-### `medh5 seg convert PATH ANNOTATION --to KIND [--dry-run] [--json]`
+### `medh5 seg convert`
+
+```
+medh5 seg convert PATH ANNOTATION --to KIND [--dry-run] [--json]
+```
 
 Losslessly re-encode a voxel annotation: `labelmap`, `layers`, `bitmask`,
 `instances`. `--dry-run` prints the size change without writing.
 
-### `medh5 index build PATH... [--max-coords N] [--occupancy K] [--seed S]`
+### `medh5 index build`
+
+```
+medh5 index build PATH... [--max-coords N] [--occupancy K] [--seed S]
+```
 
 Build or refresh sampling indices, which make foreground patch sampling O(1) in
 the volume. `--max-coords` bounds the stored coordinates per class.
 
-### `medh5 labels show PATH [--json]` · `labels check PATH...` · `labels registry list`
+### `medh5 labels`
+
+```
+medh5 labels show PATH [--json]
+medh5 labels check PATH...
+medh5 labels registry list
+```
 
 Inspect a file's label set, check a cohort's label sets against each other, and
 list the bundled vocabularies.
 
 ## Curation
 
-### `medh5 prov PATH [--json]`
+### `medh5 prov`
+
+```
+medh5 prov PATH [--json]
+```
 
 Agents, activities, quality records and the de-identification record.
 
-### `medh5 agree PATH A B [--metric dice|iou] [--threshold T] [--record] [--json]`
+### `medh5 agree`
+
+```
+medh5 agree PATH A B [--metric dice|iou] [--threshold T] [--record] [--json]
+```
 
 Per-class Dice or IoU and object F1 between two annotations of the same sample
 — two readers, or a reader and a model. `--record` prints the
 `quality.agreement` record the measurement produces.
 
-### `medh5 splits PATH... [--json]`
+### `medh5 splits`
+
+```
+medh5 splits PATH... [--json]
+```
 
 Cross-file audit: conflicting split claims (W906) and subject leakage between
 partitions. Needs the whole cohort, which is why it is not part of `validate`.
 
-### `medh5 scrub PATH... [--profile basic|strict] [--apply] [--date-shift-days N] [--salt S] [--by WHO] [--json]`
+### `medh5 scrub`
+
+```
+medh5 scrub PATH... [--profile basic|strict] [--apply] [--date-shift-days N] [--salt S] [--by WHO] [--json]
+```
 
 Find identifiers in the container. Without `--apply` nothing is written and the
 exit code is 1 if anything was found, so it works as a pipeline gate.
@@ -117,23 +179,40 @@ Running it twice does not shift dates twice.
 
 ## Collections
 
-### `medh5 pack PATH... -o SHARD.medh5c [--key K] [--json]`
+### `medh5 pack`
+
+```
+medh5 pack PATH... -o SHARD.medh5c [--key K] [--json]
+```
 
 Bundle samples into one `.medh5c`. Chunks move as raw bytes, so packing is
 byte-identical and `content_id` is preserved.
 
-### `medh5 unpack SHARD.medh5c -o DIR [--key K] [--json]` · `medh5 ls SHARD.medh5c [--json]`
+### `medh5 unpack`
+
+```
+medh5 unpack SHARD.medh5c -o DIR [--key K] [--json]
+medh5 ls SHARD.medh5c [--json]
+```
 
 Extract, or list what is inside.
 
 ## Cohorts
 
-### `medh5 dataset index ROOT -o manifest.json [--strict] [--json]`
+### `medh5 dataset index`
+
+```
+medh5 dataset index ROOT -o manifest.json [--strict] [--json]
+```
 
 Metadata-only scan of a directory tree. Reports what would not open instead of
 aborting; `--strict` makes the first failure fatal.
 
-### `medh5 dataset split manifest.json [options]`
+### `medh5 dataset split`
+
+```
+medh5 dataset split manifest.json [options]
+```
 
 ```
 --set-id ID          name of this split (default "default")
@@ -151,28 +230,26 @@ Groups, not files: a subject's baseline and follow-up cannot land on opposite
 sides. If the ratios cannot be met by an indivisible set of groups, the command
 says which partition got nothing rather than leaving you to notice later.
 
-### `medh5 dataset stats manifest.json [--image K] [--annotation A] [--workers N] [--stride S] [--partition P] [--out FILE] [--json]`
+### `medh5 dataset stats`
+
+```
+medh5 dataset stats manifest.json [--image K] [--annotation A] [--workers N]
+                                  [--stride S] [--partition P] [--out FILE] [--json]
+```
 
 Streaming intensity moments and class frequencies. Reads class counts from the
 sampling index when it is current. `--partition train` restricts the pass to
 one partition of `--set-id`, which is how you compute normalisation constants
 without looking at your test set.
 
-### `medh5 dataset check manifest.json [--set-id ID] [--deep] [--json]`
+### `medh5 dataset check`
 
-Cross-file consistency, under `C1xx` codes:
+```
+medh5 dataset check manifest.json [--set-id ID] [--deep] [--json]
+```
 
-| Code | |
-|---|---|
-| `C101` / `C102` | more than one label set; a class id meaning two things |
-| `C103` | a sample with no label set |
-| `C201` | a claim whose manifest digest is not this manifest's |
-| `C202` | a subject in two partitions of one split |
-| `C203` | samples with no claim |
-| `C204` | a group holding part of a subject (refused when splitting) |
-| `C301` / `C302` | a class examined in only part of the cohort; a class never seen |
-| `C401` / `C402` | a file changed, or vanished, since the scan |
-| `C501` | a partly de-identified cohort |
+Cross-file consistency. Findings carry
+[`C1xx`–`C5xx` codes](cohort-checks.md).
 
 `--deep` re-reads each `content_id` instead of trusting size and mtime.
 
@@ -192,10 +269,10 @@ medh5 convert from-dicom ROOT OUT [--group-by subject|study]
                                   [--modality M] [--series UID]
 
 medh5 convert from-dicom-seg SEG SAMPLE [--id ANN] [--grid G]
-medh5 convert to-dicom-seg PATH ANNOTATION OUT --source DICOM...
+medh5 convert to-dicom-seg PATH ANNOTATION OUT --source DICOM [--source DICOM ...]
 
 medh5 convert from-rtstruct RTSTRUCT SAMPLE [--id ANN] [--grid G] [--rasterize]
-medh5 convert to-rtstruct PATH ANNOTATION OUT --source DICOM...
+medh5 convert to-rtstruct PATH ANNOTATION OUT --source DICOM [--source DICOM ...]
 
 medh5 convert from-nnunet ROOT OUT [--case ID]
 medh5 convert to-nnunet OUT PATH... [--dataset-name NAME] [--annotation A]
@@ -208,7 +285,11 @@ sample per study, warns, and records the fallback.
 
 See [Converters](converters.md).
 
-### `medh5 migrate PATH... -o OUTDIR [options]`
+### `medh5 migrate`
+
+```
+medh5 migrate PATH... -o OUTDIR [options]
+```
 
 0.x files to 1.0 (spec Appendix B).
 
@@ -222,39 +303,75 @@ See [Converters](converters.md).
 
 ## Storage
 
-### `medh5 recompress PATH... --profile P [--out DIR] [--rechunk] [--json]`
+### `medh5 recompress`
+
+```
+medh5 recompress PATH... --profile P [--rechunk] [--json]
+medh5 recompress PATH --profile P --out FILE [--rechunk] [--json]
+```
 
 Re-encode bulk data under `training`, `balanced`, `archive` or `portable`.
 Every stored byte changes; no `content_id` does, because the digest is over
 content and not over its encoding.
 
-### `medh5 bench [PATH] [--patch N] [--repeats N] [--workers N] [--annotation A] [--no-throughput] [--json]`
+### `medh5 bench`
+
+```
+medh5 bench [PATH] [--patch N] [--repeats N] [--workers N] [--annotation A] [--no-throughput] [--json]
+```
 
 Reproduce the performance targets on your hardware. With no path it builds a
 synthetic sample first.
 
 ## Conformance
 
-### `medh5 conformance list [--json]`
+### `medh5 conformance list`
+
+```
+medh5 conformance list [--json]
+```
 
 Every corpus case, the clause it tests, and the codes it expects.
 
-### `medh5 conformance build OUTDIR [--case NAME]`
+### `medh5 conformance build`
+
+```
+medh5 conformance build OUTDIR [--case NAME]
+```
 
 Write the corpus files and `expected.json`, and nothing else. Use this when you
 want the cases as fixtures; use `publish` when you want the whole distributable
 suite.
 
-### `medh5 conformance run OUTDIR [--case NAME] [--json]`
+### `medh5 conformance run`
+
+```
+medh5 conformance run OUTDIR [--case NAME] [--json]
+```
 
 Build the corpus and check *this* validator against it.
 
-### `medh5 conformance publish OUTDIR [--case NAME]`
+### `medh5 conformance publish`
+
+```
+medh5 conformance publish OUTDIR [--case NAME]
+```
 
 Write the distributable suite: cases, `expected.json`, the code table, the JSON
 Schema, `SHA256SUMS` and a README.
 
-### `medh5 conformance score SUITE RESULTS.json [--json]`
+### `medh5 conformance score`
+
+```
+medh5 conformance score SUITE RESULTS.json [--json]
+```
 
 Score any implementation's results against a published suite. See
-[Conformance](conformance.md).
+[Conformance](../spec/conformance.md).
+
+## Related
+
+- **[Check a file before training on it](../guides/validate.md)** — `validate` versus `verify`.
+- **[Diagnostic codes](diagnostic-codes.md)** — every code these commands report.
+- **[Cohort check codes](cohort-checks.md)** — what `medh5 dataset check` reports.
+- **[How-to guides](../guides/index.md)** — these commands in the tasks they belong to.

@@ -1,7 +1,7 @@
 # medh5 1.0 — Design Proposal
 
 **Status:** Draft for review · **Author:** design pass over medh5 0.6.0 · **Date:** 2026-08-15
-**Companion documents:** [Specification](../spec/medh5-1.0.md) · [Implementation plan](medh5-1.0-implementation-plan.md)
+**Companion documents:** [Specification](../docs/spec/medh5-1.0.md) · [Implementation plan](medh5-1.0-implementation-plan.md)
 
 ---
 
@@ -305,7 +305,7 @@ ground truth plus the epistemics needed to train on it honestly.** No existing f
 ## 5. Measured results
 
 All benchmarks: macOS, Python 3.12, h5py 3.16, hdf5plugin 6.0, local SSD. Sources in
-`docs/design/benchmarks/`. Numbers are medians over 10–50 repetitions.
+`docs/examples/`. Numbers are medians over 10–50 repetitions.
 
 ### 5.1 Multi-label encodings — 160³, 200 classes, 0.25 labels/voxel, L = 5, P = 4
 

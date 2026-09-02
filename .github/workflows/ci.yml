@@ -111,7 +111,7 @@ jobs:
       - run: |
           mkdir -p "$RUNNER_TEMP/prototype"
           cd "$RUNNER_TEMP/prototype"
-          python "$GITHUB_WORKSPACE/docs/design/benchmarks/reference_writer.py"
+          python "$GITHUB_WORKSPACE/docs/examples/reference_writer.py"
       # The prototype prints "[ok] ..." per check and raises otherwise, so a
       # non-zero exit above is the gate. Confirm it wrote where it was told,
       # rather than into the checkout.

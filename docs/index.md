@@ -15,28 +15,29 @@ with medh5.open("case_0001.medh5") as s:
     s.tracks("lesion")                                 # lesions joined across visits
 ```
 
-## Start here
+```bash
+pip install medh5
+```
 
-| | |
-|---|---|
-| **[Getting started](getting-started.md)** | Install, write a sample, read it back. |
-| **[Concepts](concepts.md)** | The data model in ten minutes: samples, grids, timepoints, coverage. |
-| **[Specification](spec/medh5-1.0.md)** | The normative format. Everything else is commentary. |
+## Where to start
 
-## Reference
+**New to it?** [Write and read your first sample](tutorials/first-sample.md) —
+twenty minutes, start to finish, then
+[a training run](tutorials/first-training-run.md).
 
-| | |
-|---|---|
-| **[Python API](python-api.md)** | Reading, writing, amending. |
-| **[CLI](cli.md)** | Every `medh5` command. |
-| **[Annotations](annotations.md)** | The five voxel encodings, boxes, contours, keypoints, meshes, labels. |
-| **[Longitudinal](longitudinal.md)** | Timepoints, registration, change, instance tracking. |
-| **[Training](training.md)** | PyTorch datasets, samplers, MONAI, performance. |
-| **[Converters](converters.md)** | NIfTI, DICOM, DICOM SEG, RTSTRUCT, nnU-Net v2, and 0.x migration. |
-| **[Curation](curation.md)** | Provenance, quality, agreement, de-identification, collections. |
-| **[Cohorts](cohorts.md)** | Manifests, leakage-free splits, streaming statistics, cross-file checks. |
-| **[Storage](file-format.md)** | On-disk layout, codecs, chunking, integrity. |
-| **[Conformance](conformance.md)** | The suite, and how to run it against your own implementation. |
+**Already have data?** You probably have DICOM or NIfTI, not this.
+[Import from DICOM](guides/import-dicom.md) ·
+[Import from NIfTI and nnU-Net](guides/import-nifti.md) ·
+[Migrate from 0.x](guides/migrate-0x.md)
+
+**Writing your own reader?** [The specification](spec/medh5-1.0.md) is
+normative, the [conformance suite](spec/conformance.md) is 103 cases you can run
+against your implementation, and the
+[diagnostic codes](reference/diagnostic-codes.md) are the stable contract
+between the two.
+
+Otherwise: [how-to guides](guides/index.md) for specific tasks,
+[reference](reference/index.md) for what everything is.
 
 ## What the format is for
 
@@ -48,24 +49,27 @@ assigning whole files to train and test cannot leak a patient between them.
 **Geometry is stated once and never guessed.** Every array is bound to a
 declared grid with spacing, origin and direction; a box is at voxel edges and a
 voxel index is a voxel centre, both written down. Converting to NIfTI or DICOM
-moves numbers between conventions explicitly, and refuses when it cannot.
+moves numbers between conventions explicitly, and
+[refuses when it cannot](explanation/refusals.md).
 
 **Absence is not silence.** `class_ids` says what an annotation contains;
 `annotated_class_ids` says what was *looked for*. A class searched for and not
 found is recorded as searched for and not found, which is a different training
-signal from a class nobody examined.
+signal from a class nobody examined. See
+[partial labels and coverage](guides/partial-labels.md).
 
-**Every claim is checkable.** Per-object SHA-256 over decompressed content and
-a Merkle `content_id` that survives recompression; a validator with a stable
-diagnostic-code table; and a 103-case conformance corpus, one case per code,
-that any implementation can run.
+**Every claim is checkable.** Per-object SHA-256 over decompressed content and a
+Merkle `content_id` that survives recompression; a validator with a
+[stable diagnostic-code table](reference/diagnostic-codes.md); and a 103-case
+conformance corpus, one case per code, that any implementation can run.
 
 **Reading a patch is fast.** A 64³ multi-class patch reads in ~4 ms, against
 117 ms measured on 0.x, because chunks are sized for it and the sampling index
-makes foreground sampling O(1) in the volume — 0.09 ms at 1 Mvox and at 20
-Mvox. The index is written by `build_index()` and is not automatic: without one
-the same draw scans the labels and costs 1.4 ms and 21 ms. Run `medh5 bench` on
-your own hardware.
+makes foreground sampling O(1) in the volume — 0.09 ms at 1 Mvox and at 20 Mvox.
+The index is written by `build_index()` and is not automatic: without one the
+same draw scans the labels and costs 1.4 ms and 21 ms. See
+[tune performance](guides/performance.md), and run `medh5 bench` on your own
+hardware.
 
 ## The command line
 
@@ -80,15 +84,18 @@ $ medh5 scrub out/*.medh5 --apply --date-shift-days -117
 $ medh5 bench                            # reproduce the performance targets
 ```
 
-## Design documents
+Every command is in the [CLI reference](reference/cli.md).
 
-- **[Design proposal](design/medh5-1.0-proposal.md)** — what broke in 0.6.0, with
-  measurements; principles, alternatives, costs, risks, decisions taken.
-- **[Implementation plan](design/medh5-1.0-implementation-plan.md)** — package
-  layout, public API, phased delivery, test strategy.
-- **[Benchmarks](design/benchmarks/README.md)** — the scripts behind every number.
-- **[JSON Schema](https://github.com/XwK-P/medh5/blob/main/schemas/medh5-sample-1.0.schema.json)** — machine validation
-  of the `/meta` document.
+## Going deeper
+
+- **[Runnable examples](examples/index.md)** — a complete two-timepoint sample
+  written by following the specification literally, and the benchmark scripts
+  behind every number quoted here.
+- **[Sample document schema](reference/schema.md)** — every field of `/meta`,
+  with the machine-readable schema itself.
+- **[Design records](https://github.com/XwK-P/medh5/tree/main/design)** — how
+  1.0 was arrived at: what broke in 0.6.0, the alternatives weighed, the plan
+  delivered against. Historical, and kept in the repository rather than here.
 
 ## Versioning
 
@@ -101,4 +108,4 @@ the package; `medh5.FORMAT_VERSION` is the format.
 
 0.x files are not readable by 1.0 and are not meant to be: `medh5 migrate`
 converts them once, reporting every decision it took. See
-[Converters](converters.md#migrating-from-0x).
+[Migrate from 0.x](guides/migrate-0x.md).

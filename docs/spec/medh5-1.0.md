@@ -1,6 +1,6 @@
 # MEDH5 Format Specification — Version 1.0
 
-**Status:** Draft for review · **Schema version:** `1.0` · **Supersedes:** medh5 0.x (`schema_version = "1"`)
+**Status:** Final · **Schema version:** `1.0` · **Supersedes:** medh5 0.x (`schema_version = "1"`)
 **Container:** HDF5 ≥ 1.10 · **Media type:** `application/x-medh5` · **Extensions:** `.medh5` (sample), `.medh5c` (collection)
 
 ---
@@ -1555,7 +1555,7 @@ not implementable, or not unambiguous, as written:
 ### C.2 Prototype checks
 
 The specification is also accompanied by an executable prototype,
-[`docs/design/benchmarks/reference_writer.py`](../design/benchmarks/reference_writer.py), which
+[`docs/examples/reference_writer.py`](../examples/reference_writer.py), which
 writes a sample exercising `core + seg + det + cls + reg + curation + training + longitudinal` by
 following this document literally, then checks it. The sample is one subject at two timepoints:
 baseline CT + PET sharing a frame, a follow-up CT on its own grid with shorter z coverage and its own
