@@ -25,7 +25,12 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
         "recompress", help="re-encode bulk data under another codec profile (§14.2)"
     )
     add_paths(recompress)
-    recompress.add_argument("--profile", required=True, choices=sorted(PROFILES))
+    recompress.add_argument(
+        "--profile",
+        required=True,
+        choices=sorted(PROFILES),
+        help="codec profile: training, balanced, archive or portable",
+    )
     recompress.add_argument(
         "--rechunk",
         action="store_true",
@@ -48,8 +53,15 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
         help="a sample to measure; omitted, a synthetic one is written and used",
     )
     bench.add_argument("--annotation", help="annotation to time label reads against")
-    bench.add_argument("--patch", type=int, default=64)
-    bench.add_argument("--repeats", type=int, default=20)
+    bench.add_argument(
+        "--patch", type=int, default=64, help="patch side length to measure with"
+    )
+    bench.add_argument(
+        "--repeats",
+        type=int,
+        default=20,
+        help="repetitions per measurement; the median is reported",
+    )
     bench.add_argument(
         "--workers",
         type=int,

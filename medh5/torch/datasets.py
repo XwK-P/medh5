@@ -565,7 +565,14 @@ class PairedPatchDataset(_Base):
         source = sample.grids[patch.grid_id or self._window_grid_at(sample, pair.first)]
         target = sample.grids[self._window_grid_at(sample, pair.second)]
         world = source.index_to_world(np.asarray([patch.center], dtype=np.float64))
-        transform = sample.transform_between(pair.first, pair.second)
+        # Resolve between the two *grids*, not the two timepoints.  A visit may
+        # hold a CT grid and a PET grid on different frames, and a timepoint-level
+        # question searches every frame of one visit against every frame of the
+        # other and returns the first path it finds --- so a CT registration
+        # answered "yes" for a PET pair with no registration of its own, and its
+        # displacement was then applied to PET coordinates.  Nothing raised; the
+        # patches came back the right shape from the wrong place.
+        transform = sample.transform_between(source.grid_id, target.grid_id)
         if transform is None and source.frame_uid != target.frame_uid:
             # `transform_between` returns None for two different reasons: the
             # grids already share a frame (nothing to apply), or no path exists
@@ -575,10 +582,11 @@ class PairedPatchDataset(_Base):
             # paired patches from different anatomy, which trains quietly.
             raise MEDH5ValidationError(
                 f"{sample.path}: align='transform' needs a transform relating "
-                f"{pair.first!r} (frame {source.frame_uid!r}) to {pair.second!r} "
-                f"(frame {target.frame_uid!r}), and the file has none; register "
-                "the visits, or use align='none' to read the same index window "
-                "from both"
+                f"grid {source.grid_id!r} at {pair.first!r} (frame "
+                f"{source.frame_uid!r}) to grid {target.grid_id!r} at "
+                f"{pair.second!r} (frame {target.frame_uid!r}), and the file has "
+                "none; register those grids, or use align='none' to read the same "
+                "index window from both"
             )
         if transform is not None:
             world = transform.transform_points(world)

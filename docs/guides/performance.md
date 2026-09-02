@@ -32,18 +32,18 @@ scanning the labels and records what it did:
 
 ```python
 patch = batch["meta"]["patch"]
-patch["strategy"]       # "foreground" or "uniform"
-patch["used_index"]     # only meaningful when strategy == "foreground"
+patch["used_index"]     # True, False, or None
 ```
 
-Read the two together. A **uniform** draw never consults an index, and reports
-`used_index=True` because that is the field's default — not because an index was
-used. It is the `foreground` draws reporting `False` that mean you are paying
-for a scan:
+Three states, because there are three answers. `True` means the index answered
+the foreground query; `False` means the foreground had to be scanned because no
+current index was present; **`None` means the question did not arise** — a
+uniform draw consults no index at all.
+
+`False` is the one that costs you:
 
 ```python
-scanning = [p for p in patches
-            if p["strategy"] == "foreground" and not p["used_index"]]
+scanning = [p for p in patches if p["used_index"] is False]
 ```
 
 An index carries the digest of the annotation it derives from, so it goes

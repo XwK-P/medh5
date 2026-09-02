@@ -381,6 +381,68 @@ class TestPairedPatchDataset:
         same = PairedPatchDataset([unregistered], PatchSampler(8), align="none")[0]
         assert set(same["images"]) == {"tp0", "tp1"}
 
+    def test_S10_2_a_registration_of_another_grid_is_not_this_pair_s(self, tmp_path):
+        """A transform must relate the grids being read, not merely the visits.
+
+        A visit may hold a CT grid and a PET grid on different frames.  Asking
+        `transform_between` about the two *timepoints* searches every frame of
+        one against every frame of the other and returns the first path it
+        finds, so a CT registration answered for a PET pair that had none --- and
+        its displacement was applied to PET coordinates.  Nothing raised: the
+        patches came back the right shape from the wrong place, which is the
+        failure the guard beside it exists to prevent.
+        """
+        shape = (32, 32, 32)
+        shift = np.eye(4)
+        shift[0, 3] = 10.0
+        path = tmp_path / "two_modalities.medh5"
+        with medh5.create(path, sample_id="s", subject_id="S") as writer:
+            for index, timepoint in enumerate(("tp0", "tp1")):
+                writer.add_timepoint(
+                    timepoint,
+                    index=index,
+                    label=timepoint,
+                    days_from_baseline=index * 90,
+                )
+                for modality in ("ct", "pet"):
+                    writer.add_grid(
+                        f"{modality}_{timepoint}",
+                        shape=shape,
+                        spacing=(1.0, 1.0, 1.0),
+                        origin=(0.0, 0.0, 0.0),
+                        timepoint=timepoint,
+                        frame_uid=f"pseudo:{modality}-{timepoint}",
+                    )
+                    writer.add_image(
+                        f"{modality.upper()}_{timepoint}",
+                        np.zeros(shape, np.int16),
+                        grid=f"{modality}_{timepoint}",
+                        modality=modality.upper(),
+                    )
+            # only the CT frames are registered
+            writer.add_transform(
+                "ct_reg",
+                kind="affine",
+                from_frame="pseudo:ct-tp0",
+                to_frame="pseudo:ct-tp1",
+                matrix=shift,
+            )
+
+        def dataset(modality):
+            return PairedPatchDataset(
+                [str(path)],
+                PatchSampler(8),
+                align="transform",
+                images=[f"{modality}_tp0", f"{modality}_tp1"],
+            )
+
+        patches = dataset("CT")[0]["meta"]["patches"]
+        moved = patches["tp1"]["center"][0] - patches["tp0"]["center"][0]
+        assert moved == 10, "the CT pair is aligned by its own registration"
+
+        with pytest.raises(MEDH5ValidationError, match="pet_tp0"):
+            dataset("PET")[0]
+
     def test_S3_7_a_padded_first_visit_keeps_the_pair_one_shape(
         self, tmp_path, label_set
     ):

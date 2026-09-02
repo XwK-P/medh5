@@ -375,9 +375,34 @@ class Annotation(ABC):
         return self._label_set[class_key].id
 
     def resolve_classes(self, keys: Sequence[int | str] | None) -> tuple[int, ...]:
+        """Resolve requested class keys to ids, refusing the reserved ignore id.
+
+        ``65535`` is not a class --- §5.2 says it **MUST NOT** appear in
+        ``classes`` --- so nothing that returns per-class planes can answer for
+        it.  What every encoding *could* do is return an all-zero plane, which is
+        indistinguishable from a class examined and found absent.  Documentation
+        shipped ``dense([65535])`` as the way to read the ignore region on the
+        strength of that shape; under ``layers`` it silently yields nothing and
+        the ignored voxels go into the loss.  Refusing here covers every encoding
+        at once, because each one's ``dense`` resolves its classes through this.
+
+        :meth:`VoxelAnnotation.ignore_mask` reads the region where the encoding
+        carries it in band; ``header.ignore_mask`` names the `mask` annotation
+        holding it otherwise.
+        """
         if keys is None:
             return self.header.class_ids
-        return tuple(self.resolve_class(k) for k in keys)
+        ids = tuple(self.resolve_class(k) for k in keys)
+        if IGNORE_ID in ids:
+            raise MEDH5ValidationError(
+                f"annotation {self.ann_id!r}: {IGNORE_ID} is the reserved ignore "
+                "id, not a class, so no plane can be returned for it; read the "
+                "ignore region with `ignore_mask()` where the encoding carries it "
+                "in band, or through the `mask` annotation named by "
+                "`header.ignore_mask`",
+                code="E404",
+            )
+        return ids
 
     @property
     def classes(self) -> tuple[LabelClass, ...]:
@@ -461,7 +486,17 @@ class VoxelAnnotation(Annotation):
         classes: Sequence[int | str] | None = None,
         roi: Sequence[slice] | None = None,
     ) -> npt.NDArray[np.bool_]:
-        """``(C, *roi_shape)`` boolean occupancy, one plane per requested class."""
+        """``(C, *roi_shape)`` boolean occupancy, one plane per requested class.
+
+        Asking for the reserved ignore id is refused rather than answered.  It is
+        not a class --- §5.2 says it **MUST NOT** appear in ``classes`` --- so no
+        encoding can return a plane for it, and every encoding could none the
+        less return an all-zero one, which is indistinguishable from a class that
+        was examined and found absent.  Documentation shipped `dense([65535])` as
+        the way to read the ignore region on the strength of that shape: under
+        `layers` it silently yields nothing, and the ignored voxels go into the
+        loss.  :meth:`ignore_mask` and ``header.ignore_mask`` are the answer.
+        """
         ids = self.resolve_classes(classes)
         window = self._roi(roi)
         out = np.zeros((len(ids), *self._roi_shape(window)), dtype=bool)

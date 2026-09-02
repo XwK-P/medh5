@@ -76,11 +76,10 @@ direction:
 ann.has_ignore_region       # is there one at all?
 ```
 
-**Do not read it with `dense([65535])`.** The ignore id is not an ordinary
-class: under `layers` — the encoding chosen whenever your classes overlap — it
-is written *into* the layers rather than carried as its own plane, so
-`dense([65535])` finds nothing in the class map and hands back an all-zero mask.
-Nothing errors; the ignored voxels simply go into your loss.
+**`dense([65535])` is refused.** The ignore id is not an ordinary class, so no
+encoding can return a plane for it — `dense` raises `E404` rather than handing
+back an all-zero mask indistinguishable from a class examined and found absent.
+It used to return that mask, and the ignored voxels went into the loss.
 
 **Where the region lives depends on the encoding**, so read it through both
 routes. `labelmap` and `layers` carry it in band and expose `ignore_mask()`;

@@ -4,6 +4,47 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Fixed
+
+- **A paired patch could be aligned by another grid's registration.**
+  `PairedPatchDataset._map_center` selected its source and target *grids* from the
+  configured images but resolved the transform between the two *timepoints*, which
+  searches every frame of one visit against every frame of the other and returns the
+  first path it finds. A visit holding a CT grid and a PET grid on different frames,
+  with only the CT pair registered, moved the PET pair by the CT registration:
+  measured, a 10 mm CT shift displaced PET centres by 10 voxels. Nothing raised — the
+  patches came back the right shape from the wrong place, which is the failure the
+  guard beside it exists to prevent. Resolution is now between `source.grid_id` and
+  `target.grid_id`, and the error names the grids rather than the visits.
+
+- **`dense()` answered for the reserved ignore id instead of refusing.** `65535` is
+  not a class (§5.2 says it **MUST NOT** appear in `classes`), so no encoding can
+  return a plane for it — but every encoding could return an all-zero one, which is
+  indistinguishable from a class examined and found absent. Documentation shipped
+  `dense([65535])` as the way to read the ignore region on the strength of that shape.
+  It now raises `E404` naming `ignore_mask()` and `header.ignore_mask`. The check is in
+  `resolve_classes`, which every encoding's `dense` routes through.
+
+### Changed
+
+- **`Patch.used_index` is three-state and no longer defaults to `True`.** A uniform
+  draw consults no index, and reported `True` because that was the field's default —
+  so anyone logging it to find out whether a cohort was indexed got `True` from every
+  uniform patch of a `balanced` run. It is `True` when the index answered, `False` when
+  the foreground was scanned, and **`None` when the question did not arise**. Code
+  testing `if patch.used_index:` sees no change for foreground draws; code testing
+  `if not patch.used_index:` will now match uniform draws, which it did not before.
+
+### Added
+
+- **Help text for every CLI argument.** 93 of 196 arguments carried none, so
+  `medh5 convert to-nifti --help` documented one of its six. All 189 non-structural
+  arguments have it now. Two documentation defects in this cycle — `--source ct/*.dcm`,
+  which argparse rejects, and `--out cold/`, which raises `IsADirectoryError` — were
+  written because `--help` could not settle the question.
+
 ## [1.1.1] — 2026-08-30
 
 A documentation release. **No code changes**: the library, the format and every

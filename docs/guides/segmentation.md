@@ -22,9 +22,10 @@ kind, stats = w.add_segmentation(...)     # ("layers", OverlapStats(...))
 ```
 
 `liver` and `lesion` overlap — a lesion is inside the liver — so a single
-labelmap cannot hold both and the writer picks `layers`. Disjoint classes get a
-labelmap, which is smaller. This is a storage decision and nothing you read
-later depends on it.
+labelmap cannot hold both, and the writer picks among the encodings that can:
+`instances` for sparse localized objects, `layers` while the classes pack into
+few planes, `bitmask` beyond that. Disjoint classes get a `labelmap`, which is
+smaller. This is a storage decision and nothing you read later depends on it.
 
 **`annotated_classes` is the argument to think about**, not the encoding. Above
 it names the spleen although there is no spleen mask, recording "we looked and

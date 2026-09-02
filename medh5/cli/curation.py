@@ -42,7 +42,7 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     add_json_flag(pack_cmd)
 
     unpack_cmd = sub.add_parser("unpack", help="extract samples from a collection")
-    unpack_cmd.add_argument("path")
+    unpack_cmd.add_argument("path", help="the .medh5c collection to extract from")
     unpack_cmd.add_argument("-o", "--out", required=True, help="output directory")
     unpack_cmd.add_argument(
         "--key", action="append", dest="keys", help="extract only these keys"
@@ -50,18 +50,23 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     add_json_flag(unpack_cmd)
 
     ls_cmd = sub.add_parser("ls", help="list the samples in a collection")
-    ls_cmd.add_argument("path")
+    ls_cmd.add_argument("path", help="the .medh5c collection to list")
     add_json_flag(ls_cmd)
 
     prov = sub.add_parser("prov", help="who produced what, and how good it is (§11)")
-    prov.add_argument("path")
+    prov.add_argument("path", help="the sample whose provenance to print")
     add_json_flag(prov)
 
     agree = sub.add_parser("agree", help="measure agreement between two annotations")
-    agree.add_argument("path")
+    agree.add_argument("path", help="the sample holding both annotations")
     agree.add_argument("a", metavar="A", help="first annotation id")
     agree.add_argument("b", metavar="B", help="second annotation id")
-    agree.add_argument("--metric", choices=("dice", "iou"), default="dice")
+    agree.add_argument(
+        "--metric",
+        choices=("dice", "iou"),
+        default="dice",
+        help="agreement metric: dice (default) or iou",
+    )
     agree.add_argument(
         "--threshold",
         type=float,
@@ -79,7 +84,12 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
         "scrub", help="find identifiers in the container and attest to it (§11.4)"
     )
     add_paths(scrub)
-    scrub.add_argument("--profile", choices=SCRUB_PROFILES, default="basic")
+    scrub.add_argument(
+        "--profile",
+        choices=SCRUB_PROFILES,
+        default="basic",
+        help="how hard to look: basic (default) or strict",
+    )
     scrub.add_argument(
         "--apply",
         action="store_true",
@@ -96,7 +106,11 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
         default="",
         help="salt the UID pseudonyms; keep it to reproduce the mapping",
     )
-    scrub.add_argument("--by", dest="performed_by")
+    scrub.add_argument(
+        "--by",
+        dest="performed_by",
+        help="who performed the de-identification; recorded in the file",
+    )
     add_json_flag(scrub)
 
     splits = sub.add_parser("splits", help="audit split claims across files (§12.3)")

@@ -39,15 +39,12 @@ item["images"]["CT"].shape        # (32, 32, 32)
 item["label"]["organs"].shape     # (2, 32, 32, 32) — one plane per class
 item["meta"]["patch"]["center"]   # [32, 33, 36]
 item["meta"]["patch"]["strategy"] # "foreground" or "uniform"
-item["meta"]["patch"]["used_index"]
+item["meta"]["patch"]["used_index"] # True, False, or None
 ```
 
-`used_index` is the one to look at — but only on a draw whose `strategy` is
-`"foreground"`. A uniform draw never consults an index and reports `True`
-regardless, so read the two fields together.
-
-A foreground draw reporting `False` means the sampler scanned the volume,
-because the file carries no sampling index:
+`used_index` is the one to look at. `None` means this draw asked no index
+anything — a uniform draw never does. `False` means the sampler scanned the
+volume, because the file carries no sampling index:
 
 ```bash
 medh5 index build case_0001.medh5

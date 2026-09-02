@@ -46,8 +46,18 @@ class Patch:
     center: tuple[int, ...] = ()
     strategy: str = "uniform"
     class_id: int | None = None
-    used_index: bool = True
-    """``False`` when the foreground had to be scanned because no index was present."""
+    used_index: bool | None = None
+    """Whether the §14.3 index answered the foreground query.
+
+    ``True`` when it did, ``False`` when the foreground had to be scanned because
+    no current index was present, and **``None`` when the question did not
+    arise** --- a uniform draw consults no index at all.
+
+    The third state is not pedantry.  This defaulted to ``True``, so a uniform
+    draw reported that an index had been used when none had been opened, and a
+    reader logging `used_index` to find out whether their cohort was indexed got
+    ``True`` from every uniform patch in a `balanced` run.  Read it together with
+    ``strategy``, or read ``None`` as "not applicable"."""
     grid_id: str | None = None
     """The grid whose index coordinates ``slices`` are in.
 
