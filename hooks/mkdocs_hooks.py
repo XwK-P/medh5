@@ -425,11 +425,15 @@ def _schema_markdown(root: Path) -> str:
     open_defs = [
         n for n, sub in defs.items() if sub.get("additionalProperties") is True
     ]
+    # JSON Schema permits additional properties when the keyword is *omitted*,
+    # so absence is openness, not closure.  Excluding `None` reported `extra` ---
+    # the field that exists precisely to hold free-form data --- as if the schema
+    # constrained it.
     open_maps = [
         n
         for n, prop in doc.get("properties", {}).items()
         if prop.get("type") == "object"
-        and prop.get("additionalProperties") not in (False, None)
+        and prop.get("additionalProperties") is not False
     ]
     closed = (
         "The document itself is **closed**: `additionalProperties` is `false`, so a "
@@ -451,7 +455,9 @@ def _schema_markdown(root: Path) -> str:
         out += [
             ", ".join(f"`{n}`" for n in open_maps)
             + (" is an open map" if len(open_maps) == 1 else " are open maps")
-            + ": the keys are yours, and the schema constrains the values.",
+            + ": the keys are yours. Where a value schema is given it still "
+            "applies; where `additionalProperties` is omitted entirely, as on "
+            "`extra`, the values are unconstrained too.",
             "",
         ]
     out += [

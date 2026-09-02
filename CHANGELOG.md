@@ -4,6 +4,96 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.2.0] — 2026-09-02
+
+A correctness release. The **format version is unchanged**: 1.2.0 reads and writes
+exactly the files 1.0 does, and the conformance corpus is the same 103 cases. The
+package takes a minor bump because three fixes change what existing code produces or
+accepts — see **Behaviour changes** below before upgrading a pipeline.
+
+The two headline fixes are both silent-wrong-answer bugs found by review of the
+documentation restructure in 1.1.1: a paired patch aligned by a registration belonging
+to another modality, and `dense()` answering for the reserved ignore id under one
+encoding of six.
+
+### Behaviour changes
+
+Read these before upgrading a pipeline. Each is a correction, and each can change what
+existing code produces or accepts:
+
+- **`Patch.used_index` is three-state.** It no longer defaults to `True`, so
+  `if not patch.used_index:` now matches uniform draws, which it did not before. See
+  **Changed** below for what each value means.
+
+- **`dense()` raises `E404` for the reserved ignore id** under every encoding, where it
+  previously returned an all-zero plane — or, under `mask`, the whole volume. Code that
+  followed the old documentation and read the ignore region with `dense([65535])` must
+  switch to `ignore_mask()`, or to the `mask` annotation named by `header.ignore_mask`.
+
+- **`PairedPatchDataset(align="transform")` now refuses pairs it used to accept.** The
+  refusal itself is not new — it has raised for unrelatable frames since 1.0.0 — but it
+  was reached by asking about the two *timepoints*, so a pair whose own grids had no
+  transform still resolved through a registration belonging to another modality at the
+  same visits, and paired silently. That question is now asked frame to frame, so those
+  pairs reach the refusal instead. A multi-modality cohort that trained without
+  complaint may now stop at the first such file; that file was contributing patches
+  from mismatched anatomy. `align="none"` reads the same index window from both visits,
+  as before, and is unaffected.
+
+### Fixed
+
+- **A paired patch could be aligned by another grid's registration.**
+  `PairedPatchDataset._map_center` selected its source and target *grids* from the
+  configured images but resolved the transform between the two *timepoints*, which
+  searches every frame of one visit against every frame of the other and returns the
+  first path it finds. A visit holding a CT grid and a PET grid on different frames,
+  with only the CT pair registered, moved the PET pair by the CT registration:
+  measured, a 10 mm CT shift displaced PET centres by 10 voxels. Nothing raised — the
+  patches came back the right shape from the wrong place, which is the failure the
+  guard beside it exists to prevent.
+
+  Resolution is now directly between the two grids' `frame_uid`s, and the error names
+  the grids rather than the visits. Asking `transform_between` for the two *grid ids*
+  does not close this: grid ids and timepoint ids are separate namespaces — §2.3 scopes
+  uniqueness to the group — so a grid may legitimately be named `tp0`, and
+  `Sample._frames_for` matches a timepoint before a grid, which puts the whole visit's
+  frames back in play for precisely the files most likely to be affected. That
+  precedence is now documented on `transform_between`, and the preflight recipe in the
+  longitudinal guide resolves on frames rather than grid ids.
+
+- **`dense()` answered for the reserved ignore id instead of refusing.** `65535` is
+  not a class (§5.2 says it **MUST NOT** appear in `classes`), so no encoding can
+  return a plane for it — but every encoding could return an all-zero one, which is
+  indistinguishable from a class examined and found absent. Documentation shipped
+  `dense([65535])` as the way to read the ignore region on the strength of that shape.
+  It now raises `E404` naming `ignore_mask()` and `header.ignore_mask`. The check is in
+  `resolve_classes`, which every encoding's `dense` routes through.
+
+  `mask` did not, initially. It overrides `dense` and discarded the argument, so five
+  encodings refused and the sixth returned its whole volume — reading as "ignored
+  everywhere", the worst of the available wrong answers. It now validates an explicitly
+  supplied class and still ignores it for selection, since a `mask` has none (§4.4);
+  argument-free `dense()` is unchanged. All six are covered by a parametrized test,
+  which the first fix shipped without.
+
+### Changed
+
+- **`Patch.used_index` is three-state and no longer defaults to `True`.** A uniform
+  draw consults no index, and reported `True` because that was the field's default —
+  so anyone logging it to find out whether a cohort was indexed got `True` from every
+  uniform patch of a `balanced` run. It is `True` when the index answered, `False` when
+  the foreground was scanned, and **`None` when the question did not arise**. Code
+  testing `if patch.used_index:` sees no change for foreground draws; code testing
+  `if not patch.used_index:` will now match uniform draws, which it did not before.
+
+### Added
+
+- **Help text for every CLI argument.** 93 of 196 arguments carried none, so
+  `medh5 convert to-nifti --help` documented one of its six. All 189 non-structural
+  arguments have it now. Two documentation defects in this cycle — `--source ct/*.dcm`,
+  which argparse rejects, and `--out cold/`, which raises `IsADirectoryError` — were
+  written because `--help` could not settle the question.
+
 ## [1.1.1] — 2026-08-30
 
 A documentation release. **No code changes**: the library, the format and every

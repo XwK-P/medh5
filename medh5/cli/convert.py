@@ -32,7 +32,7 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     group = convert.add_subparsers(dest="convert_command", metavar="COMMAND")
 
     nifti = group.add_parser("from-nifti", help="NIfTI volumes -> one sample")
-    nifti.add_argument("out")
+    nifti.add_argument("out", help="the .medh5 file to write")
     nifti.add_argument(
         "--image",
         action="append",
@@ -43,8 +43,18 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     nifti.add_argument(
         "--mask", action="append", metavar="NAME=PATH", help="a mask; repeatable"
     )
-    nifti.add_argument("--modality", action="append", metavar="NAME=CODE")
-    nifti.add_argument("--coord-system", choices=("LPS", "RAS"), default="LPS")
+    nifti.add_argument(
+        "--modality",
+        action="append",
+        metavar="NAME=CODE",
+        help="NAME=CODE, the modality for an image; repeatable",
+    )
+    nifti.add_argument(
+        "--coord-system",
+        choices=("LPS", "RAS"),
+        default="LPS",
+        help="world coordinate system to store: LPS (default) or RAS",
+    )
     nifti.add_argument(
         "--fourth-axis",
         choices=("auto", "time", "channel"),
@@ -64,47 +74,78 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
             "that grid is assumed, not measured. Recorded as a guess."
         ),
     )
-    nifti.add_argument("--sample-id")
-    nifti.add_argument("--subject-id")
+    nifti.add_argument(
+        "--sample-id", help="sample id to write; defaults to the output filename"
+    )
+    nifti.add_argument("--subject-id", help="subject id to write")
     _common(nifti)
 
     to_nifti = group.add_parser("to-nifti", help="one image or class -> NIfTI")
-    to_nifti.add_argument("path")
-    to_nifti.add_argument("image")
-    to_nifti.add_argument("out")
-    to_nifti.add_argument("--annotation")
-    to_nifti.add_argument("--class", dest="class_key")
+    to_nifti.add_argument("path", help="the sample to read")
+    to_nifti.add_argument("image", help="the image id to export")
+    to_nifti.add_argument("out", help="the .nii.gz file to write")
+    to_nifti.add_argument(
+        "--annotation", help="export this annotation instead of the image"
+    )
+    to_nifti.add_argument(
+        "--class",
+        dest="class_key",
+        help="with --annotation, the single class to export",
+    )
     to_nifti.add_argument("--stored", action="store_true", help="skip the rescale")
 
     dicom = group.add_parser("from-dicom", help="a DICOM tree -> samples")
-    dicom.add_argument("root")
-    dicom.add_argument("out")
-    dicom.add_argument("--group-by", choices=GROUPING, default="subject")
-    dicom.add_argument("--modality", action="append", dest="modalities")
-    dicom.add_argument("--series", action="append", dest="series_uids")
+    dicom.add_argument("root", help="directory tree of DICOM files")
+    dicom.add_argument(
+        "out", help="output file, or a directory when several samples result"
+    )
+    dicom.add_argument(
+        "--group-by",
+        choices=GROUPING,
+        default="subject",
+        help="one sample per subject (default) or per study",
+    )
+    dicom.add_argument(
+        "--modality",
+        action="append",
+        dest="modalities",
+        help="only import these modalities; repeatable",
+    )
+    dicom.add_argument(
+        "--series",
+        action="append",
+        dest="series_uids",
+        help="only import these SeriesInstanceUIDs; repeatable",
+    )
     _common(dicom)
 
     seg_in = group.add_parser("from-dicom-seg", help="a DICOM SEG -> an annotation")
-    seg_in.add_argument("seg")
-    seg_in.add_argument("sample")
-    seg_in.add_argument("--id", dest="ann_id", default="seg")
-    seg_in.add_argument("--grid")
+    seg_in.add_argument("seg", help="the DICOM SEG file to import")
+    seg_in.add_argument("sample", help="the sample to add the annotation to")
+    seg_in.add_argument(
+        "--id", dest="ann_id", default="seg", help="id for the new annotation"
+    )
+    seg_in.add_argument(
+        "--grid", help="grid to place the frames on; inferred when omitted"
+    )
     _common(seg_in)
 
     seg_out = group.add_parser("to-dicom-seg", help="an annotation -> a DICOM SEG")
-    seg_out.add_argument("path")
-    seg_out.add_argument("annotation")
-    seg_out.add_argument("out")
+    seg_out.add_argument("path", help="the sample to read")
+    seg_out.add_argument("annotation", help="the annotation to export")
+    seg_out.add_argument("out", help="the DICOM SEG file to write")
     seg_out.add_argument(
         "--source", action="append", required=True, help="a source DICOM file"
     )
     _common(seg_out)
 
     rt_in = group.add_parser("from-rtstruct", help="an RTSTRUCT -> contours")
-    rt_in.add_argument("rtstruct")
-    rt_in.add_argument("sample")
-    rt_in.add_argument("--id", dest="ann_id", default="contours")
-    rt_in.add_argument("--grid")
+    rt_in.add_argument("rtstruct", help="the RTSTRUCT file to import")
+    rt_in.add_argument("sample", help="the sample to add the contours to")
+    rt_in.add_argument(
+        "--id", dest="ann_id", default="contours", help="id for the new annotation"
+    )
+    rt_in.add_argument("--grid", help="grid the contours are measured against")
     rt_in.add_argument(
         "--rasterize",
         action="store_true",
@@ -113,29 +154,50 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     _common(rt_in)
 
     rt_out = group.add_parser("to-rtstruct", help="contours -> an RTSTRUCT")
-    rt_out.add_argument("path")
-    rt_out.add_argument("annotation")
-    rt_out.add_argument("out")
-    rt_out.add_argument("--source", action="append", required=True)
+    rt_out.add_argument("path", help="the sample to read")
+    rt_out.add_argument("annotation", help="the contour annotation to export")
+    rt_out.add_argument("out", help="the RTSTRUCT file to write")
+    rt_out.add_argument(
+        "--source",
+        action="append",
+        required=True,
+        help="a source DICOM file; repeat once per slice",
+    )
     _common(rt_out)
 
     nn_in = group.add_parser("from-nnunet", help="an nnU-Net v2 dataset -> samples")
-    nn_in.add_argument("root")
-    nn_in.add_argument("out")
-    nn_in.add_argument("--case", action="append", dest="case_ids")
+    nn_in.add_argument("root", help="the nnU-Net v2 dataset directory")
+    nn_in.add_argument("out", help="directory to write the samples into")
+    nn_in.add_argument(
+        "--case",
+        action="append",
+        dest="case_ids",
+        help="only import these case ids; repeatable",
+    )
     _common(nn_in)
 
     nn_out = group.add_parser("to-nnunet", help="samples -> an nnU-Net v2 dataset")
-    nn_out.add_argument("out")
-    nn_out.add_argument("paths", nargs="+")
-    nn_out.add_argument("--dataset-name", default="Dataset001_medh5")
-    nn_out.add_argument("--annotation", default="seg")
+    nn_out.add_argument("out", help="directory to write the dataset into")
+    nn_out.add_argument("paths", nargs="+", help="the samples to export")
+    nn_out.add_argument(
+        "--dataset-name",
+        default="Dataset001_medh5",
+        help="nnU-Net dataset name, e.g. Dataset001_Liver",
+    )
+    nn_out.add_argument(
+        "--annotation", default="seg", help="the annotation to export as labels"
+    )
     _common(nn_out)
 
     migrate = sub.add_parser("migrate", help="0.x files -> 1.0 samples (Appendix B)")
-    migrate.add_argument("paths", nargs="+")
+    migrate.add_argument("paths", nargs="+", help="the 0.x files to convert")
     migrate.add_argument("-o", "--out", required=True, help="output directory")
-    migrate.add_argument("--group-by", choices=GROUPING, default="study")
+    migrate.add_argument(
+        "--group-by",
+        choices=GROUPING,
+        default="study",
+        help="merge files sharing --subject-key into one sample per subject",
+    )
     migrate.add_argument(
         "--subject-key",
         help="dotted path to a subject key in 0.x extra, e.g. extra.patient_id",

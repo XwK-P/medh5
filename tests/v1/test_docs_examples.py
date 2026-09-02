@@ -96,6 +96,32 @@ def test_documented_cli_flags_exist(path: Path, line: str) -> None:
     assert not unknown, f"{path.name}: `{line}` uses undefined flag(s) {unknown}"
 
 
+def test_the_registration_preflight_resolves_on_frames() -> None:
+    """The preflight must ask about frames, and nothing else.
+
+    It resolved by *grid* id, which reads correctly and is still wrong: grid ids
+    and timepoint ids are separate namespaces (§2.3), so a grid may be named
+    `tp0`, and `Sample._frames_for` matches a timepoint before a grid --- which
+    hands the question back to the whole visit and re-answers "registered" for a
+    PET pair carrying only a CT registration.  A frame uid is matched last.
+
+    This one is out of reach of `STALE_CLAIMS` below: the recipe contains
+    `is not None`, and the paragraph-scoped disclaimer check reads that `not` as
+    a correction and exempts the block.
+    """
+    text = (DOCS / "guides" / "longitudinal.md").read_text()
+    block = next(
+        b
+        for b in re.findall(r"```python\n(.*?)```", text, re.S)
+        if "transform_between" in b and "TimepointPairSampler" in b
+    )
+    returned = re.findall(r"^\s*return\s+(.+)$", block, re.M)
+    assert returned, "the preflight names what it resolves on through a helper"
+    assert all("frame_uid" in value for value in returned), (
+        f"the preflight helper must yield a frame uid, not a grid id: {returned}"
+    )
+
+
 # Claims corrected during review, each with the shape that was wrong.  A pattern
 # here is cheaper than the round trip that found it the first time.
 STALE_CLAIMS: tuple[tuple[str, str, str, str | None], ...] = (

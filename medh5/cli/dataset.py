@@ -30,7 +30,7 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     group = parser.add_subparsers(dest="dataset_command", metavar="COMMAND")
 
     index = group.add_parser("index", help="metadata-only scan of a directory tree")
-    index.add_argument("root")
+    index.add_argument("root", help="directory tree to scan for .medh5 files")
     index.add_argument("-o", "--out", required=True, help="manifest JSON to write")
     index.add_argument(
         "--strict", action="store_true", help="stop at the first unreadable file"
@@ -38,21 +38,32 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     add_json_flag(index)
 
     split = group.add_parser("split", help="assign groups to partitions or folds")
-    split.add_argument("manifest")
+    split.add_argument("manifest", help="the manifest to split")
     split.add_argument("-o", "--out", help="split JSON to write")
-    split.add_argument("--set-id", default="default")
+    split.add_argument(
+        "--set-id",
+        default="default",
+        help="name of this split, so several can coexist in one file",
+    )
     split.add_argument(
         "--group-by",
         default="group_id",
         help=f"never a file; one of {', '.join(GROUPABLE)}",
     )
-    split.add_argument("--stratify-by")
-    split.add_argument("--k-folds", type=int)
+    split.add_argument("--stratify-by", help="entry field to balance across partitions")
+    split.add_argument(
+        "--k-folds", type=int, help="produce k folds instead of ratio partitions"
+    )
     split.add_argument(
         "--ratios",
         help=f"e.g. train=0.8,val=0.2 (default {_fmt_ratios(DEFAULT_RATIOS)})",
     )
-    split.add_argument("--seed", type=int, default=0)
+    split.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+        help="deterministic given the manifest, seed and parameters",
+    )
     split.add_argument(
         "--write-claims",
         action="store_true",
@@ -61,15 +72,27 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     split.add_argument(
         "--fold", type=int, help="with --k-folds --write-claims: the validation fold"
     )
-    split.add_argument("--assigned-by")
+    split.add_argument(
+        "--assigned-by", help="recorded on each claim as who assigned it"
+    )
     add_json_flag(split)
 
     stats = group.add_parser("stats", help="streaming intensity and class statistics")
-    stats.add_argument("manifest")
+    stats.add_argument("manifest", help="the manifest to compute over")
     stats.add_argument("-o", "--out", help="statistics JSON to write")
-    stats.add_argument("--image", action="append", dest="images")
-    stats.add_argument("--annotation", action="append", dest="annotations")
-    stats.add_argument("--workers", type=int, default=1)
+    stats.add_argument(
+        "--image",
+        action="append",
+        dest="images",
+        help="image ids to include; repeatable",
+    )
+    stats.add_argument(
+        "--annotation",
+        action="append",
+        dest="annotations",
+        help="annotation ids to include; repeatable",
+    )
+    stats.add_argument("--workers", type=int, default=1, help="processes to read with")
     stats.add_argument(
         "--stride",
         type=int,
@@ -77,12 +100,14 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
         help="read every Nth slab along the first axis (approximate, opt-in)",
     )
     stats.add_argument("--partition", help="restrict to one partition of --set-id")
-    stats.add_argument("--set-id", default="default")
+    stats.add_argument(
+        "--set-id", default="default", help="which split --partition refers to"
+    )
     add_json_flag(stats)
 
     checker = group.add_parser("check", help="cross-file consistency (C1xx codes)")
-    checker.add_argument("manifest")
-    checker.add_argument("--set-id")
+    checker.add_argument("manifest", help="the manifest to check")
+    checker.add_argument("--set-id", help="which split's claims to cross-check")
     checker.add_argument(
         "--deep",
         action="store_true",

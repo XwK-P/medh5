@@ -15,11 +15,16 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     group = labels.add_subparsers(dest="labels_command", metavar="COMMAND")
 
     show = group.add_parser("show", help="print a file's label set")
-    show.add_argument("path")
+    show.add_argument("path", help="the sample whose label set to print")
     add_json_flag(show)
 
     check = group.add_parser("check", help="report vocabulary drift across files")
-    check.add_argument("paths", nargs="+", metavar="PATH")
+    check.add_argument(
+        "paths",
+        nargs="+",
+        metavar="PATH",
+        help="the samples to compare label sets across",
+    )
     add_json_flag(check)
 
     reg = group.add_parser("registry", help="bundled vocabularies")

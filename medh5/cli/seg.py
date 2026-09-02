@@ -32,14 +32,19 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     stats = group.add_parser(
         "stats", help="per-class counts, overlap graph and encoding cost model"
     )
-    stats.add_argument("path")
-    stats.add_argument("annotation")
+    stats.add_argument("path", help="the sample holding the annotation")
+    stats.add_argument("annotation", help="the voxel annotation to measure")
     add_json_flag(stats)
 
     convert = group.add_parser("convert", help="re-encode losslessly (spec §7.6)")
-    convert.add_argument("path")
-    convert.add_argument("annotation")
-    convert.add_argument("--to", required=True, choices=TRANSCODABLE)
+    convert.add_argument("path", help="the sample holding the annotation")
+    convert.add_argument("annotation", help="the voxel annotation to re-encode")
+    convert.add_argument(
+        "--to",
+        required=True,
+        choices=TRANSCODABLE,
+        help="target encoding: labelmap, layers, bitmask, instances or probmap",
+    )
     convert.add_argument(
         "--dry-run", action="store_true", help="report the size delta, write nothing"
     )
@@ -49,9 +54,24 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     index_sub = index.add_subparsers(dest="index_command", metavar="COMMAND")
     build = index_sub.add_parser("build", help="build or refresh sampling indices")
     add_paths(build)
-    build.add_argument("--max-coords", type=int, default=DEFAULT_MAX_COORDS)
-    build.add_argument("--occupancy", type=int, default=DEFAULT_OCCUPANCY_FACTOR)
-    build.add_argument("--seed", type=int, default=0)
+    build.add_argument(
+        "--max-coords",
+        type=int,
+        default=DEFAULT_MAX_COORDS,
+        help="how many foreground coordinates to sample per class",
+    )
+    build.add_argument(
+        "--occupancy",
+        type=int,
+        default=DEFAULT_OCCUPANCY_FACTOR,
+        help="store a coarse occupancy grid of this side length",
+    )
+    build.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+        help="seed for the coordinate sample, so the index is reproducible",
+    )
     add_json_flag(build)
 
 

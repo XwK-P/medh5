@@ -28,19 +28,33 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     add_json_flag(listing)
 
     build = group.add_parser("build", help="write the corpus and its manifest")
-    build.add_argument("outdir")
-    build.add_argument("--case", action="append", dest="names")
+    build.add_argument("outdir", help="directory to write the corpus into")
+    build.add_argument(
+        "--case",
+        action="append",
+        dest="names",
+        help="only build these cases; repeatable",
+    )
 
     run = group.add_parser("run", help="build the corpus and check this validator")
-    run.add_argument("outdir")
-    run.add_argument("--case", action="append", dest="names")
+    run.add_argument("outdir", help="directory to build the corpus in")
+    run.add_argument(
+        "--case", action="append", dest="names", help="only run these cases; repeatable"
+    )
     add_json_flag(run)
 
     release = group.add_parser(
         "publish", help="write the distributable suite: cases, codes, schema, checksums"
     )
-    release.add_argument("outdir")
-    release.add_argument("--case", action="append", dest="names")
+    release.add_argument(
+        "outdir", help="directory to write the distributable suite into"
+    )
+    release.add_argument(
+        "--case",
+        action="append",
+        dest="names",
+        help="only publish these cases; repeatable",
+    )
 
     check = group.add_parser(
         "score", help="score any implementation's results against a published suite"

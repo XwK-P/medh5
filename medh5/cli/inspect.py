@@ -26,23 +26,33 @@ from medh5.validate.report import LEVELS
 
 def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     info = sub.add_parser("info", help="summarise a sample")
-    info.add_argument("path")
+    info.add_argument("path", help="the sample or collection to summarise")
     add_json_flag(info)
 
     tree = sub.add_parser("tree", help="annotated object listing with spec roles")
-    tree.add_argument("path")
+    tree.add_argument("path", help="the sample or collection to list")
     add_json_flag(tree)
 
     validate = sub.add_parser("validate", help="check conformance (spec §15)")
     add_paths(validate)
-    validate.add_argument("--level", choices=LEVELS, default="semantic")
+    validate.add_argument(
+        "--level",
+        choices=LEVELS,
+        default="semantic",
+        help="how much to check: structural, semantic (default), integrity or strict",
+    )
     validate.add_argument(
         "--profile",
         action="append",
         dest="profiles",
         help="override the declared profiles; repeatable",
     )
-    validate.add_argument("-v", "--verbose", action="store_true")
+    validate.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="print every diagnostic, not only the summary",
+    )
     add_json_flag(validate)
 
     verify = sub.add_parser("verify", help="check digests and content_id (spec §13)")
@@ -59,11 +69,11 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     _register_fix(sub)
 
     timeline = sub.add_parser("timeline", help="timepoints and what belongs to each")
-    timeline.add_argument("path")
+    timeline.add_argument("path", help="the sample whose visits to list")
     add_json_flag(timeline)
 
     track = sub.add_parser("track", help="join instance ids across timepoints")
-    track.add_argument("path")
+    track.add_argument("path", help="the sample whose instances to join across visits")
     track.add_argument("--class", dest="class_key", help="restrict to one class")
     add_json_flag(track)
 
@@ -85,7 +95,11 @@ def _register_fix(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
         "--reason",
         help="why the digests are being rewritten; recorded in the file",
     )
-    fixer.add_argument("--by", dest="performed_by")
+    fixer.add_argument(
+        "--by",
+        dest="performed_by",
+        help="who is making the change; recorded in provenance",
+    )
     add_json_flag(fixer)
 
 

@@ -96,11 +96,10 @@ batch["meta"]["patch"]["strategy"], ["class_id"], ["used_index"]
 disagree on a tensor's shape it names the key that disagreed rather than
 raising from inside `torch.stack`.
 
-`used_index` is worth logging, alongside `strategy`: on a `foreground` draw,
-`False` means the sampler fell back to scanning the volume because there was no
-sampling index — the difference between 0.9 ms and several hundred. On a
-`uniform` draw it is always `True`, since no index is consulted, so the pair has
-to be read together.
+`used_index` is worth logging. `False` means the sampler fell back to scanning
+the volume because there was no sampling index — the difference between 0.9 ms
+and several hundred. `None` means the draw was uniform and consulted no index, so
+there is nothing to report.
 
 ## The DataLoader
 

@@ -50,7 +50,20 @@ class MaskAnnotation(VoxelAnnotation):
         return np.asarray(self.data[window]).astype(bool)
 
     def dense(self, classes: Any = None, roi: Any = None) -> npt.NDArray[np.bool_]:
-        del classes
+        """The volume itself, as a single plane.
+
+        A `mask` has no classes (§4.4), so naming one selects nothing --- but
+        the argument is *validated* rather than dropped.  Discarding it meant
+        ``dense([65535])`` handed back the whole mask for the reserved ignore
+        id, which is the one answer the guard in
+        :meth:`~medh5.annotations.base.VoxelAnnotation.resolve_classes` exists
+        to prevent, and this was the only encoding that gave it: the other five
+        route through that guard on the way to their planes.  So a caller who
+        asked all six the same question got a refusal from five and a full
+        mask --- read as "ignored everywhere" --- from one.
+        """
+        if classes is not None:
+            self.resolve_classes(classes)
         return self.read(roi)[None, ...]
 
     def summary(self) -> dict[str, Any]:
