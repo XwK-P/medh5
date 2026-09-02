@@ -16,8 +16,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   with only the CT pair registered, moved the PET pair by the CT registration:
   measured, a 10 mm CT shift displaced PET centres by 10 voxels. Nothing raised — the
   patches came back the right shape from the wrong place, which is the failure the
-  guard beside it exists to prevent. Resolution is now between `source.grid_id` and
-  `target.grid_id`, and the error names the grids rather than the visits.
+  guard beside it exists to prevent.
+
+  Resolution is now directly between the two grids' `frame_uid`s, and the error names
+  the grids rather than the visits. Asking `transform_between` for the two *grid ids*
+  does not close this: grid ids and timepoint ids are separate namespaces — §2.3 scopes
+  uniqueness to the group — so a grid may legitimately be named `tp0`, and
+  `Sample._frames_for` matches a timepoint before a grid, which puts the whole visit's
+  frames back in play for precisely the files most likely to be affected. That
+  precedence is now documented on `transform_between`, and the preflight recipe in the
+  longitudinal guide resolves on frames rather than grid ids.
 
 - **`dense()` answered for the reserved ignore id instead of refusing.** `65535` is
   not a class (§5.2 says it **MUST NOT** appear in `classes`), so no encoding can

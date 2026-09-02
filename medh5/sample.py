@@ -465,6 +465,17 @@ class Sample:
         baseline to follow-up with one affine, a composite, or an affine plus a
         deformable refinement, and a consumer should not have to know which.
         Returns ``None`` when the two already share a frame --- nothing to apply.
+
+        **A key is read as a timepoint first, then as a grid, then as a frame
+        uid.**  Uniqueness is scoped to the group (§2.3), so a grid MAY be named
+        after the visit it belongs to and a conforming file can have both; where
+        it does, the timepoint reading wins and the answer covers *every* frame
+        of that visit rather than the one grid.  That is only ambiguous when a
+        visit spans several frames --- a CT and a PET, say --- but there it is
+        the difference between a registration this pair owns and one belonging
+        to another modality.  Pass ``grids[gid].frame_uid`` to ask about one
+        grid's frame specifically; a frame uid is matched last, so it answers
+        for that frame alone.
         """
         transforms = dict(self.transforms)
         pairs = [

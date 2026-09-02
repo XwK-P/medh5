@@ -42,6 +42,7 @@ from medh5.sampling import (
 )
 from medh5.torch._compat import dataset_base, require_torch, to_tensor
 from medh5.torch.handles import open_cached
+from medh5.transforms.resolve import resolve_between
 
 LABEL_FORMATS = ("onehot", "labelmap", "instances", "none")
 ALIGNMENTS = ("none", "transform")
@@ -565,18 +566,32 @@ class PairedPatchDataset(_Base):
         source = sample.grids[patch.grid_id or self._window_grid_at(sample, pair.first)]
         target = sample.grids[self._window_grid_at(sample, pair.second)]
         world = source.index_to_world(np.asarray([patch.center], dtype=np.float64))
-        # Resolve between the two *grids*, not the two timepoints.  A visit may
-        # hold a CT grid and a PET grid on different frames, and a timepoint-level
-        # question searches every frame of one visit against every frame of the
-        # other and returns the first path it finds --- so a CT registration
-        # answered "yes" for a PET pair with no registration of its own, and its
-        # displacement was then applied to PET coordinates.  Nothing raised; the
-        # patches came back the right shape from the wrong place.
-        transform = sample.transform_between(source.grid_id, target.grid_id)
+        # Resolve between the two *frames*, not the two timepoints and not by
+        # name.  A visit may hold a CT grid and a PET grid on different frames,
+        # and a timepoint-level question searches every frame of one visit
+        # against every frame of the other and returns the first path it finds
+        # --- so a CT registration answered "yes" for a PET pair with no
+        # registration of its own, and its displacement was then applied to PET
+        # coordinates.  Nothing raised; the patches came back the right shape
+        # from the wrong place.
+        #
+        # Asking `transform_between` for the two *grid ids* is not enough to
+        # close that.  Grid ids and timepoint ids are separate namespaces (§2.3
+        # scopes uniqueness to the group), so a grid may legitimately be named
+        # `tp0`, and `Sample._frames_for` reads a key as a timepoint before it
+        # reads it as a grid --- which puts the whole visit's frames back in
+        # play and restores the bug for exactly the files most likely to hit it.
+        # Here the grids are already in hand, so resolve frame to frame and let
+        # no name be interpreted at all.
+        transform = None
+        if source.frame_uid and target.frame_uid:
+            transform = resolve_between(
+                dict(sample.transforms), source.frame_uid, target.frame_uid
+            )
         if transform is None and source.frame_uid != target.frame_uid:
-            # `transform_between` returns None for two different reasons: the
-            # grids already share a frame (nothing to apply), or no path exists
-            # between them.  Only the first makes the coordinates comparable.
+            # A `None` here has two possible meanings: the grids already share
+            # a frame (nothing to apply), or no path exists between them.  Only
+            # the first makes the coordinates comparable.
             # Treating the second as "no transform needed" feeds source-frame
             # world coordinates straight into an unrelated grid and returns
             # paired patches from different anatomy, which trains quietly.

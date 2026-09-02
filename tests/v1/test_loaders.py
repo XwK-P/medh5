@@ -443,6 +443,80 @@ class TestPairedPatchDataset:
         with pytest.raises(MEDH5ValidationError, match="pet_tp0"):
             dataset("PET")[0]
 
+    def test_S2_3_a_grid_named_like_a_timepoint_still_resolves_its_own_frame(
+        self, tmp_path
+    ):
+        """Grid ids and timepoint ids are separate namespaces (§2.3).
+
+        Uniqueness is scoped to the group, so a grid MAY be named `tp0` beside a
+        timepoint `tp0`, and such a file conforms.  `Sample._frames_for` reads a
+        key as a timepoint first, so asking it about the *grid* `tp0` answers
+        for the whole visit --- every frame of it --- and a CT registration was
+        again returned for a PET pair that had none.  Naming a grid after its
+        visit is a common enough habit that this is not an exotic file.
+        """
+        shape = (32, 32, 32)
+        shift = np.eye(4)
+        shift[0, 3] = 10.0
+        path = tmp_path / "colliding_ids.medh5"
+        with medh5.create(path, sample_id="s", subject_id="S") as writer:
+            for index, timepoint in enumerate(("tp0", "tp1")):
+                writer.add_timepoint(
+                    timepoint,
+                    index=index,
+                    label=timepoint,
+                    days_from_baseline=index * 90,
+                )
+                # the PET grid is *named* for the visit, colliding with it
+                for modality, grid_id in (
+                    ("ct", f"ct_{timepoint}"),
+                    ("pet", timepoint),
+                ):
+                    writer.add_grid(
+                        grid_id,
+                        shape=shape,
+                        spacing=(1.0, 1.0, 1.0),
+                        origin=(0.0, 0.0, 0.0),
+                        timepoint=timepoint,
+                        frame_uid=f"pseudo:{modality}-{timepoint}",
+                    )
+                    writer.add_image(
+                        f"{modality.upper()}_{timepoint}",
+                        np.zeros(shape, np.int16),
+                        grid=grid_id,
+                        modality=modality.upper(),
+                    )
+            writer.add_transform(
+                "ct_reg",
+                kind="affine",
+                from_frame="pseudo:ct-tp0",
+                to_frame="pseudo:ct-tp1",
+                matrix=shift,
+            )
+
+        with medh5.open(path) as sample:
+            # the collision is real: the key names a grid on one frame, and
+            # reads back as the visit's two
+            assert sample.grids["tp0"].frame_uid == "pseudo:pet-tp0"
+            assert len(sample._frames_for("tp0")) == 2
+
+        def dataset(modality):
+            return PairedPatchDataset(
+                [str(path)],
+                PatchSampler(8),
+                align="transform",
+                images=[f"{modality}_tp0", f"{modality}_tp1"],
+            )
+
+        patches = dataset("CT")[0]["meta"]["patches"]
+        moved = patches["tp1"]["center"][0] - patches["tp0"]["center"][0]
+        assert moved == 10, "the CT pair is still aligned by its own registration"
+
+        # the PET grids are unregistered, and being named after the visits does
+        # not lend them the CT registration
+        with pytest.raises(MEDH5ValidationError, match="needs a transform"):
+            dataset("PET")[0]
+
     def test_S3_7_a_padded_first_visit_keeps_the_pair_one_shape(
         self, tmp_path, label_set
     ):

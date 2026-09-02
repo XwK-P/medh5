@@ -159,45 +159,50 @@ The failure is also deferred, and in one case absent. `align="transform"` on a
 pair whose visits share no transform at all raises `MEDH5ValidationError` from
 `__getitem__` — part way into an epoch rather than at construction.
 
-**And a visit with several frames can misalign silently.** `_map_center`
-resolves the transform per *timepoint* while reading per *grid*, so when a visit
-holds a CT grid and a PET grid on different frames and only the CT pair is
-registered, a PET dataset is moved by the CT registration. The patches come back
-the right shape from the wrong place, and nothing raises. Until that is fixed,
-run the preflight below rather than relying on the exception:
+A pair whose two visits hold several frames each is the case worth checking by
+hand. The loader resolves between the frames the images are actually on and
+raises when nothing relates them, so a PET dataset is no longer moved by a CT
+registration — but it raises when the item is read, which is a slow way to find
+out that a cohort was never registered. Run the preflight first:
 
 ```python
 import medh5
 
-def grid_of(sample, timepoint, image):
-    """The grid the dataset will read at this visit, for this image."""
-    return sample.at(timepoint).images[image].grid_id
+def frame_of(sample, timepoint, image):
+    """The frame the dataset will read on at this visit, for this image."""
+    grid_id = sample.at(timepoint).images[image].grid_id
+    return sample.grids[grid_id].frame_uid
 
 for path in paths:
     with medh5.open(path) as s:
         for pair in TimepointPairSampler("consecutive").pairs(s):
-            first = grid_of(s, pair.first, f"CT_{pair.first}")
-            second = grid_of(s, pair.second, f"CT_{pair.second}")
-            if s.transform_between(first, second) is not None:
-                continue                      # a transform relates those grids
-            if s.grids[first].frame_uid == s.grids[second].frame_uid:
+            first = frame_of(s, pair.first, f"CT_{pair.first}")
+            second = frame_of(s, pair.second, f"CT_{pair.second}")
+            if first == second:
                 continue                      # same frame, none needed
+            if s.transform_between(first, second) is not None:
+                continue                      # a transform relates those frames
             print(f"{path}: {first} -> {second} has no transform")
 ```
 
 Two details decide whether this check is worth running.
 
-**Resolve between the grids, not the timepoints.** A visit may hold a CT grid and
-a PET grid on different frames. `transform_between("tp0", "tp1")` searches every
-frame of the first visit against every frame of the second and returns the first
-path it finds, so a CT registration makes the timepoint-level question answer
-"yes" for a PET dataset that has no registration of its own. Ask about the grids
-your images are actually on.
+**Resolve between the frames, not the timepoints — and not by grid id either.**
+A visit may hold a CT grid and a PET grid on different frames.
+`transform_between("tp0", "tp1")` searches every frame of the first visit
+against every frame of the second and returns the first path it finds, so a CT
+registration makes the timepoint-level question answer "yes" for a PET dataset
+that has no registration of its own. Naming the two grids instead is not enough:
+grid ids and timepoint ids are separate namespaces (spec §2.3), so a grid may
+legitimately be called `tp0`, and a key is read as a timepoint before it is read
+as a grid — which puts the whole visit's frames back in play for exactly the
+files most likely to be affected. A frame uid is matched last and answers for
+that frame alone.
 
-**Compare the frames too.** `transform_between` answers `None` both when nothing
-relates the grids and when they already share a frame and need nothing. Checking
-for `None` alone reports already-aligned visits as unregistered, which is how you
-end up registering data that is already aligned.
+**Compare the frames first.** `transform_between` answers `None` both when
+nothing relates the two and when they are already the same frame and need
+nothing. Checking for `None` alone reports already-aligned visits as
+unregistered, which is how you end up registering data that is already aligned.
 
 ## Label the change
 
