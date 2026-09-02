@@ -35,6 +35,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   It now raises `E404` naming `ignore_mask()` and `header.ignore_mask`. The check is in
   `resolve_classes`, which every encoding's `dense` routes through.
 
+  `mask` did not, initially. It overrides `dense` and discarded the argument, so five
+  encodings refused and the sixth returned its whole volume — reading as "ignored
+  everywhere", the worst of the available wrong answers. It now validates an explicitly
+  supplied class and still ignores it for selection, since a `mask` has none (§4.4);
+  argument-free `dense()` is unchanged. All six are covered by a parametrized test,
+  which the first fix shipped without.
+
 ### Changed
 
 - **`Patch.used_index` is three-state and no longer defaults to `True`.** A uniform

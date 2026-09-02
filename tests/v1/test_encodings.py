@@ -332,6 +332,90 @@ class TestTranscoding:
         assert exc.value.code == "E405"
 
 
+class TestTheIgnoreIdIsNotAClass:
+    """§5.2 keeps `65535` out of `classes`, so no `dense` may answer for it.
+
+    Every encoding *could* return an all-zero plane for it, and that shape is
+    indistinguishable from a class examined and found absent --- which is how
+    `dense([65535])` came to be documented as the way to read the ignore region.
+    The guard sits in `resolve_classes` so one placement covers every encoding,
+    and this asks all six whether it actually did.  It did not: `mask` overrode
+    `dense` and dropped the argument, so five refused and the sixth returned the
+    whole mask, reading as "ignored everywhere".
+    """
+
+    SHAPE = (6, 12, 12)
+
+    def _labels(self):
+        return LabelSet(
+            "v",
+            version="1.0.0",
+            classes=[
+                LabelClass(1, "liver", "Liver"),
+                LabelClass(2, "spleen", "Spleen"),
+            ],
+        )
+
+    def _annotation(self, tmp_path, encoding):
+        """One sample per encoding, `mask` included --- it has no classes at all."""
+        first = np.zeros(self.SHAPE, bool)
+        first[:3] = True
+        second = np.zeros(self.SHAPE, bool)
+        # overlapping, so the multi-class encodings are all writable
+        second[2:5] = True
+        path = tmp_path / f"{encoding}.medh5"
+        with medh5.create(path, codec="portable") as w:
+            w.label_set(self._labels())
+            w.add_grid("g", shape=self.SHAPE, spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", np.zeros(self.SHAPE, np.int16), grid="g", modality="CT")
+            if encoding == "mask":
+                w.add_mask("seg", np.ones(self.SHAPE, bool), grid="g")
+            else:
+                w.add_segmentation(
+                    "seg",
+                    grid="g",
+                    masks={"liver": first, "spleen": second},
+                    annotated_classes=["liver", "spleen"],
+                    encoding=encoding,
+                )
+        return path
+
+    @pytest.mark.parametrize("encoding", [*DENSE, "mask"])
+    def test_S5_2_no_encoding_returns_a_plane_for_the_ignore_id(
+        self, tmp_path, encoding
+    ):
+        if encoding == "labelmap":
+            pytest.skip("labelmap cannot hold the overlapping masks this uses")
+        path = self._annotation(tmp_path, encoding)
+        with medh5.open(path) as sample:
+            annotation = sample.annotations["seg"]
+            with pytest.raises(MEDH5ValidationError, match="reserved ignore id") as exc:
+                annotation.dense([65535])
+            assert exc.value.code == "E404"
+
+    @pytest.mark.parametrize("encoding", [*DENSE, "mask"])
+    def test_S7_6_refusing_the_ignore_id_leaves_ordinary_reads_alone(
+        self, tmp_path, encoding
+    ):
+        """The guard must cost the uniform contract nothing.
+
+        `mask` is the case worth stating: it has no classes, so `dense()` takes
+        no argument and must keep working untouched, and a named class still
+        selects nothing rather than starting to raise.
+        """
+        if encoding == "labelmap":
+            pytest.skip("labelmap cannot hold the overlapping masks this uses")
+        path = self._annotation(tmp_path, encoding)
+        with medh5.open(path) as sample:
+            annotation = sample.annotations["seg"]
+            assert annotation.dense().shape[1:] == self.SHAPE
+            if encoding == "mask":
+                assert int(annotation.dense().sum()) == int(np.prod(self.SHAPE))
+                assert annotation.dense(["liver"]).shape[1:] == self.SHAPE
+            else:
+                assert int(annotation.dense(["liver"]).sum()) > 0
+
+
 class TestTranscodingRefusesWhatItCannotCarry:
     """§7.6 calls transcoding lossless, so anything it cannot carry must stop it."""
 

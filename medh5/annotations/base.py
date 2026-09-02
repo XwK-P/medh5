@@ -383,8 +383,12 @@ class Annotation(ABC):
         indistinguishable from a class examined and found absent.  Documentation
         shipped ``dense([65535])`` as the way to read the ignore region on the
         strength of that shape; under ``layers`` it silently yields nothing and
-        the ignored voxels go into the loss.  Refusing here covers every encoding
-        at once, because each one's ``dense`` resolves its classes through this.
+        the ignored voxels go into the loss.  Refusing here covers every encoding,
+        because each one's ``dense`` resolves its classes through this --- and
+        that includes ``mask``, which has no classes to resolve and so calls it
+        for the check alone.  ``mask`` is the encoding that proves the placement:
+        it overrides ``dense`` and used to drop the argument, so the guard reached
+        five encodings of six while this paragraph claimed all six.
 
         :meth:`VoxelAnnotation.ignore_mask` reads the region where the encoding
         carries it in band; ``header.ignore_mask`` names the `mask` annotation
