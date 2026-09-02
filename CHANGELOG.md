@@ -4,7 +4,41 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
+## [1.2.0] — 2026-09-02
+
+A correctness release. The **format version is unchanged**: 1.2.0 reads and writes
+exactly the files 1.0 does, and the conformance corpus is the same 103 cases. The
+package takes a minor bump because three fixes change what existing code produces or
+accepts — see **Behaviour changes** below before upgrading a pipeline.
+
+The two headline fixes are both silent-wrong-answer bugs found by review of the
+documentation restructure in 1.1.1: a paired patch aligned by a registration belonging
+to another modality, and `dense()` answering for the reserved ignore id under one
+encoding of six.
+
+### Behaviour changes
+
+Read these before upgrading a pipeline. Each is a correction, and each can change what
+existing code produces or accepts:
+
+- **`Patch.used_index` is three-state.** It no longer defaults to `True`, so
+  `if not patch.used_index:` now matches uniform draws, which it did not before. See
+  **Changed** below for what each value means.
+
+- **`dense()` raises `E404` for the reserved ignore id** under every encoding, where it
+  previously returned an all-zero plane — or, under `mask`, the whole volume. Code that
+  followed the old documentation and read the ignore region with `dense([65535])` must
+  switch to `ignore_mask()`, or to the `mask` annotation named by `header.ignore_mask`.
+
+- **`PairedPatchDataset(align="transform")` now refuses pairs it used to accept.** The
+  refusal itself is not new — it has raised for unrelatable frames since 1.0.0 — but it
+  was reached by asking about the two *timepoints*, so a pair whose own grids had no
+  transform still resolved through a registration belonging to another modality at the
+  same visits, and paired silently. That question is now asked frame to frame, so those
+  pairs reach the refusal instead. A multi-modality cohort that trained without
+  complaint may now stop at the first such file; that file was contributing patches
+  from mismatched anatomy. `align="none"` reads the same index window from both visits,
+  as before, and is unaffected.
 
 ### Fixed
 
