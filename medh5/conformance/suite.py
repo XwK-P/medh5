@@ -202,6 +202,8 @@ def summarize(results: Sequence[CaseResult]) -> dict[str, Any]:
 
 def _readme(cases: Sequence[Case]) -> str:
     valid = sum(1 for c in cases if c.valid)
+    shards = sum(1 for c in cases if c.suffix == ".medh5c")
+    kinds = f"the cases: {len(cases) - shards} samples and {shards} collections"
     covered = sorted({code for c in cases for code in (*c.errors, *c.warnings)})
     return f"""\
 # MEDH5 {medh5.FORMAT_VERSION} conformance suite
@@ -215,7 +217,7 @@ specification's §15.2 table appear here.
 
 | File | What it is |
 |---|---|
-| `*.medh5`, `*.medh5c` | the cases: samples, and one collection |
+| `*.medh5`, `*.medh5c` | {kinds} |
 | `expected.json` | per case, the exact codes a conforming validator must emit |
 | `codes.json` | the §15.2 diagnostic code table as data |
 | `{SCHEMA}` | the JSON Schema for the `/meta` document |

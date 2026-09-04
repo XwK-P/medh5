@@ -99,6 +99,14 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
         default=1,
         help="read every Nth slab along the first axis (approximate, opt-in)",
     )
+    stats.add_argument(
+        "--stored",
+        action="store_true",
+        help=(
+            "measure the values the files store instead of physical ones; by "
+            "default each image's rescale is applied first, as the loaders do"
+        ),
+    )
     stats.add_argument("--partition", help="restrict to one partition of --set-id")
     stats.add_argument(
         "--set-id", default="default", help="which split --partition refers to"
@@ -248,6 +256,7 @@ def _stats(args: argparse.Namespace) -> int:
         annotations=args.annotations,
         workers=args.workers,
         sample_stride=args.stride,
+        physical=not args.stored,
     )
     if args.out:
         Path(args.out).write_text(json.dumps(result.to_json(), indent=2) + "\n")
@@ -265,6 +274,14 @@ def _stats(args: argparse.Namespace) -> int:
             for key, m in sorted(result.images.items())
         ]
         print(table(rows, ["image", "mean", "std", "min", "max"]))
+        print(
+            "intensities: "
+            + (
+                "physical (rescale applied, as the loaders read)"
+                if result.physical
+                else "stored (rescale not applied)"
+            )
+        )
         if result.classes:
             rows = [
                 [

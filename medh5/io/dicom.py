@@ -26,6 +26,7 @@ afterwards.
 from __future__ import annotations
 
 import os
+from collections import Counter
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -484,6 +485,29 @@ def _safe(text: str) -> str:
     return "".join(c if (c.isalnum() or c in "._-") else "_" for c in text)[:200]
 
 
+def _series_names(entries: Sequence[Series], tp: str) -> list[tuple[Series, str, str]]:
+    """``(series, grid id, image id)`` for every series of one visit.
+
+    The name is the modality and the visit --- ``CT_tp0`` on grid ``ct_tp0``
+    --- and, where a visit holds several series of one modality, a 1-based
+    position in ``SeriesInstanceUID`` order: ``MR_1_tp0``, ``MR_2_tp0``.  A T1
+    and a T2 in one study are ordinary, and naming both ``MR_tp0`` made the
+    second one a refusal (``grid 'mr_tp0' is already declared``) rather than an
+    import.  Single-series modalities keep the short form so nothing already
+    written changes its name.
+    """
+    counts = Counter(entry.modality for entry in entries)
+    position: dict[str, int] = {}
+    out: list[tuple[Series, str, str]] = []
+    for entry in entries:
+        base = _safe(entry.modality)
+        if counts[entry.modality] > 1:
+            position[entry.modality] = position.get(entry.modality, 0) + 1
+            base = f"{base}_{position[entry.modality]}"
+        out.append((entry, f"{base.lower()}_{tp}", f"{base}_{tp}"))
+    return out
+
+
 def _write_subject(
     group: SubjectGroup,
     path: Path,
@@ -495,6 +519,10 @@ def _write_subject(
 
     note_instance_ids(group, log)
     days = group.days_from_baseline()
+    named = [
+        _series_names(occasion.payload, f"tp{index}")
+        for index, occasion in enumerate(group.occasions)
+    ]
     with medh5.create(
         path,
         sample_id=_safe(group.subject_id),
@@ -504,22 +532,42 @@ def _write_subject(
         tool = writer.software("medh5", medh5.__version__)
         for index, occasion in enumerate(group.occasions):
             tp = f"tp{index}"
-            entries: list[Series] = occasion.payload
             writer.add_timepoint(
                 tp,
                 index=index,
                 date=_iso(occasion.date),
                 days_from_baseline=days[index],
                 study_uid=occasion.key,
-                series_uids={e.modality: e.series_uid for e in entries},
+                # Keyed by image id, which is what §3.7 says the key is.  Keyed
+                # by modality, two series of one modality collapsed to one entry.
+                series_uids={
+                    image_id: entry.series_uid for entry, _, image_id in named[index]
+                },
             )
-        for index, occasion in enumerate(group.occasions):
+            repeated = sorted(
+                modality
+                for modality, n in Counter(e.modality for e in occasion.payload).items()
+                if n > 1
+            )
+            if repeated:
+                log.decision(
+                    "image_ids",
+                    f"{group.subject_id} {tp}: more than one series of "
+                    f"{', '.join(repeated)} in one study; images are numbered in "
+                    "SeriesInstanceUID order",
+                    {
+                        "timepoint": tp,
+                        "images": {
+                            image_id: entry.series_uid
+                            for entry, _, image_id in named[index]
+                            if entry.modality in repeated
+                        },
+                    },
+                )
+        for index, series_names in enumerate(named):
             tp = f"tp{index}"
-            entries = occasion.payload
-            for entry in entries:
+            for entry, grid_id, image_id in series_names:
                 volume, geometry = read_series(entry, report=log)
-                grid_id = f"{_safe(entry.modality).lower()}_{tp}"
-                image_id = f"{_safe(entry.modality)}_{tp}"
                 activity = writer.activity(
                     "import",
                     agent=tool,

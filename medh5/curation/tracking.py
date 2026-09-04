@@ -316,7 +316,7 @@ def build_tracks(
             continue
         if class_key is not None:
             wanted = ann.resolve_class(class_key)
-        timepoints = ann.timepoints or ("",)
+        timepoints = ann.timepoints or _implicit_timepoints(sample)
         for tp in timepoints:
             coverage.setdefault(tp, set()).update(ann.annotated_class_ids)
         grid = _grid_of(sample, ann)
@@ -356,6 +356,17 @@ def build_tracks(
         sample.timepoints.ids,
         {tp: frozenset(ids) for tp, ids in coverage.items()},
     )
+
+
+def _implicit_timepoints(sample: Sample) -> tuple[str, ...]:
+    """Where an annotation with no timepoint of its own belongs (§3.7).
+
+    With one declared timepoint that is the answer; grids resolve the same way
+    on the reader.  With several there is no honest answer, and the empty key
+    keeps such observations out of every declared visit rather than guessing.
+    """
+    ids = sample.timepoints.ids
+    return ids if len(ids) == 1 else ("",)
 
 
 def _class_key(sample: Sample, class_id: int) -> str | None:

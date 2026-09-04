@@ -269,7 +269,11 @@ def synthetic_sample(
     with medh5.create(path, sample_id="bench", codec=codec) as writer:
         writer.label_set(label_set)
         writer.add_grid(
-            "g", shape=shape, spacing=(1.0, 1.0, 1.0), patch_hint=(64, 64, 64)
+            "g",
+            shape=shape,
+            spacing=(1.0, 1.0, 1.0),
+            timepoint="tp0",
+            patch_hint=(64, 64, 64),
         )
         writer.add_image(
             "CT",

@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import ExitStack
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
 
@@ -78,6 +79,7 @@ from medh5.document import (
     write_document,
 )
 from medh5.errors import (
+    MEDH5Error,
     MEDH5FileError,
     MEDH5ValidationError,
     MEDH5VersionError,
@@ -124,6 +126,12 @@ PROFILES = (
 )
 
 ROOT_DIGEST_ATTRS = ("medh5_version", "medh5_kind", "medh5_profiles")
+"""Root attributes covered by ``content_id``.
+
+``created`` and ``generator`` are deliberately excluded: two byte-identical
+samples written an hour apart must share a ``content_id``, or it is not a
+content address and cannot be used as a cache or dedup key (spec §13.2).
+"""
 
 _MANAGED_ROOT_ATTRS = (
     "medh5_version",
@@ -139,12 +147,6 @@ _MANAGED_ROOT_ATTRS = (
 Everything else on the root is copied through: §16 permits a minor version to
 add root attributes, and a 1.0 tool amending such a file must preserve what it
 does not understand rather than silently dropping it.
-"""
-"""Root attributes covered by ``content_id``.
-
-``created`` and ``generator`` are deliberately excluded: two byte-identical
-samples written an hour apart must share a ``content_id``, or it is not a
-content address and cannot be used as a cache or dedup key (spec §13.2).
 """
 
 _STANDARD_GROUPS = ("meta", "grids", "images", "annotations", "transforms", "index")
@@ -375,9 +377,38 @@ class Sample:
 
     @property
     def grids(self) -> dict[str, Grid]:
+        """The sample's grids, with §3.7's implicit timepoint resolved.
+
+        A grid **MUST** name its timepoint only when the sample declares more
+        than one (§3.7 rule 2); with exactly one declared, the attribute is
+        optional and the grid belongs to that one.  Every timepoint-aware reader
+        --- ``Image.timepoint``, ``Annotation.timepoints``, ``at()``,
+        ``tracks()``, the frame lookup behind ``transform_between`` --- takes
+        its answer from the grid, so the resolution happens here, once.  Left
+        unresolved, a single-visit file whose converter omitted the attribute
+        (every NIfTI and nnU-Net import did) had an empty ``at("tp0")``, blank
+        ``medh5 timeline`` columns, and a ``tracks()`` that called every lesion
+        *unexamined* at the only visit there was.  The writer's own view is the
+        file's attributes, untouched.
+        """
         if self._grids is None:
-            self._grids = read_grids(self.root)
+            self._grids = self._with_implicit_timepoint(read_grids(self.root))
         return self._grids
+
+    def _with_implicit_timepoint(self, grids: dict[str, Grid]) -> dict[str, Grid]:
+        try:
+            declared = self.timepoints.ids
+        except MEDH5Error:
+            # A document that does not parse is its own diagnostic; the grids
+            # are still readable as stored.
+            return grids
+        if len(declared) != 1:
+            return grids
+        only = declared[0]
+        return {
+            gid: replace(grid, timepoint=only) if grid.timepoint is None else grid
+            for gid, grid in grids.items()
+        }
 
     @property
     def reference_grid(self) -> Grid:

@@ -17,8 +17,10 @@ install it when it is absent.
     loader = DataLoader(ds, batch_size=2, num_workers=8,
                         worker_init_fn=worker_init_fn, collate_fn=collate)
 
-``worker_init_fn`` is not optional: without it a forked worker inherits the
-parent's HDF5 handles and returns corrupt reads (§14.4).
+``worker_init_fn`` is recommended rather than required: the handle cache is
+PID-keyed and re-checks ownership on every access, so a forked worker abandons
+the parent's HDF5 handles on first use rather than reading through or closing
+them (§14.4).  The callback does that reset eagerly, at worker start.
 """
 
 from __future__ import annotations

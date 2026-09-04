@@ -234,13 +234,18 @@ says which partition got nothing rather than leaving you to notice later.
 
 ```
 medh5 dataset stats manifest.json [--image K] [--annotation A] [--workers N]
-                                  [--stride S] [--partition P] [--out FILE] [--json]
+                                  [--stride S] [--stored] [--partition P]
+                                  [--out FILE] [--json]
 ```
 
 Streaming intensity moments and class frequencies. Reads class counts from the
 sampling index when it is current. `--partition train` restricts the pass to
 one partition of `--set-id`, which is how you compute normalisation constants
 without looking at your test set.
+
+Intensity moments are over **physical** values: each image's rescale is applied
+first, which is what the loaders read with `physical=True`. `--stored` measures
+the values the files store instead.
 
 ### `medh5 dataset check`
 

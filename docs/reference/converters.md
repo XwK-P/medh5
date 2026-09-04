@@ -63,6 +63,12 @@ conversion is a sign flip on the affine, `diag(-1, -1, 1, 1)`, and nothing else
 **Round trip.** `from_nifti` → `to_nifti` reproduces the affine and the voxels
 bit-for-bit.
 
+**`scl_slope` and `scl_inter` become the image's rescale**, the way the DICOM
+modality LUT does. The voxels keep the dtype the file stores them in;
+`read(physical=True)` applies the scale and `read()` returns the stored values
+(§4.2). A mask file carrying a scale of its own is thresholded after it is
+applied.
+
 `--assume-geometry` imports a file that declares no spatial mapping, recording
 the fallback as a guess. Without it, such a file is refused.
 
@@ -89,6 +95,12 @@ gives what the scanner stored.
 
 **Tags are an explicit allow-list.** Imaging physics goes to `acquisition`;
 everything else stays out (§11.4).
+
+**Images are named by modality and visit** — `CT_tp0` on grid `ct_tp0`,
+`PT_tp1` on `pt_tp1`. A study holding several series of one modality numbers
+them in `SeriesInstanceUID` order — `MR_1_tp0`, `MR_2_tp0` — and the report
+records which series got which name. The timepoint's `series_uids` is keyed by
+those image ids.
 
 **`--group-by subject`** (the default) resolves patient identity across studies
 and emits one multi-timepoint sample per patient, falling back to one sample per
