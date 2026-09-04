@@ -620,6 +620,18 @@ class TestW5Structure:
 
 
 class TestW6Tooling:
+    def test_fsync_leaves_a_trailing_control_z_alone(self, tmp_path: Path):
+        """`_fsync_path` opens a writable descriptor on Windows, and the C runtime's
+        text mode treats a trailing 0x1A as an end-of-file mark it strips on open.
+        The Windows job found four samples in eleven hundred one byte short."""
+        from medh5._hdf5 import _fsync_path
+
+        path = tmp_path / "ctrlz.bin"
+        payload = bytes(range(256)) + b"\x1a"
+        path.write_bytes(payload)
+        _fsync_path(path)
+        assert path.read_bytes() == payload
+
     def test_the_lint_gate_refuses_suppressions_that_suppress_nothing(self):
         text = (Path(__file__).resolve().parents[2] / "pyproject.toml").read_text(
             encoding="utf-8"

@@ -89,7 +89,9 @@ produces or accepts:
   tests before anyone found it in the package.
 - **`create` and `amend` commit on Windows.** The `fsync` before the rename into place opened
   the finished file read-only, and Windows flushes only through a writable handle, so every
-  write failed at commit with `EBADF`. Nothing had run there before the Windows job existed.
+  write failed at commit with `EBADF`. The writable handle is opened in binary mode, because
+  the C runtime's text mode strips a trailing 0x1A from a writable file on open, and one HDF5
+  file in 256 ends with that byte. Nothing had run there before the Windows job existed.
 
 ### Fixed — performance
 

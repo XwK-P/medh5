@@ -197,9 +197,14 @@ def _fsync_path(path: Path) -> None:
     Windows commits a file only through a handle opened for writing ---
     ``os.fsync`` on a read-only descriptor fails with EBADF there --- so the
     descriptor is read-write on that platform and read-only everywhere else,
-    where write access would need the file's mode to allow it.
+    where write access would need the file's mode to allow it.  It is also
+    opened in binary mode there: the C runtime's default text mode treats a
+    trailing 0x1A as an end-of-file mark and strips it from a writable file
+    on open, and one HDF5 file in 256 ends with that byte.
     """
-    flags = os.O_RDWR if os.name == "nt" else os.O_RDONLY
+    flags = os.O_RDONLY
+    if os.name == "nt":
+        flags = os.O_RDWR | getattr(os, "O_BINARY", 0)
     fd = os.open(str(path), flags)
     try:
         os.fsync(fd)
