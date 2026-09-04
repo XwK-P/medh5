@@ -14,3 +14,12 @@ htmlcov/
 # `mkdocs build` output
 site/
 .hypothesis/
+
+# Build products of the conformance suite and the cohort tools, which the
+# documentation's own examples write when they are run from a checkout.
+suite/
+corpus/
+cohort.json
+results.json
+*.medh5
+*.medh5c
