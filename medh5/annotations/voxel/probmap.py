@@ -28,8 +28,21 @@ def encode_probmap(
     *,
     dtype: npt.DTypeLike = np.float16,
     normalized: bool = False,
+    threshold: float | None = None,
 ) -> AnnotationPayload:
-    """Stack per-class probability volumes on a leading class axis."""
+    """Stack per-class probability volumes on a leading class axis.
+
+    ``threshold`` is the probability at or above which a voxel *contains* a
+    class (§7.5).  It is written only when given; the reader's default is 0.5.
+    """
+    attrs: dict[str, Any] = {"normalized": bool(normalized)}
+    if threshold is not None:
+        value = float(threshold)
+        if not 0.0 <= value <= 1.0 or value != value:
+            raise MEDH5ValidationError(
+                f"threshold {threshold!r} must lie in [0, 1]", code="E404"
+            )
+        attrs["threshold"] = value
     class_ids = tuple(sorted(int(c) for c in probabilities))
     shape = spatial_shape
     planes = []
@@ -55,7 +68,7 @@ def encode_probmap(
     return AnnotationPayload(
         kind="probmap",
         datasets={"data": data},
-        attrs={"normalized": bool(normalized)},
+        attrs=attrs,
         stacked_axes=1,
         class_ids=class_ids,
     )
@@ -82,6 +95,7 @@ class ProbmapAnnotation(VoxelAnnotation):
 
     @property
     def threshold(self) -> float:
+        """The declared decision threshold (§7.5), or the 0.5 default."""
         return float(self.group.attrs.get("threshold", DEFAULT_THRESHOLD))
 
     def _position(self, class_id: int) -> int | None:

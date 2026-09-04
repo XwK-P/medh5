@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import numpy.typing as npt
 
+from medh5._optional import require
 from medh5.errors import MEDH5ValidationError
 from medh5.geometry.grid import Grid
 
@@ -54,14 +55,7 @@ def available() -> bool:
 
 def require_monai() -> Any:
     """Import MONAI, or explain how to install it."""
-    try:
-        import monai
-    except ImportError as exc:  # pragma: no cover - depends on the environment
-        raise ImportError(
-            "MONAI is required for medh5.monai. Install it with: "
-            "pip install 'medh5[monai]'"
-        ) from exc
-    return monai
+    return require("monai", extra="monai", purpose="medh5.monai")
 
 
 def convert_affine(

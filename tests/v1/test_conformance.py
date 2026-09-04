@@ -415,7 +415,7 @@ class TestCorpusSmoke:
             for sample in _samples_of(path):
                 try:
                     self._read_surface(sample)
-                except Exception as exc:  # noqa: BLE001 - the point of the test
+                except Exception as exc:
                     raise AssertionError(
                         f"{case.name}: {type(exc).__name__}: {exc}"
                     ) from exc
@@ -433,7 +433,7 @@ class TestCorpusSmoke:
                     validate_file(path)
             except MEDH5Error:
                 continue  # a documented refusal is the correct outcome
-            except Exception as exc:  # noqa: BLE001 - the point of the test
+            except Exception as exc:
                 bad.append(f"{case.name}: {type(exc).__name__}: {exc}")
         assert not bad, (
             "public read paths raised undocumented exceptions:\n" + "\n".join(bad)

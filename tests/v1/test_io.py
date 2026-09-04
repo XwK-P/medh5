@@ -1846,7 +1846,8 @@ class TestRtstruct:
         report = from_rtstruct(rt, prepared["path"], ann_id="raster", rasterize=True)
         with medh5.open(prepared["path"]) as sample:
             derived = sample.annotations["raster_mask"]
-            assert derived.header.derived_from == ("annotations/raster",)
+            # §6.2: `derived_from` holds annotation ids, not paths.
+            assert derived.header.derived_from == ("raster",)
             activity = sample.document.provenance.activity(derived.prov)
             assert "even-odd" in activity.params["rule"]
         assert report.guesses

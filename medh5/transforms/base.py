@@ -34,12 +34,12 @@ import numpy.typing as npt
 from medh5._hdf5 import as_bool, as_str, as_str_tuple, require_attr, validate_id
 from medh5.errors import MEDH5ValidationError
 from medh5.geometry.grid import Grid
+from medh5.transforms.apply import EXTRAPOLATIONS
 
 TRANSFORM_KINDS = ("identity", "affine", "displacement", "bspline", "composite")
 
 VECTOR_SPACES = ("world", "index")
 INTERPOLATIONS = ("linear", "cubic")
-EXTRAPOLATIONS = ("zero", "nearest", "error")
 
 SPEC_TRANSFORM_ATTRS = (
     "kind",
@@ -292,13 +292,22 @@ def check_transform_id(transform_id: str) -> str:
 
 
 def frame_graph(transforms: Mapping[str, Transform]) -> dict[str, list[str]]:
-    """Frame -> reachable frames, following declared transforms and inverses."""
+    """Frame -> frames one hop away, as :func:`resolve_between` would walk them.
+
+    A reverse edge is present only where the inverse can be *evaluated* ---
+    the resolver's ``can_invert`` --- not merely declared.  This used to ask
+    ``is_invertible``, so the graph a caller inspected and the paths the
+    resolver would actually return disagreed for a displacement field written
+    ``invertible=True`` with no stored inverse.
+    """
+    from medh5.transforms.resolve import InverseTransform
+
     graph: dict[str, list[str]] = {}
     for transform in transforms.values():
         graph.setdefault(transform.from_frame, []).append(transform.to_frame)
         graph.setdefault(transform.to_frame, [])
-        if transform.is_invertible:
-            graph.setdefault(transform.to_frame, []).append(transform.from_frame)
+        if InverseTransform.can_invert(transform):
+            graph[transform.to_frame].append(transform.from_frame)
     return graph
 
 

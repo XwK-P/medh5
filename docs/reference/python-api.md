@@ -20,7 +20,8 @@ with open_any(path, key=None) as opened:   # a Sample or a Collection, whichever
 ```
 
 `medh5.open` is lazy: it parses `/meta` and opens no arrays. Use it as a
-context manager, or call `.close()`.
+context manager, or call `.close()`. It is read-only; every edit goes through
+`medh5.amend`, which is copy-on-write.
 
 ## Sample
 
@@ -132,6 +133,7 @@ See [Annotations](annotations.md) for the per-kind API.
 ```python
 s.transforms                       # {transform_id: Transform}
 t = s.transform_between("tp0", "tp1")   # resolved through the frame graph
+s.resolve_frames(frame_a, frame_b) # the same, between two frame uids; memoised per handle
 t.kind                             # "affine" | "displacement" | "bspline" | "composite"
 t.from_frame, t.to_frame
 t.is_invertible                    # the mapping is invertible
@@ -244,6 +246,7 @@ kind, stats = w.add_segmentation(
     "organs_tp0", grid="ct_tp0",
     masks={"liver": liver, "lesion": lesion},   # or probabilities= or instances=
     encoding="auto",                            # or an explicit kind
+    # threshold=0.3,                            # with probabilities=: the contains() cut (§7.5)
     annotated_classes=["liver", "spleen", "lesion"],
     ignore=uncertain_mask,
     prov=act, quality={"status": "approved"},

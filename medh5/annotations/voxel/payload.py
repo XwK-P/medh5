@@ -64,4 +64,42 @@ def normalize_masks(
     return out, tuple(shape)
 
 
-__all__ = ["Masks", "AnnotationPayload", "normalize_masks"]
+SLAB_BYTES = 8 * 1024 * 1024
+"""Read budget for a scan that only needs a yes/no or a count."""
+
+
+def _slabs(data: Any) -> Any:
+    """Slabs along the first axis of an HDF5 dataset, each within the budget."""
+    rows = int(data.shape[0]) if data.ndim else 0
+    if rows == 0:
+        return
+    per_row = int(np.prod(data.shape[1:], dtype=np.int64)) * int(data.dtype.itemsize)
+    step = max(1, min(rows, SLAB_BYTES // max(per_row, 1)))
+    for start in range(0, rows, step):
+        yield np.asarray(data[start : start + step])
+
+
+def contains_value(data: Any, value: int) -> bool:
+    """Whether any element equals *value*, scanning in bounded slabs.
+
+    A header-shaped question --- "does this annotation carry an ignore
+    region?" --- must not materialise the volume it asks about: a 512³
+    ``uint16`` labelmap is 268 MiB, and ``layers`` had its scan bounded for
+    exactly that reason while ``labelmap`` beside it did not.
+    """
+    return any(bool(np.any(slab == value)) for slab in _slabs(data))
+
+
+def count_nonzero(data: Any) -> int:
+    """``np.count_nonzero`` over an HDF5 dataset, in bounded slabs."""
+    return sum(int(np.count_nonzero(slab)) for slab in _slabs(data))
+
+
+__all__ = [
+    "SLAB_BYTES",
+    "Masks",
+    "AnnotationPayload",
+    "contains_value",
+    "count_nonzero",
+    "normalize_masks",
+]

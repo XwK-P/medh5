@@ -44,7 +44,7 @@ from medh5._hdf5 import (
     validate_sample_key,
 )
 from medh5.errors import MEDH5FileError, MEDH5ValidationError
-from medh5.sample import FORMAT_VERSION, Sample
+from medh5.sample import FORMAT_VERSION, Sample, require_major
 
 SUFFIX = ".medh5c"
 """Conventional extension for a collection file (spec §2.1)."""
@@ -170,6 +170,7 @@ def open_collection(path: str | os.PathLike[str], mode: str = "r") -> Collection
     """Open a ``.medh5c`` shard."""
     handle = open_h5(path, mode)
     try:
+        require_major(handle, path)
         if not is_collection(handle):
             raise MEDH5ValidationError(
                 f"{os.fspath(path)!r} declares medh5_kind="
@@ -232,6 +233,7 @@ def pack(
         group = handle.create_group(SAMPLES_GROUP)
         for key, source in zip(chosen, paths, strict=True):
             with open_h5(source, "r") as src:
+                require_major(src, source)
                 if is_collection(src):
                     raise MEDH5ValidationError(
                         f"{source} is already a collection; pack takes sample files",
@@ -323,6 +325,7 @@ def open_any(
     """
     handle = open_h5(path, "r")
     try:
+        require_major(handle, path)
         if is_collection(handle):
             collection = Collection(
                 handle, handle=handle, owns_handle=True, path=os.fspath(path)

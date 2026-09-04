@@ -305,7 +305,12 @@ class PatchSampler:
         if annotation is not None:
             return annotation
         for name, ann in sample.annotations.items():
-            if getattr(ann, "dense", None) is None or ann.kind == "classification":
+            if getattr(ann, "dense", None) is None or ann.kind in (
+                "classification",
+                "mask",
+            ):
+                # A `mask` has `dense` and no classes (§4.4), so it can only
+                # ever answer "no foreground here".
                 continue
             if grid is not None and ann.grid_id != grid:
                 continue
@@ -448,7 +453,7 @@ class TimepointPairSampler:
 
     def pairs(self, sample: Sample) -> list[TimepointPair]:
         ids = list(sample.timepoints.ids)
-        if len(ids) < 2:  # noqa: PLR2004 - a pair needs two visits
+        if len(ids) < 2:
             return []
         if self.mode == "consecutive":
             combos = list(zip(ids, ids[1:], strict=False))

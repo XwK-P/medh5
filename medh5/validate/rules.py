@@ -255,17 +255,13 @@ def check_document(ctx: Context) -> Iterator[Diagnostic]:
 
     try:
         ctx.document = SampleDocument.from_json(parsed)
-    except Exception as exc:  # noqa: BLE001 - reported, never raised
+    except Exception as exc:
         code = getattr(exc, "code", None) or "E005"
         if not (schema_failed and code == "E005"):
             yield ctx.err(code, "/meta", str(exc))
 
 
 def check_bulk_storage(ctx: Context) -> Iterator[Diagnostic]:
-    def visit(name: str, obj: h5py.HLObject) -> None:
-        return None
-
-    del visit
     for name, node in _iter_datasets(ctx.root):
         if name == "meta" or name.startswith("index/"):
             continue
@@ -345,7 +341,7 @@ def check_geometry(ctx: Context) -> Iterator[Diagnostic]:
             yield ctx.err("E110", location, f"unknown axis kinds {sorted(unknown)}")
             continue
         n_spatial = kinds.count("spatial")
-        if not 2 <= n_spatial <= 3:  # noqa: PLR2004
+        if not 2 <= n_spatial <= 3:
             yield ctx.err(
                 "E110", location, f"{n_spatial} spatial axes; the spec allows 2 or 3"
             )
@@ -372,7 +368,7 @@ def check_geometry(ctx: Context) -> Iterator[Diagnostic]:
                 f"spacing {spacing.tolist()} must be strictly positive",
             )
         direction = np.asarray(attrs["direction"], dtype=float)
-        if direction.ndim != 2:  # noqa: PLR2004
+        if direction.ndim != 2:
             yield ctx.err(
                 "E109",
                 location,
@@ -387,6 +383,29 @@ def check_geometry(ctx: Context) -> Iterator[Diagnostic]:
                 location,
                 f"`direction` is not orthonormal (max residual {residual:.3g})",
             )
+        if kinds.count("time") == 1:
+            # §3.2: a time axis carries one acquisition time per frame.  The
+            # writer has always refused a wrong count; a missing table it let
+            # through, and so did this rule, so a 4-D series could validate
+            # clean with no timing at all.  Two time axes is E110 above, and
+            # one defect per file is what a corpus case isolates.
+            extent = int(shape[kinds.index("time")])
+            if "time_values" not in attrs:
+                yield ctx.err(
+                    "E109",
+                    location,
+                    "grid has a `time` axis but no `time_values`; §3.2 requires "
+                    "one acquisition time per frame",
+                )
+            else:
+                found = int(np.atleast_1d(attrs["time_values"]).size)
+                if found != extent:
+                    yield ctx.err(
+                        "E109",
+                        location,
+                        f"`time_values` has {found} entries for a time axis of "
+                        f"extent {extent}",
+                    )
 
 
 def check_timepoints(ctx: Context) -> Iterator[Diagnostic]:
@@ -623,7 +642,7 @@ def check_label_set(ctx: Context) -> Iterator[Diagnostic]:
         seen_keys.add(entry.key)
     try:
         label_set.check()
-    except Exception as exc:  # noqa: BLE001 - surfaced as a diagnostic
+    except Exception as exc:
         code = getattr(exc, "code", None) or "E306"
         yield ctx.err(code, "/meta#label_set", str(exc))
 
@@ -753,7 +772,7 @@ def check_annotations(ctx: Context) -> Iterator[Diagnostic]:
         yield from _check_encoding_invariants(ctx, name, group, kind)
         yield from _check_dataset_dtypes(ctx, name, group, kind)
         yield from _check_geometric(ctx, name, group, kind, grid_id, grids_node)
-        yield from _check_classification(ctx, name, group, kind, declared_timepoints)
+        yield from _check_classification(ctx, name, group, kind)
         if kind != "mask" and annotated < class_ids and not _has_ignore(group, kind):
             yield ctx.err(
                 "W904",
@@ -767,12 +786,107 @@ def check_annotations(ctx: Context) -> Iterator[Diagnostic]:
 def _has_ignore(group: h5py.Group, kind: str) -> bool:
     if "ignore_mask" in group.attrs:
         return True
+    return _in_band_ignore(group, kind)
+
+
+def _in_band_ignore(group: h5py.Group, kind: str) -> bool:
+    """Whether the data itself carries the ignore id (§7.7), bounded."""
     if kind in ("labelmap", "layers") and "data" in group:
         ignore_id = int(group.attrs.get("ignore_id", IGNORE_ID))
         data = group["data"]
-        if data.size <= 64_000_000:  # noqa: PLR2004 - bounded scan
+        if data.size <= 64_000_000:
             return bool(np.any(np.asarray(data[...]) == ignore_id))
     return False
+
+
+def _annotation_id(reference: str) -> str:
+    """An annotation id from a reference that may be written as a path.
+
+    §6.2 says `derived_from` holds annotation ids; the RTSTRUCT importer wrote
+    `annotations/<id>` for a release, and a reader that refused the path form
+    would fail the files it made.  Both spell one thing.
+    """
+    return reference.removeprefix("annotations/")
+
+
+def check_references(ctx: Context) -> Iterator[Diagnostic]:
+    """Every cross-object reference §4.4 and §6.2 name resolves (E413).
+
+    E413 was defined for "a skeleton, correspondence, ignore mask or source
+    annotation that does not exist", and only the first two were checked: a
+    dangling `ignore_mask`, `derived_from` entry or image `valid_mask`
+    validated clean, and an `ignore_mask` pointing at something other than a
+    `mask` annotation --- the one shape §7.7 gives it --- was never noticed.
+    """
+    groups = ctx.annotation_groups
+    for name, group in groups.items():
+        location = f"/annotations/{name}"
+        attrs = group.attrs
+        if "ignore_mask" in attrs:
+            yield from _check_mask_reference(
+                ctx,
+                location,
+                "ignore_mask",
+                as_str(attrs["ignore_mask"]),
+                attrs,
+                groups,
+            )
+        if "derived_from" in attrs:
+            for reference in as_str_tuple(attrs["derived_from"]):
+                if _annotation_id(reference) not in groups:
+                    yield ctx.err(
+                        "E413",
+                        location,
+                        f"`derived_from` names annotation {reference!r}, which "
+                        "does not exist",
+                    )
+    for name, node in ctx.image_nodes.items():
+        if "valid_mask" in node.attrs:
+            yield from _check_mask_reference(
+                ctx,
+                f"/images/{name}",
+                "valid_mask",
+                as_str(node.attrs["valid_mask"]),
+                node.attrs,
+                groups,
+            )
+
+
+def _check_mask_reference(
+    ctx: Context,
+    location: str,
+    attr: str,
+    target: str,
+    owner_attrs: Any,
+    groups: dict[str, h5py.Group],
+) -> Iterator[Diagnostic]:
+    """`ignore_mask` and `valid_mask` name a `mask` annotation on the same grid."""
+    other = groups.get(target)
+    if other is None:
+        yield ctx.err(
+            "E413",
+            location,
+            f"`{attr}` names annotation {target!r}, which does not exist",
+        )
+        return
+    kind = as_str(other.attrs["kind"]) if "kind" in other.attrs else None
+    if kind != "mask":
+        yield ctx.err(
+            "E413",
+            location,
+            f"`{attr}` names {target!r}, whose kind is {kind!r}; §4.4 and §7.7 "
+            "require a `mask` annotation",
+        )
+        return
+    mine = as_str(owner_attrs["grid"]) if "grid" in owner_attrs else None
+    theirs = as_str(other.attrs["grid"]) if "grid" in other.attrs else None
+    if mine is not None and theirs is not None and mine != theirs:
+        yield ctx.err(
+            "E413",
+            location,
+            f"`{attr}` names {target!r} on grid {theirs!r}, but this object is on "
+            f"grid {mine!r}; a mask delimits the voxels of the grid it shares",
+        )
 
 
 def _check_voxel_shape(
@@ -849,6 +963,32 @@ def _check_encoding_invariants(
         yield from _check_layer_optimality(
             ctx, name, group, table.shape[0], len(declared)
         )
+    if (
+        kind == "labelmap"
+        and "data" in group
+        and group["data"].dtype.name == "uint16"
+        and declared
+        and max(declared) <= 254
+        and not _in_band_ignore(group, kind)
+    ):
+        # §7.1: uint8 MUST be used when the ids fit and no ignore voxel is
+        # present.  The writer has always chosen the width this way; the rule
+        # is what holds a third-party file to it.
+        yield ctx.err(
+            "E411",
+            f"{location}/data",
+            "stored as uint16 although max(class_ids) is at most 254 and no "
+            "ignore voxel is present; §7.1 requires uint8",
+        )
+    if kind == "probmap" and "threshold" in group.attrs:
+        value = float(group.attrs["threshold"])
+        if not 0.0 <= value <= 1.0 or value != value:
+            yield ctx.err(
+                "E404",
+                location,
+                f"`threshold` {value!r} is outside [0, 1]; it is the probability "
+                "at or above which a voxel contains the class (§7.5)",
+            )
     if kind == "bitmask" and "bit_class_ids" in group and "data" in group:
         n_classes = int(np.asarray(group["bit_class_ids"]).size)
         expected = max(1, math.ceil(n_classes / 64))
@@ -873,7 +1013,7 @@ def _check_layer_optimality(
     from medh5.annotations.voxel.transcode import payload_to_masks
 
     data = group["data"]
-    if data.size > 64_000_000:  # noqa: PLR2004 - bounded: colouring needs the masks
+    if data.size > 64_000_000:
         return
     payload = AnnotationPayload(
         kind="layers",
@@ -954,13 +1094,13 @@ def _check_geometric(
 
     if kind == "boxes" and "boxes" in group:
         boxes = np.asarray(group["boxes"][...])
-        if boxes.ndim == 3 and boxes.size and np.any(boxes[..., 0] > boxes[..., 1]):  # noqa: PLR2004
+        if boxes.ndim == 3 and boxes.size and np.any(boxes[..., 0] > boxes[..., 1]):
             bad = int(np.sum(np.any(boxes[..., 0] > boxes[..., 1], axis=1)))
             yield ctx.err("E406", location, f"{bad} box(es) have lo > hi")
         # `slice_index` names the plane each 2-D box sits on (§8.2). The rule
         # lives in `check_slice_index` and the writer and `as_slices` call the
         # same function, so this cannot drift from what they enforce.
-        if "slice_index" in group and boxes.ndim == 3:  # noqa: PLR2004
+        if "slice_index" in group and boxes.ndim == 3:
             from medh5.annotations.geometric import check_slice_index
 
             planes = np.asarray(group["slice_index"][...])
@@ -974,7 +1114,7 @@ def _check_geometric(
                 and grid_id is not None
                 and grids_node is not None
                 and grid_id in grids_node
-                and boxes.ndim == 3  # noqa: PLR2004
+                and boxes.ndim == 3
             ):
                 full = [
                     int(v) for v in np.atleast_1d(grids_node[grid_id].attrs["shape"])
@@ -1029,7 +1169,7 @@ def _check_keypoints(
     if "points" not in group:
         return
     points = group["points"]
-    if points.ndim != 3:  # noqa: PLR2004
+    if points.ndim != 3:
         yield ctx.err(
             "E405", f"{location}/points", f"expected (N, K, S), got {points.shape}"
         )
@@ -1048,7 +1188,7 @@ def _check_keypoints(
             yield ctx.err(
                 "E405", location, f"`visibility` {visibility.shape} must be ({n}, {k})"
             )
-        elif visibility.size and int(visibility.max()) > 2:  # noqa: PLR2004
+        elif visibility.size and int(visibility.max()) > 2:
             yield ctx.err(
                 "E411",
                 f"{location}/visibility",
@@ -1113,11 +1253,7 @@ def _check_mesh(ctx: Context, name: str, group: h5py.Group) -> Iterator[Diagnost
 
 
 def _check_classification(
-    ctx: Context,
-    name: str,
-    group: h5py.Group,
-    kind: str,
-    declared_timepoints: set[str],
+    ctx: Context, name: str, group: h5py.Group, kind: str
 ) -> Iterator[Diagnostic]:
     """§9 invariants: scope, value range, and single-label exclusivity."""
     if kind != "classification":
@@ -1192,7 +1328,6 @@ def _check_classification(
                 f"{tuple(group[column].shape)} must match `class_ids` "
                 f"{tuple(class_ids.shape)}",
             )
-    del declared_timepoints
 
 
 def _check_instances(
@@ -1201,7 +1336,7 @@ def _check_instances(
     location = f"/annotations/{name}"
     if "boxes" in group:
         boxes = np.asarray(group["boxes"][...])
-        if boxes.ndim == 3 and np.any(boxes[..., 0] > boxes[..., 1]):  # noqa: PLR2004
+        if boxes.ndim == 3 and np.any(boxes[..., 0] > boxes[..., 1]):
             bad = int(np.sum(np.any(boxes[..., 0] > boxes[..., 1], axis=1)))
             yield ctx.err("E406", location, f"{bad} box(es) have lo > hi")
     if "mask_offsets" in group:
@@ -1253,10 +1388,10 @@ def check_instance_identity(ctx: Context) -> Iterator[Diagnostic]:
                 name
             )
     for instance_id, by_class in sorted(table.items()):
-        if len(by_class) < 2:  # noqa: PLR2004 - one class is the healthy case
+        if len(by_class) < 2:
             continue
         where = sorted({n for names in by_class.values() for n in names})
-        if len(where) < 2:  # noqa: PLR2004 - single-annotation case: _check_instances
+        if len(where) < 2:
             continue
         detail = ", ".join(
             f"class {c} in {sorted(set(names))}"
@@ -1314,7 +1449,7 @@ def check_transforms(ctx: Context) -> Iterator[Diagnostic]:
                 ctx, name, group, kind, source, grids_node
             )
         if kind == "composite":
-            yield from _check_composite(ctx, name, group, declared, source, target)
+            yield from _check_composite(ctx, name, group, source, target)
     yield from _check_inverses(ctx, node, declared)
 
 
@@ -1324,7 +1459,7 @@ def _check_affine(ctx: Context, name: str, group: h5py.Group) -> Iterator[Diagno
         yield ctx.err("E502", location, "kind 'affine' requires a `matrix` dataset")
         return
     matrix = np.asarray(group["matrix"][...], dtype=np.float64)
-    if matrix.ndim != 2 or matrix.shape[0] != matrix.shape[1]:  # noqa: PLR2004
+    if matrix.ndim != 2 or matrix.shape[0] != matrix.shape[1]:
         yield ctx.err(
             "E504", location, f"`matrix` must be square (S+1, S+1), got {matrix.shape}"
         )
@@ -1400,12 +1535,7 @@ def _check_field_transform(
 
 
 def _check_composite(
-    ctx: Context,
-    name: str,
-    group: h5py.Group,
-    declared: dict[str, tuple[str, str]],
-    source: str,
-    target: str,
+    ctx: Context, name: str, group: h5py.Group, source: str, target: str
 ) -> Iterator[Diagnostic]:
     location = f"/transforms/{name}"
     if "components" not in group.attrs:
@@ -1472,7 +1602,6 @@ def _check_composite(
                 f"declares units {declared_units!r} but {listed} --- a chain "
                 "whose legs are in different units does not compose",
             )
-    del declared
 
 
 def _check_inverses(
@@ -1544,6 +1673,18 @@ def check_curation(ctx: Context) -> Iterator[Diagnostic]:
         yield from _check_links(ctx, f"/annotations/{name}", group.attrs, document)
     for name, node in ctx.image_nodes.items():
         yield from _check_links(ctx, f"/images/{name}", node.attrs, document)
+    transforms = ctx.root.get("transforms")
+    if transforms is not None:
+        # §10.1 gives a transform `prov` and `metrics`, the latter a key into
+        # `/meta -> quality`; both were unchecked, so a dangling one validated.
+        for name in sorted(transforms):
+            yield from _check_links(
+                ctx,
+                f"/transforms/{name}",
+                transforms[name].attrs,
+                document,
+                quality_attr="metrics",
+            )
     if document.deidentification is None:
         yield ctx.err(
             "W903",
@@ -1562,7 +1703,12 @@ def check_curation(ctx: Context) -> Iterator[Diagnostic]:
 
 
 def _check_links(
-    ctx: Context, location: str, attrs: Any, document: SampleDocument
+    ctx: Context,
+    location: str,
+    attrs: Any,
+    document: SampleDocument,
+    *,
+    quality_attr: str = "quality",
 ) -> Iterator[Diagnostic]:
     if "prov" in attrs:
         activity_id = as_str(attrs["prov"])
@@ -1570,10 +1716,12 @@ def _check_links(
             yield ctx.err(
                 "E601", location, f"`prov` names unknown activity {activity_id!r}"
             )
-    if "quality" in attrs:
-        key = as_str(attrs["quality"])
+    if quality_attr in attrs:
+        key = as_str(attrs[quality_attr])
         if key not in document.quality:
-            yield ctx.err("E602", location, f"`quality` names unknown record {key!r}")
+            yield ctx.err(
+                "E602", location, f"`{quality_attr}` names unknown record {key!r}"
+            )
 
 
 def check_splits(ctx: Context) -> Iterator[Diagnostic]:
@@ -1604,7 +1752,22 @@ def check_integrity(ctx: Context) -> Iterator[Diagnostic]:
     from medh5.integrity.verify import stale_index_entries, verify_root
 
     attr_names = ctx.notes.get("attr_names")
-    result = verify_root(ctx.root, attr_names)
+    algo_known = True
+    if "digest_algo" in ctx.root.attrs:
+        try:
+            parse_digest(f"{as_str(ctx.root.attrs['digest_algo'])}:00")
+        except Exception:
+            # Reported here, first: recomputing the root under an algorithm
+            # this validator does not have would raise out of `verify_root`
+            # and turn a §2.1 defect into "could not read the file".
+            algo_known = False
+            yield ctx.err(
+                "E703",
+                "/",
+                f"unsupported digest_algo {as_str(ctx.root.attrs['digest_algo'])!r}; "
+                "§2.1 permits sha256, sha512 and blake2b",
+            )
+    result = verify_root(ctx.root, attr_names, check_content_id=algo_known)
     if not result.checked and not result.undigested:
         return
     if result.undigested and not result.checked:
@@ -1627,15 +1790,6 @@ def check_integrity(ctx: Context) -> Iterator[Diagnostic]:
             "index `source_digest` does not match its annotation; readers must "
             "ignore this entry and rebuild it",
         )
-    if "digest_algo" in ctx.root.attrs:
-        try:
-            parse_digest(f"{as_str(ctx.root.attrs['digest_algo'])}:00")
-        except Exception:  # noqa: BLE001 - reported as a diagnostic
-            yield ctx.err(
-                "E703",
-                "/",
-                f"unsupported digest_algo {as_str(ctx.root.attrs['digest_algo'])!r}",
-            )
 
 
 # --------------------------------------------------------------------------
@@ -1689,7 +1843,7 @@ def check_profiles(ctx: Context) -> Iterator[Diagnostic]:
     if (
         "longitudinal" in declared
         and document is not None
-        and len(document.timepoints) < 2  # noqa: PLR2004
+        and len(document.timepoints) < 2
     ):
         yield ctx.err(
             "E009",
@@ -1713,6 +1867,7 @@ STRUCTURAL_RULES = (
 SEMANTIC_RULES = (
     check_timepoints,
     check_instance_identity,
+    check_references,
     check_transforms,
     check_label_set,
     check_multiscale,

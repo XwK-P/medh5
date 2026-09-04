@@ -21,7 +21,7 @@ import numpy.typing as npt
 
 from medh5.annotations.base import VoxelAnnotation
 from medh5.annotations.payload import AnnotationPayload
-from medh5.annotations.voxel.payload import Masks, normalize_masks
+from medh5.annotations.voxel.payload import Masks, contains_value, normalize_masks
 from medh5.annotations.voxel.select import (
     label_dtype_size,
     layers_from_colouring,
@@ -85,10 +85,6 @@ def encode_layers(
         stacked_axes=1,
         class_ids=class_ids,
     )
-
-
-_SCAN_BYTES = 8 * 1024 * 1024
-"""Slab budget for scans that only need a yes/no answer."""
 
 
 class LayersAnnotation(VoxelAnnotation):
@@ -200,18 +196,7 @@ class LayersAnnotation(VoxelAnnotation):
         data.  Layers chunk one per plane (§14.1), so a slab read costs a
         fraction of that, and the first hit ends the scan.
         """
-        data = self.data
-        rows = int(data.shape[1]) if data.ndim > 1 else 0
-        if rows == 0:
-            return False
-        per_row = int(np.prod(data.shape[2:], dtype=np.int64)) * data.dtype.itemsize
-        step = max(1, min(rows, _SCAN_BYTES // max(int(per_row), 1)))
-        for layer in range(int(data.shape[0])):
-            for start in range(0, rows, step):
-                block = np.asarray(data[layer, start : start + step])
-                if bool(np.any(block == self.ignore_id)):
-                    return True
-        return False
+        return contains_value(self.data, self.ignore_id)
 
     def ignore_mask(self, roi: Sequence[slice] | None = None) -> npt.NDArray[np.bool_]:
         """The in-band ignore region (§7.7), as ``labelmap`` also exposes it.

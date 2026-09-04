@@ -163,7 +163,7 @@ def audit_splits(paths: Sequence[str | os.PathLike[str]]) -> SplitAudit:
     for path in paths:
         try:
             found = list(_memberships_of(path))
-        except Exception as exc:  # noqa: BLE001 - one bad file must not stop an audit
+        except Exception as exc:
             unreadable.append((os.fspath(path), f"{type(exc).__name__}: {exc}"))
             continue
         if not found:

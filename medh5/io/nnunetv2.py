@@ -37,6 +37,7 @@ import numpy as np
 import numpy.typing as npt
 
 from medh5.errors import MEDH5ValidationError
+from medh5.io._common import sanitize_key
 from medh5.io.report import ConversionReport
 
 REQUIRED_KEYS = ("channel_names", "labels", "numTraining", "file_ending")
@@ -302,8 +303,7 @@ def _masks_from(
 
 
 def _key(name: str) -> str:
-    cleaned = "".join(c if (c.isalnum() or c in "._-") else "_" for c in name.strip())
-    return (cleaned or "class").lower()[:128]
+    return sanitize_key(name)
 
 
 def to_nnunetv2(
@@ -450,7 +450,7 @@ def _resolve_or_none(ann: Any, name: str) -> int | None:
     for candidate in (name, _key(name)):
         try:
             return int(ann.resolve_class(candidate))
-        except Exception:  # noqa: BLE001 - try the next spelling
+        except Exception:
             continue
     return None
 
@@ -465,7 +465,7 @@ def _save(
     affine = convert_world(grid.affine, source=grid.coord_system, target="RAS")
     spacing, origin, direction = decompose_affine(affine)
     data = np.asarray(array)
-    if data.ndim >= 3:  # noqa: PLR2004 - back to NIfTI (x, y, z)
+    if data.ndim >= 3:
         flip = tuple(reversed(range(data.ndim - 3, data.ndim)))
         data = np.transpose(data, tuple(range(data.ndim - 3)) + flip)
         index = [f - (data.ndim - 3) for f in flip]

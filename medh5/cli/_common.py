@@ -44,6 +44,11 @@ def human_bytes(n: float) -> str:
     return f"{n:.1f} GiB"  # pragma: no cover - unreachable
 
 
+def indent(text: str, prefix: str = "  ") -> str:
+    """Indent every line of a block, for nesting a table under a heading."""
+    return "\n".join(prefix + line for line in text.splitlines())
+
+
 def table(rows: Sequence[Sequence[Any]], headers: Sequence[str]) -> str:
     """A minimal fixed-width table --- no dependency, predictable in a pipe."""
     cells = [[str(c) for c in row] for row in rows]
@@ -70,5 +75,6 @@ __all__ = [
     "emit",
     "fail",
     "human_bytes",
+    "indent",
     "table",
 ]

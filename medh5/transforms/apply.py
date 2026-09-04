@@ -26,15 +26,31 @@ def _check_extrapolation(extrapolation: str) -> None:
         raise MEDH5ValidationError(f"unknown extrapolation {extrapolation!r}")
 
 
+def inside_extent(
+    spatial: npt.ArrayLike, points: npt.NDArray[np.float64]
+) -> npt.NDArray[np.bool_]:
+    """Which *points* lie within a lattice of *spatial* extent, edges included."""
+    extent = np.asarray(spatial, dtype=np.int64)
+    inside: npt.NDArray[np.bool_] = np.all(
+        (points >= -0.5) & (points <= extent - 0.5), axis=1
+    )
+    return inside
+
+
 def _inside_field(
     field: npt.NDArray[Any], points: npt.NDArray[np.float64]
 ) -> npt.NDArray[np.bool_]:
-    """Which *points* lie within the field's sampled domain, edges included."""
-    spatial = np.asarray(field.shape[1:], dtype=np.int64)
-    inside: npt.NDArray[np.bool_] = np.all(
-        (points >= -0.5) & (points <= spatial - 0.5), axis=1
+    return inside_extent(field.shape[1:], points)
+
+
+def refuse_outside(inside: npt.NDArray[np.bool_]) -> None:
+    """``extrapolation='error'`` is a refusal, not a quieter fill value."""
+    if bool(inside.all()):
+        return
+    raise MEDH5ValidationError(
+        f"{int((~inside).sum())} point(s) fall outside the field and "
+        "extrapolation='error'"
     )
-    return inside
 
 
 def _refuse_outside(inside: npt.NDArray[np.bool_]) -> None:
@@ -239,11 +255,14 @@ def target_registration_error(
 
 
 __all__ = [
+    "EXTRAPOLATIONS",
     "cubic_sample",
     "folding_fraction",
+    "inside_extent",
     "jacobian_determinant",
     "linear_part",
     "linear_sample",
+    "refuse_outside",
     "sample_field",
     "target_registration_error",
     "to_world_vectors",

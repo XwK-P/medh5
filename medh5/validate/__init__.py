@@ -145,7 +145,7 @@ def _attr_names(root: h5py.Group, level: Level) -> Any:
 
     try:
         return Sample(root).attr_name_map()
-    except Exception:  # noqa: BLE001 - a broken file still gets a report
+    except Exception:
         return None
 
 

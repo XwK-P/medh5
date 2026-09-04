@@ -38,6 +38,7 @@ from typing import Any
 import numpy as np
 
 from medh5.errors import MEDH5Error
+from medh5.io._common import sanitize_key, sanitize_stem
 from medh5.io._legacy_reader import LegacyMeta, LegacySample, is_legacy
 from medh5.io._legacy_reader import read_meta as _read_meta
 from medh5.io._legacy_reader import read_sample as _read_sample
@@ -144,10 +145,16 @@ def build_label_set(
 
 
 def _key(name: str) -> str:
-    cleaned = "".join(
-        c if (c.isalnum() or c in "._-") else "_" for c in str(name).strip()
-    )
-    return (cleaned or "class").lower()[:128]
+    return sanitize_key(name)
+
+
+def _sample_key(subject_id: str) -> str:
+    """A sample id from a subject id: §2.3's identifier rule, not a label key.
+
+    ``pat-a`` stays ``pat-a`` --- the hyphen is legal in an identifier and in a
+    filename, and a migrated cohort keeps the names its manifest already uses.
+    """
+    return (sanitize_stem(str(subject_id).strip(), limit=128) or "sample").lower()
 
 
 def migrate(
@@ -215,7 +222,7 @@ def migrate_paths(
     groups = group_by_subject(occasions, mode=group_by, report=log)
     used: set[str] = set()
     for group in groups:
-        target = directory / f"{output_name(group, used, safe=_key)}.medh5"
+        target = directory / f"{output_name(group, used, safe=_sample_key)}.medh5"
         _write(group, target, labels, codec=codec, log=log)
     return log
 
@@ -250,7 +257,7 @@ def _write(
     days = group.days_from_baseline()
     with medh5.create(
         target,
-        sample_id=_key(group.subject_id),
+        sample_id=_sample_key(group.subject_id),
         subject_id=group.subject_id,
         codec=codec,
     ) as writer:
@@ -433,7 +440,7 @@ def _timestamp(value: Any) -> str | None:
     text = str(value)
     if text.endswith("Z") and "T" in text:
         return text
-    if len(text) == 10 and text[4] == "-":  # noqa: PLR2004 - ISO date length
+    if len(text) == 10 and text[4] == "-":
         return f"{text}T00:00:00Z"
     return None
 

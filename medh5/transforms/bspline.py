@@ -32,7 +32,7 @@ def basis(order: int, t: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
     """
     if order == 1:
         return np.stack([1.0 - t, t])
-    if order == 3:  # noqa: PLR2004
+    if order == 3:
         t2, t3 = t * t, t * t * t
         return np.stack(
             [
@@ -69,7 +69,7 @@ def encode_bspline(
             code="E502",
         )
     array = np.asarray(control_points, dtype=np.float64)
-    if array.ndim < 3 or array.shape[0] != array.ndim - 1:  # noqa: PLR2004
+    if array.ndim < 3 or array.shape[0] != array.ndim - 1:
         raise MEDH5ValidationError(
             f"control_points must be (S, *cp_shape) with S components, got "
             f"{array.shape}",

@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from medh5.io._common import sanitize_stem
 from medh5.io.report import ConversionReport
 
 FALLBACK_PREFIX = "study"
@@ -161,7 +162,7 @@ def group_by_subject(
 
 def _order(group: SubjectGroup, log: ConversionReport | None) -> None:
     """Sort a subject's occasions, saying which signal did the sorting."""
-    if len(group) < 2:  # noqa: PLR2004 - nothing to order
+    if len(group) < 2:
         group.ordered_by = "given"
         return
     if all(_parse_date(o.date) is not None for o in group.occasions):
@@ -221,7 +222,7 @@ def output_name(group: SubjectGroup, used: set[str], *, safe: Any = None) -> str
 
 
 def _default_safe(text: str) -> str:
-    return "".join(c if (c.isalnum() or c in "._-") else "_" for c in str(text))[:120]
+    return sanitize_stem(text, limit=120)
 
 
 def note_instance_ids(group: SubjectGroup, log: ConversionReport) -> None:

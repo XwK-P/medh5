@@ -125,21 +125,35 @@ def _recompress(args: argparse.Namespace) -> int:
 
 
 def _bench(args: argparse.Namespace) -> int:
-    from medh5.bench import benchmark_file, synthetic_sample, throughput
+    from medh5.bench import (
+        benchmark_file,
+        synthetic_pair,
+        synthetic_sample,
+        throughput,
+    )
 
     temporary: tempfile.TemporaryDirectory[str] | None = None
     path = args.path
     try:
+        pair: str | None = None
         if path is None:
             temporary = tempfile.TemporaryDirectory(prefix="medh5-bench-")
             print("writing a synthetic 192x256x256 sample ...", flush=True)
             path = str(synthetic_sample(temporary.name))
+            print("writing a synthetic two-visit sample ...", flush=True)
+            pair = str(synthetic_pair(temporary.name))
         measurements = benchmark_file(
             path,
             annotation=args.annotation,
             patch=args.patch,
             repeats=args.repeats,
         )
+        if pair is not None:
+            measurements.extend(
+                m
+                for m in benchmark_file(pair, patch=args.patch, repeats=args.repeats)
+                if m.name == "paired_center_ms"
+            )
         if not args.no_throughput:
             measured = _throughput(throughput, path, args)
             if measured is not None:

@@ -18,31 +18,34 @@ PYPROJECT = Path(__file__).resolve().parents[2] / "pyproject.toml"
 
 
 def _declared() -> str:
-    """The version in `pyproject.toml`, read without `tomllib`.
+    """The version `pyproject.toml` resolves to, read without `tomllib`.
 
     `tomllib` is 3.11+ and this package supports 3.10.  Guarding the import
     would make this skip on the oldest interpreter it claims to support --
     which is the failure mode the MONAI job exists to prevent -- so it reads
-    the one line it needs instead.
+    the lines it needs instead.  Since 1.3.0 the version is *dynamic*: the
+    only source is `medh5/__about__.py`, and what this checks is that the
+    wiring points there and nowhere else.
     """
-    in_project = False
-    for line in PYPROJECT.read_text().splitlines():
-        stripped = line.strip()
-        if stripped.startswith("["):
-            in_project = stripped == "[project]"
-            continue
-        if in_project:
-            match = re.fullmatch(r'version\s*=\s*"([^"]+)"', stripped)
-            if match:
-                return match.group(1)
-    raise AssertionError("no [project] version found in pyproject.toml")
+    text = PYPROJECT.read_text()
+    assert re.search(r'^dynamic\s*=\s*\["version"\]', text, re.M), (
+        "pyproject.toml must declare version as dynamic"
+    )
+    assert not re.search(r'^version\s*=\s*"', text, re.M), (
+        "a static [project] version would be a second source"
+    )
+    match = re.search(r'^version\s*=\s*\{\s*attr\s*=\s*"([^"]+)"\s*\}', text, re.M)
+    assert match, "no [tool.setuptools.dynamic] version attr"
+    assert match.group(1) == "medh5.__about__.__version__"
+    return medh5.__version__
 
 
 def test_the_wheel_version_and_the_stamped_version_agree():
-    """The release workflow checks the tag against `pyproject.toml` only.
+    """The release workflow checks the tag against `medh5.__about__`.
 
-    Bumping one of the two and not the other publishes a wheel that reports
-    its own version wrongly in every file it writes.
+    The version is written once, in `__about__.py`; the wheel takes it from
+    there, so a wheel that reports its version wrongly in the files it writes
+    is no longer a thing a bump can produce.
     """
     assert medh5.__version__ == _declared()
 

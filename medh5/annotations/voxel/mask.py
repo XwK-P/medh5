@@ -13,6 +13,7 @@ import numpy.typing as npt
 
 from medh5.annotations.base import VoxelAnnotation
 from medh5.annotations.payload import AnnotationPayload
+from medh5.annotations.voxel.payload import count_nonzero
 from medh5.errors import MEDH5ValidationError
 
 
@@ -68,7 +69,7 @@ class MaskAnnotation(VoxelAnnotation):
 
     def summary(self) -> dict[str, Any]:
         out = super().summary()
-        out["true_voxels"] = int(np.count_nonzero(self.data[...]))
+        out["true_voxels"] = count_nonzero(self.data)
         return out
 
 

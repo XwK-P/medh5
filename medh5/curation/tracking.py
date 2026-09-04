@@ -225,7 +225,7 @@ class Tracking(Mapping[int, Track]):
     def is_resolved(self, instance_id: int) -> bool:
         """Present-then-gone, where the later visit did look for it."""
         states = self.states(instance_id)
-        if len(self.timepoints) < 2:  # noqa: PLR2004 - a series needs two visits
+        if len(self.timepoints) < 2:
             return False
         return states[self.timepoints[0]] == PRESENT and (
             states[self.timepoints[-1]] == RESOLVED
@@ -411,7 +411,7 @@ def _measure(
             return None, count
         return count * voxel_volume(grid.spacing), count
     box = np.asarray(obj.box, dtype=np.float64)
-    if box.ndim != 2 or box.shape[1] != 2:  # noqa: PLR2004 - (S, 2) boxes only
+    if box.ndim != 2 or box.shape[1] != 2:
         return None, None
     extent = box[:, 1] - box[:, 0]
     if space == "world":

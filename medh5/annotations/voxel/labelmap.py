@@ -10,7 +10,7 @@ import numpy.typing as npt
 
 from medh5.annotations.base import VoxelAnnotation
 from medh5.annotations.payload import AnnotationPayload
-from medh5.annotations.voxel.payload import Masks, normalize_masks
+from medh5.annotations.voxel.payload import Masks, contains_value, normalize_masks
 from medh5.annotations.voxel.select import label_dtype_size
 from medh5.errors import MEDH5ValidationError
 from medh5.labels.labelset import IGNORE_ID
@@ -81,7 +81,7 @@ class LabelmapAnnotation(VoxelAnnotation):
         return block
 
     def _encodes_ignore(self) -> bool:
-        return bool(np.any(np.asarray(self.data[...]) == self.ignore_id))
+        return contains_value(self.data, self.ignore_id)
 
     def labelmap(
         self,

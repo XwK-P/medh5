@@ -260,7 +260,7 @@ def encode_boxes(
 ) -> AnnotationPayload:
     """Pack axis-aligned boxes, ``(N, S, 2)`` in ``[lo, hi]`` form (spec §8.2)."""
     array = np.asarray(boxes, dtype=np.float32)
-    if array.ndim != 3 or array.shape[2] != 2:  # noqa: PLR2004
+    if array.ndim != 3 or array.shape[2] != 2:
         raise MEDH5ValidationError(
             f"boxes must have shape (N, S, 2), got {array.shape}", code="E405"
         )
@@ -513,7 +513,7 @@ def encode_obb(
     c = np.asarray(centers, dtype=np.float32)
     s = np.asarray(sizes, dtype=np.float32)
     r = np.asarray(rotations, dtype=np.float32)
-    if c.ndim != 2:  # noqa: PLR2004 - (n, dim)
+    if c.ndim != 2:
         # `boxes`, `mesh` and `instances` all raise a coded error here; `obb`
         # unpacked the shape first and died with a bare ValueError about tuple
         # lengths.  An empty detection annotation is the verified negative the
@@ -612,7 +612,7 @@ def encode_keypoints(
 ) -> AnnotationPayload:
     """Pack ``(N, K, S)`` keypoints with per-slot classes and visibility."""
     array = np.asarray(points, dtype=np.float32)
-    if array.ndim != 3:  # noqa: PLR2004
+    if array.ndim != 3:
         raise MEDH5ValidationError(
             f"keypoints must have shape (N, K, S), got {array.shape}", code="E405"
         )
@@ -631,7 +631,7 @@ def encode_keypoints(
             raise MEDH5ValidationError(
                 f"visibility {vis.shape} must be (N, K) = ({n}, {k})", code="E405"
             )
-        if np.any(vis > 2):  # noqa: PLR2004
+        if np.any(vis > 2):
             raise MEDH5ValidationError(
                 "visibility values must be 0 (unlabelled), 1 (occluded) or 2 (visible)",
                 code="E411",
@@ -711,7 +711,7 @@ def encode_points(
 ) -> AnnotationPayload:
     """Pack a point set: landmarks, seeds, or one half of a correspondence pair."""
     array = np.asarray(points, dtype=np.float32)
-    if array.ndim != 2:  # noqa: PLR2004
+    if array.ndim != 2:
         raise MEDH5ValidationError(
             f"points must have shape (N, S), got {array.shape}", code="E405"
         )
@@ -801,20 +801,42 @@ class Polygon:
             )
 
 
-def encode_contours(polygons: Sequence[Polygon]) -> AnnotationPayload:
+def encode_contours(
+    polygons: Sequence[Polygon], *, ndim: int | None = None
+) -> AnnotationPayload:
     """Concatenate planar polygons with an offset table (spec §8.6).
 
     Rasterising contours into a voxel annotation is an explicit,
     provenance-tracked activity --- never something a reader does implicitly,
     because the rasterisation rule (winding, hole handling, partial voxels) is a
     decision that belongs in the record.
+
+    An empty *polygons* is a verified negative --- looked for, nothing drawn ---
+    and is as legitimate here as for boxes (§9); it needs *ndim* to shape the
+    empty vertex table, which ``add_contours`` supplies from the grid.
     """
     if not polygons:
-        raise MEDH5ValidationError("no polygons were supplied", code="E410")
+        if ndim is None:
+            raise MEDH5ValidationError(
+                "no polygons were supplied; an empty contours annotation needs "
+                "ndim= to shape its vertex table",
+                code="E410",
+            )
+        return AnnotationPayload(
+            kind="contours",
+            datasets={
+                "vertices": np.empty((0, int(ndim)), dtype=np.float32),
+                "contour_offsets": np.zeros(1, dtype=np.int64),
+                "contour_class_ids": np.empty(0, dtype=np.uint16),
+                "contour_plane": np.empty((0, 2), dtype=np.int32),
+                "contour_role": np.empty(0, dtype=np.uint8),
+            },
+            class_ids=(),
+        )
     chunks = [np.asarray(p.vertices, dtype=np.float32) for p in polygons]
     dim = chunks[0].shape[1]
     for i, chunk in enumerate(chunks):
-        if chunk.ndim != 2 or chunk.shape[1] != dim:  # noqa: PLR2004
+        if chunk.ndim != 2 or chunk.shape[1] != dim:
             raise MEDH5ValidationError(
                 f"polygon {i} has shape {chunk.shape}; expected (V, {dim})", code="E405"
             )
@@ -912,11 +934,11 @@ def encode_mesh(
     """Pack a triangle surface mesh (spec §8.7)."""
     v = np.asarray(vertices, dtype=np.float32)
     f = np.asarray(faces, dtype=np.int32)
-    if v.ndim != 2 or v.shape[1] != 3:  # noqa: PLR2004
+    if v.ndim != 2 or v.shape[1] != 3:
         raise MEDH5ValidationError(
             f"mesh vertices must have shape (V, 3), got {v.shape}", code="E405"
         )
-    if f.ndim != 2 or f.shape[1] != 3:  # noqa: PLR2004
+    if f.ndim != 2 or f.shape[1] != 3:
         raise MEDH5ValidationError(
             f"mesh faces must have shape (F, 3), got {f.shape}", code="E405"
         )

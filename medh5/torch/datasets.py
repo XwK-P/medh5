@@ -42,7 +42,6 @@ from medh5.sampling import (
 )
 from medh5.torch._compat import dataset_base, require_torch, to_tensor
 from medh5.torch.handles import open_cached
-from medh5.transforms.resolve import resolve_between
 
 LABEL_FORMATS = ("onehot", "labelmap", "instances", "none")
 ALIGNMENTS = ("none", "transform")
@@ -585,9 +584,7 @@ class PairedPatchDataset(_Base):
         # no name be interpreted at all.
         transform = None
         if source.frame_uid and target.frame_uid:
-            transform = resolve_between(
-                dict(sample.transforms), source.frame_uid, target.frame_uid
-            )
+            transform = sample.resolve_frames(source.frame_uid, target.frame_uid)
         if transform is None and source.frame_uid != target.frame_uid:
             # A `None` here has two possible meanings: the grids already share
             # a frame (nothing to apply), or no path exists between them.  Only

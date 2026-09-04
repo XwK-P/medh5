@@ -30,6 +30,7 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
+from medh5._optional import require
 from medh5.errors import MEDH5ValidationError
 from medh5.geometry.affine import ORTHONORMAL_TOL, build_affine, decompose_affine
 from medh5.io.report import ConversionReport
@@ -41,14 +42,7 @@ COORD_SYSTEMS = ("LPS", "RAS")
 
 
 def require_nibabel() -> Any:
-    try:
-        import nibabel
-    except ImportError as exc:  # pragma: no cover - depends on the environment
-        raise ImportError(
-            "nibabel is required for NIfTI conversion. Install it with: "
-            "pip install 'medh5[nifti]'"
-        ) from exc
-    return nibabel
+    return require("nibabel", extra="nifti", purpose="NIfTI conversion")
 
 
 def convert_world(
@@ -174,17 +168,13 @@ def read_nifti(
     # writers emit `dim[4] = 1` routinely, and keeping it turns a plain volume
     # into a grid with a degenerate one-frame time axis --- and a 5-D
     # `(x, y, z, 1, n)` multi-echo into something no grid can describe.
-    squeezed = [
-        axis
-        for axis in range(data.ndim - 1, 2, -1)  # noqa: PLR2004 - past x, y, z
-        if data.shape[axis] == 1
-    ]
+    squeezed = [axis for axis in range(data.ndim - 1, 2, -1) if data.shape[axis] == 1]
     for axis in squeezed:
         data = np.squeeze(data, axis=axis)
     affine = convert_world(image.affine, source="RAS", target=coord_system)
     spacing, origin, direction = decompose_affine(affine)
     order = tuple(range(data.ndim))
-    if transpose and data.ndim >= 3:  # noqa: PLR2004 - 3-D and up reorder
+    if transpose and data.ndim >= 3:
         # NIfTI puts i, j, k *first* and time (dim[4]) after them, so the
         # spatial block is the leading three axes, not the trailing three.
         # Reversing the trailing three would move t into a spatial slot and
@@ -195,7 +185,7 @@ def read_nifti(
         data = np.transpose(data, order)
         spacing = spacing[list(spatial)]
         direction = direction[:, list(spatial)]
-    if data.ndim == 2:  # noqa: PLR2004 - a radiograph (§3.6)
+    if data.ndim == 2:
         spacing, origin, direction = _reduce_plane(spacing, origin, direction)
     times: tuple[float, ...] | None = None
     time_units: str | None = None
@@ -205,7 +195,7 @@ def read_nifti(
     b_values: tuple[float, ...] | None = None
     channel_field: str | None = None
     channel_values: tuple[float, ...] | None = None
-    if data.ndim == 4:  # noqa: PLR2004 - three spatial axes and one more
+    if data.ndim == 4:
         frames = int(data.shape[0])
         bids = _bids_axis(path, frames, fourth_axis)
         kind, stated = _fourth_axis(image, path, fourth_axis, bids)
@@ -535,10 +525,10 @@ def _temporal(image: Any) -> tuple[float, float, str, bool]:
     is what separates a frame time this converter read from one it assumed.
     """
     zooms = image.header.get_zooms()
-    step = float(zooms[3]) if len(zooms) > 3 else 0.0  # noqa: PLR2004 - dim[4]
+    step = float(zooms[3]) if len(zooms) > 3 else 0.0
     try:
         _, temporal = image.header.get_xyzt_units()
-    except Exception:  # noqa: BLE001 - a malformed header is not fatal
+    except Exception:
         temporal = "unknown"
     known = {"sec": ("s", 1.0), "msec": ("ms", 1.0), "usec": ("ms", 1e-3)}
     if step <= 0 or str(temporal) not in known:
@@ -583,7 +573,7 @@ def _units(image: Any) -> str:
     """The NIfTI spatial unit, mapped onto the §3.5 vocabulary."""
     try:
         spatial, _ = image.header.get_xyzt_units()
-    except Exception:  # noqa: BLE001 - a malformed header is not fatal
+    except Exception:
         return "mm"
     return {"meter": "m", "mm": "mm", "micron": "um", "unknown": "mm"}.get(
         str(spatial), "mm"
@@ -602,7 +592,7 @@ def _text(value: Any) -> str:
 def _number(value: Any) -> float | None:
     try:
         out = float(np.asarray(value).reshape(-1)[0])
-    except Exception:  # noqa: BLE001 - absent or malformed
+    except Exception:
         return None
     return None if not np.isfinite(out) else out
 
@@ -745,7 +735,7 @@ def from_nifti(
                 "as times; §3.2 requires `time_values` where there is a time axis",
                 detail,
             )
-    if transpose and len(geometry["shape"]) >= 3:  # noqa: PLR2004
+    if transpose and len(geometry["shape"]) >= 3:
         log.decision(
             "axis_order",
             "NIfTI (x, y, z) was reordered to (z, y, x), any trailing time "
@@ -948,7 +938,7 @@ def to_nifti(
             data = np.asarray(image.read(physical=physical))
         affine = convert_world(grid.affine, source=grid.coord_system, target="RAS")
         spacing, origin, direction = decompose_affine(affine)
-        if data.ndim >= 3:  # noqa: PLR2004 - undo the (z, y, x) reordering
+        if data.ndim >= 3:
             # MEDH5 leads with time and trails with (z, y, x); NIfTI is the
             # other way round.  Reversing only the trailing three sent time to
             # a *spatial* slot and left the affine describing (x, y, z), so a

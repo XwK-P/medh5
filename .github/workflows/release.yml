@@ -24,28 +24,23 @@ jobs:
       - name: Verify tag matches package version
         run: |
           python - <<'PY'
-          import os, pathlib, re, sys, tomllib
+          import os, pathlib, re, sys
           ref = os.environ["GITHUB_REF"]
           m = re.fullmatch(r"refs/tags/v(.+)", ref)
           if not m:
               sys.exit(f"unexpected GITHUB_REF: {ref}")
           tag_version = m.group(1)
-          with open("pyproject.toml", "rb") as f:
-              data = tomllib.load(f)
-          pkg_version = data["project"]["version"]
-          if tag_version != pkg_version:
-              sys.exit(f"tag {tag_version!r} does not match pyproject version {pkg_version!r}")
-          # `__about__` is what gets stamped into every file's `generator` and
-          # into dataset manifests, so a wheel where it disagrees with the tag
-          # publishes wrong provenance into user data.
+          # `__about__` is the one source of the version: `pyproject.toml`
+          # declares it dynamic and reads it from here, and it is what gets
+          # stamped into every file's `generator` and into dataset manifests.
           about = {}
           exec((pathlib.Path("medh5") / "__about__.py").read_text(), about)
-          if about["__version__"] != pkg_version:
+          if about["__version__"] != tag_version:
               sys.exit(
-                  f"medh5.__version__ {about['__version__']!r} does not match "
-                  f"pyproject version {pkg_version!r}"
+                  f"tag {tag_version!r} does not match medh5.__version__ "
+                  f"{about['__version__']!r}"
               )
-          print(f"tag, package and stamped version agree: {pkg_version}")
+          print(f"tag and stamped version agree: {tag_version}")
           PY
 
       - name: Build sdist and wheel

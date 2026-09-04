@@ -13,7 +13,9 @@ repos:
         exclude: ^mkdocs\.yml$
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.4.8
+    # The same ruff the `dev` extra pins and CI runs. Bump the two together:
+    # a hook five minor versions behind formats differently from the gate.
+    rev: v0.16.3
     hooks:
       - id: ruff
         args: [--fix]

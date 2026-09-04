@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
@@ -162,12 +162,17 @@ class Entry:
         to remember which document section a field came from.
         """
         name = dotted.split(".")[-1]
-        if not hasattr(self, name):
+        if name not in _ENTRY_FIELDS:
+            # Fields, not attributes: `hasattr` answered yes for `to_json`, so
+            # `--group-by to_json` grouped a cohort by a bound method's repr.
             raise MEDH5ValidationError(
                 f"{dotted!r} is not a manifest field; try one of "
                 f"{', '.join(sorted(GROUPABLE))}"
             )
         return getattr(self, name)
+
+
+_ENTRY_FIELDS = frozenset(f.name for f in fields(Entry))
 
 
 GROUPABLE = (

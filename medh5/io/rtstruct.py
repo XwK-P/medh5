@@ -29,6 +29,7 @@ import numpy as np
 import numpy.typing as npt
 
 from medh5.errors import MEDH5ValidationError
+from medh5.io._common import sanitize_key
 from medh5.io.report import ConversionReport
 
 MIN_POLYGON_VERTICES = 3
@@ -56,7 +57,7 @@ def read_rtstruct(
     for item in getattr(dataset, "ROIContourSequence", []):
         number = int(item.ReferencedROINumber)
         rgb = getattr(item, "ROIDisplayColor", None)
-        if rgb is not None and len(rgb) >= 3:  # noqa: PLR2004 - RGB triple
+        if rgb is not None and len(rgb) >= 3:
             colors[number] = (int(rgb[0]), int(rgb[1]), int(rgb[2]), 255)
         for contour in getattr(item, "ContourSequence", []):
             data = np.asarray([float(v) for v in contour.ContourData], dtype=np.float64)
@@ -149,12 +150,16 @@ def from_rtstruct(
     polygons: list[Polygon] = []
     for number in sorted(contours):
         planar = _assign_roles(contours[number], target, log, meta["names"].get(number))
-        for points, role in planar:
+        for points, role, plane in planar:
             polygons.append(
                 Polygon(
                     vertices=points.astype(np.float32),
                     class_id=ids[number],
-                    plane=(-1, 0),
+                    # `(0, k)`: the polygon lies in slice k along the grid's
+                    # first spatial axis, in that grid's index space (§8.6).
+                    # It was computed to find holes and then thrown away, so
+                    # `by_plane()` on an imported RTSTRUCT answered nothing.
+                    plane=(0, plane),
                     role=role,
                 )
             )
@@ -202,7 +207,7 @@ def from_rtstruct(
                 masks=masks,
                 annotated_classes=annotated_classes,
                 prov=raster,
-                derived_from=[f"annotations/{ann_id}"],
+                derived_from=[ann_id],
             )
             log.decision(
                 "rasterization",
@@ -220,7 +225,7 @@ def _assign_roles(
     grid: Any,
     log: ConversionReport,
     name: str | None,
-) -> list[tuple[npt.NDArray[np.float64], str]]:
+) -> list[tuple[npt.NDArray[np.float64], str, int]]:
     """Mark contours enclosed by another on the same slice as holes.
 
     The grouping and the enclosure test are both done in the grid's **index**
@@ -228,8 +233,11 @@ def _assign_roles(
     coordinates would only work for axial acquisitions: under the orientation
     a DICOM series actually declares, the world *z* of a contour varies within
     its own slice, and grouping on it puts every vertex in its own plane.
+
+    Returns ``(vertices, role, plane)`` with the plane index that grouping
+    found, so the writer can record it rather than lose it.
     """
-    out: list[tuple[npt.NDArray[np.float64], str]] = []
+    out: list[tuple[npt.NDArray[np.float64], str, int]] = []
     index = [grid.world_to_index(points) for points in contours]
     by_plane: dict[int, list[int]] = {}
     for position, points in enumerate(index):
@@ -237,7 +245,7 @@ def _assign_roles(
             position
         )
     holes = 0
-    for positions in by_plane.values():
+    for plane, positions in by_plane.items():
         for position in positions:
             role = "outer"
             for other in positions:
@@ -245,7 +253,7 @@ def _assign_roles(
                     role = "hole"
                     holes += 1
                     break
-            out.append((contours[position], role))
+            out.append((contours[position], role, plane))
     if holes:
         log.decision(
             "holes",
@@ -334,8 +342,7 @@ def _rasterize(
 
 
 def _key(name: str) -> str:
-    cleaned = "".join(c if (c.isalnum() or c in "._-") else "_" for c in name.strip())
-    return (cleaned or "roi").lower()[:128]
+    return sanitize_key(name, fallback="roi")
 
 
 def _match_grid(sample: Any, meta: Mapping[str, Any], log: ConversionReport) -> str:

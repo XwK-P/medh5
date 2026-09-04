@@ -114,6 +114,8 @@ def benchmark_file(
             for n in shape
         )
 
+        if sample.is_longitudinal:
+            out.extend(_paired_measurements(sample, repeats))
         if ann_id is not None:
             ann = sample.annotations[ann_id]
             classes = list(ann.class_ids)
@@ -175,6 +177,94 @@ def benchmark_file(
         )
     )
     return out
+
+
+def _paired_measurements(sample: Any, repeats: int) -> list[Measurement]:
+    """Moving one patch centre through the transform relating two visits.
+
+    Measured because it is the read a paired dataset does once per training
+    item, and a displacement field used to be read whole to answer it.
+    """
+    first, second = sample.timepoints.ids[:2]
+    frames = [
+        (a, b)
+        for a in sample.grids.values()
+        for b in sample.grids.values()
+        if a.timepoint == first
+        and b.timepoint == second
+        and a.frame_uid
+        and b.frame_uid
+        and sample.resolve_frames(a.frame_uid, b.frame_uid) is not None
+    ]
+    if not frames:
+        return []
+    source, target = frames[0]
+    transform = sample.resolve_frames(source.frame_uid or "", target.frame_uid or "")
+    assert transform is not None
+    centre = source.index_to_world(
+        np.asarray([[n // 2 for n in source.spatial_shape]], dtype=np.float64)
+    )
+    return [
+        Measurement(
+            "paired_center_ms",
+            timed(lambda: transform.transform_points(centre), repeats=repeats),
+            description="one patch centre moved between two visits",
+            detail={
+                "transform": transform.transform_id,
+                "kind": transform.kind,
+                "from": source.grid_id,
+                "to": target.grid_id,
+            },
+        )
+    ]
+
+
+def synthetic_pair(
+    directory: str | os.PathLike[str],
+    *,
+    shape: tuple[int, ...] = (64, 96, 96),
+    codec: str = "training",
+    seed: int = 20260815,
+) -> Path:
+    """Two visits of one subject related by a dense displacement field."""
+    import medh5
+
+    rng = np.random.default_rng(seed)
+    root = Path(os.fspath(directory))
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / "bench-pair.medh5"
+    with medh5.create(path, sample_id="bench-pair", codec=codec) as writer:
+        writer.add_timepoint("tp0", days_from_baseline=0)
+        writer.add_timepoint("tp1", days_from_baseline=90)
+        for tp, frame in (("tp0", "bench:frame-0"), ("tp1", "bench:frame-1")):
+            writer.add_grid(
+                f"g_{tp}",
+                shape=shape,
+                spacing=(1.0, 1.0, 1.0),
+                timepoint=tp,
+                frame_uid=frame,
+                patch_hint=(64, 64, 64),
+            )
+            writer.add_image(
+                f"CT_{tp}",
+                rng.integers(-1000, 1500, shape).astype(np.int16),
+                grid=f"g_{tp}",
+                modality="CT",
+                value_type="quantitative",
+                value_units="HU",
+            )
+        field = rng.normal(0.0, 0.5, (len(shape), *shape)).astype(np.float32)
+        writer.add_transform(
+            "warp",
+            kind="displacement",
+            from_frame="bench:frame-0",
+            to_frame="bench:frame-1",
+            field=field,
+            field_grid="g_tp0",
+            vector_space="world",
+        )
+        writer.deidentification(method="synthetic")
+    return path
 
 
 def throughput(
@@ -308,6 +398,7 @@ __all__ = [
     "Measurement",
     "benchmark_file",
     "report",
+    "synthetic_pair",
     "synthetic_sample",
     "throughput",
     "timed",

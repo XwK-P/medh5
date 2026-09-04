@@ -229,7 +229,7 @@ class CostModel:
 def label_dtype_size(class_ids: Sequence[int], *, ignore: bool = False) -> int:
     """1 for ``uint8`` when the ids fit, else 2 for ``uint16`` (spec §7.1)."""
     ceiling = max(class_ids) if class_ids else 0
-    return 1 if (ceiling <= 254 and not ignore) else 2  # noqa: PLR2004
+    return 1 if (ceiling <= 254 and not ignore) else 2
 
 
 def cost_model(stats: OverlapStats, *, ignore: bool = False) -> CostModel:

@@ -159,7 +159,7 @@ _TABLE: tuple[Code, ...] = (
     # --- E6xx curation ------------------------------------------------------
     _c("E601", "curation", "`prov` names an activity that does not exist"),
     _c("E602", "curation", "`quality` names a record that does not exist"),
-    _c("E603", "curation", "unknown provenance activity type"),
+    _c("E603", "curation", "unknown agent or activity type"),
     _c("E604", "curation", "timestamp is not RFC 3339"),
     _c("E605", "curation", "activity names an agent that does not exist"),
     # --- E7xx integrity -----------------------------------------------------

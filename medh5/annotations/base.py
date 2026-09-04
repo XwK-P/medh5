@@ -98,6 +98,7 @@ SPEC_ANNOTATION_ATTRS = (
     "scope_ids",
     "multilabel",
     "normalized",
+    "threshold",
     "skeleton",
 )
 

@@ -11,6 +11,7 @@ import contextlib
 import os
 import re
 import stat
+import uuid
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
@@ -210,6 +211,16 @@ def _fsync_dir(directory: Path) -> None:
         os.close(fd)
 
 
+def _temporary_name(name: str) -> str:
+    """A sibling name no other writer in any process is using.
+
+    The pid alone told two threads of one process apart from nothing: both
+    built ``.x.medh5.tmp-1234``, and the second ``os.replace`` moved a file the
+    first was still writing.
+    """
+    return f".{name}.tmp-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+
+
 def _existing_mode(target: Path) -> int | None:
     """The permission bits of *target*, or ``None`` when it does not exist."""
     try:
@@ -237,7 +248,7 @@ def atomic_h5(
     """
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_name(f".{target.name}.tmp-{os.getpid()}")
+    tmp = target.with_name(_temporary_name(target.name))
     mode = _existing_mode(target)
     handle = None
     try:
@@ -285,7 +296,7 @@ def atomic_rewrite(
     src_path = Path(os.fspath(source))
     dst_path = Path(os.fspath(target)) if target is not None else src_path
     dst_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dst_path.with_name(f".{dst_path.name}.tmp-{os.getpid()}")
+    tmp = dst_path.with_name(_temporary_name(dst_path.name))
     mode = _existing_mode(dst_path)
     src: h5py.File | None = None
     dst: h5py.File | None = None

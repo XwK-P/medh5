@@ -231,7 +231,6 @@ class TestEncoders:
         nobody expected to touch the data.  Correct whether the ignore region
         sits in the first slab, the last, or nowhere.
         """
-        from medh5.annotations.voxel import layers as layers_module
 
         shape = (16, 32, 32)
         masks = {
@@ -260,7 +259,7 @@ class TestEncoders:
             )
 
         # One row per slab, so the scan cannot be reading the dataset whole.
-        monkeypatch.setattr(layers_module, "_SCAN_BYTES", 1)
+        monkeypatch.setattr("medh5.annotations.voxel.payload.SLAB_BYTES", 1)
         with medh5.open(path) as sample:
             annotation = sample.annotations["objs"]
             assert annotation.kind == "layers"

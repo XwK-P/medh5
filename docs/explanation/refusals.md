@@ -87,6 +87,14 @@ TR/TE — goes to `acquisition`; everything else stays out (§11.4). A wholesale
 tag copy is how a "de-identified" export carries a patient name into a training
 set.
 
+**Enhanced multi-frame objects are skipped and reported, not refused.** They
+are not malformed; they are a different object model, with geometry in
+per-frame functional groups this importer does not read. Refusing the whole
+tree for one such series would block the classic series beside it, so the
+enhanced ones are left out and the report says so as a warning, which fails
+the command's exit status. Before 1.3.0 they were skipped silently, and a
+modern MR export could import as nothing with no word why.
+
 ## DICOM SEG
 
 **Segments match by label, not by number.** DICOM numbers segments 1..N

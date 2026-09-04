@@ -59,7 +59,7 @@ from medh5.sampling import (
     grid_patches,
 )
 
-open = open_sample  # noqa: A001 - `medh5.open` is the documented entry point
+open = open_sample
 
 __all__ = [
     "CODES",

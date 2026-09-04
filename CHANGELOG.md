@@ -4,6 +4,120 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.3.0] — 2026-09-04
+
+The last 1.x feature release. The **format version is unchanged**: 1.3.0 reads and writes files 1.0
+does, and every file 1.2.x wrote validates under it unless it carried one of the defects the new
+rules exist to catch. The corpus grows from 103 to 115 cases, so that every *clause* behind a code
+has a case and not only every code. Five specification clauses are corrected (Appendix C now lists
+fifteen), none of which changes what a conforming file looks like.
+
+### Behaviour changes
+
+Read these before upgrading a pipeline. Each is a correction; each can change what existing code
+produces or accepts:
+
+- **New validator refusals.** A `labelmap` stored `uint16` whose ids fit `uint8` and carries no
+  ignore voxel is **E411** (§7.1 has always said `uint8` MUST be used); a grid with a `time` axis and
+  no `time_values` is **E109** (§3.2); a dangling `ignore_mask`, `derived_from` entry or image
+  `valid_mask`, or an `ignore_mask` naming anything but a `mask` annotation, is **E413**; a transform
+  whose `prov` or `metrics` names nothing is **E601**/**E602**; a `splits[].assigned_at` or
+  `deidentification.date` that is not RFC 3339 is **E604**; and a `digest_algo` outside `sha256`,
+  `sha512`, `blake2b` is **E703**. The writer refuses the same things at `commit()`.
+
+- **`medh5.open(path, "r+")` is refused.** `Sample` has no mutating method and never had one;
+  `amend` is the edit path. `open(path)` and `open(path, "r")` are unchanged.
+
+- **`add_grid` refuses a `time` axis without `time_values`** (E109), as §3.2 requires and as the
+  validator now checks.
+
+- **Label-set keys minted by the converters are schema-valid.** `sanitize_key` replaces the four
+  private copies of the key sanitiser, and it holds to the schema's `^[a-z0-9][a-z0-9_]*$`: an ROI
+  named `GTV-1` becomes `gtv_1`, where the old copies minted `gtv-1` and the write then failed E005.
+  Names that were already valid keys are unchanged.
+
+- **`derived_from` carries annotation ids, not paths.** The RTSTRUCT importer wrote
+  `annotations/<id>`; it writes `<id>` now, as §6.2 says. Readers and the validator accept both.
+
+- **Imported RTSTRUCT polygons record their plane** as `(0, k)`, so `by_plane()` works on them;
+  the `contour_plane` column, and with it the `content_id` of a freshly imported structure set,
+  differs from 1.2.x's.
+
+- **DICOM imports record `PhotometricInterpretation` in `acquisition`**, which changes the
+  `content_id` of a freshly imported study; and `from_dicom` **warns** rather than stays silent when
+  a tree holds enhanced multi-frame objects it cannot read, or a `MONOCHROME1` series. A warning makes
+  `report.ok` false and the command exit non-zero.
+
+- **`Entry.field` accepts manifest fields only.** `--group-by to_json` used to "work".
+
+- **`compute_content_id` and `verify()` raise E703 for an unknown `digest_algo`** instead of a
+  `ValueError` from `hashlib`.
+
+- **`medh5.monai.to_dict`, `dataset stats` and the other 1.2.1 changes stand** — see that entry.
+
+### Specification corrections (Appendix C, entries 11–15)
+
+- **§2.1** `digest_algo` names `sha256`, `sha512`, `blake2b`, the algorithms every Python ships,
+  rather than `blake3` and `xxh3-128`, which the reference implementation never carried and reported
+  as E703 malformed. Any other value is E703, normatively.
+- **§7.5** `threshold` is a spec-defined `probmap` attribute, default 0.5, covered by `content_id`.
+  §7.6 already said transcoding was "lossless only under a declared threshold" and the reader honoured
+  one; nothing defined it. `add_segmentation(probabilities=..., threshold=0.3)` writes it.
+- **§3.4** The sentence requiring a *validator* to report an annotation compared with an image on
+  another frame described a query, not a file. It is reader guidance now; the refusal lives in
+  `PairedPatchDataset`.
+- **§5.1** A collection carrying one label set at `/` with `uri = "medh5:/label_set"` is MAY, not
+  SHOULD; the reference implementation neither writes nor resolves it.
+- **§7.1, §3.2, §15.2** The `uint8` rule and the `time_values` requirement are validated; E603's
+  summary reads "unknown agent or activity type", as the table always said.
+
+### Fixed — performance
+
+- **A displacement field was read whole on every evaluation.** `PairedPatchDataset(align="transform")`
+  asks for one displacement per training item, and `displacement_at` answered by decompressing the
+  entire field each time. Linear interpolation now reads the bounding window of the query points,
+  padded by one voxel — kilobytes rather than gigabytes on a 512³ field — with the `zero`/`error`
+  cases decided against the full extent and the `nearest` clamp landing where it always did, so the
+  result is bit-identical to the whole-field read. Cubic interpolation still reads the field whole,
+  because a spline's coefficients are global and a windowed answer would depend on its neighbours.
+  `medh5 bench` gains a `paired_center_ms` row measuring it on a synthetic two-visit sample.
+- **`instances` re-read its columns on every access**: `dense()` fetched `boxes` and `class_ids` once
+  per class and `crop()` three datasets per object. The per-object columns are read once per open
+  annotation; only `mask_data` is read on demand, one object's slice at a time.
+- **`labelmap.has_ignore_region` and `mask.summary()` materialised the whole volume** to answer a
+  header-shaped question; they scan in bounded slabs, as `layers` already did, through one helper.
+- **`Sample.resolve_frames(a, b)`** resolves between two frame uids and memoises per handle;
+  `transform_between` and the paired loader go through it, so a pair is resolved once, not once per
+  item.
+
+### Changed — structure
+
+- **`SampleWriter` lives in `medh5/writer.py`.** `sample.py` was 2 400 lines holding the reader and
+  the writer; every name is still importable from `medh5.sample` and from `medh5`.
+- One `medh5/io/_common.py` (`sanitize_key`, `sanitize_stem`) replaces six private copies; one
+  `medh5/_optional.py` says how to install every optional dependency; one `indent` in the CLI; one
+  `EXTRAPOLATIONS`.
+- `transforms.base.frame_graph` follows the resolver's `can_invert`, not the file's `is_invertible`
+  claim, so the graph it draws is the one `resolve_between` walks.
+- `PatchSampler` no longer auto-selects a `mask` annotation, which has no classes to draw from.
+- Temporary files are named with a pid **and** a uuid, so two threads amending one path in one
+  process cannot collide.
+- `open_collection`, `open_any` and `pack` check the format major through the same
+  `require_major` as `open`; a 2.0 shard used to open through the collection door.
+- An empty polygon list is a valid `contours` annotation when `annotated_classes` names what was
+  looked for, as an empty box set already was.
+- Fifty `# noqa: PLR2004` comments guarded a rule family that was never selected; `RUF100` is on and
+  every suppression that suppressed nothing is gone.
+
+### Changed — tooling
+
+- The package version is written once, in `medh5/__about__.py`; `pyproject.toml` declares it dynamic
+  and the release workflow checks the tag against it. `license` is the SPDX string `MIT`.
+- CI gains a **Windows** job and a **minimum-dependency** job (`numpy 1.24`, `h5py 3.10`,
+  `hdf5plugin 4.1` on 3.10), asserts numpy 2 on the matrix, and prints skips.
+- `.pre-commit-config.yaml` pins the ruff the `dev` extra pins. `.hypothesis/` is ignored. The
+  README's static coverage badge is gone; the number lives in CI.
+
 ## [1.2.1] — 2026-09-04
 
 A correctness patch from a full audit of 1.2.0. The **format version is unchanged**: 1.2.1

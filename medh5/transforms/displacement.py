@@ -24,7 +24,10 @@ from medh5.errors import MEDH5ValidationError
 from medh5.geometry.grid import Grid
 from medh5.transforms.apply import (
     folding_fraction,
+    inside_extent,
     jacobian_determinant,
+    linear_sample,
+    refuse_outside,
     sample_field,
     to_world_vectors,
 )
@@ -69,7 +72,7 @@ def encode_displacement(
             code="E502",
         )
     array = np.asarray(field, dtype=dtype)
-    if array.ndim < 3:  # noqa: PLR2004
+    if array.ndim < 3:
         raise MEDH5ValidationError(
             f"displacement field must be (S, *spatial), got {array.shape}", code="E503"
         )
@@ -157,13 +160,51 @@ class DisplacementTransform(Transform):
         grid = self.field_grid
         world = np.asarray(points, dtype=np.float64)
         indices = grid.world_to_index(world.reshape(-1, grid.n_spatial))
-        raw = sample_field(
-            np.asarray(self.field[...]),
-            indices,
-            interpolation=self.interpolation,
-            extrapolation=self.extrapolation,
-        )
+        raw = self._sample(indices)
         return to_world_vectors(raw, grid, self.vector_space).reshape(world.shape)
+
+    def _sample(self, indices: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+        """Interpolate at continuous field indices, reading what the points touch.
+
+        A paired dataset asks for one displacement per training item, and this
+        used to answer by reading the *entire* field --- every chunk, every
+        time --- so a deformable registration turned each item into a
+        full-volume decompress.  Linear interpolation needs the two lattice
+        points either side of each query along each axis, so the read is the
+        bounding window of the points, padded by one; on a 512³ field that is
+        kilobytes rather than gigabytes.  The result is identical to sampling
+        the whole field: the window is clamped inside the array exactly where
+        ``nearest`` would clamp, and the ``zero``/``error`` cases are decided
+        against the full extent before the window is cut.
+
+        Cubic interpolation reads the whole field as before.  Its spline
+        coefficients are global, so a window would change the answer near its
+        own edges, and an answer that depends on which other points were asked
+        about at the same time is not one.
+        """
+        field = self.field
+        spatial = np.asarray(field.shape[1:], dtype=np.int64)
+        if self.interpolation != "linear" or indices.shape[0] == 0:
+            return sample_field(
+                np.asarray(field[...]),
+                indices,
+                interpolation=self.interpolation,
+                extrapolation=self.extrapolation,
+            )
+        inside = inside_extent(spatial, indices)
+        if self.extrapolation == "error":
+            refuse_outside(inside)
+        lo = np.clip(np.floor(indices.min(axis=0)).astype(np.int64) - 1, 0, spatial - 1)
+        hi = np.clip(np.ceil(indices.max(axis=0)).astype(np.int64) + 2, lo + 1, spatial)
+        # Two lattice points per axis where the array has them, so the clamp
+        # at the far edge lands on the same voxel it would in the whole field.
+        lo = np.minimum(lo, np.maximum(hi - 2, 0))
+        window = tuple(slice(int(a), int(b)) for a, b in zip(lo, hi, strict=True))
+        block = np.asarray(field[(slice(None), *window)])
+        raw = linear_sample(block, indices - lo, extrapolation="nearest")
+        if self.extrapolation == "zero":
+            raw[~inside] = 0.0
+        return raw
 
     def transform_points(self, points: npt.ArrayLike) -> npt.NDArray[np.float64]:
         values = np.asarray(points, dtype=np.float64)

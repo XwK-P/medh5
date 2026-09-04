@@ -96,6 +96,17 @@ gives what the scanner stored.
 **Tags are an explicit allow-list.** Imaging physics goes to `acquisition`;
 everything else stays out (§11.4).
 
+**Enhanced multi-frame objects are reported, not read.** The importer reads
+classic single-frame series. An Enhanced CT/MR/PET object keeps its geometry
+in per-frame functional groups it does not read, so such files are skipped
+and named in the report as a warning — an import that found nothing says
+why. Convert them to classic instances first.
+
+**`MONOCHROME1` is stored as written.** Lower stored values are brighter in
+such a series; the importer never rewrites values (§4.2), records the
+`PhotometricInterpretation` in `acquisition`, and warns in the report so a
+model trained on intensity can invert them.
+
 **Images are named by modality and visit** — `CT_tp0` on grid `ct_tp0`,
 `PT_tp1` on `pt_tp1`. A study holding several series of one modality numbers
 them in `SeriesInstanceUID` order — `MR_1_tp0`, `MR_2_tp0` — and the report
@@ -134,6 +145,10 @@ $ medh5 convert to-rtstruct case.medh5 contours out.dcm \
 
 **Contours stay contours** (§8.6), in world coordinates. `--rasterize` is opt-in,
 and the rule it used goes into the provenance graph.
+
+Each imported polygon records the slice it lies on as `contour_plane`
+`(0, k)`, in the grid's index space, so `by_plane()` on the result groups the
+structure set the way the planner drew it.
 
 ### nnU-Net v2
 
