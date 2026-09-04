@@ -87,6 +87,9 @@ produces or accepts:
   conformance suite used the platform default, which on Windows is cp1252 — a manifest with a
   non-ASCII subject id could not be read back there. The new Windows job found it in the docs
   tests before anyone found it in the package.
+- **`create` and `amend` commit on Windows.** The `fsync` before the rename into place opened
+  the finished file read-only, and Windows flushes only through a writable handle, so every
+  write failed at commit with `EBADF`. Nothing had run there before the Windows job existed.
 
 ### Fixed — performance
 

@@ -192,7 +192,15 @@ def open_h5(path: str | os.PathLike[str], mode: str = "r") -> h5py.File:
 
 
 def _fsync_path(path: Path) -> None:
-    fd = os.open(str(path), os.O_RDONLY)
+    """Flush a closed file to stable storage before it is renamed into place.
+
+    Windows commits a file only through a handle opened for writing ---
+    ``os.fsync`` on a read-only descriptor fails with EBADF there --- so the
+    descriptor is read-write on that platform and read-only everywhere else,
+    where write access would need the file's mode to allow it.
+    """
+    flags = os.O_RDWR if os.name == "nt" else os.O_RDONLY
+    fd = os.open(str(path), flags)
     try:
         os.fsync(fd)
     finally:
