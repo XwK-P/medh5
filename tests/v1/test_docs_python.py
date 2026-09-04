@@ -261,6 +261,43 @@ def workspace(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
     }
 
 
+def _torch_names(workspace: dict[str, Any]) -> dict[str, Any]:
+    """The loader names, or nothing where torch is not installed."""
+    try:
+        import torch
+        from torch.utils.data import DataLoader
+
+        from medh5.torch import PairedPatchDataset, PatchDataset, VolumeDataset
+    except ImportError:
+        return {}
+    from medh5.sampling import PatchSampler
+
+    case = str(workspace["case"])
+    volumes = VolumeDataset([case], images=["CT"])
+    patches = PatchDataset(
+        [case],
+        PatchSampler((8, 8, 8), strategy="foreground"),
+        images=["CT"],
+        annotations={"organs": ["liver", "lesion"]},
+        annotation="organs",
+    )
+    return {
+        "torch": torch,
+        "DataLoader": DataLoader,
+        "PatchDataset": PatchDataset,
+        "PairedPatchDataset": PairedPatchDataset,
+        "VolumeDataset": VolumeDataset,
+        "dataset": volumes,
+        "ds": volumes,
+        # `annotations=` is what puts `item["label"]` there; a tutorial reads it.
+        "item": patches[0],
+        # `patches` on the performance page is a list of patch *meta* dicts, and
+        # `p["used_index"]` is the line that says so.
+        "patches": [patches[i]["meta"]["patch"] for i in range(len(patches))],
+        "batch": next(iter(DataLoader(patches, batch_size=2))),
+    }
+
+
 def _namespace(workspace: dict[str, Any], tmp_path: Path) -> dict[str, Any]:
     """The names a documentation example may assume are already bound.
 
@@ -269,12 +306,9 @@ def _namespace(workspace: dict[str, Any], tmp_path: Path) -> dict[str, Any]:
     documentation --- so the runner supplies the setup instead, under the names
     the pages already use.
     """
-    import torch
-    from torch.utils.data import DataLoader
 
     from medh5.dataset import Manifest, compute_stats
     from medh5.sampling import PatchSampler, TimepointPairSampler
-    from medh5.torch import PairedPatchDataset, PatchDataset, VolumeDataset
 
     sample = medh5.open(workspace["case"])
     # A live writer, because half the pages show one call of one.  It carries
@@ -299,30 +333,20 @@ def _namespace(workspace: dict[str, Any], tmp_path: Path) -> dict[str, Any]:
     image = sample.images["CT"]
     uncertain = np.zeros(SHAPE, dtype=bool)
     uncertain[14:, :, :] = True
-    dataset = VolumeDataset([str(workspace["case"])], images=["CT"])
-    patches = PatchDataset(
-        [str(workspace["case"])],
-        PatchSampler((8, 8, 8), strategy="foreground"),
-        images=["CT"],
-        annotations={"organs": ["liver", "lesion"]},
-        annotation="organs",
-    )
-    # `annotations=` is what puts `item["label"]` there; the tutorial reads it.
-    assert "label" in patches[0]
     return {
         "medh5": medh5,
         "np": np,
         "numpy": np,
-        "torch": torch,
         "Path": Path,
-        "DataLoader": DataLoader,
         "Manifest": Manifest,
         "compute_stats": compute_stats,
         "PatchSampler": PatchSampler,
         "TimepointPairSampler": TimepointPairSampler,
-        "PatchDataset": PatchDataset,
-        "PairedPatchDataset": PairedPatchDataset,
-        "VolumeDataset": VolumeDataset,
+        # The loader names, where the job installs torch.  Without them a block
+        # that needs one raises NameError (a fragment) or ImportError (skipped),
+        # which is what the minimum-dependency and Windows jobs should see ---
+        # importing torch to *build* the namespace failed every block instead.
+        **_torch_names(workspace),
         # The sample, under every name the pages give it.
         "s": sample,
         "sample": sample,
@@ -372,16 +396,6 @@ def _namespace(workspace: dict[str, Any], tmp_path: Path) -> dict[str, Any]:
         "z": 4,
         "y": 4,
         "x": 4,
-        "dataset": dataset,
-        "ds": dataset,
-        "item": patches[0],
-        # `patches` on the performance page is a list of patch *meta* dicts, and
-        # `p["used_index"]` is the line that says so.
-        "patches": [patches[i]["meta"]["patch"] for i in range(len(patches))],
-        "dataset_patches": patches,
-        # From the patch loader, so `batch["meta"]["patch"]` is there: the pages
-        # that read it are about patch sampling.
-        "batch": next(iter(DataLoader(patches, batch_size=2))),
         "tmp_path": tmp_path,
         "_writer": writer,
     }
@@ -427,7 +441,10 @@ def test_documented_python_runs(
         # way; the rest of the suite reaches the same conclusion with
         # `importorskip`.  A name removed from *this* package raises
         # `ImportError` too, so only the optional ones are skipped.
-        if "pip install 'medh5[" in str(exc) or getattr(exc, "name", "") in OPTIONAL:
+        named = re.search(r"No module named '([^'.]+)", str(exc))
+        root = str(getattr(exc, "name", "") or "").split(".")[0]
+        missing = root or (named.group(1) if named else "")
+        if "pip install 'medh5[" in str(exc) or missing in OPTIONAL:
             pytest.skip(f"{page.relative_to(DOCS)}:{line}: {exc}")
         raise AssertionError(
             f"{page.relative_to(DOCS)}:{line} does not run: {exc}\n---\n{code}"
