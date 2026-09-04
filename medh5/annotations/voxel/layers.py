@@ -13,21 +13,28 @@ never ``data[l][roi]``, which materialises the whole layer first (spec §14.5).
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
+import h5py
 import numpy as np
 import numpy.typing as npt
 
-from medh5.annotations.base import VoxelAnnotation
+from medh5.annotations.base import AnnotationHeader, VoxelAnnotation
 from medh5.annotations.payload import AnnotationPayload
-from medh5.annotations.voxel.payload import Masks, contains_value, normalize_masks
+from medh5.annotations.voxel.payload import (
+    Masks,
+    contains_value,
+    normalize_masks,
+    value_counts,
+)
 from medh5.annotations.voxel.select import (
     label_dtype_size,
     layers_from_colouring,
 )
 from medh5.errors import MEDH5ValidationError
-from medh5.labels.labelset import IGNORE_ID
+from medh5.geometry.grid import Grid
+from medh5.labels.labelset import IGNORE_ID, LabelSet
 
 
 def encode_layers(
@@ -88,9 +95,54 @@ def encode_layers(
 
 
 class LayersAnnotation(VoxelAnnotation):
-    """Reader for ``kind = "layers"``."""
+    """Reader for ``kind = "layers"``.
 
-    __slots__ = ()
+    The layer table is read once per open annotation and kept.  It is a few
+    hundred bytes, a ``Sample`` is read-only, and ``amend`` replaces the inode
+    rather than editing in place --- so an open reader cannot see it change.
+    Re-reading it per access cost one HDF5 read per class per ``dense()``: 63
+    reads of the same table for a 63-class annotation packed into four layers,
+    which is the whole cliff behind an otherwise cheap multi-class read.
+    """
+
+    __slots__ = ("_layer_table",)
+
+    def __init__(
+        self,
+        ann_id: str,
+        group: h5py.Group,
+        header: AnnotationHeader,
+        grids: Mapping[str, Grid] | None = None,
+        label_set: LabelSet | None = None,
+    ) -> None:
+        super().__init__(ann_id, group, header, grids, label_set)
+        self._layer_table: tuple[npt.NDArray[np.uint16], dict[int, int]] | None = None
+
+    def _table(self) -> tuple[npt.NDArray[np.uint16], dict[int, int]]:
+        """``(layer_class_ids, class id -> layer)``, read once."""
+        if self._layer_table is None:
+            try:
+                table = np.asarray(self.group["layer_class_ids"][...], dtype=np.uint16)
+            except KeyError:
+                raise MEDH5ValidationError(
+                    f"annotation {self.ann_id!r}: `layers` requires `layer_class_ids`",
+                    code="E410",
+                ) from None
+            out: dict[int, int] = {}
+            for layer in range(table.shape[0]):
+                for value in table[layer]:
+                    class_id = int(value)
+                    if class_id == 0:
+                        continue
+                    if class_id in out:
+                        raise MEDH5ValidationError(
+                            f"annotation {self.ann_id!r}: class {class_id} appears "
+                            f"in layers {out[class_id]} and {layer}",
+                            code="E404",
+                        )
+                    out[class_id] = layer
+            self._layer_table = (table, out)
+        return self._layer_table
 
     @property
     def data(self) -> Any:
@@ -104,13 +156,7 @@ class LayersAnnotation(VoxelAnnotation):
 
     @property
     def layer_class_ids(self) -> npt.NDArray[np.uint16]:
-        try:
-            return np.asarray(self.group["layer_class_ids"][...], dtype=np.uint16)
-        except KeyError:
-            raise MEDH5ValidationError(
-                f"annotation {self.ann_id!r}: `layers` requires `layer_class_ids`",
-                code="E410",
-            ) from None
+        return self._table()[0]
 
     @property
     def n_layers(self) -> int:
@@ -119,21 +165,7 @@ class LayersAnnotation(VoxelAnnotation):
     @property
     def layer_of(self) -> dict[int, int]:
         """class id -> layer index.  Every class appears in exactly one layer."""
-        table = self.layer_class_ids
-        out: dict[int, int] = {}
-        for layer in range(table.shape[0]):
-            for value in table[layer]:
-                class_id = int(value)
-                if class_id == 0:
-                    continue
-                if class_id in out:
-                    raise MEDH5ValidationError(
-                        f"annotation {self.ann_id!r}: class {class_id} appears in "
-                        f"layers {out[class_id]} and {layer}",
-                        code="E404",
-                    )
-                out[class_id] = layer
-        return out
+        return self._table()[1]
 
     def layer_classes(self) -> tuple[tuple[int, ...], ...]:
         table = self.layer_class_ids
@@ -185,6 +217,22 @@ class LayersAnnotation(VoxelAnnotation):
         """One layer's labelmap, sliced in a single call (spec §14.5)."""
         window = self._roi(roi)
         return np.asarray(self.data[(layer, *window)])
+
+    def _counts_from_planes(self) -> dict[int, int] | None:
+        """One ``bincount`` per slab per layer; every class appears in one layer.
+
+        Counting is a sum over layers rather than a merge, because a class
+        lives in exactly one of them --- the invariant `_table` enforces.
+        """
+        ids = self.class_ids
+        if not ids:
+            return {}
+        ceiling = max(ids)
+        totals: dict[int, int] = {}
+        for layer in range(self.n_layers):
+            for value, count in value_counts(self.data[layer], ceiling).items():
+                totals[value] = totals.get(value, 0) + count
+        return totals
 
     def _encodes_ignore(self) -> bool:
         """Whether any layer stores the ignore id, read in bounded slabs.

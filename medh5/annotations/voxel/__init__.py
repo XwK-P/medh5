@@ -30,6 +30,7 @@ from medh5.annotations.voxel.select import (
     select_encoding,
 )
 from medh5.annotations.voxel.transcode import (
+    IN_BAND_IGNORE_KINDS,
     annotation_to_masks,
     check_roundtrip,
     encode_masks,
@@ -38,6 +39,7 @@ from medh5.annotations.voxel.transcode import (
     transcode,
     transcode_payload,
 )
+from medh5.errors import MEDH5ValidationError
 
 READERS: dict[str, Any] = {
     "labelmap": LabelmapAnnotation,
@@ -61,12 +63,31 @@ def encode_voxels(
 
     Returns the payload **and** the statistics behind the choice, so a writer can
     report why it picked what it picked (spec §7.6).
+
+    An ``ignore`` region rides in band only under ``labelmap`` and ``layers``.
+    The other encodings express it as a separate ``mask`` annotation (§7.7),
+    which one payload cannot hold, so the choice is refused rather than the
+    region dropped: ``SampleWriter.add_segmentation`` writes the sibling mask
+    for those, and this function --- which returns a payload and nothing
+    else --- has nowhere to put it.
     """
     resolved, shape = normalize_masks(masks, spatial_shape)
     kind, stats = select_encoding(
-        resolved, shape, prefer=None if encoding == "auto" else encoding
+        resolved,
+        shape,
+        prefer=None if encoding == "auto" else encoding,
+        ignore=ignore is not None,
     )
-    if kind in ("labelmap", "layers") and ignore is not None:
+    if ignore is not None:
+        if kind not in IN_BAND_IGNORE_KINDS:
+            raise MEDH5ValidationError(
+                f"encode_voxels: {kind!r} cannot hold an ignore region in band; "
+                "§7.7 puts it in a separate `mask` annotation, which a single "
+                "payload cannot carry. Use SampleWriter.add_segmentation, which "
+                "writes the sibling mask, or choose "
+                f"{' or '.join(map(repr, IN_BAND_IGNORE_KINDS))}.",
+                code="E404",
+            )
         kwargs.setdefault("ignore", ignore)
     payload = encode_masks(resolved, kind, shape, **kwargs)
     return payload, stats
@@ -85,6 +106,7 @@ __all__ = [
     "OverlapStats",
     "ProbmapAnnotation",
     "AnnotationPayload",
+    "IN_BAND_IGNORE_KINDS",
     "analyse",
     "annotation_to_masks",
     "check_roundtrip",

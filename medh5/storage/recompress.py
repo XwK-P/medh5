@@ -29,6 +29,7 @@ import numpy as np
 
 from medh5._hdf5 import atomic_rewrite, open_h5
 from medh5.errors import MEDH5ValidationError
+from medh5.integrity.verify import verify_root
 from medh5.storage.codecs import PROFILES, Role, dataset_kwargs, describe_filters
 
 
@@ -44,12 +45,26 @@ class RecompressResult:
     bytes_after: int = 0
     content_id: str | None = None
     content_id_preserved: bool = True
+    verified: bool = True
+    """Whether the *output* verifies: every object digest, and the root.
+
+    The re-encoded file is read back and checked against the digests it
+    carries.  Without it, ``content_id_preserved`` compared the attribute this
+    function had just copied with itself --- true by construction, including on
+    a file whose bytes were corrupted before it ran, which then reported
+    "content_id yes", exited 0, and failed ``verify()``.
+    """
+    mismatched: list[str] = field(default_factory=list)
     changed: list[tuple[str, str, str]] = field(default_factory=list)
     """``(path, codec before, codec after)`` for each dataset re-encoded."""
 
     @property
     def ratio(self) -> float:
         return self.bytes_after / self.bytes_before if self.bytes_before else 1.0
+
+    @property
+    def ok(self) -> bool:
+        return self.verified and self.content_id_preserved
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -61,6 +76,9 @@ class RecompressResult:
             "ratio": self.ratio,
             "content_id": self.content_id,
             "content_id_preserved": self.content_id_preserved,
+            "verified": self.verified,
+            "mismatched": list(self.mismatched),
+            "ok": self.ok,
             "changed": [list(c) for c in self.changed],
         }
 
@@ -100,14 +118,26 @@ def recompress(
     # Windows refuses when the target is the source.
     with atomic_rewrite(source_path, target) as (src, dst):
         before = src.attrs.get("content_id")
-        for key, value in src.attrs.items():
-            dst.attrs[key] = value
+        # Root attributes are copied by `_copy_group`, which every group goes
+        # through; copying them here as well was a second, identical pass.
         _copy_group(src, dst, profile, rechunk, result)
     result.bytes_after = target.stat().st_size
+    # Verify the *output*, against the digests it carries.  §13.1 says digests
+    # cover decompressed content, so a correct re-encode changes every stored
+    # byte and no digest --- which is a claim worth checking rather than
+    # asserting, and checking it is what makes the preserved `content_id`
+    # evidence about the data instead of about the copy.
     with open_h5(target, "r") as check:
         after = check.attrs.get("content_id")
+        from medh5.sample import attr_name_map_of
+
+        verification = verify_root(check, attr_name_map_of(check))
     result.content_id = None if after is None else str(_text(after))
-    result.content_id_preserved = _text(before) == _text(after)
+    result.mismatched = [*verification.mismatched, *verification.malformed]
+    result.verified = verification.ok
+    result.content_id_preserved = (
+        _text(before) == _text(after) and verification.content_id_ok is not False
+    )
     return result
 
 

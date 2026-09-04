@@ -438,8 +438,19 @@ class TestNifti:
         assert np.allclose(convert_world(AFFINE, source="RAS", target="RAS"), AFFINE)
         with pytest.raises(MEDH5ValidationError, match="coordinate system"):
             convert_world(AFFINE, source="RAS", target="quaternionic")
-        with pytest.raises(MEDH5ValidationError, match="3-D"):
-            convert_world(np.eye(3), source="RAS", target="LPS")
+        with pytest.raises(MEDH5ValidationError, match="2-D and 3-D"):
+            convert_world(np.eye(5), source="RAS", target="LPS")
+
+    def test_S3_6_convert_world_handles_a_2D_affine(self):
+        """§3.6 gives a 2-D grid a 3x3 affine, and both exporters convert one.
+
+        Refusing it here is why no 2-D sample could be exported at all: the
+        importers take a radiograph and the exporters stopped on its affine.
+        """
+        plane = np.array([[0.8, 0.0, -1.0], [0.0, 0.9, -2.0], [0.0, 0.0, 1.0]])
+        there = convert_world(plane, source="RAS", target="LPS")
+        assert np.allclose(there[:2, 2], [1.0, 2.0])
+        assert np.allclose(convert_world(there, source="LPS", target="RAS"), plane)
 
     def test_read_nifti_reports_units_and_header(self, volumes):
         _, geometry = read_nifti(volumes["ct"])

@@ -13,6 +13,7 @@ A transform relates two **frames**, and a timepoint has a frame only because
 its grids say so. Set `frame_uid` when you write the grids, and use those same
 values on the transform:
 
+<!-- illustrative -->
 ```python
 w.add_grid("ct_tp0", shape=..., spacing=..., timepoint="tp0",
            frame_uid="pseudo:frame-tp0")

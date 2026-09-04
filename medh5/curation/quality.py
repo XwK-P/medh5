@@ -11,7 +11,20 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from medh5.document_fields import check_known
 from medh5.errors import MEDH5ValidationError
+
+QUALITY_FIELDS = frozenset(
+    {
+        "status",
+        "confidence",
+        "reviewed_by",
+        "agreement",
+        "issues",
+        "edit_effort_s",
+    }
+)
+"""The schema's `qualityRecord` properties; the object is closed."""
 
 QUALITY_STATUS = (
     "draft",
@@ -99,7 +112,6 @@ class QualityRecord:
     agreement: tuple[Agreement, ...] = ()
     issues: tuple[Issue, ...] = ()
     edit_effort_s: float | None = None
-    extra: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.status not in QUALITY_STATUS:
@@ -127,19 +139,11 @@ class QualityRecord:
             out["issues"] = [i.to_json() for i in self.issues]
         if self.edit_effort_s is not None:
             out["edit_effort_s"] = float(self.edit_effort_s)
-        out.update(self.extra)
         return out
 
     @classmethod
     def from_json(cls, doc: Mapping[str, Any]) -> QualityRecord:
-        known = {
-            "status",
-            "confidence",
-            "reviewed_by",
-            "agreement",
-            "issues",
-            "edit_effort_s",
-        }
+        check_known(doc, QUALITY_FIELDS, what="quality record")
         return cls(
             status=str(doc["status"]),
             confidence=doc.get("confidence"),
@@ -156,7 +160,6 @@ class QualityRecord:
                 for i in doc.get("issues") or ()
             ),
             edit_effort_s=doc.get("edit_effort_s"),
-            extra={k: v for k, v in doc.items() if k not in known},
         )
 
 
@@ -186,6 +189,7 @@ def dice_agreement(
 
 __all__ = [
     "ISSUE_SEVERITY",
+    "QUALITY_FIELDS",
     "QUALITY_STATUS",
     "Agreement",
     "Issue",

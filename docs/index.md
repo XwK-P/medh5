@@ -31,7 +31,7 @@ twenty minutes, start to finish, then
 [Migrate from 0.x](guides/migrate-0x.md)
 
 **Writing your own reader?** [The specification](spec/medh5-1.0.md) is
-normative, the [conformance suite](spec/conformance.md) is 115 cases you can run
+normative, the [conformance suite](spec/conformance.md) is 116 cases you can run
 against your implementation, and the
 [diagnostic codes](reference/diagnostic-codes.md) are the stable contract
 between the two.
@@ -60,7 +60,7 @@ signal from a class nobody examined. See
 
 **Every claim is checkable.** Per-object SHA-256 over decompressed content and a
 Merkle `content_id` that survives recompression; a validator with a
-[stable diagnostic-code table](reference/diagnostic-codes.md); and a 115-case
+[stable diagnostic-code table](reference/diagnostic-codes.md); and a 116-case
 conformance corpus, one case per code, that any implementation can run.
 
 **Reading a patch is fast.** A 64³ multi-class patch reads in ~4 ms, against

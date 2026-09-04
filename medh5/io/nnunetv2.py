@@ -355,6 +355,10 @@ def to_nnunetv2(
                     sample.images[image_id].read(),
                     root / "imagesTr" / f"{case}_{index:04d}{file_ending}",
                     image_id,
+                    rescale=sample.images[image_id].rescale,
+                )
+                log.outputs.append(
+                    str(root / "imagesTr" / f"{case}_{index:04d}{file_ending}")
                 )
             if annotation in sample.annotations:
                 ann = sample.annotations[annotation]
@@ -366,7 +370,11 @@ def to_nnunetv2(
                     root / "labelsTr" / f"{case}{file_ending}",
                     None,
                 )
-        log.outputs.append(str(root / "labelsTr" / f"{case}{file_ending}"))
+                # Listed only when written.  A sample without the annotation
+                # produced no label file and the report named one anyway, so a
+                # caller checking `outputs` for what to ship was told about a
+                # path that did not exist.
+                log.outputs.append(str(root / "labelsTr" / f"{case}{file_ending}"))
 
     document = dict(stashed) if stashed else {}
     document.update(
@@ -458,27 +466,27 @@ def _resolve_or_none(ann: Any, name: str) -> int | None:
 
 
 def _save(
-    nib: Any, sample: Any, array: npt.NDArray[Any], path: Path, image: str | None
+    nib: Any,
+    sample: Any,
+    array: npt.NDArray[Any],
+    path: Path,
+    image: str | None,
+    *,
+    rescale: tuple[float, float] | None = None,
 ) -> None:
-    from medh5.geometry.affine import build_affine, decompose_affine
-    from medh5.io.nifti import convert_world
+    """Write one channel or label volume, through the one NIfTI writer.
+
+    *rescale* is the image's §4.2 scale.  ``Image.read()`` returns **stored**
+    values, so writing them with no ``scl_slope``/``scl_inter`` handed nnU-Net
+    a CT 1024 HU off its own units, in the exporter's default path, with
+    nothing in ``dataset.json`` or the report to say so.
+    """
+    del nib  # every write goes through `write_nifti`, which requires nibabel
+    from medh5.io.nifti import for_export, write_nifti
 
     grid = sample.images[image].grid if image else sample.reference_grid
-    affine = convert_world(grid.affine, source=grid.coord_system, target="RAS")
-    spacing, origin, direction = decompose_affine(affine)
-    data = np.asarray(array)
-    if data.ndim >= 3:
-        flip = tuple(reversed(range(data.ndim - 3, data.ndim)))
-        data = np.transpose(data, tuple(range(data.ndim - 3)) + flip)
-        index = [f - (data.ndim - 3) for f in flip]
-        spacing = spacing[index]
-        direction = direction[:, index]
-    nib.save(
-        nib.Nifti1Image(
-            np.ascontiguousarray(data), build_affine(spacing, origin, direction)
-        ),
-        str(path),
-    )
+    data, affine = for_export(grid, np.asarray(array))
+    write_nifti(data, affine, path, rescale=rescale)
 
 
 __all__ = [

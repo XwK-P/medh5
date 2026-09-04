@@ -579,12 +579,32 @@ class VoxelAnnotation(Annotation):
     def voxel_counts(
         self, classes: Sequence[int | str] | None = None
     ) -> dict[int, int]:
-        """Foreground voxel count per class, over the whole grid."""
+        """Foreground voxel count per class, over the whole grid.
+
+        The generic path decodes one class at a time, which for a dense
+        encoding is a full pass over the volume per class.  ``labelmap`` and
+        ``layers`` answer every class from one ``bincount`` per plane, and
+        ``bitmask`` from one ``popcount``; each overrides
+        :meth:`_counts_from_planes` and this stays the fallback for the
+        encodings where per-class really is the only way.  ``build_index`` and
+        the unindexed path of ``dataset stats`` both come through here.
+        """
         ids = self.resolve_classes(classes)
+        counted = self._counts_from_planes()
+        if counted is not None:
+            return {class_id: int(counted.get(class_id, 0)) for class_id in ids}
         window = self._roi(None)
         return {
             class_id: int(self._dense_class(class_id, window).sum()) for class_id in ids
         }
+
+    def _counts_from_planes(self) -> dict[int, int] | None:
+        """Every class's voxel count in one pass, where the encoding allows it.
+
+        ``None`` means "no such pass exists here", and :meth:`voxel_counts`
+        falls back to decoding per class.
+        """
+        return None
 
     def class_bboxes(
         self, classes: Sequence[int | str] | None = None

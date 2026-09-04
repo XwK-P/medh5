@@ -55,6 +55,7 @@ from medh5.annotations.geometric import (
     encode_points,
 )
 from medh5.annotations.voxel import (
+    IN_BAND_IGNORE_KINDS,
     AnnotationPayload,
     InstanceInput,
     OverlapStats,
@@ -305,8 +306,19 @@ class SampleWriter:
     def _agent(
         self, agent_type: str, name: str, agent_id: str | None = None, **fields: Any
     ) -> Agent:
+        """Declare an agent; an explicit id must be free, an automatic one is.
+
+        Automatic ids are ``<type initial><n>``, which is exactly the id a
+        caller who named one node explicitly is likely to have used, so the
+        counter skips every taken id rather than colliding with it.  An
+        explicit duplicate is refused by :meth:`Provenance.add_agent`.
+        """
         prov = self._document.provenance
-        agent_id = agent_id or f"{agent_type[0]}{len(prov.agents) + 1}"
+        if agent_id is None:
+            n = len(prov.agents) + 1
+            while prov.has_agent(f"{agent_type[0]}{n}"):
+                n += 1
+            agent_id = f"{agent_type[0]}{n}"
         return prov.add_agent(Agent(id=agent_id, type=agent_type, name=name, **fields))
 
     def activity(
@@ -317,8 +329,13 @@ class SampleWriter:
         activity_id: str | None = None,
         **fields: Any,
     ) -> Activity:
+        """Record an activity.  See :meth:`_agent` for how ids are minted."""
         prov = self._document.provenance
-        activity_id = activity_id or f"act_{activity_type}_{len(prov.activities) + 1}"
+        if activity_id is None:
+            n = len(prov.activities) + 1
+            while prov.has_activity(f"act_{activity_type}_{n}"):
+                n += 1
+            activity_id = f"act_{activity_type}_{n}"
         agent_id = agent.id if isinstance(agent, Agent) else agent
         return prov.add_activity(
             Activity(id=activity_id, type=activity_type, agent=agent_id, **fields)
@@ -682,6 +699,28 @@ class SampleWriter:
         sequence claims exactly what the annotator looked for.  ``threshold``
         declares the probability at or above which a voxel contains a class
         (§7.5); it applies to ``probabilities=`` and nothing else.
+
+        ``ignore`` is a boolean array over the grid marking voxels nobody
+        examined, which must not be read as background for any annotated class
+        (§7.7).  Where it ends up depends on the encoding written, and the
+        caller does not have to know which:
+
+        * ``labelmap`` and ``layers`` hold it in band, as the reserved id
+          ``65535`` in the data; ``ignore_mask()`` on the reader returns it.
+        * ``bitmask``, ``instances`` and ``probmap`` cannot hold a reserved id,
+          so the region is written as a sibling ``mask`` annotation named
+          ``<ann_id>_ignore`` --- same grid, same ``prov``, ``task="other"`` ---
+          and this annotation's ``ignore_mask`` attribute names it.
+
+        Either way ``has_ignore_region`` is true on the result and the region
+        reads back equal to the array given.  With ``encoding="auto"`` the
+        region is part of the measurement: an in-band ignore forces ``uint16``
+        planes, so the cost model sees it before choosing.
+
+        ``ignore_mask`` names a ``mask`` annotation the caller wrote (or will
+        write) themselves, for the case where one region serves several
+        annotations.  Passing both is refused: two sources of the same fact
+        cannot be kept in agreement.
         """
         target = self._grid(grid)
         if threshold is not None and probabilities is None:
@@ -689,16 +728,42 @@ class SampleWriter:
                 f"annotation {ann_id!r}: threshold= applies to probabilities= only",
                 code="E404",
             )
+        if ignore is not None and ignore_mask is not None:
+            raise MEDH5ValidationError(
+                f"annotation {ann_id!r}: pass ignore= (an array this writer stores) "
+                "or ignore_mask= (a `mask` annotation you wrote), not both",
+                code="E404",
+            )
+        ignore_array: npt.NDArray[np.bool_] | None = None
+        if ignore is not None:
+            ignore_array = np.asarray(ignore, dtype=bool)
+            if ignore_array.shape != target.spatial_shape:
+                raise MEDH5ValidationError(
+                    f"annotation {ann_id!r}: ignore has shape {ignore_array.shape}; "
+                    f"grid {grid!r} spatial shape is {target.spatial_shape}",
+                    code="E405",
+                )
         payload, stats, class_ids = self._encode_segmentation(
             masks,
             probabilities,
             instances,
             target,
             encoding,
-            ignore,
+            ignore_array,
             self._named_classes(annotated_classes),
             threshold=threshold,
         )
+        sibling: str | None = None
+        if ignore_array is not None and payload.kind not in IN_BAND_IGNORE_KINDS:
+            # §7.7: the region lives in a separate `mask` annotation.  Both ids
+            # are checked before either is written, so a refusal leaves nothing
+            # half-done in the file.
+            sibling = f"{ann_id}_ignore"
+            validate_id(sibling, what="annotation id")
+            for taken in (ann_id, sibling):
+                if taken in self._file["annotations"]:
+                    raise MEDH5ValidationError(f"annotation {taken!r} already exists")
+            ignore_mask = sibling
         annotated = self._resolve_annotated(annotated_classes, class_ids)
         header = AnnotationHeader(
             kind=payload.kind,
@@ -715,6 +780,8 @@ class SampleWriter:
             extra=dict(payload.attrs),
         )
         self._write_annotation(ann_id, header, payload, target, codec)
+        if sibling is not None and ignore_array is not None:
+            self.add_mask(sibling, ignore_array, grid=grid, prov=prov, codec=codec)
         return payload.kind, stats
 
     def _encode_segmentation(
@@ -763,11 +830,16 @@ class SampleWriter:
             given.setdefault(class_id, np.zeros(grid.spatial_shape, dtype=bool))
         resolved_masks, shape = normalize_masks(given, grid.spatial_shape)
         kind, stats = select_encoding(
-            resolved_masks, shape, prefer=None if encoding == "auto" else encoding
+            resolved_masks,
+            shape,
+            prefer=None if encoding == "auto" else encoding,
+            ignore=ignore is not None,
         )
         kwargs: dict[str, Any] = {}
-        if ignore is not None and kind in ("labelmap", "layers"):
+        if ignore is not None and kind in IN_BAND_IGNORE_KINDS:
             kwargs["ignore"] = ignore
+        # Any other kind gets the region as a sibling `mask`, written by
+        # `add_segmentation` once the payload's kind is known (§7.7).
         payload = encode_masks(resolved_masks, kind, shape, **kwargs)
         return payload, stats, payload.class_ids
 
@@ -1810,7 +1882,16 @@ class SampleWriter:
             )
 
     def commit(self, *, digests: bool = True) -> str | None:
-        """Validate, write ``/meta``, stamp digests and atomically replace."""
+        """Validate, write ``/meta``, stamp digests and atomically replace.
+
+        ``digests=False`` stamps only the datasets that do not already carry a
+        digest --- on an amend, the ones this writer added, since the rest came
+        through the copy with theirs intact --- and **always** computes
+        ``content_id``.  The root address is what makes a file citable (§13.2),
+        and it used to be dropped entirely under this flag, so an amend that
+        skipped digests for speed turned an addressed file into an unaddressed
+        one and every cache keyed on it missed.
+        """
         from medh5.integrity.digest import compute_content_id, stamp_digests
 
         if self._committed:
@@ -1839,11 +1920,9 @@ class SampleWriter:
                 "digest_algo": "sha256",
             },
         )
-        content_id: str | None = None
-        if digests:
-            stamp_digests(self._file)
-            content_id = compute_content_id(self._file, attr_name_map_of(self._file))
-            self._file.attrs["content_id"] = content_id
+        stamp_digests(self._file, only_missing=not digests)
+        content_id = compute_content_id(self._file, attr_name_map_of(self._file))
+        self._file.attrs["content_id"] = content_id
         self._committed = True
         self._stack.close()
         return content_id

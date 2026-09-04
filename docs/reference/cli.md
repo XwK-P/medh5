@@ -13,15 +13,21 @@ writes a machine-readable document to stdout.
 ### `medh5 info`
 
 ```
-medh5 info PATH [--json]
+medh5 info PATH [--key K] [--json]
 ```
 
 Grids, images, annotations, coverage, quality, codecs and content id.
 
+**Collections.** `info`, `tree`, `verify`, `timeline` and `track` all take a
+`.medh5c` shard with `--key`, which names one sample inside it — a member of a
+shard is a sample root, so every per-sample view works on one. `info` and
+`tree` without a key describe the shard itself; the commands that report on one
+sample ask for a key and list the ones available.
+
 ### `medh5 tree`
 
 ```
-medh5 tree PATH [--json]
+medh5 tree PATH [--key K] [--json]
 ```
 
 An annotated object listing — `h5ls` with each object's role in the spec.
@@ -46,7 +52,7 @@ case.medh5: FAILED [strict] profiles=core,seg (1 errors, 0 warnings)
 ### `medh5 verify`
 
 ```
-medh5 verify PATH... [--partial OBJ] [--json]
+medh5 verify PATH... [--key K] [--partial OBJ] [--json]
 ```
 
 Recompute every object's digest and the root `content_id`. `--partial` limits
@@ -73,7 +79,7 @@ fact that the tool did not verify the content it just re-attested.
 ### `medh5 timeline`
 
 ```
-medh5 timeline PATH [--json]
+medh5 timeline PATH [--key K] [--json]
 ```
 
 Timepoints, their intervals, and what belongs to each visit.
@@ -105,7 +111,7 @@ medh5 seg convert PATH ANNOTATION --to KIND [--dry-run] [--json]
 ```
 
 Losslessly re-encode a voxel annotation: `labelmap`, `layers`, `bitmask`,
-`instances`. `--dry-run` prints the size change without writing.
+`instances`, `probmap`. `--dry-run` prints the size change without writing.
 
 ### `medh5 index build`
 
@@ -165,11 +171,18 @@ medh5 scrub PATH... [--profile basic|strict] [--apply] [--date-shift-days N] [--
 Find identifiers in the container. Without `--apply` nothing is written and the
 exit code is 1 if anything was found, so it works as a pipeline gate.
 
-`--apply` removes identifying attributes, pseudonymises UIDs (so files still
-join on a shared frame of reference), shifts or drops dates, and writes a §11.4
+`--apply` removes identifying attributes wherever the scan reports them —
+`extra`, `acquisition`, `identity.extra`, `cohort`, activity parameters and
+tools, and quality issue notes — pseudonymises UIDs (so files still join on a
+shared frame of reference), shifts or drops dates, and writes a §11.4
 de-identification record saying **what was and was not checked**. It does not
 look at pixels: burned-in text and identifiable anatomy are outside its reach,
 and the record it writes says so rather than claiming a clean file.
+
+**`--apply` re-scans what it wrote**, records the result in the
+de-identification activity's parameters, and **exits non-zero if anything
+actionable is left**. An apply that exits 0 is a file the same rules now find
+nothing to fix in.
 
 ```
 $ medh5 scrub out/*.medh5 --apply --date-shift-days -117 --by RAD-07
@@ -318,6 +331,11 @@ medh5 recompress PATH --profile P --out FILE [--rechunk] [--json]
 Re-encode bulk data under `training`, `balanced`, `archive` or `portable`.
 Every stored byte changes; no `content_id` does, because the digest is over
 content and not over its encoding.
+
+The output is **verified** against the digests it carries before the command
+returns, and the exit code follows: a file whose bytes had already been
+corrupted before you re-encoded it now fails here rather than reporting a
+preserved `content_id` and exiting 0.
 
 ### `medh5 bench`
 

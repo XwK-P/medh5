@@ -29,7 +29,7 @@ CHECK_CODES = {
     "C102": "a class id means different things in different label sets",
     "C103": "a sample declares no label set",
     "C201": "a split claim's manifest digest is not this manifest's",
-    "C202": "one subject's samples claim different partitions of one split",
+    "C202": "one grouping key's samples claim different partitions of one split",
     "C203": "a sample carries no split claim",
     "C204": "a group holds part of a subject, so the split is not subject-safe",
     "C301": "a class is examined in only part of the cohort",
@@ -182,7 +182,13 @@ def _splits(manifest: Manifest, report: CohortReport, *, set_id: str | None) -> 
     digest = manifest.sha256()
     stale: list[str] = []
     unclaimed: list[str] = []
-    by_subject: dict[str, dict[str, set[str]]] = {}
+    # Grouped by the §12.2 grouping key --- `cohort.group_id` where the cohort
+    # sets one, else `subject_id` --- which is what `medh5 splits` audits and
+    # what `medh5.dataset.split` assigns by.  Grouping by subject alone meant a
+    # family or a longitudinal group straddling two partitions was a LEAK in
+    # one tool and clean in the other, on the same files.
+    by_group: dict[str, dict[str, set[str]]] = {}
+    subjects: dict[str, set[str]] = {}
     for entry in manifest:
         claims = [
             c for c in entry.splits if set_id is None or c.get("set_id") == set_id
@@ -194,10 +200,11 @@ def _splits(manifest: Manifest, report: CohortReport, *, set_id: str | None) -> 
             recorded = claim.get("manifest_sha256")
             if recorded is not None and recorded != digest:
                 stale.append(entry.path)
-            bucket = by_subject.setdefault(entry.subject_id, {})
+            bucket = by_group.setdefault(entry.group_id, {})
             bucket.setdefault(str(claim.get("set_id")), set()).add(
                 str(claim.get("partition"))
             )
+            subjects.setdefault(entry.group_id, set()).add(entry.subject_id)
     if stale:
         report.add(
             "C201",
@@ -214,8 +221,8 @@ def _splits(manifest: Manifest, report: CohortReport, *, set_id: str | None) -> 
             unclaimed,
         )
     leaking = sorted(
-        subject
-        for subject, sets in by_subject.items()
+        group
+        for group, sets in by_group.items()
         for partitions in sets.values()
         if len(partitions) > 1
     )
@@ -223,8 +230,13 @@ def _splits(manifest: Manifest, report: CohortReport, *, set_id: str | None) -> 
         report.add(
             "C202",
             "error",
-            f"{len(leaking)} subject(s) appear in more than one partition of the "
-            "same split --- this leaks anatomy between train and test",
+            f"{len(leaking)} grouping key(s) appear in more than one partition of "
+            "the same split --- this leaks anatomy between train and test. "
+            "Subjects involved: "
+            + "; ".join(
+                f"{group} ({', '.join(sorted(subjects.get(group, ())))})"
+                for group in leaking[:3]
+            ),
             leaking,
         )
 

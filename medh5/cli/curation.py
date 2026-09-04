@@ -430,7 +430,9 @@ def _scrub(args: argparse.Namespace) -> int:
                 )
     emit(reports, as_json=args.json)
     # A scrub that only looked reports findings as a failure, so it is usable in
-    # a pipeline gate.  A scrub that acted succeeds if it acted.
-    if args.apply_changes:
-        return EXIT_OK
-    return EXIT_OK if all(not r["findings"] for r in reports) else EXIT_ERROR
+    # a pipeline gate.  A scrub that *acted* used to succeed merely for having
+    # acted --- so a file whose patient name the tool had flagged and left in
+    # place exited 0 carrying a fresh de-identification record.  Both forms now
+    # report the state of the file: `ok` is "nothing found" for a scan and
+    # "nothing actionable left, by re-scanning what was written" for an apply.
+    return EXIT_OK if all(r["ok"] for r in reports) else EXIT_ERROR

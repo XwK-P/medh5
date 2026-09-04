@@ -53,6 +53,7 @@ crop = s.images["CT"].read(b.as_slices()[0])     # exactly the boxed voxels
 The common radiology annotation is 2-D on a plane of a 3-D study: a box with a
 degenerate axis (`lo == hi`) plus `slice_index`:
 
+<!-- illustrative -->
 ```python
 w.add_boxes("lesions", boxes, class_ids=["lesion"], grid="ct",
             space="index", slice_index=[37, 41])

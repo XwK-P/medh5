@@ -153,7 +153,7 @@ jobs:
 
   conformance:
     # The corpus is a shipped artifact, not a test fixture: a third-party
-    # implementation runs the same 115 cases, and is scored the same way.
+    # implementation runs the same 116 cases, and is scored the same way.
     # Running it here through `publish` + `score` exercises the public path
     # rather than the in-process one.
     runs-on: ubuntu-latest
@@ -172,7 +172,7 @@ jobs:
           results = []
           for case in manifest["cases"]:
               # No `check=True`: `validate` exits non-zero for a file with
-              # errors, and 76 of the 115 cases are deliberately invalid. The
+              # errors, and 76 of the 116 cases are deliberately invalid. The
               # exit code is the answer, not a failure.
               out = subprocess.run(
                   ["medh5", "validate", f"suite/{case['file']}",

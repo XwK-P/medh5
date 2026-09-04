@@ -45,12 +45,32 @@ def require_highdicom() -> Any:
     return require("highdicom", extra="dicomseg", purpose="writing DICOM SEG")
 
 
-def read_dicom_seg(
+SLICE_TOLERANCE = 0.25
+"""How far off a slice centre a frame may sit and still be that slice.
+
+A quarter of a slice: comfortably inside the rounding and floating-point error
+of an ``ImagePositionPatient``, and far enough from half a slice that a frame
+lying *between* two slices is refused rather than assigned to one.
+"""
+
+
+def read_dicom_seg_frames(
     path: str | os.PathLike[str],
-    *,
-    report: ConversionReport | None = None,
-) -> tuple[dict[int, npt.NDArray[Any]], dict[str, Any]]:
-    """A SEG file as ``{segment number: volume}`` plus its geometry and segments."""
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Every frame of a SEG, each with the segment and the position it carries.
+
+    The lower-level half of :func:`read_dicom_seg`, and what an import wants.
+    A SEG stores one frame per (segment, source slice) and **need not store
+    the empty ones**: ``omit_empty_frames=True`` is highdicom's default and
+    the common form in the wild, so a file segmenting two slices of an
+    eight-slice series has two frames --- and a volume assembled from the
+    frames present is a two-slice volume whose through-plane spacing is the
+    distance between those two slices.  That is not a smaller reconstruction
+    of the study, it is the study with its gaps closed up, and comparing its
+    shape to the grid refused an ordinary file for a reason that was not true.
+    Frames carry their own ``ImagePositionPatient``, so :func:`place_frames`
+    puts each one where it belongs instead.
+    """
     from medh5.io.dicom import require_pydicom
 
     pydicom = require_pydicom()
@@ -61,32 +81,32 @@ def read_dicom_seg(
             "not 'SEG'"
         )
     segments = _segments(dataset)
-    frames = np.asarray(dataset.pixel_array)
-    if frames.ndim == 2:
-        frames = frames[None]
+    pixels = np.asarray(dataset.pixel_array)
+    if pixels.ndim == 2:
+        pixels = pixels[None]
     rows, columns = int(dataset.Rows), int(dataset.Columns)
-    placement = _frame_placement(dataset, frames.shape[0])
-    depth = len(placement["planes"])
+    placement = _frame_placement(dataset, pixels.shape[0])
     fractional = getattr(dataset, "SegmentationType", BINARY) == FRACTIONAL
     scale = float(getattr(dataset, "MaximumFractionalValue", 255) or 255)
 
-    volumes: dict[int, npt.NDArray[Any]] = {
-        number: np.zeros(
-            (depth, rows, columns), dtype=np.float32 if fractional else bool
-        )
-        for number in segments
-    }
-    for index in range(frames.shape[0]):
-        segment = placement["segments"][index]
-        plane = placement["indices"][index]
-        if segment not in volumes:
-            continue
-        frame = frames[index]
-        volumes[segment][plane] = (
-            frame.astype(np.float32) / scale if fractional else frame.astype(bool)
-        )
-    geometry = {
-        "shape": (depth, rows, columns),
+    frames = [
+        {
+            "index": index,
+            "segment": placement["segments"][index],
+            "position": placement["positions"][index],
+            "plane": placement["indices"][index],
+            "data": (
+                pixels[index].astype(np.float32) / scale
+                if fractional
+                else pixels[index].astype(bool)
+            ),
+        }
+        for index in range(pixels.shape[0])
+    ]
+    geometry: dict[str, Any] = {
+        "shape": (len(placement["planes"]), rows, columns),
+        "rows": rows,
+        "columns": columns,
         "spacing": placement["spacing"],
         "origin": placement["origin"],
         "direction": placement["direction"],
@@ -96,7 +116,92 @@ def read_dicom_seg(
         "segments": segments,
         "fractional": fractional,
         "source_series": placement["source_series"],
+        "planes": placement["planes"],
+        "frames": len(frames),
+        "scale": scale,
     }
+    return frames, geometry
+
+
+def place_frames(
+    frames: Sequence[Mapping[str, Any]],
+    geometry: Mapping[str, Any],
+    grid: Any,
+) -> dict[int, npt.NDArray[Any]]:
+    """Put each frame on the slice of *grid* that its position names (§3.3).
+
+    Shape agreement becomes a question about rows and columns, which a SEG and
+    its source series must share, and never about depth, which a SEG with
+    omitted frames does not have.  A frame whose position is not a slice of
+    this grid is refused **by name** rather than force-fitted: it is either a
+    different reconstruction or a different series, and both are answers the
+    caller has to act on.
+    """
+    shape = tuple(grid.spatial_shape)
+    if len(shape) != 3:
+        raise MEDH5ValidationError(
+            f"grid {grid.grid_id!r} has {len(shape)} spatial axes; a DICOM SEG "
+            "is placed into a 3-D grid",
+            code="E405",
+        )
+    if shape[1:] != (int(geometry["rows"]), int(geometry["columns"])):
+        raise MEDH5ValidationError(
+            f"the SEG's frames are {geometry['rows']}x{geometry['columns']} but "
+            f"grid {grid.grid_id!r} is {shape[1]}x{shape[2]} in plane; it was "
+            "drawn on a different reconstruction",
+            code="E405",
+        )
+    dtype = np.float32 if geometry["fractional"] else bool
+    volumes: dict[int, npt.NDArray[Any]] = {
+        number: np.zeros(shape, dtype=dtype) for number in geometry["segments"]
+    }
+    for frame in frames:
+        segment = int(frame["segment"])
+        if segment not in volumes:
+            continue
+        index = np.asarray(grid.world_to_index(frame["position"]), dtype=np.float64)
+        position = float(index.reshape(-1)[0])
+        nearest = int(np.round(position))
+        if abs(position - nearest) > SLICE_TOLERANCE or not 0 <= nearest < shape[0]:
+            raise MEDH5ValidationError(
+                f"SEG frame {frame['index']} (segment {segment}) sits at index "
+                f"{position:.3f} along grid {grid.grid_id!r}'s first axis, which "
+                "is not one of its slices; the segmentation was drawn on a "
+                "different reconstruction",
+                code="E405",
+            )
+        volumes[segment][nearest] = frame["data"]
+    return volumes
+
+
+def read_dicom_seg(
+    path: str | os.PathLike[str],
+    *,
+    report: ConversionReport | None = None,
+) -> tuple[dict[int, npt.NDArray[Any]], dict[str, Any]]:
+    """A SEG file as ``{segment number: volume}`` plus its geometry and segments.
+
+    The volume spans the planes the file carries, which is what a reader with
+    no other information can honestly build.  An import into an existing
+    sample goes through :func:`read_dicom_seg_frames` and :func:`place_frames`
+    instead, because the grid it is going onto is what knows how many slices
+    the study has.
+    """
+    frames, geometry = read_dicom_seg_frames(path)
+    segments = geometry["segments"]
+    depth, rows, columns = geometry["shape"]
+    volumes: dict[int, npt.NDArray[Any]] = {
+        number: np.zeros(
+            (depth, rows, columns),
+            dtype=np.float32 if geometry["fractional"] else bool,
+        )
+        for number in segments
+    }
+    for frame in frames:
+        if frame["segment"] in volumes:
+            volumes[frame["segment"]][frame["plane"]] = frame["data"]
+    fractional = geometry["fractional"]
+    scale = float(geometry.get("scale", 255))
     if report is not None:
         report.decision(
             "segments",
@@ -157,6 +262,11 @@ def _frame_placement(dataset: Any, n_frames: int) -> dict[str, Any]:
         "planes": planes,
         "indices": indices,
         "segments": segments,
+        # Each frame's own `ImagePositionPatient`, kept rather than collapsed
+        # into a plane index: placing a frame on the grid it is being imported
+        # onto needs the position, and the index is only meaningful among the
+        # planes this file happens to carry.
+        "positions": positions,
         "spacing": spacing,
         "origin": [float(v) for v in positions[origin_index]],
         "direction": [
@@ -249,20 +359,38 @@ def from_dicom_seg(
 
     log = report or ConversionReport(converter="from-dicom-seg")
     log.source = os.fspath(path)
-    volumes, geometry = read_dicom_seg(path, report=log)
+    frames, geometry = read_dicom_seg_frames(path)
 
     with medh5.open(sample) as opened:
         grid_id = grid or _match_grid(opened, geometry, log)
         target = opened.grids[grid_id]
         existing = opened.label_set
-    if tuple(geometry["shape"]) != tuple(target.spatial_shape):
-        raise MEDH5ValidationError(
-            f"the SEG is {geometry['shape']} but grid {grid_id!r} is "
-            f"{target.spatial_shape}; it was drawn on a different reconstruction",
-            code="E405",
+    # Placed by position, not reshaped by count: a SEG that omits its empty
+    # frames covers only the slices it labels, and the grid is what says how
+    # many slices the study has (§3.3).
+    volumes = place_frames(frames, geometry, target)
+    log.decision(
+        "frames",
+        f"{len(frames)} frame(s) were placed on grid {grid_id!r} by "
+        "ImagePositionPatient; a SEG may omit its empty frames and store the "
+        "rest in any order",
+        {"frames": len(frames), "slices": int(target.spatial_shape[0])},
+    )
+    if geometry["fractional"]:
+        log.decision(
+            "fractional",
+            "SegmentationType is FRACTIONAL, so the segments became a "
+            "`probmap` rather than being thresholded",
+            {"scale": geometry["scale"]},
         )
 
     segments = geometry["segments"]
+    log.decision(
+        "segments",
+        f"{len(segments)} segment(s) were read by frame geometry, not by "
+        "frame order; a SEG may store its frames in any order",
+        {"segments": {k: v["label"] for k, v in segments.items()}},
+    )
     label_set = existing
     if label_set is not None:
         # DICOM segment numbers are positional --- a SEG numbers its segments
@@ -385,6 +513,20 @@ def _key(label: str) -> str:
     return sanitize_key(label, fallback="segment")
 
 
+def _in_plane_match(grid: Any, geometry: Mapping[str, Any]) -> bool:
+    """Whether a grid's rows and columns are the SEG's.
+
+    Depth is deliberately not compared: a SEG that omits its empty frames has
+    fewer planes than the series it was drawn on, and matching on the full
+    shape rejected exactly the grid it belonged to.
+    """
+    shape = tuple(grid.spatial_shape)
+    return len(shape) == 3 and shape[1:] == (
+        int(geometry["rows"]),
+        int(geometry["columns"]),
+    )
+
+
 def _match_grid(sample: Any, geometry: Mapping[str, Any], log: ConversionReport) -> str:
     """Pick the grid the SEG was drawn on, by frame of reference then by shape."""
     frame = geometry.get("frame_uid")
@@ -393,12 +535,10 @@ def _match_grid(sample: Any, geometry: Mapping[str, Any], log: ConversionReport)
         if len(matches) == 1:
             return str(matches[0].grid_id)
         if len(matches) > 1:
-            same = [g for g in matches if g.spatial_shape == tuple(geometry["shape"])]
+            same = [g for g in matches if _in_plane_match(g, geometry)]
             if len(same) == 1:
                 return str(same[0].grid_id)
-    candidates = [
-        g for g in sample.grids.values() if g.spatial_shape == tuple(geometry["shape"])
-    ]
+    candidates = [g for g in sample.grids.values() if _in_plane_match(g, geometry)]
     if len(candidates) == 1:
         log.guess(
             "grid",
@@ -409,8 +549,8 @@ def _match_grid(sample: Any, geometry: Mapping[str, Any], log: ConversionReport)
         return str(candidates[0].grid_id)
     raise MEDH5ValidationError(
         f"cannot tell which grid the SEG belongs to: frame {frame!r} matches no "
-        f"grid and {len(candidates)} grid(s) share its shape. Pass grid= "
-        "explicitly rather than letting the converter guess.",
+        f"grid and {len(candidates)} grid(s) share its rows and columns. Pass "
+        "grid= explicitly rather than letting the converter guess.",
         code="E101",
     )
 
@@ -518,8 +658,11 @@ def _ipp(dataset: Any) -> npt.NDArray[np.float64]:
 __all__ = [
     "BINARY",
     "FRACTIONAL",
+    "SLICE_TOLERANCE",
     "from_dicom_seg",
+    "place_frames",
     "read_dicom_seg",
+    "read_dicom_seg_frames",
     "require_highdicom",
     "to_dicom_seg",
 ]

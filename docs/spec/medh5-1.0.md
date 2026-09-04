@@ -1523,13 +1523,13 @@ grouping, since a 0.x file carries no reliable subject key of its own.
 ### C.1 Reference implementation
 
 Sections §2–§15 are **implemented** in the `medh5` package and exercised by a conformance corpus
-(§15) of 115 files: valid samples covering every encoding, annotation kind, transform kind,
+(§15) of 116 files: valid samples covering every encoding, annotation kind, transform kind,
 dimensionality, profile and container kind, plus one deliberately-invalid file per diagnostic code.
 Running the corpus against a validator is how a third-party implementation demonstrates conformance:
 
 ```
 $ medh5 conformance run ./corpus
-115/115 cases pass
+116/116 cases pass
 ```
 
 **Every code in §15.2 has a corpus case.** The implementation gates on `ruff`,
@@ -1541,7 +1541,7 @@ any machine. On a 192×256×256 synthetic CT with eight classes, a multi-class 6
 4.0 ms, foreground centre sampling 0.90 ms (O(1) in volume size, via §14.3), a metadata-only read
 0.21 ms, and `open()` → first patch 2.4 ms.
 
-Fifteen clauses have been corrected — ten during implementation and five in the 1.x package releases
+Sixteen clauses have been corrected — ten during implementation and six in the 1.x package releases
 that followed — each because writing the code showed the text was not implementable, not unambiguous,
 or not what the implementation could honestly promise, as written:
 
@@ -1562,6 +1562,7 @@ or not what the implementation could honestly promise, as written:
 | §5.1 | Collections carrying one label set at `/` with `uri = "medh5:/label_set"` is MAY, not SHOULD: the reference implementation neither writes nor resolves it, and §5.1 already requires the inline form at the sizes where it would matter. |
 | §7.1, §3.2, §15.2 | Two rules the writer enforced and the validator did not are validated: a `labelmap` stored `uint16` where §7.1 requires `uint8` is E411, and a `time` axis without `time_values` is E109. E603's summary reads "unknown agent or activity type", as this table has always said. |
 | §13.1, §13.2 | `index/` is **excluded** from object digests and from `content_id`, normatively rather than by convention. The reference implementation had always skipped it — a derived cache should not change the address of the sample it derives from — but the text did not say so, so a conforming implementation that stamped index digests would compute a different `content_id` for the same bytes, and `content_id` is only useful as a cross-implementation key if every implementation agrees on what it covers. |
+| §7.7 | `instances` is named beside `bitmask` and `probmap` as an encoding whose ignore region **MUST** live in a separate `mask` annotation. It has no in-band value either, so the clause left a conforming writer with nowhere to put one. The reference writer now emits that sibling (`<id>_ignore`, referenced by `ignore_mask`) whenever `ignore=` is given under any of the three, where it used to drop the region without a word — every unexamined voxel became a verified negative for every annotated class, and W904 stayed silent because coverage read as complete. |
 
 ### C.2 Prototype checks
 

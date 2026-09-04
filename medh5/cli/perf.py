@@ -99,7 +99,7 @@ def _recompress(args: argparse.Namespace) -> int:
         return fail(str(exc))
     if args.json:
         emit([r.to_json() for r in results], as_json=True)
-        return EXIT_OK if all(r.content_id_preserved for r in results) else EXIT_ERROR
+        return EXIT_OK if all(r.ok for r in results) else EXIT_ERROR
     print(
         table(
             [
@@ -111,17 +111,32 @@ def _recompress(args: argparse.Namespace) -> int:
                     human_bytes(r.bytes_after),
                     f"{r.ratio:.2f}x",
                     "yes" if r.content_id_preserved else "CHANGED",
+                    "ok" if r.verified else f"FAILED ({len(r.mismatched)})",
                 ]
                 for r in results
             ],
-            ["path", "profile", "sets", "before", "after", "ratio", "content_id"],
+            [
+                "path",
+                "profile",
+                "sets",
+                "before",
+                "after",
+                "ratio",
+                "content_id",
+                "verify",
+            ],
         )
     )
+    for result in results:
+        for name in result.mismatched:
+            print(f"  MISMATCH  {name}")
     print(
         "\ndigests cover decompressed content (§13.1), so `content_id` is "
-        "unchanged by re-encoding; a cache keyed on it stays valid."
+        "unchanged by re-encoding; a cache keyed on it stays valid. The output "
+        "is verified against the digests it carries, so that claim is checked "
+        "rather than assumed."
     )
-    return EXIT_OK if all(r.content_id_preserved for r in results) else EXIT_ERROR
+    return EXIT_OK if all(r.ok for r in results) else EXIT_ERROR
 
 
 def _bench(args: argparse.Namespace) -> int:

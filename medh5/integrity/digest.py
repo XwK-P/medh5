@@ -187,11 +187,19 @@ def stamp_digests(
     *,
     algo: str = DEFAULT_ALGO,
     skip: Sequence[str] = ("index",),
+    only_missing: bool = False,
 ) -> dict[str, str]:
     """Write a ``digest`` attribute on every dataset under *root*.
 
     ``index/`` is skipped by default: it is derived, regenerable and carries
     ``source_digest`` instead (§13.3).
+
+    ``only_missing`` digests just the datasets that carry none, and returns the
+    stored value for the rest.  That is what an amend wants: copy-on-write
+    brings every untouched dataset across with its digest intact, so re-reading
+    them all to recompute what they already say is the whole cost of the flag
+    --- and the caller still gets a complete map, which is what ``content_id``
+    is built from.
     """
     digests: dict[str, str] = {}
     blocked = tuple(skip)
@@ -200,6 +208,10 @@ def stamp_digests(
         if not isinstance(obj, h5py.Dataset):
             return
         if name == "meta" or name.split("/", 1)[0] in blocked:
+            return
+        stored = obj.attrs.get("digest")
+        if only_missing and stored is not None:
+            digests[name] = as_str(stored)
             return
         value = dataset_digest(obj, name, algo)
         obj.attrs["digest"] = np.array(value, dtype=h5py.string_dtype())

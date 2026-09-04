@@ -166,9 +166,15 @@ class Collection(Mapping[str, Sample]):
         return {key: sample.identity.subject_id for key, sample in self.items()}
 
 
-def open_collection(path: str | os.PathLike[str], mode: str = "r") -> Collection:
-    """Open a ``.medh5c`` shard."""
-    handle = open_h5(path, mode)
+def open_collection(path: str | os.PathLike[str]) -> Collection:
+    """Open a ``.medh5c`` shard, read-only.
+
+    There is no mode: :class:`Collection` has no mutating method, and neither
+    has :class:`~medh5.sample.Sample`, which is why ``medh5.open`` stopped
+    taking one.  ``pack``, ``unpack`` and ``amend`` on an extracted member are
+    the write paths.
+    """
+    handle = open_h5(path, "r")
     try:
         require_major(handle, path)
         if not is_collection(handle):

@@ -65,6 +65,7 @@ after decompression, sizing to the training patch keeps read amplification low
 — and the optimiser resolves them by starting at the patch, growing toward the
 cache budget, and stopping before the chunk is much larger than the patch.
 
+<!-- illustrative -->
 ```python
 w.add_grid("ct", shape=..., spacing=..., patch_hint=(96, 96, 96))
 ```

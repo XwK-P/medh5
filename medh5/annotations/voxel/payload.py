@@ -95,11 +95,54 @@ def count_nonzero(data: Any) -> int:
     return sum(int(np.count_nonzero(slab)) for slab in _slabs(data))
 
 
+def value_counts(data: Any, ceiling: int) -> dict[int, int]:
+    """How many voxels hold each value up to *ceiling*, in bounded slabs.
+
+    One pass over the data answers every class at once, which is what a
+    labelmap-shaped encoding can do and a per-class decode cannot: counting
+    63 classes by decoding each one is 63 passes over the same bytes.
+    """
+    totals = np.zeros(ceiling + 1, dtype=np.int64)
+    for slab in _slabs(data):
+        flat = np.asarray(slab).reshape(-1)
+        if flat.size == 0:
+            continue
+        clipped = flat[flat <= ceiling]
+        totals += np.bincount(clipped, minlength=ceiling + 1).astype(np.int64)
+    return {value: int(count) for value, count in enumerate(totals) if count}
+
+
+def popcounts(data: Any) -> npt.NDArray[np.int64]:
+    """Per-plane population counts of a packed ``uint64`` bitmask, per bit.
+
+    ``(P, 64)``: how many voxels have each bit set in each plane.  One pass
+    over the planes answers every class, where asking per class re-reads and
+    re-decompresses the same words up to 64 times.
+    """
+    planes = int(data.shape[0])
+    out = np.zeros((planes, 64), dtype=np.int64)
+    for plane in range(planes):
+        for slab in _slabs(data[plane]):
+            words = np.asarray(slab, dtype=np.uint64).reshape(-1)
+            if words.size == 0:
+                continue
+            # `unpackbits` over the little-endian bytes: bit `b` of a word is
+            # byte `b // 8`, bit `b % 8` counting from the least significant,
+            # which is the order the encoder writes and the reader shifts.
+            bits = np.unpackbits(
+                words.view(np.uint8).reshape(-1, 8), axis=1, bitorder="little"
+            )
+            out[plane] += bits.sum(axis=0, dtype=np.int64)
+    return out
+
+
 __all__ = [
     "SLAB_BYTES",
     "Masks",
     "AnnotationPayload",
     "contains_value",
     "count_nonzero",
+    "popcounts",
+    "value_counts",
     "normalize_masks",
 ]

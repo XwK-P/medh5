@@ -17,6 +17,7 @@ w.add_segmentation("organs", grid="ct",
 It measures the class overlap graph and picks an encoding that can represent it,
 returning which one and the statistics behind the choice:
 
+<!-- illustrative -->
 ```python
 kind, stats = w.add_segmentation(...)     # ("layers", OverlapStats(...))
 ```
@@ -51,6 +52,7 @@ class was examined, and is why coverage is a separate question.
 
 Read a patch rather than a volume by passing an ROI:
 
+<!-- illustrative -->
 ```python
 roi = (slice(10, 42),) * 3
 organs.dense(["liver"], roi=roi)       # only the chunks that ROI touches
