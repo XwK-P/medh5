@@ -11,6 +11,14 @@ Two things this deliberately does *not* do.  It does not average per-file means
 weights by voxel count.  And it does not treat an unexamined class as a zero:
 ``§11.3`` distinguishes "looked for and absent" from "never looked for", so
 frequencies are reported over the samples that actually examined each class.
+
+Intensity moments are over **physical** values by default --- ``stored × slope +
+intercept`` (§4.2) --- because that is what the loaders hand a model with
+``physical=True``, and a z-score computed over the numbers the file *stores*
+normalises the wrong distribution.  A CT stored ``int16`` with slope 2 and
+intercept −1024 has a stored mean near 100 and a physical mean near −824; the
+statistics used to report the former while the tensors carried the latter.
+``physical=False`` measures the stored values for the caller who wants them.
 """
 
 from __future__ import annotations
@@ -127,8 +135,19 @@ class DatasetStats:
     classes: dict[int, ClassStats] = field(default_factory=dict)
     total_voxels: int = 0
     failures: tuple[str, ...] = ()
+    physical: bool = True
+    """Whether the image moments are over physical values (rescale applied)."""
 
     def merge(self, other: DatasetStats) -> None:
+        if other.samples:
+            # One pass, one convention.  A mean over physical values merged with
+            # a mean over stored ones describes no image anybody can load.
+            if self.samples and other.physical != self.physical:
+                raise MEDH5Error(
+                    "cannot merge statistics over physical values with statistics "
+                    "over stored values; compute both passes the same way"
+                )
+            self.physical = other.physical
         self.samples += other.samples
         self.total_voxels += other.total_voxels
         self.failures = (*self.failures, *other.failures)
@@ -173,6 +192,7 @@ class DatasetStats:
     def to_json(self) -> dict[str, Any]:
         return {
             "samples": self.samples,
+            "physical": self.physical,
             "total_voxels": self.total_voxels,
             "images": {k: v.to_json() for k, v in sorted(self.images.items())},
             "classes": [
@@ -186,6 +206,7 @@ class DatasetStats:
     def from_json(cls, doc: dict[str, Any]) -> DatasetStats:
         return cls(
             samples=int(doc.get("samples", 0)),
+            physical=bool(doc.get("physical", True)),
             total_voxels=int(doc.get("total_voxels", 0)),
             images={k: Moments.from_json(v) for k, v in doc.get("images", {}).items()},
             classes={
@@ -207,6 +228,7 @@ def stats_for(
     images: Sequence[str] | None = None,
     annotations: Sequence[str] | None = None,
     sample_stride: int = 1,
+    physical: bool = True,
 ) -> DatasetStats:
     """One file's contribution, read plane by plane rather than whole.
 
@@ -214,16 +236,20 @@ def stats_for(
     over a 900-slice CT reads a quarter of the bytes for a mean that differs in
     the fourth decimal --- but it is opt-in, because "close enough" is a
     decision for the caller to take knowingly.
+
+    ``physical`` applies each image's rescale (§4.2) before measuring, which is
+    the default because it is what the loaders do; ``False`` measures the
+    stored values.
     """
     import medh5
 
-    out = DatasetStats(samples=1)
+    out = DatasetStats(samples=1, physical=physical)
     with medh5.open(path) as sample:
         for key, image in sample.images.items():
             if images is not None and key not in images:
                 continue
             moments = out.images.setdefault(key, Moments())
-            for block in _blocks(image, sample_stride):
+            for block in _blocks(image, sample_stride, physical):
                 moments.update(block)
         fresh = sample.fresh_indices
         for key, annotation in sample.annotations.items():
@@ -260,14 +286,20 @@ def _counts(
     return {} if counter is None else {int(c): int(n) for c, n in counter().items()}
 
 
-def _blocks(image: Any, stride: int) -> Iterable[npt.NDArray[Any]]:
-    """Slabs of an image along its first spatial axis."""
+def _blocks(image: Any, stride: int, physical: bool) -> Iterable[npt.NDArray[Any]]:
+    """Slabs of an image along its first stored axis, rescaled when asked.
+
+    Read through :meth:`~medh5.image.Image.read` rather than the raw dataset so
+    the rescale is applied by the one place that knows how; reading the dataset
+    directly is exactly what handed back stored counts as if they were HU.
+    """
     shape = image.shape
     if not shape:
         return
     step = max(1, stride)
+    trailing = (slice(None),) * (len(shape) - 1)
     for start in range(0, shape[0], step):
-        yield np.asarray(image.dataset[start])
+        yield image.read((slice(start, start + 1), *trailing), physical=physical)
 
 
 def compute_stats(
@@ -277,20 +309,23 @@ def compute_stats(
     annotations: Sequence[str] | None = None,
     workers: int = 1,
     sample_stride: int = 1,
+    physical: bool = True,
 ) -> DatasetStats:
     """Stream a whole cohort, optionally across processes.
 
     Workers return accumulators, not arrays: the merge is over a few hundred
     bytes per file however large the volumes were.
     """
-    total = DatasetStats()
+    total = DatasetStats(physical=physical)
     if workers <= 1:
         for path in paths:
-            total.merge(_guarded(path, images, annotations, sample_stride))
+            total.merge(_guarded(path, images, annotations, sample_stride, physical))
         return total
     with ProcessPoolExecutor(max_workers=workers) as pool:
         futures = [
-            pool.submit(_guarded, os.fspath(p), images, annotations, sample_stride)
+            pool.submit(
+                _guarded, os.fspath(p), images, annotations, sample_stride, physical
+            )
             for p in paths
         ]
         for future in futures:
@@ -303,6 +338,7 @@ def _guarded(
     images: Sequence[str] | None,
     annotations: Sequence[str] | None,
     sample_stride: int,
+    physical: bool = True,
 ) -> DatasetStats:
     """One file, with failure recorded rather than raised.
 
@@ -311,10 +347,14 @@ def _guarded(
     """
     try:
         return stats_for(
-            path, images=images, annotations=annotations, sample_stride=sample_stride
+            path,
+            images=images,
+            annotations=annotations,
+            sample_stride=sample_stride,
+            physical=physical,
         )
     except (MEDH5Error, OSError) as exc:
-        return DatasetStats(failures=(f"{os.fspath(path)}: {exc}",))
+        return DatasetStats(failures=(f"{os.fspath(path)}: {exc}",), physical=physical)
 
 
 __all__ = [

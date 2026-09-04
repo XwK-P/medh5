@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import warnings
 from abc import ABC, abstractmethod
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -43,6 +43,19 @@ from medh5.labels.labelset import (
 VOXEL_KINDS = ("labelmap", "layers", "bitmask", "instances", "probmap", "mask")
 GEOMETRIC_KINDS = ("boxes", "obb", "keypoints", "points", "contours", "mesh")
 ANNOTATION_KINDS = (*VOXEL_KINDS, *GEOMETRIC_KINDS, "classification")
+
+
+def instance_id_dtype(ids: Iterable[int]) -> Any:
+    """``uint32`` unless an id needs the wider form (spec §7.4, §8.2).
+
+    One helper for every kind that stores object identity.  ``instances`` had
+    its own copy and the §8 encoders hard-cast to ``uint32``, so a box carrying
+    id ``2**32 + 7`` was stored as ``7`` --- in the column that is the whole
+    longitudinal join --- while the same id on an ``instances`` annotation
+    survived.  The width follows the data, and it follows it everywhere.
+    """
+    return np.uint64 if any(int(i) > 0xFFFFFFFF for i in ids) else np.uint32
+
 
 RESERVED_KINDS = ("rle",)
 """Names reserved by spec §16.  A 1.0 writer MUST NOT emit them."""
@@ -331,7 +344,9 @@ class Annotation(ABC):
 
         An annotation declares ``timepoints`` only when it spans them --- a
         response assessment, a change label.  Everything else inherits, so time
-        is stated once, on the grid.
+        is stated once, on the grid --- and a grid that names none in a
+        single-timepoint sample belongs to that timepoint, which
+        :attr:`Sample.grids` resolves before the grids reach here.
         """
         if self.header.timepoints is not None:
             return self.header.timepoints
@@ -661,6 +676,7 @@ __all__ = [
     "AnnotationHeader",
     "Instance",
     "VoxelAnnotation",
+    "instance_id_dtype",
     "open_annotation",
     "readers",
 ]

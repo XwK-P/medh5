@@ -441,9 +441,13 @@ def _verify(args: argparse.Namespace) -> int:
         ok = ok and result.ok
         if not args.json:
             state = "OK" if result.ok else "FAILED"
+            # Three answers, not two: a partial pass does not recompute the
+            # root, and a file may declare no `content_id` at all (§13.2).
+            content = {True: "ok", False: "MISMATCH", None: "not verified"}[
+                result.content_id_ok
+            ]
             print(
-                f"{path}: {state}  {len(result.checked)} objects, "
-                f"content_id {'ok' if result.content_id_ok else result.content_id_ok}"
+                f"{path}: {state}  {len(result.checked)} objects, content_id {content}"
             )
             for name in result.mismatched:
                 print(f"  MISMATCH  {name}")

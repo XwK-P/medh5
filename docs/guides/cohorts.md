@@ -177,6 +177,14 @@ stats.failures
 Streaming: one pass per file, constant memory per worker, and an **exact**
 Welford merge (Chan–Golub–LeVeque), not an approximation.
 
+The intensity moments are over **physical** values, `stored × slope +
+intercept`, because that is what the datasets hand a model with
+`physical=True`. A z-score computed over what a file *stores* normalises the
+wrong distribution: a CT stored `int16` under slope 2 and intercept −1024 has a
+stored mean near 100 and a physical mean near −824. `compute_stats(...,
+physical=False)`, or `--stored` on the command line, measures the stored values
+when those are what you want, and the result records which it did.
+
 Two things it deliberately does not do.
 
 **It does not average per-file means.** That weights a 40-slice scan the same

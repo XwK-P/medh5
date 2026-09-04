@@ -50,6 +50,12 @@ view.images                        # only tp1's images
 view.annotations                   # only tp1's annotations
 ```
 
+Time is stated once, on the grid, and inherited by everything on it. A
+single-timepoint sample may leave `timepoint` off its grids (spec §3.7); the
+reader resolves those to the one declared timepoint, so `s.at("tp0")`,
+`Image.timepoint`, `Annotation.timepoints` and `s.tracks()` answer the same way
+whether or not the writer wrote the attribute.
+
 ### Geometry
 
 ```python

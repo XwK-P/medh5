@@ -4,6 +4,94 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.2.1] — 2026-09-04
+
+A correctness patch from a full audit of 1.2.0. The **format version is unchanged**: 1.2.1
+reads and writes exactly the files 1.0 does, and the conformance corpus is the same 103 cases.
+Every fix below was reproduced against 1.2.0 before it was made, and each ships with a
+regression test that fails on 1.2.0 (`tests/v1/test_regressions_1_2_1.py`).
+
+### Behaviour changes
+
+Read these before upgrading a pipeline. Each is a correction; each can change what existing
+code produces or accepts:
+
+- **`medh5 dataset stats` and `compute_stats` now measure physical values.** Each image's
+  rescale is applied before the moments are taken, which is what the loaders read with
+  `physical=True`. For any rescaled image — every CT the DICOM importer writes — the mean,
+  standard deviation, minimum and maximum change, and so does `normalization()`. `--stored`
+  (or `physical=False`) reproduces the 1.2.0 numbers, and the result records which convention
+  it used under `physical`.
+
+- **A single-timepoint sample whose grids omit `timepoint` now resolves to that timepoint.**
+  `Sample.grids`, and everything downstream of it — `Image.timepoint`, `Annotation.timepoints`,
+  `at()`, `tracks()`, `medh5 timeline`, `VolumeDataset(timepoint=...)` — used to answer as if
+  such grids belonged to no visit. They answer for the one declared visit now. The file is not
+  rewritten; the writer's view is still the stored attributes.
+
+- **`medh5.monai.to_dict` returns `int64` label tensors**, not `int16`. Class ids above 32767
+  no longer wrap, and the ignore id comes through as `65535` rather than `-1`.
+
+- **`from_nifti` keeps a scaled file's stored dtype and records `scl_slope`/`scl_inter` as the
+  image's rescale.** Physical values are unchanged; the stored dtype and `content_id` of such
+  imports differ from 1.2.0's.
+
+- **`from_dicom` keys `series_uids` by image id** (`CT_tp0`), which is what spec §3.7 says the
+  key is, rather than by modality (`CT`).
+
+- **Converter-written single-visit samples name `tp0` on their grid.** `from_nifti`,
+  `from_nnunet` and `medh5 bench` now write the attribute the reader resolves anyway, so a
+  third-party reader sees it too. The `content_id` of a freshly converted file therefore differs
+  from one 1.2.0 wrote from the same input.
+
+### Fixed — silent wrong answers
+
+- **64-bit instance ids wrapped to 32 bits on read.** 1.1.0 widened the `instances` encoder to
+  `uint64` so `2**32 + 7` would stop becoming 7; the reader then cast the column back to `uint32`
+  and it became 7 again, in `instance_ids`, `instances()`, `tracking()` and every longitudinal
+  join built on them. The §8 kinds had the mirror defect on the write side: `boxes`, `obb` and
+  `keypoints` hard-cast `instance_ids` to `uint32` while their reader returned `uint64`. One
+  `instance_id_dtype` helper now serves every kind, the reader widens and never narrows, and the
+  round trip is tested end to end rather than on the payload dtype alone.
+
+- **Cohort statistics were computed on stored values while the loaders read physical ones.**
+  See **Behaviour changes**. A z-score built from `stats.normalization("CT")` normalised the
+  stored counts, not the HU the model was trained on.
+
+- **Single-timepoint files written by the converters were invisible to every timepoint-aware
+  reader.** §3.7 makes the grid attribute optional when one timepoint is declared, and
+  `from_nifti`, `from_nnunet`, `migrate` and `medh5 bench` all omitted it, so on their output
+  `sample.at("tp0").images` was empty, `medh5 timeline` printed `-` in every column, and
+  `sample.tracks()` reported every lesion as *unexamined* at the only visit there was, with the
+  real coverage filed under an empty-string key. The reader resolves the implicit timepoint once,
+  on `Sample.grids`, and `medh5 track` on such a file now says *present*.
+
+- **`medh5.monai.to_dict` narrowed labels to `int16`.** See **Behaviour changes**.
+
+- **`from_nifti` read `scl_slope`/`scl_inter` into the report and then ignored them**, storing
+  nibabel's scaled `float64` volume as `float32` with no rescale attribute — three times the bytes
+  for the same numbers, and W907 on the converter's own output. The stored dtype is kept and the
+  scale recorded, as the DICOM importer already did with the modality LUT. Mask files carrying a
+  scale are thresholded after it is applied.
+
+### Fixed — hard failure on ordinary input
+
+- **A DICOM study holding two series of one modality could not be imported.** Images were named
+  `{Modality}_{tp}`, so a T1 and a T2 in one study stopped the whole import with
+  `grid 'mr_tp0' is already declared`. A visit with several series of a modality now numbers them
+  in `SeriesInstanceUID` order — `MR_1_tp0`, `MR_2_tp0` — records the assignment as a decision,
+  and keys `series_uids` by image id. Single-series modalities keep their 1.2.0 names.
+
+### Fixed — statements that did not match the code
+
+- The README that `medh5 conformance publish` writes said the suite held "one collection"; it
+  holds four. The count is now computed from the cases rather than typed.
+- `medh5 verify` printed `content_id None` for a partial pass and `content_id False` for a
+  mismatch. It says `not verified` and `MISMATCH`.
+- The `medh5.torch` docstring called `worker_init_fn` "not optional"; the code, the README and
+  the reference say recommended, and the docstring now agrees.
+- `medh5/sample.py` carried the `content_id` root-attribute docstring under the wrong constant.
+
 ## [1.2.0] — 2026-09-02
 
 A correctness release. The **format version is unchanged**: 1.2.0 reads and writes

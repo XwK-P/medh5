@@ -28,7 +28,7 @@ import numpy as np
 import numpy.typing as npt
 
 from medh5._hdf5 import as_str, str_dtype
-from medh5.annotations.base import Annotation, Instance
+from medh5.annotations.base import Annotation, Instance, instance_id_dtype
 from medh5.annotations.payload import AnnotationPayload
 from medh5.errors import MEDH5ValidationError
 from medh5.geometry.affine import (
@@ -204,7 +204,12 @@ def _object_columns(
         "class_ids": np.asarray(class_ids, dtype=np.uint16)
     }
     if instance_ids is not None:
-        out["instance_ids"] = np.asarray(instance_ids, dtype=np.uint32)
+        # The width follows the data (§8.2 permits either); a hard `uint32`
+        # cast stored `2**32 + 7` as `7` and the reader, which returns
+        # `uint64`, had no way to tell.
+        out["instance_ids"] = np.asarray(
+            instance_ids, dtype=instance_id_dtype(instance_ids)
+        )
     if scores is not None:
         out["scores"] = np.asarray(scores, dtype=np.float32)
     if attributes is not None:

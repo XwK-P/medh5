@@ -245,9 +245,11 @@ def to_dict(
 ) -> dict[str, Any]:
     """A MONAI dictionary-transform item: ``{image_id: MetaTensor, ...}``.
 
-    Annotations come through as label tensors carrying **their own grid's**
-    affine, which is what ``Spacingd(keys=["CT", "organs"], mode=["bilinear",
-    "nearest"])`` needs in order to resample both consistently.
+    Annotations come through as ``int64`` label tensors carrying **their own
+    grid's** affine, which is what ``Spacingd(keys=["CT", "organs"],
+    mode=["bilinear", "nearest"])`` needs in order to resample both
+    consistently.  Class ids keep their §5.3 values and the ignore id stays
+    ``65535``.
 
     The annotation's grid is not assumed to be the first image's.  A sample
     holding CT and PET on different grids --- the case this format exists for ---
@@ -265,7 +267,12 @@ def to_dict(
         item[image_id] = to_metatensor(sample, image_id, physical=physical, space=space)
     for ann_id in annotations:
         ann = sample.annotations[ann_id]
-        planes = np.asarray(ann.labelmap(), dtype=np.int16)
+        # `int64`, the dtype torch indexes and one-hots with.  `int16` wrapped
+        # every class id above 32767 -- §5.3 gives them the full `uint16` range
+        # -- and turned the ignore id 65535 into -1 without anything saying so.
+        # The ignore id comes through as 65535; mask it out with `ignore_index`
+        # rather than relying on a sign.
+        planes = np.asarray(ann.labelmap(), dtype=np.int64)
         item[ann_id] = _metatensor(planes, _annotation_meta(sample, ann, space=space))
     return item
 

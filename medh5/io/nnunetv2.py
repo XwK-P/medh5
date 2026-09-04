@@ -165,6 +165,7 @@ def from_nnunetv2(
                 direction=geometry["direction"],
                 coord_system=geometry["coord_system"],
                 units=geometry["units"],
+                timepoint="tp0",
             )
             for name, array in images.items():
                 writer.add_image(

@@ -23,7 +23,7 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
-from medh5.annotations.base import Instance, VoxelAnnotation
+from medh5.annotations.base import Instance, VoxelAnnotation, instance_id_dtype
 from medh5.annotations.payload import AnnotationPayload
 from medh5.errors import MEDH5ValidationError
 from medh5.geometry.affine import box_to_slices, slices_to_box
@@ -50,11 +50,6 @@ def _tight_slices(mask: npt.NDArray[np.bool_]) -> tuple[slice, ...] | None:
             return None
         slices.append(slice(int(present[0]), int(present[-1]) + 1))
     return tuple(slices)
-
-
-def _instance_dtype(ids: Sequence[int]) -> Any:
-    """`uint32` unless an id needs the wider form (spec §7.4)."""
-    return np.uint64 if any(int(i) > 0xFFFFFFFF for i in ids) else np.uint32
 
 
 def encode_instances(
@@ -134,7 +129,7 @@ def encode_instances(
         # to uint32 silently wrapped an id minted from a 64-bit key -- 2**32 + 7
         # became 7 -- so one object took another's identity in the field that is
         # the entire longitudinal join.
-        "instance_ids": np.asarray(instance_ids, dtype=_instance_dtype(instance_ids)),
+        "instance_ids": np.asarray(instance_ids, dtype=instance_id_dtype(instance_ids)),
     }
     if has_scores:
         datasets["scores"] = np.asarray(scores, dtype=np.float32)
@@ -200,8 +195,15 @@ class InstancesAnnotation(VoxelAnnotation):
         return np.asarray(self._dataset("class_ids")[...], dtype=np.uint16)
 
     @property
-    def instance_ids(self) -> npt.NDArray[np.uint32]:
-        return np.asarray(self._dataset("instance_ids")[...], dtype=np.uint32)
+    def instance_ids(self) -> npt.NDArray[np.uint64]:
+        """Object ids, widened to ``uint64`` and never narrowed.
+
+        §7.4 permits ``uint32`` or ``uint64`` on disk.  Reading through a
+        ``uint32`` cast undid the encoder's widening: a stored ``uint64`` id of
+        ``2**32 + 7`` came back as ``7``, and so did every ``instances()`` row
+        and every longitudinal join built on it, with nothing raised.
+        """
+        return np.asarray(self._dataset("instance_ids")[...], dtype=np.uint64)
 
     @property
     def scores(self) -> npt.NDArray[np.float32] | None:

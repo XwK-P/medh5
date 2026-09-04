@@ -168,7 +168,8 @@ def read_nifti(
     nib = require_nibabel()
     image = nib.load(os.fspath(path))
     notes = _geometry_notes(image, path, assume_geometry=assume_geometry)
-    data = np.asanyarray(image.dataobj)
+    rescale = _rescale(image)
+    data = _stored_data(image, rescale)
     # A trailing axis of extent 1 beyond the spatial block carries nothing:
     # writers emit `dim[4] = 1` routinely, and keeping it turns a plain volume
     # into a grid with a degenerate one-frame time axis --- and a 5-D
@@ -238,12 +239,66 @@ def read_nifti(
         "squeezed": squeezed,
         "units": _units(image),
         "dtype": str(data.dtype),
+        "rescale": rescale,
         "header": {
             "descrip": _text(image.header.get("descrip")),
             "scl_slope": _number(image.header.get("scl_slope")),
             "scl_inter": _number(image.header.get("scl_inter")),
         },
     }
+
+
+def _rescale(image: Any) -> tuple[float, float] | None:
+    """``scl_slope``/``scl_inter`` as a §4.2 rescale, or ``None`` when nothing scales.
+
+    Read from the array proxy, not the header.  nibabel *consumes* the header
+    fields on load --- it moves them onto ``dataobj.slope``/``dataobj.inter``
+    and resets ``scl_slope`` to NaN --- so the header of a loaded image says
+    "unscaled" whatever the file said.  NIfTI-1's "no scaling" (``scl_slope``
+    of 0 or NaN) arrives here as slope 1, intercept 0.
+    """
+    proxy = image.dataobj
+    slope = _number(getattr(proxy, "slope", None))
+    inter = _number(getattr(proxy, "inter", None))
+    if slope is None or slope == 0.0:
+        return None
+    inter = 0.0 if inter is None else inter
+    if slope == 1.0 and inter == 0.0:
+        return None
+    return float(slope), float(inter)
+
+
+def _stored_data(image: Any, rescale: tuple[float, float] | None) -> npt.NDArray[Any]:
+    """The voxels as the file stores them; the scaling goes into ``rescale``.
+
+    ``np.asanyarray(image.dataobj)`` applies ``scl_slope``/``scl_inter`` and
+    hands back ``float64``, so an ``int16`` CT scaled by its header used to be
+    imported as floats with no ``rescale`` attribute --- three times the bytes
+    for the same numbers, W907 on the converter's own output, and the two
+    header fields read into the report and then ignored.  §4.2 keeps the stored
+    dtype and records the scale, exactly as the DICOM importer does with the
+    modality LUT.
+    """
+    proxy = image.dataobj
+    if rescale is not None and hasattr(proxy, "get_unscaled"):
+        return np.asanyarray(proxy.get_unscaled())
+    return np.asanyarray(proxy)
+
+
+def _as_mask(
+    data: npt.NDArray[Any], geometry: Mapping[str, Any]
+) -> npt.NDArray[np.bool_]:
+    """Non-zero **physical** voxels.
+
+    A mask file may carry a rescale of its own, and the stored values are only
+    the mask once it is applied: stored ``1`` under intercept ``-1`` is ``0``.
+    """
+    values = np.asarray(data)
+    rescale = geometry.get("rescale")
+    if rescale is not None:
+        values = values.astype(np.float64) * rescale[0] + rescale[1]
+    out: npt.NDArray[np.bool_] = np.asarray(values != 0)
+    return out
 
 
 # NIfTI intent codes whose extra dimension holds *components* rather than
@@ -636,7 +691,7 @@ def from_nifti(
         )
         _replay_notes(log, name, geo)
         _same_grid(geometry, geo, name, log)
-        mask_arrays[name] = np.asarray(data) != 0
+        mask_arrays[name] = _as_mask(data, geo)
 
     if coord_system != "RAS":
         log.decision(
@@ -737,6 +792,7 @@ def from_nifti(
             axis_kinds=axis_kinds,
             coord_system=geometry["coord_system"],
             units=geometry["units"],
+            timepoint="tp0",
             time_values=geometry.get("time_values"),
             time_units=geometry.get("time_units"),
         )
@@ -762,6 +818,15 @@ def from_nifti(
                 # for: echo times are to a multi-echo stack what b-values are
                 # to a DWI one.
                 writer.acquisition(name, **{PER_VOLUME_CHANNEL[field][0]: list(values)})
+            rescale = per_image[name].get("rescale")
+            if rescale is not None:
+                log.decision(
+                    "value_scale",
+                    f"{name}: scl_slope/scl_inter were stored as the image's rescale, "
+                    "not applied; read(physical=True) applies them and read() "
+                    "returns what the file stores (§4.2)",
+                    {"image": name, "slope": rescale[0], "intercept": rescale[1]},
+                )
             writer.add_image(
                 name,
                 array,
@@ -772,6 +837,8 @@ def from_nifti(
                 value_type="quantitative"
                 if (value_units or {}).get(name)
                 else "intensity",
+                rescale_slope=None if rescale is None else rescale[0],
+                rescale_intercept=None if rescale is None else rescale[1],
                 prov=activity,
             )
         if mask_arrays and label_set is not None:
@@ -936,7 +1003,7 @@ def import_seg_nifti(
                 f"{list(target_grid.spacing)}; the voxels were taken as aligned",
                 {"mask": name},
             )
-        arrays[name] = np.asarray(data) != 0
+        arrays[name] = _as_mask(data, geo)
 
     label_set = existing
     if label_set is None:
