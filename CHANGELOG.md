@@ -4,6 +4,157 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.4.0] — 2026-09-04
+
+**The final 1.x release.** The **format version is unchanged**: 1.4.0 reads and writes the files
+1.0 does. What changes is what the *writer* does with what it is given. A second full audit went
+after the inputs rather than the outputs — an ignore region under an encoding chosen by
+measurement, a provenance id a caller picked, an export of a 2-D sample, a DICOM SEG written the
+way `highdicom` writes them by default — and found that the package produced good files while
+quietly dropping, overwriting or refusing several ordinary things asked of it. Those are the
+subject of this release. The corpus grows from 115 to 116 cases and Appendix C now lists sixteen
+corrected clauses.
+
+After this, the package is in maintenance against format 1.0.
+
+### Behaviour changes
+
+Read these before upgrading a pipeline. Each is a correction; each can change what existing code
+produces or accepts:
+
+- **`add_segmentation(ignore=...)` now keeps the region under every encoding.** It was forwarded
+  to the encoder only for `labelmap` and `layers`; under `bitmask`, `instances` and `probmap` the
+  array was dropped without a word — no in-band value, no `ignore_mask` attribute,
+  `has_ignore_region` reading `False`. With `encoding="auto"` the caller could not know which
+  branch they were on, so the same call kept the region for one cohort and lost it for the next,
+  and every ignored voxel became a *verified negative* for every annotated class with W904 unable
+  to fire. The writer now stores the region where the chosen encoding can hold it: in band for
+  `labelmap` and `layers`, and otherwise as a sibling `mask` annotation named `<ann_id>_ignore` —
+  same grid, same `prov` — referenced by the header's `ignore_mask` (§7.7). **Files written with
+  `ignore=` under those three encodings gain that extra annotation.** Passing both `ignore=` and
+  `ignore_mask=` is now E404, and `encode_voxels`, which returns a single payload and so cannot
+  create the sibling, refuses rather than dropping. `select_encoding` takes `ignore=` and costs the
+  `uint16` widening an in-band ignore forces, so the encoding is chosen with the region in view.
+
+- **Provenance ids are never silently overwritten.** `Provenance.add_agent` and `add_activity`
+  assigned into a dict, so `person("Alice", agent_id="s2")` followed by `software("tool")` — whose
+  automatic id is also `s2` — left one agent, the software, and every activity that named Alice
+  named the tool. The file validated, because every reference resolved; it resolved to the wrong
+  node. Both now refuse a duplicate id (`replace=True` for the one legitimate rewrite), and the
+  writer's automatic ids skip taken ones. **Code that relied on overwriting now raises.**
+
+- **`transcode_annotation(..., "mask")` is refused (E404).** A `mask` has no classes, so the
+  conversion OR-ed every class into one volume and left `class_ids` and `annotated_class_ids` empty
+  under `task="segmentation"` — the coverage contract gone, in a file that still validated.
+  `TRANSCODABLE` is now the whole truth; build a deliberate union with `encode_mask` and
+  `add_mask`. The CLI was already safe, since `seg convert --to` restricts its choices.
+
+- **`scrub --apply` acts on everything it flags, re-scans what it wrote, and can exit 1.** It
+  cleaned `extra` and `acquisition` only, then wrote a §11.4 record whose profile string reads
+  "quasi-identifiers removed" and exited 0 — over files still carrying the patient name,
+  institution and referring physician it had itself reported in `identity.extra` and `cohort`.
+  Three places were never scanned at all: `activity.params` (where a converter naturally stores
+  `OperatorsName`), `activity.tool`, and `quality.issues[].note`. All are scanned and cleaned now,
+  along with agent roles and qualifications; under `--profile strict` a person agent's name becomes
+  a stable pseudonym and flagged free text is removed. `apply` then re-runs the rules over the file
+  it wrote, records `remaining` and `remaining_actionable` in the deidentify activity's params, and
+  **the CLI exit code follows that re-scan**. `identity.sample_id` and `identity.subject_id` are
+  reported and never rewritten — every manifest, split claim and cross-file join names the sample
+  by them.
+
+- **Exported NIfTI files carry their rescale.** `Image.read()` returns *stored* values, and both
+  exporters wrote them with no `scl_slope`/`scl_inter`: a CT imported from DICOM with intercept
+  −1024 left every voxel 1024 HU too high, in `to_nnunetv2`'s only path and in
+  `to_nifti(physical=False)`, with nothing in `dataset.json` or the report to say so. Both now go
+  through one `write_nifti`, which records the scale, so every conforming reader — nibabel,
+  SimpleITK, and therefore nnU-Net — sees the physical values. **The numbers a downstream tool
+  reads from those files change, which is the correction.**
+
+- **2-D samples can be exported.** `convert_world` was defined for 4×4 affines only, so both
+  exporters stopped on a 2-D grid's 3×3 with "RAS↔LPS conversion is defined for 3-D affines" —
+  and the import → export round trip the converters page promises was broken for every 2-D sample,
+  although both importers accept one. It handles a 2-D affine now, and `embed_plane` puts it back
+  in the 4×4 a NIfTI file carries (§3.6).
+
+- **A DICOM SEG that omits its empty frames imports.** `omit_empty_frames=True` is highdicom's
+  default and the common form in the wild. The reader assembled a volume from the planes present —
+  two slices, spaced by the distance between them — and the import compared *that* shape with the
+  grid's and refused with E405 "drawn on a different reconstruction". Frames carry their own
+  `ImagePositionPatient`, so they are now placed on the grid by position (§3.3), and shape
+  agreement is a question about rows and columns. A frame that genuinely is not a slice of the
+  target grid is still refused, now naming the frame. `read_dicom_seg_frames` and `place_frames`
+  are the new public entry points; `read_dicom_seg` keeps its shape and meaning.
+
+- **`recompress` verifies its output, and its exit code follows.** `content_id_preserved` compared
+  the attribute the function had just copied with itself — true by construction, including on a
+  file whose bytes were corrupted before the run, which reported "content_id yes", exited 0, and
+  failed `verify()` immediately after. The re-encoded file is now read back and checked against the
+  digests it carries. **It takes roughly twice as long, and can now fail on a file that was already
+  broken.**
+
+- **`commit(digests=False)` keeps `content_id`.** It skipped the root address entirely, so an
+  amend that used the flag for speed turned an addressed file into an unaddressed one. It now
+  stamps the datasets that carry no digest — on an amend, the ones just written — and always
+  computes the root. `create(...).commit(digests=False)` therefore stamps everything, since nothing
+  has a digest yet.
+
+- **`Timepoint.extra`, `QualityRecord.extra` and `Activity.extra` are gone, and `Agent.extra` with
+  them.** The schema closes all four objects, so anything placed there failed E005 at `commit()`:
+  an extension point that could not reach a file. An unknown key is now E005 where it is parsed,
+  with the field named. `Agent` gains the `organization` field the schema has always had, and
+  `Timepoint` gains `description`.
+
+- **`open_collection` takes no `mode`.** `Collection` has no mutating method, as `medh5.open`
+  stopped taking one in 1.3.0.
+
+- **`dataset check` C202 groups by the §12.2 grouping key**, as `medh5 splits` does, and names the
+  subjects involved. A family or longitudinal group straddling two partitions was a LEAK in one
+  tool and clean in the other, on the same files.
+
+### Fixed
+
+- `info`, `tree`, `verify`, `timeline` and `track` accept a `.medh5c` shard with `--key`; `info`
+  and `tree` without one describe the shard. Six help strings promised collection support the
+  commands did not have.
+- `Sample.reference_grid` raises E111 on a file with no grids, where it raised a bare `IndexError`.
+- `to_nnunetv2` lists in `report.outputs` only the files it wrote; it named a `labelsTr` path
+  whether or not the sample had the annotation.
+- `recompress` no longer copies the root attributes twice.
+- The annotation reference gave `closure` as `"explicit" | "complete"`; the values are `explicit`
+  and `implicit`. `seg convert` is documented with the five targets it accepts.
+
+### Performance
+
+- **`layers` and `bitmask` cache their class tables per open annotation**, as `instances` has since
+  1.3.0. `dense()` asked the table once per class: 63 HDF5 reads of the same table for a 63-class
+  annotation packed into four layers.
+- **`storage.index._occupancy` is vectorised** — pad, reshape, `any` over the block axes — where it
+  was a Python loop over every coarse block: about 80 ms per class at 256³ and 0.6 s at 512³, so
+  `build_index` on a 200-class annotation spent minutes on a map measured in kilobytes.
+- **`voxel_counts()` answers every class in one pass** where the encoding allows it: a slab
+  `bincount` for `labelmap` and `layers`, a per-plane population count for `bitmask`. It decoded
+  each class separately, and `build_index` and the unindexed path of `dataset stats` both go
+  through it.
+
+### Specification corrections (Appendix C, entry 16)
+
+- **§7.7** names `instances` beside `bitmask` and `probmap` as an encoding whose ignore region must
+  live in a separate `mask` annotation. It has no in-band value either, so the clause left a
+  conforming writer with nowhere to put one.
+
+### Conformance and tests
+
+- The corpus grows to **116 cases**, with `seg-bitmask-ignore-mask`: §7.7's separate-mask form as
+  the writer now emits it, partial coverage and W904 silent.
+- `tests/v1/test_release_1_4_0.py` carries every reproduction above, each named for the finding it
+  came from, and each failing on 1.3.0.
+- `tests/v1/test_docs_python.py` **executes every Python example in the documentation** against a
+  real sample. `test_docs_examples.py` checked the prose and the CLI flags but never ran a line of
+  Python, and one of the examples it passed was the `ignore=` call this release exists to fix. A
+  block whose only failure is a name it never binds is a fragment and is tolerated; anything else —
+  a method that no longer exists, a signature that changed — fails. A block that cannot be executed
+  says so on the page with `<!-- illustrative -->`.
+
 ## [1.3.0] — 2026-09-04
 
 The last 1.x feature release. The **format version is unchanged**: 1.3.0 reads and writes files 1.0

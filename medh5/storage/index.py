@@ -92,16 +92,32 @@ def _sample_foreground_coords(
 
 
 def _occupancy(mask: npt.NDArray[np.bool_], factor: int) -> npt.NDArray[np.bool_]:
-    """Low-resolution "is there anything in this block" map for rejection sampling."""
-    coarse = tuple(max(1, -(-n // factor)) for n in mask.shape)
-    out = np.zeros(coarse, dtype=bool)
-    for block in np.ndindex(*coarse):
-        window = tuple(
-            slice(i * factor, min((i + 1) * factor, n))
-            for i, n in zip(block, mask.shape, strict=True)
-        )
-        out[block] = bool(mask[window].any())
-    return out
+    """Low-resolution "is there anything in this block" map for rejection sampling.
+
+    Pad to a multiple of the factor, reshape so each axis splits into (block,
+    within-block), and reduce with ``any`` over the within-block axes.  The
+    obvious Python loop over ``np.ndindex`` is one interpreted iteration and
+    one array slice per *coarse voxel*: 80 ms per class at 256³ and about
+    0.6 s at 512³, so ``build_index`` on a 200-class annotation spent minutes
+    building a map measured in kilobytes.
+    """
+    shape = mask.shape
+    coarse = tuple(max(1, -(-n // factor)) for n in shape)
+    padding = tuple(
+        (0, blocks * factor - n) for blocks, n in zip(coarse, shape, strict=True)
+    )
+    padded = (
+        np.pad(mask, padding, constant_values=False)
+        if any(after for _, after in padding)
+        else mask
+    )
+    split: tuple[int, ...] = ()
+    for blocks in coarse:
+        split = (*split, blocks, factor)
+    reduced: npt.NDArray[np.bool_] = padded.reshape(split).any(
+        axis=tuple(range(1, len(split), 2))
+    )
+    return reduced
 
 
 def build_index(

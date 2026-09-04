@@ -13,16 +13,19 @@ independent.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
+import h5py
 import numpy as np
 import numpy.typing as npt
 
-from medh5.annotations.base import VoxelAnnotation
+from medh5.annotations.base import AnnotationHeader, VoxelAnnotation
 from medh5.annotations.payload import AnnotationPayload
-from medh5.annotations.voxel.payload import Masks, normalize_masks
+from medh5.annotations.voxel.payload import Masks, normalize_masks, popcounts
 from medh5.errors import MEDH5ValidationError
+from medh5.geometry.grid import Grid
+from medh5.labels.labelset import LabelSet
 
 BITS_PER_PLANE = 64
 
@@ -51,9 +54,40 @@ def encode_bitmask(
 
 
 class BitmaskAnnotation(VoxelAnnotation):
-    """Reader for ``kind = "bitmask"``."""
+    """Reader for ``kind = "bitmask"``.
 
-    __slots__ = ()
+    ``bit_class_ids`` is read once per open annotation and kept, as
+    ``layers`` and ``instances`` keep theirs and for the same reason: a
+    ``Sample`` is read-only and ``amend`` replaces the inode, so the table
+    cannot change under an open reader, while re-reading it per accessor cost
+    one HDF5 read per class on every ``dense()``.
+    """
+
+    __slots__ = ("_bit_table",)
+
+    def __init__(
+        self,
+        ann_id: str,
+        group: h5py.Group,
+        header: AnnotationHeader,
+        grids: Mapping[str, Grid] | None = None,
+        label_set: LabelSet | None = None,
+    ) -> None:
+        super().__init__(ann_id, group, header, grids, label_set)
+        self._bit_table: tuple[npt.NDArray[np.uint16], dict[int, int]] | None = None
+
+    def _table(self) -> tuple[npt.NDArray[np.uint16], dict[int, int]]:
+        """``(bit_class_ids, class id -> bit position)``, read once."""
+        if self._bit_table is None:
+            try:
+                ids = np.asarray(self.group["bit_class_ids"][...], dtype=np.uint16)
+            except KeyError:
+                raise MEDH5ValidationError(
+                    f"annotation {self.ann_id!r}: `bitmask` requires `bit_class_ids`",
+                    code="E410",
+                ) from None
+            self._bit_table = (ids, {int(c): i for i, c in enumerate(ids)})
+        return self._bit_table
 
     @property
     def data(self) -> Any:
@@ -67,13 +101,7 @@ class BitmaskAnnotation(VoxelAnnotation):
 
     @property
     def bit_class_ids(self) -> npt.NDArray[np.uint16]:
-        try:
-            return np.asarray(self.group["bit_class_ids"][...], dtype=np.uint16)
-        except KeyError:
-            raise MEDH5ValidationError(
-                f"annotation {self.ann_id!r}: `bitmask` requires `bit_class_ids`",
-                code="E410",
-            ) from None
+        return self._table()[0]
 
     @property
     def n_planes(self) -> int:
@@ -81,7 +109,7 @@ class BitmaskAnnotation(VoxelAnnotation):
 
     @property
     def position_of(self) -> dict[int, int]:
-        return {int(c): i for i, c in enumerate(self.bit_class_ids)}
+        return self._table()[1]
 
     def _dense_class(
         self, class_id: int, roi: tuple[slice, ...]
@@ -124,6 +152,19 @@ class BitmaskAnnotation(VoxelAnnotation):
                 out[position] = (block & (np.uint64(1) << np.uint64(bit))) != np.uint64(
                     0
                 )
+        return out
+
+    def _counts_from_planes(self) -> dict[int, int] | None:
+        """One population count per plane answers all 64 of its classes."""
+        ids = self.bit_class_ids
+        if ids.size == 0:
+            return {}
+        counts = popcounts(self.data)
+        out: dict[int, int] = {}
+        for position, class_id in enumerate(ids):
+            plane, bit = divmod(position, BITS_PER_PLANE)
+            if plane < counts.shape[0]:
+                out[int(class_id)] = int(counts[plane, bit])
         return out
 
     def classes_at(self, voxel: tuple[int, ...]) -> tuple[int, ...]:

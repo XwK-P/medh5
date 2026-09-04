@@ -116,6 +116,7 @@ ann.quality_key, ann.prov
 
 Voxel annotations add:
 
+<!-- illustrative -->
 ```python
 ann.contains(class_id, (z, y, x))
 ann.dense(["liver", "lesion"])          # (C, *spatial) bool
@@ -182,6 +183,7 @@ s.compute_content_id()        # recompute rather than read the stored one
 
 ## Writing
 
+<!-- illustrative -->
 ```python
 with medh5.create("out.medh5", sample_id="c1", subject_id="s1",
                   codec="balanced") as w:
@@ -193,6 +195,7 @@ clean exit. An exception aborts and leaves nothing behind.
 
 ### Document
 
+<!-- illustrative -->
 ```python
 w.identity(sex="F", bodypart="abdomen")
 w.cohort(dataset_id="d", site_id="site-A", group_id="family-7")
@@ -223,6 +226,7 @@ Activity types: `import`, `annotate`, `review`, `predict`, `resample`,
 
 ### Grids and images
 
+<!-- illustrative -->
 ```python
 w.add_grid("ct_tp0", shape=(192, 256, 256), spacing=(1.5, 0.8, 0.8),
            origin=(-144.0, -102.4, -102.4), direction=np.eye(3),
@@ -248,7 +252,7 @@ kind, stats = w.add_segmentation(
     encoding="auto",                            # or an explicit kind
     # threshold=0.3,                            # with probabilities=: the contains() cut (§7.5)
     annotated_classes=["liver", "spleen", "lesion"],
-    ignore=uncertain_mask,
+    ignore=uncertain_mask,                      # voxels nobody examined (§7.7)
     prov=act, quality={"status": "approved"},
 )
 
@@ -262,6 +266,13 @@ w.add_mesh("surface", vertices, faces, space="world")
 w.add_classification("response", {"progressive": 1.0}, scope="sample",
                      timepoints=["tp0", "tp1"])   # the interval, not one visit
 ```
+
+`ignore=` is stored wherever the chosen encoding can hold it. `labelmap` and
+`layers` carry it in band; under `bitmask`, `instances` or `probmap` the writer
+stores it as a sibling `mask` annotation named `<ann_id>_ignore` and sets
+`ignore_mask` on the header, so `encoding="auto"` never decides whether the
+region survives. `ignore_mask=` names a mask you wrote yourself instead;
+passing both is refused.
 
 ### Transforms
 
@@ -277,6 +288,7 @@ w.add_transform("warp", kind="displacement",
 
 ### Derived data
 
+<!-- illustrative -->
 ```python
 w.build_index()                          # sampling indices for every voxel annotation
 w.build_index(["organs_tp0"], max_coords=8192)

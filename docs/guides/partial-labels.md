@@ -81,12 +81,17 @@ encoding can return a plane for it — `dense` raises `E404` rather than handing
 back an all-zero mask indistinguishable from a class examined and found absent.
 It used to return that mask, and the ignored voxels went into the loss.
 
-**Where the region lives depends on the encoding**, so read it through both
-routes. `labelmap` and `layers` carry it in band and expose `ignore_mask()`;
-`bitmask` and `probmap` cannot represent a reserved id in band, so theirs is a
-separate `mask` annotation named by `header.ignore_mask`. Ask a `bitmask` for
-`ignore_mask()` and you get `AttributeError`, with `has_ignore_region` already
-True:
+**Writing it is one argument.** `add_segmentation(..., ignore=region)` stores
+the region wherever the chosen encoding can hold it: in band under `labelmap`
+and `layers`, and as a sibling `mask` annotation named `<ann_id>_ignore` ---
+same grid, same provenance, referenced by `header.ignore_mask` --- under
+`bitmask`, `instances` and `probmap`, which cannot hold a reserved id (§7.7).
+`encoding="auto"` therefore never decides whether the region survives.
+
+**Reading it depends on the encoding**, so read it through both routes.
+`labelmap` and `layers` expose `ignore_mask()`; the other three have the
+separate mask. Ask a `bitmask` for `ignore_mask()` and you get
+`AttributeError`, with `has_ignore_region` already True:
 
 ```python
 def ignore_region(sample, ann, roi=None):

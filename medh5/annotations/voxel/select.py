@@ -277,12 +277,19 @@ def select_encoding(
     stats: OverlapStats | None = None,
     soft: bool = False,
     prefer: str | None = None,
+    ignore: bool = False,
 ) -> tuple[str, OverlapStats]:
     """Choose an encoding by measurement (spec §7.6).
 
     Returns the chosen ``kind`` and the statistics that justified it, so a writer
     can record *why* --- an encoding chosen by a rule nobody can inspect is a
     rule nobody will trust.
+
+    *ignore* says an in-band ignore region will be written with the masks.
+    The reserved id is ``65535``, so ``labelmap`` and ``layers`` then need
+    ``uint16`` planes whatever the class ids are (§7.1), and the crossover
+    against ``bitmask`` moves: the choice has to be made with the region in
+    the picture, or it is made for a payload that is not the one written.
     """
     if soft:
         measured = stats or analyse(masks or {}, spatial_shape)
@@ -299,7 +306,7 @@ def select_encoding(
         return "instances", measured
     if measured.is_edgeless:
         return "labelmap", measured
-    itemsize = label_dtype_size(measured.class_ids)
+    itemsize = label_dtype_size(measured.class_ids, ignore=ignore)
     if measured.n_layers < (8 // itemsize) * measured.n_planes:
         return "layers", measured
     return "bitmask", measured

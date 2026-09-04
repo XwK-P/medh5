@@ -102,17 +102,39 @@ class TestProvenance:
         with pytest.raises(MEDH5ValidationError):
             check_timestamp("2026-02-03", where="test")
 
-    def test_json_round_trip_preserves_extras(self):
+    def test_json_round_trip_keeps_every_schema_field(self):
         graph = Provenance(
-            agents=[Agent("a", "software", "medh5", extra={"x_site": "B"})],
-            activities=[
-                Activity("t", "import", params={"kernel": "B30f"}, extra={"x_run": 3})
-            ],
+            agents=[Agent("a", "software", "medh5", organization="org1")],
+            activities=[Activity("t", "import", params={"kernel": "B30f"})],
         )
         back = Provenance.from_json(graph.to_json())
-        assert back.agent("a").extra == {"x_site": "B"}
-        assert back.activity("t").extra == {"x_run": 3}
+        assert back.agent("a").organization == "org1"
+        assert back.activity("t").params == {"kernel": "B30f"}
         assert Provenance.from_json(None).to_json()["agents"] == []
+
+    def test_S2_4_a_key_the_schema_forbids_is_refused_at_parse(self):
+        """`agent` and `activity` are closed objects, so E005 comes early.
+
+        Both used to collect unknown keys into an `extra` mapping and write
+        them straight back out --- an extension point that could not reach a
+        file, since `commit()` failed the whole document on it.
+        """
+        for build, what in (
+            (
+                lambda: Agent.from_json(
+                    {"id": "a", "type": "software", "name": "m", "x_site": "B"}
+                ),
+                "agent",
+            ),
+            (
+                lambda: Activity.from_json({"id": "t", "type": "import", "x_run": 3}),
+                "activity",
+            ),
+        ):
+            with pytest.raises(MEDH5ValidationError) as exc:
+                build()
+            assert exc.value.code == "E005"
+            assert what in str(exc.value)
 
 
 class TestQuality:
@@ -223,13 +245,18 @@ class TestTimeline:
         with pytest.raises(MEDH5ValidationError):
             Timeline([Timepoint("tp0", 0), Timepoint("tp0", 1)])
 
-    def test_json_round_trip_keeps_extras(self):
+    def test_json_round_trip_keeps_every_schema_field(self):
         timeline = Timeline(
-            [Timepoint("tp0", 0, series_uids={"CT": "s1"}, extra={"x_note": "n"})]
+            [Timepoint("tp0", 0, series_uids={"CT": "s1"}, description="baseline CT")]
         )
         back = Timeline.from_json(timeline.to_json())
         assert back["tp0"].series_uids == {"CT": "s1"}
-        assert back["tp0"].extra == {"x_note": "n"}
+        assert back["tp0"].description == "baseline CT"
+
+    def test_S2_4_a_key_the_schema_forbids_is_refused_at_parse(self):
+        with pytest.raises(MEDH5ValidationError) as exc:
+            Timepoint.from_json({"id": "tp0", "index": 0, "x_note": "n"})
+        assert exc.value.code == "E005"
 
 
 class TestDocument:

@@ -38,6 +38,14 @@ from medh5.io.report import ConversionReport
 RAS_TO_LPS = np.diag([-1.0, -1.0, 1.0, 1.0])
 """World-axis sign flip. ``LPS = RAS_TO_LPS @ RAS``, and it is its own inverse."""
 
+RAS_TO_LPS_2D = np.diag([-1.0, -1.0, 1.0])
+"""The same flip for a 2-D grid (§3.6).
+
+A 2-D grid's two world axes are the first two of the frame it was reduced
+from --- :func:`_reduce_plane` keeps a plane only when it has no component
+along the third --- and those are exactly the two axes RAS↔LPS flips.
+"""
+
 COORD_SYSTEMS = ("LPS", "RAS")
 
 
@@ -58,11 +66,67 @@ def convert_world(
     matrix = np.asarray(affine, dtype=np.float64)
     if source == target:
         return matrix
+    if matrix.shape == (3, 3):
+        # A 2-D grid, which §3.6 gives an S = 2 affine.  Both importers accept
+        # 2-D input and both exporters called this, so refusing here meant no
+        # 2-D sample could be written back out at all --- a radiograph could go
+        # in and never come out.
+        return np.asarray(RAS_TO_LPS_2D @ matrix, dtype=np.float64)
     if matrix.shape != (4, 4):
         raise MEDH5ValidationError(
-            f"RAS↔LPS conversion is defined for 3-D affines; got {matrix.shape}"
+            f"RAS↔LPS conversion is defined for 2-D and 3-D affines; got {matrix.shape}"
         )
     return np.asarray(RAS_TO_LPS @ matrix, dtype=np.float64)
+
+
+def embed_plane(affine: npt.ArrayLike) -> npt.NDArray[np.float64]:
+    """A 2-D grid's 3x3 affine as the 4x4 a NIfTI file carries.
+
+    The exact inverse of :func:`_reduce_plane`: the third index axis is unit
+    and the third world coordinate zero, which is the only embedding that
+    round-trips, because a plane keeps no information about the axis it was
+    reduced along.  A 2-D array is written as ``(x, y)`` with ``dim[3] = 1``,
+    which ``read_nifti`` squeezes back off.
+    """
+    matrix = np.asarray(affine, dtype=np.float64)
+    if matrix.shape == (4, 4):
+        return matrix
+    if matrix.shape != (3, 3):
+        raise MEDH5ValidationError(
+            f"embed_plane takes a 2-D grid's 3x3 affine; got {matrix.shape}"
+        )
+    out = np.eye(4, dtype=np.float64)
+    out[:2, :2] = matrix[:2, :2]
+    out[:2, 3] = matrix[:2, 2]
+    return out
+
+
+def write_nifti(
+    array: npt.NDArray[Any],
+    affine: npt.ArrayLike,
+    path: str | os.PathLike[str],
+    *,
+    rescale: tuple[float, float] | None = None,
+) -> Path:
+    """Write one NIfTI file, recording *rescale* in the header (§4.2).
+
+    Every export goes through here, because the alternative is what shipped:
+    ``image.read()`` returns **stored** values and the exporters wrote them
+    with no ``scl_slope``/``scl_inter``, so a CT imported from DICOM with
+    intercept −1024 left every voxel 1024 HU too high in the exported file and
+    nothing in it said so.  NIfTI has the two fields for exactly this, and
+    every reader --- nibabel, SimpleITK, and therefore nnU-Net --- applies them
+    on load, so writing them makes the stored volume mean what it meant here.
+    """
+    nib = require_nibabel()
+    target = Path(os.fspath(path))
+    data = np.ascontiguousarray(array)
+    image = nib.Nifti1Image(data, np.asarray(affine, dtype=np.float64))
+    image.header.set_data_dtype(data.dtype)
+    if rescale is not None:
+        image.header.set_slope_inter(float(rescale[0]), float(rescale[1]))
+    nib.save(image, str(target))
+    return target
 
 
 def _geometry_notes(
@@ -919,14 +983,19 @@ def to_nifti(
 
     The affine is converted back to RAS+ and the axes back to ``(x, y, z)``, so
     the file opens in FSL, ITK-SNAP or 3D Slicer at the location it came from.
+
+    ``physical=False`` writes the **stored** values, and then the image's
+    rescale is written into the header, so the numbers a conforming reader
+    gets are the physical ones either way.  A label volume has no rescale and
+    is written as it is.
     """
     import medh5
 
-    nib = require_nibabel()
     target = Path(os.fspath(out))
     with medh5.open(path) as sample:
         image = sample.images[image_id]
         grid = image.grid
+        rescale: tuple[float, float] | None = None
         if annotation is not None:
             ann = sample.annotations[annotation]
             data = (
@@ -936,21 +1005,35 @@ def to_nifti(
             )
         else:
             data = np.asarray(image.read(physical=physical))
-        affine = convert_world(grid.affine, source=grid.coord_system, target="RAS")
-        spacing, origin, direction = decompose_affine(affine)
-        if data.ndim >= 3:
-            # MEDH5 leads with time and trails with (z, y, x); NIfTI is the
-            # other way round.  Reversing only the trailing three sent time to
-            # a *spatial* slot and left the affine describing (x, y, z), so a
-            # 4-D export carried geometry that was wrong on every axis.
-            spatial = (data.ndim - 1, data.ndim - 2, data.ndim - 3)
-            data = np.transpose(data, spatial + tuple(range(data.ndim - 3)))
-            index = [2, 1, 0]
-            spacing = spacing[index]
-            direction = direction[:, index]
-        out_affine = build_affine(spacing, origin, direction)
-    nib.save(nib.Nifti1Image(np.ascontiguousarray(data), out_affine), str(target))
-    return target
+            if not physical:
+                rescale = image.rescale
+        data, out_affine = for_export(grid, data)
+    return write_nifti(data, out_affine, target, rescale=rescale)
+
+
+def for_export(
+    grid: Any, data: npt.NDArray[Any]
+) -> tuple[npt.NDArray[Any], npt.NDArray[np.float64]]:
+    """An array and affine in MEDH5 conventions, as NIfTI wants them.
+
+    MEDH5 leads with time and trails with ``(z, y, x)``; NIfTI is the other way
+    round, so the spatial axes are reversed and the affine's columns with them.
+    A 2-D plane is *not* reversed --- ``read_nifti`` does not transpose one
+    either, so reversing here would mirror every radiograph --- and its 3x3
+    affine is embedded in the 4x4 a NIfTI file carries (§3.6).
+
+    Shared by both exporters, because both had their own copy of the reversal
+    and only one of them was ever fixed.
+    """
+    affine = convert_world(grid.affine, source=grid.coord_system, target="RAS")
+    spacing, origin, direction = decompose_affine(affine)
+    if data.ndim >= 3:
+        spatial = (data.ndim - 1, data.ndim - 2, data.ndim - 3)
+        data = np.transpose(data, spatial + tuple(range(data.ndim - 3)))
+        index = [2, 1, 0]
+        spacing = spacing[index]
+        direction = direction[:, index]
+    return data, embed_plane(build_affine(spacing, origin, direction))
 
 
 def import_seg_nifti(

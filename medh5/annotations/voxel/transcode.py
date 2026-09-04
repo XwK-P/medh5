@@ -174,6 +174,7 @@ def transcode_payload(
     """Convert a payload to another encoding, preserving ``contains``."""
     if to_kind == payload.kind:
         return payload
+    _check_target(to_kind)
     masks = payload_to_masks(payload, spatial_shape=spatial_shape, threshold=threshold)
     shape = spatial_shape or next(iter(masks.values())).shape
     return encode_masks(masks, to_kind, tuple(shape), **kwargs)
@@ -183,21 +184,43 @@ IN_BAND_IGNORE_KINDS = ("labelmap", "layers")
 """Encodings that can hold an ignore region in the data itself (spec §7.7)."""
 
 
+def _check_target(to_kind: str) -> None:
+    """``TRANSCODABLE`` is the whole truth about where a transcode may go.
+
+    ``mask`` is a voxel kind and :func:`encode_masks` will build one, but it
+    has no classes (§4.4): every class of the source is OR-ed into one
+    volume, ``class_ids`` and ``annotated_class_ids`` come out empty, and the
+    coverage contract of §11.3 --- which classes were looked for --- is gone
+    from a file that still validates.  That is not a transcode under §7.6,
+    which promises ``contains`` for every class.  A caller who wants the
+    union asks :func:`encode_mask` for it deliberately.
+    """
+    if to_kind == "mask":
+        raise MEDH5ValidationError(
+            "cannot transcode to 'mask': a `mask` has no classes (§4.4), so every "
+            "class would merge into one volume and the coverage contract "
+            "(`class_ids`, `annotated_class_ids`) would be lost. For a deliberate "
+            "union, build one with `encode_mask` and write it with `add_mask`.",
+            code="E404",
+        )
+    if to_kind not in TRANSCODABLE:
+        raise MEDH5ValidationError(
+            f"{to_kind!r} is not a voxel encoding; expected one of "
+            f"{list(TRANSCODABLE)}",
+            code="E401",
+        )
+
+
 def transcode(
     annotation: VoxelAnnotation, to_kind: str, **kwargs: Any
 ) -> AnnotationPayload:
     """Convert an open annotation to another encoding.
 
     Refuses rather than silently dropping what the target cannot express: an
-    in-band ignore region, and object identity.  §7.6 calls transcoding
-    lossless, so anything it cannot carry has to stop it.
+    in-band ignore region, object identity, and class identity itself.  §7.6
+    calls transcoding lossless, so anything it cannot carry has to stop it.
     """
-    if to_kind not in TRANSCODABLE and to_kind != "mask":
-        raise MEDH5ValidationError(
-            f"{to_kind!r} is not a voxel encoding; expected one of "
-            f"{list(TRANSCODABLE)}",
-            code="E401",
-        )
+    _check_target(to_kind)
     if to_kind == "instances" and annotation.kind != "instances":
         # A dense encoding records which voxels belong to a class, never which
         # object they belong to.  Going to `instances` from one merged every

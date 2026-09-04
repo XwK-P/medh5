@@ -27,9 +27,11 @@ report.needs_review      # what a person has to judge
 print(report.format())
 ```
 
-It looks for identifying DICOM keywords anywhere in `extra` or `acquisition`,
-DICOM person names, real DICOM UIDs where a pseudonym belongs, unshifted dates,
-and free text no rule can judge. That last category is why the read-only pass
+It looks for identifying DICOM keywords anywhere a string can live in the
+document — `extra`, `acquisition`, `identity.extra`, `cohort`, activity
+parameters and tool strings, agent roles, and quality issue notes — plus DICOM
+person names, real DICOM UIDs where a pseudonym belongs, unshifted dates, and
+free text no rule can judge. That last category is why the read-only pass
 exists: `needs_review` is the part no tool should decide for you.
 
 The exit code is non-zero when the scan found **anything at all** — not only
@@ -72,7 +74,22 @@ medh5 scrub out/*.medh5 --apply --date-shift-days -117 --salt "$SALT" --by RAD-0
 report = scrub.apply(path, date_shift_days=-117, salt=SALT)
 ```
 
-Two behaviours worth knowing before you run it:
+Three behaviours worth knowing before you run it:
+
+**It re-scans its own output.** After amending, `--apply` runs the same rules
+over the file it just wrote, records `remaining` and `remaining_actionable` in
+the de-identification activity's parameters, and **exits non-zero if anything
+actionable is left**. The attestation and the exit code therefore agree with a
+re-scan by construction, rather than reporting what the tool set out to do. In
+Python, `report.remaining` holds those findings and `report.ok` is the same
+answer as the exit code.
+
+`--apply` acts on everything the scan calls actionable, which under
+`--profile strict` includes a person agent's name (replaced by a stable
+pseudonym, so the graph still says two activities were the same person) and
+flagged free text (removed). Two locations are reported and never rewritten:
+`identity.sample_id` and `identity.subject_id`, because every manifest, split
+claim and cross-file join names the sample by them. Re-mint those yourself.
 
 **UIDs are pseudonymised, not deleted.** A frame UID is how two files agree they
 share a frame of reference, so deleting it breaks registration.

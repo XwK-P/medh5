@@ -33,6 +33,7 @@ is liver because you asked for liver first — not because of anything in the fi
 
 ## Look at one item before you loop
 
+<!-- illustrative -->
 ```python
 item = dataset[0]
 item["images"]["CT"].shape        # (32, 32, 32)

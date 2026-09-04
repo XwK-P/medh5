@@ -44,6 +44,7 @@ Overlapping segments survive.
 So a probability of 0.49 does not become 1 — it becomes **background**, and is
 gone from the exported SEG:
 
+<!-- illustrative -->
 ```python
 ann.threshold                    # 0.5 unless the file says otherwise
 # probabilities  0.0  0.1  0.3  0.49  0.5  0.7  0.9  1.0

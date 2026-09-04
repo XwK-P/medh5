@@ -74,6 +74,7 @@ class in it as examined.
 `add_segmentation` measured the overlap graph and picked an encoding that can
 represent it. It returns which one:
 
+<!-- illustrative -->
 ```python
 kind, stats = w.add_segmentation(...)   # ("layers", OverlapStats(...))
 ```

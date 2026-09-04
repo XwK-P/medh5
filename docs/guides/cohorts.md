@@ -83,6 +83,7 @@ $ medh5 dataset split cohort.json --group-by group_id --stratify-by site_id \
       --ratios train=0.7,val=0.15,test=0.15 --seed 0 -o split.json --write-claims
 ```
 
+<!-- illustrative -->
 ```python
 from medh5.dataset import make_splits, write_claims
 

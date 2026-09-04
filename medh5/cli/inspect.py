@@ -7,7 +7,6 @@ from typing import Any
 
 import h5py
 
-import medh5
 from medh5.cli._common import (
     EXIT_ERROR,
     EXIT_OK,
@@ -25,13 +24,29 @@ from medh5.validate import validate_paths
 from medh5.validate.report import LEVELS
 
 
+def _add_key(parser: argparse.ArgumentParser) -> None:
+    """``--key`` selects one sample inside a ``.medh5c`` shard (§2.2).
+
+    Six commands described their argument as "the sample or collection" and
+    then refused a shard, telling the reader to "open it with
+    open_collection()" --- which is a Python function, not something a shell
+    can do. A member of a shard *is* a sample root, so the commands take one.
+    """
+    parser.add_argument(
+        "--key",
+        help="sample key inside a .medh5c collection; omit for a single sample",
+    )
+
+
 def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    info = sub.add_parser("info", help="summarise a sample")
+    info = sub.add_parser("info", help="summarise a sample, or a collection")
     info.add_argument("path", help="the sample or collection to summarise")
+    _add_key(info)
     add_json_flag(info)
 
     tree = sub.add_parser("tree", help="annotated object listing with spec roles")
     tree.add_argument("path", help="the sample or collection to list")
+    _add_key(tree)
     add_json_flag(tree)
 
     validate = sub.add_parser("validate", help="check conformance (spec §15)")
@@ -58,6 +73,7 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
 
     verify = sub.add_parser("verify", help="check digests and content_id (spec §13)")
     add_paths(verify)
+    _add_key(verify)
     verify.add_argument(
         "--partial",
         action="append",
@@ -71,11 +87,13 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
 
     timeline = sub.add_parser("timeline", help="timepoints and what belongs to each")
     timeline.add_argument("path", help="the sample whose visits to list")
+    _add_key(timeline)
     add_json_flag(timeline)
 
     track = sub.add_parser("track", help="join instance ids across timepoints")
     track.add_argument("path", help="the sample whose instances to join across visits")
     track.add_argument("--class", dest="class_key", help="restrict to one class")
+    _add_key(track)
     add_json_flag(track)
 
 
@@ -160,6 +178,23 @@ def _fix(args: argparse.Namespace) -> int:
     return EXIT_OK if not outstanding else EXIT_ERROR
 
 
+def _open(args: argparse.Namespace, path: str | None = None) -> Any:
+    """Open a sample, or one member of a collection, from a CLI argument."""
+    from medh5.collection import open_any
+
+    return open_any(path if path is not None else args.path, key=args.key)
+
+
+def _needs_key(path: str, opened: Any) -> str:
+    """The message for a per-sample command handed a whole shard."""
+    keys = sorted(opened)
+    shown = ", ".join(keys[:5]) + (" ..." if len(keys) > 5 else "")
+    return (
+        f"{path} is a collection of {len(keys)} sample(s); this command reports "
+        f"on one sample, so name it with --key (keys: {shown})"
+    )
+
+
 def dispatch(command: str, args: argparse.Namespace) -> int | None:
     if command == "info":
         return _info(args)
@@ -179,8 +214,13 @@ def dispatch(command: str, args: argparse.Namespace) -> int | None:
 
 
 def _info(args: argparse.Namespace) -> int:
+    from medh5.collection import Collection
+
     try:
-        with medh5.open(args.path) as sample:
+        with _open(args) as opened:
+            if isinstance(opened, Collection):
+                return _collection_info(args, opened)
+            sample = opened
             summary = sample.summary()
             if args.json:
                 emit(summary, as_json=True)
@@ -335,6 +375,41 @@ def _info(args: argparse.Namespace) -> int:
         return fail(str(exc))
 
 
+def _collection_info(args: argparse.Namespace, collection: Any) -> int:
+    """A shard with no ``--key`` summarises the shard, rather than refusing.
+
+    What a reader wants from ``info`` on a container is what is in it; the
+    per-sample view is one ``--key`` away and the listing names the keys.
+    """
+    summary = collection.summary()
+    if args.json:
+        emit(summary, as_json=True)
+        return EXIT_OK
+    print(f"{args.path}")
+    print(f"  format      {summary['version']} ({summary['kind']})")
+    print(f"  samples     {len(summary['samples'])}")
+    print()
+    print(
+        table(
+            [
+                [
+                    entry["key"],
+                    entry["sample_id"],
+                    entry["subject_id"],
+                    ",".join(entry["timepoints"]) or "-",
+                    len(entry["images"]),
+                    len(entry["annotations"]),
+                    ",".join(entry["profiles"]),
+                ]
+                for entry in summary["samples"]
+            ],
+            ["key", "sample", "subject", "tp", "images", "anns", "profiles"],
+        )
+    )
+    print("\nper-sample detail: `medh5 info PATH --key KEY`")
+    return EXIT_OK
+
+
 _ROLES = {
     "meta": "sample document (§2.4)",
     "grids": "geometry (§3.2)",
@@ -346,9 +421,11 @@ _ROLES = {
 
 
 def _tree(args: argparse.Namespace) -> int:
+    from medh5.collection import Collection
+
     try:
-        with medh5.open(args.path) as sample:
-            root = sample.root
+        with _open(args) as opened:
+            root = opened.root if not isinstance(opened, Collection) else opened.root
             if args.json:
                 emit(
                     {"path": args.path, "objects": _tree_json(root)},
@@ -427,10 +504,14 @@ def _validate(args: argparse.Namespace) -> int:
 def _verify(args: argparse.Namespace) -> int:
     results: list[dict[str, Any]] = []
     ok = True
+    from medh5.collection import Collection
+
     for path in args.paths:
         try:
-            with medh5.open(path) as sample:
-                result = sample.verify(partial=args.partial)
+            with _open(args, path) as opened:
+                if isinstance(opened, Collection):
+                    return fail(_needs_key(path, opened))
+                result = opened.verify(partial=args.partial)
         except MEDH5Error as exc:
             return fail(str(exc))
         summary = {"path": path, **result.summary()}
@@ -455,8 +536,12 @@ def _verify(args: argparse.Namespace) -> int:
 
 
 def _timeline(args: argparse.Namespace) -> int:
+    from medh5.collection import Collection
+
     try:
-        with medh5.open(args.path) as sample:
+        with _open(args) as sample:
+            if isinstance(sample, Collection):
+                return fail(_needs_key(args.path, sample))
             rows = []
             payload = []
             for tp in sample.timepoints:
@@ -501,8 +586,12 @@ def _timeline(args: argparse.Namespace) -> int:
 
 
 def _track(args: argparse.Namespace) -> int:
+    from medh5.collection import Collection
+
     try:
-        with medh5.open(args.path) as sample:
+        with _open(args) as sample:
+            if isinstance(sample, Collection):
+                return fail(_needs_key(args.path, sample))
             tracking = sample.tracks(args.class_key)
             if args.json:
                 emit(tracking.to_json(), as_json=True)

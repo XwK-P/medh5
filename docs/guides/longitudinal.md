@@ -14,6 +14,7 @@ cannot leak a patient between them.
 
 Declared once on the sample, in acquisition order:
 
+<!-- illustrative -->
 ```python
 w.add_timepoint("tp0", label="baseline", days_from_baseline=0,
                 date="2026-02-03", study_uid="pseudo:study-a")
@@ -23,6 +24,7 @@ w.add_timepoint("tp1", index=1, label="fu1", days_from_baseline=92)
 Indices are dense and start at zero, and `days_from_baseline` must not
 decrease. A grid names its timepoint; images and annotations inherit it:
 
+<!-- illustrative -->
 ```python
 w.add_grid("ct_tp1", shape=..., spacing=..., timepoint="tp1")
 w.add_image("CT_tp1", array, grid="ct_tp1", modality="CT")   # tp1, by inheritance

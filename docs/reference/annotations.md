@@ -14,7 +14,7 @@ ann.grid_id                # the geometry it lives on
 ann.timepoints             # which visits it describes
 ann.class_ids              # classes it declares
 ann.annotated_class_ids    # classes that were examined (§11.3)
-ann.closure                # "explicit" | "complete"
+ann.closure                # "explicit" | "implicit"
 ann.quality_key, ann.prov  # links into quality and provenance
 ```
 
@@ -46,11 +46,14 @@ Do not read it through `dense([65535])`. The ignore id is not an ordinary class:
 asking `dense()` for it returns an all-zero mask with no error --- and the
 ignored voxels end up in the loss.
 
-Where the region lives depends on the encoding. `labelmap` and `layers` hold it
-in band and expose `ignore_mask()`; `bitmask` and `probmap` cannot represent a
-reserved id in band, so theirs is a separate `mask` annotation named by
-`header.ignore_mask`, and `ignore_mask()` is not defined on them ---
-`has_ignore_region` is `True` and the call raises `AttributeError`.
+Where the region lives depends on the encoding, and the writer decides.
+`add_segmentation(..., ignore=region)` stores it in band under `labelmap` and
+`layers`, where `ignore_mask()` reads it back; `bitmask`, `instances` and
+`probmap` cannot represent a reserved id in band, so for those the writer
+stores the region as a sibling `mask` annotation named `<ann_id>_ignore` and
+sets `header.ignore_mask` to it (§7.7). On those three `ignore_mask()` is not
+defined --- `has_ignore_region` is `True` and the call raises `AttributeError`;
+read the referenced mask instead.
 [Partial labels and coverage](../guides/partial-labels.md#some-voxels-i-cannot-label-either-way)
 has a reader that handles both.
 
@@ -59,6 +62,7 @@ has a reader that handles both.
 Five encodings, one API. The encoding is a storage decision; the reading code
 does not change.
 
+<!-- illustrative -->
 ```python
 ann.contains(class_id, (z, y, x))       # one voxel, one class
 ann.dense(["liver", "lesion"])          # (C, *spatial) bool stack
@@ -103,6 +107,7 @@ Any encoding converts to any other without loss of what both can express:
 $ medh5 seg convert case.medh5 organs --to bitmask --dry-run
 ```
 
+<!-- illustrative -->
 ```python
 w.transcode_annotation("organs", "bitmask")
 ```
@@ -114,12 +119,14 @@ dropped**. Three cases:
 |---|---|
 | anything dense → `instances` | A dense encoding records which voxels belong to a class, never which object. The conversion would merge every object of a class into one and mint an `instance_id` belonging to none of them (§7.4). |
 | `labelmap`/`layers` carrying an in-band ignore region → `bitmask`/`probmap` | Those express ignore as a separate `mask` annotation (§7.7). Dropping it turns "nobody examined these voxels" into "verified absent". Write the ignore region as its own `mask` and reference it with `ignore_mask=` first. |
+| anything → `mask` | A `mask` has no classes, so every class would merge into one volume and the coverage contract would be lost. Build a deliberate union with `encode_mask` and write it with `add_mask`. |
 | `instances` → dense | Allowed, and one-way: identity is not recoverable afterwards. |
 
 ### Instances
 
 Per-object masks, ids and boxes, from an encoding that carries identity:
 
+<!-- illustrative -->
 ```python
 for obj in ann.instances():
     obj.instance_id, obj.class_id
@@ -167,6 +174,7 @@ one thing to get right when writing a detector.
 `slice_index` is the common radiology annotation — a lesion drawn on one slice
 of a 3-D study (§8.2):
 
+<!-- illustrative -->
 ```python
 w.add_boxes("lesions", boxes, class_ids=["lesion"], grid="ct",
             space="index", slice_index=[37, 41])

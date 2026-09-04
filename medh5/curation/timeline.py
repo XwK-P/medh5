@@ -20,9 +20,28 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from medh5._hdf5 import ID_PATTERN
+from medh5.document_fields import check_known
 from medh5.errors import MEDH5ValidationError
 
 DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}")
+
+TIMEPOINT_FIELDS = frozenset(
+    {
+        "id",
+        "index",
+        "label",
+        "date",
+        "days_from_baseline",
+        "study_uid",
+        "series_uids",
+        "subject_age_years",
+        "description",
+    }
+)
+"""Exactly the schema's `timepoint` properties.
+
+The object is `additionalProperties: false`, so anything else is E005.
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,7 +56,7 @@ class Timepoint:
     study_uid: str | None = None
     series_uids: Mapping[str, str] = field(default_factory=dict)
     subject_age_years: float | None = None
-    extra: Mapping[str, Any] = field(default_factory=dict)
+    description: str | None = None
 
     def __post_init__(self) -> None:
         if not ID_PATTERN.match(self.id):
@@ -63,27 +82,18 @@ class Timepoint:
             "days_from_baseline",
             "study_uid",
             "subject_age_years",
+            "description",
         ):
             value = getattr(self, key)
             if value is not None:
                 out[key] = value
         if self.series_uids:
             out["series_uids"] = dict(self.series_uids)
-        out.update(self.extra)
         return out
 
     @classmethod
     def from_json(cls, doc: Mapping[str, Any]) -> Timepoint:
-        known = {
-            "id",
-            "index",
-            "label",
-            "date",
-            "days_from_baseline",
-            "study_uid",
-            "series_uids",
-            "subject_age_years",
-        }
+        check_known(doc, TIMEPOINT_FIELDS, what="timepoint")
         return cls(
             id=str(doc["id"]),
             index=int(doc["index"]),
@@ -93,7 +103,7 @@ class Timepoint:
             study_uid=doc.get("study_uid"),
             series_uids=dict(doc.get("series_uids") or {}),
             subject_age_years=doc.get("subject_age_years"),
-            extra={k: v for k, v in doc.items() if k not in known},
+            description=doc.get("description"),
         )
 
 

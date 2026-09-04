@@ -2375,6 +2375,53 @@ def _register_fourth_batch() -> None:
 _register_fourth_batch()
 
 
+def _register_fifth_batch() -> None:
+    """1.4.0: §7.7's separate-mask form of an ignore region, as the writer emits it."""
+
+    @case(
+        "seg-bitmask-ignore-mask",
+        "A `bitmask` whose ignore region is a sibling `mask` named by "
+        "`ignore_mask`: partial coverage, no W904.",
+        "§7.7, §11.3",
+        warnings=["W912"],
+    )
+    def _seg_bitmask_ignore_mask(path: Path) -> None:
+        rng = np.random.default_rng(SEED)
+        shape = (16, 24, 24)
+        ignore = np.zeros(shape, dtype=bool)
+        ignore[12:, :, :] = True
+        with medh5.create(path, sample_id=path.stem, codec="portable") as w:
+            w.add_timepoint("tp0")
+            w.label_set(_LS)
+            w.add_grid("ct", shape=shape, spacing=(1.5, 0.8, 0.8), timepoint="tp0")
+            w.add_image(
+                "CT",
+                rng.integers(-1000, 1500, shape).astype(np.int16),
+                grid="ct",
+                modality="CT",
+                value_type="quantitative",
+                value_units="HU",
+            )
+            tool = w.software("medh5", medh5.__version__)
+            act = w.activity("annotate", agent=tool)
+            # `bitmask` has no in-band ignore value, so the writer stores the
+            # region as `organs_ignore` and names it on the header (§7.7).
+            kind, _ = w.add_segmentation(
+                "organs",
+                grid="ct",
+                masks=_blocks(shape, {1: (2, 2, 2), 3: (4, 4, 4)}),
+                encoding="bitmask",
+                annotated_classes=[1],
+                ignore=ignore,
+                prov=act,
+            )
+            assert kind == "bitmask"
+            w.deidentification(method="dicom-psi-profile")
+
+
+_register_fifth_batch()
+
+
 CASES: tuple[Case, ...] = tuple(_CASES)
 
 

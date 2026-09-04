@@ -5,7 +5,7 @@ makes "conforming MEDH5 file" a claim somebody else can test.
 
 ## The corpus
 
-115 cases, each a file plus the **exact set of diagnostic codes** a conforming
+116 cases, each a file plus the **exact set of diagnostic codes** a conforming
 validator must emit for it. 39 are valid files an implementation must accept;
 76 are invalid ones it must reject with specific codes — every code in the
 specification's §15.2 table, and every cross-reference clause behind a code.
@@ -17,7 +17,7 @@ against each other.
 ```
 $ medh5 conformance list
 $ medh5 conformance run /tmp/corpus
-115/115 cases pass
+116/116 cases pass
 ```
 
 A test in this repository asserts the §15.2 table and the code registry are
@@ -27,7 +27,7 @@ identical, so the spec and the implementation cannot drift apart silently.
 
 ```
 $ medh5 conformance publish suite/
-wrote the suite to suite/: 115 cases, see suite/README.md
+wrote the suite to suite/: 116 cases, see suite/README.md
 ```
 
 | File | |
@@ -56,12 +56,13 @@ one JSON array:
 
 ```
 $ medh5 conformance score suite/ results.json
-115/115 cases pass
+116/116 cases pass
 ```
 
 `medh5 validate --json` emits a superset of that shape, so the reference
 implementation is scored through exactly the same door as everybody else:
 
+<!-- illustrative -->
 ```python
 import json, subprocess
 
@@ -121,7 +122,7 @@ publish("suite/")
 check_checksums("suite/")           # names of files whose bytes changed
 
 results = score("suite/", submitted)
-summarize(results)                  # {"cases": 115, "passed": 115, "ok": True, ...}
+summarize(results)                  # {"cases": 116, "passed": 116, "ok": True, ...}
 ```
 
 ## Profiles

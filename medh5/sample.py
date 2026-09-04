@@ -345,6 +345,12 @@ class Sample:
         if names:
             first: Image = self.images[names[0]]
             return first.grid
+        if not grids:
+            raise MEDH5ValidationError(
+                f"{self.path or '<memory>'} declares no grids, so it has no "
+                "reference grid",
+                code="E111",
+            )
         return grids[sorted(grids)[0]]
 
     @property

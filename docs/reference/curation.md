@@ -91,6 +91,7 @@ number that gets quoted can be traced to the comparison that made it.
 Object-level agreement matches instances by id where both carry one, and by IoU
 otherwise:
 
+<!-- illustrative -->
 ```python
 from medh5.curation.agreement import compare_instances
 

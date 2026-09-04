@@ -60,6 +60,7 @@ change label to a visit pair by comparing the tuples exactly. Pass
 `["tp1", "tp0"]` and the label is stored reversed, the sampler's forward pair
 finds nothing, and paired training silently sees no label at all:
 
+<!-- illustrative -->
 ```python
 w.add_classification("response", {...}, timepoints=["tp1", "tp0"])   # reversed
 # sampler pair ("tp0", "tp1") -> label None.  No error, no warning.

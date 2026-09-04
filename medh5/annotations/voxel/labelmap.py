@@ -10,7 +10,12 @@ import numpy.typing as npt
 
 from medh5.annotations.base import VoxelAnnotation
 from medh5.annotations.payload import AnnotationPayload
-from medh5.annotations.voxel.payload import Masks, contains_value, normalize_masks
+from medh5.annotations.voxel.payload import (
+    Masks,
+    contains_value,
+    normalize_masks,
+    value_counts,
+)
 from medh5.annotations.voxel.select import label_dtype_size
 from medh5.errors import MEDH5ValidationError
 from medh5.labels.labelset import IGNORE_ID
@@ -82,6 +87,13 @@ class LabelmapAnnotation(VoxelAnnotation):
 
     def _encodes_ignore(self) -> bool:
         return contains_value(self.data, self.ignore_id)
+
+    def _counts_from_planes(self) -> dict[int, int] | None:
+        """One ``bincount`` per slab answers every class (§7.1)."""
+        ids = self.class_ids
+        if not ids:
+            return {}
+        return value_counts(self.data, max(ids))
 
     def labelmap(
         self,

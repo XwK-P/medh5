@@ -15,9 +15,28 @@ from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from medh5.document_fields import check_known
 from medh5.errors import MEDH5ValidationError
 
 AGENT_TYPES = ("person", "software", "organization", "model")
+
+AGENT_FIELDS = frozenset(
+    {"id", "type", "name", "role", "version", "qualification", "organization"}
+)
+ACTIVITY_FIELDS = frozenset(
+    {
+        "id",
+        "type",
+        "agent",
+        "started",
+        "ended",
+        "tool",
+        "inputs",
+        "outputs",
+        "params",
+    }
+)
+"""The schema's `agent` and `activity` properties; both are closed objects."""
 
 ACTIVITY_TYPES = (
     "import",
@@ -56,7 +75,12 @@ class Agent:
     role: str | None = None
     version: str | None = None
     qualification: str | None = None
-    extra: Mapping[str, Any] = field(default_factory=dict)
+    organization: str | None = None
+    """The id of an ``organization`` agent this one belongs to (§11.1).
+
+    A schema field, and the one thing the old ``extra`` mapping was ever used
+    for --- where it failed E005 at ``commit()``.
+    """
 
     def __post_init__(self) -> None:
         if self.type not in AGENT_TYPES:
@@ -68,16 +92,15 @@ class Agent:
 
     def to_json(self) -> dict[str, Any]:
         out: dict[str, Any] = {"id": self.id, "type": self.type, "name": self.name}
-        for key in ("role", "version", "qualification"):
+        for key in ("role", "version", "qualification", "organization"):
             value = getattr(self, key)
             if value is not None:
                 out[key] = value
-        out.update(self.extra)
         return out
 
     @classmethod
     def from_json(cls, doc: Mapping[str, Any]) -> Agent:
-        known = {"id", "type", "name", "role", "version", "qualification"}
+        check_known(doc, AGENT_FIELDS, what="agent")
         return cls(
             id=str(doc["id"]),
             type=str(doc["type"]),
@@ -85,7 +108,7 @@ class Agent:
             role=doc.get("role"),
             version=doc.get("version"),
             qualification=doc.get("qualification"),
-            extra={k: v for k, v in doc.items() if k not in known},
+            organization=doc.get("organization"),
         )
 
 
@@ -102,7 +125,6 @@ class Activity:
     inputs: tuple[str, ...] = ()
     outputs: tuple[str, ...] = ()
     params: Mapping[str, Any] = field(default_factory=dict)
-    extra: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.type not in ACTIVITY_TYPES:
@@ -130,22 +152,11 @@ class Activity:
             out["outputs"] = list(self.outputs)
         if self.params:
             out["params"] = dict(self.params)
-        out.update(self.extra)
         return out
 
     @classmethod
     def from_json(cls, doc: Mapping[str, Any]) -> Activity:
-        known = {
-            "id",
-            "type",
-            "agent",
-            "started",
-            "ended",
-            "tool",
-            "inputs",
-            "outputs",
-            "params",
-        }
+        check_known(doc, ACTIVITY_FIELDS, what="activity")
         return cls(
             id=str(doc["id"]),
             type=str(doc["type"]),
@@ -156,7 +167,6 @@ class Activity:
             inputs=tuple(doc.get("inputs") or ()),
             outputs=tuple(doc.get("outputs") or ()),
             params=dict(doc.get("params") or {}),
-            extra={k: v for k, v in doc.items() if k not in known},
         )
 
 
@@ -205,11 +215,35 @@ class Provenance:
     def has_activity(self, activity_id: str) -> bool:
         return activity_id in self._activities
 
-    def add_agent(self, agent: Agent) -> Agent:
+    def has_agent(self, agent_id: str) -> bool:
+        return agent_id in self._agents
+
+    def add_agent(self, agent: Agent, *, replace: bool = False) -> Agent:
+        """Add an agent; an id already in the graph is refused unless *replace*.
+
+        Assigning into the dict silently overwrote: ``person("Alice",
+        agent_id="s2")`` followed by ``software("tool")`` --- whose automatic
+        id is also ``s2`` --- left one agent, the software, and every
+        activity that named Alice now named the tool.  The file validated,
+        because every reference resolved; it resolved to the wrong node.
+        """
+        if not replace and agent.id in self._agents:
+            raise MEDH5ValidationError(
+                f"agent {agent.id!r} is already declared "
+                f"({self._agents[agent.id].name!r}); pass replace=True to "
+                "rewrite it deliberately"
+            )
         self._agents[agent.id] = agent
         return agent
 
-    def add_activity(self, activity: Activity) -> Activity:
+    def add_activity(self, activity: Activity, *, replace: bool = False) -> Activity:
+        """Add an activity; an id already in the graph is refused unless *replace*."""
+        if not replace and activity.id in self._activities:
+            raise MEDH5ValidationError(
+                f"activity {activity.id!r} is already declared "
+                f"({self._activities[activity.id].type!r}); pass replace=True to "
+                "rewrite it deliberately"
+            )
         self._activities[activity.id] = activity
         return activity
 
@@ -248,7 +282,9 @@ class Provenance:
 
 
 __all__ = [
+    "ACTIVITY_FIELDS",
     "ACTIVITY_TYPES",
+    "AGENT_FIELDS",
     "AGENT_TYPES",
     "Activity",
     "Agent",
