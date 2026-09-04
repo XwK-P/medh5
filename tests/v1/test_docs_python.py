@@ -50,6 +50,21 @@ PAGES = sorted(p for p in DOCS.rglob("*.md") if "spec/medh5-1.0.md" not in str(p
 
 _FENCE = re.compile(r"(?P<marker>[^\n]*)\n```python\n(?P<code>.*?)```", re.S)
 
+OPTIONAL = frozenset(
+    {
+        "highdicom",
+        "hdf5plugin",
+        "jsonschema",
+        "monai",
+        "nibabel",
+        "pydicom",
+        "scipy",
+        "SimpleITK",
+        "torch",
+    }
+)
+"""Packages a page may import that a given CI job does not install."""
+
 
 def _blocks() -> list[tuple[Path, int, str, bool]]:
     """``(page, line, code, marked)`` for every fenced Python block."""
@@ -406,6 +421,17 @@ def test_documented_python_runs(
             # demonstrate on purpose.
             warnings.simplefilter("ignore")
             exec(compile(code, f"{page}:{line}", "exec"), namespace)
+    except ImportError as exc:
+        # An optional dependency this job does not install.  `require()` names
+        # the extra, and `pip install 'medh5[...]'` is in the message either
+        # way; the rest of the suite reaches the same conclusion with
+        # `importorskip`.  A name removed from *this* package raises
+        # `ImportError` too, so only the optional ones are skipped.
+        if "pip install 'medh5[" in str(exc) or getattr(exc, "name", "") in OPTIONAL:
+            pytest.skip(f"{page.relative_to(DOCS)}:{line}: {exc}")
+        raise AssertionError(
+            f"{page.relative_to(DOCS)}:{line} does not run: {exc}\n---\n{code}"
+        ) from exc
     except SystemExit:
         # A page that ends in `raise SystemExit(...)` is showing a pipeline
         # gate; running it is the point, exiting the test run is not.
