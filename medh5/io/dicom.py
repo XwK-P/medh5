@@ -35,7 +35,9 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
+from medh5._optional import require
 from medh5.errors import MEDH5ValidationError
+from medh5.io._common import sanitize_stem
 from medh5.io.grouping import (
     Occasion,
     SubjectGroup,
@@ -65,6 +67,7 @@ STORED_TAGS = (
     "ContrastBolusAgent",
     "PatientPosition",
     "BodyPartExamined",
+    "PhotometricInterpretation",
 )
 """Acquisition parameters copied to ``/meta → acquisition`` (§4.5).
 
@@ -75,14 +78,7 @@ de-identified.
 
 
 def require_pydicom() -> Any:
-    try:
-        import pydicom
-    except ImportError as exc:  # pragma: no cover - depends on the environment
-        raise ImportError(
-            "pydicom is required for DICOM conversion. Install it with: "
-            "pip install 'medh5[dicom]'"
-        ) from exc
-    return pydicom
+    return require("pydicom", extra="dicom", purpose="DICOM conversion")
 
 
 @dataclass(slots=True)
@@ -121,16 +117,55 @@ class Series:
         )
 
 
-def scan_dicom(root: str | os.PathLike[str]) -> list[Series]:
-    """Walk a directory tree and collect its image series."""
+_ENHANCED_SOP_CLASSES = (
+    "EnhancedCTImageStorage",
+    "EnhancedMRImageStorage",
+    "EnhancedPETImageStorage",
+    "LegacyConvertedEnhancedCTImageStorage",
+    "LegacyConvertedEnhancedMRImageStorage",
+    "LegacyConvertedEnhancedPETImageStorage",
+    "EnhancedUSVolumeStorage",
+)
+"""Multi-frame image objects whose geometry lives in per-frame functional groups.
+
+This importer reads classic single-frame series.  An enhanced object carries
+`ImagePositionPatient` per frame rather than at the top level, so the scan used
+to skip it as if it were not an image at all --- silently, which for a modern
+MR export means an empty import and no word why.
+"""
+
+
+def _enhanced_sop_classes(pydicom: Any) -> frozenset[str]:
+    return frozenset(
+        str(getattr(pydicom.uid, name))
+        for name in _ENHANCED_SOP_CLASSES
+        if hasattr(pydicom.uid, name)
+    )
+
+
+def scan_dicom(
+    root: str | os.PathLike[str], *, report: ConversionReport | None = None
+) -> list[Series]:
+    """Walk a directory tree and collect its image series.
+
+    Objects this importer cannot read as a series are skipped, and the ones a
+    user would expect to be images --- enhanced multi-frame CT/MR/PET --- are
+    reported on *report*, so an import that found nothing says why.
+    """
     pydicom = require_pydicom()
+    enhanced = _enhanced_sop_classes(pydicom)
     found: dict[str, Series] = {}
+    unsupported: dict[str, list[str]] = {}
     for path in sorted(Path(os.fspath(root)).rglob("*")):
         if not path.is_file():
             continue
         try:
             header = pydicom.dcmread(str(path), stop_before_pixels=True, force=False)
-        except Exception:  # noqa: BLE001 - a tree holds more than DICOM
+        except Exception:
+            continue
+        sop_class = str(getattr(header, "SOPClassUID", ""))
+        if sop_class in enhanced:
+            unsupported.setdefault(sop_class, []).append(str(path))
             continue
         uid = getattr(header, "SeriesInstanceUID", None)
         if uid is None or not hasattr(header, "ImagePositionPatient"):
@@ -148,6 +183,23 @@ def scan_dicom(root: str | os.PathLike[str]) -> list[Series]:
             )
             found[uid] = series
         series.paths.append(str(path))
+    if unsupported and report is not None:
+        total = sum(len(v) for v in unsupported.values())
+        report.warn(
+            "unsupported",
+            f"{total} enhanced multi-frame instance(s) were skipped: this importer "
+            "reads classic single-frame series, and an enhanced CT/MR/PET object "
+            "carries its geometry in per-frame functional groups it does not read; "
+            "convert them to classic instances first",
+            {
+                "sop_classes": {
+                    sop: len(paths) for sop, paths in sorted(unsupported.items())
+                },
+                "files": sorted(p for paths in unsupported.values() for p in paths)[
+                    :20
+                ],
+            },
+        )
     return sorted(found.values(), key=lambda s: (s.study_uid, s.series_uid))
 
 
@@ -209,6 +261,18 @@ def read_series(
         expect=2,
     )
     volume = np.stack([np.asarray(s.pixel_array) for s in slices])
+    photometric = _text(getattr(slices[0], "PhotometricInterpretation", None))
+    if photometric == "MONOCHROME1" and report is not None:
+        # Stored as written (§4.2): inverting would make the file disagree
+        # with its source, and this importer never rewrites values.  But a
+        # model trained on intensity needs to know that here low is bright.
+        report.warn(
+            "photometric",
+            f"series {series.series_uid}: PhotometricInterpretation is "
+            "MONOCHROME1, so lower stored values are brighter; values are stored "
+            "as written, and a model trained on intensity should invert them",
+            {"series_uid": series.series_uid},
+        )
     direction = np.stack([normal, column, row], axis=1)
     geometry = {
         "shape": tuple(int(v) for v in volume.shape),
@@ -428,7 +492,7 @@ def from_dicom(
     """
     log = report or ConversionReport(converter="from-dicom")
     log.source = os.fspath(root)
-    series = scan_dicom(root)
+    series = scan_dicom(root, report=log)
     if series_uids is not None:
         wanted = set(series_uids)
         series = [s for s in series if s.series_uid in wanted]
@@ -482,7 +546,7 @@ def _consistent_patient(entries: Sequence[Series], log: ConversionReport) -> str
 
 
 def _safe(text: str) -> str:
-    return "".join(c if (c.isalnum() or c in "._-") else "_" for c in text)[:200]
+    return sanitize_stem(text, limit=200)
 
 
 def _series_names(entries: Sequence[Series], tp: str) -> list[tuple[Series, str, str]]:
@@ -623,7 +687,7 @@ def _iso(value: str | None) -> str | None:
     if not value:
         return None
     text = str(value).strip()
-    if len(text) == 8 and text.isdigit():  # noqa: PLR2004 - DICOM DA length
+    if len(text) == 8 and text.isdigit():
         return f"{text[:4]}-{text[4:6]}-{text[6:]}"
     return text
 

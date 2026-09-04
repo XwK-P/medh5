@@ -68,7 +68,7 @@ def _guard(call, n: int, columns: tuple[str, ...]) -> None:
         payload = call()
     except MEDH5Error:
         return
-    except Exception as exc:  # noqa: BLE001 - the point of the test
+    except Exception as exc:
         raise AssertionError(
             f"raised {type(exc).__name__} rather than MEDH5Error: {exc}"
         ) from exc
@@ -327,7 +327,7 @@ class TestTranscodeRoundTrip:
             converted = transcode_payload(payload, target, spatial_shape=shape)
         except MEDH5Error:
             return  # a target that cannot hold the content must refuse
-        except Exception as exc:  # noqa: BLE001 - the point of the test
+        except Exception as exc:
             raise AssertionError(
                 f"{source}->{target} raised {type(exc).__name__}: {exc}"
             ) from exc

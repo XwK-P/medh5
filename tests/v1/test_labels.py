@@ -201,6 +201,7 @@ class TestRegistry:
     def test_load_file(self, tmp_path):
         path = tmp_path / "v.json"
         path.write_text(
-            '{"id":"f","version":"1","classes":[{"id":1,"key":"a","name":"A"}]}'
+            '{"id":"f","version":"1","classes":[{"id":1,"key":"a","name":"A"}]}',
+            encoding="utf-8",
         )
         assert registry.load_file(path)["a"].name == "A"

@@ -118,7 +118,7 @@ def build_index(
 
     ids = annotation.resolve_classes(classes)
     rng = np.random.default_rng(seed)
-    window = annotation._roi(None)  # noqa: SLF001 - same-package internal
+    window = annotation._roi(None)
     n_spatial = len(annotation.spatial_shape)
 
     counts = np.zeros(len(ids), dtype=np.int64)
@@ -127,7 +127,7 @@ def build_index(
     occ_planes: list[npt.NDArray[np.bool_]] = []
 
     for i, class_id in enumerate(ids):
-        mask = annotation._dense_class(class_id, window)  # noqa: SLF001
+        mask = annotation._dense_class(class_id, window)
         counts[i] = int(mask.sum())
         if counts[i]:
             slices = []

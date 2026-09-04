@@ -22,7 +22,7 @@ from medh5.transforms.base import Transform, component_ids, open_transform
 
 def encode_composite(components: Sequence[str]) -> AnnotationPayload:
     """Declare an ordered composition by component id."""
-    if len(components) < 2:  # noqa: PLR2004
+    if len(components) < 2:
         raise MEDH5ValidationError(
             "a composite transform needs at least two components", code="E501"
         )

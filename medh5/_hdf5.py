@@ -11,6 +11,7 @@ import contextlib
 import os
 import re
 import stat
+import uuid
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
@@ -191,7 +192,20 @@ def open_h5(path: str | os.PathLike[str], mode: str = "r") -> h5py.File:
 
 
 def _fsync_path(path: Path) -> None:
-    fd = os.open(str(path), os.O_RDONLY)
+    """Flush a closed file to stable storage before it is renamed into place.
+
+    Windows commits a file only through a handle opened for writing ---
+    ``os.fsync`` on a read-only descriptor fails with EBADF there --- so the
+    descriptor is read-write on that platform and read-only everywhere else,
+    where write access would need the file's mode to allow it.  It is also
+    opened in binary mode there: the C runtime's default text mode treats a
+    trailing 0x1A as an end-of-file mark and strips it from a writable file
+    on open, and one HDF5 file in 256 ends with that byte.
+    """
+    flags = os.O_RDONLY
+    if os.name == "nt":
+        flags = os.O_RDWR | getattr(os, "O_BINARY", 0)
+    fd = os.open(str(path), flags)
     try:
         os.fsync(fd)
     finally:
@@ -208,6 +222,16 @@ def _fsync_dir(directory: Path) -> None:
             os.fsync(fd)
     finally:
         os.close(fd)
+
+
+def _temporary_name(name: str) -> str:
+    """A sibling name no other writer in any process is using.
+
+    The pid alone told two threads of one process apart from nothing: both
+    built ``.x.medh5.tmp-1234``, and the second ``os.replace`` moved a file the
+    first was still writing.
+    """
+    return f".{name}.tmp-{os.getpid()}-{uuid.uuid4().hex[:8]}"
 
 
 def _existing_mode(target: Path) -> int | None:
@@ -237,7 +261,7 @@ def atomic_h5(
     """
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_name(f".{target.name}.tmp-{os.getpid()}")
+    tmp = target.with_name(_temporary_name(target.name))
     mode = _existing_mode(target)
     handle = None
     try:
@@ -285,7 +309,7 @@ def atomic_rewrite(
     src_path = Path(os.fspath(source))
     dst_path = Path(os.fspath(target)) if target is not None else src_path
     dst_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dst_path.with_name(f".{dst_path.name}.tmp-{os.getpid()}")
+    tmp = dst_path.with_name(_temporary_name(dst_path.name))
     mode = _existing_mode(dst_path)
     src: h5py.File | None = None
     dst: h5py.File | None = None

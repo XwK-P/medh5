@@ -58,7 +58,40 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install -e ".[dev,schema,torch,nifti,dicom,dicomseg,itk,interp]"
-      - run: pytest tests/ -v --cov=medh5 --cov-report=term-missing --cov-fail-under=90
+      # A fresh install resolves numpy 2; say so, so the matrix is known to
+      # cover it rather than covering it by accident of resolution.
+      - run: python -c "import numpy; assert int(numpy.__version__.split('.')[0]) >= 2, numpy.__version__"
+      # `-rs` prints the skips. A skipped test is not a passing test, and the
+      # two the suite has by design should be visible in every log.
+      - run: pytest tests/ -v -rs --cov=medh5 --cov-report=term-missing --cov-fail-under=90
+
+  test-windows:
+    # `atomic_rewrite` exists for a Windows failure --- `os.replace` onto a
+    # source that is still open --- and until now nothing ran there. Core
+    # extras only: the optional-dependency paths are the Linux matrix's job,
+    # this one is about the platform.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev,schema,nifti,dicom,dicomseg,interp]"
+      - run: pytest tests/ -v -rs --no-cov -p no:cacheprovider
+
+  test-min-deps:
+    # The floors `pyproject.toml` declares, on the oldest interpreter it
+    # supports. A floor nothing installs is a floor nobody has checked.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: pip install -e ".[dev,schema]"
+      - run: pip install "numpy==1.24.*" "h5py==3.13.*" "hdf5plugin==4.1.*"
+      - run: python -c "import numpy, h5py, hdf5plugin; print(numpy.__version__, h5py.__version__, hdf5plugin.version)"
+      - run: pytest tests/ -v -rs --no-cov -p no:cacheprovider
 
   test-macos:
     # macOS defaults to the `spawn` multiprocessing start method,
@@ -75,7 +108,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install -e ".[dev,schema,torch,nifti,dicom,dicomseg,itk,interp]"
-      - run: pytest tests/ -v --cov=medh5 --cov-report=term-missing --cov-fail-under=90
+      - run: pytest tests/ -v -rs --cov=medh5 --cov-report=term-missing --cov-fail-under=90
 
   test-monai:
     # MONAI is a heavy dependency for a handful of tests, so it stays out of
@@ -120,7 +153,7 @@ jobs:
 
   conformance:
     # The corpus is a shipped artifact, not a test fixture: a third-party
-    # implementation runs the same 103 cases, and is scored the same way.
+    # implementation runs the same 115 cases, and is scored the same way.
     # Running it here through `publish` + `score` exercises the public path
     # rather than the in-process one.
     runs-on: ubuntu-latest
@@ -139,7 +172,7 @@ jobs:
           results = []
           for case in manifest["cases"]:
               # No `check=True`: `validate` exits non-zero for a file with
-              # errors, and 65 of the 103 cases are deliberately invalid. The
+              # errors, and 76 of the 115 cases are deliberately invalid. The
               # exit code is the answer, not a failure.
               out = subprocess.run(
                   ["medh5", "validate", f"suite/{case['file']}",

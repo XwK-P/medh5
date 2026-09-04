@@ -135,7 +135,7 @@ class LabelClass:
         object.__setattr__(self, "codes", tuple(self.codes))
         if self.color is not None:
             color = tuple(int(c) for c in self.color)
-            if len(color) != 4 or any(not 0 <= c <= 255 for c in color):  # noqa: PLR2004
+            if len(color) != 4 or any(not 0 <= c <= 255 for c in color):
                 raise MEDH5ValidationError(
                     f"class {self.key!r}: color must be four 0-255 RGBA values",
                     code="E306",
@@ -296,7 +296,7 @@ class LabelSet:
                 raise MEDH5ValidationError(
                     f"label set {self.id!r}: hierarchy cycle {cycle}", code="E304"
                 )
-            if state == 2:  # noqa: PLR2004 - fully explored
+            if state == 2:
                 return
             colour[node] = 1
             for parent in self._by_id[node].parents:

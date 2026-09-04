@@ -14,6 +14,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from medh5.curation.provenance import check_timestamp
 from medh5.errors import MEDH5ValidationError
 
 SEX_VALUES = ("F", "M", "O", "unknown")
@@ -146,6 +147,10 @@ class SplitClaim:
                 f"partition {self.partition!r} must be one of {list(PARTITIONS)}",
                 code="E005",
             )
+        if self.assigned_at is not None:
+            check_timestamp(
+                self.assigned_at, where=f"split {self.set_id!r}.assigned_at"
+            )
 
     def to_json(self) -> dict[str, Any]:
         out: dict[str, Any] = {"set_id": self.set_id, "partition": self.partition}
@@ -183,6 +188,10 @@ class Deidentification:
     date: str | None = None
     burned_in_annotation_checked: bool | None = None
     extra: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.date is not None:
+            check_timestamp(self.date, where="deidentification.date")
 
     def to_json(self) -> dict[str, Any]:
         out: dict[str, Any] = {"method": self.method}

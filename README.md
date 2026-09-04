@@ -4,7 +4,6 @@
 [![Python versions](https://img.shields.io/pypi/pyversions/medh5.svg)](https://pypi.org/project/medh5/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![CI](https://github.com/XwK-P/medh5/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/XwK-P/medh5/actions/workflows/ci.yml)
-[![Coverage](https://img.shields.io/badge/coverage-93%25-brightgreen.svg)](#)
 [![Typed](https://img.shields.io/badge/typed-mypy%20strict-informational.svg)](medh5/py.typed)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 
@@ -15,7 +14,7 @@ Multi-modality images, segmentation in five encodings, detection boxes,
 keypoints, contours, meshes, classification, registration between visits,
 provenance and quality records, and per-object integrity digests. Format
 version **1.0**, with a [normative specification](https://medh5.readthedocs.io/en/latest/spec/medh5-1.0/) and a
-[103-case conformance suite](https://medh5.readthedocs.io/en/latest/spec/conformance/) any implementation can run.
+[115-case conformance suite](https://medh5.readthedocs.io/en/latest/spec/conformance/) any implementation can run.
 
 ```python
 import medh5
@@ -58,7 +57,7 @@ guides, the Python and CLI reference, and the normative specification.
 - **Absence is not silence** — a class examined and not found is recorded as
   such, which is a different training signal from one nobody examined.
 - **Every claim is checkable** — per-object digests, a Merkle `content_id` that
-  survives recompression, a stable diagnostic-code table, and a 103-case
+  survives recompression, a stable diagnostic-code table, and a 115-case
   conformance corpus.
 - **Reading a patch is fast** — a 64³ multi-class patch in ~4 ms, and O(1)
   foreground sampling once `build_index()` has run.

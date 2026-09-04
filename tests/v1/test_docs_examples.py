@@ -34,7 +34,7 @@ def _shell_lines() -> list[tuple[Path, str]]:
     out: list[tuple[Path, str]] = []
     for path in [*PAGES, README]:
         for block in re.findall(
-            r"```(?:bash|sh|console)?\n(.*?)```", path.read_text(), re.S
+            r"```(?:bash|sh|console)?\n(.*?)```", path.read_text(encoding="utf-8"), re.S
         ):
             for line in re.sub(r"\\\n\s*", " ", block).splitlines():
                 line = line.strip().removeprefix("$ ").strip()
@@ -109,7 +109,7 @@ def test_the_registration_preflight_resolves_on_frames() -> None:
     `is not None`, and the paragraph-scoped disclaimer check reads that `not` as
     a correction and exempts the block.
     """
-    text = (DOCS / "guides" / "longitudinal.md").read_text()
+    text = (DOCS / "guides" / "longitudinal.md").read_text(encoding="utf-8")
     block = next(
         b
         for b in re.findall(r"```python\n(.*?)```", text, re.S)
@@ -248,7 +248,7 @@ def test_corrected_claims_stay_corrected(
     )
     hits: list[str] = []
     for path in [*PAGES, README]:
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
         offset = 0
         for para in text.split("\n\n"):
             if unless and re.search(unless, para, re.I):

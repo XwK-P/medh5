@@ -5,10 +5,10 @@ makes "conforming MEDH5 file" a claim somebody else can test.
 
 ## The corpus
 
-103 cases, each a file plus the **exact set of diagnostic codes** a conforming
-validator must emit for it. 38 are valid files an implementation must accept;
-65 are invalid ones it must reject with specific codes — one per code in the
-specification's §15.2 table.
+115 cases, each a file plus the **exact set of diagnostic codes** a conforming
+validator must emit for it. 39 are valid files an implementation must accept;
+76 are invalid ones it must reject with specific codes — every code in the
+specification's §15.2 table, and every cross-reference clause behind a code.
 
 Invalid cases are built by mutating a valid one, because the writer refuses to
 produce them. That is the point: the writer and the validator are checked
@@ -17,7 +17,7 @@ against each other.
 ```
 $ medh5 conformance list
 $ medh5 conformance run /tmp/corpus
-103/103 cases pass
+115/115 cases pass
 ```
 
 A test in this repository asserts the §15.2 table and the code registry are
@@ -27,12 +27,12 @@ identical, so the spec and the implementation cannot drift apart silently.
 
 ```
 $ medh5 conformance publish suite/
-wrote the suite to suite/: 103 cases, see suite/README.md
+wrote the suite to suite/: 115 cases, see suite/README.md
 ```
 
 | File | |
 |---|---|
-| `*.medh5`, `*.medh5c` | the cases: 99 samples, and four collections |
+| `*.medh5`, `*.medh5c` | the cases: 111 samples and four collections |
 | `expected.json` | per case: the clause, the level, and the expected codes |
 | `codes.json` | the §15.2 diagnostic code table as data |
 | `medh5-sample-1.0.schema.json` | the JSON Schema for `/meta` |
@@ -56,7 +56,7 @@ one JSON array:
 
 ```
 $ medh5 conformance score suite/ results.json
-103/103 cases pass
+115/115 cases pass
 ```
 
 `medh5 validate --json` emits a superset of that shape, so the reference
@@ -121,7 +121,7 @@ publish("suite/")
 check_checksums("suite/")           # names of files whose bytes changed
 
 results = score("suite/", submitted)
-summarize(results)                  # {"cases": 103, "passed": 103, "ok": True, ...}
+summarize(results)                  # {"cases": 115, "passed": 115, "ok": True, ...}
 ```
 
 ## Profiles

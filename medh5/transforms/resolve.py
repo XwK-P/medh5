@@ -43,8 +43,8 @@ class InverseTransform(Transform):
             f"{inner.transform_id}⁻¹",
             inner.group,
             header,
-            inner._grids,  # noqa: SLF001 - same-package internal
-            inner._siblings,  # noqa: SLF001
+            inner._grids,
+            inner._siblings,
         )
 
     @staticmethod
@@ -121,8 +121,8 @@ class ChainTransform(Transform):
             " -> ".join(t.transform_id for t in self._chain),
             self._chain[0].group,
             header,
-            self._chain[0]._grids,  # noqa: SLF001 - same-package internal
-            self._chain[0]._siblings,  # noqa: SLF001
+            self._chain[0]._grids,
+            self._chain[0]._siblings,
         )
 
     @property
@@ -231,7 +231,7 @@ def _reject_ambiguous(
 ) -> None:
     """Raise when two distinct minimal-length routes reach the same frame."""
     routes = {tuple(_step_id(step) for step in path): path for path in arrivals}
-    if len(routes) < 2:  # noqa: PLR2004 - one route, or the same route twice
+    if len(routes) < 2:
         return
     named = sorted(" -> ".join(route) for route in routes)
     raise MEDH5ValidationError(

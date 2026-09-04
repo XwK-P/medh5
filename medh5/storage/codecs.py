@@ -186,7 +186,7 @@ def describe_filters(dset: Any) -> str:
 
 def _describe_blosc(values: Any) -> str:
     """Decode ``(_, _, _, _, clevel, shuffle, cname)`` from the Blosc client data."""
-    if len(values) < 7:  # noqa: PLR2004 - not a Blosc parameter block
+    if len(values) < 7:
         return "blosc2"
     clevel, shuffle, cname = int(values[4]), int(values[5]), int(values[6])
     return (

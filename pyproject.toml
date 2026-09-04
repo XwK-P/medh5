@@ -1,14 +1,19 @@
 [build-system]
-requires = ["setuptools>=68"]
+# >= 77 for the SPDX `license` string and `license-files`.
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "medh5"
-version = "1.2.1"
+# The one source of the version is `medh5/__about__.py`, which is what gets
+# stamped into every file's `generator` and every manifest; declaring it twice
+# needed a test to keep the two equal.
+dynamic = ["version"]
 description = "Self-describing HDF5 container for one medical imaging sample and all of its ground truth: multi-timepoint, multi-modal images with segmentation, detection, classification and registration annotations, provenance and integrity."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { file = "LICENSE" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
   { name = "Puyang Wang", email = "pauliwang411@gmail.com" },
 ]
@@ -32,7 +37,6 @@ classifiers = [
   "Development Status :: 5 - Production/Stable",
   "Intended Audience :: Developers",
   "Intended Audience :: Science/Research",
-  "License :: OSI Approved :: MIT License",
   "Operating System :: OS Independent",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.10",
@@ -44,7 +48,7 @@ classifiers = [
   "Typing :: Typed",
 ]
 dependencies = [
-  "h5py>=3.10",
+  "h5py>=3.13",
   "hdf5plugin>=4.1",
   "numpy>=1.24",
 ]
@@ -113,6 +117,9 @@ medh5 = "medh5.cli:main"
 where = ["."]
 include = ["medh5*"]
 
+[tool.setuptools.dynamic]
+version = { attr = "medh5.__about__.__version__" }
+
 [tool.setuptools.package-data]
 medh5 = ["py.typed", "schemas/*.json", "labels/vocabularies/*.json"]
 
@@ -138,7 +145,10 @@ extend-exclude = ["docs/examples", "site"]
 exclude = ["*.md"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "SIM"]
+# RUF100 fails on a `noqa` for a rule that is not selected. Fifty of them
+# accumulated for a rule family nobody had turned on; a suppression that
+# suppresses nothing is a comment that lies.
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF100"]
 
 [tool.mypy]
 strict = true

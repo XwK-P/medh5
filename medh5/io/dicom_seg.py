@@ -32,7 +32,9 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
+from medh5._optional import require
 from medh5.errors import MEDH5ValidationError
+from medh5.io._common import sanitize_key
 from medh5.io.report import ConversionReport
 
 BINARY = "BINARY"
@@ -40,14 +42,7 @@ FRACTIONAL = "FRACTIONAL"
 
 
 def require_highdicom() -> Any:
-    try:
-        import highdicom
-    except ImportError as exc:  # pragma: no cover - depends on the environment
-        raise ImportError(
-            "highdicom is required to write DICOM SEG. Install it with: "
-            "pip install 'medh5[dicomseg]'"
-        ) from exc
-    return highdicom
+    return require("highdicom", extra="dicomseg", purpose="writing DICOM SEG")
 
 
 def read_dicom_seg(
@@ -67,7 +62,7 @@ def read_dicom_seg(
         )
     segments = _segments(dataset)
     frames = np.asarray(dataset.pixel_array)
-    if frames.ndim == 2:  # noqa: PLR2004 - a one-frame SEG
+    if frames.ndim == 2:
         frames = frames[None]
     rows, columns = int(dataset.Rows), int(dataset.Columns)
     placement = _frame_placement(dataset, frames.shape[0])
@@ -386,9 +381,8 @@ def _first_or(geometry: Mapping[str, Any], key: str) -> str:
 
 
 def _key(label: str) -> str:
-    """A SegmentLabel as a label-set key (§2.3 identifier rules)."""
-    cleaned = "".join(c if (c.isalnum() or c in "._-") else "_" for c in label.strip())
-    return (cleaned or "segment").lower()[:128]
+    """A SegmentLabel as a label-set key (§5.2)."""
+    return sanitize_key(label, fallback="segment")
 
 
 def _match_grid(sample: Any, geometry: Mapping[str, Any], log: ConversionReport) -> str:

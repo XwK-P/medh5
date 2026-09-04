@@ -28,7 +28,7 @@ def encode_affine(matrix: npt.ArrayLike) -> AnnotationPayload:
     it is actually wanted.
     """
     array = np.asarray(matrix, dtype=np.float64)
-    if array.ndim != 2 or array.shape[0] != array.shape[1]:  # noqa: PLR2004
+    if array.ndim != 2 or array.shape[0] != array.shape[1]:
         raise MEDH5ValidationError(
             f"affine `matrix` must be square (S+1, S+1), got {array.shape}", code="E504"
         )

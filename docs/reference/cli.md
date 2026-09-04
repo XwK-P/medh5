@@ -326,7 +326,11 @@ medh5 bench [PATH] [--patch N] [--repeats N] [--workers N] [--annotation A] [--n
 ```
 
 Reproduce the performance targets on your hardware. With no path it builds a
-synthetic sample first.
+synthetic sample first, and a synthetic two-visit sample related by a
+displacement field for the `paired_center_ms` row — one patch centre moved
+between visits, the read a paired dataset does once per item. A longitudinal
+sample given as `PATH` gets the same row when a transform relates its first
+two visits.
 
 ## Conformance
 

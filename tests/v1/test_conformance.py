@@ -106,7 +106,7 @@ def _samples_of(path: Path):
 class TestManifest:
     def test_manifest_describes_every_written_file(self, tmp_path):
         manifest_path = build_corpus(tmp_path, names=["core-minimal", "seg-layers"])
-        manifest = json.loads(Path(manifest_path).read_text())
+        manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
         assert manifest["format"] == medh5.FORMAT_VERSION
         assert len(manifest["cases"]) == 2
         for record in manifest["cases"]:
@@ -189,7 +189,9 @@ class TestPublishedSchema:
 
         published = Path(__file__).resolve().parents[2] / "schemas" / SCHEMA_PATH.name
         assert published.exists(), f"published schema missing at {published}"
-        assert json.loads(published.read_text()) == json.loads(SCHEMA_PATH.read_text())
+        assert json.loads(published.read_text(encoding="utf-8")) == json.loads(
+            SCHEMA_PATH.read_text(encoding="utf-8")
+        )
 
     def test_the_schema_is_reachable_as_package_data(self):
         from medh5.document import schema
@@ -214,7 +216,7 @@ class TestSpecSync:
 
         spec = (
             Path(__file__).resolve().parents[2] / "docs" / "spec" / "medh5-1.0.md"
-        ).read_text()
+        ).read_text(encoding="utf-8")
         start = spec.index("### 15.2 Error codes")
         table = spec[start : spec.index("## 16. Versioning")]
         return set(re.findall(r"`([EW]\d{3})`", table))
@@ -243,7 +245,7 @@ class TestPublication:
         assert (suite / "medh5-sample-1.0.schema.json").exists()
         assert (suite / "README.md").exists()
         assert (suite / "SHA256SUMS").exists()
-        codes = json.loads((suite / "codes.json").read_text())
+        codes = json.loads((suite / "codes.json").read_text(encoding="utf-8"))
         assert {c["code"] for c in codes["codes"]} == set(CODES)
         for case in load_manifest(suite)["cases"]:
             assert (suite / case["file"]).exists(), case["name"]
@@ -251,7 +253,7 @@ class TestPublication:
     def test_the_checksums_cover_every_published_file(self, suite):
         listed = {
             line.split("  ", 1)[1]
-            for line in (suite / "SHA256SUMS").read_text().splitlines()
+            for line in (suite / "SHA256SUMS").read_text(encoding="utf-8").splitlines()
             if line.strip()
         }
         on_disk = {
@@ -344,7 +346,7 @@ class TestPublication:
         )
         room = tmp_path / "future"
         room.mkdir()
-        (room / "expected.json").write_text(json.dumps(manifest))
+        (room / "expected.json").write_text(json.dumps(manifest), encoding="utf-8")
         results = score(room, [{"file": "from-the-future.medh5", "errors": ["E404"]}])
         future = [r for r in results if r.case.name == "from-the-future"]
         assert len(future) == 1 and future[0].ok
@@ -415,7 +417,7 @@ class TestCorpusSmoke:
             for sample in _samples_of(path):
                 try:
                     self._read_surface(sample)
-                except Exception as exc:  # noqa: BLE001 - the point of the test
+                except Exception as exc:
                     raise AssertionError(
                         f"{case.name}: {type(exc).__name__}: {exc}"
                     ) from exc
@@ -433,7 +435,7 @@ class TestCorpusSmoke:
                     validate_file(path)
             except MEDH5Error:
                 continue  # a documented refusal is the correct outcome
-            except Exception as exc:  # noqa: BLE001 - the point of the test
+            except Exception as exc:
                 bad.append(f"{case.name}: {type(exc).__name__}: {exc}")
         assert not bad, (
             "public read paths raised undocumented exceptions:\n" + "\n".join(bad)

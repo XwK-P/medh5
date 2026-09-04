@@ -177,8 +177,9 @@ def canonical_attrs(obj: h5py.HLObject, names: Iterable[str]) -> str:
 def attrs_digest(
     obj: h5py.HLObject, names: Iterable[str], algo: str = DEFAULT_ALGO
 ) -> str:
-    payload = canonical_attrs(obj, names).encode("utf-8")
-    return f"{algo}:{hashlib.new(algo, payload).hexdigest()}"
+    hasher = _hasher(algo)
+    hasher.update(canonical_attrs(obj, names).encode("utf-8"))
+    return f"{algo}:{hasher.hexdigest()}"
 
 
 def stamp_digests(
@@ -266,7 +267,9 @@ def group_digest(
             else dataset_digest(node, relative_path(node, root), algo)
         )
         lines.append(f"{name}\t{value}\n")
-    return f"{algo}:{hashlib.new(algo, ''.join(lines).encode('utf-8')).hexdigest()}"
+    hasher = _hasher(algo)
+    hasher.update("".join(lines).encode("utf-8"))
+    return f"{algo}:{hasher.hexdigest()}"
 
 
 def compute_content_id(
@@ -281,7 +284,12 @@ def compute_content_id(
     *attr_names* maps a sample-root-relative object path to the spec-defined
     attribute names of that object.  Paths are relative to the **sample root**,
     so a sample extracted from a collection keeps the same ``content_id``.
+
+    An *algo* outside §2.1's vocabulary is E703 here, before any byte is
+    hashed: a file declaring ``blake3`` used to reach ``hashlib.new`` and die
+    with a ``ValueError`` no caller could catch by the documented type.
     """
+    _hasher(algo)
     dataset_lines = sorted(
         f"{path}\t{value}\n"
         for path, value in (
@@ -292,14 +300,18 @@ def compute_content_id(
     meta_text = (
         raw_meta.decode("utf-8") if isinstance(raw_meta, bytes) else str(raw_meta)
     )
-    meta_hash = hashlib.new(algo, meta_text.encode("utf-8")).hexdigest()
+    meta_hasher = _hasher(algo)
+    meta_hasher.update(meta_text.encode("utf-8"))
+    meta_hash = meta_hasher.hexdigest()
     attr_lines = sorted(
         f"@{path}\t{attrs_digest(root[path] if path else root, names, algo)}\n"
         for path, names in attr_names.items()
         if (path == "" or path in root)
     )
     payload = "".join(dataset_lines) + f"meta\t{meta_hash}\n" + "".join(attr_lines)
-    return f"{algo}:{hashlib.new(algo, payload.encode('utf-8')).hexdigest()}"
+    root_hasher = _hasher(algo)
+    root_hasher.update(payload.encode("utf-8"))
+    return f"{algo}:{root_hasher.hexdigest()}"
 
 
 __all__ = [

@@ -24,6 +24,13 @@ from medh5.errors import (
 from medh5.validate import validate_file
 from tests.v1.conftest import SHAPE, write_sample
 
+# Windows keeps only a read-only bit, so a mode round trip cannot be asserted
+# there. The Linux matrix holds these; the Windows job exists for the replace
+# ordering in `TestAtomicRewrite`, which runs everywhere.
+posix_modes = pytest.mark.skipif(
+    os.name == "nt", reason="POSIX permission bits are not a Windows concept"
+)
+
 
 def minimal(writer, *, grid: str = "g") -> None:
     """The two calls every sample needs, so a test can add just its own point."""
@@ -562,6 +569,7 @@ class TestAmendPreservesWhatItDoesNotOwn:
             assert handle.attrs["medh5_version"] == medh5.__format_version__
             assert "images" in handle and "CT2" in handle["images"]
 
+    @posix_modes
     def test_S14_4_permissions_survive_the_copy_on_write_replace(self, tmp_path):
         """The mode is the access control on a shared research filesystem.
 
@@ -626,6 +634,7 @@ class TestAtomicRewrite:
         with medh5.open(path) as sample:
             assert "CT" in sample.images
 
+    @posix_modes
     def test_repack_preserves_content_and_permissions(self, tmp_path):
         from medh5._hdf5 import repack
 

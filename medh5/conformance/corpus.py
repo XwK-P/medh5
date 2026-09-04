@@ -1032,7 +1032,7 @@ def _store_float_ct(handle: h5py.File) -> None:
 
 def _duplicate_layer_class(handle: h5py.File) -> None:
     table = np.asarray(handle["annotations/organs/layer_class_ids"][...])
-    if table.shape[0] < 2:  # noqa: PLR2004
+    if table.shape[0] < 2:
         raise RuntimeError("case needs at least two layers")
     table[1, 0] = table[0, 0]
     handle["annotations/organs/layer_class_ids"][...] = table
@@ -2219,6 +2219,162 @@ def _collection_empty(path: Path) -> None:
     _collection(path, samples=1, drop_samples_group=True)
 
 
+def _widen_labelmap(handle: h5py.File) -> None:
+    """Store a labelmap that fits in uint8 as uint16 --- §7.1's refusal."""
+    group = handle["annotations/organs"]
+    values = np.asarray(group["data"][...]).astype(np.uint16)
+    attrs = dict(group["data"].attrs)
+    del group["data"]
+    node = group.create_dataset("data", data=values)
+    for key, value in attrs.items():
+        node.attrs[key] = value
+
+
+def _set_split_timestamp(doc: dict[str, Any]) -> None:
+    doc["splits"] = [
+        {"set_id": "cv5", "partition": "train", "assigned_at": "yesterday"}
+    ]
+
+
+def _set_deidentification_date(doc: dict[str, Any]) -> None:
+    doc.setdefault("deidentification", {"method": "dicom-psi-profile"})
+    doc["deidentification"]["date"] = "yesterday"
+
+
+def _register_fourth_batch() -> None:
+    """1.3.0: every cross-reference clause gets a case, not only every code."""
+
+    @case(
+        "seg-probmap-threshold",
+        "Soft labels with a declared decision threshold.",
+        "§7.5, §7.6",
+        warnings=["W912"],
+    )
+    def _seg_probmap_threshold(path: Path) -> None:
+        rng = np.random.default_rng(SEED)
+        shape = (16, 24, 24)
+        with medh5.create(path, sample_id=path.stem, codec="portable") as w:
+            w.add_timepoint("tp0")
+            w.label_set(_LS)
+            w.add_grid("ct", shape=shape, spacing=(1.5, 0.8, 0.8), timepoint="tp0")
+            w.add_image(
+                "CT",
+                rng.integers(-1000, 1500, shape).astype(np.int16),
+                grid="ct",
+                modality="CT",
+                value_type="quantitative",
+                value_units="HU",
+            )
+            w.add_segmentation(
+                "soft",
+                grid="ct",
+                probabilities={1: rng.random(shape), 3: rng.random(shape)},
+                threshold=0.3,
+            )
+            w.deidentification(method="dicom-psi-profile")
+
+    _invalid(
+        "E703-unknown-digest-algo",
+        "A `digest_algo` outside the §2.1 vocabulary.",
+        "§2.1",
+        ["E703"],
+        lambda f: f.attrs.__setitem__("digest_algo", encode_attr("blake3")),
+        level="integrity",
+    )
+    _invalid(
+        "E411-labelmap-wide-dtype",
+        "A `labelmap` stored uint16 whose ids fit uint8 and carries no ignore voxel.",
+        "§7.1",
+        ["E411"],
+        _widen_labelmap,
+        base=lambda p: _seg_base(
+            p,
+            encoding="labelmap",
+            classes={1: (2, 2, 2), 2: (2, 12, 2), 4: (9, 2, 12)},
+        ),
+        warnings=["W912"],
+    )
+    _invalid(
+        "E109-time-axis-without-time-values",
+        "A grid with a `time` axis and no `time_values`.",
+        "§3.2",
+        ["E109"],
+        lambda f: f["grids/dce"].attrs.__delitem__("time_values"),
+        base=_core_4d,
+    )
+    _seg_invalid(
+        "E413-dangling-ignore-mask",
+        "An `ignore_mask` naming an annotation that does not exist.",
+        "§7.7",
+        ["E413"],
+        lambda f: f["annotations/organs"].attrs.__setitem__(
+            "ignore_mask", encode_attr("nope")
+        ),
+    )
+    _seg_invalid(
+        "E413-ignore-mask-not-a-mask",
+        "An `ignore_mask` naming an annotation that is not a `mask`.",
+        "§7.7",
+        ["E413"],
+        lambda f: f["annotations/organs"].attrs.__setitem__(
+            "ignore_mask", encode_attr("organs")
+        ),
+    )
+    _seg_invalid(
+        "E413-dangling-derived-from",
+        "A `derived_from` entry naming an annotation that does not exist.",
+        "§6.2",
+        ["E413"],
+        lambda f: f["annotations/organs"].attrs.__setitem__(
+            "derived_from", encode_attr(["ghost"])
+        ),
+    )
+    _invalid(
+        "E413-dangling-valid-mask",
+        "An image `valid_mask` naming an annotation that does not exist.",
+        "§4.4",
+        ["E413"],
+        lambda f: f["images/CT"].attrs.__setitem__("valid_mask", encode_attr("nope")),
+    )
+    _invalid(
+        "E601-transform-dangling-prov",
+        "A transform naming an activity that does not exist.",
+        "§10.1, §11.1",
+        ["E601"],
+        lambda f: f["transforms/tp0_to_tp1"].attrs.__setitem__(
+            "prov", encode_attr("act_nope")
+        ),
+        base=_reg_base,
+    )
+    _invalid(
+        "E602-transform-unknown-metrics",
+        "A transform whose `metrics` names no quality record.",
+        "§10.1, §11.2",
+        ["E602"],
+        lambda f: f["transforms/tp0_to_tp1"].attrs.__setitem__(
+            "metrics", encode_attr("nope")
+        ),
+        base=_reg_base,
+    )
+    _invalid(
+        "E604-split-assigned-at",
+        "A split claim whose `assigned_at` is not RFC 3339.",
+        "§12.3",
+        ["E604"],
+        lambda f: _set_meta(f, _set_split_timestamp),
+    )
+    _invalid(
+        "E604-deidentification-date",
+        "A de-identification record whose `date` is not RFC 3339.",
+        "§11.4",
+        ["E604"],
+        lambda f: _set_meta(f, _set_deidentification_date),
+    )
+
+
+_register_fourth_batch()
+
+
 CASES: tuple[Case, ...] = tuple(_CASES)
 
 
@@ -2247,7 +2403,9 @@ def build_corpus(outdir: str | Path, *, names: Sequence[str] | None = None) -> P
         record = entry.to_json()
         record["file"] = path.name
         manifest["cases"].append(record)  # type: ignore[attr-defined]
-    (root / "expected.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    (root / "expected.json").write_text(
+        json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+    )
     return root / "expected.json"
 
 
@@ -2265,7 +2423,7 @@ def run_corpus(
         result = CaseResult(case=entry, path=str(path))
         try:
             report = validate_file(path, level=entry.level)
-        except Exception as exc:  # noqa: BLE001 - a crash is a corpus failure
+        except Exception as exc:
             result.error = f"{type(exc).__name__}: {exc}"
             results.append(result)
             continue

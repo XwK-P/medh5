@@ -16,6 +16,7 @@ from medh5.cli._common import (
     emit,
     fail,
     human_bytes,
+    indent,
     table,
 )
 from medh5.errors import MEDH5Error
@@ -193,7 +194,7 @@ def _info(args: argparse.Namespace) -> int:
             print(f"  content_id  {summary['content_id'] or '-'}")
             print("\ntimepoints")
             print(
-                _indent(
+                indent(
                     table(
                         [
                             [
@@ -212,7 +213,7 @@ def _info(args: argparse.Namespace) -> int:
             )
             print("\ngrids")
             print(
-                _indent(
+                indent(
                     table(
                         [
                             [
@@ -240,7 +241,7 @@ def _info(args: argparse.Namespace) -> int:
             )
             print("\nimages")
             print(
-                _indent(
+                indent(
                     table(
                         [
                             [
@@ -271,7 +272,7 @@ def _info(args: argparse.Namespace) -> int:
             if summary["annotations"]:
                 print("\nannotations")
                 print(
-                    _indent(
+                    indent(
                         table(
                             [
                                 [
@@ -303,7 +304,7 @@ def _info(args: argparse.Namespace) -> int:
             if summary.get("transforms"):
                 print("\ntransforms")
                 print(
-                    _indent(
+                    indent(
                         table(
                             [
                                 [
@@ -332,10 +333,6 @@ def _info(args: argparse.Namespace) -> int:
             return EXIT_OK
     except MEDH5Error as exc:
         return fail(str(exc))
-
-
-def _indent(text: str, prefix: str = "  ") -> str:
-    return "\n".join(prefix + line for line in text.splitlines())
 
 
 _ROLES = {
@@ -559,7 +556,7 @@ def _trend(
     tracking: Any, instance_id: int, track: Any, timepoints: tuple[str, ...]
 ) -> str:
     """Relative volume change from first to last visit, where it is measurable."""
-    if len(timepoints) < 2:  # noqa: PLR2004 - a trend needs two visits
+    if len(timepoints) < 2:
         return "-"
     change = track.relative_change(timepoints[0], timepoints[-1])
     if change is not None:

@@ -295,7 +295,7 @@ def _changed_content(manifest: Manifest) -> list[str]:
                     out.append(entry.path)
                     continue
                 current = opened.content_id
-        except Exception:  # noqa: BLE001 - unreadable is "changed" for this check
+        except Exception:
             out.append(entry.path)
             continue
         if current != entry.content_id:

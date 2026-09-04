@@ -103,7 +103,7 @@ def open_cached(path: str | os.PathLike[str]) -> Sample:
     return CACHE.get(path)
 
 
-def worker_init_fn(worker_id: int) -> None:  # noqa: ARG001 - DataLoader signature
+def worker_init_fn(worker_id: int) -> None:
     """``DataLoader(worker_init_fn=...)``: drop handles inherited across ``fork``."""
     CACHE.clear()
 

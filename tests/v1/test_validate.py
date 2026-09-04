@@ -212,7 +212,7 @@ class TestCorruptFiles:
                     handle.write(bytes([rng.randrange(256)]))
             try:
                 report = validate_file(victim, level="strict")
-            except Exception as exc:  # noqa: BLE001 - that is the bug under test
+            except Exception as exc:
                 crashed.append(f"{victim.name}: {type(exc).__name__}: {exc}")
                 continue
             # Whatever it found, it has to be reportable and serialisable.

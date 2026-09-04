@@ -82,7 +82,7 @@ Root attributes on the file (`/`):
 | `medh5_kind` | `str` | **MUST** | `"sample"` or `"collection"`. |
 | `medh5_profiles` | `str[]` | **MUST** | Declared profiles (§1.3). |
 | `content_id` | `str` | SHOULD | `"<algo>:<hex>"` Merkle root (§13.2). |
-| `digest_algo` | `str` | SHOULD | `"sha256"` (default), `"blake3"` or `"xxh3-128"`. |
+| `digest_algo` | `str` | SHOULD | `"sha256"` (default), `"sha512"` or `"blake2b"`. A validator **MUST** report any other value as E703. |
 | `created` | `str` | SHOULD | RFC 3339 UTC timestamp. |
 | `generator` | `str` | SHOULD | `"<name> <version>"` of the writing software. |
 
@@ -276,9 +276,11 @@ non-DICOM sources.
 * Grids in **different timepoints MUST NOT** share a `frame_uid` unless the acquisitions genuinely
   share a physical frame (the subject was not repositioned, as in a single interrupted session).
   Follow-up imaging is a new frame; relating it to baseline is registration, and pretending otherwise
-  by reusing a `frame_uid` silently asserts an alignment nobody computed. A
-  validator at level `semantic` **MUST** report an error when an annotation on grid *A* is compared
-  with an image on grid *B* with a different `frame_uid` and no transform resolves *A*→*B*.
+  by reusing a `frame_uid` silently asserts an alignment nobody computed. A reader that
+  compares an annotation on grid *A* with an image on grid *B* under a different `frame_uid` **MUST**
+  refuse rather than assume alignment when no transform in `transforms/` resolves *A*→*B*. That is
+  a property of the query, not of the file, so no §15.2 code corresponds to it; the reference
+  implementation's paired loader is where the refusal lives (Appendix C).
 
 > **Rationale.** 0.x required every array in a file to have identical shape, which silently forced
 > resampling of PET/CT and multi-sequence MR at ingest — a lossy, irreversible operation performed
@@ -469,9 +471,10 @@ Annotations reference classes by `uint16` id. The mapping id → meaning is the 
 * `form = "ref"` — `classes` is absent; `uri` and `sha256` **MUST** both be present, `sha256` because
   it is the only thing that tells a reader *which* vocabulary it needs when the `uri` cannot be
   resolved. Permitted only for very large vocabularies; readers that cannot resolve `uri` **MUST**
-  treat class names as unknown but **MUST** still read the annotation data. Collections **SHOULD**
+  treat class names as unknown but **MUST** still read the annotation data. A collection **MAY**
   carry the resolved label set once at `/` and let sample roots use `form = "ref"` with
-  `uri = "medh5:/label_set"`.
+  `uri = "medh5:/label_set"`; the reference implementation neither writes nor resolves that form in
+  1.x (Appendix C).
 
 **Canonical serialization (normative).** `label_set.sha256` is the digest of the label set's *content*,
 computed so that two implementations in two languages agree. The digested document is
@@ -725,9 +728,11 @@ a 45× reduction, because storage is proportional to object volume, not image vo
 |---|---|---|---|
 | `data` | `(len(class_ids), *shape_spatial)` | `float16`/`float32` | values in [0,1] |
 | `normalized` | attr `bool` | | `true` ⟹ channels sum to 1 across classes at each voxel |
+| `threshold` | attr `float64` | | OPTIONAL, default `0.5`: the probability at or above which a voxel *contains* the class (§7.6); in [0, 1] |
 
 For soft ground truth, inter-rater probability maps, distillation targets and predicted logits after
-sigmoid/softmax. **MUST** be chunked `(1, *spatial_chunk)`.
+sigmoid/softmax. **MUST** be chunked `(1, *spatial_chunk)`. `threshold` is a spec-defined attribute
+and so is covered by `content_id` (§13.2): two readers of one file answer `contains` identically.
 
 ### 7.6 Encoding equivalence and selection
 
@@ -739,7 +744,7 @@ contains(annotation, class_id c, voxel v) -> bool
 
 A reader **MUST** expose this predicate identically regardless of `kind`, and transcoding between
 encodings **MUST** be lossless for every `c ∈ class_ids`, `v ∈ grid` — with the sole exception of
-`probmap`, which is lossless only under a declared threshold.
+`probmap`, which is lossless only under its declared `threshold` (§7.5).
 
 Writers **SHOULD** select the encoding automatically:
 
@@ -1518,13 +1523,13 @@ grouping, since a 0.x file carries no reliable subject key of its own.
 ### C.1 Reference implementation
 
 Sections §2–§15 are **implemented** in the `medh5` package and exercised by a conformance corpus
-(§15) of 103 files: valid samples covering every encoding, annotation kind, transform kind,
+(§15) of 115 files: valid samples covering every encoding, annotation kind, transform kind,
 dimensionality, profile and container kind, plus one deliberately-invalid file per diagnostic code.
 Running the corpus against a validator is how a third-party implementation demonstrates conformance:
 
 ```
 $ medh5 conformance run ./corpus
-103/103 cases pass
+115/115 cases pass
 ```
 
 **Every code in §15.2 has a corpus case.** The implementation gates on `ruff`,
@@ -1536,8 +1541,9 @@ any machine. On a 192×256×256 synthetic CT with eight classes, a multi-class 6
 4.0 ms, foreground centre sampling 0.90 ms (O(1) in volume size, via §14.3), a metadata-only read
 0.21 ms, and `open()` → first patch 2.4 ms.
 
-Ten clauses were corrected during implementation, each because writing the code showed the text was
-not implementable, or not unambiguous, as written:
+Fifteen clauses have been corrected — ten during implementation and five in the 1.x package releases
+that followed — each because writing the code showed the text was not implementable, not unambiguous,
+or not what the implementation could honestly promise, as written:
 
 | Clause | Correction |
 |---|---|
@@ -1550,6 +1556,11 @@ not implementable, or not unambiguous, as written:
 | §2.2 | §2.2 requires every sample root in a collection to carry its own `content_id`, but §15.2 had no code to report a missing one. `E010` was added. |
 | §7.4 | W909 is **sample-scoped**, matching the scope of `instance_id` itself. Checking it per annotation would miss the case it exists for: one lesion classified differently at two visits, each annotation internally consistent. |
 | §8.1 | The box↔slice rounding is `floor(x + 0.5)`, stated explicitly. "round" was read as a language's default, and both Python's `round` and NumPy's `rint` round half to **even** — under which `lo + 0.5` and `hi + 0.5` round in opposite directions, so a one-voxel box on integer edges became empty or two voxels wide depending on its parity. The extent identity in the same clause was the thing being violated. |
+| §2.1 | `digest_algo` names `sha256`, `sha512` and `blake2b` — the algorithms every Python ships — rather than `blake3` and `xxh3-128`, which the reference implementation never carried; a validator reported the two the text permitted as **E703** malformed, so the text and the validator could not both be right. Any other value is E703, normatively. |
+| §7.5 | `threshold` is now a spec-defined `probmap` attribute, default `0.5`. §7.6 already said transcoding was "lossless only under a declared threshold", and the reference reader honoured a `threshold` attribute, but nothing defined it — so it sat outside `content_id` and two implementations could disagree about `contains` for one file. |
+| §3.4 | The sentence requiring a *validator* to report an annotation compared with an image on another frame with no relating transform described a query, not a property of a file; no code existed for it and none could. It is now reader guidance, and the refusal lives in the reference loader. |
+| §5.1 | Collections carrying one label set at `/` with `uri = "medh5:/label_set"` is MAY, not SHOULD: the reference implementation neither writes nor resolves it, and §5.1 already requires the inline form at the sizes where it would matter. |
+| §7.1, §3.2, §15.2 | Two rules the writer enforced and the validator did not are validated: a `labelmap` stored `uint16` where §7.1 requires `uint8` is E411, and a `time` axis without `time_values` is E109. E603's summary reads "unknown agent or activity type", as this table has always said. |
 | §13.1, §13.2 | `index/` is **excluded** from object digests and from `content_id`, normatively rather than by convention. The reference implementation had always skipped it — a derived cache should not change the address of the sample it derives from — but the text did not say so, so a conforming implementation that stamped index digests would compute a different `content_id` for the same bytes, and `content_id` is only useful as a cross-implementation key if every implementation agrees on what it covers. |
 
 ### C.2 Prototype checks

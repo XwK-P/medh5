@@ -129,7 +129,7 @@ def verify_root(
             continue
         try:
             algo, _ = parse_digest(value)
-        except Exception:  # noqa: BLE001 - reported, not raised
+        except Exception:
             malformed.append(path)
             continue
         checked.append(path)

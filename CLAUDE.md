@@ -131,9 +131,11 @@ reads without the others.
 - Test names cite the clause they hold: `test_S8_1_boxes_shift_by_half_a_voxel`.
 - Fixtures are built by the **public writer**, so every reader test is also a
   writer test.
-- CI matrix: Python 3.10–3.12, plus a macOS job specifically for the `spawn`
-  start method, plus a conformance job that publishes the suite and scores this
-  validator through the public `score` path, plus a MONAI job.
+- CI matrix: Python 3.10–3.13, plus a macOS job specifically for the `spawn`
+  start method, a Windows job (the atomic-rewrite and repack paths exist for
+  it), a minimum-dependency job at the floors `pyproject.toml` declares, a
+  conformance job that publishes the suite and scores this validator through
+  the public `score` path, and a MONAI job.
 - **A skipped test is not a passing test.** Anything guarded by
   `pytest.importorskip` needs a CI job that installs the dependency, or it
   reports coverage it does not have.

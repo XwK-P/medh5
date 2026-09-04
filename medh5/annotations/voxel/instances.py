@@ -16,17 +16,25 @@ which is why coverage is required rather than optional.
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+import h5py
 import numpy as np
 import numpy.typing as npt
 
-from medh5.annotations.base import Instance, VoxelAnnotation, instance_id_dtype
+from medh5.annotations.base import (
+    AnnotationHeader,
+    Instance,
+    VoxelAnnotation,
+    instance_id_dtype,
+)
 from medh5.annotations.payload import AnnotationPayload
 from medh5.errors import MEDH5ValidationError
 from medh5.geometry.affine import box_to_slices, slices_to_box
+from medh5.geometry.grid import Grid
+from medh5.labels.labelset import LabelSet
 
 
 @dataclass(slots=True)
@@ -172,9 +180,29 @@ def instances_from_masks(
 
 
 class InstancesAnnotation(VoxelAnnotation):
-    """Reader for ``kind = "instances"``."""
+    """Reader for ``kind = "instances"``.
 
-    __slots__ = ()
+    The per-object columns --- boxes, classes, ids, scores, mask offsets and
+    shapes --- are read once per open annotation and kept.  They are small and
+    the file is read-only, and every accessor used to re-read them from HDF5:
+    ``dense()`` fetched ``boxes`` and ``class_ids`` once per class, and
+    ``crop()`` fetched three datasets per object, so a thousand-object
+    annotation cost thousands of reads per patch.  Only ``mask_data`` is read
+    on demand, one object's slice at a time.
+    """
+
+    __slots__ = ("_columns",)
+
+    def __init__(
+        self,
+        ann_id: str,
+        group: h5py.Group,
+        header: AnnotationHeader,
+        grids: Mapping[str, Grid] | None = None,
+        label_set: LabelSet | None = None,
+    ) -> None:
+        super().__init__(ann_id, group, header, grids, label_set)
+        self._columns: dict[str, Any] | None = None
 
     def _dataset(self, name: str, required: bool = True) -> Any:
         if name in self.group:
@@ -186,13 +214,40 @@ class InstancesAnnotation(VoxelAnnotation):
             )
         return None
 
+    def _table(self) -> dict[str, Any]:
+        if self._columns is None:
+            columns: dict[str, Any] = {
+                "boxes": np.asarray(self._dataset("boxes")[...], dtype=np.float32),
+                "class_ids": np.asarray(
+                    self._dataset("class_ids")[...], dtype=np.uint16
+                ),
+                "instance_ids": np.asarray(
+                    self._dataset("instance_ids")[...], dtype=np.uint64
+                ),
+            }
+            scores = self._dataset("scores", required=False)
+            columns["scores"] = (
+                None if scores is None else np.asarray(scores[...], dtype=np.float32)
+            )
+            if self.has_masks:
+                columns["mask_offsets"] = np.asarray(
+                    self._dataset("mask_offsets")[...], dtype=np.int64
+                )
+                columns["mask_shapes"] = np.asarray(
+                    self._dataset("mask_shapes")[...], dtype=np.int64
+                )
+            self._columns = columns
+        return self._columns
+
     @property
     def boxes(self) -> npt.NDArray[np.float32]:
-        return np.asarray(self._dataset("boxes")[...], dtype=np.float32)
+        boxes: npt.NDArray[np.float32] = self._table()["boxes"]
+        return boxes
 
     @property
     def object_class_ids(self) -> npt.NDArray[np.uint16]:
-        return np.asarray(self._dataset("class_ids")[...], dtype=np.uint16)
+        classes: npt.NDArray[np.uint16] = self._table()["class_ids"]
+        return classes
 
     @property
     def instance_ids(self) -> npt.NDArray[np.uint64]:
@@ -203,12 +258,13 @@ class InstancesAnnotation(VoxelAnnotation):
         ``2**32 + 7`` came back as ``7``, and so did every ``instances()`` row
         and every longitudinal join built on it, with nothing raised.
         """
-        return np.asarray(self._dataset("instance_ids")[...], dtype=np.uint64)
+        ids: npt.NDArray[np.uint64] = self._table()["instance_ids"]
+        return ids
 
     @property
     def scores(self) -> npt.NDArray[np.float32] | None:
-        node = self._dataset("scores", required=False)
-        return None if node is None else np.asarray(node[...], dtype=np.float32)
+        scores: npt.NDArray[np.float32] | None = self._table()["scores"]
+        return scores
 
     @property
     def has_masks(self) -> bool:
@@ -216,16 +272,16 @@ class InstancesAnnotation(VoxelAnnotation):
 
     @property
     def n_objects(self) -> int:
-        return int(self._dataset("boxes").shape[0])
+        return int(self.boxes.shape[0])
 
     def crop(self, index: int) -> npt.NDArray[np.bool_] | None:
         """Decode one object's bbox-local mask."""
         if not self.has_masks:
             return None
-        offsets = self._dataset("mask_offsets")
-        shapes = self._dataset("mask_shapes")
+        table = self._table()
+        offsets = table["mask_offsets"]
         start, stop = int(offsets[index]), int(offsets[index + 1])
-        shape = tuple(int(v) for v in shapes[index])
+        shape = tuple(int(v) for v in table["mask_shapes"][index])
         packed = np.asarray(self._dataset("mask_data")[start:stop], dtype=np.uint8)
         n = int(np.prod(shape, dtype=np.int64))
         return np.unpackbits(packed)[:n].astype(bool).reshape(shape)

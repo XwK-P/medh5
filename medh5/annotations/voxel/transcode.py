@@ -119,11 +119,8 @@ def annotation_to_masks(
 ) -> dict[int, npt.NDArray[np.bool_]]:
     """Decode an open annotation to per-class boolean masks."""
     ids = annotation.resolve_classes(classes)
-    window = annotation._roi(None)  # noqa: SLF001 - same-package internal
-    return {
-        class_id: annotation._dense_class(class_id, window)  # noqa: SLF001
-        for class_id in ids
-    }
+    window = annotation._roi(None)
+    return {class_id: annotation._dense_class(class_id, window) for class_id in ids}
 
 
 def encode_masks(
@@ -255,7 +252,7 @@ def _ignore_region(annotation: VoxelAnnotation) -> npt.NDArray[np.bool_] | None:
     inside `labelmap`/`layers` data that have nowhere to go in `bitmask` or
     `probmap`.
     """
-    if not annotation._encodes_ignore():  # noqa: SLF001 - same-package internal
+    if not annotation._encodes_ignore():
         return None
     reader = getattr(annotation, "ignore_mask", None)
     if reader is None:

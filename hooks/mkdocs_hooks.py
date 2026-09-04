@@ -628,7 +628,7 @@ def on_page_markdown(markdown: str, page: Any, config: Any, files: Files) -> str
     return markdown
 
 
-def on_build_error(error: Exception) -> None:  # noqa: ARG001 - MkDocs signature
+def on_build_error(error: Exception) -> None:
     """Clear the counts when a build fails anywhere.
 
     `on_post_build` is not reached when MkDocs takes the build-error path, so

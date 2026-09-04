@@ -20,6 +20,7 @@ from medh5.cli._common import (
     emit,
     fail,
     human_bytes,
+    indent,
     table,
 )
 from medh5.collection import SUFFIX, open_collection, pack, unpack
@@ -230,7 +231,7 @@ def _prov(args: argparse.Namespace) -> int:
             else:
                 print("agents")
                 print(
-                    _indent(
+                    indent(
                         table(
                             [
                                 [a.id, a.type, a.name, a.version or "-", a.role or "-"]
@@ -242,7 +243,7 @@ def _prov(args: argparse.Namespace) -> int:
                 )
                 print("\nactivities")
                 print(
-                    _indent(
+                    indent(
                         table(
                             [
                                 [
@@ -261,7 +262,7 @@ def _prov(args: argparse.Namespace) -> int:
             if document.quality:
                 print("\nquality")
                 print(
-                    _indent(
+                    indent(
                         table(
                             [
                                 [
@@ -305,10 +306,6 @@ def _prov(args: argparse.Namespace) -> int:
         return fail(str(exc))
 
 
-def _indent(text: str, prefix: str = "  ") -> str:
-    return "\n".join(prefix + line for line in text.splitlines())
-
-
 def _agree(args: argparse.Namespace) -> int:
     try:
         with medh5.open(args.path) as sample:
@@ -330,7 +327,7 @@ def _agree(args: argparse.Namespace) -> int:
             print(f"{args.a} vs {args.b}: {payload['metric']} = {result.value:.4f}")
             if hasattr(result, "per_class"):
                 print(
-                    _indent(
+                    indent(
                         table(
                             [
                                 [k, f"{v:.4f}"]

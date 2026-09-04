@@ -76,6 +76,11 @@ ann.class_bboxes()                      # {class_id: (S, 2) index-space bounds}
 | `instances` | per-object masks with ids | counting, tracking, per-object metrics | yes | yes |
 | `probmap` | float per class | soft labels, model output | yes | no |
 
+`probmap` answers `contains()` against a **threshold**: 0.5 unless the
+annotation declares one. `add_segmentation(..., probabilities=..., threshold=0.3)`
+writes it as the `threshold` attribute (spec §7.5); it is covered by
+`content_id`, so two readers of one file decide alike.
+
 ### Choosing one
 
 You do not have to. `add_segmentation(encoding="auto")` measures the class
@@ -205,8 +210,15 @@ w.add_contours("rtstruct",
                grid="ct", space="world")
 ```
 
-`plane` says which axis the contour lies in; `role` distinguishes an outer
-boundary from a hole inside it.
+`plane` is `(axis, index)` in the grid's index space — the axis the polygon
+is flat along and the slice it sits on, `(0, k)` for a polygon on slice `k` of
+an axial stack, `(-1, 0)` for one that is not in-plane. The RTSTRUCT importer
+records it, so `ann.by_plane()` groups an imported structure set by slice.
+`role` distinguishes an outer boundary from a hole inside it.
+
+An empty polygon list is accepted when `annotated_classes` names what was
+looked for: a contours annotation can record a verified negative, exactly as
+an empty box set can (§9).
 
 Contours stay contours. Rasterising them is a separate, opt-in step whose rule
 is recorded in provenance, because "even-odd fill at voxel centres" is a
