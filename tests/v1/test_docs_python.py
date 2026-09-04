@@ -424,8 +424,15 @@ def test_documented_python_runs(
     # a test order dependency rather than a documentation problem.
     scratch = tmp_path / "docs"
     shutil.copytree(workspace["root"], scratch)
+    # The open sample is a *separate* copy from the one the blocks write.  A
+    # page that creates `case.medh5` goes through `os.replace`, and Windows
+    # refuses to replace a file this runner still holds open --- which is the
+    # test's own doing, not the example's.
+    reading = tmp_path / "read"
+    reading.mkdir()
+    shutil.copyfile(scratch / "case.medh5", reading / "case.medh5")
     namespace = _namespace(
-        {**workspace, "root": scratch, "case": scratch / "case.medh5"}, tmp_path
+        {**workspace, "root": scratch, "case": reading / "case.medh5"}, tmp_path
     )
     here = Path.cwd()
     os.chdir(scratch)
