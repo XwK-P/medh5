@@ -346,7 +346,8 @@ class TestConformanceCommands:
 
         results = tmp_path / "results.json"
         results.write_text(
-            json.dumps([{"file": "core-minimal.medh5", "errors": [], "warnings": []}])
+            json.dumps([{"file": "core-minimal.medh5", "errors": [], "warnings": []}]),
+            encoding="utf-8",
         )
         code, out = run(capsys, "conformance", "score", str(tmp_path), str(results))
         assert code == EXIT_OK
@@ -356,7 +357,8 @@ class TestConformanceCommands:
         run(capsys, "conformance", "publish", str(tmp_path), "--case", "core-minimal")
         results = tmp_path / "results.json"
         results.write_text(
-            json.dumps([{"file": "core-minimal.medh5", "errors": ["E101"]}])
+            json.dumps([{"file": "core-minimal.medh5", "errors": ["E101"]}]),
+            encoding="utf-8",
         )
         code, out = run(capsys, "conformance", "score", str(tmp_path), str(results))
         assert code == EXIT_ERROR
@@ -368,14 +370,15 @@ class TestConformanceCommands:
         case.write_bytes(case.read_bytes() + b"\x00")
         results = tmp_path / "results.json"
         results.write_text(
-            json.dumps([{"file": "core-minimal.medh5", "errors": [], "warnings": []}])
+            json.dumps([{"file": "core-minimal.medh5", "errors": [], "warnings": []}]),
+            encoding="utf-8",
         )
         code, out = run(capsys, "conformance", "score", str(tmp_path), str(results))
         assert "differ" in out.out and "core-minimal.medh5" in out.out
 
     def test_score_without_a_suite_fails_cleanly(self, capsys, tmp_path):
         results = tmp_path / "results.json"
-        results.write_text("[]")
+        results.write_text("[]", encoding="utf-8")
         code, out = run(capsys, "conformance", "score", str(tmp_path), str(results))
         assert code == EXIT_ERROR
 
@@ -492,7 +495,7 @@ class TestDatasetCommands:
         code, out = run(capsys, "dataset", "index", str(cohort), "-o", str(manifest))
         assert code == EXIT_OK
         assert "6 sample(s), 5 subject(s)" in out.out
-        assert json.loads(manifest.read_text())["samples"] == 6
+        assert json.loads(manifest.read_text(encoding="utf-8"))["samples"] == 6
 
     def test_index_json_carries_the_digest(self, capsys, cohort, tmp_path):
         code, out = run(
@@ -545,7 +548,7 @@ class TestDatasetCommands:
         )
         assert code == EXIT_OK
         assert "wrote split claims into 6 file(s)" in out.out
-        payload = json.loads((tmp_path / "split.json").read_text())
+        payload = json.loads((tmp_path / "split.json").read_text(encoding="utf-8"))
         assert sum(payload["counts"].values()) == 6
         with medh5.open(sorted(cohort.glob("*.medh5"))[0]) as sample:
             assert sample.document.splits[0].manifest_sha256
@@ -607,7 +610,7 @@ class TestDatasetCommands:
         )
         assert code == EXIT_OK
         assert "CT_tp0" in out.out
-        payload = json.loads((tmp_path / "s.json").read_text())
+        payload = json.loads((tmp_path / "s.json").read_text(encoding="utf-8"))
         assert payload["samples"] == 6
         assert payload["images"]["CT_tp0"]["std"] > 0
 
@@ -1137,7 +1140,7 @@ class TestPhase7Convert:
         assert code == EXIT_OK
         payload = json.loads(printed.out)
         assert payload["converter"] == "from-nifti"
-        assert json.loads(report.read_text())["ok"] is True
+        assert json.loads(report.read_text(encoding="utf-8"))["ok"] is True
 
     def test_a_malformed_pair_is_reported(self, capsys, tmp_path, nifti):
         code, printed = run(
@@ -1175,7 +1178,8 @@ class TestPhase7Convert:
                     "numTraining": 1,
                     "file_ending": ".nii.gz",
                 }
-            )
+            ),
+            encoding="utf-8",
         )
         code, printed = run(
             capsys, "convert", "from-nnunet", str(root), str(tmp_path / "out")
@@ -1216,7 +1220,7 @@ class TestPhase7Convert:
         )
         assert code == EXIT_OK
         assert "review before migrating" in printed.out
-        assert json.loads(labels.read_text())["classes"]
+        assert json.loads(labels.read_text(encoding="utf-8"))["classes"]
 
         code, printed = run(
             capsys,

@@ -60,11 +60,12 @@ def publish(
             },
             indent=2,
         )
-        + "\n"
+        + "\n",
+        encoding="utf-8",
     )
     schema = Path(medh5.__file__).parent / "schemas" / SCHEMA
-    (root / SCHEMA).write_text(schema.read_text())
-    (root / "README.md").write_text(_readme(selected))
+    (root / SCHEMA).write_text(schema.read_text(encoding="utf-8"))
+    (root / "README.md").write_text(_readme(selected), encoding="utf-8")
     _write_checksums(root)
     return root
 
@@ -78,7 +79,7 @@ def _write_checksums(root: Path) -> Path:
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         lines.append(f"{digest}  {path.relative_to(root).as_posix()}")
     target = root / CHECKSUMS
-    target.write_text("\n".join(lines) + "\n")
+    target.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return target
 
 
@@ -86,7 +87,7 @@ def check_checksums(root: str | os.PathLike[str]) -> tuple[str, ...]:
     """Names of published files whose bytes no longer match ``SHA256SUMS``."""
     directory = Path(os.fspath(root))
     bad: list[str] = []
-    for line in (directory / CHECKSUMS).read_text().splitlines():
+    for line in (directory / CHECKSUMS).read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         digest, _, name = line.partition("  ")
@@ -103,7 +104,7 @@ def load_manifest(root: str | os.PathLike[str]) -> dict[str, Any]:
             f"{path} not found --- build the suite first with "
             "`medh5 conformance publish`"
         )
-    data: dict[str, Any] = json.loads(path.read_text())
+    data: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
     return data
 
 

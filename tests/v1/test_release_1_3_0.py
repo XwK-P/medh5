@@ -621,5 +621,7 @@ class TestW5Structure:
 
 class TestW6Tooling:
     def test_the_lint_gate_refuses_suppressions_that_suppress_nothing(self):
-        text = (Path(__file__).resolve().parents[2] / "pyproject.toml").read_text()
+        text = (Path(__file__).resolve().parents[2] / "pyproject.toml").read_text(
+            encoding="utf-8"
+        )
         assert '"RUF100"' in text

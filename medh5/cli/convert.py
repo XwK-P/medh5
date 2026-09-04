@@ -255,7 +255,9 @@ def _pairs(values: list[str] | None, what: str) -> dict[str, str]:
 
 def _finish(report: ConversionReport, args: argparse.Namespace) -> int:
     if getattr(args, "report", None):
-        Path(args.report).write_text(json.dumps(report.to_json(), indent=2) + "\n")
+        Path(args.report).write_text(
+            json.dumps(report.to_json(), indent=2) + "\n", encoding="utf-8"
+        )
     if getattr(args, "json", False):
         emit(report.to_json(), as_json=True)
     else:

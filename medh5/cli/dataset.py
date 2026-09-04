@@ -186,7 +186,9 @@ def _split(args: argparse.Namespace) -> int:
             split, manifest, assigned_by=args.assigned_by, fold=args.fold
         )
     if args.out:
-        Path(args.out).write_text(json.dumps(split.to_json(), indent=2) + "\n")
+        Path(args.out).write_text(
+            json.dumps(split.to_json(), indent=2) + "\n", encoding="utf-8"
+        )
     if args.json:
         emit({**split.to_json(), "claims_written": list(written)}, as_json=True)
     else:
@@ -259,7 +261,9 @@ def _stats(args: argparse.Namespace) -> int:
         physical=not args.stored,
     )
     if args.out:
-        Path(args.out).write_text(json.dumps(result.to_json(), indent=2) + "\n")
+        Path(args.out).write_text(
+            json.dumps(result.to_json(), indent=2) + "\n", encoding="utf-8"
+        )
     if args.json:
         emit(result.to_json(), as_json=True)
     else:

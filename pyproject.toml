@@ -48,7 +48,7 @@ classifiers = [
   "Typing :: Typed",
 ]
 dependencies = [
-  "h5py>=3.10",
+  "h5py>=3.13",
   "hdf5plugin>=4.1",
   "numpy>=1.24",
 ]

@@ -17,6 +17,15 @@ fifteen), none of which changes what a conforming file looks like.
 Read these before upgrading a pipeline. Each is a correction; each can change what existing code
 produces or accepts:
 
+- **h5py 3.13 is the floor** (was 3.10). The new minimum-dependency job found that every `amend`
+  — the copy-on-write path, so also `scrub --apply`, `fix`, `recompress` and `seg convert` —
+  segfaults inside HDF5's `H5Ocopy` on the HDF5 builds h5py 3.10–3.12 bundle (1.12.2 and
+  1.14.2). The trigger is an object with more than eight attributes, which the latest file
+  format stores densely, when one of them is a variable-length string; every grid has nine,
+  and the isolation is reproducible in ten lines of h5py without this package. h5py 3.13
+  bundles HDF5 1.14.6, where the copy succeeds. `pip install medh5` resolves the floor; an
+  environment pinned to an older h5py could not amend a file, whatever this package did.
+
 - **New validator refusals.** A `labelmap` stored `uint16` whose ids fit `uint8` and carries no
   ignore voxel is **E411** (§7.1 has always said `uint8` MUST be used); a grid with a `time` axis and
   no `time_values` is **E109** (§3.2); a dangling `ignore_mask`, `derived_from` entry or image
@@ -71,6 +80,14 @@ produces or accepts:
 - **§7.1, §3.2, §15.2** The `uint8` rule and the `time_values` requirement are validated; E603's
   summary reads "unknown agent or activity type", as the table always said.
 
+### Fixed
+
+- **JSON, Markdown and checksum files are read and written as UTF-8 on every platform.**
+  Manifests, splits, reports, nnU-Net `dataset.json`, NIfTI sidecars and the published
+  conformance suite used the platform default, which on Windows is cp1252 — a manifest with a
+  non-ASCII subject id could not be read back there. The new Windows job found it in the docs
+  tests before anyone found it in the package.
+
 ### Fixed — performance
 
 - **A displacement field was read whole on every evaluation.** `PairedPatchDataset(align="transform")`
@@ -113,7 +130,7 @@ produces or accepts:
 
 - The package version is written once, in `medh5/__about__.py`; `pyproject.toml` declares it dynamic
   and the release workflow checks the tag against it. `license` is the SPDX string `MIT`.
-- CI gains a **Windows** job and a **minimum-dependency** job (`numpy 1.24`, `h5py 3.10`,
+- CI gains a **Windows** job and a **minimum-dependency** job (`numpy 1.24`, `h5py 3.13`,
   `hdf5plugin 4.1` on 3.10), asserts numpy 2 on the matrix, and prints skips.
 - `.pre-commit-config.yaml` pins the ruff the `dev` extra pins. `.hypothesis/` is ignored. The
   README's static coverage badge is gone; the number lives in CI.

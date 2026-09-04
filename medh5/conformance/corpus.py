@@ -2403,7 +2403,9 @@ def build_corpus(outdir: str | Path, *, names: Sequence[str] | None = None) -> P
         record = entry.to_json()
         record["file"] = path.name
         manifest["cases"].append(record)  # type: ignore[attr-defined]
-    (root / "expected.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    (root / "expected.json").write_text(
+        json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+    )
     return root / "expected.json"
 
 

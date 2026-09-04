@@ -325,7 +325,7 @@ def _bval_sidecar(path: str | os.PathLike[str]) -> Path | None:
 
 
 def _read_bvals(path: Path) -> tuple[float, ...]:
-    text = path.read_text().replace("\n", " ")
+    text = path.read_text(encoding="utf-8").replace("\n", " ")
     return tuple(float(v) for v in text.split())
 
 
@@ -350,7 +350,7 @@ PER_VOLUME_TIME = ("VolumeTiming",)
 def _read_json(path: Path) -> dict[str, Any]:
     """A BIDS sidecar as a mapping; malformed or unreadable reads as absent."""
     try:
-        loaded = json.loads(path.read_text())
+        loaded = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):  # a broken sidecar is not a broken NIfTI
         return {}
     return loaded if isinstance(loaded, dict) else {}

@@ -51,7 +51,7 @@ def read_dataset_json(path: str | os.PathLike[str]) -> dict[str, Any]:
         target = target / "dataset.json"
     if not target.exists():
         raise MEDH5ValidationError(f"dataset.json not found at {target}")
-    raw = json.loads(target.read_text())
+    raw = json.loads(target.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise MEDH5ValidationError("dataset.json must contain an object")
     missing = [k for k in REQUIRED_KEYS if k not in raw]
@@ -377,7 +377,9 @@ def to_nnunetv2(
             "file_ending": file_ending,
         }
     )
-    (root / "dataset.json").write_text(json.dumps(document, indent=2) + "\n")
+    (root / "dataset.json").write_text(
+        json.dumps(document, indent=2) + "\n", encoding="utf-8"
+    )
     log.outputs.append(str(root / "dataset.json"))
     log.decision(
         "dataset_json",

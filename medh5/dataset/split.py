@@ -437,7 +437,9 @@ def load(path: str | os.PathLike[str]) -> Split:
     import json
     from pathlib import Path
 
-    return Split.from_json(json.loads(Path(os.fspath(path)).read_text()))
+    return Split.from_json(
+        json.loads(Path(os.fspath(path)).read_text(encoding="utf-8"))
+    )
 
 
 __all__ = [

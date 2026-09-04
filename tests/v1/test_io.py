@@ -490,9 +490,13 @@ class TestDimensionality:
         source = tmp_path / f"{name}.nii.gz"
         nib.save(image, str(source))
         if bvals is not None:
-            (tmp_path / f"{name}.bval").write_text(" ".join(str(b) for b in bvals))
+            (tmp_path / f"{name}.bval").write_text(
+                " ".join(str(b) for b in bvals), encoding="utf-8"
+            )
         if sidecar is not None:
-            (tmp_path / f"{name}.json").write_text(json.dumps(sidecar))
+            (tmp_path / f"{name}.json").write_text(
+                json.dumps(sidecar), encoding="utf-8"
+            )
         return source
 
     @pytest.mark.parametrize(
@@ -695,7 +699,7 @@ class TestDimensionality:
 
     def test_S3_6_a_broken_sidecar_is_not_a_broken_nifti(self, tmp_path):
         source = self._write(tmp_path, "bad", (24, 20, 12, 4))
-        (tmp_path / "bad.json").write_text("{not json")
+        (tmp_path / "bad.json").write_text("{not json", encoding="utf-8")
         _, geometry = read_nifti(source)
         assert geometry["leading_kind"] == "time"
 
@@ -818,7 +822,8 @@ class TestNnunet:
                     "numTraining": 2,
                     "file_ending": ".nii.gz",
                 }
-            )
+            ),
+            encoding="utf-8",
         )
         return root
 
@@ -882,12 +887,16 @@ class TestNnunet:
         from_nnunetv2(dataset, tmp_path / "out")
         with medh5.open(tmp_path / "out" / "CASE_001.medh5") as sample:
             stashed = sample.document.extra["nnunetv2"]
-            assert stashed == json.loads((dataset / "dataset.json").read_text())
+            assert stashed == json.loads(
+                (dataset / "dataset.json").read_text(encoding="utf-8")
+            )
 
     def test_a_malformed_dataset_json_is_named(self, tmp_path):
         from medh5.io.nnunetv2 import read_dataset_json
 
-        (tmp_path / "dataset.json").write_text(json.dumps({"labels": {}}))
+        (tmp_path / "dataset.json").write_text(
+            json.dumps({"labels": {}}), encoding="utf-8"
+        )
         with pytest.raises(MEDH5ValidationError, match="missing"):
             read_dataset_json(tmp_path)
         (tmp_path / "dataset.json").write_text(
@@ -898,7 +907,8 @@ class TestNnunet:
                     "numTraining": 1,
                     "file_ending": ".nii.gz",
                 }
-            )
+            ),
+            encoding="utf-8",
         )
         with pytest.raises(MEDH5ValidationError, match="0\\.\\.0"):
             read_dataset_json(tmp_path)
@@ -962,7 +972,8 @@ class TestNnunet:
                     "numTraining": 1,
                     "file_ending": ".nii.gz",
                 }
-            )
+            ),
+            encoding="utf-8",
         )
         imported = tmp_path / "imported"
         from_nnunetv2(root, imported)
@@ -1937,7 +1948,7 @@ class TestConverterDiagnosticCodes:
         found = {
             (path.name, code)
             for path in sorted(root.glob("*.py"))
-            for code in re.findall(r'code="(E\d{3})"', path.read_text())
+            for code in re.findall(r'code="(E\d{3})"', path.read_text(encoding="utf-8"))
         }
         assert found <= self.ALLOWED, (
             "new coded refusal(s) in medh5.io: "

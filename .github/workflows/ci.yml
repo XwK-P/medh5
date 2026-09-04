@@ -89,7 +89,7 @@ jobs:
         with:
           python-version: "3.10"
       - run: pip install -e ".[dev,schema]"
-      - run: pip install "numpy==1.24.*" "h5py==3.10.*" "hdf5plugin==4.1.*"
+      - run: pip install "numpy==1.24.*" "h5py==3.13.*" "hdf5plugin==4.1.*"
       - run: python -c "import numpy, h5py, hdf5plugin; print(numpy.__version__, h5py.__version__, hdf5plugin.version)"
       - run: pytest tests/ -v -rs --no-cov -p no:cacheprovider
 

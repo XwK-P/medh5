@@ -448,14 +448,18 @@ def _timestamp(value: Any) -> str | None:
 def write_sidecar(label_set: Any, path: str | os.PathLike[str]) -> Path:
     """Write the minted label set for review before a cohort-wide migration."""
     target = Path(os.fspath(path))
-    target.write_text(json.dumps(label_set.to_json(), indent=2) + "\n")
+    target.write_text(
+        json.dumps(label_set.to_json(), indent=2) + "\n", encoding="utf-8"
+    )
     return target
 
 
 def load_sidecar(path: str | os.PathLike[str]) -> Any:
     from medh5.labels.labelset import LabelSet
 
-    return LabelSet.from_json(json.loads(Path(os.fspath(path)).read_text()))
+    return LabelSet.from_json(
+        json.loads(Path(os.fspath(path)).read_text(encoding="utf-8"))
+    )
 
 
 __all__ = [

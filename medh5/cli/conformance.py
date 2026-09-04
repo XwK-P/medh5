@@ -100,7 +100,7 @@ def dispatch(command: str, args: argparse.Namespace) -> int | None:
         return EXIT_OK
     if sub == "score":
         try:
-            submitted = json.loads(Path(args.results).read_text())
+            submitted = json.loads(Path(args.results).read_text(encoding="utf-8"))
             stale = check_checksums(args.suite)
             results = score(args.suite, submitted)
         except (MEDH5Error, OSError, json.JSONDecodeError) as exc:

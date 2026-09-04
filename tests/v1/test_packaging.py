@@ -27,7 +27,7 @@ def _declared() -> str:
     only source is `medh5/__about__.py`, and what this checks is that the
     wiring points there and nowhere else.
     """
-    text = PYPROJECT.read_text()
+    text = PYPROJECT.read_text(encoding="utf-8")
     assert re.search(r'^dynamic\s*=\s*\["version"\]', text, re.M), (
         "pyproject.toml must declare version as dynamic"
     )
