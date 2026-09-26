@@ -40,6 +40,7 @@ import hashlib
 import json
 import os
 import re
+import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1286,31 +1287,61 @@ class _Sweep:
 
 
 def _rewrite_strings(dataset: h5py.Dataset, values: list[str]) -> None:
-    """Write cleaned strings back, as variable-length UTF-8 when they must grow.
+    """Write cleaned strings back, keeping the dataset's whole filter pipeline.
 
-    A fixed-length string dataset cannot hold a pseudonym longer than the UID
-    it replaces, so it is recreated in place with the same name, filters and
-    attributes --- ``commit`` then restamps its digest from the new bytes.
+    In place wherever the values fit, which keeps every filter, the chunking
+    and the fill value by construction.  A fixed-length dataset whose width is
+    shorter than a pseudonym is widened instead: recreated with the same kind
+    of string, a copy of its creation property list --- so shuffle, Fletcher32
+    and any codec come across, not only the compression --- and its attributes.
+    ``commit`` then restamps its digest from the new bytes.
     """
-    array = np.array(values, dtype=object).reshape(dataset.shape)
     info = h5py.check_string_dtype(dataset.dtype)
-    if info is not None and info.length is None:
-        dataset[...] = array
+    if info is None or info.length is None:
+        dataset[...] = np.array(values, dtype=object).reshape(dataset.shape)
         return
+    encoding = info.encoding
+    try:
+        encoded = [v.encode(encoding) for v in values]
+    except UnicodeEncodeError:
+        encoding = "utf-8"
+        encoded = [v.encode(encoding) for v in values]
+    width = max([info.length, *(len(b) for b in encoded)])
+    if width == info.length and encoding == info.encoding:
+        dataset[...] = np.array(encoded, dtype=dataset.dtype).reshape(dataset.shape)
+        return
+    _widen(dataset, h5py.string_dtype(encoding, width), encoded)
+
+
+def _widen(dataset: h5py.Dataset, dtype: Any, encoded: list[bytes]) -> None:
+    """Recreate *dataset* with a wider string type and its own creation plist.
+
+    Built under a temporary name and moved into place, so a pipeline HDF5
+    cannot rebuild for the new type leaves the original untouched.
+    """
+    from h5py import h5d, h5t
+
     parent = dataset.parent
     name = dataset.name.rsplit("/", 1)[-1]
-    attrs = {key: dataset.attrs[key] for key in dataset.attrs}
-    options: dict[str, Any] = {}
+    staging = f"{name}.scrub-{uuid.uuid4().hex[:8]}"
+    dcpl = dataset.id.get_create_plist()
     if dataset.chunks is not None:
-        options["chunks"] = dataset.chunks
-        options["maxshape"] = dataset.maxshape
-    if dataset.compression is not None:
-        options["compression"] = dataset.compression
-        options["compression_opts"] = dataset.compression_opts
+        # The copied layout records the old element size beside the chunk
+        # shape; setting the shape again lets HDF5 size it for the new type.
+        dcpl.set_chunk(dataset.chunks)
+    created = h5d.create(
+        parent.id,
+        staging.encode(),
+        h5t.py_create(dtype, logical=True),
+        dataset.id.get_space(),
+        dcpl=dcpl,
+    )
+    replacement = h5py.Dataset(created)
+    replacement[...] = np.array(encoded, dtype=dtype).reshape(dataset.shape)
+    for key in dataset.attrs:
+        replacement.attrs[key] = dataset.attrs[key]
     del parent[name]
-    replacement = parent.create_dataset(name, data=array, dtype=str_dtype(), **options)
-    for key, value in attrs.items():
-        replacement.attrs[key] = value
+    parent.move(staging, name)
 
 
 def _imported_from_dicom(doc: Mapping[str, Any]) -> bool:

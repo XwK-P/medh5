@@ -202,24 +202,48 @@ def open_h5(path: str | os.PathLike[str], mode: str = "r") -> h5py.File:
     return handle
 
 
-_SELF_CONTAINED: dict[tuple[int, int, int, int], None] = {}
-"""Files already checked, keyed by ``(st_dev, st_ino, st_mtime_ns, st_size)``.
+_SELF_CONTAINED: dict[tuple[int, ...], None] = {}
+"""Files already checked, keyed by the identity of the file a handle had open:
+``(st_dev, st_ino, st_size, st_mtime_ns, st_ctime_ns)``.
 
 Every write is an atomic replace (§14.4), so a file that changes gets a new
-inode or a new mtime, and a key that still matches names bytes that were
-checked.  A training loop re-opens the same few thousand files for the length
-of a run; this keeps the check off that path after the first open of each.
+inode; an in-place edit changes the ctime even where the mtime is put back.  A
+training loop re-opens the same few thousand files for the length of a run;
+this keeps the check off that path after the first open of each.
 """
 
 _SELF_CONTAINED_LIMIT = 65_536
 
 
-def _stat_key(path: str | os.PathLike[str]) -> tuple[int, int, int, int] | None:
+def _opened_key(
+    handle: h5py.File, path: str | os.PathLike[str] | None
+) -> tuple[int, ...] | None:
+    """The identity of the file *handle* holds open --- not whatever *path* names now.
+
+    Between an open and a stat by name, another process can atomically replace
+    the path; caching the replacement's identity as checked would let it skip
+    the check on its next open, and the next ``recompress`` would copy whatever
+    it points at.  So on POSIX the identity comes from the descriptor HDF5 read
+    through.  Windows refuses to replace a file another handle holds open, so
+    there the path names the opened file for as long as the handle lives --- and
+    HDF5's descriptor belongs to its own C runtime, which Python's cannot
+    ``fstat`` --- so a stat by name gives the same answer.
+    """
     try:
-        st = os.stat(os.fspath(path))
-    except OSError:
+        if os.name == "nt":
+            if path is None:
+                return None
+            st = os.stat(os.fspath(path))
+        else:
+            fd = handle.id.get_vfd_handle()
+            if not isinstance(fd, int):
+                return None
+            st = os.fstat(fd)
+    except Exception:
+        # A driver without a descriptor, or a vanished path: no key, so the
+        # file is checked on every open rather than trusted on a guess.
         return None
-    return (st.st_dev, st.st_ino, st.st_mtime_ns, st.st_size)
+    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
 
 
 def outside_references(handle: h5py.Group) -> list[tuple[str, str]]:
@@ -276,10 +300,11 @@ def check_self_contained(
 ) -> None:
     """Refuse a file that reads bytes from outside itself (``MEDH5FileError``).
 
-    See :func:`outside_references`.  The result is memoised per file identity,
-    so re-opening an unchanged file costs one ``stat``.
+    See :func:`outside_references`.  The result is memoised per identity of the
+    file *handle* has open (:func:`_opened_key`), so re-opening an unchanged
+    file costs one ``stat``.
     """
-    key = _stat_key(path) if path is not None else None
+    key = _opened_key(handle, path)
     if key is not None and key in _SELF_CONTAINED:
         return
     found = outside_references(handle)
@@ -350,19 +375,24 @@ def _existing_mode(target: Path) -> int | None:
 
 
 def _precreate(tmp: Path, mode: int | None) -> None:
-    """Create the temporary file with the target's permissions, before any data.
+    """Create the temporary file before any data, readable by its owner only.
 
     Restoring the mode after the write left a window: for as long as a large
     amend ran, a ``0o600`` sample's new contents sat in a sibling created with
     the umask's default --- usually world-readable.  HDF5 truncates an existing
     file without touching its mode, so creating it first, restricted, closes the
-    window; the ``chmod`` after the write still sets the exact bits, which the
-    umask may have narrowed here.
+    window, and the ``chmod`` after the write sets the target's exact bits.
+
+    Restricted means owner read-write, not the target's own mode: HDF5 reopens
+    the file for writing, which a read-only mode such as ``0o444`` refuses to
+    its owner, so a read-only sample could no longer be amended at all.  A new
+    file, with no target mode to protect, is created as a writer would create
+    it, subject to the umask.
     """
     fd = os.open(
         str(tmp),
         os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0),
-        0o666 if mode is None else mode,
+        0o666 if mode is None else 0o600,
     )
     os.close(fd)
 

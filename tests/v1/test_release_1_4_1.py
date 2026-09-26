@@ -151,6 +151,46 @@ class TestW14RewriteGate:
         with pytest.raises(MEDH5FileError, match="virtual dataset"):
             medh5.open(path)
 
+    @pytest.mark.skipif(os.name == "nt", reason="Windows cannot replace an open file")
+    def test_F22_the_check_is_remembered_for_the_file_it_read(
+        self, tmp_path: Path, secret: Path
+    ):
+        """A path replaced between the open and the check must not inherit it.
+
+        The memo was keyed by a stat of the *path*, taken after the open.  A
+        replacement landing in between was recorded as checked while the handle
+        scanned the old file, and its next open skipped the check.
+        """
+        from medh5._hdf5 import check_self_contained
+
+        target = _plain(tmp_path / "target.medh5")
+        bad = self._external_storage(tmp_path, secret)
+        handle = h5py.File(target, "r")
+        try:
+            os.replace(bad, target)  # the path now names another file
+            check_self_contained(handle, target)  # the file read is clean
+        finally:
+            handle.close()
+        with pytest.raises(MEDH5FileError, match="not self-contained"):
+            medh5.open(target)
+
+    @pytest.mark.skipif(
+        sys.platform == "win32" or getattr(os, "geteuid", lambda: 1)() == 0,
+        reason="POSIX file modes, which root ignores",
+    )
+    def test_Q15_a_read_only_sample_can_still_be_amended(self, tmp_path: Path):
+        """The temporary took the target's `0o444` and HDF5 could not write it."""
+        path = _plain(tmp_path / "read-only.medh5")
+        os.chmod(path, 0o444)
+        writer = medh5.amend(path)
+        try:
+            temporary = [p for p in tmp_path.iterdir() if ".tmp" in p.name]
+            assert temporary
+            assert all(stat.S_IMODE(p.stat().st_mode) == 0o600 for p in temporary)
+        finally:
+            writer.commit()
+        assert stat.S_IMODE(path.stat().st_mode) == 0o444
+
     def test_L31_unpack_refuses_a_member_name_that_is_a_path(self, tmp_path: Path):
         from medh5.collection import pack, unpack
 
@@ -618,6 +658,56 @@ class TestW15ScrubRules:
             subject = sample.identity.subject_id
             assert subject == report.uid_map["subj-1"]
             assert sample.document.cohort.group_id == subject
+
+    def test_L36_a_rewritten_string_dataset_keeps_its_filters(self, tmp_path: Path):
+        """Widening a fixed-length dataset kept its compression and dropped the
+        rest: a checksummed column lost its Fletcher32 to a scrub."""
+        import hdf5plugin
+
+        from medh5.curation import scrub
+
+        path = _plain(tmp_path / "filters.medh5")
+        uid = b"1.2.840.1.2"  # 11 bytes, in a 12-byte column: its pseudonym is 39
+        with h5py.File(path, "r+") as handle:
+            group = handle.create_group("x_vendor")
+            narrow = group.create_dataset(
+                "narrow",
+                data=np.array([uid, b"ok"], dtype="S12"),
+                chunks=(2,),
+                shuffle=True,
+                fletcher32=True,
+                compression="gzip",
+            )
+            narrow.attrs["about"] = "series"
+            group.create_dataset(
+                "codec",
+                data=np.array([uid, b"ok"], dtype="S12"),
+                chunks=(2,),
+                **hdf5plugin.Zstd(clevel=5),
+            )
+            group.create_dataset(
+                "wide", data=np.array([uid, b"ok"], dtype="S64"), chunks=(2,)
+            )
+
+        def pipeline(dataset: Any) -> list[int]:
+            plist = dataset.id.get_create_plist()
+            return [plist.get_filter(i)[0] for i in range(plist.get_nfilters())]
+
+        with h5py.File(path, "r") as handle:
+            before = {n: pipeline(handle[f"x_vendor/{n}"]) for n in handle["x_vendor"]}
+        report = scrub.apply(path)
+        assert report.ok
+        pseudonym = report.uid_map[uid.decode()].encode()
+        with h5py.File(path, "r") as handle:
+            group = handle["x_vendor"]
+            assert sorted(group) == ["codec", "narrow", "wide"]
+            for name, filters in before.items():
+                assert pipeline(group[name]) == filters, name
+                assert group[name].chunks == (2,)
+                assert list(group[name][...]) == [pseudonym, b"ok"]
+            assert group["narrow"].dtype.itemsize == len(pseudonym)
+            assert group["wide"].dtype == np.dtype("S64")
+            assert group["narrow"].attrs["about"] == "series"
 
     def test_scan_document_reads_only_the_document(self, tmp_path: Path):
         from medh5.curation import scrub
