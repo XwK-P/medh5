@@ -529,6 +529,8 @@ def _verify(args: argparse.Namespace) -> int:
             )
             for name in result.mismatched:
                 print(f"  MISMATCH  {name}")
+            for name in result.unattested:
+                print(f"  UNSIGNED  {name} (no digest, inside an attested object)")
             for name in result.stale_index:
                 print(f"  STALE     index/{name} (rebuild with `medh5 index build`)")
     emit(results, as_json=args.json)

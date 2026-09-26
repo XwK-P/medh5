@@ -11,6 +11,12 @@ inverted analytically, anything carrying ``inverse_id`` delegates to the stored
 inverse, and a deformable transform with neither is simply not traversable
 backwards --- because approximating the inverse of a dense field silently is how
 a registration pipeline reports errors it never measured.
+
+**A transform and the stored inverse its ``inverse_id`` names are one route**
+(§10.1).  Walking both the stored transform and the other one's delegated
+inverse made every mutually declared pair --- what E505 checks as "mutually
+consistent" --- two equally short routes, and refused as ambiguous in both
+directions.  Each direction of a declared pair is its stored transform, once.
 """
 
 from __future__ import annotations
@@ -67,14 +73,14 @@ class InverseTransform(Transform):
             return False
         if isinstance(inner, (IdentityTransform, AffineTransform)):
             return True
-        return inner.inverse() is not None
+        return stored_inverse(inner) is not None
 
     def transform_points(self, points: npt.ArrayLike) -> npt.NDArray[np.float64]:
         from medh5.transforms.affine import AffineTransform, IdentityTransform
 
         if isinstance(self._inner, IdentityTransform):
             return np.asarray(points, dtype=np.float64)
-        stored = self._inner.inverse()
+        stored = stored_inverse(self._inner)
         if stored is not None:
             return stored.transform_points(points)
         if isinstance(self._inner, AffineTransform):
@@ -149,14 +155,46 @@ _AMBIGUITY_EVIDENCE = 2
 """Distinct routes to keep per frame --- two is enough to prove a tie."""
 
 
+def stored_inverse(transform: Transform) -> Transform | None:
+    """The transform ``inverse_id`` names, if it really maps the other way.
+
+    One whose frames are not this transform's reversed is not its inverse
+    whatever the attribute says (E505), and evaluating it as one would put
+    points in the wrong frame.
+    """
+    other = transform.inverse()
+    if other is None:
+        return None
+    if (other.from_frame, other.to_frame) != (transform.to_frame, transform.from_frame):
+        return None
+    return other
+
+
+def _paired(transforms: Mapping[str, Transform]) -> set[str]:
+    """Ids of transforms that are one half of a stored inverse pair (§10.1).
+
+    Each half is traversed forwards only: its reverse direction *is* the other
+    half, which carries its own forward edge.
+    """
+    out: set[str] = set()
+    for transform_id, transform in transforms.items():
+        other = stored_inverse(transform)
+        if other is not None and other.transform_id in transforms:
+            out.update((transform_id, other.transform_id))
+    return out
+
+
 def _edges(
     transforms: Mapping[str, Transform],
 ) -> dict[str, list[tuple[str, Transform]]]:
     """Frame -> [(neighbour, step)], including inverses where they are usable."""
+    paired = _paired(transforms)
     out: dict[str, list[tuple[str, Transform]]] = {}
-    for transform in transforms.values():
+    for transform_id, transform in transforms.items():
         out.setdefault(transform.from_frame, []).append((transform.to_frame, transform))
         out.setdefault(transform.to_frame, [])
+        if transform_id in paired:
+            continue
         # `can_invert`, not `is_invertible`: an edge the walker cannot evaluate
         # is not an edge, and adding it turns "no path exists" into a path that
         # raises when the caller uses it.
@@ -263,4 +301,5 @@ __all__ = [
     "InverseTransform",
     "frames_of_timepoint",
     "resolve_between",
+    "stored_inverse",
 ]

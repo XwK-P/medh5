@@ -906,12 +906,20 @@ class TestPhase5Curation:
         assert code == EXIT_ERROR
 
     def test_agree_between_instance_annotations(self, capsys, tmp_path, label_set):
+        from tests.v1.test_tracking import write_raters
+
+        path = write_raters(tmp_path / "raters.medh5", label_set)
+        code, out = run(capsys, "agree", str(path), "r1", "r2")
+        assert code == EXIT_OK
+        assert "matched" in out.out and "instance_id" in out.out
+
+    def test_agree_refuses_two_visits_grids(self, capsys, tmp_path, label_set):
         from tests.v1.test_tracking import write_series
 
         path = write_series(tmp_path / "series.medh5", label_set)
         code, out = run(capsys, "agree", str(path), "les_tp0", "les_tp1")
-        assert code == EXIT_OK
-        assert "matched" in out.out and "instance_id" in out.out
+        assert code == EXIT_ERROR
+        assert "different grids" in out.err
 
     def test_splits_audit_reports_leakage(self, capsys, tmp_path, label_set, masks):
         import medh5

@@ -136,7 +136,7 @@ disagree on a tensor's shape it names the key that disagreed rather than
 raising from inside `torch.stack`.
 
 `used_index` is worth logging. `False` means the sampler fell back to scanning
-the volume because there was no sampling index — the difference between 0.9 ms
+the volume because there was no sampling index — the difference between 0.03 ms
 and several hundred. `None` means the draw was uniform and consulted no index, so
 there is nothing to report.
 
@@ -156,6 +156,44 @@ but not required for correctness**: the handle cache is PID-keyed and re-checks
 ownership on every access, so a forked worker abandons the parent's handles on
 first use rather than reading through or closing them. The callback just does
 that reset eagerly, at worker start, instead of lazily.
+
+### Keeping a file's items together
+
+Each worker keeps up to 32 files open (`set_cache_size(n)` changes it; call it
+in your `worker_init_fn` to size each worker's cache). `shuffle=True` scatters a
+file's `samples_per_volume` items across the epoch, so with more files than the
+cache holds most items open their file again. `FileGroupedSampler` shuffles
+**files** instead, and yields each file's items together:
+
+```python
+from medh5.torch import FileGroupedSampler, set_cache_size
+
+loader = DataLoader(ds, batch_size=4, sampler=FileGroupedSampler(ds, seed=0),
+                    num_workers=8, worker_init_fn=worker_init_fn,
+                    collate_fn=collate, persistent_workers=True)
+```
+
+The order is a function of `(seed, epoch)`, and the epoch is the dataset's:
+`ds.set_epoch(epoch)` redraws the patches and reorders the files. Pass it
+instead of `shuffle=True`, not with it. It works with every dataset here, and
+with workers `samples_per_volume` should be a multiple of `batch_size`, since a
+file whose items straddle two batches is opened by both workers.
+
+The cache is shared by the threads of a process and locked. A handle is held
+for the length of an item, so a thread-based loader never has one closed under
+it by another thread's eviction.
+
+### On a network filesystem
+
+HDF5's file locking is unreliable on NFS, Lustre and GPFS. For a training job
+that only reads, turn it off in the job's environment, before Python starts:
+
+```bash
+export HDF5_USE_FILE_LOCKING=FALSE
+```
+
+medh5 does not set it for you (§14.4): it also removes the protection between
+two writers. See [Tune performance](../guides/performance.md#on-a-network-filesystem).
 
 If you need your one `worker_init_fn` slot for seeding or other setup, call it
 from your own:

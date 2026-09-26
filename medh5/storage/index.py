@@ -25,6 +25,7 @@ import numpy.typing as npt
 from medh5._hdf5 import as_int, as_str, set_attrs
 from medh5.annotations.base import VoxelAnnotation
 from medh5.errors import MEDH5ValidationError
+from medh5.storage.codecs import CodecProfile, dataset_kwargs
 
 DEFAULT_MAX_COORDS = 4096
 """Coordinates cached per class.
@@ -172,20 +173,49 @@ def build_index(
     )
 
 
-def write_index(root: h5py.Group, payload: IndexPayload) -> h5py.Group:
-    """Write an index entry under ``index/<ann_id>``."""
+def write_index(
+    root: h5py.Group,
+    payload: IndexPayload,
+    *,
+    codec: str | CodecProfile | None = None,
+) -> h5py.Group:
+    """Write an index entry under ``index/<ann_id>``.
+
+    Datasets go through the label codec, like every other dataset the writer
+    stores, and ``occupancy`` is chunked one class per chunk --- the unit a
+    reader asks about.  It was written uncompressed and contiguous: C × (N/8)³
+    booleans, about 52 MB for 200 classes at 512³, of what is almost entirely
+    ``False``.  Datasets under the compression threshold stay contiguous, as
+    they do everywhere else.
+    """
     index_root = root.require_group("index")
     if payload.ann_id in index_root:
         del index_root[payload.ann_id]
     group = index_root.create_group(payload.ann_id)
-    group.create_dataset("class_ids", data=payload.class_ids)
-    group.create_dataset("voxel_counts", data=payload.voxel_counts)
-    group.create_dataset("class_bboxes", data=payload.class_bboxes)
+
+    def store(
+        parent: h5py.Group,
+        name: str,
+        data: npt.NDArray[Any],
+        chunks: tuple[int, ...] | None = None,
+    ) -> None:
+        parent.create_dataset(
+            name,
+            data=data,
+            **dataset_kwargs(
+                data.shape, data.dtype, profile=codec, role="label", chunks=chunks
+            ),
+        )
+
+    store(group, "class_ids", payload.class_ids)
+    store(group, "voxel_counts", payload.voxel_counts)
+    store(group, "class_bboxes", payload.class_bboxes)
     coords = group.create_group("fg_coords")
     for class_id, arr in payload.fg_coords.items():
-        coords.create_dataset(str(class_id), data=arr)
+        store(coords, str(class_id), arr)
     if payload.occupancy is not None:
-        group.create_dataset("occupancy", data=payload.occupancy)
+        occupancy = payload.occupancy
+        store(group, "occupancy", occupancy, (1, *occupancy.shape[1:]))
     set_attrs(
         group,
         {
@@ -198,17 +228,49 @@ def write_index(root: h5py.Group, payload: IndexPayload) -> h5py.Group:
 
 
 class SamplingIndex:
-    """Reader for one ``index/<ann_id>`` entry."""
+    """Reader for one ``index/<ann_id>`` entry.
 
-    __slots__ = ("ann_id", "group")
+    The class table, the counts and each class's coordinate dataset are read
+    once per open and kept: a :class:`~medh5.sample.Sample` is a read-only
+    view, so they cannot change under it.  Reading them per call is what made
+    the draw the design calls O(1) cost 190 HDF5 reads at 63 classes --- one
+    ``class_ids`` read per class checked, and two more per count looked up ---
+    the pattern P-02 and P-05 had already removed from the annotation readers.
+    Coordinates are *not* all loaded: a draw reads the one row it picked.
+    """
+
+    __slots__ = (
+        "_class_ids",
+        "_coord_nodes",
+        "_counts",
+        "_positions",
+        "ann_id",
+        "group",
+    )
 
     def __init__(self, ann_id: str, group: h5py.Group) -> None:
         self.ann_id = ann_id
         self.group = group
+        self._class_ids: tuple[int, ...] | None = None
+        self._positions: dict[int, int] = {}
+        self._counts: dict[int, int] | None = None
+        self._coord_nodes: dict[int, h5py.Dataset] = {}
 
     @property
     def class_ids(self) -> tuple[int, ...]:
-        return tuple(int(c) for c in self.group["class_ids"][...])
+        if self._class_ids is None:
+            self._class_ids = tuple(int(c) for c in self.group["class_ids"][...])
+            self._positions = {c: i for i, c in enumerate(self._class_ids)}
+        return self._class_ids
+
+    def _position(self, class_id: int) -> int | None:
+        """Row of *class_id* in the class table, or ``None``."""
+        if self._class_ids is None:
+            self.class_ids  # noqa: B018 - fills the table and its positions
+        return self._positions.get(int(class_id))
+
+    def has_class(self, class_id: int) -> bool:
+        return self._position(class_id) is not None
 
     @property
     def source_digest(self) -> str | None:
@@ -221,36 +283,56 @@ class SamplingIndex:
 
     @property
     def voxel_counts(self) -> dict[int, int]:
-        counts = self.group["voxel_counts"][...]
-        return {cid: int(n) for cid, n in zip(self.class_ids, counts, strict=True)}
+        if self._counts is None:
+            counts = self.group["voxel_counts"][...]
+            self._counts = {
+                cid: int(n) for cid, n in zip(self.class_ids, counts, strict=True)
+            }
+        return dict(self._counts)
 
     def bbox(self, class_id: int) -> npt.NDArray[np.float32] | None:
-        position = self.class_ids.index(int(class_id))
+        position = self._position(class_id)
+        if position is None:
+            raise ValueError(f"index {self.ann_id!r} has no class {class_id}")
         box = np.asarray(self.group["class_bboxes"][position], dtype=np.float32)
         return None if np.isnan(box).any() else box
 
+    def _coord_node(self, class_id: int) -> h5py.Dataset:
+        key = int(class_id)
+        node = self._coord_nodes.get(key)
+        if node is None:
+            group = self.group["fg_coords"]
+            if str(key) not in group:
+                raise KeyError(
+                    f"index {self.ann_id!r} has no coordinates for class {class_id}"
+                )
+            node = self._coord_nodes[key] = group[str(key)]
+        return node
+
     def coords(self, class_id: int) -> npt.NDArray[np.int32]:
-        node = self.group["fg_coords"]
-        key = str(int(class_id))
-        if key not in node:
-            raise KeyError(
-                f"index {self.ann_id!r} has no coordinates for class {class_id}"
-            )
-        return np.asarray(node[key][...], dtype=np.int32)
+        return np.asarray(self._coord_node(class_id)[...], dtype=np.int32)
 
     def sample_foreground(
         self, class_id: int, n: int = 1, rng: np.random.Generator | None = None
     ) -> npt.NDArray[np.int32]:
         """Draw *n* foreground voxel coordinates in O(1) time and memory."""
-        pool = self.coords(class_id)
-        if pool.shape[0] == 0:
+        pool = self._coord_node(class_id)
+        size = int(pool.shape[0])
+        if size == 0:
             raise MEDH5ValidationError(
                 f"index {self.ann_id!r}: class {class_id} has no foreground voxels"
             )
         generator = rng if rng is not None else np.random.default_rng()
-        picks = generator.integers(0, pool.shape[0], size=n)
-        drawn: npt.NDArray[np.int32] = pool[picks]
-        return drawn
+        picks = generator.integers(0, size, size=n)
+        if n == 1:
+            # One row, not the pool: the draw that made sampling O(1) should
+            # not read 4096 coordinates to use one of them.
+            drawn: npt.NDArray[np.int32] = np.asarray(
+                pool[int(picks[0])], dtype=np.int32
+            )[None]
+            return drawn
+        rows: npt.NDArray[np.int32] = np.asarray(pool[...], dtype=np.int32)[picks]
+        return rows
 
     def class_weights(self, mode: str = "inverse_frequency") -> dict[int, float]:
         """Sampling weights derived from ``voxel_counts``."""

@@ -991,6 +991,10 @@ its own.
 | `metrics` | `str` | MAY | key into `/meta → quality` holding TRE, Dice-after-warp, folding fraction |
 | `digest` | `str` | SHOULD | §13.1 |
 
+A transform and the stored transform its `inverse_id` names are **one relation between two frames,
+traversable in both directions — not two**. A reader resolving a path between frames **MUST NOT**
+count the stored inverse and the inverse of the transform that names it as two distinct routes.
+
 ### 10.2 Direction convention (normative)
 
 **A transform T with `from_frame = F`, `to_frame = M` maps a point expressed in F to the
@@ -1555,12 +1559,12 @@ implementation's code registry are identical, so the two cannot drift.
 
 The §14 performance claims are reproducible rather than asserted: `medh5 bench` re-measures them on
 any machine. On a 192×256×256 synthetic CT with eight classes, a multi-class 64³ label read costs
-4.0 ms, foreground centre sampling 0.90 ms (O(1) in volume size, via §14.3), a metadata-only read
-0.21 ms, and `open()` → first patch 2.4 ms.
+4.0 ms, foreground centre sampling 0.03 ms (O(1) in volume size, via §14.3; 0.10 ms at 63 classes),
+a metadata-only read 0.21 ms, and `open()` → first patch 2.4 ms.
 
-Twenty clauses have been corrected — ten during implementation and ten in the 1.x package releases
-that followed — each because writing the code showed the text was not implementable, not unambiguous,
-or not what the implementation could honestly promise, as written:
+Twenty-one clauses have been corrected — ten during implementation and eleven in the 1.x package
+releases that followed — each because writing the code showed the text was not implementable, not
+unambiguous, or not what the implementation could honestly promise, as written:
 
 | Clause | Correction |
 |---|---|
@@ -1584,6 +1588,7 @@ or not what the implementation could honestly promise, as written:
 | §7.4 | An `instances` annotation may hold `N = 0` objects. §7.4 already made a resolved lesion distinguishable from an unexamined one "only through `annotated_class_ids`", and for the one encoding that carries identity the only way to state that was an annotation with no objects — which the reference writer refused. |
 | §7.5 | `contains` is decided at the stored precision, and a writer must store `data` in a dtype under which that decision matches the input. The clause set a `float16` default and a `float64` threshold and said nothing about comparing them: a threshold of 1/3 compared against a float16 1/3 excluded exactly the voxels the threshold was chosen to include. |
 | §7.7 | An ignore region that overlaps a class is stored as the sibling `mask` under every encoding. In band it cannot survive the overlap — `labelmap` kept the class and lost the region there, while `bitmask` kept both — so one call to a writer meant different things to a loss depending on which encoding the size measurement picked. |
+| §10.1 | A transform and the stored inverse its `inverse_id` names are one route, not two. E505 requires the pair to be mutually consistent, and a resolver that counted the stored transform and the delegated inverse of its partner as two equally short routes refused every such pair as ambiguous, in both directions — so the declaration E505 checks made the pair unusable, and the registration guide told users not to make it. |
 
 ### C.2 Prototype checks
 

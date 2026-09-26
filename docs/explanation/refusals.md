@@ -133,8 +133,8 @@ anyone drew, and an RTSTRUCT is a clinical document that asserts they are.
 
 **Rasterisation is opt-in and recorded.** Contours stay contours (§8.6), in
 world coordinates. When you do rasterise, the rule used — even-odd fill at voxel
-centres, holes excluded — goes into the provenance graph, because somebody will
-need to know a year later.
+centres, per plane, so a hole is excluded and an island inside it is not — goes
+into the provenance graph, because somebody will need to know a year later.
 
 Hole detection groups contours by plane in the grid's **index** space. In world
 space the *z* of a contour varies within its own slice under a real oblique

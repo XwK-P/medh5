@@ -9,12 +9,13 @@ everywhere.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import numpy as np
 import numpy.typing as npt
 
+from medh5._hdf5 import as_str
 from medh5.annotations.payload import AnnotationPayload
 from medh5.errors import MEDH5ValidationError
 from medh5.transforms.base import Transform, component_ids, open_transform
@@ -40,6 +41,13 @@ class CompositeTransform(Transform):
 
     def components(self) -> tuple[Transform, ...]:
         """The chain, resolved and in application order."""
+        cycle = composite_cycle(self.transform_id, self._siblings)
+        if cycle:
+            raise MEDH5ValidationError(
+                f"composite {self.transform_id!r} contains itself through "
+                f"{' -> '.join(cycle)}; the chain never ends",
+                code="E501",
+            )
         out: list[Transform] = []
         for name in self.component_ids:
             if name not in self._siblings:
@@ -128,4 +136,29 @@ class CompositeTransform(Transform):
         return out
 
 
-__all__ = ["CompositeTransform", "encode_composite"]
+def composite_cycle(start: str, siblings: Mapping[str, Any]) -> tuple[str, ...]:
+    """The first path by which composite *start* reaches itself, or ``()``.
+
+    Two composites that name each other chain their frames correctly and
+    validated clean, and evaluating either recursed until Python gave up with a
+    ``RecursionError`` --- not a MEDH5 error, and not from the call documented
+    to answer ``None`` when no route exists.  Walked on the ``components``
+    attributes alone, so it opens nothing and cannot recurse itself.
+    """
+    stack: list[tuple[str, tuple[str, ...]]] = [(start, (start,))]
+    seen: set[str] = set()
+    while stack:
+        name, trail = stack.pop()
+        node = siblings.get(name)
+        if node is None or as_str(node.attrs.get("kind", "")) != "composite":
+            continue
+        for child in component_ids(node):
+            if child == start:
+                return (*trail, child)
+            if child not in seen:
+                seen.add(child)
+                stack.append((child, (*trail, child)))
+    return ()
+
+
+__all__ = ["CompositeTransform", "composite_cycle", "encode_composite"]

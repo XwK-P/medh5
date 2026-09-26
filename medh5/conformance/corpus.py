@@ -1093,30 +1093,32 @@ def _strip_digests(handle: h5py.File) -> None:
 
 
 def _instances_two_classes(handle: h5py.File) -> None:
+    """Object 1 is class 1 in one annotation and class 2 in another.
+
+    Across two annotations, because that is the case W909 exists for: each
+    annotation internally consistent, the join between them wrong (§7.4,
+    Appendix C).  Two rows sharing an id inside *one* annotation are two
+    objects sharing an id, which §7.4 forbids outright --- E404, not a warning.
+    """
     del handle["annotations/organs"]
-    group = handle["annotations"].create_group("organs")
-    group.create_dataset(
-        "boxes",
-        data=np.array(
-            [
-                [[1.5, 5.5], [1.5, 5.5], [1.5, 5.5]],
-                [[6.5, 9.5], [6.5, 9.5], [6.5, 9.5]],
-            ],
-            dtype=np.float32,
-        ),
-    )
-    group.create_dataset("class_ids", data=np.array([1, 2], dtype=np.uint16))
-    group.create_dataset("instance_ids", data=np.array([1, 1], dtype=np.uint32))
-    for key, value in (
-        ("kind", "instances"),
-        ("task", "segmentation"),
-        ("grid", "ct"),
-        ("closure", "explicit"),
-        ("quality", "organs"),
+    for name, box, class_id in (
+        ("organs", [[1.5, 5.5], [1.5, 5.5], [1.5, 5.5]], 1),
+        ("organs_rater2", [[6.5, 9.5], [6.5, 9.5], [6.5, 9.5]], 2),
     ):
-        group.attrs[key] = encode_attr(value)
-    group.attrs["class_ids"] = np.array([1, 2], dtype=np.uint16)
-    group.attrs["annotated_class_ids"] = np.array([1, 2], dtype=np.uint16)
+        group = handle["annotations"].create_group(name)
+        group.create_dataset("boxes", data=np.array([box], dtype=np.float32))
+        group.create_dataset("class_ids", data=np.array([class_id], dtype=np.uint16))
+        group.create_dataset("instance_ids", data=np.array([1], dtype=np.uint32))
+        for key, value in (
+            ("kind", "instances"),
+            ("task", "segmentation"),
+            ("grid", "ct"),
+            ("closure", "explicit"),
+            ("quality", "organs"),
+        ):
+            group.attrs[key] = encode_attr(value)
+        group.attrs["class_ids"] = np.array([1, 2], dtype=np.uint16)
+        group.attrs["annotated_class_ids"] = np.array([1, 2], dtype=np.uint16)
 
 
 _register_invalid_cases()

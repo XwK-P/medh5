@@ -13,21 +13,22 @@ Two findings matter, and they are not the same thing:
 different ``manifest_sha256`` values.  One of them predates a re-split, and any
 training run that mixes them is using two different partitions at once.
 
-**Subject leakage.**  Two files carrying the same grouping key (§12.2) land in
-different partitions of one split.  A sample never spans subjects (§3.7), so
-assigning whole files is subject-safe *by construction* --- but only if the
-assignment itself respected the grouping, and nothing prevents a hand-edited
-manifest from splitting a patient's baseline into ``train`` and their follow-up
-into ``test``.  That is the single most common evaluation error in medical AI,
-it inflates every reported metric, and it is invisible in any one file.  It gets
-its own report rather than being folded into W906, because the remedy is
-different: a conflicting claim needs a re-stamp, leakage needs a re-split.
+**Subject leakage.**  Two files carrying the same grouping key (§12.2) --- or
+the same subject under two keys --- land in different partitions of one split.
+A sample never spans subjects (§3.7), so assigning whole files is subject-safe
+*by construction* --- but only if the assignment itself respected the grouping,
+and nothing prevents a hand-edited manifest from splitting a patient's baseline
+into ``train`` and their follow-up into ``test``.  That is the single most
+common evaluation error in medical AI, it inflates every reported metric, and
+it is invisible in any one file.  It gets its own report rather than being
+folded into W906, because the remedy is different: a conflicting claim needs a
+re-stamp, leakage needs a re-split.
 """
 
 from __future__ import annotations
 
 import os
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -64,12 +65,20 @@ class Membership:
 
 @dataclass(frozen=True, slots=True)
 class Leak:
-    """One grouping key appearing in more than one partition of one split."""
+    """One unit of anatomy appearing in more than one partition of one split.
+
+    The unit is a connected component of ``subject_id`` and grouping key: two
+    files are in one unit if they share either, transitively.  ``group_id``
+    names the unit by its first grouping key; ``groups`` and ``subjects`` list
+    everything it joined.
+    """
 
     set_id: str
     group_id: str
     partitions: tuple[str, ...]
     paths: tuple[str, ...]
+    groups: tuple[str, ...] = ()
+    subjects: tuple[str, ...] = ()
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -77,11 +86,19 @@ class Leak:
             "group_id": self.group_id,
             "partitions": list(self.partitions),
             "paths": list(self.paths),
+            "groups": list(self.groups or (self.group_id,)),
+            "subjects": list(self.subjects),
         }
 
     def __str__(self) -> str:
+        joined = (
+            f" (joined with {', '.join(repr(g) for g in self.groups[1:])} by "
+            f"subject {', '.join(repr(s) for s in self.subjects)})"
+            if len(self.groups) > 1
+            else ""
+        )
         return (
-            f"{self.set_id}: group {self.group_id!r} is in "
+            f"{self.set_id}: group {self.group_id!r}{joined} is in "
             f"{', '.join(self.partitions)} ({len(self.paths)} files)"
         )
 
@@ -226,25 +243,67 @@ def _conflicts(memberships: Sequence[Membership]) -> tuple[Conflict, ...]:
     return tuple(out)
 
 
+def anatomy_units(pairs: Iterable[tuple[str, str]]) -> dict[str, tuple[str, ...]]:
+    """Grouping key -> every grouping key sharing anatomy with it, sorted.
+
+    *pairs* are ``(subject_id, group_id)``.  A split is subject-safe only if
+    no subject straddles two partitions, and a grouping key is a *coarsening*
+    of subjects only when every file of a subject names the same key.  When two
+    visits of one subject were curated under two ``group_id`` values, grouping by
+    the key alone deals them as strangers: that is the case
+    :func:`medh5.dataset.split.make_splits` refuses to produce, and an audit
+    that groups by the key alone cannot see it.  So the unit is the connected
+    component of subjects and keys (union--find): two files are one unit if
+    they share either, transitively.
+    """
+    parent: dict[tuple[str, str], tuple[str, str]] = {}
+
+    def find(node: tuple[str, str]) -> tuple[str, str]:
+        parent.setdefault(node, node)
+        while parent[node] != node:
+            parent[node] = parent[parent[node]]
+            node = parent[node]
+        return node
+
+    for subject, group in pairs:
+        a, b = find(("subject", subject)), find(("group", group))
+        if a != b:
+            parent[max(a, b)] = min(a, b)
+    members: dict[tuple[str, str], list[str]] = {}
+    for node in list(parent):
+        if node[0] == "group":
+            members.setdefault(find(node), []).append(node[1])
+    return {group: tuple(sorted(unit)) for unit in members.values() for group in unit}
+
+
 def _leaks(memberships: Sequence[Membership]) -> tuple[Leak, ...]:
-    by_group: dict[tuple[str, str], dict[str, list[str]]] = {}
+    units = anatomy_units((m.subject_id, m.group_id) for m in memberships)
+    by_unit: dict[tuple[str, tuple[str, ...]], list[Membership]] = {}
     for member in memberships:
-        key = (member.set_id, member.group_id)
-        by_group.setdefault(key, {}).setdefault(member.partition, []).append(
-            member.path
-        )
+        key = (member.set_id, units[member.group_id])
+        by_unit.setdefault(key, []).append(member)
     out = []
-    for (set_id, group_id), by_partition in sorted(by_group.items()):
-        if len(by_partition) > 1:
+    for (set_id, groups), members in sorted(by_unit.items()):
+        partitions = sorted({m.partition for m in members})
+        if len(partitions) > 1:
             out.append(
                 Leak(
                     set_id=set_id,
-                    group_id=group_id,
-                    partitions=tuple(sorted(by_partition)),
-                    paths=tuple(sorted(p for v in by_partition.values() for p in v)),
+                    group_id=groups[0],
+                    partitions=tuple(partitions),
+                    paths=tuple(sorted(m.path for m in members)),
+                    groups=groups,
+                    subjects=tuple(sorted({m.subject_id for m in members})),
                 )
             )
     return tuple(out)
 
 
-__all__ = ["Conflict", "Leak", "Membership", "SplitAudit", "audit_splits"]
+__all__ = [
+    "Conflict",
+    "Leak",
+    "Membership",
+    "SplitAudit",
+    "anatomy_units",
+    "audit_splits",
+]

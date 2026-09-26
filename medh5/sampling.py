@@ -359,8 +359,8 @@ class PatchSampler:
             sample.index.get(annotation) if annotation in sample.fresh_indices else None
         )
         if index is not None:
-            available = [c for c in classes if c in index.class_ids]
-            counted = {c: index.voxel_counts.get(c, 0) for c in available}
+            counts = index.voxel_counts
+            counted = {c: counts.get(c, 0) for c in classes if index.has_class(c)}
             picked = self._pick_class(counted, rng)
             if picked is not None:
                 coords = index.sample_foreground(picked, 1, rng)

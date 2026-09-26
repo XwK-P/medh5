@@ -34,6 +34,7 @@ class Diagnosis:
     path: str
     mismatched: tuple[str, ...] = ()
     undigested: tuple[str, ...] = ()
+    unattested: tuple[str, ...] = ()
     stale_index: tuple[str, ...] = ()
     missing_index: tuple[str, ...] = ()
     content_id_ok: bool | None = None
@@ -51,7 +52,11 @@ class Diagnosis:
 
     @property
     def needs_digests(self) -> bool:
-        return bool(self.mismatched) or self.content_id_ok is False
+        return (
+            bool(self.mismatched)
+            or bool(self.unattested)
+            or self.content_id_ok is False
+        )
 
     @property
     def clean(self) -> bool:
@@ -62,6 +67,7 @@ class Diagnosis:
             "path": self.path,
             "mismatched": list(self.mismatched),
             "undigested": list(self.undigested),
+            "unattested": list(self.unattested),
             "stale_index": list(self.stale_index),
             "missing_index": list(self.missing_index),
             "content_id_ok": self.content_id_ok,
@@ -114,6 +120,7 @@ def diagnose(path: str | os.PathLike[str]) -> Diagnosis:
             path=os.fspath(path),
             mismatched=tuple(result.mismatched),
             undigested=tuple(result.undigested),
+            unattested=tuple(result.unattested),
             stale_index=tuple(stale_index_entries(sample.root)),
             # Reported as it is, with no inference: an annotation without an
             # index is not "missing" one merely because a sibling has one.
@@ -162,6 +169,12 @@ def fix(
             f"digests, and this file has {len(diagnosis.mismatched)} that no "
             "longer match its bytes"
             + (
+                f" and {len(diagnosis.unattested)} dataset(s) inside attested "
+                "objects that carry none"
+                if diagnosis.unattested
+                else ""
+            )
+            + (
                 ""
                 if diagnosis.content_id_ok is not False
                 else " (and a stale content_id)"
@@ -202,7 +215,8 @@ def fix(
                 tool="medh5 fix --rewrite-digests",
                 params={
                     "reason": reason,
-                    "restamped": sorted(diagnosis.mismatched) or "all",
+                    "restamped": sorted({*diagnosis.mismatched, *diagnosis.unattested})
+                    or "all",
                     "verified_content": False,
                 },
             )

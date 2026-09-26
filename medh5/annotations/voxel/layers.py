@@ -227,12 +227,11 @@ class LayersAnnotation(VoxelAnnotation):
         ids = self.class_ids
         if not ids:
             return {}
-        ceiling = max(ids)
-        totals: dict[int, int] = {}
-        for layer in range(self.n_layers):
-            for value, count in value_counts(self.data[layer], ceiling).items():
-                totals[value] = totals.get(value, 0) + count
-        return totals
+        # All layers in one pass: a class lives in exactly one layer, so the
+        # per-value totals over every layer are the per-class counts.  The slab
+        # reader bounds each read (`_slabs`), where `self.data[layer]` read the
+        # whole layer before slabbing it.
+        return value_counts(self.data, max(ids))
 
     def _encodes_ignore(self) -> bool:
         """Whether any layer stores the ignore id, read in bounded slabs.

@@ -13,7 +13,11 @@ hashed the compressed bytes would make this operation a data migration.
 
 Chunking is preserved by default.  A codec change alters compression ratio, not
 access pattern, and re-chunking would quietly undo the L3-aware sizing (§14.1)
-that makes patch reads cheap.
+that makes patch reads cheap.  ``rechunk=True`` re-derives chunks **the way the
+writer does** --- from each grid's ``patch_hint``, ``(1, *spatial)`` for stacked
+encodings --- rather than handing the choice to h5py, whose guess spanned the
+stacked axis of a ``layers`` dataset and drew W902 from this package's own
+validator.
 """
 
 from __future__ import annotations
@@ -29,7 +33,9 @@ import numpy as np
 
 from medh5._hdf5 import atomic_rewrite, open_h5
 from medh5.errors import MEDH5ValidationError
+from medh5.geometry.grid import Grid, read_grids
 from medh5.integrity.verify import verify_root
+from medh5.storage.chunking import field_chunks, fit_chunks, grid_chunks
 from medh5.storage.codecs import PROFILES, Role, dataset_kwargs, describe_filters
 
 
@@ -55,6 +61,12 @@ class RecompressResult:
     "content_id yes", exited 0, and failed ``verify()``.
     """
     mismatched: list[str] = field(default_factory=list)
+    unattested: list[str] = field(default_factory=list)
+    """Undigested datasets inside objects a declared ``content_id`` covers.
+
+    Carried through from the source as they were, and the reason ``verified``
+    is false when nothing mismatched: the output is not attested either.
+    """
     changed: list[tuple[str, str, str]] = field(default_factory=list)
     """``(path, codec before, codec after)`` for each dataset re-encoded."""
 
@@ -78,6 +90,7 @@ class RecompressResult:
             "content_id_preserved": self.content_id_preserved,
             "verified": self.verified,
             "mismatched": list(self.mismatched),
+            "unattested": list(self.unattested),
             "ok": self.ok,
             "changed": [list(c) for c in self.changed],
         }
@@ -137,14 +150,42 @@ def recompress(
         after = check.attrs.get("content_id")
         from medh5.sample import attr_name_map_of
 
-        verification = verify_root(check, attr_name_map_of(check))
+        checked = [
+            (prefix, verify_root(root, attr_name_map_of(root)))
+            for prefix, root in _sample_roots(check)
+        ]
     result.content_id = None if after is None else str(_text(after))
-    result.mismatched = [*verification.mismatched, *verification.malformed]
-    result.verified = verification.ok
-    result.content_id_preserved = (
-        _text(before) == _text(after) and verification.content_id_ok is not False
+    result.mismatched = [
+        f"{prefix}{name}"
+        for prefix, verification in checked
+        for name in (*verification.mismatched, *verification.malformed)
+    ]
+    result.unattested = [
+        f"{prefix}{name}"
+        for prefix, verification in checked
+        for name in verification.unattested
+    ]
+    result.verified = all(verification.ok for _, verification in checked)
+    result.content_id_preserved = _text(before) == _text(after) and all(
+        verification.content_id_ok is not False for _, verification in checked
     )
     return result
+
+
+def _sample_roots(root: h5py.Group) -> list[tuple[str, h5py.Group]]:
+    """``(path prefix, sample root)`` for a sample, or for each collection member.
+
+    A collection's root holds no ``/meta`` and no ``content_id`` of its own ---
+    each member carries its own (§2.2) --- so its output is verified member by
+    member.  Verifying the root as a sample raised a KeyError after the file had
+    already been replaced.
+    """
+    from medh5.collection import SAMPLES_GROUP, is_collection
+
+    if not is_collection(root):
+        return [("", root)]
+    members = root[SAMPLES_GROUP]
+    return [(f"{SAMPLES_GROUP}/{key}/", members[key]) for key in sorted(members)]
 
 
 def _text(value: Any) -> str | None:
@@ -153,20 +194,80 @@ def _text(value: Any) -> str | None:
     return value.decode() if isinstance(value, bytes) else str(value)
 
 
+class _Layout:
+    """One sample root's grids, and the chunks the writer derives from them."""
+
+    __slots__ = ("_grids", "_root", "name")
+
+    def __init__(self, root: h5py.Group) -> None:
+        self._root = root
+        self.name = str(root.name).rstrip("/") + "/"
+        self._grids: dict[str, Grid] | None = None
+
+    def grid(self, grid_id: Any) -> Grid | None:
+        if self._grids is None:
+            try:
+                self._grids = read_grids(self._root)
+            except Exception:  # a malformed grid: fall back to h5py's choice
+                self._grids = {}
+        return self._grids.get(str(_text(grid_id))) if grid_id is not None else None
+
+    def chunks_for(self, node: h5py.Dataset) -> tuple[int, ...] | None:
+        """What the writer would chunk *node* as; ``None`` leaves it to h5py."""
+        parts = str(node.name)[len(self.name) :].split("/")
+        itemsize = int(node.dtype.itemsize)
+        section = parts[0]
+        if section == "images" and len(parts) == 2:
+            grid = self.grid(node.attrs.get("grid"))
+            return (
+                None
+                if grid is None
+                else fit_chunks(grid_chunks(grid, itemsize), node.shape)
+            )
+        if section == "images" and len(parts) == 3 and parts[2].isdigit():
+            levels = node.parent.attrs.get("grid_levels")
+            level = int(parts[2])
+            if levels is None or level >= len(levels):
+                return None
+            grid = self.grid(levels[level])
+            return (
+                None
+                if grid is None
+                else fit_chunks(grid_chunks(grid, itemsize), node.shape)
+            )
+        if section == "annotations" and len(parts) == 3 and parts[2] == "data":
+            grid = self.grid(node.parent.attrs.get("grid"))
+            if grid is None or node.ndim < grid.n_spatial:
+                return None
+            return fit_chunks(
+                grid_chunks(grid, itemsize, leading=node.ndim - grid.n_spatial),
+                node.shape,
+            )
+        if section == "transforms" and len(parts) == 3 and parts[2] == "field":
+            grid = self.grid(node.parent.attrs.get("field_grid"))
+            return None if grid is None else field_chunks(grid, node.shape, itemsize)
+        if section == "index" and parts[-1] == "occupancy" and node.ndim > 1:
+            return (1, *(int(n) for n in node.shape[1:]))
+        return None
+
+
 def _copy_group(
     src: h5py.Group,
     dst: h5py.Group,
     profile: str,
     rechunk: bool,
     result: RecompressResult,
+    layout: _Layout | None = None,
 ) -> None:
     for key, value in src.attrs.items():
         dst.attrs[key] = value
+    if rechunk and isinstance(src.get("grids"), h5py.Group):
+        layout = _Layout(src)
     for name, node in src.items():
         if isinstance(node, h5py.Group):
-            _copy_group(node, dst.create_group(name), profile, rechunk, result)
+            _copy_group(node, dst.create_group(name), profile, rechunk, result, layout)
             continue
-        _copy_dataset(node, dst, name, profile, rechunk, result)
+        _copy_dataset(node, dst, name, profile, rechunk, result, layout)
 
 
 def _copy_dataset(
@@ -176,7 +277,12 @@ def _copy_dataset(
     profile: str,
     rechunk: bool,
     result: RecompressResult,
+    layout: _Layout | None = None,
 ) -> None:
+    if rechunk:
+        chunks = layout.chunks_for(node) if layout is not None else None
+    else:
+        chunks = node.chunks
     kwargs = (
         {}
         if node.dtype == object
@@ -185,7 +291,7 @@ def _copy_dataset(
             node.dtype,
             profile=profile,
             role=_role(node),
-            chunks=None if rechunk else node.chunks,
+            chunks=chunks,
         )
     )
     if not kwargs:

@@ -16,7 +16,7 @@ which is why coverage is required rather than optional.
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -47,6 +47,15 @@ class InstanceInput:
     box: npt.NDArray[np.float32] | None = None
     crop: npt.NDArray[np.bool_] | None = None
     score: float | None = None
+
+
+def _shared_ids(ids: Iterable[int]) -> list[int]:
+    """Ids that appear more than once, sorted."""
+    seen: set[int] = set()
+    twice: set[int] = set()
+    for value in ids:
+        (twice if value in seen else seen).add(value)
+    return sorted(twice)
 
 
 def _tight_slices(mask: npt.NDArray[np.bool_]) -> tuple[slice, ...] | None:
@@ -87,6 +96,14 @@ def encode_instances(
                 code="E410",
             )
         return _empty_instances(len(spatial_shape), class_ids, store_masks)
+    shared = _shared_ids(int(o.instance_id) for o in objects)
+    if shared:
+        raise MEDH5ValidationError(
+            f"instance id(s) {shared} name more than one object in this annotation; "
+            "an `instance_id` names one physical object, and two distinct objects "
+            "MUST NOT share one (§7.4)",
+            code="E404",
+        )
     ndim = None
     boxes: list[npt.NDArray[np.float32]] = []
     crops: list[npt.NDArray[np.bool_]] = []

@@ -43,13 +43,21 @@ from medh5.torch.datasets import (
     PatchDataset,
     VolumeDataset,
 )
-from medh5.torch.handles import CACHE, HandleCache, open_cached, worker_init_fn
+from medh5.torch.handles import (
+    CACHE,
+    HandleCache,
+    open_cached,
+    set_cache_size,
+    worker_init_fn,
+)
+from medh5.torch.samplers import FileGroupedSampler
 
 __all__ = [
     "ALIGNMENTS",
     "AVAILABLE",
     "CACHE",
     "LABEL_FORMATS",
+    "FileGroupedSampler",
     "GridPatchDataset",
     "HandleCache",
     "PairReport",
@@ -64,6 +72,7 @@ __all__ = [
     "grid_patches",
     "open_cached",
     "require_torch",
+    "set_cache_size",
     "stack_images",
     "worker_init_fn",
 ]

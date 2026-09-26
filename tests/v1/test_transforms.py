@@ -524,7 +524,10 @@ class TestResolution:
         path = registered(tmp_path / "reg.medh5")
         with medh5.open(path) as sample:
             assert sample.transform_between("tp0", "tp0") is None
-            assert sample.transform_between("F0", "F9") is None
+            # A frame nothing in the file declares is a mistyped key, not "no
+            # registration exists" (L-35).
+            with pytest.raises(KeyError, match="F9"):
+                sample.transform_between("F0", "F9")
 
     def test_a_chain_reports_its_steps(self, tmp_path):
         path = registered(tmp_path / "reg.medh5", displacement=True)

@@ -24,10 +24,18 @@ import numpy as np
 TARGETS: dict[str, tuple[float, str]] = {
     "patch_labels_ms": (10.0, "64³ patch, multi-class labels only"),
     "foreground_sample_ms": (1.0, "foreground centre sampling"),
+    "foreground_sample_many_ms": (1.0, "foreground centre sampling, 63 classes"),
     "meta_read_ms": (2.0, "metadata-only read"),
     "open_to_first_patch_ms": (15.0, "full open() → first patch"),
 }
-"""Metric -> (upper bound in ms, description).  Plan §4.3."""
+"""Metric -> (upper bound in ms, description).  Plan §4.3.
+
+The many-class row holds the foreground draw to its O(1) claim where the class
+count is large.  The eight-class sample met the target at 0.9 ms while a
+63-class file cost 7.6 ms per draw, and nothing measured it.
+"""
+
+MANY_CLASSES = 63
 
 
 @dataclass(slots=True)
@@ -333,6 +341,7 @@ def synthetic_sample(
     codec: str = "training",
     index: bool = True,
     seed: int = 20260815,
+    name: str = "bench.medh5",
 ) -> Path:
     """Write a sample shaped like the one the published numbers were measured on."""
     import medh5
@@ -341,7 +350,7 @@ def synthetic_sample(
     rng = np.random.default_rng(seed)
     root = Path(os.fspath(directory))
     root.mkdir(parents=True, exist_ok=True)
-    path = root / "bench.medh5"
+    path = root / name
     label_set = LabelSet(
         "bench",
         version="1.0.0",
@@ -380,6 +389,38 @@ def synthetic_sample(
     return path
 
 
+def synthetic_many_class_sample(
+    directory: str | os.PathLike[str], *, classes: int = MANY_CLASSES
+) -> Path:
+    """A smaller sample with many classes, indexed: the case the draw must scale to."""
+    return synthetic_sample(
+        directory, shape=(64, 128, 128), classes=classes, name="bench-many.medh5"
+    )
+
+
+def many_class_measurement(
+    path: str | os.PathLike[str], *, patch: int = 64, repeats: int = 20
+) -> Measurement:
+    """Foreground centre sampling on a many-class, indexed annotation."""
+    import medh5
+    from medh5.sampling import PatchSampler
+
+    with medh5.open(os.fspath(path)) as sample:
+        ann_id = next(
+            name for name, ann in sample.annotations.items() if ann.kind != "mask"
+        )
+        classes = len(sample.annotations[ann_id].class_ids)
+        sampler = PatchSampler(patch, strategy="foreground")
+        rng = np.random.default_rng(0)
+        return Measurement(
+            "foreground_sample_many_ms",
+            timed(lambda: sampler.draw(sample, ann_id, rng), repeats=repeats),
+            target=TARGETS["foreground_sample_many_ms"][0],
+            description=TARGETS["foreground_sample_many_ms"][1],
+            detail={"classes": classes, "used_index": ann_id in sample.index},
+        )
+
+
 def report(measurements: Sequence[Measurement]) -> str:
     lines = [str(m) for m in measurements]
     failed = [m for m in measurements if not m.ok]
@@ -394,10 +435,13 @@ def report(measurements: Sequence[Measurement]) -> str:
 
 
 __all__ = [
+    "MANY_CLASSES",
     "TARGETS",
     "Measurement",
     "benchmark_file",
+    "many_class_measurement",
     "report",
+    "synthetic_many_class_sample",
     "synthetic_pair",
     "synthetic_sample",
     "throughput",

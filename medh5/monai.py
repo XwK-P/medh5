@@ -124,7 +124,11 @@ def meta_dict(
         "original_affine": affine,
         "spatial_shape": np.asarray(grid.spatial_shape, dtype=np.int64),
         "space": space or grid.coord_system,
-        "original_channel_dim": "no_channel",
+        # The grid's channel axis where it has one.  "no_channel" on an image
+        # that has one makes `EnsureChannelFirst` add a second channel axis.
+        "original_channel_dim": (
+            "no_channel" if grid.channel_axis is None else int(grid.channel_axis)
+        ),
         "medh5": {
             "path": sample.path,
             "sample_id": sample.identity.sample_id,
@@ -295,6 +299,8 @@ def _annotation_meta(
         "original_affine": affine,
         "spatial_shape": np.asarray(grid.spatial_shape, dtype=np.int64),
         "space": space or grid.coord_system,
+        # A label volume is spatial whatever its grid holds: `labelmap()` has
+        # no channel axis, so there is none to name.
         "original_channel_dim": "no_channel",
         "medh5": {
             "path": sample.path,

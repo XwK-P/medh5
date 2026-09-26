@@ -103,7 +103,9 @@ two hundred — which is where the 64³ patch time went from 117 ms to 4 ms.
 $ medh5 recompress case.medh5 --profile training --rechunk
 ```
 
-`--rechunk` re-derives the chunk shape as well as the codec.
+`--rechunk` re-derives the chunk shape as well as the codec, by the writer's
+rule: from each grid's `patch_hint` (or `chunk_hint`), and `(1, *spatial_chunk)`
+for the stacked encodings and a displacement field's components.
 
 ## Integrity
 
@@ -164,6 +166,12 @@ Per voxel annotation, per class: a bounded sample of foreground coordinates,
 the exact voxel count, and a tight bounding box. That makes foreground patch
 sampling O(1) in the volume instead of a scan, and gives `dataset stats` its
 class counts for a few hundred bytes instead of a decompression pass.
+
+A reader loads the class table and counts once per open, and a draw reads the
+one coordinate it picked — O(1) in the class count too: 0.10 ms at 63 classes.
+The index's datasets are stored with the file's label codec, and the coarse
+`occupancy` map one class per chunk; it was stored uncompressed, about 52 MB of
+mostly `False` for 200 classes at 512³.
 
 An index carries the digest of the annotation it derives from. When they
 disagree the index is **stale**, readers must ignore it, and the validator

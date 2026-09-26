@@ -46,4 +46,14 @@ def dataset_base() -> type:
     return base
 
 
-__all__ = ["AVAILABLE", "dataset_base", "require_torch", "to_tensor"]
+def sampler_base() -> type:
+    """``torch.utils.data.Sampler`` when torch is installed, else ``object``."""
+    if not AVAILABLE:  # pragma: no cover - depends on the environment
+        return object
+    from torch.utils.data import Sampler
+
+    base: type = Sampler
+    return base
+
+
+__all__ = ["AVAILABLE", "dataset_base", "require_torch", "sampler_base", "to_tensor"]

@@ -5,13 +5,26 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # `release.yml` runs this workflow on the tagged commit before publishing,
+  # so what reaches PyPI is what passed, not what passed on the pull request.
+  workflow_call:
+
+# A new push to a pull request supersedes the run in progress.  Runs on `main`
+# and on a release tag always complete: each is a record of that commit.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Every job only reads the repository.
+permissions:
+  contents: read
 
 jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
       # From the dev extra, so CI and a developer's checkout run the same
@@ -23,25 +36,25 @@ jobs:
   docs:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
       # The same pinned versions Read the Docs builds with, so a green build
       # here means a green build there.
       - run: pip install -r docs/requirements.txt
-      # `--strict` turns MkDocs' link warnings into failures. The docs carry 61
-      # relative links between pages and a normative specification with 88
-      # clause headings; a cross-reference that stopped resolving is a defect in
-      # the specification, and this is the gate that catches it on the pull
-      # request rather than after publication.
+      # `--strict` turns MkDocs' link warnings into failures. The docs link
+      # between pages and into a normative specification by clause heading; a
+      # cross-reference that stopped resolving is a defect in the specification,
+      # and this is the gate that catches it on the pull request rather than
+      # after publication.
       - run: mkdocs build --strict
 
   typecheck:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
       - run: pip install -e ".[dev]"
@@ -53,8 +66,8 @@ jobs:
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install -e ".[dev,schema,torch,nifti,dicom,dicomseg,itk,interp]"
@@ -72,8 +85,8 @@ jobs:
     # this one is about the platform.
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
       - run: pip install -e ".[dev,schema,nifti,dicom,dicomseg,interp]"
@@ -84,8 +97,8 @@ jobs:
     # supports. A floor nothing installs is a floor nobody has checked.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.10"
       - run: pip install -e ".[dev,schema]"
@@ -103,8 +116,8 @@ jobs:
       matrix:
         python-version: ["3.12"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install -e ".[dev,schema,torch,nifti,dicom,dicomseg,itk,interp]"
@@ -118,8 +131,8 @@ jobs:
     # a test that had never once executed.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
       - run: pip install -e ".[dev,nifti,monai]"
@@ -136,8 +149,8 @@ jobs:
     # deliberately dependency-light, so this job is cheap.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
       - run: pip install -e ".[dev,schema]"
@@ -158,8 +171,8 @@ jobs:
     # rather than the in-process one.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
       - run: pip install -e ".[dev,schema]"
@@ -184,7 +197,7 @@ jobs:
           json.dump(results, open("results.json", "w"))
           PY
       - run: medh5 conformance score suite/ results.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: conformance-suite
           path: suite/
@@ -192,8 +205,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
       - run: pip install --upgrade build twine packaging
@@ -212,7 +225,9 @@ jobs:
               print("names:", names, file=sys.stderr)
               sys.exit(f"missing {missing or 'LICENSE'} in wheel")
           PY
-      - uses: actions/upload-artifact@v4
+      # Not `dist`: when `release.yml` calls this workflow, the release's own
+      # build uploads that name in the same run, and artifact names are unique.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: dist
+          name: ci-dist
           path: dist/

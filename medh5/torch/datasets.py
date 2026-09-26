@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from typing import Any
 
 import numpy as np
@@ -57,7 +57,7 @@ from medh5.sampling import (
     grid_patches,
 )
 from medh5.torch._compat import dataset_base, require_torch, to_tensor
-from medh5.torch.handles import open_cached
+from medh5.torch.handles import CACHE, open_cached
 
 LABEL_FORMATS = ("onehot", "labelmap", "instances", "none")
 ALIGNMENTS = ("none", "transform")
@@ -134,6 +134,10 @@ class _Base(_DatasetBase):  # type: ignore[misc,valid-type]
 
     def _sample(self, path: str) -> Sample:
         return open_cached(path)
+
+    def _lease(self, path: str) -> AbstractContextManager[Sample]:
+        """The cached handle, held against eviction while an item is read."""
+        return CACHE.lease(path)
 
     @staticmethod
     @contextmanager
@@ -366,9 +370,13 @@ class VolumeDataset(_Base):
     def __len__(self) -> int:
         return len(self.paths)
 
+    def file_groups(self) -> list[range]:
+        """Item indices per file, for :class:`~medh5.torch.FileGroupedSampler`."""
+        return [range(i, i + 1) for i in range(len(self.paths))]
+
     def __getitem__(self, index: int) -> dict[str, Any]:
-        sample = self._sample(self.paths[index])
-        return self._item(sample, None)
+        with self._lease(self.paths[index]) as sample:
+            return self._item(sample, None)
 
 
 class PatchDataset(_Base):
@@ -422,12 +430,17 @@ class PatchDataset(_Base):
     def __len__(self) -> int:
         return len(self.paths) * self.samples_per_volume
 
+    def file_groups(self) -> list[range]:
+        """Item indices per file, for :class:`~medh5.torch.FileGroupedSampler`."""
+        n = self.samples_per_volume
+        return [range(f * n, (f + 1) * n) for f in range(len(self.paths))]
+
     def __getitem__(self, index: int) -> dict[str, Any]:
         path = self.paths[index // self.samples_per_volume]
-        sample = self._sample(path)
-        rng = np.random.default_rng((self.seed, self.epoch, index))
-        patch = self.sampler.draw(sample, self.annotation, rng)
-        return self._item(sample, patch)
+        with self._lease(path) as sample:
+            rng = np.random.default_rng((self.seed, self.epoch, index))
+            patch = self.sampler.draw(sample, self.annotation, rng)
+            return self._item(sample, patch)
 
 
 class GridPatchDataset(_Base):
@@ -459,9 +472,17 @@ class GridPatchDataset(_Base):
     def __len__(self) -> int:
         return len(self._plan)
 
+    def file_groups(self) -> list[list[int]]:
+        """Item indices per file, for :class:`~medh5.torch.FileGroupedSampler`."""
+        groups: dict[str, list[int]] = {}
+        for index, (path, _) in enumerate(self._plan):
+            groups.setdefault(path, []).append(index)
+        return list(groups.values())
+
     def __getitem__(self, index: int) -> dict[str, Any]:
         path, patch = self._plan[index]
-        return self._item(self._sample(path), patch)
+        with self._lease(path) as sample:
+            return self._item(sample, patch)
 
 
 class PairedPatchDataset(_Base):
@@ -530,9 +551,21 @@ class PairedPatchDataset(_Base):
     def __len__(self) -> int:
         return len(self._plan) * self.samples_per_pair
 
+    def file_groups(self) -> list[list[int]]:
+        """Item indices per file, for :class:`~medh5.torch.FileGroupedSampler`."""
+        n = self.samples_per_pair
+        groups: dict[str, list[int]] = {}
+        for position, (path, _) in enumerate(self._plan):
+            groups.setdefault(path, []).extend(range(position * n, (position + 1) * n))
+        return list(groups.values())
+
     def __getitem__(self, index: int) -> dict[str, Any]:
-        path, pair = self._plan[index // self.samples_per_pair]
-        sample = self._sample(path)
+        path, _ = self._plan[index // self.samples_per_pair]
+        with self._lease(path) as sample:
+            return self._paired_item(sample, index)
+
+    def _paired_item(self, sample: Sample, index: int) -> dict[str, Any]:
+        _, pair = self._plan[index // self.samples_per_pair]
         rng = np.random.default_rng((self.seed, self.epoch, index))
         first = self._patch_for(sample, pair.first, rng)
         second = self._corresponding(sample, pair, first)

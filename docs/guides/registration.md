@@ -121,21 +121,32 @@ w.add_transform("tp1_to_tp0", kind="displacement", field=back,
                 from_frame="frame-tp1", to_frame="frame-tp0", field_grid="ct_tp1")
 ```
 
-**Do not link them with `inverse_id`.** That makes `can_invert()` true for the
-forward transform, so the graph gains an `InverseTransform` edge *in addition to*
-the sibling's own edge — two distinct one-hop paths between the same frames, and
-resolution refuses to choose between them:
+**Linking them with `inverse_id` is fine, and says more.** Declare each as the
+other's inverse and both directions still resolve, each to its own stored
+transform: a transform and the stored inverse its `inverse_id` names are one
+route, not two (§10.1). The link is what lets `t.inverse()` hand you the stored
+inverse of a transform you already hold, and what the validator checks for
+consistency (`E505`: the inverse must map the other way, and a declaration must
+be mutual where both sides make one).
+
+```python
+w.add_transform("tp0_to_tp1", kind="displacement", field=fwd,
+                from_frame="frame-tp0", to_frame="frame-tp1", field_grid="ct_tp0",
+                inverse_id="tp1_to_tp0")
+w.add_transform("tp1_to_tp0", kind="displacement", field=back,
+                from_frame="frame-tp1", to_frame="frame-tp0", field_grid="ct_tp1",
+                inverse_id="tp0_to_tp1")
+```
 
 | what you write | forward | reverse |
 |---|---|---|
 | `invertible=True` only | resolves | `None` |
-| **two independent transforms** | **resolves** | **resolves** |
-| linked with `inverse_id` | resolves | raises `E501` |
+| two independent transforms | resolves | resolves |
+| two transforms linked with `inverse_id` | resolves | resolves |
 
-`inverse_id` is for `t.inverse()` — retrieving the stored inverse directly from a
-transform you already hold. It is not a way to make `transform_between` work
-backwards, and using it for that makes the reverse direction worse than leaving
-it out.
+Before 1.4.2 the linked form raised `E501` in both directions: the resolver
+counted the forward transform's delegated inverse as a second route beside the
+stored one, and refused to choose between them.
 
 ## Related
 

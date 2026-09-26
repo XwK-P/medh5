@@ -24,7 +24,7 @@ from medh5.cli._common import (
     table,
 )
 from medh5.collection import SUFFIX, open_collection, pack, unpack
-from medh5.curation.agreement import compare_instances, compare_voxel
+from medh5.curation.agreement import VoxelAgreement, compare
 from medh5.curation.scrub import PROFILES as SCRUB_PROFILES
 from medh5.curation.splits import audit_splits
 from medh5.errors import MEDH5Error
@@ -65,13 +65,11 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     agree.add_argument(
         "--metric",
         choices=("dice", "iou"),
-        default="dice",
-        help="agreement metric: dice (default) or iou",
+        help="voxel agreement metric: dice (default) or iou",
     )
     agree.add_argument(
         "--threshold",
         type=float,
-        default=0.5,
         help="IoU threshold when matching objects (default 0.5)",
     )
     agree.add_argument(
@@ -317,10 +315,12 @@ def _agree(args: argparse.Namespace) -> int:
         with medh5.open(args.path) as sample:
             first = sample.annotations[args.a]
             second = sample.annotations[args.b]
-            if first.kind == "instances" or second.kind == "instances":
-                result: Any = compare_instances(first, second, threshold=args.threshold)
-            else:
-                result = compare_voxel(first, second, metric=args.metric)
+            # `compare` picks the comparison the two kinds support.  Deciding
+            # here on `kind == "instances"` alone sent two `boxes` annotations
+            # to the voxel path, which ended in an AttributeError traceback.
+            result = compare(
+                first, second, metric=args.metric, threshold=args.threshold
+            )
             payload = result.to_json()
             if args.record:
                 payload = {
@@ -330,29 +330,24 @@ def _agree(args: argparse.Namespace) -> int:
             if args.json:
                 emit(payload, as_json=True)
                 return EXIT_OK
-            print(f"{args.a} vs {args.b}: {payload['metric']} = {result.value:.4f}")
-            if hasattr(result, "per_class"):
-                print(
-                    indent(
-                        table(
-                            [
-                                [k, f"{v:.4f}"]
-                                for k, v in sorted(result.per_class.items())
-                            ],
-                            ["class", args.metric],
-                        )
-                    )
-                )
-                if result.skipped:
-                    print("\nnot scored: " + ", ".join(result.skipped))
+            print(f"{args.a} vs {args.b}: {payload['metric']} = {_score(result.value)}")
+            if isinstance(result, VoxelAgreement):
+                if result.per_class:
                     print(
-                        "  a class one side never examined is not a disagreement "
-                        "(§11.3)"
+                        indent(
+                            table(
+                                [
+                                    [k, f"{v:.4f}"]
+                                    for k, v in sorted(result.per_class.items())
+                                ],
+                                ["class", result.metric],
+                            )
+                        )
                     )
             else:
                 print(
                     f"  matched {len(result.matched)} by {result.matched_by}, "
-                    f"mean IoU {result.mean_iou:.4f}; "
+                    f"mean IoU {_score(result.mean_iou)}; "
                     f"{len(result.only_in_a)} only in {args.a}, "
                     f"{len(result.only_in_b)} only in {args.b}"
                 )
@@ -361,11 +356,18 @@ def _agree(args: argparse.Namespace) -> int:
                         f"  MISMATCH instance {instance_id}: "
                         f"class {class_a} vs {class_b}"
                     )
+            if result.skipped:
+                print("\nnot scored: " + ", ".join(result.skipped))
+                print("  a class one side never examined is not a disagreement (§11.3)")
             return EXIT_OK
     except KeyError as exc:
         return fail(f"no such annotation: {exc}")
     except MEDH5Error as exc:
         return fail(str(exc))
+
+
+def _score(value: float | None) -> str:
+    return "undefined (nothing comparable)" if value is None else f"{value:.4f}"
 
 
 def _splits(args: argparse.Namespace) -> int:

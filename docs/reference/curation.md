@@ -37,6 +37,12 @@ $ medh5 prov case.medh5
 The question this answers is the one that comes up when a model behaves oddly
 on a subset: *was this mask drawn or predicted, and by what?*
 
+Ids are unique per graph. The writer refuses a taken id; a file that declares
+one agent or activity id twice is refused when its document is read — the
+validator reports it through the parse — because a reference to the id cannot
+say which one it means. Before 1.4.2 the reader kept the last one silently, and
+a no-op `amend` then deleted the other from the file.
+
 ## Quality
 
 ```python
@@ -71,10 +77,10 @@ with medh5.open(path) as s:
                                  s.annotations["organs_b"],
                                  metric="dice")
 result.metric             # "dice"
-result.per_class          # {"liver": 0.67} — keyed by class key
-result.value              # the mean over compared classes
+result.per_class          # {"liver": 0.67} — keyed by class key, for reading
+result.value              # the mean over compared classes; None when none was
 result.skipped            # classes one side never examined — not scored as zero
-result.to_record()        # the quality.agreement record
+result.to_record()        # the quality.agreement record, keyed by class id
 ```
 
 `skipped` matters: a class the other annotation never examined is not a
@@ -86,10 +92,18 @@ $ medh5 agree case.medh5 organs_a organs_b --metric dice --record
 ```
 
 `--record` prints the `quality.agreement` record the measurement produces, so a
-number that gets quoted can be traced to the comparison that made it.
+number that gets quoted can be traced to the comparison that made it. The
+record is keyed by class **id**, as §11.2 and the schema require, and it is
+refused when nothing was comparable: `value` is then `None`, not 0 — two raters
+who both found nothing agree, and a 0 in the file would say they did not.
 
 Object-level agreement matches instances by id where both carry one, and by IoU
-otherwise:
+otherwise. A miss counts only where the other side looked: an unmatched object
+whose class the other annotation never examined is left out, and its class is
+listed under `skipped`. A matched pair always counts, even when the two classed
+it differently — that is what `class_mismatches` reports. Both must be on one
+grid for index boxes, or one frame for world boxes; comparing index coordinates
+of two grids is refused (`E101`).
 
 <!-- illustrative -->
 ```python
@@ -100,10 +114,16 @@ result = compare_instances(s.annotations["pred"], s.annotations["truth"],
 result.matched            # ((a_id, b_id, iou), ...)
 result.only_in_a, result.only_in_b
 result.matched_by         # "instance_id" where both carry one, else "iou"
-result.mean_iou
-result.value              # object F1
+result.mean_iou           # None when nothing matched
+result.value              # object F1; None when neither side has an object
+result.skipped            # classes not examined by both
 result.class_mismatches   # matched objects whose classes disagree
 ```
+
+`compare(a, b)` picks the comparison the kinds support — objects for two
+`instances` or `boxes` annotations, voxels for two voxel annotations — and
+refuses an argument the chosen one cannot use (`metric=` for objects,
+`threshold=` for voxels) rather than ignoring it.
 
 ## Identity and cohort
 
