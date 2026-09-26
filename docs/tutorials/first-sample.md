@@ -16,14 +16,16 @@ Extras, all optional:
 | `dicom` | DICOM, DICOM SEG and RTSTRUCT reading (pydicom) |
 | `dicomseg` | *Writing* DICOM SEG (highdicom) |
 | `itk` | Resampling in the converters (SimpleITK) |
-| `schema` | JSON Schema validation of `/meta` (jsonschema) |
 | `interp` | Cubic displacement-field evaluation (scipy) |
 
 ```bash
 pip install "medh5[torch,nifti,dicom]"
 ```
 
-Nothing but `h5py`, `hdf5plugin` and `numpy` is needed to read or write a file.
+Nothing but `h5py`, `hdf5plugin`, `numpy` and `jsonschema` is needed to read
+or write a file. `jsonschema` checks `/meta` against the format's JSON Schema on
+every write and every validation, so it has been a core dependency since 1.4.1;
+the old `schema` extra still installs cleanly and adds nothing.
 
 ## Write a sample
 

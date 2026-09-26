@@ -29,6 +29,28 @@ IGNORE_ID = 65535
 
 MAX_CLASS_ID = 65534
 
+
+def check_class_id(class_id: Any) -> int:
+    """A class id in the writable range ``1..65534``, or a coded refusal (E303).
+
+    Every encoder that stores class ids goes through this before its ``uint16``
+    cast.  Unchecked, the id was cast into storage and wrapped: 0 became
+    background, -1 became 65535 --- the ignore value --- and 70000 became 4464,
+    each one decoding as a different class than was asked for.  numpy 2 turns
+    the last into an ``OverflowError`` instead; numpy 1.24, the declared floor,
+    wraps it without a word.
+    """
+    value = int(class_id)
+    if not BACKGROUND_ID < value <= MAX_CLASS_ID:
+        raise MEDH5ValidationError(
+            f"class id {value} is outside the writable range "
+            f"[{BACKGROUND_ID + 1}, {MAX_CLASS_ID}]: {BACKGROUND_ID} is background and "
+            f"{IGNORE_ID} is ignore (spec §5.3)",
+            code="E303",
+        )
+    return value
+
+
 CLOSURES = ("explicit", "implicit")
 
 FORMS = ("inline", "ref")
@@ -552,5 +574,6 @@ __all__ = [
     "Relation",
     "Skeleton",
     "canonical_json",
+    "check_class_id",
     "from_keys",
 ]

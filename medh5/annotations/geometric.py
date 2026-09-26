@@ -37,6 +37,7 @@ from medh5.geometry.affine import (
     is_proper_rotation,
 )
 from medh5.geometry.grid import Grid
+from medh5.labels.labelset import check_class_id
 
 SPACES = ("index", "world")
 
@@ -201,7 +202,7 @@ def _object_columns(
             f"class_ids has {len(class_ids)} entries for {n} objects", code="E405"
         )
     out: dict[str, npt.NDArray[Any]] = {
-        "class_ids": np.asarray(class_ids, dtype=np.uint16)
+        "class_ids": np.asarray([check_class_id(c) for c in class_ids], dtype=np.uint16)
     }
     if instance_ids is not None:
         # The width follows the data (§8.2 permits either); a hard `uint32`
@@ -639,7 +640,9 @@ def encode_keypoints(
     datasets: dict[str, npt.NDArray[Any]] = {
         "points": array,
         "visibility": vis,
-        "keypoint_class_ids": np.asarray(keypoint_class_ids, dtype=np.uint16),
+        "keypoint_class_ids": np.asarray(
+            [check_class_id(c) for c in keypoint_class_ids], dtype=np.uint16
+        ),
     }
     datasets.update(_object_columns(n, class_ids, instance_ids, scores, None))
     return AnnotationPayload(
@@ -719,7 +722,7 @@ def encode_points(
     n = array.shape[0]
     if class_ids is not None:
         datasets["class_ids"] = _per_element(
-            "class_ids", class_ids, n, np.uint16, "points"
+            "class_ids", [check_class_id(c) for c in class_ids], n, np.uint16, "points"
         )
     if names is not None:
         datasets["names"] = _per_element("names", list(names), n, str_dtype(), "points")
@@ -848,7 +851,7 @@ def encode_contours(
             "vertices": np.concatenate(chunks),
             "contour_offsets": offsets,
             "contour_class_ids": np.asarray(
-                [p.class_id for p in polygons], dtype=np.uint16
+                [check_class_id(p.class_id) for p in polygons], dtype=np.uint16
             ),
             "contour_plane": np.asarray([p.plane for p in polygons], dtype=np.int32),
             "contour_role": np.asarray(
@@ -956,7 +959,11 @@ def encode_mesh(
         datasets["normals"] = n
     if vertex_class_ids is not None:
         datasets["vertex_class_ids"] = _per_element(
-            "vertex_class_ids", vertex_class_ids, v.shape[0], np.uint16, "vertices"
+            "vertex_class_ids",
+            [check_class_id(c) for c in vertex_class_ids],
+            v.shape[0],
+            np.uint16,
+            "vertices",
         )
     if mesh_offsets is not None:
         datasets["mesh_offsets"] = np.asarray(mesh_offsets, dtype=np.int64)
@@ -965,7 +972,11 @@ def encode_mesh(
         # --- so the offsets name one more boundary than there are meshes.
         meshes = 1 if mesh_offsets is None else len(mesh_offsets) - 1
         datasets["mesh_class_ids"] = _per_element(
-            "mesh_class_ids", mesh_class_ids, meshes, np.uint16, "meshes"
+            "mesh_class_ids",
+            [check_class_id(c) for c in mesh_class_ids],
+            meshes,
+            np.uint16,
+            "meshes",
         )
     declared = set()
     if vertex_class_ids is not None:

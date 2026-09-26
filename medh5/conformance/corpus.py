@@ -498,6 +498,33 @@ def _seg_instances(path: Path) -> None:
 
 
 @case(
+    "seg-instances-empty",
+    "Examined for lesions and found none: an `instances` annotation with N = 0.",
+    "§7.4, §11.3",
+    warnings=["W912"],
+)
+def _seg_instances_empty(path: Path) -> None:
+    """The verified negative tracking depends on (S-13): a follow-up at which a
+    lesion has resolved is told apart from one nobody examined only by this."""
+    rng = np.random.default_rng(SEED)
+    shape = (16, 24, 24)
+    with medh5.create(path, sample_id=path.stem, codec="portable") as w:
+        w.add_timepoint("tp0")
+        w.label_set(_LS)
+        w.add_grid("ct", shape=shape, spacing=(1.5, 0.8, 0.8), timepoint="tp0")
+        w.add_image(
+            "CT",
+            rng.integers(-1000, 1500, shape).astype(np.int16),
+            grid="ct",
+            modality="CT",
+            value_type="quantitative",
+            value_units="HU",
+        )
+        w.add_segmentation("lesions", grid="ct", instances=[], annotated_classes=[3])
+        w.deidentification(method="dicom-psi-profile")
+
+
+@case(
     "seg-partial-coverage-with-ignore",
     "Two of four classes annotated, with an explicit ignore region: no W904.",
     "§7.7, §11.3",

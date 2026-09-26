@@ -168,13 +168,17 @@ def describe_filters(dset: Any) -> str:
         return "contiguous"
     parts: list[str] = []
     plist = dset.id.get_create_plist()
+    named = False
     for i in range(plist.get_nfilters()):
         filter_id, _, values, _ = plist.get_filter(i)
         if filter_id == BLOSC2_FILTER_ID:
             parts.append(_describe_blosc(values))
         elif filter_id == BLOSC_FILTER_ID:
             parts.append("blosc:" + _describe_blosc(values).partition(":")[2])
-        elif dset.compression and dset.compression != "unknown":
+        elif not named and dset.compression and dset.compression != "unknown":
+            # h5py names one compression filter for the whole pipeline, so it
+            # is added once --- a gzip dataset with shuffle read "gzip:4+gzip:4".
+            named = True
             opts = dset.compression_opts
             parts.append(
                 f"{dset.compression}" + (f":{opts}" if opts is not None else "")
@@ -195,6 +199,44 @@ def _describe_blosc(values: Any) -> str:
     )
 
 
+BUILTIN_FILTER_IDS = frozenset({1, 2, 3, 4, 5, 6})
+"""HDF5's own filters: deflate, shuffle, fletcher32, szip, n-bit, scale-offset.
+
+A file that uses nothing else opens in stock h5py, MATLAB, R and ``h5dump``
+--- which is the whole of what the ``portable`` profile promises (§14.2).
+"""
+
+
+def profile_family(root: Any) -> str:
+    """``portable`` when every dataset under *root* needs only HDF5's own
+    filters, else ``balanced``.
+
+    A profile is a writer convenience and no file records one, so an amend has
+    to infer what the file was written for.  It used to assume ``balanced``,
+    and amending a ``portable`` file added Blosc2 datasets that the readers the
+    file was written for could not open.  The family is what matters: a file
+    that already needs ``hdf5plugin`` loses nothing by gaining another Blosc2
+    dataset, and one that does not must not start needing it.
+    """
+    needs_plugin = False
+
+    def visit(name: str, obj: Any) -> Any:
+        nonlocal needs_plugin
+        if not hasattr(obj, "id") or not hasattr(obj, "chunks"):
+            return None
+        if obj.chunks is None:
+            return None
+        plist = obj.id.get_create_plist()
+        for i in range(plist.get_nfilters()):
+            if int(plist.get_filter(i)[0]) not in BUILTIN_FILTER_IDS:
+                needs_plugin = True
+                return True
+        return None
+
+    root.visititems(visit)
+    return "balanced" if needs_plugin else "portable"
+
+
 def is_bulk(dset: Any) -> bool:
     """Whether a dataset is large enough for the W902 chunking/compression warning."""
     return int(dset.nbytes) >= BULK_MIN_BYTES
@@ -203,6 +245,7 @@ def is_bulk(dset: Any) -> bool:
 __all__ = [
     "BLOSC2_FILTER_ID",
     "BLOSC_FILTER_ID",
+    "BUILTIN_FILTER_IDS",
     "BULK_MIN_BYTES",
     "COMPRESS_MIN_BYTES",
     "DEFAULT_PROFILE",
@@ -213,5 +256,6 @@ __all__ = [
     "dataset_kwargs",
     "describe_filters",
     "is_bulk",
+    "profile_family",
     "resolve_profile",
 ]

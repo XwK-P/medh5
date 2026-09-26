@@ -1,8 +1,22 @@
 """PyTorch datasets over MEDH5 samples (implementation plan §2.3).
 
 Three datasets, one contract: every item is a ``dict`` with ``images``,
-``label`` and ``meta``.  Keeping the shape uniform is what lets a training
-script swap whole-volume for patch-based sampling by changing one constructor.
+``valid``, ``label``, ``ignore`` and ``meta``.  Keeping the shape uniform is
+what lets a training script swap whole-volume for patch-based sampling by
+changing one constructor.
+
+The file's contracts travel with the arrays, because a loss can only honour
+what it is handed:
+
+* ``ignore[ann_id]`` --- ``True`` where §7.7 says a voxel must not be scored:
+  the annotation's ignore region under whichever encoding stores it, and any
+  padding added to reach the patch size.  ``label_format="labelmap"`` also
+  writes ``65535`` there.
+* ``valid[image_id]`` --- ``True`` where the image holds data (§4.4): its
+  ``valid_mask`` where it declares one, and never the padding.
+* ``meta["annotated"][ann_id]`` --- one ``bool`` per label channel: whether the
+  class was *examined* (§11.3).  A ``0`` in an unexamined class is not a
+  negative.
 
 Two things here are load-bearing:
 
@@ -30,7 +44,9 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
+from medh5.annotations.base import VoxelAnnotation
 from medh5.errors import MEDH5ValidationError
+from medh5.labels.labelset import IGNORE_ID
 from medh5.sample import Sample, open_sample
 from medh5.sampling import (
     PairReport,
@@ -58,6 +74,33 @@ def _check_label_format(name: str) -> str:
 
 
 _DatasetBase = dataset_base()
+
+
+class _Epoch:
+    """The epoch, in a tensor every ``DataLoader`` worker shares (F-17).
+
+    Patches are seeded with ``(seed, epoch, index)``.  An ``int`` attribute set
+    in the main process never reached a worker started with
+    ``persistent_workers=True`` --- the worker kept the copy of the dataset it
+    was started with --- so every epoch drew epoch 0's patches, and random
+    crops, the main source of variety in patch-based 3-D training, became one
+    fixed draw.  A shared-memory tensor is the same storage in every worker,
+    under ``fork`` and under ``spawn``, so ``set_epoch`` is seen at the next
+    ``__getitem__`` wherever that runs.
+    """
+
+    __slots__ = ("_value",)
+
+    def __init__(self) -> None:
+        import torch
+
+        self._value = torch.zeros((), dtype=torch.int64).share_memory_()
+
+    def get(self) -> int:
+        return int(self._value.item())
+
+    def set(self, epoch: int) -> None:
+        self._value.fill_(int(epoch))
 
 
 class _Base(_DatasetBase):  # type: ignore[misc,valid-type]
@@ -183,11 +226,36 @@ class _Base(_DatasetBase):  # type: ignore[misc,valid-type]
             out[image_id] = array if patch is None else patch.apply_padding(array)
         return out
 
-    def _read_labels(self, sample: Sample, patch: Patch | None) -> dict[str, Any]:
+    def _read_valid(
+        self, sample: Sample, image_ids: Sequence[str], patch: Patch | None
+    ) -> dict[str, npt.NDArray[np.bool_]]:
+        """Each image's valid region over the window; padding is never valid."""
+        roi = None if patch is None else patch.slices
+        out: dict[str, npt.NDArray[np.bool_]] = {}
+        for image_id in image_ids:
+            region = sample.valid_region(image_id, roi)
+            out[image_id] = (
+                region if patch is None else patch.apply_padding(region, value=False)
+            )
+        return out
+
+    def _read_labels(
+        self, sample: Sample, patch: Patch | None
+    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+        """``(labels, ignore, annotated)`` for every requested annotation.
+
+        The ignore region is read through :meth:`Sample.ignore_region`, which
+        knows both places §7.7 lets an encoding keep it.  Reading labels with
+        ``dense()`` or ``labelmap()`` alone returned 0 at every ignored voxel
+        under ``layers``, ``bitmask``, ``instances`` and ``probmap`` --- the
+        voxels §7.7 exists to keep out of the loss went into it as negatives.
+        """
         if self.label_format == "none" or not self.annotations:
-            return {}
+            return {}, {}, {}
         roi = None if patch is None else list(patch.slices)
-        out: dict[str, Any] = {}
+        labels: dict[str, Any] = {}
+        ignore: dict[str, Any] = {}
+        annotated: dict[str, Any] = {}
         for ann_id, classes in self.annotations.items():
             if ann_id not in sample.annotations:
                 raise MEDH5ValidationError(
@@ -196,15 +264,34 @@ class _Base(_DatasetBase):  # type: ignore[misc,valid-type]
                 )
             ann = sample.annotations[ann_id]
             wanted = list(classes) if classes else None
+            examined = set(ann.annotated_class_ids)
+            annotated[ann_id] = np.asarray(
+                [c in examined for c in ann.resolve_classes(wanted)], dtype=bool
+            )
+            region = (
+                sample.ignore_region(ann_id, roi)
+                if isinstance(ann, VoxelAnnotation)
+                else None
+            )
+            if region is not None:
+                ignore[ann_id] = (
+                    region if patch is None else patch.apply_padding(region, value=True)
+                )
             if self.label_format == "instances":
-                out[ann_id] = self._instances_in(ann, patch)
+                labels[ann_id] = self._instances_in(ann, patch)
                 continue
             if self.label_format == "labelmap":
                 array = np.asarray(ann.labelmap(roi=roi, priority=wanted))
+                if region is not None:
+                    array[region] = IGNORE_ID
+                pad: float = IGNORE_ID
             else:
                 array = np.asarray(ann.dense(wanted, roi=roi), dtype=self.dtype)
-            out[ann_id] = array if patch is None else patch.apply_padding(array)
-        return out
+                pad = 0.0
+            labels[ann_id] = (
+                array if patch is None else patch.apply_padding(array, value=pad)
+            )
+        return labels, ignore, annotated
 
     @staticmethod
     def _instances_in(ann: Any, patch: Patch | None) -> list[dict[str, Any]]:
@@ -250,16 +337,22 @@ class _Base(_DatasetBase):  # type: ignore[misc,valid-type]
         if patch is not None:
             self._check_patch_grid(sample, patch)
         images = self._read_images(sample, patch)
+        valid = self._read_valid(sample, list(images), patch)
         item: dict[str, Any] = {
             "images": {k: to_tensor(v) for k, v in images.items()},
+            "valid": {k: to_tensor(v) for k, v in valid.items()},
             "meta": {**self._meta(sample, patch), **(extra or {})},
         }
-        labels = self._read_labels(sample, patch)
+        labels, ignore, annotated = self._read_labels(sample, patch)
         if labels:
             item["label"] = {
                 k: (v if isinstance(v, list) else to_tensor(v))
                 for k, v in labels.items()
             }
+        if ignore:
+            item["ignore"] = {k: to_tensor(v) for k, v in ignore.items()}
+        if annotated:
+            item["meta"]["annotated"] = {k: to_tensor(v) for k, v in annotated.items()}
         return item
 
 
@@ -306,11 +399,25 @@ class PatchDataset(_Base):
             next(iter(self.annotations)) if self.annotations else None
         )
         self.seed = int(seed)
-        self.epoch = 0
+        self._epoch = _Epoch()
+
+    @property
+    def epoch(self) -> int:
+        return self._epoch.get()
+
+    @epoch.setter
+    def epoch(self, epoch: int) -> None:
+        self._epoch.set(epoch)
 
     def set_epoch(self, epoch: int) -> None:
-        """Redraw patches next epoch --- call it from the training loop."""
-        self.epoch = int(epoch)
+        """Redraw patches from the next item on --- call it once per epoch.
+
+        Seen by every ``DataLoader`` worker, persistent ones included; see
+        :class:`_Epoch`.  A loop that never calls it draws the same patches
+        every epoch, by design: the draw is a function of ``(seed, epoch,
+        index)``, which is what makes a run reproducible.
+        """
+        self._epoch.set(epoch)
 
     def __len__(self) -> int:
         return len(self.paths) * self.samples_per_volume
@@ -395,7 +502,7 @@ class PairedPatchDataset(_Base):
         self.annotation = annotation
         self.label = label
         self.seed = int(seed)
-        self.epoch = 0
+        self._epoch = _Epoch()
         self.report = PairReport()
         self._plan: list[tuple[str, TimepointPair]] = []
         for path in self.paths:
@@ -408,8 +515,17 @@ class PairedPatchDataset(_Base):
             self._plan.extend((path, pair) for pair in pairs)
         self.report.pairs = len(self._plan)
 
+    @property
+    def epoch(self) -> int:
+        return self._epoch.get()
+
+    @epoch.setter
+    def epoch(self, epoch: int) -> None:
+        self._epoch.set(epoch)
+
     def set_epoch(self, epoch: int) -> None:
-        self.epoch = int(epoch)
+        """Redraw pairs' patches from the next item on; see :class:`_Epoch`."""
+        self._epoch.set(epoch)
 
     def __len__(self) -> int:
         return len(self._plan) * self.samples_per_pair
@@ -420,16 +536,24 @@ class PairedPatchDataset(_Base):
         rng = np.random.default_rng((self.seed, self.epoch, index))
         first = self._patch_for(sample, pair.first, rng)
         second = self._corresponding(sample, pair, first)
+        images = {
+            pair.first: self._read_at(sample, pair.first, first),
+            pair.second: self._read_at(sample, pair.second, second),
+        }
+        windows = {pair.first: first, pair.second: second}
         item = {
             "images": {
-                pair.first: {
+                tp: {k: to_tensor(v) for k, v in arrays.items()}
+                for tp, arrays in images.items()
+            },
+            "valid": {
+                tp: {
                     k: to_tensor(v)
-                    for k, v in self._read_at(sample, pair.first, first).items()
-                },
-                pair.second: {
-                    k: to_tensor(v)
-                    for k, v in self._read_at(sample, pair.second, second).items()
-                },
+                    for k, v in self._read_valid(
+                        sample, list(arrays), windows[tp]
+                    ).items()
+                }
+                for tp, arrays in images.items()
             },
             "meta": {
                 **self._meta(sample, first),
@@ -585,19 +709,29 @@ class PairedPatchDataset(_Base):
         transform = None
         if source.frame_uid and target.frame_uid:
             transform = sample.resolve_frames(source.frame_uid, target.frame_uid)
-        if transform is None and source.frame_uid != target.frame_uid:
+        if transform is None and not source.comparable_with(target):
             # A `None` here has two possible meanings: the grids already share
             # a frame (nothing to apply), or no path exists between them.  Only
-            # the first makes the coordinates comparable.
-            # Treating the second as "no transform needed" feeds source-frame
-            # world coordinates straight into an unrelated grid and returns
+            # the first makes the coordinates comparable, and §3.3 says what
+            # "share" means: the same declared frame, not the same *absence*
+            # of one.  Comparing the two `frame_uid`s let two frame-less grids
+            # --- every longitudinal sample the NIfTI and nnU-Net importers
+            # write --- through as registered (`None == None`), feeding one
+            # visit's world coordinates into the other's grid and returning
             # paired patches from different anatomy, which trains quietly.
             raise MEDH5ValidationError(
                 f"{sample.path}: align='transform' needs a transform relating "
                 f"grid {source.grid_id!r} at {pair.first!r} (frame "
                 f"{source.frame_uid!r}) to grid {target.grid_id!r} at "
                 f"{pair.second!r} (frame {target.frame_uid!r}), and the file has "
-                "none; register those grids, or use align='none' to read the same "
+                "none"
+                + (
+                    " --- and grids without a frame of reference are never "
+                    "comparable, whatever their coordinates say (§3.3)"
+                    if source.frame_uid is None or target.frame_uid is None
+                    else ""
+                )
+                + "; register those grids, or use align='none' to read the same "
                 "index window from both"
             )
         if transform is not None:

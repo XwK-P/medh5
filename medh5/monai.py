@@ -26,8 +26,10 @@ import numpy as np
 import numpy.typing as npt
 
 from medh5._optional import require
+from medh5.annotations.base import VoxelAnnotation
 from medh5.errors import MEDH5ValidationError
 from medh5.geometry.grid import Grid
+from medh5.labels.labelset import IGNORE_ID
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from medh5.sample import Sample
@@ -242,8 +244,9 @@ def to_dict(
     Annotations come through as ``int64`` label tensors carrying **their own
     grid's** affine, which is what ``Spacingd(keys=["CT", "organs"],
     mode=["bilinear", "nearest"])`` needs in order to resample both
-    consistently.  Class ids keep their §5.3 values and the ignore id stays
-    ``65535``.
+    consistently.  Class ids keep their §5.3 values, and every voxel in the
+    §7.7 ignore region is ``65535`` whichever encoding stores it
+    (:meth:`~medh5.sample.Sample.ignore_region`).
 
     The annotation's grid is not assumed to be the first image's.  A sample
     holding CT and PET on different grids --- the case this format exists for ---
@@ -264,9 +267,15 @@ def to_dict(
         # `int64`, the dtype torch indexes and one-hots with.  `int16` wrapped
         # every class id above 32767 -- §5.3 gives them the full `uint16` range
         # -- and turned the ignore id 65535 into -1 without anything saying so.
-        # The ignore id comes through as 65535; mask it out with `ignore_index`
-        # rather than relying on a sign.
         planes = np.asarray(ann.labelmap(), dtype=np.int64)
+        # The ignore region comes through as 65535 under *every* encoding;
+        # mask it out with `ignore_index=65535`.  `labelmap()` paints classes
+        # only, so this used to hold for the `labelmap` kind alone and write 0
+        # --- background --- at the ignored voxels of `layers`, `bitmask`,
+        # `instances` and `probmap` annotations, and of a region kept in a
+        # sibling mask.
+        if isinstance(ann, VoxelAnnotation):
+            planes[sample.ignore_region(ann_id)] = IGNORE_ID
         item[ann_id] = _metatensor(planes, _annotation_meta(sample, ann, space=space))
     return item
 

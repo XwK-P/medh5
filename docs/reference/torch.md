@@ -46,8 +46,17 @@ ds = PatchDataset(paths, sampler,
                   samples_per_volume=8,
                   seed=0)
 
-ds.set_epoch(epoch)   # re-seed between epochs
+for epoch in range(epochs):
+    ds.set_epoch(epoch)   # new patches this epoch --- call it every epoch
+    ...
 ```
+
+Each item's patch is drawn from `(seed, epoch, index)`, so a run is
+reproducible and **a loop that never calls `set_epoch` draws the same patches
+every epoch**. The epoch lives in shared memory, so `set_epoch` reaches every
+`DataLoader` worker — `persistent_workers=True` included, under `fork` and
+`spawn`. (Before 1.4.1 persistent workers kept the epoch they were started
+with and repeated epoch 0's draw for the whole run.)
 
 ### GridPatchDataset — deterministic tiling, for inference
 
@@ -77,6 +86,12 @@ from `__getitem__` as `MEDH5ValidationError` — part way into an epoch. See
 [Longitudinal studies](../guides/longitudinal.md#train-on-the-pairs) for a
 preflight that resolves the pairs itself.
 
+Two grids **without** a `frame_uid` are never treated as registered, whatever
+their coordinates: nothing says their world coordinates agree (§3.3). The NIfTI
+and nnU-Net importers write no frame, so their longitudinal samples need a
+transform — or `align="none"`, which reads the same index window from both
+visits.
+
 
 See [Longitudinal](../guides/longitudinal.md#train-on-the-pairs).
 
@@ -86,10 +101,34 @@ See [Longitudinal](../guides/longitudinal.md#train-on-the-pairs).
 batch = next(iter(loader))
 
 batch["images"]["CT"]        # (B, *patch) float32
+batch["valid"]["CT"]         # (B, *patch) bool — where the image holds data
 batch["label"]["organs"]     # (B, C, *patch) float32 — one-hot over the classes asked for
+batch["ignore"]["organs"]    # (B, *patch) bool — voxels no loss may score
+batch["meta"]["annotated"]["organs"]  # (B, C) bool — was each class examined?
 batch["meta"]["subject_id"]  # list[str] — kept as a list, not stacked
 batch["meta"]["patch"]["start"], ["stop"], ["pad"], ["center"]
 batch["meta"]["patch"]["strategy"], ["class_id"], ["used_index"]
+```
+
+Three keys carry the file's contracts to the loss, because a loss can only
+honour what it is handed:
+
+- **`ignore[ann]`** is `True` on the §7.7 ignore region, under whichever
+  encoding stores it — in band for `labelmap` and `layers`, a sibling mask for
+  the rest — and on any padding added to reach the patch size.
+  `label_format="labelmap"` also writes `65535` there, so
+  `CrossEntropyLoss(ignore_index=65535)` works directly. The one-hot planes are
+  `0` there: mask the loss with `ignore`.
+- **`valid[image]`** is the image's `valid_mask` (§4.4) where it declares one,
+  all `True` otherwise, and never the padding.
+- **`meta["annotated"][ann]`** holds one flag per label channel, in the order you
+  asked for the classes: whether that class was *examined* (§11.3). A `0` in a
+  class nobody looked for is not a negative.
+
+```python
+loss = criterion(logits, target)                       # (B, C, *patch), unreduced
+keep = ~batch["ignore"]["organs"] & batch["valid"]["CT"]
+loss = loss * keep[:, None] * batch["meta"]["annotated"]["organs"][..., None, None, None]
 ```
 
 `collate` stacks tensors and leaves everything else as lists. When two samples
@@ -168,6 +207,11 @@ with medh5.open(path) as s:
 `Spacingd`, `Orientationd`, `SaveImaged` and the rest work unmodified, because
 the affine is right. `to_metatensor(..., roi=...)` shifts the origin to the
 ROI, so a patch keeps its world position.
+
+`to_dict(sample, images, annotations)` builds a dictionary-transform item.
+Annotations arrive as `int64` label volumes with their own grid's affine, and
+every voxel of the §7.7 ignore region is `65535` whichever encoding stores it —
+pass `ignore_index=65535` to the loss.
 
 The affine construction (`affine_for`, `convert_affine`) does not import MONAI,
 so the geometry is testable — and tested — in an environment without it.

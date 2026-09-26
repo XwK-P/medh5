@@ -66,7 +66,13 @@ from medh5.annotations.voxel import (
     normalize_masks,
     select_encoding,
 )
-from medh5.curation.identity import Cohort, Deidentification, Identity, SplitClaim
+from medh5.curation.identity import (
+    ID_SOURCE,
+    Cohort,
+    Deidentification,
+    Identity,
+    SplitClaim,
+)
 from medh5.curation.provenance import Activity, Agent
 from medh5.curation.quality import QualityRecord
 from medh5.curation.timeline import Timeline, Timepoint
@@ -76,9 +82,16 @@ from medh5.document import (
     write_document,
 )
 from medh5.errors import (
+    MEDH5FileError,
     MEDH5ValidationError,
 )
-from medh5.geometry.grid import Grid, read_grids, write_grid
+from medh5.geometry.grid import (
+    KNOWN_UNITS,
+    TIME_UNITS,
+    Grid,
+    read_grids,
+    write_grid,
+)
 from medh5.geometry.multiscale import Pyramid, check_pyramid, pyramid_factors
 from medh5.image import check_value_type
 from medh5.labels.labelset import LabelSet
@@ -89,9 +102,10 @@ from medh5.sample import (
     annotation_id,
     attr_name_map_of,
     frame_references,
+    require_major,
 )
 from medh5.storage.chunking import optimize_chunks
-from medh5.storage.codecs import dataset_kwargs, resolve_profile
+from medh5.storage.codecs import dataset_kwargs, profile_family, resolve_profile
 from medh5.storage.index import (
     DEFAULT_MAX_COORDS,
     DEFAULT_OCCUPANCY_FACTOR,
@@ -149,6 +163,7 @@ class SampleWriter:
         "_grids",
         "_image_multiscale",
         "_images",
+        "_source_version",
         "_stack",
         "_transform_frames",
         "codec",
@@ -178,6 +193,7 @@ class SampleWriter:
             self._transform_frames: dict[str, tuple[str, str]] = {}
             self._declared_profiles = set(profiles)
             self._default_timeline = True
+            self._source_version: str | None = None
             default_id = sample_id or os.path.basename(self.path).split(".")[0]
             self._document = SampleDocument(
                 identity=Identity(
@@ -211,7 +227,14 @@ class SampleWriter:
             self.abort()
             return
         if not self._committed:
-            self.commit()
+            # A commit that refuses --- a dangling reference, a schema failure
+            # --- must not leave the temporary sibling behind with its handle
+            # open: nothing else will ever close it.
+            try:
+                self.commit()
+            except BaseException:
+                self.abort()
+                raise
 
     def abort(self) -> None:
         """Discard the in-progress file, leaving any existing one untouched."""
@@ -222,8 +245,30 @@ class SampleWriter:
     def document(self) -> SampleDocument:
         return self._document
 
+    @document.setter
+    def document(self, document: SampleDocument) -> None:
+        """Replace the whole sample document; ``commit`` validates it as usual."""
+        if not isinstance(document, SampleDocument):
+            raise MEDH5ValidationError(
+                f"document must be a SampleDocument, not {type(document).__name__}"
+            )
+        self._document = document
+
+    @property
+    def handle(self) -> h5py.File:
+        """The file being built, for tools that rewrite what the builder does
+        not model --- ``scrub`` cleaning attributes a converter left behind.
+
+        Edits here are committed with everything else: ``commit`` restamps
+        every digest from the bytes it finds, so a dataset rewritten through
+        this handle is re-addressed, not left carrying a stale digest.
+        """
+        return self._file
+
     def _inherit(self, source: h5py.Group) -> None:
         """Copy an existing sample into this writer --- the copy-on-write amend."""
+        if "medh5_version" in source.attrs:
+            self._source_version = as_str(source.attrs["medh5_version"])
         self._document = read_document(source)
         self._default_timeline = False
         for name in ("grids", "images", "annotations", "transforms", "index"):
@@ -266,8 +311,27 @@ class SampleWriter:
     # -- document ----------------------------------------------------------
 
     def identity(self, **fields: Any) -> Identity:
-        """Set the sample's identity (``sample_id`` and ``subject_id`` required)."""
-        merged = {**self._document.identity.to_json(), **fields}
+        """Set the sample's identity (``sample_id`` and ``subject_id`` required).
+
+        Changing an id drops what :data:`~medh5.curation.identity.ID_SOURCE`
+        recorded about it, unless *fields* records a new source: a curator who
+        re-mints ``MRN12345`` as ``case-001`` has not got an id copied from
+        DICOM any more, and a scan that still said so would keep the
+        de-identification gate red for an id that is gone.
+        """
+        current = self._document.identity.to_json()
+        merged = {**current, **fields}
+        source = merged.get(ID_SOURCE)
+        if ID_SOURCE not in fields and isinstance(source, Mapping):
+            kept = {
+                name: origin
+                for name, origin in source.items()
+                if name not in fields or fields[name] == current.get(name)
+            }
+            if kept:
+                merged[ID_SOURCE] = kept
+            else:
+                del merged[ID_SOURCE]
         self._document.identity = Identity.from_json(merged)
         return self._document.identity
 
@@ -397,6 +461,23 @@ class SampleWriter:
         validate_id(grid_id, what="grid id")
         if grid_id in self._grids:
             raise MEDH5ValidationError(f"grid {grid_id!r} is already declared")
+        # §3.2 lists the units; the validator's code for one outside the list is
+        # format 1.1 business, but a writer has no reason to produce one.  "cm"
+        # used to be written without a word, and every consumer that assumes
+        # millimetres --- most of them --- read it ten times too small.
+        if units not in KNOWN_UNITS:
+            raise MEDH5ValidationError(
+                f"grid {grid_id!r}: units {units!r} is not one of "
+                f"{list(KNOWN_UNITS)} (§3.2); convert spacing and origin rather "
+                "than declaring another unit",
+                code="E109",
+            )
+        if time_units is not None and time_units not in TIME_UNITS:
+            raise MEDH5ValidationError(
+                f"grid {grid_id!r}: time_units {time_units!r} is not one of "
+                f"{list(TIME_UNITS)} (§3.2)",
+                code="E109",
+            )
         shape_t = tuple(int(s) for s in shape)
         if axis_kinds is None:
             axis_kinds = _default_axis_kinds(len(shape_t))
@@ -721,8 +802,49 @@ class SampleWriter:
         write) themselves, for the case where one region serves several
         annotations.  Passing both is refused: two sources of the same fact
         cannot be kept in agreement.
+
+        An ignore region that **overlaps** a class goes to the sibling mask
+        under every encoding.  One in-band value per voxel cannot say "liver"
+        and "ignored" at once, so ``labelmap`` kept the class there and lost that
+        part of the region --- 56 of 64 voxels read back --- while ``bitmask``
+        kept all 64: the same call meant different things to the loss depending
+        on which encoding the measurement picked.
+
+        Exactly one of ``masks``, ``probabilities`` and ``instances`` is
+        accepted, and ``encoding`` must be ``"auto"`` or the one the argument
+        implies (``probmap``, ``instances``).  Passing ``instances=[]`` records
+        "examined, none found" when ``annotated_classes`` names what was
+        examined (§7.4): it is how a resolved lesion is told apart from an
+        unexamined one.
         """
         target = self._grid(grid)
+        sources = [
+            name
+            for name, value in (
+                ("masks", masks),
+                ("probabilities", probabilities),
+                ("instances", instances),
+            )
+            if value is not None
+        ]
+        if len(sources) > 1:
+            # `probabilities=` used to win silently: `masks=` was dropped, and a
+            # caller who passed both got a file holding half of what they gave.
+            raise MEDH5ValidationError(
+                f"annotation {ann_id!r}: pass one of masks=, probabilities= or "
+                f"instances=, not {' and '.join(sources)}",
+                code="E404",
+            )
+        implied = {"probabilities": "probmap", "instances": "instances"}.get(
+            sources[0] if sources else ""
+        )
+        if implied is not None and encoding not in ("auto", implied):
+            raise MEDH5ValidationError(
+                f"annotation {ann_id!r}: encoding={encoding!r} contradicts "
+                f"{sources[0]}=, which is stored as {implied!r}; pass "
+                f"encoding='auto' or {implied!r}",
+                code="E404",
+            )
         if threshold is not None and probabilities is None:
             raise MEDH5ValidationError(
                 f"annotation {ann_id!r}: threshold= applies to probabilities= only",
@@ -743,7 +865,7 @@ class SampleWriter:
                     f"grid {grid!r} spatial shape is {target.spatial_shape}",
                     code="E405",
                 )
-        payload, stats, class_ids = self._encode_segmentation(
+        payload, stats, class_ids, in_band = self._encode_segmentation(
             masks,
             probabilities,
             instances,
@@ -754,7 +876,7 @@ class SampleWriter:
             threshold=threshold,
         )
         sibling: str | None = None
-        if ignore_array is not None and payload.kind not in IN_BAND_IGNORE_KINDS:
+        if ignore_array is not None and not in_band:
             # §7.7: the region lives in a separate `mask` annotation.  Both ids
             # are checked before either is written, so a refusal leaves nothing
             # half-done in the file.
@@ -795,19 +917,29 @@ class SampleWriter:
         examined: tuple[int, ...] = (),
         *,
         threshold: float | None = None,
-    ) -> tuple[AnnotationPayload, OverlapStats | None, tuple[int, ...]]:
+    ) -> tuple[AnnotationPayload, OverlapStats | None, tuple[int, ...], bool]:
         """Encode the payload, keeping every *examined* class expressible.
 
         A class the annotator searched for and did not find has to survive into
         ``class_ids``, or the file cannot tell "verified absent" from "never
         looked for" (spec §11.3).  Empty classes therefore reach the encoders
         rather than being dropped for having no voxels.
+
+        The last element says whether *ignore* went into the data itself; where
+        it did not, the caller writes it as the sibling mask.
         """
         if instances is not None:
+            if not instances and not examined:
+                raise MEDH5ValidationError(
+                    "instances=[] records 'examined, none found' only with "
+                    "annotated_classes= naming the classes that were examined; "
+                    "without it the annotation says nothing (§7.4)",
+                    code="E410",
+                )
             payload = encode_instances(
                 instances, grid.spatial_shape, class_ids=examined or None
             )
-            return payload, None, payload.class_ids
+            return payload, None, payload.class_ids, False
         if probabilities is not None:
             resolved = {self._class_id(k): v for k, v in probabilities.items()}
             # Examined-but-absent classes get an all-zero plane, exactly as the
@@ -820,7 +952,7 @@ class SampleWriter:
                     class_id, np.zeros(grid.spatial_shape, dtype=np.float32)
                 )
             payload = encode_probmap(resolved, grid.spatial_shape, threshold=threshold)
-            return payload, None, payload.class_ids
+            return payload, None, payload.class_ids, False
         if masks is None:
             raise MEDH5ValidationError(
                 "add_segmentation needs one of masks=, probabilities= or instances="
@@ -829,19 +961,27 @@ class SampleWriter:
         for class_id in examined:
             given.setdefault(class_id, np.zeros(grid.spatial_shape, dtype=bool))
         resolved_masks, shape = normalize_masks(given, grid.spatial_shape)
+        # A region overlapping a class cannot go in band under any encoding
+        # (see `add_segmentation`), so the cost model is told only about a
+        # region that will actually be stored there.
+        overlaps = ignore is not None and any(
+            bool(np.any(mask & ignore)) for mask in resolved_masks.values()
+        )
+        in_band_possible = ignore is not None and not overlaps
         kind, stats = select_encoding(
             resolved_masks,
             shape,
             prefer=None if encoding == "auto" else encoding,
-            ignore=ignore is not None,
+            ignore=in_band_possible,
         )
         kwargs: dict[str, Any] = {}
-        if ignore is not None and kind in IN_BAND_IGNORE_KINDS:
+        in_band = in_band_possible and kind in IN_BAND_IGNORE_KINDS
+        if in_band:
             kwargs["ignore"] = ignore
-        # Any other kind gets the region as a sibling `mask`, written by
+        # Otherwise the region is a sibling `mask`, written by
         # `add_segmentation` once the payload's kind is known (§7.7).
         payload = encode_masks(resolved_masks, kind, shape, **kwargs)
-        return payload, stats, payload.class_ids
+        return payload, stats, payload.class_ids, in_band
 
     def add_mask(
         self,
@@ -977,13 +1117,22 @@ class SampleWriter:
             del self._file["index"][ann_id]
 
     def transcode_annotation(
-        self, ann_id: str, to_kind: str, *, codec: str | None = None
+        self,
+        ann_id: str,
+        to_kind: str,
+        *,
+        codec: str | None = None,
+        drop_identity: bool = False,
     ) -> str:
         """Re-encode a voxel annotation in place, preserving its header.
 
         Lossless for every class and voxel (spec §7.6), which is what makes the
         encoding a storage decision: a cohort can be re-encoded for a different
         access pattern without anyone re-deriving the ground truth.
+
+        ``instances`` to a dense encoding also loses every ``instance_id``, so it
+        is refused unless ``drop_identity=True`` --- and then recorded as a
+        ``transcode`` activity, so the file says why ``tracks()`` finds nothing.
         """
         from medh5.annotations.voxel.transcode import transcode as _transcode
 
@@ -1001,7 +1150,9 @@ class SampleWriter:
             )
         if header.kind == to_kind:
             return to_kind
-        payload = _transcode(annotation, to_kind)
+        payload = _transcode(annotation, to_kind, drop_identity=drop_identity)
+        dropped = header.kind == "instances"
+        objects = len(annotation.instance_ids) if dropped else 0  # type: ignore[attr-defined]
         grid = self._grid(header.grid or "")
         self.remove_annotation(ann_id)
         header.kind = to_kind
@@ -1019,6 +1170,20 @@ class SampleWriter:
         )
         header.extra = {**dict(header.extra), **payload.attrs}
         self._write_annotation(ann_id, header, payload, grid, codec)
+        if dropped:
+            self.activity(
+                "transcode",
+                agent=self.software("medh5", __about__.__version__),
+                tool=f"medh5 transcode --to {to_kind} --drop-identity",
+                inputs=[f"annotations/{ann_id}"],
+                outputs=[f"annotations/{ann_id}"],
+                params={
+                    "from": "instances",
+                    "to": to_kind,
+                    "dropped": "instance identity",
+                    "objects": objects,
+                },
+            )
         return to_kind
 
     # -- geometric and classification annotations (§8, §9) -----------------
@@ -1417,7 +1582,7 @@ class SampleWriter:
     def add_classification(
         self,
         ann_id: str,
-        labels: Mapping[int | str, float],
+        labels: Mapping[int | str, float] | Sequence[Sequence[Any]],
         *,
         scope: str = "sample",
         multilabel: bool = True,
@@ -1439,18 +1604,39 @@ class SampleWriter:
         ``timepoints`` list naming the visits compared --- the format adds no
         ``change`` kind, because what makes a change label well defined is that
         the compared timepoints are named rather than implied.
+
+        *labels* is a mapping ``class -> value``, one assertion per class, or a
+        sequence of rows ``(class, value[, scope_id[, scheme, scheme_value]])``
+        for a class asserted about several scope units --- per lesion, per
+        slice, per visit (§9)::
+
+            w.add_classification(
+                "malignancy",
+                [("malignant", 1.0, 1), ("malignant", 0.0, 2)],
+                scope="instance",
+            )
         """
+        if isinstance(labels, Mapping):
+            resolved: Any = {self._class_id(k): v for k, v in labels.items()}
+        else:
+            resolved = [
+                (self._class_id(row[0]), *row[1:])
+                if isinstance(row, (list, tuple)) and row
+                else row  # malformed; `encode_classification` refuses it by name
+                for row in labels
+            ]
         payload = encode_classification(
-            {self._class_id(k): v for k, v in labels.items()},
+            resolved,
             scope=scope,
             multilabel=multilabel,
             scope_ids=scope_ids,
             schemes=schemes,
             scheme_values=scheme_values,
         )
-        if scope == "timepoint" and scope_ids is not None:
+        units = payload.datasets.get("scope_ids")
+        if scope == "timepoint" and units is not None:
             declared = len(self._document.timepoints)
-            unknown = sorted({int(v) for v in scope_ids if not 0 <= int(v) < declared})
+            unknown = sorted({int(v) for v in units if not 0 <= int(v) < declared})
             if unknown:
                 raise MEDH5ValidationError(
                     f"annotation {ann_id!r}: scope='timepoint' scope_ids {unknown} "
@@ -1611,13 +1797,17 @@ class SampleWriter:
                     code="E503",
                 )
             self._check_field_frame(transform_id, field_grid, from_frame)
-            return encode_displacement(
+            payload = encode_displacement(
                 field,
                 field_grid=field_grid,
                 vector_space=vector_space,
                 interpolation=interpolation,
                 extrapolation=extrapolation,
             )
+            self._check_field_lattice(
+                transform_id, payload.datasets["field"], field_grid, lattice=True
+            )
+            return payload
         if kind == "bspline":
             if control_points is None or cp_grid is None:
                 raise MEDH5ValidationError(
@@ -1626,9 +1816,13 @@ class SampleWriter:
                     code="E503",
                 )
             self._check_field_frame(transform_id, cp_grid, from_frame)
-            return encode_bspline(
+            payload = encode_bspline(
                 control_points, cp_grid=cp_grid, order=order, vector_space=vector_space
             )
+            self._check_field_lattice(
+                transform_id, payload.datasets["control_points"], cp_grid, lattice=False
+            )
+            return payload
         if kind == "composite":
             if components is None:
                 raise MEDH5ValidationError(
@@ -1658,6 +1852,34 @@ class SampleWriter:
                 f"transform {transform_id!r}: grid {grid_id!r} is in frame "
                 f"{grid.frame_uid!r} but the transform starts in {from_frame!r}; the "
                 "field must be sampled in the source frame",
+                code="E503",
+            )
+
+    def _check_field_lattice(
+        self, transform_id: str, data: Any, grid_id: str, *, lattice: bool
+    ) -> None:
+        """A field's components, and a displacement field's lattice, fit its grid.
+
+        The validator's E503 rule, at the call.  A ``(3, 4, 4, 4)`` field on a
+        16³ ``field_grid`` used to be written without complaint, and the
+        transform then returned ``T(x) = x`` wherever the field did not reach
+        --- although the field said +1 everywhere.  Control points are a coarser
+        lattice than their grid by design, so only their component count is
+        compared.
+        """
+        grid = self._grid(grid_id)
+        shape = tuple(int(v) for v in np.shape(data))
+        if shape[0] != grid.n_spatial:
+            raise MEDH5ValidationError(
+                f"transform {transform_id!r}: {shape[0]} components on grid "
+                f"{grid_id!r}, which has {grid.n_spatial} spatial axes",
+                code="E503",
+            )
+        if lattice and shape[1:] != grid.spatial_shape:
+            raise MEDH5ValidationError(
+                f"transform {transform_id!r}: field lattice {shape[1:]} is not grid "
+                f"{grid_id!r}'s spatial shape {grid.spatial_shape}; the field is "
+                "sampled at that grid's voxels (§10.3)",
                 code="E503",
             )
 
@@ -1773,7 +1995,15 @@ class SampleWriter:
         label_set = doc.label_set
         for name in self._annotation_kinds:
             node = self._file["annotations"][name]
-            if label_set is not None and "class_ids" in node.attrs:
+            # A `form: "ref"` vocabulary carries no classes to check against:
+            # §5.1 has readers treat class names as unknown while still reading
+            # the data, and the validator skips E402 for it.  Checking here
+            # refused every annotation such a sample could hold.
+            if (
+                label_set is not None
+                and label_set.form == "inline"
+                and "class_ids" in node.attrs
+            ):
                 missing = label_set.missing(
                     int(c) for c in np.atleast_1d(node.attrs["class_ids"])
                 )
@@ -1912,7 +2142,7 @@ class SampleWriter:
         set_attrs(
             self._file,
             {
-                "medh5_version": FORMAT_VERSION,
+                "medh5_version": _written_version(self._source_version),
                 "medh5_kind": "sample",
                 "medh5_profiles": sorted(profiles),
                 "created": _utcnow(),
@@ -1923,9 +2153,40 @@ class SampleWriter:
         stamp_digests(self._file, only_missing=not digests)
         content_id = compute_content_id(self._file, attr_name_map_of(self._file))
         self._file.attrs["content_id"] = content_id
+        self._check_valid()
         self._committed = True
         self._stack.close()
         return content_id
+
+    def _check_valid(self) -> None:
+        """Refuse to write a file the validator would reject (§15).
+
+        The writer enforced its own hand-kept subset of the rules and the
+        validator another, and every rule added to one side and not the other
+        was a disagreement: the writer produced displacement fields the
+        validator rejects (E503) and refused label sets the validator accepts
+        (E402).  Running the validator's structural and semantic *error* rules
+        over the finished temporary file makes the validator the one definition
+        of a valid file.  Warnings are not raised --- ``medh5 validate`` reports
+        them --- and the bulk-reading warning checks are skipped
+        (``errors_only``), so the cost is one read of what was just written.
+        """
+        from medh5.validate import validate_root
+
+        report = validate_root(
+            self._file, path=self.path, level="semantic", errors_only=True
+        )
+        errors = [d for d in report.diagnostics if d.severity == "error"]
+        if not errors:
+            return
+        self.abort()
+        listed = "; ".join(f"{d.code} {d.location}: {d.message}" for d in errors[:5])
+        more = f" (and {len(errors) - 5} more)" if len(errors) > 5 else ""
+        raise MEDH5ValidationError(
+            f"refusing to write {self.path!r}: the file would fail validation: "
+            f"{listed}{more}",
+            code=errors[0].code,
+        )
 
 
 def _default_axis_kinds(ndim: int) -> tuple[str, ...]:
@@ -1956,6 +2217,27 @@ def _prov_id(prov: Activity | str | None) -> str | None:
     return prov.id if isinstance(prov, Activity) else prov
 
 
+def _written_version(source: str | None) -> str:
+    """The ``medh5_version`` a commit writes: this writer's, or a later minor's.
+
+    An amend copies what it does not understand straight through (§16), so a
+    1.1 file amended by this 1.0 writer still carries its 1.1 objects --- and
+    is still a 1.1 file.  Restamping it ``1.0`` claimed a version whose rules
+    the file no longer follows.  A different major never gets here:
+    :func:`amend` refuses it.
+    """
+    if source is None:
+        return FORMAT_VERSION
+    try:
+        smajor, sminor = (int(part) for part in source.split(".", 1))
+        wmajor, wminor = (int(part) for part in FORMAT_VERSION.split(".", 1))
+    except ValueError:
+        return FORMAT_VERSION
+    if smajor == wmajor and sminor > wminor:
+        return source
+    return FORMAT_VERSION
+
+
 def create(
     path: str | os.PathLike[str],
     *,
@@ -1974,16 +2256,29 @@ def create(
     )
 
 
-def amend(path: str | os.PathLike[str], *, codec: str = "balanced") -> SampleWriter:
+def amend(path: str | os.PathLike[str], *, codec: str | None = None) -> SampleWriter:
     """Copy-on-write amend: build a new file from the old and replace it (§14.4).
 
     Unknown objects --- including ones written by a future minor version --- are
     copied through untouched, so amending never silently drops what this reader
-    does not understand.
+    does not understand.  A future *major* is refused, as every other door
+    refuses it (§16): amending one used to succeed and restamp it ``1.0``.
+
+    *codec* defaults to the family the file was written in (see
+    :func:`~medh5.storage.codecs.profile_family`): a ``portable`` file stays
+    readable without ``hdf5plugin``.
     """
     source = open_h5(path, "r")
     try:
-        writer = SampleWriter(path, codec=codec, source=source)
+        require_major(source, path)
+        kind = as_str(source.attrs.get("medh5_kind", "sample"))
+        if kind != "sample":
+            raise MEDH5FileError(
+                f"{os.fspath(path)!r} is a {kind!r}; amend works on one sample --- "
+                "extract the member with `medh5 unpack`, amend it, and pack again"
+            )
+        chosen = codec if codec is not None else profile_family(source)
+        writer = SampleWriter(path, codec=chosen, source=source)
     finally:
         source.close()
     return writer

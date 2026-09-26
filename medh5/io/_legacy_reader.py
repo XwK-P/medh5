@@ -38,6 +38,7 @@ import h5py
 import numpy as np
 import numpy.typing as npt
 
+from medh5._hdf5 import check_self_contained
 from medh5.errors import MEDH5FileError, MEDH5SchemaError
 
 SUFFIX = ".medh5"
@@ -107,6 +108,9 @@ def _open(path: str | os.PathLike[str]) -> h5py.File:
     except OSError as exc:
         raise MEDH5FileError(f"cannot open {text!r} as a 0.x file: {exc}") from exc
     try:
+        # A 0.x file is migrated into a 1.0 one, so anything it reads from
+        # outside itself would be copied into the new file (see `open_h5`).
+        check_self_contained(handle, text)
         if "meta" in handle:
             raise MEDH5SchemaError(
                 f"{text!r} is a 1.0 file (it has `/meta`), not a 0.x file"

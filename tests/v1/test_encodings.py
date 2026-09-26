@@ -289,7 +289,14 @@ class TestTranscoding:
         converted = transcode_payload(original, target, spatial_shape=SHAPE)
         decoded = payload_to_masks(converted, spatial_shape=SHAPE)
         assert masks_equal(masks, decoded)
-        back = transcode_payload(converted, "layers", spatial_shape=SHAPE)
+        # Back from `instances`, the voxels survive and the ids do not, so that
+        # leg has to be asked for (L-25).
+        back = transcode_payload(
+            converted,
+            "layers",
+            spatial_shape=SHAPE,
+            drop_identity=target == "instances",
+        )
         assert masks_equal(masks, payload_to_masks(back, spatial_shape=SHAPE))
 
     @pytest.mark.parametrize("source", ["layers", "bitmask", "instances", "probmap"])
@@ -297,7 +304,9 @@ class TestTranscoding:
     def test_S7_6_full_matrix(self, source, target):
         masks = random_masks(21, n_classes=4)
         start = encode_masks(masks, source, SHAPE)
-        end = transcode_payload(start, target, spatial_shape=SHAPE)
+        end = transcode_payload(
+            start, target, spatial_shape=SHAPE, drop_identity=source == "instances"
+        )
         assert masks_equal(masks, payload_to_masks(end, spatial_shape=SHAPE))
 
     def test_S7_1_labelmap_is_only_a_valid_target_without_overlap(self):
@@ -554,7 +563,7 @@ class TestTranscodingRefusesWhatItCannotCarry:
             ],
         )
         with medh5.amend(path) as writer:
-            writer.transcode_annotation("seg", "layers")
+            writer.transcode_annotation("seg", "layers", drop_identity=True)
         with (
             medh5.amend(path) as writer,
             pytest.raises(MEDH5ValidationError, match="no object identity"),
@@ -635,7 +644,9 @@ class TestPayloadEncoderGuards:
         decoded = payload_to_masks(payload, spatial_shape=self.SHAPE)
         assert sorted(decoded) == [1, 5]
         assert not decoded[5].any()
-        onward = transcode_payload(payload, "layers", spatial_shape=self.SHAPE)
+        onward = transcode_payload(
+            payload, "layers", spatial_shape=self.SHAPE, drop_identity=True
+        )
         assert onward.class_ids == (1, 5)
 
     def test_an_empty_obb_collection_is_refused_with_a_coded_error(self):

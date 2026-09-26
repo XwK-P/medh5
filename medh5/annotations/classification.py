@@ -31,6 +31,7 @@ from medh5._hdf5 import as_bool, as_str, as_str_tuple, str_dtype
 from medh5.annotations.base import Annotation
 from medh5.annotations.payload import AnnotationPayload
 from medh5.errors import MEDH5ValidationError
+from medh5.labels.labelset import check_class_id
 
 SCOPES = ("sample", "timepoint", "grid", "roi", "slice", "instance")
 
@@ -67,8 +68,78 @@ class Assertion:
         return f"Assertion({self.class_id}={self.value:g}{target}{scheme})"
 
 
+Labels = Mapping[Any, float] | Sequence[Sequence[Any]]
+"""What a classification is built from: ``class -> value``, or assertion rows.
+
+A row is ``(class, value)``, ``(class, value, scope_id)`` or
+``(class, value, scope_id, scheme, scheme_value)``.
+"""
+
+
+Columns = tuple[
+    list[Any], list[float], list[Any] | None, list[Any] | None, list[Any] | None
+]
+
+
+def assertion_rows(labels: Labels) -> Columns:
+    """Split *labels* into columns: classes, values, scope ids, schemes, scheme values.
+
+    A mapping holds one assertion per class, which is the common case and the
+    only one this used to accept.  §9 makes ``scope_ids`` *per assertion*, and
+    the reader treats a class asserted for several scope units as ordinary ---
+    "lesion 1 malignant, lesion 2 benign" is two assertions of one class ---
+    so the rows form carries it.  A column is ``None`` when no row supplies it,
+    and supplying it in some rows but not others is refused.
+    """
+    if isinstance(labels, Mapping):
+        return list(labels), [float(v) for v in labels.values()], None, None, None
+    classes: list[Any] = []
+    values: list[float] = []
+    units: list[Any] = []
+    schemes: list[Any] = []
+    scheme_values: list[Any] = []
+    widths: set[int] = set()
+    for index, row in enumerate(labels):
+        if isinstance(row, (str, bytes)) or not isinstance(row, Sequence):
+            raise MEDH5ValidationError(
+                f"classification row {index} is {row!r}; a row is (class, value), "
+                "(class, value, scope_id) or (class, value, scope_id, scheme, "
+                "scheme_value)",
+                code="E405",
+            )
+        if len(row) not in (2, 3, 5):
+            raise MEDH5ValidationError(
+                f"classification row {index} has {len(row)} fields; a row is "
+                "(class, value), (class, value, scope_id) or (class, value, "
+                "scope_id, scheme, scheme_value)",
+                code="E405",
+            )
+        widths.add(len(row))
+        classes.append(row[0])
+        values.append(float(row[1]))
+        if len(row) >= 3:
+            units.append(row[2])
+        if len(row) == 5:
+            schemes.append(row[3])
+            scheme_values.append(row[4])
+    if len(widths) > 1:
+        raise MEDH5ValidationError(
+            f"classification rows mix widths {sorted(widths)}; every row supplies "
+            "the same columns, so no assertion is left without a scope unit",
+            code="E405",
+        )
+    width = widths.pop() if widths else 2
+    return (
+        classes,
+        values,
+        units if width >= 3 else None,
+        schemes if width == 5 else None,
+        scheme_values if width == 5 else None,
+    )
+
+
 def encode_classification(
-    labels: Mapping[int, float],
+    labels: Labels,
     *,
     scope: str = "sample",
     multilabel: bool = True,
@@ -78,14 +149,30 @@ def encode_classification(
 ) -> AnnotationPayload:
     """Pack label assertions (spec §9).
 
-    ``multilabel = False`` means exactly one positive class per scope unit, and
-    that is checked here rather than left to a validator: a single-label
-    annotation carrying two positives is a curation error, and finding it at
-    write time costs nothing.
+    *labels* is a mapping ``class -> value`` or a sequence of assertion rows
+    (see :func:`assertion_rows`); a column given by the rows cannot also be
+    given as an argument.  ``multilabel = False`` means exactly one positive
+    class per scope unit, and that is checked here rather than left to a
+    validator: a single-label annotation carrying two positives is a curation
+    error, and finding it at write time costs nothing.
     """
     check_scope(scope)
-    class_ids = [int(c) for c in labels]
-    values = [float(v) for v in labels.values()]
+    classes, values, row_units, row_schemes, row_scheme_values = assertion_rows(labels)
+    for name, from_rows, from_argument in (
+        ("scope_ids", row_units, scope_ids),
+        ("schemes", row_schemes, schemes),
+        ("scheme_values", row_scheme_values, scheme_values),
+    ):
+        if from_rows is not None and from_argument is not None:
+            raise MEDH5ValidationError(
+                f"{name} is given both in the rows and as an argument; give it once",
+                code="E405",
+            )
+    scope_ids = row_units if row_units is not None else scope_ids
+    schemes = row_schemes if row_schemes is not None else schemes
+    if row_scheme_values is not None:
+        scheme_values = row_scheme_values
+    class_ids = [check_class_id(c) for c in classes]
     if any(not 0.0 <= v <= 1.0 for v in values):
         raise MEDH5ValidationError(
             "classification values must lie in [0, 1]; 1.0 is a hard positive, "
@@ -97,6 +184,11 @@ def encode_classification(
         units: list[Any] = (
             list(scope_ids) if scope_ids is not None else [None] * len(class_ids)
         )
+        if len(units) != len(class_ids):
+            raise MEDH5ValidationError(
+                f"scope_ids has {len(units)} entries for {len(class_ids)} assertions",
+                code="E405",
+            )
         for unit, value in zip(units, values, strict=True):
             if value > 0.0:
                 by_unit[unit] = by_unit.get(unit, 0) + 1
@@ -380,6 +472,8 @@ __all__ = [
     "SCOPES",
     "Assertion",
     "ClassificationAnnotation",
+    "Labels",
+    "assertion_rows",
     "check_scope",
     "encode_classification",
 ]

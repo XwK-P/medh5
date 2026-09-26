@@ -44,8 +44,13 @@ def validate_root(
     level: Level = "semantic",
     profiles: Sequence[str] | None = None,
     attr_names: Any = None,
+    errors_only: bool = False,
 ) -> Report:
-    """Validate an open sample root."""
+    """Validate an open sample root.
+
+    *errors_only* skips the warning-only checks that read bulk data; see
+    :attr:`~medh5.validate.rules.Context.errors_only`.
+    """
     if level not in LEVELS:
         raise ValueError(
             f"unknown validation level {level!r}; expected one of {LEVELS}"
@@ -59,7 +64,13 @@ def validate_root(
             else ()
         )
     )
-    ctx = Context(root=root, path=path, level=level, profiles=declared)
+    ctx = Context(
+        root=root,
+        path=path,
+        level=level,
+        profiles=declared,
+        errors_only=errors_only,
+    )
     if attr_names is not None:
         ctx.notes["attr_names"] = attr_names
     report = Report(path=path, level=level, profiles=declared)

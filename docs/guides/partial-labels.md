@@ -86,25 +86,22 @@ the region wherever the chosen encoding can hold it: in band under `labelmap`
 and `layers`, and as a sibling `mask` annotation named `<ann_id>_ignore` ---
 same grid, same provenance, referenced by `header.ignore_mask` --- under
 `bitmask`, `instances` and `probmap`, which cannot hold a reserved id (§7.7).
-`encoding="auto"` therefore never decides whether the region survives.
+A region that **overlaps a class** goes to the sibling mask under every
+encoding, because one in-band value per voxel cannot say "liver" and "ignored"
+at once. So `encoding="auto"` never decides whether the region survives, and it
+reads back equal to the array you gave.
 
-**Reading it depends on the encoding**, so read it through both routes.
-`labelmap` and `layers` expose `ignore_mask()`; the other three have the
-separate mask. Ask a `bitmask` for `ignore_mask()` and you get
-`AttributeError`, with `has_ignore_region` already True:
+**Reading it is one call**, whichever encoding the writer chose:
 
 ```python
-def ignore_region(sample, ann, roi=None):
-    """The ignore region, wherever this encoding keeps it."""
-    referenced = ann.header.ignore_mask
-    if referenced:                                 # a separate mask annotation
-        return sample.annotations[referenced].dense(roi=roi)
-    reader = getattr(ann, "ignore_mask", None)     # in band: labelmap, layers
-    return reader(roi=roi) if reader else None
+region = s.ignore_region("organs")                  # bool, the whole grid
+region = s.ignore_region("organs", roi=(slice(0, 8),) * 3)
 ```
 
-Verified across all three: the same 64 ignored voxels from `labelmap`, `layers`
-and `bitmask`.
+`ignore_region` reads both places §7.7 allows --- the data itself and the
+sibling mask --- and is all `False` where the annotation has no region. The
+per-encoding `ignore_mask()` exists only on `labelmap` and `layers`, and sees
+only the in-band part.
 
 Use it for a truncated field of view, an unreadable region, a structure a rater
 declined to call. Do not use it for "background": background is a positive
@@ -112,9 +109,25 @@ statement that nothing is there, and it is a signal.
 
 ## What this buys you at training time
 
-The batch does not carry coverage — it carries `path`, `sample_id`,
-`subject_id` and the patch. Look coverage up from the manifest, which holds it
-as metadata and therefore costs nothing to consult:
+The loaders hand both contracts to the loss with every item:
+
+```python
+from medh5.torch import VolumeDataset
+
+dataset = VolumeDataset(["case.medh5"], images=["CT"],
+                        annotations={"organs": ["liver", "spleen"]})
+item = dataset[0]
+item["ignore"]["organs"]              # True where no loss may score (and on padding)
+item["meta"]["annotated"]["organs"]   # one flag per label channel: examined?
+item["valid"]["CT"]                   # where the image holds data (§4.4)
+```
+
+`label_format="labelmap"` also writes `65535` at every ignored voxel, so
+`ignore_index=65535` works directly; see
+[the torch reference](../reference/torch.md#a-batch) for a masked loss.
+
+Working from a manifest instead --- to choose samples by coverage before loading
+anything --- the same facts are metadata there and cost nothing to consult:
 
 ```python
 from medh5.dataset import Manifest
@@ -127,10 +140,6 @@ coverage = {
     for e in manifest
     if ANN in e.annotations
 }
-
-for batch in loader:
-    for path in batch["meta"]["path"]:
-        examined = coverage[path]     # mask the loss to these class ids
 ```
 
 **Take the coverage from the annotation you are training on, not from the

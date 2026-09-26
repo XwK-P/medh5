@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 # Install with the extras the test suite needs
-pip install -e ".[dev,schema,torch,nifti,dicom,dicomseg,itk,interp]"
+pip install -e ".[dev,torch,nifti,dicom,dicomseg,itk,interp]"
 
 # Full suite (90% coverage floor)
 pytest tests/ --cov=medh5 --cov-report=term-missing --cov-fail-under=90

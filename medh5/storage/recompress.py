@@ -116,7 +116,13 @@ def recompress(
     # `atomic_rewrite`, not `open_h5` + `atomic_h5`: nesting those exits
     # right-to-left, so the replace ran while the source was still open, which
     # Windows refuses when the target is the source.
+    from medh5.sample import require_major
+
     with atomic_rewrite(source_path, target) as (src, dst):
+        # One gate for every rewrite (§16): a file from an unknown major is
+        # refused here as `open` and `amend` refuse it, not re-encoded under
+        # rules it may not follow.
+        require_major(src, source_path)
         before = src.attrs.get("content_id")
         # Root attributes are copied by `_copy_group`, which every group goes
         # through; copying them here as well was a second, identical pass.

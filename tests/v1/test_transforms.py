@@ -830,7 +830,7 @@ class TestAmbiguousResolution:
                 matrix=step,
                 from_frame="FA",
                 to_frame="F1",
-                units="um",
+                units="mm",
             )
             w.add_transform(
                 "comp",
@@ -840,6 +840,13 @@ class TestAmbiguousResolution:
                 to_frame="F1",
                 units="mm",
             )
+        # The writer refuses the chain (it runs the validator's E501), so a file
+        # holding one comes from somewhere else --- which is who the reader's
+        # refusal is for.
+        import h5py
+
+        with h5py.File(path, "r+") as handle:
+            handle["transforms/t2"].attrs["units"] = "um"
         with medh5.open(path) as sample:
             problems = sample.transforms["comp"].check_chain()
             assert any("units" in p for p in problems)

@@ -113,14 +113,14 @@ w.transcode_annotation("organs", "bitmask")
 ```
 
 Going to an encoding that cannot represent something is **refused, not silently
-dropped**. Three cases:
+dropped**. Four cases:
 
 | From → to | Why it is refused |
 |---|---|
 | anything dense → `instances` | A dense encoding records which voxels belong to a class, never which object. The conversion would merge every object of a class into one and mint an `instance_id` belonging to none of them (§7.4). |
 | `labelmap`/`layers` carrying an in-band ignore region → `bitmask`/`probmap` | Those express ignore as a separate `mask` annotation (§7.7). Dropping it turns "nobody examined these voxels" into "verified absent". Write the ignore region as its own `mask` and reference it with `ignore_mask=` first. |
 | anything → `mask` | A `mask` has no classes, so every class would merge into one volume and the coverage contract would be lost. Build a deliberate union with `encode_mask` and write it with `add_mask`. |
-| `instances` → dense | Allowed, and one-way: identity is not recoverable afterwards. |
+| `instances` → dense | Every voxel survives and every `instance_id` does not — and `instance_id` is what tracking joins on across visits (§7.4). Refused unless you pass `drop_identity=True` (`--drop-identity`), which records a `transcode` activity saying identity was dropped. One-way: identity is not recoverable afterwards. |
 
 ### Instances
 

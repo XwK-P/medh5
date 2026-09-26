@@ -39,6 +39,7 @@ AXIS_KINDS = ("spatial", "channel", "time", "other")
 
 KNOWN_COORD_SYSTEMS = ("LPS", "RAS", "RAI", "LAS", "custom")
 KNOWN_UNITS = ("mm", "um", "m", "px")
+TIME_UNITS = ("s", "ms")
 
 MIN_SPATIAL, MAX_SPATIAL = 2, 3
 
@@ -418,6 +419,7 @@ __all__ = [
     "AXIS_KINDS",
     "KNOWN_COORD_SYSTEMS",
     "KNOWN_UNITS",
+    "TIME_UNITS",
     "SPEC_GRID_ATTRS",
     "Grid",
     "iter_spatial_slices",

@@ -48,6 +48,12 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     convert.add_argument(
         "--dry-run", action="store_true", help="report the size delta, write nothing"
     )
+    convert.add_argument(
+        "--drop-identity",
+        action="store_true",
+        help="allow instances -> a dense encoding, which loses every instance_id; "
+        "recorded in the provenance",
+    )
     add_json_flag(convert)
 
     index = sub.add_parser("index", help="derived sampling caches (spec §14.3)")
@@ -183,7 +189,7 @@ def _convert(args: argparse.Namespace) -> int:
         )
         from medh5.annotations.voxel.transcode import transcode
 
-        payload = transcode(annotation, args.to)
+        payload = transcode(annotation, args.to, drop_identity=args.drop_identity)
         after = payload.nbytes
         source_kind = annotation.kind
     except MEDH5Error as exc:
@@ -203,7 +209,9 @@ def _convert(args: argparse.Namespace) -> int:
     if not args.dry_run:
         try:
             with medh5.amend(args.path) as writer:
-                writer.transcode_annotation(args.annotation, args.to)
+                writer.transcode_annotation(
+                    args.annotation, args.to, drop_identity=args.drop_identity
+                )
         except MEDH5Error as exc:
             return fail(str(exc))
     if args.json:

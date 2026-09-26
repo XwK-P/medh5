@@ -263,7 +263,9 @@ Consequences that readers and writers **MUST** honour:
    Voxel *i* spans `[i-0.5, i+0.5)`.
 3. A `channel` or `time` axis has no geometric extent; it is never part of **i**.
 4. Two grids are **physically comparable without a transform** if and only if they share `frame_uid`
-   and `coord_system`. They need not share `shape`, `spacing` or `direction`.
+   and `coord_system`. They need not share `shape`, `spacing` or `direction`. A grid without a
+   `frame_uid` shares a frame with nothing — including another grid without one: two absent frames
+   are not one frame, and nothing says their world coordinates agree.
 
 ### 3.4 Frames of reference
 
@@ -718,6 +720,12 @@ An object present at one timepoint and absent at another is represented by its a
 timepoint's annotation; a *resolved* lesion is distinguishable from an *unexamined* one only through
 `annotated_class_ids` (§11.3), which is why coverage is required.
 
+**`N = 0` is permitted.** An `instances` annotation with no objects and a non-empty
+`annotated_class_ids` states that those classes were examined and nothing was found — the verified
+negative the previous paragraph depends on. Every per-object dataset then has zero rows,
+`mask_offsets` is `[0]`, `mask_data` is empty, and the `class_ids` attribute names the classes
+examined. Writers **MUST** accept it.
+
 `mask_data` **MAY** be absent, in which case the annotation is box-only and `kind` **SHOULD** be
 `boxes` instead. Measured on the 200-structure phantom: 0.08 MiB versus 3.57 MiB for per-class dense —
 a 45× reduction, because storage is proportional to object volume, not image volume.
@@ -733,6 +741,13 @@ a 45× reduction, because storage is proportional to object volume, not image vo
 For soft ground truth, inter-rater probability maps, distillation targets and predicted logits after
 sigmoid/softmax. **MUST** be chunked `(1, *spatial_chunk)`. `threshold` is a spec-defined attribute
 and so is covered by `content_id` (§13.2): two readers of one file answer `contains` identically.
+
+`contains` is decided **at the stored precision**: a voxel contains the class where its stored value
+is `>= threshold` converted to the stored dtype. A writer **MUST** store `data` in a dtype under which
+that comparison gives, at every voxel, the answer the values it was given gave — widening `float16`
+to `float32` where it would not. `float16` represents few fractions exactly (a vote of 1 in 3 is
+stored as 0.33325), so a rater-vote map written without this check loses every voxel that sits
+exactly on its threshold, at write time, beyond any reader's reach.
 
 ### 7.6 Encoding equivalence and selection
 
@@ -770,8 +785,10 @@ runs on the way out. No `.medh5` file stores runs.
 ### 7.7 Ignore and unlabeled semantics
 
 * In `labelmap` / `layers`, the value `ignore_id` marks ignore voxels.
-* In `bitmask` and `probmap`, ignore regions **MUST** be expressed as a separate `mask`-kind
-  annotation named by the `ignore_mask` attribute.
+* In `bitmask`, `instances` and `probmap`, ignore regions **MUST** be expressed as a separate
+  `mask`-kind annotation named by the `ignore_mask` attribute. So **MUST** a region that overlaps
+  any class's voxels, under every encoding: one in-band value per voxel cannot say both "this class"
+  and "ignored", so an in-band region would lose one or the other where they meet.
 * `0` means **background — verified absent for `annotated_class_ids`**. It does not mean "unknown".
   A file with a partially annotated volume **MUST** either mark unlabelled regions as ignore or
   restrict `annotated_class_ids` accordingly. Getting this wrong is the single most common cause of
@@ -1523,13 +1540,13 @@ grouping, since a 0.x file carries no reliable subject key of its own.
 ### C.1 Reference implementation
 
 Sections §2–§15 are **implemented** in the `medh5` package and exercised by a conformance corpus
-(§15) of 116 files: valid samples covering every encoding, annotation kind, transform kind,
+(§15) of 117 files: valid samples covering every encoding, annotation kind, transform kind,
 dimensionality, profile and container kind, plus one deliberately-invalid file per diagnostic code.
 Running the corpus against a validator is how a third-party implementation demonstrates conformance:
 
 ```
 $ medh5 conformance run ./corpus
-116/116 cases pass
+117/117 cases pass
 ```
 
 **Every code in §15.2 has a corpus case.** The implementation gates on `ruff`,
@@ -1541,7 +1558,7 @@ any machine. On a 192×256×256 synthetic CT with eight classes, a multi-class 6
 4.0 ms, foreground centre sampling 0.90 ms (O(1) in volume size, via §14.3), a metadata-only read
 0.21 ms, and `open()` → first patch 2.4 ms.
 
-Sixteen clauses have been corrected — ten during implementation and six in the 1.x package releases
+Twenty clauses have been corrected — ten during implementation and ten in the 1.x package releases
 that followed — each because writing the code showed the text was not implementable, not unambiguous,
 or not what the implementation could honestly promise, as written:
 
@@ -1563,6 +1580,10 @@ or not what the implementation could honestly promise, as written:
 | §7.1, §3.2, §15.2 | Two rules the writer enforced and the validator did not are validated: a `labelmap` stored `uint16` where §7.1 requires `uint8` is E411, and a `time` axis without `time_values` is E109. E603's summary reads "unknown agent or activity type", as this table has always said. |
 | §13.1, §13.2 | `index/` is **excluded** from object digests and from `content_id`, normatively rather than by convention. The reference implementation had always skipped it — a derived cache should not change the address of the sample it derives from — but the text did not say so, so a conforming implementation that stamped index digests would compute a different `content_id` for the same bytes, and `content_id` is only useful as a cross-implementation key if every implementation agrees on what it covers. |
 | §7.7 | `instances` is named beside `bitmask` and `probmap` as an encoding whose ignore region **MUST** live in a separate `mask` annotation. It has no in-band value either, so the clause left a conforming writer with nowhere to put one. The reference writer now emits that sibling (`<id>_ignore`, referenced by `ignore_mask`) whenever `ignore=` is given under any of the three, where it used to drop the region without a word — every unexamined voxel became a verified negative for every annotated class, and W904 stayed silent because coverage read as complete. |
+| §3.3 | Rule 4 says a grid without a `frame_uid` is comparable with nothing, another frame-less grid included. Read literally, "share `frame_uid`" was satisfied by two absent values, and the reference paired loader did read it that way: it mapped one visit's world coordinates into another visit's grid with no registration, for every longitudinal sample built from NIfTI or nnU-Net sources, and returned patches of different anatomy without a word. |
+| §7.4 | An `instances` annotation may hold `N = 0` objects. §7.4 already made a resolved lesion distinguishable from an unexamined one "only through `annotated_class_ids`", and for the one encoding that carries identity the only way to state that was an annotation with no objects — which the reference writer refused. |
+| §7.5 | `contains` is decided at the stored precision, and a writer must store `data` in a dtype under which that decision matches the input. The clause set a `float16` default and a `float64` threshold and said nothing about comparing them: a threshold of 1/3 compared against a float16 1/3 excluded exactly the voxels the threshold was chosen to include. |
+| §7.7 | An ignore region that overlaps a class is stored as the sibling `mask` under every encoding. In band it cannot survive the overlap — `labelmap` kept the class and lost the region there, while `bitmask` kept both — so one call to a writer meant different things to a loss depending on which encoding the size measurement picked. |
 
 ### C.2 Prototype checks
 
