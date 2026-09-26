@@ -457,3 +457,54 @@ class TestCorpusSmoke:
             if main(["info", str(built / f"{case.name}{case.suffix}")]) != 0
         ]
         assert not failed, f"`medh5 info` exited non-zero on: {failed}"
+
+
+class TestStatedCounts:
+    """Every place the corpus size is written down agrees with the corpus (D-09).
+
+    The count was maintained by hand in about ten places --- the README, the
+    site's front page, the conformance page, Appendix C and the CI comments ---
+    and each release that added a case had to find them all.  A documentation
+    hook could render the site's copies, but not the README, the CI comments or
+    the specification as GitHub shows it, so the check is a test instead.
+    """
+
+    ROOT = Path(__file__).resolve().parents[2]
+    SOURCES = (
+        "README.md",
+        "CLAUDE.md",
+        ".github/workflows/ci.yml",
+        "docs/index.md",
+        "docs/spec/conformance.md",
+        "docs/spec/medh5-1.0.md",
+    )
+    STATED = (
+        r"(\d+)-case",
+        r"(\d+) cases",
+        r"(\d+)/\d+ cases pass",
+        r"\d+/(\d+) cases pass",
+        r"\(§15\) of (\d+) files",
+        r'"cases": (\d+)',
+        r'"passed": (\d+)',
+        r"\d+ of the (\d+) cases",
+    )
+
+    def _stated(self, pattern: str) -> list[tuple[str, int]]:
+        import re
+
+        found = []
+        for name in self.SOURCES:
+            text = (self.ROOT / name).read_text(encoding="utf-8")
+            found += [(name, int(n)) for n in re.findall(pattern, text)]
+        return found
+
+    def test_D09_every_stated_corpus_size_is_the_corpus_size(self):
+        stated = [hit for pattern in self.STATED for hit in self._stated(pattern)]
+        assert len(stated) >= 12, stated  # the count is still written down
+        wrong = [(where, n) for where, n in stated if n != len(CASES)]
+        assert not wrong, f"the corpus has {len(CASES)} cases; stated: {wrong}"
+
+    def test_D09_the_stated_invalid_count_is_the_corpus_count(self):
+        invalid = sum(1 for case in CASES if case.errors)
+        stated = self._stated(r"(\d+) of the \d+ cases are deliberately invalid")
+        assert stated and all(n == invalid for _, n in stated), (invalid, stated)

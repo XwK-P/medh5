@@ -12,9 +12,10 @@ voxel counts — is a decision that belongs in the provenance record rather than
 in a library's defaults.  When it is used, the rule is written down and the
 contours stay in the file beside the mask.
 
-Holes are read the way planners write them: a second contour on the same slice
-that lies inside another is stored with ``role="hole"``, and the rasteriser
-excludes it.  Treating every contour as an outer boundary is how a segmented
+Holes are read the way planners write them: a contour on a slice that lies
+inside an odd number of others is stored with ``role="hole"``, and the
+rasteriser fills each slice by the even-odd rule, so an island inside a hole is
+a region again.  Treating every contour as an outer boundary is how a segmented
 vessel lumen ends up filled in.
 """
 
@@ -197,7 +198,7 @@ def from_rtstruct(
                 tool="medh5 convert from-rtstruct --rasterize",
                 inputs=[f"annotations/{ann_id}"],
                 params={
-                    "rule": "even-odd fill at voxel centres, holes excluded",
+                    "rule": "even-odd fill at voxel centres, per plane",
                     "sampling": "voxel centre",
                 },
             )
@@ -211,9 +212,9 @@ def from_rtstruct(
             )
             log.decision(
                 "rasterization",
-                "contours were rasterised by even-odd fill at voxel centres with "
-                f"holes excluded, stored as {kind!r}; the contours were kept, so "
-                "the lossy step is reversible by re-deriving it",
+                "contours were rasterised by even-odd fill at voxel centres, per "
+                f"plane, stored as {kind!r}; the contours were kept, so the lossy "
+                "step is reversible by re-deriving it",
                 {"kind": kind, "rule": "even-odd at voxel centres"},
             )
     log.outputs.append(os.fspath(sample))
@@ -226,7 +227,11 @@ def _assign_roles(
     log: ConversionReport,
     name: str | None,
 ) -> list[tuple[npt.NDArray[np.float64], str, int]]:
-    """Mark contours enclosed by another on the same slice as holes.
+    """Mark contours inside an odd number of others on the same slice as holes.
+
+    Nesting depth, not mere enclosure: an island drawn inside a hole is inside
+    two contours and is a region again.  Marking every enclosed contour a hole
+    erased it.
 
     The grouping and the enclosure test are both done in the grid's **index**
     space, where a planar contour has one constant axis.  Doing it on world
@@ -246,22 +251,32 @@ def _assign_roles(
         )
     holes = 0
     for plane, positions in by_plane.items():
-        for position in positions:
-            role = "outer"
-            for other in positions:
-                if other != position and _encloses(index[other], index[position]):
-                    role = "hole"
-                    holes += 1
-                    break
+        depths = _depths([index[position] for position in positions])
+        for position, depth in zip(positions, depths, strict=True):
+            role = "hole" if depth % 2 else "outer"
+            holes += role == "hole"
             out.append((contours[position], role, plane))
     if holes:
         log.decision(
             "holes",
-            f"{holes} contour(s) of ROI {name!r} lie inside another on the same "
-            "slice and were marked as holes rather than as separate regions",
+            f"{holes} contour(s) of ROI {name!r} lie inside an odd number of others "
+            "on the same slice and were marked as holes; one inside a hole is a "
+            "region again",
             {"holes": holes, "roi": name},
         )
     return out
+
+
+def _depths(contours: Sequence[npt.NDArray[np.float64]]) -> list[int]:
+    """How many of the other contours on one slice enclose each contour."""
+    return [
+        sum(
+            1
+            for other, outer in enumerate(contours)
+            if other != position and _encloses(outer, inner)
+        )
+        for position, inner in enumerate(contours)
+    ]
 
 
 def _encloses(outer: npt.NDArray[np.float64], inner: npt.NDArray[np.float64]) -> bool:
@@ -290,7 +305,14 @@ def _inside(
 def _rasterize(
     polygons: Sequence[Any], grid: Any, log: ConversionReport
 ) -> dict[int, npt.NDArray[np.bool_]]:
-    """Fill contours at voxel centres, subtracting holes (§8.6).
+    """Fill contours at voxel centres by the even-odd rule, per plane (§8.6).
+
+    A voxel is inside when an odd number of nesting levels contain it: a hole
+    subtracts from the region around it, and an island inside the hole adds
+    back.  Contours at one depth are unioned first, so two outlines that
+    overlap without nesting are one region rather than cancelling where they
+    overlap.  Unioning every outer and subtracting every hole erased an island
+    inside a hole.
 
     Voxel centres, not areas: a partial-coverage rule would need a threshold,
     and any threshold chosen here would be an unrecorded decision applied to
@@ -304,14 +326,11 @@ def _rasterize(
     )
     centres = np.stack([rows.ravel(), columns.ravel()], axis=1)
 
-    # Outers and holes are collected per (class, plane) and combined only once
-    # that plane is complete.  DICOM does not require an outer contour to
-    # precede the hole it encloses, and subtracting a hole from a mask whose
-    # outer has not been drawn yet loses the cavity: the outer then fills it
-    # back in and the conversion silently turns holes into foreground.
+    # Contours are collected per (class, plane) and combined only once that
+    # plane is complete.  DICOM does not require an outer contour to precede
+    # the hole it encloses, and combining in file order lost the cavity.
     seen: set[int] = set()
-    outers: dict[tuple[int, int], npt.NDArray[np.bool_]] = {}
-    holes: dict[tuple[int, int], npt.NDArray[np.bool_]] = {}
+    planes: dict[tuple[int, int], list[npt.NDArray[np.float64]]] = {}
     for polygon in polygons:
         index = grid.world_to_index(np.asarray(polygon.vertices, dtype=np.float64))
         plane = int(round(float(np.median(index[:, 0]))))
@@ -319,19 +338,22 @@ def _rasterize(
             continue
         class_id = int(polygon.class_id)
         seen.add(class_id)
-        filled = _inside(index[:, 1:], centres).reshape(shape[1], shape[2])
-        into = holes if polygon.role == "hole" else outers
-        key = (class_id, plane)
-        into[key] = filled if key not in into else (into[key] | filled)
+        planes.setdefault((class_id, plane), []).append(index)
 
     # A class contributing only holes still gets its (empty) mask: "examined and
     # absent" and "never looked at" are different facts (§6.4).
     masks: dict[int, npt.NDArray[np.bool_]] = {
         class_id: np.zeros(shape, dtype=bool) for class_id in sorted(seen)
     }
-    for (class_id, plane), filled in outers.items():
-        hole = holes.get((class_id, plane))
-        masks[class_id][plane] |= filled if hole is None else filled & ~hole
+    for (class_id, plane), contours in planes.items():
+        levels: dict[int, npt.NDArray[np.bool_]] = {}
+        for depth, index in zip(_depths(contours), contours, strict=True):
+            filled = _inside(index[:, 1:], centres).reshape(shape[1], shape[2])
+            levels[depth] = filled if depth not in levels else levels[depth] | filled
+        region = np.zeros((shape[1], shape[2]), dtype=bool)
+        for filled in levels.values():
+            region ^= filled
+        masks[class_id][plane] |= region
     log.guess(
         "rasterization",
         "a rasterised mask is an approximation of the contours it came from; the "

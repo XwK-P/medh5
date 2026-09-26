@@ -1393,6 +1393,18 @@ def _check_instances(
         offsets = np.asarray(group["mask_offsets"][...])
         if np.any(np.diff(offsets.astype(np.int64)) < 0):
             yield ctx.err("E408", location, "`mask_offsets` are not monotonic")
+    if "instance_ids" in group:
+        values, counts = np.unique(
+            np.asarray(group["instance_ids"][...]).reshape(-1), return_counts=True
+        )
+        shared = values[counts > 1].tolist()
+        if shared:
+            yield ctx.err(
+                "E404",
+                location,
+                f"instance id(s) {shared} name more than one object; two distinct "
+                "objects MUST NOT share one (§7.4)",
+            )
     if "instance_ids" in group and "class_ids" in group:
         ids = np.asarray(group["instance_ids"][...])
         classes = np.asarray(group["class_ids"][...])
@@ -1596,6 +1608,17 @@ def _check_composite(
     unknown = [c for c in components if c not in node]
     if unknown:
         yield ctx.err("E501", location, f"names components {unknown} that do not exist")
+        return
+    from medh5.transforms.composite import composite_cycle
+
+    cycle = composite_cycle(name, node)
+    if cycle:
+        yield ctx.err(
+            "E501",
+            location,
+            f"contains itself through {' -> '.join(cycle)}; a chain that never "
+            "ends cannot be evaluated",
+        )
         return
     frames = []
     for component in components:

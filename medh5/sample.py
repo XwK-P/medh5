@@ -510,6 +510,10 @@ class Sample:
         to another modality.  Pass ``grids[gid].frame_uid`` to ask about one
         grid's frame specifically; a frame uid is matched last, so it answers
         for that frame alone.
+
+        A key that is none of the three raises ``KeyError``.  ``None`` is the
+        answer "no registration exists", and a mistyped ``"TP1"`` used to get
+        it too.
         """
         pairs = [
             (a, b) for a in self._frames_for(source) for b in self._frames_for(target)
@@ -548,7 +552,23 @@ class Sample:
         if key in self.grids:
             frame = self.grids[key].frame_uid
             return (frame,) if frame else ()
-        return (key,)
+        if key in self._known_frames():
+            return (key,)
+        raise KeyError(
+            f"{key!r} is not a timepoint, a grid or a frame of reference in this "
+            f"sample (timepoints: {list(self.timepoints.ids)})"
+        )
+
+    def _known_frames(self) -> set[str]:
+        """Every frame uid a grid, a transform or an annotation declares."""
+        frames = {g.frame_uid for g in self.grids.values() if g.frame_uid}
+        for transform in self.transforms.values():
+            frames.update((transform.from_frame, transform.to_frame))
+        if "annotations" in self.root:
+            for group in self.root["annotations"].values():
+                if "frame_uid" in group.attrs:
+                    frames.add(as_str(group.attrs["frame_uid"]))
+        return frames
 
     # -- timepoints --------------------------------------------------------
 

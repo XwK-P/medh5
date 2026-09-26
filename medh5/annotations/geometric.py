@@ -97,34 +97,64 @@ class GeometricAnnotation(Annotation):
                 ) from None
         return self.grid
 
+    def _is_own(self, grid: Grid) -> bool:
+        own = self.header.grid
+        return own is not None and own in self._grids and grid == self._grids[own]
+
+    def _require_related(self, target: Grid) -> None:
+        """Refuse a grid this annotation's coordinates cannot be read on.
+
+        The annotation's own grid always relates.  Any other grid does only
+        through a shared frame of reference (§3.3), and a grid without a
+        ``frame_uid`` shares nothing, another frame-less grid included.
+        """
+        if self._is_own(target):
+            return
+        frame = self.frame_uid
+        if frame is not None and frame == target.frame_uid:
+            return
+        raise MEDH5ValidationError(
+            f"annotation {self.ann_id!r} is in frame {frame!r} and grid "
+            f"{target.grid_id!r} is in {target.frame_uid!r}; a transform is "
+            "required to relate them",
+            code="E414",
+        )
+
     def to_world(
         self, coords: npt.ArrayLike, *, grid: Grid | str | None = None
     ) -> npt.NDArray[np.float64]:
-        """Map coordinates from this annotation's ``space`` to world."""
+        """Map coordinates from this annotation's ``space`` to world.
+
+        Index coordinates count the voxels of the annotation's **own** grid,
+        whichever *grid* is named: *grid* says whose world the caller wants,
+        which is the same world only when the frames match --- and is refused
+        otherwise.  Reading them as *grid*'s indices put a box drawn on a 4 mm
+        grid at a quarter of its size on a 1 mm one.
+        """
         values = np.asarray(coords, dtype=np.float64)
+        if grid is not None:
+            self._require_related(self._resolve_grid(grid))
         if self.space == "world":
             return values
-        return self._resolve_grid(grid).index_to_world(values)
+        return self.grid.index_to_world(values)
 
     def to_index(
         self, coords: npt.ArrayLike, *, grid: Grid | str | None = None
     ) -> npt.NDArray[np.float64]:
-        """Map coordinates from this annotation's ``space`` to continuous index."""
+        """Map coordinates from this annotation's ``space`` to continuous index.
+
+        The index is *grid*'s --- the annotation's own when none is named ---
+        reached through world when the two are different grids of one frame.
+        Returning index coordinates unchanged for another grid answered with
+        the annotation's voxels in place of *grid*'s.
+        """
         values = np.asarray(coords, dtype=np.float64)
-        if self.space == "index":
-            return values
         target = self._resolve_grid(grid)
-        if (
-            target.frame_uid is not None
-            and self.frame_uid is not None
-            and target.frame_uid != self.frame_uid
-        ):
-            raise MEDH5ValidationError(
-                f"annotation {self.ann_id!r} is in frame {self.frame_uid!r} and grid "
-                f"{target.grid_id!r} is in {target.frame_uid!r}; a transform is "
-                "required to relate them",
-                code="E414",
-            )
+        self._require_related(target)
+        if self.space == "index":
+            if self._is_own(target):
+                return values
+            values = self.grid.index_to_world(values)
         return target.world_to_index(values)
 
     # -- per-object columns ------------------------------------------------
@@ -415,11 +445,18 @@ class BoxesAnnotation(GeometricAnnotation):
         given one voxel of thickness instead.
         """
         target = self._resolve_grid(grid)
-        if self.space == "index":
+        if self.space == "index" and self._is_own(target):
             boxes = self.boxes.astype(np.float64)
         else:
             boxes = self._boxes_in_index(target)
         planes = self.slice_index
+        if planes is not None and not self._is_own(target):
+            raise MEDH5ValidationError(
+                f"annotation {self.ann_id!r}: `slice_index` names planes of grid "
+                f"{self.grid_id!r}, not of {target.grid_id!r}; read these boxes on "
+                "their own grid",
+                code="E414",
+            )
         if planes is not None:
             # Files predating the writer's check exist, and the range check can
             # only happen here for a world-space box --- its plane is not known

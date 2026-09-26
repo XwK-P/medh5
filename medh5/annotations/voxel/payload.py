@@ -65,15 +65,28 @@ SLAB_BYTES = 8 * 1024 * 1024
 """Read budget for a scan that only needs a yes/no or a count."""
 
 
-def _slabs(data: Any) -> Any:
-    """Slabs along the first axis of an HDF5 dataset, each within the budget."""
-    rows = int(data.shape[0]) if data.ndim else 0
-    if rows == 0:
+def _slabs(data: Any, prefix: tuple[int, ...] = ()) -> Any:
+    """Slabs of an HDF5 dataset, each read from storage within the budget.
+
+    *prefix* fixes leading indices --- ``(layer,)`` reads one layer of a
+    stacked encoding --- and the slabs run along the next axis.  Where one row
+    of that axis is itself over the budget (a whole layer, a whole bit-plane)
+    the slab descends an axis instead of reading it: indexing the dataset with
+    ``data[layer]`` first and slabbing the result bounded nothing, because the
+    read had already happened --- 256 MiB for a ``uint16`` layer at 512³, 1 GiB
+    for a ``uint64`` bit-plane.
+    """
+    shape = tuple(int(n) for n in data.shape[len(prefix) :])
+    if not shape or shape[0] == 0:
         return
-    per_row = int(np.prod(data.shape[1:], dtype=np.int64)) * int(data.dtype.itemsize)
-    step = max(1, min(rows, SLAB_BYTES // max(per_row, 1)))
-    for start in range(0, rows, step):
-        yield np.asarray(data[start : start + step])
+    per_row = int(np.prod(shape[1:], dtype=np.int64)) * int(data.dtype.itemsize)
+    if per_row > SLAB_BYTES and len(shape) > 1:
+        for index in range(shape[0]):
+            yield from _slabs(data, (*prefix, index))
+        return
+    step = max(1, min(shape[0], SLAB_BYTES // max(per_row, 1)))
+    for start in range(0, shape[0], step):
+        yield np.asarray(data[(*prefix, slice(start, start + step))])
 
 
 def contains_value(data: Any, value: int) -> bool:
@@ -119,7 +132,7 @@ def popcounts(data: Any) -> npt.NDArray[np.int64]:
     planes = int(data.shape[0])
     out = np.zeros((planes, 64), dtype=np.int64)
     for plane in range(planes):
-        for slab in _slabs(data[plane]):
+        for slab in _slabs(data, (plane,)):
             words = np.asarray(slab, dtype=np.uint64).reshape(-1)
             if words.size == 0:
                 continue

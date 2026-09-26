@@ -13,7 +13,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TypeVar
 
 from medh5.document_fields import check_known
 from medh5.errors import MEDH5ValidationError
@@ -180,8 +180,8 @@ class Provenance:
         agents: Sequence[Agent] = (),
         activities: Sequence[Activity] = (),
     ) -> None:
-        self._agents = {a.id: a for a in agents}
-        self._activities = {a.id: a for a in activities}
+        self._agents = _unique(agents, "agent")
+        self._activities = _unique(activities, "activity")
 
     def __bool__(self) -> bool:
         return bool(self._agents or self._activities)
@@ -279,6 +279,31 @@ class Provenance:
             agents=[Agent.from_json(a) for a in doc.get("agents", ())],
             activities=[Activity.from_json(a) for a in doc.get("activities", ())],
         )
+
+
+_Node = TypeVar("_Node", Agent, Activity)
+
+
+def _unique(nodes: Sequence[_Node], what: str) -> dict[str, _Node]:
+    """Nodes by id, refusing an id declared twice.
+
+    A dict comprehension kept the last and dropped the rest without a word:
+    the reader then saw one agent where the file declared two, every reference
+    to the id resolved to whichever came last, and a no-op ``amend`` wrote the
+    survivor back --- deleting the other from the file.  Two nodes with one id
+    cannot both be what a reference names, so the document is refused rather
+    than guessed at.  (The validator reports it through the parse; a dedicated
+    diagnostic code is format 1.1 business.)
+    """
+    out: dict[str, _Node] = {}
+    for node in nodes:
+        if node.id in out:
+            raise MEDH5ValidationError(
+                f"provenance declares {what} id {node.id!r} more than once; a "
+                "reference to it cannot say which one it means"
+            )
+        out[node.id] = node
+    return out
 
 
 __all__ = [

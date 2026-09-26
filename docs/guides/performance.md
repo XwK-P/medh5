@@ -9,10 +9,11 @@ The short version, in payoff order:
 
 | Lever | Worth | Do it when |
 |---|---|---|
-| **Build a sampling index** | foreground sampling goes from O(volume) to O(1) — 30 ms → 0.9 ms on a 12 Mvox volume, 312 ms → 0.9 ms at 512³ | always, unless you only sample uniformly |
+| **Build a sampling index** | foreground sampling goes from O(volume) to O(1) — 30 ms → 0.03 ms on a 12 Mvox volume, 312 ms → 0.03 ms at 512³ | always, unless you only sample uniformly |
 | **Set `patch_hint` on the grid** | sizes chunks to what you will actually read | at write time, if you know your patch size |
 | **`--profile training`** | decompresses fastest | the cohort is read far more often than written |
 | **`num_workers > 0`** | ~330 → 600–850 patches/s | always, with `worker_init_fn` |
+| **`FileGroupedSampler`** | one open per file per epoch instead of one per item | shuffled training over more files than the handle cache holds |
 
 ## Build the index first
 
@@ -76,11 +77,16 @@ where the platform allows and falls back to ~1.375 MiB; chunks are held between
 512 KiB and 4 MiB.
 
 For an existing cohort, `--rechunk` re-derives the chunk shape as well as the
-codec:
+codec, by the writer's own rule — from each grid's `patch_hint`, one plane per
+chunk for `layers`, `bitmask` and `probmap` — so a re-chunked file is chunked
+the way a fresh write would be:
 
 ```bash
 medh5 recompress cohort/*.medh5 --profile training --rechunk
 ```
+
+(Before 1.4.2 it let h5py choose, and h5py's guess spanned the stacked axis the
+spec keeps at 1, which the validator reported as `W902`.)
 
 ## Choose a codec profile
 
@@ -106,6 +112,47 @@ loader = DataLoader(dataset, batch_size=2, num_workers=8,
 rather than required — the cache is PID-keyed and resets on first use in a
 forked worker either way. See [PyTorch and MONAI](../reference/torch.md#the-dataloader).
 
+## Keep a file's patches together
+
+Each worker keeps its 32 most recently used files open. `shuffle=True`
+permutes *items*, so with `samples_per_volume` items per file and more files
+than that, consecutive items rarely share a file and most of them open it
+again: at 100 small files and 4 items each, 304 opens an epoch and 0.77 ms per
+item.
+
+`FileGroupedSampler` shuffles files and yields each file's items together —
+100 opens, one per file, and 0.30 ms per item on the same run:
+
+```python
+from medh5.torch import FileGroupedSampler
+
+loader = DataLoader(ds, batch_size=4, sampler=FileGroupedSampler(ds, seed=0),
+                    num_workers=8, worker_init_fn=worker_init_fn, collate_fn=collate)
+for epoch in range(epochs):
+    ds.set_epoch(epoch)     # new patches, and a new file order
+```
+
+With workers, make `samples_per_volume` a multiple of `batch_size`: a batch is
+read by one worker, so a file whose items straddle two batches is opened by
+both. `set_cache_size(n)` is the other lever — raise it toward the number of
+files a worker cycles through, lower it when descriptors are scarce.
+
+## On a network filesystem
+
+HDF5's file locking is unreliable on NFS, Lustre and GPFS, where training
+clusters usually keep their data, and a lock that hangs or fails there looks
+like a slow or broken file. Reading is safe without it, so turn it off for the
+training job:
+
+```bash
+export HDF5_USE_FILE_LOCKING=FALSE
+```
+
+Set it in the job's environment before Python starts, so every `DataLoader`
+worker inherits it. medh5 never sets it for you (§14.4): it also disables the
+lock that keeps two writers apart, and whether that is safe is a fact about your
+cluster, not about the file.
+
 ## The numbers
 
 Measured on a 192×256×256 synthetic CT with eight classes.
@@ -113,7 +160,8 @@ Measured on a 192×256×256 synthetic CT with eight classes.
 | Metric | Target | 0.x | Measured |
 |---|---|---|---|
 | 64³ patch, multi-class labels only | ≤ 10 ms | 117 ms | **4.0 ms** |
-| Foreground centre sampling *(indexed)* | ≤ 1 ms, O(1) memory | 9.2 ms, O(volume) | **0.90 ms** |
+| Foreground centre sampling *(indexed)* | ≤ 1 ms, O(1) memory | 9.2 ms, O(volume) | **0.03 ms** |
+| … at 63 classes | ≤ 1 ms | — | **0.10 ms** |
 | Metadata-only read | ≤ 2 ms | ~1.5 ms | **0.21 ms** |
 | Full `open()` → first patch | ≤ 15 ms | ~120 ms | **2.4 ms** |
 | Sustained 96³ throughput | ≥ 400 patches/s | ~60 | **600–850** (4 workers) |
@@ -125,18 +173,20 @@ $ medh5 bench case.medh5 --patch 64 --repeats 20 --workers 4 --json
 
 Two things to know before quoting these.
 
-**The sampling row needs an index.** `bench` calls `build_index()` on the
-sample it builds, so 0.90 ms is the indexed path — the one you get after
+**The sampling rows need an index.** `bench` calls `build_index()` on the
+samples it builds, so 0.03 ms is the indexed path — the one you get after
 `medh5 index build`, not the one you get by default. Unindexed, the same draw
 scans the labels: 30 ms on this volume, 312 ms at 512³, growing with the volume
 while the indexed draw stays flat. `used_index` in the batch metadata says which
-you measured.
+you measured. The 63-class row exists because the class count is the other
+axis: before 1.4.2 each draw re-read the index's class table once per class,
+0.9 ms at eight classes and 7.6 ms at 63.
 
-**`bench` does not check the throughput target.** The first four rows carry a
-target it verifies and reports against; throughput depends on worker count, so
-it is measured and printed without one. `medh5 bench` with no `--workers` runs
+**`bench` does not check the throughput target.** The rows with a target are
+verified and reported against; throughput depends on worker count, so it is
+measured and printed without one. `medh5 bench` with no `--workers` runs
 single-process and reports around 330 patches/s — below the 400 in the table,
-and still followed by *all targets met*, which is a statement about the four
+and still followed by *all targets met*, which is a statement about the
 checked rows. Pass `--workers 4` to reproduce the number above.
 
 Two decisions are behind the label-read number: each stacked plane is chunked

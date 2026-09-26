@@ -18,6 +18,9 @@ from medh5.integrity.digest import (
     parse_digest,
 )
 
+ATTESTED_GROUPS = ("grids", "images", "annotations", "transforms")
+"""Where every dataset is part of an object a ``content_id`` speaks for."""
+
 
 @dataclass(slots=True)
 class VerifyResult:
@@ -30,6 +33,15 @@ class VerifyResult:
     content_id_declared: str | None = None
     content_id_computed: str | None = None
     stale_index: tuple[str, ...] = ()
+    unattested: tuple[str, ...] = ()
+    """Undigested datasets inside an object a declared ``content_id`` covers.
+
+    ``content_id`` is a root over the digests that are *present*, so a dataset
+    added to an annotation without one --- ``instance_ids`` on a boxes
+    annotation, say --- changes what the object means while the root still
+    matches: the file verified, and ``tracks()`` joined on ids nobody attested.
+    The writer digests every dataset, so none of its files carries one.
+    """
     details: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -49,6 +61,7 @@ class VerifyResult:
         return (
             not self.mismatched
             and not self.malformed
+            and not self.unattested
             and self.content_id_ok is not False
         )
 
@@ -58,6 +71,7 @@ class VerifyResult:
             "checked": len(self.checked),
             "mismatched": list(self.mismatched),
             "undigested": list(self.undigested),
+            "unattested": list(self.unattested),
             "malformed": list(self.malformed),
             "content_id_ok": self.content_id_ok,
             "stale_index": list(self.stale_index),
@@ -160,6 +174,17 @@ def verify_root(
         )
         computed = compute_content_id(root, attr_names, algo=algo, digests=stored)
 
+    unattested = (
+        tuple(
+            sorted(
+                name
+                for name in undigested
+                if name.split("/", 1)[0] in ATTESTED_GROUPS and "/" in name
+            )
+        )
+        if declared_str is not None and partial is None
+        else ()
+    )
     return VerifyResult(
         checked=tuple(checked),
         mismatched=tuple(mismatched),
@@ -168,6 +193,7 @@ def verify_root(
         content_id_declared=declared_str,
         content_id_computed=computed,
         stale_index=stale_index_entries(root),
+        unattested=unattested,
     )
 
 
@@ -258,6 +284,7 @@ def _attr_equal(left: Any, right: Any) -> bool:
 
 
 __all__ = [
+    "ATTESTED_GROUPS",
     "VerifyResult",
     "raw_chunks",
     "stale_index_entries",

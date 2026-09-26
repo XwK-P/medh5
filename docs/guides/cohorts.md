@@ -112,7 +112,10 @@ that subject's samples in two groups, and two groups can land in different
 partitions — the leak the grouping exists to prevent, reintroduced by the
 grouping key. `dataset check` reports the realised version of the same problem
 as `C202`; `C204` catches it while the split is being made, which is before it
-can be trained on.
+can be trained on. Both `C202` and `medh5 splits` look for leaks over subjects
+and grouping keys together — two files are one unit if they share either — so
+one subject whose visits were curated under two `group_id`s is found in two
+partitions, not two unrelated groups each in one.
 
 **Stratify on what you can see.** Groups are indivisible and a group's stratum
 is its majority, so exact balance is not always reachable. `balance()` reports

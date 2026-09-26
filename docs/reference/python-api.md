@@ -160,7 +160,9 @@ jacobian_determinant(field, grid)                           # for a displacement
 
 `transform_between` searches the frame graph, composing chains and using
 inverses where a transform declares one. It returns `None` when no path
-exists — it does not invent one.
+exists — it does not invent one — and raises `KeyError` for a key that is not
+a timepoint, a grid or a frame of reference in the sample, so a mistyped
+`"TP1"` is not mistaken for "no registration exists".
 
 ### Tracking
 
@@ -190,8 +192,13 @@ See [Longitudinal](../guides/longitudinal.md).
 s.verify()                    # VerifyResult
 s.verify(partial=["images/CT_tp0"])
 s.verify().ok
+s.verify().unattested         # undigested datasets inside objects content_id covers
 s.compute_content_id()        # recompute rather than read the stored one
 ```
+
+`ok` is `False` when a digest mismatches, when the root does, or — in a file
+that declares a `content_id` — when a dataset inside a grid, image, annotation
+or transform carries no digest at all (`unattested`).
 
 ## Writing
 

@@ -104,7 +104,7 @@ from medh5.sample import (
     frame_references,
     require_major,
 )
-from medh5.storage.chunking import optimize_chunks
+from medh5.storage.chunking import field_chunks, fit_chunks, grid_chunks
 from medh5.storage.codecs import dataset_kwargs, profile_family, resolve_profile
 from medh5.storage.index import (
     DEFAULT_MAX_COORDS,
@@ -425,7 +425,12 @@ class SampleWriter:
 
     def deidentification(self, **fields: Any) -> Deidentification:
         record = Deidentification.from_json(fields)
-        assert record is not None
+        if record is None:
+            # An `assert` stood here, so `python -O` wrote no record at all ---
+            # and cleared any the file already had --- without a word.
+            raise MEDH5ValidationError(
+                "a de-identification record needs at least its `method` (§11.4)"
+            )
         self._document.deidentification = record
         return record
 
@@ -735,15 +740,7 @@ class SampleWriter:
     def _chunks_for(
         self, grid: Grid, itemsize: int, *, leading: int = 0
     ) -> tuple[int, ...]:
-        if grid.chunk_hint is not None and leading == 0:
-            return grid.chunk_hint
-        return optimize_chunks(
-            (1,) * leading + grid.shape,
-            grid.axis_kinds,
-            grid.patch_hint,
-            itemsize=itemsize,
-            leading=leading,
-        )
+        return grid_chunks(grid, itemsize, leading=leading)
 
     # -- annotations -------------------------------------------------------
 
@@ -1024,14 +1021,12 @@ class SampleWriter:
         for name, array in payload.datasets.items():
             chunks = None
             if grid is not None and name == "data" and array.ndim >= grid.n_spatial:
-                proposed = self._chunks_for(
-                    grid, array.dtype.itemsize, leading=payload.stacked_axes
-                )[-array.ndim :]
-                if len(proposed) == array.ndim:
-                    chunks = tuple(
-                        min(int(c), int(s))
-                        for c, s in zip(proposed, array.shape, strict=True)
-                    )
+                chunks = fit_chunks(
+                    self._chunks_for(
+                        grid, array.dtype.itemsize, leading=payload.stacked_axes
+                    ),
+                    array.shape,
+                )
             group.create_dataset(
                 name,
                 data=array,
@@ -1737,17 +1732,8 @@ class SampleWriter:
             chunks = None
             if name in ("field", "control_points") and field_grid is not None:
                 grid = self._grids.get(field_grid)
-                if grid is not None and array.ndim == grid.n_spatial + 1:
-                    chunks = (
-                        1,
-                        *self._chunks_for(grid, array.dtype.itemsize)[
-                            -grid.n_spatial :
-                        ],
-                    )
-                    chunks = tuple(
-                        min(int(c), int(s))
-                        for c, s in zip(chunks, array.shape, strict=True)
-                    )
+                if grid is not None:
+                    chunks = field_chunks(grid, array.shape, array.dtype.itemsize)
             group.create_dataset(
                 name,
                 data=array,
@@ -1920,7 +1906,7 @@ class SampleWriter:
                 seed=seed,
                 source_digest=group_digest(group, root=self._file),
             )
-            write_index(self._file, payload)
+            write_index(self._file, payload, codec=self.codec)
             built.append(name)
         return tuple(built)
 

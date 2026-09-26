@@ -140,6 +140,10 @@ def encode_attr(value: Any) -> Any:
         return np.float64(value)
     if isinstance(value, np.ndarray):
         return value
+    if isinstance(value, (bytes, np.bytes_)):
+        # A fixed-length string as h5py reads one back.  `bytes` is a
+        # Sequence, and the branch below would store its code points.
+        return value
     if isinstance(value, Sequence):
         seq = list(value)
         if not seq:

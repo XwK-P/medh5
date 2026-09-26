@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 import tempfile
 from typing import Any
 
@@ -142,6 +143,8 @@ def _recompress(args: argparse.Namespace) -> int:
 def _bench(args: argparse.Namespace) -> int:
     from medh5.bench import (
         benchmark_file,
+        many_class_measurement,
+        synthetic_many_class_sample,
         synthetic_pair,
         synthetic_sample,
         throughput,
@@ -151,12 +154,17 @@ def _bench(args: argparse.Namespace) -> int:
     path = args.path
     try:
         pair: str | None = None
+        many: str | None = None
         if path is None:
+            # Progress goes to stderr: with `--json`, stdout is the document,
+            # and these lines ahead of it made `medh5 bench --json` unparsable.
             temporary = tempfile.TemporaryDirectory(prefix="medh5-bench-")
-            print("writing a synthetic 192x256x256 sample ...", flush=True)
+            _progress("writing a synthetic 192x256x256 sample ...")
             path = str(synthetic_sample(temporary.name))
-            print("writing a synthetic two-visit sample ...", flush=True)
+            _progress("writing a synthetic two-visit sample ...")
             pair = str(synthetic_pair(temporary.name))
+            _progress("writing a synthetic 63-class sample ...")
+            many = str(synthetic_many_class_sample(temporary.name))
         measurements = benchmark_file(
             path,
             annotation=args.annotation,
@@ -168,6 +176,10 @@ def _bench(args: argparse.Namespace) -> int:
                 m
                 for m in benchmark_file(pair, patch=args.patch, repeats=args.repeats)
                 if m.name == "paired_center_ms"
+            )
+        if many is not None:
+            measurements.append(
+                many_class_measurement(many, patch=args.patch, repeats=args.repeats)
             )
         if not args.no_throughput:
             measured = _throughput(throughput, path, args)
@@ -193,6 +205,10 @@ def _bench(args: argparse.Namespace) -> int:
             temporary.cleanup()
 
 
+def _progress(message: str) -> None:
+    print(message, file=sys.stderr, flush=True)
+
+
 def _throughput(fn: Any, path: str, args: argparse.Namespace) -> Any:
     """Run the dataloader benchmark, or say why it was skipped."""
     try:
@@ -203,7 +219,7 @@ def _throughput(fn: Any, path: str, args: argparse.Namespace) -> Any:
             annotation=args.annotation,
         )
     except ImportError as exc:
-        print(f"skipping throughput: {exc}")
+        _progress(f"skipping throughput: {exc}")
         return None
 
 

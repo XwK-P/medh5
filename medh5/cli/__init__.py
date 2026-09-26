@@ -61,10 +61,28 @@ def main(argv: Sequence[str] | None = None) -> int:
     except MEDH5Error as exc:
         print(f"medh5: {exc}", file=sys.stderr)
         return EXIT_ERROR
+    except LookupError as exc:
+        # A name the file does not have --- an image, an annotation, a key ---
+        # is a handled error like any other.  Only `MEDH5Error` was caught, so
+        # `medh5 convert to-nifti FILE <unknown image>` ended in a traceback.
+        print(f"medh5: {_what(exc)}", file=sys.stderr)
+        return EXIT_ERROR
     except BrokenPipeError:  # pragma: no cover - `medh5 info | head`
         return 0
     parser.print_help()
     return EXIT_USAGE
+
+
+def _what(exc: LookupError) -> str:
+    """The message a lookup failed with, or what was looked up.
+
+    ``str(KeyError('x'))`` is ``"'x'"``: the key alone, in quotes.  Most of
+    this package's lookups raise with a sentence that names what is available,
+    which is printed as it is; a bare key is named as one.
+    """
+    detail = exc.args[0] if len(exc.args) == 1 else exc
+    text = str(detail)
+    return text if " " in text else f"no such entry: {text!r}"
 
 
 if __name__ == "__main__":  # pragma: no cover

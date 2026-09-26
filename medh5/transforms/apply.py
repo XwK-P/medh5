@@ -53,16 +53,6 @@ def refuse_outside(inside: npt.NDArray[np.bool_]) -> None:
     )
 
 
-def _refuse_outside(inside: npt.NDArray[np.bool_]) -> None:
-    """``extrapolation='error'`` is a refusal, not a quieter fill value."""
-    if bool(inside.all()):
-        return
-    raise MEDH5ValidationError(
-        f"{int((~inside).sum())} point(s) fall outside the field and "
-        "extrapolation='error'"
-    )
-
-
 def linear_sample(
     field: npt.NDArray[Any],
     coords: npt.NDArray[np.float64],
@@ -83,7 +73,7 @@ def linear_sample(
     _check_extrapolation(extrapolation)
     inside = _inside_field(field, points)
     if extrapolation == "error":
-        _refuse_outside(inside)
+        refuse_outside(inside)
 
     clamped = np.clip(points, 0.0, spatial - 1.0)
     base = np.floor(clamped).astype(np.int64)
@@ -133,7 +123,7 @@ def cubic_sample(
         # constant-zero would answer an out-of-domain query with "no
         # displacement" --- precisely the silence the declared contract exists
         # to break, and only for cubic fields.
-        _refuse_outside(_inside_field(field, points))
+        refuse_outside(_inside_field(field, points))
     mode = {"zero": "constant", "nearest": "nearest", "error": "constant"}[
         extrapolation
     ]

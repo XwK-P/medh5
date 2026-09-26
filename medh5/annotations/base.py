@@ -237,6 +237,12 @@ class AnnotationHeader:
             derived_from=as_str_tuple(attrs["derived_from"])
             if "derived_from" in attrs
             else (),
+            # Kept, not dropped: a rewrite of this annotation --- a transcode ---
+            # must carry what a later minor version added, as `amend` carries
+            # it for the objects it does not touch (§16).
+            extra={
+                key: attrs[key] for key in attrs if key not in SPEC_ANNOTATION_ATTRS
+            },
         )
 
 

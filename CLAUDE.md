@@ -113,10 +113,13 @@ home.
 ## Codec profiles
 
 `training` (lz4:1), `balanced` (zstd:3, default), `archive` (zstd:9),
-`portable` (gzip:4, readable without hdf5plugin). Labels get `bitshuffle` where
-images get `shuffle`. Chunks are sized by `optimize_chunks()` from the patch
-hint toward an L3-cache budget; stacked encodings chunk per plane so one layer
-reads without the others.
+`portable` (gzip:4, readable without hdf5plugin). Under `balanced`, labels get
+`bitshuffle` where images get byte `shuffle`; `training` byte-shuffles both,
+`archive` bit-shuffles both, and `portable` runs HDF5's own shuffle before gzip
+for both. Chunks are sized by `optimize_chunks()` from the patch hint toward an
+L3-cache budget; stacked encodings chunk per plane so one layer reads without
+the others. `storage/chunking.py::grid_chunks` is that rule, shared by the
+writer and `recompress --rechunk`.
 
 ## Linting & style
 
@@ -131,11 +134,13 @@ reads without the others.
 - Test names cite the clause they hold: `test_S8_1_boxes_shift_by_half_a_voxel`.
 - Fixtures are built by the **public writer**, so every reader test is also a
   writer test.
-- CI matrix: Python 3.10–3.13, plus a macOS job specifically for the `spawn`
+- CI matrix: Python 3.10–3.14, plus a macOS job specifically for the `spawn`
   start method, a Windows job (the atomic-rewrite and repack paths exist for
   it), a minimum-dependency job at the floors `pyproject.toml` declares, a
   conformance job that publishes the suite and scores this validator through
-  the public `score` path, and a MONAI job.
+  the public `score` path, and a MONAI job. `release.yml` runs the same CI on
+  the tagged commit before it builds and publishes. Actions are pinned by
+  commit SHA; Dependabot proposes the updates.
 - **A skipped test is not a passing test.** Anything guarded by
   `pytest.importorskip` needs a CI job that installs the dependency, or it
   reports coverage it does not have.

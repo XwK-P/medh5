@@ -90,6 +90,40 @@ def series(tmp_path: Path, label_set) -> Path:
     return write_series(tmp_path / "series.medh5", label_set)
 
 
+def write_raters(
+    path: Path,
+    label_set,
+    *,
+    second: list[InstanceInput] | None = None,
+    annotated_second: list[int] | str = "all_given",
+) -> Path:
+    """Two raters' lesions on one grid: what an agreement is measured between."""
+    with medh5.create(path, sample_id=path.stem, codec="portable") as w:
+        w.label_set(label_set)
+        w.add_grid("g", shape=SHAPE, spacing=(2.0, 1.0, 1.0), frame_uid="pseudo:f0")
+        w.add_image("CT", np.zeros(SHAPE, dtype=np.int16), grid="g", modality="CT")
+        w.add_segmentation(
+            "r1",
+            grid="g",
+            instances=[
+                InstanceInput(class_id=3, instance_id=7, mask=lesion(8, 8, 8, 2)),
+                InstanceInput(class_id=3, instance_id=8, mask=lesion(8, 16, 16, 1)),
+            ],
+            annotated_classes=[3],
+        )
+        w.add_segmentation(
+            "r2",
+            grid="g",
+            instances=second
+            or [
+                InstanceInput(class_id=3, instance_id=7, mask=lesion(8, 8, 8, 3)),
+                InstanceInput(class_id=3, instance_id=9, mask=lesion(9, 4, 18, 1)),
+            ],
+            annotated_classes=annotated_second,
+        )
+    return path
+
+
 class TestTrackingJoin:
     def test_S7_4_the_join_recovers_each_object(self, series):
         with medh5.open(series) as sample:
@@ -353,10 +387,23 @@ class TestAgreement:
             compare_voxel(sample.annotations["les_tp0"], sample.annotations["les_tp1"])
         assert exc.value.code == "E101"
 
-    def test_instances_match_on_declared_ids_first(self, series):
-        with medh5.open(series) as sample:
-            result = compare_instances(
+    def test_instances_on_two_visits_grids_are_refused(self, series):
+        # Index boxes on two grids count different voxels; comparing them
+        # number for number measured nothing (L-29).
+        with (
+            medh5.open(series) as sample,
+            pytest.raises(MEDH5ValidationError) as exc,
+        ):
+            compare_instances(
                 sample.annotations["les_tp0"], sample.annotations["les_tp1"]
+            )
+        assert exc.value.code == "E101"
+
+    def test_instances_match_on_declared_ids_first(self, tmp_path, label_set):
+        path = write_raters(tmp_path / "raters.medh5", label_set)
+        with medh5.open(path) as sample:
+            result = compare_instances(
+                sample.annotations["r1"], sample.annotations["r2"]
             )
             assert result.matched_by == "instance_id"
             assert [m[0] for m in result.matched] == [0]
@@ -369,50 +416,50 @@ class TestAgreement:
     def test_class_mismatches_are_reported_on_matched_objects(
         self, tmp_path, label_set
     ):
-        path = write_series(
+        path = write_raters(
             tmp_path / "mismatch.medh5",
             label_set,
-            follow_up=[
-                InstanceInput(class_id=1, instance_id=7, mask=lesion(8, 8, 8, 2))
-            ],
-            annotated_tp1=[1, 3],
+            second=[InstanceInput(class_id=1, instance_id=7, mask=lesion(8, 8, 8, 2))],
+            annotated_second=[1, 3],
         )
         with medh5.open(path) as sample:
             result = compare_instances(
-                sample.annotations["les_tp0"], sample.annotations["les_tp1"]
+                sample.annotations["r1"], sample.annotations["r2"]
             )
             assert result.class_mismatches == ((7, 3, 1),)
+            # r1 never looked for class 1, so it is skipped, not scored --- but
+            # the matched pair counts, because both raters found the object.
+            assert result.matched and result.skipped
 
     def test_iou_matching_is_the_fallback_without_shared_ids(self, tmp_path, label_set):
-        path = write_series(
+        path = write_raters(
             tmp_path / "noshare.medh5",
             label_set,
-            follow_up=[
-                InstanceInput(class_id=3, instance_id=99, mask=lesion(8, 8, 8, 2))
-            ],
+            second=[InstanceInput(class_id=3, instance_id=99, mask=lesion(8, 8, 8, 2))],
         )
         with medh5.open(path) as sample:
             result = compare_instances(
-                sample.annotations["les_tp0"], sample.annotations["les_tp1"]
+                sample.annotations["r1"], sample.annotations["r2"]
             )
             assert result.matched_by == "iou"
             assert result.matched and result.matched[0][2] == pytest.approx(1.0)
             assert result.mean_iou == pytest.approx(1.0)
 
     def test_no_matches_scores_zero(self, tmp_path, label_set):
-        path = write_series(
+        path = write_raters(
             tmp_path / "nomatch.medh5",
             label_set,
-            follow_up=[
+            second=[
                 InstanceInput(class_id=3, instance_id=99, mask=lesion(2, 21, 21, 1))
             ],
         )
         with medh5.open(path) as sample:
             result = compare_instances(
-                sample.annotations["les_tp0"], sample.annotations["les_tp1"]
+                sample.annotations["r1"], sample.annotations["r2"]
             )
             assert result.value == 0.0
-            assert result.mean_iou == 0.0
+            # A mean over no matched pairs is undefined, not zero overlap.
+            assert result.mean_iou is None
 
 
 class TestSplitAudit:

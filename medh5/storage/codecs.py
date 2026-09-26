@@ -1,7 +1,7 @@
 """Codec profiles (spec §14.2).
 
 A file's datasets need not share a codec.  Four named profiles cover the real
-trade space, measured in ``docs/design/benchmarks/bench_io.py``:
+trade space, measured in ``docs/examples/bench_io.py``:
 
 ===========  =====================  =========================================
 Profile      Codec                  Intended use

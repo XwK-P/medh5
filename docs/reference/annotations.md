@@ -170,6 +170,15 @@ b.class_ids, b.scores, b.instance_ids
 and a slice bound is the convention written down in spec §8.1, and it is the
 one thing to get right when writing a detector.
 
+Index coordinates count the voxels of the annotation's **own** grid.
+`as_slices(grid=…)`, `to_index(…, grid=…)` and `to_world(…, grid=…)` with
+another grid convert through world when the two grids share a `frame_uid`,
+and refuse (`E414`) when they do not — a grid without a frame shares nothing
+(§3.3). A box drawn on a 4 mm grid and read on a 1 mm grid of the same frame
+comes back at the 1 mm grid's indices; before 1.4.2 it came back unchanged,
+covering a quarter of the anatomy. Boxes carrying `slice_index` are read on
+their own grid only, since the planes they name are that grid's.
+
 **2-D boxes on a slice.** A box with a degenerate axis (`lo == hi`) plus
 `slice_index` is the common radiology annotation — a lesion drawn on one slice
 of a 3-D study (§8.2):

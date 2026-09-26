@@ -1,0 +1,15 @@
+# Keeps the SHA-pinned actions in `.github/workflows/` current.  Actions are
+# pinned by commit, not tag, so a moved tag cannot change what CI or the release
+# job runs; Dependabot proposes each update as a pull request, which runs CI
+# like any other change.  Python dependencies are ranges in `pyproject.toml`,
+# and the docs toolchain is pinned deliberately (docs/requirements.txt), so
+# neither is managed here.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]

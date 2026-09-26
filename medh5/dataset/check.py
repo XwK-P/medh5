@@ -20,6 +20,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from medh5.curation.splits import anatomy_units
 from medh5.dataset.manifest import Entry, Manifest
 
 SEVERITIES = ("error", "warning", "info")
@@ -29,7 +30,8 @@ CHECK_CODES = {
     "C102": "a class id means different things in different label sets",
     "C103": "a sample declares no label set",
     "C201": "a split claim's manifest digest is not this manifest's",
-    "C202": "one grouping key's samples claim different partitions of one split",
+    "C202": "one subject's or grouping key's samples claim different partitions "
+    "of one split",
     "C203": "a sample carries no split claim",
     "C204": "a group holds part of a subject, so the split is not subject-safe",
     "C301": "a class is examined in only part of the cohort",
@@ -186,9 +188,13 @@ def _splits(manifest: Manifest, report: CohortReport, *, set_id: str | None) -> 
     # sets one, else `subject_id` --- which is what `medh5 splits` audits and
     # what `medh5.dataset.split` assigns by.  Grouping by subject alone meant a
     # family or a longitudinal group straddling two partitions was a LEAK in
-    # one tool and clean in the other, on the same files.
-    by_group: dict[str, dict[str, set[str]]] = {}
-    subjects: dict[str, set[str]] = {}
+    # one tool and clean in the other, on the same files.  And grouping by the
+    # key alone missed one subject curated under two keys --- the case the
+    # splitter refuses as C204 --- so the unit is every key sharing a subject
+    # with it, transitively (`anatomy_units`).
+    units = anatomy_units((entry.subject_id, entry.group_id) for entry in manifest)
+    by_unit: dict[tuple[str, ...], dict[str, set[str]]] = {}
+    subjects: dict[tuple[str, ...], set[str]] = {}
     for entry in manifest:
         claims = [
             c for c in entry.splits if set_id is None or c.get("set_id") == set_id
@@ -196,15 +202,16 @@ def _splits(manifest: Manifest, report: CohortReport, *, set_id: str | None) -> 
         if not claims:
             unclaimed.append(entry.path)
             continue
+        unit = units[entry.group_id]
         for claim in claims:
             recorded = claim.get("manifest_sha256")
             if recorded is not None and recorded != digest:
                 stale.append(entry.path)
-            bucket = by_group.setdefault(entry.group_id, {})
+            bucket = by_unit.setdefault(unit, {})
             bucket.setdefault(str(claim.get("set_id")), set()).add(
                 str(claim.get("partition"))
             )
-            subjects.setdefault(entry.group_id, set()).add(entry.subject_id)
+            subjects.setdefault(unit, set()).add(entry.subject_id)
     if stale:
         report.add(
             "C201",
@@ -221,23 +228,24 @@ def _splits(manifest: Manifest, report: CohortReport, *, set_id: str | None) -> 
             unclaimed,
         )
     leaking = sorted(
-        group
-        for group, sets in by_group.items()
-        for partitions in sets.values()
-        if len(partitions) > 1
+        {
+            unit
+            for unit, sets in by_unit.items()
+            if any(len(partitions) > 1 for partitions in sets.values())
+        }
     )
     if leaking:
         report.add(
             "C202",
             "error",
-            f"{len(leaking)} grouping key(s) appear in more than one partition of "
-            "the same split --- this leaks anatomy between train and test. "
-            "Subjects involved: "
+            f"{len(leaking)} grouping key(s), or keys sharing a subject, appear in "
+            "more than one partition of the same split --- this leaks anatomy "
+            "between train and test. Subjects involved: "
             + "; ".join(
-                f"{group} ({', '.join(sorted(subjects.get(group, ())))})"
-                for group in leaking[:3]
+                f"{' + '.join(unit)} ({', '.join(sorted(subjects.get(unit, ())))})"
+                for unit in leaking[:3]
             ),
-            leaking,
+            [group for unit in leaking for group in unit],
         )
 
 

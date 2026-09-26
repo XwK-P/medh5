@@ -4,6 +4,175 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.4.2] — 2026-09-26
+
+The second patch release under the third audit's plan, and the last of it: the
+cohort, curation and registration tools, performance, and hygiene. **No format
+change** — 1.4.2 reads and writes the files 1.0 does, and the conformance corpus
+is still 117 cases. Most of what changes is a tool answering a question wrongly
+without saying so: an agreement score for a comparison that measured nothing, a
+split audit that missed one subject in two groups, a verified file whose
+attested object had gained an undigested dataset, a box read on another grid
+at the wrong size. After this release every one of the twelve "final 1.x"
+properties holds.
+
+### Behaviour changes
+
+Read these before upgrading a pipeline. Each is a correction; each can change what existing code
+produces or accepts:
+
+- **Agreement scores only what was measured (L-29).** Object agreement now does what voxel
+  agreement did: an unmatched object whose class the other annotation never examined is left out
+  and listed under `skipped` — identical work scored 0.667 when the second rater had not been asked
+  to look for a class — while a matched pair always counts. When neither side has anything to
+  compare, `value` is **`None`** rather than 0, `mean_iou` is `None` when nothing matched, and
+  `to_record()` refuses rather than writing a 0 into the file. `compare_instances` refuses two
+  `index` annotations on different grids (`E101`), and boxes in different spaces or in different
+  frames (`E414`): boxes on a 4 mm and a 1 mm grid were compared in raw index units. `compare()` picks the comparison the two kinds
+  support and refuses an argument it cannot use; `medh5 agree` goes through it, so two `boxes`
+  annotations no longer end in an `AttributeError`, and `--metric` or `--threshold` on the wrong
+  kind is an error rather than ignored. **Comparisons across two visits' grids now raise.**
+
+- **An agreement record can be stored in the file it describes (L-38).** `to_record()` keyed
+  `per_class` by class name, and the object record put its mean IoU there as `mean_iou`; the schema
+  admits only class ids, so every record `medh5` produced failed with `E005` when written. Records
+  are keyed by class id now, and the object record carries no `per_class`.
+
+- **Duplicate ids are refused (L-30).** A document that declares one agent or activity id twice is
+  refused when read — the reader kept the last, and a no-op `amend` deleted the other from the file.
+  The validator reports it through the parse (`E005`; a dedicated code is format 1.1). Two objects
+  sharing an `instance_id` inside one `instances` annotation — which §7.4 forbids — are refused by
+  the writer and reported by the validator as `E404`. **Such third-party files no longer open or
+  validate.**
+
+- **Split audits find a subject stored under two `group_id`s (L-33).** `medh5 splits`,
+  `audit_splits` and the cohort check `C202` grouped by the grouping key alone, so one subject in
+  train and in test under two keys reported `leaks = 0, ok = True` — the case `make_splits` refuses
+  as `C204`. Leaks are now found over subjects and keys together (`anatomy_units`, union–find), and
+  a `Leak` lists the keys and subjects it joined. **Audits can report leaks they used to miss.**
+
+- **The frame graph (L-35, S-12).** A transform and the stored inverse its `inverse_id` names are
+  one route: mutually declared inverses — what `E505` checks as "mutually consistent" — raised
+  `E501` in both directions, and the registration guide told users not to declare them. They now
+  resolve both ways. A composite that contains itself is `E501` in the validator and when evaluated,
+  where it validated clean and recursed until `RecursionError`. `transform_between` raises
+  **`KeyError`** for a key that is not a timepoint, a grid or a frame the file declares; a mistyped
+  `"TP1"` returned `None`, the answer for "no registration exists".
+
+- **`verify` fails a file whose attested object gained an undigested dataset (L-26).** `content_id`
+  covers the digests present, so `instance_ids` added to a boxes annotation left the file verified
+  and changed `tracks()`. In a file that declares a `content_id`, an undigested dataset inside a
+  grid, image, annotation or transform is now listed in `VerifyResult.unattested` and makes `ok`
+  false (`medh5 verify` prints it as `UNSIGNED`; `fix` counts it as needing digests). The writer
+  digests every dataset, so none of its files is affected.
+
+- **Index coordinates belong to the annotation's own grid (L-32).** `as_slices(grid=)`,
+  `to_index(grid=)` and `to_world(grid=)` on an `index`-space annotation read its coordinates as the
+  other grid's: a box on a 4 mm grid asked for slices on a 1 mm grid of the same frame came back
+  unchanged, covering a quarter of the anatomy. They now convert through world when the frames
+  match and refuse (`E414`) otherwise; since §3.3 (1.4.1) a grid without a `frame_uid` relates to
+  nothing, which now applies to `world`-space conversions onto another grid too. Boxes with
+  `slice_index` are read on their own grid only.
+
+- **RTSTRUCT rasterisation keeps an island inside a hole (Q-18).** Every outer contour on a slice
+  was unioned and every enclosed contour subtracted, so an island drawn inside a hole was erased. A
+  contour's role now follows its nesting depth, and each slice is filled by the even-odd rule the
+  provenance record already named. **Rasterised masks gain those islands.**
+
+- **`recompress --rechunk` chunks the way the writer does (L-28)** — from each grid's `patch_hint`
+  or `chunk_hint`, `(1, *spatial)` for stacked encodings — where it let h5py guess and spanned the
+  stacked axis the spec keeps at 1, which the validator reported as `W902`.
+
+- **Sampling-index datasets are compressed (P-12)** with the file's label codec, and `occupancy` is
+  chunked one class per chunk; it was uncompressed and contiguous. Files with an index get smaller.
+
+- **The CLI reports a missing name as an error, not a traceback (Q-12).** `medh5 convert to-nifti
+  FILE <unknown image>` printed a `KeyError` traceback; any lookup error is now `medh5: …` and exit 1.
+
+- **`SampleWriter.deidentification()` with no fields is refused (Q-11).** An `assert` stood there,
+  so under `python -O` the call wrote nothing and cleared an existing record.
+
+### Added
+
+- `medh5.torch.FileGroupedSampler` (P-11): shuffles files and yields each file's items together, so
+  an epoch opens each file once per worker. At 100 small files and four items each, 304 opens
+  became 100 and 0.77 ms per item became 0.30. Every dataset gains `file_groups()`, and the order
+  follows the dataset's `set_epoch`.
+- `medh5.torch.set_cache_size` is exported and documented, `HandleCache.resize` closes idle
+  handles past the new size, and `HandleCache.lease(path)` holds a handle against eviction.
+- `compare(a, b, *, metric=, threshold=, classes=)`; `compare_instances(..., classes=)`;
+  `InstanceAgreement.skipped`; `VoxelAgreement.class_ids`; `OBJECT_KINDS`.
+- `VerifyResult.unattested` and `Diagnosis.unattested`; `ATTESTED_GROUPS`.
+- `Leak.groups`, `Leak.subjects` and `medh5.curation.splits.anatomy_units`.
+- `SamplingIndex.has_class`; `medh5.storage.chunking.grid_chunks`, `fit_chunks` and
+  `field_chunks` — the writer's chunk rule, shared with `recompress`.
+- `medh5.transforms.resolve.stored_inverse` and `medh5.transforms.composite.composite_cycle`.
+- `medh5 bench` gains `foreground_sample_many_ms`, a foreground draw on a 63-class sample held to
+  the same 1 ms target (T-11); `medh5.bench.many_class_measurement` and
+  `synthetic_many_class_sample`.
+
+### Fixed
+
+- **The indexed foreground draw is O(1) in the class count too (P-08).** `SamplingIndex` re-read its
+  class table once per class it checked and twice per count it looked up: 190 HDF5 reads and 7.6 ms
+  per draw at 63 classes. It reads them once per open, and a draw reads the one coordinate it
+  picks: one read, 0.10 ms at 63 classes and 0.03 ms at eight (was 0.9). Draws are unchanged for
+  a given seed.
+- **Plane counts are bounded (P-09).** `layers` and `bitmask` counts read a whole plane before
+  slabbing it — 256 MiB for a `uint16` layer at 512³, 1 GiB for a bit-plane. The slab reader now
+  descends an axis when one row is over its budget, for every bounded scan.
+- **A transcode carries attributes it does not know (Q-13).** `AnnotationHeader.read` dropped them,
+  so re-encoding an annotation lost anything a later minor version had added, which `amend` carries
+  everywhere else (§16).
+- **The handle cache is thread-safe (Q-16).** Lookup and eviction are locked, and the datasets hold
+  their handle for the length of an item, so a thread-based loader's eviction can no longer close a
+  file another thread is reading.
+- **`medh5.monai` names the channel axis (Q-17)**: `original_channel_dim` comes from the grid, where
+  `"no_channel"` on an RGB image made `EnsureChannelFirst` add a second channel axis.
+- **`medh5 bench --json` prints only JSON (Q-19).** Its progress lines went to stdout ahead of the
+  document; they go to stderr.
+- **`recompress` of a collection (L-39).** A `.medh5c` shard was rewritten and then raised a
+  `KeyError` while verifying the output, which it read as a single sample. Each member is verified.
+
+### Removed
+
+- `medh5.geometry.grid.iter_spatial_slices` and `KNOWN_COORD_SYSTEMS`, which nothing used (Q-11);
+  the duplicate `transforms.apply._refuse_outside`.
+
+### Specification corrections (Appendix C, entry 21)
+
+- **§10.1** — a transform and the stored inverse its `inverse_id` names are one route between two
+  frames, traversable both ways; a resolver must not count them as two (S-12).
+
+### Conformance, docs, tests and CI
+
+- The `W909-instance-id-two-classes` case puts its conflicting id in two annotations — the
+  sample-scoped form Appendix C's §7.4 entry already requires — because inside one annotation a
+  shared id is now `E404`. Its expected codes are unchanged; the corpus is still 117 cases.
+- A test holds every place the corpus size is written down — README, site, conformance page,
+  Appendix C, CI comments — to `len(CASES)` (D-09). Stale pointers in `storage/codecs.py` and
+  `.readthedocs.yaml` are corrected; the codec sentence in `CLAUDE.md` now says what each profile
+  shuffles (D-10); the performance guide and the training reference say to set
+  `HDF5_USE_FILE_LOCKING=FALSE` on NFS, Lustre and GPFS, which medh5 never does for you (D-11).
+- `tests/v1/test_release_1_4_2.py` carries every reproduction above; run against 1.4.1, 54 of its 55
+  tests fail, and the one that passes guards behaviour that must not change. It includes a
+  persistent-worker loader under the `spawn` start method on every platform (T-10).
+- CI actions are pinned by commit SHA, and Dependabot proposes their updates; a concurrency group
+  cancels superseded pull-request runs; and `release.yml` runs the whole CI on the tagged commit
+  before it builds and publishes (K-03).
+
+### The final-1.x properties
+
+With 1.4.2 all twelve hold. The five still open after 1.4.1:
+
+- **2. No reader answers differently for a third party's file** — holds: L-35 (mutual
+  `inverse_id`), after L-20 in 1.4.1.
+- **5. Nothing materialises a volume to answer a header-shaped question** — holds: P-09.
+- **7. Every attestation is re-checkable, and the exit code agrees** — holds: L-26, and L-38 makes
+  the agreement record writable at all.
+- **10. Every rewrite carries what it does not understand** — holds: Q-13 for annotation attributes.
+- **12. Every file a tool writes passes the validator** — holds: L-28 for `recompress --rechunk`.
+
 ## [1.4.1] — 2026-09-25
 
 A patch release under the maintenance contract: defect and security fixes, and **no format

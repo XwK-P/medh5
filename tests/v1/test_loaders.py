@@ -1043,7 +1043,9 @@ class TestBench:
 
         measurements = benchmark_file(cohort[0], patch=8, repeats=2)
         names = {m.name for m in measurements}
-        assert set(TARGETS) <= names
+        # The many-class row is measured on the 63-class sample `medh5 bench`
+        # writes for it, not on a file passed in (test_release_1_4_2, T-11).
+        assert set(TARGETS) - {"foreground_sample_many_ms"} <= names
         assert all(m.value >= 0 for m in measurements)
         assert "target" in report(measurements) or "all targets met" in report(
             measurements

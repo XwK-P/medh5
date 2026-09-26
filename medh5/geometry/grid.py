@@ -9,7 +9,7 @@ need for per-image geometry overrides.
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -37,7 +37,6 @@ from medh5.geometry.affine import (
 
 AXIS_KINDS = ("spatial", "channel", "time", "other")
 
-KNOWN_COORD_SYSTEMS = ("LPS", "RAS", "RAI", "LAS", "custom")
 KNOWN_UNITS = ("mm", "um", "m", "px")
 TIME_UNITS = ("s", "ms")
 
@@ -400,29 +399,12 @@ def read_grids(root: h5py.Group) -> dict[str, Grid]:
     return {name: read_grid(grids_group[name], name) for name in sorted(grids_group)}
 
 
-def iter_spatial_slices(
-    grid: Grid, roi: Sequence[slice] | None
-) -> Iterator[slice] | tuple[slice, ...]:
-    """Expand a spatial ROI to a full-rank index tuple for *grid*."""
-    if roi is None:
-        return tuple(slice(None) for _ in range(grid.ndim))
-    if len(roi) != grid.n_spatial:
-        raise MEDH5ValidationError(
-            f"roi has {len(roi)} axes; grid {grid.grid_id!r} has {grid.n_spatial} "
-            f"spatial axes"
-        )
-    lead = grid.ndim - grid.n_spatial
-    return (slice(None),) * lead + tuple(roi)
-
-
 __all__ = [
     "AXIS_KINDS",
-    "KNOWN_COORD_SYSTEMS",
     "KNOWN_UNITS",
     "TIME_UNITS",
     "SPEC_GRID_ATTRS",
     "Grid",
-    "iter_spatial_slices",
     "read_grid",
     "read_grids",
     "write_grid",

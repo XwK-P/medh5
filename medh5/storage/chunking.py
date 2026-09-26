@@ -21,11 +21,14 @@ import subprocess
 import sys
 from collections.abc import Sequence
 from functools import lru_cache
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
 from medh5.errors import MEDH5ValidationError
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from medh5.geometry.grid import Grid
 
 DEFAULT_L3_BYTES = 1_441_792
 """Fallback L3 slice, ~1.375 MiB (Intel Xeon Silver 4110)."""
@@ -177,6 +180,50 @@ def optimize_chunks(
     return (1,) * len(prefix) + tuple(out)
 
 
+def grid_chunks(grid: Grid, itemsize: int, *, leading: int = 0) -> tuple[int, ...]:
+    """The chunk shape the writer gives an array laid out on *grid* (§14.1).
+
+    The grid's ``chunk_hint`` where it declares one, else the optimizer run
+    from its ``patch_hint``; *leading* stacked axes (``layers``, ``bitmask``,
+    ``probmap``) get extent 1, which is the ``(1, *spatial_chunk)`` rule.  The
+    writer and ``recompress --rechunk`` both call this, so a re-chunked file is
+    chunked the way a fresh write would be.
+    """
+    if grid.chunk_hint is not None and leading == 0:
+        return tuple(int(c) for c in grid.chunk_hint)
+    return optimize_chunks(
+        (1,) * leading + tuple(grid.shape),
+        grid.axis_kinds,
+        grid.patch_hint,
+        itemsize=itemsize,
+        leading=leading,
+    )
+
+
+def fit_chunks(proposed: Sequence[int], shape: Sequence[int]) -> tuple[int, ...] | None:
+    """*proposed*'s trailing entries clipped to *shape*, or ``None``.
+
+    An annotation's ``data`` has the grid's spatial axes and not its channel or
+    time axes, so the chunk is read off the end of the grid's; ``None`` when
+    the proposal cannot describe an array of this rank.
+    """
+    dims = len(shape)
+    tail = tuple(proposed)[-dims:] if dims else ()
+    if len(tail) != dims:
+        return None
+    return tuple(min(int(c), int(s)) for c, s in zip(tail, shape, strict=True))
+
+
+def field_chunks(
+    grid: Grid, shape: Sequence[int], itemsize: int
+) -> tuple[int, ...] | None:
+    """Chunks for a displacement field on *grid*: one vector component per chunk."""
+    if len(shape) != grid.n_spatial + 1:
+        return None
+    spatial = grid_chunks(grid, itemsize)[-grid.n_spatial :]
+    return fit_chunks((1, *spatial), shape)
+
+
 def chunk_report(
     shape: Sequence[int], chunks: Sequence[int], itemsize: int
 ) -> dict[str, Any]:
@@ -204,6 +251,9 @@ __all__ = [
     "OVERSHOOT_LIMIT",
     "chunk_report",
     "detect_l3_bytes",
+    "field_chunks",
+    "fit_chunks",
+    "grid_chunks",
     "optimize_chunks",
     "spatial_chunk_for",
 ]

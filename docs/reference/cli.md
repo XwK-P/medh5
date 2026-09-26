@@ -59,6 +59,13 @@ Recompute every object's digest and the root `content_id`. `--partial` limits
 it to named objects — useful when you only want to know whether one image
 changed.
 
+In a file that declares a `content_id`, a dataset inside a grid, image,
+annotation or transform that carries no digest fails the check (`UNSIGNED`):
+the root covers the digests present, so an undigested dataset added to an
+object — `instance_ids` on a boxes annotation, say — changes what it means
+without changing the root. The writer digests every dataset, so none of its
+files has one.
+
 ### `medh5 fix`
 
 ```
@@ -152,9 +159,14 @@ Agents, activities, quality records and the de-identification record.
 medh5 agree PATH A B [--metric dice|iou] [--threshold T] [--record] [--json]
 ```
 
-Per-class Dice or IoU and object F1 between two annotations of the same sample
-— two readers, or a reader and a model. `--record` prints the
-`quality.agreement` record the measurement produces.
+Per-class Dice or IoU between two voxel annotations, and object F1 between two
+`instances` or `boxes` annotations of the same sample — two readers, or a reader
+and a model. `--metric` applies to the first and `--threshold` to the second;
+the other is refused rather than ignored. Only classes both sides examined are
+scored (§11.3), and a comparison with nothing to score says so rather than
+reporting 0. The two must share a grid (for index boxes) or a frame (for world
+boxes). `--record` prints the `quality.agreement` record the measurement
+produces, keyed by class id, and exits 1 when there is nothing to record.
 
 ### `medh5 splits`
 
@@ -164,6 +176,8 @@ medh5 splits PATH... [--json]
 
 Cross-file audit: conflicting split claims (W906) and subject leakage between
 partitions. Needs the whole cohort, which is why it is not part of `validate`.
+A leak is found over subjects *and* grouping keys together, so one subject
+curated under two `group_id`s in two partitions is a leak.
 
 ### `medh5 scrub`
 
@@ -359,9 +373,11 @@ medh5 bench [PATH] [--patch N] [--repeats N] [--workers N] [--annotation A] [--n
 Reproduce the performance targets on your hardware. With no path it builds a
 synthetic sample first, and a synthetic two-visit sample related by a
 displacement field for the `paired_center_ms` row — one patch centre moved
-between visits, the read a paired dataset does once per item. A longitudinal
-sample given as `PATH` gets the same row when a transform relates its first
-two visits.
+between visits, the read a paired dataset does once per item — and a 63-class
+sample for the `foreground_sample_many_ms` row, which holds the foreground draw
+to its target where the class count is large. A longitudinal sample given as
+`PATH` gets the paired row when a transform relates its first two visits.
+Progress goes to stderr, so `--json` output is only the document.
 
 ## Conformance
 
