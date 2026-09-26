@@ -127,11 +127,20 @@ class VoxelAgreement:
         )
 
     def to_json(self) -> dict[str, Any]:
-        return {
-            **self.to_record().to_json(),
-            "skipped": list(self.skipped),
-            "compared": len(self.per_class),
-        }
+        """The report, which states an undefined comparison rather than refusing.
+
+        Built directly, not from :meth:`to_record`: the record refuses a value
+        nobody measured, and a report of that comparison is exactly what a
+        reader needs to see.  ``per_class`` is keyed as the attribute is, by
+        class key; the record keys it by id.
+        """
+        out: dict[str, Any] = {"metric": self.metric, "value": self.value}
+        if self.against is not None:
+            out["against"] = self.against
+        out["per_class"] = dict(self.per_class)
+        out["skipped"] = list(self.skipped)
+        out["compared"] = len(self.per_class)
+        return out
 
 
 @dataclass(frozen=True, slots=True)

@@ -63,7 +63,8 @@ produces or accepts:
   covers the digests present, so `instance_ids` added to a boxes annotation left the file verified
   and changed `tracks()`. In a file that declares a `content_id`, an undigested dataset inside a
   grid, image, annotation or transform is now listed in `VerifyResult.unattested` and makes `ok`
-  false (`medh5 verify` prints it as `UNSIGNED`; `fix` counts it as needing digests). The writer
+  false (`medh5 verify` and `recompress` print it as `UNSIGNED`; `fix` counts it as needing
+  digests). The writer
   digests every dataset, so none of its files is affected.
 
 - **Index coordinates belong to the annotation's own grid (L-32).** `as_slices(grid=)`,

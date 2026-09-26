@@ -61,6 +61,12 @@ class RecompressResult:
     "content_id yes", exited 0, and failed ``verify()``.
     """
     mismatched: list[str] = field(default_factory=list)
+    unattested: list[str] = field(default_factory=list)
+    """Undigested datasets inside objects a declared ``content_id`` covers.
+
+    Carried through from the source as they were, and the reason ``verified``
+    is false when nothing mismatched: the output is not attested either.
+    """
     changed: list[tuple[str, str, str]] = field(default_factory=list)
     """``(path, codec before, codec after)`` for each dataset re-encoded."""
 
@@ -84,6 +90,7 @@ class RecompressResult:
             "content_id_preserved": self.content_id_preserved,
             "verified": self.verified,
             "mismatched": list(self.mismatched),
+            "unattested": list(self.unattested),
             "ok": self.ok,
             "changed": [list(c) for c in self.changed],
         }
@@ -152,6 +159,11 @@ def recompress(
         f"{prefix}{name}"
         for prefix, verification in checked
         for name in (*verification.mismatched, *verification.malformed)
+    ]
+    result.unattested = [
+        f"{prefix}{name}"
+        for prefix, verification in checked
+        for name in verification.unattested
     ]
     result.verified = all(verification.ok for _, verification in checked)
     result.content_id_preserved = _text(before) == _text(after) and all(

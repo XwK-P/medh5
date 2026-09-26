@@ -200,6 +200,29 @@ class TestL29Agreement:
             with pytest.raises(MEDH5ValidationError):
                 result.to_record()
 
+    def test_L29_an_undefined_voxel_comparison_is_reported_not_refused(
+        self, tmp_path: Path, capsys
+    ):
+        """The report went through `to_record()`, so it refused as the record does."""
+        from medh5.cli import main
+        from medh5.curation.agreement import compare_voxel
+
+        path = tmp_path / "undefined.medh5"
+        mask = np.zeros(SHAPE, bool)
+        mask[2:5, 2:5, 2:5] = True
+        with _writer(path) as w:
+            w.add_segmentation("a", grid="g", masks={1: mask}, annotated_classes=[1])
+            w.add_segmentation("b", grid="g", masks={2: mask}, annotated_classes=[2])
+        with medh5.open(path) as s:
+            report = compare_voxel(s.annotations["a"], s.annotations["b"]).to_json()
+        assert report["value"] is None and report["compared"] == 0
+        assert main(["agree", str(path), "a", "b"]) == 0
+        assert "undefined (nothing comparable)" in capsys.readouterr().out
+        assert main(["agree", str(path), "a", "b", "--json"]) == 0
+        assert json.loads(capsys.readouterr().out)["value"] is None
+        assert main(["agree", str(path), "a", "b", "--record"]) == 1
+        assert "nothing was comparable" in capsys.readouterr().err
+
     def test_L38_S11_2_an_agreement_record_can_be_stored_in_its_file(
         self, tmp_path: Path
     ):
@@ -503,6 +526,25 @@ class TestL26Verify:
             assert not result.ok
             assert result.unattested == ("annotations/det/instance_ids",)
             assert result.summary()["unattested"] == ["annotations/det/instance_ids"]
+
+    def test_L26_recompress_names_the_unattested_dataset(self, tmp_path: Path, capsys):
+        """It failed with `FAILED (0)` and no path, in the table and the JSON."""
+        from medh5.cli import main
+        from medh5.storage.recompress import recompress
+
+        path = self._boxes(tmp_path / "det.medh5")
+        with h5py.File(path, "r+") as handle:
+            handle["annotations/det"].create_dataset(
+                "instance_ids", data=np.array([7], np.uint32)
+            )
+        result = recompress(path, "portable")
+        assert not result.ok and result.mismatched == []
+        assert result.unattested == ["annotations/det/instance_ids"]
+        assert result.to_json()["unattested"] == ["annotations/det/instance_ids"]
+        assert main(["recompress", str(path), "--profile", "portable"]) == 1
+        out = capsys.readouterr().out
+        assert "FAILED (1)" in out
+        assert "UNSIGNED  annotations/det/instance_ids" in out
 
     def test_L26_fix_counts_it_as_needing_digests(self, tmp_path: Path):
         from medh5.integrity.repair import diagnose

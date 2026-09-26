@@ -112,7 +112,9 @@ def _recompress(args: argparse.Namespace) -> int:
                     human_bytes(r.bytes_after),
                     f"{r.ratio:.2f}x",
                     "yes" if r.content_id_preserved else "CHANGED",
-                    "ok" if r.verified else f"FAILED ({len(r.mismatched)})",
+                    "ok"
+                    if r.verified
+                    else f"FAILED ({len(r.mismatched) + len(r.unattested)})",
                 ]
                 for r in results
             ],
@@ -131,6 +133,8 @@ def _recompress(args: argparse.Namespace) -> int:
     for result in results:
         for name in result.mismatched:
             print(f"  MISMATCH  {name}")
+        for name in result.unattested:
+            print(f"  UNSIGNED  {name} (no digest, inside an attested object)")
     print(
         "\ndigests cover decompressed content (§13.1), so `content_id` is "
         "unchanged by re-encoding; a cache keyed on it stays valid. The output "

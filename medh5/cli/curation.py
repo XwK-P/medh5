@@ -332,17 +332,18 @@ def _agree(args: argparse.Namespace) -> int:
                 return EXIT_OK
             print(f"{args.a} vs {args.b}: {payload['metric']} = {_score(result.value)}")
             if isinstance(result, VoxelAgreement):
-                print(
-                    indent(
-                        table(
-                            [
-                                [k, f"{v:.4f}"]
-                                for k, v in sorted(result.per_class.items())
-                            ],
-                            ["class", result.metric],
+                if result.per_class:
+                    print(
+                        indent(
+                            table(
+                                [
+                                    [k, f"{v:.4f}"]
+                                    for k, v in sorted(result.per_class.items())
+                                ],
+                                ["class", result.metric],
+                            )
                         )
                     )
-                )
             else:
                 print(
                     f"  matched {len(result.matched)} by {result.matched_by}, "
