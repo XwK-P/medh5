@@ -148,7 +148,9 @@ Each is needed by a fix above, and none changes the format:
 
 ### Fixed
 
-- The temporary file an atomic write creates has the target's permissions from the start (Q-15).
+- The temporary file an atomic write creates is readable by its owner only until the write is
+  done, then gets the target's exact mode (Q-15). It was created with the umask's default,
+  usually world-readable, for as long as a large amend of a `0o600` sample ran.
 - `describe_filters` no longer names the compression twice (`gzip:4+gzip:4`).
 - A commit refused inside a `with` block no longer leaves its temporary file behind.
 - W908 builds the overlap graph slab by slab (P-10), where it decoded one volume per class and
