@@ -95,6 +95,12 @@ class Context:
     document: SampleDocument | None = None
     grids: dict[str, Any] = field(default_factory=dict)
     notes: dict[str, Any] = field(default_factory=dict)
+    errors_only: bool = False
+    """Skip warning-only checks that read bulk data (W904, W907, W908).
+
+    What ``SampleWriter.commit`` asks for: it refuses a file the validator would
+    reject, and a warning is not a refusal, so it need not pay to find one.
+    """
 
     def err(self, code: str, location: str, message: str) -> Diagnostic:
         return Diagnostic(
@@ -537,7 +543,11 @@ def check_images(ctx: Context) -> Iterator[Diagnostic]:
                         f"{len(as_str_tuple(attrs['channel_names']))} "
                         f"entries for a channel axis of extent {extent}",
                     )
-        if dataset.dtype.kind == "f" and _int16_lossless(dataset):
+        if (
+            not ctx.errors_only
+            and dataset.dtype.kind == "f"
+            and _int16_lossless(dataset)
+        ):
             yield ctx.err(
                 "W907",
                 location,
@@ -773,7 +783,12 @@ def check_annotations(ctx: Context) -> Iterator[Diagnostic]:
         yield from _check_dataset_dtypes(ctx, name, group, kind)
         yield from _check_geometric(ctx, name, group, kind, grid_id, grids_node)
         yield from _check_classification(ctx, name, group, kind)
-        if kind != "mask" and annotated < class_ids and not _has_ignore(group, kind):
+        if (
+            not ctx.errors_only
+            and kind != "mask"
+            and annotated < class_ids
+            and not _has_ignore(group, kind)
+        ):
             yield ctx.err(
                 "W904",
                 location,
@@ -790,12 +805,19 @@ def _has_ignore(group: h5py.Group, kind: str) -> bool:
 
 
 def _in_band_ignore(group: h5py.Group, kind: str) -> bool:
-    """Whether the data itself carries the ignore id (§7.7), bounded."""
+    """Whether the data itself carries the ignore id (§7.7).
+
+    Scanned in bounded slabs, with no size limit.  This used to answer False,
+    without looking, for any dataset over 64M elements --- and E411's "uint8
+    when no ignore voxel is present" then reported the `uint16` the ignore id
+    requires as an error, on a correct 512×512×256 labelmap.  A check that
+    declines to look must not report what it would have found.
+    """
     if kind in ("labelmap", "layers") and "data" in group:
+        from medh5.annotations.voxel.payload import contains_value
+
         ignore_id = int(group.attrs.get("ignore_id", IGNORE_ID))
-        data = group["data"]
-        if data.size <= 64_000_000:
-            return bool(np.any(np.asarray(data[...]) == ignore_id))
+        return contains_value(group["data"], ignore_id)
     return False
 
 
@@ -1006,24 +1028,15 @@ def _check_encoding_invariants(
 def _check_layer_optimality(
     ctx: Context, name: str, group: h5py.Group, n_layers: int, n_classes: int
 ) -> Iterator[Diagnostic]:
-    if ctx.level not in ("semantic", "strict") or n_classes == 0:
+    if ctx.errors_only or ctx.level not in ("semantic", "strict") or n_classes == 0:
         return
-    from medh5.annotations.payload import AnnotationPayload
-    from medh5.annotations.voxel.select import analyse
-    from medh5.annotations.voxel.transcode import payload_to_masks
+    from medh5.annotations.voxel.select import greedy_colour
 
-    data = group["data"]
-    if data.size > 64_000_000:
-        return
-    payload = AnnotationPayload(
-        kind="layers",
-        datasets={
-            "data": np.asarray(data[...]),
-            "layer_class_ids": np.asarray(group["layer_class_ids"][...]),
-        },
-    )
-    masks = payload_to_masks(payload)
-    optimal = analyse(masks).n_layers
+    table = np.asarray(group["layer_class_ids"][...])
+    classes = sorted({int(v) for v in table.ravel().tolist() if int(v) != 0})
+    ignore_id = int(group.attrs.get("ignore_id", IGNORE_ID))
+    colouring = greedy_colour(classes, _overlap_edges(group["data"], ignore_id))
+    optimal = max(colouring.values(), default=-1) + 1
     if n_layers > optimal + W908_TOLERANCE:
         yield ctx.err(
             "W908",
@@ -1032,6 +1045,43 @@ def _check_layer_optimality(
             f"{optimal}; transcoding would cut the label volume by "
             f"{100 * (1 - optimal / n_layers):.0f}%",
         )
+
+
+def _overlap_edges(data: h5py.Dataset, ignore_id: int) -> set[tuple[int, int]]:
+    """The class overlap graph of a ``layers`` dataset, read in bounded slabs.
+
+    Within one layer classes never share a voxel, so an edge is a pair of
+    values that co-occur at a voxel in two different layers.  Reading the
+    layers slab by slab and pairing their values answers that directly; the
+    check used to decode every class into its own full boolean volume --- C × V
+    bytes, gigabytes for a many-class annotation --- and skipped any dataset
+    over 64M elements entirely.
+    """
+    from medh5.annotations.voxel.payload import SLAB_BYTES
+
+    n_layers = int(data.shape[0])
+    edges: set[tuple[int, int]] = set()
+    if n_layers < 2 or data.ndim < 2 or data.size == 0:
+        return edges
+    rows = int(data.shape[1])
+    per_row = (
+        n_layers * int(np.prod(data.shape[2:], dtype=np.int64)) * data.dtype.itemsize
+    )
+    step = max(1, min(rows, SLAB_BYTES // max(per_row, 1)))
+    for start in range(0, rows, step):
+        block = np.asarray(data[:, start : start + step]).reshape(n_layers, -1)
+        labelled = (block != 0) & (block != ignore_id)
+        for i in range(n_layers):
+            for j in range(i + 1, n_layers):
+                both = labelled[i] & labelled[j]
+                if not both.any():
+                    continue
+                pairs = np.unique(
+                    np.stack([block[i][both], block[j][both]], axis=1), axis=0
+                )
+                for a, b in pairs.tolist():
+                    edges.add((int(a), int(b)) if a < b else (int(b), int(a)))
+    return edges
 
 
 def _check_dataset_dtypes(

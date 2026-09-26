@@ -64,6 +64,17 @@ and is regularly different. If the gaps disagree by more than a tolerance, the
 stack is not a regular grid, and pretending otherwise silently distorts every
 distance measured from it.
 
+**A sheared stack is refused.** The grid is orthonormal: slice *k* sits at the
+origin plus *k* steps along the slice normal. A tilted gantry — routine in head
+CT — also shifts each slice within its plane, and writing that stack as an
+orthonormal grid misplaces the far slices by centimetres (17 mm at the last of
+twenty 2.5 mm slices at 20°). The check measures each slice's distance from the
+stack's axis against half a pixel, so every voxel the grid places is within half
+a voxel of where the scanner put it, and names the tilt angle when it refuses.
+It is measured per slice rather than per step, because position rounding in the
+files does not accumulate and a tilt does. De-tilting is a resampling, so it is
+left to a tool that records it.
+
 **A missing or malformed tag is refused**, rather than defaulted, or left to
 surface as a `TypeError` from inside numpy. A series whose slices all omit
 `PixelSpacing` used to fall through to 1 mm — which every slice then agreed on,
@@ -81,6 +92,15 @@ de-identification pass randomised `PatientID` — it falls back to one sample pe
 study, warns, names the affected inputs and records the fallback. Guessing that
 two studies belong to one patient is how a subject ends up in both the training
 and the test set.
+
+**Nor is it taken from a key the source contradicts.** Two studies under one
+`PatientID` whose birth dates or sexes differ fall back the same way, recorded
+as a guess with both values. The opposite error is the quieter one: an
+anonymiser that writes a constant `PatientID` merged two patients into one
+subject with two visits, which subject-safe splitting then kept together and a
+paired model learned "change" between two different people. Splitting is not a
+refusal — each study is still a valid sample — and it errs on the side a split
+can survive.
 
 **Tags are an explicit allow-list.** Imaging physics — kVp, exposure, kernel,
 TR/TE — goes to `acquisition`; everything else stays out (§11.4). A wholesale

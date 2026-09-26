@@ -298,7 +298,7 @@ class TestCompositeUnits:
                 matrix=step,
                 from_frame="FA",
                 to_frame="F1",
-                units="um",
+                units="mm",
             )
             w.add_transform(
                 "comp",
@@ -308,6 +308,12 @@ class TestCompositeUnits:
                 to_frame="F1",
                 units="mm",
             )
+        # Since 1.4.1 the writer runs this rule itself and would refuse the
+        # chain, so the file is made the way a third-party writer would make it.
+        import h5py
+
+        with h5py.File(path, "r+") as handle:
+            handle["transforms/t2"].attrs["units"] = "um"
 
         report = validate_file(path, level="semantic")
         assert not report.ok

@@ -159,6 +159,18 @@ class AnnotationHeader:
             raise MEDH5ValidationError(
                 f"class_ids uses reserved id(s) {sorted(reserved)}", code="E303"
             )
+        outside = sorted(
+            c
+            for c in {*self.class_ids, *self.annotated_class_ids}
+            if not BACKGROUND_ID < c < IGNORE_ID
+        )
+        if outside:
+            # The attributes are stored `uint16`, where these would wrap.
+            raise MEDH5ValidationError(
+                f"class id(s) {outside} are outside the writable range "
+                f"[{BACKGROUND_ID + 1}, {IGNORE_ID - 1}] (spec §5.3)",
+                code="E303",
+            )
 
     def attrs(self) -> dict[str, Any]:
         out: dict[str, Any] = {

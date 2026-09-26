@@ -36,9 +36,11 @@ import numpy as np
 import numpy.typing as npt
 
 from medh5._optional import require
+from medh5.curation.identity import ID_SOURCE
 from medh5.errors import MEDH5ValidationError
 from medh5.io._common import sanitize_stem
 from medh5.io.grouping import (
+    FALLBACK_PREFIX,
     Occasion,
     SubjectGroup,
     group_by_subject,
@@ -93,6 +95,11 @@ class Series:
     paths: list[str] = field(default_factory=list)
     description: str = ""
     frame_uid: str | None = None
+    birth_date: str | None = None
+    """``PatientBirthDate``: compared across the studies of one PatientID, and
+    never written to the file (§11.4)."""
+    sex: str | None = None
+    """``PatientSex``, compared the same way."""
 
     @property
     def n_slices(self) -> int:
@@ -180,6 +187,8 @@ def scan_dicom(
                 study_date=_text(getattr(header, "StudyDate", None)),
                 description=_text(getattr(header, "SeriesDescription", "")) or "",
                 frame_uid=_text(getattr(header, "FrameOfReferenceUID", None)),
+                birth_date=_text(getattr(header, "PatientBirthDate", None)),
+                sex=_text(getattr(header, "PatientSex", None)),
             )
             found[uid] = series
         series.paths.append(str(path))
@@ -260,6 +269,7 @@ def read_series(
         series,
         expect=2,
     )
+    _check_stacked(positions, normal, pixel_spacing, series, report)
     volume = np.stack([np.asarray(s.pixel_array) for s in slices])
     photometric = _text(getattr(slices[0], "PhotometricInterpretation", None))
     if photometric == "MONOCHROME1" and report is not None:
@@ -349,6 +359,61 @@ def _slice_spacing(
             {"spacing": spacing, "thickness": thickness, "slices": len(positions)},
         )
     return spacing, [float(g) for g in gaps]
+
+
+def _check_stacked(
+    positions: npt.NDArray[np.float64],
+    normal: npt.NDArray[np.float64],
+    pixel_spacing: Sequence[float],
+    series: Series,
+    report: ConversionReport | None,
+) -> None:
+    """Refuse a stack whose slice origins do not run along the slice normal.
+
+    The grid this importer writes is orthonormal: slice *k* sits at ``origin +
+    k * spacing * normal``.  A tilted gantry --- routine in head CT --- shifts
+    each slice *within* its plane as well, so the stack is sheared, and writing
+    it as an orthonormal grid places the far slices centimetres from where the
+    scanner put them, with nothing in the file to say so.  Converters refuse
+    rather than resample (§3), so the tilt is measured and reported, and
+    de-tilting is left to a tool that records what it did.
+
+    The measure is each slice's distance from the stack's axis through the
+    first origin, against half the finest in-plane pixel: within it, every
+    voxel of the grid is less than half a voxel from where the scanner put it.
+    Measured per slice rather than per step, because position rounding in the
+    files is per slice and does not accumulate, where a tilt does.
+    """
+    if positions.shape[0] < 2:
+        return
+    relative = positions - positions[0]
+    along = relative @ normal
+    in_plane = relative - along[:, None] * normal
+    offsets = np.linalg.norm(in_plane, axis=1)
+    worst = float(offsets.max())
+    tolerance = 0.5 * float(min(pixel_spacing))
+    if worst > tolerance:
+        # The shear as a slope, fitted over the whole stack: in-plane offset per
+        # millimetre along the normal is the tangent of the tilt.
+        slope = (in_plane.T @ along) / float(along @ along)
+        angle = float(np.degrees(np.arctan(np.linalg.norm(slope))))
+        raise MEDH5ValidationError(
+            f"series {series.series_uid} is sheared: its slice origins drift "
+            f"within the slice plane as the stack advances --- a gantry tilt of "
+            f"about {angle:.1f} degrees --- and the worst slice is {worst:.3g} mm "
+            f"off the stack's axis (tolerance {tolerance:.3g} mm, half a pixel). "
+            "An orthonormal grid would misplace every slice after the first; "
+            "de-tilt (resample) the series with a tool that records what it "
+            "did, then import the result"
+        )
+    if report is not None:
+        report.decision(
+            "slice_alignment",
+            "slice origins lie along the slice normal, so the stack is not "
+            f"sheared: the worst slice is {worst:.3g} mm off the stack's axis, "
+            f"within half a pixel ({tolerance:.3g} mm)",
+            {"in_plane_offset_mm": worst, "tolerance_mm": tolerance},
+        )
 
 
 def _agreed(
@@ -511,6 +576,7 @@ def from_dicom(
             subject_id=_consistent_patient(entries, log),
             date=next((e.study_date for e in entries if e.study_date), None),
             payload=entries,
+            demographics=_demographics(entries),
         )
         for study_uid, entries in sorted(studies.items())
     ]
@@ -543,6 +609,22 @@ def _consistent_patient(entries: Sequence[Series], log: ConversionReport) -> str
             {"patient_ids": sorted(ids)},
         )
     return None
+
+
+def _demographics(entries: Sequence[Series]) -> dict[str, str]:
+    """What one study states about the person, for :func:`group_by_subject`.
+
+    Every stated value is kept, joined, so a study whose own series disagree
+    contradicts every other study rather than passing for one of them.
+    """
+    out: dict[str, str] = {}
+    for name, values in (
+        ("PatientBirthDate", {e.birth_date for e in entries if e.birth_date}),
+        ("PatientSex", {e.sex for e in entries if e.sex}),
+    ):
+        if values:
+            out[name] = "|".join(sorted(values))
+    return out
 
 
 def _safe(text: str) -> str:
@@ -587,12 +669,21 @@ def _write_subject(
         _series_names(occasion.payload, f"tp{index}")
         for index, occasion in enumerate(group.occasions)
     ]
+    # The ids are the PatientID --- usually the medical record number --- or,
+    # where there was none, the StudyInstanceUID.  Either is an identifier, and
+    # saying which is what lets `scrub` report it without guessing from shape.
+    source = (
+        "dicom:StudyInstanceUID"
+        if group.subject_id.startswith(f"{FALLBACK_PREFIX}:")
+        else "dicom:PatientID"
+    )
     with medh5.create(
         path,
         sample_id=_safe(group.subject_id),
         subject_id=group.subject_id,
         codec=codec,
     ) as writer:
+        writer.identity(**{ID_SOURCE: {"sample_id": source, "subject_id": source}})
         tool = writer.software("medh5", medh5.__version__)
         for index, occasion in enumerate(group.occasions):
             tp = f"tp{index}"

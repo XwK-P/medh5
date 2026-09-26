@@ -43,6 +43,7 @@ classifiers = [
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Topic :: Scientific/Engineering",
   "Topic :: Scientific/Engineering :: Medical Science Apps.",
   "Typing :: Typed",
@@ -50,6 +51,10 @@ classifiers = [
 dependencies = [
   "h5py>=3.13",
   "hdf5plugin>=4.1",
+  # Core since 1.4.1: without it E005 went unchecked, and `commit()` wrote
+  # documents a machine with it installed rejects (a class key like
+  # `Left-Kidney`).  The format's own schema is not optional.
+  "jsonschema>=4.18",
   "numpy>=1.24",
 ]
 
@@ -67,8 +72,8 @@ dev = [
   "hypothesis>=6.100",
 ]
 schema = [
-  # Without this the validator cannot check E005, and says so rather than
-  # reporting a clean document it never inspected.
+  # jsonschema is a core dependency since 1.4.1; the extra stays so that
+  # existing `pip install "medh5[schema]"` lines keep working.
   "jsonschema>=4.18",
 ]
 torch = [

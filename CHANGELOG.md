@@ -4,6 +4,195 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.4.1] — 2026-09-25
+
+A patch release under the maintenance contract: defect and security fixes, and **no format
+change** — 1.4.1 reads and writes the files 1.0 does. A third full audit went after how the files
+are *used*: shipped to a collaborator after a scrub, fed to a training loop, recompressed by a
+curator, amended by a tool one version behind. It found twelve silent wrong answers and one
+security defect, all fixed here. Four fixes needed a little new API, because the defect cannot be
+fixed without it — loader item keys, classification rows, `drop_identity`, `--pseudonymise-ids` —
+and each is listed under **Added**. `jsonschema` becomes a core dependency. The corpus grows from
+116 to 117 cases, and Appendix C now lists twenty corrected clauses.
+
+### Behaviour changes
+
+Read these before upgrading a pipeline. Each is a correction; each can change what existing code
+produces or accepts:
+
+- **Security: files that read outside themselves are refused by every tool (F-22).** HDF5 lets a
+  dataset keep its bytes in an arbitrary file on the reader's machine (external storage), and lets
+  a file reach others through external links and virtual datasets. A crafted file whose extension
+  dataset pointed at `~/.ssh/id_rsa` validated clean at `--level strict`, and `recompress --out`
+  copied the key into the file a curator then shared. `open`, `amend`, `recompress`, `repack`,
+  `pack`, `verify`, `validate` and the 0.x reader now walk the file first and refuse any such
+  object by name, before reading a byte of it; `validate` reports E001. Copies no longer expand
+  external data. The writer never produced these objects.
+
+- **`scrub` examines the whole file and can exit 1 on files that used to pass (F-14, L-36).** It
+  kept a list of places to look, and each audit found string-bearing places the list had missed —
+  this time provenance `inputs`/`outputs`, the sample's own ids, timepoint text, per-object JSON,
+  and every HDF5 attribute. It now walks every string in `/meta`, every object name, every attribute
+  and every string dataset (JSON inside a string is decoded and examined as a mapping), skipping
+  only fields named in the code with a reason, and the scan and `--apply` are one traversal, so
+  "actionable" means what `--apply` will change. New rules: DICOM UIDs inside provenance references
+  (`dicom:<uid>`) get the same pseudonym as the field they came from; filesystem paths keep only
+  their file name, or nothing under `--profile strict`; ages over 90 and organization agents are
+  reported and handled under `strict`; person names are recognised in any script (`Müller^Hans`).
+  **The DICOM importer records where the ids came from** (`identity.id_source`), `scrub` reports
+  a `sample_id`/`subject_id` copied from `PatientID`, and **a strict `--apply` exits non-zero while
+  an id is still an identifier** — re-mint it, or pass `--pseudonymise-ids --salt ...`. A file
+  named after such an id, or after a UID, is reported too. The attestation's profile string now
+  says what was not examined. After a DICOM import and a strict apply with `--pseudonymise-ids`, no
+  PatientID, UID or date bytes remain in the file.
+
+- **Loader items carry the ignore region, validity and coverage (F-16).** Items gain
+  `ignore[ann_id]` (the §7.7 region, wherever the encoding keeps it, *and* any padding),
+  `valid[image_id]` (the image's `valid_mask`, never the padding) and `meta["annotated"][ann_id]`
+  (one flag per label channel). `label_format="labelmap"` — and `medh5.monai.to_dict` — now write
+  **65535 at ignored voxels under every encoding**, where `layers`, `bitmask`, `instances` and
+  `probmap` gave 0, and at padding, which was 0 (background). The ignored voxels §7.7 exists to keep
+  out of the loss went into it as negatives.
+
+- **Persistent workers draw new patches every epoch (F-17).** The epoch was an `int` on the dataset;
+  `DataLoader(persistent_workers=True)` — the documented setup — kept the copy it started with, so
+  every epoch repeated epoch 0's patches. It now lives in shared memory and `set_epoch` reaches every
+  worker, under `fork` and `spawn`. `ds.epoch` still reads and assigns as before.
+
+- **Two grids without a `frame_uid` are not registered (F-18).** `PairedPatchDataset(align=
+  "transform")` compared the two frames with `==`, and `None == None` let every unregistered
+  longitudinal sample from the NIfTI and nnU-Net importers through as aligned. It now requires a
+  shared frame (§3.3) or a transform; **such samples raise** and say to use `align="none"`.
+
+- **A gantry-tilted DICOM stack is refused (F-19).** It imported as an orthonormal grid, 17 mm off at
+  the last of twenty slices at 20°. The refusal names the tilt and the worst slice's offset; a stack
+  within half a pixel of its axis imports as before, with a `slice_alignment` decision recorded.
+
+- **`amend` refuses a future major version and keeps a later minor (F-20).** It restamped a 2.0 file
+  `1.0`, and a 1.1 file `1.0` while carrying its 1.1 objects. `scrub --apply`, `fix` and
+  `seg convert` go through `amend`.
+
+- **Cohort class statistics come from voxel annotations, per sample (F-24).** A sample-level
+  classification arrived as "examined, 0 voxels", and `class_weights()` floored it to 1 voxel —
+  making a one-bit diagnosis the heaviest segmentation class. Classification, geometric and `mask`
+  annotations no longer contribute; `present_in`/`examined_in` count samples, not annotations; and
+  `class_weights()` leaves out classes with no voxels, with a warning naming them. **Weights and
+  prevalence change for cohorts with non-voxel annotations.**
+
+- **Contradictory demographics split a PatientID (F-25).** An anonymiser's constant `PatientID`
+  merged two patients into one subject with two visits. Studies whose `PatientBirthDate` or
+  `PatientSex` disagree now become one sample each, with a guess in the report naming both values.
+  **Such imports produce more files.** Study-keyed files are named by their whole
+  StudyInstanceUID, where `Path.stem` used to chop its last component.
+
+- **`commit()` runs the validator (L-19–L-22).** The writer and the validator each kept their own
+  list of rules and drifted apart. `commit()` now runs the validator's structural and semantic error
+  rules over the finished file and refuses to write one it would reject (warnings are not raised;
+  measured at about 2 ms on a 192×256×256 sample). A displacement field off its grid's lattice is
+  refused at `add_transform` (E503); grid `units` outside `mm`, `um`, `m`, `px` and `time_units`
+  outside `s`, `ms` are refused (E109); and a `form="ref"` label set is written, where the writer
+  refused what the validator accepts. **Files the validator would reject are no longer written.**
+
+- **`add_segmentation` refuses what it used to half-honour (L-23, L-24, L-37).** Passing more than
+  one of `masks=`, `probabilities=`, `instances=`, or an `encoding=` the argument cannot use, is E404
+  — `masks=` was silently dropped beside `probabilities=`. An ignore region that **overlaps a class**
+  is stored as the sibling mask under every encoding, so it reads back whole: under `labelmap` 56 of
+  64 voxels came back. **Such files gain a sibling mask instead of an in-band region.**
+  `instances=[]` with `annotated_classes=` now writes the "examined, none found" annotation (§7.4)
+  it used to refuse.
+
+- **A transcode from `instances` to a dense encoding needs `drop_identity=True` (L-25).** Every
+  voxel survived and every `instance_id` did not; `tracks()` then found nothing. With the flag (CLI
+  `--drop-identity`) it proceeds and records a `transcode` activity saying identity was dropped.
+  **Callers that relied on the silent drop must pass the flag.**
+
+- **`amend` keeps a `portable` file portable (L-27).** New datasets were Blosc2, unreadable without
+  `hdf5plugin`. `amend(codec=None)` now means the source's codec family.
+
+- **`unpack` refuses a member name that is a path (L-31).** Names read from a shard were used as
+  file names unchecked; `..\..\evil` wrote outside the output directory on Windows.
+
+- **Intensity moments honour `valid_mask` (L-34),** and `total_voxels` counts each measured image's
+  grid once. A CT padded outside its reconstruction circle reported a mean of −1180 where the tissue
+  averages 40. **Normalisation statistics change for images that declare a valid mask.**
+
+- **A probability map keeps the voxels on its threshold (F-15).** Stored as float16, a vote of 1 in
+  3 became 0.33325 and fell below a threshold of 1/3 — at write time. Readers now compare at the
+  stored precision, and the writer widens to float32 where float16 would change an answer, so such
+  maps take twice the bytes. **Existing files read their boundary voxels as contained.**
+
+- **The validator no longer invents E411 and W904 on large labelmaps (F-21).** It declined to look
+  for an ignore voxel past 64M elements and then reported the `uint16` the ignore id requires as an
+  error — `medh5 validate` failed the writer's own output at ordinary CT sizes.
+
+- **Every encoder refuses a class id outside 1–65534 with E303 (Q-14)** before the `uint16` cast,
+  where numpy 2 raised `OverflowError` and numpy 1.24 wrapped the id silently.
+
+- **`jsonschema` is a core dependency (L-21).** Without it E005 went unchecked and `commit()` wrote
+  documents a machine with it rejects. The `schema` extra still installs, and adds nothing.
+
+### Added
+
+Each is needed by a fix above, and none changes the format:
+
+- `Sample.ignore_region(ann_id, roi=None)` and `Sample.valid_region(image_id, roi=None)` — the two
+  reads the loaders use, public so a custom loader can make them.
+- Loader item keys `ignore`, `valid` and `meta["annotated"]` (F-16).
+- `add_classification` accepts rows `(class, value[, scope_id[, scheme, scheme_value]])`, so one
+  class can be asserted per lesion, slice or visit (F-23). The mapping form is unchanged.
+- `transcode(..., drop_identity=True)`, `transcode_annotation(..., drop_identity=True)` and
+  `medh5 seg convert --drop-identity` (L-25).
+- `scrub.apply(..., pseudonymise_ids=True)` and `medh5 scrub --pseudonymise-ids`, which require a
+  salt (F-14); `identity.id_source`, written by the DICOM importer and by `--pseudonymise-ids`, and
+  dropped by `SampleWriter.identity` when the id it describes changes.
+
+### Fixed
+
+- The temporary file an atomic write creates has the target's permissions from the start (Q-15).
+- `describe_filters` no longer names the compression twice (`gzip:4+gzip:4`).
+- A commit refused inside a `with` block no longer leaves its temporary file behind.
+- W908 builds the overlap graph slab by slab (P-10), where it decoded one volume per class and
+  skipped annotations over 64M elements.
+- `scrub` treated date keys in `identity.extra`, `cohort` and activity parameters as actionable in
+  a file that already records a date shift, so a second `--apply` could never go green; and it
+  dropped its own "dates were left alone" note from the report.
+
+### Specification corrections (Appendix C, entries 17–20)
+
+- **§3.3** — a grid without a `frame_uid` is comparable with nothing, another frame-less grid
+  included.
+- **§7.4** — an `instances` annotation may hold `N = 0` objects: the verified negative tracking
+  depends on.
+- **§7.5** — `contains` is decided at the stored precision, and a writer must store `data` in a
+  dtype under which that matches the input.
+- **§7.7** — an ignore region overlapping a class is stored as the sibling mask under every
+  encoding. The clause also now names `instances`, as entry 16 already said it did.
+
+### Conformance, tests and CI
+
+- The corpus grows to **117 cases**, with `seg-instances-empty` (N = 0, §7.4).
+- `tests/v1/test_release_1_4_1.py` carries every reproduction above, each named for its finding,
+  including a strict apply over a sample with a person name planted in every string slot, and
+  a no-op `amend` over every corpus file that must either refuse or write a valid file.
+- Python 3.14 joins the CI matrix and the classifiers; the minimum-dependency job pins
+  `jsonschema` 4.18.
+
+### The final-1.x properties
+
+The third audit added four properties to the eight "final 1.x" means. After this release:
+
+- **9. A tool never reads outside the file it was handed, nor writes outside the directory it was
+  handed** — holds: F-22 and L-31.
+- **10. Every rewrite goes through one gate** that refuses an unknown major, never lowers the
+  version, keeps the codec family, and carries what it does not understand — holds for the first
+  three (F-20, L-27); unknown *annotation* attributes (Q-13) are carried by 1.4.2.
+- **11. What a loader hands a model carries the file's contracts** — ignore region, validity,
+  coverage, a frame check before alignment, fresh randomness each epoch — holds: F-16, F-17, F-18,
+  F-24, L-34.
+- **12. Every file a tool writes passes the validator at its default level, and the validator never
+  reports "absent" because it declined to look** — holds for the writer (L-19–L-22, checked over
+  the whole corpus) and the validator (F-21); `recompress --rechunk` (L-28) is 1.4.2's.
+
 ## [1.4.0] — 2026-09-04
 
 **The final 1.x release.** The **format version is unchanged**: 1.4.0 reads and writes the files

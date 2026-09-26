@@ -41,6 +41,21 @@ be established — usually because a de-identification pass randomised
 the affected inputs. It never infers identity from filenames, dates or accession
 numbers.
 
+The same fallback applies when the source **contradicts** its own key: studies
+under one `PatientID` whose `PatientBirthDate` or `PatientSex` disagree are not
+one person on the evidence — an anonymiser that writes a constant `ANONYMOUS`
+makes this ordinary. Each such study becomes its own sample, and the report
+records a guess (`identity`) with the values that disagreed. Only stated values
+count: a study that omits a birth date contradicts nothing. The birth date and
+sex are compared, never written to the file.
+
+The sample's ids **are** the `PatientID` — usually the medical record number —
+or, in the fallback, the `StudyInstanceUID`, and `identity.id_source` says
+which. `medh5 scrub` reports them for that reason; see
+[De-identify](deidentify.md#2-apply-with-a-salt) for replacing them with
+pseudonyms before the files leave your control. A multi-subject import names its
+files after the same ids, and `scrub` reports that too.
+
 If that fallback happened, you have one file per *study*, not per subject, and
 splitting by file is no longer subject-safe.
 
@@ -83,8 +98,15 @@ the files alone once DICOM has lost it.
 
 The importer would rather stop than write a file whose geometry is invented. A
 series is refused when its slices disagree about orientation, spacing or rescale;
-when slice gaps are irregular; or when a required tag is missing or malformed.
-The message names the offending `SOPInstanceUID`.
+when slice gaps are irregular; when a required tag is missing or malformed; or
+when the stack is **sheared** — the slice origins drift within the slice plane,
+as a tilted gantry makes them in head CT. The grid the importer writes is
+orthonormal, so a sheared stack would place the far slices centimetres from
+where the scanner put them; the refusal names the tilt angle and the worst
+slice's offset, and de-tilting is left to a tool that records what it did. The
+tolerance is half a pixel, and a passing check is recorded as a
+`slice_alignment` decision. The messages name the offending `SOPInstanceUID` or
+series.
 
 These refusals carry **no diagnostic code**, because a DICOM series is not a
 MEDH5 file yet. [The reasoning for each is here](../explanation/refusals.md#dicom).

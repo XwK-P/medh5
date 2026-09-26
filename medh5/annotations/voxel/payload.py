@@ -10,7 +10,7 @@ import numpy.typing as npt
 
 from medh5.annotations.payload import AnnotationPayload
 from medh5.errors import MEDH5ValidationError
-from medh5.labels.labelset import BACKGROUND_ID, IGNORE_ID, MAX_CLASS_ID
+from medh5.labels.labelset import check_class_id
 
 Masks = Mapping[int, npt.NDArray[np.bool_]]
 
@@ -20,30 +20,27 @@ Masks = Mapping[int, npt.NDArray[np.bool_]]
 def _checked_class_id(class_id: Any) -> int:
     """Reject reserved and out-of-range ids here, not only at the writer.
 
-    `AnnotationHeader` and the writer already enforce §5.3, but these encoders
-    are exported from `medh5.annotations` and are what a third-party converter
-    calls directly.  Unchecked, the id was cast into the labelmap dtype and
-    wrapped: 0 became background, -1 became 255, 65535 became the ignore value,
-    70000 became 4464 -- each one decoding as a different class than was asked
-    for, with nothing raised.
+    These encoders are exported from `medh5.annotations` and are what a
+    third-party converter calls directly; see
+    :func:`~medh5.labels.labelset.check_class_id`.
     """
-    value = int(class_id)
-    if not BACKGROUND_ID < value <= MAX_CLASS_ID:
-        raise MEDH5ValidationError(
-            f"class id {value} is outside the writable range "
-            f"[{BACKGROUND_ID + 1}, {MAX_CLASS_ID}]: {BACKGROUND_ID} is background and "
-            f"{IGNORE_ID} is ignore (spec §5.3)",
-            code="E303",
-        )
-    return value
+    return check_class_id(class_id)
+
+
+def checked_class_id(class_id: Any) -> int:
+    """A class id in the writable range ``1..65534``, or a coded refusal (E303).
+
+    Every encoder that stores class ids goes through this before a ``uint16``
+    cast: numpy 2 raises ``OverflowError`` on an out-of-range Python int, and
+    numpy 1.24 --- the declared floor --- wraps it silently.
+    """
+    return _checked_class_id(class_id)
 
 
 def normalize_masks(
     masks: Masks, spatial_shape: tuple[int, ...] | None = None
 ) -> tuple[dict[int, npt.NDArray[np.bool_]], tuple[int, ...]]:
     """Coerce a mask mapping to ``bool`` arrays of one agreed shape."""
-    from medh5.errors import MEDH5ValidationError
-
     out: dict[int, npt.NDArray[np.bool_]] = {}
     shape = spatial_shape
     for class_id, mask in masks.items():
@@ -138,6 +135,7 @@ def popcounts(data: Any) -> npt.NDArray[np.int64]:
 
 __all__ = [
     "SLAB_BYTES",
+    "checked_class_id",
     "Masks",
     "AnnotationPayload",
     "contains_value",

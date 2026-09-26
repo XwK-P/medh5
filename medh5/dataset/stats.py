@@ -12,6 +12,13 @@ weights by voxel count.  And it does not treat an unexamined class as a zero:
 ``§11.3`` distinguishes "looked for and absent" from "never looked for", so
 frequencies are reported over the samples that actually examined each class.
 
+Class statistics are *voxel* statistics, so they come from voxel annotations
+only.  A sample-level classification or a set of boxes names classes too, and
+counting those as "examined, 0 voxels" made a one-bit diagnosis the heaviest
+segmentation class in the cohort.  And the moments are over the voxels an image
+holds data in: a ``valid_mask`` (§4.4) keeps the scanner's padding outside the
+reconstruction circle out of the mean.
+
 Intensity moments are over **physical** values by default --- ``stored × slope +
 intercept`` (§4.2) --- because that is what the loaders hand a model with
 ``physical=True``, and a z-score computed over the numbers the file *stores*
@@ -25,6 +32,7 @@ from __future__ import annotations
 
 import math
 import os
+import warnings
 from collections.abc import Iterable, Sequence
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
@@ -104,7 +112,11 @@ class Moments:
 
 @dataclass(slots=True)
 class ClassStats:
-    """How often a class occurs, over the samples that examined it."""
+    """How often a class occurs, over the samples that examined it.
+
+    ``present_in`` and ``examined_in`` count *samples*: a longitudinal sample
+    that examined a class at two visits examined it once, as a cohort member.
+    """
 
     class_id: int
     voxels: int = 0
@@ -171,8 +183,22 @@ class DatasetStats:
 
         ``inverse_frequency`` weights by 1/count and normalises to a mean of 1,
         so switching schemes does not silently rescale the learning rate.
+
+        A class with no voxels in the cohort gets **no** weight, and a warning
+        names it.  Flooring its count at 1 gave it a weight about *N* times
+        that of a class with *N* voxels, and after normalisation left every
+        real class near zero: a class examined and absent everywhere --- or one
+        only a classification ever named --- became the whole loss.
         """
-        counts = {c: max(s.voxels, 1) for c, s in self.classes.items()}
+        empty = sorted(c for c, s in self.classes.items() if s.voxels == 0)
+        if empty:
+            warnings.warn(
+                f"class_weights: class(es) {empty} have no voxels in these "
+                "statistics, so they get no weight; a weight for an unseen class "
+                "is a guess, and the inverse of zero is not one",
+                stacklevel=2,
+            )
+        counts = {c: s.voxels for c, s in self.classes.items() if s.voxels > 0}
         if not counts:
             return {}
         if scheme == "inverse_frequency":
@@ -242,31 +268,48 @@ def stats_for(
     stored values.
     """
     import medh5
+    from medh5.annotations.base import VoxelAnnotation
 
     out = DatasetStats(samples=1, physical=physical)
     with medh5.open(path) as sample:
+        measured: set[str] = set()
         for key, image in sample.images.items():
             if images is not None and key not in images:
                 continue
             moments = out.images.setdefault(key, Moments())
-            for block in _blocks(image, sample_stride, physical):
+            for block in _blocks(sample, key, image, sample_stride, physical):
                 moments.update(block)
+            measured.add(image.grid_id)
         fresh = sample.fresh_indices
+        examined: set[int] = set()
+        present: set[int] = set()
         for key, annotation in sample.annotations.items():
             if annotations is not None and key not in annotations:
                 continue
-            examined = {int(c) for c in annotation.annotated_class_ids}
-            present = _counts(sample, key, annotation, fresh)
-            for class_id in examined | {int(c) for c in annotation.class_ids}:
+            # Voxel classes only: a `mask` has none (§4.4), and a
+            # classification or a geometric annotation names classes it holds
+            # no voxels of.
+            if not isinstance(annotation, VoxelAnnotation) or annotation.kind == "mask":
+                continue
+            counts = _counts(sample, key, annotation, fresh)
+            looked_for = {int(c) for c in annotation.annotated_class_ids}
+            examined |= looked_for
+            for class_id in {int(c) for c in annotation.class_ids} | looked_for:
                 stats = out.classes.setdefault(class_id, ClassStats(class_id))
-                if class_id in examined:
-                    stats.examined_in += 1
-                voxels = int(present.get(class_id, 0))
+                voxels = int(counts.get(class_id, 0))
                 stats.voxels += voxels
                 if voxels:
-                    stats.present_in += 1
-        for grid in sample.grids.values():
-            out.total_voxels += int(np.prod(grid.spatial_shape))
+                    present.add(class_id)
+        # Once per sample, not once per annotation: a follow-up visit examining
+        # the same class again is the same cohort member.
+        for class_id in examined:
+            out.classes.setdefault(class_id, ClassStats(class_id)).examined_in += 1
+        for class_id in present:
+            out.classes.setdefault(class_id, ClassStats(class_id)).present_in += 1
+        # Each measured image's own grid, once.  Summing every grid counted a
+        # pyramid's levels and every mask's grid on top of the voxels measured.
+        for grid_id in measured:
+            out.total_voxels += int(np.prod(sample.grids[grid_id].spatial_shape))
     return out
 
 
@@ -286,20 +329,33 @@ def _counts(
     return {} if counter is None else {int(c): int(n) for c, n in counter().items()}
 
 
-def _blocks(image: Any, stride: int, physical: bool) -> Iterable[npt.NDArray[Any]]:
-    """Slabs of an image along its first stored axis, rescaled when asked.
+def _blocks(
+    sample: Any, key: str, image: Any, stride: int, physical: bool
+) -> Iterable[npt.NDArray[Any]]:
+    """Slabs of an image along its first spatial axis, valid voxels only.
 
     Read through :meth:`~medh5.image.Image.read` rather than the raw dataset so
     the rescale is applied by the one place that knows how; reading the dataset
     directly is exactly what handed back stored counts as if they were HU.
+
+    Where the image declares a ``valid_mask`` (§4.4), only the voxels it marks
+    are measured.  A CT padded with −3024 outside its reconstruction circle
+    otherwise reports a mean of about −1180 where the tissue averages 40, and
+    ``normalization()`` hands the model that.
     """
-    shape = image.shape
-    if not shape:
+    spatial = image.grid.spatial_shape
+    if not spatial:
         return
     step = max(1, stride)
-    trailing = (slice(None),) * (len(shape) - 1)
-    for start in range(0, shape[0], step):
-        yield image.read((slice(start, start + 1), *trailing), physical=physical)
+    trailing = (slice(None),) * (len(spatial) - 1)
+    masked = image.valid_mask is not None
+    for start in range(0, spatial[0], step):
+        roi = (slice(start, start + 1), *trailing)
+        block = image.read(roi, physical=physical)
+        if masked:
+            valid = sample.valid_region(key, roi)
+            block = block[np.broadcast_to(valid, block.shape)]
+        yield block
 
 
 def compute_stats(

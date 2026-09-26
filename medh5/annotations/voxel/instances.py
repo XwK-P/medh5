@@ -34,7 +34,7 @@ from medh5.annotations.payload import AnnotationPayload
 from medh5.errors import MEDH5ValidationError
 from medh5.geometry.affine import box_to_slices, slices_to_box
 from medh5.geometry.grid import Grid
-from medh5.labels.labelset import LabelSet
+from medh5.labels.labelset import LabelSet, check_class_id
 
 
 @dataclass(slots=True)
@@ -73,9 +73,20 @@ def encode_instances(
     the same as the classes that happen to have an object.  A class searched for
     and not found must stay in ``class_ids`` --- dropping it would turn
     "verified absent" into "never looked for" (spec §11.3).
+
+    No objects at all is the same statement for every declared class, and is
+    written as ``N = 0`` columns: "examined, none found" is how a resolved lesion
+    is told apart from an unexamined one (§7.4).  It needs *class_ids*, and
+    *spatial_shape* to give the columns their width.
     """
     if not objects:
-        raise MEDH5ValidationError("no instances were supplied", code="E410")
+        if not class_ids or spatial_shape is None:
+            raise MEDH5ValidationError(
+                "no instances were supplied; an empty `instances` annotation needs "
+                "class_ids (what was examined) and spatial_shape",
+                code="E410",
+            )
+        return _empty_instances(len(spatial_shape), class_ids, store_masks)
     ndim = None
     boxes: list[npt.NDArray[np.float32]] = []
     crops: list[npt.NDArray[np.bool_]] = []
@@ -118,7 +129,7 @@ def encode_instances(
                 "instances disagree on dimensionality", code="E405"
             )
         boxes.append(box_arr)
-        object_classes.append(int(obj.class_id))
+        object_classes.append(check_class_id(obj.class_id))
         instance_ids.append(int(obj.instance_id))
         scores.append(float(obj.score) if obj.score is not None else float("nan"))
         if store_masks:
@@ -151,7 +162,7 @@ def encode_instances(
             np.concatenate(packed) if packed else np.zeros(0, dtype=np.uint8)
         )
     declared = (
-        tuple(sorted({int(c) for c in class_ids}))
+        tuple(sorted({check_class_id(c) for c in class_ids}))
         if class_ids is not None
         else tuple(sorted(set(object_classes)))
     )
@@ -161,6 +172,28 @@ def encode_instances(
         attrs={},
         stacked_axes=0,
         class_ids=declared,
+    )
+
+
+def _empty_instances(
+    ndim: int, class_ids: Sequence[int], store_masks: bool
+) -> AnnotationPayload:
+    """The ``N = 0`` columns of an annotation that examined and found nothing."""
+    datasets: dict[str, npt.NDArray[Any]] = {
+        "boxes": np.zeros((0, ndim, 2), dtype=np.float32),
+        "class_ids": np.zeros(0, dtype=np.uint16),
+        "instance_ids": np.zeros(0, dtype=np.uint32),
+    }
+    if store_masks:
+        datasets["mask_offsets"] = np.zeros(1, dtype=np.uint64)
+        datasets["mask_shapes"] = np.zeros((0, ndim), dtype=np.int32)
+        datasets["mask_data"] = np.zeros(0, dtype=np.uint8)
+    return AnnotationPayload(
+        kind="instances",
+        datasets=datasets,
+        attrs={},
+        stacked_axes=0,
+        class_ids=tuple(sorted({check_class_id(c) for c in class_ids})),
     )
 
 

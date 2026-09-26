@@ -127,6 +127,18 @@ ann.class_bboxes()                       # {class_id: (S, 2) or None}
 ann.instances()                          # needs instance identity — see below
 ```
 
+Two reads span objects, so they are on the sample:
+
+```python
+s.ignore_region("organs_tp0")            # (*spatial) bool: the §7.7 ignore region,
+                                         # in band or in its sibling mask
+s.valid_region("CT_tp0", roi=(slice(0, 8),) * 3)   # the image's valid_mask (§4.4),
+                                         # or all True where it declares none
+```
+
+These are what the loaders put in `item["ignore"]` and `item["valid"]`; see
+[Training](torch.md#a-batch).
+
 See [Annotations](annotations.md) for the per-kind API.
 
 ### Transforms
@@ -268,11 +280,22 @@ w.add_classification("response", {"progressive": 1.0}, scope="sample",
 ```
 
 `ignore=` is stored wherever the chosen encoding can hold it. `labelmap` and
-`layers` carry it in band; under `bitmask`, `instances` or `probmap` the writer
-stores it as a sibling `mask` annotation named `<ann_id>_ignore` and sets
-`ignore_mask` on the header, so `encoding="auto"` never decides whether the
-region survives. `ignore_mask=` names a mask you wrote yourself instead;
-passing both is refused.
+`layers` carry it in band; under `bitmask`, `instances` or `probmap` — and under
+every encoding when the region overlaps a class — the writer stores it as a
+sibling `mask` annotation named `<ann_id>_ignore` and sets `ignore_mask` on the
+header, so `encoding="auto"` never decides whether the region survives, and it
+reads back equal to what you gave. `ignore_mask=` names a mask you wrote
+yourself instead; passing both is refused.
+
+Pass exactly one of `masks=`, `probabilities=` and `instances=`, with
+`encoding="auto"` or the encoding the argument implies; anything else is
+refused rather than half-honoured. `instances=[]` with `annotated_classes=`
+records "examined, none found" (§7.4).
+
+Every `commit()` runs the validator's structural and semantic error rules over
+the finished file and refuses to write one it would reject, so a file this
+writer produces passes `medh5 validate` at the default level. Grid `units` must
+be one of `mm`, `um`, `m`, `px` (§3.2).
 
 ### Transforms
 

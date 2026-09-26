@@ -261,8 +261,14 @@ def unpack(
     directory.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
     with open_collection(path) as collection:
+        # Member names come from the file, and each becomes a file name below.
+        # They are validated exactly as keys a caller passes are: a member named
+        # `..\..\evil` used to be written as `..\..\evil.medh5`, which on
+        # Windows resolves outside *outdir*.
         wanted = (
-            list(collection) if keys is None else [validate_sample_key(k) for k in keys]
+            [_member_key(k, path) for k in collection]
+            if keys is None
+            else [validate_sample_key(k) for k in keys]
         )
         missing = [k for k in wanted if k not in collection]
         if missing:
@@ -277,6 +283,19 @@ def unpack(
             _write_sample_root(group[key], destination)
             written.append(destination)
     return written
+
+
+def _member_key(key: str, path: str | os.PathLike[str]) -> str:
+    """A member name that is safe to use as a file name, or a refusal."""
+    try:
+        return validate_sample_key(str(key))
+    except MEDH5ValidationError as exc:
+        raise MEDH5ValidationError(
+            f"{os.fspath(path)!r} has a member named {key!r}, which is not a valid "
+            "sample key (§2.2) and cannot be used as a file name; refusing to unpack "
+            "it",
+            code="E003",
+        ) from exc
 
 
 def _write_sample_root(src: h5py.Group, destination: Path) -> None:

@@ -107,11 +107,14 @@ auto-selector would cost for each candidate encoding.
 ### `medh5 seg convert`
 
 ```
-medh5 seg convert PATH ANNOTATION --to KIND [--dry-run] [--json]
+medh5 seg convert PATH ANNOTATION --to KIND [--dry-run] [--drop-identity] [--json]
 ```
 
 Losslessly re-encode a voxel annotation: `labelmap`, `layers`, `bitmask`,
 `instances`, `probmap`. `--dry-run` prints the size change without writing.
+From `instances` to a dense encoding the voxels survive and the object ids do
+not, so it is refused unless `--drop-identity` says to drop them; the file then
+records a `transcode` activity saying so.
 
 ### `medh5 index build`
 
@@ -165,24 +168,34 @@ partitions. Needs the whole cohort, which is why it is not part of `validate`.
 ### `medh5 scrub`
 
 ```
-medh5 scrub PATH... [--profile basic|strict] [--apply] [--date-shift-days N] [--salt S] [--by WHO] [--json]
+medh5 scrub PATH... [--profile basic|strict] [--apply] [--date-shift-days N] [--salt S] [--by WHO] [--pseudonymise-ids] [--json]
 ```
 
 Find identifiers in the container. Without `--apply` nothing is written and the
 exit code is 1 if anything was found, so it works as a pipeline gate.
 
-`--apply` removes identifying attributes wherever the scan reports them —
-`extra`, `acquisition`, `identity.extra`, `cohort`, activity parameters and
-tools, and quality issue notes — pseudonymises UIDs (so files still join on a
-shared frame of reference), shifts or drops dates, and writes a §11.4
-de-identification record saying **what was and was not checked**. It does not
-look at pixels: burned-in text and identifiable anatomy are outside its reach,
-and the record it writes says so rather than claiming a clean file.
+The scan covers every string in the file — all of `/meta`, every object name,
+attribute and string dataset, including ones a newer version wrote — and skips
+only fields named in the code with a reason (see the
+[de-identification guide](../guides/deidentify.md#1-look-before-you-change-anything)).
+`--apply` removes identifying attributes wherever the scan reports them,
+pseudonymises UIDs (so files still join on a shared frame of reference) including
+inside provenance references, reduces provenance paths to a file name, shifts
+or drops dates, and writes a §11.4 de-identification record saying **what was
+and was not checked**. It does not look at pixels: burned-in text and
+identifiable anatomy are outside its reach, and the record it writes says so
+rather than claiming a clean file.
 
 **`--apply` re-scans what it wrote**, records the result in the
 de-identification activity's parameters, and **exits non-zero if anything
-actionable is left**. An apply that exits 0 is a file the same rules now find
-nothing to fix in.
+actionable is left** — and, under `--profile strict`, while `sample_id` or
+`subject_id` is still an identifier (the DICOM importer's are the PatientID).
+An apply that exits 0 is a file the same rules now find nothing to fix in.
+
+`--pseudonymise-ids` (with `--apply` and `--salt`) replaces `sample_id` and
+`subject_id` — and a `cohort.group_id` equal to either — with salted stable
+pseudonyms. A file still named after the old id is reported: `scrub` does not
+rename files.
 
 ```
 $ medh5 scrub out/*.medh5 --apply --date-shift-days -117 --by RAD-07

@@ -184,11 +184,118 @@ def require_attr(obj: Any, name: str, *, code: str = "E109") -> Any:
 
 
 def open_h5(path: str | os.PathLike[str], mode: str = "r") -> h5py.File:
-    """Open an HDF5 file, mapping OS-level failures onto :class:`MEDH5FileError`."""
+    """Open an HDF5 file, mapping OS-level failures onto :class:`MEDH5FileError`.
+
+    Every file is also checked to be self-contained before it is handed back
+    (see :func:`check_self_contained`), because this is the one door that
+    readers, validators and every copy-on-write path open files through.
+    """
     try:
-        return h5py.File(str(path), mode)
+        handle = h5py.File(str(path), mode)
     except OSError as exc:
         raise MEDH5FileError(f"failed to open {os.fspath(path)!r}: {exc}") from exc
+    try:
+        check_self_contained(handle, path)
+    except BaseException:
+        handle.close()
+        raise
+    return handle
+
+
+_SELF_CONTAINED: dict[tuple[int, int, int, int], None] = {}
+"""Files already checked, keyed by ``(st_dev, st_ino, st_mtime_ns, st_size)``.
+
+Every write is an atomic replace (§14.4), so a file that changes gets a new
+inode or a new mtime, and a key that still matches names bytes that were
+checked.  A training loop re-opens the same few thousand files for the length
+of a run; this keeps the check off that path after the first open of each.
+"""
+
+_SELF_CONTAINED_LIMIT = 65_536
+
+
+def _stat_key(path: str | os.PathLike[str]) -> tuple[int, int, int, int] | None:
+    try:
+        st = os.stat(os.fspath(path))
+    except OSError:
+        return None
+    return (st.st_dev, st.st_ino, st.st_mtime_ns, st.st_size)
+
+
+def outside_references(handle: h5py.Group) -> list[tuple[str, str]]:
+    """Objects that read bytes from outside the file: ``(path, what)`` pairs.
+
+    Three HDF5 features do: a dataset whose raw data lives in *external
+    storage* (any file on the reader's disk), a *virtual dataset* mapping other
+    files, and an *external link*.  A MEDH5 file is a self-contained sample
+    (§2), and a tool that follows one of these copies bytes it was never given
+    --- ``recompress`` of a crafted file used to write the contents of a local
+    private key into its output.
+    """
+    from h5py import h5d, h5l, h5o
+
+    fid = handle.id
+    found: list[tuple[str, str]] = []
+
+    def visit(name: bytes, info: Any) -> None:
+        text = name.decode("utf-8", "replace")
+        if info.type == h5l.TYPE_EXTERNAL:
+            found.append((text, "an external link"))
+            return None
+        if info.type != h5l.TYPE_HARD:
+            return None
+        try:
+            if h5o.get_info(fid, name).type != h5o.TYPE_DATASET:
+                return None
+            plist = h5d.open(fid, name).get_create_plist()
+            layout, external = plist.get_layout(), plist.get_external_count()
+        except Exception:
+            # An object whose header cannot be read cannot have its data read
+            # either, so it cannot leak anything; the rules that touch it report
+            # the damage.  Raising here, inside HDF5's visit, surfaced as an
+            # unrelated-looking SystemError.
+            return None
+        if layout == h5d.VIRTUAL:
+            found.append((text, "a virtual dataset"))
+        elif external:
+            found.append((text, "external raw-data storage"))
+        return None
+
+    try:
+        fid.links.visit(visit, info=True)
+    except Exception as exc:
+        raise MEDH5FileError(
+            f"{handle.filename!r} could not be walked to check that it is "
+            f"self-contained: {type(exc).__name__}: {exc}"
+        ) from exc
+    return found
+
+
+def check_self_contained(
+    handle: h5py.File, path: str | os.PathLike[str] | None = None
+) -> None:
+    """Refuse a file that reads bytes from outside itself (``MEDH5FileError``).
+
+    See :func:`outside_references`.  The result is memoised per file identity,
+    so re-opening an unchanged file costs one ``stat``.
+    """
+    key = _stat_key(path) if path is not None else None
+    if key is not None and key in _SELF_CONTAINED:
+        return
+    found = outside_references(handle)
+    if found:
+        named = "; ".join(f"/{name} is {what}" for name, what in found[:5])
+        more = f" (and {len(found) - 5} more)" if len(found) > 5 else ""
+        where = os.fspath(path) if path is not None else handle.filename
+        raise MEDH5FileError(
+            f"{where!r} is not self-contained: {named}{more}. A MEDH5 file holds "
+            "its own bytes (§2); following these would read files on this "
+            "machine that the file's author chose, so the file is refused"
+        )
+    if key is not None:
+        if len(_SELF_CONTAINED) >= _SELF_CONTAINED_LIMIT:
+            _SELF_CONTAINED.clear()
+        _SELF_CONTAINED[key] = None
 
 
 def _fsync_path(path: Path) -> None:
@@ -242,6 +349,24 @@ def _existing_mode(target: Path) -> int | None:
         return None
 
 
+def _precreate(tmp: Path, mode: int | None) -> None:
+    """Create the temporary file with the target's permissions, before any data.
+
+    Restoring the mode after the write left a window: for as long as a large
+    amend ran, a ``0o600`` sample's new contents sat in a sibling created with
+    the umask's default --- usually world-readable.  HDF5 truncates an existing
+    file without touching its mode, so creating it first, restricted, closes the
+    window; the ``chmod`` after the write still sets the exact bits, which the
+    umask may have narrowed here.
+    """
+    fd = os.open(
+        str(tmp),
+        os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0),
+        0o666 if mode is None else mode,
+    )
+    os.close(fd)
+
+
 @contextmanager
 def atomic_h5(
     path: str | os.PathLike[str], *, libver: str | tuple[str, str] = "latest"
@@ -265,6 +390,7 @@ def atomic_h5(
     mode = _existing_mode(target)
     handle = None
     try:
+        _precreate(tmp, mode)
         handle = h5py.File(str(tmp), "w", libver=libver)
         yield handle
         handle.close()
@@ -285,8 +411,13 @@ def atomic_h5(
 
 
 def copy_object(src: h5py.Group, name: str, dst: h5py.Group) -> None:
-    """Copy one object (group or dataset), attributes included, into *dst*."""
-    src.copy(name, dst, name=name, expand_soft=True, expand_external=True)
+    """Copy one object (group or dataset), attributes included, into *dst*.
+
+    External links are *not* expanded.  Expanding one copies another file's
+    contents into this one; :func:`open_h5` refuses a file that carries one, so
+    this is the second line of defence rather than the first.
+    """
+    src.copy(name, dst, name=name, expand_soft=True, expand_external=False)
 
 
 @contextmanager
@@ -315,6 +446,7 @@ def atomic_rewrite(
     dst: h5py.File | None = None
     try:
         src = open_h5(src_path, "r")
+        _precreate(tmp, mode)
         dst = h5py.File(str(tmp), "w", libver=libver)
         yield src, dst
         dst.close()
@@ -353,7 +485,10 @@ def repack(path: str | os.PathLike[str]) -> None:
     is a compaction, not a re-encode, so every digest and the ``content_id``
     survive it.
     """
+    from medh5.sample import require_major
+
     with atomic_rewrite(path) as (src, dst):
+        require_major(src, path)
         for name in src:
             copy_object(src, name, dst)
         for key, value in src.attrs.items():
@@ -369,7 +504,8 @@ def copy_unknown(
     objects that version added, so an amend copies everything it does not
     recognise straight through.  Returns the names it copied.
     """
-    kept = tuple(name for name in src if name not in set(known))
+    standard = set(known)
+    kept = tuple(name for name in src if name not in standard)
     for name in kept:
         copy_object(src, name, dst)
     return kept
@@ -397,12 +533,14 @@ __all__ = [
     "as_str_tuple",
     "atomic_h5",
     "atomic_rewrite",
+    "check_self_contained",
     "copy_object",
     "copy_root_attrs",
     "copy_unknown",
     "encode_attr",
     "has_attr",
     "open_h5",
+    "outside_references",
     "repack",
     "require_attr",
     "set_attrs",

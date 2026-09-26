@@ -48,7 +48,12 @@ def schema() -> dict[str, Any]:
 
 
 def schema_available() -> bool:
-    """Whether ``jsonschema`` is installed, so E005 can actually be checked."""
+    """Whether ``jsonschema`` is importable, so E005 can actually be checked.
+
+    It is a core dependency since 1.4.1, so this is ``False`` only in an
+    environment installed without dependencies --- and then the validator says
+    it did not check, rather than reporting a clean document it never read.
+    """
     try:
         import jsonschema  # noqa: F401
     except ImportError:

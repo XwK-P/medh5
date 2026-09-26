@@ -25,7 +25,11 @@ from medh5.annotations.voxel.instances import InstanceInput, encode_instances
 from medh5.annotations.voxel.labelmap import encode_labelmap
 from medh5.annotations.voxel.layers import encode_layers
 from medh5.annotations.voxel.mask import encode_mask
-from medh5.annotations.voxel.probmap import DEFAULT_THRESHOLD, encode_probmap
+from medh5.annotations.voxel.probmap import (
+    DEFAULT_THRESHOLD,
+    contains_at,
+    encode_probmap,
+)
 from medh5.errors import MEDH5ValidationError
 from medh5.geometry.affine import box_to_slices
 
@@ -36,9 +40,15 @@ def payload_to_masks(
     payload: AnnotationPayload,
     *,
     spatial_shape: tuple[int, ...] | None = None,
-    threshold: float = DEFAULT_THRESHOLD,
+    threshold: float | None = None,
 ) -> dict[int, npt.NDArray[np.bool_]]:
-    """Decode any voxel payload to per-class boolean masks."""
+    """Decode any voxel payload to per-class boolean masks.
+
+    A ``probmap`` payload is thresholded at *threshold* when one is given, and
+    otherwise at its own declared ``threshold`` (§7.5) --- not at 0.5 whatever
+    it declared, which is how a payload-level transcode used to binarise a map
+    written with ``threshold=0.3``.
+    """
     kind = payload.kind
     if kind == "labelmap":
         data = payload.data
@@ -65,8 +75,13 @@ def payload_to_masks(
         return dict(sorted(decoded.items()))
     if kind == "probmap":
         data = payload.data
+        cut = (
+            float(threshold)
+            if threshold is not None
+            else float(payload.attrs.get("threshold", DEFAULT_THRESHOLD))
+        )
         return {
-            int(c): np.asarray(data[i], dtype=np.float32) >= threshold
+            int(c): contains_at(np.asarray(data[i]), cut)
             for i, c in enumerate(payload.class_ids)
         }
     if kind == "mask":
@@ -168,13 +183,19 @@ def transcode_payload(
     to_kind: str,
     *,
     spatial_shape: tuple[int, ...] | None = None,
-    threshold: float = DEFAULT_THRESHOLD,
+    threshold: float | None = None,
+    drop_identity: bool = False,
     **kwargs: Any,
 ) -> AnnotationPayload:
-    """Convert a payload to another encoding, preserving ``contains``."""
+    """Convert a payload to another encoding, preserving ``contains``.
+
+    From ``instances`` to a dense encoding needs ``drop_identity=True``; see
+    :func:`transcode`.
+    """
     if to_kind == payload.kind:
         return payload
     _check_target(to_kind)
+    _check_identity(payload.kind, to_kind, drop_identity)
     masks = payload_to_masks(payload, spatial_shape=spatial_shape, threshold=threshold)
     shape = spatial_shape or next(iter(masks.values())).shape
     return encode_masks(masks, to_kind, tuple(shape), **kwargs)
@@ -211,16 +232,41 @@ def _check_target(to_kind: str) -> None:
         )
 
 
+def _check_identity(from_kind: str, to_kind: str, drop_identity: bool) -> None:
+    """Object identity leaves only when the caller says so (§7.4).
+
+    ``instances`` is the one voxel encoding that carries ``instance_id``, the
+    field the longitudinal join is made on.  A transcode to a dense encoding
+    kept every voxel and silently dropped every id: after it, ``tracks()`` was
+    empty, and the docstring above claimed identity was refused.
+    """
+    if from_kind == "instances" and to_kind != "instances" and not drop_identity:
+        raise MEDH5ValidationError(
+            f"transcoding 'instances' to {to_kind!r} keeps every voxel and drops "
+            "every instance_id --- the field tracking joins on across visits "
+            "(§7.4). Pass drop_identity=True (--drop-identity) to do it "
+            "deliberately; the transcode is then recorded in the provenance.",
+            code="E404",
+        )
+
+
 def transcode(
-    annotation: VoxelAnnotation, to_kind: str, **kwargs: Any
+    annotation: VoxelAnnotation,
+    to_kind: str,
+    *,
+    drop_identity: bool = False,
+    **kwargs: Any,
 ) -> AnnotationPayload:
     """Convert an open annotation to another encoding.
 
     Refuses rather than silently dropping what the target cannot express: an
     in-band ignore region, object identity, and class identity itself.  §7.6
-    calls transcoding lossless, so anything it cannot carry has to stop it.
+    calls transcoding lossless, so anything it cannot carry has to stop it ---
+    unless the caller asks for the loss by name: ``drop_identity=True`` lets
+    ``instances`` go to a dense encoding without its object ids.
     """
     _check_target(to_kind)
+    _check_identity(annotation.kind, to_kind, drop_identity)
     if to_kind == "instances" and annotation.kind != "instances":
         # A dense encoding records which voxels belong to a class, never which
         # object they belong to.  Going to `instances` from one merged every

@@ -21,6 +21,21 @@ SEX_VALUES = ("F", "M", "O", "unknown")
 LATERALITY_VALUES = ("left", "right", "bilateral")
 PARTITIONS = ("train", "val", "test", "holdout", "unassigned")
 
+ID_SOURCE = "id_source"
+"""``identity`` key recording where ``sample_id`` and ``subject_id`` came from.
+
+A mapping from id name to source: ``"dicom:PatientID"`` or
+``"dicom:StudyInstanceUID"`` from the DICOM importer, :data:`PSEUDONYM_SOURCE`
+after ``medh5 scrub --pseudonymise-ids``, or whatever a curator records.  It
+lets a de-identification scan tell a record number from a pseudonym without
+guessing from the id's shape.  :meth:`~medh5.writer.SampleWriter.identity`
+drops an entry when the id it describes changes, so it never describes an id
+the sample no longer has.
+"""
+
+PSEUDONYM_SOURCE = "pseudonym"
+"""The :data:`ID_SOURCE` value for an id ``scrub`` replaced with a pseudonym."""
+
 
 @dataclass(frozen=True, slots=True)
 class Identity:
@@ -243,8 +258,10 @@ def splits_from_json(
 
 
 __all__ = [
+    "ID_SOURCE",
     "LATERALITY_VALUES",
     "PARTITIONS",
+    "PSEUDONYM_SOURCE",
     "SEX_VALUES",
     "Cohort",
     "Deidentification",

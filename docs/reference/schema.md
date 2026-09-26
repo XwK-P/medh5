@@ -17,10 +17,10 @@ with h5py.File("case_0001.medh5") as f:
 ```
 
 Validation against this schema is `E005`, and is what `--level structural`
-checks. It needs the `schema` extra:
+checks. `jsonschema` is a core dependency, so every install checks it — and
+every `commit()` refuses a document that fails it:
 
 ```bash
-pip install "medh5[schema]"
 medh5 validate case_0001.medh5 --level structural
 ```
 

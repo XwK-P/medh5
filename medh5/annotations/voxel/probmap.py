@@ -17,9 +17,61 @@ import numpy.typing as npt
 
 from medh5.annotations.base import VoxelAnnotation
 from medh5.annotations.payload import AnnotationPayload
+from medh5.annotations.voxel.payload import checked_class_id
 from medh5.errors import MEDH5ValidationError
 
 DEFAULT_THRESHOLD = 0.5
+
+STORAGE_DTYPES = (np.dtype(np.float16), np.dtype(np.float32))
+"""What §7.5 lets ``data`` be, narrowest first."""
+
+
+def contains_at(values: npt.NDArray[Any], threshold: float) -> npt.NDArray[np.bool_]:
+    """``values >= threshold``, decided in the precision *values* are stored in.
+
+    The threshold is a float64 attribute and the data is usually float16.
+    Comparing the two directly moved every voxel stored exactly at a threshold
+    float16 cannot represent to the wrong side of it: a three-rater map
+    thresholded at 1/3 stores 1/3 as 0.33325, below the 0.33333 it is compared
+    with, so "one rater of three" read as absent (§7.5).  Rounding the threshold
+    the way the data was rounded makes equal values compare equal.
+    """
+    array = np.asarray(values)
+    if array.dtype.kind == "f":
+        out: npt.NDArray[np.bool_] = array >= array.dtype.type(threshold)
+        return out
+    return np.asarray(array, dtype=np.float64) >= float(threshold)
+
+
+def storage_dtype(
+    planes: Sequence[npt.NDArray[np.float64]],
+    threshold: float,
+    requested: npt.DTypeLike = np.float16,
+) -> np.dtype[Any]:
+    """The narrowest allowed dtype, no narrower than *requested*, under which
+    every voxel lands on the same side of *threshold* as it was given.
+
+    Storage is a cost decision and must not change an answer: a value just
+    under the threshold that float16 rounds up to it, or one on it that float16
+    rounds down, would change which voxels contain the class.  Where float16
+    would, the map is stored as float32 instead.
+    """
+    wanted = np.dtype(requested)
+    candidates: list[np.dtype[Any]] = [
+        d for d in STORAGE_DTYPES if d.itemsize >= wanted.itemsize
+    ] or [wanted]
+    for candidate in candidates:
+        if all(
+            np.array_equal(
+                arr >= threshold, contains_at(arr.astype(candidate), threshold)
+            )
+            for arr in planes
+        ):
+            return candidate
+    # Within float32 rounding of the threshold the given value and the stored
+    # one are the same number for every purpose §7.5 serves; the stored value
+    # then defines containment, as it does for any reader of the file.
+    return candidates[-1]
 
 
 def encode_probmap(
@@ -34,6 +86,11 @@ def encode_probmap(
 
     ``threshold`` is the probability at or above which a voxel *contains* a
     class (§7.5).  It is written only when given; the reader's default is 0.5.
+
+    *dtype* is the narrowest storage wanted.  It is widened to ``float32``
+    when storing at *dtype* would move a voxel across the threshold (see
+    :func:`storage_dtype`), so ``contains`` answers for the stored file what it
+    answered for the arrays given.
     """
     attrs: dict[str, Any] = {"normalized": bool(normalized)}
     if threshold is not None:
@@ -43,11 +100,13 @@ def encode_probmap(
                 f"threshold {threshold!r} must lie in [0, 1]", code="E404"
             )
         attrs["threshold"] = value
-    class_ids = tuple(sorted(int(c) for c in probabilities))
+    class_ids = tuple(sorted(checked_class_id(c) for c in probabilities))
+    decide = DEFAULT_THRESHOLD if threshold is None else float(threshold)
     shape = spatial_shape
     planes = []
+    by_id = {int(c): v for c, v in probabilities.items()}
     for class_id in class_ids:
-        arr = np.asarray(probabilities[class_id], dtype=np.float64)
+        arr = np.asarray(by_id[class_id], dtype=np.float64)
         if shape is None:
             shape = arr.shape
         elif arr.shape != tuple(shape):
@@ -61,10 +120,15 @@ def encode_probmap(
                 f"probability map for class {class_id} has values outside [0, 1]",
                 code="E411",
             )
-        planes.append(arr.astype(dtype))
+        planes.append(arr)
     if shape is None:
         raise MEDH5ValidationError("no probability maps were supplied", code="E410")
-    data = np.stack(planes) if planes else np.zeros((0, *shape), dtype=np.dtype(dtype))
+    chosen = storage_dtype(planes, decide, dtype)
+    data = (
+        np.stack([arr.astype(chosen) for arr in planes])
+        if planes
+        else np.zeros((0, *shape), dtype=chosen)
+    )
     return AnnotationPayload(
         kind="probmap",
         datasets={"data": data},
@@ -125,9 +189,7 @@ class ProbmapAnnotation(VoxelAnnotation):
         position = self._position(class_id)
         if position is None:
             return np.zeros(self._roi_shape(roi), dtype=bool)
-        return (
-            np.asarray(self.data[(position, *roi)], dtype=np.float32) >= self.threshold
-        )
+        return contains_at(np.asarray(self.data[(position, *roi)]), self.threshold)
 
     def summary(self) -> dict[str, Any]:
         out = super().summary()
@@ -136,4 +198,11 @@ class ProbmapAnnotation(VoxelAnnotation):
         return out
 
 
-__all__ = ["DEFAULT_THRESHOLD", "ProbmapAnnotation", "encode_probmap"]
+__all__ = [
+    "DEFAULT_THRESHOLD",
+    "STORAGE_DTYPES",
+    "ProbmapAnnotation",
+    "contains_at",
+    "encode_probmap",
+    "storage_dtype",
+]

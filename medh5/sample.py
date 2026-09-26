@@ -19,6 +19,8 @@ from dataclasses import replace
 from typing import Any
 
 import h5py
+import numpy as np
+import numpy.typing as npt
 
 from medh5._hdf5 import (
     as_str,
@@ -28,6 +30,7 @@ from medh5._hdf5 import (
 from medh5.annotations.base import (
     SPEC_ANNOTATION_ATTRS,
     Annotation,
+    VoxelAnnotation,
     open_annotation,
 )
 from medh5.curation.identity import Cohort, Identity
@@ -377,6 +380,75 @@ class Sample:
                     )
             self._annotations = AnnotationCollection("annotation", items)
         return self._annotations
+
+    def ignore_region(
+        self, ann_id: str, roi: Sequence[slice] | None = None
+    ) -> npt.NDArray[np.bool_]:
+        """The §7.7 ignore region of a voxel annotation, under any encoding.
+
+        ``labelmap`` and ``layers`` keep it in band; every encoding may instead
+        name a sibling `mask` annotation in ``header.ignore_mask``, and does
+        wherever the region overlaps a class.  A caller reading one of the two
+        and not the other trained on the ignored voxels of every file the
+        writer stored the other way --- which is what the loaders did (F-16).
+        All ``False`` where the annotation declares no region.
+        """
+        annotation = self.annotations[ann_id]
+        if not isinstance(annotation, VoxelAnnotation):
+            raise MEDH5ValidationError(
+                f"annotation {ann_id!r} is a {annotation.kind!r}, not a voxel "
+                "annotation; the §7.7 ignore region is defined on voxels"
+            )
+        window = annotation._roi(roi)
+        region = np.zeros(annotation._roi_shape(window), dtype=bool)
+        in_band = getattr(annotation, "ignore_mask", None)
+        if in_band is not None:
+            region |= in_band(window)
+        referenced = annotation.header.ignore_mask
+        if referenced is not None:
+            region |= self._mask(ann_id, "ignore_mask", referenced, window)
+        return region
+
+    def valid_region(
+        self, image_id: str, roi: Sequence[slice] | None = None
+    ) -> npt.NDArray[np.bool_]:
+        """Where an image holds data (§4.4): its ``valid_mask``, or everywhere.
+
+        A field-of-view mask marks the voxels a reconstruction actually measured;
+        intensities outside it are filler, and §4.4 says a loss SHOULD NOT count
+        them.
+        """
+        image = self.images[image_id]
+        grid = image.grid
+        shape = grid.spatial_shape
+        window = (
+            tuple(slice(0, n) for n in shape)
+            if roi is None
+            else tuple(
+                slice(
+                    0 if s.start is None else int(s.start),
+                    n if s.stop is None else int(s.stop),
+                )
+                for s, n in zip(roi, shape, strict=True)
+            )
+        )
+        if image.valid_mask is None:
+            return np.ones(tuple(max(0, s.stop - s.start) for s in window), dtype=bool)
+        return self._mask(image_id, "valid_mask", image.valid_mask, window)
+
+    def _mask(
+        self, owner: str, attr: str, reference: str, window: tuple[slice, ...]
+    ) -> npt.NDArray[np.bool_]:
+        name = annotation_id(reference)
+        target = self.annotations.get(name)
+        if target is None or target.kind != "mask":
+            raise MEDH5ValidationError(
+                f"{owner!r}: {attr} names {name!r}, which is not a `mask` "
+                "annotation in this file",
+                code="E413",
+            )
+        read: npt.NDArray[np.bool_] = target.read(window)
+        return read
 
     @property
     def index(self) -> dict[str, SamplingIndex]:

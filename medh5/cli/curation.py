@@ -112,6 +112,12 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
         dest="performed_by",
         help="who performed the de-identification; recorded in the file",
     )
+    scrub.add_argument(
+        "--pseudonymise-ids",
+        action="store_true",
+        help="with --apply and --salt: replace sample_id and subject_id with salted "
+        "stable pseudonyms (they are often the record number)",
+    )
     add_json_flag(scrub)
 
     splits = sub.add_parser("splits", help="audit split claims across files (§12.3)")
@@ -405,6 +411,8 @@ __all__ = ["dispatch", "register"]
 def _scrub(args: argparse.Namespace) -> int:
     from medh5.curation import scrub as scrubber
 
+    if args.pseudonymise_ids and not args.apply_changes:
+        return fail("--pseudonymise-ids changes the file, so it needs --apply")
     reports = []
     for path in args.paths:
         try:
@@ -415,6 +423,7 @@ def _scrub(args: argparse.Namespace) -> int:
                     salt=args.salt,
                     date_shift_days=args.date_shift_days,
                     performed_by=args.performed_by,
+                    pseudonymise_ids=args.pseudonymise_ids,
                 )
             else:
                 report = scrubber.scan(path, profile=args.profile)
