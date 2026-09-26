@@ -965,12 +965,12 @@ class _Sweep:
                 "identity.bodypart" if key == "bodypart" else f"identity.extra.{key}"
             )
             kept = self.entry(str(key), value, where, depth=0, review=None)
-            name = self.key(key, where, None) if kept is not _DROP else _DROP
-            if kept is _DROP or name is _DROP:
+            renamed = self.key(key, where, None) if kept is not _DROP else _DROP
+            if kept is _DROP or renamed is _DROP:
                 out.pop(key, None)
-            elif name != key:
+            elif renamed != key:
                 del out[key]
-                out[name] = kept
+                out[str(renamed)] = kept
             else:
                 out[key] = kept
         return out
