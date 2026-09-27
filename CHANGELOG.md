@@ -4,10 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
+## [1.4.3] — 2026-09-27
 
-Documentation only: **no format change and no change to the package's
-behaviour**. A review of every page against the code and the specification.
+A documentation release. **No format change and no change to the package's
+behaviour**: a review of every page against the code and the specification.
+It exists, like 1.1.1 before it, because `README.md` is the package's PyPI
+long description — the corrected install note and the new links below could
+only reach the project page through a release.
 
 ### Removed
 
