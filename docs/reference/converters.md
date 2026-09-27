@@ -72,6 +72,13 @@ applied.
 `--assume-geometry` imports a file that declares no spatial mapping, recording
 the fallback as a guess. Without it, such a file is refused.
 
+**A 4-D series' extra axis is decided, not assumed.** Cine, DCE and 4-D CT put
+time there; multi-b-value DWI and multi-echo series put channels there (§3.6),
+and NIfTI's header does not distinguish them. A `.bval` sidecar, a BIDS sidecar,
+the intent code or a time unit settles it; otherwise the axis is read as time
+and the report records a guess. `--fourth-axis time|channel` (`fourth_axis=`)
+overrides it, and b-values or echo times go to `acquisition`.
+
 ### DICOM
 
 ```
@@ -79,8 +86,11 @@ $ medh5 convert from-dicom /studies out/ --group-by subject
 $ medh5 convert from-dicom /studies out/ --modality CT --series 1.2.840...
 ```
 
+<!-- illustrative -->
 ```python
 from medh5.io.dicom import scan_dicom, read_series, from_dicom, select_series
+
+report = from_dicom("/studies", "out/", group_by="subject", modalities=["CT"])
 ```
 
 **Slices are ordered by geometry** — position projected on the slice normal, not
@@ -128,9 +138,17 @@ $ medh5 convert to-dicom-seg case.medh5 organs out.dcm \
 **Frames are placed by geometry**, from each frame's `PlanePositionSequence` —
 not by frame index. **Segments match by label, not by number.**
 
+<!-- illustrative -->
+```python
+from medh5.io.dicom_seg import from_dicom_seg, to_dicom_seg
+
+from_dicom_seg("seg.dcm", "case.medh5", ann_id="organs")
+to_dicom_seg("case.medh5", "organs", ["ct/1.dcm", "ct/2.dcm"], "out.dcm")
+```
+
 Import preserves overlapping segments and `FRACTIONAL` values. **Export does
-not**: `to_dicom_seg` casts to boolean and writes `BINARY`, so fractional data
-is thresholded on the way out.
+not**: `to_dicom_seg` writes `BINARY` from `dense()`, which for a `probmap`
+applies the stored threshold, so fractional data is thresholded on the way out.
 
 Writing needs `highdicom` (`pip install "medh5[dicomseg]"`).
 
@@ -141,6 +159,13 @@ $ medh5 convert from-rtstruct plan.dcm case.medh5 --id contours
 $ medh5 convert from-rtstruct plan.dcm case.medh5 --rasterize
 $ medh5 convert to-rtstruct case.medh5 contours out.dcm \
     --source ct/1.dcm --source ct/2.dcm ...
+```
+
+<!-- illustrative -->
+```python
+from medh5.io.rtstruct import from_rtstruct, to_rtstruct
+
+from_rtstruct("plan.dcm", "case.medh5", rasterize=False)
 ```
 
 **Contours stay contours** (§8.6), in world coordinates. `--rasterize` is opt-in,
@@ -157,6 +182,14 @@ $ medh5 convert from-nnunet /Dataset001_Liver out/
 $ medh5 convert to-nnunet /out case1.medh5 case2.medh5 --dataset-name Dataset001_Liver
 ```
 
+<!-- illustrative -->
+```python
+from medh5.io.nnunetv2 import from_nnunetv2, to_nnunetv2
+
+from_nnunetv2("/Dataset001_Liver", "out/")
+to_nnunetv2(["case1.medh5", "case2.medh5"], "/out", dataset_name="Dataset001_Liver")
+```
+
 Each case's channels and per-class masks are bundled into one sample.
 
 **nnU-Net's class ids are kept**, so a model trained against the original
@@ -166,6 +199,23 @@ as a parent, which is exactly what the hierarchy is for.
 
 The parsed `dataset.json` is stashed in `extra["nnunetv2"]`, so `to-nnunet`
 reproduces the original dataset definition rather than inventing one.
+
+### 0.x files
+
+```
+$ medh5 migrate old/*.medh5 -o new/ --write-labels labels.json
+$ medh5 migrate old/*.medh5 -o new/ --label-set labels.json --report migration.json
+```
+
+```python
+from medh5.io.legacy import build_label_set, migrate, migrate_paths
+```
+
+The one-way conversion from the 0.x layout (spec Appendix B): mint one label set
+for the whole cohort, review it, then convert against it. Box corners shift by
+half a voxel, the encoding is chosen by measurement, and grouping by subject is
+opt-in because a 0.x file carries no subject key — each reported per file. The
+procedure is [Migrate from 0.x](../guides/migrate-0x.md).
 
 ### COCO
 

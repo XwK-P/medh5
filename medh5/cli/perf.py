@@ -45,9 +45,7 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     )
     add_json_flag(recompress)
 
-    bench = sub.add_parser(
-        "bench", help="reproduce the performance targets (plan §4.3)"
-    )
+    bench = sub.add_parser("bench", help="reproduce the performance targets")
     bench.add_argument(
         "path",
         nargs="?",

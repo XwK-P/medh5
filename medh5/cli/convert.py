@@ -1,4 +1,4 @@
-"""``convert`` and ``migrate`` --- the importers and exporters (plan §7).
+"""``convert`` and ``migrate`` --- the importers and exporters.
 
 Every command writes a conversion report, because the interesting part of an
 import is not that it succeeded but what it had to decide: which encoding, which

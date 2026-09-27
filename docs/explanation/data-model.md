@@ -1,4 +1,4 @@
-# Concepts
+# The data model
 
 Ten minutes on the data model. The normative statement of all of this is the
 [specification](../spec/medh5-1.0.md); this page is the shape of it.
@@ -146,8 +146,11 @@ whatever source had them.
 ```
 
 Overlapping classes (a lesion inside the liver) are expressible in every
-encoding that supports them, and transcoding between any pair is lossless.
-See [Annotations](../reference/annotations.md).
+encoding except `labelmap`, and transcoding preserves `contains()` exactly — a
+`probmap` under its threshold. Where the target cannot express something
+(overlap in a `labelmap`, object identity in a dense encoding), the transcode is
+refused rather than lossy. See
+[Annotation kinds](../reference/annotations.md#transcoding).
 
 ## Provenance and quality
 
@@ -173,8 +176,10 @@ s.content_id            # "sha256:..." — the identity of the content
 ```
 
 Recompressing a file changes every stored byte and no digest, because the
-digest is over the content and not over its encoding. Editing a voxel changes
-one object digest and the `content_id`.
+digest is over the content and not over its encoding. Editing a voxel through
+`medh5.amend` restamps that one object's digest and so the `content_id`; editing
+it behind the library's back leaves the stored digest describing the old bytes,
+which is exactly what `verify` reports.
 
 ## Profiles
 

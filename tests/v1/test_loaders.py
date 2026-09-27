@@ -1,4 +1,4 @@
-"""PyTorch datasets, handle safety, MONAI and recompression (plan §2.3, §4.3)."""
+"""PyTorch datasets, handle safety, MONAI and recompression."""
 
 from __future__ import annotations
 
@@ -713,7 +713,7 @@ class TestDataLoader:
         assert tuple(batches[0]["images"]["CT_tp0"].shape) == (2, 8, 8, 8)
 
     def test_S14_4_a_soak_does_not_grow_the_handle_cache(self, cohort):
-        """10 epochs must not leak handles or file descriptors (plan §4.1)."""
+        """10 epochs must not leak handles or file descriptors."""
         CACHE.clear()
         ds = PatchDataset(cohort, PatchSampler(8), samples_per_volume=4)
         loader = DataLoader(ds, batch_size=2, num_workers=0, collate_fn=collate)

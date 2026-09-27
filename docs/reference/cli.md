@@ -69,7 +69,7 @@ files has one.
 ### `medh5 fix`
 
 ```
-medh5 fix PATH... [--rebuild-index] [--rewrite-digests --reason WHY] [--json]
+medh5 fix PATH... [--rebuild-index] [--rewrite-digests --reason WHY] [--by WHO] [--json]
 ```
 
 With no flags: diagnose and change nothing. Exit 1 if anything needs attention.
@@ -79,7 +79,8 @@ With no flags: diagnose and change nothing. Exit 1 if anything needs attention.
 `--rewrite-digests` is not repair. A digest that no longer matches is *evidence
 that the bytes changed*, and recomputing it destroys the evidence. It therefore
 requires `--reason`, which is recorded in the file's provenance along with the
-fact that the tool did not verify the content it just re-attested.
+fact that the tool did not verify the content it just re-attested. `--by` names
+who made the change, in the same record.
 
 ## Longitudinal
 
@@ -94,7 +95,7 @@ Timepoints, their intervals, and what belongs to each visit.
 ### `medh5 track`
 
 ```
-medh5 track PATH [--class KEY] [--json]
+medh5 track PATH [--class KEY] [--key K] [--json]
 ```
 
 Join instance ids across visits: per object, its volume at each timepoint, the
@@ -126,18 +127,21 @@ records a `transcode` activity saying so.
 ### `medh5 index build`
 
 ```
-medh5 index build PATH... [--max-coords N] [--occupancy K] [--seed S]
+medh5 index build PATH... [--max-coords N] [--occupancy K] [--seed S] [--json]
 ```
 
 Build or refresh sampling indices, which make foreground patch sampling O(1) in
-the volume. `--max-coords` bounds the stored coordinates per class.
+the volume. `--max-coords` bounds the stored coordinates per class (default
+4096); `--occupancy` sets the block size of the coarse per-class occupancy map,
+in voxels per axis (default 8, so the map is 1/8 resolution); `--seed` (default
+0) fixes the coordinate subsample, so rebuilding an index reproduces it.
 
 ### `medh5 labels`
 
 ```
 medh5 labels show PATH [--json]
-medh5 labels check PATH...
-medh5 labels registry list
+medh5 labels check PATH... [--json]
+medh5 labels registry list [--json]
 ```
 
 Inspect a file's label set, check a cohort's label sets against each other, and
@@ -222,20 +226,21 @@ Running it twice does not shift dates twice.
 ### `medh5 pack`
 
 ```
-medh5 pack PATH... -o SHARD.medh5c [--key K] [--json]
+medh5 pack PATH... -o SHARD.medh5c [--key K ...] [--json]
 ```
 
 Bundle samples into one `.medh5c`. Chunks move as raw bytes, so packing is
-byte-identical and `content_id` is preserved.
+byte-identical and `content_id` is preserved. Each member's key is its file
+stem unless `--key` is repeated once per source, in order.
 
 ### `medh5 unpack`
 
 ```
-medh5 unpack SHARD.medh5c -o DIR [--key K] [--json]
+medh5 unpack SHARD.medh5c -o DIR [--key K ...] [--json]
 medh5 ls SHARD.medh5c [--json]
 ```
 
-Extract, or list what is inside.
+Extract — every member, or only the keys named — or list what is inside.
 
 ## Cohorts
 
@@ -260,10 +265,12 @@ medh5 dataset split manifest.json [options]
 --stratify-by FIELD  balance a field across partitions
 --ratios train=0.7,val=0.15,test=0.15
 --k-folds N          k-fold instead of ratios
---seed N             deterministic given the manifest, seed and parameters
---out split.json
+--seed N             deterministic given the manifest, seed and parameters (default 0)
+-o, --out split.json
 --write-claims       stamp each sample with its partition and the manifest digest
 --fold N             with --k-folds --write-claims: which fold is validation
+--assigned-by WHO    recorded on each claim as who assigned it
+--json
 ```
 
 Groups, not files: a subject's baseline and follow-up cannot land on opposite
@@ -273,15 +280,16 @@ says which partition got nothing rather than leaving you to notice later.
 ### `medh5 dataset stats`
 
 ```
-medh5 dataset stats manifest.json [--image K] [--annotation A] [--workers N]
-                                  [--stride S] [--stored] [--partition P]
+medh5 dataset stats manifest.json [--image K ...] [--annotation A ...] [--workers N]
+                                  [--stride S] [--stored] [--partition P] [--set-id ID]
                                   [--out FILE] [--json]
 ```
 
 Streaming intensity moments and class frequencies. Reads class counts from the
 sampling index when it is current. `--partition train` restricts the pass to
-one partition of `--set-id`, which is how you compute normalisation constants
-without looking at your test set.
+one partition of `--set-id` (default `default`), which is how you compute
+normalisation constants without looking at your test set. `--stride N` reads
+every Nth slab along the first axis — faster, approximate, and opt-in.
 
 Intensity moments are over **physical** values: each image's rescale is applied
 first, which is what the loaders read with `physical=True`. `--stored` measures
@@ -300,18 +308,20 @@ Cross-file consistency. Findings carry
 
 ## Converting
 
-Every `convert` command writes a report of what it **decided** (determined from
-the data) and where it **guessed** (assumed something it could not read).
-`--report FILE` keeps it as JSON; without it, guesses and warnings still print.
+Every `convert` command except `to-nifti` writes a report of what it
+**decided** (determined from the data) and where it **guessed** (assumed
+something it could not read). `--report FILE` keeps it as JSON and `--json`
+prints it; without either, guesses and warnings still print.
 
 ```
-medh5 convert from-nifti OUT --image NAME=PATH [--mask NAME=PATH]
-                             [--modality NAME=CODE] [--coord-system LPS|RAS]
+medh5 convert from-nifti OUT --image NAME=PATH [--image ...] [--mask NAME=PATH ...]
+                             [--modality NAME=CODE ...] [--coord-system LPS|RAS]
+                             [--fourth-axis auto|time|channel] [--assume-geometry]
                              [--sample-id ID] [--subject-id ID]
 medh5 convert to-nifti PATH IMAGE OUT [--annotation A --class K] [--stored]
 
 medh5 convert from-dicom ROOT OUT [--group-by subject|study]
-                                  [--modality M] [--series UID]
+                                  [--modality M ...] [--series UID ...]
 
 medh5 convert from-dicom-seg SEG SAMPLE [--id ANN] [--grid G]
 medh5 convert to-dicom-seg PATH ANNOTATION OUT --source DICOM [--source DICOM ...]
@@ -319,14 +329,28 @@ medh5 convert to-dicom-seg PATH ANNOTATION OUT --source DICOM [--source DICOM ..
 medh5 convert from-rtstruct RTSTRUCT SAMPLE [--id ANN] [--grid G] [--rasterize]
 medh5 convert to-rtstruct PATH ANNOTATION OUT --source DICOM [--source DICOM ...]
 
-medh5 convert from-nnunet ROOT OUT [--case ID]
+medh5 convert from-nnunet ROOT OUT [--case ID ...]
 medh5 convert to-nnunet OUT PATH... [--dataset-name NAME] [--annotation A]
 ```
 
-`from-dicom --group-by subject` merges a patient's studies into one
-multi-timepoint sample. Identity is never inferred from filenames, dates or
+All but `to-nifti` also take `[--report FILE] [--json]`. Options marked `...`
+repeat, one value per occurrence.
+
+`from-nifti --fourth-axis` says what a 4-D series' extra axis is — `time` for
+cine, DCE and 4-D CT, `channel` for multi-b-value DWI and multi-echo; `auto`
+(the default) reads the file's sidecars and header and records a guess when they
+do not say. `--assume-geometry` imports a file that declares no spatial mapping,
+recorded as a guess; without it such a file is refused.
+
+`from-dicom --group-by subject` (the default) merges a patient's studies into
+one multi-timepoint sample. Identity is never inferred from filenames, dates or
 accession numbers; when it cannot be established the command falls back to one
 sample per study, warns, and records the fallback.
+
+`from-dicom-seg` writes annotation `seg` and `from-rtstruct` writes `contours`
+unless `--id` names another; `to-nnunet` exports annotation `seg` unless
+`--annotation` names another, as dataset `Dataset001_medh5` unless
+`--dataset-name` does.
 
 See [Converters](converters.md).
 
@@ -344,7 +368,10 @@ medh5 migrate PATH... -o OUTDIR [options]
 --write-labels FILE        mint the cohort's label set for review, then stop
 --label-set FILE           reuse a reviewed label set
 --report FILE
+--json
 ```
+
+See [Migrate from 0.x](../guides/migrate-0x.md) for the two-pass procedure.
 
 ## Storage
 

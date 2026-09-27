@@ -508,3 +508,33 @@ class TestStatedCounts:
         invalid = sum(1 for case in CASES if case.errors)
         stated = self._stated(r"(\d+) of the \d+ cases are deliberately invalid")
         assert stated and all(n == invalid for _, n in stated), (invalid, stated)
+
+    def test_D09_the_conformance_page_breakdown_is_the_corpus_breakdown(self):
+        """The page splits the total several ways, and each split drifts too.
+
+        Only the total was checked, so the total stayed right while the page
+        went on saying 39 valid cases, 111 samples and 71 mutated ones for
+        several releases after all three had changed.
+        """
+        import re
+
+        page = (self.ROOT / "docs/spec/conformance.md").read_text(encoding="utf-8")
+        valid = [case for case in CASES if not case.errors]
+        expected = {
+            r"(\d+) are valid files": len(valid),
+            r"(\d+) of them with specific warnings": sum(
+                1 for case in valid if case.warnings
+            ),
+            r"(\d+) are invalid ones": len(CASES) - len(valid),
+            r"(\d+) samples and \w+ collections": sum(
+                1 for case in CASES if case.suffix == ".medh5"
+            ),
+            r"(\d+) of the cases prove it": sum(1 for case in CASES if case.mutated),
+        }
+        for pattern, count in expected.items():
+            stated = [int(n) for n in re.findall(pattern, page)]
+            assert stated == [count], (pattern, count, stated)
+        words = ("zero", "one", "two", "three", "four", "five", "six", "seven")
+        collections = sum(1 for case in CASES if case.suffix == ".medh5c")
+        stated_words = re.findall(r"\d+ samples and (\w+) collections", page)
+        assert stated_words == [words[collections]], (collections, stated_words)

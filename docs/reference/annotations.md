@@ -1,4 +1,4 @@
-# Annotations
+# Annotation kinds
 
 Thirteen kinds, one contract. This page is what each stores and how to read it;
 spec §6–§9 is the normative version.
@@ -41,21 +41,22 @@ ann.header.ignore_mask     # the id of a separate mask annotation, or None
 ann.ignore_mask(roi=roi)   # labelmap and layers only --- see below
 ```
 
-Do not read it through `dense([65535])`. The ignore id is not an ordinary class:
-`layers` writes it *into* the layers rather than carrying it as its own plane, so
-asking `dense()` for it returns an all-zero mask with no error --- and the
-ignored voxels end up in the loss.
+The ignore id is not a class, so `dense([65535])` is refused with `E404`
+rather than returning a plane — an all-zero mask would be indistinguishable
+from "examined, and absent", and the ignored voxels would go into the loss.
 
 Where the region lives depends on the encoding, and the writer decides.
 `add_segmentation(..., ignore=region)` stores it in band under `labelmap` and
 `layers`, where `ignore_mask()` reads it back; `bitmask`, `instances` and
-`probmap` cannot represent a reserved id in band, so for those the writer
-stores the region as a sibling `mask` annotation named `<ann_id>_ignore` and
-sets `header.ignore_mask` to it (§7.7). On those three `ignore_mask()` is not
-defined --- `has_ignore_region` is `True` and the call raises `AttributeError`;
-read the referenced mask instead.
-[Partial labels and coverage](../guides/partial-labels.md#some-voxels-i-cannot-label-either-way)
-has a reader that handles both.
+`probmap` cannot represent a reserved id in band, so for those — and under
+every encoding where the region overlaps a class — the writer stores it as a
+sibling `mask` annotation named `<ann_id>_ignore` and sets `header.ignore_mask`
+to it (§7.7). On those three `ignore_mask()` is not defined.
+
+**Read it with `s.ignore_region(ann_id, roi=...)`**, which answers for every
+encoding: it combines the in-band region and the sibling mask, and is all
+`False` where there is none. See
+[Partial labels and coverage](../guides/partial-labels.md#some-voxels-i-cannot-label-either-way).
 
 ## Voxel annotations
 
@@ -79,6 +80,15 @@ ann.class_bboxes()                      # {class_id: (S, 2) index-space bounds}
 | `bitmask` | packed bit planes | many classes, heavy overlap | yes | no |
 | `instances` | per-object masks with ids | counting, tracking, per-object metrics | yes | yes |
 | `probmap` | float per class | soft labels, model output | yes | no |
+
+A sixth voxel kind, `mask`, is a single boolean volume with no classes — the
+shape of a field-of-view mask or a stored ignore region, not a segmentation:
+
+<!-- illustrative -->
+```python
+w.add_mask("fov", fov, grid="ct")                      # bool, grid-shaped
+w.add_image("CT", ct, grid="ct", modality="CT", valid_mask="fov")
+```
 
 `probmap` answers `contains()` against a **threshold**: 0.5 unless the
 annotation declares one. `add_segmentation(..., probabilities=..., threshold=0.3)`
@@ -146,7 +156,7 @@ whatever source had them.
 
 `instance_id` is **sample-scoped**, which is what makes it a longitudinal join:
 object 7 at baseline and object 7 at follow-up are the same lesion. See
-[Longitudinal](../guides/longitudinal.md).
+[Longitudinal studies](../guides/longitudinal.md#join-the-objects).
 
 ## Geometric annotations
 
@@ -210,11 +220,14 @@ the corner representation exactly.
 ```python
 w.add_keypoints("landmarks", points, keypoint_classes, class_ids,
                 grid="ct", visibility=vis, skeleton="spine-17")
-w.add_points("fiducials", points, grid="ct", correspondence="paired")
+w.add_points("fiducials_tp0", points, grid="ct",
+             correspondence="fiducials_tp1")
 ```
 
 Keypoints are structured (a skeleton, per-point classes, visibility); points
-are a bare set, used for registration landmarks and TRE.
+are a bare set, used for registration landmarks and TRE. `correspondence` names
+the paired `points` annotation — the same landmarks, in the same row order, in
+the other frame (§10.6).
 
 ### Contours
 
@@ -255,7 +268,8 @@ saying *whose* millimetres is not reproducible, and the writer refuses it
 
 ## Classification
 
-Sample-level, per-timepoint, per-instance, or per-slice:
+About the sample, one timepoint, one grid, one region, one instance, or one
+slice:
 
 ```python
 w.add_classification("response", {"progressive": 1.0},
@@ -266,14 +280,15 @@ w.add_classification("birads", {"birads_4": 1.0}, scope="instance",
 
 ```python
 c = s.annotations["response"]
-c.labels          # {class_id: score}
-c.scope           # "sample" | "timepoint" | "instance" | "slice"
+c.labels          # {class_key: score}
+c.scope           # "sample" | "timepoint" | "grid" | "roi" | "instance" | "slice"
 c.scope_ids
+c.assertions()    # every assertion: class_id, value, scope_id, scheme, scheme_value
 ```
 
 A **change** label — one that describes a difference between two visits — is a
-classification whose `timepoints` names both. See
-[Longitudinal](../guides/classification.md#change-labels-span-an-interval).
+classification whose `timepoints` names both (`c.is_change_label`). See
+[Classification and change labels](../guides/classification.md#change-labels-span-an-interval).
 
 ## Label sets
 
@@ -313,4 +328,4 @@ Ids `0` (background) and `65535` (ignore) are reserved.
 - **[Detection and boxes](../guides/detection.md)** — boxes without an off-by-one.
 - **[Classification and change labels](../guides/classification.md)** — choosing a scope.
 - **[Partial labels and coverage](../guides/partial-labels.md)** — `annotated_classes` in full.
-- **[Specification §6–§9](../spec/medh5-1.0.md)** — the normative model.
+- **[Specification §6–§9](../spec/medh5-1.0.md#6-annotations--common-model)** — the normative model.

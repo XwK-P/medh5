@@ -23,3 +23,7 @@ cohort.json
 results.json
 *.medh5
 *.medh5c
+
+# Scratch files and results the benchmark scripts write beside themselves.
+docs/examples/*.h5
+docs/examples/*.json

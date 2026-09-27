@@ -1,4 +1,4 @@
-"""Cohort tools: manifests, splits, statistics, cross-file checks (plan §5).
+"""Cohort tools: manifests, splits, statistics, cross-file checks.
 
 The unit under test is never one file.  Everything here is about a property no
 sample can carry on its own --- who agrees on a label set, who is in which

@@ -38,6 +38,7 @@ Reading:
 ```python
 s.timepoints["tp1"].days_from_baseline    # 92
 s.timepoints[0].label                     # "baseline"
+s.timepoints.interval_days("tp0", "tp1")  # 92.0 — None where either lacks days
 s.is_longitudinal                         # True
 
 view = s.at("tp1")
@@ -157,9 +158,9 @@ contributed none. It does **not** check registrations: it resolves no
 transforms, so a file that needs one and lacks it is counted as a perfectly good
 pair.
 
-The failure is also deferred, and in one case absent. `align="transform"` on a
-pair whose visits share no transform at all raises `MEDH5ValidationError` from
-`__getitem__` — part way into an epoch rather than at construction.
+The failure is also deferred. `align="transform"` on a pair whose visits share
+no transform at all raises `MEDH5ValidationError` from `__getitem__` — part way
+into an epoch rather than at construction.
 
 A pair whose two visits hold several frames each is the case worth checking by
 hand. The loader resolves between the frames the images are actually on and

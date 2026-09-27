@@ -6,9 +6,10 @@ makes "conforming MEDH5 file" a claim somebody else can test.
 ## The corpus
 
 117 cases, each a file plus the **exact set of diagnostic codes** a conforming
-validator must emit for it. 39 are valid files an implementation must accept;
-76 are invalid ones it must reject with specific codes — every code in the
-specification's §15.2 table, and every cross-reference clause behind a code.
+validator must emit for it. 41 are valid files an implementation must accept,
+30 of them with specific warnings; 76 are invalid ones it must reject with
+specific errors. Between them they exercise every code in the specification's
+§15.2 table, and every cross-reference clause behind a code.
 
 Invalid cases are built by mutating a valid one, because the writer refuses to
 produce them. That is the point: the writer and the validator are checked
@@ -32,7 +33,7 @@ wrote the suite to suite/: 117 cases, see suite/README.md
 
 | File | |
 |---|---|
-| `*.medh5`, `*.medh5c` | the cases: 111 samples and four collections |
+| `*.medh5`, `*.medh5c` | the cases: 113 samples and four collections |
 | `expected.json` | per case: the clause, the level, and the expected codes |
 | `codes.json` | the §15.2 diagnostic code table as data |
 | `medh5-sample-1.0.schema.json` | the JSON Schema for `/meta` |
@@ -102,7 +103,7 @@ stored digests cover the pre-edit bytes and an integrity pass adds a
 `"mutated": true`.
 
 *(That correction came from running it. The README first said deeper was safe;
-it is not, and 71 of the cases prove it.)*
+it is not, and 82 of the cases prove it.)*
 
 **A `.medh5c` case is a collection** (§2.1) — it contains samples rather than
 being one. `"file_suffix"` says which.

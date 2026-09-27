@@ -1,7 +1,8 @@
-# Training
+# PyTorch and MONAI
 
-PyTorch datasets, patch samplers, the MONAI adapter, and the performance
-numbers behind them.
+PyTorch datasets, patch samplers, collation and the handle cache, and the MONAI
+adapter. What each performance lever is worth is in
+[Tune performance](../guides/performance.md).
 
 ```bash
 pip install "medh5[torch]"
@@ -10,7 +11,8 @@ pip install "medh5[torch]"
 ## Datasets
 
 All four take the same reading arguments: `images`, `annotations`,
-`label_format`, `physical`, `dtype`, `timepoint`.
+`label_format` (`onehot`, `labelmap`, `instances` or `none`), `physical`,
+`dtype`, `timepoint`.
 
 ```python
 from medh5.torch import (
@@ -66,7 +68,9 @@ ds = GridPatchDataset(paths, patch_size=(96, 96, 96), overlap=16,
 ```
 
 Every patch position, in order, with a recorded pad — so you can stitch the
-output back together.
+output back together. The tiling itself is `medh5.sampling.grid_patches(shape,
+patch_size, overlap=...)`, which needs no torch, for an inference loop of your
+own.
 
 ### PairedPatchDataset — the same place at two visits
 
@@ -76,9 +80,16 @@ from medh5.sampling import TimepointPairSampler
 ds = PairedPatchDataset(paths, sampler,
                         pair_sampler=TimepointPairSampler("consecutive"),
                         align="transform",
-                        annotation="lesions")
+                        annotation="lesions",
+                        samples_per_pair=4)
 ds.report      # files, pairs, and cross-sectional files that contributed none
 ```
+
+`TimepointPairSampler` modes are `consecutive`, `baseline_vs_all` and
+`all_pairs`. Each item carries both visits' patches, `meta["pair"]` and
+`meta["interval_days"]`, and — where a change label spans exactly that pair —
+`item["label"][ann_id]`, that classification's `{class_key: value}`. `label=`
+names the change-label annotation explicitly instead.
 
 `report` does **not** resolve transforms. With `align="transform"`, a pair whose
 frames have no registration is still counted as a pair, and the failure surfaces
@@ -91,9 +102,6 @@ their coordinates: nothing says their world coordinates agree (§3.3). The NIfTI
 and nnU-Net importers write no frame, so their longitudinal samples need a
 transform — or `align="none"`, which reads the same index window from both
 visits.
-
-
-See [Longitudinal](../guides/longitudinal.md#train-on-the-pairs).
 
 ## A batch
 
@@ -136,9 +144,9 @@ disagree on a tensor's shape it names the key that disagreed rather than
 raising from inside `torch.stack`.
 
 `used_index` is worth logging. `False` means the sampler fell back to scanning
-the volume because there was no sampling index — the difference between 0.03 ms
-and several hundred. `None` means the draw was uniform and consulted no index, so
-there is nothing to report.
+the volume because there was no current sampling index — the difference between
+0.03 ms and 312 ms per draw at 512³. `None` means the draw was uniform and
+consulted no index, so there is nothing to report.
 
 ## The DataLoader
 
@@ -156,6 +164,17 @@ but not required for correctness**: the handle cache is PID-keyed and re-checks
 ownership on every access, so a forked worker abandons the parent's handles on
 first use rather than reading through or closing them. The callback just does
 that reset eagerly, at worker start, instead of lazily.
+
+If you need your one `worker_init_fn` slot for seeding or other setup, call it
+from your own:
+
+```python
+from medh5.torch import worker_init_fn as medh5_worker_init
+
+def init(worker_id):
+    medh5_worker_init(worker_id)
+    seed_everything(worker_id)
+```
 
 ### Keeping a file's items together
 
@@ -183,6 +202,9 @@ The cache is shared by the threads of a process and locked. A handle is held
 for the length of an item, so a thread-based loader never has one closed under
 it by another thread's eviction.
 
+A 10-epoch soak over the cache leaves the handle count and the descriptor count
+flat; there is a test that asserts it.
+
 ### On a network filesystem
 
 HDF5's file locking is unreliable on NFS, Lustre and GPFS. For a training job
@@ -194,20 +216,6 @@ export HDF5_USE_FILE_LOCKING=FALSE
 
 medh5 does not set it for you (§14.4): it also removes the protection between
 two writers. See [Tune performance](../guides/performance.md#on-a-network-filesystem).
-
-If you need your one `worker_init_fn` slot for seeding or other setup, call it
-from your own:
-
-```python
-from medh5.torch import worker_init_fn as medh5_worker_init
-
-def init(worker_id):
-    medh5_worker_init(worker_id)
-    seed_everything(worker_id)
-```
-
-A 10-epoch soak over the cache leaves the handle count and the descriptor count
-flat; there is a test that asserts it.
 
 ## Sampling strategies
 
@@ -246,7 +254,14 @@ with medh5.open(path) as s:
 the affine is right. `to_metatensor(..., roi=...)` shifts the origin to the
 ROI, so a patch keeps its world position.
 
-`to_dict(sample, images, annotations)` builds a dictionary-transform item.
+The affine is passed through in the grid's own `coord_system` — usually LPS —
+and labelled with it in the metadata MONAI reads, rather than silently converted.
+Pass `space="RAS"` when a consumer needs RAS: the conversion is a sign flip on
+the first two world axes of the affine, never a flip of the voxels.
+`from_metatensor(tensor)` returns the array and its metadata.
+
+`to_dict(sample, images, annotations)` builds a dictionary-transform item, with
+the same `space=` and `physical=` options.
 Annotations arrive as `int64` label volumes with their own grid's affine, and
 every voxel of the §7.7 ignore region is `65535` whichever encoding stores it —
 pass `ignore_index=65535` to the loss.

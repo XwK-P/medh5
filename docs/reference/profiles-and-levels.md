@@ -63,26 +63,33 @@ them:
 s.profiles   # {"core", "seg", "det", "curation", "longitudinal"}
 ```
 
-| Profile | Requires |
+| Profile | Requires (spec §1.3) |
 |---|---|
-| `core` | the container, geometry, at least one image |
-| `seg` | at least one voxel annotation |
-| `det` | at least one geometric annotation |
-| `cls` | at least one classification |
+| `core` | the container, geometry and timepoints, at least one image, integrity — always required |
+| `seg` | a label set and at least one voxel annotation (a bare `mask` does not count) |
+| `det` | a label set and at least one annotation whose `task` is `detection` |
+| `cls` | a label set and at least one classification annotation |
 | `reg` | at least one transform |
-| `curation` | provenance and quality records |
-| `multiscale` | a valid image pyramid |
-| `training` | a current sampling index |
-| `longitudinal` | more than one timepoint, related |
+| `curation` | a provenance graph, and `quality` on every annotation |
+| `multiscale` | the §4.3 pyramid layout on every image |
+| `training` | a sampling index |
+| `longitudinal` | at least two declared timepoints, each grid bound to one |
 
 `--profile` **overrides** what the file claims, which is the useful direction: a
 tool can require `det` and get a diagnostic whether or not the file thought to
 claim it.
 
 A profile is coarser than a kind, though. `det` is satisfied by any annotation
-whose task is `detection` — keypoints, points, contours and meshes as well as
-boxes — so requiring it does not guarantee the annotation your code is about to
-read. Check the kind you need in your own code as well.
+whose task is `detection` — oriented boxes, keypoints and points as well as
+boxes; contours and meshes default to `segmentation` — so requiring it does not
+guarantee the annotation your code is about to read. Check the kind you need in
+your own code as well.
+
+A declared profile whose requirement is missing is `E009`. A stale sampling
+index does not break `training` — it is `W905`, a cache to rebuild — and
+`W909`–`W911` report the longitudinal properties a validator can only warn
+about: stable instance ids, distinct frames per visit, a transform relating the
+visits.
 
 `w.infer_profiles()` sets them from what was actually written, so a writer
 rarely declares them by hand.
@@ -90,5 +97,5 @@ rarely declares them by hand.
 ## Related
 
 - [Diagnostic codes](diagnostic-codes.md) — what a failure at any level reports.
-- [Check a file before training on it](cli.md) — choosing a level for a job.
-- [`medh5 validate`](cli.md) — every flag.
+- [Check a file before training on it](../guides/validate.md) — choosing a level for a job.
+- [`medh5 validate`](cli.md#medh5-validate) — every flag.

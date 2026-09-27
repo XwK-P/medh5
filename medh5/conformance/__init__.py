@@ -1,4 +1,4 @@
-"""The conformance corpus (spec §15, implementation plan phase 0).
+"""The conformance corpus (spec §15).
 
 Every case is a file plus the exact set of diagnostic codes a conforming
 validator must emit for it.  Valid cases prove the format is writable; invalid

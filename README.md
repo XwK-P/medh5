@@ -34,8 +34,10 @@ pip install medh5
 pip install "medh5[torch,nifti,dicom]"
 ```
 
-Reading and writing needs only `h5py`, `hdf5plugin` and `numpy`. Extras:
-`torch`, `monai`, `nifti`, `dicom`, `dicomseg`, `itk`, `schema`, `interp`.
+Reading and writing needs only `h5py`, `hdf5plugin`, `numpy` and `jsonschema`
+(every write is checked against the format's JSON Schema). Extras: `torch`,
+`monai`, `nifti`, `dicom`, `dicomseg`, `itk`, `interp`; the old `schema` extra
+still installs and adds nothing.
 
 ## Documentation
 
@@ -185,7 +187,14 @@ encodings and diagnostic codes; it may not change what an existing one means
 (spec §16). The **package** follows semantic versioning from 1.0.0.
 
 0.x files are not readable by 1.0 and are not meant to be — `medh5 migrate`
-converts them once. See [Converters](https://medh5.readthedocs.io/en/latest/guides/migrate-0x/).
+converts them once. See [Migrate from 0.x](https://medh5.readthedocs.io/en/latest/guides/migrate-0x/).
+
+## Contributing
+
+See [CONTRIBUTING.md](https://github.com/XwK-P/medh5/blob/main/CONTRIBUTING.md)
+for the development setup, the checks a change has to pass, and how the
+specification and documentation are kept in step with the code. Release notes
+are in [CHANGELOG.md](https://github.com/XwK-P/medh5/blob/main/CHANGELOG.md).
 
 ## License
 

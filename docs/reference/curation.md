@@ -1,7 +1,7 @@
-# Curation
+# Curation records
 
 Who produced this, how good is it, who is it about, and can it be shared.
-Spec §11–§13.
+Spec §11–§12.
 
 ## Provenance
 
@@ -159,8 +159,17 @@ two claims for one set is precisely the `W906` conflict the validator catches.
 $ medh5 splits cohort/*.medh5        # conflicting claims and subject leakage
 ```
 
+<!-- illustrative -->
+```python
+audit = medh5.audit_splits(paths)
+audit.ok
+audit.conflicts        # W906: one set_id, different manifest digests
+audit.leaks            # a subject or group key in more than one partition
+audit.unclaimed        # files carrying no split claim at all
+```
+
 That check needs the whole cohort, which is why it is not part of `validate`.
-See [Cohorts](../guides/cohorts.md).
+See [Build and split a cohort](../guides/cohorts.md).
 
 ## De-identification
 

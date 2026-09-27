@@ -10,5 +10,8 @@ mistaken for arbitrary.
   export that fails on purpose, and the reasoning. A refusal you do not
   understand looks like a bug; a refusal you do understand is usually telling
   you something true about your data.
+- **[Design rationale](design-rationale.md)** — what 0.x could not express,
+  the alternatives weighed for each load-bearing decision, the costs accepted,
+  and the non-goals.
 
 For the normative version, see [the specification](../spec/medh5-1.0.md).

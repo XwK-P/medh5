@@ -1,4 +1,4 @@
-"""Patch and pair sampling (spec §14.3, plan §2.3)."""
+"""Patch and pair sampling (spec §14.3)."""
 
 from __future__ import annotations
 

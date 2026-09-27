@@ -62,8 +62,10 @@ Sub-packages map onto specification sections, so a spec change has one obvious
 home.
 
 - **`_hdf5.py`** — attribute codecs, identifier rules, atomic create, CoW amend.
-- **`sample.py`** — `Sample` (read) and `SampleWriter` (write); `medh5.open`,
-  `create`, `amend`. The central API.
+- **`sample.py`** — `Sample` (read) and `medh5.open`; **`writer.py`** —
+  `SampleWriter`, `create`, `amend`. The central API.
+- **`collection.py`** — `.medh5c` collections: `pack`, `unpack`,
+  `open_collection`.
 - **`document.py`** — the `/meta` sample document and its JSON Schema.
 - **`image.py`** — lazy reads, rescale, pyramid levels.
 - **`errors.py`** — the exception hierarchy and the §15.2 diagnostic code table.
@@ -75,19 +77,23 @@ home.
   `contains`/`dense`/`labelmap`/`instances` contract; `voxel/` holds the five
   encodings plus `select.py` (auto-selection by overlap graph) and
   `transcode.py`; `geometric.py` and `classification.py` hold the rest.
-- **`transforms/`** (§10) — affine, displacement, B-spline, composite, plus
-  frame-graph resolution in `resolve.py`.
+- **`transforms/`** (§10) — identity, affine, displacement, B-spline,
+  composite, plus frame-graph resolution in `resolve.py`.
 - **`curation/`** (§11–§12) — provenance, quality, agreement, identity, splits,
   tracking, timeline, and `scrub.py` (de-identification).
 - **`integrity/`** (§13) — per-object digests, `content_id`, verification, repair.
 - **`storage/`** (§14) — codec profiles, chunking, sampling index, recompression.
-- **`dataset/`** — cohort tools: manifests, splits, streaming stats, `C1xx` checks.
+- **`dataset/`** — cohort tools: manifests, splits, streaming stats, the
+  `C1xx`–`C5xx` checks.
+- **`validate/`** (§15) — the four levels; `rules.py` holds every rule.
 - **`io/`** — converters, each lazily imported: NIfTI, DICOM, DICOM SEG,
   RTSTRUCT, nnU-Net v2, and `legacy.py` (0.x → 1.0 migration).
 - **`torch/`**, **`sampling.py`**, **`monai.py`** — loaders. `sampling.py`
   depends on no deep-learning framework, because where to read is geometry.
 - **`conformance/`** — the corpus is a *shipped artifact*, not a test fixture:
   third-party implementations run it.
+- **`bench.py`** — `medh5 bench`, re-measuring the performance targets in
+  `docs/guides/performance.md`.
 - **`cli/`** — one module per command group, each exposing `register(sub)` and
   `dispatch(cmd, args)`; `cli/__init__.py::main` composes them.
 
@@ -123,7 +129,9 @@ writer and `recompress --rechunk`.
 
 ## Linting & style
 
-- **ruff** with `E, F, I, UP, B, SIM`, `target-version = "py310"`.
+- **ruff** with `E, F, I, UP, B, SIM, RUF100`, `target-version = "py310"`,
+  pinned in the `dev` extra and in `.pre-commit-config.yaml` (bump both).
+  Markdown is not formatted, and `docs/examples/` is excluded.
 - **mypy --strict**, with `ignore_missing_imports` for h5py, hdf5plugin, torch,
   nibabel, pydicom, SimpleITK, jsonschema, scipy, monai, highdicom.
 
@@ -138,12 +146,36 @@ writer and `recompress --rechunk`.
   start method, a Windows job (the atomic-rewrite and repack paths exist for
   it), a minimum-dependency job at the floors `pyproject.toml` declares, a
   conformance job that publishes the suite and scores this validator through
-  the public `score` path, and a MONAI job. `release.yml` runs the same CI on
+  the public `score` path, a MONAI job, a docs job (`mkdocs build --strict`),
+  and a prototype job that runs `docs/examples/reference_writer.py`. `release.yml` runs the same CI on
   the tagged commit before it builds and publishes. Actions are pinned by
   commit SHA; Dependabot proposes the updates.
 - **A skipped test is not a passing test.** Anything guarded by
   `pytest.importorskip` needs a CI job that installs the dependency, or it
   reports coverage it does not have.
+
+## Documentation
+
+`docs/` is the MkDocs site: `tutorials/`, `guides/` (how-to), `reference/`,
+`explanation/`, `spec/`, and `examples/` (standalone scripts). `CHANGELOG.md`
+stays at the root and `hooks/mkdocs_hooks.py` pulls it in; the same hook renders
+the diagnostic-code, cohort-code and schema tables from their sources (edit
+`errors.py`, `dataset/check.py` or the schema, never the page) and emits
+redirects for moved pages (`REDIRECTS`). There are no separate design records:
+the reasoning lives in `docs/explanation/design-rationale.md`.
+
+The docs are tested, not proofread:
+
+- `tests/v1/test_docs_python.py` executes every `python` block against a real
+  sample. A block that cannot run gets `<!-- illustrative -->` on the line above
+  its fence; fewer than half may.
+- `tests/v1/test_docs_examples.py` checks every documented `medh5 …` flag
+  against the parser, and keeps `STALE_CLAIMS` — statements once wrong in the
+  docs that must not come back.
+- `TestStatedCounts` in `tests/v1/test_conformance.py` compares every stated
+  corpus size and breakdown with the corpus.
+
+`CONTRIBUTING.md` is the human-facing version of this file.
 
 ## 0.x
 

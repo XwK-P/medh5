@@ -1,4 +1,4 @@
-"""PyTorch datasets over MEDH5 samples (implementation plan §2.3).
+"""PyTorch datasets over MEDH5 samples.
 
 Three datasets, one contract: every item is a ``dict`` with ``images``,
 ``valid``, ``label``, ``ignore`` and ``meta``.  Keeping the shape uniform is

@@ -1,4 +1,4 @@
-"""MONAI interoperability (implementation plan §2.3).
+"""MONAI interoperability.
 
 ``to_metatensor`` hands MONAI a tensor with the **correct affine**, so
 ``Spacingd``, ``Orientationd`` and ``SaveImaged`` work unmodified.  That is the

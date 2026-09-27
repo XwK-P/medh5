@@ -88,4 +88,4 @@ medh5 dataset check cohort.json --deep
 
 - **[Diagnostic codes](../reference/diagnostic-codes.md)** — all 71.
 - **[Profiles and validation levels](../reference/profiles-and-levels.md)** — the two dials.
-- **[Cohort check codes](../reference/cohort-checks.md)** — the `C1xx` space.
+- **[Cohort check codes](../reference/cohort-checks.md)** — the `C1xx`–`C5xx` space.

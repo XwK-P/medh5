@@ -65,9 +65,9 @@ conformance corpus, one case per code, that any implementation can run.
 
 **Reading a patch is fast.** A 64³ multi-class patch reads in ~4 ms, against
 117 ms measured on 0.x, because chunks are sized for it and the sampling index
-makes foreground sampling O(1) in the volume — 0.09 ms at 1 Mvox and at 20 Mvox.
-The index is written by `build_index()` and is not automatic: without one the
-same draw scans the labels and costs 1.4 ms and 21 ms. See
+makes foreground sampling O(1) in the volume — 0.03 ms per draw at 12.6 Mvox and
+at 512³ alike. The index is written by `build_index()` and is not automatic:
+without one the same draw scans the labels and costs 30 ms and 312 ms. See
 [tune performance](guides/performance.md), and run `medh5 bench` on your own
 hardware.
 
@@ -93,9 +93,13 @@ Every command is in the [CLI reference](reference/cli.md).
   behind every number quoted here.
 - **[Sample document schema](reference/schema.md)** — every field of `/meta`,
   with the machine-readable schema itself.
-- **[Design records](https://github.com/XwK-P/medh5/tree/main/design)** — how
-  1.0 was arrived at: what broke in 0.6.0, the alternatives weighed, the plan
-  delivered against. Historical, and kept in the repository rather than here.
+- **[Design rationale](explanation/design-rationale.md)** — why 1.0 is shaped
+  the way it is: what 0.x could not express, the alternatives weighed, the costs
+  accepted, and what the format deliberately is not.
+- **[Changelog](changelog.md)** — every release, with the behaviour changes to
+  read before upgrading a pipeline.
+- **[Contributing](https://github.com/XwK-P/medh5/blob/main/CONTRIBUTING.md)** —
+  the checks a change has to pass, and how the documentation is kept honest.
 
 ## Versioning
 

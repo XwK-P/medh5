@@ -1,4 +1,4 @@
-"""Converters: NIfTI, DICOM, DICOM SEG, RTSTRUCT, nnU-Net v2 (plan §7)."""
+"""Converters: NIfTI, DICOM, DICOM SEG, RTSTRUCT, nnU-Net v2."""
 
 from __future__ import annotations
 

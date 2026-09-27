@@ -1,4 +1,4 @@
-"""Batching items whose parts do not all stack (implementation plan §2.3).
+"""Batching items whose parts do not all stack.
 
 A MEDH5 item is a nested dict of tensors, lists and metadata.  The default
 ``torch`` collate stacks anything it recognises and raises on anything it does
