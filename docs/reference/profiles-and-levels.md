@@ -72,8 +72,8 @@ s.profiles   # {"core", "seg", "det", "curation", "longitudinal"}
 | `reg` | at least one transform |
 | `curation` | a provenance graph, and `quality` on every annotation |
 | `multiscale` | the §4.3 pyramid layout on every image |
-| `training` | a sampling index |
-| `longitudinal` | at least two declared timepoints, each grid bound to one |
+| `training` | a sampling index, present and current |
+| `longitudinal` | at least two declared timepoints, each grid bound to one, and stable instance ids for objects seen at more than one visit (§7.4) |
 
 `--profile` **overrides** what the file claims, which is the useful direction: a
 tool can require `det` and get a diagnostic whether or not the file thought to
@@ -85,11 +85,20 @@ boxes; contours and meshes default to `segmentation` — so requiring it does no
 guarantee the annotation your code is about to read. Check the kind you need in
 your own code as well.
 
-A declared profile whose requirement is missing is `E009`. A stale sampling
-index does not break `training` — it is `W905`, a cache to rebuild — and
-`W909`–`W911` report the longitudinal properties a validator can only warn
-about: stable instance ids, distinct frames per visit, a transform relating the
-visits.
+A declared profile whose requirement is missing is `E009`. Not every
+requirement can be checked that way:
+
+- **`training`** — an absent index is `E009`. A stale one is `W905`: the
+  profile still requires it to be current, but readers ignore a stale entry and
+  fall back to scanning, so the file stays readable and the index needs a
+  rebuild (`medh5 fix --rebuild-index`). Under `strict` it fails like an error,
+  which is why `strict` is the level for a readiness check.
+- **`longitudinal`** — whether one physical object kept its `instance_id` across
+  visits is not something a validator can see; that is the curator's to get
+  right. What it can see is a symptom: `W909` fires when one `instance_id`
+  carries two different class ids. Alongside it, `W910` reports grids at
+  different visits sharing a `frame_uid`, and `W911` a multi-timepoint sample
+  with no transform relating any two visits.
 
 `w.infer_profiles()` sets them from what was actually written, so a writer
 rarely declares them by hand.

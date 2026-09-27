@@ -197,7 +197,7 @@ honestly** — coverage, provenance, geometry and integrity.
 | **Multiple grids complicate every consumer** | Real complexity, but it is the domain's: PET and CT genuinely have different lattices. A consumer that wants one grid reads the reference grid and is no more complex than before. |
 | **Copy-on-write amend rewrites the whole file** | The alternative, in-place deletion, leaks space monotonically and fragments the chunk index, because HDF5 does not reclaim it (§14.4). |
 | **Subject-scoped files are larger** | A file holds every visit, so amend costs scale with the record and a new visit is a rewrite, not an append. Mitigated by the curator's freedom to emit one sample per timepoint for a long series, and by the fact that annotation edits — the frequent operation — touch small objects. |
-| **Longitudinal correctness becomes the format's problem** | Stable instance ids and honest coverage across visits are the writer's to get right; a validator can only warn (`W909`, `W911`). The format makes the correct thing expressible and the incorrect thing detectable. It cannot make it automatic. |
+| **Longitudinal correctness becomes the format's problem** | Stable instance ids and honest coverage across visits are the writer's to get right. A validator sees only their symptoms — one `instance_id` carrying two classes (`W909`), partial coverage with no ignore region (`W904`) — so the format makes the correct thing expressible and some of the incorrect things detectable. It cannot make it automatic. |
 
 ## Non-goals
 
