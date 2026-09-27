@@ -147,17 +147,17 @@ registered to each other by construction — that is what makes them channels �
 a second channel at a different spacing or origin, or a label volume some other
 tool resampled, is refused rather than filed onto channel 0's grid (§3.2).
 
-This is the same `_same_grid` check `from_nifti` has always applied. Import used
-to keep whichever grid it saw first, which wrote the later volumes' voxels
-intact and their position silently wrong.
+This is the same shared-grid check `from_nifti` applies. Import used to keep
+whichever grid it saw first, which wrote the later volumes' voxels intact and
+their position silently wrong.
 
 **Export refuses a class the sample does not have** (`E402`). `to-nnunet`
 matches classes by **id**, not by name — which is precisely why import keeps
 nnU-Net's own integers. Matching by name looks equivalent and is not: import
 sanitises `dataset.json` names into label-set keys, so a dataset naming a class
-`"Tumour Core"` or `"GTV"` resolved nothing. The miss fell into a bare
-`except: continue`, and the export came out listing every class, with label
-files of the right shape in which every voxel was 0.
+`"Tumour Core"` or `"GTV"` resolved nothing — and the export, skipping the miss
+silently, came out listing every class, with label files of the right shape in
+which every voxel was 0.
 
 ## COCO
 

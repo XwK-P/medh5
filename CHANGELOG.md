@@ -4,6 +4,65 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+Documentation only: **no format change and no change to the package's
+behaviour**. A review of every page against the code and the specification.
+
+### Removed
+
+- **The `design/` records.** The 1.0 design proposal and implementation plan
+  were pre-implementation working documents, unmaintained by their own account.
+  The reasoning that still holds — the problems 0.x could not express, the
+  alternatives weighed, the costs accepted, the non-goals — is now a maintained
+  page, [Design rationale](docs/explanation/design-rationale.md), and the
+  benchmark results the proposal carried are on
+  [Runnable examples](docs/examples/index.md) beside the scripts that produce
+  them. Old links to the proposal redirect to the new page; the plan remains in
+  the repository's history. Docstrings and `medh5 bench --help` no longer cite
+  the plan.
+
+### Added
+
+- `CONTRIBUTING.md`: setup, the gates, how the specification and the tested
+  documentation are kept in step with the code, and the release process.
+- Documentation for what existed but was undocumented: `from-nifti
+  --fourth-axis` and 4-D series; the `grid` and `roi` classification scopes;
+  `identity` transforms; `mask` annotations and `valid_mask`; the Python entry
+  points of every converter; `s.index`, `s.fresh_indices`, `s.label_set`,
+  `Timeline.interval_days`, `commit()`/`abort()`, `remap_frame_uids`,
+  `audit_splits`, `pack`/`unpack`, `grid_patches`; the MONAI adapter's `space=`;
+  `PairedPatchDataset`'s change labels and `samples_per_pair`.
+- A test holding the conformance page's breakdown of the corpus — valid,
+  invalid, samples, collections, mutated — to the corpus. Only the total was
+  checked, and the breakdown had drifted.
+
+### Fixed
+
+- **Specification, editorially.** The heading for §5.4 (hierarchy and
+  `closure`) was missing although three clauses cite it; §6.3's kind registry
+  pointed every geometric kind one subsection early; §4.2 and §8.5 cited §10.3
+  and §10.5 for §10.4 and §10.6; §2.4's table of `/meta` members omitted
+  `quality`. No requirement changed.
+- **Claims the code contradicts.** `dense([65535])` is refused with `E404`, not
+  answered with an all-zero plane; contours and meshes do not satisfy the `det`
+  profile; the profile table now states §1.3's requirements; a classification's
+  `labels` are keyed by class key; `Cohort` has `acquisition_protocol`, not
+  `protocol`; `transform_between` traverses a link backwards only where an
+  inverse can be evaluated; `portable` shuffles before gzip; the core install
+  includes `jsonschema`.
+- **Stale numbers.** The conformance page's 39 valid cases, 111 samples and 71
+  mutated cases are 41, 113 and 82; the landing page and the training tutorial
+  quoted foreground-sampling timings from before 1.4.2.
+- **The CLI reference** now matches the parser: `fix --by`, `track --key`,
+  `index build` defaults, `dataset split --assigned-by`, `dataset stats
+  --set-id` and `--stride`, `--report` and `--json` on the converters, and the
+  default annotation ids. `medh5 index build --help` now says `--occupancy` is
+  the occupancy map's block size, which is what it always was, not its side
+  length.
+- Page titles that disagreed with the navigation, links labelled with pages
+  that no longer exist, and a tutorial that duplicated the next one.
+
 ## [1.4.2] — 2026-09-26
 
 The second patch release under the third audit's plan, and the last of it: the
@@ -1353,7 +1412,8 @@ the files 1.0.0 does, and `__format_version__` stays `"1.0"`.
 A clean-slate reimplementation of the format. **Not backward compatible with 0.x**, by design: a
 1.0 reader refuses a 0.x file rather than guessing, and a 0.x reader raises on the missing
 `schema_version`. See [the specification](docs/spec/medh5-1.0.md) and
-[the implementation plan](design/medh5-1.0-implementation-plan.md).
+[the implementation plan](https://github.com/XwK-P/medh5/blob/11c4860/design/medh5-1.0-implementation-plan.md)
+(a working document, kept in the repository's history).
 
 ### The model
 

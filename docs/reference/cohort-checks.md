@@ -25,4 +25,4 @@ medh5 dataset check cohort.json --deep
 
 - [Build and split a cohort](../guides/cohorts.md) — the task these checks close.
 - [Diagnostic codes](diagnostic-codes.md) — the per-file `E`/`W` space.
-- [`medh5 dataset check`](cli.md) — flags and JSON output.
+- [`medh5 dataset check`](cli.md#medh5-dataset-check) — flags and JSON output.

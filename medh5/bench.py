@@ -1,13 +1,13 @@
-"""Reproducing the performance targets on the reader's own hardware (plan §4.3).
+"""Reproducing the performance targets on the reader's own hardware.
 
-The numbers in the plan and in §14 of the specification were measured on one
-machine.  Published without a way to re-run them they are marketing; this
-module is the way to re-run them, so a claim like "18× faster foreground
-sampling" can be checked rather than believed.
+The numbers in the performance guide and in §14 of the specification were
+measured on one machine.  Published without a way to re-run them they are
+marketing; this module is the way to re-run them, so a claim like "18× faster
+foreground sampling" can be checked rather than believed.
 
-Every metric here is one the plan set a target for.  A measurement below target
-is reported as such and the exit status says so --- a benchmark that always
-passes is a benchmark nobody reads.
+Every metric here is one the performance guide sets a target for.  A
+measurement below target is reported as such and the exit status says so --- a
+benchmark that always passes is a benchmark nobody reads.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ TARGETS: dict[str, tuple[float, str]] = {
     "meta_read_ms": (2.0, "metadata-only read"),
     "open_to_first_patch_ms": (15.0, "full open() → first patch"),
 }
-"""Metric -> (upper bound in ms, description).  Plan §4.3.
+"""Metric -> (upper bound in ms, description): the performance guide's targets.
 
 The many-class row holds the foreground draw to its O(1) claim where the class
 count is large.  The eight-class sample met the target at 0.9 ms while a
@@ -284,7 +284,7 @@ def throughput(
     workers: int = 0,
     annotation: str | None = None,
 ) -> Measurement:
-    """Sustained patches/s through the real dataloader (plan §4.3: ≥ 400/s, 8 workers).
+    """Sustained patches/s through the real dataloader (target: ≥ 400/s).
 
     Measured end to end --- open, sample, read, decompress, collate --- because
     that is the number that decides whether a GPU waits.

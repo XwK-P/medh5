@@ -1,4 +1,4 @@
-"""0.x → 1.0 migration (spec Appendix B, plan §6).
+"""0.x → 1.0 migration (spec Appendix B).
 
 The mapping is mostly mechanical; four steps are not, and each is reported per
 file so a curator can audit a cohort rather than trust it:

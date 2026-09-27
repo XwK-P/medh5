@@ -72,10 +72,11 @@ medh5 validate case.medh5 --level strict --profile det
 ```
 
 `--profile det` holds the file to having **some** detection annotation — the
-check is `task='detection'`, which keypoints, points, contours and meshes satisfy
-as well as boxes. A file carrying only keypoints passes `--profile det`, so a
-pipeline that specifically needs boxes still gets its `KeyError`. Check for the
-annotation you are going to read:
+check is `task='detection'`, which oriented boxes, keypoints and points satisfy
+as well as boxes (contours and meshes default to `segmentation`, spec §1.3). A
+file carrying only keypoints passes `--profile det`, so a pipeline that
+specifically needs boxes still gets its `KeyError`. Check for the annotation you
+are going to read:
 
 ```python
 with medh5.open(path) as s:
@@ -88,4 +89,4 @@ with medh5.open(path) as s:
 
 - **[Annotation kinds](../reference/annotations.md#boxes)** — oriented boxes, keypoints, contours, meshes.
 - **[Diagnostic codes](../reference/diagnostic-codes.md#e405)** — what `E405` means.
-- **[Specification §8.1](../spec/medh5-1.0.md)** — the normative box↔slice rule.
+- **[Specification §8.1](../spec/medh5-1.0.md#81-coordinate-conventions-normative)** — the normative box↔slice rule.

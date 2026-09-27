@@ -1,4 +1,4 @@
-"""``medh5 fix`` and ``medh5 scrub`` --- repair and de-identification (plan §5).
+"""``medh5 fix`` and ``medh5 scrub`` --- repair and de-identification.
 
 The two commands share a shape and not much else: one rebuilds what is derived
 and one removes what should never have been written.  Both are tested on the

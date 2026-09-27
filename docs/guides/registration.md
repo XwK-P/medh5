@@ -29,7 +29,7 @@ Without `frame_uid` on the grids, a timepoint resolves to no frames at all and
 `transform_between("tp0", "tp1")` returns `None` however carefully the transform
 was written — the transform names endpoints nothing else refers to.
 
-Kinds: `affine`, `displacement`, `bspline`, `composite`.
+Kinds: `identity`, `affine`, `displacement`, `bspline`, `composite`.
 
 ```python
 t = s.transform_between("tp0", "tp1")
@@ -152,4 +152,4 @@ stored one, and refused to choose between them.
 
 - **[Longitudinal studies](longitudinal.md)** — the task this fits into.
 - **[Python API](../reference/python-api.md)** — `transform_between`, the transform classes.
-- **[Specification §10](../spec/medh5-1.0.md)** — the normative model.
+- **[Specification §10](../spec/medh5-1.0.md#10-registration)** — the normative model.

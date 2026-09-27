@@ -1,4 +1,4 @@
-"""``dataset`` --- the cohort commands: index, split, stats, check (plan §5).
+"""``dataset`` --- the cohort commands: index, split, stats, check.
 
 Every one of these reads metadata and nothing else unless told otherwise, which
 is what makes them usable on a cohort rather than on a demo.

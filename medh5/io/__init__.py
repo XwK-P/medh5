@@ -1,4 +1,4 @@
-"""Converters (plan §7).
+"""Converters.
 
 Every converter is lazy: ``import medh5`` never pulls in nibabel, pydicom,
 SimpleITK or highdicom, and a missing one produces a message naming the extra

@@ -15,20 +15,24 @@ docs_dir: docs
 # puts `examples/*.py` on the site --- deliberately, since the specification and
 # the examples page link to them as runnable scripts. The build's own
 # requirements file is not documentation and is excluded; it only lives here
-# because that is where Read the Docs looks for it.
+# because that is where Read the Docs looks for it. So are the scratch files and
+# JSON results the benchmark scripts write beside themselves when run from a
+# checkout: a local build would otherwise publish megabytes of HDF5.
 exclude_docs: |
   requirements.txt
+  examples/*.h5
+  examples/*.json
 
 # A broken cross-reference in a normative specification is a defect, not a
-# cosmetic problem: 61 of the links below point between clauses.  `strict`
-# turns MkDocs' link warnings into build failures, and CI builds with it.
+# cosmetic problem: the pages link into it clause by clause.  `strict` turns
+# MkDocs' link warnings into build failures, and CI builds with it.
 strict: true
 
 # Anchor and link validation.  MkDocs defaults `anchors` to `info`, which means
 # a link to a heading that no longer exists prints a line nobody reads and the
 # build stays green.  With `strict` above, raising these to `warn` makes every
 # broken `#fragment` a build failure --- which is what makes it safe to move a
-# page: the machine, not a reviewer, checks the 60-odd cross-document links.
+# page: the machine, not a reviewer, checks every cross-document link.
 validation:
   nav:
     omitted_files: warn
@@ -89,8 +93,8 @@ markdown_extensions:
   - attr_list
   - toc:
       permalink: true
-      # The specification is one 1,589-line file with 88 headings; without a
-      # deeper sidebar its clauses are unreachable except by scrolling.
+      # The specification is one long file with about ninety headings; without
+      # a deeper sidebar its clauses are unreachable except by scrolling.
       toc_depth: 3
       # GitHub's slug algorithm, not Python-Markdown's. The two disagree on
       # headings containing punctuation --- `### medh5 fix PATH... [--json]`
@@ -153,6 +157,7 @@ nav:
       - explanation/index.md
       - The data model: explanation/data-model.md
       - What the converters refuse, and why: explanation/refusals.md
+      - Design rationale: explanation/design-rationale.md
 
   - Specification:
       - Format specification 1.0: spec/medh5-1.0.md

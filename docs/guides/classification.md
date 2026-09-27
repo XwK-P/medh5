@@ -1,7 +1,8 @@
 # Classification and change labels
 
-Attach a label to a whole sample, one visit, one object or one slice — and, for
-a label that describes a *difference*, to the interval between two visits.
+Attach a label to a whole sample, one visit, one acquisition, one region, one
+object or one slice — and, for a label that describes a *difference*, to the
+interval between two visits.
 
 ## Choose a scope
 
@@ -12,6 +13,8 @@ common mistake, because every scope reads the same at the call site.
 |---|---|---|
 | `sample` | the subject | RECIST response across the study |
 | `timepoint` | one visit | image quality at follow-up |
+| `grid` | one acquisition — the annotation's `grid=` | this series is motion-corrupted |
+| `roi` | one region, by region id | this region is suspicious |
 | `instance` | one object | this lesion is calcified |
 | `slice` | one plane | this slice is non-diagnostic |
 
@@ -26,8 +29,9 @@ by timepoint index. Give only `timepoints` and the assertion comes back with
 `scope_id=None`, so `assertions()` and `by_scope_id()` cannot tell you which
 visit it was about — which is the entire point of a timepoint scope.
 
-The same applies to `instance` and `slice`: the scope names the *kind* of thing,
-`scope_ids` names the thing.
+The same applies to `roi`, `instance` and `slice`: the scope names the *kind* of
+thing, `scope_ids` names the thing — a region id, an `instance_id`, a slice
+index.
 
 ## Change labels span an interval
 
@@ -77,13 +81,26 @@ c.scope             # "sample"
 c.timepoints        # ("tp0", "tp1")
 c.labels            # {"progressive_disease": 1.0}
 c.schemes           # ("RECIST 1.1",)
+c.is_change_label   # True — sample scope, more than one timepoint
 ```
 
 `labels` maps a class key to a confidence, so a one-hot label and a soft label
-have the same shape and nothing has to know which it is holding.
+have the same shape and nothing has to know which it is holding. A value of
+`0.0` is an explicit negative — assessed and not present — which is different
+from a class nobody assessed (spec §9).
+
+Where one annotation holds several assertions per class — one per visit, one per
+lesion — read them per scope unit instead:
+
+<!-- illustrative -->
+```python
+q = s.annotations["quality"]
+q.by_scope_id()     # {1: (Assertion(...),)} — keyed by timepoint index here
+q.assertions()      # every assertion, with its class, value and scope_id
+```
 
 ## Related
 
 - **[Longitudinal studies](longitudinal.md)** — the task change labels belong to.
 - **[Annotation kinds](../reference/annotations.md#classification)** — the full API.
-- **[Specification §9](../spec/medh5-1.0.md)** — the normative model.
+- **[Specification §9](../spec/medh5-1.0.md#9-classification-annotations)** — the normative model.

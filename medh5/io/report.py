@@ -1,4 +1,4 @@
-"""What a conversion decided, and where it had to guess (plan §6).
+"""What a conversion decided, and where it had to guess.
 
 Importing data is where a format either preserves what a source said or quietly
 substitutes something plausible.  Every converter here records the second kind

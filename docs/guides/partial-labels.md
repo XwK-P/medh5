@@ -159,7 +159,7 @@ which never looked for it — the exact substitution this page exists to prevent
 `e.annotations[name]["timepoints"]` narrows it further when a sample carries
 per-visit annotations.
 
-`ManifestEntry`'s own pair — `has_class(class_id)` for what is present,
+`Entry`'s own pair — `has_class(class_id)` for what is present,
 `examined(class_id)` for what was looked for — draws the same distinction as an
 annotation does, at sample scope.
 

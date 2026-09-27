@@ -51,20 +51,6 @@ INCLUDED: tuple[tuple[str, str], ...] = (("CHANGELOG.md", "changelog.md"),)
 SCHEMA_SOURCE = "schemas/medh5-sample-1.0.schema.json"
 SCHEMA_TARGET = "reference/medh5-sample-1.0.schema.json"
 
-# Pages that used to be published at one URL and are now served at another.
-# Read the Docs, PyPI, search engines and other people's bookmarks all point at
-# the old ones, and a documentation site that answers a stale link with a 404
-# has broken the very thing it exists to provide.  Each entry generates a
-# redirecting stub at the *old* path.
-#
-# `mkdocs-redirects` does exactly this, and is not used: `docs/requirements.txt`
-# pins two packages and explains why, and a third pinned dependency --- a third
-# thing to bump, a third way for a Read the Docs build to fail --- to emit a
-# handful of four-line HTML files is not the trade this project makes when it
-# already owns `File.generated`.
-#
-# (old site path, page it now lives at) --- or an absolute URL, for a page that
-# has left the site entirely.
 # Files that were published verbatim at one path and now live at another.
 #
 # These are *not* redirects.  A meta-refresh page served where a reader asked
@@ -81,14 +67,27 @@ ASSET_ALIASES: tuple[tuple[str, str], ...] = (
     ("design/benchmarks/reference_writer.py", "examples/reference_writer.py"),
 )
 
+# Pages that used to be published at one URL and are now served at another.
+# Read the Docs, PyPI, search engines and other people's bookmarks all point at
+# the old ones, and a documentation site that answers a stale link with a 404
+# has broken the very thing it exists to provide.  Each entry generates a
+# redirecting stub at the *old* path.
+#
+# `mkdocs-redirects` does exactly this, and is not used: `docs/requirements.txt`
+# pins two packages and explains why, and a third pinned dependency --- a third
+# thing to bump, a third way for a Read the Docs build to fail --- to emit a
+# handful of four-line HTML files is not the trade this project makes when it
+# already owns `File.generated`.
+#
+# (old site path, page it now lives at) --- or an absolute URL, for a page that
+# has left the site entirely.  The 1.0 design proposal was superseded by the
+# design-rationale page; the implementation plan was a working document and is
+# kept only in the repository's history, at the last commit that carried it.
 REDIRECTS: tuple[tuple[str, str], ...] = (
-    (
-        "design/medh5-1.0-proposal.md",
-        "https://github.com/XwK-P/medh5/blob/main/design/medh5-1.0-proposal.md",
-    ),
+    ("design/medh5-1.0-proposal.md", "explanation/design-rationale.md"),
     (
         "design/medh5-1.0-implementation-plan.md",
-        "https://github.com/XwK-P/medh5/blob/main/design/medh5-1.0-implementation-plan.md",
+        "https://github.com/XwK-P/medh5/blob/11c4860/design/medh5-1.0-implementation-plan.md",
     ),
     ("design/benchmarks/README.md", "examples/index.md"),
     ("getting-started.md", "tutorials/first-sample.md"),
@@ -108,16 +107,10 @@ REDIRECTS: tuple[tuple[str, str], ...] = (
 # A Markdown link target beginning `docs/`, which is repository-root-relative.
 _DOCS_LINK = re.compile(r"(?<=]\()docs/")
 
-# A Markdown link target into `design/`, which is in the repository but *not* on
-# the site: those documents are historical records of the 1.0 design and are
-# deliberately not published.  On the site the link has to leave for GitHub.
-_OFF_SITE_LINK = re.compile(r"(?<=]\()(design/[^)]+)")
 
-
-def _relocated(markdown: str, repo_url: str) -> str:
+def _relocated(markdown: str) -> str:
     """Rewrite repository-root-relative doc links for a page served at the site root."""
-    markdown = _DOCS_LINK.sub("", markdown)
-    return _OFF_SITE_LINK.sub(rf"{repo_url.rstrip('/')}/blob/main/\1", markdown)
+    return _DOCS_LINK.sub("", markdown)
 
 
 # --------------------------------------------------------------------------
@@ -575,7 +568,6 @@ def _old_url(source: str) -> str:
 def on_files(files: Files, config: Any) -> Files:
     """Add repository-root files to the build without copying them into `docs/`."""
     root = _root(config)
-    repo_url = config.get("repo_url") or ""
     for source, destination in INCLUDED:
         origin = root / source
         if not origin.is_file():
@@ -586,7 +578,7 @@ def on_files(files: Files, config: Any) -> Files:
                 f"{source} is listed in hooks/mkdocs_hooks.py:INCLUDED but is not in "
                 f"the repository at {origin}"
             )
-        content = _relocated(origin.read_text(encoding="utf-8"), repo_url)
+        content = _relocated(origin.read_text(encoding="utf-8"))
         files.append(
             File.generated(config, destination, content=content.encode("utf-8"))
         )

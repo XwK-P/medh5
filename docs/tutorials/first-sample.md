@@ -1,4 +1,7 @@
-# Getting started
+# Write and read your first sample
+
+Install the package, write a CT with two labelled structures, read it back, and
+look at it from the shell. About twenty minutes.
 
 ## Install
 
@@ -116,33 +119,21 @@ $ medh5 verify case_0001.medh5
 `validate` checks the file against the specification and reports stable
 diagnostic codes; `verify` checks that every object still matches its digest.
 
-## Train on it
+## Build a sampling index
 
-```python
-from torch.utils.data import DataLoader
-from medh5.torch import PatchDataset, collate, worker_init_fn
-from medh5.sampling import PatchSampler
-
-sampler = PatchSampler((32, 32, 32), strategy="balanced",
-                       foreground_classes=["liver", "lesion"])
-dataset = PatchDataset(["case_0001.medh5"], sampler,
-                       images=["CT"], annotations={"organs": ["liver", "lesion"]},
-                       samples_per_volume=8)
-
-loader = DataLoader(dataset, batch_size=2, num_workers=4,
-                    worker_init_fn=worker_init_fn, collate_fn=collate)
-```
-
-Foreground sampling is O(1) in the volume if the file carries a sampling index.
-Build one with:
+One more command before the file goes near a training loop:
 
 ```
 $ medh5 index build case_0001.medh5
 ```
 
+It stores, per class, a bounded sample of foreground coordinates, so drawing a
+patch centred on the liver becomes a lookup instead of a scan of the labels.
+Nothing fails without it — the sampler scans instead, and says so.
+
 ## Where to go next
 
-- **[Concepts](../explanation/data-model.md)** — the model behind the API.
-- **[Converters](../reference/converters.md)** — you probably have NIfTI or DICOM, not this.
-- **[Training](../reference/torch.md)** — samplers, transforms, MONAI, and the numbers.
+- **[Your first training run](first-training-run.md)** — feed this file to a PyTorch `DataLoader`.
+- **[The data model](../explanation/data-model.md)** — the model behind the API.
+- **[Import from DICOM](../guides/import-dicom.md)** or **[from NIfTI](../guides/import-nifti.md)** — you probably have one of those, not this.
 - **[Specification](../spec/medh5-1.0.md)** — when you need the normative answer.

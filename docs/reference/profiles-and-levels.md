@@ -63,26 +63,42 @@ them:
 s.profiles   # {"core", "seg", "det", "curation", "longitudinal"}
 ```
 
-| Profile | Requires |
+| Profile | Requires (spec §1.3) |
 |---|---|
-| `core` | the container, geometry, at least one image |
-| `seg` | at least one voxel annotation |
-| `det` | at least one geometric annotation |
-| `cls` | at least one classification |
+| `core` | the container, geometry and timepoints, at least one image, integrity — always required |
+| `seg` | a label set and at least one voxel annotation (a bare `mask` does not count) |
+| `det` | a label set and at least one annotation whose `task` is `detection` |
+| `cls` | a label set and at least one classification annotation |
 | `reg` | at least one transform |
-| `curation` | provenance and quality records |
-| `multiscale` | a valid image pyramid |
-| `training` | a current sampling index |
-| `longitudinal` | more than one timepoint, related |
+| `curation` | a provenance graph, and `quality` on every annotation |
+| `multiscale` | the §4.3 pyramid layout on every image |
+| `training` | a sampling index, present and current |
+| `longitudinal` | at least two declared timepoints, each grid bound to one, and stable instance ids for objects seen at more than one visit (§7.4) |
 
 `--profile` **overrides** what the file claims, which is the useful direction: a
 tool can require `det` and get a diagnostic whether or not the file thought to
 claim it.
 
 A profile is coarser than a kind, though. `det` is satisfied by any annotation
-whose task is `detection` — keypoints, points, contours and meshes as well as
-boxes — so requiring it does not guarantee the annotation your code is about to
-read. Check the kind you need in your own code as well.
+whose task is `detection` — oriented boxes, keypoints and points as well as
+boxes; contours and meshes default to `segmentation` — so requiring it does not
+guarantee the annotation your code is about to read. Check the kind you need in
+your own code as well.
+
+A declared profile whose requirement is missing is `E009`. Not every
+requirement can be checked that way:
+
+- **`training`** — an absent index is `E009`. A stale one is `W905`: the
+  profile still requires it to be current, but readers ignore a stale entry and
+  fall back to scanning, so the file stays readable and the index needs a
+  rebuild (`medh5 fix --rebuild-index`). Under `strict` it fails like an error,
+  which is why `strict` is the level for a readiness check.
+- **`longitudinal`** — whether one physical object kept its `instance_id` across
+  visits is not something a validator can see; that is the curator's to get
+  right. What it can see is a symptom: `W909` fires when one `instance_id`
+  carries two different class ids. Alongside it, `W910` reports grids at
+  different visits sharing a `frame_uid`, and `W911` a multi-timepoint sample
+  with no transform relating any two visits.
 
 `w.infer_profiles()` sets them from what was actually written, so a writer
 rarely declares them by hand.
@@ -90,5 +106,5 @@ rarely declares them by hand.
 ## Related
 
 - [Diagnostic codes](diagnostic-codes.md) — what a failure at any level reports.
-- [Check a file before training on it](cli.md) — choosing a level for a job.
-- [`medh5 validate`](cli.md) — every flag.
+- [Check a file before training on it](../guides/validate.md) — choosing a level for a job.
+- [`medh5 validate`](cli.md#medh5-validate) — every flag.

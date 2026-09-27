@@ -70,7 +70,7 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
         "--occupancy",
         type=int,
         default=DEFAULT_OCCUPANCY_FACTOR,
-        help="store a coarse occupancy grid of this side length",
+        help="block size, in voxels per axis, of the coarse occupancy map",
     )
     build.add_argument(
         "--seed",

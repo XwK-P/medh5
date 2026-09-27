@@ -1,4 +1,4 @@
-"""PyTorch integration (implementation plan §2.3).
+"""PyTorch integration.
 
 ``import medh5`` never imports torch; this subpackage does, and says how to
 install it when it is absent.

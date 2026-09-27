@@ -1,4 +1,4 @@
-"""The command line (implementation plan §5)."""
+"""The command line."""
 
 from __future__ import annotations
 
@@ -472,7 +472,7 @@ class TestFixAndScrub:
 
 
 class TestDatasetCommands:
-    """The cohort commands (plan §5): index, split, stats, check."""
+    """The cohort commands: index, split, stats, check."""
 
     @pytest.fixture
     def cohort(self, tmp_path, label_set):
@@ -977,7 +977,7 @@ class TestPhase5Curation:
 
 
 class TestPhase6Performance:
-    """``recompress`` and ``bench`` (§14.2, plan §4.3)."""
+    """``recompress`` and ``bench`` (§14.2)."""
 
     def test_recompress_preserves_the_content_id(self, capsys, sample_path):
         import medh5
@@ -1067,7 +1067,7 @@ class TestPhase6Performance:
 
 
 class TestPhase7Convert:
-    """``convert`` and ``migrate`` (plan §7)."""
+    """``convert`` and ``migrate``."""
 
     @pytest.fixture
     def nifti(self, tmp_path):

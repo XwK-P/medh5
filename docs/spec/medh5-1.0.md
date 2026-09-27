@@ -168,6 +168,7 @@ Top-level members of the sample document:
 | `cohort` | SHOULD | §12.2 | dataset, site, group key for leakage-free splitting |
 | `label_set` | seg/det/cls | §5 | inline label set or reference |
 | `provenance` | `curation` | §11.1 | agents and activities |
+| `quality` | `curation` | §11.2 | quality records, keyed by the annotations' `quality` attribute |
 | `splits` | MAY | §12.3 | split-membership claims |
 | `acquisition` | SHOULD | §4.5 | per-image acquisition parameters |
 | `deidentification` | SHOULD | §11.4 | method, profile, date shift |
@@ -392,7 +393,7 @@ dataset — or on the group, inherited by every level:
 | `quantitative` | `int16`/`float32` | calibrated physical quantity named by `value_units` (HU, SUV, ADC, T1) |
 | `rgb` | `uint8` | colour channels, `channel` axis required |
 | `probability` | `float16`/`float32` | ∈ [0,1] |
-| `displacement` | `float32` | vector field; see §10.3 |
+| `displacement` | `float32` | vector field; see §10.4 |
 | `mask` | `bool`/`uint8` | validity / FOV mask |
 
 **Physical value** = `stored × rescale_slope + rescale_intercept`. Readers **MUST** apply this when
@@ -532,6 +533,8 @@ full-FMA anatomy, cell-type atlases — are served by the reserved `wide_labels`
 future minor version. Note that **instance** ids are separately `uint32`/`uint64` (§7.4), so the cap
 never limits how many *objects* a sample may contain.
 
+### 5.4 Hierarchy and closure
+
 `parents` forms a DAG (`liver_segment_iv` → `liver` → `abdominal_organ`; `left_kidney` → `kidney`,
 and separately `part_of` → `urinary_system` via `relations`). Cycles are an error.
 
@@ -605,12 +608,12 @@ absent from the file.
 | `instances` | seg + det | §7.4 | per-object bbox + bbox-local bit-packed mask |
 | `probmap` | seg | §7.5 | per-class `float16` probability volumes |
 | `mask` | — | §4.4 | single boolean volume, no classes (FOV, ignore region) |
-| `boxes` | det | §8.1 | axis-aligned boxes |
-| `obb` | det | §8.2 | oriented boxes |
-| `keypoints` | det | §8.3 | per-object keypoint sets |
-| `points` | det/reg | §8.4 | unordered or named point sets, landmarks |
-| `contours` | seg | §8.5 | planar polygons (DICOM RTSTRUCT interop) |
-| `mesh` | seg | §8.6 | triangle surface mesh |
+| `boxes` | det | §8.2 | axis-aligned boxes |
+| `obb` | det | §8.3 | oriented boxes |
+| `keypoints` | det | §8.4 | per-object keypoint sets |
+| `points` | det/reg | §8.5 | unordered or named point sets, landmarks |
+| `contours` | seg | §8.6 | planar polygons (DICOM RTSTRUCT interop) |
+| `mesh` | seg | §8.7 | triangle surface mesh |
 | `classification` | cls | §9 | labels at sample/timepoint/grid/roi/slice scope, incl. change across timepoints |
 
 ---
@@ -877,7 +880,7 @@ Euler-angle forms are **not** stored; readers convert. The corner set is
 | `class_ids` | `(N,)` | `uint16` | OPTIONAL |
 | `names` | `(N,)` | vlen UTF-8 | OPTIONAL — anatomical landmark names |
 | `weights` | `(N,)` | `float32` | OPTIONAL — evaluation weights |
-| `correspondence` | attr `str` | | OPTIONAL — id of the paired `points` annotation (§10.5) |
+| `correspondence` | attr `str` | | OPTIONAL — id of the paired `points` annotation (§10.6) |
 
 ### 8.6 `contours`
 

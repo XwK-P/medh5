@@ -51,6 +51,23 @@ That takes the fallback on purpose, and the report records it as a guess.
 
 [The reasoning for both](../explanation/refusals.md#nifti).
 
+## 4-D series
+
+NIfTI's fourth dimension does not say what it is. Cine, DCE and 4-D CT are
+**time**; multi-b-value DWI and multi-echo series are **channels** (spec §3.6),
+and reading a DWI gradient axis as time hands every volume an invented
+acquisition time. The importer decides from what the file states — a `.bval`
+sidecar, a BIDS sidecar, the header's intent code, a time unit — and records a
+**guess** when none of them says:
+
+```bash
+medh5 convert from-nifti case.medh5 --image DWI=dwi.nii.gz --fourth-axis channel
+```
+
+`--fourth-axis time` or `channel` settles it; the default, `auto`, reads the
+file. With a `.bval` sidecar the b-values go into `acquisition`, so a channel
+axis still says which volume is which.
+
 ## nnU-Net v2 datasets
 
 ```bash

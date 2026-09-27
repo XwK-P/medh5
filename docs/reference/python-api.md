@@ -1,6 +1,7 @@
 # Python API
 
-Everything in this page is reachable from the top-level `medh5` namespace.
+The core of the package is reachable from the top-level `medh5` namespace;
+where a name lives in a sub-package, the example imports it from there.
 
 ## Opening
 
@@ -19,9 +20,9 @@ with open_any(path, key=None) as opened:   # a Sample or a Collection, whichever
     ...
 ```
 
-`medh5.open` is lazy: it parses `/meta` and opens no arrays. Use it as a
-context manager, or call `.close()`. It is read-only; every edit goes through
-`medh5.amend`, which is copy-on-write.
+`medh5.open` (also exported as `medh5.open_sample`) is lazy: it parses `/meta`
+and opens no arrays. Use it as a context manager, or call `.close()`. It is
+read-only; every edit goes through `medh5.amend`, which is copy-on-write.
 
 ## Sample
 
@@ -29,12 +30,15 @@ context manager, or call `.close()`. It is read-only; every edit goes through
 
 ```python
 s.identity            # Identity: sample_id, subject_id, sex, laterality, bodypart
-s.cohort              # Cohort: dataset_id, site_id, scanner_id, group_id, protocol
+s.cohort              # Cohort: dataset_id, site_id, scanner_id, group_id,
+                      #         acquisition_protocol
+s.label_set           # LabelSet, or None
 s.document            # SampleDocument — the whole /meta document
 s.profiles            # frozenset of conformance profiles
 s.version             # "1.0"
 s.kind                # "sample" or "collection"
 s.content_id          # "sha256:..." or None
+s.path                # where it was opened from
 s.summary()           # JSON-safe description; what `medh5 info --json` prints
 ```
 
@@ -44,6 +48,8 @@ s.summary()           # JSON-safe description; what `medh5 info --json` prints
 s.timepoints                       # Timeline — indexable by position or id
 s.timepoints[0].label              # "baseline"
 s.timepoints["tp1"].days_from_baseline
+s.timepoints.ids                   # ("tp0", "tp1"), in acquisition order
+s.timepoints.interval_days("tp0", "tp1")
 s.is_longitudinal                  # len(timepoints) > 1
 
 view = s.at("tp1")                 # a timepoint-scoped view of the whole sample
@@ -137,9 +143,9 @@ s.valid_region("CT_tp0", roi=(slice(0, 8),) * 3)   # the image's valid_mask (§4
 ```
 
 These are what the loaders put in `item["ignore"]` and `item["valid"]`; see
-[Training](torch.md#a-batch).
+[PyTorch and MONAI](torch.md#a-batch).
 
-See [Annotations](annotations.md) for the per-kind API.
+See [Annotation kinds](annotations.md) for the per-kind API.
 
 ### Transforms
 
@@ -147,7 +153,8 @@ See [Annotations](annotations.md) for the per-kind API.
 s.transforms                       # {transform_id: Transform}
 t = s.transform_between("tp0", "tp1")   # resolved through the frame graph
 s.resolve_frames(frame_a, frame_b) # the same, between two frame uids; memoised per handle
-t.kind                             # "affine" | "displacement" | "bspline" | "composite"
+t.kind                             # "identity" | "affine" | "displacement" |
+                                   # "bspline" | "composite"
 t.from_frame, t.to_frame
 t.is_invertible                    # the mapping is invertible
 t.inverse()                        # the *stored* inverse, when the file has one
@@ -158,11 +165,15 @@ target_registration_error(t, fixed_points, moving_points)   # {"mean", "max", ..
 jacobian_determinant(field, grid)                           # for a displacement field
 ```
 
-`transform_between` searches the frame graph, composing chains and using
-inverses where a transform declares one. It returns `None` when no path
-exists — it does not invent one — and raises `KeyError` for a key that is not
-a timepoint, a grid or a frame of reference in the sample, so a mistyped
-`"TP1"` is not mistaken for "no registration exists".
+`transform_between` accepts a timepoint id, a grid id or a frame uid at either
+end, matched in that order. It searches the frame graph, composing chains and
+traversing a link backwards only where its inverse can be *evaluated* — an
+affine's or identity's analytic inverse, or a stored `inverse_id` — not merely where
+`invertible=True` is declared. It returns `None` when no path exists — it does
+not invent one — and raises `KeyError` for a key that is not a timepoint, a grid
+or a frame of reference in the sample, so a mistyped `"TP1"` is not mistaken for
+"no registration exists". [Registration between visits](../guides/registration.md)
+covers what `None` means and when to store an inverse.
 
 ### Tracking
 
@@ -200,6 +211,16 @@ s.compute_content_id()        # recompute rather than read the stored one
 that declares a `content_id` — when a dataset inside a grid, image, annotation
 or transform carries no digest at all (`unattested`).
 
+### Sampling index
+
+```python
+s.index                       # {ann_id: SamplingIndex} — every entry in the file
+s.fresh_indices               # the ids whose source_digest still matches (§13.3)
+```
+
+A stale entry is ignored by the samplers and the statistics, never trusted; see
+[Storage](storage.md#the-sampling-index).
+
 ## Writing
 
 <!-- illustrative -->
@@ -209,8 +230,10 @@ with medh5.create("out.medh5", sample_id="c1", subject_id="s1",
     ...
 ```
 
-The writer builds a temporary file and `os.replace`s it into position on a
-clean exit. An exception aborts and leaves nothing behind.
+`create` and `amend` both return a `SampleWriter`. It builds a temporary file
+and `os.replace`s it into position on a clean exit; an exception aborts and
+leaves nothing behind. Without a `with` block, call `w.commit()` to finish or
+`w.abort()` to discard.
 
 ### Document
 
@@ -261,6 +284,15 @@ w.add_pyramid("WSI", [level0, level1, level2],
 ```
 
 `patch_hint` tells the chunk optimiser what shape you will read.
+`add_image` also takes `channel_names` for a channel axis, `window_center` /
+`window_width` display presets, and `valid_mask` — the id of a `mask`
+annotation delimiting the acquired field of view (§4.4):
+
+<!-- illustrative -->
+```python
+w.add_mask("fov", fov, grid="ct_tp0")        # a bool volume, no classes
+w.add_image("CT_tp0", array, grid="ct_tp0", modality="CT", valid_mask="fov")
+```
 
 ### Annotations
 
@@ -279,7 +311,8 @@ w.add_boxes("lesions", boxes, class_ids=["lesion"], grid="ct_tp0",
             space="index", scores=[0.91], instance_ids=[7])
 w.add_obb("nodules", centers, sizes, rotations, class_ids=["nodule"], grid="ct")
 w.add_keypoints("landmarks", points, keypoint_classes, class_ids, grid="ct")
-w.add_points("fiducials", points, grid="ct", correspondence="paired")
+w.add_points("fiducials_tp0", points, grid="ct",
+             correspondence="fiducials_tp1")   # the paired point set (§10.6)
 w.add_contours("rtstruct", polygons, grid="ct", space="world")
 w.add_mesh("surface", vertices, faces, space="world")
 w.add_classification("response", {"progressive": 1.0}, scope="sample",
@@ -324,6 +357,9 @@ w.build_index()                          # sampling indices for every voxel anno
 w.build_index(["organs_tp0"], max_coords=8192)
 w.transcode_annotation("organs_tp0", "bitmask")
 w.remove_annotation("old_seg")           # takes its index with it
+w.remap_frame_uids({"old-frame": "new-frame"})   # grids, transforms, world-space
+                                                 # annotations — all at once
+w.infer_profiles()                       # the profiles the content satisfies
 ```
 
 ## Amending
@@ -336,7 +372,18 @@ with medh5.amend("case.medh5") as w:
 Copy-on-write: a new file is built from the old and replaced atomically.
 Objects this reader does not understand — including ones written by a future
 minor version — are copied through untouched, so amending never silently drops
-what it cannot read.
+what it cannot read. Anything holding the file open across an `amend` keeps
+reading the old version.
+
+## Collections
+
+```python
+medh5.pack(["case.medh5", "case2.medh5"], "pair.medh5c")    # keys default to file stems
+medh5.unpack("pair.medh5c", "restored/", keys=["case"])       # -> restored/case.medh5
+```
+
+Packing moves chunks as stored bytes, so every member keeps its `content_id`;
+see [Storage](storage.md#collections).
 
 ## Validation
 
@@ -353,7 +400,8 @@ print(report.format(verbose=True))
 ```
 
 Levels: `structural` → `semantic` → `integrity` → `strict`. Codes are stable
-API; see spec §15.2 and `medh5.CODES`.
+API; see spec §15.2 and `medh5.CODES`. `validate_paths` takes several files and
+returns one report per file, which is what `medh5 validate` prints.
 
 ## Exceptions
 

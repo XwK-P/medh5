@@ -10,7 +10,8 @@ An ordinary HDF5 file. `h5ls`, HDFView, h5py, MATLAB and Julia all open it.
 
 ```
 case_0001.medh5                      (root attrs: medh5_version, medh5_kind,
-│                                     medh5_profiles, content_id, digest_algo)
+│                                     medh5_profiles, content_id, digest_algo,
+│                                     created, generator)
 ├── meta                             the sample document: JSON, UTF-8, one dataset
 ├── grids/<grid_id>                  empty groups; geometry lives in attributes
 ├── images/<image_id>                arrays, chunked and compressed
@@ -54,19 +55,21 @@ $ for f in cohort/*.medh5; do
 | `training` | blosc2 lz4:1 shuffle | blosc2 lz4:1 shuffle | fastest decompression; the hot dataloader path |
 | `balanced` | blosc2 zstd:3 shuffle | blosc2 zstd:3 bitshuffle | general use — the default |
 | `archive` | blosc2 zstd:9 bitshuffle | blosc2 zstd:9 bitshuffle | smallest on disk; cold storage and distribution |
-| `portable` | gzip:4 | gzip:4 | readable without `hdf5plugin` |
+| `portable` | gzip:4 + HDF5 shuffle | gzip:4 + HDF5 shuffle | readable without `hdf5plugin` |
 
-Labels get `bitshuffle` where images get `shuffle`: label planes are low-entropy
-integers, and bit-level transposition compresses them much better than
-byte-level does.
+Under `balanced`, labels get `bitshuffle` where images get byte `shuffle`: label
+planes are low-entropy integers, and bit-level transposition compresses them
+much better than byte-level does. `training` byte-shuffles both for speed, and
+`archive` bit-shuffles both for size.
 
 `portable` exists because a collaborator with a plain h5py install should be
 able to open the file at all. Blosc2 needs the filter plugin; gzip is in every
 HDF5 build.
 
-Datasets below a size threshold are stored **contiguous**: chunking and a filter
-pipeline cost more than they save at that size, and a contiguous read is one
-seek.
+Datasets under 64 KiB raw are stored **contiguous** and uncompressed: chunking
+and a filter pipeline cost more than they save at that size, and a contiguous
+read is one seek. (`W902` warns only from 1 MiB, so the policy never trips its
+own warning.)
 
 ```python
 from medh5.storage.codecs import PROFILES, resolve_profile, dataset_kwargs
@@ -88,14 +91,15 @@ w.add_grid("ct", shape=..., spacing=..., patch_hint=(96, 96, 96))
 ```
 
 `patch_hint` is how you tell it what you will read. Without one it assumes a
-reasonable default and you get a reasonable answer.
+64-voxel cube, clipped to the grid, and you get a reasonable answer.
 
 L3 size is detected per-core where the platform allows and falls back to
 ~1.375 MiB otherwise. Chunks are held between 512 KiB and 4 MiB.
 
-**Stacked encodings chunk per plane.** A `layers` or `bitmask` annotation is
-chunked `(1, *spatial_chunk)`, so reading one layer does not decompress the
-others. Combined with reading a multi-class `dense()` **by plane rather than by
+**Stacked encodings chunk per plane.** A `layers`, `bitmask` or `probmap`
+annotation — and a displacement field's components — is chunked
+`(1, *spatial_chunk)`, so reading one plane does not decompress the others
+(§14.1). Combined with reading a multi-class `dense()` **by plane rather than by
 class**, a 200-class annotation packed into four layers is four reads and not
 two hundred — which is where the 64³ patch time went from 117 ms to 4 ms.
 
@@ -170,8 +174,7 @@ class counts for a few hundred bytes instead of a decompression pass.
 A reader loads the class table and counts once per open, and a draw reads the
 one coordinate it picked — O(1) in the class count too: 0.10 ms at 63 classes.
 The index's datasets are stored with the file's label codec, and the coarse
-`occupancy` map one class per chunk; it was stored uncompressed, about 52 MB of
-mostly `False` for 200 classes at 512³.
+`occupancy` map is chunked one class per chunk — the unit a reader asks about.
 
 An index carries the digest of the annotation it derives from. When they
 disagree the index is **stale**, readers must ignore it, and the validator
