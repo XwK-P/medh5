@@ -39,7 +39,12 @@ from medh5.dataset.manifest import scan
 from medh5.labels.labelset import LabelClass, LabelSet
 from tests.v1.conftest import SHAPE, block, write_sample
 
-DOCS = Path(__file__).resolve().parents[2] / "docs"
+ROOT = Path(__file__).resolve().parents[2]
+DOCS = ROOT / "docs"
+
+# The README too.  It is the page GitHub and PyPI show, so it is read more than
+# any page under `docs/`, and its examples are the first ones a newcomer pastes.
+README = ROOT / "README.md"
 
 MARKER = "<!-- illustrative -->"
 """What a block that cannot run must carry, on the line before its fence."""
@@ -69,7 +74,7 @@ OPTIONAL = frozenset(
 def _blocks() -> list[tuple[Path, int, str, bool]]:
     """``(page, line, code, marked)`` for every fenced Python block."""
     out: list[tuple[Path, int, str, bool]] = []
-    for page in PAGES:
+    for page in [*PAGES, README]:
         text = page.read_text(encoding="utf-8")
         for match in _FENCE.finditer(text):
             line = text.count("\n", 0, match.start("code")) + 1
@@ -452,9 +457,9 @@ def test_documented_python_runs(
         root = str(getattr(exc, "name", "") or "").split(".")[0]
         missing = root or (named.group(1) if named else "")
         if "pip install 'medh5[" in str(exc) or missing in OPTIONAL:
-            pytest.skip(f"{page.relative_to(DOCS)}:{line}: {exc}")
+            pytest.skip(f"{page.relative_to(ROOT)}:{line}: {exc}")
         raise AssertionError(
-            f"{page.relative_to(DOCS)}:{line} does not run: {exc}\n---\n{code}"
+            f"{page.relative_to(ROOT)}:{line} does not run: {exc}\n---\n{code}"
         ) from exc
     except SystemExit:
         # A page that ends in `raise SystemExit(...)` is showing a pipeline
@@ -468,10 +473,10 @@ def test_documented_python_runs(
         # renamed or deleted API still fails.
         missing = re.search(r"name '([^']+)'", str(exc))
         if missing and hasattr(medh5, missing.group(1)):
-            pytest.fail(f"{page.relative_to(DOCS)}:{line}: {exc}\n---\n{code}")
+            pytest.fail(f"{page.relative_to(ROOT)}:{line}: {exc}\n---\n{code}")
     except Exception as exc:  # pragma: no cover - the message is the point
         raise AssertionError(
-            f"{page.relative_to(DOCS)}:{line} does not run: "
+            f"{page.relative_to(ROOT)}:{line} does not run: "
             f"{type(exc).__name__}: {exc}\n"
             f"Fix the example, or mark it `{MARKER}` on the line above its fence "
             "if it cannot be executed here.\n---\n" + code
