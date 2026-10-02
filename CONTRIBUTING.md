@@ -120,9 +120,12 @@ reader can decide whether their pipeline is affected.
 The package version lives in one place, `medh5/__about__.py`. To release, set it,
 move the unreleased notes under the new version, and push a `vX.Y.Z` tag:
 `.github/workflows/release.yml` runs the full CI on the tagged commit, checks the
-tag against the version, builds and checks the distributions, and publishes to
-PyPI through Trusted Publishing. The format version (`medh5.FORMAT_VERSION`) is
-separate and changes only with the specification.
+tag against the version, builds and checks the distributions, publishes to PyPI
+through Trusted Publishing, and then creates the GitHub Release: its notes are
+the version's section of `CHANGELOG.md`, and it carries the same distributions.
+A tag whose version has no section there fails before anything is published.
+The format version (`medh5.FORMAT_VERSION`) is separate and changes only with
+the specification.
 
 GitHub Actions are pinned by commit SHA; Dependabot proposes the updates as pull
 requests.

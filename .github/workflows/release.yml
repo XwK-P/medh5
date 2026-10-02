@@ -54,6 +54,31 @@ jobs:
           print(f"tag and stamped version agree: {tag_version}")
           PY
 
+      - name: Extract release notes from CHANGELOG.md
+        # Here rather than in the release job: a tag whose version has no
+        # CHANGELOG section fails before anything reaches PyPI, not after.
+        run: |
+          python - <<'PY'
+          import os, pathlib, re, sys
+          tag = os.environ["GITHUB_REF_NAME"]
+          version = tag.removeprefix("v")
+          text = pathlib.Path("CHANGELOG.md").read_text(encoding="utf-8")
+          m = re.search(
+              rf"^## \[{re.escape(version)}\][^\n]*\n(.*?)(?=^## |\Z)",
+              text,
+              re.M | re.S,
+          )
+          notes = m.group(1).strip() if m else ""
+          if not notes:
+              sys.exit(f"CHANGELOG.md has no section for {version}")
+          # A relative link resolves in GitHub's file view and on the docs
+          # site, but not on a release page. Pin each one to the tagged commit.
+          blob = f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/blob/{tag}/"
+          notes = re.sub(r"\]\((?!https?://|#|mailto:)", "](" + blob, notes)
+          pathlib.Path("release-notes.md").write_text(notes + "\n", encoding="utf-8")
+          print(f"release notes: {len(notes)} characters from CHANGELOG.md [{version}]")
+          PY
+
       - name: Build sdist and wheel
         run: python -m build
 
@@ -81,6 +106,12 @@ jobs:
           path: dist/
           if-no-files-found: error
 
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-notes
+          path: release-notes.md
+          if-no-files-found: error
+
   publish:
     name: Publish to PyPI
     needs: build
@@ -98,3 +129,39 @@ jobs:
 
       - name: Publish via PyPI Trusted Publishing
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+
+  github-release:
+    name: Create the GitHub Release
+    # After PyPI rather than beside it, so a release is never announced for a
+    # version that `pip install` cannot find.
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # create the release and attach the distributions
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist
+          path: dist/
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-notes
+
+      - name: Create the release, with the distributions PyPI received
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          flags=()
+          # A PEP 440 pre- or dev-release (1.5.0rc1, 1.5.0.dev2) must not
+          # become the repository's "Latest".
+          if [[ "${TAG#v}" =~ (a|b|rc|\.dev)[0-9]+$ ]]; then
+            flags+=(--prerelease)
+          fi
+          gh release create "$TAG" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "medh5 ${TAG#v}" \
+            --notes-file release-notes.md \
+            --verify-tag \
+            "${flags[@]}"
