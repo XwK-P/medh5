@@ -4,10 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
+## [1.4.4] — 2026-10-02
 
 Release tooling and `README.md` only: **no format change and no change to the
-package's behaviour**.
+package's behaviour**. It exists, like 1.4.3 before it, because `README.md` is
+the package's PyPI long description, and the badge links fixed below could
+reach the project page only through a release.
 
 ### Added
 
@@ -25,8 +27,7 @@ package's behaviour**.
 
 - **`README.md` on PyPI.** The License and Typed badges were relative links,
   which resolve on GitHub but 404 on the PyPI project page, where the README is
-  the long description; both are absolute now. Like 1.4.3's corrections, this
-  reaches PyPI only with the next release.
+  the long description; both are absolute now.
 - `README.md`'s "Write a sample" raised `NameError` when pasted; it now defines
   the arrays it writes. "The reasoning behind each" pointed at the
   documentation's front page rather than the design rationale.
