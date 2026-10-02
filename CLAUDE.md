@@ -61,41 +61,12 @@ because implementing them showed the text was not implementable.
 Sub-packages map onto specification sections, so a spec change has one obvious
 home.
 
-- **`_hdf5.py`** — attribute codecs, identifier rules, atomic create, CoW amend.
-- **`sample.py`** — `Sample` (read) and `medh5.open`; **`writer.py`** —
-  `SampleWriter`, `create`, `amend`. The central API.
-- **`collection.py`** — `.medh5c` collections: `pack`, `unpack`,
-  `open_collection`.
-- **`document.py`** — the `/meta` sample document and its JSON Schema.
-- **`image.py`** — lazy reads, rescale, pyramid levels.
-- **`errors.py`** — the exception hierarchy and the §15.2 diagnostic code table.
-  A test asserts the table and the spec agree.
-- **`geometry/`** (§3) — `Grid`, index↔world affines, the half-voxel box rules,
-  multiscale derivation.
-- **`labels/`** (§5) — `LabelSet` as a DAG, canonical digests, bundled vocabularies.
-- **`annotations/`** (§6–§9) — `base.py` defines the
-  `contains`/`dense`/`labelmap`/`instances` contract; `voxel/` holds the five
-  encodings plus `select.py` (auto-selection by overlap graph) and
-  `transcode.py`; `geometric.py` and `classification.py` hold the rest.
-- **`transforms/`** (§10) — identity, affine, displacement, B-spline,
-  composite, plus frame-graph resolution in `resolve.py`.
-- **`curation/`** (§11–§12) — provenance, quality, agreement, identity, splits,
-  tracking, timeline, and `scrub.py` (de-identification).
-- **`integrity/`** (§13) — per-object digests, `content_id`, verification, repair.
-- **`storage/`** (§14) — codec profiles, chunking, sampling index, recompression.
-- **`dataset/`** — cohort tools: manifests, splits, streaming stats, the
-  `C1xx`–`C5xx` checks.
-- **`validate/`** (§15) — the four levels; `rules.py` holds every rule.
-- **`io/`** — converters, each lazily imported: NIfTI, DICOM, DICOM SEG,
-  RTSTRUCT, nnU-Net v2, and `legacy.py` (0.x → 1.0 migration).
-- **`torch/`**, **`sampling.py`**, **`monai.py`** — loaders. `sampling.py`
-  depends on no deep-learning framework, because where to read is geometry.
+- **`errors.py`** holds the §15.2 diagnostic code table; a test asserts the
+  table and the spec agree.
+- **`sampling.py`** depends on no deep-learning framework, because where to read
+  is geometry.
 - **`conformance/`** — the corpus is a *shipped artifact*, not a test fixture:
   third-party implementations run it.
-- **`bench.py`** — `medh5 bench`, re-measuring the performance targets in
-  `docs/guides/performance.md`.
-- **`cli/`** — one module per command group, each exposing `register(sub)` and
-  `dispatch(cmd, args)`; `cli/__init__.py::main` composes them.
 
 ## Invariants that are easy to break
 
@@ -116,24 +87,10 @@ home.
 - **`amend` is copy-on-write** and replaces the file, so anything holding an open
   handle across it keeps reading the old inode.
 
-## Codec profiles
-
-`training` (lz4:1), `balanced` (zstd:3, default), `archive` (zstd:9),
-`portable` (gzip:4, readable without hdf5plugin). Under `balanced`, labels get
-`bitshuffle` where images get byte `shuffle`; `training` byte-shuffles both,
-`archive` bit-shuffles both, and `portable` runs HDF5's own shuffle before gzip
-for both. Chunks are sized by `optimize_chunks()` from the patch hint toward an
-L3-cache budget; stacked encodings chunk per plane so one layer reads without
-the others. `storage/chunking.py::grid_chunks` is that rule, shared by the
-writer and `recompress --rechunk`.
-
 ## Linting & style
 
-- **ruff** with `E, F, I, UP, B, SIM, RUF100`, `target-version = "py310"`,
-  pinned in the `dev` extra and in `.pre-commit-config.yaml` (bump both).
-  Markdown is not formatted, and `docs/examples/` is excluded.
-- **mypy --strict**, with `ignore_missing_imports` for h5py, hdf5plugin, torch,
-  nibabel, pydicom, SimpleITK, jsonschema, scipy, monai, highdicom.
+- **ruff** is pinned in the `dev` extra and in `.pre-commit-config.yaml` (bump
+  both).
 
 ## Testing patterns
 
@@ -142,14 +99,6 @@ writer and `recompress --rechunk`.
 - Test names cite the clause they hold: `test_S8_1_boxes_shift_by_half_a_voxel`.
 - Fixtures are built by the **public writer**, so every reader test is also a
   writer test.
-- CI matrix: Python 3.10–3.14, plus a macOS job specifically for the `spawn`
-  start method, a Windows job (the atomic-rewrite and repack paths exist for
-  it), a minimum-dependency job at the floors `pyproject.toml` declares, a
-  conformance job that publishes the suite and scores this validator through
-  the public `score` path, a MONAI job, a docs job (`mkdocs build --strict`),
-  and a prototype job that runs `docs/examples/reference_writer.py`. `release.yml` runs the same CI on
-  the tagged commit before it builds and publishes. Actions are pinned by
-  commit SHA; Dependabot proposes the updates.
 - **A skipped test is not a passing test.** Anything guarded by
   `pytest.importorskip` needs a CI job that installs the dependency, or it
   reports coverage it does not have.
@@ -176,9 +125,3 @@ The docs are tested, not proofread:
   corpus size and breakdown with the corpus.
 
 `CONTRIBUTING.md` is the human-facing version of this file.
-
-## 0.x
-
-Deleted at 1.0. `io/_legacy_reader.py` is a read-only reader of the old layout
-so `medh5 migrate` works; there is no 0.x writer, deliberately. 0.x files are
-converted once, and the migration reports every non-mechanical decision.
