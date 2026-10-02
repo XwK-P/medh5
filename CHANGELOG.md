@@ -4,6 +4,33 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+Release tooling and `README.md` only: **no format change and no change to the
+package's behaviour**.
+
+### Added
+
+- **GitHub Releases.** `release.yml` creates one for each tag once PyPI has the
+  distributions: its notes are the version's section of this file, with links
+  into the repository pinned to the tag, and it carries the same wheel and
+  sdist. A tag whose version has no section here now fails before anything is
+  published. Releases for 0.5.0 to 1.4.3 were created from this file.
+- A Read the Docs badge in `README.md`.
+- `README.md`'s Python examples run in the documentation tests, as every page
+  under `docs/` already did. It is the page GitHub and PyPI show, and it was
+  the only one whose examples nothing executed.
+
+### Fixed
+
+- **`README.md` on PyPI.** The License and Typed badges were relative links,
+  which resolve on GitHub but 404 on the PyPI project page, where the README is
+  the long description; both are absolute now. Like 1.4.3's corrections, this
+  reaches PyPI only with the next release.
+- `README.md`'s "Write a sample" raised `NameError` when pasted; it now defines
+  the arrays it writes. "The reasoning behind each" pointed at the
+  documentation's front page rather than the design rationale.
+
 ## [1.4.3] — 2026-09-27
 
 A documentation release. **No format change and no change to the package's

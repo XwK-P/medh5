@@ -2,9 +2,10 @@
 
 [![PyPI version](https://img.shields.io/pypi/v/medh5.svg)](https://pypi.org/project/medh5/)
 [![Python versions](https://img.shields.io/pypi/pyversions/medh5.svg)](https://pypi.org/project/medh5/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/XwK-P/medh5/blob/main/LICENSE)
 [![CI](https://github.com/XwK-P/medh5/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/XwK-P/medh5/actions/workflows/ci.yml)
-[![Typed](https://img.shields.io/badge/typed-mypy%20strict-informational.svg)](medh5/py.typed)
+[![Documentation](https://img.shields.io/readthedocs/medh5/latest.svg)](https://medh5.readthedocs.io/en/latest/)
+[![Typed](https://img.shields.io/badge/typed-mypy%20strict-informational.svg)](https://github.com/XwK-P/medh5/blob/main/medh5/py.typed)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 
 **One medical imaging sample — a subject, at every timepoint, with all of its
@@ -64,7 +65,7 @@ guides, the Python and CLI reference, and the normative specification.
 - **Reading a patch is fast** — a 64³ multi-class patch in ~4 ms, and O(1)
   foreground sampling once `build_index()` has run.
 
-[The reasoning behind each](https://medh5.readthedocs.io/en/latest/).
+[The reasoning behind each](https://medh5.readthedocs.io/en/latest/explanation/design-rationale/).
 
 ## Write a sample
 
@@ -72,6 +73,11 @@ guides, the Python and CLI reference, and the normative specification.
 import numpy as np
 import medh5
 from medh5 import LabelClass, LabelSet
+
+# Stand-ins for a real CT and its masks.
+ct = np.random.default_rng(0).integers(-1000, 1500, (64, 96, 96)).astype(np.int16)
+liver = np.zeros(ct.shape, bool); liver[10:40, 20:70, 20:70] = True
+lesion = np.zeros(ct.shape, bool); lesion[20:26, 35:45, 35:45] = True
 
 labels = LabelSet("demo-v1", version="1.0.0", classes=[
     LabelClass(1, "liver", "Liver", category="organ"),
@@ -198,4 +204,4 @@ are in [CHANGELOG.md](https://github.com/XwK-P/medh5/blob/main/CHANGELOG.md).
 
 ## License
 
-MIT
+[MIT](https://github.com/XwK-P/medh5/blob/main/LICENSE)
