@@ -60,7 +60,7 @@ pub fn validate_against_schema(doc: &Value) -> Vec<String> {
                 .filter(|s| !s.is_empty())
                 .map(|s| s.replace("~1", "/").replace("~0", "~"))
                 .collect();
-            let message = err.to_string();
+            let message = python_message(&err);
             (path, message)
         })
         .collect();
@@ -72,6 +72,58 @@ pub fn validate_against_schema(doc: &Value) -> Vec<String> {
             format!("{where_}: {message}")
         })
         .collect()
+}
+
+/// A schema error worded as Python's `jsonschema` words it, so a report reads
+/// the same from every frontend: `'x' is a required property`, not `"x" ...`.
+fn python_message(err: &jsonschema::ValidationError<'_>) -> String {
+    use jsonschema::error::{TypeKind, ValidationErrorKind as K};
+    use crate::json::repr;
+    let instance = repr(err.instance());
+    let plural = |n: usize| if n == 1 { "was" } else { "were" };
+    match err.kind() {
+        K::Required { property } => format!("{} is a required property", repr(property)),
+        K::Enum { options } => format!("{instance} is not one of {}", repr(options)),
+        K::Constant { expected_value } => format!("{} was expected", repr(expected_value)),
+        K::Type { kind } => {
+            let names: Vec<String> = match kind {
+                TypeKind::Single(t) => vec![repr_str(&t.to_string())],
+                TypeKind::Multiple(set) => set.iter().map(|t| repr_str(&t.to_string())).collect(),
+            };
+            format!("{instance} is not of type {}", names.join(", "))
+        }
+        K::AdditionalProperties { unexpected } => format!(
+            "Additional properties are not allowed ({} {} unexpected)",
+            unexpected.iter().map(|u| repr_str(u)).collect::<Vec<_>>().join(", "),
+            plural(unexpected.len())
+        ),
+        K::UnevaluatedProperties { unexpected } => format!(
+            "Unevaluated properties are not allowed ({} {} unexpected)",
+            unexpected.iter().map(|u| repr_str(u)).collect::<Vec<_>>().join(", "),
+            plural(unexpected.len())
+        ),
+        K::Minimum { limit } => format!("{instance} is less than the minimum of {}", repr(limit)),
+        K::Maximum { limit } => format!("{instance} is greater than the maximum of {}", repr(limit)),
+        K::ExclusiveMinimum { limit } => format!("{instance} is less than or equal to the minimum of {}", repr(limit)),
+        K::ExclusiveMaximum { limit } => format!("{instance} is greater than or equal to the maximum of {}", repr(limit)),
+        K::MinItems { limit } => format!("{instance} {}", if *limit == 1 { "should be non-empty" } else { "is too short" }),
+        K::MaxItems { limit } => format!("{instance} {}", if *limit == 0 { "is expected to be empty" } else { "is too long" }),
+        K::MinLength { limit } => format!("{instance} {}", if *limit == 1 { "should be non-empty" } else { "is too short" }),
+        K::MaxLength { limit } => format!("{instance} {}", if *limit == 0 { "is expected to be empty" } else { "is too long" }),
+        K::MinProperties { limit } => {
+            format!("{instance} {}", if *limit == 1 { "should be non-empty" } else { "does not have enough properties" })
+        }
+        K::MaxProperties { limit } => {
+            format!("{instance} {}", if *limit == 0 { "is expected to be empty" } else { "has too many properties" })
+        }
+        K::Pattern { pattern } => format!("{instance} does not match {}", repr_str(pattern)),
+        K::UniqueItems => format!("{instance} has non-unique elements"),
+        K::AnyOf { .. } | K::OneOfNotValid { .. } => format!("{instance} is not valid under any of the given schemas"),
+        K::OneOfMultipleValid { .. } => format!("{instance} is valid under each of the given schemas"),
+        K::Not { schema } => format!("{instance} should not be valid under {}", repr(schema)),
+        K::FalseSchema => format!("False schema does not allow {instance}"),
+        _ => err.to_string(),
+    }
 }
 
 /// Typed access to `/meta`.

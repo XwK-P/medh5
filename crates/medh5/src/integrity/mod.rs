@@ -1,6 +1,7 @@
 //! Content addressing and verification (spec §13).
 
 pub mod digest;
+pub mod repair;
 pub mod verify;
 
 pub use digest::{

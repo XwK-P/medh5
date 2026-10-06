@@ -9,6 +9,8 @@
 
 pub mod annotations;
 pub mod codes;
+pub mod collection;
+pub mod convert;
 pub mod curation;
 pub mod digest;
 pub mod document;
