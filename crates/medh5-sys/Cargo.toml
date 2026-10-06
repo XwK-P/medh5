@@ -1,0 +1,45 @@
+[package]
+name = "medh5-sys"
+description = "Native dependencies of the medh5 format engine: HDF5 (static) and the HDF5-Blosc2 filter with a vendored C-Blosc2"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT AND BSD-3-Clause"
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["hdf5", "blosc2", "compression", "medical-imaging", "ffi"]
+categories = ["compression", "external-ffi-bindings", "science"]
+links = "medh5_blosc2"
+build = "build.rs"
+# The vendored C sources are the point of the crate; nothing else is needed to
+# build it.
+include = [
+  "Cargo.toml",
+  "build.rs",
+  "src/**",
+  "vendor/**",
+  "README.md",
+]
+readme = "README.md"
+
+[lib]
+name = "medh5_sys"
+path = "src/lib.rs"
+
+[dependencies]
+# HDF5 is built from source and linked statically, so every frontend --- the
+# Python wheel, the CLI binary, a crate that depends on `medh5` --- carries the
+# same library and needs nothing installed.  Depending on the -sys crate
+# directly is what hands this crate's build script `DEP_HDF5_INCLUDE`, the
+# headers the HDF5-Blosc2 filter is compiled against.
+hdf5-metno-sys = { version = "0.12.4", features = ["static", "zlib"] }
+# The codecs C-Blosc2 links against, each built from source by its own -sys
+# crate rather than fetched at configure time (C-Blosc2's CMake would fetch
+# them from the network).
+lz4-sys = "1.11.1"
+zstd-sys = { version = "2.1.0", default-features = false, features = ["zdict_builder"] }
+libz-sys = { version = "1.1.29", default-features = false, features = ["libc", "static"] }
+
+[build-dependencies]
+cc = "1.2"

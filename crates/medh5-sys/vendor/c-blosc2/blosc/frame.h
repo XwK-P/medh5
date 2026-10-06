@@ -1,0 +1,287 @@
+/*********************************************************************
+  Blosc - Blocked Shuffling and Compression Library
+
+  Copyright (c) 2021  Blosc Development Team <blosc@blosc.org>
+  https://blosc.org
+  License: BSD 3-Clause (see LICENSE.txt)
+
+  See LICENSE.txt for details about copyright and rights to use.
+**********************************************************************/
+
+#ifndef BLOSC_FRAME_H
+#define BLOSC_FRAME_H
+
+#include "blosc2.h"
+#include "threading.h"
+
+#include <stdbool.h>
+#include <stdint.h>
+
+// Different types of frames
+#define FRAME_CONTIGUOUS_TYPE 0
+#define FRAME_DIRECTORY_TYPE 1
+
+
+// Constants for metadata placement in header
+#define FRAME_VARIABLE_CHUNKS (1U << 6)
+#define FRAME_VL_BLOCKS (1U << 7)
+
+#define FRAME_HEADER_MAGIC 2
+#define FRAME_HEADER_LEN (FRAME_HEADER_MAGIC + 8 + 1)  // 11
+#define FRAME_LEN (FRAME_HEADER_LEN + 4 + 1)  // 16
+#define FRAME_FLAGS (FRAME_LEN + 8 + 1)  // 25
+#define FRAME_TYPE (FRAME_FLAGS + 1)  // 26
+#define FRAME_CODECS (FRAME_FLAGS + 2)  // 27
+#define FRAME_OTHER_FLAGS (FRAME_FLAGS + 3)  // 28
+#define FRAME_NBYTES (FRAME_FLAGS + 4 + 1)  // 30
+#define FRAME_CBYTES (FRAME_NBYTES + 8 + 1)  // 39
+#define FRAME_TYPESIZE (FRAME_CBYTES + 8 + 1) // 48
+#define FRAME_BLOCKSIZE (FRAME_TYPESIZE + 4 + 1)  // 53
+#define FRAME_CHUNKSIZE (FRAME_BLOCKSIZE + 4 + 1)  // 58
+#define FRAME_NTHREADS_C (FRAME_CHUNKSIZE + 4 + 1)  // 63
+#define FRAME_NTHREADS_D (FRAME_NTHREADS_C + 2 + 1)  // 66
+#define FRAME_HAS_VLMETALAYERS (FRAME_NTHREADS_D + 2)  // 68
+#define FRAME_FILTER_PIPELINE (FRAME_HAS_VLMETALAYERS + 1 + 1) // 70
+#define FRAME_UDCODEC (FRAME_FILTER_PIPELINE + 1 + 6) // 77
+#define FRAME_CODEC_META (FRAME_FILTER_PIPELINE + 1 + 7) // 78
+#define FRAME_OTHER_FLAGS2 (FRAME_FILTER_PIPELINE + 1 + 14)  // 85
+#define FRAME_USE_DICT (1U << 0)   //!< bit 0 of other_flags2: use dictionary compression
+#define FRAME_HEADER_MINLEN (FRAME_FILTER_PIPELINE + 1 + 16)  // 87 <- minimum length
+#define FRAME_METALAYERS (FRAME_HEADER_MINLEN)  // 87
+#define FRAME_IDX_SIZE (FRAME_METALAYERS + 1 + 1)  // 89
+
+#define FRAME_FILTER_PIPELINE_MAX (8)  // the maximum number of filters that can be stored in header
+
+#define FRAME_TRAILER_VERSION_BETA2 (0U)  // for beta.2 and former
+#define FRAME_TRAILER_VERSION (1U)        // can be up to 127
+
+#define FRAME_TRAILER_MINLEN (25)  // minimum length for the trailer (msgpack overhead)
+#define FRAME_TRAILER_LEN_OFFSET (22)  // offset to trailer length (counting from the end)
+#define FRAME_TRAILER_VLMETALAYERS (2)
+
+
+typedef struct {
+  char* urlpath;            //!< The name of the file or directory if it's an sframe; if NULL, this is in-memory
+  uint8_t* cframe;          //!< The in-memory, contiguous frame buffer
+  bool avoid_cframe_free;   //!< Whether the cframe can be freed (false) or not (true).
+  uint8_t* coffsets;        //!< Pointers to the (compressed, on-disk) chunk offsets
+  bool coffsets_needs_free; //!< Whether the coffsets memory need to be freed or not.
+  int64_t len;              //!< The current length of the frame in (compressed) bytes
+  int64_t maxlen;           //!< The maximum length of the frame; if 0, there is no maximum
+  uint32_t trailer_len;     //!< The current length of the trailer in (compressed) bytes
+  bool sframe;              //!< Whether the frame is sparse (true) or not
+  blosc2_schunk *schunk;    //!< The schunk associated
+  int64_t file_offset;      //!< The offset where the frame starts inside the file
+  bool locking;             //!< Whether accesses are serialized via a sidecar lock file
+  intptr_t lock_fd;         //!< The fd (POSIX) or HANDLE (Windows) of the sidecar; -1 if not open
+  int32_t lock_depth;       //!< Lock re-entrancy depth; only depth 0 acquires/releases
+  uint64_t lock_seq;        //!< Last seen value of the sidecar's generation counter
+  bool force_refresh;       //!< Force a refresh of the cached frame state on the next access
+  bool refreshing;          //!< Re-entrancy guard for the metalayer reload during a refresh
+  void* read_fp;            //!< Cached "rb" handle for the frame file; NULL if none open
+  int32_t read_fp_refs;     //!< Outstanding frame_reader_acquire() calls on read_fp
+  bool read_fp_nocache;     //!< The handle cache was full for this frame; do not ask again
+  blosc2_pthread_mutex_t read_fp_mutex;  //!< Guards read_fp and its bookkeeping
+} blosc2_frame_s;
+
+
+/*********************************************************************
+  Frame struct related functions.
+  These are rather low-level and the blosc2_schunk interface is
+  recommended instead.
+*********************************************************************/
+
+/**
+ * @brief Create a new frame.
+ *
+ * @param urlpath The filename of the frame.  If not persistent, pass NULL.
+ *
+ * @return The new frame.
+ */
+blosc2_frame_s* frame_new(const char* urlpath);
+
+/**
+ * @brief Create a frame from a super-chunk.
+ *
+ * @param schunk The super-chunk from where the frame will be created.
+ * @param frame The pointer for the frame that will be populated.
+ *
+ * @note If frame->urlpath is NULL, a frame is created in-memory; else it is created
+ * on-disk.
+ *
+ * @return The size in bytes of the frame. If an error occurs it returns a negative value.
+ */
+int64_t frame_from_schunk(blosc2_schunk* schunk, blosc2_frame_s* frame);
+
+/**
+ * @brief Set `avoid_cframe_free` from @param frame to @param avoid_cframe_free.
+ *
+ * @param frame The frame to set the property to.
+ * @param avoid_cframe_free The value to set in @param frame.
+ * @warning If you set it to `true` you will be responsible of freeing it.
+ */
+void frame_avoid_cframe_free(blosc2_frame_s* frame, bool avoid_cframe_free);
+
+/**
+ * @brief Free all memory from a frame.
+ *
+ * @param frame The frame to be freed.
+ *
+ * @return 0 if succeeds.
+ */
+int frame_free(blosc2_frame_s *frame);
+
+/**
+ * @brief Initialize a frame out of a file.
+ *
+ * @param urlpath The file name.
+ *
+ * @return The frame created from the file.
+ */
+blosc2_frame_s* frame_from_file_offset(const char *urlpath, const blosc2_io *io_cb, int64_t offset);
+
+/**
+ * @brief Initialize a frame out of a contiguous frame buffer.
+ *
+ * @param cframe The buffer for the frame.
+ * @param len The length of buffer for the frame.
+ * @param copy Whether the frame buffer should be copied internally or not.
+ *
+ * @return The frame created from the contiguous frame buffer.
+ *
+ * @note The user is responsible to `free` the returned frame.
+ */
+blosc2_frame_s* frame_from_cframe(uint8_t *cframe, int64_t len, bool copy);
+
+/**
+ * @brief Create a super-chunk from a frame.
+ *
+ * @param frame The frame from which the super-chunk will be created.
+ * @param copy If true, a new frame buffer is created
+ * internally to serve as storage for the super-chunk. Else, the
+ * super-chunk will be backed by @p frame (i.e. no copies are made).
+ *
+ * @return The super-chunk corresponding to the frame.
+ */
+blosc2_schunk* frame_to_schunk(blosc2_frame_s* frame, bool copy, const blosc2_io *udio);
+
+blosc2_storage *
+get_new_storage(const blosc2_storage *storage, const blosc2_cparams *cdefaults, const blosc2_dparams *ddefaults,
+                const blosc2_io *iodefaults);
+
+void* frame_append_chunk(blosc2_frame_s* frame, void* chunk, blosc2_schunk* schunk);
+void* frame_insert_chunk(blosc2_frame_s* frame, int64_t nchunk, void* chunk, blosc2_schunk* schunk);
+void* frame_update_chunk(blosc2_frame_s* frame, int64_t nchunk, void* chunk, blosc2_schunk* schunk);
+void* frame_delete_chunk(blosc2_frame_s* frame, int64_t nchunk, blosc2_schunk* schunk);
+int frame_reorder_offsets(blosc2_frame_s *frame, const int64_t *offsets_order, blosc2_schunk* schunk);
+
+/**
+ * @brief Get an open "rb" handle for the frame file (regular frames only; sframe
+ * chunk/index files keep their own opens).  With the default filesystem backend
+ * on POSIX the handle is opened once and cached in the frame, so scattered
+ * reads -- including the decompressor's worker threads -- do not pay an
+ * open/close each: reads there are positional (pread), hence safe to share.
+ *
+ * Caching is skipped, and a private per-call handle returned instead, when:
+ * the backend is not #BLOSC2_IO_FILESYSTEM (other backends keep their per-call
+ * open/close contract); the platform is Windows (the CRT gives no
+ * FILE_SHARE_DELETE, so a cached handle would block unlink/rename of the frame
+ * file); or the process-wide cache is full, which bounds descriptor use at
+ * min(96, RLIMIT_NOFILE/16), overridable with BLOSC_MAX_CACHED_READERS.
+ *
+ * Either way the handle must be given back with frame_reader_release().
+ *
+ * @return The handle, or NULL if it could not be opened.
+ */
+void* frame_reader_acquire(blosc2_frame_s* frame, const blosc2_io* io);
+
+/**
+ * @brief Counterpart of frame_reader_acquire(): closes @p fp unless it is the
+ * frame's cached handle.  Also the right call for handles obtained elsewhere
+ * (e.g. sframe_open_index), which are never the cached one.  Every acquire must
+ * be paired with exactly one release: the cached handle is only ever dropped
+ * while no acquire is outstanding.
+ */
+void frame_reader_release(blosc2_frame_s* frame, const blosc2_io_cb* io_cb, void* fp);
+
+/**
+ * @brief Close the frame's cached read handle, if any.  Call before the frame
+ * file is replaced (rather than rewritten in place) so the next read reopens it.
+ * Unconditional: only for teardown and for write paths that recreate the file,
+ * where no read can be in flight.
+ */
+void frame_reader_invalidate(blosc2_frame_s* frame);
+
+/**
+ * @brief Drop the cached read handle if it no longer refers to the file at the
+ * frame's urlpath, i.e. the frame file was unlinked and recreated, or renamed
+ * over.  Also sets @p frame->force_refresh so the cached metadata is reloaded
+ * even when the replacement happens to have the same length.  Call before any
+ * read that the frame's cached state is derived from.  No-op where no handle is
+ * cached (Windows, non-filesystem backends, cframes).
+ */
+void frame_reader_revalidate(blosc2_frame_s* frame);
+
+int frame_get_chunk(blosc2_frame_s* frame, int64_t nchunk, uint8_t **chunk, bool *needs_free);
+int frame_get_lazychunk(blosc2_frame_s* frame, int64_t nchunk, uint8_t **chunk, bool *needs_free);
+int frame_decompress_chunk(blosc2_context* dctx, blosc2_frame_s* frame, int64_t nchunk,
+                           void *dest, int32_t nbytes);
+
+int frame_update_header(blosc2_frame_s* frame, blosc2_schunk* schunk, bool new);
+int frame_update_trailer(blosc2_frame_s* frame, blosc2_schunk* schunk);
+
+int frame_get_metalayers(blosc2_frame_s* frame, blosc2_schunk* schunk);
+int frame_get_vlmetalayers(blosc2_frame_s* frame, blosc2_schunk* schunk);
+
+/**
+ * @brief Poll the on-disk frame for staleness and refresh the cached state
+ * (offsets index, counters, metalayers and vlmetalayers) when another handle
+ * mutated it.  Takes the shared lock when locking is enabled, so the sidecar
+ * generation counter is consulted too.  A no-op for in-memory frames.
+ *
+ * @return 1 if a refresh took place, 0 if none was needed, negative on error.
+ */
+int frame_check_stale(blosc2_frame_s* frame);
+
+/* Free the cached (vl)metalayers of a schunk (defined in schunk.c); used to
+ * reset the cache before reloading it from a refreshed frame. */
+void schunk_free_metalayers(blosc2_schunk* schunk);
+void schunk_free_vlmetalayers(blosc2_schunk* schunk);
+
+/**
+ * @brief Acquire the frame's cross-process advisory lock (shared for reads,
+ * exclusive for mutations), blocking until available.  A no-op unless locking
+ * was requested at open/creation time (or when @p frame is NULL, for non-frame
+ * schunks).  Re-entrant on the same frame handle via a depth counter, so an
+ * exclusive section can nest shared ones.
+ *
+ * @return 0 if succeeds; BLOSC2_ERROR_LOCK otherwise.
+ */
+int frame_lock(blosc2_frame_s* frame, bool exclusive);
+
+/**
+ * @brief Release one level of the frame's advisory lock (the OS lock is
+ * released when the depth reaches zero).  A no-op when locking is off.
+ *
+ * @return 0 if succeeds; BLOSC2_ERROR_LOCK otherwise.
+ */
+int frame_unlock(blosc2_frame_s* frame);
+
+/**
+ * @brief Enable sidecar locking on @p frame when @p io requests it (default
+ * filesystem backend with blosc2_stdio_params.locking set).  Only meaningful
+ * for disk-based frames.
+ */
+void frame_set_locking(blosc2_frame_s* frame, const blosc2_io* io);
+
+/**
+ * @brief Whether @p io requests locking, either explicitly
+ * (blosc2_stdio_params.locking) or via the BLOSC_LOCKING environment
+ * variable. Usable before a frame object exists (e.g. in the open path).
+ */
+bool frame_locking_requested(const blosc2_io* io);
+
+int64_t frame_fill_special(blosc2_frame_s* frame, int64_t nitems, int special_value,
+                       int32_t chunksize, blosc2_schunk* schunk);
+
+#endif /* BLOSC_FRAME_H */

@@ -1,0 +1,35 @@
+[package]
+name = "medh5"
+description = "The MEDH5 format engine: a self-describing HDF5 container for one medical imaging subject and all of its ground truth"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/medh5"
+readme = "README.md"
+keywords = ["medical-imaging", "hdf5", "segmentation", "registration", "dataset"]
+categories = ["science", "encoding", "data-structures"]
+
+[dependencies]
+medh5-sys.workspace = true
+hdf5.workspace = true
+ndarray.workspace = true
+half.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+indexmap.workspace = true
+sha2.workspace = true
+blake2.workspace = true
+digest.workspace = true
+hex.workspace = true
+regex.workspace = true
+thiserror.workspace = true
+jsonschema.workspace = true
+rand.workspace = true
+rand_pcg.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

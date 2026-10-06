@@ -1,0 +1,20 @@
+[package]
+name = "medh5-python"
+description = "Python bindings of the medh5 format engine (built by maturin; not published to crates.io)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+name = "_core"
+crate-type = ["cdylib"]
+
+[dependencies]
+medh5.workspace = true
+medh5-cli.workspace = true
+pyo3.workspace = true
+numpy.workspace = true

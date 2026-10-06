@@ -1,0 +1,52 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/medh5-sys",
+  "crates/medh5",
+  "crates/medh5-cli",
+  "crates/medh5-python",
+]
+default-members = [
+  "crates/medh5-sys",
+  "crates/medh5",
+  "crates/medh5-cli",
+]
+
+[workspace.package]
+# The one source of the package version for every frontend: the Rust crates,
+# the CLI and the Python wheel (pyproject.toml reads it through maturin).  It is
+# stamped into every file's `generator` attribute and every manifest.
+version = "2.0.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT"
+authors = ["Puyang Wang <pauliwang411@gmail.com>"]
+repository = "https://github.com/XwK-P/medh5"
+homepage = "https://medh5.readthedocs.io/"
+
+[workspace.dependencies]
+medh5-sys = { path = "crates/medh5-sys", version = "=2.0.0" }
+medh5 = { path = "crates/medh5", version = "=2.0.0" }
+medh5-cli = { path = "crates/medh5-cli", version = "=2.0.0" }
+hdf5 = { package = "hdf5-metno", version = "0.15.0", features = ["static", "zlib", "f16"] }
+ndarray = "0.17"
+half = "2.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+indexmap = "2"
+sha2 = "0.10"
+blake2 = "0.10"
+digest = "0.10"
+hex = "0.4"
+regex = "1"
+thiserror = "2"
+jsonschema = { version = "0.58", default-features = false }
+rand = "0.9"
+rand_pcg = "0.9"
+clap = { version = "4.5", features = ["derive", "wrap_help"] }
+pyo3 = { version = "0.29.3", features = ["abi3-py310"] }
+numpy = { version = "0.29.0", features = ["half"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 4

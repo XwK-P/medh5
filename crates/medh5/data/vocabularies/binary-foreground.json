@@ -1,0 +1,19 @@
+{
+  "id": "binary-foreground",
+  "version": "1.0.0",
+  "description": "One foreground class. The vocabulary a binary segmentation needs.",
+  "classes": [
+    {
+      "id": 1,
+      "key": "foreground",
+      "name": "Foreground",
+      "category": "region",
+      "color": [
+        255,
+        96,
+        64,
+        255
+      ]
+    }
+  ]
+}
