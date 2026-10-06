@@ -189,10 +189,7 @@ impl Grid {
         let gid = repr_str(&self.grid_id);
         let ndim = self.shape.len();
         if self.axis_names.len() != ndim || self.axis_kinds.len() != ndim {
-            return Err(Error::coded(
-                "E109",
-                format!("grid {gid}: axis_names/axis_kinds must have {ndim} entries"),
-            ));
+            return Err(Error::coded("E109", format!("grid {gid}: axis_names/axis_kinds must have {ndim} entries")));
         }
         if self.shape.iter().any(|s| *s <= 0) {
             return Err(Error::coded(
@@ -211,10 +208,7 @@ impl Grid {
         }
         let n_spatial = self.n_spatial();
         if !(MIN_SPATIAL..=MAX_SPATIAL).contains(&n_spatial) {
-            return Err(Error::coded(
-                "E110",
-                format!("grid {gid}: {n_spatial} spatial axes; the spec allows 2 or 3"),
-            ));
+            return Err(Error::coded("E110", format!("grid {gid}: {n_spatial} spatial axes; the spec allows 2 or 3")));
         }
         let count = |k: &str| self.axis_kinds.iter().filter(|v| *v == k).count();
         if count("time") > 1 || count("channel") > 1 {
@@ -233,10 +227,7 @@ impl Grid {
             ));
         }
         if self.spacing.len() != n_spatial || self.origin.len() != n_spatial {
-            return Err(Error::coded(
-                "E109",
-                format!("grid {gid}: spacing/origin must have {n_spatial} entries"),
-            ));
+            return Err(Error::coded("E109", format!("grid {gid}: spacing/origin must have {n_spatial} entries")));
         }
         if self.spacing.iter().any(|v| *v <= 0.0 || v.is_nan()) {
             return Err(Error::coded(
@@ -257,10 +248,7 @@ impl Grid {
             if values.len() as i64 != extent {
                 return Err(Error::coded(
                     "E109",
-                    format!(
-                        "grid {gid}: time_values has {} entries for a time axis of extent {extent}",
-                        values.len()
-                    ),
+                    format!("grid {gid}: time_values has {} entries for a time axis of extent {extent}", values.len()),
                 ));
             }
         }
@@ -403,10 +391,7 @@ impl Grid {
             ("axis_kinds".into(), AttrValue::strs(&self.axis_kinds)),
             ("spacing".into(), AttrValue::floats(&self.spacing)),
             ("origin".into(), AttrValue::floats(&self.origin)),
-            (
-                "direction".into(),
-                AttrValue::matrix(n, n, self.direction.as_standard_layout().as_slice().unwrap()),
-            ),
+            ("direction".into(), AttrValue::matrix(n, n, self.direction.as_standard_layout().as_slice().unwrap())),
             ("coord_system".into(), AttrValue::Str(self.coord_system.clone())),
             ("units".into(), AttrValue::Str(self.units.clone())),
         ];
@@ -613,7 +598,8 @@ mod tests {
 
     #[test]
     fn grid_rules() {
-        let mut spec = GridSpec { grid_id: "g".into(), shape: vec![4, 4], spacing: vec![0.0, 1.0], ..Default::default() };
+        let mut spec =
+            GridSpec { grid_id: "g".into(), shape: vec![4, 4], spacing: vec![0.0, 1.0], ..Default::default() };
         assert_eq!(Grid::from_spec(spec.clone()).unwrap_err().code(), Some("E104"));
         spec.spacing = vec![1.0, 1.0];
         spec.direction = Some(Array2::from_shape_vec((2, 2), vec![1.0, 0.1, 0.0, 1.0]).unwrap());

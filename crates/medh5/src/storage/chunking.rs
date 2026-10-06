@@ -79,7 +79,12 @@ pub enum Patch {
 }
 
 /// Chunk extents for the spatial axes alone.
-pub fn spatial_chunk_for(spatial_shape: &[usize], patch: &Patch, itemsize: usize, l3_bytes: Option<u64>) -> Result<Vec<usize>> {
+pub fn spatial_chunk_for(
+    spatial_shape: &[usize],
+    patch: &Patch,
+    itemsize: usize,
+    l3_bytes: Option<u64>,
+) -> Result<Vec<usize>> {
     if spatial_shape.is_empty() || spatial_shape.contains(&0) {
         return Err(Error::invalid(format!("spatial shape must be positive, got {}", repr_int_tuple(spatial_shape))));
     }
@@ -116,7 +121,8 @@ pub fn spatial_chunk_for(spatial_shape: &[usize], patch: &Patch, itemsize: usize
         let step = pow2_ceil(patch_t[axis]);
         let mut grown = chunk.clone();
         grown[axis] = (grown[axis] + step).min(spatial_shape[axis]);
-        let mean: f64 = grown.iter().zip(&patch_t).map(|(c, p)| *c as f64 / *p as f64).sum::<f64>() / grown.len() as f64;
+        let mean: f64 =
+            grown.iter().zip(&patch_t).map(|(c, p)| *c as f64 / *p as f64).sum::<f64>() / grown.len() as f64;
         if mean > OVERSHOOT_LIMIT {
             break;
         }
@@ -145,7 +151,8 @@ pub fn optimize_chunks(
         )));
     }
     let body = &shape[leading..];
-    let spatial_idx: Vec<usize> = axis_kinds.iter().enumerate().filter(|(_, k)| *k == "spatial").map(|(i, _)| i).collect();
+    let spatial_idx: Vec<usize> =
+        axis_kinds.iter().enumerate().filter(|(_, k)| *k == "spatial").map(|(i, _)| i).collect();
     let spatial_shape: Vec<usize> = spatial_idx.iter().map(|i| body[*i]).collect();
     let spatial_chunk = spatial_chunk_for(&spatial_shape, patch, itemsize, l3_bytes)?;
     let mut out = vec![1usize; body.len()];
@@ -250,7 +257,8 @@ mod tests {
     fn spatial_chunks_match_reference() {
         // medh5 1.4.4 on a host whose L3 clamps the budget to 4 MiB.
         let kinds: Vec<String> = vec!["spatial".into(); 3];
-        let c = optimize_chunks(&[16, 24, 24], &kinds, &Patch::PerAxis(vec![8, 8, 8]), 2, Some(272_629_760), 0).unwrap();
+        let c =
+            optimize_chunks(&[16, 24, 24], &kinds, &Patch::PerAxis(vec![8, 8, 8]), 2, Some(272_629_760), 0).unwrap();
         assert_eq!(c, vec![16, 8, 8]);
     }
 

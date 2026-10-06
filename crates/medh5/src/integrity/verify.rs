@@ -187,8 +187,11 @@ fn compare_attrs(a: &hdf5::Location, b: &hdf5::Location, prefix: &str, out: &mut
     let label = if prefix.is_empty() { "/" } else { prefix };
     let names_a = attrs::names(a)?;
     let names_b = attrs::names(b)?;
-    let mut only: Vec<&String> =
-        names_a.iter().filter(|n| !names_b.contains(n)).chain(names_b.iter().filter(|n| !names_a.contains(n))).collect();
+    let mut only: Vec<&String> = names_a
+        .iter()
+        .filter(|n| !names_b.contains(n))
+        .chain(names_b.iter().filter(|n| !names_a.contains(n)))
+        .collect();
     only.sort();
     for key in only {
         out.push(format!("{label}@{key}: present in only one tree"));
@@ -213,7 +216,9 @@ fn compare_groups(a: &hdf5::Group, b: &hdf5::Group, prefix: &str, out: &mut Vec<
     for name in names_a.iter().filter(|n| names_b.contains(n)) {
         let path = format!("{prefix}/{name}");
         match (ops::node_kind(a, name), ops::node_kind(b, name)) {
-            (Some(NodeKind::Group), Some(NodeKind::Group)) => compare_groups(&a.group(name)?, &b.group(name)?, &path, out)?,
+            (Some(NodeKind::Group), Some(NodeKind::Group)) => {
+                compare_groups(&a.group(name)?, &b.group(name)?, &path, out)?
+            }
             (Some(NodeKind::Dataset), Some(NodeKind::Dataset)) => {
                 let (da, db) = (a.dataset(name)?, b.dataset(name)?);
                 compare_attrs(&da, &db, &path, out)?;

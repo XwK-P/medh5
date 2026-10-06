@@ -271,7 +271,11 @@ pub fn repr(value: &Value) -> String {
                 if f.is_nan() {
                     "nan".to_string()
                 } else if f.is_infinite() {
-                    if f > 0.0 { "inf".to_string() } else { "-inf".to_string() }
+                    if f > 0.0 {
+                        "inf".to_string()
+                    } else {
+                        "-inf".to_string()
+                    }
                 } else {
                     float_repr(f)
                 }
@@ -283,8 +287,7 @@ pub fn repr(value: &Value) -> String {
             format!("[{}]", inner.join(", "))
         }
         Value::Object(map) => {
-            let inner: Vec<String> =
-                map.iter().map(|(k, v)| format!("{}: {}", repr_str(k), repr(v))).collect();
+            let inner: Vec<String> = map.iter().map(|(k, v)| format!("{}: {}", repr_str(k), repr(v))).collect();
             format!("{{{}}}", inner.join(", "))
         }
     }
@@ -326,7 +329,11 @@ pub fn py_float(value: f64) -> String {
     if value.is_nan() {
         "nan".to_string()
     } else if value.is_infinite() {
-        if value > 0.0 { "inf".to_string() } else { "-inf".to_string() }
+        if value > 0.0 {
+            "inf".to_string()
+        } else {
+            "-inf".to_string()
+        }
     } else {
         float_repr(value)
     }
@@ -417,7 +424,10 @@ mod tests {
         let escaped = format!("{{\"a\": 1, \"b\": [1.0, \"x\"], \"c\": {{\"{}u00e9\": null}}}}", '\\');
         assert_eq!(dumps(&v, Style::PYTHON), escaped);
         assert_eq!(canonical(&json!({"b": 1, "a": [2, 3]})), r#"{"a":[2,3],"b":1}"#);
-        assert_eq!(pretty(&json!({"a": [], "b": {}, "c": [1]})), "{\n  \"a\": [],\n  \"b\": {},\n  \"c\": [\n    1\n  ]\n}");
+        assert_eq!(
+            pretty(&json!({"a": [], "b": {}, "c": [1]})),
+            "{\n  \"a\": [],\n  \"b\": {},\n  \"c\": [\n    1\n  ]\n}"
+        );
     }
 
     #[test]

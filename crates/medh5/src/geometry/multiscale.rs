@@ -60,10 +60,7 @@ impl Pyramid {
             ));
         }
         if !DOWNSAMPLE_METHODS.contains(&p.downsample_method.as_str()) {
-            return Err(Error::coded(
-                "E105",
-                format!("unknown downsample_method {}", repr_str(&p.downsample_method)),
-            ));
+            return Err(Error::coded("E105", format!("unknown downsample_method {}", repr_str(&p.downsample_method))));
         }
         if p.downsample_factors.iter().any(|v| *v <= 0.0) {
             return Err(Error::coded("E105", "downsample factors must be > 0"));
@@ -113,7 +110,12 @@ pub fn derive_level_grid(base: &Grid, factors: &[f64], grid_id: &str, shape: Opt
         Some(shape) => shape.to_vec(),
         None => {
             let lead = &base.shape[..base.ndim() - s];
-            let spatial = base.spatial_shape().iter().zip(factors).map(|(n, f)| ((*n as f64 / f).ceil() as i64).max(1)).collect::<Vec<_>>();
+            let spatial = base
+                .spatial_shape()
+                .iter()
+                .zip(factors)
+                .map(|(n, f)| ((*n as f64 / f).ceil() as i64).max(1))
+                .collect::<Vec<_>>();
             lead.iter().copied().chain(spatial).collect()
         }
     };

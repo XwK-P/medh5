@@ -75,7 +75,13 @@ pub struct Payload {
 impl Payload {
     /// An empty payload of `kind`.
     pub fn new(kind: &str) -> Payload {
-        Payload { kind: kind.into(), datasets: IndexMap::new(), attrs: Vec::new(), stacked_axes: 0, class_ids: Vec::new() }
+        Payload {
+            kind: kind.into(),
+            datasets: IndexMap::new(),
+            attrs: Vec::new(),
+            stacked_axes: 0,
+            class_ids: Vec::new(),
+        }
     }
 
     /// The `data` dataset.

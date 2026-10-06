@@ -189,7 +189,8 @@ impl AnnotationHeader {
     pub fn attrs(&self) -> Vec<(String, AttrValue)> {
         let u16s = |ids: &[i64]| {
             AttrValue::Array(crate::array::NdArray::from(
-                ndarray::ArrayD::from_shape_vec(ndarray::IxDyn(&[ids.len()]), ids.iter().map(|v| *v as u16).collect()).unwrap(),
+                ndarray::ArrayD::from_shape_vec(ndarray::IxDyn(&[ids.len()]), ids.iter().map(|v| *v as u16).collect())
+                    .unwrap(),
             ))
         };
         let mut out: Vec<(String, AttrValue)> = vec![
@@ -265,7 +266,9 @@ impl AnnotationHeader {
             ignore_mask: opt_text("ignore_mask")?,
             prov: opt_text("prov")?,
             quality: opt_text("quality")?,
-            derived_from: attrs::read(group, "derived_from")?.map(|v| v.as_str_list().unwrap_or_default()).unwrap_or_default(),
+            derived_from: attrs::read(group, "derived_from")?
+                .map(|v| v.as_str_list().unwrap_or_default())
+                .unwrap_or_default(),
             extra,
         };
         header.check()?;

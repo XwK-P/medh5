@@ -130,9 +130,10 @@ impl Skeleton {
         };
         let mut edges = Vec::new();
         for edge in get_list(doc, "edges") {
-            let pair = edge.as_array().filter(|p| p.len() == 2).ok_or_else(|| {
-                Error::Value("a skeleton edge must be a pair of keypoint ids".into())
-            })?;
+            let pair = edge
+                .as_array()
+                .filter(|p| p.len() == 2)
+                .ok_or_else(|| Error::Value("a skeleton edge must be a pair of keypoint ids".into()))?;
             edges.push((to_int(&pair[0])?, to_int(&pair[1])?));
         }
         Ok(Skeleton { id: to_str(require(doc, "id")?), keypoints, edges })
@@ -243,8 +244,7 @@ impl LabelClass {
             }
             _ => None,
         };
-        let codes =
-            get_list(doc, "codes").iter().map(OntologyCode::from_json).collect::<Result<Vec<_>>>()?;
+        let codes = get_list(doc, "codes").iter().map(OntologyCode::from_json).collect::<Result<Vec<_>>>()?;
         let properties = match get(doc, "properties") {
             Some(Value::Object(map)) => map.clone(),
             _ => Map::new(),
@@ -383,11 +383,7 @@ impl LabelSet {
             dupes.sort();
             return Err(Error::coded(
                 "E302",
-                format!(
-                    "label set {}: duplicate class ids {}",
-                    repr_str(&self.id),
-                    crate::json::repr_int_list(&dupes)
-                ),
+                format!("label set {}: duplicate class ids {}", repr_str(&self.id), crate::json::repr_int_list(&dupes)),
             ));
         }
         if self.by_key.len() != self.classes.len() {
@@ -414,10 +410,7 @@ impl LabelSet {
         }
         self.check_acyclic()?;
         if self.form == "ref" && self.uri.as_deref().map(str::is_empty).unwrap_or(true) {
-            return Err(Error::coded(
-                "E305",
-                format!("label set {}: form 'ref' requires a uri", repr_str(&self.id)),
-            ));
+            return Err(Error::coded("E305", format!("label set {}: form 'ref' requires a uri", repr_str(&self.id))));
         }
         if self.form == "ref" && self.declared_sha256.as_deref().map(str::is_empty).unwrap_or(true) {
             return Err(Error::coded(
@@ -451,12 +444,7 @@ impl LabelSet {
     fn check_acyclic(&self) -> Result<()> {
         // 0 = unvisited, 1 = on the current path, 2 = done.
         let mut colour: HashMap<i64, u8> = HashMap::new();
-        fn visit(
-            set: &LabelSet,
-            node: i64,
-            path: &mut Vec<i64>,
-            colour: &mut HashMap<i64, u8>,
-        ) -> Result<()> {
+        fn visit(set: &LabelSet, node: i64, path: &mut Vec<i64>, colour: &mut HashMap<i64, u8>) -> Result<()> {
             match colour.get(&node).copied().unwrap_or(0) {
                 1 => {
                     let mut names: Vec<&str> = path.iter().map(|n| set.class_by_id(*n).key.as_str()).collect();
@@ -539,9 +527,7 @@ impl LabelSet {
 
     /// Look up a class by id or key, or a `KeyError`.
     pub fn lookup(&self, key: &ClassKey) -> Result<&LabelClass> {
-        self.get(key).ok_or_else(|| {
-            Error::Key(format!("label set {} has no class {}", repr_str(&self.id), key.repr()))
-        })
+        self.get(key).ok_or_else(|| Error::Key(format!("label set {} has no class {}", repr_str(&self.id), key.repr())))
     }
 
     /// Look up a class by id.
@@ -643,11 +629,7 @@ impl LabelSet {
     /// A declared skeleton, or a `KeyError`.
     pub fn skeleton(&self, skeleton_id: &str) -> Result<&Skeleton> {
         self.skeletons.iter().find(|s| s.id == skeleton_id).ok_or_else(|| {
-            Error::Key(format!(
-                "label set {} has no skeleton {}",
-                repr_str(&self.id),
-                repr_str(skeleton_id)
-            ))
+            Error::Key(format!("label set {} has no skeleton {}", repr_str(&self.id), repr_str(skeleton_id)))
         })
     }
 
@@ -853,11 +835,9 @@ mod tests {
 
     #[test]
     fn duplicate_and_cycle_refused() {
-        let err = LabelSet::inline(
-            "x",
-            vec![LabelClass::new(1, "a", "A").unwrap(), LabelClass::new(1, "b", "B").unwrap()],
-        )
-        .unwrap_err();
+        let err =
+            LabelSet::inline("x", vec![LabelClass::new(1, "a", "A").unwrap(), LabelClass::new(1, "b", "B").unwrap()])
+                .unwrap_err();
         assert_eq!(err.code(), Some("E302"));
         let mut a = LabelClass::new(1, "a", "A").unwrap();
         a.parents = vec![2];

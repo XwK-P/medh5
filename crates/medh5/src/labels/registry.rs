@@ -100,10 +100,7 @@ pub fn describe() -> Result<serde_json::Map<String, Value>> {
     let mut out = serde_json::Map::new();
     for name in available() {
         let ls = load(&name)?;
-        out.insert(
-            name,
-            json!({"id": ls.id, "version": ls.version, "classes": ls.len(), "sha256": ls.sha256()}),
-        );
+        out.insert(name, json!({"id": ls.id, "version": ls.version, "classes": ls.len(), "sha256": ls.sha256()}));
     }
     Ok(out)
 }

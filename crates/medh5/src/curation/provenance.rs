@@ -18,30 +18,17 @@ use crate::{Error, Result};
 /// `agent.type` values (§11.1).
 pub const AGENT_TYPES: [&str; 4] = ["person", "software", "organization", "model"];
 /// The schema's `agent` properties; the object is closed.
-pub const AGENT_FIELDS: [&str; 7] =
-    ["id", "type", "name", "role", "version", "qualification", "organization"];
+pub const AGENT_FIELDS: [&str; 7] = ["id", "type", "name", "role", "version", "qualification", "organization"];
 /// The schema's `activity` properties; the object is closed.
 pub const ACTIVITY_FIELDS: [&str; 9] =
     ["id", "type", "agent", "started", "ended", "tool", "inputs", "outputs", "params"];
 /// `activity.type` values (§11.1).
-pub const ACTIVITY_TYPES: [&str; 10] = [
-    "import",
-    "annotate",
-    "review",
-    "predict",
-    "resample",
-    "register",
-    "derive",
-    "deidentify",
-    "transcode",
-    "other",
-];
+pub const ACTIVITY_TYPES: [&str; 10] =
+    ["import", "annotate", "review", "predict", "resample", "register", "derive", "deidentify", "transcode", "other"];
 
 fn rfc3339() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d+)?([Zz]|[+-]\d{2}:\d{2})$").unwrap()
-    })
+    RE.get_or_init(|| Regex::new(r"^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d+)?([Zz]|[+-]\d{2}:\d{2})$").unwrap())
 }
 
 /// Whether `value` is an RFC 3339 timestamp, as the format checks it.
@@ -52,10 +39,7 @@ pub fn is_timestamp(value: &str) -> bool {
 /// Validate an RFC 3339 timestamp (E604).
 pub fn check_timestamp(value: &str, where_: &str) -> Result<()> {
     if !is_timestamp(value) {
-        return Err(Error::coded(
-            "E604",
-            format!("{where_}: {} is not an RFC 3339 timestamp", repr_str(value)),
-        ));
+        return Err(Error::coded("E604", format!("{where_}: {} is not an RFC 3339 timestamp", repr_str(value))));
     }
     Ok(())
 }
@@ -94,11 +78,7 @@ pub struct Agent {
 
 impl Agent {
     /// A validated agent.
-    pub fn new(
-        id: impl Into<String>,
-        agent_type: impl Into<String>,
-        name: impl Into<String>,
-    ) -> Result<Self> {
+    pub fn new(id: impl Into<String>, agent_type: impl Into<String>, name: impl Into<String>) -> Result<Self> {
         let agent = Agent {
             id: id.into(),
             r#type: agent_type.into(),
@@ -220,12 +200,9 @@ impl Activity {
         let mut out = Map::new();
         out.insert("id".into(), json!(self.id));
         out.insert("type".into(), json!(self.r#type));
-        for (key, value) in [
-            ("agent", &self.agent),
-            ("started", &self.started),
-            ("ended", &self.ended),
-            ("tool", &self.tool),
-        ] {
+        for (key, value) in
+            [("agent", &self.agent), ("started", &self.started), ("ended", &self.ended), ("tool", &self.tool)]
+        {
             if let Some(v) = value {
                 out.insert(key.into(), json!(v));
             }
@@ -313,9 +290,7 @@ impl Provenance {
 
     /// An agent, or a `KeyError`.
     pub fn agent(&self, agent_id: &str) -> Result<&Agent> {
-        self.agents
-            .get(agent_id)
-            .ok_or_else(|| Error::Key(format!("unknown agent {}", repr_str(agent_id))))
+        self.agents.get(agent_id).ok_or_else(|| Error::Key(format!("unknown agent {}", repr_str(agent_id))))
     }
 
     /// An activity, or a `KeyError`.
@@ -398,8 +373,7 @@ impl Provenance {
         }
         let doc = pyval::as_object(doc, "provenance")?;
         let agents = get_list(doc, "agents").iter().map(Agent::from_json).collect::<Result<Vec<_>>>()?;
-        let activities =
-            get_list(doc, "activities").iter().map(Activity::from_json).collect::<Result<Vec<_>>>()?;
+        let activities = get_list(doc, "activities").iter().map(Activity::from_json).collect::<Result<Vec<_>>>()?;
         Provenance::new(agents, activities)
     }
 

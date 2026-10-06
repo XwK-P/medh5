@@ -27,10 +27,7 @@ pub fn is_valid_id(name: &str) -> bool {
 /// Check an object identifier against spec §2.3 and return it unchanged.
 pub fn validate_id<'a>(name: &'a str, what: &str) -> Result<&'a str> {
     if !is_valid_id(name) {
-        return Err(Error::coded(
-            "E003",
-            format!("{what} {} must match [A-Za-z0-9_.-]{{1,128}}", repr_str(name)),
-        ));
+        return Err(Error::coded("E003", format!("{what} {} must match [A-Za-z0-9_.-]{{1,128}}", repr_str(name))));
     }
     if RESERVED_IDS.contains(&name) {
         return Err(Error::coded("E003", format!("{what} {} is reserved", repr_str(name))));
@@ -41,10 +38,7 @@ pub fn validate_id<'a>(name: &'a str, what: &str) -> Result<&'a str> {
 /// Check a collection sample key against spec §2.2 and return it unchanged.
 pub fn validate_sample_key(name: &str) -> Result<&str> {
     if !matches_pattern(name, 255) {
-        return Err(Error::coded(
-            "E003",
-            format!("sample key {} must match [A-Za-z0-9_.-]{{1,255}}", repr_str(name)),
-        ));
+        return Err(Error::coded("E003", format!("sample key {} must match [A-Za-z0-9_.-]{{1,255}}", repr_str(name))));
     }
     Ok(name)
 }

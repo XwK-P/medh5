@@ -30,7 +30,9 @@ use crate::labels::ClassKey;
 use crate::storage::chunking::{field_chunks, fit_chunks};
 use crate::storage::codecs::{dataset_layout, resolve_profile, Role};
 use crate::storage::index::{build_index, write_index, DEFAULT_MAX_COORDS, DEFAULT_OCCUPANCY_FACTOR};
-use crate::transforms::encode::{encode_affine, encode_bspline, encode_composite, encode_displacement, encode_identity};
+use crate::transforms::encode::{
+    encode_affine, encode_bspline, encode_composite, encode_displacement, encode_identity,
+};
 use crate::transforms::model::{check_transform_id, TransformHeader, TRANSFORM_KINDS};
 use crate::{Error, Result, VERSION};
 
@@ -113,10 +115,9 @@ impl SampleWriter {
         match key {
             ClassKey::Id(i) => Ok(*i),
             ClassKey::Key(k) => match &self.document.label_set {
-                None => Err(Error::invalid(format!(
-                    "cannot resolve class name {}: declare a label set first",
-                    repr_str(k)
-                ))),
+                None => {
+                    Err(Error::invalid(format!("cannot resolve class name {}: declare a label set first", repr_str(k))))
+                }
                 Some(ls) => Ok(ls.lookup(key)?.id),
             },
         }
@@ -237,8 +238,14 @@ impl SampleWriter {
             }
         }
         let examined = self.named_classes(&options.common.annotated_classes)?;
-        let (payload, stats, class_ids, in_band) =
-            self.encode_segmentation(source, &target, &encoding, options.ignore.as_ref(), &examined, options.threshold)?;
+        let (payload, stats, class_ids, in_band) = self.encode_segmentation(
+            source,
+            &target,
+            &encoding,
+            options.ignore.as_ref(),
+            &examined,
+            options.threshold,
+        )?;
         let mut ignore_mask = options.ignore_mask.clone();
         let mut sibling = None;
         if options.ignore.is_some() && !in_band {
@@ -254,7 +261,10 @@ impl SampleWriter {
             sibling = Some(name);
         }
         let annotated = self.resolve_annotated(&options.common.annotated_classes, &class_ids)?;
-        let mut header = AnnotationHeader::new(payload.kind.clone(), options.common.task.clone().unwrap_or_else(|| "segmentation".into()));
+        let mut header = AnnotationHeader::new(
+            payload.kind.clone(),
+            options.common.task.clone().unwrap_or_else(|| "segmentation".into()),
+        );
         header.grid = Some(grid.to_string());
         header.timepoints = options.common.timepoints.clone();
         header.class_ids = class_ids;
@@ -268,7 +278,14 @@ impl SampleWriter {
         header.check()?;
         self.write_annotation(ann_id, &header, &payload, Some(&target), options.common.codec.as_deref())?;
         if let (Some(name), Some(ignore)) = (sibling, options.ignore) {
-            self.add_mask(&name, ignore, grid, "other", options.common.prov.as_deref(), options.common.codec.as_deref())?;
+            self.add_mask(
+                &name,
+                ignore,
+                grid,
+                "other",
+                options.common.prov.as_deref(),
+                options.common.codec.as_deref(),
+            )?;
         }
         Ok((payload.kind, stats))
     }
@@ -323,7 +340,9 @@ impl SampleWriter {
                 }
                 let shape = normalize_masks(&given, Some(&spatial))?;
                 let overlaps = match ignore {
-                    Some(ig) => given.values().any(|m| ndarray::Zip::from(m).and(ig).fold(false, |acc, a, b| acc || (*a && *b))),
+                    Some(ig) => {
+                        given.values().any(|m| ndarray::Zip::from(m).and(ig).fold(false, |acc, a, b| acc || (*a && *b)))
+                    }
                     None => false,
                 };
                 let in_band_possible = ignore.is_some() && !overlaps;
@@ -331,7 +350,8 @@ impl SampleWriter {
                 let prefer = if encoding == "auto" { None } else { Some(encoding) };
                 let kind = select_encoding(&stats, false, prefer, in_band_possible);
                 let in_band = in_band_possible && IN_BAND_IGNORE_KINDS.contains(&kind.as_str());
-                let options = EncodeOptions { ignore: if in_band { ignore.cloned() } else { None }, ..Default::default() };
+                let options =
+                    EncodeOptions { ignore: if in_band { ignore.cloned() } else { None }, ..Default::default() };
                 let payload = encode_masks(&given, &kind, Some(&shape), &options)?;
                 let ids = payload.class_ids.clone();
                 Ok((payload, Some(stats), ids, in_band))
@@ -340,7 +360,15 @@ impl SampleWriter {
     }
 
     /// Write a boolean `mask` annotation (FOV, ignore region).
-    pub fn add_mask(&mut self, ann_id: &str, mask: ArrayD<bool>, grid: &str, task: &str, prov: Option<&str>, codec: Option<&str>) -> Result<()> {
+    pub fn add_mask(
+        &mut self,
+        ann_id: &str,
+        mask: ArrayD<bool>,
+        grid: &str,
+        task: &str,
+        prov: Option<&str>,
+        codec: Option<&str>,
+    ) -> Result<()> {
         let target = self.grid_ref(grid)?.clone();
         let spatial = target.spatial_shape();
         if mask.shape() != spatial.as_slice() {
@@ -392,7 +420,8 @@ impl SampleWriter {
                             chunks = fit_chunks(&proposed, &array.shape());
                         }
                     }
-                    let layout = dataset_layout(&array.shape(), array.dtype().itemsize(), &profile, Role::Label, chunks);
+                    let layout =
+                        dataset_layout(&array.shape(), array.dtype().itemsize(), &profile, Role::Label, chunks);
                     data::create(&group, name, array, &layout)?;
                 }
             }
@@ -424,7 +453,13 @@ impl SampleWriter {
     /// `instances` to a dense encoding loses every `instance_id` and is
     /// refused unless `drop_identity`; the loss is then recorded as a
     /// `transcode` activity.
-    pub fn transcode_annotation(&mut self, ann_id: &str, to_kind: &str, codec: Option<&str>, drop_identity: bool) -> Result<String> {
+    pub fn transcode_annotation(
+        &mut self,
+        ann_id: &str,
+        to_kind: &str,
+        codec: Option<&str>,
+        drop_identity: bool,
+    ) -> Result<String> {
         let node = self.root()?.group("annotations")?;
         let Some(group) = ops::child_group(&node, ann_id) else {
             return Err(Error::invalid(format!("no annotation {} to transcode", repr_str(ann_id))));
@@ -498,7 +533,10 @@ impl SampleWriter {
         if space == Some("index") && target.is_none() {
             return Err(Error::coded(
                 "E412",
-                format!("annotation {}: space='index' names a grid's coordinates, so `grid` is required", repr_str(ann_id)),
+                format!(
+                    "annotation {}: space='index' names a grid's coordinates, so `grid` is required",
+                    repr_str(ann_id)
+                ),
             ));
         }
         let mut frame = placement.frame_uid.clone();
@@ -532,7 +570,8 @@ impl SampleWriter {
         let mut declared: Vec<i64> = payload.class_ids.iter().chain(&annotated).copied().collect();
         declared.sort_unstable();
         declared.dedup();
-        let mut header = AnnotationHeader::new(payload.kind.clone(), options.task.clone().unwrap_or_else(|| default_task.into()));
+        let mut header =
+            AnnotationHeader::new(payload.kind.clone(), options.task.clone().unwrap_or_else(|| default_task.into()));
         header.grid = placement.grid.clone();
         header.timepoints = options.timepoints.clone();
         header.space = space.map(str::to_string);
@@ -671,7 +710,13 @@ impl SampleWriter {
     }
 
     /// Write planar polygons (§8.6) --- the RTSTRUCT-shaped annotation.
-    pub fn add_contours(&mut self, ann_id: &str, polygons: &[Polygon], placement: Placement, options: AnnotationOptions) -> Result<hdf5::Group> {
+    pub fn add_contours(
+        &mut self,
+        ann_id: &str,
+        polygons: &[Polygon],
+        placement: Placement,
+        options: AnnotationOptions,
+    ) -> Result<hdf5::Group> {
         let ndim = placement.grid.as_ref().and_then(|g| self.grids.get(g)).map(Grid::n_spatial);
         let payload = encode_contours(polygons, ndim)?;
         let space = placement.space.clone().unwrap_or_else(|| "index".into());
@@ -746,7 +791,14 @@ impl SampleWriter {
 
     /// Write a transform mapping points from `from_frame` to `to_frame`:
     /// `x_M = T(x_F)`, the ITK convention, with no attribute to switch it.
-    pub fn add_transform(&mut self, transform_id: &str, kind: &str, from_frame: &str, to_frame: &str, spec: TransformSpec) -> Result<hdf5::Group> {
+    pub fn add_transform(
+        &mut self,
+        transform_id: &str,
+        kind: &str,
+        from_frame: &str,
+        to_frame: &str,
+        spec: TransformSpec,
+    ) -> Result<hdf5::Group> {
         check_transform_id(transform_id)?;
         if from_frame == to_frame {
             return Err(Error::coded(
@@ -796,7 +848,13 @@ impl SampleWriter {
         Ok(group)
     }
 
-    fn encode_transform(&self, transform_id: &str, kind: &str, spec: &TransformSpec, from_frame: &str) -> Result<Payload> {
+    fn encode_transform(
+        &self,
+        transform_id: &str,
+        kind: &str,
+        spec: &TransformSpec,
+        from_frame: &str,
+    ) -> Result<Payload> {
         let id = repr_str(transform_id);
         match kind {
             "identity" => Ok(encode_identity()),
@@ -806,7 +864,10 @@ impl SampleWriter {
             },
             "displacement" => {
                 let (Some(field), Some(field_grid)) = (&spec.field, &spec.field_grid) else {
-                    return Err(Error::coded("E503", format!("transform {id}: kind 'displacement' needs `field` and `field_grid`")));
+                    return Err(Error::coded(
+                        "E503",
+                        format!("transform {id}: kind 'displacement' needs `field` and `field_grid`"),
+                    ));
                 };
                 self.check_field_frame(transform_id, field_grid, from_frame)?;
                 let payload = encode_displacement(
@@ -822,10 +883,18 @@ impl SampleWriter {
             }
             "bspline" => {
                 let (Some(cp), Some(cp_grid)) = (&spec.control_points, &spec.cp_grid) else {
-                    return Err(Error::coded("E503", format!("transform {id}: kind 'bspline' needs `control_points` and `cp_grid`")));
+                    return Err(Error::coded(
+                        "E503",
+                        format!("transform {id}: kind 'bspline' needs `control_points` and `cp_grid`"),
+                    ));
                 };
                 self.check_field_frame(transform_id, cp_grid, from_frame)?;
-                let payload = encode_bspline(cp, cp_grid, spec.order.unwrap_or(3), spec.vector_space.as_deref().unwrap_or("world"))?;
+                let payload = encode_bspline(
+                    cp,
+                    cp_grid,
+                    spec.order.unwrap_or(3),
+                    spec.vector_space.as_deref().unwrap_or("world"),
+                )?;
                 self.check_field_lattice(transform_id, &payload.array("control_points")?.shape(), cp_grid, false)?;
                 Ok(payload)
             }
@@ -833,11 +902,15 @@ impl SampleWriter {
                 let Some(components) = &spec.components else {
                     return Err(Error::coded("E501", format!("transform {id}: kind 'composite' needs `components`")));
                 };
-                let missing: Vec<&String> = components.iter().filter(|c| !self.transform_frames.contains_key(*c)).collect();
+                let missing: Vec<&String> =
+                    components.iter().filter(|c| !self.transform_frames.contains_key(*c)).collect();
                 if !missing.is_empty() {
                     return Err(Error::coded(
                         "E501",
-                        format!("transform {id} names components {} that do not exist yet; declare them first", repr_list(&missing)),
+                        format!(
+                            "transform {id} names components {} that do not exist yet; declare them first",
+                            repr_list(&missing)
+                        ),
                     ));
                 }
                 encode_composite(components)
@@ -901,7 +974,13 @@ impl SampleWriter {
 
     /// Build sampling indices for the named voxel annotations (§14.3); all
     /// non-mask voxel annotations when `ann_ids` is `None`.
-    pub fn build_index(&mut self, ann_ids: Option<&[String]>, max_coords: Option<usize>, occupancy: Option<Option<usize>>, seed: u64) -> Result<Vec<String>> {
+    pub fn build_index(
+        &mut self,
+        ann_ids: Option<&[String]>,
+        max_coords: Option<usize>,
+        occupancy: Option<Option<usize>>,
+        seed: u64,
+    ) -> Result<Vec<String>> {
         let names: Vec<String> = match ann_ids {
             Some(ids) => ids.to_vec(),
             None => self

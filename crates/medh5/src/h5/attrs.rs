@@ -276,11 +276,9 @@ pub fn read_attribute(attr: &hdf5::Attribute) -> Result<AttrValue> {
 fn read_strings_attr(attr: &hdf5::Attribute, td: &TD) -> Result<Vec<String>> {
     Ok(match td {
         TD::VarLenUnicode => attr.read_raw::<VarLenUnicode>()?.into_iter().map(|s| s.as_str().to_string()).collect(),
-        TD::VarLenAscii => attr
-            .read_raw::<hdf5::types::VarLenAscii>()?
-            .into_iter()
-            .map(|s| s.as_str().to_string())
-            .collect(),
+        TD::VarLenAscii => {
+            attr.read_raw::<hdf5::types::VarLenAscii>()?.into_iter().map(|s| s.as_str().to_string()).collect()
+        }
         TD::FixedAscii(_) | TD::FixedUnicode(_) => {
             let bytes = read_fixed_strings(attr.id(), attr.size(), td, true)?;
             bytes
@@ -290,7 +288,12 @@ fn read_strings_attr(attr: &hdf5::Attribute, td: &TD) -> Result<Vec<String>> {
 }
 
 /// Read fixed-length strings by asking HDF5 to convert them to variable length.
-pub(crate) fn read_fixed_strings(id: crate::h5sys::h5i::hid_t, n: usize, _td: &TD, is_attr: bool) -> Result<Vec<String>> {
+pub(crate) fn read_fixed_strings(
+    id: crate::h5sys::h5i::hid_t,
+    n: usize,
+    _td: &TD,
+    is_attr: bool,
+) -> Result<Vec<String>> {
     use crate::h5sys::{h5a, h5d, h5p, h5s, h5t};
     use std::ffi::CStr;
     super::locked(|| unsafe {
@@ -367,9 +370,8 @@ pub(crate) fn bytes_to_array(buf: &[u8], dtype: DType, shape: &[usize]) -> Resul
     }
     macro_rules! decode {
         ($t:ty) => {{
-            let values: Vec<$t> = (0..n)
-                .map(|i| <$t>::from_ne_bytes(buf[i * size..(i + 1) * size].try_into().unwrap()))
-                .collect();
+            let values: Vec<$t> =
+                (0..n).map(|i| <$t>::from_ne_bytes(buf[i * size..(i + 1) * size].try_into().unwrap())).collect();
             NdArray::from(ArrayD::from_shape_vec(IxDyn(shape), values)?)
         }};
     }
@@ -442,8 +444,11 @@ pub fn write(obj: &hdf5::Location, name: &str, value: &AttrValue) -> Result<()> 
             obj.new_attr::<VarLenUnicode>().shape(()).create(name)?.write_scalar(&v)?;
         }
         AttrValue::Strs(values) => {
-            let parsed: Vec<VarLenUnicode> =
-                values.iter().map(|s| s.parse()).collect::<std::result::Result<_, _>>().map_err(|e| Error::Value(format!("{e}")))?;
+            let parsed: Vec<VarLenUnicode> = values
+                .iter()
+                .map(|s| s.parse())
+                .collect::<std::result::Result<_, _>>()
+                .map_err(|e| Error::Value(format!("{e}")))?;
             let arr = ndarray::Array1::from(parsed);
             obj.new_attr::<VarLenUnicode>().shape(values.len()).create(name)?.write(&arr)?;
         }
@@ -521,7 +526,13 @@ pub fn stringify_value(value: &AttrValue) -> String {
         AttrValue::Str(s) => s.clone(),
         AttrValue::Int(i) => i.to_string(),
         AttrValue::Float(f) => crate::json::py_float(*f),
-        AttrValue::Bool(b) => if *b { "True".into() } else { "False".into() },
+        AttrValue::Bool(b) => {
+            if *b {
+                "True".into()
+            } else {
+                "False".into()
+            }
+        }
         other => crate::json::py_str(&other.to_json()),
     }
 }
@@ -533,9 +544,8 @@ pub fn object_name(obj: &hdf5::Location) -> String {
 
 /// Fetch a required attribute, raising a coded validation error when absent.
 pub fn require(obj: &hdf5::Location, name: &str, code: &str) -> Result<AttrValue> {
-    read(obj, name)?.ok_or_else(|| {
-        Error::coded(code, format!("{}: required attribute {} is missing", obj.name(), repr_str(name)))
-    })
+    read(obj, name)?
+        .ok_or_else(|| Error::coded(code, format!("{}: required attribute {} is missing", obj.name(), repr_str(name))))
 }
 
 /// Copy one attribute byte-for-byte, keeping its stored type and shape.

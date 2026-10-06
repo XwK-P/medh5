@@ -13,11 +13,9 @@ use crate::pyval::{self, get, get_list, get_str, require, to_float, to_int, to_s
 use crate::{Error, Result};
 
 /// The schema's `qualityRecord` properties; the object is closed.
-pub const QUALITY_FIELDS: [&str; 6] =
-    ["status", "confidence", "reviewed_by", "agreement", "issues", "edit_effort_s"];
+pub const QUALITY_FIELDS: [&str; 6] = ["status", "confidence", "reviewed_by", "agreement", "issues", "edit_effort_s"];
 /// `quality.status` values (§11.2).
-pub const QUALITY_STATUS: [&str; 6] =
-    ["draft", "submitted", "reviewed", "approved", "rejected", "deprecated"];
+pub const QUALITY_STATUS: [&str; 6] = ["draft", "submitted", "reviewed", "approved", "rejected", "deprecated"];
 /// `issue.severity` values.
 pub const ISSUE_SEVERITY: [&str; 3] = ["info", "warning", "error"];
 
@@ -40,8 +38,7 @@ impl Agreement {
             out.insert("against".into(), json!(against));
         }
         if !self.per_class.is_empty() {
-            let per: Map<String, Value> =
-                self.per_class.iter().map(|(k, v)| (k.clone(), num(*v))).collect();
+            let per: Map<String, Value> = self.per_class.iter().map(|(k, v)| (k.clone(), num(*v))).collect();
             out.insert("per_class".into(), Value::Object(per));
         }
         Value::Object(out)
@@ -75,7 +72,12 @@ pub struct Issue {
 
 impl Issue {
     /// A validated issue.
-    pub fn new(code: impl Into<String>, severity: impl Into<String>, class_ids: Vec<i64>, note: Option<String>) -> Result<Self> {
+    pub fn new(
+        code: impl Into<String>,
+        severity: impl Into<String>,
+        class_ids: Vec<i64>,
+        note: Option<String>,
+    ) -> Result<Self> {
         let issue = Issue { code: code.into(), severity: severity.into(), class_ids, note };
         if !ISSUE_SEVERITY.contains(&issue.severity.as_str()) {
             return Err(Error::invalid(format!(
@@ -209,11 +211,8 @@ pub fn quality_to_json(records: &IndexMap<String, QualityRecord>) -> Value {
 
 /// A mean-Dice [`Agreement`] from per-class values.
 pub fn dice_agreement(per_class: &[(i64, f64)], against: Option<String>) -> Agreement {
-    let mean = if per_class.is_empty() {
-        0.0
-    } else {
-        per_class.iter().map(|(_, v)| v).sum::<f64>() / per_class.len() as f64
-    };
+    let mean =
+        if per_class.is_empty() { 0.0 } else { per_class.iter().map(|(_, v)| v).sum::<f64>() / per_class.len() as f64 };
     Agreement {
         metric: "dice".into(),
         value: mean,

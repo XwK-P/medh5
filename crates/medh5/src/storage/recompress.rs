@@ -78,7 +78,12 @@ impl RecompressResult {
     pub fn line(&self) -> String {
         format!(
             "{}: {}, {} datasets, {} -> {} bytes ({:.2}\u{d7})",
-            self.path, self.profile, self.datasets, self.bytes_before, self.bytes_after, self.ratio()
+            self.path,
+            self.profile,
+            self.datasets,
+            self.bytes_before,
+            self.bytes_after,
+            self.ratio()
         )
     }
 }
@@ -98,7 +103,8 @@ pub fn recompress(path: &Path, profile: &str, out: Option<&Path>, rechunk: bool)
     }
     let codec = resolve_profile(Some(profile))?;
     let target = out.unwrap_or(path);
-    let mut result = RecompressResult { path: target.to_string_lossy().into_owned(), profile: profile.into(), ..Default::default() };
+    let mut result =
+        RecompressResult { path: target.to_string_lossy().into_owned(), profile: profile.into(), ..Default::default() };
     result.bytes_before = std::fs::metadata(path)?.len();
     let before = atomic_rewrite(path, Some(target), |src, dst| {
         require_major(src, path)?;

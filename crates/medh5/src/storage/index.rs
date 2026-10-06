@@ -172,8 +172,18 @@ pub fn write_index(root: &hdf5::Group, payload: &IndexPayload, codec: &CodecProf
         data::create(parent, name, &array, &layout)?;
         Ok(())
     };
-    store(&group, "class_ids", NdArray::from(ArrayD::from_shape_vec(IxDyn(&[payload.class_ids.len()]), payload.class_ids.clone())?), None)?;
-    store(&group, "voxel_counts", NdArray::from(ArrayD::from_shape_vec(IxDyn(&[payload.voxel_counts.len()]), payload.voxel_counts.clone())?), None)?;
+    store(
+        &group,
+        "class_ids",
+        NdArray::from(ArrayD::from_shape_vec(IxDyn(&[payload.class_ids.len()]), payload.class_ids.clone())?),
+        None,
+    )?;
+    store(
+        &group,
+        "voxel_counts",
+        NdArray::from(ArrayD::from_shape_vec(IxDyn(&[payload.voxel_counts.len()]), payload.voxel_counts.clone())?),
+        None,
+    )?;
     store(&group, "class_bboxes", NdArray::from(payload.class_bboxes.clone().into_dyn()), None)?;
     let coords = group.create_group("fg_coords")?;
     for (class_id, arr) in &payload.fg_coords {
@@ -242,7 +252,8 @@ impl SamplingIndex {
     pub fn voxel_counts(&self) -> Result<IndexMap<i64, i64>> {
         match self.counts.get_or_init(|| {
             let ids = self.class_ids()?;
-            let counts: Vec<i64> = data::read(&self.group.dataset("voxel_counts")?)?.cast::<i64>().iter().copied().collect();
+            let counts: Vec<i64> =
+                data::read(&self.group.dataset("voxel_counts")?)?.cast::<i64>().iter().copied().collect();
             Ok(ids.into_iter().zip(counts).collect())
         }) {
             Ok(c) => Ok(c.clone()),
@@ -336,7 +347,9 @@ impl SamplingIndex {
     pub fn occupancy_plane(&self, position: usize) -> Result<Option<ArrayD<bool>>> {
         match ops::child_dataset(&self.group, "occupancy") {
             None => Ok(None),
-            Some(ds) => Ok(Some(data::read_region(&ds, &[Index::At(position as i64), Index::Slice(Slice::full())])?.nonzero_mask())),
+            Some(ds) => Ok(Some(
+                data::read_region(&ds, &[Index::At(position as i64), Index::Slice(Slice::full())])?.nonzero_mask(),
+            )),
         }
     }
 

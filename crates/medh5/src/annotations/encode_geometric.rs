@@ -76,7 +76,10 @@ fn object_columns(n: usize, cols: &ObjectColumns) -> Result<Vec<(String, Payload
     if let Some(scores) = cols.scores {
         out.push((
             "scores".into(),
-            PayloadData::Array(NdArray::from_vec(&[scores.len()], scores.iter().map(|v| *v as f32).collect::<Vec<_>>())?),
+            PayloadData::Array(NdArray::from_vec(
+                &[scores.len()],
+                scores.iter().map(|v| *v as f32).collect::<Vec<_>>(),
+            )?),
         ));
     }
     if let Some(attrs) = cols.attributes {
@@ -114,7 +117,12 @@ pub fn degenerate_axis(bbox: &[f64]) -> Option<usize> {
 ///
 /// Shape is checked always; the range needs the index-space boxes and the
 /// grid extent and is checked when both are given.
-pub fn check_slice_index(planes: &[i64], n_boxes: usize, boxes: Option<&[Vec<f64>]>, shape: Option<&[usize]>) -> Option<String> {
+pub fn check_slice_index(
+    planes: &[i64],
+    n_boxes: usize,
+    boxes: Option<&[Vec<f64>]>,
+    shape: Option<&[usize]>,
+) -> Option<String> {
     if planes.len() != n_boxes {
         return Some(format!(
             "`slice_index` has shape ({},), but it names one plane for each of {n_boxes} box(es), so its shape must \
@@ -178,7 +186,12 @@ pub fn encode_boxes(boxes: &ArrayD<f64>, cols: &ObjectColumns, slice_index: Opti
 // -- obb ---------------------------------------------------------------------------
 
 /// Pack oriented boxes as centre, **full** edge lengths and a rotation matrix (§8.3).
-pub fn encode_obb(centers: &ArrayD<f64>, sizes: &ArrayD<f64>, rotations: &ArrayD<f64>, cols: &ObjectColumns) -> Result<Payload> {
+pub fn encode_obb(
+    centers: &ArrayD<f64>,
+    sizes: &ArrayD<f64>,
+    rotations: &ArrayD<f64>,
+    cols: &ObjectColumns,
+) -> Result<Payload> {
     if centers.ndim() != 2 {
         return Err(Error::coded(
             "E405",
@@ -243,7 +256,10 @@ pub fn encode_keypoints(
     skeleton: Option<&str>,
 ) -> Result<Payload> {
     if points.ndim() != 3 {
-        return Err(Error::coded("E405", format!("keypoints must have shape (N, K, S), got {}", repr_int_tuple(points.shape()))));
+        return Err(Error::coded(
+            "E405",
+            format!("keypoints must have shape (N, K, S), got {}", repr_int_tuple(points.shape())),
+        ));
     }
     let (n, k) = (points.shape()[0], points.shape()[1]);
     if keypoint_class_ids.len() != k {
@@ -263,7 +279,10 @@ pub fn encode_keypoints(
             }
             let cast = v.mapv(|x| x as u8);
             if cast.iter().any(|x| *x > 2) {
-                return Err(Error::coded("E411", "visibility values must be 0 (unlabelled), 1 (occluded) or 2 (visible)"));
+                return Err(Error::coded(
+                    "E411",
+                    "visibility values must be 0 (unlabelled), 1 (occluded) or 2 (visible)",
+                ));
             }
             cast
         }
@@ -272,7 +291,12 @@ pub fn encode_keypoints(
     p.datasets.insert("points".into(), NdArray::F32(points.mapv(|v| v as f32)).into());
     p.datasets.insert("visibility".into(), NdArray::U8(vis).into());
     p.datasets.insert("keypoint_class_ids".into(), u16_column(keypoint_class_ids)?.into());
-    let cols = ObjectColumns { class_ids: cols.class_ids, instance_ids: cols.instance_ids, scores: cols.scores, attributes: None };
+    let cols = ObjectColumns {
+        class_ids: cols.class_ids,
+        instance_ids: cols.instance_ids,
+        scores: cols.scores,
+        attributes: None,
+    };
     for (name, column) in object_columns(n, &cols)? {
         p.datasets.insert(name, column);
     }
@@ -289,7 +313,9 @@ fn per_element_len(name: &str, len: usize, n: usize, unit: &str) -> Result<()> {
     if len != n {
         return Err(Error::coded(
             "E405",
-            format!("{name} has length {len}, but the annotation holds {n} {unit}; it carries one value for each of them"),
+            format!(
+                "{name} has length {len}, but the annotation holds {n} {unit}; it carries one value for each of them"
+            ),
         ));
     }
     Ok(())
@@ -304,7 +330,10 @@ pub fn encode_points(
     correspondence: Option<&str>,
 ) -> Result<Payload> {
     if points.ndim() != 2 {
-        return Err(Error::coded("E405", format!("points must have shape (N, S), got {}", repr_int_tuple(points.shape()))));
+        return Err(Error::coded(
+            "E405",
+            format!("points must have shape (N, S), got {}", repr_int_tuple(points.shape())),
+        ));
     }
     let n = points.shape()[0];
     let mut p = Payload::new("points");
@@ -396,7 +425,8 @@ pub fn encode_contours(polygons: &[Polygon], ndim: Option<usize>) -> Result<Payl
         class_ids.push(check_class_id(poly.class_id)?);
     }
     let planes: Vec<i32> = polygons.iter().flat_map(|p| [p.plane.0 as i32, p.plane.1 as i32]).collect();
-    let roles: Vec<u8> = polygons.iter().map(|p| CONTOUR_ROLES.iter().position(|r| *r == p.role).unwrap_or(0) as u8).collect();
+    let roles: Vec<u8> =
+        polygons.iter().map(|p| CONTOUR_ROLES.iter().position(|r| *r == p.role).unwrap_or(0) as u8).collect();
     let m = polygons.len();
     p.datasets.insert("vertices".into(), NdArray::from_vec(&[total, dim], vertices)?.into());
     p.datasets.insert("contour_offsets".into(), NdArray::from_vec(&[m + 1], offsets)?.into());
@@ -419,10 +449,16 @@ pub fn encode_mesh(
     mesh_class_ids: Option<&[i64]>,
 ) -> Result<Payload> {
     if vertices.ndim() != 2 || vertices.shape()[1] != 3 {
-        return Err(Error::coded("E405", format!("mesh vertices must have shape (V, 3), got {}", repr_int_tuple(vertices.shape()))));
+        return Err(Error::coded(
+            "E405",
+            format!("mesh vertices must have shape (V, 3), got {}", repr_int_tuple(vertices.shape())),
+        ));
     }
     if faces.ndim() != 2 || faces.shape()[1] != 3 {
-        return Err(Error::coded("E405", format!("mesh faces must have shape (F, 3), got {}", repr_int_tuple(faces.shape()))));
+        return Err(Error::coded(
+            "E405",
+            format!("mesh faces must have shape (F, 3), got {}", repr_int_tuple(faces.shape())),
+        ));
     }
     let n_vertices = vertices.shape()[0] as i64;
     let f = faces.mapv(|v| v as i32);
@@ -440,7 +476,11 @@ pub fn encode_mesh(
         if n.shape() != vertices.shape() {
             return Err(Error::coded(
                 "E405",
-                format!("normals {} must match vertices {}", repr_int_tuple(n.shape()), repr_int_tuple(vertices.shape())),
+                format!(
+                    "normals {} must match vertices {}",
+                    repr_int_tuple(n.shape()),
+                    repr_int_tuple(vertices.shape())
+                ),
             ));
         }
         p.datasets.insert("normals".into(), NdArray::F32(n.mapv(|v| v as f32)).into());

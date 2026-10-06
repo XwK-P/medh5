@@ -174,7 +174,15 @@ pub fn analyse(masks: &Masks, spatial_shape: Option<&[usize]>) -> Result<Overlap
         }
     }
     let colouring = greedy_colour(&class_ids, &edges);
-    Ok(OverlapStats { class_ids, spatial_shape: shape, counts, edges, colouring, localized, n_labelled_voxels: labelled })
+    Ok(OverlapStats {
+        class_ids,
+        spatial_shape: shape,
+        counts,
+        edges,
+        colouring,
+        localized,
+        n_labelled_voxels: labelled,
+    })
 }
 
 /// Colour the overlap graph greedily, highest degree first (spec §7.6).
@@ -272,7 +280,11 @@ pub fn cost_model(stats: &OverlapStats, ignore: bool) -> CostModel {
         .iter()
         .map(|cid| {
             let count = stats.counts.get(cid).copied().unwrap_or(0);
-            if count == 0 { 0 } else { count / 8 + 64 }
+            if count == 0 {
+                0
+            } else {
+                count / 8 + 64
+            }
         })
         .sum();
     let probmap = stats.n_classes() as u64 * n_voxels * 2;

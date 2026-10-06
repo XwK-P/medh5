@@ -155,7 +155,12 @@ pub fn equals(block: &NdArray, value: i64) -> ArrayD<bool> {
 
 impl Annotation {
     /// Open an annotation group as the reader matching its `kind`.
-    pub fn open(ann_id: &str, group: hdf5::Group, grids: Arc<Grids>, label_set: Option<Arc<LabelSet>>) -> Result<Annotation> {
+    pub fn open(
+        ann_id: &str,
+        group: hdf5::Group,
+        grids: Arc<Grids>,
+        label_set: Option<Arc<LabelSet>>,
+    ) -> Result<Annotation> {
         let header = AnnotationHeader::read(&group)?;
         Ok(Annotation {
             ann_id: ann_id.to_string(),
@@ -451,11 +456,7 @@ impl Annotation {
             return Ok(shape.iter().map(|n| (0, *n)).collect());
         };
         if roi.len() != shape.len() {
-            return Err(Error::invalid(format!(
-                "roi has {} axes; grid has {} spatial axes",
-                roi.len(),
-                shape.len()
-            )));
+            return Err(Error::invalid(format!("roi has {} axes; grid has {} spatial axes", roi.len(), shape.len())));
         }
         roi.iter()
             .zip(&shape)
@@ -623,7 +624,12 @@ impl Annotation {
     /// painted first, in `class_ids` order.  Returns the volume and, when no
     /// priority was given, how many voxels a later class overwrote --- the
     /// frontends warn on a nonzero count with [`Annotation::flatten_warning`].
-    pub fn labelmap(&self, roi: Option<&[Slice]>, priority: Option<&[ClassKey]>, dtype: DType) -> Result<(NdArray, u64, Vec<i64>)> {
+    pub fn labelmap(
+        &self,
+        roi: Option<&[Slice]>,
+        priority: Option<&[ClassKey]>,
+        dtype: DType,
+    ) -> Result<(NdArray, u64, Vec<i64>)> {
         self.require_voxel("labelmap()")?;
         let window = self.window(roi)?;
         if self.kind() == "labelmap" {
@@ -677,9 +683,7 @@ impl Annotation {
             return Ok(ids.iter().map(|c| (*c, counted.get(c).copied().unwrap_or(0))).collect());
         }
         let window = self.window(None)?;
-        ids.iter()
-            .map(|c| Ok((*c, self.dense_class(*c, &window)?.iter().filter(|v| **v).count() as u64)))
-            .collect()
+        ids.iter().map(|c| Ok((*c, self.dense_class(*c, &window)?.iter().filter(|v| **v).count() as u64))).collect()
     }
 
     fn counts_from_planes(&self) -> Result<Option<HashMap<i64, u64>>> {
@@ -870,7 +874,12 @@ impl Annotation {
         let ds = self.data()?;
         let mut out = Vec::new();
         for plane in 0..ds.shape().first().copied().unwrap_or(0) {
-            let word = data::read_region(&ds, &window_index(Some(plane), &window))?.cast::<u64>().iter().next().copied().unwrap_or(0);
+            let word = data::read_region(&ds, &window_index(Some(plane), &window))?
+                .cast::<u64>()
+                .iter()
+                .next()
+                .copied()
+                .unwrap_or(0);
             if word == 0 {
                 continue;
             }
@@ -965,7 +974,10 @@ impl Annotation {
             },
             k if is_geometric_kind(k) => Ok(self.read_as::<u16>("class_ids")?.iter().copied().collect()),
             _ => self
-                .require_kind(&["instances", "boxes", "obb", "keypoints", "points", "contours", "mesh"], "object_class_ids")
+                .require_kind(
+                    &["instances", "boxes", "obb", "keypoints", "points", "contours", "mesh"],
+                    "object_class_ids",
+                )
                 .map(|_| unreachable!()),
         }
     }
@@ -974,7 +986,9 @@ impl Annotation {
     pub fn instance_ids(&self) -> Result<Option<Vec<u64>>> {
         match self.kind() {
             "instances" => Ok(Some(self.instance_columns()?.instance_ids.clone())),
-            k if is_geometric_kind(k) => Ok(self.read_optional::<u64>("instance_ids")?.map(|a| a.iter().copied().collect())),
+            k if is_geometric_kind(k) => {
+                Ok(self.read_optional::<u64>("instance_ids")?.map(|a| a.iter().copied().collect()))
+            }
             _ => self.require_kind(&["instances"], "instance_ids").map(|_| unreachable!()),
         }
     }
@@ -1004,10 +1018,14 @@ impl Annotation {
         let offsets = columns.mask_offsets.as_ref().expect("masks present");
         let shapes = columns.mask_shapes.as_ref().expect("masks present");
         if index + 1 >= offsets.len() {
-            return Err(Error::Index(format!("index {index} is out of bounds for {} objects", offsets.len().saturating_sub(1))));
+            return Err(Error::Index(format!(
+                "index {index} is out of bounds for {} objects",
+                offsets.len().saturating_sub(1)
+            )));
         }
         let (start, stop) = (offsets[index] as i64, offsets[index + 1] as i64);
-        let packed = data::read_region(&self.dataset("mask_data")?, &[Index::Slice(Slice::new(start, stop))])?.cast::<u8>();
+        let packed =
+            data::read_region(&self.dataset("mask_data")?, &[Index::Slice(Slice::new(start, stop))])?.cast::<u8>();
         let packed: Vec<u8> = packed.iter().copied().collect();
         let local_offsets = [0u64, packed.len() as u64];
         let shape = shapes.index_axis(Axis(0), index).to_owned().insert_axis(Axis(0));

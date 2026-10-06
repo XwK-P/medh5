@@ -8,6 +8,7 @@
 //! the `medh5` command line are frontends over it.
 
 pub mod annotations;
+pub mod array;
 pub mod codes;
 pub mod collection;
 pub mod convert;
@@ -15,19 +16,19 @@ pub mod curation;
 pub mod digest;
 pub mod document;
 pub mod error;
+pub mod geometry;
+pub mod h5;
 pub mod ids;
+pub mod integrity;
 pub mod json;
 pub mod labels;
-pub mod array;
-pub mod h5;
-pub mod integrity;
-pub mod geometry;
-pub mod storage;
-pub mod transforms;
-pub mod validate;
+pub mod numeric;
 pub mod pyval;
 pub mod rng;
 pub mod sample;
+pub mod storage;
+pub mod transforms;
+pub mod validate;
 
 pub use error::{Error, Result};
 

@@ -125,11 +125,7 @@ pub enum Node {
 /// first in name order --- h5py's `visititems`.  Paths are relative to
 /// `group`.  `f` returns `false` to stop.
 pub fn visit(group: &hdf5::Group, f: &mut dyn FnMut(&str, &Node) -> Result<bool>) -> Result<()> {
-    fn walk(
-        group: &hdf5::Group,
-        prefix: &str,
-        f: &mut dyn FnMut(&str, &Node) -> Result<bool>,
-    ) -> Result<bool> {
+    fn walk(group: &hdf5::Group, prefix: &str, f: &mut dyn FnMut(&str, &Node) -> Result<bool>) -> Result<bool> {
         for name in members(group)? {
             if link_kind(group, &name) != Some(LinkKind::Hard) {
                 continue;
@@ -308,8 +304,7 @@ pub fn outside_references(handle: &hdf5::File) -> Result<Vec<(String, String)>> 
 }
 
 fn checked_files() -> &'static Mutex<HashMap<(u64, u64, u64, i128, i128), ()>> {
-    static CHECKED: std::sync::OnceLock<Mutex<HashMap<(u64, u64, u64, i128, i128), ()>>> =
-        std::sync::OnceLock::new();
+    static CHECKED: std::sync::OnceLock<Mutex<HashMap<(u64, u64, u64, i128, i128), ()>>> = std::sync::OnceLock::new();
     CHECKED.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -383,7 +378,15 @@ pub fn read_raw_chunk(ds: &hdf5::Dataset, offset: &[u64]) -> Result<(u32, Vec<u8
         let mut buf = vec![0u8; nbytes as usize];
         let mut filter_mask: u32 = 0;
         let mut size = nbytes as usize;
-        if h5d::H5Dread_chunk(ds.id(), h5p::H5P_DEFAULT, offset.as_ptr(), &mut filter_mask, buf.as_mut_ptr().cast(), &mut size) < 0 {
+        if h5d::H5Dread_chunk(
+            ds.id(),
+            h5p::H5P_DEFAULT,
+            offset.as_ptr(),
+            &mut filter_mask,
+            buf.as_mut_ptr().cast(),
+            &mut size,
+        ) < 0
+        {
             return Err(Error::Io(format!("could not read the chunk at {offset:?} in {}", ds.name())));
         }
         buf.truncate(size);
@@ -405,7 +408,8 @@ pub fn stored_chunks(ds: &hdf5::Dataset) -> Result<Vec<Vec<u64>>> {
                 let mut mask: u32 = 0;
                 let mut addr: u64 = 0;
                 let mut size: u64 = 0;
-                if h5d::H5Dget_chunk_info(ds.id(), space, i, offset.as_mut_ptr(), &mut mask, &mut addr, &mut size) >= 0 {
+                if h5d::H5Dget_chunk_info(ds.id(), space, i, offset.as_mut_ptr(), &mut mask, &mut addr, &mut size) >= 0
+                {
                     out.push(offset);
                 }
             }

@@ -95,7 +95,11 @@ impl TransformHeader {
         if !TRANSFORM_KINDS.contains(&self.kind.as_str()) {
             return Err(Error::coded(
                 "E502",
-                format!("unknown transform kind {}; expected one of {}", repr_str(&self.kind), repr_list(&TRANSFORM_KINDS)),
+                format!(
+                    "unknown transform kind {}; expected one of {}",
+                    repr_str(&self.kind),
+                    repr_list(&TRANSFORM_KINDS)
+                ),
             ));
         }
         if self.from_frame.is_empty() || self.to_frame.is_empty() {
@@ -961,12 +965,8 @@ pub fn basis(order: i64, t: f64) -> Result<Vec<f64>> {
 pub fn cropped_grid(grid: &Grid, roi: &[Slice]) -> Result<Grid> {
     let spatial = grid.spatial_shape();
     let starts: Vec<i64> = roi.iter().map(|s| s.start.unwrap_or(0)).collect();
-    let shape: Vec<i64> = roi
-        .iter()
-        .zip(&spatial)
-        .zip(&starts)
-        .map(|((s, n), start)| s.stop.unwrap_or(*n as i64) - start)
-        .collect();
+    let shape: Vec<i64> =
+        roi.iter().zip(&spatial).zip(&starts).map(|((s, n), start)| s.stop.unwrap_or(*n as i64) - start).collect();
     let origin = grid.index_to_world(&starts.iter().map(|v| *v as f64).collect::<Vec<_>>());
     let lead = grid.shape.len() - grid.n_spatial();
     let mut full_shape: Vec<i64> = grid.shape[..lead].to_vec();

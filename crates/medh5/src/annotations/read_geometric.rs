@@ -202,7 +202,11 @@ impl Annotation {
             "classification" => rows("class_ids"),
             "boxes" => rows("class_ids"),
             "instances" => self.n_objects(),
-            _ => Err(Error::Type(format!("annotation {} of kind {} has no length", repr_str(&self.ann_id), repr_str(self.kind())))),
+            _ => Err(Error::Type(format!(
+                "annotation {} of kind {} has no length",
+                repr_str(&self.ann_id),
+                repr_str(self.kind())
+            ))),
         }
     }
 
@@ -474,7 +478,10 @@ impl Annotation {
     pub fn polygon(&self, index: usize) -> Result<ArrayD<f32>> {
         let offsets = self.contour_offsets()?;
         if index + 1 >= offsets.len() {
-            return Err(Error::Index(format!("polygon {index} is out of range for {} polygons", offsets.len().saturating_sub(1))));
+            return Err(Error::Index(format!(
+                "polygon {index} is out of range for {} polygons",
+                offsets.len().saturating_sub(1)
+            )));
         }
         let vertices = self.read_as::<f32>("vertices")?;
         let (a, b) = (offsets[index].max(0) as usize, offsets[index + 1].max(0) as usize);

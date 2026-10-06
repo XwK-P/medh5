@@ -18,6 +18,6 @@ pub use writer::{amend, create, Annotated, GridOptions, ImageOptions, QualityArg
 pub mod writer_annotations;
 
 pub use writer_annotations::{
-    annotation_to_masks, transcode, AnnotationOptions, ObjectFields, Placement, SegmentationOptions, SegmentationSource,
-    TransformSpec,
+    annotation_to_masks, transcode, AnnotationOptions, ObjectFields, Placement, SegmentationOptions,
+    SegmentationSource, TransformSpec,
 };

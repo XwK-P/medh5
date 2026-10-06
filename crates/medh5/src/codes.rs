@@ -39,23 +39,14 @@ struct Table {
 }
 
 /// The domains, in the order the specification lists them.
-pub const DOMAINS: [&str; 8] = [
-    "container",
-    "geometry",
-    "images",
-    "labels",
-    "annotations",
-    "transforms",
-    "curation",
-    "integrity",
-];
+pub const DOMAINS: [&str; 8] =
+    ["container", "geometry", "images", "labels", "annotations", "transforms", "curation", "integrity"];
 
 /// Every code, in table order.
 pub fn all() -> &'static [Code] {
     static TABLE: OnceLock<Vec<Code>> = OnceLock::new();
     TABLE.get_or_init(|| {
-        let table: Table =
-            serde_json::from_str(TABLE_JSON).expect("data/codes.json is valid by construction");
+        let table: Table = serde_json::from_str(TABLE_JSON).expect("data/codes.json is valid by construction");
         table.codes
     })
 }

@@ -79,12 +79,7 @@ pub fn is_orthonormal(direction: &Array2<f64>, tol: f64) -> bool {
     }
     let n = direction.nrows();
     let gram = direction.t().dot(direction);
-    allclose(
-        gram.as_standard_layout().as_slice().unwrap(),
-        eye(n).as_slice().unwrap(),
-        tol,
-        0.0,
-    )
+    allclose(gram.as_standard_layout().as_slice().unwrap(), eye(n).as_slice().unwrap(), tol, 0.0)
 }
 
 /// Validate orthonormality, raising E102 when it fails.

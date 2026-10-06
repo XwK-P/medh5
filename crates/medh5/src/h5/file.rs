@@ -24,9 +24,8 @@ use crate::{Error, Result};
 /// validators and every copy-on-write path open files through.
 pub fn open_read(path: &Path) -> Result<hdf5::File> {
     super::init();
-    let handle = hdf5::File::open(path).map_err(|e| {
-        Error::File(format!("failed to open {}: {}", repr_str(&path.to_string_lossy()), e))
-    })?;
+    let handle = hdf5::File::open(path)
+        .map_err(|e| Error::File(format!("failed to open {}: {}", repr_str(&path.to_string_lossy()), e)))?;
     check_self_contained(&handle, Some(path))?;
     Ok(handle)
 }
@@ -51,7 +50,9 @@ fn temporary_name(target: &Path) -> PathBuf {
         use std::collections::hash_map::RandomState;
         use std::hash::{BuildHasher, Hasher};
         let mut h = RandomState::new().build_hasher();
-        h.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0));
+        h.write_u128(
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0),
+        );
         h.finish() as u32
     };
     target.with_file_name(format!(".{name}.tmp-{}-{unique:08x}", std::process::id()))

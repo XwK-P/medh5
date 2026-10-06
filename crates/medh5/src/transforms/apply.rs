@@ -26,10 +26,7 @@ fn check_extrapolation(extrapolation: &str) -> Result<()> {
 
 /// Which `(N, S)` points lie within a lattice of `spatial` extent, edges included.
 pub fn inside_extent(spatial: &[usize], points: &Array2<f64>) -> Vec<bool> {
-    points
-        .outer_iter()
-        .map(|p| p.iter().zip(spatial).all(|(v, n)| *v >= -0.5 && *v <= *n as f64 - 0.5))
-        .collect()
+    points.outer_iter().map(|p| p.iter().zip(spatial).all(|(v, n)| *v >= -0.5 && *v <= *n as f64 - 0.5)).collect()
 }
 
 /// `extrapolation = "error"` is a refusal, not a quieter fill value.
@@ -38,19 +35,14 @@ pub fn refuse_outside(inside: &[bool]) -> Result<()> {
     if outside == 0 {
         return Ok(());
     }
-    Err(Error::invalid(format!(
-        "{outside} point(s) fall outside the field and extrapolation='error'"
-    )))
+    Err(Error::invalid(format!("{outside} point(s) fall outside the field and extrapolation='error'")))
 }
 
 /// `(N, S)` view of `(..., S)` coordinates.
 pub fn as_points(coords: &ArrayD<f64>, dim: usize) -> Result<Array2<f64>> {
     let flat: Vec<f64> = coords.iter().copied().collect();
     if dim == 0 || flat.len() % dim != 0 {
-        return Err(Error::Value(format!(
-            "cannot reshape array of size {} into shape (-1, {dim})",
-            flat.len()
-        )));
+        return Err(Error::Value(format!("cannot reshape array of size {} into shape (-1, {dim})", flat.len())));
     }
     Ok(Array2::from_shape_vec((flat.len() / dim, dim), flat)?)
 }
@@ -198,9 +190,8 @@ fn pad_edge(data: &ArrayD<f64>, pad: usize) -> ArrayD<f64> {
     let shape: Vec<usize> = data.shape().iter().map(|n| n + 2 * pad).collect();
     let src_shape = data.shape().to_vec();
     ArrayD::from_shape_fn(IxDyn(&shape), |idx| {
-        let at: Vec<usize> = (0..idx.ndim())
-            .map(|k| (idx[k] as i64 - pad as i64).clamp(0, src_shape[k] as i64 - 1) as usize)
-            .collect();
+        let at: Vec<usize> =
+            (0..idx.ndim()).map(|k| (idx[k] as i64 - pad as i64).clamp(0, src_shape[k] as i64 - 1) as usize).collect();
         data[IxDyn(&at)]
     })
 }
@@ -331,7 +322,12 @@ pub fn cubic_sample(field: &ArrayD<f64>, coords: &Array2<f64>, extrapolation: &s
 }
 
 /// Interpolate a field with the declared interpolation.
-pub fn sample_field(field: &ArrayD<f64>, coords: &Array2<f64>, interpolation: &str, extrapolation: &str) -> Result<Array2<f64>> {
+pub fn sample_field(
+    field: &ArrayD<f64>,
+    coords: &Array2<f64>,
+    interpolation: &str,
+    extrapolation: &str,
+) -> Result<Array2<f64>> {
     match interpolation {
         "linear" => linear_sample(field, coords, extrapolation),
         "cubic" => cubic_sample(field, coords, extrapolation),
@@ -384,10 +380,7 @@ pub fn gradient(values: &ArrayD<f64>, axis: usize) -> Result<ArrayD<f64>> {
 pub fn jacobian_determinant(field: &ArrayD<f64>, grid: &Grid, vector_space: &str) -> Result<ArrayD<f64>> {
     let dim = field.shape()[0];
     if dim != grid.n_spatial() {
-        return Err(Error::coded(
-            "E503",
-            format!("field has {dim} components for a {}-D grid", grid.n_spatial()),
-        ));
+        return Err(Error::coded("E503", format!("field has {dim} components for a {}-D grid", grid.n_spatial())));
     }
     let linear = linear_part(grid);
     let world = match vector_space {
@@ -487,7 +480,11 @@ pub fn tre_from_warped(warped: &Array2<f64>, moving: &Array2<f64>, weights: Opti
     Ok(Tre {
         mean: if total != 0.0 { weighted / total } else { 0.0 },
         median: median(&errors),
-        max: errors.iter().copied().fold(f64::NEG_INFINITY, f64::max).max(if errors.is_empty() { 0.0 } else { f64::NEG_INFINITY }),
+        max: errors.iter().copied().fold(f64::NEG_INFINITY, f64::max).max(if errors.is_empty() {
+            0.0
+        } else {
+            f64::NEG_INFINITY
+        }),
         n: errors.len(),
     })
 }

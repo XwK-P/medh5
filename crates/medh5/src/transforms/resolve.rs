@@ -70,7 +70,11 @@ pub fn frame_graph(transforms: &IndexMap<String, Transform>) -> Result<IndexMap<
 /// A single hop returns the transform itself, several a chain.  Two distinct
 /// minimal-length routes are refused (E501): nothing in the file says which
 /// is authoritative.
-pub fn resolve_between(transforms: &IndexMap<String, Transform>, from_frame: &str, to_frame: &str) -> Result<Option<Transform>> {
+pub fn resolve_between(
+    transforms: &IndexMap<String, Transform>,
+    from_frame: &str,
+    to_frame: &str,
+) -> Result<Option<Transform>> {
     if from_frame == to_frame {
         return Ok(None);
     }

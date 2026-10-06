@@ -124,7 +124,8 @@ pub struct FixOptions {
 /// acted on, because an index is optional per annotation (§14.3).
 pub fn fix(path: &Path, options: &FixOptions) -> Result<Repair> {
     let diagnosis = diagnose(path)?;
-    let mut repair = Repair { path: path.to_string_lossy().into_owned(), diagnosis: diagnosis.clone(), ..Default::default() };
+    let mut repair =
+        Repair { path: path.to_string_lossy().into_owned(), diagnosis: diagnosis.clone(), ..Default::default() };
     if !options.rebuild_index && !options.rewrite_digests {
         return Ok(repair);
     }

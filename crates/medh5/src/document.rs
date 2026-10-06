@@ -77,8 +77,8 @@ pub fn validate_against_schema(doc: &Value) -> Vec<String> {
 /// A schema error worded as Python's `jsonschema` words it, so a report reads
 /// the same from every frontend: `'x' is a required property`, not `"x" ...`.
 fn python_message(err: &jsonschema::ValidationError<'_>) -> String {
-    use jsonschema::error::{TypeKind, ValidationErrorKind as K};
     use crate::json::repr;
+    use jsonschema::error::{TypeKind, ValidationErrorKind as K};
     let instance = repr(err.instance());
     let plural = |n: usize| if n == 1 { "was" } else { "were" };
     match err.kind() {
@@ -105,13 +105,26 @@ fn python_message(err: &jsonschema::ValidationError<'_>) -> String {
         K::Minimum { limit } => format!("{instance} is less than the minimum of {}", repr(limit)),
         K::Maximum { limit } => format!("{instance} is greater than the maximum of {}", repr(limit)),
         K::ExclusiveMinimum { limit } => format!("{instance} is less than or equal to the minimum of {}", repr(limit)),
-        K::ExclusiveMaximum { limit } => format!("{instance} is greater than or equal to the maximum of {}", repr(limit)),
-        K::MinItems { limit } => format!("{instance} {}", if *limit == 1 { "should be non-empty" } else { "is too short" }),
-        K::MaxItems { limit } => format!("{instance} {}", if *limit == 0 { "is expected to be empty" } else { "is too long" }),
-        K::MinLength { limit } => format!("{instance} {}", if *limit == 1 { "should be non-empty" } else { "is too short" }),
-        K::MaxLength { limit } => format!("{instance} {}", if *limit == 0 { "is expected to be empty" } else { "is too long" }),
+        K::ExclusiveMaximum { limit } => {
+            format!("{instance} is greater than or equal to the maximum of {}", repr(limit))
+        }
+        K::MinItems { limit } => {
+            format!("{instance} {}", if *limit == 1 { "should be non-empty" } else { "is too short" })
+        }
+        K::MaxItems { limit } => {
+            format!("{instance} {}", if *limit == 0 { "is expected to be empty" } else { "is too long" })
+        }
+        K::MinLength { limit } => {
+            format!("{instance} {}", if *limit == 1 { "should be non-empty" } else { "is too short" })
+        }
+        K::MaxLength { limit } => {
+            format!("{instance} {}", if *limit == 0 { "is expected to be empty" } else { "is too long" })
+        }
         K::MinProperties { limit } => {
-            format!("{instance} {}", if *limit == 1 { "should be non-empty" } else { "does not have enough properties" })
+            format!(
+                "{instance} {}",
+                if *limit == 1 { "should be non-empty" } else { "does not have enough properties" }
+            )
         }
         K::MaxProperties { limit } => {
             format!("{instance} {}", if *limit == 0 { "is expected to be empty" } else { "has too many properties" })
@@ -234,8 +247,8 @@ impl SampleDocument {
 
     /// Parse the JSON string stored in `/meta`.
     pub fn loads(text: &str) -> Result<Self> {
-        let doc: Value = serde_json::from_str(text)
-            .map_err(|e| Error::Schema(format!("`meta` is not valid JSON: {e}")))?;
+        let doc: Value =
+            serde_json::from_str(text).map_err(|e| Error::Schema(format!("`meta` is not valid JSON: {e}")))?;
         if !doc.is_object() {
             return Err(Error::Schema("`meta` must hold a JSON object".into()));
         }
@@ -299,7 +312,11 @@ fn missing_member(name: &str) -> Error {
 /// Start a document with the two required members filled in.
 ///
 /// `subject_id` defaults to `sample_id`; `timepoints` defaults to one `tp0`.
-pub fn new_document(sample_id: &str, subject_id: Option<&str>, timepoints: Option<&[String]>) -> Result<SampleDocument> {
+pub fn new_document(
+    sample_id: &str,
+    subject_id: Option<&str>,
+    timepoints: Option<&[String]>,
+) -> Result<SampleDocument> {
     let timeline = match timepoints {
         None => Timeline::single("tp0")?,
         Some(ids) => Timeline::new(

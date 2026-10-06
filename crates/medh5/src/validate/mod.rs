@@ -74,7 +74,13 @@ pub struct Report {
 
 impl Report {
     pub fn new(path: &str, level: &str) -> Report {
-        Report { path: path.into(), level: level.into(), profiles: Vec::new(), diagnostics: Vec::new(), checked: json!({}) }
+        Report {
+            path: path.into(),
+            level: level.into(),
+            profiles: Vec::new(),
+            diagnostics: Vec::new(),
+            checked: json!({}),
+        }
     }
 
     /// Severity at this level: `strict` promotes every warning to an error.
@@ -218,7 +224,7 @@ pub fn validate_root_with(
             Err(e) => report.diagnostics.push(Diagnostic {
                 code: "E001".into(),
                 location: "/".into(),
-                message: format!("{name} could not read the file: {}: {}", e.kind_name(), e.message()),
+                message: format!("{name} could not read the file: {}", e.python_line()),
                 severity: "error".into(),
                 level: level.into(),
             }),
@@ -310,7 +316,7 @@ pub fn validate_file(path: &Path, level: &str, profiles: Option<&[String]>) -> R
     match result {
         Ok(r) => Ok(r),
         Err(e @ Error::Value(_)) if e.message().starts_with("unknown validation level") => Err(e),
-        Err(e) => Ok(read_failure(&text, level, format!("the file could not be read: {}: {}", e.kind_name(), e.message()))),
+        Err(e) => Ok(read_failure(&text, level, format!("the file could not be read: {}", e.python_line()))),
     }
 }
 

@@ -93,7 +93,11 @@ impl Identity {
             sex: get_str(doc, "sex"),
             laterality: get_str(doc, "laterality"),
             bodypart: get_str(doc, "bodypart"),
-            extra: doc.iter().filter(|(k, _)| !known.contains(&k.as_str())).map(|(k, v)| (k.clone(), v.clone())).collect(),
+            extra: doc
+                .iter()
+                .filter(|(k, _)| !known.contains(&k.as_str()))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
         };
         id.check()?;
         Ok(id)
@@ -153,7 +157,11 @@ impl Cohort {
             scanner_id: get_str(doc, "scanner_id"),
             group_id: get_str(doc, "group_id"),
             acquisition_protocol: get_str(doc, "acquisition_protocol"),
-            extra: doc.iter().filter(|(k, _)| !Self::KNOWN.contains(&k.as_str())).map(|(k, v)| (k.clone(), v.clone())).collect(),
+            extra: doc
+                .iter()
+                .filter(|(k, _)| !Self::KNOWN.contains(&k.as_str()))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
         })
     }
 
@@ -257,15 +265,8 @@ pub struct Deidentification {
 }
 
 impl Deidentification {
-    const KNOWN: [&'static str; 7] = [
-        "method",
-        "profile",
-        "date_shift_days",
-        "id_mapping",
-        "performed_by",
-        "date",
-        "burned_in_annotation_checked",
-    ];
+    const KNOWN: [&'static str; 7] =
+        ["method", "profile", "date_shift_days", "id_mapping", "performed_by", "date", "burned_in_annotation_checked"];
 
     pub fn check(&self) -> Result<()> {
         if let Some(date) = &self.date {
@@ -283,7 +284,9 @@ impl Deidentification {
         if let Some(v) = &self.date_shift_days {
             out.insert("date_shift_days".into(), Value::Number(v.clone()));
         }
-        for (key, value) in [("id_mapping", &self.id_mapping), ("performed_by", &self.performed_by), ("date", &self.date)] {
+        for (key, value) in
+            [("id_mapping", &self.id_mapping), ("performed_by", &self.performed_by), ("date", &self.date)]
+        {
             if let Some(v) = value {
                 out.insert(key.into(), json!(v));
             }
@@ -312,7 +315,11 @@ impl Deidentification {
             performed_by: get_str(doc, "performed_by"),
             date: get_str(doc, "date"),
             burned_in_annotation_checked: get(doc, "burned_in_annotation_checked").map(pyval::truthy),
-            extra: doc.iter().filter(|(k, _)| !Self::KNOWN.contains(&k.as_str())).map(|(k, v)| (k.clone(), v.clone())).collect(),
+            extra: doc
+                .iter()
+                .filter(|(k, _)| !Self::KNOWN.contains(&k.as_str()))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
         };
         record.check()?;
         Ok(Some(record))

@@ -44,7 +44,16 @@ fn main() -> medh5::Result<()> {
     spleen.category = Some("organ".into());
     let mut vessel = LabelClass::new(4, "vessel", "Vessel")?;
     vessel.category = Some("vessel".into());
-    let ls = LabelSet::new("test-v1", vec![liver, spleen, lesion, vessel], "1.0.0", Vec::new(), Vec::new(), "inline", None, None)?;
+    let ls = LabelSet::new(
+        "test-v1",
+        vec![liver, spleen, lesion, vessel],
+        "1.0.0",
+        Vec::new(),
+        Vec::new(),
+        "inline",
+        None,
+        None,
+    )?;
 
     let mut w = create(path, Some("case-1"), Some("subj-A"), codec, &[])?;
     w.identity(obj(json!({"sex": "F", "bodypart": "abdomen"})))?;
@@ -102,7 +111,11 @@ fn main() -> medh5::Result<()> {
         ObjectFields { instance_ids: Some(vec![7]), scores: Some(vec![0.9]), attributes: None },
         None,
         Placement { grid: Some("ct_tp0".into()), ..Default::default() },
-        AnnotationOptions { prov: Some(act.id.clone()), quality: Some(QualityArg::Key("organs_tp0".into())), ..Default::default() },
+        AnnotationOptions {
+            prov: Some(act.id.clone()),
+            quality: Some(QualityArg::Key("organs_tp0".into())),
+            ..Default::default()
+        },
     )?;
     w.add_classification(
         "dx",
@@ -110,7 +123,11 @@ fn main() -> medh5::Result<()> {
         "sample",
         true,
         None,
-        AnnotationOptions { prov: Some(act.id.clone()), quality: Some(QualityArg::Key("organs_tp0".into())), ..Default::default() },
+        AnnotationOptions {
+            prov: Some(act.id.clone()),
+            quality: Some(QualityArg::Key("organs_tp0".into())),
+            ..Default::default()
+        },
     )?;
     let matrix = ArrayD::from_shape_vec(
         IxDyn(&[4, 4]),

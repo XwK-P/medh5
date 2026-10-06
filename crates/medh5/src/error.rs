@@ -102,15 +102,26 @@ impl Error {
         }
     }
 
+    /// What Python's `str(exc)` prints for the matching exception: a
+    /// `KeyError` quotes its message, a coded validation error leads with its
+    /// code, everything else is the message.
+    pub fn python_str(&self) -> String {
+        match self {
+            Error::Key(m) => crate::json::repr_str(m),
+            other => other.to_string(),
+        }
+    }
+
+    /// `ExceptionName: message`, as Python reports a caught exception.
+    pub fn python_line(&self) -> String {
+        format!("{}: {}", self.kind_name(), self.python_str())
+    }
+
     /// Whether this is one of the package's own `MEDH5Error` family.
     pub fn is_medh5(&self) -> bool {
         matches!(
             self,
-            Error::File(_)
-                | Error::Version(_)
-                | Error::Schema(_)
-                | Error::Validation { .. }
-                | Error::Integrity(_)
+            Error::File(_) | Error::Version(_) | Error::Schema(_) | Error::Validation { .. } | Error::Integrity(_)
         )
     }
 

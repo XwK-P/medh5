@@ -34,9 +34,10 @@ pub fn to_int(value: &Value) -> Result<i64> {
             }
         }
         Value::Bool(b) => Ok(i64::from(*b)),
-        Value::String(s) => s.trim().parse::<i64>().map_err(|_| {
-            Error::Value(format!("invalid literal for int() with base 10: {}", repr(value)))
-        }),
+        Value::String(s) => s
+            .trim()
+            .parse::<i64>()
+            .map_err(|_| Error::Value(format!("invalid literal for int() with base 10: {}", repr(value)))),
         other => Err(Error::Type(format!(
             "int() argument must be a string, a bytes-like object or a real number, not '{}'",
             type_name(other)
@@ -55,15 +56,14 @@ pub fn to_float(value: &Value) -> Result<f64> {
                 "nan" | "+nan" | "-nan" => Ok(f64::NAN),
                 "inf" | "+inf" | "infinity" | "+infinity" => Ok(f64::INFINITY),
                 "-inf" | "-infinity" => Ok(f64::NEG_INFINITY),
-                _ => t.parse::<f64>().map_err(|_| {
-                    Error::Value(format!("could not convert string to float: {}", repr(value)))
-                }),
+                _ => t
+                    .parse::<f64>()
+                    .map_err(|_| Error::Value(format!("could not convert string to float: {}", repr(value)))),
             }
         }
-        other => Err(Error::Type(format!(
-            "float() argument must be a string or a real number, not '{}'",
-            type_name(other)
-        ))),
+        other => {
+            Err(Error::Type(format!("float() argument must be a string or a real number, not '{}'", type_name(other))))
+        }
     }
 }
 
@@ -117,9 +117,7 @@ pub fn get_list<'a>(doc: &'a Map<String, Value>, key: &str) -> &'a [Value] {
 
 /// A JSON object view of a value, or a type error naming what was expected.
 pub fn as_object<'a>(value: &'a Value, what: &str) -> Result<&'a Map<String, Value>> {
-    value.as_object().ok_or_else(|| {
-        Error::Type(format!("{what} must be a JSON object, not {}", type_name(value)))
-    })
+    value.as_object().ok_or_else(|| Error::Type(format!("{what} must be a JSON object, not {}", type_name(value))))
 }
 
 /// A JSON number from an `f64` (finite), as Python's `float` would be stored.

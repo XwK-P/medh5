@@ -180,12 +180,8 @@ impl Timeline {
                 format!("timepoint indices {} must be dense and start at 0", repr_int_list(&indices)),
             ));
         }
-        let known: Vec<(usize, &Number)> = self
-            .points
-            .iter()
-            .enumerate()
-            .filter_map(|(i, t)| t.days_from_baseline.as_ref().map(|d| (i, d)))
-            .collect();
+        let known: Vec<(usize, &Number)> =
+            self.points.iter().enumerate().filter_map(|(i, t)| t.days_from_baseline.as_ref().map(|d| (i, d))).collect();
         for pair in known.windows(2) {
             let (i0, d0) = pair[0];
             let (i1, d1) = pair[1];

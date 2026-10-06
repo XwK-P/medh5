@@ -124,12 +124,7 @@ pub fn profiles() -> Vec<CodecProfile> {
             label: blosc2("blosc2:zstd:3:bitshuffle", "zstd", 3, "bitshuffle"),
             description: "general use; the default",
         },
-        CodecProfile {
-            name: "portable",
-            image: gzip(4),
-            label: gzip(4),
-            description: "readable without hdf5plugin",
-        },
+        CodecProfile { name: "portable", image: gzip(4), label: gzip(4), description: "readable without hdf5plugin" },
         CodecProfile {
             name: "training",
             image: blosc2("blosc2:lz4:1:shuffle", "lz4", 1, "shuffle"),

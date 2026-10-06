@@ -20,7 +20,9 @@ use crate::curation::provenance::{Activity, Agent};
 use crate::curation::quality::QualityRecord;
 use crate::curation::timeline::{Timeline, Timepoint};
 use crate::document::{SampleDocument, META_DATASET};
-use crate::geometry::grid::{default_axis_kinds, default_axis_names, read_grids, write_grid, Grid, KNOWN_UNITS, TIME_UNITS};
+use crate::geometry::grid::{
+    default_axis_kinds, default_axis_names, read_grids, write_grid, Grid, KNOWN_UNITS, TIME_UNITS,
+};
 use crate::geometry::multiscale::{check_pyramid, pyramid_factors, Pyramid};
 use crate::h5::attrs::{self, AttrValue};
 use crate::h5::data;
@@ -156,7 +158,13 @@ impl std::fmt::Debug for SampleWriter {
 }
 
 /// Create a new sample.  Call [`SampleWriter::commit`] to write it.
-pub fn create(path: &Path, sample_id: Option<&str>, subject_id: Option<&str>, codec: &str, profiles: &[String]) -> Result<SampleWriter> {
+pub fn create(
+    path: &Path,
+    sample_id: Option<&str>,
+    subject_id: Option<&str>,
+    codec: &str,
+    profiles: &[String],
+) -> Result<SampleWriter> {
     SampleWriter::new(path, sample_id, subject_id, codec, profiles, None)
 }
 
@@ -199,8 +207,10 @@ impl SampleWriter {
         let codec = resolve_profile(Some(codec))?.name.to_string();
         let file = AtomicFile::create(path)?;
         let stem = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let default_id = sample_id.map(str::to_string).unwrap_or_else(|| stem.split('.').next().unwrap_or("").to_string());
-        let identity = Identity::new(default_id.clone(), subject_id.map(str::to_string).unwrap_or_else(|| default_id.clone()));
+        let default_id =
+            sample_id.map(str::to_string).unwrap_or_else(|| stem.split('.').next().unwrap_or("").to_string());
+        let identity =
+            Identity::new(default_id.clone(), subject_id.map(str::to_string).unwrap_or_else(|| default_id.clone()));
         let mut writer = SampleWriter {
             path: path.to_path_buf(),
             codec,
@@ -374,7 +384,8 @@ impl SampleWriter {
 
     /// Declare a timepoint; the first explicit one replaces the implicit `tp0`.
     pub fn add_timepoint(&mut self, timepoint_id: &str, mut fields: Map<String, Value>) -> Result<Timepoint> {
-        let existing: Vec<Timepoint> = if self.default_timeline { Vec::new() } else { self.document.timepoints.points().to_vec() };
+        let existing: Vec<Timepoint> =
+            if self.default_timeline { Vec::new() } else { self.document.timepoints.points().to_vec() };
         let index = fields.remove("index").unwrap_or_else(|| Value::from(existing.len()));
         let mut doc = Map::new();
         doc.insert("id".into(), Value::String(timepoint_id.into()));
@@ -395,7 +406,13 @@ impl SampleWriter {
 
     /// Declare an agent; an explicit id must be free, an automatic one is
     /// `<type initial><n>`, skipping ids already taken.
-    pub fn agent(&mut self, agent_type: &str, name: &str, agent_id: Option<&str>, fields: Map<String, Value>) -> Result<Agent> {
+    pub fn agent(
+        &mut self,
+        agent_type: &str,
+        name: &str,
+        agent_id: Option<&str>,
+        fields: Map<String, Value>,
+    ) -> Result<Agent> {
         let prov = &self.document.provenance;
         let id = match agent_id {
             Some(id) => id.to_string(),
@@ -437,7 +454,13 @@ impl SampleWriter {
     }
 
     /// Record an activity; ids are `act_<type>_<n>`, skipping taken ones.
-    pub fn activity(&mut self, activity_type: &str, agent: Option<&str>, activity_id: Option<&str>, fields: Map<String, Value>) -> Result<Activity> {
+    pub fn activity(
+        &mut self,
+        activity_type: &str,
+        agent: Option<&str>,
+        activity_id: Option<&str>,
+        fields: Map<String, Value>,
+    ) -> Result<Activity> {
         let prov = &self.document.provenance;
         let id = match activity_id {
             Some(id) => id.to_string(),
@@ -528,7 +551,12 @@ impl SampleWriter {
             if !TIME_UNITS.contains(&tu.as_str()) {
                 return Err(Error::coded(
                     "E109",
-                    format!("grid {}: time_units {} is not one of {} (§3.2)", repr_str(grid_id), repr_str(tu), repr_list(&TIME_UNITS)),
+                    format!(
+                        "grid {}: time_units {} is not one of {} (§3.2)",
+                        repr_str(grid_id),
+                        repr_str(tu),
+                        repr_list(&TIME_UNITS)
+                    ),
                 ));
             }
         }
@@ -640,7 +668,14 @@ impl SampleWriter {
     }
 
     /// Write one image, chunked for its grid's patch hint.
-    pub fn add_image(&mut self, image_id: &str, data: &NdArray, grid: &str, modality: &str, options: ImageOptions) -> Result<hdf5::Dataset> {
+    pub fn add_image(
+        &mut self,
+        image_id: &str,
+        data: &NdArray,
+        grid: &str,
+        modality: &str,
+        options: ImageOptions,
+    ) -> Result<hdf5::Dataset> {
         validate_id(image_id, "image id")?;
         if self.images.contains_key(image_id) {
             return Err(Error::invalid(format!("image {} already exists", repr_str(image_id))));
@@ -674,7 +709,13 @@ impl SampleWriter {
             }
         }
         let chunks = self.chunks_for(&target, data.dtype().itemsize(), 0)?;
-        let layout = dataset_layout(&data.shape(), data.dtype().itemsize(), &self.profile(options.codec.as_deref())?, Role::Image, Some(chunks));
+        let layout = dataset_layout(
+            &data.shape(),
+            data.dtype().itemsize(),
+            &self.profile(options.codec.as_deref())?,
+            Role::Image,
+            Some(chunks),
+        );
         let node = data::create(&self.group("images")?, image_id, data, &layout)?;
         let mut values: Vec<(&str, Option<AttrValue>)> = vec![
             ("grid", Some(AttrValue::Str(grid.into()))),
@@ -810,7 +851,8 @@ impl SampleWriter {
                 found.insert("curation".into());
             }
         }
-        if !self.images.is_empty() && self.images.keys().all(|i| self.image_multiscale.get(i).copied().unwrap_or(false)) {
+        if !self.images.is_empty() && self.images.keys().all(|i| self.image_multiscale.get(i).copied().unwrap_or(false))
+        {
             found.insert("multiscale".into());
         }
         if let Some(index) = ops::child_group(&self.root()?, "index") {
@@ -818,10 +860,13 @@ impl SampleWriter {
                 found.insert("training".into());
             }
         }
-        if doc.timepoints.is_longitudinal() && self.grids.values().all(|g| g.timepoint.as_deref().is_some_and(|t| !t.is_empty())) {
+        if doc.timepoints.is_longitudinal()
+            && self.grids.values().all(|g| g.timepoint.as_deref().is_some_and(|t| !t.is_empty()))
+        {
             found.insert("longitudinal".into());
         }
-        let mut unknown: Vec<String> = self.declared_profiles.union(&found).filter(|p| !PROFILES.contains(&p.as_str())).cloned().collect();
+        let mut unknown: Vec<String> =
+            self.declared_profiles.union(&found).filter(|p| !PROFILES.contains(&p.as_str())).cloned().collect();
         unknown.sort();
         if !unknown.is_empty() {
             return Err(Error::coded("E007", format!("unknown profile(s) {}", repr_list(&unknown))));
@@ -893,7 +938,11 @@ impl SampleWriter {
                 if !doc.provenance.has_activity(&prov) {
                     return Err(Error::coded(
                         "E601",
-                        format!("annotation {} names activity {}, which is not in the provenance graph", repr_str(name), repr_str(&prov)),
+                        format!(
+                            "annotation {} names activity {}, which is not in the provenance graph",
+                            repr_str(name),
+                            repr_str(&prov)
+                        ),
                     ));
                 }
             }
@@ -901,7 +950,11 @@ impl SampleWriter {
                 if !doc.quality.contains_key(&q) {
                     return Err(Error::coded(
                         "E602",
-                        format!("annotation {} names quality record {}, which does not exist", repr_str(name), repr_str(&q)),
+                        format!(
+                            "annotation {} names quality record {}, which does not exist",
+                            repr_str(name),
+                            repr_str(&q)
+                        ),
                     ));
                 }
             }
@@ -945,7 +998,11 @@ impl SampleWriter {
                 if !doc.provenance.has_activity(&prov) {
                     return Err(Error::coded(
                         "E601",
-                        format!("image {} names activity {}, which is not in the provenance graph", repr_str(image_id), repr_str(&prov)),
+                        format!(
+                            "image {} names activity {}, which is not in the provenance graph",
+                            repr_str(image_id),
+                            repr_str(&prov)
+                        ),
                     ));
                 }
             }
@@ -961,7 +1018,11 @@ impl SampleWriter {
                     if !doc.provenance.has_activity(&prov) {
                         return Err(Error::coded(
                             "E601",
-                            format!("transform {} names activity {}, which is not in the provenance graph", repr_str(name), repr_str(&prov)),
+                            format!(
+                                "transform {} names activity {}, which is not in the provenance graph",
+                                repr_str(name),
+                                repr_str(&prov)
+                            ),
                         ));
                     }
                 }
@@ -969,7 +1030,11 @@ impl SampleWriter {
                     if !doc.quality.contains_key(&m) {
                         return Err(Error::coded(
                             "E602",
-                            format!("transform {} names quality record {}, which does not exist", repr_str(name), repr_str(&m)),
+                            format!(
+                                "transform {} names quality record {}, which does not exist",
+                                repr_str(name),
+                                repr_str(&m)
+                            ),
                         ));
                     }
                 }
@@ -1044,7 +1109,10 @@ impl SampleWriter {
         if !errors.is_empty() {
             return Err(Error::coded(
                 "E005",
-                format!("sample document fails its JSON Schema: {}", errors.iter().take(5).cloned().collect::<Vec<_>>().join("; ")),
+                format!(
+                    "sample document fails its JSON Schema: {}",
+                    errors.iter().take(5).cloned().collect::<Vec<_>>().join("; ")
+                ),
             ));
         }
         let root = self.root()?;
@@ -1079,7 +1147,8 @@ impl SampleWriter {
         if errors.is_empty() {
             return Ok(());
         }
-        let listed: Vec<String> = errors.iter().take(5).map(|d| format!("{} {}: {}", d.code, d.location, d.message)).collect();
+        let listed: Vec<String> =
+            errors.iter().take(5).map(|d| format!("{} {}: {}", d.code, d.location, d.message)).collect();
         let more = if errors.len() > 5 { format!(" (and {} more)", errors.len() - 5) } else { String::new() };
         Err(Error::coded(
             &errors[0].code,

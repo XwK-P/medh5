@@ -57,7 +57,12 @@ impl ConversionReport {
 
     /// Record a note.
     pub fn add(&mut self, kind: &str, message: impl Into<String>, severity: &str, detail: Value) -> &Note {
-        self.notes.push(Note { kind: kind.into(), message: message.into(), severity: severity.into(), detail: detail_map(detail) });
+        self.notes.push(Note {
+            kind: kind.into(),
+            message: message.into(),
+            severity: severity.into(),
+            detail: detail_map(detail),
+        });
         self.notes.last().expect("just pushed")
     }
 

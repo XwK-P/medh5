@@ -376,4 +376,3 @@ pub fn is_probability(array: &NdArray) -> bool {
         None => false,
     }
 }
-

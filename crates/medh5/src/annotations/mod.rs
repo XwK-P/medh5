@@ -15,9 +15,7 @@ pub mod select;
 
 pub use encode::{encode_masks, transcode_payload, EncodeOptions, InstanceInput};
 pub use encode_geometric::{Assertions, ObjectColumns, Polygon, SCOPES, SPACES};
-pub use header::{
-    AnnotationHeader, ANNOTATION_KINDS, GEOMETRIC_KINDS, RESERVED_KINDS, TASKS, VOXEL_KINDS,
-};
+pub use header::{AnnotationHeader, ANNOTATION_KINDS, GEOMETRIC_KINDS, RESERVED_KINDS, TASKS, VOXEL_KINDS};
 pub use payload::{Masks, Payload, PayloadData};
 pub use read::{Annotation, GridRef, Grids, Instance};
 pub use read_geometric::Assertion;

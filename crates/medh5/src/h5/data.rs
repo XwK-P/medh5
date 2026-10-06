@@ -87,7 +87,8 @@ fn read_enum(ds: &hdf5::Dataset, dtype: DType) -> Result<NdArray> {
     super::locked(|| unsafe {
         let ftype = h5d::H5Dget_type(ds.id());
         let mtype = h5t::H5Tget_native_type(ftype, h5t::H5T_direction_t::H5T_DIR_ASCEND);
-        let status = h5d::H5Dread(ds.id(), mtype, h5s::H5S_ALL, h5s::H5S_ALL, h5p::H5P_DEFAULT, buf.as_mut_ptr().cast());
+        let status =
+            h5d::H5Dread(ds.id(), mtype, h5s::H5S_ALL, h5s::H5S_ALL, h5p::H5P_DEFAULT, buf.as_mut_ptr().cast());
         h5t::H5Tclose(mtype);
         h5t::H5Tclose(ftype);
         if status < 0 {
@@ -165,9 +166,7 @@ fn resolve(shape: &[usize], index: &[Index]) -> Result<Vec<(usize, usize, usize,
             Index::At(i) => {
                 let k = if i < 0 { i + *n as i64 } else { i };
                 if k < 0 || k >= *n as i64 {
-                    return Err(Error::Index(format!(
-                        "index {i} is out of range for axis {axis} with size {n}"
-                    )));
+                    return Err(Error::Index(format!("index {i} is out of range for axis {axis} with size {n}")));
                 }
                 out.push((k as usize, 1, 1, false));
             }
@@ -242,7 +241,9 @@ pub fn read_strings(ds: &hdf5::Dataset) -> Result<Vec<String>> {
     Ok(match td {
         TD::VarLenUnicode => ds.read_raw::<VarLenUnicode>()?.into_iter().map(|s| s.as_str().to_string()).collect(),
         TD::VarLenAscii => ds.read_raw::<VarLenAscii>()?.into_iter().map(|s| s.as_str().to_string()).collect(),
-        TD::FixedAscii(_) | TD::FixedUnicode(_) => read_fixed_strings(ds.id(), ds.size().max(usize::from(ds.is_scalar())), &td, false)?,
+        TD::FixedAscii(_) | TD::FixedUnicode(_) => {
+            read_fixed_strings(ds.id(), ds.size().max(usize::from(ds.is_scalar())), &td, false)?
+        }
         other => return Err(Error::Type(format!("{} holds {other}, not strings", ds.name()))),
     })
 }

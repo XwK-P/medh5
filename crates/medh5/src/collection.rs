@@ -86,7 +86,10 @@ impl Collection {
                 repr_list(&ops::members(&group)?)
             )));
         };
-        let shown = format!("{}::{key}", self.path.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| "None".into()));
+        let shown = format!(
+            "{}::{key}",
+            self.path.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| "None".into())
+        );
         Ok(Sample::from_root(member, self.handle.clone(), Some(PathBuf::from(shown))))
     }
 
@@ -230,7 +233,10 @@ pub fn pack(sources: &[&Path], out: &Path, keys: Option<&[String]>) -> Result<Pa
     if !duplicates.is_empty() {
         return Err(Error::coded(
             "E003",
-            format!("sample key(s) {} are not unique in the collection; pass explicit --key values", repr_list(&duplicates)),
+            format!(
+                "sample key(s) {} are not unique in the collection; pass explicit --key values",
+                repr_list(&duplicates)
+            ),
         ));
     }
     let file = AtomicFile::create(out)?;

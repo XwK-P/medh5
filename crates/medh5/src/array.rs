@@ -207,7 +207,11 @@ int_element!(u64, U64);
 impl Element for bool {
     const DTYPE: DType = DType::Bool;
     fn to_f64(self) -> f64 {
-        if self { 1.0 } else { 0.0 }
+        if self {
+            1.0
+        } else {
+            0.0
+        }
     }
     fn from_f64(value: f64) -> Self {
         value != 0.0

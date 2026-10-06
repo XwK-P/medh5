@@ -71,7 +71,11 @@ pub fn allowed_dtypes(kind: &str) -> Option<&'static [&'static str]> {
 pub fn geometric_dtypes(kind: &str) -> &'static [(&'static str, &'static [&'static str])] {
     match kind {
         "boxes" => &[("boxes", &["float32", "float64"]), ("class_ids", &["uint16"])],
-        "obb" => &[("centers", &["float32", "float64"]), ("sizes", &["float32", "float64"]), ("rotations", &["float32", "float64"])],
+        "obb" => &[
+            ("centers", &["float32", "float64"]),
+            ("sizes", &["float32", "float64"]),
+            ("rotations", &["float32", "float64"]),
+        ],
         "keypoints" => &[("points", &["float32", "float64"]), ("visibility", &["uint8"])],
         "points" => &[("points", &["float32", "float64"])],
         "contours" => &[("vertices", &["float32", "float64"]), ("contour_offsets", &["int64"])],
@@ -268,15 +272,17 @@ pub fn check_collection(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     let root = ctx.root.clone();
     match str_attr(&root, "medh5_version")? {
         None => out.push(ctx.err("E001", "/", "collection root has no `medh5_version` attribute")),
-        Some(v) if v.split('.').next().unwrap_or("") != SUPPORTED_MAJOR => out.push(ctx.err(
-            "E002",
-            "/",
-            format!("declares MEDH5 {v}; this validator implements {SUPPORTED_MAJOR}.x"),
-        )),
+        Some(v) if v.split('.').next().unwrap_or("") != SUPPORTED_MAJOR => {
+            out.push(ctx.err("E002", "/", format!("declares MEDH5 {v}; this validator implements {SUPPORTED_MAJOR}.x")))
+        }
         _ => {}
     }
     let Some(node) = ops::child_group(&root, SAMPLES_GROUP) else {
-        out.push(ctx.err("E008", format!("/{SAMPLES_GROUP}"), format!("a `collection` requires a `{SAMPLES_GROUP}` group")));
+        out.push(ctx.err(
+            "E008",
+            format!("/{SAMPLES_GROUP}"),
+            format!("a `collection` requires a `{SAMPLES_GROUP}` group"),
+        ));
         return Ok(out);
     };
     let keys = ops::members(&node)?;
@@ -294,7 +300,11 @@ pub fn check_collection(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
         }
         let Some(member) = child(&node, &key) else { continue };
         if !attrs::has(loc(&member), "medh5_profiles") {
-            out.push(ctx.err("E007", location.clone(), "a sample root in a collection carries its own `medh5_profiles`"));
+            out.push(ctx.err(
+                "E007",
+                location.clone(),
+                "a sample root in a collection carries its own `medh5_profiles`",
+            ));
         }
         if !attrs::has(loc(&member), "content_id") {
             out.push(ctx.err(
@@ -385,10 +395,11 @@ pub fn check_geometry(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
         let Some(grid) = child(&node, &name) else { continue };
         let g = loc(&grid);
         let location = format!("/grids/{name}");
-        let missing: Vec<&str> = ["shape", "axis_names", "axis_kinds", "spacing", "origin", "direction", "coord_system", "units"]
-            .into_iter()
-            .filter(|k| !attrs::has(g, k))
-            .collect();
+        let missing: Vec<&str> =
+            ["shape", "axis_names", "axis_kinds", "spacing", "origin", "direction", "coord_system", "units"]
+                .into_iter()
+                .filter(|k| !attrs::has(g, k))
+                .collect();
         if !missing.is_empty() {
             out.push(ctx.err("E109", location, format!("missing required attribute(s) {}", repr_list(&missing))));
             continue;
@@ -439,7 +450,11 @@ pub fn check_geometry(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
         }
         let spacing = attrs::get_f64s(g, "spacing")?.unwrap_or_default();
         if spacing.iter().any(|v| *v <= 0.0) {
-            out.push(ctx.err("E104", location.clone(), format!("spacing {} must be strictly positive", float_list(&spacing))));
+            out.push(ctx.err(
+                "E104",
+                location.clone(),
+                format!("spacing {} must be strictly positive", float_list(&spacing)),
+            ));
         }
         let direction = attrs::read(g, "direction")?.unwrap_or(AttrValue::Unsupported(String::new()));
         match direction.as_matrix() {
@@ -670,7 +685,8 @@ fn int16_lossless(ds: &hdf5::Dataset) -> Result<bool> {
 
 pub fn check_multiscale(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     let mut out = Vec::new();
-    let (Some(node), Some(grids)) = (ops::child_group(&ctx.root, "images"), ops::child_group(&ctx.root, "grids")) else {
+    let (Some(node), Some(grids)) = (ops::child_group(&ctx.root, "images"), ops::child_group(&ctx.root, "grids"))
+    else {
         return Ok(out);
     };
     for name in ops::members(&node)? {
@@ -682,7 +698,11 @@ pub fn check_multiscale(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
         }
         let level_ids = strs_attr(&image, "grid_levels")?;
         if level_ids.iter().any(|g| !ops::exists(&grids, g)) {
-            out.push(ctx.err("E101", location, format!("grid_levels reference missing grids {}", repr_list(&level_ids))));
+            out.push(ctx.err(
+                "E101",
+                location,
+                format!("grid_levels reference missing grids {}", repr_list(&level_ids)),
+            ));
             continue;
         }
         let levels: Vec<crate::geometry::grid::Grid> =
@@ -704,11 +724,16 @@ pub fn check_multiscale(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
 pub fn check_label_set(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     let mut out = Vec::new();
     let Some(doc) = &ctx.document else { return Ok(out) };
-    let mut needs: Vec<&str> = ["seg", "det", "cls"].into_iter().filter(|p| ctx.profiles.iter().any(|x| x == p)).collect();
+    let mut needs: Vec<&str> =
+        ["seg", "det", "cls"].into_iter().filter(|p| ctx.profiles.iter().any(|x| x == p)).collect();
     needs.sort_unstable();
     let Some(ls) = &doc.label_set else {
         if !needs.is_empty() {
-            out.push(ctx.err("E301", "/meta#label_set", format!("profile(s) {} require a label set", repr_list(&needs))));
+            out.push(ctx.err(
+                "E301",
+                "/meta#label_set",
+                format!("profile(s) {} require a label set", repr_list(&needs)),
+            ));
         }
         return Ok(out);
     };
@@ -798,13 +823,21 @@ pub fn check_annotations(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
             }
         }
         if !attrs::has(a, "annotated_class_ids") && kind != "mask" {
-            out.push(ctx.err("E412", location.clone(), "missing `annotated_class_ids`; the coverage contract is required"));
+            out.push(ctx.err(
+                "E412",
+                location.clone(),
+                "missing `annotated_class_ids`; the coverage contract is required",
+            ));
         }
         let class_ids = int_set(a, "class_ids")?;
         let annotated = int_set(a, "annotated_class_ids")?;
         if !annotated.is_subset(&class_ids) && kind != "mask" {
             let extra: Vec<i64> = annotated.difference(&class_ids).copied().collect();
-            out.push(ctx.err("E403", location.clone(), format!("annotated_class_ids {} are not in class_ids", repr_int_list(&extra))));
+            out.push(ctx.err(
+                "E403",
+                location.clone(),
+                format!("annotated_class_ids {} are not in class_ids", repr_int_list(&extra)),
+            ));
         }
         if let Some(ls) = label_set.as_ref().filter(|l| l.form == "inline") {
             let missing = ls.missing(class_ids.iter().copied());
@@ -818,7 +851,11 @@ pub fn check_annotations(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
         }
         let reserved: Vec<i64> = class_ids.iter().copied().filter(|c| *c == BACKGROUND_ID || *c == IGNORE_ID).collect();
         if !reserved.is_empty() {
-            out.push(ctx.err("E303", location.clone(), format!("class_ids uses reserved id(s) {}", repr_int_list(&reserved))));
+            out.push(ctx.err(
+                "E303",
+                location.clone(),
+                format!("class_ids uses reserved id(s) {}", repr_int_list(&reserved)),
+            ));
         }
         if attrs::has(a, "timepoints") {
             for tp in strs_attr(a, "timepoints")? {
@@ -830,7 +867,9 @@ pub fn check_annotations(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
         let grid_id = str_attr(a, "grid")?;
         if VOXEL_KINDS.contains(&kind.as_str()) {
             match &grid_id {
-                None => out.push(ctx.err("E412", location.clone(), format!("kind {} requires a `grid`", repr_str(&kind)))),
+                None => {
+                    out.push(ctx.err("E412", location.clone(), format!("kind {} requires a `grid`", repr_str(&kind))))
+                }
                 Some(gid) if !grids.as_ref().is_some_and(|g| ops::exists(g, gid)) => out.push(ctx.err(
                     "E101",
                     location.clone(),
@@ -930,7 +969,14 @@ pub fn check_references(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     }
     for (name, node) in ctx.children("images")? {
         if let Some(target) = str_attr(loc(&node), "valid_mask")? {
-            out.extend(check_mask_reference(ctx, &format!("/images/{name}"), "valid_mask", &target, loc(&node), &groups)?);
+            out.extend(check_mask_reference(
+                ctx,
+                &format!("/images/{name}"),
+                "valid_mask",
+                &target,
+                loc(&node),
+                &groups,
+            )?);
         }
     }
     Ok(out)
@@ -945,7 +991,11 @@ fn check_mask_reference(
     groups: &BTreeMap<String, Node>,
 ) -> Result<Vec<Diagnostic>> {
     let Some(other) = groups.get(target) else {
-        return Ok(vec![ctx.err("E413", location, format!("`{attr}` names annotation {}, which does not exist", repr_str(target)))]);
+        return Ok(vec![ctx.err(
+            "E413",
+            location,
+            format!("`{attr}` names annotation {}, which does not exist", repr_str(target)),
+        )]);
     };
     let kind = str_attr(loc(other), "kind")?;
     if kind.as_deref() != Some("mask") {
@@ -1055,7 +1105,11 @@ fn check_encoding_invariants(ctx: &Context, name: &str, group: &Node, kind: &str
             }
             let missing: Vec<i64> = declared.iter().copied().filter(|c| !seen.contains_key(c)).collect();
             if !missing.is_empty() {
-                out.push(ctx.err("E404", location.clone(), format!("class_ids {} are not assigned to any layer", repr_int_list(&missing))));
+                out.push(ctx.err(
+                    "E404",
+                    location.clone(),
+                    format!("class_ids {} are not assigned to any layer", repr_int_list(&missing)),
+                ));
             }
             out.extend(check_layer_optimality(ctx, name, group, rows.len(), declared.len())?);
         }
@@ -1095,7 +1149,11 @@ fn check_encoding_invariants(ctx: &Context, name: &str, group: &Node, kind: &str
             let expected = n_classes.div_ceil(64).max(1);
             let planes = ds.shape().first().copied().unwrap_or(0);
             if planes != expected {
-                out.push(ctx.err("E404", location.clone(), format!("{planes} bitplanes for {n_classes} classes; expected {expected}")));
+                out.push(ctx.err(
+                    "E404",
+                    location.clone(),
+                    format!("{planes} bitplanes for {n_classes} classes; expected {expected}"),
+                ));
             }
         }
     }
@@ -1105,7 +1163,13 @@ fn check_encoding_invariants(ctx: &Context, name: &str, group: &Node, kind: &str
     Ok(out)
 }
 
-fn check_layer_optimality(ctx: &Context, name: &str, group: &Node, n_layers: usize, n_classes: usize) -> Result<Vec<Diagnostic>> {
+fn check_layer_optimality(
+    ctx: &Context,
+    name: &str,
+    group: &Node,
+    n_layers: usize,
+    n_classes: usize,
+) -> Result<Vec<Diagnostic>> {
     if ctx.errors_only || !(ctx.level == "semantic" || ctx.level == "strict") || n_classes == 0 {
         return Ok(Vec::new());
     }
@@ -1151,8 +1215,11 @@ fn overlap_edges(ds: &hdf5::Dataset, ignore_id: i64) -> Result<BTreeSet<(i64, i6
     let step = (SLAB_BYTES / per_row.max(1)).clamp(1, rows);
     let mut start = 0;
     while start < rows {
-        let block = data::read_region(ds, &[Index::Slice(Slice::full()), Index::Slice(Slice::new(start as i64, (start + step) as i64))])?
-            .cast::<i64>();
+        let block = data::read_region(
+            ds,
+            &[Index::Slice(Slice::full()), Index::Slice(Slice::new(start as i64, (start + step) as i64))],
+        )?
+        .cast::<i64>();
         let n = block.len() / n_layers;
         let flat: Vec<i64> = block.iter().copied().collect();
         for i in 0..n_layers {
@@ -1206,8 +1273,12 @@ fn check_geometric(
     let a = loc(group);
     let space = str_attr(a, "space")?;
     match space.as_deref() {
-        None => out.push(ctx.err("E412", location.clone(), format!("kind {} requires a `space` attribute", repr_str(kind)))),
-        Some(s) if !SPACES.contains(&s) => out.push(ctx.err("E412", location.clone(), format!("unknown space {}", repr_str(s)))),
+        None => {
+            out.push(ctx.err("E412", location.clone(), format!("kind {} requires a `space` attribute", repr_str(kind))))
+        }
+        Some(s) if !SPACES.contains(&s) => {
+            out.push(ctx.err("E412", location.clone(), format!("unknown space {}", repr_str(s))))
+        }
         Some("index") if grid_id.is_none() => {
             out.push(ctx.err("E412", location.clone(), "space='index' names a grid's coordinates, but no `grid`"))
         }
@@ -1325,10 +1396,7 @@ fn check_geometric(
 }
 
 fn bad_boxes(boxes: &ArrayD<f64>) -> usize {
-    boxes
-        .outer_iter()
-        .filter(|b| b.outer_iter().any(|axis| axis.len() == 2 && axis[0] > axis[1]))
-        .count()
+    boxes.outer_iter().filter(|b| b.outer_iter().any(|axis| axis.len() == 2 && axis[0] > axis[1])).count()
 }
 
 fn check_keypoints(ctx: &Context, name: &str, group: &Node) -> Result<Vec<Diagnostic>> {
@@ -1337,14 +1405,22 @@ fn check_keypoints(ctx: &Context, name: &str, group: &Node) -> Result<Vec<Diagno
     let Some(points) = sub_dataset(group, "points") else { return Ok(out) };
     let shape = points.shape();
     if shape.len() != 3 {
-        out.push(ctx.err("E405", format!("{location}/points"), format!("expected (N, K, S), got {}", repr_int_tuple(&shape))));
+        out.push(ctx.err(
+            "E405",
+            format!("{location}/points"),
+            format!("expected (N, K, S), got {}", repr_int_tuple(&shape)),
+        ));
         return Ok(out);
     }
     let (n, k) = (shape[0], shape[1]);
     if let Some(kc) = sub_dataset(group, "keypoint_class_ids") {
         let got = kc.shape().first().copied().unwrap_or(0);
         if got != k {
-            out.push(ctx.err("E405", location.clone(), format!("`keypoint_class_ids` has {got} entries for {k} keypoint slots")));
+            out.push(ctx.err(
+                "E405",
+                location.clone(),
+                format!("`keypoint_class_ids` has {got} entries for {k} keypoint slots"),
+            ));
         }
     }
     if let Some(vis) = sub_dataset(group, "visibility") {
@@ -1356,7 +1432,11 @@ fn check_keypoints(ctx: &Context, name: &str, group: &Node) -> Result<Vec<Diagno
                 format!("`visibility` {} must be ({n}, {k})", repr_int_tuple(v.shape())),
             ));
         } else if !v.is_empty() && v.iter().copied().max().unwrap_or(0) > 2 {
-            out.push(ctx.err("E411", format!("{location}/visibility"), "values must be 0 (unlabelled), 1 (occluded) or 2 (visible)"));
+            out.push(ctx.err(
+                "E411",
+                format!("{location}/visibility"),
+                "values must be 0 (unlabelled), 1 (occluded) or 2 (visible)",
+            ));
         }
     }
     if let Some(skeleton) = str_attr(loc(group), "skeleton")? {
@@ -1405,7 +1485,11 @@ fn check_mesh(ctx: &Context, name: &str, group: &Node) -> Result<Vec<Diagnostic>
         let lo = f.iter().copied().min().unwrap_or(0);
         let hi = f.iter().copied().max().unwrap_or(0);
         if lo < 0 || hi >= n_vertices {
-            out.push(ctx.err("E405", format!("{location}/faces"), format!("face indices reach outside the {n_vertices} vertices")));
+            out.push(ctx.err(
+                "E405",
+                format!("{location}/faces"),
+                format!("face indices reach outside the {n_vertices} vertices"),
+            ));
         }
     }
     if let Some(normals) = sub_dataset(group, "normals") {
@@ -1448,7 +1532,11 @@ fn check_classification(ctx: &Context, name: &str, group: &Node, kind: &str) -> 
         out.push(ctx.err(
             "E405",
             location,
-            format!("`values` {} must match `class_ids` {}", repr_int_tuple(&vds.shape()), repr_int_tuple(&class_shape)),
+            format!(
+                "`values` {} must match `class_ids` {}",
+                repr_int_tuple(&vds.shape()),
+                repr_int_tuple(&class_shape)
+            ),
         ));
         return Ok(out);
     }
@@ -1472,7 +1560,11 @@ fn check_classification(ctx: &Context, name: &str, group: &Node, kind: &str) -> 
             out.push(ctx.err(
                 "E405",
                 location.clone(),
-                format!("`scope_ids` {} must match `class_ids` {}", repr_int_tuple(&ds.shape()), repr_int_tuple(&class_shape)),
+                format!(
+                    "`scope_ids` {} must match `class_ids` {}",
+                    repr_int_tuple(&ds.shape()),
+                    repr_int_tuple(&class_shape)
+                ),
             ));
             scope_ids = None;
         }
@@ -1604,7 +1696,8 @@ pub fn check_instance_identity(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     let mut out = Vec::new();
     let mut table: BTreeMap<u64, BTreeMap<i64, Vec<String>>> = BTreeMap::new();
     for (name, group) in ctx.children("annotations")? {
-        let (Some(ids_ds), Some(cls_ds)) = (sub_dataset(&group, "instance_ids"), sub_dataset(&group, "class_ids")) else {
+        let (Some(ids_ds), Some(cls_ds)) = (sub_dataset(&group, "instance_ids"), sub_dataset(&group, "class_ids"))
+        else {
             continue;
         };
         let ids: Vec<u64> = data::read(&ids_ds)?.cast::<u64>().iter().copied().collect();
@@ -1682,7 +1775,9 @@ pub fn check_transforms(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
         }
         match kind.as_str() {
             "affine" => out.extend(check_affine(ctx, &name, &t)?),
-            "displacement" | "bspline" => out.extend(check_field_transform(ctx, &name, &t, &kind, &source, grids.as_ref())?),
+            "displacement" | "bspline" => {
+                out.extend(check_field_transform(ctx, &name, &t, &kind, &source, grids.as_ref())?)
+            }
             "composite" => out.extend(check_composite(ctx, &name, &t, &node, &source, &target)?),
             _ => {}
         }
@@ -1711,7 +1806,11 @@ fn check_affine(ctx: &Context, name: &str, group: &Node) -> Result<Vec<Diagnosti
         expected[n - 1] = 1.0;
     }
     if !crate::geometry::linalg::allclose(&last, &expected, 1e-9, 1e-5) {
-        return Ok(vec![ctx.err("E504", location, format!("last row must be [0 \u{2026} 0 1], got {}", float_list(&last)))]);
+        return Ok(vec![ctx.err(
+            "E504",
+            location,
+            format!("last row must be [0 \u{2026} 0 1], got {}", float_list(&last)),
+        )]);
     }
     Ok(Vec::new())
 }
@@ -1726,9 +1825,14 @@ fn check_field_transform(
 ) -> Result<Vec<Diagnostic>> {
     let mut out = Vec::new();
     let location = format!("/transforms/{name}");
-    let (dataset, grid_attr) = if kind == "displacement" { ("field", "field_grid") } else { ("control_points", "cp_grid") };
+    let (dataset, grid_attr) =
+        if kind == "displacement" { ("field", "field_grid") } else { ("control_points", "cp_grid") };
     if !has_member(group, dataset) {
-        out.push(ctx.err("E502", location.clone(), format!("kind {} requires a {} dataset", repr_str(kind), repr_str(dataset))));
+        out.push(ctx.err(
+            "E502",
+            location.clone(),
+            format!("kind {} requires a {} dataset", repr_str(kind), repr_str(dataset)),
+        ));
     }
     let Some(grid_id) = str_attr(loc(group), grid_attr)? else {
         out.push(ctx.err("E503", location, format!("kind {} requires {}", repr_str(kind), repr_str(grid_attr))));
@@ -1789,7 +1893,14 @@ fn check_field_transform(
     Ok(out)
 }
 
-fn check_composite(ctx: &Context, name: &str, group: &Node, node: &hdf5::Group, source: &str, target: &str) -> Result<Vec<Diagnostic>> {
+fn check_composite(
+    ctx: &Context,
+    name: &str,
+    group: &Node,
+    node: &hdf5::Group,
+    source: &str,
+    target: &str,
+) -> Result<Vec<Diagnostic>> {
     let mut out = Vec::new();
     let location = format!("/transforms/{name}");
     let a = loc(group);
@@ -1833,7 +1944,11 @@ fn check_composite(ctx: &Context, name: &str, group: &Node, node: &hdf5::Group, 
             out.push(ctx.err(
                 "E501",
                 location.clone(),
-                format!("first component starts in {} but the composite declares {}", repr_str(&first.0), repr_str(source)),
+                format!(
+                    "first component starts in {} but the composite declares {}",
+                    repr_str(&first.0),
+                    repr_str(source)
+                ),
             ));
         }
     }
@@ -1886,14 +2001,22 @@ fn check_composite(ctx: &Context, name: &str, group: &Node, node: &hdf5::Group, 
     Ok(out)
 }
 
-fn check_inverses(ctx: &Context, node: &hdf5::Group, declared: &BTreeMap<String, (String, String)>) -> Result<Vec<Diagnostic>> {
+fn check_inverses(
+    ctx: &Context,
+    node: &hdf5::Group,
+    declared: &BTreeMap<String, (String, String)>,
+) -> Result<Vec<Diagnostic>> {
     let mut out = Vec::new();
     for (name, (source, target)) in declared {
         let t = child(node, name).ok_or_else(|| crate::Error::Key(repr_str(name)))?;
         let Some(other) = str_attr(loc(&t), "inverse_id")? else { continue };
         let location = format!("/transforms/{name}");
         let Some((os, ot)) = declared.get(&other) else {
-            out.push(ctx.err("E505", location, format!("`inverse_id` names {}, which does not exist", repr_str(&other))));
+            out.push(ctx.err(
+                "E505",
+                location,
+                format!("`inverse_id` names {}, which does not exist", repr_str(&other)),
+            ));
             continue;
         };
         if (os, ot) != (target, source) {
@@ -1939,7 +2062,11 @@ pub fn check_curation(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     for activity in prov.activities() {
         let location = format!("/meta#provenance/activities/{}", activity.id);
         if !ACTIVITY_TYPES.contains(&activity.r#type.as_str()) {
-            out.push(ctx.err("E603", location.clone(), format!("unknown activity type {}", repr_str(&activity.r#type))));
+            out.push(ctx.err(
+                "E603",
+                location.clone(),
+                format!("unknown activity type {}", repr_str(&activity.r#type)),
+            ));
         }
         for (field, value) in [("started", &activity.started), ("ended", &activity.ended)] {
             if let Some(v) = value {
@@ -1986,7 +2113,13 @@ pub fn check_curation(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     Ok(out)
 }
 
-fn check_links(ctx: &Context, location: &str, a: &hdf5::Location, doc: &SampleDocument, quality_attr: &str) -> Result<Vec<Diagnostic>> {
+fn check_links(
+    ctx: &Context,
+    location: &str,
+    a: &hdf5::Location,
+    doc: &SampleDocument,
+    quality_attr: &str,
+) -> Result<Vec<Diagnostic>> {
     let mut out = Vec::new();
     if let Some(activity) = str_attr(a, "prov")? {
         if !doc.provenance.has_activity(&activity) {
@@ -2015,7 +2148,11 @@ pub fn check_splits(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
             out.push(ctx.err(
                 "W906",
                 "/meta#splits",
-                format!("split set {} is claimed against {} different manifests in one file", repr_str(&set_id), hashes.len()),
+                format!(
+                    "split set {} is claimed against {} different manifests in one file",
+                    repr_str(&set_id),
+                    hashes.len()
+                ),
             ));
         }
     }
@@ -2111,7 +2248,11 @@ pub fn check_profiles(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     if declared.contains("longitudinal") {
         if let Some(doc) = &ctx.document {
             if doc.timepoints.len() < 2 {
-                out.push(ctx.err("E009", "/meta#timepoints", "profile `longitudinal` requires at least two declared timepoints"));
+                out.push(ctx.err(
+                    "E009",
+                    "/meta#timepoints",
+                    "profile `longitudinal` requires at least two declared timepoints",
+                ));
             }
         }
     }
@@ -2148,4 +2289,3 @@ pub fn rules_for(level: &str) -> Vec<(&'static str, Rule)> {
         _ => [structural, semantic, integrity].concat(),
     }
 }
-

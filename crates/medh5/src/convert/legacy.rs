@@ -23,7 +23,9 @@ use indexmap::IndexMap;
 use ndarray::ArrayD;
 use serde_json::{json, Map, Value};
 
-use super::grouping::{group_by_subject, note_instance_ids, output_name, sanitize_key, sanitize_stem, Occasion, SubjectGroup};
+use super::grouping::{
+    group_by_subject, note_instance_ids, output_name, sanitize_key, sanitize_stem, Occasion, SubjectGroup,
+};
 use super::report::ConversionReport;
 use crate::annotations::Assertions;
 use crate::array::NdArray;
@@ -164,7 +166,8 @@ fn read_meta_from(handle: &hdf5::File) -> Result<LegacyMeta> {
     };
     meta.label_name = attrs::get_str(handle, "label_name")?;
     if let Some(text) = attrs::get_str(handle, "extra")? {
-        let parsed = crate::json::loads(&text).map_err(|e| Error::Schema(format!("0.x attribute 'extra' is not JSON: {e}")))?;
+        let parsed =
+            crate::json::loads(&text).map_err(|e| Error::Schema(format!("0.x attribute 'extra' is not JSON: {e}")))?;
         if let Value::Object(m) = parsed {
             meta.extra = m;
         }
@@ -228,7 +231,11 @@ fn key(name: &str) -> String {
 /// A sample id from a subject id: §2.3's identifier rule, lowercased.
 pub fn sample_key(subject_id: &str) -> String {
     let stem = sanitize_stem(subject_id.trim(), 128);
-    if stem.is_empty() { "sample".to_string() } else { stem.to_lowercase() }
+    if stem.is_empty() {
+        "sample".to_string()
+    } else {
+        stem.to_lowercase()
+    }
 }
 
 /// Mint one label set covering a whole cohort's mask names and box labels.
@@ -311,7 +318,13 @@ pub fn build_label_set(paths: &[&Path], report: Option<&mut ConversionReport>) -
 }
 
 /// Migrate one 0.x file into one 1.0 sample.
-pub fn migrate(path: &Path, out: &Path, label_set: Option<&LabelSet>, codec: &str, report: Option<ConversionReport>) -> Result<ConversionReport> {
+pub fn migrate(
+    path: &Path,
+    out: &Path,
+    label_set: Option<&LabelSet>,
+    codec: &str,
+    report: Option<ConversionReport>,
+) -> Result<ConversionReport> {
     let mut log = report.unwrap_or_else(|| ConversionReport::new("migrate", ""));
     log.source = path.to_string_lossy().into_owned();
     let labels = match label_set {
@@ -419,7 +432,14 @@ pub fn migrate_paths(
     Ok(log)
 }
 
-fn write_group(group: &SubjectGroup, sources: &[PathBuf], target: &Path, label_set: &LabelSet, codec: &str, log: &mut ConversionReport) -> Result<()> {
+fn write_group(
+    group: &SubjectGroup,
+    sources: &[PathBuf],
+    target: &Path,
+    label_set: &LabelSet,
+    codec: &str,
+    log: &mut ConversionReport,
+) -> Result<()> {
     note_instance_ids(group, log);
     if group.ordered_by == "order_hint" {
         log.guess(
@@ -446,7 +466,16 @@ fn write_group(group: &SubjectGroup, sources: &[PathBuf], target: &Path, label_s
         for (index, occasion) in group.occasions.iter().enumerate() {
             let source = &sources[occasion.payload];
             let sample = read_sample(source)?;
-            migrate_one(&mut writer, &sample, &source.to_string_lossy(), &format!("tp{index}"), label_set, &tool.id, log, single)?;
+            migrate_one(
+                &mut writer,
+                &sample,
+                &source.to_string_lossy(),
+                &format!("tp{index}"),
+                label_set,
+                &tool.id,
+                log,
+                single,
+            )?;
         }
         writer.commit(true)?;
         Ok(())
@@ -481,7 +510,9 @@ fn migrate_one(
     let (_, first) = sample.images.first().ok_or_else(|| Error::Schema(format!("{source}: 0.x file has no images")))?;
     let shape: Vec<i64> = first.shape().iter().map(|v| *v as i64).collect();
     let direction = match &spatial.direction {
-        Some(rows) => Some(ndarray::Array2::from_shape_vec((rows.len(), rows.len()), rows.iter().flatten().copied().collect())?),
+        Some(rows) => {
+            Some(ndarray::Array2::from_shape_vec((rows.len(), rows.len()), rows.iter().flatten().copied().collect())?)
+        }
         None => None,
     };
     writer.add_grid(
@@ -550,8 +581,10 @@ fn migrate_one(
         let shifted = boxes.mapv(|v| v + BOX_SHIFT);
         let n = shifted.shape()[0];
         let labels = sample.bbox_labels.clone().unwrap_or_else(|| vec!["object".into(); n]);
-        let class_ids: Vec<ClassKey> =
-            labels.iter().map(|l| Ok(ClassKey::Id(label_set.lookup(&ClassKey::Key(key(l)))?.id))).collect::<Result<_>>()?;
+        let class_ids: Vec<ClassKey> = labels
+            .iter()
+            .map(|l| Ok(ClassKey::Id(label_set.lookup(&ClassKey::Key(key(l)))?.id)))
+            .collect::<Result<_>>()?;
         let stored = shifted.mapv(|v| f64::from(v as f32));
         writer.add_boxes(
             &format!("boxes{suffix}"),
@@ -621,8 +654,15 @@ fn timestamp(value: Option<&Value>) -> Option<String> {
     None
 }
 
-fn migrate_review(writer: &mut crate::sample::SampleWriter, review: &Map<String, Value>, suffix: &str, log: &mut ConversionReport, source: &str) -> Result<()> {
-    let reviewer = review.get("reviewer").or_else(|| review.get("by")).filter(|v| !v.is_null() && v.as_str() != Some(""));
+fn migrate_review(
+    writer: &mut crate::sample::SampleWriter,
+    review: &Map<String, Value>,
+    suffix: &str,
+    log: &mut ConversionReport,
+    source: &str,
+) -> Result<()> {
+    let reviewer =
+        review.get("reviewer").or_else(|| review.get("by")).filter(|v| !v.is_null() && v.as_str() != Some(""));
     let agent = match reviewer {
         Some(r) => Some(writer.person(&crate::json::py_str(r), None, Map::new())?),
         None => None,
@@ -638,7 +678,10 @@ fn migrate_review(writer: &mut crate::sample::SampleWriter, review: &Map<String,
     let status = status_raw.to_lowercase();
     let allowed = ["draft", "submitted", "reviewed", "approved", "rejected", "deprecated"];
     let mut quality = Map::new();
-    quality.insert("status".into(), json!(if allowed.contains(&status.as_str()) { status.clone() } else { "reviewed".into() }));
+    quality.insert(
+        "status".into(),
+        json!(if allowed.contains(&status.as_str()) { status.clone() } else { "reviewed".into() }),
+    );
     quality.insert("reviewed_by".into(), json!(agent.as_ref().map(|a| vec![a.id.clone()]).unwrap_or_default()));
     writer.set_quality(&format!("seg{suffix}"), quality)?;
     log.decision(
@@ -663,5 +706,6 @@ pub fn write_sidecar(label_set: &LabelSet, path: &Path) -> Result<PathBuf> {
 pub fn load_sidecar(path: &Path) -> Result<LabelSet> {
     let text = std::fs::read_to_string(path)?;
     let doc = crate::json::loads(&text)?;
-    LabelSet::from_json(Some(&doc))?.ok_or_else(|| Error::Value(format!("{} holds no label set", path.to_string_lossy())))
+    LabelSet::from_json(Some(&doc))?
+        .ok_or_else(|| Error::Value(format!("{} holds no label set", path.to_string_lossy())))
 }

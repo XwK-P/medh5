@@ -64,8 +64,7 @@ fn main() {
     let mut have_avx512 = false;
     if x86 {
         let mut sse2 = new_build();
-        sse2.file(blosc_src.join("shuffle-sse2.c"))
-            .file(blosc_src.join("bitshuffle-sse2.c"));
+        sse2.file(blosc_src.join("shuffle-sse2.c")).file(blosc_src.join("bitshuffle-sse2.c"));
         if !msvc {
             sse2.flag("-msse2");
         } else if arch == "x86" {
@@ -74,9 +73,11 @@ fn main() {
         objects.extend(sse2.compile_intermediates());
 
         let mut avx2 = new_build();
-        avx2.file(blosc_src.join("shuffle-avx2.c"))
-            .file(blosc_src.join("bitshuffle-avx2.c"))
-            .flag(if msvc { "/arch:AVX2" } else { "-mavx2" });
+        avx2.file(blosc_src.join("shuffle-avx2.c")).file(blosc_src.join("bitshuffle-avx2.c")).flag(if msvc {
+            "/arch:AVX2"
+        } else {
+            "-mavx2"
+        });
         objects.extend(avx2.compile_intermediates());
 
         let mut avx512 = new_build();
@@ -97,15 +98,13 @@ fn main() {
         }
     } else if neon {
         let mut kernels = new_build();
-        kernels
-            .file(blosc_src.join("shuffle-neon.c"))
-            .flag_if_supported("-flax-vector-conversions");
+        kernels.file(blosc_src.join("shuffle-neon.c")).flag_if_supported("-flax-vector-conversions");
         objects.extend(kernels.compile_intermediates());
     }
 
     // --- the HDF5 filter, against the HDF5 that hdf5-metno-sys builds ------
-    let hdf5_include = env::var("DEP_HDF5_INCLUDE")
-        .expect("hdf5-metno-sys did not report its include directory (DEP_HDF5_INCLUDE)");
+    let hdf5_include =
+        env::var("DEP_HDF5_INCLUDE").expect("hdf5-metno-sys did not report its include directory (DEP_HDF5_INCLUDE)");
     let mut filter = new_build();
     filter.include(&filter_src);
     for dir in hdf5_include.split([';', ',']).filter(|s| !s.is_empty()) {
@@ -159,10 +158,7 @@ fn main() {
             println!("cargo:rustc-link-lib=gcc");
         }
     }
-    println!(
-        "cargo:include={}",
-        blosc_inc.display().to_string().replace('\\', "/")
-    );
+    println!("cargo:include={}", blosc_inc.display().to_string().replace('\\', "/"));
 }
 
 /// Include directories of the codec libraries, from their -sys crates.

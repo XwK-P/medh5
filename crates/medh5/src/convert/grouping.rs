@@ -174,7 +174,11 @@ fn contradicted(occasions: &[Occasion], log: &mut Option<&mut ConversionReport>)
 }
 
 /// Group occasions into subjects (`subject`) or leave them apart (`study`).
-pub fn group_by_subject(occasions: Vec<Occasion>, mode: &str, mut report: Option<&mut ConversionReport>) -> Result<Vec<SubjectGroup>> {
+pub fn group_by_subject(
+    occasions: Vec<Occasion>,
+    mode: &str,
+    mut report: Option<&mut ConversionReport>,
+) -> Result<Vec<SubjectGroup>> {
     if mode != "subject" && mode != "study" {
         return Err(Error::Value(format!("unknown grouping mode {}", repr_str(mode))));
     }
@@ -255,7 +259,9 @@ fn order(group: &mut SubjectGroup, log: &mut Option<&mut ConversionReport>) {
         return;
     }
     if group.occasions.iter().all(|o| o.order_hint.is_some()) {
-        group.occasions.sort_by(|a, b| a.order_hint.unwrap_or(0.0).partial_cmp(&b.order_hint.unwrap_or(0.0)).unwrap_or(std::cmp::Ordering::Equal));
+        group.occasions.sort_by(|a, b| {
+            a.order_hint.unwrap_or(0.0).partial_cmp(&b.order_hint.unwrap_or(0.0)).unwrap_or(std::cmp::Ordering::Equal)
+        });
         group.ordered_by = "order_hint".into();
         if let Some(log) = log.as_deref_mut() {
             log.guess(
@@ -349,8 +355,10 @@ pub fn note_instance_ids(group: &SubjectGroup, log: &mut ConversionReport) {
 /// A label-set `key` from free text (§5.2): `^[a-z0-9][a-z0-9_]*$`.
 pub fn sanitize_key(name: &str, fallback: &str) -> String {
     let lowered = name.trim().to_lowercase();
-    let cleaned: String =
-        lowered.chars().map(|c| if c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' { c } else { '_' }).collect();
+    let cleaned: String = lowered
+        .chars()
+        .map(|c| if c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' { c } else { '_' })
+        .collect();
     let mut cleaned = cleaned.trim_matches('_').to_string();
     if cleaned.is_empty() {
         cleaned = fallback.to_string();

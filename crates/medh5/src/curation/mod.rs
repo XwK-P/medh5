@@ -4,10 +4,13 @@
 //! (identity, cohorts, splits).  These are the *documents* of the sample
 //! document (§2.4); nothing here writes an HDF5 attribute.
 
+pub mod agreement;
 pub mod identity;
 pub mod provenance;
 pub mod quality;
+pub mod splits;
 pub mod timeline;
+pub mod tracking;
 
 pub use identity::{Cohort, Deidentification, Identity, SplitClaim};
 pub use provenance::{Activity, Agent, Provenance};

@@ -137,7 +137,12 @@ fn top_level(path: &str) -> &str {
 /// `index/` is skipped (it carries `source_digest` instead, §13.3).
 /// `only_missing` digests just the datasets that carry none and returns the
 /// stored value for the rest --- what an amend wants.
-pub fn stamp_digests(root: &hdf5::Group, algo: &str, skip: &[&str], only_missing: bool) -> Result<IndexMap<String, String>> {
+pub fn stamp_digests(
+    root: &hdf5::Group,
+    algo: &str,
+    skip: &[&str],
+    only_missing: bool,
+) -> Result<IndexMap<String, String>> {
     let mut digests = IndexMap::new();
     for (name, ds) in ops::datasets(root)? {
         if name == "meta" || skip.contains(&top_level(&name)) {
@@ -211,7 +216,8 @@ pub fn compute_content_id(
     };
     let mut dataset_lines: Vec<String> = digests.iter().map(|(p, v)| format!("{p}\t{v}\n")).collect();
     dataset_lines.sort();
-    let meta = ops::child_dataset(root, "meta").ok_or_else(|| Error::Key("\"Unable to synchronously open object (object 'meta' doesn't exist)\"".into()))?;
+    let meta = ops::child_dataset(root, "meta")
+        .ok_or_else(|| Error::Key("\"Unable to synchronously open object (object 'meta' doesn't exist)\"".into()))?;
     let meta_text = data::read_scalar_string(&meta)?;
     let mut meta_hasher = Hasher::new(algo)?;
     meta_hasher.update(meta_text.as_bytes());

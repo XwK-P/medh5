@@ -60,7 +60,12 @@ fn first_true(mask: &ArrayD<bool>) -> Option<Vec<usize>> {
 ///
 /// Raises E404 when two classes claim the same voxel: silently letting the last
 /// writer win would turn a curation error into a training set nobody can audit.
-pub fn encode_labelmap(masks: &Masks, spatial_shape: Option<&[usize]>, ignore: Option<&ArrayD<bool>>, ignore_id: i64) -> Result<Payload> {
+pub fn encode_labelmap(
+    masks: &Masks,
+    spatial_shape: Option<&[usize]>,
+    ignore: Option<&ArrayD<bool>>,
+    ignore_id: i64,
+) -> Result<Payload> {
     let shape = normalize_masks(masks, spatial_shape)?;
     let class_ids: Vec<i64> = masks.keys().copied().collect();
     let itemsize = label_dtype_size(&class_ids, ignore.is_some());
@@ -301,7 +306,10 @@ pub fn encode_probmap(
             let lo = arr.iter().copied().fold(f64::INFINITY, f64::min);
             let hi = arr.iter().copied().fold(f64::NEG_INFINITY, f64::max);
             if lo < 0.0 || hi > 1.0 {
-                return Err(Error::coded("E411", format!("probability map for class {class_id} has values outside [0, 1]")));
+                return Err(Error::coded(
+                    "E411",
+                    format!("probability map for class {class_id} has values outside [0, 1]"),
+                ));
             }
         }
         planes.push(arr.clone());
@@ -477,7 +485,8 @@ pub fn encode_instances(
         for chunk in &packed {
             offsets.push(offsets.last().unwrap() + chunk.len() as u64);
         }
-        let shapes: Vec<i32> = crops.iter().flat_map(|c| c.shape().iter().map(|v| *v as i32).collect::<Vec<_>>()).collect();
+        let shapes: Vec<i32> =
+            crops.iter().flat_map(|c| c.shape().iter().map(|v| *v as i32).collect::<Vec<_>>()).collect();
         let data: Vec<u8> = packed.concat();
         let crop_ndim = crops.first().map(|c| c.ndim()).unwrap_or(s);
         p.datasets.insert("mask_offsets".into(), NdArray::from_vec(&[n + 1], offsets)?.into());
@@ -587,7 +596,9 @@ pub fn payload_to_masks(payload: &Payload, spatial_shape: Option<&[usize]>, thre
         }
         "probmap" => {
             let data = payload.data()?;
-            let cut = threshold.or_else(|| payload.attr("threshold").and_then(AttrValue::as_f64)).unwrap_or(DEFAULT_THRESHOLD);
+            let cut = threshold
+                .or_else(|| payload.attr("threshold").and_then(AttrValue::as_f64))
+                .unwrap_or(DEFAULT_THRESHOLD);
             for (i, c) in payload.class_ids.iter().enumerate() {
                 let plane = crate::with_array!(data, a => NdArray::from(a.index_axis(Axis(0), i).to_owned()));
                 out.insert(*c, contains_at(&plane, cut));
@@ -645,7 +656,12 @@ fn instances_to_masks(payload: &Payload, spatial_shape: &[usize]) -> Result<Mask
 }
 
 /// Encode per-class boolean masks into any voxel encoding.
-pub fn encode_masks(masks: &Masks, kind: &str, spatial_shape: Option<&[usize]>, options: &EncodeOptions) -> Result<Payload> {
+pub fn encode_masks(
+    masks: &Masks,
+    kind: &str,
+    spatial_shape: Option<&[usize]>,
+    options: &EncodeOptions,
+) -> Result<Payload> {
     let ignore_id = options.ignore_id.unwrap_or(IGNORE_ID);
     match kind {
         "labelmap" => encode_labelmap(masks, spatial_shape, options.ignore.as_ref(), ignore_id),
