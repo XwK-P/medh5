@@ -1,0 +1,11 @@
+# `python -m mypy.stubtest medh5._core` reports these, and they are right
+# to differ (tests/v1/test_typing.py runs it).
+#
+# The value classes are dataclasses at runtime --- `__dataclass_fields__`,
+# `__match_args__`, `__replace__`, so `dataclasses.fields/replace/asdict` and
+# `match` work as they did in 1.x --- but their constructor is the engine's
+# `__new__`.  The stub declares them `@dataclass`, which states the fields and
+# their types; the price is a synthesized `__init__` stubtest compares with
+# `__new__`.  Classes the engine builds and no caller constructs
+# (`init=False` in the stub) have no `__replace__`.
+medh5\._core\.(Activity|Agent|Agreement|AnnotationHeader|AnnotationPayload|Cohort|CostModel|Deidentification|Grid|Identity|IndexPayload|Issue|LabelClass|Observation|OntologyCode|OverlapStats|Pyramid|QualityRecord|Relation|SampleDocument|Skeleton|SplitClaim|Timepoint|Track|TransformHeader)\.__(init|new|replace)__

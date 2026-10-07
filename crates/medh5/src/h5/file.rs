@@ -168,10 +168,13 @@ pub fn close_everything(file: hdf5::File, flush: bool) -> Result<()> {
     })
 }
 
+/// What a test runs on the target just before a commit's rename.
+#[cfg(test)]
+type RenameHook = Box<dyn FnMut(&Path)>;
+
 #[cfg(test)]
 thread_local! {
-    /// What a test runs on the target just before a commit's rename.
-    static BEFORE_RENAME: std::cell::RefCell<Option<Box<dyn FnMut(&Path)>>> = const { std::cell::RefCell::new(None) };
+    static BEFORE_RENAME: std::cell::RefCell<Option<RenameHook>> = const { std::cell::RefCell::new(None) };
 }
 
 /// An HDF5 file being written to a temporary sibling of its target.

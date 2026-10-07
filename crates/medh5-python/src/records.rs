@@ -44,10 +44,30 @@ pub struct Field {
     pub name: &'static str,
     pub key: &'static str,
     pub kind: Kind,
+    /// A dataclass field without a default: the constructor needs it.
+    pub required: bool,
 }
 
 pub const fn field(name: &'static str, kind: Kind) -> Field {
-    Field { name, key: name, kind }
+    Field { name, key: name, kind, required: false }
+}
+
+/// A field the constructor cannot do without.
+pub const fn required(name: &'static str, kind: Kind) -> Field {
+    Field { name, key: name, kind, required: true }
+}
+
+/// `missing 2 required positional arguments: 'a' and 'b'`, as a dataclass says it.
+fn missing_arguments(class: &str, missing: &[&str]) -> PyErr {
+    let quoted: Vec<String> = missing.iter().map(|n| medh5::json::repr_str(n)).collect();
+    let names = match quoted.as_slice() {
+        [one] => one.clone(),
+        [a, b] => format!("{a} and {b}"),
+        [rest @ .., last] => format!("{}, and {last}", rest.join(", ")),
+        [] => String::new(),
+    };
+    let plural = if missing.len() == 1 { "argument" } else { "arguments" };
+    PyTypeError::new_err(format!("{class}.__init__() missing {} required positional {plural}: {names}", missing.len()))
 }
 
 /// Read one field from a record's JSON form.
@@ -162,6 +182,11 @@ pub fn build_json(
             }
             given[i] = Some(v);
         }
+    }
+    let missing: Vec<&str> =
+        fields.iter().zip(&given).filter(|(f, v)| f.required && v.is_none()).map(|(f, _)| f.name).collect();
+    if !missing.is_empty() {
+        return Err(missing_arguments(class, &missing));
     }
     let mut out = Map::new();
     for (f, value) in fields.iter().zip(given) {
@@ -279,6 +304,15 @@ macro_rules! record_class {
 
             fn to_json<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
                 $crate::convert::json_to_py(py, &self.json)
+            }
+
+            /// `copy.replace(record, **changes)`.
+            #[pyo3(signature = (**changes))]
+            fn __replace__(
+                slf: &Bound<'_, Self>,
+                changes: Option<&Bound<'_, pyo3::types::PyDict>>,
+            ) -> PyResult<Py<PyAny>> {
+                $crate::values::dataclass_replace(slf.as_any(), changes)
             }
 
             #[classmethod]

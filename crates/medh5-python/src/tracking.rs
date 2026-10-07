@@ -14,8 +14,35 @@ use crate::values::{dataclass_repr, opt};
 #[derive(Clone)]
 pub struct Observation(pub engine::Observation);
 
+impl Observation {
+    /// The fields of the 1.x dataclass, in order.
+    const FIELDS: &'static [&'static str] = &[
+        "timepoint",
+        "annotation",
+        "index",
+        "instance_id",
+        "class_id",
+        "box",
+        "voxel_count",
+        "volume",
+        "units",
+        "score",
+        "grid",
+    ];
+}
+
 #[pymethods]
 impl Observation {
+    #[classattr]
+    fn __dataclass_fields__(py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
+        crate::geometry::dataclass_fields(py, Self::FIELDS)
+    }
+
+    #[classattr]
+    fn __match_args__(py: Python<'_>) -> PyResult<Py<pyo3::types::PyTuple>> {
+        crate::values::match_args(py, Self::FIELDS)
+    }
+
     #[getter]
     fn timepoint(&self) -> &str {
         &self.0.timepoint
@@ -85,8 +112,23 @@ impl Observation {
 #[derive(Clone)]
 pub struct Track(pub engine::Track);
 
+impl Track {
+    /// The fields of the 1.x dataclass, in order.
+    const FIELDS: &'static [&'static str] = &["instance_id", "class_ids", "observations", "class_key"];
+}
+
 #[pymethods]
 impl Track {
+    #[classattr]
+    fn __dataclass_fields__(py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
+        crate::geometry::dataclass_fields(py, Self::FIELDS)
+    }
+
+    #[classattr]
+    fn __match_args__(py: Python<'_>) -> PyResult<Py<pyo3::types::PyTuple>> {
+        crate::values::match_args(py, Self::FIELDS)
+    }
+
     #[getter]
     fn instance_id(&self) -> u64 {
         self.0.instance_id

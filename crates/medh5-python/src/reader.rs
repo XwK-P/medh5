@@ -884,8 +884,8 @@ impl TransformHandle {
     fn class_name(&self) -> &'static str {
         self.inner.class_name()
     }
-    #[getter]
-    fn from_frame(&self) -> &str {
+    #[getter(from_frame)]
+    fn source_frame(&self) -> &str {
         self.inner.from_frame()
     }
     #[getter]

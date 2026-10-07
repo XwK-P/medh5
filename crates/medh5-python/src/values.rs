@@ -4,7 +4,7 @@
 use std::hash::{Hash, Hasher};
 
 use pyo3::prelude::*;
-use pyo3::types::PyTuple;
+use pyo3::types::{PyDict, PyTuple};
 use pyo3::IntoPyObjectExt;
 use serde_json::Value;
 
@@ -38,4 +38,15 @@ pub fn opt<'py, T: IntoPyObject<'py>>(py: Python<'py>, value: Option<T>) -> PyRe
         Some(v) => v.into_bound_py_any(py),
         None => Ok(py.None().into_bound(py)),
     }
+}
+
+/// A dataclass's `__match_args__`: its field names, in order.
+pub fn match_args(py: Python<'_>, names: &[&str]) -> PyResult<Py<PyTuple>> {
+    Ok(PyTuple::new(py, names)?.unbind())
+}
+
+/// `copy.replace(obj, **changes)`: what `dataclasses.replace` builds.
+pub fn dataclass_replace(obj: &Bound<'_, PyAny>, changes: Option<&Bound<'_, PyDict>>) -> PyResult<Py<PyAny>> {
+    let replace = obj.py().import("dataclasses")?.getattr("replace")?;
+    Ok(replace.call((obj,), changes)?.unbind())
 }

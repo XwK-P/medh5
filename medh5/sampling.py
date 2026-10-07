@@ -164,6 +164,7 @@ class PatchSampler:
     """
 
     __slots__ = (*_CONFIG, "_built")
+    _built: _core.PatchSamplerHandle | None
 
     def __init__(
         self,

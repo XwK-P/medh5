@@ -184,6 +184,17 @@ impl Grid {
         dataclass_fields(py, &GRID_FIELDS)
     }
 
+    #[classattr]
+    fn __match_args__(py: Python<'_>) -> PyResult<Py<PyTuple>> {
+        crate::values::match_args(py, &GRID_FIELDS)
+    }
+
+    /// `copy.replace(grid, **changes)`.
+    #[pyo3(signature = (**changes))]
+    fn __replace__(slf: &Bound<'_, Self>, changes: Option<&Bound<'_, PyDict>>) -> PyResult<Py<PyAny>> {
+        crate::values::dataclass_replace(slf.as_any(), changes)
+    }
+
     #[getter]
     fn grid_id(&self) -> &str {
         &self.0.grid_id
@@ -378,8 +389,29 @@ fn points_through<'py>(
 #[pyclass(module = "medh5.geometry.multiscale", name = "Pyramid", skip_from_py_object, frozen)]
 pub struct Pyramid(pub multiscale::Pyramid);
 
+impl Pyramid {
+    /// The fields of the 1.x dataclass, in order.
+    const FIELDS: &'static [&'static str] = &["levels", "downsample_factors", "downsample_method", "grid_levels"];
+}
+
 #[pymethods]
 impl Pyramid {
+    #[classattr]
+    fn __dataclass_fields__(py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
+        crate::geometry::dataclass_fields(py, Self::FIELDS)
+    }
+
+    #[classattr]
+    fn __match_args__(py: Python<'_>) -> PyResult<Py<pyo3::types::PyTuple>> {
+        crate::values::match_args(py, Self::FIELDS)
+    }
+
+    /// `copy.replace(obj, **changes)`.
+    #[pyo3(signature = (**changes))]
+    fn __replace__(slf: &Bound<'_, Self>, changes: Option<&Bound<'_, pyo3::types::PyDict>>) -> PyResult<Py<PyAny>> {
+        crate::values::dataclass_replace(slf.as_any(), changes)
+    }
+
     #[new]
     fn new(
         levels: usize,

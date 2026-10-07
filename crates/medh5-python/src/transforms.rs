@@ -230,8 +230,41 @@ pub struct TransformHeader {
     pub inner: model::TransformHeader,
 }
 
+impl TransformHeader {
+    /// The fields of the 1.x dataclass, in order.
+    const FIELDS: &'static [&'static str] = &[
+        "kind",
+        "from_frame",
+        "to_frame",
+        "units",
+        "from_grid",
+        "to_grid",
+        "invertible",
+        "inverse_id",
+        "prov",
+        "metrics",
+        "extra",
+    ];
+}
+
 #[pymethods]
 impl TransformHeader {
+    #[classattr]
+    fn __dataclass_fields__(py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
+        crate::geometry::dataclass_fields(py, Self::FIELDS)
+    }
+
+    #[classattr]
+    fn __match_args__(py: Python<'_>) -> PyResult<Py<pyo3::types::PyTuple>> {
+        crate::values::match_args(py, Self::FIELDS)
+    }
+
+    /// `copy.replace(obj, **changes)`.
+    #[pyo3(signature = (**changes))]
+    fn __replace__(slf: &Bound<'_, Self>, changes: Option<&Bound<'_, pyo3::types::PyDict>>) -> PyResult<Py<PyAny>> {
+        crate::values::dataclass_replace(slf.as_any(), changes)
+    }
+
     #[new]
     #[pyo3(signature = (kind, from_frame, to_frame, units="mm", from_grid=None, to_grid=None, invertible=None,
         inverse_id=None, prov=None, metrics=None, extra=None))]
@@ -269,8 +302,8 @@ impl TransformHeader {
     fn kind(&self) -> &str {
         &self.inner.kind
     }
-    #[getter]
-    fn from_frame(&self) -> &str {
+    #[getter(from_frame)]
+    fn source_frame(&self) -> &str {
         &self.inner.from_frame
     }
     #[getter]
@@ -281,8 +314,8 @@ impl TransformHeader {
     fn units(&self) -> &str {
         &self.inner.units
     }
-    #[getter]
-    fn from_grid(&self) -> Option<&str> {
+    #[getter(from_grid)]
+    fn source_grid(&self) -> Option<&str> {
         self.inner.from_grid.as_deref()
     }
     #[getter]

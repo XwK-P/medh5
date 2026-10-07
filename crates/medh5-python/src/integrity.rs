@@ -30,12 +30,12 @@ pub fn verify_result_to_py<'py>(py: Python<'py>, r: &verify::VerifyResult) -> Py
     Ok(out.into_any())
 }
 
-fn root_of(path: &PathBuf) -> R<medh5::hdf5::Group> {
+fn root_of(path: &std::path::Path) -> R<medh5::hdf5::Group> {
     let file = open_read(path)?;
     Ok(file.as_group()?)
 }
 
-fn group_at(path: &PathBuf, inner: &str) -> R<medh5::hdf5::Group> {
+fn group_at(path: &std::path::Path, inner: &str) -> R<medh5::hdf5::Group> {
     let root = root_of(path)?;
     if inner.is_empty() || inner == "/" {
         return Ok(root);

@@ -179,7 +179,7 @@ fn dataset_key(key: &Bound<'_, PyAny>, ndim: usize) -> PyResult<Vec<Index>> {
     let items: Vec<Bound<'_, PyAny>> =
         if let Ok(t) = key.cast::<PyTuple>() { t.iter().collect() } else { vec![key.clone()] };
     let ellipsis = PyEllipsis::get(key.py());
-    let ellipses = items.iter().filter(|i| i.is(&ellipsis)).count();
+    let ellipses = items.iter().filter(|i| i.is(ellipsis)).count();
     if ellipses > 1 {
         return Err(PyIndexError::new_err("an index can only have a single ellipsis ('...')"));
     }
@@ -191,7 +191,7 @@ fn dataset_key(key: &Bound<'_, PyAny>, ndim: usize) -> PyResult<Vec<Index>> {
     }
     let mut out = Vec::with_capacity(ndim);
     for item in &items {
-        if item.is(&ellipsis) {
+        if item.is(ellipsis) {
             for _ in 0..(ndim - explicit) {
                 out.push(Index::Slice(Slice::full()));
             }

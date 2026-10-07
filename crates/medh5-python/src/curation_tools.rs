@@ -156,7 +156,8 @@ fn agreement_compare_instances<'py>(
     Ok(instance_fields(py, &found)?)
 }
 
-/// The comparison two annotations' kinds support: `("voxel" | "instance", fields)`.
+/// The comparison two annotations' kinds support:
+/// `("voxel" | "instance", fields)`.
 #[pyfunction]
 #[pyo3(signature = (a, b, *, metric=None, threshold=None, classes=None))]
 fn agreement_compare<'py>(

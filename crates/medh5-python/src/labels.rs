@@ -19,8 +19,29 @@ const MODULE: &str = "medh5.labels.labelset";
 #[derive(Clone, PartialEq)]
 pub struct OntologyCode(pub engine::OntologyCode);
 
+impl OntologyCode {
+    /// The fields of the 1.x dataclass, in order.
+    const FIELDS: &'static [&'static str] = &["system", "code", "name"];
+}
+
 #[pymethods]
 impl OntologyCode {
+    #[classattr]
+    fn __dataclass_fields__(py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
+        crate::geometry::dataclass_fields(py, Self::FIELDS)
+    }
+
+    #[classattr]
+    fn __match_args__(py: Python<'_>) -> PyResult<Py<pyo3::types::PyTuple>> {
+        crate::values::match_args(py, Self::FIELDS)
+    }
+
+    /// `copy.replace(obj, **changes)`.
+    #[pyo3(signature = (**changes))]
+    fn __replace__(slf: &Bound<'_, Self>, changes: Option<&Bound<'_, pyo3::types::PyDict>>) -> PyResult<Py<PyAny>> {
+        crate::values::dataclass_replace(slf.as_any(), changes)
+    }
+
     #[new]
     #[pyo3(signature = (system, code, name=None))]
     fn new(system: String, code: String, name: Option<String>) -> Self {
@@ -69,8 +90,29 @@ impl OntologyCode {
 #[derive(Clone, PartialEq, Hash)]
 pub struct Relation(pub engine::Relation);
 
+impl Relation {
+    /// The fields of the 1.x dataclass, in order.
+    const FIELDS: &'static [&'static str] = &["subject", "predicate", "object"];
+}
+
 #[pymethods]
 impl Relation {
+    #[classattr]
+    fn __dataclass_fields__(py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
+        crate::geometry::dataclass_fields(py, Self::FIELDS)
+    }
+
+    #[classattr]
+    fn __match_args__(py: Python<'_>) -> PyResult<Py<pyo3::types::PyTuple>> {
+        crate::values::match_args(py, Self::FIELDS)
+    }
+
+    /// `copy.replace(obj, **changes)`.
+    #[pyo3(signature = (**changes))]
+    fn __replace__(slf: &Bound<'_, Self>, changes: Option<&Bound<'_, pyo3::types::PyDict>>) -> PyResult<Py<PyAny>> {
+        crate::values::dataclass_replace(slf.as_any(), changes)
+    }
+
     #[new]
     fn new(subject: i64, predicate: String, object: i64) -> Self {
         Relation(engine::Relation { subject, predicate, object })
@@ -113,8 +155,29 @@ impl Relation {
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Skeleton(pub engine::Skeleton);
 
+impl Skeleton {
+    /// The fields of the 1.x dataclass, in order.
+    const FIELDS: &'static [&'static str] = &["id", "keypoints", "edges"];
+}
+
 #[pymethods]
 impl Skeleton {
+    #[classattr]
+    fn __dataclass_fields__(py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
+        crate::geometry::dataclass_fields(py, Self::FIELDS)
+    }
+
+    #[classattr]
+    fn __match_args__(py: Python<'_>) -> PyResult<Py<pyo3::types::PyTuple>> {
+        crate::values::match_args(py, Self::FIELDS)
+    }
+
+    /// `copy.replace(obj, **changes)`.
+    #[pyo3(signature = (**changes))]
+    fn __replace__(slf: &Bound<'_, Self>, changes: Option<&Bound<'_, pyo3::types::PyDict>>) -> PyResult<Py<PyAny>> {
+        crate::values::dataclass_replace(slf.as_any(), changes)
+    }
+
     #[new]
     #[pyo3(signature = (id, keypoints, edges=Vec::new()))]
     fn new(id: String, keypoints: Vec<i64>, edges: Vec<(i64, i64)>) -> Self {
@@ -183,8 +246,30 @@ impl LabelClass {
     }
 }
 
+impl LabelClass {
+    /// The fields of the 1.x dataclass, in order.
+    const FIELDS: &'static [&'static str] =
+        &["id", "key", "name", "parents", "category", "color", "codes", "laterality", "properties"];
+}
+
 #[pymethods]
 impl LabelClass {
+    #[classattr]
+    fn __dataclass_fields__(py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
+        crate::geometry::dataclass_fields(py, Self::FIELDS)
+    }
+
+    #[classattr]
+    fn __match_args__(py: Python<'_>) -> PyResult<Py<pyo3::types::PyTuple>> {
+        crate::values::match_args(py, Self::FIELDS)
+    }
+
+    /// `copy.replace(obj, **changes)`.
+    #[pyo3(signature = (**changes))]
+    fn __replace__(slf: &Bound<'_, Self>, changes: Option<&Bound<'_, pyo3::types::PyDict>>) -> PyResult<Py<PyAny>> {
+        crate::values::dataclass_replace(slf.as_any(), changes)
+    }
+
     #[new]
     #[pyo3(signature = (id, key, name, parents=None, category=None, color=None, codes=None, laterality=None, properties=None))]
     #[allow(clippy::too_many_arguments)]

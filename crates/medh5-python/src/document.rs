@@ -14,7 +14,7 @@ use crate::labels::{label_set_arg, LabelSet};
 /// Where a document object's fields live.
 enum Source {
     /// Its own copy: a document read from a file or built by hand.
-    Owned(engine::SampleDocument),
+    Owned(Box<engine::SampleDocument>),
     /// A writer's document, read and edited in place: `SampleWriter.document`,
     /// as 1.x had it, so `w.document.label_set = ...` reaches the file.
     Writer(Py<crate::writer::SampleWriter>),
@@ -35,7 +35,7 @@ fn object(value: Value) -> Map<String, Value> {
 
 impl SampleDocument {
     pub fn owned(inner: engine::SampleDocument) -> Self {
-        SampleDocument { source: Source::Owned(inner) }
+        SampleDocument { source: Source::Owned(Box::new(inner)) }
     }
 
     /// The live document of `writer`.
@@ -71,8 +71,40 @@ impl SampleDocument {
     }
 }
 
+impl SampleDocument {
+    /// The fields of the 1.x dataclass, in order.
+    const FIELDS: &'static [&'static str] = &[
+        "identity",
+        "timepoints",
+        "cohort",
+        "label_set",
+        "provenance",
+        "quality",
+        "splits",
+        "acquisition",
+        "deidentification",
+        "extra",
+    ];
+}
+
 #[pymethods]
 impl SampleDocument {
+    #[classattr]
+    fn __dataclass_fields__(py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
+        crate::geometry::dataclass_fields(py, Self::FIELDS)
+    }
+
+    #[classattr]
+    fn __match_args__(py: Python<'_>) -> PyResult<Py<pyo3::types::PyTuple>> {
+        crate::values::match_args(py, Self::FIELDS)
+    }
+
+    /// `copy.replace(obj, **changes)`.
+    #[pyo3(signature = (**changes))]
+    fn __replace__(slf: &Bound<'_, Self>, changes: Option<&Bound<'_, pyo3::types::PyDict>>) -> PyResult<Py<PyAny>> {
+        crate::values::dataclass_replace(slf.as_any(), changes)
+    }
+
     #[new]
     #[pyo3(signature = (identity, timepoints, cohort=None, label_set=None, provenance=None, quality=None, splits=None, acquisition=None, deidentification=None, extra=None))]
     #[allow(clippy::too_many_arguments)]

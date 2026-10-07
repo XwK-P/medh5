@@ -29,7 +29,7 @@ RESERVED_KINDS: tuple[str, ...] = _core.RESERVED_KINDS
 
 TASKS: tuple[str, ...] = _core.TASKS
 DEFAULT_TASK_FOR_KIND: dict[str, str] = {
-    kind: _core.default_task_for_kind(kind) for kind in ANNOTATION_KINDS
+    kind: str(_core.default_task_for_kind(kind)) for kind in ANNOTATION_KINDS
 }
 SPEC_ANNOTATION_ATTRS: tuple[str, ...] = _core.SPEC_ANNOTATION_ATTRS
 

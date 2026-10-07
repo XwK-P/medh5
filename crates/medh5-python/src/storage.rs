@@ -193,8 +193,34 @@ pub struct IndexPayload {
     pub inner: index::IndexPayload,
 }
 
+impl IndexPayload {
+    /// The fields of the 1.x dataclass, in order.
+    const FIELDS: &'static [&'static str] = &[
+        "ann_id",
+        "class_ids",
+        "voxel_counts",
+        "class_bboxes",
+        "fg_coords",
+        "occupancy",
+        "source_digest",
+        "max_coords",
+        "seed",
+        "stats",
+    ];
+}
+
 #[pymethods]
 impl IndexPayload {
+    #[classattr]
+    fn __dataclass_fields__(py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
+        crate::geometry::dataclass_fields(py, Self::FIELDS)
+    }
+
+    #[classattr]
+    fn __match_args__(py: Python<'_>) -> PyResult<Py<pyo3::types::PyTuple>> {
+        crate::values::match_args(py, Self::FIELDS)
+    }
+
     #[getter]
     fn ann_id(&self) -> &str {
         &self.inner.ann_id

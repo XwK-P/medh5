@@ -193,8 +193,29 @@ pub fn payload_arg(obj: &Bound<'_, PyAny>) -> R<Payload> {
     Ok(p)
 }
 
+impl AnnotationPayload {
+    /// The fields of the 1.x dataclass, in order.
+    const FIELDS: &'static [&'static str] = &["kind", "datasets", "attrs", "stacked_axes", "class_ids"];
+}
+
 #[pymethods]
 impl AnnotationPayload {
+    #[classattr]
+    fn __dataclass_fields__(py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
+        crate::geometry::dataclass_fields(py, Self::FIELDS)
+    }
+
+    #[classattr]
+    fn __match_args__(py: Python<'_>) -> PyResult<Py<pyo3::types::PyTuple>> {
+        crate::values::match_args(py, Self::FIELDS)
+    }
+
+    /// `copy.replace(obj, **changes)`.
+    #[pyo3(signature = (**changes))]
+    fn __replace__(slf: &Bound<'_, Self>, changes: Option<&Bound<'_, pyo3::types::PyDict>>) -> PyResult<Py<PyAny>> {
+        crate::values::dataclass_replace(slf.as_any(), changes)
+    }
+
     #[new]
     #[pyo3(signature = (kind, datasets=None, attrs=None, stacked_axes=0, class_ids=None))]
     fn new(
@@ -281,8 +302,45 @@ pub struct AnnotationHeader {
     pub inner: medh5::annotations::header::AnnotationHeader,
 }
 
+impl AnnotationHeader {
+    /// The fields of the 1.x dataclass, in order.
+    const FIELDS: &'static [&'static str] = &[
+        "kind",
+        "task",
+        "grid",
+        "timepoints",
+        "space",
+        "frame_uid",
+        "class_ids",
+        "annotated_class_ids",
+        "closure",
+        "ignore_id",
+        "ignore_mask",
+        "prov",
+        "quality",
+        "derived_from",
+        "extra",
+    ];
+}
+
 #[pymethods]
 impl AnnotationHeader {
+    #[classattr]
+    fn __dataclass_fields__(py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
+        crate::geometry::dataclass_fields(py, Self::FIELDS)
+    }
+
+    #[classattr]
+    fn __match_args__(py: Python<'_>) -> PyResult<Py<pyo3::types::PyTuple>> {
+        crate::values::match_args(py, Self::FIELDS)
+    }
+
+    /// `copy.replace(obj, **changes)`.
+    #[pyo3(signature = (**changes))]
+    fn __replace__(slf: &Bound<'_, Self>, changes: Option<&Bound<'_, pyo3::types::PyDict>>) -> PyResult<Py<PyAny>> {
+        crate::values::dataclass_replace(slf.as_any(), changes)
+    }
+
     #[new]
     #[pyo3(signature = (kind, task, grid=None, timepoints=None, space=None, frame_uid=None, class_ids=None,
         annotated_class_ids=None, closure="explicit", ignore_id=medh5::labels::IGNORE_ID, ignore_mask=None,
@@ -450,8 +508,24 @@ fn int_dict<'py, K: IntoPyObject<'py> + Copy, V: IntoPyObject<'py> + Copy>(
     Ok(out)
 }
 
+impl OverlapStats {
+    /// The fields of the 1.x dataclass, in order.
+    const FIELDS: &'static [&'static str] =
+        &["class_ids", "spatial_shape", "counts", "edges", "colouring", "localized", "n_labelled_voxels"];
+}
+
 #[pymethods]
 impl OverlapStats {
+    #[classattr]
+    fn __dataclass_fields__(py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
+        crate::geometry::dataclass_fields(py, Self::FIELDS)
+    }
+
+    #[classattr]
+    fn __match_args__(py: Python<'_>) -> PyResult<Py<pyo3::types::PyTuple>> {
+        crate::values::match_args(py, Self::FIELDS)
+    }
+
     #[getter]
     fn class_ids<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
         PyTuple::new(py, &self.inner.class_ids)
@@ -541,8 +615,23 @@ pub struct CostModel {
     pub inner: select::CostModel,
 }
 
+impl CostModel {
+    /// The fields of the 1.x dataclass, in order.
+    const FIELDS: &'static [&'static str] = &["labelmap", "layers", "bitmask", "instances", "probmap", "detail"];
+}
+
 #[pymethods]
 impl CostModel {
+    #[classattr]
+    fn __dataclass_fields__(py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
+        crate::geometry::dataclass_fields(py, Self::FIELDS)
+    }
+
+    #[classattr]
+    fn __match_args__(py: Python<'_>) -> PyResult<Py<pyo3::types::PyTuple>> {
+        crate::values::match_args(py, Self::FIELDS)
+    }
+
     #[getter]
     fn labelmap(&self) -> Option<u64> {
         self.inner.labelmap

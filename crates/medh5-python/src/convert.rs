@@ -297,7 +297,7 @@ pub fn matrix(obj: &Bound<'_, PyAny>) -> PyResult<ndarray::Array2<f64>> {
     if a.ndim() != 2 {
         return Err(PyValueError::new_err(format!("expected a 2-D matrix, got shape {:?}", a.shape())));
     }
-    Ok(a.into_dimensionality::<ndarray::Ix2>().map_err(|e| PyValueError::new_err(e.to_string()))?)
+    a.into_dimensionality::<ndarray::Ix2>().map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
 /// `numpy.dtype(obj)` as an engine dtype.

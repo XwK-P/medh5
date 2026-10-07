@@ -15,7 +15,7 @@ use medh5::curation::timeline as tl_engine;
 use crate::convert::{json_to_py, map_to_py, py_to_json};
 use crate::errors::R;
 use crate::record_class;
-use crate::records::{field, Kind};
+use crate::records::{field, required, Kind};
 
 // -- identity ------------------------------------------------------------------------------
 
@@ -27,8 +27,8 @@ record_class!(
     parse = id_engine::Identity::from_json,
     dump = |v| v.to_json(),
     fields = [
-        field("sample_id", Kind::Plain),
-        field("subject_id", Kind::Plain),
+        required("sample_id", Kind::Plain),
+        required("subject_id", Kind::Plain),
         field("sex", Kind::Plain),
         field("laterality", Kind::Plain),
         field("bodypart", Kind::Plain),
@@ -67,8 +67,8 @@ record_class!(
     parse = id_engine::SplitClaim::from_json,
     dump = |v| v.to_json(),
     fields = [
-        field("set_id", Kind::Plain),
-        field("partition", Kind::Plain),
+        required("set_id", Kind::Plain),
+        required("partition", Kind::Plain),
         field("fold", Kind::Plain),
         field("assigned_by", Kind::Plain),
         field("assigned_at", Kind::Plain),
@@ -90,7 +90,7 @@ record_class!(
     dump = |v| v.to_json(),
     nullable = true,
     fields = [
-        field("method", Kind::Plain),
+        required("method", Kind::Plain),
         field("profile", Kind::Plain),
         field("date_shift_days", Kind::Plain),
         field("id_mapping", Kind::Plain),
@@ -118,9 +118,9 @@ record_class!(
     parse = prov_engine::Agent::from_json,
     dump = |v| v.to_json(),
     fields = [
-        field("id", Kind::Plain),
-        field("type", Kind::Plain),
-        field("name", Kind::Plain),
+        required("id", Kind::Plain),
+        required("type", Kind::Plain),
+        required("name", Kind::Plain),
         field("role", Kind::Plain),
         field("version", Kind::Plain),
         field("qualification", Kind::Plain),
@@ -136,8 +136,8 @@ record_class!(
     parse = prov_engine::Activity::from_json,
     dump = |v| v.to_json(),
     fields = [
-        field("id", Kind::Plain),
-        field("type", Kind::Plain),
+        required("id", Kind::Plain),
+        required("type", Kind::Plain),
         field("agent", Kind::Plain),
         field("started", Kind::Plain),
         field("ended", Kind::Plain),
@@ -260,8 +260,8 @@ record_class!(
     parse = q_engine::Agreement::from_json,
     dump = |v| v.to_json(),
     fields = [
-        field("metric", Kind::Plain),
-        field("value", Kind::Float),
+        required("metric", Kind::Plain),
+        required("value", Kind::Float),
         field("against", Kind::Plain),
         field("per_class", Kind::Dict),
     ]
@@ -275,7 +275,7 @@ record_class!(
     parse = q_engine::Issue::from_json,
     dump = |v| v.to_json(),
     fields = [
-        field("code", Kind::Plain),
+        required("code", Kind::Plain),
         field("severity", Kind::Default("info")),
         field("class_ids", Kind::Tuple),
         field("note", Kind::Plain),
@@ -290,7 +290,7 @@ record_class!(
     parse = q_engine::QualityRecord::from_json,
     dump = |v| v.to_json(),
     fields = [
-        field("status", Kind::Plain),
+        required("status", Kind::Plain),
         field("confidence", Kind::Float),
         field("reviewed_by", Kind::Tuple),
         field("agreement", Kind::Records(Agreement::py_from_json)),
@@ -348,8 +348,8 @@ record_class!(
     parse = tl_engine::Timepoint::from_json,
     dump = |v| v.to_json(),
     fields = [
-        field("id", Kind::Plain),
-        field("index", Kind::Plain),
+        required("id", Kind::Plain),
+        required("index", Kind::Plain),
         field("label", Kind::Plain),
         field("date", Kind::Plain),
         field("days_from_baseline", Kind::Plain),
