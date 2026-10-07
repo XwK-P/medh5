@@ -1,40 +1,16 @@
-"""``instances``: per-object box + bbox-local bit-packed mask (spec §7.4).
-
-Storage is proportional to **object volume, not image volume**: 0.08 MiB versus
-3.57 MiB for the same 200-structure phantom stored as per-class dense volumes, a
-45x reduction.  It is the natural encoding for lesions, nodules and cells, and
-the only voxel encoding that carries object identity.
-
-``instance_id`` is sample-scoped and longitudinal: the same physical object
-observed at several timepoints reuses its id in every annotation describing it,
-so lesion tracking, growth curves and per-lesion response are a **join on this
-column** rather than a separate structure.  An object present at one timepoint
-and absent at another is represented by its absence --- and a *resolved* lesion
-is distinguishable from an *unexamined* one only through ``annotated_class_ids``,
-which is why coverage is required rather than optional.
-"""
+"""``instances``: objects with identity, boxes and cropped masks (spec §7.4)."""
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-import h5py
 import numpy as np
 import numpy.typing as npt
 
-from medh5.annotations.base import (
-    AnnotationHeader,
-    Instance,
-    VoxelAnnotation,
-    instance_id_dtype,
-)
-from medh5.annotations.payload import AnnotationPayload
-from medh5.errors import MEDH5ValidationError
-from medh5.geometry.affine import box_to_slices, slices_to_box
-from medh5.geometry.grid import Grid
-from medh5.labels.labelset import LabelSet, check_class_id
+from medh5 import _core
+from medh5.annotations.base import Instance, VoxelAnnotation, _instance
 
 
 @dataclass(slots=True)
@@ -49,367 +25,79 @@ class InstanceInput:
     score: float | None = None
 
 
-def _shared_ids(ids: Iterable[int]) -> list[int]:
-    """Ids that appear more than once, sorted."""
-    seen: set[int] = set()
-    twice: set[int] = set()
-    for value in ids:
-        (twice if value in seen else seen).add(value)
-    return sorted(twice)
-
-
-def _tight_slices(mask: npt.NDArray[np.bool_]) -> tuple[slice, ...] | None:
-    slices: list[slice] = []
-    for axis in range(mask.ndim):
-        axes = tuple(i for i in range(mask.ndim) if i != axis)
-        present = np.flatnonzero(mask.any(axis=axes))
-        if present.size == 0:
-            return None
-        slices.append(slice(int(present[0]), int(present[-1]) + 1))
-    return tuple(slices)
-
-
 def encode_instances(
     objects: Sequence[InstanceInput],
     spatial_shape: tuple[int, ...] | None = None,
     *,
     store_masks: bool = True,
     class_ids: Sequence[int] | None = None,
-) -> AnnotationPayload:
-    """Pack objects into boxes, ids, offsets and one concatenated bit stream.
+) -> Any:
+    """Pack objects into boxes, ids and bit-packed crops (spec §7.4).
 
-    *class_ids* declares the classes the annotation can express, which is not
-    the same as the classes that happen to have an object.  A class searched for
-    and not found must stay in ``class_ids`` --- dropping it would turn
-    "verified absent" into "never looked for" (spec §11.3).
-
-    No objects at all is the same statement for every declared class, and is
-    written as ``N = 0`` columns: "examined, none found" is how a resolved lesion
-    is told apart from an unexamined one (§7.4).  It needs *class_ids*, and
-    *spatial_shape* to give the columns their width.
+    ``class_ids`` declares the classes examined; with no objects it is what
+    makes "examined, none found" expressible.
     """
-    if not objects:
-        if not class_ids or spatial_shape is None:
-            raise MEDH5ValidationError(
-                "no instances were supplied; an empty `instances` annotation needs "
-                "class_ids (what was examined) and spatial_shape",
-                code="E410",
-            )
-        return _empty_instances(len(spatial_shape), class_ids, store_masks)
-    shared = _shared_ids(int(o.instance_id) for o in objects)
-    if shared:
-        raise MEDH5ValidationError(
-            f"instance id(s) {shared} name more than one object in this annotation; "
-            "an `instance_id` names one physical object, and two distinct objects "
-            "MUST NOT share one (§7.4)",
-            code="E404",
-        )
-    ndim = None
-    boxes: list[npt.NDArray[np.float32]] = []
-    crops: list[npt.NDArray[np.bool_]] = []
-    object_classes: list[int] = []
-    instance_ids: list[int] = []
-    scores: list[float] = []
-    has_scores = any(o.score is not None for o in objects)
-
-    for obj in objects:
-        crop = obj.crop
-        box = obj.box
-        if obj.mask is not None:
-            mask = np.asarray(obj.mask, dtype=bool)
-            if spatial_shape is not None and mask.shape != tuple(spatial_shape):
-                raise MEDH5ValidationError(
-                    f"instance {obj.instance_id}: mask shape {mask.shape} != "
-                    f"grid {tuple(spatial_shape)}",
-                    code="E405",
-                )
-            slices = _tight_slices(mask)
-            if slices is None:
-                raise MEDH5ValidationError(
-                    f"instance {obj.instance_id} has an empty mask", code="E404"
-                )
-            crop = mask[slices]
-            box = slices_to_box(slices)
-        if box is None:
-            raise MEDH5ValidationError(
-                f"instance {obj.instance_id} needs either a mask or a box", code="E410"
-            )
-        box_arr = np.asarray(box, dtype=np.float32)
-        if np.any(box_arr[:, 0] > box_arr[:, 1]):
-            raise MEDH5ValidationError(
-                f"instance {obj.instance_id}: box has lo > hi", code="E406"
-            )
-        if ndim is None:
-            ndim = box_arr.shape[0]
-        elif box_arr.shape[0] != ndim:
-            raise MEDH5ValidationError(
-                "instances disagree on dimensionality", code="E405"
-            )
-        boxes.append(box_arr)
-        object_classes.append(check_class_id(obj.class_id))
-        instance_ids.append(int(obj.instance_id))
-        scores.append(float(obj.score) if obj.score is not None else float("nan"))
-        if store_masks:
-            if crop is None:
-                raise MEDH5ValidationError(
-                    f"instance {obj.instance_id}: store_masks=True needs a mask or "
-                    f"crop",
-                    code="E410",
-                )
-            crops.append(np.asarray(crop, dtype=bool))
-
-    datasets: dict[str, npt.NDArray[Any]] = {
-        "boxes": np.stack(boxes).astype(np.float32),
-        "class_ids": np.asarray(object_classes, dtype=np.uint16),
-        # §7.4 permits uint32 or uint64; the width follows the data.  Hard-casting
-        # to uint32 silently wrapped an id minted from a 64-bit key -- 2**32 + 7
-        # became 7 -- so one object took another's identity in the field that is
-        # the entire longitudinal join.
-        "instance_ids": np.asarray(instance_ids, dtype=instance_id_dtype(instance_ids)),
-    }
-    if has_scores:
-        datasets["scores"] = np.asarray(scores, dtype=np.float32)
-    if store_masks:
-        packed = [np.packbits(c.reshape(-1)) for c in crops]
-        offsets = np.zeros(len(packed) + 1, dtype=np.uint64)
-        offsets[1:] = np.cumsum([p.size for p in packed], dtype=np.uint64)
-        datasets["mask_offsets"] = offsets
-        datasets["mask_shapes"] = np.asarray([c.shape for c in crops], dtype=np.int32)
-        datasets["mask_data"] = (
-            np.concatenate(packed) if packed else np.zeros(0, dtype=np.uint8)
-        )
-    declared = (
-        tuple(sorted({check_class_id(c) for c in class_ids}))
-        if class_ids is not None
-        else tuple(sorted(set(object_classes)))
-    )
-    return AnnotationPayload(
-        kind="instances",
-        datasets=datasets,
-        attrs={},
-        stacked_axes=0,
-        class_ids=declared,
-    )
-
-
-def _empty_instances(
-    ndim: int, class_ids: Sequence[int], store_masks: bool
-) -> AnnotationPayload:
-    """The ``N = 0`` columns of an annotation that examined and found nothing."""
-    datasets: dict[str, npt.NDArray[Any]] = {
-        "boxes": np.zeros((0, ndim, 2), dtype=np.float32),
-        "class_ids": np.zeros(0, dtype=np.uint16),
-        "instance_ids": np.zeros(0, dtype=np.uint32),
-    }
-    if store_masks:
-        datasets["mask_offsets"] = np.zeros(1, dtype=np.uint64)
-        datasets["mask_shapes"] = np.zeros((0, ndim), dtype=np.int32)
-        datasets["mask_data"] = np.zeros(0, dtype=np.uint8)
-    return AnnotationPayload(
-        kind="instances",
-        datasets=datasets,
-        attrs={},
-        stacked_axes=0,
-        class_ids=tuple(sorted({check_class_id(c) for c in class_ids})),
+    return _core.encode_instances(
+        objects, spatial_shape, store_masks=store_masks, class_ids=class_ids
     )
 
 
 def instances_from_masks(
-    masks: dict[int, npt.NDArray[np.bool_]], *, start_id: int = 1
+    masks: Mapping[int, npt.NDArray[Any]], *, start_id: int = 1
 ) -> list[InstanceInput]:
-    """One object per class --- what a converter can honestly infer from masks.
-
-    Splitting a class mask into connected components would **invent** object
-    identity, so it is not done here: a caller who wants per-lesion ids supplies
-    them.
-    """
+    """One object per class mask, minting ids from *start_id*."""
     return [
-        InstanceInput(class_id=class_id, instance_id=start_id + i, mask=mask)
-        for i, (class_id, mask) in enumerate(sorted(masks.items()))
+        InstanceInput(class_id=class_id, instance_id=instance_id, mask=mask)
+        for class_id, instance_id, mask in _core.instances_from_masks(
+            masks, start_id=start_id
+        )
     ]
 
 
 class InstancesAnnotation(VoxelAnnotation):
-    """Reader for ``kind = "instances"``.
+    """Objects: each a class, a sample-scoped id, a box and maybe a mask."""
 
-    The per-object columns --- boxes, classes, ids, scores, mask offsets and
-    shapes --- are read once per open annotation and kept.  They are small and
-    the file is read-only, and every accessor used to re-read them from HDF5:
-    ``dense()`` fetched ``boxes`` and ``class_ids`` once per class, and
-    ``crop()`` fetched three datasets per object, so a thousand-object
-    annotation cost thousands of reads per patch.  Only ``mask_data`` is read
-    on demand, one object's slice at a time.
-    """
-
-    __slots__ = ("_columns",)
-
-    def __init__(
-        self,
-        ann_id: str,
-        group: h5py.Group,
-        header: AnnotationHeader,
-        grids: Mapping[str, Grid] | None = None,
-        label_set: LabelSet | None = None,
-    ) -> None:
-        super().__init__(ann_id, group, header, grids, label_set)
-        self._columns: dict[str, Any] | None = None
-
-    def _dataset(self, name: str, required: bool = True) -> Any:
-        if name in self.group:
-            return self.group[name]
-        if required:
-            raise MEDH5ValidationError(
-                f"annotation {self.ann_id!r}: `instances` requires a {name!r} dataset",
-                code="E410",
-            )
-        return None
-
-    def _table(self) -> dict[str, Any]:
-        if self._columns is None:
-            columns: dict[str, Any] = {
-                "boxes": np.asarray(self._dataset("boxes")[...], dtype=np.float32),
-                "class_ids": np.asarray(
-                    self._dataset("class_ids")[...], dtype=np.uint16
-                ),
-                "instance_ids": np.asarray(
-                    self._dataset("instance_ids")[...], dtype=np.uint64
-                ),
-            }
-            scores = self._dataset("scores", required=False)
-            columns["scores"] = (
-                None if scores is None else np.asarray(scores[...], dtype=np.float32)
-            )
-            if self.has_masks:
-                columns["mask_offsets"] = np.asarray(
-                    self._dataset("mask_offsets")[...], dtype=np.int64
-                )
-                columns["mask_shapes"] = np.asarray(
-                    self._dataset("mask_shapes")[...], dtype=np.int64
-                )
-            self._columns = columns
-        return self._columns
+    __slots__ = ()
 
     @property
     def boxes(self) -> npt.NDArray[np.float32]:
-        boxes: npt.NDArray[np.float32] = self._table()["boxes"]
-        return boxes
+        found: npt.NDArray[np.float32] = self._handle.boxes
+        return found
 
     @property
     def object_class_ids(self) -> npt.NDArray[np.uint16]:
-        classes: npt.NDArray[np.uint16] = self._table()["class_ids"]
-        return classes
+        found: npt.NDArray[np.uint16] = self._handle.object_class_ids
+        return found
 
     @property
     def instance_ids(self) -> npt.NDArray[np.uint64]:
-        """Object ids, widened to ``uint64`` and never narrowed.
-
-        §7.4 permits ``uint32`` or ``uint64`` on disk.  Reading through a
-        ``uint32`` cast undid the encoder's widening: a stored ``uint64`` id of
-        ``2**32 + 7`` came back as ``7``, and so did every ``instances()`` row
-        and every longitudinal join built on it, with nothing raised.
-        """
-        ids: npt.NDArray[np.uint64] = self._table()["instance_ids"]
-        return ids
+        found: npt.NDArray[np.uint64] = self._handle.instance_ids
+        return found
 
     @property
     def scores(self) -> npt.NDArray[np.float32] | None:
-        scores: npt.NDArray[np.float32] | None = self._table()["scores"]
-        return scores
+        found: npt.NDArray[np.float32] | None = self._handle.scores
+        return found
 
     @property
     def has_masks(self) -> bool:
-        return "mask_data" in self.group
+        return bool(self._handle.has_masks)
 
     @property
     def n_objects(self) -> int:
-        return int(self.boxes.shape[0])
+        return int(self._handle.n_objects)
 
     def crop(self, index: int) -> npt.NDArray[np.bool_] | None:
-        """Decode one object's bbox-local mask."""
-        if not self.has_masks:
-            return None
-        table = self._table()
-        offsets = table["mask_offsets"]
-        start, stop = int(offsets[index]), int(offsets[index + 1])
-        shape = tuple(int(v) for v in table["mask_shapes"][index])
-        packed = np.asarray(self._dataset("mask_data")[start:stop], dtype=np.uint8)
-        n = int(np.prod(shape, dtype=np.int64))
-        return np.unpackbits(packed)[:n].astype(bool).reshape(shape)
-
-    def instances(self) -> Iterator[Instance]:
-        boxes = self.boxes
-        classes = self.object_class_ids
-        ids = self.instance_ids
-        scores = self.scores
-        for i in range(boxes.shape[0]):
-            yield Instance(
-                index=i,
-                instance_id=int(ids[i]),
-                class_id=int(classes[i]),
-                box=boxes[i],
-                mask=self.crop(i),
-                score=None
-                if scores is None or not np.isfinite(scores[i])
-                else float(scores[i]),
-            )
+        found: npt.NDArray[np.bool_] | None = self._handle.crop(int(index))
+        return found
 
     def instance(self, instance_id: int) -> Instance:
-        for obj in self.instances():
-            if obj.instance_id == instance_id:
-                return obj
-        raise KeyError(f"annotation {self.ann_id!r} has no instance {instance_id}")
-
-    def _dense_class(
-        self, class_id: int, roi: tuple[slice, ...]
-    ) -> npt.NDArray[np.bool_]:
-        shape = self._roi_shape(roi)
-        out = np.zeros(shape, dtype=bool)
-        classes = self.object_class_ids
-        boxes = self.boxes
-        for index in np.flatnonzero(classes == class_id):
-            # Unclipped, deliberately: these slices are the coordinate frame the
-            # stored crop was cut in, and `box_to_slices(..., grid_shape)` moves
-            # `start` for a box hanging off the near edge.  The crop was then
-            # read from its own element 0 rather than from the first in-bounds
-            # one, shifting the decoded mask by exactly the overhang --- silently,
-            # for boxes a resample pushed slightly out of bounds, which is the
-            # case the clip was added for.  Intersecting with `roi` below does
-            # the clipping, because `roi` is already inside the array.
-            obj_slices = box_to_slices(boxes[index])
-            local: list[slice] = []
-            target: list[slice] = []
-            empty = False
-            for axis, (want, have) in enumerate(zip(roi, obj_slices, strict=True)):
-                lo = max(want.start, have.start)
-                hi = min(want.stop, have.stop)
-                if hi <= lo:
-                    empty = True
-                    break
-                local.append(slice(lo - have.start, hi - have.start))
-                target.append(slice(lo - want.start, hi - want.start))
-                del axis
-            if empty:
-                continue
-            crop = self.crop(int(index))
-            if crop is None:
-                out[tuple(target)] = True
-            else:
-                out[tuple(target)] |= crop[tuple(local)]
-        return out
+        return _instance(self._handle.instance(int(instance_id)))
 
     def tracking(self) -> dict[int, int]:
-        """``instance_id -> class_id`` --- the join key for longitudinal tracking."""
-        return {
-            int(i): int(c)
-            for i, c in zip(self.instance_ids, self.object_class_ids, strict=True)
-        }
-
-    def summary(self) -> dict[str, Any]:
-        out = super().summary()
-        out["objects"] = self.n_objects
-        out["has_masks"] = self.has_masks
-        out["instance_ids"] = [int(v) for v in self.instance_ids]
-        return out
+        """``instance_id`` -> row index, the join key for §7.4 tracking."""
+        found: dict[int, int] = self._handle.tracking()
+        return found
 
 
 __all__ = [

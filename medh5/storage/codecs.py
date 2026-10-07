@@ -1,71 +1,47 @@
-"""Codec profiles (spec §14.2).
+"""Codec profiles: how each dataset is compressed (spec §14.2).
 
-A file's datasets need not share a codec.  Four named profiles cover the real
-trade space, measured in ``docs/examples/bench_io.py``:
+Four named profiles pair a codec for image data with one for label and field
+data.  The codec a dataset was written with is discoverable from the file
+itself (:func:`describe_filters`); nothing records the profile name, because a
+profile is a writer convenience and a file may mix codecs.
 
-===========  =====================  =========================================
-Profile      Codec                  Intended use
-===========  =====================  =========================================
-``training`` Blosc2 lz4 L1          hot dataloader path; ~80x faster to write
-``balanced`` Blosc2 zstd L3         general use (default)
-``archive``  Blosc2 zstd L9         cold storage and distribution
-``portable`` gzip L4                readers without ``hdf5plugin``
-===========  =====================  =========================================
-
-``portable`` exists because Blosc2 requires the ``hdf5plugin`` package on the
-*reader*; a ``portable`` file opens in stock h5py, MATLAB, R and ``h5dump``.
+The profiles and the layout rules are the format engine's: Blosc2 is compiled
+into it, so writing and reading every profile needs no plugin package.
 """
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Any, Literal
 
 import numpy as np
+import numpy.typing as npt
 
-from medh5.errors import MEDH5ValidationError
+from medh5 import _core
 
 Role = Literal["image", "label", "aux"]
 
-COMPRESS_MIN_BYTES = 64 * 1024
-"""Below this raw size a dataset is stored contiguous and uncompressed.
+COMPRESS_MIN_BYTES: int = _core.COMPRESS_MIN_BYTES
+"""Datasets smaller than this are stored contiguous and unfiltered."""
 
-Chunking a 14-byte ``class_ids`` array costs a chunk index and a filter
-pipeline to save nothing.  The validator's W902 threshold is deliberately
-higher (:data:`BULK_MIN_BYTES`) so this policy never trips its own warning.
-"""
+BULK_MIN_BYTES: int = _core.BULK_MIN_BYTES
+"""Datasets at least this large are bulk: W902 wants them compressed."""
 
-BULK_MIN_BYTES = 1024 * 1024
-"""At or above this raw size a dataset is 'bulk' and W902 applies."""
+BLOSC2_FILTER_ID: int = _core.BLOSC2_FILTER_ID
+BLOSC_FILTER_ID: int = _core.BLOSC_FILTER_ID
+BUILTIN_FILTER_IDS: frozenset[int] = frozenset(_core.BUILTIN_FILTER_IDS)
+DEFAULT_PROFILE: str = _core.DEFAULT_PROFILE
 
 
 @dataclass(frozen=True, slots=True)
 class Codec:
-    """One codec setting, expressed as ``h5py.create_dataset`` keyword arguments."""
+    """One codec setting."""
 
     name: str
     blosc2: tuple[str, int, str] | None = None
     gzip_level: int | None = None
     shuffle: bool = True
-
-    def kwargs(self) -> dict[str, Any]:
-        if self.blosc2 is not None:
-            cname, clevel, shuffle_mode = self.blosc2
-            import hdf5plugin
-
-            mode = {
-                "shuffle": hdf5plugin.Blosc2.SHUFFLE,
-                "bitshuffle": hdf5plugin.Blosc2.BITSHUFFLE,
-                "none": hdf5plugin.Blosc2.NOFILTER,
-            }[shuffle_mode]
-            return dict(hdf5plugin.Blosc2(cname=cname, clevel=clevel, filters=mode))
-        if self.gzip_level is not None:
-            return {
-                "compression": "gzip",
-                "compression_opts": self.gzip_level,
-                "shuffle": self.shuffle,
-            }
-        return {}  # pragma: no cover - no uncompressed profile is defined
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,165 +57,75 @@ class CodecProfile:
         return self.image if role == "image" else self.label
 
 
-PROFILES: dict[str, CodecProfile] = {
-    "training": CodecProfile(
-        name="training",
-        image=Codec("blosc2:lz4:1:shuffle", blosc2=("lz4", 1, "shuffle")),
-        label=Codec("blosc2:lz4:1:shuffle", blosc2=("lz4", 1, "shuffle")),
-        description="fastest decompression; hot dataloader path",
-    ),
-    "balanced": CodecProfile(
-        name="balanced",
-        image=Codec("blosc2:zstd:3:shuffle", blosc2=("zstd", 3, "shuffle")),
-        label=Codec("blosc2:zstd:3:bitshuffle", blosc2=("zstd", 3, "bitshuffle")),
-        description="general use; the default",
-    ),
-    "archive": CodecProfile(
-        name="archive",
-        image=Codec("blosc2:zstd:9:bitshuffle", blosc2=("zstd", 9, "bitshuffle")),
-        label=Codec("blosc2:zstd:9:bitshuffle", blosc2=("zstd", 9, "bitshuffle")),
-        description="smallest on disk; cold storage and distribution",
-    ),
-    "portable": CodecProfile(
-        name="portable",
-        image=Codec("gzip:4", gzip_level=4),
-        label=Codec("gzip:4", gzip_level=4),
-        description="readable without hdf5plugin",
-    ),
-}
+def _codec(doc: dict[str, Any]) -> Codec:
+    blosc2 = doc.get("blosc2")
+    return Codec(
+        name=doc["name"],
+        blosc2=None
+        if blosc2 is None
+        else (str(blosc2[0]), int(blosc2[1]), str(blosc2[2])),
+        gzip_level=doc.get("gzip_level"),
+        shuffle=bool(doc.get("shuffle", True)),
+    )
 
-DEFAULT_PROFILE = "balanced"
+
+PROFILES: dict[str, CodecProfile] = {
+    p["name"]: CodecProfile(
+        name=p["name"],
+        image=_codec(p["image"]),
+        label=_codec(p["label"]),
+        description=p["description"],
+    )
+    for p in _core.codec_profiles()
+}
 
 
 def resolve_profile(profile: str | CodecProfile | None) -> CodecProfile:
-    """Resolve a profile name, or pass a profile through.  Defaults to ``balanced``."""
-    if profile is None:
-        return PROFILES[DEFAULT_PROFILE]
+    """A profile by name (``None`` is ``balanced``), or the profile given."""
     if isinstance(profile, CodecProfile):
         return profile
-    try:
-        return PROFILES[profile]
-    except KeyError:
-        known = ", ".join(sorted(PROFILES))
-        raise MEDH5ValidationError(
-            f"unknown codec profile {profile!r}; expected one of {known}"
-        ) from None
+    return PROFILES[_core.resolve_profile_name(profile)]
 
 
 def dataset_kwargs(
     shape: tuple[int, ...],
-    dtype: np.dtype[Any],
+    dtype: npt.DTypeLike,
     *,
     profile: str | CodecProfile | None = None,
     role: Role = "image",
     chunks: tuple[int, ...] | None = None,
 ) -> dict[str, Any]:
-    """Build ``create_dataset`` keyword arguments for one dataset.
-
-    Datasets below :data:`COMPRESS_MIN_BYTES` are stored contiguous: chunking and
-    a filter pipeline cost more than they save at that size, and a contiguous
-    read is one seek.
-    """
-    nbytes = int(np.prod(shape, dtype=np.int64)) * int(dtype.itemsize) if shape else 0
-    if nbytes < COMPRESS_MIN_BYTES or 0 in shape:
-        return {}
-    resolved = resolve_profile(profile)
-    kwargs: dict[str, Any] = dict(resolved.codec(role).kwargs())
-    kwargs["chunks"] = tuple(chunks) if chunks is not None else True
-    return kwargs
-
-
-BLOSC2_FILTER_ID = 32026
-BLOSC_FILTER_ID = 32001
-
-_BLOSC_CNAMES = {0: "blosclz", 1: "lz4", 2: "lz4hc", 3: "snappy", 4: "zlib", 5: "zstd"}
-_BLOSC_SHUFFLE = {0: "noshuffle", 1: "shuffle", 2: "bitshuffle"}
-
-
-def describe_filters(dset: Any) -> str:
-    """Describe a dataset's actual HDF5 filter pipeline, for ``medh5 info``.
-
-    The codec used is discoverable from the file itself (spec §14.2); nothing
-    records the profile name, because a profile is a writer convenience and a
-    file may mix codecs.  Blosc2 parameters are decoded from the filter's client
-    data, since h5py reports a registered third-party filter only as "unknown".
-    """
-    if dset.chunks is None:
-        return "contiguous"
-    parts: list[str] = []
-    plist = dset.id.get_create_plist()
-    named = False
-    for i in range(plist.get_nfilters()):
-        filter_id, _, values, _ = plist.get_filter(i)
-        if filter_id == BLOSC2_FILTER_ID:
-            parts.append(_describe_blosc(values))
-        elif filter_id == BLOSC_FILTER_ID:
-            parts.append("blosc:" + _describe_blosc(values).partition(":")[2])
-        elif not named and dset.compression and dset.compression != "unknown":
-            # h5py names one compression filter for the whole pipeline, so it
-            # is added once --- a gzip dataset with shuffle read "gzip:4+gzip:4".
-            named = True
-            opts = dset.compression_opts
-            parts.append(
-                f"{dset.compression}" + (f":{opts}" if opts is not None else "")
-            )
-    if dset.shuffle:
-        parts.append("shuffle")
-    return "+".join(parts) if parts else "chunked"
-
-
-def _describe_blosc(values: Any) -> str:
-    """Decode ``(_, _, _, _, clevel, shuffle, cname)`` from the Blosc client data."""
-    if len(values) < 7:
-        return "blosc2"
-    clevel, shuffle, cname = int(values[4]), int(values[5]), int(values[6])
-    return (
-        f"blosc2:{_BLOSC_CNAMES.get(cname, cname)}:{clevel}"
-        f"+{_BLOSC_SHUFFLE.get(shuffle, shuffle)}"
+    """The layout the writer gives one dataset: ``{}`` when it is stored
+    contiguous (small or empty), else ``{"chunks": ..., "codec": ...}``."""
+    name = resolve_profile(profile).name
+    found: dict[str, Any] = _core.dataset_layout(
+        [int(n) for n in shape],
+        np.dtype(dtype).itemsize,
+        profile=name,
+        role=role,
+        chunks=None if chunks is None else [int(c) for c in chunks],
     )
+    return found
 
 
-BUILTIN_FILTER_IDS = frozenset({1, 2, 3, 4, 5, 6})
-"""HDF5's own filters: deflate, shuffle, fletcher32, szip, n-bit, scale-offset.
+def describe_filters(dataset: Any) -> str:
+    """A dataset's actual filter pipeline, e.g. ``blosc2:zstd:3+shuffle``.
 
-A file that uses nothing else opens in stock h5py, MATLAB, R and ``h5dump``
---- which is the whole of what the ``portable`` profile promises (§14.2).
-"""
-
-
-def profile_family(root: Any) -> str:
-    """``portable`` when every dataset under *root* needs only HDF5's own
-    filters, else ``balanced``.
-
-    A profile is a writer convenience and no file records one, so an amend has
-    to infer what the file was written for.  It used to assume ``balanced``,
-    and amending a ``portable`` file added Blosc2 datasets that the readers the
-    file was written for could not open.  The family is what matters: a file
-    that already needs ``hdf5plugin`` loses nothing by gaining another Blosc2
-    dataset, and one that does not must not start needing it.
+    *dataset* is a stored dataset as this package hands them out
+    (``Image.dataset``, the return of ``SampleWriter.add_image``).
     """
-    needs_plugin = False
-
-    def visit(name: str, obj: Any) -> Any:
-        nonlocal needs_plugin
-        if not hasattr(obj, "id") or not hasattr(obj, "chunks"):
-            return None
-        if obj.chunks is None:
-            return None
-        plist = obj.id.get_create_plist()
-        for i in range(plist.get_nfilters()):
-            if int(plist.get_filter(i)[0]) not in BUILTIN_FILTER_IDS:
-                needs_plugin = True
-                return True
-        return None
-
-    root.visititems(visit)
-    return "balanced" if needs_plugin else "portable"
+    return str(_core.describe_filters(dataset))
 
 
-def is_bulk(dset: Any) -> bool:
-    """Whether a dataset is large enough for the W902 chunking/compression warning."""
-    return int(dset.nbytes) >= BULK_MIN_BYTES
+def is_bulk(dataset: Any) -> bool:
+    """Whether a dataset is large enough for the W902 warning."""
+    return bool(_core.is_bulk(dataset))
+
+
+def profile_family(path: str | os.PathLike[str]) -> str:
+    """``portable`` when every dataset of the file needs only HDF5's own
+    filters, else ``balanced`` --- what an amend of it defaults to."""
+    return str(_core.profile_family(os.fspath(path)))
 
 
 __all__ = [

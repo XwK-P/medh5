@@ -392,7 +392,7 @@ class TestComposite:
     def test_S10_5_a_broken_chain_refuses_to_evaluate(self, tmp_path):
         import h5py
 
-        from medh5._hdf5 import encode_attr
+        from tests.v1._h5 import encode_attr
 
         path = registered(tmp_path / "reg.medh5", composite=True)
         with h5py.File(path, "r+") as handle:

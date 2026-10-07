@@ -11,10 +11,18 @@ publish = false
 
 [lib]
 name = "_core"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 medh5.workspace = true
 medh5-cli.workspace = true
 pyo3.workspace = true
 numpy.workspace = true
+ndarray.workspace = true
+half.workspace = true
+serde_json.workspace = true
+indexmap.workspace = true
+
+[features]
+# maturin turns this on: an extension module must not link libpython.
+extension-module = ["pyo3/extension-module"]

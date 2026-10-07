@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 import medh5
-from medh5._hdf5 import encode_attr
+from tests.v1._h5 import encode_attr
 from medh5.cli import main
 from medh5.cli._common import EXIT_ERROR, EXIT_OK, EXIT_USAGE, human_bytes, table
 from tests.v1.conftest import write_legacy_sample
@@ -412,7 +412,7 @@ class TestFixAndScrub:
     def test_fix_rebuilds_a_stale_index(self, capsys, longitudinal_path):
         import h5py
 
-        from medh5._hdf5 import encode_attr
+        from tests.v1._h5 import encode_attr
 
         with h5py.File(longitudinal_path, "r+") as handle:
             handle["index/organs_tp0"].attrs["source_digest"] = encode_attr(

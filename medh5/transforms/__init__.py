@@ -24,9 +24,9 @@ from medh5.transforms.base import (
     VECTOR_SPACES,
     Transform,
     TransformHeader,
+    check_transform_id,
     frame_graph,
-    open_transform,
-    read_transforms,
+    wrap_transform,
 )
 from medh5.transforms.bspline import BSplineTransform, encode_bspline
 from medh5.transforms.composite import CompositeTransform, encode_composite
@@ -63,8 +63,8 @@ __all__ = [
     "frames_of_timepoint",
     "jacobian_determinant",
     "linear_sample",
-    "open_transform",
-    "read_transforms",
+    "check_transform_id",
+    "wrap_transform",
     "resolve_between",
     "sample_field",
     "target_registration_error",

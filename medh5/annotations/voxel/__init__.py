@@ -8,6 +8,7 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
+from medh5 import _core
 from medh5.annotations.base import Instance
 from medh5.annotations.payload import AnnotationPayload
 from medh5.annotations.voxel.bitmask import BitmaskAnnotation, encode_bitmask
@@ -39,7 +40,6 @@ from medh5.annotations.voxel.transcode import (
     transcode,
     transcode_payload,
 )
-from medh5.errors import MEDH5ValidationError
 
 READERS: dict[str, Any] = {
     "labelmap": LabelmapAnnotation,
@@ -71,25 +71,9 @@ def encode_voxels(
     for those, and this function --- which returns a payload and nothing
     else --- has nowhere to put it.
     """
-    resolved, shape = normalize_masks(masks, spatial_shape)
-    kind, stats = select_encoding(
-        resolved,
-        shape,
-        prefer=None if encoding == "auto" else encoding,
-        ignore=ignore is not None,
+    payload, stats = _core.encode_voxels(
+        masks, spatial_shape, encoding=encoding, ignore=ignore, **kwargs
     )
-    if ignore is not None:
-        if kind not in IN_BAND_IGNORE_KINDS:
-            raise MEDH5ValidationError(
-                f"encode_voxels: {kind!r} cannot hold an ignore region in band; "
-                "§7.7 puts it in a separate `mask` annotation, which a single "
-                "payload cannot carry. Use SampleWriter.add_segmentation, which "
-                "writes the sibling mask, or choose "
-                f"{' or '.join(map(repr, IN_BAND_IGNORE_KINDS))}.",
-                code="E404",
-            )
-        kwargs.setdefault("ignore", ignore)
-    payload = encode_masks(resolved, kind, shape, **kwargs)
     return payload, stats
 
 

@@ -30,3 +30,7 @@ docs/examples/*.json
 
 # Rust build output (the workspace in `crates/`).
 target/
+
+# The compiled engine, as `maturin develop` leaves it next to the sources.
+medh5/_core*.so
+medh5/_core*.pyd

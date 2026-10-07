@@ -662,10 +662,14 @@ dependencies = [
 name = "medh5-python"
 version = "2.0.0"
 dependencies = [
+ "half",
+ "indexmap",
  "medh5",
  "medh5-cli",
+ "ndarray",
  "numpy",
  "pyo3",
+ "serde_json",
 ]
 
 [[package]]

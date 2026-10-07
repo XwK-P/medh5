@@ -606,7 +606,8 @@ impl SampleWriter {
         &self.grids
     }
 
-    pub(crate) fn grid_ref(&self, grid_id: &str) -> Result<&Grid> {
+    /// A declared grid, or E101.
+    pub fn grid_ref(&self, grid_id: &str) -> Result<&Grid> {
         self.grids.get(grid_id).ok_or_else(|| {
             Error::coded(
                 "E101",

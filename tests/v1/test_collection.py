@@ -279,7 +279,7 @@ class TestValidation:
         assert "E001" in validate_file(shard).codes
 
     def test_a_shard_of_a_future_major_is_E002(self, shard):
-        from medh5._hdf5 import encode_attr
+        from tests.v1._h5 import encode_attr
 
         with h5py.File(shard, "r+") as handle:
             handle.attrs["medh5_version"] = encode_attr("2.0")

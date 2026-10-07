@@ -209,7 +209,7 @@ class TestPatchSampler:
         """
         import h5py
 
-        from medh5._hdf5 import encode_attr
+        from tests.v1._h5 import encode_attr
 
         sampler = PatchSampler(8, strategy="foreground")
         with medh5.open(indexed) as sample:

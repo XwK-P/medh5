@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 import medh5
-from medh5._hdf5 import encode_attr
+from tests.v1._h5 import encode_attr
 from medh5.errors import MEDH5ValidationError
 from medh5.integrity.digest import (
     array_digest,

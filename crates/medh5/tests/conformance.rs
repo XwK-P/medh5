@@ -14,7 +14,9 @@ fn every_case_reports_exactly_its_expected_codes() {
     let failures: Vec<String> = results
         .iter()
         .filter(|r| !r.ok())
-        .map(|r| format!("{}: missing {:?}, unexpected {:?}, error {:?}", r.case.name, r.missing, r.unexpected, r.error))
+        .map(|r| {
+            format!("{}: missing {:?}, unexpected {:?}, error {:?}", r.case.name, r.missing, r.unexpected, r.error)
+        })
         .collect();
     assert!(failures.is_empty(), "{failures:#?}");
 }

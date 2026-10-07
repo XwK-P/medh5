@@ -106,7 +106,7 @@ impl Relation {
 }
 
 /// A keypoint topology declared by the vocabulary (spec §5.5).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Skeleton {
     pub id: String,
     pub keypoints: Vec<i64>,

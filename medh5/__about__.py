@@ -1,7 +1,12 @@
-"""Package identity, kept in one place so nothing has to import the package."""
+"""Package identity: the engine's version and the format version it writes.
+
+Both come from the compiled engine, whose version is the Cargo workspace's ---
+the one number stamped on the wheel, into every file's ``generator`` and into
+every manifest.
+"""
 
 from __future__ import annotations
 
-__version__ = "1.4.4"
-__format_version__ = "1.0"
+from medh5._core import __format_version__, __version__
+
 __all__ = ["__format_version__", "__version__"]

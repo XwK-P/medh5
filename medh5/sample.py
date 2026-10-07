@@ -1,79 +1,41 @@
-"""``Sample`` and ``SampleWriter`` --- where the pieces become a file.
+"""``Sample`` --- where the pieces become a file.
 
 A sample is **one subject at one or more timepoints**.  Reading is lazy and
-timepoint-aware; writing is a builder that validates as it goes and commits
-atomically.
+timepoint-aware; writing (:mod:`medh5.writer`) is a builder that validates as
+it goes and commits atomically.
 
-The write model is spec §14.4: create writes to a sibling temporary file and
-``os.replace``s it, so a reader never sees a half-written sample and a crash
-leaves the previous file intact.  Amend is copy-on-write by default, because
-HDF5 does not reclaim space on ``del`` --- repeated in-place add/remove
-monotonically bloats a file and fragments its chunk index.
+A :class:`Sample` is a read-only view over the format engine's reader.  It is
+memoised the way the file is immutable to it: ``amend`` is copy-on-write and
+replaces the inode, so an open sample never sees an edit --- reopen to read
+one.
 """
 
 from __future__ import annotations
 
 import os
 from collections.abc import Iterator, Mapping, Sequence
-from dataclasses import replace
 from typing import Any
 
-import h5py
 import numpy as np
 import numpy.typing as npt
 
-from medh5._hdf5 import (
-    as_str,
-    as_str_tuple,
-    open_h5,
-)
-from medh5.annotations.base import (
-    SPEC_ANNOTATION_ATTRS,
-    Annotation,
-    VoxelAnnotation,
-    open_annotation,
-)
+from medh5 import _core
+from medh5.annotations.base import Annotation, open_annotation
 from medh5.curation.identity import Cohort, Identity
 from medh5.curation.timeline import Timeline, Timepoint
 from medh5.curation.tracking import Tracking
-from medh5.document import (
-    SampleDocument,
-    read_document,
-)
-from medh5.errors import (
-    MEDH5Error,
-    MEDH5FileError,
-    MEDH5ValidationError,
-    MEDH5VersionError,
-)
-from medh5.geometry.grid import SPEC_GRID_ATTRS, Grid, read_grids
-from medh5.image import SPEC_IMAGE_ATTRS, Image
+from medh5.document import SampleDocument
+from medh5.errors import MEDH5ValidationError
+from medh5.geometry.grid import Grid
+from medh5.image import Image
 from medh5.labels.labelset import LabelSet
-from medh5.storage.index import (
-    SamplingIndex,
-    read_indices,
-)
-from medh5.transforms.base import (
-    SPEC_TRANSFORM_ATTRS,
-    Transform,
-    read_transforms,
-)
-from medh5.transforms.resolve import frames_of_timepoint, resolve_between
+from medh5.storage.index import SamplingIndex
+from medh5.transforms.base import Transform, wrap_transform
 
-FORMAT_VERSION = "1.0"
-PROFILES = (
-    "core",
-    "seg",
-    "det",
-    "cls",
-    "reg",
-    "curation",
-    "multiscale",
-    "training",
-    "longitudinal",
-)
+FORMAT_VERSION: str = _core.FORMAT_VERSION
+PROFILES: tuple[str, ...] = _core.PROFILES
 
-ROOT_DIGEST_ATTRS = ("medh5_version", "medh5_kind", "medh5_profiles")
+ROOT_DIGEST_ATTRS: tuple[str, ...] = _core.ROOT_DIGEST_ATTRS
 """Root attributes covered by ``content_id``.
 
 ``created`` and ``generator`` are deliberately excluded: two byte-identical
@@ -167,7 +129,7 @@ class TimepointView:
 
     @property
     def id(self) -> str:
-        return self.timepoint.id
+        return str(self.timepoint.id)
 
     @property
     def grids(self) -> dict[str, Grid]:
@@ -200,43 +162,28 @@ class TimepointView:
 
 
 class Sample:
-    """A read-only view of one sample root."""
+    """A read-only view of one sample root (a file, or a collection member)."""
 
     __slots__ = (
         "_annotations",
         "_document",
-        "_fresh_indices",
         "_grids",
         "_handle",
         "_images",
         "_index",
-        "_owns_handle",
-        "_resolved",
         "_transforms",
         "path",
-        "root",
     )
 
-    def __init__(
-        self,
-        root: h5py.Group,
-        *,
-        handle: h5py.File | None = None,
-        owns_handle: bool = False,
-        path: str | None = None,
-    ) -> None:
-        self.root = root
+    def __init__(self, handle: Any) -> None:
         self._handle = handle
-        self._owns_handle = owns_handle
-        self.path = path
+        self.path: str | None = handle.path
         self._document: SampleDocument | None = None
         self._grids: dict[str, Grid] | None = None
         self._images: ImageCollection | None = None
         self._annotations: AnnotationCollection | None = None
         self._transforms: _Collection | None = None
         self._index: dict[str, SamplingIndex] | None = None
-        self._fresh_indices: frozenset[str] | None = None
-        self._resolved: dict[tuple[str, str], Transform | None] = {}
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -247,59 +194,65 @@ class Sample:
         self.close()
 
     def close(self) -> None:
-        if self._owns_handle and self._handle is not None:
-            self._handle.close()
-            self._handle = None
+        """Release the file.  Safe to call twice."""
+        self._handle.close()
+
+    @property
+    def is_open(self) -> bool:
+        return bool(self._handle.is_open)
 
     def __repr__(self) -> str:
-        return (
-            f"Sample({self.identity.sample_id!r}, {len(self.timepoints)} timepoints, "
-            f"{len(self.images)} images, {len(self.annotations)} annotations)"
-        )
+        return str(self._handle.repr())
+
+    @property
+    def root(self) -> Any:
+        """The sample's root group, for inspection (attributes, members)."""
+        return self._handle.root
 
     # -- document ----------------------------------------------------------
 
     @property
     def document(self) -> SampleDocument:
         if self._document is None:
-            self._document = read_document(self.root)
+            self._document = self._handle.document()
         return self._document
 
     @property
     def identity(self) -> Identity:
-        return self.document.identity
+        found: Identity = self.document.identity
+        return found
 
     @property
     def cohort(self) -> Cohort:
-        return self.document.cohort
+        found: Cohort = self.document.cohort
+        return found
 
     @property
     def timepoints(self) -> Timeline:
-        return self.document.timepoints
+        found: Timeline = self.document.timepoints
+        return found
 
     @property
     def label_set(self) -> LabelSet | None:
-        return self.document.label_set
+        found: LabelSet | None = self.document.label_set
+        return found
 
     @property
     def version(self) -> str:
-        return as_str(self.root.attrs["medh5_version"])
+        return str(self._handle.version)
 
     @property
     def kind(self) -> str:
-        return as_str(self.root.attrs.get("medh5_kind", "sample"))
+        return str(self._handle.kind)
 
     @property
     def profiles(self) -> frozenset[str]:
-        attrs = self.root.attrs
-        if "medh5_profiles" not in attrs:
-            return frozenset({"core"})
-        return frozenset(as_str_tuple(attrs["medh5_profiles"]))
+        return frozenset(self._handle.profiles)
 
     @property
     def content_id(self) -> str | None:
-        value = self.root.attrs.get("content_id")
-        return as_str(value) if value is not None else None
+        found: str | None = self._handle.content_id
+        return found
 
     # -- objects -----------------------------------------------------------
 
@@ -307,78 +260,42 @@ class Sample:
     def grids(self) -> dict[str, Grid]:
         """The sample's grids, with §3.7's implicit timepoint resolved.
 
-        A grid **MUST** name its timepoint only when the sample declares more
-        than one (§3.7 rule 2); with exactly one declared, the attribute is
-        optional and the grid belongs to that one.  Every timepoint-aware reader
-        --- ``Image.timepoint``, ``Annotation.timepoints``, ``at()``,
-        ``tracks()``, the frame lookup behind ``transform_between`` --- takes
-        its answer from the grid, so the resolution happens here, once.  Left
-        unresolved, a single-visit file whose converter omitted the attribute
-        (every NIfTI and nnU-Net import did) had an empty ``at("tp0")``, blank
-        ``medh5 timeline`` columns, and a ``tracks()`` that called every lesion
-        *unexamined* at the only visit there was.  The writer's own view is the
-        file's attributes, untouched.
+        A grid MUST name its timepoint only when the sample declares more than
+        one (§3.7 rule 2); with exactly one declared, the grid belongs to that
+        one, and every timepoint-aware reader takes its answer from here.
         """
         if self._grids is None:
-            self._grids = self._with_implicit_timepoint(read_grids(self.root))
+            self._grids = dict(self._handle.grids())
         return self._grids
-
-    def _with_implicit_timepoint(self, grids: dict[str, Grid]) -> dict[str, Grid]:
-        try:
-            declared = self.timepoints.ids
-        except MEDH5Error:
-            # A document that does not parse is its own diagnostic; the grids
-            # are still readable as stored.
-            return grids
-        if len(declared) != 1:
-            return grids
-        only = declared[0]
-        return {
-            gid: replace(grid, timepoint=only) if grid.timepoint is None else grid
-            for gid, grid in grids.items()
-        }
 
     @property
     def reference_grid(self) -> Grid:
         """``grids/ref`` when present, else the grid of the first image (§3.2)."""
-        grids = self.grids
-        if "ref" in grids:
-            return grids["ref"]
-        names = sorted(self.images)
-        if names:
-            first: Image = self.images[names[0]]
-            return first.grid
-        if not grids:
-            raise MEDH5ValidationError(
-                f"{self.path or '<memory>'} declares no grids, so it has no "
-                "reference grid",
-                code="E111",
-            )
-        return grids[sorted(grids)[0]]
+        found: Grid = self._handle.reference_grid()
+        return found
 
     @property
     def images(self) -> ImageCollection:
         if self._images is None:
-            node = self.root.get("images")
-            items = (
-                {name: Image(name, node[name], self.grids) for name in sorted(node)}
-                if node is not None
-                else {}
+            self._images = ImageCollection(
+                "image",
+                {
+                    name: Image(self._handle.image(name))
+                    for name in sorted(self._handle.image_ids())
+                },
             )
-            self._images = ImageCollection("image", items)
         return self._images
 
     @property
     def annotations(self) -> AnnotationCollection:
         if self._annotations is None:
-            node = self.root.get("annotations")
-            items: dict[str, Annotation] = {}
-            if node is not None:
-                for name in sorted(node):
-                    items[name] = open_annotation(
-                        name, node[name], self.grids, self.label_set
-                    )
-            self._annotations = AnnotationCollection("annotation", items)
+            self._annotations = AnnotationCollection(
+                "annotation",
+                {
+                    name: open_annotation(self._handle.annotation(name))
+                    for name in sorted(self._handle.annotation_ids())
+                },
+            )
         return self._annotations
 
     def ignore_region(
@@ -386,189 +303,61 @@ class Sample:
     ) -> npt.NDArray[np.bool_]:
         """The §7.7 ignore region of a voxel annotation, under any encoding.
 
-        ``labelmap`` and ``layers`` keep it in band; every encoding may instead
-        name a sibling `mask` annotation in ``header.ignore_mask``, and does
-        wherever the region overlaps a class.  A caller reading one of the two
-        and not the other trained on the ignored voxels of every file the
-        writer stored the other way --- which is what the loaders did (F-16).
-        All ``False`` where the annotation declares no region.
+        ``labelmap`` and ``layers`` may keep it in band; every encoding may
+        instead name a sibling `mask` annotation in ``header.ignore_mask``.
+        This reads both.  All ``False`` where the annotation declares no region.
         """
-        annotation = self.annotations[ann_id]
-        if not isinstance(annotation, VoxelAnnotation):
-            raise MEDH5ValidationError(
-                f"annotation {ann_id!r} is a {annotation.kind!r}, not a voxel "
-                "annotation; the §7.7 ignore region is defined on voxels"
-            )
-        window = annotation._roi(roi)
-        region = np.zeros(annotation._roi_shape(window), dtype=bool)
-        in_band = getattr(annotation, "ignore_mask", None)
-        if in_band is not None:
-            region |= in_band(window)
-        referenced = annotation.header.ignore_mask
-        if referenced is not None:
-            region |= self._mask(ann_id, "ignore_mask", referenced, window)
-        return region
+        found: npt.NDArray[np.bool_] = self._handle.ignore_region(ann_id, roi)
+        return found
 
     def valid_region(
         self, image_id: str, roi: Sequence[slice] | None = None
     ) -> npt.NDArray[np.bool_]:
-        """Where an image holds data (§4.4): its ``valid_mask``, or everywhere.
-
-        A field-of-view mask marks the voxels a reconstruction actually measured;
-        intensities outside it are filler, and §4.4 says a loss SHOULD NOT count
-        them.
-        """
-        image = self.images[image_id]
-        grid = image.grid
-        shape = grid.spatial_shape
-        window = (
-            tuple(slice(0, n) for n in shape)
-            if roi is None
-            else tuple(
-                slice(
-                    0 if s.start is None else int(s.start),
-                    n if s.stop is None else int(s.stop),
-                )
-                for s, n in zip(roi, shape, strict=True)
-            )
-        )
-        if image.valid_mask is None:
-            return np.ones(tuple(max(0, s.stop - s.start) for s in window), dtype=bool)
-        return self._mask(image_id, "valid_mask", image.valid_mask, window)
-
-    def _mask(
-        self, owner: str, attr: str, reference: str, window: tuple[slice, ...]
-    ) -> npt.NDArray[np.bool_]:
-        name = annotation_id(reference)
-        target = self.annotations.get(name)
-        if target is None or target.kind != "mask":
-            raise MEDH5ValidationError(
-                f"{owner!r}: {attr} names {name!r}, which is not a `mask` "
-                "annotation in this file",
-                code="E413",
-            )
-        read: npt.NDArray[np.bool_] = target.read(window)
-        return read
+        """Where an image holds data (§4.4): its ``valid_mask``, or everywhere."""
+        found: npt.NDArray[np.bool_] = self._handle.valid_region(image_id, roi)
+        return found
 
     @property
     def index(self) -> dict[str, SamplingIndex]:
         if self._index is None:
-            self._index = read_indices(self.root)
+            self._index = {
+                name: self._handle.index(name) for name in self._handle.index_ids()
+            }
         return self._index
 
     @property
     def fresh_indices(self) -> frozenset[str]:
-        """Index entries whose ``source_digest`` still matches their source (§13.3).
-
-        A stale entry is not a file error --- readers must ignore it and fall
-        back to the annotation itself, because counts and coordinates for the
-        mask as it was before somebody edited it are wrong rather than merely
-        old.  Computed once per handle: a reader cannot edit the file it holds
-        open, and re-digesting every annotation per patch draw would cost more
-        than the index saves.
-        """
-        if self._fresh_indices is None:
-            from medh5.integrity.verify import stale_index_entries
-
-            stale = set(stale_index_entries(self.root))
-            self._fresh_indices = frozenset(
-                name for name in self.index if name not in stale
-            )
-        return self._fresh_indices
+        """Index entries whose ``source_digest`` still matches their source
+        (§13.3).  A stale entry is ignored, not trusted."""
+        return frozenset(self._handle.fresh_indices())
 
     @property
     def transforms(self) -> _Collection:
-        """The file's transforms, read once.
-
-        Memoized like ``grids``/``images``/``annotations``, and for the same
-        reason: a ``Sample`` is a read-only view, and ``amend`` is copy-on-write
-        --- it replaces the inode, so an open handle never sees an edit.
-        Rebuilding this per access re-opened every transform group on every
-        ``transform_between``, which is once per pair per training item.
-        """
         if self._transforms is None:
             self._transforms = _Collection(
-                "transform", read_transforms(self.root, self.grids)
+                "transform",
+                {
+                    name: wrap_transform(self._handle.transform(name))
+                    for name in self._handle.transform_ids()
+                },
             )
         return self._transforms
 
     def transform_between(self, source: str, target: str) -> Transform | None:
-        """The transform relating two timepoints or two frames (spec §10).
+        """The transform relating two timepoints, grids or frames (spec §10).
 
-        Resolution walks the frame graph, not transform names: a file may relate
-        baseline to follow-up with one affine, a composite, or an affine plus a
-        deformable refinement, and a consumer should not have to know which.
-        Returns ``None`` when the two already share a frame --- nothing to apply.
-
-        **A key is read as a timepoint first, then as a grid, then as a frame
-        uid.**  Uniqueness is scoped to the group (§2.3), so a grid MAY be named
-        after the visit it belongs to and a conforming file can have both; where
-        it does, the timepoint reading wins and the answer covers *every* frame
-        of that visit rather than the one grid.  That is only ambiguous when a
-        visit spans several frames --- a CT and a PET, say --- but there it is
-        the difference between a registration this pair owns and one belonging
-        to another modality.  Pass ``grids[gid].frame_uid`` to ask about one
-        grid's frame specifically; a frame uid is matched last, so it answers
-        for that frame alone.
-
-        A key that is none of the three raises ``KeyError``.  ``None`` is the
-        answer "no registration exists", and a mistyped ``"TP1"`` used to get
-        it too.
+        A key is read as a timepoint first, then as a grid, then as a frame
+        uid; one that is none of the three raises ``KeyError``.  Returns
+        ``None`` when the two already share a frame --- or when no transform
+        relates them: geometry is never invented.
         """
-        pairs = [
-            (a, b) for a in self._frames_for(source) for b in self._frames_for(target)
-        ]
-        for a, b in pairs:
-            if a == b:
-                return None
-            found = self.resolve_frames(a, b)
-            if found is not None:
-                return found
-        return None
+        found = self._handle.transform_between(source, target)
+        return None if found is None else wrap_transform(found)
 
     def resolve_frames(self, from_frame: str, to_frame: str) -> Transform | None:
-        """The transform relating two frame uids, resolved once per handle.
-
-        No name is interpreted: the arguments are frame uids, which is what a
-        loader holding two grids wants to ask about (§10.2).  The answer is
-        memoised because a ``Sample`` is a read-only view --- ``amend`` replaces
-        the inode --- and a paired dataset asks the same question once per
-        training item.  An ambiguous pair raises every time; refusals are not
-        cached.
-        """
-        if from_frame == to_frame:
-            return None
-        key = (from_frame, to_frame)
-        if key not in self._resolved:
-            self._resolved[key] = resolve_between(
-                dict(self.transforms), from_frame, to_frame
-            )
-        return self._resolved[key]
-
-    def _frames_for(self, key: str) -> tuple[str, ...]:
-        """Frames named by a timepoint id, a grid id, or a frame uid itself."""
-        if key in self.timepoints.ids:
-            return frames_of_timepoint(self.grids, key)
-        if key in self.grids:
-            frame = self.grids[key].frame_uid
-            return (frame,) if frame else ()
-        if key in self._known_frames():
-            return (key,)
-        raise KeyError(
-            f"{key!r} is not a timepoint, a grid or a frame of reference in this "
-            f"sample (timepoints: {list(self.timepoints.ids)})"
-        )
-
-    def _known_frames(self) -> set[str]:
-        """Every frame uid a grid, a transform or an annotation declares."""
-        frames = {g.frame_uid for g in self.grids.values() if g.frame_uid}
-        for transform in self.transforms.values():
-            frames.update((transform.from_frame, transform.to_frame))
-        if "annotations" in self.root:
-            for group in self.root["annotations"].values():
-                if "frame_uid" in group.attrs:
-                    frames.add(as_str(group.attrs["frame_uid"]))
-        return frames
+        """The transform relating two frame uids, resolved once per handle."""
+        found = self._handle.resolve_frames(from_frame, to_frame)
+        return None if found is None else wrap_transform(found)
 
     # -- timepoints --------------------------------------------------------
 
@@ -578,61 +367,42 @@ class Sample:
 
     @property
     def is_longitudinal(self) -> bool:
-        return self.timepoints.is_longitudinal
+        return bool(self.timepoints.is_longitudinal)
 
     def tracks(
         self, class_key: int | str | None = None, *, measure: bool = True
     ) -> Tracking:
         """Join ``instance_id`` across timepoints --- the tracking operation (§7.4).
 
-        A lesion that persisted appears under several timepoints; one that
-        vanished appears under fewer than the sample declares.  Whether that
-        absence means *resolved* or *unexamined* is answered by
-        ``annotated_class_ids`` (§11.3), which is why the result is a
-        :class:`~medh5.curation.tracking.Tracking` rather than a plain dict:
-        the coverage it needs to answer that question travels with the join.
+        Whether an absence means *resolved* or *unexamined* is answered by
+        ``annotated_class_ids`` (§11.3), which is why the result carries the
+        coverage it needs.
         """
-        from medh5.curation.tracking import build_tracks
-
-        return build_tracks(self, class_key, measure=measure)
+        found: Tracking = self._handle.tracks(class_key, measure=measure)
+        return found
 
     # -- integrity ---------------------------------------------------------
 
     def attr_name_map(self) -> dict[str, tuple[str, ...]]:
         """Object path -> spec-defined attribute names, for ``content_id``."""
-        return attr_name_map_of(self.root)
+        found: dict[str, tuple[str, ...]] = self._handle.attr_name_map()
+        return found
 
     def verify(self, partial: Sequence[str] | None = None) -> Any:
-        from medh5.integrity.verify import verify_root
+        from medh5.integrity.verify import VerifyResult
 
-        return verify_root(self.root, self.attr_name_map(), partial=partial)
+        return VerifyResult(
+            **self._handle.verify(None if partial is None else list(partial))
+        )
 
     def compute_content_id(self) -> str:
-        from medh5.integrity.digest import compute_content_id
-
-        algo = (
-            as_str(self.root.attrs["digest_algo"])
-            if "digest_algo" in self.root.attrs
-            else "sha256"
-        )
-        return compute_content_id(self.root, self.attr_name_map(), algo=algo)
+        return str(self._handle.compute_content_id())
 
     # -- reporting ---------------------------------------------------------
 
     def summary(self) -> dict[str, Any]:
-        return {
-            "path": self.path,
-            "version": self.version,
-            "kind": self.kind,
-            "profiles": sorted(self.profiles),
-            "content_id": self.content_id,
-            **self.document.summary(),
-            "grids": [g.summary() for g in self.grids.values()],
-            "images": [i.summary() for i in self.images.values()],
-            "annotations": [a.summary() for a in self.annotations.values()],
-            "transforms": [t.summary() for t in self.transforms.values()],
-            "index": sorted(self.index),
-        }
+        found: dict[str, Any] = self._handle.summary()
+        return found
 
 
 FRAME_ATTRS: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -642,127 +412,33 @@ FRAME_ATTRS: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 
 
-def frame_references(root: h5py.Group) -> dict[str, tuple[str, ...]]:
-    """Every frame-of-reference UID in a file, and the attributes naming it.
-
-    A frame UID is a *shared* identifier rather than a property of one object:
-    grids declare it, a world-space annotation names the frame its coordinates
-    are in, and a transform names two of them (§3.4, §10.2).  Anything that
-    rewrites one has to rewrite all of them --- see
-    :meth:`SampleWriter.remap_frame_uids` for why half a rename is worse than
-    none.
-    """
-    out: dict[str, list[str]] = {}
-    for group, attrs in FRAME_ATTRS:
-        if group not in root:
-            continue
-        for name in sorted(root[group]):
-            node = root[group][name]
-            for attr in attrs:
-                raw = node.attrs.get(attr)
-                uid = as_str(raw) if raw is not None else ""
-                if uid:
-                    out.setdefault(uid, []).append(f"{group}.{name}.{attr}")
-    return {uid: tuple(where) for uid, where in sorted(out.items())}
-
-
-def attr_name_map_of(root: h5py.Group) -> dict[str, tuple[str, ...]]:
-    """Object path -> spec-defined attribute names, for ``content_id`` (§13.2).
-
-    Derived from the file, and shared by the reader and the writer, because the
-    two have to agree by construction rather than by maintenance.  The writer
-    used to build this from its own in-memory caches, so every object class it
-    forgot to restore in ``_inherit`` produced a ``content_id`` computed over
-    fewer objects than a reader would later find --- an amend that verified on
-    the way out and reported E702 on the way back in.  Four caches needed that
-    restore before a fifth was noticed; asking the file removes the class.
-    """
-    out: dict[str, tuple[str, ...]] = {"": ROOT_DIGEST_ATTRS}
-    for group, attrs in (
-        ("grids", SPEC_GRID_ATTRS),
-        ("images", SPEC_IMAGE_ATTRS),
-        ("annotations", SPEC_ANNOTATION_ATTRS),
-        ("transforms", SPEC_TRANSFORM_ATTRS),
-    ):
-        if group not in root:
-            continue
-        # The digest attribute is what the map is used to compute; hashing it
-        # into its own input is the one attribute that can never be included.
-        names = tuple(a for a in attrs if a != "digest")
-        for name in root[group]:
-            out[f"{group}/{name}"] = names
-    return out
-
-
 def annotation_id(reference: str) -> str:
     """An annotation id from a reference that may be written as a path.
 
-    §6.2 says ``derived_from`` holds annotation ids; the RTSTRUCT importer wrote
-    ``annotations/<id>`` for a release, so both spellings name one thing.
+    §6.2 says ``derived_from`` holds annotation ids; the RTSTRUCT importer
+    wrote ``annotations/<id>`` for a release, so both spellings name one thing.
     """
-    return reference.removeprefix("annotations/")
-
-
-def require_major(handle: h5py.Group, path: str | os.PathLike[str]) -> str:
-    """The file's ``medh5_version``, or a refusal of a major this reader lacks.
-
-    One check for every door --- ``open``, ``open_collection``, ``open_any``,
-    ``pack`` --- because a 2.0 shard used to open through the collection door
-    while the sample door refused it (§2.1, §16).
-    """
-    version = handle.attrs.get("medh5_version")
-    if version is None:
-        raise MEDH5VersionError(
-            f"{os.fspath(path)!r} declares no `medh5_version`; a 0.x file must be "
-            "converted with `medh5 migrate`"
-        )
-    text = as_str(version)
-    if text.split(".", 1)[0] != FORMAT_VERSION.split(".", 1)[0]:
-        raise MEDH5VersionError(
-            f"{os.fspath(path)!r} is MEDH5 {text}; this reader implements "
-            f"{FORMAT_VERSION}"
-        )
-    return text
-
-
-# --------------------------------------------------------------------------
-# Entry points
-# --------------------------------------------------------------------------
+    return str(_core.annotation_id(reference))
 
 
 def open_sample(path: str | os.PathLike[str], mode: str = "r") -> Sample:
     """Open a ``.medh5`` sample file, read-only.
 
-    ``mode`` exists for the callers that spelled out ``"r"``.  ``"r+"`` used to
-    be accepted too, and bought nothing: a :class:`Sample` has no mutating
-    method, and §14.4's edits go through :func:`amend`, which is copy-on-write.
+    ``mode`` exists for the callers that spelled out ``"r"``; edits go through
+    :func:`amend`, which is copy-on-write.
     """
     if mode != "r":
         raise MEDH5ValidationError(
             f"open() is read-only; use create() or amend() to write, not {mode!r}"
         )
-    handle = open_h5(path, mode)
-    try:
-        require_major(handle, path)
-        kind = as_str(handle.attrs.get("medh5_kind", "sample"))
-        if kind != "sample":
-            raise MEDH5FileError(
-                f"{os.fspath(path)!r} is a {kind!r}; open it with open_collection()"
-            )
-    except BaseException:
-        handle.close()
-        raise
-    return Sample(handle, handle=handle, owns_handle=True, path=os.fspath(path))
+    return Sample(_core.open_sample(os.fspath(path)))
 
 
-# The writer lives beside the reader, not inside it: `sample.py` was 2 400
-# lines holding both, and every contributor read the whole to touch either.
-# Imported last so `writer.py` can import this module's names while it is
-# still initialising (the two are a pair by design, not a cycle by accident).
 from medh5.writer import SampleWriter, amend, create  # noqa: E402
 
 __all__ = [
     "FORMAT_VERSION",
+    "FRAME_ATTRS",
     "PROFILES",
     "ROOT_DIGEST_ATTRS",
     "AnnotationCollection",
@@ -774,5 +450,4 @@ __all__ = [
     "annotation_id",
     "create",
     "open_sample",
-    "require_major",
 ]

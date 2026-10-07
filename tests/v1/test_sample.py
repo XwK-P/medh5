@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 
 import medh5
-from medh5._hdf5 import as_str, encode_attr, str_dtype
+from tests.v1._h5 import as_str, encode_attr, str_dtype
 from medh5.annotations.voxel import InstanceInput
 from medh5.curation.timeline import Timeline, Timepoint
 from medh5.errors import (

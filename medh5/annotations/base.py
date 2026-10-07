@@ -1,249 +1,45 @@
-"""The common annotation model and the uniform read contract (spec §6, §7.6).
+"""The annotation header and the read contract every kind shares (spec §6).
 
-Every voxel encoding defines the same predicate::
-
-    contains(annotation, class_id c, voxel v) -> bool
-
-and a reader must expose it identically regardless of ``kind``.  That is the
-load-bearing idea of the annotation model: the encoding is a **storage
-decision**, chosen by measurement (§7.6) and changeable by transcoding, while
-callers ask for classes and a region of interest and never for a layout.
-
-The second load-bearing idea is the **coverage contract**.  ``class_ids`` is what
-an annotation *can* express; ``annotated_class_ids`` is what the annotator
-committed to finding.  The difference is the whole of partial labelling: a class
-in the first set and not the second may be present in the patient and absent
-from the file, so ``0`` at a voxel means "verified absent" only for classes in
-``annotated_class_ids``.
+An annotation is one coherent unit of ground truth.  The classes here are
+views over the format engine's reader: every answer --- coverage, class
+resolution, dense planes, counts, boxes --- is computed by the engine from the
+file, so the command line, this package and the Rust SDK agree by
+construction.
 """
 
 from __future__ import annotations
 
 import warnings
-from abc import ABC, abstractmethod
-from collections.abc import Iterable, Iterator, Mapping, Sequence
-from dataclasses import dataclass, field
+from collections.abc import Iterable, Iterator, Sequence
+from dataclasses import dataclass
 from typing import Any
 
-import h5py
 import numpy as np
 import numpy.typing as npt
 
-from medh5._hdf5 import as_int, as_str, as_str_tuple, require_attr
-from medh5.errors import MEDH5ValidationError
+from medh5 import _core
 from medh5.geometry.grid import Grid
-from medh5.labels.labelset import (
-    BACKGROUND_ID,
-    CLOSURES,
-    IGNORE_ID,
-    LabelClass,
-    LabelSet,
-)
+from medh5.labels.labelset import LabelClass, LabelSet
 
-VOXEL_KINDS = ("labelmap", "layers", "bitmask", "instances", "probmap", "mask")
-GEOMETRIC_KINDS = ("boxes", "obb", "keypoints", "points", "contours", "mesh")
-ANNOTATION_KINDS = (*VOXEL_KINDS, *GEOMETRIC_KINDS, "classification")
+VOXEL_KINDS: tuple[str, ...] = _core.VOXEL_KINDS
+GEOMETRIC_KINDS: tuple[str, ...] = _core.GEOMETRIC_KINDS
+ANNOTATION_KINDS: tuple[str, ...] = _core.ANNOTATION_KINDS
+RESERVED_KINDS: tuple[str, ...] = _core.RESERVED_KINDS
+"""Kinds a 1.0 writer must not write (spec §16)."""
+
+TASKS: tuple[str, ...] = _core.TASKS
+DEFAULT_TASK_FOR_KIND: dict[str, str] = {
+    kind: _core.default_task_for_kind(kind) for kind in ANNOTATION_KINDS
+}
+SPEC_ANNOTATION_ATTRS: tuple[str, ...] = _core.SPEC_ANNOTATION_ATTRS
+
+AnnotationHeader = _core.AnnotationHeader
+"""The fixed attribute header every annotation carries (spec §6.2)."""
 
 
 def instance_id_dtype(ids: Iterable[int]) -> Any:
-    """``uint32`` unless an id needs the wider form (spec §7.4, §8.2).
-
-    One helper for every kind that stores object identity.  ``instances`` had
-    its own copy and the §8 encoders hard-cast to ``uint32``, so a box carrying
-    id ``2**32 + 7`` was stored as ``7`` --- in the column that is the whole
-    longitudinal join --- while the same id on an ``instances`` annotation
-    survived.  The width follows the data, and it follows it everywhere.
-    """
-    return np.uint64 if any(int(i) > 0xFFFFFFFF for i in ids) else np.uint32
-
-
-RESERVED_KINDS = ("rle",)
-"""Names reserved by spec §16.  A 1.0 writer MUST NOT emit them."""
-
-TASKS = ("segmentation", "detection", "classification", "registration", "other")
-
-DEFAULT_TASK_FOR_KIND: dict[str, str] = {
-    "labelmap": "segmentation",
-    "layers": "segmentation",
-    "bitmask": "segmentation",
-    "probmap": "segmentation",
-    "mask": "other",
-    "instances": "segmentation",
-    "contours": "segmentation",
-    "mesh": "segmentation",
-    "boxes": "detection",
-    "obb": "detection",
-    "keypoints": "detection",
-    "points": "detection",
-    "classification": "classification",
-}
-
-SPEC_ANNOTATION_ATTRS = (
-    "kind",
-    "task",
-    "grid",
-    "timepoints",
-    "space",
-    "frame_uid",
-    "class_ids",
-    "annotated_class_ids",
-    "closure",
-    "ignore_id",
-    "ignore_mask",
-    "prov",
-    "quality",
-    "derived_from",
-    "digest",
-    "scope",
-    "scope_ids",
-    "multilabel",
-    "normalized",
-    "threshold",
-    "skeleton",
-)
-
-
-@dataclass(slots=True)
-class AnnotationHeader:
-    """The fixed attribute header every annotation carries (spec §6.2)."""
-
-    kind: str
-    task: str
-    grid: str | None = None
-    timepoints: tuple[str, ...] | None = None
-    space: str | None = None
-    frame_uid: str | None = None
-    class_ids: tuple[int, ...] = ()
-    annotated_class_ids: tuple[int, ...] = ()
-    closure: str = "explicit"
-    ignore_id: int = IGNORE_ID
-    ignore_mask: str | None = None
-    prov: str | None = None
-    quality: str | None = None
-    derived_from: tuple[str, ...] = ()
-    extra: Mapping[str, Any] = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        if self.kind in RESERVED_KINDS:
-            raise MEDH5ValidationError(
-                f"annotation kind {self.kind!r} is reserved by spec §16 and "
-                "must not be written by a 1.0 writer",
-                code="E401",
-            )
-        if self.kind not in ANNOTATION_KINDS:
-            raise MEDH5ValidationError(
-                f"unknown annotation kind {self.kind!r}", code="E401"
-            )
-        if self.task not in TASKS:
-            raise MEDH5ValidationError(
-                f"unknown task {self.task!r}; expected one of {list(TASKS)}",
-                code="E412",
-            )
-        if self.closure not in CLOSURES:
-            raise MEDH5ValidationError(
-                f"closure {self.closure!r} must be one of {list(CLOSURES)}", code="E412"
-            )
-        self.class_ids = tuple(int(c) for c in self.class_ids)
-        self.annotated_class_ids = tuple(int(c) for c in self.annotated_class_ids)
-        self.derived_from = tuple(self.derived_from)
-        if self.timepoints is not None:
-            self.timepoints = tuple(self.timepoints)
-        missing = set(self.annotated_class_ids) - set(self.class_ids)
-        if missing:
-            raise MEDH5ValidationError(
-                f"annotated_class_ids {sorted(missing)} are not in class_ids",
-                code="E403",
-            )
-        reserved = {BACKGROUND_ID, IGNORE_ID} & set(self.class_ids)
-        if reserved:
-            raise MEDH5ValidationError(
-                f"class_ids uses reserved id(s) {sorted(reserved)}", code="E303"
-            )
-        outside = sorted(
-            c
-            for c in {*self.class_ids, *self.annotated_class_ids}
-            if not BACKGROUND_ID < c < IGNORE_ID
-        )
-        if outside:
-            # The attributes are stored `uint16`, where these would wrap.
-            raise MEDH5ValidationError(
-                f"class id(s) {outside} are outside the writable range "
-                f"[{BACKGROUND_ID + 1}, {IGNORE_ID - 1}] (spec §5.3)",
-                code="E303",
-            )
-
-    def attrs(self) -> dict[str, Any]:
-        out: dict[str, Any] = {
-            "kind": self.kind,
-            "task": self.task,
-            "closure": self.closure,
-        }
-        if self.grid is not None:
-            out["grid"] = self.grid
-        if self.timepoints is not None:
-            out["timepoints"] = list(self.timepoints)
-        if self.space is not None:
-            out["space"] = self.space
-        if self.frame_uid is not None:
-            out["frame_uid"] = self.frame_uid
-        if self.kind != "mask":
-            out["class_ids"] = np.asarray(self.class_ids, dtype=np.uint16)
-        out["annotated_class_ids"] = np.asarray(
-            self.annotated_class_ids, dtype=np.uint16
-        )
-        if self.ignore_id != IGNORE_ID:
-            out["ignore_id"] = int(self.ignore_id)
-        if self.ignore_mask is not None:
-            out["ignore_mask"] = self.ignore_mask
-        if self.prov is not None:
-            out["prov"] = self.prov
-        if self.quality is not None:
-            out["quality"] = self.quality
-        if self.derived_from:
-            out["derived_from"] = list(self.derived_from)
-        out.update(self.extra)
-        return out
-
-    @classmethod
-    def read(cls, group: h5py.Group) -> AnnotationHeader:
-        attrs = group.attrs
-        kind = as_str(require_attr(group, "kind", code="E412"))
-        return cls(
-            kind=kind,
-            task=as_str(attrs["task"])
-            if "task" in attrs
-            else DEFAULT_TASK_FOR_KIND[kind],
-            grid=as_str(attrs["grid"]) if "grid" in attrs else None,
-            timepoints=as_str_tuple(attrs["timepoints"])
-            if "timepoints" in attrs
-            else None,
-            space=as_str(attrs["space"]) if "space" in attrs else None,
-            frame_uid=as_str(attrs["frame_uid"]) if "frame_uid" in attrs else None,
-            class_ids=tuple(int(c) for c in np.atleast_1d(attrs["class_ids"]))
-            if "class_ids" in attrs
-            else (),
-            annotated_class_ids=tuple(
-                int(c) for c in np.atleast_1d(attrs["annotated_class_ids"])
-            )
-            if "annotated_class_ids" in attrs
-            else (),
-            closure=as_str(attrs["closure"]) if "closure" in attrs else "explicit",
-            ignore_id=as_int(attrs["ignore_id"]) if "ignore_id" in attrs else IGNORE_ID,
-            ignore_mask=as_str(attrs["ignore_mask"])
-            if "ignore_mask" in attrs
-            else None,
-            prov=as_str(attrs["prov"]) if "prov" in attrs else None,
-            quality=as_str(attrs["quality"]) if "quality" in attrs else None,
-            derived_from=as_str_tuple(attrs["derived_from"])
-            if "derived_from" in attrs
-            else (),
-            # Kept, not dropped: a rewrite of this annotation --- a transcode ---
-            # must carry what a later minor version added, as `amend` carries
-            # it for the objects it does not touch (§16).
-            extra={
-                key: attrs[key] for key in attrs if key not in SPEC_ANNOTATION_ATTRS
-            },
-        )
+    """``uint32`` unless an id needs the wider form (spec §7.4, §8.2)."""
+    return _core.instance_id_dtype(list(ids)).type
 
 
 @dataclass(frozen=True, slots=True)
@@ -281,272 +77,145 @@ class Instance:
         )
 
 
-class Annotation(ABC):
-    """Base class for every annotation kind."""
+def _instance(row: tuple[Any, ...]) -> Instance:
+    index, instance_id, class_id, box, mask, score = row
+    return Instance(
+        index=int(index),
+        instance_id=int(instance_id),
+        class_id=int(class_id),
+        box=np.asarray(box, dtype=np.float32),
+        mask=mask,
+        score=score,
+    )
 
-    __slots__ = ("_grids", "_label_set", "ann_id", "group", "header")
 
-    def __init__(
-        self,
-        ann_id: str,
-        group: h5py.Group,
-        header: AnnotationHeader,
-        grids: Mapping[str, Grid] | None = None,
-        label_set: LabelSet | None = None,
-    ) -> None:
-        self.ann_id = ann_id
-        self.group = group
-        self.header = header
-        self._grids = grids or {}
-        self._label_set = label_set
+class Annotation:
+    """What every annotation answers, whatever its kind."""
 
-    # -- header passthrough -----------------------------------------------
+    __slots__ = ("_handle", "ann_id")
+
+    def __init__(self, handle: Any) -> None:
+        self._handle = handle
+        self.ann_id: str = handle.ann_id
+
+    @property
+    def header(self) -> Any:
+        """The §6.2 header, as stored."""
+        return self._handle.header
 
     @property
     def kind(self) -> str:
-        return self.header.kind
+        return str(self._handle.kind)
 
     @property
     def task(self) -> str:
-        return self.header.task
+        return str(self._handle.task)
 
     @property
     def class_ids(self) -> tuple[int, ...]:
-        return self.header.class_ids
+        return tuple(self._handle.class_ids)
 
     @property
     def annotated_class_ids(self) -> tuple[int, ...]:
-        return self.header.annotated_class_ids
+        """What was *looked for* (§11.3): a class here and absent from the data
+        is a usable negative; a class not here was never examined."""
+        return tuple(self._handle.annotated_class_ids)
 
     @property
     def closure(self) -> str:
-        return self.header.closure
+        return str(self._handle.closure)
 
     @property
     def ignore_id(self) -> int:
-        return self.header.ignore_id
+        return int(self._handle.ignore_id)
 
     @property
     def prov(self) -> str | None:
-        return self.header.prov
+        found: str | None = self._handle.prov
+        return found
 
     @property
     def quality_key(self) -> str | None:
-        return self.header.quality
+        found: str | None = self._handle.quality_key
+        return found
 
     @property
     def label_set(self) -> LabelSet | None:
-        return self._label_set
+        found: LabelSet | None = self._handle.label_set
+        return found
 
     @property
     def grid_id(self) -> str | None:
-        return self.header.grid
+        found: str | None = self._handle.grid_id
+        return found
 
     @property
     def grid(self) -> Grid:
-        gid = self.header.grid
-        if gid is None:
-            raise MEDH5ValidationError(
-                f"annotation {self.ann_id!r} of kind {self.kind!r} has no grid"
-            )
-        try:
-            return self._grids[gid]
-        except KeyError:
-            raise MEDH5ValidationError(
-                f"annotation {self.ann_id!r} names grid {gid!r}, which does not exist",
-                code="E101",
-            ) from None
+        found: Grid = self._handle.grid
+        return found
 
     @property
     def timepoints(self) -> tuple[str, ...]:
-        """Timepoints this annotation pertains to, inherited from the grid (§3.7).
-
-        An annotation declares ``timepoints`` only when it spans them --- a
-        response assessment, a change label.  Everything else inherits, so time
-        is stated once, on the grid --- and a grid that names none in a
-        single-timepoint sample belongs to that timepoint, which
-        :attr:`Sample.grids` resolves before the grids reach here.
-        """
-        if self.header.timepoints is not None:
-            return self.header.timepoints
-        gid = self.header.grid
-        if gid is not None and gid in self._grids:
-            tp = self._grids[gid].timepoint
-            return (tp,) if tp else ()
-        return ()
-
-    # -- coverage ----------------------------------------------------------
+        """The timepoints this annotation covers: declared, or its grid's."""
+        return tuple(self._handle.timepoints)
 
     def is_annotated(self, class_key: int | str) -> bool:
-        """Whether the annotator committed to finding this class (§11.3).
-
-        ``False`` means the class's absence carries **no information**: it may be
-        present in the patient and simply not looked for.  Training code must
-        consult this before treating ``0`` as a negative.
-        """
-        return self.resolve_class(class_key) in self.header.annotated_class_ids
+        """Whether *class_key* was examined --- not whether it is present."""
+        return bool(self._handle.is_annotated(class_key))
 
     @property
     def is_fully_covered(self) -> bool:
-        return set(self.header.annotated_class_ids) == set(self.header.class_ids)
+        return bool(self._handle.is_fully_covered)
 
     @property
     def has_ignore_region(self) -> bool:
-        return self.header.ignore_mask is not None or self._encodes_ignore()
-
-    def _encodes_ignore(self) -> bool:
-        return False
+        return bool(self._handle.has_ignore_region)
 
     def resolve_class(self, class_key: int | str) -> int:
-        """Resolve a class id or key to an id, using the label set when needed."""
-        if isinstance(class_key, (int, np.integer)):
-            return int(class_key)
-        if self._label_set is None:
-            raise MEDH5ValidationError(
-                f"annotation {self.ann_id!r}: cannot resolve class name "
-                f"{class_key!r} without a label set"
-            )
-        return self._label_set[class_key].id
+        return int(self._handle.resolve_class(class_key))
 
     def resolve_classes(self, keys: Sequence[int | str] | None) -> tuple[int, ...]:
-        """Resolve requested class keys to ids, refusing the reserved ignore id.
-
-        ``65535`` is not a class --- §5.2 says it **MUST NOT** appear in
-        ``classes`` --- so nothing that returns per-class planes can answer for
-        it.  What every encoding *could* do is return an all-zero plane, which is
-        indistinguishable from a class examined and found absent.  Documentation
-        shipped ``dense([65535])`` as the way to read the ignore region on the
-        strength of that shape; under ``layers`` it silently yields nothing and
-        the ignored voxels go into the loss.  Refusing here covers every encoding,
-        because each one's ``dense`` resolves its classes through this --- and
-        that includes ``mask``, which has no classes to resolve and so calls it
-        for the check alone.  ``mask`` is the encoding that proves the placement:
-        it overrides ``dense`` and used to drop the argument, so the guard reached
-        five encodings of six while this paragraph claimed all six.
-
-        :meth:`VoxelAnnotation.ignore_mask` reads the region where the encoding
-        carries it in band; ``header.ignore_mask`` names the `mask` annotation
-        holding it otherwise.
-        """
-        if keys is None:
-            return self.header.class_ids
-        ids = tuple(self.resolve_class(k) for k in keys)
-        if IGNORE_ID in ids:
-            raise MEDH5ValidationError(
-                f"annotation {self.ann_id!r}: {IGNORE_ID} is the reserved ignore "
-                "id, not a class, so no plane can be returned for it; read the "
-                "ignore region with `ignore_mask()` where the encoding carries it "
-                "in band, or through the `mask` annotation named by "
-                "`header.ignore_mask`",
-                code="E404",
-            )
-        return ids
+        return tuple(self._handle.resolve_classes(keys))
 
     @property
     def classes(self) -> tuple[LabelClass, ...]:
-        """Resolved class entries; empty when the label set is unavailable."""
-        if self._label_set is None:
-            return ()
-        return tuple(
-            c for c in (self._label_set.get(i) for i in self.header.class_ids) if c
-        )
+        return tuple(self._handle.classes)
 
     @property
     def annotated_classes(self) -> tuple[LabelClass, ...]:
-        if self._label_set is None:
-            return ()
-        return tuple(
-            c
-            for c in (self._label_set.get(i) for i in self.header.annotated_class_ids)
-            if c
-        )
+        return tuple(self._handle.annotated_classes)
 
     def class_key(self, class_id: int) -> str:
-        cls_ = self._label_set.get(class_id) if self._label_set else None
-        return cls_.key if cls_ else str(class_id)
+        return str(self._handle.class_key(int(class_id)))
 
-    # -- the contract ------------------------------------------------------
-
-    @abstractmethod
     def summary(self) -> dict[str, Any]:
-        """JSON-safe description for ``medh5 info``."""
+        found: dict[str, Any] = self._handle.summary()
+        return found
 
     def __repr__(self) -> str:
-        return (
-            f"{type(self).__name__}({self.ann_id!r}, kind={self.kind!r}, "
-            f"{len(self.class_ids)} classes)"
-        )
+        return str(self._handle.__repr__())
 
 
 class VoxelAnnotation(Annotation):
-    """An annotation defined on a grid's voxels (spec §7).
-
-    Subclasses implement :meth:`_dense_class`; everything else --- ``contains``,
-    multi-class ``dense``, ``labelmap`` flattening, voxel counts --- is derived
-    once here so the five encodings cannot drift apart in behaviour.
-    """
+    """The uniform read contract of the five voxel encodings (spec §7)."""
 
     __slots__ = ()
 
     @property
     def spatial_shape(self) -> tuple[int, ...]:
-        return self.grid.spatial_shape
-
-    def _roi(self, roi: Sequence[slice] | None) -> tuple[slice, ...]:
-        shape = self.spatial_shape
-        if roi is None:
-            return tuple(slice(0, n) for n in shape)
-        roi_t = tuple(roi)
-        if len(roi_t) != len(shape):
-            raise MEDH5ValidationError(
-                f"roi has {len(roi_t)} axes; grid has {len(shape)} spatial axes"
-            )
-        return tuple(
-            slice(
-                0 if s.start is None else int(s.start),
-                int(n) if s.stop is None else int(s.stop),
-            )
-            for s, n in zip(roi_t, shape, strict=True)
-        )
-
-    @staticmethod
-    def _roi_shape(roi: Sequence[slice]) -> tuple[int, ...]:
-        return tuple(max(0, s.stop - s.start) for s in roi)
-
-    @abstractmethod
-    def _dense_class(
-        self, class_id: int, roi: tuple[slice, ...]
-    ) -> npt.NDArray[np.bool_]:
-        """Boolean occupancy of one class over *roi*."""
+        return tuple(self._handle.spatial_shape)
 
     def dense(
         self,
         classes: Sequence[int | str] | None = None,
         roi: Sequence[slice] | None = None,
     ) -> npt.NDArray[np.bool_]:
-        """``(C, *roi_shape)`` boolean occupancy, one plane per requested class.
-
-        Asking for the reserved ignore id is refused rather than answered.  It is
-        not a class --- §5.2 says it **MUST NOT** appear in ``classes`` --- so no
-        encoding can return a plane for it, and every encoding could none the
-        less return an all-zero one, which is indistinguishable from a class that
-        was examined and found absent.  Documentation shipped `dense([65535])` as
-        the way to read the ignore region on the strength of that shape: under
-        `layers` it silently yields nothing, and the ignored voxels go into the
-        loss.  :meth:`ignore_mask` and ``header.ignore_mask`` are the answer.
-        """
-        ids = self.resolve_classes(classes)
-        window = self._roi(roi)
-        out = np.zeros((len(ids), *self._roi_shape(window)), dtype=bool)
-        for i, class_id in enumerate(ids):
-            out[i] = self._dense_class(class_id, window)
-        return out
+        """``(C, *roi)`` boolean planes, one per class, whatever the encoding."""
+        found: npt.NDArray[np.bool_] = self._handle.dense(classes, roi)
+        return found
 
     def contains(self, class_key: int | str, voxel: Sequence[int]) -> bool:
-        """The uniform predicate of §7.6: is *class* present at *voxel*?"""
-        class_id = self.resolve_class(class_key)
-        window = tuple(slice(int(v), int(v) + 1) for v in voxel)
-        return bool(self._dense_class(class_id, window).reshape(-1)[0])
+        return bool(self._handle.contains(class_key, [int(v) for v in voxel]))
 
     def labelmap(
         self,
@@ -562,118 +231,36 @@ class VoxelAnnotation(Annotation):
         annotation is lossy, and which class survives is the caller's decision,
         not the format's --- so when voxels are actually lost and the caller
         expressed no preference, this warns rather than picking silently.
-
-        The warning is the whole point.  ``layers``, ``bitmask`` and ``probmap``
-        exist because §7.0 classes overlap, and three callers inside this package
-        (NIfTI export, the torch loader's ``labelmap`` format, and the MONAI
-        bridge) flatten on the way out.  Each one was quietly deleting the
-        overlap region --- a lesion inside a liver stopped being liver --- and
-        nothing in the output said so.
         """
-        window = self._roi(roi)
-        out = np.zeros(self._roi_shape(window), dtype=dtype)
-        ordered = list(self.class_ids)
-        if priority is not None:
-            ranked = list(self.resolve_classes(priority))
-            rest = [c for c in ordered if c not in ranked]
-            ordered = rest + list(reversed(ranked))
-        overwritten = 0
-        for class_id in ordered:
-            mask = self._dense_class(class_id, window)
-            if priority is None:
-                overwritten += int(np.count_nonzero(mask & (out != 0)))
-            out[mask] = class_id
-        if overwritten:
-            warnings.warn(
-                f"labelmap() flattened {overwritten} overlapping voxel(s) in "
-                f"{self.ann_id!r}: classes {list(ordered)} overlap and one integer "
-                "volume cannot hold both, so later classes overwrote earlier "
-                "ones. Pass priority=[...] to choose which class survives, or "
-                "use dense()/contains() to keep the overlap.",
-                stacklevel=2,
-            )
-        return out
+        volume, _, _, warning = self._handle.labelmap(roi, priority, dtype)
+        if warning is not None:
+            warnings.warn(warning, stacklevel=2)
+        found: npt.NDArray[Any] = volume
+        return found
 
     def voxel_counts(
         self, classes: Sequence[int | str] | None = None
     ) -> dict[int, int]:
-        """Foreground voxel count per class, over the whole grid.
-
-        The generic path decodes one class at a time, which for a dense
-        encoding is a full pass over the volume per class.  ``labelmap`` and
-        ``layers`` answer every class from one ``bincount`` per plane, and
-        ``bitmask`` from one ``popcount``; each overrides
-        :meth:`_counts_from_planes` and this stays the fallback for the
-        encodings where per-class really is the only way.  ``build_index`` and
-        the unindexed path of ``dataset stats`` both come through here.
-        """
-        ids = self.resolve_classes(classes)
-        counted = self._counts_from_planes()
-        if counted is not None:
-            return {class_id: int(counted.get(class_id, 0)) for class_id in ids}
-        window = self._roi(None)
-        return {
-            class_id: int(self._dense_class(class_id, window).sum()) for class_id in ids
-        }
-
-    def _counts_from_planes(self) -> dict[int, int] | None:
-        """Every class's voxel count in one pass, where the encoding allows it.
-
-        ``None`` means "no such pass exists here", and :meth:`voxel_counts`
-        falls back to decoding per class.
-        """
-        return None
+        found: dict[int, int] = self._handle.voxel_counts(classes)
+        return found
 
     def class_bboxes(
         self, classes: Sequence[int | str] | None = None
     ) -> dict[int, npt.NDArray[np.float32] | None]:
-        """Tight ``(S, 2)`` index-space bounds per class; ``None`` when empty."""
-        from medh5.geometry.affine import slices_to_box
-
-        ids = self.resolve_classes(classes)
-        window = self._roi(None)
-        out: dict[int, npt.NDArray[np.float32] | None] = {}
-        for class_id in ids:
-            mask = self._dense_class(class_id, window)
-            if not mask.any():
-                out[class_id] = None
-                continue
-            slices = []
-            for axis in range(mask.ndim):
-                axes = tuple(i for i in range(mask.ndim) if i != axis)
-                present = np.flatnonzero(mask.any(axis=axes))
-                slices.append(slice(int(present[0]), int(present[-1]) + 1))
-            out[class_id] = slices_to_box(slices)
-        return out
+        """Each class's box at voxel edges, ``None`` for an absent class."""
+        found: dict[int, npt.NDArray[np.float32] | None] = self._handle.class_bboxes(
+            classes
+        )
+        return found
 
     def instances(self) -> Iterator[Instance]:
         """Iterate objects, where the encoding carries object identity."""
-        raise MEDH5ValidationError(
-            f"annotation {self.ann_id!r} of kind {self.kind!r} does not carry "
-            "instance identity, and it cannot be recovered from a dense "
-            "encoding: transcoding to `instances` would merge every object of a "
-            "class into one and mint an id that belongs to none of them (§7.4). "
-            "Re-derive the objects from whatever source had them."
-        )
-
-    def summary(self) -> dict[str, Any]:
-        return {
-            "id": self.ann_id,
-            "kind": self.kind,
-            "task": self.task,
-            "grid": self.grid_id,
-            "timepoints": list(self.timepoints),
-            "classes": len(self.class_ids),
-            "annotated_classes": len(self.annotated_class_ids),
-            "fully_covered": self.is_fully_covered,
-            "closure": self.closure,
-            "quality": self.quality_key,
-            "prov": self.prov,
-        }
+        for row in self._handle.instances():
+            yield _instance(row)
 
 
 def readers() -> dict[str, Any]:
-    """``kind`` -> reader class, assembled lazily to keep the imports acyclic."""
+    """``kind`` -> reader class."""
     from medh5.annotations.classification import ClassificationAnnotation
     from medh5.annotations.geometric import GEOMETRIC_READERS
     from medh5.annotations.voxel import READERS as VOXEL_READERS
@@ -685,21 +272,15 @@ def readers() -> dict[str, Any]:
     }
 
 
-def open_annotation(
-    ann_id: str,
-    group: h5py.Group,
-    grids: Mapping[str, Grid] | None = None,
-    label_set: LabelSet | None = None,
-) -> Annotation:
-    """Open an annotation group as the class matching its ``kind``."""
-    header = AnnotationHeader.read(group)
-    reader = readers().get(header.kind)
-    if reader is None:
-        raise MEDH5ValidationError(
-            f"annotation {ann_id!r}: kind {header.kind!r} is not implemented yet",
-            code="E401",
-        )
-    opened: Annotation = reader(ann_id, group, header, grids, label_set)
+_READERS: dict[str, Any] = {}
+
+
+def open_annotation(handle: Any) -> Annotation:
+    """The reader class for an annotation handle's ``kind``."""
+    if not _READERS:
+        _READERS.update(readers())
+    cls = _READERS.get(handle.kind, Annotation)
+    opened: Annotation = cls(handle)
     return opened
 
 

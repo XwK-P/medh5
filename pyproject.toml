@@ -1,13 +1,14 @@
 [build-system]
-# >= 77 for the SPDX `license` string and `license-files`.
-requires = ["setuptools>=77"]
-build-backend = "setuptools.build_meta"
+# The package is the Rust engine (crates/medh5) compiled as `medh5._core`, plus
+# the Python sources under medh5/.  maturin builds both into one wheel.
+requires = ["maturin>=1.8,<2"]
+build-backend = "maturin"
 
 [project]
 name = "medh5"
-# The one source of the version is `medh5/__about__.py`, which is what gets
-# stamped into every file's `generator` and every manifest; declaring it twice
-# needed a test to keep the two equal.
+# The one source of the version is the Cargo workspace (`Cargo.toml`): maturin
+# stamps it on the wheel, the engine stamps it into every file's `generator`,
+# and `medh5.__version__` reads it back from the compiled module.
 dynamic = ["version"]
 description = "Self-describing HDF5 container for one medical imaging sample and all of its ground truth: multi-timepoint, multi-modal images with segmentation, detection, classification and registration annotations, provenance and integrity."
 readme = "README.md"
@@ -37,7 +38,10 @@ classifiers = [
   "Development Status :: 5 - Production/Stable",
   "Intended Audience :: Developers",
   "Intended Audience :: Science/Research",
-  "Operating System :: OS Independent",
+  "Operating System :: MacOS",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Rust",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
@@ -49,12 +53,8 @@ classifiers = [
   "Typing :: Typed",
 ]
 dependencies = [
-  "h5py>=3.13",
-  "hdf5plugin>=4.1",
-  # Core since 1.4.1: without it E005 went unchecked, and `commit()` wrote
-  # documents a machine with it installed rejects (a class key like
-  # `Left-Kidney`).  The format's own schema is not optional.
-  "jsonschema>=4.18",
+  # HDF5, Blosc2 and the JSON Schema validator are compiled into the engine;
+  # NumPy is the one runtime dependency, because arrays are the API.
   "numpy>=1.24",
 ]
 
@@ -66,16 +66,17 @@ dev = [
   # started formatting Markdown. A lint gate that changes under you is not a gate.
   "ruff==0.16.3",
   "mypy==1.18.2",
-  "build>=1.0",
+  "maturin>=1.8,<2",
   "twine>=5.0",
-  "jsonschema>=4.18",
   "hypothesis>=6.100",
+  # The tests open files with h5py to plant the defects the validator must
+  # find; the package itself never imports it.
+  "h5py>=3.13",
+  "hdf5plugin>=4.1",
 ]
-schema = [
-  # jsonschema is a core dependency since 1.4.1; the extra stays so that
-  # existing `pip install "medh5[schema]"` lines keep working.
-  "jsonschema>=4.18",
-]
+# Kept so that `pip install "medh5[schema]"` lines from 1.x keep working: the
+# schema is validated by the engine and needs nothing installed.
+schema = []
 torch = [
   "torch>=2.0",
 ]
@@ -101,11 +102,8 @@ dicomseg = [
 itk = [
   "SimpleITK>=2.3",
 ]
-interp = [
-  # Only needed to evaluate a displacement field that declares
-  # `interpolation: cubic`; linear interpolation is built in.
-  "scipy>=1.10",
-]
+# Kept for 1.x install lines: cubic interpolation is built into the engine.
+interp = []
 
 [project.urls]
 Homepage = "https://github.com/XwK-P/medh5"
@@ -118,20 +116,16 @@ Specification = "https://github.com/XwK-P/medh5/blob/main/docs/spec/medh5-1.0.md
 [project.scripts]
 medh5 = "medh5.cli:main"
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["medh5*"]
-
-[tool.setuptools.dynamic]
-version = { attr = "medh5.__about__.__version__" }
-
-[tool.setuptools.package-data]
-medh5 = ["py.typed", "schemas/*.json", "labels/vocabularies/*.json"]
-
-# Contributor guidance ships in the sdist (MANIFEST.in), not in installed packages.
-[tool.setuptools.exclude-package-data]
-"medh5.io" = ["CLAUDE.md"]
-"medh5.storage" = ["CLAUDE.md"]
+[tool.maturin]
+# The extension module is `medh5._core`; the Python half of the package is the
+# `medh5/` directory next to this file.
+manifest-path = "crates/medh5-python/Cargo.toml"
+module-name = "medh5._core"
+python-source = "."
+python-packages = ["medh5"]
+features = ["extension-module"]
+include = [{ path = "LICENSE", format = "sdist" }]
+exclude = ["medh5/**/CLAUDE.md"]
 
 [tool.pytest.ini_options]
 addopts = "--cov=medh5 --cov-report=term-missing"

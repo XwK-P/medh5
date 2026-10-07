@@ -1,8 +1,12 @@
 """The validation report model (spec §15).
 
 A validator emits ``(code, severity, location, message)``.  Codes are stable API
---- :mod:`medh5.errors` owns the table --- and ``location`` is an HDF5 path or a
-JSON pointer into ``/meta``, so a diagnostic always names the object to look at.
+--- :mod:`medh5.errors` exposes the table --- and ``location`` is an HDF5 path
+or a JSON pointer into ``/meta``, so a diagnostic always names the object to
+look at.
+
+The rules themselves are the format engine's; these classes are the report
+it returns, in the shape 1.x returned it.
 """
 
 from __future__ import annotations
@@ -34,6 +38,16 @@ class Diagnostic:
     @property
     def summary(self) -> str:
         return CODES[self.code].summary if self.code in CODES else ""
+
+    @classmethod
+    def from_json(cls, doc: dict[str, Any]) -> Diagnostic:
+        return cls(
+            code=doc["code"],
+            location=doc["location"],
+            message=doc["message"],
+            severity=doc.get("severity", "error"),
+            level=doc.get("level", "structural"),
+        )
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -126,6 +140,17 @@ class Report:
             "diagnostics": [d.to_json() for d in self.diagnostics],
             "checked": self.checked,
         }
+
+    @classmethod
+    def from_json(cls, doc: dict[str, Any]) -> Report:
+        """A report from its JSON form (what the engine returns)."""
+        return cls(
+            path=doc["path"],
+            level=doc.get("level", "structural"),
+            profiles=tuple(doc.get("profiles") or ()),
+            diagnostics=[Diagnostic.from_json(d) for d in doc.get("diagnostics", ())],
+            checked=dict(doc.get("checked") or {}),
+        )
 
     def dumps(self, *, indent: int | None = 2) -> str:
         return json.dumps(self.to_json(), indent=indent)
