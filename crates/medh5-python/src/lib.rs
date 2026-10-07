@@ -14,17 +14,20 @@ pub mod cli;
 pub mod conformance;
 pub mod convert;
 pub mod curation;
+pub mod curation_tools;
 pub mod dataset;
 pub mod document;
 pub mod errors;
 pub mod geometry;
 pub mod integrity;
+pub mod io;
 pub mod labels;
 pub mod misc;
 pub mod nodes;
 pub mod reader;
 pub mod records;
 pub mod rng;
+pub mod sampling;
 pub mod storage;
 pub mod tracking;
 pub mod transforms;
@@ -53,5 +56,8 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     cli::register(m)?;
     conformance::register(m)?;
     dataset::register(m)?;
+    curation_tools::register(m)?;
+    sampling::register(m)?;
+    io::register(m)?;
     Ok(())
 }

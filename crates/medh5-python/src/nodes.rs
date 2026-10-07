@@ -128,6 +128,21 @@ impl Attrs {
 
 // -- Dataset ------------------------------------------------------------------------------
 
+/// A `Dataset` argument, refusing anything else --- an `h5py.Dataset` above
+/// all --- with what to pass instead.
+pub fn dataset_arg<'py>(obj: &Bound<'py, PyAny>) -> PyResult<Bound<'py, Dataset>> {
+    if let Ok(ds) = obj.cast::<Dataset>() {
+        return Ok(ds.clone());
+    }
+    let ty = obj.get_type();
+    Err(pyo3::exceptions::PyTypeError::new_err(format!(
+        "expected a medh5 Dataset (`Sample.root[...]`, `Image.dataset`, or what a writer's `add_*` returns), not \
+         {}.{}; medh5 reads files through its own engine, not h5py",
+        ty.module()?,
+        ty.qualname()?
+    )))
+}
+
 /// A stored dataset: shape, dtype, chunks, filters, attributes and `ds[...]`.
 #[pyclass(module = "medh5._core", name = "Dataset", frozen)]
 pub struct Dataset {

@@ -18,7 +18,9 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-SEVERITIES = ("info", "decision", "guess", "warning")
+from medh5 import _core
+
+SEVERITIES: tuple[str, ...] = _core.IO_SEVERITIES
 """``decision`` was determined by the data; ``guess`` was not."""
 
 
@@ -32,20 +34,21 @@ class Note:
     detail: dict[str, Any] = field(default_factory=dict)
 
     def to_json(self) -> dict[str, Any]:
-        return {
-            "kind": self.kind,
-            "message": self.message,
-            "severity": self.severity,
-            "detail": self.detail,
-        }
+        result: dict[str, Any] = _core.io_note_json(self)
+        return result
 
     def __str__(self) -> str:
-        return f"{self.severity.upper():8s} {self.kind}: {self.message}"
+        return str(_core.io_note_line(self))
 
 
 @dataclass(slots=True)
 class ConversionReport:
-    """Every note from one conversion, plus what it produced."""
+    """Every note from one conversion, plus what it produced.
+
+    The text and JSON forms are the engine's, so a converter's report reads
+    exactly as the native ``medh5 migrate`` prints one.  Details JSON has no
+    form for are written as their ``str()``, so the JSON always serialises.
+    """
 
     source: str = ""
     converter: str = ""
@@ -99,37 +102,36 @@ class ConversionReport:
     @property
     def ok(self) -> bool:
         """Whether the conversion needed no warning.  Guesses are not failures."""
-        return not self.warnings
+        return bool(_core.io_report_ok(self))
 
     def of_kind(self, kind: str) -> tuple[Note, ...]:
         return tuple(n for n in self.notes if n.kind == kind)
 
     def to_json(self) -> dict[str, Any]:
-        return {
-            "source": self.source,
-            "converter": self.converter,
-            "outputs": list(self.outputs),
-            "ok": self.ok,
-            "counts": {
-                severity: sum(1 for n in self.notes if n.severity == severity)
-                for severity in SEVERITIES
-            },
-            "notes": [n.to_json() for n in self.notes],
-        }
+        result: dict[str, Any] = _core.io_report_json(self)
+        return result
 
     def format(self, *, verbose: bool = False) -> str:
-        head = (
-            f"{self.converter}: {len(self.outputs)} output(s), "
-            f"{len(self.guesses)} guess(es), {len(self.warnings)} warning(s)"
-        )
-        lines = [head]
-        for note in self.notes:
-            if verbose or note.severity in ("guess", "warning"):
-                lines.append("  " + str(note))
-        return "\n".join(lines)
+        return str(_core.io_report_format(self, verbose=verbose))
 
     def __str__(self) -> str:
         return self.format()
+
+    def _extend(self, notes: Sequence[Mapping[str, Any]]) -> None:
+        """Append notes an engine step recorded, as field mappings."""
+        self.notes.extend(Note(**n) for n in notes)
+
+    def _update(self, fields: Mapping[str, Any]) -> ConversionReport:
+        """Take the engine's report, keeping this object (and its lists)."""
+        self.source = fields["source"]
+        self.converter = fields["converter"]
+        self.outputs[:] = fields["outputs"]
+        self.notes[:] = [Note(**n) for n in fields["notes"]]
+        return self
+
+    @classmethod
+    def _from_fields(cls, fields: Mapping[str, Any]) -> ConversionReport:
+        return cls()._update(fields)
 
 
 def merge_reports(

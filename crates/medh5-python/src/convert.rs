@@ -148,6 +148,29 @@ pub fn py_to_json(obj: &Bound<'_, PyAny>) -> PyResult<Value> {
     Err(PyTypeError::new_err(format!("Object of type {} is not JSON serializable", obj.get_type().name()?)))
 }
 
+/// [`py_to_json`], with `str()` for a value JSON has no form for: for records
+/// whose details are free-form and must always serialise.
+pub fn py_to_json_lenient(obj: &Bound<'_, PyAny>) -> PyResult<Value> {
+    if let Ok(dict) = obj.cast::<PyDict>() {
+        let mut map = Map::new();
+        for (k, v) in dict.iter() {
+            map.insert(key_text(&k).unwrap_or(k.str()?.to_string()), py_to_json_lenient(&v)?);
+        }
+        return Ok(Value::Object(map));
+    }
+    if obj.is_instance_of::<PyList>() || obj.is_instance_of::<PyTuple>() {
+        let mut items = Vec::new();
+        for item in obj.try_iter()? {
+            items.push(py_to_json_lenient(&item?)?);
+        }
+        return Ok(Value::Array(items));
+    }
+    match py_to_json(obj) {
+        Ok(v) => Ok(v),
+        Err(_) => Ok(Value::String(obj.str()?.to_string())),
+    }
+}
+
 /// A mapping of keyword fields as a JSON object.
 pub fn kwargs_to_map(kwargs: Option<&Bound<'_, PyDict>>) -> PyResult<Map<String, Value>> {
     let mut map = Map::new();

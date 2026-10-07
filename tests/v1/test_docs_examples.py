@@ -16,10 +16,11 @@ from __future__ import annotations
 import re
 import shlex
 from pathlib import Path
+from typing import Any
 
 import pytest
 
-from medh5.cli import build_parser
+from medh5.cli import command_tree
 
 DOCS = Path(__file__).resolve().parents[2] / "docs"
 README = Path(__file__).resolve().parents[2] / "README.md"
@@ -48,18 +49,16 @@ def _shell_lines() -> list[tuple[Path, str]]:
     return out
 
 
-def _parser_tree() -> dict[tuple[str, ...], object]:
-    tree: dict[tuple[str, ...], object] = {}
+def _parser_tree() -> dict[tuple[str, ...], dict[str, Any]]:
+    """Every command of the CLI's grammar, by its path of subcommand names."""
+    tree: dict[tuple[str, ...], dict[str, Any]] = {}
 
-    def walk(parser: object, prefix: tuple[str, ...]) -> None:
-        tree[prefix] = parser
-        for action in parser._actions:  # type: ignore[attr-defined]
-            choices = getattr(action, "choices", None)
-            if isinstance(choices, dict):
-                for name, sub in choices.items():
-                    walk(sub, (*prefix, name))
+    def walk(node: dict[str, Any], prefix: tuple[str, ...]) -> None:
+        tree[prefix] = node
+        for name, sub in node["commands"].items():
+            walk(sub, (*prefix, name))
 
-    walk(build_parser(), ())
+    walk(command_tree(), ())
     return tree
 
 
@@ -81,11 +80,7 @@ def test_documented_cli_flags_exist(path: Path, line: str) -> None:
     parser = tree.get(command)
     if parser is None:  # a placeholder command name; nothing to check
         return
-    defined = {
-        option
-        for action in parser._actions  # type: ignore[attr-defined]
-        for option in action.option_strings
-    }
+    defined = set(parser["options"])
     used = [
         token
         for token in tokens[len(command) :]

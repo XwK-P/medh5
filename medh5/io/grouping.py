@@ -29,16 +29,14 @@ that is the one genuinely lossy step in importing, so the rules are explicit:
 
 from __future__ import annotations
 
-import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
-from medh5.io._common import sanitize_stem
+from medh5 import _core
 from medh5.io.report import ConversionReport
 
-FALLBACK_PREFIX = "study"
+FALLBACK_PREFIX: str = _core.IO_FALLBACK_PREFIX
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,10 +78,10 @@ class SubjectGroup:
 
     def days_from_baseline(self) -> list[int | None]:
         """Intervals in days, or ``None`` where a date is missing."""
-        dates = [_parse_date(o.date) for o in self.occasions]
-        if not dates or dates[0] is None:
-            return [None] * len(dates)
-        return [None if d is None else (d - dates[0]).days for d in dates]
+        found: list[int | None] = _core.io_days_from_baseline(
+            [o.date for o in self.occasions]
+        )
+        return found
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -100,24 +98,6 @@ class SubjectGroup:
         return f"SubjectGroup({self.subject_id!r}, {len(self)} occasions)"
 
 
-def _parse_date(value: str | None) -> Any:
-    """Parse a DICOM ``YYYYMMDD`` or an ISO date; ``None`` when unparseable."""
-    if not value:
-        return None
-    from datetime import date, datetime
-
-    text = str(value).strip()
-    for form in ("%Y%m%d", "%Y-%m-%d"):
-        try:
-            return datetime.strptime(text[: len(form) + 2], form).date()
-        except ValueError:
-            continue
-    try:
-        return date.fromisoformat(text[:10])
-    except ValueError:
-        return None
-
-
 def group_by_subject(
     occasions: Iterable[Occasion],
     *,
@@ -127,93 +107,24 @@ def group_by_subject(
     """Group occasions into subjects (``mode="subject"``) or leave them apart.
 
     ``mode="study"`` produces one group per occasion, which is the honest
-    default for sources with no reliable subject key.
+    default for sources with no reliable subject key.  A subject key the
+    sources contradict (two birth dates, two sexes) groups nothing: each of its
+    studies becomes its own subject, recorded as a guess with the values that
+    disagreed.  Order within a subject comes from dates, else from order
+    hints (a guess), else is kept as given (a guess).
     """
-    if mode not in ("subject", "study"):
-        raise ValueError(f"unknown grouping mode {mode!r}")
     entries = list(occasions)
-    log = report
-    contradicted = _contradicted(entries, log)
-
-    def subject_of(occasion: Occasion) -> str | None:
-        """The occasion's key, unless the source contradicts it."""
-        if occasion.subject_id in contradicted:
-            return None
-        return occasion.subject_id
-
-    if mode == "study":
-        return [
-            SubjectGroup(
-                subject_id=subject_of(o) or f"{FALLBACK_PREFIX}:{o.key}",
-                occasions=[o],
-                ordered_by="given",
-            )
-            for o in entries
-        ]
-
-    identified = [o for o in entries if subject_of(o)]
-    unidentified = [o for o in entries if not o.subject_id]
-    if unidentified and log is not None:
-        log.warn(
-            "grouping",
-            f"{len(unidentified)} input(s) carry no subject key, so each became "
-            "its own sample; identity is never inferred from filenames or dates",
-            {"inputs": [o.key for o in unidentified][:20]},
+    groups, notes = _core.io_group_by_subject(entries, mode=mode)
+    if report is not None:
+        report._extend(notes)
+    return [
+        SubjectGroup(
+            subject_id=subject_id,
+            occasions=[entries[i] for i in positions],
+            ordered_by=ordered_by,
         )
-    unidentified.extend(o for o in entries if o.subject_id and not subject_of(o))
-
-    groups: dict[str, SubjectGroup] = {}
-    for occasion in identified:
-        assert occasion.subject_id is not None
-        group = groups.setdefault(
-            occasion.subject_id, SubjectGroup(subject_id=occasion.subject_id)
-        )
-        group.occasions.append(occasion)
-    for occasion in unidentified:
-        key = f"{FALLBACK_PREFIX}:{occasion.key}"
-        groups[key] = SubjectGroup(subject_id=key, occasions=[occasion])
-
-    out = []
-    for group in groups.values():
-        _order(group, log)
-        out.append(group)
-    return sorted(out, key=lambda g: g.subject_id)
-
-
-def _contradicted(
-    occasions: Sequence[Occasion], log: ConversionReport | None
-) -> set[str]:
-    """Subject keys the source contradicts, each recorded as a guess.
-
-    Every study of such a key falls back to its own subject, not a majority:
-    which of them belong together is exactly what the key was supposed to say
-    and cannot.
-    """
-    by_subject: dict[str, list[Occasion]] = {}
-    for occasion in occasions:
-        if occasion.subject_id:
-            by_subject.setdefault(occasion.subject_id, []).append(occasion)
-    out: set[str] = set()
-    for subject, members in by_subject.items():
-        conflicts = contradictions(members)
-        if not conflicts:
-            continue
-        out.add(subject)
-        if log is not None:
-            log.guess(
-                "identity",
-                f"subject key {subject!r} names {len(members)} studies whose "
-                f"{' and '.join(sorted(conflicts))} disagree, so they are not "
-                "one person on the evidence; each study was given its own "
-                f"subject ({FALLBACK_PREFIX}:<study>) rather than grouped under "
-                "the key",
-                {
-                    "subject": subject,
-                    "conflicts": conflicts,
-                    "occasions": [o.key for o in members],
-                },
-            )
-    return out
+        for subject_id, positions, ordered_by in groups
+    ]
 
 
 def contradictions(occasions: Sequence[Occasion]) -> dict[str, list[str]]:
@@ -222,103 +133,28 @@ def contradictions(occasions: Sequence[Occasion]) -> dict[str, list[str]]:
     Only stated values count.  A study that omits a birth date contradicts
     nothing; one that states a different one contradicts the rest.
     """
-    seen: dict[str, set[str]] = {}
-    for occasion in occasions:
-        for name, value in occasion.demographics.items():
-            text = str(value).strip().upper()
-            if text:
-                seen.setdefault(name, set()).add(text)
-    return {name: sorted(values) for name, values in seen.items() if len(values) > 1}
-
-
-def _order(group: SubjectGroup, log: ConversionReport | None) -> None:
-    """Sort a subject's occasions, saying which signal did the sorting."""
-    if len(group) < 2:
-        group.ordered_by = "given"
-        return
-    if all(_parse_date(o.date) is not None for o in group.occasions):
-        group.occasions.sort(key=lambda o: _parse_date(o.date))
-        group.ordered_by = "date"
-        return
-    if all(o.order_hint is not None for o in group.occasions):
-        group.occasions.sort(key=lambda o: o.order_hint or 0.0)
-        group.ordered_by = "order_hint"
-        if log is not None:
-            log.guess(
-                "timepoint_order",
-                f"subject {group.subject_id!r} has no study dates; its "
-                f"{len(group)} visits were ordered by a file timestamp, which is "
-                "a heuristic and not evidence",
-                {
-                    "subject": group.subject_id,
-                    "occasions": [o.key for o in group.occasions],
-                },
-            )
-        return
-    group.ordered_by = "given"
-    if log is not None:
-        log.guess(
-            "timepoint_order",
-            f"subject {group.subject_id!r} has neither dates nor timestamps; its "
-            "visits kept the order they were supplied in",
-            {"subject": group.subject_id},
-        )
+    found: dict[str, list[str]] = _core.io_contradictions(list(occasions))
+    return found
 
 
 def output_name(group: SubjectGroup, used: set[str], *, safe: Any = None) -> str:
-    """A unique filename stem for one group.
+    """A unique filename stem for one group; it is added to *used*.
 
     The subject key is the name.  In ``study`` mode several groups can share a
     subject --- that is the point of the mode --- so a collision falls back to
     the occasion's own key, and then to a counter.  Naming files after the
     subject alone would silently overwrite every visit but the last.
     """
-    clean = safe or _default_safe
-    base = clean(group.subject_id)
-    if base.startswith("study") and group.occasions:
-        base = clean(_key_stem(group.occasions[0].key)) or base
-    if base not in used:
-        used.add(base)
-        return base
-    if group.occasions:
-        candidate = f"{base}_{clean(_key_stem(group.occasions[0].key))}"
-        if candidate not in used:
-            used.add(candidate)
-            return candidate
-    index = 2
-    while f"{base}_{index}" in used:
-        index += 1
-    used.add(f"{base}_{index}")
-    return f"{base}_{index}"
-
-
-_UID = re.compile(r"^\d+(\.\d+)+$")
-
-
-def _key_stem(key: str) -> str:
-    """An occasion key as a file-name stem: a path's stem, a UID whole.
-
-    ``Path(uid).stem`` reads a StudyInstanceUID's last component as a file
-    extension, so every study of one root named its file after the same
-    truncated UID.
-    """
-    return key if _UID.match(key) else Path(key).stem
-
-
-def _default_safe(text: str) -> str:
-    return sanitize_stem(text, limit=120)
+    return str(
+        _core.io_output_name(
+            group.subject_id, [o.key for o in group.occasions], used, safe
+        )
+    )
 
 
 def note_instance_ids(group: SubjectGroup, log: ConversionReport) -> None:
     """Record that objects were *not* joined across merged studies (§7.4)."""
-    if group.is_longitudinal:
-        log.decision(
-            "instance_ids",
-            f"subject {group.subject_id!r} merged {len(group)} studies; each "
-            "study's objects kept independent instance ids, because asserting "
-            "correspondence across visits would fabricate tracking ground truth",
-            {"subject": group.subject_id, "occasions": len(group)},
-        )
+    log._extend(_core.io_note_instance_ids(group.subject_id, len(group.occasions)))
 
 
 def build_occasions(

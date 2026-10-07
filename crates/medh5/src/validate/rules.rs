@@ -1203,7 +1203,17 @@ fn format_g_fixed0(value: f64) -> String {
 }
 
 /// The class overlap graph of a `layers` dataset, read in bounded slabs.
+///
+/// Within one layer classes never share a voxel, so an edge is a pair of
+/// values that co-occur at a voxel in two different layers.  Pairing the
+/// layers slab by slab answers that directly, in memory bounded by the slab
+/// rather than by classes times voxels.
 fn overlap_edges(ds: &hdf5::Dataset, ignore_id: i64) -> Result<BTreeSet<(i64, i64)>> {
+    overlap_edges_within(ds, ignore_id, SLAB_BYTES)
+}
+
+/// [`overlap_edges`] reading at most about `budget` bytes at a time.
+fn overlap_edges_within(ds: &hdf5::Dataset, ignore_id: i64, budget: usize) -> Result<BTreeSet<(i64, i64)>> {
     let shape = ds.shape();
     let mut edges = BTreeSet::new();
     if shape.len() < 2 || shape[0] < 2 || shape.iter().product::<usize>() == 0 {
@@ -1213,7 +1223,7 @@ fn overlap_edges(ds: &hdf5::Dataset, ignore_id: i64) -> Result<BTreeSet<(i64, i6
     let rows = shape[1];
     let itemsize = data::dtype(ds)?.itemsize();
     let per_row = n_layers * shape[2..].iter().product::<usize>() * itemsize;
-    let step = (SLAB_BYTES / per_row.max(1)).clamp(1, rows);
+    let step = (budget / per_row.max(1)).clamp(1, rows);
     let mut start = 0;
     while start < rows {
         let block = data::read_region(
@@ -2288,5 +2298,29 @@ pub fn rules_for(level: &str) -> Vec<(&'static str, Rule)> {
         "structural" => structural,
         "semantic" => [structural, semantic].concat(),
         _ => [structural, semantic, integrity].concat(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ndarray::{s, Array4};
+
+    #[test]
+    fn p10_the_overlap_graph_is_read_in_slabs() {
+        // Two layers of 8 rows of 4x4 uint16: 64 bytes a row, so a 64-byte
+        // budget reads one row per slab.
+        let dir = tempfile::tempdir().unwrap();
+        let file = hdf5::File::create(dir.path().join("layers.h5")).unwrap();
+        let mut data = Array4::<u16>::zeros((2, 8, 4, 4));
+        data.slice_mut(s![0, 1..6, .., ..]).fill(1); // liver
+        data.slice_mut(s![0, 7, .., ..]).fill(3); // spleen, in the liver's layer
+        data.slice_mut(s![1, 5, 1..3, 1..3]).fill(2); // lesion, inside the liver
+        data[[1, 3, 0, 0]] = 65535; // ignore over the liver: not an overlap
+        let ds = file.new_dataset_builder().with_data(&data).create("data").unwrap();
+        let whole = overlap_edges(&ds, 65535).unwrap();
+        assert_eq!(whole, BTreeSet::from([(1, 2)]));
+        assert_eq!(overlap_edges_within(&ds, 65535, 64).unwrap(), whole);
+        assert_eq!(overlap_edges_within(&ds, 65535, 1).unwrap(), whole);
     }
 }

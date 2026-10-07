@@ -937,7 +937,8 @@ fn annotation_to_masks<'py>(
     Ok(masks_to_py(py, medh5::sample::writer_annotations::annotation_to_masks(&handle, keys.as_deref())?)?)
 }
 
-fn annotation_handle(obj: &Bound<'_, PyAny>) -> PyResult<std::sync::Arc<medh5::annotations::Annotation>> {
+/// The engine annotation of an `AnnotationHandle` or a facade holding one.
+pub fn annotation_handle(obj: &Bound<'_, PyAny>) -> PyResult<std::sync::Arc<medh5::annotations::Annotation>> {
     if let Ok(h) = obj.cast::<crate::reader::AnnotationHandle>() {
         return Ok(h.get().inner.clone());
     }

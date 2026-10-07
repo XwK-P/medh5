@@ -21,7 +21,7 @@ use crate::annotations::Annotation;
 use crate::array::{DType, NdArray};
 use crate::curation::quality::QualityRecord;
 use crate::geometry::grid::Grid;
-use crate::h5::attrs::AttrValue;
+use crate::h5::attrs::{self, AttrValue};
 use crate::h5::{data, ops};
 use crate::ids::validate_id;
 use crate::integrity::group_digest;
@@ -465,6 +465,10 @@ impl SampleWriter {
             return Err(Error::invalid(format!("no annotation {} to transcode", repr_str(ann_id))));
         };
         let mut header = AnnotationHeader::read(&group)?;
+        // Attributes the header does not model are carried as stored, not as
+        // decoded: an `int32` stays `int32`, fixed-length bytes stay bytes (§16).
+        let carried: Vec<attrs::RawAttr> =
+            header.extra.iter().map(|(name, _)| attrs::RawAttr::capture(&group, name)).collect::<Result<_>>()?;
         let grids = std::sync::Arc::new(self.grids.clone());
         let label_set = self.document.label_set.clone().map(std::sync::Arc::new);
         let annotation = Annotation::open(ann_id, group, grids, label_set)?;
@@ -494,7 +498,10 @@ impl SampleWriter {
                 header.extra.push((k.clone(), v.clone()));
             }
         }
-        self.write_annotation(ann_id, &header, &payload, Some(&grid), codec)?;
+        let written = self.write_annotation(ann_id, &header, &payload, Some(&grid), codec)?;
+        for raw in carried.iter().filter(|raw| !payload.attrs.iter().any(|(k, _)| raw.name() == k)) {
+            raw.restore(&written)?;
+        }
         if dropped {
             let tool = self.software("medh5", Some(VERSION), Map::new())?;
             let mut fields = Map::new();

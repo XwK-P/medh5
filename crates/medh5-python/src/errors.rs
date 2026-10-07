@@ -33,6 +33,18 @@ impl From<PyErr> for BindError {
     }
 }
 
+impl From<pyo3::pycell::PyBorrowError> for BindError {
+    fn from(e: pyo3::pycell::PyBorrowError) -> Self {
+        BindError::Py(e.into())
+    }
+}
+
+impl From<pyo3::pycell::PyBorrowMutError> for BindError {
+    fn from(e: pyo3::pycell::PyBorrowMutError) -> Self {
+        BindError::Py(e.into())
+    }
+}
+
 impl From<std::io::Error> for BindError {
     fn from(e: std::io::Error) -> Self {
         BindError::Engine(e.into())

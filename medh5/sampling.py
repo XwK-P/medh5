@@ -25,14 +25,13 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import numpy.typing as npt
 
-from medh5.errors import MEDH5ValidationError
+from medh5 import _core
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from medh5.annotations.base import VoxelAnnotation
     from medh5.sample import Sample
 
-STRATEGIES = ("uniform", "foreground", "balanced")
-PAIR_MODES = ("consecutive", "baseline_vs_all", "all_pairs")
+STRATEGIES: tuple[str, ...] = _core.SAMPLING_STRATEGIES
+PAIR_MODES: tuple[str, ...] = _core.SAMPLING_PAIR_MODES
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,16 +110,7 @@ class Patch:
 
 def coerce_patch_size(patch_size: int | Sequence[int], ndim: int) -> tuple[int, ...]:
     """Broadcast a scalar patch size across *ndim* spatial axes."""
-    if isinstance(patch_size, (int, np.integer)):
-        size = (int(patch_size),) * ndim
-    else:
-        size = tuple(int(v) for v in patch_size)
-    if len(size) != ndim:
-        raise MEDH5ValidationError(
-            f"patch_size {size} has {len(size)} axes; the grid has {ndim}"
-        )
-    if any(v <= 0 for v in size):
-        raise MEDH5ValidationError(f"patch_size {size} must be positive on every axis")
+    size: tuple[int, ...] = _core.sampling_coerce_patch_size(patch_size, ndim)
     return size
 
 
@@ -135,49 +125,21 @@ def window_around(
     array would break batching in a way that surfaces as a shape error three
     layers away.
     """
-    slices: list[slice] = []
-    pads: list[tuple[int, int]] = []
-    for axis_center, size, extent in zip(center, patch, shape, strict=True):
-        if size >= extent:
-            slices.append(slice(0, int(extent)))
-            spare = size - extent
-            before = spare // 2
-            pads.append((int(before), int(spare - before)))
-            continue
-        start = int(axis_center) - size // 2
-        start = max(0, min(start, extent - size))
-        slices.append(slice(start, start + size))
-        pads.append((0, 0))
-    return tuple(slices), tuple(pads)
+    found: tuple[tuple[slice, ...], tuple[tuple[int, int], ...]] = (
+        _core.sampling_window_around(
+            [int(v) for v in center], [int(v) for v in patch], [int(v) for v in shape]
+        )
+    )
+    return found
 
 
-def _uniform_center(
-    shape: Sequence[int], patch: Sequence[int], generator: np.random.Generator
-) -> tuple[int, ...]:
-    """A centre whose window lands uniformly over the volume.
-
-    Drawing the centre uniformly over *every* voxel and letting
-    :func:`window_around` clamp is not uniform in the thing that matters: every
-    centre in the leading half-patch collapses onto window start 0, and every
-    centre in the trailing half onto the last start.  On a 24-voxel axis with an
-    8-voxel patch that put 3.6x the uniform share on the first window and 2.8x
-    on the last, and the skew grows with patch size --- border-heavy training
-    data, from a strategy named ``uniform``.
-
-    Drawing from the range that maps one-to-one onto the valid window starts
-    makes the *window* uniform, which is what a caller asking for uniform
-    coverage means.  Clamping stays in ``window_around`` for the foreground
-    path, where the centre is a voxel the caller specifically wants included.
-    """
-    center: list[int] = []
-    for extent, size in zip(shape, patch, strict=True):
-        if size >= extent:
-            center.append(int(extent) // 2)
-            continue
-        lead = size // 2
-        # Valid starts are 0 .. extent - size; start s has centre s + lead.
-        center.append(int(generator.integers(0, extent - size + 1)) + lead)
-    return tuple(center)
+_CONFIG = (
+    "patch_size",
+    "strategy",
+    "foreground_prob",
+    "foreground_classes",
+    "class_weights",
+)
 
 
 class PatchSampler:
@@ -186,7 +148,8 @@ class PatchSampler:
     ``strategy``:
 
     ``uniform``
-        centres drawn uniformly over the volume.
+        windows drawn uniformly over the volume --- uniform in the *window*,
+        not the centre, so the border is not over-represented.
     ``foreground``
         centres drawn from indexed foreground coordinates.
     ``balanced``
@@ -194,15 +157,13 @@ class PatchSampler:
         the strategy nearly every segmentation recipe actually uses, because
         pure foreground sampling never shows the model the background it will
         be evaluated on.
+
+    A stale index is never trusted: its coordinates point at foreground the
+    annotation no longer has, so the sampler scans instead --- and says so on
+    the patch (``used_index=False``).
     """
 
-    __slots__ = (
-        "class_weights",
-        "foreground_classes",
-        "foreground_prob",
-        "patch_size",
-        "strategy",
-    )
+    __slots__ = (*_CONFIG, "_built")
 
     def __init__(
         self,
@@ -213,13 +174,7 @@ class PatchSampler:
         foreground_classes: Sequence[int | str] | None = None,
         class_weights: str | Mapping[int, float] = "uniform",
     ) -> None:
-        if strategy not in STRATEGIES:
-            raise MEDH5ValidationError(
-                f"unknown sampling strategy {strategy!r}; expected one of "
-                f"{list(STRATEGIES)}"
-            )
-        if not 0.0 <= foreground_prob <= 1.0:
-            raise MEDH5ValidationError("foreground_prob must lie in [0, 1]")
+        object.__setattr__(self, "_built", None)
         self.patch_size = patch_size
         self.strategy = strategy
         self.foreground_prob = float(foreground_prob)
@@ -227,9 +182,36 @@ class PatchSampler:
             None if foreground_classes is None else tuple(foreground_classes)
         )
         self.class_weights = class_weights
+        self._engine()  # refuse a bad configuration now, not at the first draw
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        object.__setattr__(self, name, value)
+        if name in _CONFIG:
+            object.__setattr__(self, "_built", None)
+
+    def __getstate__(self) -> dict[str, Any]:
+        return {name: getattr(self, name) for name in _CONFIG}
+
+    def __setstate__(self, state: Mapping[str, Any]) -> None:
+        object.__setattr__(self, "_built", None)
+        for name, value in state.items():
+            object.__setattr__(self, name, value)
+
+    def _engine(self) -> Any:
+        built = self._built
+        if built is None:
+            built = _core.PatchSamplerHandle(
+                self.patch_size,
+                strategy=self.strategy,
+                foreground_prob=self.foreground_prob,
+                foreground_classes=self.foreground_classes,
+                class_weights=self.class_weights,
+            )
+            object.__setattr__(self, "_built", built)
+        return built
 
     def __repr__(self) -> str:
-        return f"PatchSampler({self.patch_size}, {self.strategy})"
+        return str(self._engine().repr())
 
     # -- drawing -----------------------------------------------------------
 
@@ -248,37 +230,7 @@ class PatchSampler:
         live there --- ``annotation=None`` on its own means "find me one",
         which for a longitudinal sample can find another visit's.
         """
-        generator = rng if rng is not None else np.random.default_rng()
-        ann = self._annotation(sample, annotation, grid)
-        grid_id = self._window_grid(sample, ann, grid)
-        shape = sample.grids[grid_id].spatial_shape
-        patch = coerce_patch_size(self.patch_size, len(shape))
-        want_foreground = self.strategy == "foreground" or (
-            self.strategy == "balanced" and generator.random() < self.foreground_prob
-        )
-        if want_foreground and ann is not None:
-            drawn = self._foreground_center(sample, ann, generator)
-            if drawn is not None:
-                center, class_id, used_index = drawn
-                slices, pad = window_around(center, patch, shape)
-                return Patch(
-                    slices=slices,
-                    pad=pad,
-                    center=tuple(int(c) for c in center),
-                    strategy="foreground",
-                    class_id=class_id,
-                    used_index=used_index,
-                    grid_id=grid_id,
-                )
-        center = _uniform_center(shape, patch, generator)
-        slices, pad = window_around(center, patch, shape)
-        return Patch(
-            slices=slices,
-            pad=pad,
-            center=center,
-            strategy="uniform",
-            grid_id=grid_id,
-        )
+        return Patch(**self._engine().draw(sample, annotation, rng, grid=grid))
 
     def draws(
         self,
@@ -290,131 +242,33 @@ class PatchSampler:
         generator = rng if rng is not None else np.random.default_rng()
         return [self.draw(sample, annotation, generator) for _ in range(n)]
 
-    # -- internals ---------------------------------------------------------
+    # -- the decisions a draw makes, for callers that need one alone ---------
 
     def _annotation(
         self, sample: Sample, annotation: str | None, grid: str | None = None
     ) -> str | None:
         """The annotation to draw foreground from, auto-selected if not named.
 
-        Auto-selection stays inside *grid* when the caller named one.  Without
-        that, a caller who wanted "no annotation, this grid" got "any
-        annotation anywhere in the sample" --- for a longitudinal file that is
-        another visit's, whose coordinates are in another visit's grid.
+        Auto-selection stays inside *grid* when the caller named one, and never
+        picks a ``mask`` (no classes, so it can only answer "no foreground").
         """
-        if annotation is not None:
-            return annotation
-        for name, ann in sample.annotations.items():
-            if getattr(ann, "dense", None) is None or ann.kind in (
-                "classification",
-                "mask",
-            ):
-                # A `mask` has `dense` and no classes (§4.4), so it can only
-                # ever answer "no foreground here".
-                continue
-            if grid is not None and ann.grid_id != grid:
-                continue
-            return name
-        return None
+        found: str | None = self._engine().annotation(sample, annotation, grid)
+        return found
 
     def _window_grid(
         self, sample: Sample, annotation: str | None, grid: str | None = None
     ) -> str:
-        """The grid a draw is measured in.
-
-        The annotation's own grid where it has one, because that is the space
-        its foreground coordinates are in; *grid* where the caller named one
-        and there is no annotation to defer to; the sample's reference grid
-        otherwise.  Named on the patch so a consumer reading some *other* grid
-        with the result can tell, instead of returning a window that indexes
-        different anatomy.
-        """
-        if annotation is not None and annotation in sample.annotations:
-            declared = sample.annotations[annotation].grid_id
-            if declared is not None:
-                if grid is not None and str(declared) != grid:
-                    raise MEDH5ValidationError(
-                        f"annotation {annotation!r} is on grid {str(declared)!r}, so a "
-                        f"window drawn from its foreground cannot be measured in "
-                        f"grid {grid!r}"
-                    )
-                return str(declared)
-        if grid is not None:
-            return grid
-        return str(sample.reference_grid.grid_id)
-
-    def _foreground_center(
-        self, sample: Sample, annotation: str, rng: np.random.Generator
-    ) -> tuple[tuple[int, ...], int, bool] | None:
-        """A foreground voxel, from the index when there is one."""
-        ann = sample.annotations[annotation]
-        classes = self._classes(ann)
-        if not classes:
-            return None
-        # A stale index is worse than no index: its coordinates point at
-        # foreground the annotation no longer has, so a centre drawn from it is
-        # silently not foreground and the training distribution shifts with
-        # nothing to show for it.  Scan instead, as the statistics path does.
-        index = (
-            sample.index.get(annotation) if annotation in sample.fresh_indices else None
-        )
-        if index is not None:
-            counts = index.voxel_counts
-            counted = {c: counts.get(c, 0) for c in classes if index.has_class(c)}
-            picked = self._pick_class(counted, rng)
-            if picked is not None:
-                coords = index.sample_foreground(picked, 1, rng)
-                return tuple(int(v) for v in coords[0]), picked, True
-        return self._scan_center(ann, classes, rng)
-
-    def _classes(self, ann: VoxelAnnotation) -> tuple[int, ...]:
-        if self.foreground_classes is None:
-            return tuple(ann.class_ids)
-        return tuple(ann.resolve_class(c) for c in self.foreground_classes)
+        """The grid a draw is measured in: the annotation's own where it has
+        one, *grid* where the caller named one, the reference grid otherwise."""
+        found: str = self._engine().window_grid(sample, annotation, grid)
+        return found
 
     def _pick_class(
         self, counts: Mapping[int, int], rng: np.random.Generator
     ) -> int | None:
         """Choose a class to sample from, weighted as configured."""
-        present = {c: n for c, n in counts.items() if n > 0}
-        if not present:
-            return None
-        if isinstance(self.class_weights, str):
-            if self.class_weights == "uniform":
-                weights = dict.fromkeys(present, 1.0)
-            elif self.class_weights == "inverse_frequency":
-                weights = {c: 1.0 / n for c, n in present.items()}
-            elif self.class_weights == "frequency":
-                weights = {c: float(n) for c, n in present.items()}
-            else:
-                raise MEDH5ValidationError(
-                    f"unknown class_weights {self.class_weights!r}"
-                )
-        else:
-            weights = {c: float(self.class_weights.get(c, 0.0)) for c in present}
-        total = sum(weights.values())
-        if total <= 0:
-            return None
-        keys = sorted(weights)
-        probabilities = [weights[k] / total for k in keys]
-        return int(rng.choice(keys, p=probabilities))
-
-    def _scan_center(
-        self,
-        ann: VoxelAnnotation,
-        classes: Sequence[int],
-        rng: np.random.Generator,
-    ) -> tuple[tuple[int, ...], int, bool] | None:
-        """The O(volume) fallback for a file with no sampling index."""
-        order = list(classes)
-        rng.shuffle(order)
-        for class_id in order:
-            mask = ann.dense([int(class_id)])[0]
-            coords = np.argwhere(mask)
-            if coords.shape[0]:
-                pick = int(rng.integers(0, coords.shape[0]))
-                return tuple(int(v) for v in coords[pick]), int(class_id), False
-        return None
+        found: int | None = self._engine().pick_class(counts, rng)
+        return found
 
 
 @dataclass(frozen=True, slots=True)
@@ -437,57 +291,31 @@ class TimepointPairSampler:
     A cross-sectional sample yields **no** pairs.  That is reported as a count
     rather than absorbed silently: a dataset that quietly drops nine tenths of
     its files looks exactly like one that is training normally.
+
+    A pair's ``label`` is the classification annotation whose ``timepoints``
+    is exactly that ordered pair: "grew 40 %" and "shrank 40 %" span the same
+    two visits and differ only in which one is the baseline.
     """
 
     __slots__ = ("mode",)
 
     def __init__(self, mode: str = "consecutive") -> None:
-        if mode not in PAIR_MODES:
-            raise MEDH5ValidationError(
-                f"unknown pair mode {mode!r}; expected one of {list(PAIR_MODES)}"
-            )
+        _core.sampling_check_pair_mode(mode)
         self.mode = mode
 
     def __repr__(self) -> str:
         return f"TimepointPairSampler({self.mode!r})"
 
     def pairs(self, sample: Sample) -> list[TimepointPair]:
-        ids = list(sample.timepoints.ids)
-        if len(ids) < 2:
-            return []
-        if self.mode == "consecutive":
-            combos = list(zip(ids, ids[1:], strict=False))
-        elif self.mode == "baseline_vs_all":
-            combos = [(ids[0], later) for later in ids[1:]]
-        else:
-            combos = [(a, b) for i, a in enumerate(ids) for b in ids[i + 1 :]]
         return [
-            TimepointPair(
-                first=a,
-                second=b,
-                interval_days=sample.timepoints.interval_days(a, b),
-                label=_change_label(sample, a, b),
+            TimepointPair(first, second, interval, label)
+            for first, second, interval, label in _core.sampling_pairs(
+                self.mode, sample
             )
-            for a, b in combos
         ]
 
     def __call__(self, sample: Sample) -> list[TimepointPair]:
         return self.pairs(sample)
-
-
-def _change_label(sample: Sample, first: str, second: str) -> str | None:
-    """The classification annotation whose ``timepoints`` is exactly this pair.
-
-    Ordered, not as a set: "grew 40 %" and "shrank 40 %" span the same two
-    visits and differ only in which one is the baseline, so a label written
-    ``(tp1, tp0)`` does not describe the forward pair ``(tp0, tp1)``.
-    """
-    for name, ann in sample.annotations.items():
-        if ann.kind != "classification":
-            continue
-        if tuple(ann.timepoints) == (first, second):
-            return name
-    return None
 
 
 @dataclass(slots=True)
@@ -542,49 +370,12 @@ def grid_patches(
     Every voxel is covered, and the last window on each axis is shifted inwards
     rather than padded, so predictions near the far edge come from real data.
     """
-    extent = tuple(int(v) for v in shape)
-    patch = coerce_patch_size(patch_size, len(extent))
-    if overlap < 0 or any(overlap >= p for p in patch):
-        raise MEDH5ValidationError("overlap must be non-negative and below patch_size")
-    starts_per_axis = []
-    for size, n in zip(patch, extent, strict=True):
-        step = size - overlap
-        if size >= n:
-            starts_per_axis.append([0])
-            continue
-        positions = list(range(0, n - size + 1, step))
-        if positions[-1] != n - size:
-            positions.append(n - size)
-        starts_per_axis.append(positions)
-    out: list[Patch] = []
-    for corner in _odometer(starts_per_axis):
-        slices = tuple(
-            slice(start, min(start + size, n))
-            for start, size, n in zip(corner, patch, extent, strict=True)
+    return [
+        Patch(**fields)
+        for fields in _core.sampling_grid_patches(
+            [int(v) for v in shape], patch_size, overlap=overlap, grid_id=grid_id
         )
-        pad = tuple(
-            (0, size - (s.stop - s.start))
-            for s, size in zip(slices, patch, strict=True)
-        )
-        out.append(
-            Patch(
-                slices=slices,
-                pad=pad,
-                center=tuple(s.start + (s.stop - s.start) // 2 for s in slices),
-                strategy="grid",
-                grid_id=grid_id,
-            )
-        )
-    return out
-
-
-def _odometer(axes: Sequence[Sequence[int]]) -> Iterator[tuple[int, ...]]:
-    if not axes:
-        yield ()
-        return
-    for head in axes[0]:
-        for tail in _odometer(axes[1:]):
-            yield (head, *tail)
+    ]
 
 
 __all__ = [

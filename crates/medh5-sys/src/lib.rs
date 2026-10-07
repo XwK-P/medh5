@@ -8,17 +8,23 @@
 //!   crates;
 //! * the **HDF5-Blosc2 filter** (HDF Group filter id 32026), upstream's own C
 //!   source, so chunks are written and read exactly as `hdf5plugin` writes and
-//!   reads them.
+//!   reads them;
+//! * the **HDF5 Zstandard filter** (id 32015) in the chunk format `hdf5plugin`
+//!   uses, for datasets other tools wrote into a file's extension groups.
 //!
-//! Nothing here interprets a MEDH5 file; the `medh5` crate does.  The one entry
-//! point beyond the raw bindings is [`register_blosc2_filter`], which must run
-//! before any Blosc2-compressed dataset is created or read.
+//! Nothing here interprets a MEDH5 file; the `medh5` crate does.  The entry
+//! points beyond the raw bindings are [`register_blosc2_filter`] and
+//! [`register_zstd_filter`], which must run before a dataset using either
+//! filter is created or read.
 
 #![allow(non_camel_case_types)]
 
 use std::os::raw::{c_char, c_int};
 
 pub use hdf5_metno_sys as hdf5_sys;
+
+mod zstd_filter;
+pub use zstd_filter::ZSTD_FILTER_ID;
 
 // The codec libraries are linked for their symbols alone; naming the crates
 // keeps them in the link even though no Rust code here calls them.
@@ -65,6 +71,28 @@ pub unsafe fn register_blosc2_filter() -> bool {
     unsafe { blosc2_init() };
     let ok = unsafe { register_blosc2(std::ptr::null_mut(), std::ptr::null_mut()) } >= 0
         && unsafe { hdf5_sys::h5z::H5Zfilter_avail(BLOSC2_FILTER_ID as _) } > 0;
+    STATE.store(if ok { 1 } else { 2 }, Ordering::Release);
+    ok
+}
+
+/// Register the HDF5 Zstandard filter (id 32015) with the process's HDF5
+/// library.
+///
+/// Idempotent; the same locking requirement as [`register_blosc2_filter`].
+/// Returns `false` when HDF5 refused the registration.
+///
+/// # Safety
+///
+/// Calls into the HDF5 C library; the caller must hold HDF5's global lock.
+pub unsafe fn register_zstd_filter() -> bool {
+    use std::sync::atomic::{AtomicU8, Ordering};
+    static STATE: AtomicU8 = AtomicU8::new(0);
+    match STATE.load(Ordering::Acquire) {
+        1 => return true,
+        2 => return false,
+        _ => {}
+    }
+    let ok = unsafe { zstd_filter::register() } && unsafe { hdf5_sys::h5z::H5Zfilter_avail(ZSTD_FILTER_ID as _) } > 0;
     STATE.store(if ok { 1 } else { 2 }, Ordering::Release);
     ok
 }

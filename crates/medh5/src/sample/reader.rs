@@ -378,7 +378,10 @@ impl Sample {
         Ok(found)
     }
 
-    fn frames_for(&self, key: &str) -> Result<Vec<String>> {
+    /// The frames a key names: a timepoint's (every grid's at that visit),
+    /// else a grid's own, else the key as a frame uid --- in that order,
+    /// because the namespaces are separate (§2.3) and may collide.
+    pub fn frames_for(&self, key: &str) -> Result<Vec<String>> {
         let timeline = self.timepoints()?;
         if timeline.contains(key) {
             return Ok(frames_of_timepoint(self.grids()?, key));

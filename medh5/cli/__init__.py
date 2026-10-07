@@ -48,6 +48,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     return int(code)
 
 
+def _what(exc: LookupError) -> str:
+    """The message a lookup failed with, or what was looked up.
+
+    ``str(KeyError('x'))`` is ``"'x'"``: the key alone, in quotes.  Most of
+    this package's lookups raise with a sentence that names what is available,
+    which is printed as it is; a bare key is named as one.  The rule is the
+    native CLI's, so a converter's error reads as an engine error does.
+    """
+    detail = exc.args[0] if len(exc.args) == 1 else exc
+    return str(_core.cli_lookup_message(str(detail)))
+
+
 def command_tree() -> dict[str, Any]:
     """The grammar as data: ``{"options", "positionals", "commands"}``,
     recursively --- what documentation is checked against."""

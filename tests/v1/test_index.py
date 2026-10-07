@@ -54,8 +54,10 @@ class TestChunking:
 
         On Linux that is a wasted fork+exec for a sysctl key that does not
         exist, in a package whose handle cache exists because HDF5 state must
-        not cross a fork --- and `os.popen` signalled failure by returning empty
-        output rather than by raising the `OSError` the handler caught.
+        not cross a fork.  The probe is the engine's now: it reads sysfs, and
+        its one process (`sysctl`, for macOS) is compiled in only on macOS.
+        What stays observable here: no Python process-spawning entry point is
+        reached, and the answer is positive and stable.
         """
         import os
         import subprocess
@@ -65,14 +67,12 @@ class TestChunking:
         def refuse(*args, **kwargs):
             raise AssertionError("L3 detection must not spawn a process here")
 
-        monkeypatch.setattr(chunking.sys, "platform", "linux")
         monkeypatch.setattr(os, "popen", refuse)
         monkeypatch.setattr(subprocess, "run", refuse)
-        chunking.detect_l3_bytes.cache_clear()
-        try:
-            assert chunking.detect_l3_bytes() > 0
-        finally:
-            chunking.detect_l3_bytes.cache_clear()
+        monkeypatch.setattr(subprocess, "Popen", refuse)
+        found = chunking.detect_l3_bytes()
+        assert found > 0
+        assert chunking.detect_l3_bytes() == found
 
     def test_axis_kinds_must_describe_the_shape(self):
         with pytest.raises(MEDH5ValidationError):
@@ -132,10 +132,9 @@ class TestCodecs:
             assert np.asarray(handle["images/CT"][0, 0, :4]).size == 4
 
     def test_is_bulk(self, sample_path):
-        import h5py
-
-        with h5py.File(sample_path) as handle:
-            assert not is_bulk(handle["annotations/organs_tp0/layer_class_ids"])
+        with medh5.open(sample_path) as sample:
+            stored = sample.root["annotations/organs_tp0/layer_class_ids"]
+            assert not is_bulk(stored)
 
 
 class TestSamplingIndex:

@@ -1,12 +1,15 @@
 """Per-worker file handles (spec §14.4).
 
-An open ``h5py.File`` **must not** cross a ``fork``.  The HDF5 library keeps
+An open HDF5 file **must not** cross a ``fork``.  The HDF5 library keeps
 state behind the file descriptor, and a child that inherits and then uses a
 parent's handle produces corrupt reads that look like data errors, not
 concurrency errors --- which is why they are usually diagnosed as a broken
 dataset months later.  The cache is therefore keyed by PID and abandoned
 (never closed --- the descriptors belong to the parent) as soon as it notices
-it is running somewhere else.
+it is running somewhere else.  Abandoning is explicit: each inherited sample
+pins its engine handle so that nothing in this process closes the file, and is
+kept alive for the life of the process, so no destructor of what it holds runs
+either.
 
 Reopening per ``__getitem__`` would be correct but costs an open per patch;
 with a 1000-file dataset and 8 workers that is the dominant cost in the
@@ -37,6 +40,16 @@ from medh5.sample import Sample, open_sample
 
 DEFAULT_MAXSIZE = 32
 
+_ABANDONED: list[Sample] = []
+"""Samples inherited across a fork: pinned, never closed, never collected."""
+
+
+def _abandon(samples: Iterator[Sample] | list[Sample]) -> None:
+    for sample in samples:
+        with contextlib.suppress(Exception):  # pragma: no cover - best effort
+            sample._handle.abandon()
+        _ABANDONED.append(sample)
+
 
 class HandleCache:
     """PID-scoped, thread-safe LRU cache of open samples."""
@@ -64,6 +77,7 @@ class HandleCache:
             # Abandon, never close: the descriptors are the parent's.  The lock
             # is replaced too --- one held by another of the parent's threads
             # at the fork is held forever in the child.
+            _abandon(list(self._items.values()))
             self._lock = threading.Lock()
             self._items = OrderedDict()
             self._pins = {}
@@ -144,6 +158,7 @@ class HandleCache:
 
     def clear(self) -> None:
         """Drop every handle without closing it --- the post-fork reset."""
+        _abandon(list(self._items.values()))
         self._lock = threading.Lock()
         self._items = OrderedDict()
         self._pins = {}

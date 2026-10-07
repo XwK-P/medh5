@@ -58,10 +58,16 @@ fn product(values: impl Iterator<Item = f64>) -> f64 {
 
 /// IoU of two `(S, 2)` boxes in the same space.
 pub fn box_iou(a: &Array2<f32>, b: &Array2<f32>) -> f64 {
+    box_iou_f64(&a.mapv(f64::from), &b.mapv(f64::from))
+}
+
+/// [`box_iou`] of float64 boxes, as a caller gives them rather than a file
+/// stores them.
+pub fn box_iou_f64(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
     let rows = a.nrows().min(b.nrows());
     let overlap = product((0..rows).map(|i| {
-        let lo = f64::from(a[[i, 0]]).max(f64::from(b[[i, 0]]));
-        let hi = f64::from(a[[i, 1]]).min(f64::from(b[[i, 1]]));
+        let lo = a[[i, 0]].max(b[[i, 0]]);
+        let hi = a[[i, 1]].min(b[[i, 1]]);
         let d = hi - lo;
         if d < 0.0 {
             0.0
@@ -72,7 +78,7 @@ pub fn box_iou(a: &Array2<f32>, b: &Array2<f32>) -> f64 {
     if overlap == 0.0 {
         return 0.0;
     }
-    let volume = |m: &Array2<f32>| product(m.outer_iter().map(|r| f64::from(r[1]) - f64::from(r[0])));
+    let volume = |m: &Array2<f64>| product(m.outer_iter().map(|r| r[1] - r[0]));
     let union = volume(a) + volume(b) - overlap;
     if union > 0.0 {
         overlap / union

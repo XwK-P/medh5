@@ -758,7 +758,7 @@ class TestW11Performance:
             assert reads <= 1, f"{encoding}: {reads} reads of {table}"
 
     def test_P06_the_occupancy_map_equals_the_loop_it_replaced(self):
-        from medh5.storage.index import _occupancy
+        from medh5.storage.index import occupancy as _occupancy
 
         rng = np.random.default_rng(0)
         for shape in [(9, 7, 5), (16, 16, 16), (33, 17, 8)]:

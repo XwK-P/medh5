@@ -552,38 +552,95 @@ pub fn require(obj: &hdf5::Location, name: &str, code: &str) -> Result<AttrValue
 /// value a later minor version wrote (§16) survives exactly as written ---
 /// an `int32` stays `int32`, a fixed-length string stays fixed-length.
 pub fn copy_raw(src: &hdf5::Location, dst: &hdf5::Location, name: &str) -> Result<()> {
-    use crate::h5sys::{h5a, h5p, h5s, h5t};
-    let cname = std::ffi::CString::new(name).map_err(|e| Error::Value(e.to_string()))?;
-    super::locked(|| unsafe {
-        let attr = h5a::H5Aopen(src.id(), cname.as_ptr(), h5p::H5P_DEFAULT);
-        if attr < 0 {
-            return Err(Error::Io(format!("could not open attribute {}", repr_str(name))));
-        }
-        let ftype = h5a::H5Aget_type(attr);
-        let space = h5a::H5Aget_space(attr);
-        let size = h5t::H5Tget_size(ftype);
-        let npoints = h5s::H5Sget_simple_extent_npoints(space).max(1) as usize;
-        let mut buf = vec![0u8; size * npoints];
-        let mut status = h5a::H5Aread(attr, ftype, buf.as_mut_ptr().cast());
-        if status >= 0 {
-            if h5a::H5Aexists(dst.id(), cname.as_ptr()) > 0 {
-                h5a::H5Adelete(dst.id(), cname.as_ptr());
+    RawAttr::capture(src, name)?.restore(dst)
+}
+
+/// An attribute captured exactly as stored --- its datatype, dataspace and
+/// bytes --- so it can be recreated after the object holding it is rebuilt,
+/// with nothing a typed decode would normalise (§16).
+pub struct RawAttr {
+    name: std::ffi::CString,
+    dtype: crate::h5sys::h5i::hid_t,
+    space: crate::h5sys::h5i::hid_t,
+    buf: Vec<u8>,
+    /// The buffer holds variable-length data HDF5 allocated, to reclaim.
+    vlen: bool,
+}
+
+// SAFETY: the identifiers and the variable-length memory they own are only
+// touched under HDF5's global lock.
+unsafe impl Send for RawAttr {}
+
+impl RawAttr {
+    /// Read attribute `name` of `obj` as stored.
+    pub fn capture(obj: &hdf5::Location, name: &str) -> Result<RawAttr> {
+        use crate::h5sys::{h5a, h5p, h5s, h5t};
+        let cname = std::ffi::CString::new(name).map_err(|e| Error::Value(e.to_string()))?;
+        super::locked(|| unsafe {
+            let attr = h5a::H5Aopen(obj.id(), cname.as_ptr(), h5p::H5P_DEFAULT);
+            if attr < 0 {
+                return Err(Error::Io(format!("could not open attribute {}", repr_str(name))));
             }
-            let out = h5a::H5Acreate2(dst.id(), cname.as_ptr(), ftype, space, h5p::H5P_DEFAULT, h5p::H5P_DEFAULT);
-            status = if out < 0 { -1 } else { h5a::H5Awrite(out, ftype, buf.as_ptr().cast()) };
+            let stored = h5a::H5Aget_type(attr);
+            let dtype = h5t::H5Tcopy(stored);
+            h5t::H5Tclose(stored);
+            let space = h5a::H5Aget_space(attr);
+            let size = h5t::H5Tget_size(dtype);
+            let npoints = h5s::H5Sget_simple_extent_npoints(space).max(1) as usize;
+            let mut buf = vec![0u8; size * npoints];
+            let status = h5a::H5Aread(attr, dtype, buf.as_mut_ptr().cast());
+            h5a::H5Aclose(attr);
+            let vlen =
+                h5t::H5Tdetect_class(dtype, h5t::H5T_class_t::H5T_VLEN) > 0 || h5t::H5Tis_variable_str(dtype) > 0;
+            let raw = RawAttr { name: cname, dtype, space, buf, vlen: vlen && status >= 0 };
+            if status < 0 {
+                return Err(Error::Io(format!("could not read attribute {}", repr_str(name))));
+            }
+            Ok(raw)
+        })
+    }
+
+    /// The attribute's name.
+    pub fn name(&self) -> &str {
+        self.name.to_str().unwrap_or_default()
+    }
+
+    /// Write it to `obj`, replacing an attribute of the same name.
+    pub fn restore(&self, obj: &hdf5::Location) -> Result<()> {
+        use crate::h5sys::{h5a, h5p};
+        super::locked(|| unsafe {
+            if h5a::H5Aexists(obj.id(), self.name.as_ptr()) > 0 {
+                h5a::H5Adelete(obj.id(), self.name.as_ptr());
+            }
+            let out = h5a::H5Acreate2(
+                obj.id(),
+                self.name.as_ptr(),
+                self.dtype,
+                self.space,
+                h5p::H5P_DEFAULT,
+                h5p::H5P_DEFAULT,
+            );
+            let status = if out < 0 { -1 } else { h5a::H5Awrite(out, self.dtype, self.buf.as_ptr().cast()) };
             if out >= 0 {
                 h5a::H5Aclose(out);
             }
-            if h5t::H5Tdetect_class(ftype, h5t::H5T_class_t::H5T_VLEN) > 0 || h5t::H5Tis_variable_str(ftype) > 0 {
-                h5t::H5Treclaim(ftype, space, h5p::H5P_DEFAULT, buf.as_mut_ptr().cast());
+            if status < 0 {
+                return Err(Error::Io(format!("could not copy attribute {}", repr_str(&self.name.to_string_lossy()))));
             }
-        }
-        h5s::H5Sclose(space);
-        h5t::H5Tclose(ftype);
-        h5a::H5Aclose(attr);
-        if status < 0 {
-            return Err(Error::Io(format!("could not copy attribute {}", repr_str(name))));
-        }
-        Ok(())
-    })
+            Ok(())
+        })
+    }
+}
+
+impl Drop for RawAttr {
+    fn drop(&mut self) {
+        use crate::h5sys::{h5p, h5s, h5t};
+        super::locked(|| unsafe {
+            if self.vlen {
+                h5t::H5Treclaim(self.dtype, self.space, h5p::H5P_DEFAULT, self.buf.as_mut_ptr().cast());
+            }
+            h5s::H5Sclose(self.space);
+            h5t::H5Tclose(self.dtype);
+        });
+    }
 }

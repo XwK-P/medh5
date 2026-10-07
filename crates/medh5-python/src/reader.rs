@@ -1035,6 +1035,7 @@ impl IndexHandle {
     fn max_coords(&self) -> R<i64> {
         Ok(self.inner.max_coords()?)
     }
+    #[getter]
     fn voxel_counts<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyDict>> {
         let out = PyDict::new(py);
         for (k, v) in self.inner.voxel_counts()? {
@@ -1113,6 +1114,15 @@ impl SampleHandle {
     }
 }
 
+/// The engine sample of a `SampleHandle`, or of a `Sample` holding one.
+pub fn sample_arg(obj: &Bound<'_, PyAny>) -> R<Arc<EngineSample>> {
+    if let Ok(handle) = obj.cast::<SampleHandle>() {
+        return handle.get().sample();
+    }
+    let inner = obj.getattr("_handle")?;
+    inner.cast::<SampleHandle>().map_err(PyErr::from)?.get().sample()
+}
+
 #[pymethods]
 impl SampleHandle {
     #[getter]
@@ -1130,6 +1140,25 @@ impl SampleHandle {
             drop(sample);
         }
     }
+    /// Make sure this process never closes the file: for a process that
+    /// inherited the handle across `fork`, where closing would call into HDF5
+    /// on descriptors that belong to the parent.  One reference to the engine
+    /// sample is leaked, so neither `close()` nor collection releases it.
+    /// Returns whether there was an open handle to pin.
+    fn abandon(&self) -> bool {
+        // `try_lock`: a lock another of the parent's threads held at the fork
+        // is held forever here; the caller keeps the object alive regardless.
+        match self.inner.try_lock() {
+            Ok(slot) => match slot.as_ref() {
+                Some(sample) => {
+                    std::mem::forget(Arc::clone(sample));
+                    true
+                }
+                None => false,
+            },
+            Err(_) => false,
+        }
+    }
     #[getter]
     fn is_open(&self) -> bool {
         self.inner.lock().unwrap().is_some()
@@ -1138,7 +1167,7 @@ impl SampleHandle {
         Ok(self.sample()?.repr()?)
     }
     fn document(&self) -> R<crate::document::SampleDocument> {
-        Ok(crate::document::SampleDocument { inner: self.sample()?.document()?.clone() })
+        Ok(crate::document::SampleDocument::owned(self.sample()?.document()?.clone()))
     }
     #[getter]
     fn version(&self) -> R<String> {
@@ -1222,6 +1251,9 @@ impl SampleHandle {
     }
     fn transform_between(&self, source: &str, target: &str) -> R<Option<TransformHandle>> {
         Ok(self.sample()?.transform_between(source, target)?.map(TransformHandle::wrap))
+    }
+    fn frames_for(&self, key: &str) -> R<Vec<String>> {
+        Ok(self.sample()?.frames_for(key)?)
     }
     fn resolve_frames(&self, from_frame: &str, to_frame: &str) -> R<Option<TransformHandle>> {
         Ok(self.sample()?.resolve_frames(from_frame, to_frame)?.map(TransformHandle::wrap))

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import stat
 import sys
 from pathlib import Path
@@ -211,8 +212,9 @@ class TestW14RewriteGate:
         with medh5.amend(path) as w:
             w.add_grid("g2", shape=big.shape, spacing=(1.0, 1.0, 1.0))
             w.add_mask("new", big, grid="g2")
-        with h5py.File(path, "r") as handle:
-            assert describe_filters(handle["annotations/new/data"]).startswith("gzip")
+        with medh5.open(path) as sample:
+            stored = sample.root["annotations/new/data"]
+            assert describe_filters(stored).startswith("gzip")
 
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
     def test_Q15_the_temporary_file_is_never_more_permissive(self, tmp_path: Path):
@@ -840,11 +842,11 @@ class TestW17Precision:
         with medh5.open(path) as sample:
             assert sample.annotations["seg"].has_ignore_region
 
-    def test_P10_the_overlap_graph_is_read_in_slabs(self, tmp_path: Path, monkeypatch):
-        from medh5.validate.rules import _overlap_edges
-
-        from medh5.annotations.voxel import payload
-
+    def test_P10_the_overlap_graph_is_read_in_slabs(self, tmp_path: Path):
+        """The slab-bounded read is the engine's (`overlap_edges_within`, held
+        at a 64-byte and a 1-byte budget by its Rust test); what W908 judges
+        from that graph is checked here: one overlap needs two layers, so two
+        layers are not too many."""
         path = tmp_path / "layers.medh5"
         liver = np.zeros(SHAPE, bool)
         liver[1:6] = True
@@ -859,9 +861,9 @@ class TestW17Precision:
                 masks={1: liver, 2: lesion, 3: spleen},
                 encoding="layers",
             )
-        monkeypatch.setattr(payload, "SLAB_BYTES", 64)
-        with h5py.File(path, "r") as handle:
-            assert _overlap_edges(handle["annotations/seg/data"], 65535) == {(1, 2)}
+        with medh5.open(path) as sample:
+            assert sample.annotations["seg"].kind == "layers"
+            assert sample.root["annotations/seg/data"].shape[0] == 2
         assert "W908" not in validate_file(path).codes
 
     @pytest.mark.parametrize("class_id", [0, -1, 65535, 70000])
@@ -1497,14 +1499,18 @@ class TestW19WriterEqualsValidator:
             w.add_segmentation("seg", grid="g", masks={1: mask})
         assert validate_file(path).ok
 
-    def test_L21_jsonschema_is_a_core_dependency(self):
+    def test_L21_the_schema_check_needs_no_optional_dependency(self):
+        """1.4.1 made jsonschema a core dependency so E005 was checked
+        everywhere.  2.0 compiles the validator into the engine: NumPy is the
+        only runtime dependency, and the check is always there."""
         from importlib.metadata import requires
 
-        from medh5.document import schema_available
+        from medh5.document import schema_available, validate_against_schema
 
         core = [r for r in requires("medh5") or () if "extra ==" not in r]
-        assert any(r.startswith("jsonschema") for r in core)
+        assert [re.split(r"[<>=!~ ;\[]", r, maxsplit=1)[0] for r in core] == ["numpy"]
         assert schema_available()
+        assert validate_against_schema({"identity": {}})
 
     def test_L21_S2_4_commit_checks_the_schema(self, tmp_path: Path):
         """A class key like `Left-Kidney` failed E005 only where jsonschema was."""

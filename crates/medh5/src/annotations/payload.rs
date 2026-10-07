@@ -160,21 +160,26 @@ pub const SLAB_BYTES: usize = 8 * 1024 * 1024;
 /// Selections that read `ds` in slabs within [`SLAB_BYTES`], with `prefix`
 /// fixing leading indices.  A row over the budget descends an axis instead.
 pub fn slabs(shape: &[usize], itemsize: usize, prefix: &[usize]) -> Vec<Vec<Index>> {
+    slabs_within(shape, itemsize, prefix, SLAB_BYTES)
+}
+
+/// [`slabs`] for a read budget of `budget` bytes.
+pub fn slabs_within(shape: &[usize], itemsize: usize, prefix: &[usize], budget: usize) -> Vec<Vec<Index>> {
     let rest = &shape[prefix.len()..];
     let mut out = Vec::new();
     if rest.is_empty() || rest[0] == 0 {
         return out;
     }
     let per_row = rest[1..].iter().product::<usize>() * itemsize;
-    if per_row > SLAB_BYTES && rest.len() > 1 {
+    if per_row > budget && rest.len() > 1 {
         for index in 0..rest[0] {
             let mut p = prefix.to_vec();
             p.push(index);
-            out.extend(slabs(shape, itemsize, &p));
+            out.extend(slabs_within(shape, itemsize, &p, budget));
         }
         return out;
     }
-    let step = (SLAB_BYTES / per_row.max(1)).min(rest[0]).max(1);
+    let step = (budget / per_row.max(1)).min(rest[0]).max(1);
     let mut start = 0;
     while start < rest[0] {
         let mut sel: Vec<Index> = prefix.iter().map(|i| Index::At(*i as i64)).collect();
@@ -210,9 +215,14 @@ pub fn count_nonzero(ds: &hdf5::Dataset) -> Result<u64> {
 
 /// How many voxels hold each value up to `ceiling`, in slabs.
 pub fn value_counts(ds: &hdf5::Dataset, ceiling: i64) -> Result<BTreeMap<i64, u64>> {
+    value_counts_within(ds, ceiling, SLAB_BYTES)
+}
+
+/// [`value_counts`] reading at most `budget` bytes at a time where a row fits.
+pub fn value_counts_within(ds: &hdf5::Dataset, ceiling: i64, budget: usize) -> Result<BTreeMap<i64, u64>> {
     let dtype = data::dtype(ds)?;
     let mut totals = vec![0u64; (ceiling.max(0) + 1) as usize];
-    for sel in slabs(&ds.shape(), dtype.itemsize(), &[]) {
+    for sel in slabs_within(&ds.shape(), dtype.itemsize(), &[], budget) {
         let block = data::read_region(ds, &sel)?;
         for v in block.cast::<i64>().iter() {
             if *v >= 0 && *v <= ceiling {
@@ -225,11 +235,17 @@ pub fn value_counts(ds: &hdf5::Dataset, ceiling: i64) -> Result<BTreeMap<i64, u6
 
 /// Per-plane population counts of a packed `uint64` bitmask: `(P, 64)`.
 pub fn popcounts(ds: &hdf5::Dataset) -> Result<Vec<[u64; 64]>> {
+    popcounts_within(ds, SLAB_BYTES)
+}
+
+/// [`popcounts`] reading at most `budget` bytes at a time where a row fits:
+/// one plane is read slab by slab, never whole.
+pub fn popcounts_within(ds: &hdf5::Dataset, budget: usize) -> Result<Vec<[u64; 64]>> {
     let shape = ds.shape();
     let planes = shape.first().copied().unwrap_or(0);
     let mut out = vec![[0u64; 64]; planes];
     for (plane, counts) in out.iter_mut().enumerate() {
-        for sel in slabs(&shape, 8, &[plane]) {
+        for sel in slabs_within(&shape, 8, &[plane], budget) {
             let block = data::read_region(ds, &sel)?;
             for word in block.cast::<u64>().iter() {
                 let mut w = *word;
@@ -282,6 +298,60 @@ pub fn unpackbits(packed: &[u8], n: usize) -> Vec<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The bytes one selection reads from a dataset of `shape`.
+    fn selection_bytes(shape: &[usize], itemsize: usize, sel: &[Index]) -> usize {
+        let mut n = itemsize;
+        for (axis, extent) in shape.iter().enumerate() {
+            n *= match sel.get(axis) {
+                Some(Index::At(_)) => 1,
+                Some(Index::Slice(s)) => {
+                    let start = s.start.unwrap_or(0).max(0) as usize;
+                    let stop = (s.stop.unwrap_or(*extent as i64).max(0) as usize).min(*extent);
+                    stop.saturating_sub(start)
+                }
+                _ => *extent,
+            };
+        }
+        n
+    }
+
+    #[test]
+    fn p09_s14_slabs_stay_within_the_budget_and_tile_the_dataset() {
+        for (shape, itemsize, prefix) in [
+            (vec![2, 16, 32, 32], 2, vec![]),  // layers, read whole: descends to rows
+            (vec![1, 16, 32, 32], 8, vec![0]), // one bitmask plane
+            (vec![3, 7, 5], 1, vec![]),        // rows smaller than the budget
+        ] {
+            let sels = slabs_within(&shape, itemsize, &prefix, 4096);
+            assert!(sels.iter().all(|sel| selection_bytes(&shape, itemsize, sel) <= 4096), "{shape:?}");
+            let whole: usize = shape[prefix.len()..].iter().product::<usize>() * itemsize;
+            let read: usize = sels.iter().map(|sel| selection_bytes(&shape, itemsize, sel)).sum();
+            assert_eq!(read, whole, "{shape:?}");
+        }
+    }
+
+    #[test]
+    fn p09_s14_plane_counts_read_within_the_slab_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = hdf5::File::create(dir.path().join("planes.h5")).unwrap();
+        let mut layers = ndarray::Array4::<u16>::zeros((2, 16, 32, 32));
+        layers.slice_mut(ndarray::s![0, 2..10, 2..20, 2..20]).fill(1);
+        layers.slice_mut(ndarray::s![1, .., .., 10..30]).fill(2);
+        let ds = file.new_dataset_builder().with_data(&layers).create("layers").unwrap();
+        let expected =
+            BTreeMap::from([(0, 2 * 16 * 32 * 32 - 8 * 18 * 18 - 16 * 32 * 20), (1, 8 * 18 * 18), (2, 16 * 32 * 20)]);
+        assert_eq!(value_counts_within(&ds, 2, 4096).unwrap(), expected);
+        assert_eq!(value_counts(&ds, 2).unwrap(), expected);
+
+        let mut words = ndarray::Array4::<u64>::zeros((1, 16, 32, 32));
+        words.slice_mut(ndarray::s![0, 2..10, 2..20, 2..20]).fill(0b01);
+        words.slice_mut(ndarray::s![0, .., .., 10..30]).mapv_inplace(|w| w | 0b10);
+        let ds = file.new_dataset_builder().with_data(&words).create("bitmask").unwrap();
+        let counts = popcounts_within(&ds, 4096).unwrap();
+        assert_eq!((counts[0][0], counts[0][1]), (8 * 18 * 18, 16 * 32 * 20));
+        assert_eq!(popcounts(&ds).unwrap(), counts);
+    }
 
     #[test]
     fn bits_pack_like_numpy() {

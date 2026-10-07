@@ -184,7 +184,8 @@ fn loc_of(obj: &Bound<'_, PyAny>) -> PyResult<Loc> {
     Ok(Loc::Group(root.cast::<Group>()?.get().group.clone()))
 }
 
-fn group_of(obj: &Bound<'_, PyAny>) -> PyResult<medh5::hdf5::Group> {
+/// The group a `Group` proxy or a `Sample` (its root) stands for.
+pub(crate) fn group_of(obj: &Bound<'_, PyAny>) -> PyResult<medh5::hdf5::Group> {
     match loc_of(obj)? {
         Loc::Group(g) => Ok(g),
         Loc::Dataset(_) => Err(pyo3::exceptions::PyTypeError::new_err("expected a group, not a dataset")),
@@ -226,7 +227,8 @@ fn attr_names_arg(
 /// The digest of a stored dataset over its decompressed content (§13.1).
 #[pyfunction]
 #[pyo3(signature = (dataset, path=None, algo="sha256"))]
-fn dataset_digest(dataset: &Bound<'_, Dataset>, path: Option<String>, algo: &str) -> R<String> {
+fn dataset_digest(dataset: &Bound<'_, PyAny>, path: Option<String>, algo: &str) -> R<String> {
+    let dataset = crate::nodes::dataset_arg(dataset)?;
     let ds = &dataset.get().ds;
     let path = path.unwrap_or_else(|| ds.name().trim_start_matches('/').to_string());
     Ok(digest::dataset_digest(ds, &path, algo)?)
@@ -322,8 +324,8 @@ fn verify_root<'py>(
 }
 
 #[pyfunction]
-fn raw_chunks<'py>(py: Python<'py>, dataset: &Bound<'py, Dataset>) -> R<Bound<'py, PyList>> {
-    let chunks = verify::raw_chunks(&dataset.get().ds)?;
+fn raw_chunks<'py>(py: Python<'py>, dataset: &Bound<'py, PyAny>) -> R<Bound<'py, PyList>> {
+    let chunks = verify::raw_chunks(&crate::nodes::dataset_arg(dataset)?.get().ds)?;
     Ok(PyList::new(py, chunks.iter().map(|c| PyBytes::new(py, c)))?)
 }
 

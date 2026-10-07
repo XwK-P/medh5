@@ -358,6 +358,11 @@ pub struct SampleWriter {
 }
 
 impl SampleWriter {
+    /// The engine writer, while it can still be written to.
+    pub(crate) fn engine(&mut self) -> R<&mut EngineWriter> {
+        self.writer()
+    }
+
     fn writer(&mut self) -> R<&mut EngineWriter> {
         if self.inner.is_closed() {
             return Err(medh5::Error::invalid("this writer has already committed or aborted").into());
@@ -435,14 +440,15 @@ impl SampleWriter {
         self.inner.is_closed()
     }
 
-    /// The sample document as it stands (a copy: assign to replace it).
+    /// The sample document being built.  Live: assigning one of its fields
+    /// edits the writer's document, and `commit` validates the result.
     #[getter]
-    fn document(&self) -> crate::document::SampleDocument {
-        crate::document::SampleDocument { inner: self.inner.document().clone() }
+    fn document(slf: &Bound<'_, Self>) -> crate::document::SampleDocument {
+        crate::document::SampleDocument::of_writer(slf.clone().unbind())
     }
 
     #[setter]
-    fn set_document(&mut self, document: &Bound<'_, PyAny>) -> R<()> {
+    fn set_document(slf: &Bound<'_, Self>, document: &Bound<'_, PyAny>) -> R<()> {
         let Ok(doc) = document.cast::<crate::document::SampleDocument>() else {
             return Err(medh5::Error::invalid(format!(
                 "document must be a SampleDocument, not {}",
@@ -450,8 +456,14 @@ impl SampleWriter {
             ))
             .into());
         };
-        let doc = doc.borrow().inner.clone();
-        self.writer()?.set_document(doc);
+        let doc = doc.try_borrow()?;
+        if doc.is_view_of(slf.as_ptr()) {
+            // `w.document = w.document`: already the writer's own.
+            return Ok(());
+        }
+        let value = doc.current(slf.py())?;
+        drop(doc);
+        slf.try_borrow_mut()?.writer()?.set_document(value);
         Ok(())
     }
 

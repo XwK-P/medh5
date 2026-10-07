@@ -28,10 +28,11 @@ re-stamp, leakage needs a re-split.
 from __future__ import annotations
 
 import os
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from medh5 import _core
 from medh5.curation.identity import SplitClaim
 
 
@@ -54,13 +55,8 @@ class Membership:
         return self.claim.partition
 
     def to_json(self) -> dict[str, Any]:
-        return {
-            "path": self.path,
-            "sample_id": self.sample_id,
-            "subject_id": self.subject_id,
-            "group_id": self.group_id,
-            **self.claim.to_json(),
-        }
+        result: dict[str, Any] = _core.audit_membership_json(self)
+        return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,26 +77,12 @@ class Leak:
     subjects: tuple[str, ...] = ()
 
     def to_json(self) -> dict[str, Any]:
-        return {
-            "set_id": self.set_id,
-            "group_id": self.group_id,
-            "partitions": list(self.partitions),
-            "paths": list(self.paths),
-            "groups": list(self.groups or (self.group_id,)),
-            "subjects": list(self.subjects),
-        }
+        result: dict[str, Any] = _core.audit_leak_json(self)
+        return result
 
     def __str__(self) -> str:
-        joined = (
-            f" (joined with {', '.join(repr(g) for g in self.groups[1:])} by "
-            f"subject {', '.join(repr(s) for s in self.subjects)})"
-            if len(self.groups) > 1
-            else ""
-        )
-        return (
-            f"{self.set_id}: group {self.group_id!r}{joined} is in "
-            f"{', '.join(self.partitions)} ({len(self.paths)} files)"
-        )
+        result: str = _core.audit_leak_line(self)
+        return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,19 +94,12 @@ class Conflict:
     paths_by_manifest: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
 
     def to_json(self) -> dict[str, Any]:
-        return {
-            "set_id": self.set_id,
-            "manifests": list(self.manifests),
-            "paths_by_manifest": {
-                k: list(v) for k, v in self.paths_by_manifest.items()
-            },
-        }
+        result: dict[str, Any] = _core.audit_conflict_json(self)
+        return result
 
     def __str__(self) -> str:
-        return (
-            f"{self.set_id}: {len(self.manifests)} different manifest hashes "
-            f"({', '.join(m[:12] for m in self.manifests)})"
-        )
+        result: str = _core.audit_conflict_line(self)
+        return result
 
 
 @dataclass(slots=True)
@@ -140,107 +115,46 @@ class SplitAudit:
 
     @property
     def ok(self) -> bool:
-        return not self.conflicts and not self.leaks and not self.unreadable
+        result: bool = _core.audit_ok(self)
+        return result
 
     @property
     def set_ids(self) -> tuple[str, ...]:
-        return tuple(sorted({m.set_id for m in self.memberships}))
+        result: tuple[str, ...] = _core.audit_set_ids(self)
+        return result
 
     def partitions(self, set_id: str) -> dict[str, tuple[str, ...]]:
         """``partition -> sample ids`` for one split."""
-        out: dict[str, list[str]] = {}
-        for member in self.memberships:
-            if member.set_id == set_id:
-                out.setdefault(member.partition, []).append(member.sample_id)
-        return {k: tuple(sorted(v)) for k, v in sorted(out.items())}
+        result: dict[str, tuple[str, ...]] = _core.audit_partitions(self, set_id)
+        return result
 
     def counts(self) -> dict[str, dict[str, int]]:
-        return {
-            set_id: {k: len(v) for k, v in self.partitions(set_id).items()}
-            for set_id in self.set_ids
-        }
+        result: dict[str, dict[str, int]] = _core.audit_counts(self)
+        return result
 
     def to_json(self) -> dict[str, Any]:
-        return {
-            "ok": self.ok,
-            "sets": self.set_ids,
-            "counts": self.counts(),
-            "conflicts": [c.to_json() for c in self.conflicts],
-            "leaks": [leak.to_json() for leak in self.leaks],
-            "unclaimed": list(self.unclaimed),
-            "unreadable": [{"path": p, "error": e} for p, e in self.unreadable],
-        }
+        result: dict[str, Any] = _core.audit_json(self)
+        return result
+
+    @classmethod
+    def from_fields(cls, fields: Mapping[str, Any]) -> SplitAudit:
+        """The audit the engine reported, as its field values."""
+        return cls(
+            memberships=tuple(Membership(**m) for m in fields["memberships"]),
+            conflicts=tuple(Conflict(**c) for c in fields["conflicts"]),
+            leaks=tuple(Leak(**leak) for leak in fields["leaks"]),
+            unclaimed=tuple(fields["unclaimed"]),
+            unreadable=tuple(fields["unreadable"]),
+        )
 
 
 def audit_splits(paths: Sequence[str | os.PathLike[str]]) -> SplitAudit:
-    """Read every file's claims and cross-check them (spec §12.3)."""
-    memberships: list[Membership] = []
-    unclaimed: list[str] = []
-    unreadable: list[tuple[str, str]] = []
-    for path in paths:
-        try:
-            found = list(_memberships_of(path))
-        except Exception as exc:
-            unreadable.append((os.fspath(path), f"{type(exc).__name__}: {exc}"))
-            continue
-        if not found:
-            unclaimed.append(os.fspath(path))
-        memberships.extend(found)
-    return SplitAudit(
-        memberships=tuple(memberships),
-        conflicts=_conflicts(memberships),
-        leaks=_leaks(memberships),
-        unclaimed=tuple(sorted(unclaimed)),
-        unreadable=tuple(sorted(unreadable)),
-    )
+    """Read every file's claims and cross-check them (spec §12.3).
 
-
-def _memberships_of(path: str | os.PathLike[str]) -> Iterator[Membership]:
-    """Every claim in a file, whether it holds one sample or many."""
-    from medh5.collection import open_any
-    from medh5.sample import Sample
-
-    text = os.fspath(path)
-    with open_any(path) as opened:
-        samples = (
-            [("", opened)]
-            if isinstance(opened, Sample)
-            else [(key, opened[key]) for key in opened]
-        )
-        for key, sample in samples:
-            document = sample.document
-            identity = document.identity
-            location = text if not key else f"{text}::{key}"
-            for claim in document.splits:
-                yield Membership(
-                    path=location,
-                    sample_id=identity.sample_id,
-                    subject_id=identity.subject_id,
-                    group_id=document.cohort.grouping_key(identity.subject_id),
-                    claim=claim,
-                )
-
-
-def _conflicts(memberships: Sequence[Membership]) -> tuple[Conflict, ...]:
-    by_set: dict[str, dict[str, list[str]]] = {}
-    for member in memberships:
-        digest = member.claim.manifest_sha256
-        if not digest:
-            continue
-        by_set.setdefault(member.set_id, {}).setdefault(digest, []).append(member.path)
-    out = []
-    for set_id, by_manifest in sorted(by_set.items()):
-        if len(by_manifest) > 1:
-            out.append(
-                Conflict(
-                    set_id=set_id,
-                    manifests=tuple(sorted(by_manifest)),
-                    paths_by_manifest={
-                        k: tuple(sorted(v)) for k, v in sorted(by_manifest.items())
-                    },
-                )
-            )
-    return tuple(out)
+    A file that cannot be read is listed under ``unreadable`` rather than
+    stopping the audit: one bad file must not hide a leak in the others.
+    """
+    return SplitAudit.from_fields(_core.audit_splits([os.fspath(p) for p in paths]))
 
 
 def anatomy_units(pairs: Iterable[tuple[str, str]]) -> dict[str, tuple[str, ...]]:
@@ -256,47 +170,8 @@ def anatomy_units(pairs: Iterable[tuple[str, str]]) -> dict[str, tuple[str, ...]
     component of subjects and keys (union--find): two files are one unit if
     they share either, transitively.
     """
-    parent: dict[tuple[str, str], tuple[str, str]] = {}
-
-    def find(node: tuple[str, str]) -> tuple[str, str]:
-        parent.setdefault(node, node)
-        while parent[node] != node:
-            parent[node] = parent[parent[node]]
-            node = parent[node]
-        return node
-
-    for subject, group in pairs:
-        a, b = find(("subject", subject)), find(("group", group))
-        if a != b:
-            parent[max(a, b)] = min(a, b)
-    members: dict[tuple[str, str], list[str]] = {}
-    for node in list(parent):
-        if node[0] == "group":
-            members.setdefault(find(node), []).append(node[1])
-    return {group: tuple(sorted(unit)) for unit in members.values() for group in unit}
-
-
-def _leaks(memberships: Sequence[Membership]) -> tuple[Leak, ...]:
-    units = anatomy_units((m.subject_id, m.group_id) for m in memberships)
-    by_unit: dict[tuple[str, tuple[str, ...]], list[Membership]] = {}
-    for member in memberships:
-        key = (member.set_id, units[member.group_id])
-        by_unit.setdefault(key, []).append(member)
-    out = []
-    for (set_id, groups), members in sorted(by_unit.items()):
-        partitions = sorted({m.partition for m in members})
-        if len(partitions) > 1:
-            out.append(
-                Leak(
-                    set_id=set_id,
-                    group_id=groups[0],
-                    partitions=tuple(partitions),
-                    paths=tuple(sorted(m.path for m in members)),
-                    groups=groups,
-                    subjects=tuple(sorted({m.subject_id for m in members})),
-                )
-            )
-    return tuple(out)
+    result: dict[str, tuple[str, ...]] = _core.audit_anatomy_units(list(pairs))
+    return result
 
 
 __all__ = [

@@ -11,7 +11,6 @@ use medh5::storage::{chunking, codecs, index, recompress as rc};
 use crate::convert::{array_to_py, bool_array, class_keys, json_to_py, opt_strings};
 use crate::errors::R;
 use crate::geometry::grid_arg;
-use crate::nodes::Dataset;
 
 // -- codecs ------------------------------------------------------------------------------
 
@@ -88,14 +87,14 @@ fn dataset_layout<'py>(
 
 /// A dataset's actual HDF5 filter pipeline, e.g. `blosc2:zstd:3+shuffle`.
 #[pyfunction]
-fn describe_filters(dataset: &Bound<'_, Dataset>) -> R<String> {
-    Ok(codecs::describe_filters(&dataset.get().ds)?)
+fn describe_filters(dataset: &Bound<'_, PyAny>) -> R<String> {
+    Ok(codecs::describe_filters(&crate::nodes::dataset_arg(dataset)?.get().ds)?)
 }
 
 /// Whether a dataset is large enough for the W902 warning.
 #[pyfunction]
-fn is_bulk(dataset: &Bound<'_, Dataset>) -> bool {
-    codecs::is_bulk(&dataset.get().ds)
+fn is_bulk(dataset: &Bound<'_, PyAny>) -> PyResult<bool> {
+    Ok(codecs::is_bulk(&crate::nodes::dataset_arg(dataset)?.get().ds))
 }
 
 /// `portable` when every dataset of the file needs only HDF5's own filters,
@@ -275,6 +274,18 @@ fn build_index(
     Ok(IndexPayload { inner: payload })
 }
 
+/// Every stored index entry under a sample root (`Sample.root`, or the
+/// `Sample`), by annotation id.
+#[pyfunction]
+fn read_indices<'py>(py: Python<'py>, root: &Bound<'py, PyAny>) -> R<Bound<'py, PyDict>> {
+    let group = crate::integrity::group_of(root)?;
+    let out = PyDict::new(py);
+    for (name, found) in index::read_indices(&group)? {
+        out.set_item(name, crate::reader::IndexHandle { inner: std::sync::Arc::new(found) })?;
+    }
+    Ok(out)
+}
+
 /// The occupancy map of a mask: one bit per `factor`-cube of voxels.
 #[pyfunction]
 fn occupancy<'py>(py: Python<'py>, mask: &Bound<'py, PyAny>, factor: usize) -> R<Bound<'py, PyAny>> {
@@ -333,6 +344,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         wrap_pyfunction!(chunk_report, m)?,
         wrap_pyfunction!(build_index, m)?,
         wrap_pyfunction!(occupancy, m)?,
+        wrap_pyfunction!(read_indices, m)?,
         wrap_pyfunction!(recompress, m)?,
         wrap_pyfunction!(recompress_paths, m)?,
     ] {

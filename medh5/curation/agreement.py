@@ -35,51 +35,41 @@ stored in the file it described --- the schema admits only numeric keys.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field, replace
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import numpy.typing as npt
 
+from medh5 import _core
 from medh5.curation.quality import Agreement
-from medh5.errors import MEDH5ValidationError
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from medh5.annotations.base import Annotation, VoxelAnnotation
 
-DEFAULT_IOU = 0.5
+DEFAULT_IOU: float = _core.AGREEMENT_DEFAULT_IOU
+
+OBJECT_KINDS: tuple[str, ...] = _core.AGREEMENT_OBJECT_KINDS
+"""Kinds whose objects carry an axis-aligned box that IoU can be taken over."""
 
 
 def dice(a: npt.NDArray[np.bool_], b: npt.NDArray[np.bool_]) -> float | None:
     """Sørensen--Dice, or ``None`` when both masks are empty."""
-    total = int(a.sum()) + int(b.sum())
-    if total == 0:
-        return None
-    return 2.0 * float(np.count_nonzero(a & b)) / total
+    result: float | None = _core.agreement_dice(a, b)
+    return result
 
 
 def iou(a: npt.NDArray[np.bool_], b: npt.NDArray[np.bool_]) -> float | None:
     """Intersection over union, or ``None`` when both masks are empty."""
-    union = int(np.count_nonzero(a | b))
-    if union == 0:
-        return None
-    return float(np.count_nonzero(a & b)) / union
+    result: float | None = _core.agreement_iou(a, b)
+    return result
 
 
 def box_iou(a: npt.ArrayLike, b: npt.ArrayLike) -> float:
     """IoU of two ``(S, 2)`` boxes in the same space."""
-    first = np.asarray(a, dtype=np.float64)
-    second = np.asarray(b, dtype=np.float64)
-    lo = np.maximum(first[:, 0], second[:, 0])
-    hi = np.minimum(first[:, 1], second[:, 1])
-    overlap = float(np.prod(np.clip(hi - lo, 0.0, None)))
-    if overlap == 0.0:
-        return 0.0
-    volume_a = float(np.prod(first[:, 1] - first[:, 0]))
-    volume_b = float(np.prod(second[:, 1] - second[:, 0]))
-    union = volume_a + volume_b - overlap
-    return overlap / union if union > 0.0 else 0.0
+    result: float = _core.agreement_box_iou(a, b)
+    return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,30 +91,17 @@ class VoxelAgreement:
         ``None`` when no class was: 0 would report total disagreement for a
         comparison that measured nothing.
         """
-        values = list(self.per_class.values())
-        return float(np.mean(values)) if values else None
+        result: float | None = _core.agreement_voxel_value(self)
+        return result
 
     def to_record(self) -> Agreement:
-        """The :class:`Agreement` a ``quality`` record stores (§11.2)."""
-        value = _measured(self.value, self.skipped)
-        return Agreement(
-            metric=self.metric,
-            value=value,
-            against=self.against,
-            per_class={
-                str(self._class_id(key)): score for key, score in self.per_class.items()
-            },
-        )
+        """The :class:`Agreement` a ``quality`` record stores (§11.2).
 
-    def _class_id(self, key: str) -> int:
-        if key in self.class_ids:
-            return int(self.class_ids[key])
-        if key.isdigit():
-            return int(key)
-        raise MEDH5ValidationError(
-            f"per-class score {key!r} names no class id; a `quality.agreement` "
-            "record is keyed by class id (§11.2)"
-        )
+        Keyed by class id, as the schema keys ``per_class``; refused when
+        nothing was comparable, because 0 would record a disagreement nobody
+        measured.
+        """
+        return _core.agreement_voxel_record(self)
 
     def to_json(self) -> dict[str, Any]:
         """The report, which states an undefined comparison rather than refusing.
@@ -134,13 +111,8 @@ class VoxelAgreement:
         reader needs to see.  ``per_class`` is keyed as the attribute is, by
         class key; the record keys it by id.
         """
-        out: dict[str, Any] = {"metric": self.metric, "value": self.value}
-        if self.against is not None:
-            out["against"] = self.against
-        out["per_class"] = dict(self.per_class)
-        out["skipped"] = list(self.skipped)
-        out["compared"] = len(self.per_class)
-        return out
+        result: dict[str, Any] = _core.agreement_voxel_json(self)
+        return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,19 +139,14 @@ class InstanceAgreement:
         both found nothing agree; scoring that 0 punished them for it, and the
         record it wrote said so in the file.
         """
-        true_positives = len(self.matched)
-        if true_positives + len(self.only_in_a) + len(self.only_in_b) == 0:
-            return None
-        if true_positives == 0:
-            return 0.0
-        precision = true_positives / (true_positives + len(self.only_in_b))
-        recall = true_positives / (true_positives + len(self.only_in_a))
-        return 2 * precision * recall / (precision + recall)
+        result: float | None = _core.agreement_instance_value(self)
+        return result
 
     @property
     def mean_iou(self) -> float | None:
         """Mean IoU of the matched pairs; ``None`` when nothing matched."""
-        return float(np.mean([m[2] for m in self.matched])) if self.matched else None
+        result: float | None = _core.agreement_instance_mean_iou(self)
+        return result
 
     def to_record(self) -> Agreement:
         """The :class:`Agreement` a ``quality`` record stores (§11.2).
@@ -188,44 +155,11 @@ class InstanceAgreement:
         used to put there under the key ``mean_iou`` made every record fail the
         schema.
         """
-        return Agreement(
-            metric="object_f1",
-            value=_measured(self.value, self.skipped),
-            against=self.against,
-        )
+        return _core.agreement_instance_record(self)
 
     def to_json(self) -> dict[str, Any]:
-        return {
-            "metric": "object_f1",
-            "value": self.value,
-            "mean_iou": self.mean_iou,
-            "matched": [list(m) for m in self.matched],
-            "only_in_a": list(self.only_in_a),
-            "only_in_b": list(self.only_in_b),
-            "matched_by": self.matched_by,
-            "threshold": self.threshold,
-            "class_mismatches": [list(m) for m in self.class_mismatches],
-            "skipped": list(self.skipped),
-            "against": self.against,
-        }
-
-
-def _measured(value: float | None, skipped: Sequence[str]) -> float:
-    """A value worth recording, or a refusal that says why there is none."""
-    if value is None:
-        reason = f" (not scored: {', '.join(skipped)})" if skipped else ""
-        raise MEDH5ValidationError(
-            "nothing was comparable, so there is no agreement to record"
-            f"{reason}; agreement on an empty comparison is undefined, and "
-            "recording 0 would report a disagreement nobody measured"
-        )
-    return value
-
-
-@dataclass(slots=True)
-class _Pair:
-    classes: list[int] = field(default_factory=list)
-    skipped: list[str] = field(default_factory=list)
+        result: dict[str, Any] = _core.agreement_instance_json(self)
+        return result
 
 
 def compare_voxel(
@@ -236,58 +170,9 @@ def compare_voxel(
     classes: Sequence[int | str] | None = None,
 ) -> VoxelAgreement:
     """Per-class Dice or IoU between two voxel annotations on the same grid."""
-    if metric not in ("dice", "iou"):
-        raise MEDH5ValidationError(f"unknown agreement metric {metric!r}")
-    if a.grid_id != b.grid_id:
-        raise MEDH5ValidationError(
-            f"annotations {a.ann_id!r} and {b.ann_id!r} are on different grids "
-            f"({a.grid_id!r} vs {b.grid_id!r}); resample before comparing",
-            code="E101",
-        )
-    pair = _classes_to_compare(a, b, classes)
-    scorer = dice if metric == "dice" else iou
-    per_class: dict[str, float] = {}
-    ids: dict[str, int] = {}
-    skipped = list(pair.skipped)
-    for class_id in pair.classes:
-        left = a.dense([class_id])[0]
-        right = b.dense([class_id])[0]
-        score = scorer(left, right)
-        key = a.class_key(class_id)
-        if score is None:
-            skipped.append(f"{key} (empty in both)")
-            continue
-        per_class[key] = score
-        ids[key] = int(class_id)
     return VoxelAgreement(
-        metric=metric,
-        per_class=per_class,
-        skipped=tuple(skipped),
-        against=f"annotations/{b.ann_id}",
-        class_ids=ids,
+        **_core.agreement_compare_voxel(a, b, metric=metric, classes=classes)
     )
-
-
-def _classes_to_compare(
-    a: Annotation, b: Annotation, classes: Sequence[int | str] | None
-) -> _Pair:
-    """Classes both sides committed to finding, in a stable order (§11.3)."""
-    out = _Pair()
-    if classes is not None:
-        wanted: Iterable[int] = [a.resolve_class(c) for c in classes]
-    else:
-        wanted = sorted(set(a.class_ids) | set(b.class_ids))
-    for class_id in wanted:
-        examined = a.is_annotated(class_id) and b.is_annotated(class_id)
-        if not examined:
-            out.skipped.append(f"{a.class_key(class_id)} (not examined by both)")
-            continue
-        out.classes.append(class_id)
-    return out
-
-
-OBJECT_KINDS = ("instances", "boxes")
-"""Kinds whose objects carry an axis-aligned box that IoU can be taken over."""
 
 
 def compare_instances(
@@ -309,156 +194,8 @@ def compare_instances(
     boxes, the same frame for ``world`` boxes.  Boxes on a 4 mm and a 1 mm grid
     compared in raw index units overlap where the anatomy does not.
     """
-    for ann in (a, b):
-        if ann.kind not in OBJECT_KINDS:
-            raise MEDH5ValidationError(
-                f"annotation {ann.ann_id!r} is {ann.kind!r}; object agreement needs "
-                f"objects with boxes ({', '.join(OBJECT_KINDS)}). Compare voxel "
-                "annotations with `compare_voxel`"
-            )
-    _check_same_space(a, b)
-    pair = _classes_to_compare(a, b, classes)
-    left = list(_objects(a))
-    right = list(_objects(b))
-    if classes is not None:
-        asked = {a.resolve_class(c) for c in classes}
-        left = [o for o in left if o.class_id in asked]
-        right = [o for o in right if o.class_id in asked]
-    ids_a = {o.instance_id for o in left}
-    ids_b = {o.instance_id for o in right}
-    shared = ids_a & ids_b
-    if shared and _declares_ids(a) and _declares_ids(b):
-        result = _match_by_id(left, right, shared, threshold, b.ann_id)
-    else:
-        result = _match_by_iou(left, right, threshold, b.ann_id)
-    class_a = {o.index: o.class_id for o in left}
-    class_b = {o.index: o.class_id for o in right}
-    looked_a = set(a.annotated_class_ids)
-    looked_b = set(b.annotated_class_ids)
-    return replace(
-        result,
-        only_in_a=tuple(i for i in result.only_in_a if class_a[i] in looked_b),
-        only_in_b=tuple(j for j in result.only_in_b if class_b[j] in looked_a),
-        skipped=tuple(pair.skipped),
-    )
-
-
-def _space_of(ann: Annotation) -> str:
-    return str(ann.header.space or "index")
-
-
-def _frame_of(ann: Annotation) -> str | None:
-    if ann.header.frame_uid is not None:
-        return ann.header.frame_uid
-    try:
-        return ann.grid.frame_uid
-    except MEDH5ValidationError:
-        return None
-
-
-def _check_same_space(a: Annotation, b: Annotation) -> None:
-    """Refuse two coordinate systems that cannot be compared number for number."""
-    space_a, space_b = _space_of(a), _space_of(b)
-    if space_a != space_b:
-        raise MEDH5ValidationError(
-            f"annotations {a.ann_id!r} and {b.ann_id!r} store boxes in different "
-            f"spaces ({space_a!r} vs {space_b!r}); convert one before comparing",
-            code="E414",
-        )
-    if space_a == "world":
-        # World boxes compare within one frame; one grid is one frame.  Two
-        # annotations without a grid would pass a grid test as `None == None`.
-        if a.grid_id is not None and a.grid_id == b.grid_id:
-            return
-        frame_a, frame_b = _frame_of(a), _frame_of(b)
-        if frame_a is not None and frame_a == frame_b:
-            return
-        raise MEDH5ValidationError(
-            f"annotations {a.ann_id!r} and {b.ann_id!r} are in frames "
-            f"{frame_a!r} and {frame_b!r}; a transform is required to relate them",
-            code="E414",
-        )
-    if a.grid_id != b.grid_id:
-        raise MEDH5ValidationError(
-            f"annotations {a.ann_id!r} and {b.ann_id!r} are on different grids "
-            f"({a.grid_id!r} vs {b.grid_id!r}); their index coordinates count "
-            "different voxels, so resample or convert before comparing",
-            code="E101",
-        )
-
-
-def _declares_ids(ann: Annotation) -> bool:
-    from medh5.curation.tracking import carries_instance_ids
-
-    return carries_instance_ids(ann)
-
-
-def _objects(ann: Annotation) -> Iterable[Any]:
-    from medh5.curation.tracking import _objects as objects_of
-
-    return list(objects_of(ann))
-
-
-def _match_by_id(
-    left: Sequence[Any],
-    right: Sequence[Any],
-    shared: set[int],
-    threshold: float,
-    against: str,
-) -> InstanceAgreement:
-    by_id_b = {o.instance_id: o for o in right}
-    matched: list[tuple[int, int, float]] = []
-    mismatches: list[tuple[int, int, int]] = []
-    for obj in left:
-        if obj.instance_id not in shared:
-            continue
-        other = by_id_b[obj.instance_id]
-        matched.append((obj.index, other.index, box_iou(obj.box, other.box)))
-        if obj.class_id != other.class_id:
-            mismatches.append((obj.instance_id, obj.class_id, other.class_id))
     return InstanceAgreement(
-        matched=tuple(matched),
-        only_in_a=tuple(o.index for o in left if o.instance_id not in shared),
-        only_in_b=tuple(o.index for o in right if o.instance_id not in shared),
-        matched_by="instance_id",
-        threshold=threshold,
-        against=f"annotations/{against}",
-        class_mismatches=tuple(mismatches),
-    )
-
-
-def _match_by_iou(
-    left: Sequence[Any],
-    right: Sequence[Any],
-    threshold: float,
-    against: str,
-) -> InstanceAgreement:
-    """Greedy highest-IoU-first matching, one object to at most one object."""
-    candidates: list[tuple[float, int, int]] = []
-    for i, obj in enumerate(left):
-        for j, other in enumerate(right):
-            if obj.class_id != other.class_id:
-                continue
-            overlap = box_iou(obj.box, other.box)
-            if overlap >= threshold:
-                candidates.append((overlap, i, j))
-    candidates.sort(key=lambda t: (-t[0], t[1], t[2]))
-    used_a: set[int] = set()
-    used_b: set[int] = set()
-    matched: list[tuple[int, int, float]] = []
-    for overlap, i, j in candidates:
-        if i in used_a or j in used_b:
-            continue
-        used_a.add(i)
-        used_b.add(j)
-        matched.append((left[i].index, right[j].index, overlap))
-    return InstanceAgreement(
-        matched=tuple(sorted(matched)),
-        only_in_a=tuple(o.index for i, o in enumerate(left) if i not in used_a),
-        only_in_b=tuple(o.index for j, o in enumerate(right) if j not in used_b),
-        matched_by="iou",
-        threshold=threshold,
-        against=f"annotations/{against}",
+        **_core.agreement_compare_instances(a, b, threshold=threshold, classes=classes)
     )
 
 
@@ -477,31 +214,12 @@ def compare(
     class, by *metric*.  An argument the chosen comparison cannot use is
     refused rather than ignored, and so is a pair with no common comparison.
     """
-    from medh5.annotations.base import VoxelAnnotation as _Voxel
-
-    if a.kind in OBJECT_KINDS and b.kind in OBJECT_KINDS:
-        if metric is not None:
-            raise MEDH5ValidationError(
-                f"metric {metric!r} scores voxels; {a.ann_id!r} and {b.ann_id!r} "
-                "are compared object by object, as F1 at an IoU threshold"
-            )
-        return compare_instances(
-            a,
-            b,
-            threshold=DEFAULT_IOU if threshold is None else threshold,
-            classes=classes,
-        )
-    if isinstance(a, _Voxel) and isinstance(b, _Voxel):
-        if threshold is not None:
-            raise MEDH5ValidationError(
-                f"threshold matches objects; {a.ann_id!r} and {b.ann_id!r} are "
-                "compared voxel by voxel"
-            )
-        return compare_voxel(a, b, metric=metric or "dice", classes=classes)
-    raise MEDH5ValidationError(
-        f"cannot compare {a.kind!r} with {b.kind!r}: transcode them to a common "
-        "kind first"
+    kind, fields = _core.agreement_compare(
+        a, b, metric=metric, threshold=threshold, classes=classes
     )
+    if kind == "voxel":
+        return VoxelAgreement(**fields)
+    return InstanceAgreement(**fields)
 
 
 __all__ = [

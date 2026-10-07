@@ -354,6 +354,11 @@ class Sample:
         found = self._handle.transform_between(source, target)
         return None if found is None else wrap_transform(found)
 
+    def _frames_for(self, key: str) -> tuple[str, ...]:
+        """The frame uids a key names, read as :meth:`transform_between` reads
+        it: a timepoint (every grid of the visit), then a grid, then a frame."""
+        return tuple(self._handle.frames_for(key))
+
     def resolve_frames(self, from_frame: str, to_frame: str) -> Transform | None:
         """The transform relating two frame uids, resolved once per handle."""
         found = self._handle.resolve_frames(from_frame, to_frame)

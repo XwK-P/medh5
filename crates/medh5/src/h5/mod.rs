@@ -13,17 +13,19 @@ pub mod ops;
 pub use attrs::AttrValue;
 pub use hdf5::{Dataset, File, Group, Location};
 
-/// Prepare the HDF5 library for MEDH5: register the Blosc2 filter.
+/// Prepare the HDF5 library for MEDH5: register the Blosc2 and Zstandard
+/// filters.
 ///
 /// Idempotent and cheap after the first call; every entry point that opens or
 /// creates a file calls it, so a caller never has to.
 pub fn init() {
     hdf5::sync::sync(|| {
-        // SAFETY: the HDF5 global lock is held for the duration.
-        let ok = unsafe { medh5_sys::register_blosc2_filter() };
-        if !ok {
-            // Reading a Blosc2 dataset will then fail with HDF5's own error,
-            // which names the missing filter; nothing is gained by panicking.
+        // SAFETY: the HDF5 global lock is held for the duration.  A refused
+        // registration is not fatal: reading a dataset that needs the filter
+        // then fails with HDF5's own error, which names the missing filter.
+        unsafe {
+            medh5_sys::register_blosc2_filter();
+            medh5_sys::register_zstd_filter();
         }
     });
 }

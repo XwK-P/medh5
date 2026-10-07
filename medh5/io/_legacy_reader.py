@@ -29,20 +29,18 @@ that trusts the flag silently drops the data.
 
 from __future__ import annotations
 
-import json
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-import h5py
 import numpy as np
 import numpy.typing as npt
 
-from medh5._hdf5 import check_self_contained
-from medh5.errors import MEDH5FileError, MEDH5SchemaError
+from medh5 import _core
 
 SUFFIX = ".medh5"
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION: str = _core.LEGACY_SCHEMA_VERSION
 """The only 0.x schema version that ever shipped."""
 
 
@@ -71,6 +69,12 @@ class LegacyMeta:
     extra: dict[str, Any] = field(default_factory=dict)
     schema_version: str = SCHEMA_VERSION
 
+    @classmethod
+    def _from_fields(cls, fields: Mapping[str, Any]) -> LegacyMeta:
+        values = dict(fields)
+        values["spatial"] = LegacySpatial(**values["spatial"])
+        return cls(**values)
+
 
 @dataclass
 class LegacySample:
@@ -84,142 +88,27 @@ class LegacySample:
     meta: LegacyMeta
 
 
-def _text(value: Any) -> str:
-    return value.decode() if isinstance(value, bytes) else str(value)
-
-
-def _json(value: Any, what: str) -> Any:
-    try:
-        return json.loads(_text(value))
-    except json.JSONDecodeError as exc:
-        raise MEDH5SchemaError(f"0.x attribute {what!r} is not JSON: {exc}") from exc
-
-
-def _open(path: str | os.PathLike[str]) -> h5py.File:
-    """Open a 0.x file, refusing anything that is not one.
-
-    A 1.0 file carries ``/meta`` and no ``schema_version``; a 0.x file carries
-    ``schema_version`` and an ``images`` group.  Reading either as the other
-    produces nonsense, so the discriminator is checked before anything else.
-    """
-    text = os.fspath(path)
-    try:
-        handle = h5py.File(text, "r")
-    except OSError as exc:
-        raise MEDH5FileError(f"cannot open {text!r} as a 0.x file: {exc}") from exc
-    try:
-        # A 0.x file is migrated into a 1.0 one, so anything it reads from
-        # outside itself would be copied into the new file (see `open_h5`).
-        check_self_contained(handle, text)
-        if "meta" in handle:
-            raise MEDH5SchemaError(
-                f"{text!r} is a 1.0 file (it has `/meta`), not a 0.x file"
-            )
-        if "images" not in handle or not isinstance(handle["images"], h5py.Group):
-            raise MEDH5SchemaError(f"{text!r} has no 0.x `/images` group")
-        version = _text(handle.attrs.get("schema_version", SCHEMA_VERSION))
-        if version != SCHEMA_VERSION:
-            raise MEDH5SchemaError(
-                f"{text!r} declares 0.x schema version {version!r}; this reader "
-                f"understands {SCHEMA_VERSION!r}"
-            )
-    except BaseException:
-        handle.close()
-        raise
-    return handle
-
-
 def is_legacy(path: str | os.PathLike[str]) -> bool:
     """True when *path* is a readable 0.x file."""
-    try:
-        _open(path).close()
-    except (MEDH5FileError, MEDH5SchemaError):
-        return False
-    return True
+    return bool(_core.legacy_is(os.fspath(path)))
 
 
 def read_meta(path: str | os.PathLike[str]) -> LegacyMeta:
-    """Read 0.x metadata without touching the arrays."""
-    with _open(path) as handle:
-        return _meta(handle)
+    """A 0.x file's metadata, without its arrays.
+
+    A 1.0 file, a file without 0.x ``/images``, an unknown schema version, a
+    malformed ``direction`` or ``extra`` --- each is refused by name rather
+    than read as nonsense.
+    """
+    return LegacyMeta._from_fields(_core.legacy_read_meta(os.fspath(path)))
 
 
 def read_sample(path: str | os.PathLike[str]) -> LegacySample:
-    """Read a whole 0.x file: images, masks, boxes and metadata."""
-    with _open(path) as handle:
-        images = {name: handle["images"][name][...] for name in handle["images"]}
-        seg: dict[str, npt.NDArray[np.bool_]] = {}
-        group = handle.get("seg")
-        if isinstance(group, h5py.Group):
-            seg = {name: np.asarray(group[name][...], dtype=bool) for name in group}
-        boxes = handle["bboxes"][...] if "bboxes" in handle else None
-        scores = handle["bbox_scores"][...] if "bbox_scores" in handle else None
-        labels = (
-            [_text(v) for v in handle["bbox_labels"][...]]
-            if "bbox_labels" in handle
-            else None
-        )
-        return LegacySample(
-            images=images,
-            seg=seg,
-            bboxes=boxes,
-            bbox_scores=scores,
-            bbox_labels=labels,
-            meta=_meta(handle),
-        )
-
-
-def _meta(handle: h5py.File) -> LegacyMeta:
-    spatial = LegacySpatial()
-    meta = LegacyMeta(spatial=spatial)
-
-    group = handle["images"]
-    meta.image_names = sorted(group)
-    attrs = group.attrs
-    if "spacing" in attrs:
-        spatial.spacing = [float(v) for v in np.asarray(attrs["spacing"]).ravel()]
-    if "origin" in attrs:
-        spatial.origin = [float(v) for v in np.asarray(attrs["origin"]).ravel()]
-    if "axis_labels" in attrs:
-        spatial.axis_labels = [_text(v) for v in attrs["axis_labels"]]
-    if "coord_system" in attrs:
-        spatial.coord_system = _text(attrs["coord_system"])
-    if "shape" in attrs:
-        meta.shape = [int(v) for v in np.asarray(attrs["shape"]).ravel()]
-    if "patch_size" in attrs:
-        meta.patch_size = [int(v) for v in np.asarray(attrs["patch_size"]).ravel()]
-    if "direction" in attrs and meta.image_names:
-        ndim = len(group[meta.image_names[0]].shape)
-        raw = np.asarray(attrs["direction"], dtype=np.float64).ravel()
-        if raw.size != ndim * ndim:
-            raise MEDH5SchemaError(
-                f"0.x `direction` has {raw.size} element(s), not {ndim * ndim} "
-                f"for a {ndim}-D volume"
-            )
-        spatial.direction = raw.reshape(ndim, ndim).tolist()
-
-    root = handle.attrs
-    if "label" in root:
-        value = root["label"]
-        meta.label = value.item() if isinstance(value, np.generic) else _label(value)
-    if "label_name" in root:
-        meta.label_name = _text(root["label_name"])
-    if "extra" in root:
-        extra = _json(root["extra"], "extra")
-        meta.extra = dict(extra) if isinstance(extra, dict) else {}
-    meta.schema_version = _text(root.get("schema_version", SCHEMA_VERSION))
-
-    seg = handle.get("seg")
-    meta.seg_names = sorted(seg) if isinstance(seg, h5py.Group) else []
-    return meta
-
-
-def _label(value: Any) -> int | str:
-    text = _text(value)
-    try:
-        return int(text)
-    except ValueError:
-        return text
+    """A whole 0.x file.  The file beats its own denormalised flags: masks
+    are what ``/seg`` holds, whatever ``has_seg`` and ``seg_names`` say."""
+    fields = dict(_core.legacy_read_sample(os.fspath(path)))
+    fields["meta"] = LegacyMeta._from_fields(fields["meta"])
+    return LegacySample(**fields)
 
 
 __all__ = [
