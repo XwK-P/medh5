@@ -503,7 +503,9 @@ pub fn py_to_attr(obj: &Bound<'_, PyAny>) -> PyResult<AttrValue> {
         if all(&|i| Ok(i.is_instance_of::<PyString>()))? {
             return Ok(AttrValue::Strs(items.iter().map(|i| i.to_string()).collect()));
         }
-        let boolean = |i: &Bound<'_, PyAny>| -> PyResult<bool> { Ok(i.is_instance_of::<PyBool>() || i.is_instance(&np.getattr("bool_")?)?) };
+        let boolean = |i: &Bound<'_, PyAny>| -> PyResult<bool> {
+            Ok(i.is_instance_of::<PyBool>() || i.is_instance(&np.getattr("bool_")?)?)
+        };
         let integer = |i: &Bound<'_, PyAny>| -> PyResult<bool> {
             Ok(!boolean(i)? && (i.is_instance_of::<PyInt>() || i.is_instance(&np.getattr("integer")?)?))
         };

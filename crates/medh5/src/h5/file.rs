@@ -152,7 +152,9 @@ pub fn close_everything(file: hdf5::File, flush: bool) -> Result<()> {
                 }
             }
         };
-        release(h5f::H5F_OBJ_LOCAL | h5f::H5F_OBJ_DATASET | h5f::H5F_OBJ_GROUP | h5f::H5F_OBJ_DATATYPE | h5f::H5F_OBJ_ATTR);
+        release(
+            h5f::H5F_OBJ_LOCAL | h5f::H5F_OBJ_DATASET | h5f::H5F_OBJ_GROUP | h5f::H5F_OBJ_DATATYPE | h5f::H5F_OBJ_ATTR,
+        );
         // The file identifiers last: this one, and any handed out for it.
         release(h5f::H5F_OBJ_LOCAL | h5f::H5F_OBJ_FILE);
         if h5i::H5Iis_valid(fid) > 0 {
@@ -323,8 +325,7 @@ mod tests {
 
     #[test]
     fn s14_4_temporary_names_are_unique_within_a_process() {
-        let names: std::collections::HashSet<PathBuf> =
-            (0..50).map(|_| temporary_name(Path::new("x.medh5"))).collect();
+        let names: std::collections::HashSet<PathBuf> = (0..50).map(|_| temporary_name(Path::new("x.medh5"))).collect();
         assert_eq!(names.len(), 50);
         assert!(names.iter().all(|n| n.to_string_lossy().starts_with(".x.medh5.tmp-")));
     }
