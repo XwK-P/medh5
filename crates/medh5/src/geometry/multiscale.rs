@@ -145,6 +145,8 @@ pub fn derive_level_grid(base: &Grid, factors: &[f64], grid_id: &str, shape: Opt
 /// Check every level's geometry against the derivation rule.
 ///
 /// Returns human-readable messages; empty means the pyramid conforms.
+// Each axis is checked across several parallel per-axis vectors at once.
+#[allow(clippy::needless_range_loop)]
 pub fn check_pyramid(base: &Grid, levels: &[&Grid], factors: &Array2<f64>, rtol: f64) -> Result<Vec<String>> {
     let mut problems = Vec::new();
     for (level, grid) in levels.iter().enumerate() {

@@ -117,12 +117,15 @@ pub fn coerce_patch_size(patch_size: &PatchSize, ndim: usize) -> Result<Vec<i64>
     Ok(size)
 }
 
+/// `(slices, padding)`: `[start, stop)` per axis, and `(before, after)` per axis.
+pub type Window = (Vec<(i64, i64)>, Vec<(i64, i64)>);
+
 /// Slices covering `patch` voxels around `center`, plus the padding needed.
 ///
 /// A centre near the edge is shifted inwards rather than clipped, so a patch
 /// keeps its requested size wherever the volume allows; padding appears only
 /// on an axis genuinely shorter than the patch.
-pub fn window_around(center: &[i64], patch: &[i64], shape: &[i64]) -> (Vec<(i64, i64)>, Vec<(i64, i64)>) {
+pub fn window_around(center: &[i64], patch: &[i64], shape: &[i64]) -> Window {
     let mut slices = Vec::with_capacity(patch.len());
     let mut pads = Vec::with_capacity(patch.len());
     for ((c, size), extent) in center.iter().zip(patch).zip(shape) {

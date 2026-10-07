@@ -174,3 +174,50 @@ mod tests {
         assert_eq!(title_case("a1b"), "A1B");
     }
 }
+
+/// `str(pathlib.Path(path))`: the spelling 1.x printed a path in.
+///
+/// `pathlib` drops empty and `.` components and trailing separators, keeps
+/// `..`, and keeps a leading `//` (exactly two) as POSIX allows; an empty path
+/// is `.`.  Messages that name a path a caller passed in use this, so
+/// `./corpus/` reads `corpus` as it always did.
+pub fn py_path(path: &std::path::Path) -> String {
+    let text = path.to_string_lossy();
+    #[cfg(windows)]
+    let text = text.replace('\\', "/");
+    let root = if text.starts_with("//") && !text.starts_with("///") {
+        "//"
+    } else if text.starts_with('/') {
+        "/"
+    } else {
+        ""
+    };
+    let parts: Vec<&str> = text.split('/').filter(|p| !p.is_empty() && *p != ".").collect();
+    match (root, parts.is_empty()) {
+        ("", true) => ".".to_string(),
+        (r, _) => format!("{r}{}", parts.join("/")),
+    }
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::py_path;
+    use std::path::Path;
+
+    #[test]
+    fn paths_print_as_pathlib_prints_them() {
+        for (raw, shown) in [
+            ("./corpus/", "corpus"),
+            ("corpus/expected.json", "corpus/expected.json"),
+            ("", "."),
+            (".", "."),
+            ("/tmp//x/./y/", "/tmp/x/y"),
+            ("//host/share", "//host/share"),
+            ("///a", "/a"),
+            ("../up/./x", "../up/x"),
+            ("/", "/"),
+        ] {
+            assert_eq!(py_path(Path::new(raw)), shown, "{raw:?}");
+        }
+    }
+}

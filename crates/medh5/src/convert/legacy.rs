@@ -268,12 +268,10 @@ pub fn build_label_set(paths: &[&Path], report: Option<&mut ConversionReport>) -
                     }
                 }
             }
-            Ok(None) if has_boxes => {
-                // Unlabelled 0.x boxes migrate as class `object`, which the
-                // label set must therefore declare.
-                if !names.iter().any(|n| n == "object") {
-                    names.push("object".into());
-                }
+            // Unlabelled 0.x boxes migrate as class `object`, which the label
+            // set must therefore declare.
+            Ok(None) if has_boxes && !names.iter().any(|n| n == "object") => {
+                names.push("object".into());
             }
             _ => {}
         }

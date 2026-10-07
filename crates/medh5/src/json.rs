@@ -399,10 +399,301 @@ pub fn loads(text: &str) -> Result<Value, serde_json::Error> {
     serde_json::from_str(text)
 }
 
+/// `json.loads(text)`'s error message for a document serde_json refused:
+/// CPython's wording when CPython also refuses it, serde_json's otherwise.
+pub fn decode_error(text: &str, err: &serde_json::Error) -> String {
+    python_json_error(text).unwrap_or_else(|| err.to_string())
+}
+
+/// What CPython's `json.loads(text)` raises, as `str(exc)`; `None` when
+/// CPython would accept the text.
+///
+/// A port of the C scanner in `Modules/_json.c` (CPython 3.13, which rejects
+/// trailing commas by name): positions count code points, and every message
+/// and position is the one a 1.x tool printed for the same bytes.
+pub fn python_json_error(text: &str) -> Option<String> {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.first() == Some(&'\u{feff}') {
+        return Some(located(&chars, "Unexpected UTF-8 BOM (decode using utf-8-sig)", 0));
+    }
+    let scanner = PyJson { s: &chars };
+    match scanner.scan_once(scanner.ws(0), 0) {
+        Err(PyJsonError::Stop(pos)) => Some(located(&chars, "Expecting value", pos)),
+        Err(PyJsonError::Fail(message, pos)) => Some(located(&chars, message, pos)),
+        Err(PyJsonError::Depth(what)) => {
+            Some(format!("maximum recursion depth exceeded while decoding a JSON {what} from a unicode string"))
+        }
+        Ok(end) => {
+            let end = scanner.ws(end);
+            (end != chars.len()).then(|| located(&chars, "Extra data", end))
+        }
+    }
+}
+
+/// `JSONDecodeError.__str__`: the message, then where.
+fn located(s: &[char], message: &str, pos: usize) -> String {
+    let before = &s[..pos.min(s.len())];
+    let lineno = before.iter().filter(|c| **c == '\n').count() + 1;
+    let colno = match before.iter().rposition(|c| *c == '\n') {
+        Some(i) => pos - i,
+        None => pos + 1,
+    };
+    format!("{message}: line {lineno} column {colno} (char {pos})")
+}
+
+enum PyJsonError {
+    /// `StopIteration(pos)`: no value starts here ("Expecting value").
+    Stop(usize),
+    Fail(&'static str, usize),
+    /// Nesting deeper than CPython's recursion limit allows.
+    Depth(&'static str),
+}
+
+/// Roughly where CPython's default recursion limit stops a nested document.
+const PY_JSON_MAX_DEPTH: usize = 990;
+
+struct PyJson<'a> {
+    s: &'a [char],
+}
+
+impl PyJson<'_> {
+    fn ws(&self, mut i: usize) -> usize {
+        while i < self.s.len() && matches!(self.s[i], ' ' | '\t' | '\n' | '\r') {
+            i += 1;
+        }
+        i
+    }
+
+    fn follows(&self, at: usize, word: &str) -> bool {
+        word.chars().enumerate().all(|(k, c)| self.s.get(at + k) == Some(&c))
+    }
+
+    fn scan_once(&self, idx: usize, depth: usize) -> Result<usize, PyJsonError> {
+        let len = self.s.len();
+        if idx >= len {
+            return Err(PyJsonError::Stop(idx));
+        }
+        match self.s[idx] {
+            '"' => return self.string(idx + 1),
+            '{' => {
+                if depth >= PY_JSON_MAX_DEPTH {
+                    return Err(PyJsonError::Depth("object"));
+                }
+                return self.object(idx + 1, depth + 1);
+            }
+            '[' => {
+                if depth >= PY_JSON_MAX_DEPTH {
+                    return Err(PyJsonError::Depth("array"));
+                }
+                return self.array(idx + 1, depth + 1);
+            }
+            'n' if idx + 3 < len && self.follows(idx + 1, "ull") => return Ok(idx + 4),
+            't' if idx + 3 < len && self.follows(idx + 1, "rue") => return Ok(idx + 4),
+            'f' if idx + 4 < len && self.follows(idx + 1, "alse") => return Ok(idx + 5),
+            'N' if idx + 2 < len && self.follows(idx + 1, "aN") => return Ok(idx + 3),
+            'I' if idx + 7 < len && self.follows(idx + 1, "nfinity") => return Ok(idx + 8),
+            '-' if idx + 8 < len && self.follows(idx + 1, "Infinity") => return Ok(idx + 9),
+            _ => {}
+        }
+        self.number(idx)
+    }
+
+    fn number(&self, start: usize) -> Result<usize, PyJsonError> {
+        let s = self.s;
+        let end_idx = s.len() - 1;
+        let digit = |i: usize| s[i].is_ascii_digit();
+        let mut idx = start;
+        if s[idx] == '-' {
+            idx += 1;
+            if idx > end_idx {
+                return Err(PyJsonError::Stop(start));
+            }
+        }
+        if ('1'..='9').contains(&s[idx]) {
+            idx += 1;
+            while idx <= end_idx && digit(idx) {
+                idx += 1;
+            }
+        } else if s[idx] == '0' {
+            idx += 1;
+        } else {
+            return Err(PyJsonError::Stop(start));
+        }
+        if idx < end_idx && s[idx] == '.' && digit(idx + 1) {
+            idx += 2;
+            while idx <= end_idx && digit(idx) {
+                idx += 1;
+            }
+        }
+        if idx < end_idx && (s[idx] == 'e' || s[idx] == 'E') {
+            let e_start = idx;
+            idx += 1;
+            if idx < end_idx && (s[idx] == '-' || s[idx] == '+') {
+                idx += 1;
+            }
+            while idx <= end_idx && digit(idx) {
+                idx += 1;
+            }
+            if !digit(idx - 1) {
+                idx = e_start;
+            }
+        }
+        Ok(idx)
+    }
+
+    fn hex4(&self, from: usize, to: usize, error_at: usize) -> Result<u32, PyJsonError> {
+        let mut c = 0u32;
+        for i in from..to {
+            let v = self.s[i].to_digit(16).ok_or(PyJsonError::Fail("Invalid \\uXXXX escape", error_at))?;
+            c = (c << 4) | v;
+        }
+        Ok(c)
+    }
+
+    fn string(&self, mut end: usize) -> Result<usize, PyJsonError> {
+        let s = self.s;
+        let len = s.len();
+        let begin = end - 1;
+        loop {
+            let mut next = end;
+            let mut c = '\0';
+            while next < len {
+                c = s[next];
+                if c == '"' || c == '\\' {
+                    break;
+                }
+                if (c as u32) <= 0x1f {
+                    return Err(PyJsonError::Fail("Invalid control character at", next));
+                }
+                next += 1;
+            }
+            if next >= len || !(c == '"' || c == '\\') {
+                return Err(PyJsonError::Fail("Unterminated string starting at", begin));
+            }
+            next += 1;
+            if c == '"' {
+                return Ok(next);
+            }
+            if next == len {
+                return Err(PyJsonError::Fail("Unterminated string starting at", begin));
+            }
+            if s[next] != 'u' {
+                end = next + 1;
+                if !matches!(s[next], '"' | '\\' | '/' | 'b' | 'f' | 'n' | 'r' | 't') {
+                    return Err(PyJsonError::Fail("Invalid \\escape", end - 2));
+                }
+            } else {
+                next += 1;
+                end = next + 4;
+                if end >= len {
+                    return Err(PyJsonError::Fail("Invalid \\uXXXX escape", next - 1));
+                }
+                let c = self.hex4(next, end, end - 5)?;
+                next = end;
+                // A high surrogate followed by `\u`: try to pair it.
+                if (0xd800..=0xdbff).contains(&c) && end + 6 < len && s[next] == '\\' && s[next + 1] == 'u' {
+                    let c2 = self.hex4(next + 2, end + 6, end + 1)?;
+                    if (0xdc00..=0xdfff).contains(&c2) {
+                        end += 6;
+                    }
+                }
+            }
+        }
+    }
+
+    fn object(&self, mut idx: usize, depth: usize) -> Result<usize, PyJsonError> {
+        let s = self.s;
+        let len = s.len();
+        idx = self.ws(idx);
+        if idx >= len || s[idx] != '}' {
+            loop {
+                if idx >= len || s[idx] != '"' {
+                    return Err(PyJsonError::Fail("Expecting property name enclosed in double quotes", idx));
+                }
+                idx = self.ws(self.string(idx + 1)?);
+                if idx >= len || s[idx] != ':' {
+                    return Err(PyJsonError::Fail("Expecting ':' delimiter", idx));
+                }
+                idx = self.ws(idx + 1);
+                idx = self.ws(self.scan_once(idx, depth)?);
+                if idx < len && s[idx] == '}' {
+                    break;
+                }
+                if idx >= len || s[idx] != ',' {
+                    return Err(PyJsonError::Fail("Expecting ',' delimiter", idx));
+                }
+                let comma = idx;
+                idx = self.ws(idx + 1);
+                if idx < len && s[idx] == '}' {
+                    return Err(PyJsonError::Fail("Illegal trailing comma before end of object", comma));
+                }
+            }
+        }
+        Ok(idx + 1)
+    }
+
+    fn array(&self, mut idx: usize, depth: usize) -> Result<usize, PyJsonError> {
+        let s = self.s;
+        let len = s.len();
+        idx = self.ws(idx);
+        if idx >= len || s[idx] != ']' {
+            loop {
+                idx = self.ws(self.scan_once(idx, depth)?);
+                if idx < len && s[idx] == ']' {
+                    break;
+                }
+                if idx >= len || s[idx] != ',' {
+                    return Err(PyJsonError::Fail("Expecting ',' delimiter", idx));
+                }
+                let comma = idx;
+                idx = self.ws(idx + 1);
+                if idx < len && s[idx] == ']' {
+                    return Err(PyJsonError::Fail("Illegal trailing comma before end of array", comma));
+                }
+            }
+        }
+        Ok(idx + 1)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn decode_errors_are_cpythons() {
+        let cases = [
+            ("{not json", "Expecting property name enclosed in double quotes: line 1 column 2 (char 1)"),
+            ("", "Expecting value: line 1 column 1 (char 0)"),
+            ("[1,]", "Illegal trailing comma before end of array: line 1 column 3 (char 2)"),
+            ("{\"a\": 1,}", "Illegal trailing comma before end of object: line 1 column 8 (char 7)"),
+            ("\"ab", "Unterminated string starting at: line 1 column 1 (char 0)"),
+            ("\"a\u{1}\"", "Invalid control character at: line 1 column 3 (char 2)"),
+            ("\"\\q\"", "Invalid \\escape: line 1 column 2 (char 1)"),
+            ("\"\\u12\"", "Invalid \\uXXXX escape: line 1 column 3 (char 2)"),
+            ("[1 2]", "Expecting ',' delimiter: line 1 column 4 (char 3)"),
+            ("{\"a\" 1}", "Expecting ':' delimiter: line 1 column 6 (char 5)"),
+            ("1 2", "Extra data: line 1 column 3 (char 2)"),
+            ("\u{feff}{}", "Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)"),
+            ("-", "Expecting value: line 1 column 1 (char 0)"),
+            ("[-]", "Expecting value: line 1 column 2 (char 1)"),
+            ("{\"a\":}", "Expecting value: line 1 column 6 (char 5)"),
+            ("nul", "Expecting value: line 1 column 1 (char 0)"),
+            ("[1, 2", "Expecting ',' delimiter: line 1 column 6 (char 5)"),
+            ("{\"a\": 1", "Expecting ',' delimiter: line 1 column 8 (char 7)"),
+            ("\"\\ud800\\u12\"", "Invalid \\uXXXX escape: line 1 column 9 (char 8)"),
+            ("1.e5", "Extra data: line 1 column 2 (char 1)"),
+            ("01", "Extra data: line 1 column 2 (char 1)"),
+            ("{\n  \"a\": [1,\n  2,,]}", "Expecting value: line 3 column 5 (char 17)"),
+        ];
+        for (text, expected) in cases {
+            assert_eq!(python_json_error(text).as_deref(), Some(expected), "{text:?}");
+        }
+        for ok in ["{}", "[1, 2.5e-3, \"\\ud83d\\ude00\", null, true, false, NaN, -Infinity]", " 0 "] {
+            assert_eq!(python_json_error(ok), None, "{ok:?}");
+        }
+    }
 
     #[test]
     fn floats_print_as_python_repr() {
@@ -421,7 +712,7 @@ mod tests {
             (0.00001, "1e-05"),
             (1.2345e-7, "1.2345e-07"),
             (2.5e-5, "2.5e-05"),
-            (3.14159, "3.14159"),
+            (2.34567, "2.34567"),
             (1e100, "1e+100"),
             (0.33325, "0.33325"),
             (9.6, "9.6"),

@@ -269,6 +269,8 @@ impl Default for SplitOptions {
     }
 }
 
+/// One stratum's groups, keyed by the stratum value.
+type Stratum<'a> = (Option<String>, Vec<(String, Vec<&'a Entry>)>);
 /// Assign every group in `manifest` to a partition, or to a fold.
 ///
 /// With `k_folds` the folds are recorded as `holdout` assignments with a fold
@@ -318,7 +320,7 @@ pub fn make_splits(manifest: &Manifest, options: &SplitOptions) -> Result<Split>
         strata.entry(stratum).or_default().push((group.clone(), entries.clone()));
     }
     // `str(None)` is "None": the unstratified stratum sorts as that word.
-    let mut ordered: Vec<(Option<String>, Vec<(String, Vec<&Entry>)>)> = strata.into_iter().collect();
+    let mut ordered: Vec<Stratum<'_>> = strata.into_iter().collect();
     ordered.sort_by(|a, b| {
         let key = |s: &Option<String>| s.clone().unwrap_or_else(|| "None".into());
         key(&a.0).cmp(&key(&b.0))

@@ -202,12 +202,15 @@ pub fn write_index(root: &hdf5::Group, payload: &IndexPayload, codec: &CodecProf
     Ok(group)
 }
 
+/// The index's class ids, and each id's row.
+type ClassTable = (Vec<i64>, HashMap<i64, usize>);
+
 /// Reader for one `index/<ann_id>` entry.  Small tables are read once.
 #[derive(Debug)]
 pub struct SamplingIndex {
     pub ann_id: String,
     pub group: hdf5::Group,
-    class_ids: OnceLock<Result<(Vec<i64>, HashMap<i64, usize>)>>,
+    class_ids: OnceLock<Result<ClassTable>>,
     counts: OnceLock<Result<IndexMap<i64, i64>>>,
 }
 

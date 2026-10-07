@@ -62,7 +62,7 @@ fn macos_l3() -> Option<u64> {
 
 fn budget(l3_bytes: Option<u64>) -> f64 {
     let target = l3_bytes.unwrap_or_else(detect_l3_bytes) as f64 * CACHE_SAFETY;
-    target.max(MIN_CHUNK_BYTES).min(MAX_CHUNK_BYTES)
+    target.clamp(MIN_CHUNK_BYTES, MAX_CHUNK_BYTES)
 }
 
 fn pow2_ceil(p: usize) -> usize {
@@ -227,12 +227,7 @@ pub fn guess_chunk(shape: &[usize], typesize: usize) -> Vec<usize> {
     }
     let product = |c: &[f64]| c.iter().product::<f64>();
     let dset_size = product(&chunks) * typesize as f64;
-    let mut target = CHUNK_BASE * 2f64.powf((dset_size / (1024.0 * 1024.0)).log10());
-    if target > CHUNK_MAX {
-        target = CHUNK_MAX;
-    } else if target < CHUNK_MIN {
-        target = CHUNK_MIN;
-    }
+    let target = (CHUNK_BASE * 2f64.powf((dset_size / (1024.0 * 1024.0)).log10())).clamp(CHUNK_MIN, CHUNK_MAX);
     let mut idx = 0usize;
     loop {
         let chunk_bytes = product(&chunks) * typesize as f64;

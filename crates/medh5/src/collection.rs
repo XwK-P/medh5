@@ -165,6 +165,8 @@ pub fn open_collection(path: &Path) -> Result<Collection> {
 }
 
 /// A file opened whatever its kind.
+// One value per opened file: boxing the larger variant would buy nothing.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum AnyFile {
     Sample(Sample),

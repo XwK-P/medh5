@@ -295,7 +295,7 @@ pub fn write_region(ds: &hdf5::Dataset, data: &NdArray, starts: &[usize]) -> Res
         .zip(&shape)
         .map(|(s, n)| SliceOrIndex::SliceCount { start: *s, step: 1, count: *n, block: 1 })
         .collect();
-    if shape.iter().any(|n| *n == 0) {
+    if shape.contains(&0) {
         return Ok(());
     }
     let hyper = Hyperslab::from(selection);

@@ -12,7 +12,6 @@ pub mod array;
 pub mod bench;
 pub mod codes;
 pub mod collection;
-#[cfg(feature = "wip-conformance")]
 pub mod conformance;
 pub mod convert;
 pub mod curation;

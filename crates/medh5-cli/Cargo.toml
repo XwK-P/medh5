@@ -26,7 +26,3 @@ clap.workspace = true
 serde_json.workspace = true
 indexmap.workspace = true
 tempfile = "3"
-
-[features]
-# Commands whose engine modules are still being ported.
-wip = ["medh5/wip-conformance"]

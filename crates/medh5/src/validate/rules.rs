@@ -327,7 +327,8 @@ pub fn check_document(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     let parsed: serde_json::Value = match crate::json::loads(&text) {
         Ok(v) => v,
         Err(e) => {
-            out.push(ctx.err("E004", "/meta", format!("`meta` is not valid JSON: {e}")));
+            let reason = crate::json::decode_error(&text, &e);
+            out.push(ctx.err("E004", "/meta", format!("`meta` is not valid JSON: {reason}")));
             return Ok(out);
         }
     };

@@ -279,10 +279,7 @@ fn read_strings_attr(attr: &hdf5::Attribute, td: &TD) -> Result<Vec<String>> {
         TD::VarLenAscii => {
             attr.read_raw::<hdf5::types::VarLenAscii>()?.into_iter().map(|s| s.as_str().to_string()).collect()
         }
-        TD::FixedAscii(_) | TD::FixedUnicode(_) => {
-            let bytes = read_fixed_strings(attr.id(), attr.size(), td, true)?;
-            bytes
-        }
+        TD::FixedAscii(_) | TD::FixedUnicode(_) => read_fixed_strings(attr.id(), attr.size(), td, true)?,
         _ => Vec::new(),
     })
 }

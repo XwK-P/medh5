@@ -303,8 +303,12 @@ pub fn outside_references(handle: &hdf5::File) -> Result<Vec<(String, String)>> 
     Ok(state.found)
 }
 
-fn checked_files() -> &'static Mutex<HashMap<(u64, u64, u64, i128, i128), ()>> {
-    static CHECKED: std::sync::OnceLock<Mutex<HashMap<(u64, u64, u64, i128, i128), ()>>> = std::sync::OnceLock::new();
+/// The identity of a file a handle had open:
+/// `(st_dev, st_ino, st_size, st_mtime_ns, st_ctime_ns)`.
+type FileIdentity = (u64, u64, u64, i128, i128);
+
+fn checked_files() -> &'static Mutex<HashMap<FileIdentity, ()>> {
+    static CHECKED: std::sync::OnceLock<Mutex<HashMap<FileIdentity, ()>>> = std::sync::OnceLock::new();
     CHECKED.get_or_init(|| Mutex::new(HashMap::new()))
 }
 

@@ -102,7 +102,7 @@ pub fn linear_sample(field: &ArrayD<f64>, coords: &Array2<f64>, extrapolation: &
 // -- cubic: SciPy's `map_coordinates(order=3)` -------------------------------------
 
 /// The cubic B-spline filter pole, `sqrt(3) - 2`.
-const CUBIC_POLE: f64 = -0.267949192431122706472553658494127633;
+const CUBIC_POLE: f64 = -0.2679491924311227;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Boundary {

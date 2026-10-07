@@ -589,6 +589,7 @@ impl SampleWriter {
     }
 
     /// Write axis-aligned boxes as `(N, S, 2)` float `[lo, hi]` (§8.2).
+    #[allow(clippy::too_many_arguments)]
     pub fn add_boxes(
         &mut self,
         ann_id: &str,

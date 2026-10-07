@@ -166,6 +166,23 @@ impl From<ndarray::ShapeError> for Error {
     }
 }
 
+/// An `OSError` worded as Python words it:
+/// `[Errno 2] No such file or directory: 'results.json'`.
+///
+/// `path` is shown as given; pass [`py_path`](crate::pyval::py_path) of it
+/// where 1.x opened the file through `pathlib`.
+pub fn os_error(err: &std::io::Error, path: impl AsRef<std::path::Path>) -> Error {
+    match err.raw_os_error() {
+        Some(code) => {
+            let full = err.to_string();
+            let reason = full.strip_suffix(&format!(" (os error {code})")).unwrap_or(&full);
+            let shown = path.as_ref().to_string_lossy();
+            Error::Io(format!("[Errno {code}] {reason}: {}", crate::json::repr_str(&shown)))
+        }
+        None => Error::Io(err.to_string()),
+    }
+}
+
 /// Return early with a coded validation error.
 #[macro_export]
 macro_rules! bail_coded {
