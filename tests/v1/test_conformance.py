@@ -187,13 +187,15 @@ class TestPublishedSchema:
         """`schemas/` beside the spec and the engine's embedded copy must not
         drift: the engine is what validates E005, the published file is what a
         third-party implementation reads."""
-        from medh5.document import SCHEMA_NAME, schema_text
+        from medh5.document import SCHEMA_NAME, SCHEMA_PATH, schema_text
 
         repo = Path(__file__).resolve().parents[2]
         published = repo / "schemas" / SCHEMA_NAME
         embedded = repo / "crates" / "medh5" / "data" / SCHEMA_NAME
         assert published.exists(), f"published schema missing at {published}"
         assert published.read_bytes() == embedded.read_bytes()
+        # The file the Python package ships, for tools that want a path.
+        assert SCHEMA_PATH.read_bytes() == embedded.read_bytes()
         assert json.loads(published.read_text(encoding="utf-8")) == json.loads(
             schema_text()
         )

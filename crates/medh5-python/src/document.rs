@@ -363,8 +363,22 @@ fn new_document(
     Ok(SampleDocument::owned(doc))
 }
 
+/// The raw `/meta` text under a sample root (`sample.root`).
+#[pyfunction]
+fn read_document_text(root: &Bound<'_, PyAny>) -> R<String> {
+    Ok(medh5::sample::read_document_text(&crate::integrity::group_of(root)?)?)
+}
+
+/// The sample document under a sample root, parsed.
+#[pyfunction]
+fn read_document(root: &Bound<'_, PyAny>) -> R<SampleDocument> {
+    Ok(SampleDocument::owned(medh5::sample::read_document(&crate::integrity::group_of(root)?)?))
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<SampleDocument>()?;
+    m.add_function(wrap_pyfunction!(read_document_text, m)?)?;
+    m.add_function(wrap_pyfunction!(read_document, m)?)?;
     m.add_function(wrap_pyfunction!(schema, m)?)?;
     m.add_function(wrap_pyfunction!(schema_text, m)?)?;
     m.add_function(wrap_pyfunction!(validate_against_schema, m)?)?;

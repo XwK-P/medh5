@@ -639,8 +639,27 @@ fn pyramid_factors<'py>(
     Ok(array_to_py(py, multiscale::pyramid_factors(&grid_arg(base)?, &refs).into_dyn()))
 }
 
+/// One grid group read back (`sample.root["grids/ct"]`).
+#[pyfunction]
+#[pyo3(signature = (group, grid_id=None))]
+fn read_grid(group: &Bound<'_, PyAny>, grid_id: Option<&str>) -> R<Grid> {
+    Ok(Grid::wrap(engine_grid::read_grid(&crate::integrity::group_of(group)?, grid_id)?))
+}
+
+/// Every grid under a sample root, by id.
+#[pyfunction]
+fn read_grids<'py>(py: Python<'py>, root: &Bound<'py, PyAny>) -> R<Bound<'py, PyDict>> {
+    let out = PyDict::new(py);
+    for (grid_id, grid) in engine_grid::read_grids(&crate::integrity::group_of(root)?)? {
+        out.set_item(grid_id, Grid::wrap(grid))?;
+    }
+    Ok(out)
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let py = m.py();
+    m.add_function(wrap_pyfunction!(read_grid, m)?)?;
+    m.add_function(wrap_pyfunction!(read_grids, m)?)?;
     m.add_class::<Grid>()?;
     m.add_class::<Pyramid>()?;
     for f in [

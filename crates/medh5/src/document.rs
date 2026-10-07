@@ -246,9 +246,12 @@ impl SampleDocument {
     }
 
     /// Parse the JSON string stored in `/meta`.
+    ///
+    /// The `NaN` and `Infinity` 1.x wrote read as `null`; the validator
+    /// reports them (E004), because JSON has neither.
     pub fn loads(text: &str) -> Result<Self> {
-        let doc: Value =
-            serde_json::from_str(text).map_err(|e| Error::Schema(format!("`meta` is not valid JSON: {e}")))?;
+        let (doc, _) =
+            crate::json::loads_lenient(text).map_err(|e| Error::Schema(format!("`meta` is not valid JSON: {e}")))?;
         if !doc.is_object() {
             return Err(Error::Schema("`meta` must hold a JSON object".into()));
         }

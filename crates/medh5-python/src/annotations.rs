@@ -325,6 +325,13 @@ impl AnnotationHeader {
 
 #[pymethods]
 impl AnnotationHeader {
+    /// The header an annotation group carries (`sample.root["annotations/x"]`).
+    #[classmethod]
+    fn read(_cls: &Bound<'_, pyo3::types::PyType>, group: &Bound<'_, PyAny>) -> R<Self> {
+        let group = crate::integrity::group_of(group)?;
+        Ok(AnnotationHeader { inner: medh5::annotations::header::AnnotationHeader::read(&group)? })
+    }
+
     #[classattr]
     fn __dataclass_fields__(py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
         crate::geometry::dataclass_fields(py, Self::FIELDS)

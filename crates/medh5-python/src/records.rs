@@ -306,6 +306,17 @@ macro_rules! record_class {
                 $crate::convert::json_to_py(py, &self.json)
             }
 
+            /// The fields too: they are read through `__getattr__`, and
+            /// completion in a notebook goes by `dir()`.
+            fn __dir__(slf: &Bound<'_, Self>) -> PyResult<Vec<String>> {
+                let object = slf.py().import("builtins")?.getattr("object")?;
+                let mut names: Vec<String> = object.getattr("__dir__")?.call1((slf,))?.extract()?;
+                names.extend(Self::FIELDS.iter().map(|f| f.name.to_string()));
+                names.sort();
+                names.dedup();
+                Ok(names)
+            }
+
             /// `copy.replace(record, **changes)`.
             #[pyo3(signature = (**changes))]
             fn __replace__(

@@ -260,6 +260,7 @@ __all__ = [
     "cli_table",
     "codec_profiles",
     "codes_table",
+    "collect_digests",
     "compute_content_id",
     "conformance_build_case",
     "conformance_build_corpus",
@@ -414,6 +415,10 @@ __all__ = [
     "quality_to_json",
     "raw_chunks",
     "raw_chunks_at",
+    "read_document",
+    "read_document_text",
+    "read_grid",
+    "read_grids",
     "read_indices",
     "recompress",
     "recompress_paths",
@@ -845,6 +850,10 @@ def codec_profiles() -> list[Any]:
 
 def codes_table() -> str:
     """The normative diagnostic code table (§15.2), as JSON text."""
+    ...
+
+def collect_digests(root: Group, skip: Sequence[str] = ...) -> dict[str, str]:
+    """The `digest` of every dataset under a sample root that carries one."""
     ...
 
 def compute_content_id(
@@ -1429,6 +1438,22 @@ def quality_from_json(doc: Mapping[str, Any] | None) -> dict[str, QualityRecord]
 def quality_to_json(records: Mapping[str, QualityRecord]) -> dict[str, Any]: ...
 def raw_chunks(dataset: Any) -> list[bytes]: ...
 def raw_chunks_at(file: str | os.PathLike[str], dataset: str) -> list[Any]: ...
+def read_document(root: Group) -> SampleDocument:
+    """The sample document under a sample root, parsed."""
+    ...
+
+def read_document_text(root: Group) -> str:
+    """The raw `/meta` text under a sample root (`sample.root`)."""
+    ...
+
+def read_grid(group: Group, grid_id: str | None = None) -> Grid:
+    """One grid group read back (`sample.root["grids/ct"]`)."""
+    ...
+
+def read_grids(root: Group) -> dict[str, Grid]:
+    """Every grid under a sample root, by id."""
+    ...
+
 def read_indices(root: Group) -> dict[str, SamplingIndex]:
     """Every stored index entry under a sample root (`Sample.root`, or the
     `Sample`), by annotation id.
@@ -1945,6 +1970,10 @@ class AnnotationHeader:
     extra: Mapping[str, Any] = ...
     def attrs(self) -> dict[str, Any]:
         """The attributes this header writes."""
+        ...
+    @classmethod
+    def read(cls, group: Group) -> AnnotationHeader:
+        """The header an annotation group carries (`sample.root["annotations/x"]`)."""
         ...
 
 @final
@@ -3066,6 +3095,10 @@ class SamplingIndex:
     def class_ids(self) -> tuple[int, ...]: ...
     def class_weights(self, mode: str = "inverse_frequency") -> dict[int, float]: ...
     def coords(self, class_id: int) -> npt.NDArray[np.int32]: ...
+    @property
+    def group(self) -> Group:
+        """The `index/<ann_id>` group, as 1.x exposed it."""
+        ...
     def has_class(self, class_id: int) -> bool: ...
     @property
     def has_occupancy(self) -> bool: ...
@@ -3128,10 +3161,16 @@ class Timeline:
     @property
     def baseline(self) -> Timepoint: ...
     def check(self) -> None: ...
+    def count(self, value: Any) -> int:
+        """How many timepoints equal `value` (`Sequence.count`)."""
+        ...
     @classmethod
     def from_json(cls, docs: Sequence[Mapping[str, Any]]) -> Timeline: ...
     @property
     def ids(self) -> tuple[str, ...]: ...
+    def index(self, value: Any, start: int = 0, stop: int | None = None) -> int:
+        """The position of the first timepoint equal to `value` (`Sequence.index`)."""
+        ...
     def interval_days(self, a: str, b: str) -> float | None: ...
     @property
     def is_longitudinal(self) -> bool: ...
@@ -3313,3 +3352,7 @@ class TransformHeader:
     metrics: str | None = ...
     extra: Mapping[str, Any] = ...
     def attrs(self) -> dict[str, Any]: ...
+    @classmethod
+    def read(cls, group: Group) -> TransformHeader:
+        """The header a transform group carries (`sample.root["transforms/x"]`)."""
+        ...

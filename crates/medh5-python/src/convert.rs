@@ -80,6 +80,23 @@ fn key_text(key: &Bound<'_, PyAny>) -> PyResult<String> {
 
 /// A Python value as JSON, the way `json.dumps` would see it --- plus NumPy
 /// scalars and arrays, which 1.x callers pass freely.
+/// A float as a JSON number --- which NaN and infinity are not.
+///
+/// 1.x let `json.dumps` write them as `NaN`/`Infinity`, which made `/meta`
+/// something other than the JSON §2.4 requires; turning them into `null`
+/// would change the data without a word.  So they are refused, and the caller
+/// says what a missing value is (`None`).
+fn finite(value: f64) -> PyResult<Value> {
+    if value.is_finite() {
+        return Ok(medh5::json::num(value));
+    }
+    Err(crate::errors::BindError::from(medh5::Error::invalid(format!(
+        "{} is not a JSON number: JSON has no NaN or infinity (use None for a missing value)",
+        medh5::json::py_float(value)
+    )))
+    .into())
+}
+
 pub fn py_to_json(obj: &Bound<'_, PyAny>) -> PyResult<Value> {
     if obj.is_none() {
         return Ok(Value::Null);
@@ -97,10 +114,10 @@ pub fn py_to_json(obj: &Bound<'_, PyAny>) -> PyResult<Value> {
         if let Ok(u) = obj.extract::<u64>() {
             return Ok(Value::from(u));
         }
-        return Ok(medh5::json::num(obj.extract::<f64>()?));
+        return finite(obj.extract::<f64>()?);
     }
     if let Ok(f) = obj.cast::<PyFloat>() {
-        return Ok(medh5::json::num(f.value()));
+        return finite(f.value());
     }
     if let Ok(dict) = obj.cast::<PyDict>() {
         let mut map = Map::new();

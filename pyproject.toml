@@ -77,6 +77,12 @@ dev = [
 # Kept so that `pip install "medh5[schema]"` lines from 1.x keep working: the
 # schema is validated by the engine and needs nothing installed.
 schema = []
+# Reading and writing medh5 files with h5py directly, as any HDF5 tool can:
+# hdf5plugin carries the Blosc2 filter the default profiles use.
+h5py = [
+  "h5py>=3.13",
+  "hdf5plugin>=4.1",
+]
 torch = [
   "torch>=2.0",
 ]

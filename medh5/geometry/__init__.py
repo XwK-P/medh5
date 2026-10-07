@@ -14,7 +14,7 @@ from medh5.geometry.affine import (
     slices_to_box,
     world_to_index,
 )
-from medh5.geometry.grid import AXIS_KINDS, Grid
+from medh5.geometry.grid import AXIS_KINDS, Grid, read_grid, read_grids
 from medh5.geometry.multiscale import (
     Pyramid,
     check_pyramid,
@@ -35,6 +35,8 @@ __all__ = [
     "index_to_world",
     "is_orthonormal",
     "is_proper_rotation",
+    "read_grid",
+    "read_grids",
     "slices_to_box",
     "world_to_index",
 ]

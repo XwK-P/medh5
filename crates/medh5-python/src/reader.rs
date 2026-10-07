@@ -1069,6 +1069,11 @@ impl IndexHandle {
     fn ann_id(&self) -> &str {
         &self.inner.ann_id
     }
+    /// The `index/<ann_id>` group, as 1.x exposed it.
+    #[getter]
+    fn group(&self) -> crate::nodes::Group {
+        crate::nodes::Group::wrap(self.inner.group.clone())
+    }
     #[getter]
     fn class_ids<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyTuple>> {
         Ok(PyTuple::new(py, self.inner.class_ids()?)?)

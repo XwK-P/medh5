@@ -28,6 +28,7 @@ attrs_digest = _core.attrs_digest
 relative_path = _core.relative_path
 group_digest = _core.group_digest
 compute_content_id = _core.compute_content_id
+collect_digests = _core.collect_digests
 
 __all__ = [
     "DEFAULT_ALGO",
@@ -36,6 +37,7 @@ __all__ = [
     "array_digest",
     "attrs_digest",
     "canonical_attrs",
+    "collect_digests",
     "compute_content_id",
     "dataset_digest",
     "digest_bytes",

@@ -357,7 +357,20 @@ fn fix_paths<'py>(
     Ok(out)
 }
 
+/// The `digest` of every dataset under a sample root that carries one.
+#[pyfunction]
+#[pyo3(signature = (root, skip=vec!["index".to_string()]))]
+fn collect_digests<'py>(py: Python<'py>, root: &Bound<'py, PyAny>, skip: Vec<String>) -> R<Bound<'py, PyDict>> {
+    let skip: Vec<&str> = skip.iter().map(String::as_str).collect();
+    let out = PyDict::new(py);
+    for (path, digest) in medh5::integrity::digest::collect_digests(&group_of(root)?, &skip)? {
+        out.set_item(path, digest)?;
+    }
+    Ok(out)
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(collect_digests, m)?)?;
     for f in [
         wrap_pyfunction!(array_digest, m)?,
         wrap_pyfunction!(digest_bytes, m)?,

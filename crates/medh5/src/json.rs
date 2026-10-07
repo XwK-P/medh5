@@ -150,7 +150,7 @@ fn newline(out: &mut String, style: Style, level: usize) {
     }
 }
 
-fn write_string(out: &mut String, s: &str, ensure_ascii: bool) {
+pub(crate) fn write_string(out: &mut String, s: &str, ensure_ascii: bool) {
     out.push('"');
     for ch in s.chars() {
         match ch {
@@ -397,6 +397,80 @@ pub fn num(value: f64) -> Value {
 /// Parse a JSON document.
 pub fn loads(text: &str) -> Result<Value, serde_json::Error> {
     serde_json::from_str(text)
+}
+
+/// A token JSON does not have, and where it was (1-based, in characters).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NonFinite {
+    pub token: &'static str,
+    pub line: usize,
+    pub column: usize,
+}
+
+impl std::fmt::Display for NonFinite {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} at line {} column {}", self.token, self.line, self.column)
+    }
+}
+
+/// Parse JSON that 1.x may have written: `NaN`, `Infinity` and `-Infinity`,
+/// which Python's `json.dumps` emits and JSON does not have, read as `null`.
+///
+/// A file is not rewritten by reading it, so the stored text keeps them; the
+/// first one is returned for the validator to report (E004).  Anything else
+/// that is not JSON is the strict parser's error.
+pub fn loads_lenient(text: &str) -> Result<(Value, Option<NonFinite>), serde_json::Error> {
+    match serde_json::from_str(text) {
+        Ok(value) => Ok((value, None)),
+        Err(err) => {
+            let (patched, first) = null_non_finite(text);
+            match first {
+                Some(found) => serde_json::from_str(&patched).map(|v| (v, Some(found))).map_err(|_| err),
+                None => Err(err),
+            }
+        }
+    }
+}
+
+/// `text` with every non-finite token outside a string replaced by `null`.
+fn null_non_finite(text: &str) -> (String, Option<NonFinite>) {
+    const TOKENS: [&str; 3] = ["-Infinity", "Infinity", "NaN"];
+    let mut out = String::with_capacity(text.len());
+    let mut first = None;
+    let (mut in_string, mut escaped) = (false, false);
+    let (mut line, mut column) = (1, 1);
+    let mut rest = text;
+    while let Some(c) = rest.chars().next() {
+        if !in_string {
+            if let Some(token) = TOKENS.iter().copied().find(|t| rest.starts_with(t)) {
+                first.get_or_insert(NonFinite { token, line, column });
+                out.push_str("null");
+                rest = &rest[token.len()..];
+                column += token.len();
+                continue;
+            }
+        }
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                in_string = false;
+            }
+        } else if c == '"' {
+            in_string = true;
+        }
+        out.push(c);
+        if c == '\n' {
+            line += 1;
+            column = 1;
+        } else {
+            column += 1;
+        }
+        rest = &rest[c.len_utf8()..];
+    }
+    (out, first)
 }
 
 /// `json.loads(text)`'s error message for a document serde_json refused:
@@ -750,5 +824,34 @@ mod tests {
         assert_eq!(format_g(1234567.0, 6), "1.23457e+06");
         assert_eq!(format_g(0.5, 6), "0.5");
         assert_eq!(format_g(2.0, 3), "2");
+    }
+}
+
+#[cfg(test)]
+mod non_finite_tests {
+    use super::*;
+
+    /// 1.x's `json.dumps` wrote these; JSON has none of them.
+    #[test]
+    fn s2_4_non_finite_tokens_read_as_null_and_are_located() {
+        let text = "{\"a\": NaN, \"s\": \"NaN in a string\",\n \"b\": [-Infinity, Infinity, 1.5]}";
+        assert!(loads(text).is_err());
+        let (value, found) = loads_lenient(text).unwrap();
+        assert_eq!(value["a"], Value::Null);
+        assert_eq!(value["s"], Value::from("NaN in a string"));
+        assert_eq!(value["b"], serde_json::json!([null, null, 1.5]));
+        assert_eq!(found, Some(NonFinite { token: "NaN", line: 1, column: 7 }));
+        assert_eq!(found.unwrap().to_string(), "NaN at line 1 column 7");
+    }
+
+    #[test]
+    fn s2_4_valid_json_and_other_errors_are_untouched() {
+        assert_eq!(loads_lenient("{\"a\": 1}").unwrap(), (serde_json::json!({"a": 1}), None));
+        assert!(loads_lenient("{\"a\": nan}").is_err());
+        assert!(loads_lenient("{\"a\": NaN,}").is_err());
+        let escaped = "{\"q\": \"\\\"NaN\\\"\", \"n\": NaN}";
+        let (value, found) = loads_lenient(escaped).unwrap();
+        assert_eq!(value["q"], Value::from("\"NaN\""));
+        assert_eq!(found.unwrap().column, 23);
     }
 }

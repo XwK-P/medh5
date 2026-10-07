@@ -185,7 +185,7 @@ impl Annotation {
         };
         values
             .iter()
-            .map(|v| crate::json::loads(if v.is_empty() { "{}" } else { v }).map_err(Error::from))
+            .map(|v| Ok(crate::json::loads_lenient(if v.is_empty() { "{}" } else { v })?.0))
             .collect::<Result<Vec<_>>>()
             .map(Some)
     }

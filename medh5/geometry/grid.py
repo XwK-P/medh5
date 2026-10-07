@@ -9,12 +9,20 @@ need for per-image geometry overrides.
 :class:`Grid` is the format engine's grid: its checks (orthonormal direction,
 positive spacing, axis kinds) and its index/world mappings are the engine's.
 Grids are written with ``SampleWriter.add_grid`` and read from
-``Sample.grids``.
+``Sample.grids``, or from a stored group with :func:`read_grid`.
 """
 
 from __future__ import annotations
 
-from medh5._core import AXIS_KINDS, KNOWN_UNITS, SPEC_GRID_ATTRS, TIME_UNITS, Grid
+from medh5._core import (
+    AXIS_KINDS,
+    KNOWN_UNITS,
+    SPEC_GRID_ATTRS,
+    TIME_UNITS,
+    Grid,
+    read_grid,
+    read_grids,
+)
 
 MIN_SPATIAL, MAX_SPATIAL = 2, 3
 
@@ -26,4 +34,6 @@ __all__ = [
     "SPEC_GRID_ATTRS",
     "TIME_UNITS",
     "Grid",
+    "read_grid",
+    "read_grids",
 ]

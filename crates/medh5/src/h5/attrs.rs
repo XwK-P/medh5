@@ -164,6 +164,65 @@ impl AttrValue {
         }
     }
 
+    /// The value in canonical JSON (§5.1), as `canonical_attrs` hashes it.
+    ///
+    /// Written from the value rather than through [`to_json`](Self::to_json):
+    /// a JSON value has no NaN or infinity, and an attribute can hold one ---
+    /// 1.x hashed it as `NaN`/`Infinity`, so a `content_id` stamped then
+    /// depends on spelling it the same way.
+    pub fn write_canonical(&self, out: &mut String) {
+        fn float(out: &mut String, value: f64) {
+            out.push_str(&crate::json::float_repr(value));
+        }
+        fn list<T>(out: &mut String, items: impl IntoIterator<Item = T>, mut each: impl FnMut(&mut String, T)) {
+            out.push('[');
+            for (i, item) in items.into_iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                each(out, item);
+            }
+            out.push(']');
+        }
+        fn nested(out: &mut String, shape: &[usize], offset: usize, flat: &dyn Fn(&mut String, usize)) {
+            match shape.split_first() {
+                None => flat(out, offset),
+                Some((&n, inner)) => {
+                    let stride: usize = inner.iter().product();
+                    list(out, 0..n, |out, i| nested(out, inner, offset + i * stride, flat));
+                }
+            }
+        }
+        match self {
+            AttrValue::Str(s) | AttrValue::Unsupported(s) => crate::json::write_string(out, s, false),
+            AttrValue::Strs(v) => list(out, v, |out, s| crate::json::write_string(out, s, false)),
+            AttrValue::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+            AttrValue::Int(i) => out.push_str(&i.to_string()),
+            AttrValue::Float(f) => float(out, *f),
+            AttrValue::Array(array) => {
+                let shape = array.shape();
+                match array {
+                    NdArray::Bool(a) => {
+                        let flat: Vec<bool> = a.iter().copied().collect();
+                        nested(out, &shape, 0, &|out, i| out.push_str(if flat[i] { "true" } else { "false" }));
+                    }
+                    NdArray::F16(_) | NdArray::F32(_) | NdArray::F64(_) => {
+                        let flat: Vec<f64> = array.to_f64().iter().copied().collect();
+                        nested(out, &shape, 0, &|out, i| float(out, flat[i]));
+                    }
+                    NdArray::U64(a) => {
+                        let flat: Vec<u64> = a.iter().copied().collect();
+                        nested(out, &shape, 0, &|out, i| out.push_str(&flat[i].to_string()));
+                    }
+                    other => {
+                        let flat: Vec<i64> = other.cast::<i64>().iter().copied().collect();
+                        nested(out, &shape, 0, &|out, i| out.push_str(&flat[i].to_string()));
+                    }
+                }
+            }
+        }
+    }
+
     /// A short type description, for diagnostics.
     pub fn describe(&self) -> String {
         match self {
@@ -725,5 +784,36 @@ mod tests {
         write(&file, "empty", &AttrValue::Str("now a string".into())).unwrap();
         assert_eq!(get_str(&file, "empty").unwrap().as_deref(), Some("now a string"));
         assert!(write(&file, "bad", &AttrValue::Unsupported("compound".into())).is_err());
+    }
+}
+
+#[cfg(test)]
+mod canonical_tests {
+    use super::*;
+
+    /// `json.dumps(sort_keys=True, separators=(",", ":"), ensure_ascii=False)`
+    /// of the value 1.x read with h5py --- non-finite floats included.
+    #[test]
+    fn s13_2_canonical_attribute_values_are_python_json_to_the_byte() {
+        let cases: Vec<(AttrValue, &str)> = vec![
+            (AttrValue::Str("ünï \"q\"\n".into()), "\"ünï \\\"q\\\"\\n\""),
+            (AttrValue::strs(&["a", "b"]), "[\"a\",\"b\"]"),
+            (AttrValue::Bool(true), "true"),
+            (AttrValue::Int(-3), "-3"),
+            (AttrValue::Float(1.0), "1.0"),
+            (AttrValue::Float(f64::NAN), "NaN"),
+            (AttrValue::Float(f64::NEG_INFINITY), "-Infinity"),
+            (AttrValue::floats(&[0.1, 1e-5, 1e16]), "[0.1,1e-05,1e+16]"),
+            (AttrValue::ints(&[]), "[]"),
+            (AttrValue::matrix(2, 2, &[1.0, 0.0, f64::INFINITY, -0.0]), "[[1.0,0.0],[Infinity,-0.0]]"),
+            (AttrValue::Array(NdArray::from(ndarray::arr1(&[true, false]).into_dyn())), "[true,false]"),
+            (AttrValue::Array(NdArray::from(ndarray::arr1(&[u64::MAX]).into_dyn())), "[18446744073709551615]"),
+            (AttrValue::Array(NdArray::from(ndarray::arr1(&[0.5f32]).into_dyn())), "[0.5]"),
+        ];
+        for (value, expected) in cases {
+            let mut out = String::new();
+            value.write_canonical(&mut out);
+            assert_eq!(out, expected, "{value:?}");
+        }
     }
 }

@@ -13,7 +13,6 @@
 //! ```
 
 use indexmap::IndexMap;
-use serde_json::{Map, Value};
 
 use crate::array::{Index, NdArray, Slice};
 use crate::digest::{Hasher, DEFAULT_ALGO};
@@ -119,12 +118,19 @@ pub fn canonical_attrs(obj: &hdf5::Location, names: &[&str]) -> Result<String> {
     let mut wanted: Vec<&str> = names.iter().copied().filter(|n| present.iter().any(|p| p == n)).collect();
     wanted.sort_unstable();
     wanted.dedup();
-    let mut doc = Map::new();
-    for name in wanted {
-        let value = attrs::read(obj, name)?.unwrap_or(AttrValue::Unsupported(String::new()));
-        doc.insert(name.to_string(), value.to_json());
+    // Canonical JSON (§5.1) written from the values themselves, so a NaN or
+    // infinity is spelled as 1.x hashed it rather than lost in a JSON value.
+    let mut out = String::from("{");
+    for (i, name) in wanted.into_iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        crate::json::write_string(&mut out, name, false);
+        out.push(':');
+        attrs::read(obj, name)?.unwrap_or(AttrValue::Unsupported(String::new())).write_canonical(&mut out);
     }
-    Ok(crate::json::canonical(&Value::Object(doc)))
+    out.push('}');
+    Ok(out)
 }
 
 /// Digest of an object's canonical attributes.

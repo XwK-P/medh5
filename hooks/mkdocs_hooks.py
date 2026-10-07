@@ -17,27 +17,24 @@ copy served here resolves too.  `mkdocs build --strict` fails if it does not.
 The second job is the tables.  The diagnostic codes, the cohort check codes and
 the sample-document schema are all *already* defined precisely somewhere in the
 repository, and were all *also* being retyped by hand into prose pages --- in
-two different wordings, in the case of the C1xx codes.  `medh5/errors.py` says
-in its own docstring that "the validator, the conformance corpus and the
-documentation all read it rather than repeating literals"; that was true of the
-first two and false of the third.  It is true of all three now: pages carry a
-marker comment, and the table is rendered from the source at build time.
+two different wordings, in the case of the C1xx codes.  The code table says in
+its own `$comment` that "the validator, conformance corpus and documentation
+all read it"; pages carry a marker comment, and the table is rendered from the
+source at build time.
 
 Reading those sources costs the build nothing, which matters because
 `docs/requirements.txt` deliberately does not install `medh5` --- the site is
-hand-written Markdown and a build should not need h5py, torch or pydicom.  So
-`medh5/errors.py` is loaded as a standalone module (it imports only the standard
-library) and `medh5/dataset/check.py`, which does pull h5py transitively, is
-*parsed* rather than imported.
+hand-written Markdown, and a build should not need a Rust toolchain to compile
+the engine.  So the engine's data is read where it lives: the diagnostic code
+table is `crates/medh5/data/codes.json`, which the engine embeds, and the
+cohort codes are the `CHECK_CODES` table in `crates/medh5/src/dataset/check.rs`,
+*parsed* rather than compiled.
 """
 
 from __future__ import annotations
 
-import ast
-import importlib.util
 import json
 import re
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -118,56 +115,57 @@ def _relocated(markdown: str) -> str:
 # --------------------------------------------------------------------------
 
 
-def _load_errors(root: Path) -> Any:
-    """Import ``medh5/errors.py`` as a standalone module.
+CODES_SOURCE = "crates/medh5/data/codes.json"
+CHECK_SOURCE = "crates/medh5/src/dataset/check.rs"
 
-    It imports only ``dataclasses``, ``typing`` and ``__future__``, so it loads
-    with no h5py, no numpy and no installed package.  Two details are not
-    optional:
 
-    * the module name is **not** ``medh5.errors``.  That name would make Python
-      import the parent package first, which does pull h5py in, defeating the
-      whole point.
-    * it is registered in ``sys.modules`` *before* execution.  ``Code`` is a
-      ``@dataclass(slots=True)``, and building a slots dataclass resolves its
-      annotations through ``sys.modules[cls.__module__]``; with the module
-      absent that lookup returns ``None`` and the import dies in `dataclasses`.
+def _load_codes(root: Path) -> list[dict[str, str]]:
+    """The §15.2 diagnostic code table, in table order.
+
+    The engine embeds this file (`include_str!`), so what the page renders is
+    what the validator reports.
     """
-    path = root / "medh5" / "errors.py"
+    path = root / CODES_SOURCE
     if not path.is_file():
         raise FileNotFoundError(f"the diagnostic code table is not at {path}")
-    spec = importlib.util.spec_from_file_location("_medh5_errors_for_docs", path)
-    if spec is None or spec.loader is None:  # pragma: no cover - defensive
-        raise ImportError(f"cannot load {path} as a module")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+    codes = json.loads(path.read_text(encoding="utf-8"))["codes"]
+    for row in codes:
+        missing = {"code", "severity", "domain", "summary"} - set(row)
+        if missing:  # pragma: no cover - defensive
+            raise ValueError(f"{path}: {row.get('code', row)} lacks {sorted(missing)}")
+    return list(codes)
+
+
+# One `("C101", "summary"),` row of the Rust table.  The summaries are plain
+# string literals; an escape in one would need decoding, so it is refused.
+_CHECK_TABLE = re.compile(
+    r"pub const CHECK_CODES: \[\(&str, &str\); \d+\] = \[(?P<rows>.*?)\n\];", re.S
+)
+_CHECK_ROW = re.compile(r'\(\s*"(?P<code>C\d{3})",\s*"(?P<summary>[^"\\]*)",?\s*\),?')
 
 
 def _cohort_codes(root: Path) -> dict[str, str]:
-    """``CHECK_CODES`` from ``medh5/dataset/check.py``, read as a literal.
+    """``CHECK_CODES`` from the engine's cohort check, read from its source.
 
-    That module imports `medh5.dataset.manifest`, which needs h5py, so it is
-    parsed rather than imported --- the table itself is a plain dict of string
-    literals and `ast` can read it without running anything.
+    The table is a Rust array of `(code, summary)` string pairs, so it is
+    parsed rather than compiled --- and the parse refuses anything else, so a
+    reshaped table fails the build instead of rendering an incomplete page.
     """
-    path = root / "medh5" / "dataset" / "check.py"
+    path = root / CHECK_SOURCE
     if not path.is_file():
         raise FileNotFoundError(f"the cohort check table is not at {path}")
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    for node in tree.body:
-        if isinstance(node, ast.Assign) and any(
-            isinstance(t, ast.Name) and t.id == "CHECK_CODES" for t in node.targets
-        ):
-            value = ast.literal_eval(node.value)
-            if not isinstance(value, dict):  # pragma: no cover - defensive
-                raise TypeError(f"CHECK_CODES is a {type(value).__name__}, not a dict")
-            return value
-    raise ValueError(
-        f"CHECK_CODES is no longer a module-level literal in {path}; the cohort "
-        "check reference page cannot be generated from it"
-    )
+    table = _CHECK_TABLE.search(path.read_text(encoding="utf-8"))
+    if table is None:
+        raise ValueError(
+            f"CHECK_CODES is no longer a `[(&str, &str); N]` table in {path}; the "
+            "cohort check reference page cannot be generated from it"
+        )
+    rows = table.group("rows")
+    codes = {m["code"]: m["summary"] for m in _CHECK_ROW.finditer(rows)}
+    leftover = _CHECK_ROW.sub("", rows).strip()
+    if leftover or not codes:
+        raise ValueError(f"unparsed CHECK_CODES rows in {path}: {leftover[:200]!r}")
+    return codes
 
 
 # --------------------------------------------------------------------------
@@ -221,9 +219,8 @@ _DOMAIN_TITLES: tuple[tuple[str, str], ...] = (
 
 def _codes_markdown(root: Path) -> str:
     """The §15.2 diagnostic code table, grouped by domain."""
-    errors = _load_errors(root)
-    codes = errors.CODES
-    warnings = sum(c.severity == "warning" for c in codes.values())
+    codes = _load_codes(root)
+    warnings = sum(c["severity"] == "warning" for c in codes)
     out: list[str] = [
         f"{len(codes)} codes: **{len(codes) - warnings} errors** and "
         f"**{warnings} warnings**. Every one has a conformance case.",
@@ -231,7 +228,7 @@ def _codes_markdown(root: Path) -> str:
     ]
     seen = 0
     for domain, title in _DOMAIN_TITLES:
-        rows = errors.codes_for(domain)
+        rows = [c for c in codes if c["domain"] == domain]
         if not rows:  # pragma: no cover - every domain is populated today
             continue
         seen += len(rows)
@@ -242,7 +239,8 @@ def _codes_markdown(root: Path) -> str:
             "|---|---|---|",
         ]
         out += [
-            f"| `{c.code}`{{ #{c.code.lower()} }} | {c.severity} | {_cell(c.summary)} |"
+            f"| `{c['code']}`{{ #{c['code'].lower()} }} | {c['severity']} "
+            f"| {_cell(c['summary'])} |"
             for c in rows
         ]
         out.append("")

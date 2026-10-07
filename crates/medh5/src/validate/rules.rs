@@ -324,8 +324,18 @@ pub fn check_document(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
         return Ok(out);
     };
     let text = data::read_scalar_string(&meta)?;
-    let parsed: serde_json::Value = match crate::json::loads(&text) {
-        Ok(v) => v,
+    let parsed: serde_json::Value = match crate::json::loads_lenient(&text) {
+        Ok((v, None)) => v,
+        // What 1.x's `json.dumps` wrote for a NaN: not JSON, so E004, but the
+        // rest of the document is still checked --- a reader reads it as null.
+        Ok((v, Some(found))) => {
+            out.push(ctx.err(
+                "E004",
+                "/meta",
+                format!("`meta` is not valid JSON: {found} (JSON has no NaN or infinity; a reader takes it as null)"),
+            ));
+            v
+        }
         Err(e) => {
             let reason = crate::json::decode_error(&text, &e);
             out.push(ctx.err("E004", "/meta", format!("`meta` is not valid JSON: {reason}")));

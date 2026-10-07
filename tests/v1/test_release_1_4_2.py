@@ -1259,6 +1259,14 @@ class TestW22Hygiene:
             if line.startswith("| §") or line.startswith("| ")
         ]
         rows = rows[: next((i for i, r in enumerate(rows) if not r.strip()), len(rows))]
-        words = {20: "Twenty", 21: "Twenty-one", 22: "Twenty-two"}
+        words = {
+            20: "Twenty",
+            21: "Twenty-one",
+            22: "Twenty-two",
+            23: "Twenty-three",
+            24: "Twenty-four",
+            25: "Twenty-five",
+        }
         assert f"{words[len(rows)]} clauses have been corrected" in section
-        assert rows[-1].startswith("| §10.1 |")
+        # The 1.4.2 correction is recorded; 2.0's three follow it.
+        assert any(r.startswith("| §10.1 |") for r in rows)

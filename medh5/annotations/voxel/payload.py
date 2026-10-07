@@ -9,6 +9,7 @@ import numpy as np
 import numpy.typing as npt
 
 from medh5 import _core
+from medh5.annotations.payload import AnnotationPayload
 
 Masks = Mapping[int, npt.NDArray[np.bool_]]
 """class id -> boolean occupancy over the grid's spatial shape."""
@@ -30,4 +31,10 @@ def normalize_masks(
     return dict(resolved), tuple(shape)
 
 
-__all__ = ["SLAB_BYTES", "Masks", "checked_class_id", "normalize_masks"]
+__all__ = [
+    "SLAB_BYTES",
+    "AnnotationPayload",
+    "Masks",
+    "checked_class_id",
+    "normalize_masks",
+]

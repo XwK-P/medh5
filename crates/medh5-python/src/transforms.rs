@@ -249,6 +249,13 @@ impl TransformHeader {
 
 #[pymethods]
 impl TransformHeader {
+    /// The header a transform group carries (`sample.root["transforms/x"]`).
+    #[classmethod]
+    fn read(_cls: &Bound<'_, pyo3::types::PyType>, group: &Bound<'_, PyAny>) -> R<Self> {
+        let group = crate::integrity::group_of(group)?;
+        Ok(TransformHeader { inner: medh5::transforms::model::TransformHeader::read(&group)? })
+    }
+
     #[classattr]
     fn __dataclass_fields__(py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
         crate::geometry::dataclass_fields(py, Self::FIELDS)

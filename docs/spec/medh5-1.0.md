@@ -150,6 +150,11 @@ variable-length data, which lives in the file's global heap, so a compression re
 either silently ignored or an error depending on the library. A vocabulary large enough for the size
 to matter uses `form = "ref"` (§5.1) instead of an inline copy.
 
+> **Note.** JSON has no NaN or infinity. The 1.x package wrote Python's `NaN` and `Infinity` tokens
+> into `meta` when handed such a value, so a file it wrote can fail this clause (E004); the reference
+> reader takes those tokens as `null`, so that the rest of the sample stays readable, and its writer
+> refuses them.
+
 The sample document carries everything that is a *document*: identity, cohort, label set, provenance,
 quality, splits, acquisition and free-form extras. It **MUST NOT** duplicate any value that this
 specification places in an HDF5 attribute.
@@ -178,16 +183,17 @@ Top-level members of the sample document:
 
 | Logical type | HDF5 encoding |
 |---|---|
-| string | variable-length UTF-8 (`h5py.string_dtype()`) |
+| string | variable-length string, UTF-8 character set (`H5T_VARIABLE`, `H5T_CSET_UTF8`; `h5py.string_dtype()`) |
 | string list | 1-D array of variable-length UTF-8, **never** a JSON string |
-| boolean | `np.bool_` scalar |
+| boolean | 8-bit signed integer enumeration with members `FALSE = 0` and `TRUE = 1` --- what `h5py` writes for `np.bool_` |
 | integer / integer list | `int64` scalar / 1-D `int64` |
 | float / float list | `float64` scalar / 1-D `float64` |
 | matrix | 2-D array, **stored 2-D** (0.x flattened `direction`; 1.0 **MUST NOT**) |
 | enum | lowercase `snake_case` string from the values listed in this spec |
 
-Readers **MUST** accept both `bytes` and `str` for string attributes (h5py version drift) and
-**SHOULD** normalise to `str`.
+Readers **MUST** accept fixed-length as well as variable-length strings, in the ASCII as well as the
+UTF-8 character set (to `h5py`, `bytes` as well as `str` --- the version drift this clause was
+written for), and **SHOULD** normalise them to text.
 
 ---
 
@@ -487,10 +493,29 @@ computed so that two implementations in two languages agree. The digested docume
 ```
 
 with `classes` sorted by `id`, `relations` sorted by `(subject, predicate, object)`, `skeletons` sorted
-by `id`, and `relations`/`skeletons` omitted when empty. It is serialized as JSON with **sorted keys,
-no insignificant whitespace, and non-ASCII characters kept as UTF-8** (not `\u` escapes), then hashed.
+by `id`, and `relations`/`skeletons` omitted when empty. It is serialized as **canonical JSON** (below)
+and hashed.
 `form`, `uri` and `sha256` are **excluded**: they describe how the vocabulary is *carried*, not what it
 says, so an inline copy and a referenced copy of one vocabulary digest identically.
+
+**Canonical JSON (normative).** The one serialization behind `label_set.sha256` and `content_id`'s
+`canonical_attrs` (§13.2), defined to the byte so that implementations in different languages agree:
+
+* object keys **sorted** by code point; separators `,` and `:` with **no whitespace** anywhere;
+* strings in UTF-8 with non-ASCII characters written **as themselves**, not as `\u` escapes; the
+  only escapes are `\"`, `\\`, `\b`, `\f`, `\n`, `\r`, `\t`, and `\u00xx` (lowercase hex) for any
+  other character below U+0020;
+* `true`, `false`, `null`;
+* a number keeps its type: an **integer** is written in decimal with no exponent or fraction; a
+  **float** is written in its *shortest round-trip form* --- the fewest significant digits that read
+  back to the same IEEE-754 binary64 value --- in fixed notation with at least one fractional digit
+  when `1e-4 ≤ |x| < 1e16` (`1.0`, `0.0001`, `2.5`), and otherwise as `d[.ddd]e±XX` with a sign and
+  at least two exponent digits (`1e-05`, `1.5e+16`); `-0.0` keeps its sign. A JSON document has no
+  non-finite values; an attribute can hold one, and `canonical_attrs` writes it `NaN`, `Infinity` or
+  `-Infinity`.
+
+This is what Python's `json.dumps(doc, sort_keys=True, separators=(",", ":"), ensure_ascii=False)`
+produces, and what `medh5` has always written.
 
 Two files are **vocabulary-compatible** iff their `label_set.id`, `version` and `sha256` match. A
 dataset-level validator **MUST** report divergent vocabularies across a cohort.
@@ -1233,9 +1258,12 @@ Every dataset **SHOULD** carry a `digest` attribute `"<algo>:<hex>"` over its ca
 H( object_path ‖ 0x00 ‖ dtype_str ‖ 0x00 ‖ shape_csv ‖ 0x00 ‖ raw C-order little-endian bytes )
 ```
 
-`dtype_str` is the NumPy dtype string with explicit byte order normalised to little-endian
-(`"<i2"`, `"<u8"`, `"|b1"`). Variable-length string datasets hash the UTF-8 payloads separated by
-`0x00`. The digest covers **decompressed** content, so recompression does not invalidate it.
+`dtype_str` is the NumPy dtype string with explicit byte order normalised to little-endian: `|b1`
+for booleans, `|i1` and `|u1` for 8-bit integers (one byte has no order), `<i2`, `<i4`, `<i8`,
+`<u2`, `<u4`, `<u8`, `<f2`, `<f4`, `<f8` otherwise, and `|O` for variable-length strings, whose
+payloads are hashed in UTF-8, each followed by `0x00`, in place of raw bytes. `shape_csv` is the
+dimensions in decimal joined by `,` (`64,96,96`; empty for a scalar). The digest covers
+**decompressed** content, so recompression does not invalidate it.
 
 Datasets under `index/` (§14.3) are **excluded**: they carry no `digest`, and writers **MUST NOT**
 stamp one. An index is derived, regenerable, and already bound to its source by `source_digest`
@@ -1253,8 +1281,9 @@ lines = sorted( f"{path}\t{digest}\n" for every dataset with a digest )
 content_id = "<algo>:" + hex( H( "".join(lines) ) )
 ```
 
-`canonical_attrs` serialises the object's spec-defined attributes as sorted-key JSON with arrays as
-nested lists and floats in `repr` shortest round-trip form. Each of the three groups of lines is
+`canonical_attrs` serialises the object's spec-defined attributes as one JSON object in the
+canonical JSON of §5.1, keyed by attribute name: a string as a string, a boolean as `true`/`false`,
+an integer or float scalar as a number of that type, and an array as nested lists of the same. Each of the three groups of lines is
 sorted independently and they are concatenated in the order shown. Paths are relative to the **sample
 root**, so a sample extracted from a collection keeps its `content_id` (§2.2).
 
@@ -1386,9 +1415,10 @@ tens of GiB and cannot exist.
   is permitted only for attribute-only edits and **MUST** be opt-in.
 * **Amend preserves unknown objects.** A 1.0 writer amending a file containing objects from a future
   minor version **MUST** copy them through untouched.
-* **Readers** open `mode="r"`. Concurrent readers across processes are safe. A single `h5py.File`
-  **MUST NOT** be shared across threads without external locking, nor inherited across `fork` — a
-  handle cache **MUST** be keyed by PID and dropped in the child.
+* **Readers** open `mode="r"`. Concurrent readers across processes are safe. A single open HDF5
+  file (an `h5py.File`, a Rust `hdf5::File`) **MUST NOT** be shared across threads without external
+  locking, nor inherited across `fork` — a handle cache **MUST** be keyed by PID and dropped in the
+  child.
 * **SWMR** (`libver="latest"`, `swmr_mode=True`) **MAY** be used to read a file while it is being
   appended; readers **MUST** re-verify `content_id` before trusting a SWMR snapshot.
 * **Network filesystems**: HDF5 file locking is unreliable on NFS/Lustre/GPFS. Tooling **SHOULD**
@@ -1546,8 +1576,9 @@ grouping, since a 0.x file carries no reliable subject key of its own.
 
 ### C.1 Reference implementation
 
-Sections §2–§15 are **implemented** in the `medh5` package and exercised by a conformance corpus
-(§15) of 117 files: valid samples covering every encoding, annotation kind, transform kind,
+Sections §2–§15 are **implemented** by the `medh5` format engine --- the Rust crate `medh5`, which the
+Python package and the `medh5` command line wrap --- and exercised by a conformance corpus (§15) of
+117 files: valid samples covering every encoding, annotation kind, transform kind,
 dimensionality, profile and container kind, plus one deliberately-invalid file per diagnostic code.
 Running the corpus against a validator is how a third-party implementation demonstrates conformance:
 
@@ -1556,18 +1587,20 @@ $ medh5 conformance run ./corpus
 117/117 cases pass
 ```
 
-**Every code in §15.2 has a corpus case.** The implementation gates on `ruff`,
-`mypy --strict` and ≥ 90 % test coverage, and a test asserts that the §15.2 table and the
-implementation's code registry are identical, so the two cannot drift.
+**Every code in §15.2 has a corpus case.** The implementation gates on `cargo clippy` and `rustfmt`
+for the engine, `ruff`, `mypy --strict` and ≥ 90 % test coverage for the Python package, and the
+corpus through both the Python and the native command line; a test asserts that the §15.2 table and
+the implementation's code registry are identical, so the two cannot drift.
 
 The §14 performance claims are reproducible rather than asserted: `medh5 bench` re-measures them on
 any machine. On a 192×256×256 synthetic CT with eight classes, a multi-class 64³ label read costs
 4.0 ms, foreground centre sampling 0.03 ms (O(1) in volume size, via §14.3; 0.10 ms at 63 classes),
 a metadata-only read 0.21 ms, and `open()` → first patch 2.4 ms.
 
-Twenty-one clauses have been corrected — ten during implementation and eleven in the 1.x package
-releases that followed — each because writing the code showed the text was not implementable, not
-unambiguous, or not what the implementation could honestly promise, as written:
+Twenty-four clauses have been corrected — ten during implementation, eleven in the 1.x package
+releases that followed, and three when the engine was written a second time, in Rust, for the 2.0
+package — each because writing the code showed the text was not implementable, not unambiguous, or
+not what the implementation could honestly promise, as written:
 
 | Clause | Correction |
 |---|---|
@@ -1592,6 +1625,9 @@ unambiguous, or not what the implementation could honestly promise, as written:
 | §7.5 | `contains` is decided at the stored precision, and a writer must store `data` in a dtype under which that decision matches the input. The clause set a `float16` default and a `float64` threshold and said nothing about comparing them: a threshold of 1/3 compared against a float16 1/3 excluded exactly the voxels the threshold was chosen to include. |
 | §7.7 | An ignore region that overlaps a class is stored as the sibling `mask` under every encoding. In band it cannot survive the overlap — `labelmap` kept the class and lost the region there, while `bitmask` kept both — so one call to a writer meant different things to a loss depending on which encoding the size measurement picked. |
 | §10.1 | A transform and the stored inverse its `inverse_id` names are one route, not two. E505 requires the pair to be mutually consistent, and a resolver that counted the stored transform and the delegated inverse of its partner as two equally short routes refused every such pair as ambiguous, in both directions — so the declaration E505 checks made the pair unusable, and the registration guide told users not to make it. |
+| §2.5 | Booleans and strings are defined as HDF5 types --- an 8-bit enumeration `FALSE = 0`, `TRUE = 1`; a variable-length UTF-8 string --- and so is what a reader must accept. The table said `np.bool_` and `h5py.string_dtype()`, which are one library's names for them; an implementation without that library had to read `h5py`'s source to write a boolean every 1.x reader would accept. |
+| §5.1, §13.2 | Canonical JSON is defined to the byte, once, for both digests that use it. §13.2 asked for "sorted-key JSON" with floats "in `repr` shortest round-trip form" --- one language's function --- and said nothing of separators or non-ASCII text, while §5.1 named those and said nothing of numbers; Python's default separators carry spaces, so a literal reading of §13.2 gave a different `content_id` for the same file. The definition is what the 1.x implementation always wrote: no digest changes. |
+| §13.1 | `dtype_str` is spelled out for every stored type, including `|O` for variable-length strings, and `shape_csv` is defined. "The NumPy dtype string" left a string dataset's header to whatever a reader's string type is called, and a second implementation would have digested every point `names` and classification `schemes` column differently. |
 
 ### C.2 Prototype checks
 

@@ -19,6 +19,7 @@ import numpy as np
 import numpy.typing as npt
 
 from medh5 import _core
+from medh5._optional import require
 
 Role = Literal["image", "label", "aux"]
 
@@ -42,6 +43,32 @@ class Codec:
     blosc2: tuple[str, int, str] | None = None
     gzip_level: int | None = None
     shuffle: bool = True
+
+    def kwargs(self) -> dict[str, Any]:
+        """``h5py.Group.create_dataset`` keywords for this codec.
+
+        For writing a dataset with ``h5py`` directly in the profile's codec;
+        medh5 itself does not need them.  A Blosc2 codec takes its filter
+        options from ``hdf5plugin``, which is then required.
+        """
+        if self.blosc2 is not None:
+            cname, clevel, shuffle_mode = self.blosc2
+            hdf5plugin = require(
+                "hdf5plugin", extra="h5py", purpose="Blosc2 keywords for h5py"
+            )
+            mode = {
+                "shuffle": hdf5plugin.Blosc2.SHUFFLE,
+                "bitshuffle": hdf5plugin.Blosc2.BITSHUFFLE,
+                "none": hdf5plugin.Blosc2.NOFILTER,
+            }[shuffle_mode]
+            return dict(hdf5plugin.Blosc2(cname=cname, clevel=clevel, filters=mode))
+        if self.gzip_level is not None:
+            return {
+                "compression": "gzip",
+                "compression_opts": self.gzip_level,
+                "shuffle": self.shuffle,
+            }
+        return {}  # pragma: no cover - no uncompressed profile is defined
 
 
 @dataclass(frozen=True, slots=True)

@@ -407,6 +407,30 @@ impl Timeline {
     fn check(&self) -> R<()> {
         Ok(self.inner.check()?)
     }
+    /// The position of the first timepoint equal to `value` (`Sequence.index`).
+    #[pyo3(signature = (value, start=0, stop=None))]
+    fn index(&self, py: Python<'_>, value: &Bound<'_, PyAny>, start: isize, stop: Option<isize>) -> PyResult<usize> {
+        let items = self.objects(py)?;
+        let n = items.len() as isize;
+        let clamp = |i: isize| (if i < 0 { (i + n).max(0) } else { i.min(n) }) as usize;
+        let (lo, hi) = (clamp(start), clamp(stop.unwrap_or(n)));
+        for i in lo..hi.max(lo) {
+            if items.get_item(i)?.eq(value)? {
+                return Ok(i);
+            }
+        }
+        Err(pyo3::exceptions::PyValueError::new_err("timepoint is not in the timeline"))
+    }
+    /// How many timepoints equal `value` (`Sequence.count`).
+    fn count(&self, py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<usize> {
+        let mut found = 0;
+        for item in self.objects(py)?.iter() {
+            if item.eq(value)? {
+                found += 1;
+            }
+        }
+        Ok(found)
+    }
     fn __len__(&self) -> usize {
         self.inner.len()
     }
