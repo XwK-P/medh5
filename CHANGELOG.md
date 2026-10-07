@@ -4,6 +4,112 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.0.0] — 2026-10-07
+
+**One format engine, three frontends.** The format is now implemented once, in
+Rust: the [`medh5`](https://crates.io/crates/medh5) crate is the canonical
+implementation of the specification --- data model, HDF5 I/O, validation,
+chunked access, compression, geometry and transforms, annotations, provenance
+and integrity. The Python package is a layer over it (`medh5._core`, built with
+PyO3), and the command line is a native binary over the same code. Python keeps
+what is Python's: NumPy at the API, PyTorch and MONAI, and the NIfTI, DICOM,
+RTSTRUCT and nnU-Net converters.
+
+**The file format is unchanged: 1.0.** Files written by 1.x and 2.0 are the
+same format, read by both, and a sample's `content_id` does not depend on which
+wrote it. The version is a major one because of the Python API at the HDF5
+boundary --- the package no longer hands out `h5py` objects --- and the
+behaviour changes below.
+
+### Added
+
+- **The Rust crates.** `medh5` (the engine), `medh5-sys` (HDF5 built from
+  source and linked statically, C-Blosc2, and the Blosc2 and Zstandard HDF5
+  filters --- nothing to install) and `medh5-cli` (the `medh5` binary). Their
+  version is the package's, from one place: the Cargo workspace.
+- **The native command line**, from `cargo install medh5-cli`, the binaries on
+  each GitHub Release, or Homebrew. The `medh5` command `pip` installs runs the
+  same Rust code, so both give the same output and exit codes. The converters
+  (`convert …`, `migrate`) are Python integrations: the binary runs them
+  through a Python that has the package (`python3`, or `MEDH5_PYTHON`).
+- **Wheels** for Linux (x86_64, aarch64), macOS (x86_64, arm64) and Windows
+  (x64): one `abi3` wheel per platform serves CPython 3.10 and later.
+- **Types for the engine**: `medh5/_core.pyi`, checked against the built module
+  by `stubtest` in the test suite, so `mypy --strict` users keep the 1.x
+  signatures.
+- `medh5.nodes` --- `Group`, `Dataset` and `Attrs`, the package's views of
+  stored objects (see below); `Sample.is_open`; `medh5.cli.command_tree()`, the
+  command line's grammar as data; and an `h5py` extra (`h5py` and `hdf5plugin`)
+  for reading a file with `h5py` directly.
+
+### Behaviour changes
+
+- **Views, not `h5py` objects.** `Sample.root`, `Image.dataset`,
+  `Annotation.group`, `Transform.group`, `SamplingIndex.group`,
+  `SampleWriter.handle` and the writer's `add_*` return values are
+  `medh5.nodes` views. The operations a caller used still work --- `ds[...]`,
+  `numpy.asarray(ds)`, `shape`, `dtype`, `chunks`, `attrs`, `group["a/b"]`,
+  `in`, `keys()` --- but `h5py`-only API (`.id`, `create_dataset`,
+  `visititems`, …) is gone, and a string-list attribute reads as a `list` of
+  `str` rather than a NumPy object array. For anything else, open the file with
+  `h5py` (`pip install "medh5[h5py]"`); it is plain HDF5.
+- **Functions that took an `h5py` object take a view**:
+  `medh5.integrity`'s digests and verification, `medh5.storage`'s
+  `describe_filters`, `is_bulk` and `read_indices`, `read_document`,
+  `read_grid`, `read_grids`, `collect_digests`, `AnnotationHeader.read` and
+  `TransformHeader.read`.
+- **Closing a sample closes what was read from it**, as `h5py`'s
+  `File.close()` does: a view used afterwards raises `MEDH5FileError` ("the
+  file this object was read from has been closed") instead of answering from a
+  stale handle or keeping the file open and locked.
+- **NumPy is the only runtime dependency.** `h5py`, `hdf5plugin` and
+  `jsonschema` are no longer installed; HDF5, the filters and the JSON Schema
+  validator are compiled into the engine. The `schema` and `interp` extras
+  install nothing and remain so that existing install lines keep working.
+- **A NaN or infinity in the sample document is refused** with
+  `MEDH5ValidationError`. JSON has neither, and §2.4 requires `/meta` to be
+  JSON; 1.x wrote Python's `NaN` and `Infinity` tokens, which no JSON parser
+  outside Python accepts. A file 1.x wrote that way still opens --- the tokens
+  read as `None` --- and now validates with **E004**. An *attribute* may still
+  hold one, and hashes exactly as 1.x hashed it.
+
+### Removed
+
+- The private `medh5._hdf5` and `medh5.document_fields` modules.
+- The argparse internals of `medh5.cli` (`build_parser`, `MODULES` and the
+  per-command modules); `command_tree()` describes the grammar and `main()` runs
+  it.
+- `h5py`-level writers and internals with no meaning over the engine:
+  `write_document`, `write_grid`, `stamp_digests`, `write_index`,
+  `read_transforms`, `open_transform`, `component_ids`, `composite_cycle`,
+  `require_major`, `validate.Context`, `validate_collection` (`validate_file`
+  validates collections), `validate.rules`, `labels.registry.VOCAB_DIR` (the
+  vocabularies are compiled in) and `voxel.payload`'s scan helpers. Writing goes
+  through `SampleWriter`, which stamps digests and indices at commit; reading
+  through `medh5.open`.
+
+### Fixed
+
+- **The specification names bytes, not Python functions.** A second
+  implementation found three clauses it could only satisfy by reading 1.x's
+  code: booleans and strings (§2.5) were `np.bool_` and `h5py.string_dtype()`,
+  canonical JSON (§5.1, §13.2) had floats "in `repr` form" and no separators,
+  and a digest's `dtype_str` (§13.1) was "the NumPy dtype string", which says
+  nothing for a string dataset. Each is now defined in HDF5 and JSON terms and
+  recorded in [Appendix C.1](docs/spec/medh5-1.0.md#c1-reference-implementation).
+  The definitions are what 1.x always wrote: no file and no digest changes.
+- **NaN in `/meta` is reported.** 1.x's validator parsed `/meta` with Python's
+  `json`, which accepts `NaN`, so a document that is not JSON passed.
+
+### Performance
+
+Measured with `medh5 bench` on one machine, 1.4.4 → 2.0.0: `open()` to the
+first patch 7.6 → 3.9 ms, a metadata-only read 0.80 → 0.19 ms, foreground
+centre sampling 0.08 → 0.03 ms (0.35 → 0.05 ms at 63 classes), a 64³ image patch
+0.24 → 0.14 ms, a paired-visit centre 8.7 → 5.5 ms. A multi-class label patch is
+unchanged (11 ms here): it is decompression, and the codecs are the same C
+libraries.
+
 ## [1.4.4] — 2026-10-02
 
 Release tooling and `README.md` only: **no format change and no change to the

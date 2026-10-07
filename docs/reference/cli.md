@@ -4,6 +4,15 @@
 medh5 COMMAND [args] [--json]
 ```
 
+The command line is a native program over the format engine. `pip install
+medh5` puts it on the path; so do `cargo install medh5-cli`, the binaries
+attached to every GitHub Release, and `brew install XwK-P/medh5/medh5`. Each is
+the same code, with the same output and exit codes. The converters
+(`medh5 convert …`, `medh5 migrate`) are Python integrations: the standalone
+binary runs them through a Python that has the package installed (`python3`,
+or the interpreter `MEDH5_PYTHON` names), and says what to install when there
+is none.
+
 Exit codes are Unix-conventional: **0** success, **1** a handled error or a
 failed check, **2** a usage error. Every inspection command takes `--json` and
 writes a machine-readable document to stdout.

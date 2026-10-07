@@ -141,6 +141,7 @@ nav:
   - Reference:
       - reference/index.md
       - Python API: reference/python-api.md
+      - Rust crate: reference/rust.md
       - Command line: reference/cli.md
       - PyTorch and MONAI: reference/torch.md
       - Annotation kinds: reference/annotations.md

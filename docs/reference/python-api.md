@@ -3,6 +3,10 @@
 The core of the package is reachable from the top-level `medh5` namespace;
 where a name lives in a sub-package, the example imports it from there.
 
+The package is a layer over the format engine, which is written in Rust
+([Rust crate](rust.md)); the classes here are its Python face, typed for
+`mypy --strict`, and the arrays they hand back are NumPy arrays.
+
 ## Opening
 
 ```python
@@ -93,7 +97,7 @@ img.levels                 # multiscale pyramid levels
 img.read()                                # whole array, stored values
 img.read(physical=True)                   # rescale applied
 img.read((slice(0, 16), slice(0, 64), slice(0, 64)))   # one block
-img.dataset                               # the underlying h5py dataset
+img.dataset                               # the stored dataset (a view, below)
 ```
 
 `physical=True` applies `slope` and `intercept`. When an image declares
@@ -220,6 +224,24 @@ s.fresh_indices               # the ids whose source_digest still matches (§13.
 
 A stale entry is ignored by the samplers and the statistics, never trusted; see
 [Storage](storage.md#the-sampling-index).
+
+### Stored objects
+
+`s.root` is the sample's HDF5 root, and `img.dataset`, `ann.group`, `t.group`,
+`s.index[...].group` and the writer's `w.handle` are objects under it. They are
+the package's own views (`medh5.nodes`), not `h5py` objects:
+
+```python
+ds = s.root["images/CT"]          # Dataset: shape, dtype, chunks, filters, attrs
+ds.shape, ds.dtype, ds.chunks
+block = ds[0:4, :, :]             # one read, NumPy out; numpy.asarray(ds) reads all
+ds.attrs["modality"]              # attributes, decoded as spec §2.5 fixes
+"images" in s.root, s.root["annotations"].keys()
+```
+
+A view lives as long as the sample it came from: after `s.close()` using one
+raises `MEDH5FileError`. For HDF5 features the views do not cover, open the
+file with `h5py` (`pip install "medh5[h5py]"`); it is plain HDF5.
 
 ## Writing
 

@@ -19,16 +19,16 @@ Extras, all optional:
 | `dicom` | DICOM, DICOM SEG and RTSTRUCT reading (pydicom) |
 | `dicomseg` | *Writing* DICOM SEG (highdicom) |
 | `itk` | Resampling in the converters (SimpleITK) |
-| `interp` | Cubic displacement-field evaluation (scipy) |
+| `h5py` | Opening a file with `h5py` directly (h5py, hdf5plugin) |
 
 ```bash
 pip install "medh5[torch,nifti,dicom]"
 ```
 
-Nothing but `h5py`, `hdf5plugin`, `numpy` and `jsonschema` is needed to read
-or write a file. `jsonschema` checks `/meta` against the format's JSON Schema on
-every write and every validation, so it has been a core dependency since 1.4.1;
-the old `schema` extra still installs cleanly and adds nothing.
+Nothing but NumPy is needed to read or write a file. The package is a layer over
+the format engine, which is written in Rust and carries HDF5, its compression
+filters and the JSON Schema check that `/meta` passes on every write and every
+validation. The old `schema` and `interp` extras still install and add nothing.
 
 ## Write a sample
 

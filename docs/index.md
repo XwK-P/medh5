@@ -16,8 +16,14 @@ with medh5.open("case_0001.medh5") as s:
 ```
 
 ```bash
-pip install medh5
+pip install medh5            # Python
+cargo add medh5              # Rust
+cargo install medh5-cli      # the medh5 command line, natively
 ```
+
+One format engine, written in Rust, with three frontends that read and write
+the same bytes: the [Python package](reference/python-api.md), the
+[Rust crate](reference/rust.md) and the [command line](reference/cli.md).
 
 ## Where to start
 

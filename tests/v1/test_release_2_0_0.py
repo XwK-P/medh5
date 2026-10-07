@@ -377,3 +377,17 @@ class TestThe1xNamesStillAnswer:
             "shuffle": True,
         }
         assert PROFILES["training"].image.kwargs()["compression"] == 32026
+
+
+def test_the_rust_example_on_the_docs_page_is_the_tested_one() -> None:
+    """`cargo test` compiles and runs the engine crate's README; the docs page
+    shows the same block, so it is tested too --- as long as they are one."""
+    import re
+
+    block = re.compile(r"```rust\n.*?```\n", re.S)
+    readme = (ROOT / "crates/medh5/README.md").read_text(encoding="utf-8")
+    page = (ROOT / "docs/reference/rust.md").read_text(encoding="utf-8")
+    assert block.findall(page) == block.findall(readme)[:1]
+    assert '#![doc = include_str!("../README.md")]' in (
+        ROOT / "crates/medh5/src/lib.rs"
+    ).read_text(encoding="utf-8")

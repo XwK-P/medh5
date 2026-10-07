@@ -199,6 +199,27 @@ honestly** — coverage, provenance, geometry and integrity.
 | **Subject-scoped files are larger** | A file holds every visit, so amend costs scale with the record and a new visit is a rewrite, not an append. Mitigated by the curator's freedom to emit one sample per timepoint for a long series, and by the fact that annotation edits — the frequent operation — touch small objects. |
 | **Longitudinal correctness becomes the format's problem** | Stable instance ids and honest coverage across visits are the writer's to get right. A validator sees only their symptoms — one `instance_id` carrying two classes (`W909`), partial coverage with no ignore region (`W904`) — so the format makes the correct thing expressible and some of the incorrect things detectable. It cannot make it automatic. |
 
+## One engine, three frontends (2.0)
+
+Through 1.x the format was implemented in Python, over `h5py`. That served
+Python users and nobody else: a Rust or C++ pipeline, a viewer, or a cluster
+node without a Python environment had the specification and the conformance
+corpus, but no implementation to call. 2.0 moved the implementation, not the
+format.
+
+| Decision | Why |
+|---|---|
+| **One engine, in Rust** | The canonical implementation is a library every frontend calls, not a Python package other languages re-implement. Rust gives a C-compatible native library with no runtime to ship, and the memory safety a parser of untrusted files should have. |
+| **Three frontends over it** | The Rust crate, the Python package (through PyO3) and the native `medh5` binary run the same code, so there is one behaviour to specify, test and keep conformant --- the corpus runs through both the Python and the native command line. |
+| **Python keeps what is Python's** | NumPy at the API, PyTorch and MONAI datasets, and the converters, whose job is to call nibabel, pydicom and highdicom. Moving those into Rust would re-implement libraries the ecosystem already maintains. |
+| **HDF5 compiled in, statically** | A wheel, a crate and a binary that need nothing installed, and one HDF5 and one Blosc2 everywhere --- so a chunk one frontend writes is the chunk the others read. |
+| **The format stayed 1.0** | Nothing in the file needed to change: a new major format would have bought nothing and cost every 1.x reader. The package is 2.0 because its Python API changed at the HDF5 boundary --- it no longer hands out `h5py` objects --- and semantic versioning says so. |
+
+Re-implementing the format was also a test of the specification: three
+clauses turned out to name a Python function where they meant bytes, and are
+now defined in HDF5 and JSON terms (Appendix C.1). A specification only one
+implementation can satisfy is a description of that implementation.
+
 ## Non-goals
 
 - **Not a PACS or an archive format.** DICOM is the archive. medh5 is the

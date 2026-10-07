@@ -14,7 +14,8 @@ medh5 verify case.medh5          # digests and content_id
 medh5 conformance run corpus/    # the 117-case conformance corpus
 ```
 
-HDF5 is linked statically: the binary needs nothing installed.
+HDF5 is linked statically: the binary needs nothing installed. Building it
+(`cargo install`) needs a C compiler and CMake, which HDF5's build uses.
 
 ## Converters
 

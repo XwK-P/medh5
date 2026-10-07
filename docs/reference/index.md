@@ -8,6 +8,7 @@ What everything is, rather than how to do anything. For task-shaped answers, see
 | | |
 |---|---|
 | **[Python API](python-api.md)** | Reading, writing, amending. |
+| **[Rust crate](rust.md)** | The format engine itself, as a Rust library. |
 | **[Command line](cli.md)** | Every `medh5` command. |
 | **[PyTorch and MONAI](torch.md)** | Datasets, samplers, collation, the MetaTensor adapter. |
 

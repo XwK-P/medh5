@@ -30,15 +30,23 @@ with medh5.open("case_0001.medh5") as s:
 
 ## Install
 
+One format engine, written in Rust, with three frontends that read and write
+the same bytes:
+
 ```bash
-pip install medh5
+pip install medh5                      # the Python package
 pip install "medh5[torch,nifti,dicom]"
+cargo add medh5                        # the Rust crate
+cargo install medh5-cli                # the `medh5` command line, natively
 ```
 
-Reading and writing needs only `h5py`, `hdf5plugin`, `numpy` and `jsonschema`
-(every write is checked against the format's JSON Schema). Extras: `torch`,
-`monai`, `nifti`, `dicom`, `dicomseg`, `itk`, `interp`; the old `schema` extra
-still installs and adds nothing.
+The wheels carry the engine, HDF5 included, so reading and writing need only
+NumPy. Extras: `torch`, `monai`, `nifti`, `dicom`, `dicomseg`, `itk`, and
+`h5py` for opening files with `h5py` directly; `schema` and `interp` still
+install and add nothing. The `medh5` binary is also attached to every
+[GitHub Release](https://github.com/XwK-P/medh5/releases), and installs with
+`brew install XwK-P/medh5/medh5`; building it or the crate from source needs a
+C compiler and CMake, for HDF5.
 
 ## Documentation
 
@@ -128,6 +136,9 @@ rather than reading through or closing them.
 
 ## Command line
 
+`pip install medh5` puts `medh5` on the path; so does the standalone binary,
+which is the same code compiled ahead of time.
+
 ```bash
 medh5 info case.medh5                  # grids, images, annotations, coverage
 medh5 validate case.medh5 --level strict
@@ -175,7 +186,7 @@ the geometry that makes a medical annotation reproducible.
 ## Reading it without medh5
 
 ```python
-import h5py, json, hdf5plugin       # hdf5plugin only for blosc2 profiles
+import h5py, json, hdf5plugin       # pip install "medh5[h5py]"; hdf5plugin for Blosc2
 
 with h5py.File("case_0001.medh5") as f:
     doc = json.loads(f["meta"][()])
@@ -190,7 +201,10 @@ with h5py.File("case_0001.medh5") as f:
 
 The **format** is 1.0. A minor version may add optional objects, profiles,
 encodings and diagnostic codes; it may not change what an existing one means
-(spec §16). The **package** follows semantic versioning from 1.0.0.
+(spec §16). The **package** follows semantic versioning from 1.0.0: 2.0 moved
+the implementation to the Rust engine and changed the Python API at the HDF5
+boundary ([what changed](https://medh5.readthedocs.io/en/latest/changelog/)),
+and writes format 1.0, which 1.x reads.
 
 0.x files are not readable by 1.0 and are not meant to be — `medh5 migrate`
 converts them once. See [Migrate from 0.x](https://medh5.readthedocs.io/en/latest/guides/migrate-0x/).
