@@ -184,13 +184,18 @@ class TestManifest:
 
 class TestPublishedSchema:
     def test_the_packaged_schema_matches_the_published_copy(self):
-        """`schemas/` beside the spec and the packaged copy must not drift."""
-        from medh5.document import SCHEMA_PATH
+        """`schemas/` beside the spec and the engine's embedded copy must not
+        drift: the engine is what validates E005, the published file is what a
+        third-party implementation reads."""
+        from medh5.document import SCHEMA_NAME, schema_text
 
-        published = Path(__file__).resolve().parents[2] / "schemas" / SCHEMA_PATH.name
+        repo = Path(__file__).resolve().parents[2]
+        published = repo / "schemas" / SCHEMA_NAME
+        embedded = repo / "crates" / "medh5" / "data" / SCHEMA_NAME
         assert published.exists(), f"published schema missing at {published}"
+        assert published.read_bytes() == embedded.read_bytes()
         assert json.loads(published.read_text(encoding="utf-8")) == json.loads(
-            SCHEMA_PATH.read_text(encoding="utf-8")
+            schema_text()
         )
 
     def test_the_schema_is_reachable_as_package_data(self):

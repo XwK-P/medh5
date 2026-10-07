@@ -19,15 +19,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import numpy as np
+from medh5 import _core
 
-TARGETS: dict[str, tuple[float, str]] = {
-    "patch_labels_ms": (10.0, "64³ patch, multi-class labels only"),
-    "foreground_sample_ms": (1.0, "foreground centre sampling"),
-    "foreground_sample_many_ms": (1.0, "foreground centre sampling, 63 classes"),
-    "meta_read_ms": (2.0, "metadata-only read"),
-    "open_to_first_patch_ms": (15.0, "full open() → first patch"),
-}
+TARGETS: dict[str, tuple[float, str]] = dict(_core.BENCH_TARGETS)
 """Metric -> (upper bound in ms, description): the performance guide's targets.
 
 The many-class row holds the foreground draw to its O(1) claim where the class
@@ -35,7 +29,7 @@ count is large.  The eight-class sample met the target at 0.9 ms while a
 63-class file cost 7.6 ms per draw, and nothing measured it.
 """
 
-MANY_CLASSES = 63
+MANY_CLASSES: int = _core.BENCH_MANY_CLASSES
 
 
 @dataclass(slots=True)
@@ -48,6 +42,17 @@ class Measurement:
     target: float | None = None
     description: str = ""
     detail: dict[str, Any] | None = None
+
+    @classmethod
+    def from_json(cls, doc: dict[str, Any]) -> Measurement:
+        return cls(
+            name=str(doc["name"]),
+            value=float(doc["value"]),
+            unit=str(doc.get("unit", "ms")),
+            target=doc.get("target"),
+            description=str(doc.get("description", "")),
+            detail=dict(doc.get("detail") or {}),
+        )
 
     @property
     def ok(self) -> bool:
@@ -65,11 +70,7 @@ class Measurement:
         }
 
     def __str__(self) -> str:
-        goal = (
-            "" if self.target is None else f"  (target ≤ {self.target:g} {self.unit})"
-        )
-        mark = " " if self.ok else "!"
-        return f"{mark} {self.name:26s} {self.value:8.3f} {self.unit}{goal}"
+        return str(_core.bench_line(self.to_json()))
 
 
 def timed(fn: Callable[[], Any], *, repeats: int = 20, warmup: int = 3) -> float:
@@ -79,14 +80,7 @@ def timed(fn: Callable[[], Any], *, repeats: int = 20, warmup: int = 3) -> float
     twenty runs moves a mean and not a median, and the question here is what a
     dataloader gets typically, not what it gets in the worst case.
     """
-    for _ in range(warmup):
-        fn()
-    samples = []
-    for _ in range(repeats):
-        start = time.perf_counter()
-        fn()
-        samples.append((time.perf_counter() - start) * 1000.0)
-    return float(np.median(samples))
+    return float(_core.bench_timed(fn, repeats=repeats, warmup=warmup))
 
 
 def benchmark_file(
@@ -96,133 +90,12 @@ def benchmark_file(
     patch: int = 64,
     repeats: int = 20,
 ) -> list[Measurement]:
-    """Run the §4.3 metrics against one existing sample."""
-    import medh5
-    from medh5.document import read_document
-    from medh5.sampling import PatchSampler
-
-    text = os.fspath(path)
-    out: list[Measurement] = []
-
-    with medh5.open(text) as sample:
-        ann_id = annotation or next(
-            (
-                name
-                for name, ann in sample.annotations.items()
-                if ann.kind not in ("classification",)
-            ),
-            None,
-        )
-        image_id = sorted(sample.images)[0]
-        shape = sample.images[image_id].grid.spatial_shape
-        window = tuple(
-            slice(
-                max(0, n // 2 - patch // 2), max(0, n // 2 - patch // 2) + min(patch, n)
-            )
-            for n in shape
-        )
-
-        if sample.is_longitudinal:
-            out.extend(_paired_measurements(sample, repeats))
-        if ann_id is not None:
-            ann = sample.annotations[ann_id]
-            classes = list(ann.class_ids)
-            out.append(
-                Measurement(
-                    "patch_labels_ms",
-                    timed(
-                        lambda: ann.dense(classes, roi=list(window)), repeats=repeats
-                    ),
-                    target=TARGETS["patch_labels_ms"][0],
-                    description=TARGETS["patch_labels_ms"][1],
-                    detail={"classes": len(classes), "kind": ann.kind},
-                )
-            )
-            sampler = PatchSampler(patch, strategy="foreground")
-            rng = np.random.default_rng(0)
-            indexed = ann_id in sample.index
-            out.append(
-                Measurement(
-                    "foreground_sample_ms",
-                    timed(lambda: sampler.draw(sample, ann_id, rng), repeats=repeats),
-                    target=TARGETS["foreground_sample_ms"][0],
-                    description=TARGETS["foreground_sample_ms"][1],
-                    detail={"used_index": indexed},
-                )
-            )
-        out.append(
-            Measurement(
-                "image_patch_ms",
-                timed(lambda: sample.images[image_id].read(window), repeats=repeats),
-                description=f"{patch}³ image patch",
-                detail={"image": image_id, "shape": list(shape)},
-            )
-        )
-
-    def read_meta() -> Any:
-        with medh5.open(text) as handle:
-            return read_document(handle.root)
-
-    out.append(
-        Measurement(
-            "meta_read_ms",
-            timed(read_meta, repeats=repeats),
-            target=TARGETS["meta_read_ms"][0],
-            description=TARGETS["meta_read_ms"][1],
-        )
-    )
-
-    def open_and_patch() -> Any:
-        with medh5.open(text) as handle:
-            return handle.images[image_id].read(window)
-
-    out.append(
-        Measurement(
-            "open_to_first_patch_ms",
-            timed(open_and_patch, repeats=repeats),
-            target=TARGETS["open_to_first_patch_ms"][0],
-            description=TARGETS["open_to_first_patch_ms"][1],
-        )
-    )
-    return out
-
-
-def _paired_measurements(sample: Any, repeats: int) -> list[Measurement]:
-    """Moving one patch centre through the transform relating two visits.
-
-    Measured because it is the read a paired dataset does once per training
-    item, and a displacement field used to be read whole to answer it.
-    """
-    first, second = sample.timepoints.ids[:2]
-    frames = [
-        (a, b)
-        for a in sample.grids.values()
-        for b in sample.grids.values()
-        if a.timepoint == first
-        and b.timepoint == second
-        and a.frame_uid
-        and b.frame_uid
-        and sample.resolve_frames(a.frame_uid, b.frame_uid) is not None
-    ]
-    if not frames:
-        return []
-    source, target = frames[0]
-    transform = sample.resolve_frames(source.frame_uid or "", target.frame_uid or "")
-    assert transform is not None
-    centre = source.index_to_world(
-        np.asarray([[n // 2 for n in source.spatial_shape]], dtype=np.float64)
-    )
+    """Every targeted metric on one file (and the paired-read metrics when it
+    is longitudinal)."""
     return [
-        Measurement(
-            "paired_center_ms",
-            timed(lambda: transform.transform_points(centre), repeats=repeats),
-            description="one patch centre moved between two visits",
-            detail={
-                "transform": transform.transform_id,
-                "kind": transform.kind,
-                "from": source.grid_id,
-                "to": target.grid_id,
-            },
+        Measurement.from_json(doc)
+        for doc in _core.bench_benchmark_file(
+            os.fspath(path), annotation=annotation, patch=patch, repeats=repeats
         )
     ]
 
@@ -230,49 +103,16 @@ def _paired_measurements(sample: Any, repeats: int) -> list[Measurement]:
 def synthetic_pair(
     directory: str | os.PathLike[str],
     *,
-    shape: tuple[int, ...] = (64, 96, 96),
+    shape: tuple[int, int, int] = (64, 96, 96),
     codec: str = "training",
     seed: int = 20260815,
 ) -> Path:
-    """Two visits of one subject related by a dense displacement field."""
-    import medh5
-
-    rng = np.random.default_rng(seed)
-    root = Path(os.fspath(directory))
-    root.mkdir(parents=True, exist_ok=True)
-    path = root / "bench-pair.medh5"
-    with medh5.create(path, sample_id="bench-pair", codec=codec) as writer:
-        writer.add_timepoint("tp0", days_from_baseline=0)
-        writer.add_timepoint("tp1", days_from_baseline=90)
-        for tp, frame in (("tp0", "bench:frame-0"), ("tp1", "bench:frame-1")):
-            writer.add_grid(
-                f"g_{tp}",
-                shape=shape,
-                spacing=(1.0, 1.0, 1.0),
-                timepoint=tp,
-                frame_uid=frame,
-                patch_hint=(64, 64, 64),
-            )
-            writer.add_image(
-                f"CT_{tp}",
-                rng.integers(-1000, 1500, shape).astype(np.int16),
-                grid=f"g_{tp}",
-                modality="CT",
-                value_type="quantitative",
-                value_units="HU",
-            )
-        field = rng.normal(0.0, 0.5, (len(shape), *shape)).astype(np.float32)
-        writer.add_transform(
-            "warp",
-            kind="displacement",
-            from_frame="bench:frame-0",
-            to_frame="bench:frame-1",
-            field=field,
-            field_grid="g_tp0",
-            vector_space="world",
+    """A two-timepoint sample with a registration, for the paired metrics."""
+    return Path(
+        _core.bench_synthetic_pair(
+            os.fspath(directory), shape=list(shape), codec=codec, seed=seed
         )
-        writer.deidentification(method="synthetic")
-    return path
+    )
 
 
 def throughput(
@@ -336,102 +176,51 @@ def throughput(
 def synthetic_sample(
     directory: str | os.PathLike[str],
     *,
-    shape: tuple[int, ...] = (192, 256, 256),
+    shape: tuple[int, int, int] = (192, 256, 256),
     classes: int = 8,
     codec: str = "training",
     index: bool = True,
     seed: int = 20260815,
     name: str = "bench.medh5",
 ) -> Path:
-    """Write a sample shaped like the one the published numbers were measured on."""
-    import medh5
-    from medh5.labels.labelset import LabelClass, LabelSet
-
-    rng = np.random.default_rng(seed)
-    root = Path(os.fspath(directory))
-    root.mkdir(parents=True, exist_ok=True)
-    path = root / name
-    label_set = LabelSet(
-        "bench",
-        version="1.0.0",
-        classes=[
-            LabelClass(i + 1, f"c{i + 1}", f"Class {i + 1}") for i in range(classes)
-        ],
+    """Write a sample shaped like the one the published numbers were measured
+    on: a CT, ``classes`` overlapping organs, a sampling index."""
+    return Path(
+        _core.bench_synthetic_sample(
+            os.fspath(directory),
+            shape=list(shape),
+            classes=classes,
+            codec=codec,
+            index=index,
+            seed=seed,
+            name=name,
+        )
     )
-    masks = {}
-    for i in range(classes):
-        mask = np.zeros(shape, dtype=bool)
-        corner = [int(rng.integers(0, max(1, n - n // 4))) for n in shape]
-        window = tuple(slice(c, c + n // 4) for c, n in zip(corner, shape, strict=True))
-        mask[window] = True
-        masks[i + 1] = mask
-    with medh5.create(path, sample_id="bench", codec=codec) as writer:
-        writer.label_set(label_set)
-        writer.add_grid(
-            "g",
-            shape=shape,
-            spacing=(1.0, 1.0, 1.0),
-            timepoint="tp0",
-            patch_hint=(64, 64, 64),
-        )
-        writer.add_image(
-            "CT",
-            rng.integers(-1000, 1500, shape).astype(np.int16),
-            grid="g",
-            modality="CT",
-            value_type="quantitative",
-            value_units="HU",
-        )
-        writer.add_segmentation("organs", grid="g", masks=masks)
-        if index:
-            writer.build_index()
-        writer.deidentification(method="synthetic")
-    return path
 
 
 def synthetic_many_class_sample(
     directory: str | os.PathLike[str], *, classes: int = MANY_CLASSES
 ) -> Path:
-    """A smaller sample with many classes, indexed: the case the draw must scale to."""
-    return synthetic_sample(
-        directory, shape=(64, 128, 128), classes=classes, name="bench-many.medh5"
+    """A sample with *classes* small classes, for the many-class draw."""
+    return Path(
+        _core.bench_synthetic_many_class_sample(os.fspath(directory), classes=classes)
     )
 
 
 def many_class_measurement(
     path: str | os.PathLike[str], *, patch: int = 64, repeats: int = 20
 ) -> Measurement:
-    """Foreground centre sampling on a many-class, indexed annotation."""
-    import medh5
-    from medh5.sampling import PatchSampler
-
-    with medh5.open(os.fspath(path)) as sample:
-        ann_id = next(
-            name for name, ann in sample.annotations.items() if ann.kind != "mask"
+    """The foreground draw on a many-class sample: O(1) whatever the classes."""
+    return Measurement.from_json(
+        _core.bench_many_class_measurement(
+            os.fspath(path), patch=patch, repeats=repeats
         )
-        classes = len(sample.annotations[ann_id].class_ids)
-        sampler = PatchSampler(patch, strategy="foreground")
-        rng = np.random.default_rng(0)
-        return Measurement(
-            "foreground_sample_many_ms",
-            timed(lambda: sampler.draw(sample, ann_id, rng), repeats=repeats),
-            target=TARGETS["foreground_sample_many_ms"][0],
-            description=TARGETS["foreground_sample_many_ms"][1],
-            detail={"classes": classes, "used_index": ann_id in sample.index},
-        )
+    )
 
 
 def report(measurements: Sequence[Measurement]) -> str:
-    lines = [str(m) for m in measurements]
-    failed = [m for m in measurements if not m.ok]
-    lines.append("")
-    lines.append(
-        "all targets met"
-        if not failed
-        else f"{len(failed)} metric(s) below target: "
-        + ", ".join(m.name for m in failed)
-    )
-    return "\n".join(lines)
+    """The text table the ``medh5 bench`` command prints."""
+    return str(_core.bench_report([m.to_json() for m in measurements]))
 
 
 __all__ = [

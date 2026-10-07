@@ -9,9 +9,9 @@ import numpy as np
 import pytest
 
 import medh5
-from tests.v1._h5 import encode_attr
 from medh5.cli import main
 from medh5.cli._common import EXIT_ERROR, EXIT_OK, EXIT_USAGE, human_bytes, table
+from tests.v1._h5 import encode_attr
 from tests.v1.conftest import write_legacy_sample
 
 

@@ -417,6 +417,11 @@ pub fn st_mtime(meta: &std::fs::Metadata) -> f64 {
 
 /// Every sample and collection under `root`, in a stable order.
 pub fn find(root: &Path) -> Result<Vec<PathBuf>> {
+    find_with(root, &SUFFIXES)
+}
+
+/// [`find`] for other file suffixes (each with its leading dot).
+pub fn find_with(root: &Path, suffixes: &[&str]) -> Result<Vec<PathBuf>> {
     if root.is_file() {
         return Ok(vec![root.to_path_buf()]);
     }
@@ -431,7 +436,7 @@ pub fn find(root: &Path) -> Result<Vec<PathBuf>> {
                 stack.push(path);
             } else if path.is_file() {
                 let suffix = path.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
-                if SUFFIXES.contains(&suffix.as_str()) {
+                if suffixes.contains(&suffix.as_str()) {
                     found.push(path);
                 }
             }
@@ -446,9 +451,14 @@ pub fn find(root: &Path) -> Result<Vec<PathBuf>> {
 /// A cohort scan that dies on one broken file has told you nothing about the
 /// other 9 999, so failures are collected unless `strict`.
 pub fn scan(root: &Path, strict: bool) -> Result<(Manifest, Vec<String>)> {
+    scan_with(root, &SUFFIXES, strict)
+}
+
+/// [`scan`] over the files [`find_with`] finds.
+pub fn scan_with(root: &Path, suffixes: &[&str], strict: bool) -> Result<(Manifest, Vec<String>)> {
     let mut manifest = Manifest { root: Some(root.to_string_lossy().into_owned()), ..Default::default() };
     let mut failures = Vec::new();
-    for path in find(root)? {
+    for path in find_with(root, suffixes)? {
         match entries_for(&path) {
             Ok(entries) => manifest.entries.extend(entries),
             Err(e) if e.is_medh5() || matches!(e, Error::Io(_)) => {

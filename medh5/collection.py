@@ -34,57 +34,38 @@ from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-import h5py
+from medh5 import _core
+from medh5.sample import Sample
 
-from medh5._hdf5 import (
-    as_str,
-    atomic_h5,
-    copy_object,
-    open_h5,
-    validate_sample_key,
-)
-from medh5.errors import MEDH5FileError, MEDH5ValidationError
-from medh5.sample import FORMAT_VERSION, Sample, require_major
-
-SUFFIX = ".medh5c"
+SUFFIX: str = _core.COLLECTION_SUFFIX
 """Conventional extension for a collection file (spec §2.1)."""
 
-SAMPLES_GROUP = "samples"
+SAMPLES_GROUP: str = _core.SAMPLES_GROUP
 """Where sample roots live inside a collection (spec §2.2)."""
 
 
-def is_collection(root: h5py.Group) -> bool:
-    """Whether an open root declares itself a collection."""
-    return as_str(root.attrs.get("medh5_kind", "sample")) == "collection"
+def is_collection(root: Any) -> bool:
+    """Whether a root declares itself a collection.
+
+    *root* is a ``Group`` (``Sample.root``), an open sample or collection, or a
+    path.
+    """
+    return bool(_core.is_collection(root))
 
 
 class Collection(Mapping[str, Sample]):
     """A read-only mapping of ``sample_key -> Sample`` over one shard.
 
-    Each value is an ordinary :class:`~medh5.sample.Sample`; every reader,
-    validator and loader that works on a file works unchanged on a member,
-    because the member *is* a sample root.
+    Members are samples in the shard's own file; reading one is reading the
+    shard.  A member stays readable until the last reference to it goes, even
+    after :meth:`close`.
     """
 
-    __slots__ = ("_handle", "_owns_handle", "_samples", "path", "root")
+    __slots__ = ("_handle", "_samples", "path")
 
-    def __init__(
-        self,
-        root: h5py.Group,
-        *,
-        handle: h5py.File | None = None,
-        owns_handle: bool = False,
-        path: str | None = None,
-    ) -> None:
-        self.root = root
-        self.path = path
+    def __init__(self, handle: Any) -> None:
         self._handle = handle
-        self._owns_handle = owns_handle
-        if SAMPLES_GROUP not in root:
-            raise MEDH5ValidationError(
-                f"collection {path or '<memory>'} has no {SAMPLES_GROUP!r} group",
-                code="E008",
-            )
+        self.path: str | None = handle.path
         self._samples: dict[str, Sample] = {}
 
     # -- lifecycle ---------------------------------------------------------
@@ -96,108 +77,73 @@ class Collection(Mapping[str, Sample]):
         self.close()
 
     def close(self) -> None:
-        self._samples.clear()
-        if self._owns_handle and self._handle is not None:
-            self._handle.close()
-            self._handle = None
+        """Release the shard.  Safe to call twice."""
+        self._handle.close()
 
     def __repr__(self) -> str:
-        return f"Collection({self.path!r}, {len(self)} samples)"
+        return str(self._handle.repr())
 
     # -- mapping -----------------------------------------------------------
 
     @property
-    def group(self) -> h5py.Group:
-        node: h5py.Group = self.root[SAMPLES_GROUP]
-        return node
+    def root(self) -> Any:
+        """The shard's root group."""
+        return self._handle.root
+
+    @property
+    def group(self) -> Any:
+        """The ``samples`` group."""
+        return self._handle.group
 
     def __iter__(self) -> Iterator[str]:
-        return iter(sorted(self.group))
+        return iter(self._handle.keys())
 
     def __len__(self) -> int:
-        return len(self.group)
+        return len(self._handle)
+
+    def __contains__(self, key: object) -> bool:
+        return isinstance(key, str) and bool(self._handle.contains(key))
 
     def __getitem__(self, key: str) -> Sample:
         if key not in self._samples:
-            group = self.group
-            if key not in group:
-                raise KeyError(
-                    f"collection has no sample {key!r}; known keys: {sorted(group)}"
-                )
-            self._samples[key] = Sample(
-                group[key], handle=self._handle, path=f"{self.path}::{key}"
-            )
+            self._samples[key] = Sample(self._handle.get(key))
         return self._samples[key]
 
     # -- header ------------------------------------------------------------
 
     @property
     def version(self) -> str:
-        return as_str(self.root.attrs["medh5_version"])
+        return str(self._handle.version)
 
     @property
     def kind(self) -> str:
-        return as_str(self.root.attrs.get("medh5_kind", "sample"))
+        return str(self._handle.kind)
 
     # -- reporting ---------------------------------------------------------
 
     def summary(self) -> dict[str, Any]:
-        return {
-            "path": self.path,
-            "version": self.version,
-            "kind": self.kind,
-            "samples": [
-                {
-                    "key": key,
-                    "sample_id": sample.identity.sample_id,
-                    "subject_id": sample.identity.subject_id,
-                    "profiles": sorted(sample.profiles),
-                    "content_id": sample.content_id,
-                    "timepoints": list(sample.timepoints.ids),
-                    "images": sorted(sample.images),
-                    "annotations": sorted(sample.annotations),
-                }
-                for key, sample in self.items()
-            ],
-        }
+        found: dict[str, Any] = self._handle.summary()
+        return found
 
     def subject_ids(self) -> dict[str, str]:
         """``sample_key -> subject_id`` --- what a split has to group by (§12.2)."""
-        return {key: sample.identity.subject_id for key, sample in self.items()}
+        found: dict[str, str] = self._handle.subject_ids()
+        return found
 
 
 def open_collection(path: str | os.PathLike[str]) -> Collection:
     """Open a ``.medh5c`` shard, read-only.
 
     There is no mode: :class:`Collection` has no mutating method, and neither
-    has :class:`~medh5.sample.Sample`, which is why ``medh5.open`` stopped
-    taking one.  ``pack``, ``unpack`` and ``amend`` on an extracted member are
-    the write paths.
+    has :class:`~medh5.sample.Sample`.  ``pack``, ``unpack`` and ``amend`` on an
+    extracted member are the write paths.
     """
-    handle = open_h5(path, "r")
-    try:
-        require_major(handle, path)
-        if not is_collection(handle):
-            raise MEDH5ValidationError(
-                f"{os.fspath(path)!r} declares medh5_kind="
-                f"{as_str(handle.attrs.get('medh5_kind', 'sample'))!r}, not "
-                "'collection'; open it with `medh5.open`",
-                code="E006",
-            )
-        return Collection(handle, handle=handle, owns_handle=True, path=os.fspath(path))
-    except BaseException:
-        handle.close()
-        raise
-
-
-# --------------------------------------------------------------------------
-# pack / unpack
-# --------------------------------------------------------------------------
+    return Collection(_core.open_collection(os.fspath(path)))
 
 
 def default_key(path: str | os.PathLike[str]) -> str:
     """The sample key a file gets when none is supplied: its stem."""
-    return validate_sample_key(Path(os.fspath(path)).name.split(".")[0])
+    return str(_core.default_key(os.fspath(path)))
 
 
 def pack(
@@ -208,45 +154,18 @@ def pack(
 ) -> Path:
     """Copy sample files into one collection shard (spec §2.2).
 
-    Sample roots are copied object-by-object with HDF5's own copy, so chunks
-    move as raw bytes: nothing is decompressed, re-chunked or re-encoded, and
-    every ``content_id`` in the shard still addresses the same content it did in
-    the standalone file.  Packing is therefore a container operation, and
-    ``unpack(pack(x)) == x`` down to the compressed bytes.
+    Chunks move as raw bytes, so ``unpack(pack(x)) == x`` down to the
+    compressed bytes and every ``content_id`` is unchanged.  *keys* name the
+    members (default: each file's stem); they must be unique and valid sample
+    keys.
     """
-    paths = [Path(os.fspath(p)) for p in sources]
-    if not paths:
-        raise MEDH5ValidationError("pack needs at least one sample file", code="E008")
-    if keys is not None and len(keys) != len(paths):
-        raise MEDH5ValidationError(
-            f"{len(keys)} keys for {len(paths)} sources", code="E003"
+    return Path(
+        _core.pack(
+            [os.fspath(s) for s in sources],
+            os.fspath(out),
+            keys=None if keys is None else list(keys),
         )
-    chosen = [
-        validate_sample_key(str(keys[i])) if keys is not None else default_key(path)
-        for i, path in enumerate(paths)
-    ]
-    duplicates = sorted({k for k in chosen if chosen.count(k) > 1})
-    if duplicates:
-        raise MEDH5ValidationError(
-            f"sample key(s) {duplicates} are not unique in the collection; "
-            "pass explicit --key values",
-            code="E003",
-        )
-    target = Path(os.fspath(out))
-    with atomic_h5(target) as handle:
-        handle.attrs["medh5_version"] = FORMAT_VERSION
-        handle.attrs["medh5_kind"] = "collection"
-        group = handle.create_group(SAMPLES_GROUP)
-        for key, source in zip(chosen, paths, strict=True):
-            with open_h5(source, "r") as src:
-                require_major(src, source)
-                if is_collection(src):
-                    raise MEDH5ValidationError(
-                        f"{source} is already a collection; pack takes sample files",
-                        code="E006",
-                    )
-                _copy_root(src, group.create_group(key))
-    return target
+    )
 
 
 def unpack(
@@ -256,88 +175,27 @@ def unpack(
     keys: Sequence[str] | None = None,
     suffix: str = ".medh5",
 ) -> list[Path]:
-    """Extract sample roots back into standalone files (spec §2.2)."""
-    directory = Path(os.fspath(outdir))
-    directory.mkdir(parents=True, exist_ok=True)
-    written: list[Path] = []
-    with open_collection(path) as collection:
-        # Member names come from the file, and each becomes a file name below.
-        # They are validated exactly as keys a caller passes are: a member named
-        # `..\..\evil` used to be written as `..\..\evil.medh5`, which on
-        # Windows resolves outside *outdir*.
-        wanted = (
-            [_member_key(k, path) for k in collection]
-            if keys is None
-            else [validate_sample_key(k) for k in keys]
+    """Extract sample roots back into standalone files (spec §2.2).
+
+    Member names come from the file and each becomes a file name, so every one
+    is validated as a sample key first.
+    """
+    return [
+        Path(p)
+        for p in _core.unpack(
+            os.fspath(path),
+            os.fspath(outdir),
+            keys=None if keys is None else list(keys),
+            suffix=suffix,
         )
-        missing = [k for k in wanted if k not in collection]
-        if missing:
-            raise MEDH5ValidationError(
-                f"collection has no sample(s) {missing}; known keys: "
-                f"{sorted(collection)}",
-                code="E003",
-            )
-        group = collection.group
-        for key in wanted:
-            destination = directory / f"{key}{suffix}"
-            _write_sample_root(group[key], destination)
-            written.append(destination)
-    return written
-
-
-def _member_key(key: str, path: str | os.PathLike[str]) -> str:
-    """A member name that is safe to use as a file name, or a refusal."""
-    try:
-        return validate_sample_key(str(key))
-    except MEDH5ValidationError as exc:
-        raise MEDH5ValidationError(
-            f"{os.fspath(path)!r} has a member named {key!r}, which is not a valid "
-            "sample key (§2.2) and cannot be used as a file name; refusing to unpack "
-            "it",
-            code="E003",
-        ) from exc
-
-
-def _write_sample_root(src: h5py.Group, destination: Path) -> None:
-    """Write one collection member out as a standalone sample file."""
-    with atomic_h5(destination) as handle:
-        _copy_root(src, handle)
-        handle.attrs["medh5_kind"] = "sample"
-        if "medh5_version" not in handle.attrs:
-            handle.attrs["medh5_version"] = FORMAT_VERSION
-
-
-def _copy_root(src: h5py.Group, dst: h5py.Group) -> None:
-    """Copy every child and attribute of one sample root into another."""
-    for name in src:
-        copy_object(src, name, dst)
-    for key, value in src.attrs.items():
-        dst.attrs[key] = value
+    ]
 
 
 def extract(
     path: str | os.PathLike[str], key: str, out: str | os.PathLike[str]
 ) -> Path:
-    """Extract one member of a collection into a standalone sample file.
-
-    Writes *out* and nothing else.  This used to go through ``unpack``, which
-    names its output after the member key, and then move the result into place
-    --- so extracting ``case1`` to ``renamed.medh5`` destroyed any unrelated
-    ``case1.medh5`` already sitting in the same directory, silently and
-    unrecoverably, on the way past.
-    """
-    target = Path(os.fspath(out))
-    target.parent.mkdir(parents=True, exist_ok=True)
-    wanted = validate_sample_key(key)
-    with open_collection(path) as collection:
-        if wanted not in collection:
-            raise MEDH5ValidationError(
-                f"collection has no sample {wanted!r}; known keys: "
-                f"{sorted(collection)}",
-                code="E003",
-            )
-        _write_sample_root(collection.group[wanted], target)
-    return target
+    """Extract one member of a collection into a standalone sample file."""
+    return Path(_core.extract(os.fspath(path), key, os.fspath(out)))
 
 
 def open_any(
@@ -345,35 +203,13 @@ def open_any(
 ) -> Sample | Collection:
     """Open a file whatever its kind, resolving *key* inside a collection.
 
-    A caller that already knows which it has should use ``medh5.open`` or
-    :func:`open_collection`; this exists for tools that take a path from a user.
+    A collection without *key* comes back as a :class:`Collection`; with it,
+    as the member :class:`~medh5.sample.Sample`.
     """
-    handle = open_h5(path, "r")
-    try:
-        require_major(handle, path)
-        if is_collection(handle):
-            collection = Collection(
-                handle, handle=handle, owns_handle=True, path=os.fspath(path)
-            )
-            if key is None:
-                return collection
-            member = collection[key]
-            # The caller closes what it is given, so the member --- not the
-            # collection it came from --- has to own the file handle.
-            return Sample(
-                member.root,
-                handle=handle,
-                owns_handle=True,
-                path=f"{os.fspath(path)}::{key}",
-            )
-        if key is not None:
-            raise MEDH5FileError(
-                f"{os.fspath(path)!r} is a single sample; `key` applies to collections"
-            )
-        return Sample(handle, handle=handle, owns_handle=True, path=os.fspath(path))
-    except BaseException:
-        handle.close()
-        raise
+    found = _core.open_any(os.fspath(path), key=key)
+    if isinstance(found, _core.CollectionHandle):
+        return Collection(found)
+    return Sample(found)
 
 
 __all__ = [

@@ -12,7 +12,6 @@ import numpy as np
 import pytest
 
 import medh5
-from tests.v1._h5 import as_str, encode_attr, str_dtype
 from medh5.annotations.voxel import InstanceInput
 from medh5.curation.timeline import Timeline, Timepoint
 from medh5.errors import (
@@ -22,6 +21,7 @@ from medh5.errors import (
     MEDH5VersionError,
 )
 from medh5.validate import validate_file
+from tests.v1._h5 import as_str, encode_attr, str_dtype
 from tests.v1.conftest import SHAPE, write_sample
 
 # Windows keeps only a read-only bit, so a mode round trip cannot be asserted

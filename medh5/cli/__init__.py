@@ -1,89 +1,58 @@
 """The ``medh5`` command line.
 
-Each submodule exposes ``register(sub)`` and ``dispatch(command, args)``, and
-this module composes them.  Exit codes are Unix-conventional: 0 success,
-1 a handled error, 2 a usage error.
+One native application over the format engine (the ``medh5-cli`` crate): the
+same grammar, output and exit codes --- 0 success, 1 a handled error, 2 a usage
+error --- whether it runs as the standalone ``medh5`` binary or as this
+package's console script.  The commands only Python can run are handed back to
+the package: the format converters (NIfTI, DICOM, DICOM SEG, RTSTRUCT, nnU-Net),
+which wrap nibabel, pydicom and highdicom, and the PyTorch dataloader
+benchmark.
 """
 
 from __future__ import annotations
 
-import argparse
 import sys
 from collections.abc import Sequence
+from typing import Any
 
-from medh5.__about__ import __format_version__, __version__
-from medh5.cli import (
-    conformance,
-    convert,
-    curation,
-    dataset,
-    inspect,
-    labels,
-    perf,
-    seg,
-)
-from medh5.cli._common import EXIT_ERROR, EXIT_USAGE
-from medh5.errors import MEDH5Error
-
-MODULES = (inspect, seg, labels, curation, dataset, convert, perf, conformance)
+from medh5 import _core
+from medh5.cli._common import EXIT_ERROR, EXIT_OK, EXIT_USAGE
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="medh5",
-        description=(
-            f"medh5 {__version__} --- tools for the MEDH5 {__format_version__} "
-            "medical imaging container"
-        ),
-    )
-    parser.add_argument(
-        "--version",
-        action="version",
-        version=f"medh5 {__version__} (format {__format_version__})",
-    )
-    sub = parser.add_subparsers(dest="command", metavar="COMMAND")
-    for module in MODULES:
-        module.register(sub)
-    return parser
+class _Host:
+    """What only the Python package can run, on behalf of the native CLI."""
+
+    def convert(self, argv: list[str], command: str, args: dict[str, Any]) -> int:
+        from medh5.cli.convert import run
+
+        return run(command, args)
+
+    def throughput(
+        self, path: str, patch: int, workers: int, annotation: str | None
+    ) -> dict[str, Any]:
+        from medh5.cli.perf import throughput
+
+        return throughput(path, patch, workers, annotation)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
-    if not args.command:
-        parser.print_help()
-        return EXIT_USAGE
-    try:
-        for module in MODULES:
-            result: int | None = module.dispatch(args.command, args)
-            if result is not None:
-                return result
-    except MEDH5Error as exc:
-        print(f"medh5: {exc}", file=sys.stderr)
-        return EXIT_ERROR
-    except LookupError as exc:
-        # A name the file does not have --- an image, an annotation, a key ---
-        # is a handled error like any other.  Only `MEDH5Error` was caught, so
-        # `medh5 convert to-nifti FILE <unknown image>` ended in a traceback.
-        print(f"medh5: {_what(exc)}", file=sys.stderr)
-        return EXIT_ERROR
-    except BrokenPipeError:  # pragma: no cover - `medh5 info | head`
-        return 0
-    parser.print_help()
-    return EXIT_USAGE
+    """Run ``medh5`` on *argv* (``sys.argv[1:]`` by default).
 
-
-def _what(exc: LookupError) -> str:
-    """The message a lookup failed with, or what was looked up.
-
-    ``str(KeyError('x'))`` is ``"'x'"``: the key alone, in quotes.  Most of
-    this package's lookups raise with a sentence that names what is available,
-    which is printed as it is; a bare key is named as one.
+    Returns the exit code.  ``--help``, ``--version`` and usage errors raise
+    ``SystemExit`` instead, as an ``argparse`` command line does.
     """
-    detail = exc.args[0] if len(exc.args) == 1 else exc
-    text = str(detail)
-    return text if " " in text else f"no such entry: {text!r}"
+    args = [str(a) for a in (sys.argv[1:] if argv is None else argv)]
+    code, parser_exit = _core.cli_main(args, _Host())
+    if parser_exit:
+        raise SystemExit(code)
+    return int(code)
 
 
-if __name__ == "__main__":  # pragma: no cover
-    raise SystemExit(main())
+def command_tree() -> dict[str, Any]:
+    """The grammar as data: ``{"options", "positionals", "commands"}``,
+    recursively --- what documentation is checked against."""
+    found: dict[str, Any] = _core.cli_command_tree()
+    return found
+
+
+__all__ = ["EXIT_ERROR", "EXIT_OK", "EXIT_USAGE", "command_tree", "main"]

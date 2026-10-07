@@ -29,8 +29,8 @@ from typing import Any
 
 from medh5 import _core
 from medh5.validate.report import (
-    LEVELS,
     LEVEL_ORDER,
+    LEVELS,
     Diagnostic,
     Level,
     Report,

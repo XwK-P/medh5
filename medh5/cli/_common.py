@@ -1,16 +1,23 @@
-"""Shared CLI helpers: exit codes, JSON output, and error presentation."""
+"""Shared CLI helpers: exit codes, JSON output, and the text the CLI prints.
+
+The command line itself is native (``medh5-cli``); these serve the commands
+the package runs on its behalf (the format converters) and keep the 1.x
+helpers importable.  Sizes and tables are formatted by the native CLI's own
+functions, so both halves print alike.
+"""
 
 from __future__ import annotations
 
-import argparse
 import json
 import sys
 from collections.abc import Sequence
 from typing import Any
 
-EXIT_OK = 0
-EXIT_ERROR = 1
-EXIT_USAGE = 2
+from medh5 import _core
+
+EXIT_OK: int = _core.EXIT_OK
+EXIT_ERROR: int = _core.EXIT_ERROR
+EXIT_USAGE: int = _core.EXIT_USAGE
 
 
 def emit(payload: Any, *, as_json: bool) -> None:
@@ -20,28 +27,14 @@ def emit(payload: Any, *, as_json: bool) -> None:
 
 
 def fail(message: str) -> int:
+    """Report a handled error on stderr: ``medh5: <message>``, exit code 1."""
     print(f"medh5: {message}", file=sys.stderr)
     return EXIT_ERROR
 
 
-def add_json_flag(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "--json", action="store_true", help="machine-readable output on stdout"
-    )
-
-
-def add_paths(
-    parser: argparse.ArgumentParser, help_text: str = "one or more files"
-) -> None:
-    parser.add_argument("paths", nargs="+", metavar="PATH", help=help_text)
-
-
 def human_bytes(n: float) -> str:
-    for unit in ("B", "KiB", "MiB", "GiB"):
-        if abs(n) < 1024 or unit == "GiB":
-            return f"{n:.1f} {unit}" if unit != "B" else f"{int(n)} B"
-        n /= 1024
-    return f"{n:.1f} GiB"  # pragma: no cover - unreachable
+    """``512 B``, ``2.0 KiB``, ... as the CLI prints sizes."""
+    return str(_core.cli_human_bytes(float(n)))
 
 
 def indent(text: str, prefix: str = "  ") -> str:
@@ -51,27 +44,13 @@ def indent(text: str, prefix: str = "  ") -> str:
 
 def table(rows: Sequence[Sequence[Any]], headers: Sequence[str]) -> str:
     """A minimal fixed-width table --- no dependency, predictable in a pipe."""
-    cells = [[str(c) for c in row] for row in rows]
-    widths = [
-        max(len(str(headers[i])), *(len(row[i]) for row in cells))
-        if cells
-        else len(str(headers[i]))
-        for i in range(len(headers))
-    ]
-    line = "  ".join(str(h).ljust(w) for h, w in zip(headers, widths, strict=True))
-    out = [line, "  ".join("-" * w for w in widths)]
-    out.extend(
-        "  ".join(c.ljust(w) for c, w in zip(row, widths, strict=True)) for row in cells
-    )
-    return "\n".join(out)
+    return str(_core.cli_table([list(row) for row in rows], [str(h) for h in headers]))
 
 
 __all__ = [
     "EXIT_ERROR",
     "EXIT_OK",
     "EXIT_USAGE",
-    "add_json_flag",
-    "add_paths",
     "emit",
     "fail",
     "human_bytes",

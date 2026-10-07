@@ -7,7 +7,6 @@ import numpy as np
 import pytest
 
 import medh5
-from tests.v1._h5 import encode_attr
 from medh5.errors import MEDH5ValidationError
 from medh5.integrity.digest import (
     array_digest,
@@ -19,6 +18,7 @@ from medh5.integrity.digest import (
     relative_path,
 )
 from medh5.integrity.verify import stale_index_entries, verify_object, verify_root
+from tests.v1._h5 import encode_attr
 from tests.v1.conftest import SHAPE, write_sample
 
 

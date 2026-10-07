@@ -10,8 +10,11 @@
 use pyo3::prelude::*;
 
 pub mod annotations;
+pub mod cli;
+pub mod conformance;
 pub mod convert;
 pub mod curation;
+pub mod dataset;
 pub mod document;
 pub mod errors;
 pub mod geometry;
@@ -47,5 +50,8 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     misc::register(m)?;
     transforms::register(m)?;
     storage::register(m)?;
+    cli::register(m)?;
+    conformance::register(m)?;
+    dataset::register(m)?;
     Ok(())
 }

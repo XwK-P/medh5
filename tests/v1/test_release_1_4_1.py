@@ -841,8 +841,9 @@ class TestW17Precision:
             assert sample.annotations["seg"].has_ignore_region
 
     def test_P10_the_overlap_graph_is_read_in_slabs(self, tmp_path: Path, monkeypatch):
-        from medh5.annotations.voxel import payload
         from medh5.validate.rules import _overlap_edges
+
+        from medh5.annotations.voxel import payload
 
         path = tmp_path / "layers.medh5"
         liver = np.zeros(SHAPE, bool)

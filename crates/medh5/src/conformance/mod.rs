@@ -27,6 +27,7 @@ use crate::json::repr_str;
 use crate::validate::validate_file;
 use crate::{Error, Result};
 
+pub use build::SEED;
 pub use suite::{check_checksums, load_manifest, publish, score, summarize, CHECKSUMS, SCHEMA};
 
 /// How a case's file is made.

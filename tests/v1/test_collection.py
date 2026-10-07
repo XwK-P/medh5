@@ -101,8 +101,8 @@ class TestContainment:
         written = unpack(shard, tmp_path / "out")
         assert [p.name for p in written] == [p.name for p in members]
         for original, extracted in zip(members, written, strict=True):
-            with h5py.File(original) as a, h5py.File(extracted) as b:
-                assert subtrees_identical(a, b) == ()
+            with medh5.open(original) as a, medh5.open(extracted) as b:
+                assert subtrees_identical(a.root, b.root) == ()
 
     def test_compressed_chunks_are_copied_not_recompressed(self, tmp_path):
         """A raw-byte check, so a silently dropped filter cannot pass."""
@@ -117,16 +117,16 @@ class TestContainment:
                 grid="g",
                 modality="CT",
             )
-        with h5py.File(big) as handle:
-            source = raw_chunks(handle["images/CT"])
+        with medh5.open(big) as sample:
+            source = raw_chunks(sample.images["CT"].dataset)
         assert source, "the fixture must be chunked for this to prove anything"
 
         shard = pack([big], tmp_path / f"one{SUFFIX}")
         with open_collection(shard) as collection:
             assert raw_chunks(collection["big"].images["CT"].dataset) == source
         written = unpack(shard, tmp_path / "out")
-        with h5py.File(written[0]) as handle:
-            assert raw_chunks(handle["images/CT"]) == source
+        with medh5.open(written[0]) as sample:
+            assert raw_chunks(sample.images["CT"].dataset) == source
 
     def test_content_id_survives_the_round_trip(self, tmp_path, members, shard):
         with medh5.open(members[0]) as before:

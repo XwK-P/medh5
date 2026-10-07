@@ -50,6 +50,21 @@ pub struct Finding {
 }
 
 impl Finding {
+    /// A finding from its JSON form (what [`Finding::to_json`] writes).
+    pub fn from_json(doc: &Value) -> Finding {
+        let text = |k: &str| doc.get(k).map(crate::json::py_str).unwrap_or_default();
+        Finding {
+            code: text("code"),
+            severity: text("severity"),
+            message: text("message"),
+            r#where: doc
+                .get("where")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().map(crate::json::py_str).collect())
+                .unwrap_or_default(),
+        }
+    }
+
     pub fn to_json(&self) -> Value {
         json!({
             "code": self.code,
@@ -125,6 +140,41 @@ impl CohortReport {
             "findings": self.findings.iter().map(Finding::to_json).collect::<Vec<_>>(),
             "coverage": coverage,
         })
+    }
+
+    /// A report from its JSON form (what [`CohortReport::to_json`] writes).
+    pub fn from_json(doc: &Value) -> CohortReport {
+        let count = |v: Option<&Value>, k: &str| v.and_then(|v| v.get(k)).and_then(Value::as_u64).unwrap_or(0) as usize;
+        let coverage = doc
+            .get("coverage")
+            .and_then(Value::as_object)
+            .map(|m| {
+                m.iter()
+                    .filter_map(|(k, v)| {
+                        let id = k.parse::<i64>().ok()?;
+                        let v = Some(v);
+                        Some((
+                            id,
+                            Coverage {
+                                examined_in: count(v, "examined_in"),
+                                present_in: count(v, "present_in"),
+                                of: count(v, "of"),
+                            },
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        CohortReport {
+            manifest_sha256: doc.get("manifest_sha256").map(crate::json::py_str).unwrap_or_default(),
+            samples: doc.get("samples").and_then(Value::as_u64).unwrap_or(0) as usize,
+            findings: doc
+                .get("findings")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().map(Finding::from_json).collect())
+                .unwrap_or_default(),
+            coverage,
+        }
     }
 
     pub fn format(&self) -> String {
