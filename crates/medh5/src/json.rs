@@ -293,6 +293,19 @@ pub fn repr(value: &Value) -> String {
     }
 }
 
+/// Python's truthiness of a JSON value: `None`, `False`, `0`, `""`, `[]` and
+/// `{}` are false.
+pub fn py_truthy(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Bool(b) => *b,
+        Value::Number(n) => n.as_f64().is_some_and(|f| f != 0.0),
+        Value::String(s) => !s.is_empty(),
+        Value::Array(a) => !a.is_empty(),
+        Value::Object(o) => !o.is_empty(),
+    }
+}
+
 /// Python's `str()` of a JSON value: strings bare, everything else as `repr`.
 pub fn py_str(value: &Value) -> String {
     match value {

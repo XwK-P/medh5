@@ -9,10 +9,14 @@
 
 pub mod annotations;
 pub mod array;
+pub mod bench;
 pub mod codes;
 pub mod collection;
+#[cfg(feature = "wip-conformance")]
+pub mod conformance;
 pub mod convert;
 pub mod curation;
+pub mod dataset;
 pub mod digest;
 pub mod document;
 pub mod error;
@@ -26,11 +30,14 @@ pub mod numeric;
 pub mod pyval;
 pub mod rng;
 pub mod sample;
+pub mod sampling;
 pub mod storage;
 pub mod transforms;
 pub mod validate;
 
 pub use error::{Error, Result};
+/// The HDF5 bindings the engine is built on, for frontends that need a handle.
+pub use hdf5;
 
 /// Raw HDF5 C bindings, for the operations the high-level API lacks.
 pub(crate) use medh5_sys::hdf5_sys as h5sys;

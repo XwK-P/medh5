@@ -295,33 +295,34 @@ pub(crate) fn read_fixed_strings(
     is_attr: bool,
 ) -> Result<Vec<String>> {
     use crate::h5sys::{h5a, h5d, h5p, h5s, h5t};
-    use std::ffi::CStr;
+    // Read the stored bytes in the stored type --- no character-set
+    // conversion, which HDF5 refuses between ASCII and UTF-8 --- and decode
+    // them as h5py and NumPy do: trailing NULs dropped, UTF-8 with
+    // replacement.
     super::locked(|| unsafe {
-        let mtype = h5t::H5Tcopy(*h5t::H5T_C_S1);
-        h5t::H5Tset_size(mtype, h5t::H5T_VARIABLE);
-        h5t::H5Tset_cset(mtype, h5t::H5T_cset_t::H5T_CSET_UTF8);
-        let mut ptrs: Vec<*mut std::os::raw::c_char> = vec![std::ptr::null_mut(); n.max(1)];
-        let status = if is_attr {
-            h5a::H5Aread(id, mtype, ptrs.as_mut_ptr().cast())
-        } else {
-            h5d::H5Dread(id, mtype, h5s::H5S_ALL, h5s::H5S_ALL, h5p::H5P_DEFAULT, ptrs.as_mut_ptr().cast())
-        };
-        let mut out = Vec::with_capacity(n);
-        if status >= 0 {
-            for p in ptrs.iter().take(n) {
-                if p.is_null() {
-                    out.push(String::new());
-                } else {
-                    out.push(CStr::from_ptr(*p).to_string_lossy().trim_end_matches('\0').to_string());
-                    crate::h5sys::h5::H5free_memory((*p).cast());
-                }
-            }
+        let ftype = if is_attr { h5a::H5Aget_type(id) } else { h5d::H5Dget_type(id) };
+        if ftype < 0 {
+            return Err(Error::Io("could not read a fixed-length string".into()));
         }
-        h5t::H5Tclose(mtype);
+        let size = h5t::H5Tget_size(ftype).max(1);
+        let mut buf = vec![0u8; size * n.max(1)];
+        let status = if is_attr {
+            h5a::H5Aread(id, ftype, buf.as_mut_ptr().cast())
+        } else {
+            h5d::H5Dread(id, ftype, h5s::H5S_ALL, h5s::H5S_ALL, h5p::H5P_DEFAULT, buf.as_mut_ptr().cast())
+        };
+        h5t::H5Tclose(ftype);
         if status < 0 {
             return Err(Error::Io("could not read a fixed-length string".into()));
         }
-        Ok(out)
+        Ok(buf
+            .chunks(size)
+            .take(n)
+            .map(|item| {
+                let end = item.iter().rposition(|b| *b != 0).map(|i| i + 1).unwrap_or(0);
+                String::from_utf8_lossy(&item[..end]).into_owned()
+            })
+            .collect())
     })
 }
 

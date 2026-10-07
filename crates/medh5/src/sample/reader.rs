@@ -592,3 +592,26 @@ pub fn open_sample(path: &Path) -> Result<Sample> {
     let root = handle.as_group()?;
     Ok(Sample::from_root(root, Some(handle), Some(path.to_path_buf())))
 }
+
+/// Rewrite `path` so freed space is not carried forward (§14.4).
+///
+/// HDF5 does not reclaim storage: an amend that copies an object and *then*
+/// rewrites one of its attributes leaves the superseded value physically in
+/// the file, where `strings` still finds it.  For de-identification that is
+/// the difference between a pseudonymised file and one still carrying the
+/// original UID.  Every top-level object is copied into a fresh file;
+/// filters, chunking and attributes come across untouched, so every digest
+/// and the `content_id` survive.
+pub fn repack(path: &Path) -> Result<()> {
+    crate::h5::file::atomic_rewrite(path, None, |src, dst| {
+        require_major(src, path)?;
+        let (src_root, dst_root) = (src.as_group()?, dst.as_group()?);
+        for name in ops::members(&src_root)? {
+            ops::copy_object(&src_root, &name, &dst_root, &name)?;
+        }
+        for key in attrs::names(src)? {
+            attrs::copy_raw(src, dst, &key)?;
+        }
+        Ok(())
+    })
+}

@@ -365,8 +365,135 @@ pub fn filters(ds: &hdf5::Dataset) -> Result<Vec<(i32, Vec<u32>)>> {
 pub fn nbytes(ds: &hdf5::Dataset) -> Result<usize> {
     let itemsize = match kind(ds)? {
         Kind::Numeric(d) => d.itemsize(),
+        // h5py reads variable-length strings as an object array: one
+        // pointer per element, as NumPy counts it.
+        Kind::Strings if matches!(ds.dtype()?.to_descriptor(), Ok(TD::VarLenUnicode | TD::VarLenAscii)) => 8,
         _ => ds.dtype()?.size(),
     };
     let n: usize = ds.shape().iter().product();
     Ok(n * itemsize)
+}
+
+/// A fixed-length string type: NUL-padded, `width` bytes, ASCII or UTF-8 ---
+/// what h5py creates for NumPy's `S` dtype.
+fn fixed_string_type(width: usize, ascii: bool) -> Result<crate::h5sys::h5i::hid_t> {
+    use crate::h5sys::h5t;
+    // SAFETY: plain HDF5 type construction; the caller closes the type.
+    let tid = unsafe { h5t::H5Tcopy(*h5t::H5T_C_S1) };
+    if tid < 0 {
+        return Err(Error::Io("could not create a string type".into()));
+    }
+    let cset = if ascii { h5t::H5T_cset_t::H5T_CSET_ASCII } else { h5t::H5T_cset_t::H5T_CSET_UTF8 };
+    // SAFETY: `tid` is a valid, writable string type.
+    let ok = unsafe {
+        h5t::H5Tset_size(tid, width.max(1)) >= 0
+            && h5t::H5Tset_strpad(tid, h5t::H5T_str_t::H5T_STR_NULLPAD) >= 0
+            && h5t::H5Tset_cset(tid, cset) >= 0
+    };
+    if !ok {
+        // SAFETY: `tid` is valid.
+        unsafe { h5t::H5Tclose(tid) };
+        return Err(Error::Io("could not configure a string type".into()));
+    }
+    Ok(tid)
+}
+
+fn fixed_bytes(values: &[String], width: usize) -> Vec<u8> {
+    let mut buf = vec![0u8; values.len() * width.max(1)];
+    for (i, value) in values.iter().enumerate() {
+        let bytes = value.as_bytes();
+        let n = bytes.len().min(width);
+        buf[i * width..i * width + n].copy_from_slice(&bytes[..n]);
+    }
+    buf
+}
+
+/// Overwrite a fixed-length string dataset whose width fits `values`.
+pub fn write_fixed_strings(ds: &hdf5::Dataset, values: &[String], width: usize, ascii: bool) -> Result<()> {
+    use crate::h5sys::{h5d, h5p, h5s, h5t};
+    let buf = fixed_bytes(values, width);
+    super::locked(|| -> Result<()> {
+        let mtype = fixed_string_type(width, ascii)?;
+        // SAFETY: `buf` holds one `width`-byte element per selected value.
+        let status =
+            unsafe { h5d::H5Dwrite(ds.id(), mtype, h5s::H5S_ALL, h5s::H5S_ALL, h5p::H5P_DEFAULT, buf.as_ptr().cast()) };
+        // SAFETY: `mtype` was created above.
+        unsafe { h5t::H5Tclose(mtype) };
+        if status < 0 {
+            return Err(Error::Io(format!("could not rewrite {}", ds.name())));
+        }
+        Ok(())
+    })
+}
+
+/// Recreate a fixed-length string dataset wider, keeping its creation
+/// property list (filters, chunking, fill value) and its attributes.
+///
+/// Built under a temporary name and moved into place, so a pipeline HDF5
+/// cannot rebuild for the new type leaves the original untouched.
+pub fn recreate_fixed_strings(ds: &hdf5::Dataset, values: &[String], width: usize, ascii: bool) -> Result<()> {
+    use crate::h5sys::{h5d, h5i, h5l, h5p, h5s, h5t};
+    use std::ffi::CString;
+    let full = ds.name();
+    let (parent_path, name) = match full.rsplit_once('/') {
+        Some((p, n)) => (if p.is_empty() { "/".to_string() } else { p.to_string() }, n.to_string()),
+        None => ("/".to_string(), full.clone()),
+    };
+    let file = ds.file()?;
+    let parent = file.group(&parent_path)?;
+    let suffix: String = {
+        let mut rng = crate::rng::SeededRng::from_entropy();
+        format!("{:08x}", rng.next_u32())
+    };
+    let staging = format!("{name}.scrub-{suffix}");
+    let chunks = ds.chunk();
+    let buf = fixed_bytes(values, width);
+    let created = super::locked(|| -> Result<h5i::hid_t> {
+        let ftype = fixed_string_type(width, ascii)?;
+        // SAFETY: valid ids from the open dataset; every id is closed below.
+        unsafe {
+            let dcpl = h5d::H5Dget_create_plist(ds.id());
+            if let Some(c) = &chunks {
+                let dims: Vec<u64> = c.iter().map(|v| *v as u64).collect();
+                h5p::H5Pset_chunk(dcpl, dims.len() as i32, dims.as_ptr());
+            }
+            let space = h5d::H5Dget_space(ds.id());
+            let cname = CString::new(staging.as_str()).map_err(|e| Error::Value(e.to_string()))?;
+            let id =
+                h5d::H5Dcreate2(parent.id(), cname.as_ptr(), ftype, space, h5p::H5P_DEFAULT, dcpl, h5p::H5P_DEFAULT);
+            h5s::H5Sclose(space);
+            h5p::H5Pclose(dcpl);
+            if id < 0 {
+                h5t::H5Tclose(ftype);
+                return Err(Error::Io(format!("could not recreate {full} with a wider string type")));
+            }
+            let status = h5d::H5Dwrite(id, ftype, h5s::H5S_ALL, h5s::H5S_ALL, h5p::H5P_DEFAULT, buf.as_ptr().cast());
+            h5t::H5Tclose(ftype);
+            if status < 0 {
+                h5d::H5Dclose(id);
+                return Err(Error::Io(format!("could not write the widened {full}")));
+            }
+            Ok(id)
+        }
+    })?;
+    // SAFETY: `created` is a dataset id we own; closing it releases it.
+    super::locked(|| unsafe { h5d::H5Dclose(created) });
+    let replacement = parent.dataset(&staging)?;
+    for key in super::attrs::names(ds)? {
+        super::attrs::copy_raw(ds, &replacement, &key)?;
+    }
+    drop(replacement);
+    super::ops::unlink(&parent, &name)?;
+    super::locked(|| -> Result<()> {
+        let from = CString::new(staging.as_str()).map_err(|e| Error::Value(e.to_string()))?;
+        let to = CString::new(name.as_str()).map_err(|e| Error::Value(e.to_string()))?;
+        // SAFETY: both names are valid C strings in the same group.
+        let status = unsafe {
+            h5l::H5Lmove(parent.id(), from.as_ptr(), parent.id(), to.as_ptr(), h5p::H5P_DEFAULT, h5p::H5P_DEFAULT)
+        };
+        if status < 0 {
+            return Err(Error::Io(format!("could not move the widened {full} into place")));
+        }
+        Ok(())
+    })
 }

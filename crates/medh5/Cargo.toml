@@ -28,8 +28,10 @@ hex.workspace = true
 regex.workspace = true
 thiserror.workspace = true
 jsonschema.workspace = true
-rand.workspace = true
-rand_pcg.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
+
+[features]
+# Modules under construction; each builds only when its feature is on.
+wip-conformance = []

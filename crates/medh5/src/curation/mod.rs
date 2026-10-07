@@ -8,6 +8,7 @@ pub mod agreement;
 pub mod identity;
 pub mod provenance;
 pub mod quality;
+pub mod scrub;
 pub mod splits;
 pub mod timeline;
 pub mod tracking;
