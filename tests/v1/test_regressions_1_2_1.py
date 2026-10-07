@@ -16,7 +16,6 @@ import numpy as np
 import pytest
 
 import medh5
-from medh5._hdf5 import open_h5
 from medh5.annotations.voxel import InstanceInput
 from medh5.cli import main
 from medh5.errors import MEDH5Error
@@ -294,8 +293,8 @@ class TestF03ImplicitTimepoint:
         with medh5.amend(path) as w:
             assert w.grids["g"].timepoint is None
             w.extra("note", {"amended": True})
-        with open_h5(path, "r") as handle:
-            assert "timepoint" not in handle["grids/g"].attrs
+        with medh5.open(path) as stored:
+            assert "timepoint" not in stored.root["grids/g"].attrs
         with medh5.open(path) as sample:
             assert sample.grids["g"].timepoint == "tp0"
             assert sample.verify().ok
@@ -328,8 +327,8 @@ class TestF03ImplicitTimepoint:
         source = tmp_path / "ct.nii.gz"
         nib.save(nib.Nifti1Image(volume, np.diag([1.0, 1.0, 2.0, 1.0])), str(source))
         from_nifti({"CT": source}, tmp_path / "out.medh5")
-        with open_h5(tmp_path / "out.medh5", "r") as handle:
-            assert handle["grids/ref"].attrs["timepoint"] == "tp0"
+        with medh5.open(tmp_path / "out.medh5") as stored:
+            assert stored.root["grids/ref"].attrs["timepoint"] == "tp0"
 
 
 class TestMonaiF04LabelDtype:

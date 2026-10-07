@@ -166,6 +166,12 @@ pub fn close_everything(file: hdf5::File, flush: bool) -> Result<()> {
     })
 }
 
+#[cfg(test)]
+thread_local! {
+    /// What a test runs on the target just before a commit's rename.
+    static BEFORE_RENAME: std::cell::RefCell<Option<Box<dyn FnMut(&Path)>>> = const { std::cell::RefCell::new(None) };
+}
+
 /// An HDF5 file being written to a temporary sibling of its target.
 ///
 /// [`commit`](AtomicFile::commit) closes it and atomically replaces the
@@ -226,6 +232,12 @@ impl AtomicFile {
                 set_mode(&self.tmp, mode);
             }
             fsync_path(&self.tmp)?;
+            #[cfg(test)]
+            BEFORE_RENAME.with(|hook| {
+                if let Some(hook) = hook.borrow_mut().as_mut() {
+                    hook(&self.target)
+                }
+            });
             fs::rename(&self.tmp, &self.target)?;
             if let Some(parent) = self.target.parent() {
                 fsync_dir(if parent.as_os_str().is_empty() { Path::new(".") } else { parent });
@@ -307,5 +319,84 @@ mod tests {
         let again = hdf5::File::open_rw(&path).unwrap();
         assert_eq!(again.dataset("d").unwrap().read_raw::<i32>().unwrap(), vec![1, 2, 3]);
         drop((kept, group));
+    }
+
+    #[test]
+    fn s14_4_temporary_names_are_unique_within_a_process() {
+        let names: std::collections::HashSet<PathBuf> =
+            (0..50).map(|_| temporary_name(Path::new("x.medh5"))).collect();
+        assert_eq!(names.len(), 50);
+        assert!(names.iter().all(|n| n.to_string_lossy().starts_with(".x.medh5.tmp-")));
+    }
+
+    /// `fsync_path` opens a writable descriptor on Windows, where a C runtime
+    /// in text mode treats a trailing 0x1A as an end-of-file mark and strips
+    /// it: the 1.x Windows job found four samples in eleven hundred one byte
+    /// short.
+    #[test]
+    fn fsync_leaves_a_trailing_control_z_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ctrlz.bin");
+        let payload: Vec<u8> = (0..=255u8).chain([0x1a]).collect();
+        fs::write(&path, &payload).unwrap();
+        fsync_path(&path).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), payload);
+    }
+
+    /// The HDF5 file identifiers open on `path` in this process.
+    fn open_on(path: &Path) -> usize {
+        use crate::h5sys::h5f;
+        use crate::h5sys::h5i::hid_t;
+        let want = path.to_string_lossy().into_owned();
+        super::super::locked(|| unsafe {
+            let all = h5f::H5F_OBJ_ALL as hid_t;
+            let count = h5f::H5Fget_obj_count(all, h5f::H5F_OBJ_FILE);
+            let mut ids = vec![0 as hid_t; count.max(0) as usize];
+            let found = h5f::H5Fget_obj_ids(all, h5f::H5F_OBJ_FILE, ids.len(), ids.as_mut_ptr());
+            ids.iter()
+                .take(found.max(0) as usize)
+                .filter(|&&id| {
+                    let mut buf = vec![0u8; 4096];
+                    let n = h5f::H5Fget_name(id, buf.as_mut_ptr().cast(), buf.len());
+                    n > 0 && buf[..n as usize] == *want.as_bytes()
+                })
+                .count()
+        })
+    }
+
+    /// The source of a rewrite in place is closed before the rename.
+    ///
+    /// `with open_h5(...) as src, atomic_h5(...) as dst:` exits right to left,
+    /// so 1.x once replaced the file while its source was still open.  POSIX
+    /// allows that, so it passed on Linux and macOS; Windows refuses to replace
+    /// an open file, so every rewrite in place --- a repack, `recompress`
+    /// without `out` --- failed there.  This asserts the ordering directly
+    /// rather than relying on a platform to notice.
+    #[test]
+    fn s14_4_the_source_is_closed_before_the_replace() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rw.h5");
+        {
+            let file = create_truncate(&path).unwrap();
+            file.new_dataset::<i32>().shape([3]).create("d").unwrap().write(&[1, 2, 3]).unwrap();
+        }
+        let seen = std::rc::Rc::new(std::cell::Cell::new(None));
+        let record = seen.clone();
+        BEFORE_RENAME.with(|hook| *hook.borrow_mut() = Some(Box::new(move |target| record.set(Some(open_on(target))))));
+        let kept = std::cell::RefCell::new(None);
+        atomic_rewrite(&path, None, |src, dst| {
+            assert_eq!(open_on(&path), 1, "the source is open while the build runs");
+            let data = src.dataset("d")?;
+            dst.new_dataset::<i32>().shape([3]).create("d")?.write(&data.read_raw::<i32>()?)?;
+            // A view the build kept must not hold the source open either.
+            *kept.borrow_mut() = Some(data);
+            Ok(())
+        })
+        .unwrap();
+        BEFORE_RENAME.with(|hook| *hook.borrow_mut() = None);
+        assert_eq!(seen.get(), Some(0), "the source was still open at the rename");
+        assert!(!kept.into_inner().unwrap().is_valid());
+        let again = open_read(&path).unwrap();
+        assert_eq!(again.dataset("d").unwrap().read_raw::<i32>().unwrap(), vec![1, 2, 3]);
     }
 }

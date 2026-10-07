@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import stat
-from unittest import mock
+from pathlib import Path
 
 import h5py
 import numpy as np
@@ -597,42 +597,34 @@ class TestAtomicRewrite:
         The replace therefore ran while the source was still open. POSIX allows
         that, so it passed here and on CI; Windows refuses to replace an open
         file, so every rewrite-in-place -- `repack`, and `recompress` without
-        `out=` -- failed there. This asserts the ordering directly rather than
-        relying on a platform to notice.
+        `out=` -- failed there. The ordering is asserted directly by the engine
+        (`h5::file::tests::s14_4_the_source_is_closed_before_the_replace`);
+        here, its outcome: a rewrite in place succeeds and leaves this process
+        holding nothing of the file it replaced.
         """
-        from medh5._hdf5 import atomic_rewrite
+        from medh5.storage.recompress import recompress
 
         path = tmp_path / "rw.medh5"
         with medh5.create(path, codec="portable") as w:
             w.add_grid("g", shape=SHAPE, spacing=(1.0, 1.0, 1.0))
             w.add_image("CT", np.zeros(SHAPE, np.int16), grid="g", modality="CT")
+        before = path.stat().st_ino
 
-        seen = {}
-        real_replace = os.replace
+        recompress(path, "archive")  # no `out=`: the rewrite in place
 
-        def spy(a, b, *args, **kwargs):
-            seen["src_open_at_replace"] = bool(source_handle[0])
-            return real_replace(a, b, *args, **kwargs)
-
-        source_handle = [True]
-        with (
-            mock.patch("medh5._hdf5.os.replace", spy),
-            atomic_rewrite(path) as (
-                src,
-                dst,
-            ),
-        ):
-            for name in src:
-                dst.copy(src[name], name)
-            for key, value in src.attrs.items():
-                dst.attrs[key] = value
-            # Flip once the body is done; the manager closes `src` after this
-            # and before it replaces.
-            source_handle[0] = False
-
-        assert seen["src_open_at_replace"] is False
+        assert path.stat().st_ino != before
         with medh5.open(path) as sample:
             assert "CT" in sample.images
+            assert sample.verify().ok
+        fds = Path("/proc/self/fd")
+        if fds.is_dir():  # Linux: what this process still has open
+            held = []
+            for fd in fds.iterdir():
+                try:
+                    held.append(os.readlink(fd))
+                except OSError:
+                    continue  # closed while listing
+            assert not [link for link in held if link.startswith(str(path))]
 
     @posix_modes
     def test_repack_preserves_content_and_permissions(self, tmp_path):

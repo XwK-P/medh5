@@ -3,23 +3,13 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
+import h5py
+import numpy as np
 import pytest
 
 import medh5
-from medh5._hdf5 import (
-    as_bool,
-    as_float,
-    as_float_tuple,
-    as_int,
-    as_int_tuple,
-    as_matrix,
-    as_str,
-    as_str_tuple,
-    encode_attr,
-    validate_id,
-    validate_sample_key,
-)
 from medh5.curation.identity import (
     Cohort,
     Deidentification,
@@ -291,41 +281,109 @@ class TestDocument:
             json.dumps(sample.summary(), default=str)
 
 
+def _attr_sample(path: Path, **attrs: object) -> Path:
+    """A sample whose image carries *attrs*, set through the writer's views."""
+    with medh5.create(path, sample_id="attrs") as w:
+        w.add_grid("g", shape=(2, 2, 2), spacing=(1.0, 1.0, 1.0))
+        image = w.add_image(
+            "CT", np.zeros((2, 2, 2), np.int16), grid="g", modality="CT"
+        )
+        for name, value in attrs.items():
+            image.attrs[name] = value
+    return path
+
+
 class TestAttributeCodecs:
-    def test_S2_5_types_round_trip(self):
-        assert as_str(encode_attr("x")) == "x"
-        assert as_str(b"x") == "x"
-        assert as_str_tuple(encode_attr(["a", "b"])) == ("a", "b")
-        assert as_str_tuple("solo") == ("solo",)
-        assert as_int(encode_attr(3)) == 3
-        assert as_int_tuple(encode_attr([1, 2])) == (1, 2)
-        assert as_float(encode_attr(1.5)) == 1.5
-        assert as_float_tuple(encode_attr([1.5, 2.5])) == (1.5, 2.5)
-        assert as_bool(encode_attr(True)) is True
+    """Spec §2.5 through the public ``Attrs`` view; the engine's codec has its
+    own tests (``h5::attrs::tests``)."""
 
-    def test_S2_5_matrices_stay_two_dimensional(self):
-        import numpy as np
+    def test_S2_5_types_round_trip(self, tmp_path):
+        path = _attr_sample(
+            tmp_path / "types.medh5",
+            x_str="x",
+            x_bytes=b"x",
+            x_strs=["a", "b"],
+            x_int=3,
+            x_ints=[1, 2],
+            x_float=1.5,
+            x_floats=[1.5, 2.5],
+            x_bool=True,
+        )
+        with medh5.open(path) as sample:
+            attrs = sample.images["CT"].dataset.attrs
+            assert attrs["x_str"] == "x"
+            assert attrs["x_bytes"] == "x"
+            assert tuple(attrs["x_strs"]) == ("a", "b")
+            assert attrs["x_int"] == 3
+            assert tuple(attrs["x_ints"]) == (1, 2)
+            assert attrs["x_float"] == 1.5
+            assert tuple(attrs["x_floats"]) == (1.5, 2.5)
+            assert attrs["x_bool"] is True
+        # Stored as the table in §2.5 says, as any HDF5 reader sees it.
+        with h5py.File(path, "r") as handle:
+            stored = handle["images/CT"].attrs
+            text = h5py.check_string_dtype(stored.get_id("x_str").dtype)
+            assert text.encoding == "utf-8" and text.length is None
+            texts = h5py.check_string_dtype(stored.get_id("x_strs").dtype)
+            assert texts.encoding == "utf-8" and texts.length is None
+            assert stored["x_strs"].shape == (2,)
+            assert stored["x_int"].dtype == np.int64
+            assert stored["x_ints"].dtype == np.int64
+            assert stored["x_float"].dtype == np.float64
+            assert stored["x_floats"].dtype == np.float64
+            assert stored["x_bool"].dtype == np.bool_
 
-        assert as_matrix(np.eye(3)).shape == (3, 3)
-        with pytest.raises(MEDH5ValidationError) as exc:
-            as_matrix(np.zeros(9))
-        assert exc.value.code == "E109"
-
-    def test_empty_sequences_and_mixed_types(self):
-        import numpy as np
-
-        assert encode_attr([]).shape == (0,)
-        assert encode_attr([True, False]).dtype == np.bool_
-        assert encode_attr([1, 2.5]).dtype == np.float64
-        with pytest.raises(MEDH5ValidationError):
-            encode_attr(object())
-
-    def test_S2_3_identifier_rules(self):
-        assert validate_id("CT_tp0") == "CT_tp0"
-        for bad in ("", "a b", "x" * 129, "meta"):
+    def test_S2_5_matrices_stay_two_dimensional(self, tmp_path):
+        path = _attr_sample(tmp_path / "matrix.medh5")
+        with medh5.open(path) as sample:
+            assert np.asarray(sample.grids["g"].direction).shape == (3, 3)
+        with h5py.File(path, "r+") as handle:
+            handle["grids/g"].attrs["direction"] = np.eye(3).reshape(9)
+        with medh5.open(path) as sample:
             with pytest.raises(MEDH5ValidationError) as exc:
-                validate_id(bad)
-            assert exc.value.code == "E003"
-        assert validate_sample_key("a.b-c_1") == "a.b-c_1"
-        with pytest.raises(MEDH5ValidationError):
-            validate_sample_key("x" * 256)
+                sample.grids["g"]
+            assert exc.value.code == "E109"
+        from medh5.validate import validate_file
+
+        assert "E109" in validate_file(path).codes
+
+    def test_empty_sequences_and_mixed_types(self, tmp_path):
+        path = _attr_sample(
+            tmp_path / "mixed.medh5",
+            x_empty=[],
+            x_bools=[True, False],
+            x_mixed=[1, 2.5],
+        )
+        with medh5.open(path) as sample:
+            attrs = sample.images["CT"].dataset.attrs
+            assert attrs["x_empty"].shape == (0,)
+            assert attrs["x_empty"].dtype == np.int64
+            assert attrs["x_bools"].dtype == np.bool_
+            assert attrs["x_mixed"].dtype == np.float64
+        with medh5.create(tmp_path / "object.medh5", sample_id="o") as w:
+            w.add_grid("g", shape=(2, 2, 2), spacing=(1.0, 1.0, 1.0))
+            image = w.add_image(
+                "CT", np.zeros((2, 2, 2), np.int16), grid="g", modality="CT"
+            )
+            with pytest.raises(MEDH5ValidationError):
+                image.attrs["x_object"] = object()
+
+    def test_S2_3_identifier_rules(self, tmp_path):
+        from medh5.collection import pack
+
+        source = tmp_path / "ids.medh5"
+        with medh5.create(source, sample_id="ids") as w:
+            w.add_grid("CT_tp0", shape=(2, 2, 2), spacing=(1.0, 1.0, 1.0))
+            w.add_grid("x" * 128, shape=(2, 2, 2), spacing=(1.0, 1.0, 1.0))
+            for bad in ("", "a b", "x" * 129, "meta"):
+                with pytest.raises(MEDH5ValidationError) as exc:
+                    w.add_grid(bad, shape=(2, 2, 2), spacing=(1.0, 1.0, 1.0))
+                assert exc.value.code == "E003"
+            assert set(w.grids) == {"CT_tp0", "x" * 128}
+            w.add_image(
+                "CT", np.zeros((2, 2, 2), np.int16), grid="CT_tp0", modality="CT"
+            )
+        pack([source], tmp_path / "ok.medh5c", keys=["a.b-c_1"])
+        with pytest.raises(MEDH5ValidationError) as exc:
+            pack([source], tmp_path / "long.medh5c", keys=["x" * 256])
+        assert exc.value.code == "E003"

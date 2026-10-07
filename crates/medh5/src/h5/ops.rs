@@ -315,9 +315,7 @@ fn checked_files() -> &'static Mutex<HashMap<FileIdentity, ()>> {
 
 const CHECKED_LIMIT: usize = 65_536;
 
-/// The identity of the file at `path`: device, inode, size, mtime, ctime.
-fn file_key(path: &Path) -> Option<(u64, u64, u64, i128, i128)> {
-    let meta = std::fs::metadata(path).ok()?;
+fn identity(meta: &std::fs::Metadata) -> Option<FileIdentity> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
@@ -336,12 +334,57 @@ fn file_key(path: &Path) -> Option<(u64, u64, u64, i128, i128)> {
     }
 }
 
+/// The descriptor HDF5 reads `handle` through, when its driver has one.
+#[cfg(unix)]
+fn descriptor(handle: &hdf5::File) -> Option<std::os::raw::c_int> {
+    use hdf5::file::FileDriver;
+    // Only the default (sec2) driver's handle is a POSIX descriptor.
+    if !matches!(handle.access_plist().ok()?.get_driver().ok()?, FileDriver::Sec2) {
+        return None;
+    }
+    super::locked(|| unsafe {
+        let mut found: *mut c_void = std::ptr::null_mut();
+        if crate::h5sys::h5f::H5Fget_vfd_handle(handle.id(), h5p::H5P_DEFAULT, &mut found) < 0 || found.is_null() {
+            return None;
+        }
+        Some(*found.cast::<std::os::raw::c_int>())
+    })
+}
+
+/// The identity of the file `handle` holds open --- not whatever `path` names
+/// now.
+///
+/// Between an open and a stat by name, another process can atomically replace
+/// the path; recording the replacement as checked would let it skip the check
+/// on its next open, and the next `recompress` would copy whatever it points
+/// at.  So on POSIX the identity comes from the descriptor HDF5 read through.
+/// Windows refuses to replace a file another handle holds open, so there the
+/// path names the opened file for as long as the handle lives, and a stat by
+/// name gives the same answer.  No identity means no memo: the file is checked
+/// on every open rather than trusted on a guess.
+fn opened_identity(handle: &hdf5::File, path: Option<&Path>) -> Option<FileIdentity> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::FromRawFd;
+        let _ = path;
+        let fd = descriptor(handle)?;
+        // Borrowed for one `fstat`: HDF5 owns the descriptor and closes it.
+        let file = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(fd) });
+        identity(&file.metadata().ok()?)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = handle;
+        identity(&std::fs::metadata(path?).ok()?)
+    }
+}
+
 /// Refuse a file that reads bytes from outside itself (`MEDH5FileError`).
 ///
 /// Memoised per file identity, so re-opening an unchanged file costs one
 /// `stat` --- a training loop re-opens the same few thousand files for a run.
 pub fn check_self_contained(handle: &hdf5::File, path: Option<&Path>) -> Result<()> {
-    let key = path.and_then(file_key);
+    let key = opened_identity(handle, path);
     if let Some(k) = key {
         if checked_files().lock().unwrap().contains_key(&k) {
             return Ok(());
@@ -425,4 +468,55 @@ pub fn stored_chunks(ds: &hdf5::Dataset) -> Result<Vec<Vec<u64>>> {
         }
         Ok(out)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn plain(path: &Path) {
+        let file = crate::h5::file::create_truncate(path).unwrap();
+        file.new_dataset::<u8>().shape([4]).create("data").unwrap().write(&[1u8, 2, 3, 4]).unwrap();
+    }
+
+    /// A file carrying an external link: one of the three ways a file reads
+    /// bytes from outside itself.
+    fn linked(path: &Path, other: &Path) {
+        plain(path);
+        let file = hdf5::File::open_rw(path).unwrap();
+        file.link_external(&other.to_string_lossy(), "/data", "x_link").unwrap();
+    }
+
+    /// A path replaced between the open and the check must not inherit it.
+    ///
+    /// The memo was keyed by a stat of the *path*, taken after the open: a
+    /// replacement landing in between was recorded as checked while the handle
+    /// scanned the old file, and its next open skipped the check.
+    #[cfg(unix)]
+    #[test]
+    fn f22_the_check_is_remembered_for_the_file_it_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target.medh5");
+        let bad = dir.path().join("bad.medh5");
+        plain(&target);
+        linked(&bad, &target);
+        let handle = hdf5::File::open(&target).unwrap();
+        std::fs::rename(&bad, &target).unwrap(); // the path now names another file
+        check_self_contained(&handle, Some(&target)).unwrap(); // the file read is clean
+        drop(handle);
+        let err = crate::h5::file::open_read(&target).unwrap_err();
+        assert!(err.to_string().contains("not self-contained"), "{err}");
+        assert!(err.to_string().contains("external link"), "{err}");
+    }
+
+    /// An unchanged file is checked once; the memo is what keeps re-opens cheap.
+    #[test]
+    fn f22_an_unchanged_file_is_remembered() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("clean.medh5");
+        plain(&path);
+        let handle = crate::h5::file::open_read(&path).unwrap();
+        let key = opened_identity(&handle, Some(&path)).expect("a sec2 file has an identity");
+        assert!(checked_files().lock().unwrap().contains_key(&key));
+    }
 }

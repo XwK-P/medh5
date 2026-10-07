@@ -652,3 +652,78 @@ impl Drop for RawAttr {
         });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch() -> (tempfile::TempDir, hdf5::File) {
+        let dir = tempfile::tempdir().unwrap();
+        let file = crate::h5::file::create_truncate(&dir.path().join("a.h5")).unwrap();
+        (dir, file)
+    }
+
+    /// Every logical type of §2.5 reads back as itself, stored as the table
+    /// says.
+    #[test]
+    fn s2_5_types_round_trip() {
+        let (_dir, file) = scratch();
+        let cases = [
+            ("str", AttrValue::Str("x".into()), TD::VarLenUnicode),
+            ("strs", AttrValue::strs(&["a", "b"]), TD::VarLenUnicode),
+            ("int", AttrValue::Int(3), TD::Integer(hdf5::types::IntSize::U8)),
+            ("ints", AttrValue::ints(&[1, 2]), TD::Integer(hdf5::types::IntSize::U8)),
+            ("float", AttrValue::Float(1.5), TD::Float(hdf5::types::FloatSize::U8)),
+            ("floats", AttrValue::floats(&[1.5, 2.5]), TD::Float(hdf5::types::FloatSize::U8)),
+            ("bool", AttrValue::Bool(true), TD::Boolean),
+            ("matrix", AttrValue::matrix(2, 2, &[1.0, 0.0, 0.0, 1.0]), TD::Float(hdf5::types::FloatSize::U8)),
+        ];
+        for (name, value, stored) in &cases {
+            write(&file, name, value).unwrap();
+            assert_eq!(read(&file, name).unwrap().as_ref(), Some(value), "{name}");
+            assert_eq!(descriptor(&file.attr(name).unwrap()).unwrap(), *stored, "{name}");
+        }
+        assert_eq!(read(&file, "str").unwrap().unwrap().as_str().as_deref(), Some("x"));
+        assert_eq!(read(&file, "strs").unwrap().unwrap().as_str_list(), Some(vec!["a".into(), "b".into()]));
+        assert_eq!(read(&file, "int").unwrap().unwrap().as_i64(), Some(3));
+        assert_eq!(read(&file, "ints").unwrap().unwrap().as_i64_vec(), Some(vec![1, 2]));
+        assert_eq!(read(&file, "float").unwrap().unwrap().as_f64(), Some(1.5));
+        assert_eq!(read(&file, "floats").unwrap().unwrap().as_f64_vec(), Some(vec![1.5, 2.5]));
+        assert_eq!(read(&file, "bool").unwrap().unwrap().as_bool(), Some(true));
+        assert_eq!(read(&file, "absent").unwrap(), None);
+        // A scalar string is a list of one.
+        assert_eq!(AttrValue::Str("solo".into()).as_str_list(), Some(vec!["solo".into()]));
+    }
+
+    /// Readers accept fixed-length strings as well as variable-length ones.
+    #[test]
+    fn s2_5_fixed_length_strings_read_as_strings() {
+        let (_dir, file) = scratch();
+        let fixed: hdf5::types::FixedAscii<4> = hdf5::types::FixedAscii::from_ascii(b"x").unwrap();
+        file.new_attr::<hdf5::types::FixedAscii<4>>().shape(()).create("fixed").unwrap().write_scalar(&fixed).unwrap();
+        assert_eq!(read(&file, "fixed").unwrap(), Some(AttrValue::Str("x".into())));
+    }
+
+    /// Matrices stay two-dimensional: a flat array is not a matrix.
+    #[test]
+    fn s2_5_matrices_stay_two_dimensional() {
+        let eye = AttrValue::matrix(3, 3, &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(eye.as_matrix().map(|(r, c, _)| (r, c)), Some((3, 3)));
+        assert_eq!(AttrValue::floats(&[0.0; 9]).as_matrix(), None);
+        assert_eq!(AttrValue::Float(1.0).as_matrix(), None);
+    }
+
+    /// An empty list is stored `int64` of shape `(0,)`, as NumPy would.
+    #[test]
+    fn s2_5_empty_lists_and_overwrites() {
+        let (_dir, file) = scratch();
+        write(&file, "empty", &AttrValue::ints(&[])).unwrap();
+        let back = read(&file, "empty").unwrap().unwrap();
+        assert_eq!(back.shape(), vec![0]);
+        assert_eq!(back.describe(), "int64[0]");
+        // Writing again replaces the value and its type.
+        write(&file, "empty", &AttrValue::Str("now a string".into())).unwrap();
+        assert_eq!(get_str(&file, "empty").unwrap().as_deref(), Some("now a string"));
+        assert!(write(&file, "bad", &AttrValue::Unsupported("compound".into())).is_err());
+    }
+}

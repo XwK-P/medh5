@@ -160,18 +160,16 @@ class TestW14RewriteGate:
 
         The memo was keyed by a stat of the *path*, taken after the open.  A
         replacement landing in between was recorded as checked while the handle
-        scanned the old file, and its next open skipped the check.
+        scanned the old file, and its next open skipped the check.  The race
+        itself is the engine's to hold (`h5::ops::tests::
+        f22_the_check_is_remembered_for_the_file_it_read`); through the public
+        door, a file checked and remembered does not vouch for its replacement.
         """
-        from medh5._hdf5 import check_self_contained
-
         target = _plain(tmp_path / "target.medh5")
         bad = self._external_storage(tmp_path, secret)
-        handle = h5py.File(target, "r")
-        try:
+        with medh5.open(target) as sample:  # checked, and remembered
             os.replace(bad, target)  # the path now names another file
-            check_self_contained(handle, target)  # the file read is clean
-        finally:
-            handle.close()
+            assert "CT" in sample.images  # the file read is clean
         with pytest.raises(MEDH5FileError, match="not self-contained"):
             medh5.open(target)
 

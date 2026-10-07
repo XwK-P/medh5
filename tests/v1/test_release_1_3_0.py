@@ -11,11 +11,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import h5py
 import numpy as np
 import pytest
 
 import medh5
-from medh5._hdf5 import _temporary_name, open_h5
 from medh5.annotations.voxel import InstanceInput
 from medh5.errors import MEDH5ValidationError, MEDH5VersionError
 from medh5.labels.labelset import LabelClass, LabelSet
@@ -60,7 +60,7 @@ class TestW1SpecificationCorrections:
         path = tmp_path / "algo.medh5"
         with _open_writer(path):
             pass
-        with open_h5(path, "r+") as handle:
+        with h5py.File(path, "r+") as handle:
             handle.attrs["digest_algo"] = "blake3"
         with medh5.open(path) as sample:
             with pytest.raises(MEDH5ValidationError) as exc:
@@ -293,21 +293,34 @@ class TestW3LooseEnds:
             pass
         shard = tmp_path / "s.medh5c"
         pack([member], shard)
-        with open_h5(shard, "r+") as handle:
+        with h5py.File(shard, "r+") as handle:
             handle.attrs["medh5_version"] = "2.0"
         with pytest.raises(MEDH5VersionError):
             open_collection(shard)
         with pytest.raises(MEDH5VersionError):
             open_any(shard)
-        with open_h5(member, "r+") as handle:
+        with h5py.File(member, "r+") as handle:
             handle.attrs["medh5_version"] = "2.0"
         with pytest.raises(MEDH5VersionError):
             pack([member], tmp_path / "t.medh5c")
 
-    def test_S14_4_temporary_names_are_unique_within_a_process(self):
-        names = {_temporary_name("x.medh5") for _ in range(50)}
+    def test_S14_4_temporary_names_are_unique_within_a_process(self, tmp_path: Path):
+        """Writers of one target, open at once, each get their own temporary.
+
+        The name itself is the engine's (`h5::file::tests::
+        s14_4_temporary_names_are_unique_within_a_process`); this holds what it
+        is for: concurrent writers in one process never write the same file.
+        """
+        target = tmp_path / "x.medh5"
+        writers = [_open_writer(target) for _ in range(50)]
+        names = {p.name for p in tmp_path.iterdir()}
         assert len(names) == 50
         assert all(n.startswith(".x.medh5.tmp-") for n in names)
+        for w in writers:
+            w.commit()
+        assert [p.name for p in tmp_path.iterdir()] == ["x.medh5"]
+        with medh5.open(target) as sample:
+            assert sample.verify().ok
 
     def test_manifest_fields_are_fields(self, tmp_path: Path):
         from medh5.dataset.manifest import scan
@@ -621,18 +634,6 @@ class TestW5Structure:
 
 
 class TestW6Tooling:
-    def test_fsync_leaves_a_trailing_control_z_alone(self, tmp_path: Path):
-        """`_fsync_path` opens a writable descriptor on Windows, and the C runtime's
-        text mode treats a trailing 0x1A as an end-of-file mark it strips on open.
-        The Windows job found four samples in eleven hundred one byte short."""
-        from medh5._hdf5 import _fsync_path
-
-        path = tmp_path / "ctrlz.bin"
-        payload = bytes(range(256)) + b"\x1a"
-        path.write_bytes(payload)
-        _fsync_path(path)
-        assert path.read_bytes() == payload
-
     def test_the_lint_gate_refuses_suppressions_that_suppress_nothing(self):
         text = (Path(__file__).resolve().parents[2] / "pyproject.toml").read_text(
             encoding="utf-8"
