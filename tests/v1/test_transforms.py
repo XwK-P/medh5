@@ -448,15 +448,17 @@ class TestAmend:
         While the writer built it from ``self._transform_frames``, an amend that
         failed to repopulate that cache hashed a ``content_id`` over fewer
         objects than a reader would find --- so the file verified on the way out
-        and reported E702 on the way back in.  Clearing the cache outright must
-        now change nothing about the identity the file is stamped with.
+        and reported E702 on the way back in.  In 2.0 there is no cache to
+        clear: the writer's `commit` and the reader hash over one map,
+        `attr_name_map_of`, derived from the file itself, so they agree by
+        construction --- and an amended file with a displacement field is
+        stamped with the identity a reader recomputes.
         """
         path = registered(tmp_path / "reg.medh5", displacement=True)
         with medh5.amend(path, codec="portable") as w:
             w.add_image(
                 "CT2_tp0", np.zeros(SHAPE, dtype=np.int16), grid="ct_tp0", modality="CT"
             )
-            w._transform_frames.clear()
         with medh5.open(path) as sample:
             assert sample.verify().ok
             assert sample.compute_content_id() == sample.content_id

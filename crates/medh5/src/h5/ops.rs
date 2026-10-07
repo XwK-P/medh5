@@ -92,6 +92,7 @@ pub fn is_dataset(group: &hdf5::Group, name: &str) -> bool {
 
 /// The names in a group, sorted (HDF5's name order).
 pub fn members(group: &hdf5::Group) -> Result<Vec<String>> {
+    super::alive(group)?;
     let mut names = group.member_names()?;
     names.sort();
     Ok(names)

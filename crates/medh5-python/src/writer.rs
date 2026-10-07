@@ -875,7 +875,9 @@ impl SampleWriter {
         let boxes = f64_array(boxes)?;
         let keys = class_keys(class_ids)?;
         let objects = objects(instance_ids, scores, attributes)?;
-        let slice_index = is_given(slice_index).map(|o| i64_vec(&o)).transpose()?;
+        let n_boxes = boxes.shape().first().copied().unwrap_or(0);
+        let slice_index =
+            is_given(slice_index).map(|o| crate::annotations::slice_index_arg(&o, n_boxes)).transpose()?;
         let options = common(annotated_classes, closure, timepoints, prov, quality, derived_from, Some(task), codec)?;
         let group = self.writer()?.add_boxes(
             ann_id,

@@ -8,7 +8,7 @@ use hdf5::types::{TypeDescriptor as TD, VarLenAscii, VarLenUnicode};
 use hdf5::{Hyperslab, SliceOrIndex};
 use ndarray::{ArrayD, IxDyn};
 
-use super::attrs::{bytes_to_array, numeric_dtype, read_fixed_strings};
+use super::attrs::{bytes_to_array, lossy, numeric_dtype, read_fixed_strings};
 use crate::array::{DType, Index, NdArray};
 use crate::{with_array, with_dtype, Error, Result};
 
@@ -41,6 +41,7 @@ pub enum Kind {
 
 /// The element kind of a dataset.
 pub fn kind(ds: &hdf5::Dataset) -> Result<Kind> {
+    super::alive(ds)?;
     let td = ds.dtype()?.to_descriptor();
     Ok(match td {
         Ok(TD::VarLenUnicode | TD::VarLenAscii | TD::FixedAscii(_) | TD::FixedUnicode(_)) => Kind::Strings,
@@ -54,6 +55,7 @@ pub fn kind(ds: &hdf5::Dataset) -> Result<Kind> {
 
 /// The numeric dtype of a dataset, or an error for strings and others.
 pub fn dtype(ds: &hdf5::Dataset) -> Result<DType> {
+    super::alive(ds)?;
     match kind(ds)? {
         Kind::Numeric(d) => Ok(d),
         Kind::Strings => Err(Error::Type(format!("{} holds strings, not numbers", ds.name()))),
@@ -72,6 +74,7 @@ fn is_plain_enum(ds: &hdf5::Dataset) -> bool {
 
 /// Read a whole numeric dataset.
 pub fn read(ds: &hdf5::Dataset) -> Result<NdArray> {
+    super::alive(ds)?;
     let dtype = dtype(ds)?;
     if is_plain_enum(ds) {
         return read_enum(ds, dtype);
@@ -177,6 +180,7 @@ fn resolve(shape: &[usize], index: &[Index]) -> Result<Vec<(usize, usize, usize,
 
 /// Read a region of a numeric dataset in one call.
 pub fn read_region(ds: &hdf5::Dataset, index: &[Index]) -> Result<NdArray> {
+    super::alive(ds)?;
     let dtype = dtype(ds)?;
     let shape = ds.shape();
     let axes = resolve(&shape, index)?;
@@ -237,10 +241,11 @@ pub fn slice_array(array: &NdArray, index: &[Index]) -> Result<NdArray> {
 
 /// Read a string dataset (any shape), flattened in C order.
 pub fn read_strings(ds: &hdf5::Dataset) -> Result<Vec<String>> {
+    super::alive(ds)?;
     let td = ds.dtype()?.to_descriptor()?;
     Ok(match td {
-        TD::VarLenUnicode => ds.read_raw::<VarLenUnicode>()?.into_iter().map(|s| s.as_str().to_string()).collect(),
-        TD::VarLenAscii => ds.read_raw::<VarLenAscii>()?.into_iter().map(|s| s.as_str().to_string()).collect(),
+        TD::VarLenUnicode => ds.read_raw::<VarLenUnicode>()?.iter().map(|s| lossy(s.as_bytes())).collect(),
+        TD::VarLenAscii => ds.read_raw::<VarLenAscii>()?.iter().map(|s| lossy(s.as_bytes())).collect(),
         TD::FixedAscii(_) | TD::FixedUnicode(_) => {
             read_fixed_strings(ds.id(), ds.size().max(usize::from(ds.is_scalar())), &td, false)?
         }

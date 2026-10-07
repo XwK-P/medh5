@@ -636,7 +636,14 @@ class TestAtomicRewrite:
 
     @posix_modes
     def test_repack_preserves_content_and_permissions(self, tmp_path):
-        from medh5._hdf5 import repack
+        """A repack rewrites storage, not content.
+
+        The repack is the engine's (`sample::reader::tests::repack_preserves_
+        content_and_permissions` holds the content id, the values and the mode
+        in Rust); here it runs as scrub's last step, the one place the package
+        repacks a file.
+        """
+        from medh5.curation import scrub
 
         path = tmp_path / "pack.medh5"
         with medh5.create(path, codec="portable") as w:
@@ -649,15 +656,51 @@ class TestAtomicRewrite:
             )
         path.chmod(0o600)
         with medh5.open(path) as sample:
-            before = sample.content_id
             data = sample.images["CT"].read()
 
-        repack(path)
+        report = scrub.apply(path)
 
+        assert report.applied
         assert stat.S_IMODE(path.stat().st_mode) == 0o600
         with medh5.open(path) as sample:
-            assert sample.content_id == before, "a repack rewrites storage, not content"
+            assert sample.verify().ok, "every digest survives the rewrite"
             assert np.array_equal(sample.images["CT"].read(), data)
+
+
+class TestClose:
+    """§14.4: a closed sample holds nothing open.
+
+    1.x closed the h5py file and everything opened through it.  HDF5 keeps a
+    file open while any object in it is, so an image or group a caller kept
+    past the ``with`` block held the file open --- and locked against the next
+    writer --- until garbage collection got to it.
+    """
+
+    def test_S14_4_close_releases_the_file_with_everything_read_from_it(
+        self, sample_path
+    ):
+        with medh5.open(sample_path) as sample:
+            image = sample.images["CT_tp0"]
+            stored = sample.root["images/CT_tp0"]
+        with h5py.File(sample_path, "r+") as handle:  # not locked
+            handle.attrs["x_touched"] = encode_attr("yes")
+        with pytest.raises(MEDH5FileError, match="closed"):
+            image.read()
+        with pytest.raises(MEDH5FileError, match="closed"):
+            stored.shape  # noqa: B018 - the access is the assertion
+        assert repr(stored) == "<closed medh5 Dataset>"
+
+    def test_S14_4_commit_closes_what_the_writer_handed_out(self, tmp_path):
+        path = tmp_path / "w.medh5"
+        with medh5.create(path, sample_id="w") as w:
+            w.add_grid("g", shape=SHAPE, spacing=(1.0, 1.0, 1.0))
+            kept = w.add_image("CT", np.zeros(SHAPE, np.int16), grid="g", modality="CT")
+        with h5py.File(path, "r+"):
+            pass  # the written file is closed and in place
+        with pytest.raises(MEDH5FileError, match="closed"):
+            kept.shape  # noqa: B018
+        with medh5.open(path) as sample:
+            assert sample.verify().ok
 
 
 class TestOpen:

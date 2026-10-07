@@ -30,6 +30,22 @@ pub fn init() {
     });
 }
 
+/// What an object of a closed file reports.
+pub const CLOSED: &str = "the file this object was read from has been closed";
+
+/// Refuse an object whose file has been closed.
+///
+/// HDF5 answers questions about a closed object as if it were empty --- no
+/// attribute, no member, shape `()` --- which reads as a malformed file rather
+/// than a closed one, so the readers ask this first.
+pub fn alive(obj: &hdf5::Location) -> crate::Result<()> {
+    if obj.is_valid() {
+        Ok(())
+    } else {
+        Err(crate::Error::File(CLOSED.into()))
+    }
+}
+
 /// Run raw HDF5 C calls under the library's global lock.
 pub(crate) fn locked<T>(f: impl FnOnce() -> T) -> T {
     hdf5::sync::sync(f)

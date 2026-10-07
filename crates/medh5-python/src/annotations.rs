@@ -1035,7 +1035,8 @@ fn encode_boxes(
 ) -> R<AnnotationPayload> {
     let boxes = f64_array(boxes)?;
     let cols = Columns::of(class_ids, instance_ids, scores, attributes)?;
-    let planes = given(slice_index).map(|s| i64_vec(&s)).transpose()?;
+    let n_boxes = boxes.shape().first().copied().unwrap_or(0);
+    let planes = given(slice_index).map(|s| slice_index_arg(&s, n_boxes)).transpose()?;
     Ok(AnnotationPayload::wrap(geo::encode_boxes(&boxes, &cols.view(), planes.as_deref())?))
 }
 
@@ -1172,6 +1173,17 @@ fn encode_mesh(
     )?))
 }
 
+/// A `slice_index` argument as planes: an array of exactly one plane per box
+/// (§8.2), refused with E405 otherwise --- before flattening, because a column
+/// of the right length can be the wrong shape.
+pub fn slice_index_arg(obj: &Bound<'_, PyAny>, n_boxes: usize) -> R<Vec<i64>> {
+    let array = crate::convert::i64_array(obj)?;
+    if let Some(problem) = geo::check_slice_index_shape(array.shape(), n_boxes) {
+        return Err(medh5::Error::coded("E405", problem).into());
+    }
+    Ok(array.iter().copied().collect())
+}
+
 #[pyfunction]
 #[pyo3(signature = (planes, n_boxes, *, boxes=None, shape=None))]
 fn check_slice_index(
@@ -1180,7 +1192,11 @@ fn check_slice_index(
     boxes: Option<&Bound<'_, PyAny>>,
     shape: Option<&Bound<'_, PyAny>>,
 ) -> R<Option<String>> {
-    let planes = i64_vec(planes)?;
+    let array = crate::convert::i64_array(planes)?;
+    if let Some(problem) = geo::check_slice_index_shape(array.shape(), n_boxes) {
+        return Ok(Some(problem));
+    }
+    let planes: Vec<i64> = array.iter().copied().collect();
     let rows: Option<Vec<Vec<f64>>> = match given(boxes) {
         None => None,
         Some(b) => {

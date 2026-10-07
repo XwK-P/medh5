@@ -209,6 +209,7 @@ fn descriptor(attr: &hdf5::Attribute) -> Result<TD> {
 
 /// Read one attribute, or `None` when it is absent.
 pub fn read(obj: &hdf5::Location, name: &str) -> Result<Option<AttrValue>> {
+    super::alive(obj)?;
     if !has(obj, name) {
         return Ok(None);
     }
@@ -275,13 +276,19 @@ pub fn read_attribute(attr: &hdf5::Attribute) -> Result<AttrValue> {
 
 fn read_strings_attr(attr: &hdf5::Attribute, td: &TD) -> Result<Vec<String>> {
     Ok(match td {
-        TD::VarLenUnicode => attr.read_raw::<VarLenUnicode>()?.into_iter().map(|s| s.as_str().to_string()).collect(),
-        TD::VarLenAscii => {
-            attr.read_raw::<hdf5::types::VarLenAscii>()?.into_iter().map(|s| s.as_str().to_string()).collect()
-        }
+        // Bytes, decoded here: the types' `as_str` trusts the file to hold valid
+        // UTF-8, and a damaged one does not (`lossy` keeps that a finding, not
+        // undefined behaviour).
+        TD::VarLenUnicode => attr.read_raw::<VarLenUnicode>()?.iter().map(|s| lossy(s.as_bytes())).collect(),
+        TD::VarLenAscii => attr.read_raw::<hdf5::types::VarLenAscii>()?.iter().map(|s| lossy(s.as_bytes())).collect(),
         TD::FixedAscii(_) | TD::FixedUnicode(_) => read_fixed_strings(attr.id(), attr.size(), td, true)?,
         _ => Vec::new(),
     })
+}
+
+/// Text from stored bytes, invalid UTF-8 replaced rather than trusted.
+pub(crate) fn lossy(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).into_owned()
 }
 
 /// Read fixed-length strings by asking HDF5 to convert them to variable length.
@@ -420,6 +427,7 @@ pub fn has(obj: &hdf5::Location, name: &str) -> bool {
 
 /// Every attribute name, sorted (HDF5's name order).
 pub fn names(obj: &hdf5::Location) -> Result<Vec<String>> {
+    super::alive(obj)?;
     let mut names = obj.attr_names()?;
     names.sort();
     Ok(names)

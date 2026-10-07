@@ -171,6 +171,7 @@ class Sample:
         "_handle",
         "_images",
         "_index",
+        "_resolved",
         "_transforms",
         "path",
     )
@@ -184,6 +185,7 @@ class Sample:
         self._annotations: AnnotationCollection | None = None
         self._transforms: _Collection | None = None
         self._index: dict[str, SamplingIndex] | None = None
+        self._resolved: dict[tuple[str, str], Transform | None] = {}
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -360,9 +362,16 @@ class Sample:
         return tuple(self._handle.frames_for(key))
 
     def resolve_frames(self, from_frame: str, to_frame: str) -> Transform | None:
-        """The transform relating two frame uids, resolved once per handle."""
-        found = self._handle.resolve_frames(from_frame, to_frame)
-        return None if found is None else wrap_transform(found)
+        """The transform relating two frame uids, resolved once per handle.
+
+        A paired dataset asks the same question for every item; the answer
+        (and the object carrying it) is the same each time.
+        """
+        key = (from_frame, to_frame)
+        if key not in self._resolved:
+            found = self._handle.resolve_frames(from_frame, to_frame)
+            self._resolved[key] = None if found is None else wrap_transform(found)
+        return self._resolved[key]
 
     # -- timepoints --------------------------------------------------------
 

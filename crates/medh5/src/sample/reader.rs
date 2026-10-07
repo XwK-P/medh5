@@ -98,7 +98,20 @@ impl Sample {
 
     /// Release the file.  Further reads through this view fail.
     pub fn close(&mut self) {
-        self.handle = None;
+        if let Some(file) = self.handle.take() {
+            let _ = crate::h5::file::close_everything(file, false);
+        }
+    }
+
+    /// Close the file and everything opened through it, when this view owns
+    /// the file --- a collection member does not; its collection does.  An
+    /// object read from the sample and still held becomes invalid rather than
+    /// keeping the file open and locked.
+    pub fn close_file(&self) -> Result<()> {
+        match &self.handle {
+            Some(file) => crate::h5::file::close_everything(file.clone(), false),
+            None => Ok(()),
+        }
     }
 
     /// Python's `repr()`.
@@ -617,4 +630,41 @@ pub fn repack(path: &Path) -> Result<()> {
         }
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::array::NdArray;
+
+    /// A repack rewrites storage, not content: the digests, the `content_id`,
+    /// every image's values and the file's permissions come through.
+    #[test]
+    fn repack_preserves_content_and_permissions() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = crate::bench::synthetic_pair(dir.path(), &[8, 12, 10], "portable", 7).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let snapshot = |path: &Path| {
+            let sample = open_sample(path).unwrap();
+            let images: Vec<(String, NdArray)> = sample
+                .images()
+                .unwrap()
+                .iter()
+                .map(|(id, image)| (id.clone(), image.read(None, false, None).unwrap()))
+                .collect();
+            (sample.content_id().unwrap(), images)
+        };
+        let before = snapshot(&path);
+        repack(&path).unwrap();
+        assert_eq!(snapshot(&path), before);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+    }
 }

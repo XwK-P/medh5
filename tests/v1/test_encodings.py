@@ -223,7 +223,7 @@ class TestEncoders:
             assert np.array_equal(windowed, dense)
 
     @pytest.mark.parametrize("plane", [None, 0, 15])
-    def test_S7_2_has_ignore_region_reads_in_slabs(self, tmp_path, monkeypatch, plane):
+    def test_S7_2_has_ignore_region_reads_in_slabs(self, tmp_path, plane):
         """A property that reads like a header lookup must not read the volume.
 
         It materialised every layer to answer, which is ~1.3 GiB for five uint16
@@ -258,8 +258,8 @@ class TestEncoders:
                 "objs", grid="g", masks=masks, encoding="layers", ignore=ignore
             )
 
-        # One row per slab, so the scan cannot be reading the dataset whole.
-        monkeypatch.setattr("medh5.annotations.voxel.payload.SLAB_BYTES", 1)
+        # The scan reads in slabs: the engine's `contains_value_within` is held
+        # to a one-row budget by `annotations::payload::tests` in Rust.
         with medh5.open(path) as sample:
             annotation = sample.annotations["objs"]
             assert annotation.kind == "layers"

@@ -120,6 +120,52 @@ fn fsync_dir(dir: &Path) {
     let _ = dir;
 }
 
+/// Close `file` and every object opened through it --- what h5py's
+/// `File.close()` does.
+///
+/// HDF5 keeps a file open while any object in it is, so a dataset or group a
+/// caller still holds would otherwise keep a written file open and unflushed
+/// under a name that has already been renamed away, and keep a read file
+/// locked against the next writer.  Those objects become invalid instead:
+/// using one fails, and dropping one does nothing.  `flush` first, so a
+/// writer learns of a failed write rather than losing it in the close.
+pub fn close_everything(file: hdf5::File, flush: bool) -> Result<()> {
+    use crate::h5sys::h5f::{self, H5F_scope_t};
+    use crate::h5sys::h5i;
+    let fid = file.id();
+    // Released below, so the handle's own drop must not release it again.
+    std::mem::forget(file);
+    super::locked(|| unsafe {
+        let flushed = !flush || h5f::H5Fflush(fid, H5F_scope_t::H5F_SCOPE_LOCAL) >= 0;
+        let release = |types: std::os::raw::c_uint| {
+            let count = h5f::H5Fget_obj_count(fid, types);
+            if count <= 0 {
+                return;
+            }
+            let mut ids = vec![0 as h5i::hid_t; count as usize];
+            let found = h5f::H5Fget_obj_ids(fid, types, ids.len(), ids.as_mut_ptr());
+            for &id in ids.iter().take(found.max(0) as usize) {
+                while h5i::H5Iis_valid(id) > 0 {
+                    if h5i::H5Idec_ref(id) <= 0 {
+                        break;
+                    }
+                }
+            }
+        };
+        release(h5f::H5F_OBJ_LOCAL | h5f::H5F_OBJ_DATASET | h5f::H5F_OBJ_GROUP | h5f::H5F_OBJ_DATATYPE | h5f::H5F_OBJ_ATTR);
+        // The file identifiers last: this one, and any handed out for it.
+        release(h5f::H5F_OBJ_LOCAL | h5f::H5F_OBJ_FILE);
+        if h5i::H5Iis_valid(fid) > 0 {
+            while h5i::H5Idec_ref(fid) > 0 {}
+        }
+        if flushed {
+            Ok(())
+        } else {
+            Err(Error::Io(format!("could not flush the file: {}", super::ops::hdf5_error_text())))
+        }
+    })
+}
+
 /// An HDF5 file being written to a temporary sibling of its target.
 ///
 /// [`commit`](AtomicFile::commit) closes it and atomically replaces the
@@ -168,9 +214,12 @@ impl AtomicFile {
     }
 
     /// Close and atomically move the file into place.
+    ///
+    /// Everything opened through the file is closed with it, so nothing a
+    /// caller kept can hold the written file open across the rename.
     pub fn commit(mut self) -> Result<()> {
         if let Some(handle) = self.handle.take() {
-            handle.close().map_err(|e| Error::Io(e.to_string()))?;
+            close_everything(handle, true)?;
         }
         let result = (|| -> Result<()> {
             if let Some(mode) = self.mode {
@@ -198,7 +247,7 @@ impl AtomicFile {
 
     fn discard(&mut self) {
         if let Some(handle) = self.handle.take() {
-            let _ = handle.close();
+            let _ = close_everything(handle, false);
         }
         if !self.tmp.as_os_str().is_empty() && self.tmp.exists() {
             let _ = fs::remove_file(&self.tmp);
@@ -228,7 +277,35 @@ pub fn atomic_rewrite<T>(
     let src = open_read(source)?;
     let out = AtomicFile::create(dst_path)?;
     let value = build(&src, out.handle())?;
-    drop(src);
+    // Everything the build opened in the source, closed with it: a source
+    // still open cannot be replaced on Windows.
+    close_everything(src, false)?;
     out.commit()?;
     Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What a caller kept from a closed file is invalid, not a reason the file
+    /// stays open: the file reopens for writing at once.
+    #[test]
+    fn s14_4_close_everything_releases_what_was_opened_through_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.h5");
+        {
+            let file = create_truncate(&path).unwrap();
+            file.new_dataset::<i32>().shape([3]).create("d").unwrap().write(&[1, 2, 3]).unwrap();
+        }
+        let file = open_read(&path).unwrap();
+        let kept = file.dataset("d").unwrap();
+        let group = file.as_group().unwrap();
+        close_everything(file, false).unwrap();
+        assert!(!kept.is_valid() && !group.is_valid());
+        assert!(super::super::alive(&kept).is_err());
+        let again = hdf5::File::open_rw(&path).unwrap();
+        assert_eq!(again.dataset("d").unwrap().read_raw::<i32>().unwrap(), vec![1, 2, 3]);
+        drop((kept, group));
+    }
 }

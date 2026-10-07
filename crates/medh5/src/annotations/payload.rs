@@ -192,8 +192,15 @@ pub fn slabs_within(shape: &[usize], itemsize: usize, prefix: &[usize], budget: 
 
 /// Whether any element of a dataset equals `value`, scanning in slabs.
 pub fn contains_value(ds: &hdf5::Dataset, value: i64) -> Result<bool> {
+    contains_value_within(ds, value, SLAB_BYTES)
+}
+
+/// [`contains_value`] reading at most `budget` bytes at a time where a row
+/// fits --- with no cap on the dataset's size: a check that declined to look
+/// past some element count would report what it had not found.
+pub fn contains_value_within(ds: &hdf5::Dataset, value: i64, budget: usize) -> Result<bool> {
     let dtype = data::dtype(ds)?;
-    for sel in slabs(&ds.shape(), dtype.itemsize(), &[]) {
+    for sel in slabs_within(&ds.shape(), dtype.itemsize(), &[], budget) {
         let block = data::read_region(ds, &sel)?;
         if block.cast::<i64>().iter().any(|v| *v == value) {
             return Ok(true);
@@ -204,9 +211,14 @@ pub fn contains_value(ds: &hdf5::Dataset, value: i64) -> Result<bool> {
 
 /// The number of nonzero elements of a dataset, in slabs.
 pub fn count_nonzero(ds: &hdf5::Dataset) -> Result<u64> {
+    count_nonzero_within(ds, SLAB_BYTES)
+}
+
+/// [`count_nonzero`] reading at most `budget` bytes at a time where a row fits.
+pub fn count_nonzero_within(ds: &hdf5::Dataset, budget: usize) -> Result<u64> {
     let dtype = data::dtype(ds)?;
     let mut total = 0u64;
-    for sel in slabs(&ds.shape(), dtype.itemsize(), &[]) {
+    for sel in slabs_within(&ds.shape(), dtype.itemsize(), &[], budget) {
         let block = data::read_region(ds, &sel)?;
         total += block.nonzero_mask().iter().filter(|v| **v).count() as u64;
     }
@@ -351,6 +363,23 @@ mod tests {
         let counts = popcounts_within(&ds, 4096).unwrap();
         assert_eq!((counts[0][0], counts[0][1]), (8 * 18 * 18, 16 * 32 * 20));
         assert_eq!(popcounts(&ds).unwrap(), counts);
+    }
+
+    #[test]
+    fn s7_7_scans_reach_the_last_slab() {
+        // One row per slab, the only ignore voxel and the only foreground in
+        // the last one: a scan that stopped early would miss both.
+        let dir = tempfile::tempdir().unwrap();
+        let file = hdf5::File::create(dir.path().join("scan.h5")).unwrap();
+        let mut labels = ndarray::Array3::<u16>::zeros((8, 4, 4));
+        labels[[7, 3, 3]] = 65535;
+        labels[[7, 3, 2]] = 1;
+        let ds = file.new_dataset_builder().with_data(&labels).create("labels").unwrap();
+        for budget in [1, 32, SLAB_BYTES] {
+            assert!(contains_value_within(&ds, 65535, budget).unwrap(), "budget {budget}");
+            assert!(!contains_value_within(&ds, 2, budget).unwrap(), "budget {budget}");
+            assert_eq!(count_nonzero_within(&ds, budget).unwrap(), 2, "budget {budget}");
+        }
     }
 
     #[test]

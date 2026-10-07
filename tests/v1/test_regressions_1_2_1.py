@@ -507,15 +507,14 @@ class TestF06DicomSameModality:
 
 
 class TestOneLiners:
-    def test_the_published_readme_counts_its_collections(self) -> None:
+    def test_the_published_readme_counts_its_collections(self, tmp_path: Path) -> None:
         from medh5.conformance import CASES
-        from medh5.conformance.suite import _readme
+        from medh5.conformance.suite import publish
 
         shards = sum(1 for c in CASES if c.suffix == ".medh5c")
         assert shards == 4
-        assert f"{len(CASES) - shards} samples and {shards} collections" in _readme(
-            CASES
-        )
+        readme = (publish(tmp_path / "suite") / "README.md").read_text("utf-8")
+        assert f"{len(CASES) - shards} samples and {shards} collections" in readme
 
     def test_verify_names_the_content_id_state(
         self, tmp_path: Path, capsys: Any

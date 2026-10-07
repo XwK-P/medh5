@@ -456,26 +456,74 @@ pub fn attr_to_py<'py>(py: Python<'py>, value: &AttrValue) -> PyResult<Bound<'py
     })
 }
 
-/// A Python value as an attribute: `str`, a list of `str`, a scalar, or an
-/// array.
+/// A Python value as an attribute (spec §2.5): strings as UTF-8 text, string
+/// sequences as string arrays (never a JSON blob), scalars with an explicit
+/// width (`int64`, `float64`, `bool`), numeric sequences as `int64`, `float64`
+/// or `bool` arrays, arrays as they are.  Anything else is refused.
 pub fn py_to_attr(obj: &Bound<'_, PyAny>) -> PyResult<AttrValue> {
+    let np = numpy(obj.py())?;
+    let is = |name: &str| -> PyResult<bool> { obj.is_instance(&np.getattr(name)?) };
     if let Ok(s) = obj.cast::<PyString>() {
         return Ok(AttrValue::Str(s.to_string()));
     }
-    if let Ok(b) = obj.cast::<PyBool>() {
-        return Ok(AttrValue::Bool(b.is_true()));
+    if obj.is_instance_of::<PyBool>() || is("bool_")? {
+        return Ok(AttrValue::Bool(obj.is_truthy()?));
     }
-    if obj.is_instance_of::<PyInt>() {
+    if obj.is_instance_of::<PyInt>() || is("integer")? {
         return Ok(AttrValue::Int(obj.extract()?));
     }
-    if obj.is_instance_of::<PyFloat>() {
+    if obj.is_instance_of::<PyFloat>() || is("floating")? {
         return Ok(AttrValue::Float(obj.extract()?));
+    }
+    // A fixed-length string as h5py reads one back: text, not code points.
+    if obj.is_instance_of::<pyo3::types::PyBytes>() || is("bytes_")? {
+        let bytes: Vec<u8> = obj.extract()?;
+        return Ok(AttrValue::Str(String::from_utf8_lossy(&bytes).into_owned()));
+    }
+    if is("ndarray")? {
+        let kind: String = obj.getattr("dtype")?.getattr("kind")?.extract()?;
+        if matches!(kind.as_str(), "U" | "S" | "O") && obj.getattr("ndim")?.extract::<usize>()? == 1 {
+            return py_to_attr(&obj.call_method0("tolist")?);
+        }
+        return Ok(AttrValue::Array(py_to_nd(obj)?));
     }
     if obj.is_instance_of::<PyList>() || obj.is_instance_of::<PyTuple>() {
         let items: Vec<Bound<'_, PyAny>> = obj.try_iter()?.collect::<PyResult<_>>()?;
-        if !items.is_empty() && items.iter().all(|i| i.is_instance_of::<PyString>()) {
+        if items.is_empty() {
+            return Ok(AttrValue::ints(&[]));
+        }
+        let all = |test: &dyn Fn(&Bound<'_, PyAny>) -> PyResult<bool>| -> PyResult<bool> {
+            for item in &items {
+                if !test(item)? {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        };
+        if all(&|i| Ok(i.is_instance_of::<PyString>()))? {
             return Ok(AttrValue::Strs(items.iter().map(|i| i.to_string()).collect()));
         }
+        let boolean = |i: &Bound<'_, PyAny>| -> PyResult<bool> { Ok(i.is_instance_of::<PyBool>() || i.is_instance(&np.getattr("bool_")?)?) };
+        let integer = |i: &Bound<'_, PyAny>| -> PyResult<bool> {
+            Ok(!boolean(i)? && (i.is_instance_of::<PyInt>() || i.is_instance(&np.getattr("integer")?)?))
+        };
+        let real = |i: &Bound<'_, PyAny>| -> PyResult<bool> {
+            Ok(integer(i)? || i.is_instance_of::<PyFloat>() || i.is_instance(&np.getattr("floating")?)?)
+        };
+        if all(&boolean)? {
+            return Ok(AttrValue::Array(NdArray::from(bool_array(obj)?)));
+        }
+        if all(&integer)? {
+            return Ok(AttrValue::Array(NdArray::from(i64_array(obj)?)));
+        }
+        if all(&real)? {
+            return Ok(AttrValue::Array(NdArray::from(f64_array(obj)?)));
+        }
+        return Ok(AttrValue::Array(py_to_nd(obj)?));
     }
-    Ok(AttrValue::Array(py_to_nd(obj)?))
+    Err(crate::errors::BindError::from(medh5::Error::invalid(format!(
+        "cannot encode attribute value of type {}",
+        obj.get_type().repr()?
+    )))
+    .into())
 }

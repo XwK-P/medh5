@@ -505,23 +505,23 @@ class TestW4PerformanceRewritesAreExact:
             transform: Any = sample.transforms["warp"]
             for points in (inside, edges, np.vstack([inside, edges])):
                 expected = sample_field(field, points, extrapolation=extrapolation)
-                assert np.array_equal(transform._sample(points), expected)
+                assert np.array_equal(transform.sample_indices(points), expected)
             if extrapolation == "error":
                 with pytest.raises(MEDH5ValidationError, match="outside"):
-                    transform._sample(outside)
+                    transform.sample_indices(outside)
             else:
                 expected = sample_field(field, outside, extrapolation=extrapolation)
-                assert np.array_equal(transform._sample(outside), expected)
+                assert np.array_equal(transform.sample_indices(outside), expected)
                 mixed = np.vstack([inside[:3], outside])
                 assert np.array_equal(
-                    transform._sample(mixed),
+                    transform.sample_indices(mixed),
                     sample_field(field, mixed, extrapolation=extrapolation),
                 )
             # And a single far-away point along one axis only.
             lone = np.array([[2.0, 30.0, 2.0]])
             if extrapolation != "error":
                 assert np.array_equal(
-                    transform._sample(lone),
+                    transform.sample_indices(lone),
                     sample_field(field, lone, extrapolation=extrapolation),
                 )
 
@@ -539,7 +539,7 @@ class TestW4PerformanceRewritesAreExact:
         with medh5.open(path) as sample:
             ann: Any = sample.annotations["les"]
             first = ann.boxes
-            assert ann._table() is ann._table()
+            assert ann.instance_ids is ann.instance_ids
             assert ann.boxes is first
             assert [o.instance_id for o in ann.instances()] == [7, 8]
             assert ann.dense([3])[0].sum() == int(_mask().sum() + 8)
@@ -547,8 +547,9 @@ class TestW4PerformanceRewritesAreExact:
             crop = ann.crop(1)
             assert crop is not None and crop.shape == (2, 2, 2) and crop.all()
 
-    def test_S7_7_labelmap_and_mask_scan_in_slabs(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setattr("medh5.annotations.voxel.payload.SLAB_BYTES", 1)
+    def test_S7_7_labelmap_and_mask_scan_in_slabs(self, tmp_path: Path):
+        """The slab budget is the engine's, held to one row per slab by
+        `annotations::payload::tests::s7_7_scans_reach_the_last_slab`."""
         ignore = np.zeros(SHAPE, dtype=bool)
         ignore[-1] = True
         path = tmp_path / "slabs.medh5"

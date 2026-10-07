@@ -204,6 +204,34 @@ impl ImageHandle {
 #[pyclass(module = "medh5._core", name = "AnnotationHandle", frozen)]
 pub struct AnnotationHandle {
     pub inner: Arc<EngineAnnotation>,
+    /// Object columns as handed out: read once, the same read-only array
+    /// every time, so `ann.boxes[i]` in a loop does not copy the column.
+    columns: Mutex<std::collections::HashMap<&'static str, Py<PyAny>>>,
+}
+
+impl AnnotationHandle {
+    pub fn wrap(inner: Arc<EngineAnnotation>) -> Self {
+        AnnotationHandle { inner, columns: Mutex::new(std::collections::HashMap::new()) }
+    }
+
+    /// A column, made once and frozen: a caller writing into it would
+    /// otherwise change what every later read returns.
+    fn column<'py>(
+        &self,
+        py: Python<'py>,
+        name: &'static str,
+        make: impl FnOnce() -> R<Bound<'py, PyAny>>,
+    ) -> R<Bound<'py, PyAny>> {
+        if let Some(found) = self.columns.lock().unwrap().get(name) {
+            return Ok(found.bind(py).clone());
+        }
+        let value = make()?;
+        if !value.is_none() {
+            value.getattr("flags")?.setattr("writeable", false)?;
+        }
+        self.columns.lock().unwrap().entry(name).or_insert_with(|| value.clone().unbind());
+        Ok(value)
+    }
 }
 
 /// A `grid=` argument: `None` (the annotation's own), a grid id, or a Grid.
@@ -267,6 +295,11 @@ impl AnnotationHandle {
     #[getter]
     fn ann_id(&self) -> &str {
         &self.inner.ann_id
+    }
+    /// The annotation's stored group, for inspection.
+    #[getter]
+    fn group(&self) -> crate::nodes::Group {
+        crate::nodes::Group::wrap(self.inner.group.clone())
     }
     #[getter]
     fn header(&self) -> crate::annotations::AnnotationHeader {
@@ -525,25 +558,31 @@ impl AnnotationHandle {
     }
     #[getter]
     fn boxes<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyAny>> {
-        Ok(array_to_py(py, self.inner.boxes()?))
+        self.column(py, "boxes", || Ok(array_to_py(py, self.inner.boxes()?)))
     }
     #[getter]
     fn object_class_ids<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyAny>> {
-        let ids = self.inner.object_class_ids()?;
-        Ok(array_to_py(py, ArrayD::from_shape_vec(IxDyn(&[ids.len()]), ids)?))
+        self.column(py, "object_class_ids", || {
+            let ids = self.inner.object_class_ids()?;
+            Ok(array_to_py(py, ArrayD::from_shape_vec(IxDyn(&[ids.len()]), ids)?))
+        })
     }
     #[getter]
     fn instance_ids<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyAny>> {
-        Ok(match self.inner.instance_ids()? {
-            Some(ids) => array_to_py(py, ArrayD::from_shape_vec(IxDyn(&[ids.len()]), ids)?),
-            None => py.None().into_bound(py),
+        self.column(py, "instance_ids", || {
+            Ok(match self.inner.instance_ids()? {
+                Some(ids) => array_to_py(py, ArrayD::from_shape_vec(IxDyn(&[ids.len()]), ids)?),
+                None => py.None().into_bound(py),
+            })
         })
     }
     #[getter]
     fn scores<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyAny>> {
-        Ok(match self.inner.scores()? {
-            Some(s) => array_to_py(py, ArrayD::from_shape_vec(IxDyn(&[s.len()]), s)?),
-            None => py.None().into_bound(py),
+        self.column(py, "scores", || {
+            Ok(match self.inner.scores()? {
+                Some(s) => array_to_py(py, ArrayD::from_shape_vec(IxDyn(&[s.len()]), s)?),
+                None => py.None().into_bound(py),
+            })
         })
     }
     #[getter]
@@ -832,6 +871,11 @@ impl TransformHandle {
     fn transform_id(&self) -> &str {
         &self.inner.transform_id
     }
+    /// The transform's stored group, for inspection.
+    #[getter]
+    fn group(&self) -> crate::nodes::Group {
+        crate::nodes::Group::wrap(self.inner.group.clone())
+    }
     #[getter]
     fn kind(&self) -> &str {
         self.inner.kind()
@@ -941,6 +985,11 @@ impl TransformHandle {
     }
     fn displacement_at<'py>(&self, py: Python<'py>, points: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
         Ok(array_to_py(py, self.inner.displacement_at(&f64_array(points)?)?))
+    }
+    /// The stored field interpolated at continuous field indices, `(N, S)`.
+    fn sample_indices<'py>(&self, py: Python<'py>, indices: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
+        let found = crate::convert::matrix(indices)?;
+        Ok(array_to_py(py, self.inner.sample_indices(&found)?.into_dyn()))
     }
     #[pyo3(signature = (roi=None))]
     fn jacobian_determinant<'py>(&self, py: Python<'py>, roi: Option<&Bound<'py, PyAny>>) -> R<Bound<'py, PyAny>> {
@@ -1101,12 +1150,18 @@ impl IndexHandle {
 pub struct SampleHandle {
     inner: Mutex<Option<Arc<EngineSample>>>,
     path: Option<String>,
+    /// Inherited across `fork`: never closed by this process.
+    abandoned: std::sync::atomic::AtomicBool,
 }
 
 impl SampleHandle {
     pub fn wrap(sample: EngineSample) -> Self {
         let path = sample.path.as_ref().map(|p| p.to_string_lossy().into_owned());
-        SampleHandle { inner: Mutex::new(Some(Arc::new(sample))), path }
+        SampleHandle {
+            inner: Mutex::new(Some(Arc::new(sample))),
+            path,
+            abandoned: std::sync::atomic::AtomicBool::new(false),
+        }
     }
 
     pub fn sample(&self) -> R<Arc<EngineSample>> {
@@ -1134,9 +1189,15 @@ impl SampleHandle {
     fn root(&self) -> R<crate::nodes::Group> {
         Ok(crate::nodes::Group::wrap(self.sample()?.root.clone()))
     }
+    /// Close the file and everything read from it, as 1.x's sample did: an
+    /// image, annotation or group still held becomes invalid rather than
+    /// keeping the file open and locked.  A collection member's file is its
+    /// collection's, and stays open.
     fn close(&self) {
         if let Some(sample) = self.inner.lock().unwrap().take() {
-            // The engine closes the file when the last holder lets go.
+            if !self.abandoned.load(std::sync::atomic::Ordering::Acquire) {
+                let _ = sample.close_file();
+            }
             drop(sample);
         }
     }
@@ -1146,6 +1207,7 @@ impl SampleHandle {
     /// sample is leaked, so neither `close()` nor collection releases it.
     /// Returns whether there was an open handle to pin.
     fn abandon(&self) -> bool {
+        self.abandoned.store(true, std::sync::atomic::Ordering::Release);
         // `try_lock`: a lock another of the parent's threads held at the fork
         // is held forever here; the caller keeps the object alive regardless.
         match self.inner.try_lock() {
@@ -1207,7 +1269,7 @@ impl SampleHandle {
         Ok(self.sample()?.annotations()?.keys().cloned().collect())
     }
     fn annotation(&self, ann_id: &str) -> R<AnnotationHandle> {
-        Ok(AnnotationHandle { inner: self.sample()?.annotation(ann_id)?.clone() })
+        Ok(AnnotationHandle::wrap(self.sample()?.annotation(ann_id)?.clone()))
     }
     #[pyo3(signature = (ann_id, roi=None))]
     fn ignore_region<'py>(

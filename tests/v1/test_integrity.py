@@ -72,47 +72,46 @@ class TestDigests:
         with pytest.raises(MEDH5ValidationError):
             digest_bytes(b"x", "md5")
 
-    def test_streaming_matches_whole_array(self, tmp_path):
-        from medh5.integrity import digest as digest_module
+    def test_streaming_matches_whole_array(self, sample_path):
+        """A stored dataset digests as its in-memory array does.
 
+        The stream budget is the engine's; its Rust test
+        (`integrity::digest::tests::s13_1_streaming_matches_the_whole_array`)
+        digests at a 128-byte and a 1-byte budget.
+        """
         data = np.arange(4096, dtype=np.int16).reshape(64, 64)
-        path = tmp_path / "s.h5"
-        with h5py.File(path, "w") as handle:
-            handle.create_dataset("d", data=data)
-        original = digest_module.STREAM_BYTES
-        try:
-            digest_module.STREAM_BYTES = 128
-            with h5py.File(path) as handle:
-                streamed = dataset_digest(handle["d"], "d")
-        finally:
-            digest_module.STREAM_BYTES = original
+        with h5py.File(sample_path, "r+") as handle:
+            handle.create_dataset("x_test/d", data=data)
+        with medh5.open(sample_path) as sample:
+            streamed = dataset_digest(sample.root["x_test/d"], "d")
         assert streamed == array_digest("d", data)
 
-    def test_vlen_and_scalar_datasets(self, tmp_path):
-        path = tmp_path / "v.h5"
-        with h5py.File(path, "w") as handle:
-            handle.create_dataset("s", data="hello", dtype=h5py.string_dtype())
-            handle.create_dataset("n", data=np.int32(7))
-            handle.create_dataset("e", data=np.zeros((0, 3)))
-        with h5py.File(path) as handle:
-            assert dataset_digest(handle["s"], "s").startswith("sha256:")
-            assert dataset_digest(handle["n"], "n").startswith("sha256:")
-            assert dataset_digest(handle["e"], "e").startswith("sha256:")
+    def test_vlen_and_scalar_datasets(self, sample_path):
+        with h5py.File(sample_path, "r+") as handle:
+            group = handle.create_group("x_test")
+            group.create_dataset("s", data="hello", dtype=h5py.string_dtype())
+            group.create_dataset("n", data=np.int32(7))
+            group.create_dataset("e", data=np.zeros((0, 3)))
+        with medh5.open(sample_path) as sample:
+            group = sample.root["x_test"]
+            assert dataset_digest(group["s"], "s").startswith("sha256:")
+            assert dataset_digest(group["n"], "n").startswith("sha256:")
+            assert dataset_digest(group["e"], "e").startswith("sha256:")
 
-    def test_canonical_attrs_excludes_unlisted(self, tmp_path):
-        path = tmp_path / "a.h5"
-        with h5py.File(path, "w") as handle:
-            group = handle.create_group("g")
+    def test_canonical_attrs_excludes_unlisted(self, sample_path):
+        with h5py.File(sample_path, "r+") as handle:
+            group = handle.create_group("x_test")
             group.attrs["kept"] = encode_attr("yes")
             group.attrs["ignored"] = encode_attr("no")
-        with h5py.File(path) as handle:
-            rendered = canonical_attrs(handle["g"], ["kept", "absent"])
+        with medh5.open(sample_path) as sample:
+            rendered = canonical_attrs(sample.root["x_test"], ["kept", "absent"])
         assert rendered == '{"kept":"yes"}'
 
     def test_relative_path_strips_the_sample_root(self, sample_path):
-        with h5py.File(sample_path) as handle:
-            assert relative_path(handle["images/CT_tp0"]) == "images/CT_tp0"
-            assert relative_path(handle["images/CT_tp0"], handle) == "images/CT_tp0"
+        with medh5.open(sample_path) as sample:
+            image = sample.root["images/CT_tp0"]
+            assert relative_path(image) == "images/CT_tp0"
+            assert relative_path(image, sample.root) == "images/CT_tp0"
 
 
 class TestVerification:
@@ -150,9 +149,9 @@ class TestVerification:
             assert result.content_id_ok is False
 
     def test_verify_object(self, sample_path):
-        with h5py.File(sample_path) as handle:
-            assert verify_object(handle, "images/CT_tp0")
-            assert not verify_object(handle, "meta")
+        with medh5.open(sample_path) as sample:
+            assert verify_object(sample.root, "images/CT_tp0")
+            assert not verify_object(sample.root, "meta")
 
     def test_S13_2_content_id_is_a_content_address(self, tmp_path, label_set, masks):
         """Two identical samples written separately share a content_id."""
@@ -191,38 +190,48 @@ class TestVerification:
 
 class TestIndexCurrency:
     def test_S13_3_a_fresh_index_is_current(self, longitudinal_path):
-        with h5py.File(longitudinal_path) as handle:
-            assert stale_index_entries(handle) == ()
+        with medh5.open(longitudinal_path) as sample:
+            assert stale_index_entries(sample.root) == ()
 
     def test_S13_3_a_changed_annotation_makes_it_stale(self, longitudinal_path):
         with h5py.File(longitudinal_path, "r+") as handle:
             handle["index/organs_tp0"].attrs["source_digest"] = encode_attr(
                 "sha256:" + "0" * 64
             )
-            assert stale_index_entries(handle) == ("organs_tp0",)
+        with medh5.open(longitudinal_path) as sample:
+            assert stale_index_entries(sample.root) == ("organs_tp0",)
 
     def test_group_digest_tracks_every_dataset(self, sample_path):
+        def digest() -> str:
+            with medh5.open(sample_path) as sample:
+                group = sample.root["annotations/organs_tp0"]
+                return str(group_digest(group, root=sample.root))
+
+        before = digest()
         with h5py.File(sample_path, "r+") as handle:
-            group = handle["annotations/organs_tp0"]
-            before = group_digest(group, root=handle)
-            group.create_dataset("scratch", data=np.arange(3))
-            assert group_digest(group, root=handle) != before
+            handle["annotations/organs_tp0"].create_dataset(
+                "scratch", data=np.arange(3)
+            )
+        assert digest() != before
 
     def test_index_without_a_source_digest_is_stale(self, longitudinal_path):
         with h5py.File(longitudinal_path, "r+") as handle:
             del handle["index/organs_tp0"].attrs["source_digest"]
-            assert "organs_tp0" in stale_index_entries(handle)
+        with medh5.open(longitudinal_path) as sample:
+            assert "organs_tp0" in stale_index_entries(sample.root)
 
 
 class TestVerifyRoot:
     def test_undigested_datasets_are_listed(self, sample_path):
         with h5py.File(sample_path, "r+") as handle:
             handle["images"].create_dataset("scratch", data=np.zeros(SHAPE))
-            result = verify_root(handle)
+        with medh5.open(sample_path) as sample:
+            result = verify_root(sample.root)
         assert "images/scratch" in result.undigested
 
     def test_malformed_digest_is_reported(self, sample_path):
         with h5py.File(sample_path, "r+") as handle:
             handle["images/CT_tp0"].attrs["digest"] = encode_attr("garbage")
-            result = verify_root(handle, check_content_id=False)
+        with medh5.open(sample_path) as sample:
+            result = verify_root(sample.root, check_content_id=False)
         assert "images/CT_tp0" in result.malformed

@@ -42,6 +42,11 @@ class Transform:
         return self._handle.header
 
     @property
+    def group(self) -> Any:
+        """The stored group (a read-only :class:`~medh5.nodes.Group`)."""
+        return self._handle.group
+
+    @property
     def kind(self) -> str:
         return str(self._handle.kind)
 

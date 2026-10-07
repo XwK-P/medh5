@@ -597,7 +597,7 @@ impl Transform {
                 let flat_world: Vec<f64> = flat.iter().copied().collect();
                 let index = grid.world_to_index(&flat_world)?;
                 let indices = Array2::from_shape_vec(flat.dim(), index)?;
-                let raw = self.sample(&indices)?;
+                let raw = self.sample_indices(&indices)?;
                 reshape_like(to_world_vectors(&raw, grid, &self.vector_space()?)?, points)
             }
             "bspline" => self.bspline_displacement(points),
@@ -609,10 +609,12 @@ impl Transform {
         }
     }
 
-    /// Interpolate at continuous field indices, reading only the window the
-    /// points touch (linear), or the whole field (cubic, whose spline
-    /// coefficients are global).
-    fn sample(&self, indices: &Array2<f64>) -> Result<Array2<f64>> {
+    /// Interpolate the stored field at continuous field indices, `(N, S)`,
+    /// reading only the window the points touch (linear) --- kilobytes of a
+    /// 512³ field rather than all of it --- or the whole field (cubic, whose
+    /// spline coefficients are global, so a window would change the answer
+    /// near its own edges).  The result equals sampling the whole field.
+    pub fn sample_indices(&self, indices: &Array2<f64>) -> Result<Array2<f64>> {
         let ds = self.field()?;
         let shape = ds.shape();
         let spatial: Vec<usize> = shape[1..].to_vec();

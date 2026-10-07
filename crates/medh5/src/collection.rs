@@ -50,8 +50,21 @@ impl Collection {
         Ok(Collection { path, root, handle })
     }
 
+    /// Release the file, and with it everything opened through it --- every
+    /// member sample read from it included.
     pub fn close(&mut self) {
-        self.handle = None;
+        if let Some(file) = self.handle.take() {
+            let _ = crate::h5::file::close_everything(file, false);
+        }
+    }
+
+    /// [`Collection::close`] through a shared reference: the file and
+    /// everything opened through it, when this view owns the file.
+    pub fn close_file(&self) -> Result<()> {
+        match &self.handle {
+            Some(file) => crate::h5::file::close_everything(file.clone(), false),
+            None => Ok(()),
+        }
     }
 
     /// The `samples` group.

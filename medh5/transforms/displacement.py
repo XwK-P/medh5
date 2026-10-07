@@ -77,6 +77,21 @@ class DisplacementTransform(Transform):
         found: npt.NDArray[np.float64] = self._handle.displacement_at(points)
         return found
 
+    def sample_indices(self, indices: npt.ArrayLike) -> npt.NDArray[np.float64]:
+        """The stored field interpolated at ``(N, S)`` continuous field indices.
+
+        A paired dataset asks for one displacement per training item, and
+        reading the *entire* field for each turned a deformable registration
+        into a full-volume decompress per item.  Linear interpolation needs the
+        two lattice points either side of each query along each axis, so the
+        read is the bounding window of the points, padded by one --- kilobytes
+        of a 512³ field.  The result equals sampling the whole field
+        (:func:`~medh5.transforms.apply.sample_field`).  Cubic interpolation
+        reads the whole field: its spline coefficients are global.
+        """
+        found: npt.NDArray[np.float64] = self._handle.sample_indices(indices)
+        return found
+
     def jacobian_determinant(
         self, roi: Sequence[slice] | None = None
     ) -> npt.NDArray[np.float64]:

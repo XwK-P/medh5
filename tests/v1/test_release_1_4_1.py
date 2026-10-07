@@ -763,18 +763,14 @@ class TestW17Precision:
         with medh5.open(path) as sample:
             assert sample.annotations["soft"].data.dtype == np.float16
 
-    def test_F21_S7_7_the_in_band_ignore_check_has_no_size_cap(
-        self, tmp_path: Path, monkeypatch
-    ):
+    def test_F21_S7_7_the_in_band_ignore_check_has_no_size_cap(self, tmp_path: Path):
         """E411 fired on a correct 512×512×256 labelmap: the check declined to
         look past 64M elements and then reported what it had not found.
 
-        The slab size is shrunk so a small file takes the many-slab path, with
-        the only ignore voxels in the last slab.
+        The many-slab path, with the only ignore voxel in the last slab, is the
+        engine's Rust test (`annotations::payload::tests::s7_7_scans_reach_the_
+        last_slab`, budgets down to one byte); this holds the validator to it.
         """
-        from medh5.annotations.voxel import payload
-
-        monkeypatch.setattr(payload, "SLAB_BYTES", 256)
         path = tmp_path / "ignore.medh5"
         liver = np.zeros(SHAPE, bool)
         liver[:2] = True

@@ -221,6 +221,24 @@ class TestCorruptFiles:
             crashed
         )
 
+    def test_S15_invalid_utf8_in_a_string_is_read_not_trusted(self, sample_path):
+        """A string declared UTF-8 holding bytes that are not --- a damaged file,
+        or a writer that lied about the encoding.  Reading it trusted the
+        declaration and handed the bytes on as text, and the report that should
+        have carried the damage crashed instead.  The bytes are decoded with
+        replacement, so the value reads back and the report serialises."""
+        with h5py.File(sample_path, "r+") as handle:
+            handle["images/CT_tp0"].attrs.create(
+                "x_note",
+                np.array(b"ok\xff\xfe", dtype=object),
+                dtype=h5py.string_dtype("utf-8"),
+            )
+        report = validate_file(sample_path, level="strict")
+        json.loads(report.dumps())
+        with medh5.open(sample_path) as sample:
+            note = sample.root["images/CT_tp0"].attrs["x_note"]
+        assert note == "ok\ufffd\ufffd"
+
 
 class TestStrictPromotion:
     def test_S15_1_strict_promotes_warnings_in_the_counts_not_only_the_verdict(

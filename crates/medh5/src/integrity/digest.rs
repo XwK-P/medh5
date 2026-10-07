@@ -59,6 +59,12 @@ pub fn strings_digest(path: &str, values: &[String], shape: &[usize], algo: &str
 /// String datasets hash their UTF-8 payloads separated by `0x00`, because a
 /// variable-length dataset has no meaningful raw byte stream.
 pub fn dataset_digest(ds: &hdf5::Dataset, path: &str, algo: &str) -> Result<String> {
+    dataset_digest_streamed(ds, path, algo, STREAM_BYTES)
+}
+
+/// [`dataset_digest`] reading about `stream_bytes` at a time: the slab size
+/// changes the reads, never the digest.
+pub fn dataset_digest_streamed(ds: &hdf5::Dataset, path: &str, algo: &str, stream_bytes: usize) -> Result<String> {
     let mut hasher = Hasher::new(algo)?;
     let shape = ds.shape();
     match data::kind(ds)? {
@@ -82,7 +88,7 @@ pub fn dataset_digest(ds: &hdf5::Dataset, path: &str, algo: &str) -> Result<Stri
                 return Ok(hasher.finish());
             }
             let row_bytes = (shape[1..].iter().product::<usize>() * dtype.itemsize()).max(1);
-            let step = (STREAM_BYTES / row_bytes).max(1);
+            let step = (stream_bytes / row_bytes).max(1);
             let mut start = 0;
             while start < shape[0] {
                 let block = data::read_region(ds, &[Index::Slice(Slice::new(start as i64, (start + step) as i64))])?;
@@ -256,4 +262,22 @@ pub fn root_algo(root: &hdf5::Group) -> Result<String> {
 /// Visit helper re-exported for callers that walk a sample.
 pub fn walk(root: &hdf5::Group, f: &mut dyn FnMut(&str, &Node) -> Result<bool>) -> Result<()> {
     ops::visit(root, f)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn s13_1_streaming_matches_the_whole_array() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = hdf5::File::create(dir.path().join("s.h5")).unwrap();
+        let data = ndarray::Array2::<i16>::from_shape_fn((64, 64), |(i, j)| (i * 64 + j) as i16);
+        let ds = file.new_dataset_builder().with_data(&data).create("d").unwrap();
+        let whole = array_digest("d", &NdArray::from(data.into_dyn()), "sha256").unwrap();
+        // 128 bytes is one row of 64 int16: one row per read.
+        assert_eq!(dataset_digest_streamed(&ds, "d", "sha256", 128).unwrap(), whole);
+        assert_eq!(dataset_digest_streamed(&ds, "d", "sha256", 1).unwrap(), whole);
+        assert_eq!(dataset_digest(&ds, "d", "sha256").unwrap(), whole);
+    }
 }

@@ -37,6 +37,13 @@ impl Node {
             Node::Dataset(d) => d.name(),
         }
     }
+
+    /// The location, refused once its file has been closed.
+    fn live(&self) -> R<&medh5::hdf5::Location> {
+        let location = self.location();
+        medh5::h5::alive(location)?;
+        Ok(location)
+    }
 }
 
 // -- attrs ----------------------------------------------------------------------------
@@ -63,19 +70,21 @@ impl Attrs {
         }
     }
     fn __setitem__(&self, name: &str, value: &Bound<'_, PyAny>) -> R<()> {
-        Ok(attrs::write(self.node.location(), name, &py_to_attr(value)?)?)
+        Ok(attrs::write(self.node.live()?, name, &py_to_attr(value)?)?)
     }
     fn __delitem__(&self, name: &str) -> R<()> {
-        if !attrs::has(self.node.location(), name) {
+        let location = self.node.live()?;
+        if !attrs::has(location, name) {
             return Err(missing(name).into());
         }
-        Ok(attrs::delete(self.node.location(), name)?)
+        Ok(attrs::delete(location, name)?)
     }
-    fn __contains__(&self, name: &Bound<'_, PyAny>) -> bool {
-        match name.extract::<String>() {
-            Ok(n) => attrs::has(self.node.location(), &n),
+    fn __contains__(&self, name: &Bound<'_, PyAny>) -> R<bool> {
+        let location = self.node.live()?;
+        Ok(match name.extract::<String>() {
+            Ok(n) => attrs::has(location, &n),
             Err(_) => false,
-        }
+        })
     }
     fn __len__(&self) -> R<usize> {
         Ok(attrs::names(self.node.location())?.len())
@@ -122,7 +131,11 @@ impl Attrs {
         Ok(out)
     }
     fn __repr__(&self) -> String {
-        format!("<Attributes of {}>", medh5::json::repr_str(&self.node.name()))
+        if self.node.location().is_valid() {
+            format!("<Attributes of {}>", medh5::json::repr_str(&self.node.name()))
+        } else {
+            "<Attributes of a closed object>".into()
+        }
     }
 }
 
@@ -152,6 +165,12 @@ pub struct Dataset {
 impl Dataset {
     pub fn wrap(ds: medh5::hdf5::Dataset) -> Self {
         Dataset { ds }
+    }
+
+    /// The dataset, refused once its file has been closed.
+    fn live(&self) -> R<&medh5::hdf5::Dataset> {
+        medh5::h5::alive(&self.ds)?;
+        Ok(&self.ds)
     }
 }
 
@@ -193,55 +212,55 @@ impl Dataset {
         self.ds.name()
     }
     #[getter]
-    fn shape<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
-        PyTuple::new(py, self.ds.shape())
+    fn shape<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyTuple>> {
+        Ok(PyTuple::new(py, self.live()?.shape())?)
     }
     #[getter]
-    fn ndim(&self) -> usize {
-        self.ds.shape().len()
+    fn ndim(&self) -> R<usize> {
+        Ok(self.live()?.shape().len())
     }
     #[getter]
-    fn size(&self) -> usize {
-        self.ds.shape().iter().product()
+    fn size(&self) -> R<usize> {
+        Ok(self.live()?.shape().iter().product())
     }
     #[getter]
     fn dtype<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyAny>> {
-        if data::is_strings(&self.ds) {
+        if data::is_strings(self.live()?) {
             return Ok(crate::convert::numpy(py)?.call_method1("dtype", ("O",))?);
         }
         Ok(dtype_to_py(py, data::dtype(&self.ds)?)?)
     }
     #[getter]
     fn nbytes(&self) -> R<usize> {
-        Ok(data::nbytes(&self.ds)?)
+        Ok(data::nbytes(self.live()?)?)
     }
     #[getter]
-    fn chunks<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyTuple>>> {
-        data::chunks(&self.ds).map(|c| PyTuple::new(py, c)).transpose()
+    fn chunks<'py>(&self, py: Python<'py>) -> R<Option<Bound<'py, PyTuple>>> {
+        Ok(data::chunks(self.live()?).map(|c| PyTuple::new(py, c)).transpose()?)
     }
     /// The filter pipeline, as `(filter id, client data)` pairs.
     #[getter]
     fn filters<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyList>> {
         let out = PyList::empty(py);
-        for (id, values) in data::filters(&self.ds)? {
+        for (id, values) in data::filters(self.live()?)? {
             out.append((id, values))?;
         }
         Ok(out)
     }
     /// Bytes on disk (after compression).
     #[getter]
-    fn storage_size(&self) -> u64 {
-        self.ds.storage_size()
+    fn storage_size(&self) -> R<u64> {
+        Ok(self.live()?.storage_size())
     }
     #[getter]
     fn attrs(&self) -> Attrs {
         Attrs { node: Node::Dataset(self.ds.clone()) }
     }
-    fn __len__(&self) -> PyResult<usize> {
-        self.ds.shape().first().copied().ok_or_else(|| PyTypeError::new_err("len() of unsized object"))
+    fn __len__(&self) -> R<usize> {
+        Ok(self.live()?.shape().first().copied().ok_or_else(|| PyTypeError::new_err("len() of unsized object"))?)
     }
     fn __getitem__<'py>(&self, py: Python<'py>, key: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
-        if data::is_strings(&self.ds) {
+        if data::is_strings(self.live()?) {
             let values = data::read_strings(&self.ds)?;
             if self.ds.shape().is_empty() {
                 return Ok(PyString::new(py, values.first().map(String::as_str).unwrap_or("")).into_any());
@@ -277,7 +296,11 @@ impl Dataset {
         }
     }
     fn __repr__(&self) -> String {
-        format!("<medh5 Dataset {} shape {:?}>", medh5::json::repr_str(&self.ds.name()), self.ds.shape())
+        if self.ds.is_valid() {
+            format!("<medh5 Dataset {} shape {:?}>", medh5::json::repr_str(&self.ds.name()), self.ds.shape())
+        } else {
+            "<closed medh5 Dataset>".into()
+        }
     }
 }
 
@@ -296,6 +319,7 @@ impl Group {
 
     /// The member at a `/`-separated path below this group.
     fn resolve<'py>(&self, py: Python<'py>, path: &str) -> R<Option<Bound<'py, PyAny>>> {
+        medh5::h5::alive(&self.group)?;
         let trimmed = path.trim_matches('/');
         if trimmed.is_empty() {
             return Ok(Some(Bound::new(py, Group::wrap(self.group.clone()))?.into_any()));
@@ -370,6 +394,7 @@ impl Group {
         }
     }
     fn __delitem__(&self, path: &str) -> R<()> {
+        medh5::h5::alive(&self.group)?;
         let trimmed = path.trim_matches('/');
         let (parent, leaf) = match trimmed.rsplit_once('/') {
             Some((p, l)) => (self.group.group(p)?, l.to_string()),
@@ -387,7 +412,11 @@ impl Group {
         Ok(PyList::new(py, ops::members(&self.group)?)?.as_any().try_iter()?.into_any())
     }
     fn __repr__(&self) -> String {
-        format!("<medh5 Group {}>", medh5::json::repr_str(&self.group.name()))
+        if self.group.is_valid() {
+            format!("<medh5 Group {}>", medh5::json::repr_str(&self.group.name()))
+        } else {
+            "<closed medh5 Group>".into()
+        }
     }
 }
 

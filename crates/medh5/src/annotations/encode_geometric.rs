@@ -113,6 +113,21 @@ pub fn degenerate_axis(bbox: &[f64]) -> Option<usize> {
     (flat.len() == 1).then(|| flat[0])
 }
 
+/// The shape a `slice_index` must have, `(n_boxes,)`: one plane per box.  A
+/// column of the right length can be the wrong rank, so a caller holding an
+/// array checks its shape here before flattening it.
+pub fn check_slice_index_shape(shape: &[usize], n_boxes: usize) -> Option<String> {
+    if shape.len() == 1 && shape[0] == n_boxes {
+        return None;
+    }
+    let dims: Vec<i64> = shape.iter().map(|d| *d as i64).collect();
+    Some(format!(
+        "`slice_index` has shape {}, but it names one plane for each of {n_boxes} box(es), so its shape must be \
+         ({n_boxes},)",
+        crate::json::repr_int_tuple(&dims)
+    ))
+}
+
 /// What a `slice_index` must be (§8.2); `None` when it is valid.
 ///
 /// Shape is checked always; the range needs the index-space boxes and the
@@ -123,12 +138,8 @@ pub fn check_slice_index(
     boxes: Option<&[Vec<f64>]>,
     shape: Option<&[usize]>,
 ) -> Option<String> {
-    if planes.len() != n_boxes {
-        return Some(format!(
-            "`slice_index` has shape ({},), but it names one plane for each of {n_boxes} box(es), so its shape must \
-             be ({n_boxes},)",
-            planes.len()
-        ));
+    if let Some(problem) = check_slice_index_shape(&[planes.len()], n_boxes) {
+        return Some(problem);
     }
     let (Some(boxes), Some(shape)) = (boxes, shape) else { return None };
     for i in 0..n_boxes {
