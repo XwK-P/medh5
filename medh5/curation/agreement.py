@@ -3,7 +3,7 @@
 `quality.agreement` is the field that makes a second rater worth storing: two
 annotations of the same structure are only useful if the disagreement between
 them is quantified.  This module computes those numbers from the annotations
-themselves, so an :class:`~medh5.curation.quality.Agreement` record in a file is
+themselves, so an :class:`~medh5.curation.Agreement` record in a file is
 reproducible from the file rather than copied in from a spreadsheet nobody kept.
 
 Three decisions are deliberate:
@@ -43,7 +43,7 @@ import numpy as np
 import numpy.typing as npt
 
 from medh5 import _core
-from medh5.curation.quality import Agreement
+from medh5._core import Agreement
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from medh5.annotations.base import Annotation, VoxelAnnotation

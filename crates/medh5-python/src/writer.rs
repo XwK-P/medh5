@@ -1,4 +1,4 @@
-//! `medh5.writer`: `SampleWriter`, `create` and `amend` (spec §14.4).
+//! `medh5.sample`: `SampleWriter`, `create` and `amend` (spec §14.4).
 //!
 //! Every method takes the 1.x keyword arguments and hands the engine's
 //! `SampleWriter` the normalised values; every rule --- ids, geometry,
@@ -352,7 +352,7 @@ pub fn assertion_columns(
 
 /// Builder for one sample.  Every `add_*` validates immediately; `commit`
 /// validates the whole and atomically replaces the target (§14.4).
-#[pyclass(module = "medh5.writer", name = "SampleWriter", subclass)]
+#[pyclass(module = "medh5.sample", name = "SampleWriter", subclass)]
 pub struct SampleWriter {
     pub inner: EngineWriter,
 }

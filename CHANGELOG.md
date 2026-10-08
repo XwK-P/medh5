@@ -75,6 +75,21 @@ behaviour changes below.
   pipeline picks different patches under 2.0, from the same distributions.
   No file depends on it: `index/` is outside every digest and `content_id`
   (§13.1), and its `seed` attribute still reproduces the subsample.
+- **One module per area, not a package of re-exports.** `medh5.geometry`,
+  `medh5.labels`, `medh5.integrity`, `medh5.storage`, `medh5.transforms`,
+  `medh5.validate`, `medh5.conformance`, `medh5.cli` and
+  `medh5.annotations.voxel` are modules where 1.x had packages of files that
+  now only re-exported the engine; `medh5.curation`'s record classes
+  (identity, provenance, quality, timeline, tracking) live in the package
+  itself, `medh5.writer` is `medh5.sample`, and `medh5.io`'s private 0.x reader
+  is `medh5.io.legacy`. Every public name kept its place one level up ---
+  `from medh5.geometry import Grid` and `from medh5.storage import recompress`
+  work as before --- while a deep import drops its last component:
+  `from medh5.geometry.grid import Grid`,
+  `from medh5.transforms.apply import jacobian_determinant` and
+  `from medh5.labels.registry import load` become `medh5.geometry`,
+  `medh5.transforms` and `medh5.labels`. Each class's `__module__` names its
+  new home, which is where `pickle` looks for it.
 - **`medh5.cli.main()` returns the exit code** for every outcome --- `--help`
   and `--version` return 0 and a usage error 2 --- instead of raising
   `SystemExit` for those three. Only the console script exits.
@@ -113,6 +128,14 @@ behaviour changes below.
   writes it into every suite. `medh5.document.SCHEMA_PATH` and `SCHEMA_NAME`
   went with the package's copy; `medh5.document.schema_text()` returns the
   schema.
+- What the module consolidation left with nothing to do: `medh5.__about__`
+  (`medh5.__version__` is the version), `medh5.annotations.base.readers()` and
+  `medh5.transforms.transform_readers()` (`medh5.annotations.READERS`, with
+  `open_annotation` beside it), `stored_inverse()` (`Transform.inverse()`),
+  the 0.x reader's second names `read_sample` and `read_meta`
+  (`medh5.io.legacy.read_legacy` and `legacy_meta`), and the private
+  `medh5.cli._common` helpers `human_bytes`, `indent` and `table`, which only
+  the test suite called, with the two engine bindings behind them.
 
 ### Fixed
 

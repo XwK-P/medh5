@@ -249,14 +249,14 @@ class TestInstances:
 
     def test_box_only_instances_paint_the_whole_box(self, tmp_path, label_set):
         from medh5.annotations.voxel import encode_instances
-        from medh5.geometry.affine import slices_to_box
+        from medh5.geometry import slices_to_box
 
         box = slices_to_box([slice(1, 4), slice(1, 4), slice(1, 4)])
         payload = encode_instances(
             [InstanceInput(3, 1, box=box)], SHAPE, store_masks=False
         )
         assert "mask_data" not in payload.datasets
-        from medh5.annotations.voxel.transcode import payload_to_masks
+        from medh5.annotations.voxel import payload_to_masks
 
         decoded = payload_to_masks(payload, spatial_shape=SHAPE)
         assert decoded[3][1:4, 1:4, 1:4].all()

@@ -138,7 +138,6 @@ include = [
   { path = "tests/**/*.py", format = "sdist" },
   { path = "tests/**/*.txt", format = "sdist" },
 ]
-exclude = ["medh5/**/CLAUDE.md"]
 
 [tool.pytest.ini_options]
 addopts = "--cov=medh5 --cov-report=term-missing"

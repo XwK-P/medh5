@@ -72,7 +72,7 @@ read is one seek. (`W902` warns only from 1 MiB, so the policy never trips its
 own warning.)
 
 ```python
-from medh5.storage.codecs import PROFILES, resolve_profile, dataset_kwargs
+from medh5.storage import PROFILES, resolve_profile, dataset_kwargs
 PROFILES["archive"].description
 ```
 

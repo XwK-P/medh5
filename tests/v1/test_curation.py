@@ -10,28 +10,25 @@ import numpy as np
 import pytest
 
 import medh5
-from medh5.curation.identity import (
+from medh5.curation import (
+    Activity,
+    Agent,
+    Agreement,
     Cohort,
     Deidentification,
     Identity,
-    SplitClaim,
-    splits_from_json,
-)
-from medh5.curation.provenance import (
-    Activity,
-    Agent,
-    Provenance,
-    check_timestamp,
-)
-from medh5.curation.quality import (
-    Agreement,
     Issue,
+    Provenance,
     QualityRecord,
+    SplitClaim,
+    Timeline,
+    Timepoint,
+    check_timestamp,
     dice_agreement,
     quality_from_json,
     quality_to_json,
+    splits_from_json,
 )
-from medh5.curation.timeline import Timeline, Timepoint
 from medh5.document import SampleDocument, new_document, validate_against_schema
 from medh5.errors import MEDH5SchemaError, MEDH5ValidationError
 

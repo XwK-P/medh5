@@ -134,12 +134,6 @@ fn cli_command_tree(py: Python<'_>) -> PyResult<Bound<'_, PyAny>> {
     json_to_py(py, &medh5_cli::command_tree())
 }
 
-/// `512 B`, `2.0 KiB`, ... as the CLI prints sizes.
-#[pyfunction]
-fn cli_human_bytes(n: f64) -> String {
-    medh5_cli::common::human_bytes(n)
-}
-
 /// What the command line prints for a failed lookup whose message is `text`:
 /// the message when it is a sentence, the key named otherwise.
 #[pyfunction]
@@ -147,21 +141,9 @@ fn cli_lookup_message(text: &str) -> String {
     medh5_cli::common::top_level_message(&medh5::Error::Key(text.to_string()))
 }
 
-/// A plain-text table as the CLI prints one.
-#[pyfunction]
-fn cli_table(rows: Vec<Vec<Bound<'_, PyAny>>>, headers: Vec<String>) -> PyResult<String> {
-    let rows: Vec<Vec<String>> = rows
-        .iter()
-        .map(|r| r.iter().map(|v| Ok(v.str()?.to_string())).collect::<PyResult<Vec<_>>>())
-        .collect::<PyResult<_>>()?;
-    Ok(medh5_cli::common::table(&rows, &headers))
-}
-
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(cli_main, m)?)?;
     m.add_function(wrap_pyfunction!(cli_command_tree, m)?)?;
-    m.add_function(wrap_pyfunction!(cli_human_bytes, m)?)?;
-    m.add_function(wrap_pyfunction!(cli_table, m)?)?;
     m.add_function(wrap_pyfunction!(cli_lookup_message, m)?)?;
     m.add("EXIT_OK", medh5_cli::EXIT_OK)?;
     m.add("EXIT_ERROR", medh5_cli::EXIT_ERROR)?;

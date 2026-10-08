@@ -1,13 +1,26 @@
-"""``Sample`` --- where the pieces become a file.
+"""``Sample`` and ``SampleWriter`` --- where the pieces become a file.
 
 A sample is **one subject at one or more timepoints**.  Reading is lazy and
-timepoint-aware; writing (:mod:`medh5.writer`) is a builder that validates as
-it goes and commits atomically.
+timepoint-aware; writing is a builder that validates as it goes and commits
+atomically (spec §14.4).
 
 A :class:`Sample` is a read-only view over the format engine's reader.  It is
 memoised the way the file is immutable to it: ``amend`` is copy-on-write and
 replaces the inode, so an open sample never sees an edit --- reopen to read
 one.
+
+The write model: ``create`` writes to a sibling temporary file and atomically
+replaces the target on ``commit``, so a reader never sees a half-written
+sample and a crash leaves the previous file intact.  ``amend`` is
+copy-on-write: it builds a new file from the old one and replaces it, because
+HDF5 does not reclaim space on delete --- and anything holding the old file
+open keeps reading the old inode.  Every ``add_*`` validates as it goes, and
+``commit`` refuses to write a file the validator would reject.  The builder is
+the format engine's ``SampleWriter``::
+
+    with medh5.create("case.medh5", sample_id="case-001") as w:
+        w.add_grid("ct", shape=(64, 64, 32), spacing=(0.8, 0.8, 2.0))
+        w.add_image("CT", volume, grid="ct", modality="CT")
 """
 
 from __future__ import annotations
@@ -20,17 +33,15 @@ import numpy as np
 import numpy.typing as npt
 
 from medh5 import _core
-from medh5.annotations.base import Annotation, open_annotation
-from medh5.curation.identity import Cohort, Identity
-from medh5.curation.timeline import Timeline, Timepoint
-from medh5.curation.tracking import Tracking
+from medh5.annotations import Annotation, open_annotation
+from medh5.curation import Cohort, Identity, Timeline, Timepoint, Tracking
 from medh5.document import SampleDocument
 from medh5.errors import MEDH5ValidationError
-from medh5.geometry.grid import Grid
+from medh5.geometry import Grid
 from medh5.image import Image
-from medh5.labels.labelset import LabelSet
-from medh5.storage.index import SamplingIndex
-from medh5.transforms.base import Transform, wrap_transform
+from medh5.labels import LabelSet
+from medh5.storage import SamplingIndex
+from medh5.transforms import Transform, wrap_transform
 
 FORMAT_VERSION: str = _core.FORMAT_VERSION
 PROFILES: tuple[str, ...] = _core.PROFILES
@@ -42,6 +53,15 @@ ROOT_DIGEST_ATTRS: tuple[str, ...] = _core.ROOT_DIGEST_ATTRS
 samples written an hour apart must share a ``content_id``, or it is not a
 content address and cannot be used as a cache or dedup key (spec §13.2).
 """
+
+MANAGED_ROOT_ATTRS: tuple[str, ...] = _core.MANAGED_ROOT_ATTRS
+"""Root attributes ``commit`` writes itself; an amend does not copy them."""
+
+STANDARD_GROUPS: tuple[str, ...] = _core.STANDARD_GROUPS
+
+SampleWriter = _core.SampleWriter
+create = _core.create
+amend = _core.amend
 
 
 # --------------------------------------------------------------------------
@@ -403,7 +423,7 @@ class Sample:
         return found
 
     def verify(self, partial: Sequence[str] | None = None) -> Any:
-        from medh5.integrity.verify import VerifyResult
+        from medh5.integrity import VerifyResult
 
         return VerifyResult(
             **self._handle.verify(None if partial is None else list(partial))
@@ -448,13 +468,13 @@ def open_sample(path: str | os.PathLike[str], mode: str = "r") -> Sample:
     return Sample(_core.open_sample(os.fspath(path)))
 
 
-from medh5.writer import SampleWriter, amend, create  # noqa: E402
-
 __all__ = [
     "FORMAT_VERSION",
     "FRAME_ATTRS",
+    "MANAGED_ROOT_ATTRS",
     "PROFILES",
     "ROOT_DIGEST_ATTRS",
+    "STANDARD_GROUPS",
     "AnnotationCollection",
     "ImageCollection",
     "Sample",

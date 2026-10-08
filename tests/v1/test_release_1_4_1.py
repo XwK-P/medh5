@@ -28,7 +28,7 @@ import pytest
 
 import medh5
 from medh5.errors import MEDH5FileError, MEDH5ValidationError, MEDH5VersionError
-from medh5.labels.labelset import LabelClass, LabelSet
+from medh5.labels import LabelClass, LabelSet
 from medh5.validate import validate_file
 
 SHAPE = (8, 12, 12)
@@ -118,7 +118,7 @@ class TestW14RewriteGate:
         self, tmp_path: Path, secret: Path
     ):
         """A crafted file made `recompress` copy a local file into its output."""
-        from medh5.storage.recompress import recompress
+        from medh5.storage import recompress
 
         path = self._external_storage(tmp_path, secret)
         out = tmp_path / "shared.medh5"
@@ -203,7 +203,7 @@ class TestW14RewriteGate:
 
     def test_L27_S14_amend_keeps_a_portable_file_portable(self, tmp_path: Path):
         """New datasets in an amended `portable` file were Blosc2."""
-        from medh5.storage.codecs import describe_filters
+        from medh5.storage import describe_filters
 
         path = _plain(tmp_path / "port.medh5", codec="portable")
         big = np.random.default_rng(0).random((64, 64, 64)) > 0.5
@@ -433,8 +433,7 @@ class TestW15Deidentification:
         and a strict apply must, for each one, either remove it from the file's
         bytes or still report it.
         """
-        from medh5.curation import scrub
-        from medh5.curation.quality import Agreement, Issue
+        from medh5.curation import Agreement, Issue, scrub
 
         planted: dict[str, str] = {}
 
@@ -866,9 +865,12 @@ class TestW17Precision:
     ):
         """numpy 2 raised OverflowError at the uint16 cast; numpy 1.24 wrapped."""
         from medh5.annotations.geometric import encode_boxes
-        from medh5.annotations.voxel import InstanceInput, encode_masks
-        from medh5.annotations.voxel.instances import encode_instances
-        from medh5.annotations.voxel.probmap import encode_probmap
+        from medh5.annotations.voxel import (
+            InstanceInput,
+            encode_instances,
+            encode_masks,
+            encode_probmap,
+        )
 
         mask = np.zeros(SHAPE, bool)
         mask[1, 1, 1] = True
@@ -1684,7 +1686,7 @@ class TestW19WriterEqualsValidator:
         refuses the file or writes one the validator passes, and a valid case
         comes back valid.
         """
-        from medh5.conformance.corpus import CASES
+        from medh5.conformance import CASES
         from medh5.errors import MEDH5Error
 
         refused = written = 0

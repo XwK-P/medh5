@@ -1167,23 +1167,23 @@ class TestLegacyReader:
             import medh5.legacy  # noqa: F401
 
     def test_a_1_0_file_is_refused_as_0_x(self, sample_path):
-        from medh5.io._legacy_reader import is_legacy, read_sample
+        from medh5.io.legacy import is_legacy, read_legacy
 
         with pytest.raises(MEDH5SchemaError, match="1.0 file"):
-            read_sample(sample_path)
+            read_legacy(sample_path)
         assert not is_legacy(sample_path)
 
     def test_a_non_hdf5_file_is_refused(self, tmp_path):
-        from medh5.io._legacy_reader import is_legacy, read_sample
+        from medh5.io.legacy import is_legacy, read_legacy
 
         path = tmp_path / "junk.medh5"
         path.write_bytes(b"not hdf5")
         with pytest.raises(MEDH5FileError):
-            read_sample(path)
+            read_legacy(path)
         assert not is_legacy(path)
 
     def test_a_future_0_x_schema_version_is_refused(self, tmp_path):
-        from medh5.io._legacy_reader import read_meta
+        from medh5.io.legacy import legacy_meta
 
         path = write_legacy_sample(
             tmp_path / "old.medh5", images={"CT": np.zeros((2, 3, 4), np.int16)}
@@ -1191,11 +1191,11 @@ class TestLegacyReader:
         with h5py.File(path, "a") as handle:
             handle.attrs["schema_version"] = "2"
         with pytest.raises(MEDH5SchemaError, match="schema version"):
-            read_meta(path)
+            legacy_meta(path)
 
     def test_the_file_beats_its_own_flags(self, tmp_path):
         """0.x denormalised `has_seg`/`seg_names`, and they could drift."""
-        from medh5.io._legacy_reader import read_sample
+        from medh5.io.legacy import read_legacy
 
         mask = np.zeros((2, 3, 4), bool)
         mask[0, 1, 2] = True
@@ -1207,12 +1207,12 @@ class TestLegacyReader:
         with h5py.File(path, "a") as handle:
             handle.attrs["has_seg"] = False
             del handle.attrs["seg_names"]
-        sample = read_sample(path)
+        sample = read_legacy(path)
         assert list(sample.seg) == ["liver"]
         assert sample.meta.seg_names == ["liver"]
 
     def test_geometry_and_extra_round_trip(self, tmp_path):
-        from medh5.io._legacy_reader import read_sample
+        from medh5.io.legacy import read_legacy
 
         direction = [[0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [-1.0, 0.0, 0.0]]
         path = write_legacy_sample(
@@ -1227,7 +1227,7 @@ class TestLegacyReader:
             label_name="lesion",
             extra={"patient_id": "PAT-A"},
         )
-        sample = read_sample(path)
+        sample = read_legacy(path)
         assert sample.meta.spatial.direction == direction
         assert sample.meta.spatial.spacing == [2.0, 0.8, 0.9]
         assert sample.meta.patch_size == [2, 2, 2]
@@ -1235,7 +1235,7 @@ class TestLegacyReader:
         assert sample.meta.extra["patient_id"] == "PAT-A"
 
     def test_a_malformed_direction_is_named(self, tmp_path):
-        from medh5.io._legacy_reader import read_meta
+        from medh5.io.legacy import legacy_meta
 
         path = write_legacy_sample(
             tmp_path / "old.medh5", images={"CT": np.zeros((2, 3, 4), np.int16)}
@@ -1243,10 +1243,10 @@ class TestLegacyReader:
         with h5py.File(path, "a") as handle:
             handle["images"].attrs["direction"] = np.zeros(4, np.float64)
         with pytest.raises(MEDH5SchemaError, match="4 element"):
-            read_meta(path)
+            legacy_meta(path)
 
     def test_malformed_extra_is_named(self, tmp_path):
-        from medh5.io._legacy_reader import read_meta
+        from medh5.io.legacy import legacy_meta
 
         path = write_legacy_sample(
             tmp_path / "old.medh5", images={"CT": np.zeros((2, 3, 4), np.int16)}
@@ -1254,7 +1254,7 @@ class TestLegacyReader:
         with h5py.File(path, "a") as handle:
             handle.attrs["extra"] = "{not json"
         with pytest.raises(MEDH5SchemaError, match="not JSON"):
-            read_meta(path)
+            legacy_meta(path)
 
 
 class TestDicom:
@@ -1607,7 +1607,7 @@ class TestDicomSeg:
         from pydicom.uid import generate_uid
 
         from medh5.io.dicom import from_dicom
-        from medh5.labels.labelset import LabelClass, LabelSet
+        from medh5.labels import LabelClass, LabelSet
         from tests.v1.conftest import write_dicom_series
 
         root = tmp_path / "dcm"
@@ -2007,7 +2007,7 @@ class TestDicomSegExtras:
 
         from medh5.io.dicom import from_dicom
         from medh5.io.dicom_seg import from_dicom_seg, to_dicom_seg
-        from medh5.labels.labelset import LabelClass, LabelSet
+        from medh5.labels import LabelClass, LabelSet
         from tests.v1.conftest import write_dicom_series
 
         root = tmp_path / "dcm"

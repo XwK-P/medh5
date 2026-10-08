@@ -225,7 +225,7 @@ fn target_registration_error<'py>(
 // -- header and graph ------------------------------------------------------------------------
 
 /// The attribute header every transform carries (spec §10.1).
-#[pyclass(module = "medh5.transforms.base", name = "TransformHeader", skip_from_py_object, frozen)]
+#[pyclass(module = "medh5.transforms", name = "TransformHeader", skip_from_py_object, frozen)]
 pub struct TransformHeader {
     pub inner: model::TransformHeader,
 }

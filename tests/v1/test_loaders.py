@@ -934,7 +934,7 @@ class TestMonai:
         would say the two disagree.
         """
         pytest.importorskip("monai")
-        from medh5.geometry.multiscale import derive_level_grid
+        from medh5.geometry import derive_level_grid
         from medh5.monai import to_metatensor
 
         shape = (16, 32, 32)
@@ -980,7 +980,7 @@ class TestMonai:
 
 class TestRecompress:
     def test_S13_1_recompression_preserves_the_content_id(self, tmp_path, label_set):
-        from medh5.storage.recompress import recompress
+        from medh5.storage import recompress
 
         path = tmp_path / "big.medh5"
         shape = (48, 64, 64)
@@ -1014,7 +1014,7 @@ class TestRecompress:
             assert sample.verify().ok
 
     def test_out_writes_beside_the_source(self, tmp_path, cohort):
-        from medh5.storage.recompress import recompress
+        from medh5.storage import recompress
 
         target = tmp_path / "copy.medh5"
         result = recompress(cohort[0], "portable", out=target)
@@ -1024,13 +1024,13 @@ class TestRecompress:
         assert "portable" in str(result)
 
     def test_an_unknown_profile_is_refused(self, cohort):
-        from medh5.storage.recompress import recompress
+        from medh5.storage import recompress
 
         with pytest.raises(MEDH5ValidationError, match="unknown codec profile"):
             recompress(cohort[0], "maximum-effort")
 
     def test_recompress_paths_and_json(self, cohort):
-        from medh5.storage.recompress import recompress_paths
+        from medh5.storage import recompress_paths
 
         results = recompress_paths(cohort[:2], "portable")
         assert len(results) == 2

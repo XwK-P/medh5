@@ -355,7 +355,7 @@ def from_dicom_seg(
     reconstruction is refused rather than force-fitted.
     """
     import medh5
-    from medh5.labels.labelset import LabelClass, LabelSet, OntologyCode
+    from medh5.labels import LabelClass, LabelSet, OntologyCode
 
     log = report or ConversionReport(converter="from-dicom-seg")
     log.source = os.fspath(path)

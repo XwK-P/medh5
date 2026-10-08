@@ -7,20 +7,19 @@ import pytest
 
 import medh5
 from medh5.errors import MEDH5ValidationError
-from medh5.storage.chunking import (
-    MAX_CHUNK_BYTES,
-    chunk_report,
-    optimize_chunks,
-    spatial_chunk_for,
-)
-from medh5.storage.codecs import (
+from medh5.storage import (
     COMPRESS_MIN_BYTES,
+    MAX_CHUNK_BYTES,
     PROFILES,
+    build_index,
+    chunk_report,
     dataset_kwargs,
     is_bulk,
+    optimize_chunks,
+    read_indices,
     resolve_profile,
+    spatial_chunk_for,
 )
-from medh5.storage.index import build_index, read_indices
 
 
 class TestChunking:
@@ -62,7 +61,7 @@ class TestChunking:
         import os
         import subprocess
 
-        from medh5.storage import chunking
+        from medh5.storage import detect_l3_bytes
 
         def refuse(*args, **kwargs):
             raise AssertionError("L3 detection must not spawn a process here")
@@ -70,9 +69,9 @@ class TestChunking:
         monkeypatch.setattr(os, "popen", refuse)
         monkeypatch.setattr(subprocess, "run", refuse)
         monkeypatch.setattr(subprocess, "Popen", refuse)
-        found = chunking.detect_l3_bytes()
+        found = detect_l3_bytes()
         assert found > 0
-        assert chunking.detect_l3_bytes() == found
+        assert detect_l3_bytes() == found
 
     def test_axis_kinds_must_describe_the_shape(self):
         with pytest.raises(MEDH5ValidationError):
@@ -163,7 +162,7 @@ class TestSamplingIndex:
         with medh5.open(longitudinal_path) as sample:
             box = sample.index["organs_tp0"].bbox(1)
             assert box is not None
-            from medh5.geometry.affine import box_to_slices
+            from medh5.geometry import box_to_slices
 
             assert np.array_equal(
                 masks[1][box_to_slices(box)],

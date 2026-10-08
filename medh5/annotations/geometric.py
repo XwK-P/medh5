@@ -18,7 +18,7 @@ import numpy.typing as npt
 
 from medh5 import _core
 from medh5.annotations.base import Annotation, Instance, _instance
-from medh5.geometry.grid import Grid
+from medh5.geometry import Grid
 
 SPACES: tuple[str, ...] = _core.SPACES
 CONTOUR_ROLES: tuple[str, ...] = _core.CONTOUR_ROLES

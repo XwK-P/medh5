@@ -10,8 +10,14 @@ import pytest
 
 import medh5
 from medh5.errors import CODES
-from medh5.validate import validate_file, validate_paths, validate_root
-from medh5.validate.report import Diagnostic, Report, merge
+from medh5.validate import (
+    Diagnostic,
+    Report,
+    merge,
+    validate_file,
+    validate_paths,
+    validate_root,
+)
 from tests.v1._h5 import encode_attr, str_dtype
 
 

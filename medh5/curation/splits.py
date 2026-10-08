@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from medh5 import _core
-from medh5.curation.identity import SplitClaim
+from medh5._core import SplitClaim
 
 
 @dataclass(frozen=True, slots=True)

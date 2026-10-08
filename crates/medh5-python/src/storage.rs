@@ -23,7 +23,7 @@ fn codec_json(c: &codecs::Codec) -> serde_json::Value {
     })
 }
 
-/// The codec profiles, as plain data (`medh5.storage.codecs` builds its
+/// The codec profiles, as plain data (`medh5.storage` builds its
 /// `CodecProfile` values from this).
 #[pyfunction]
 fn codec_profiles<'py>(py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
@@ -188,7 +188,7 @@ fn chunk_report<'py>(
 // -- indices ---------------------------------------------------------------------------------
 
 /// The datasets of one annotation's index entry (§14.3).
-#[pyclass(module = "medh5.storage.index", name = "IndexPayload", skip_from_py_object, frozen)]
+#[pyclass(module = "medh5.storage", name = "IndexPayload", skip_from_py_object, frozen)]
 pub struct IndexPayload {
     pub inner: index::IndexPayload,
 }

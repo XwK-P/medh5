@@ -164,7 +164,7 @@ t.is_invertible                    # the mapping is invertible
 t.inverse()                        # the *stored* inverse, when the file has one
 t.transform_points(points)         # world -> world, in mm
 
-from medh5.transforms.apply import jacobian_determinant, target_registration_error
+from medh5.transforms import jacobian_determinant, target_registration_error
 target_registration_error(t, fixed_points, moving_points)   # {"mean", "max", ...}
 jacobian_determinant(field, grid)                           # for a displacement field
 ```

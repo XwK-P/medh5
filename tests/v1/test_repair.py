@@ -16,7 +16,7 @@ import pytest
 import medh5
 from medh5.curation import scrub as scrubber
 from medh5.errors import MEDH5ValidationError
-from medh5.integrity.repair import diagnose, fix
+from medh5.integrity import diagnose, fix
 from tests.v1.conftest import SHAPE, block, write_sample
 
 

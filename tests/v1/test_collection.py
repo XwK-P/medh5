@@ -21,7 +21,7 @@ from medh5.collection import (
     unpack,
 )
 from medh5.errors import MEDH5FileError, MEDH5ValidationError
-from medh5.integrity.verify import raw_chunks, subtrees_identical
+from medh5.integrity import raw_chunks, subtrees_identical
 from medh5.validate import validate_file
 from tests.v1.conftest import write_sample
 

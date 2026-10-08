@@ -316,7 +316,7 @@ $ medh5 labels registry list
 ```
 
 ```python
-from medh5.labels.registry import load
+from medh5.labels import load
 load("brats-subregions")
 ```
 

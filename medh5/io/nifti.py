@@ -32,7 +32,7 @@ import numpy.typing as npt
 
 from medh5._optional import require
 from medh5.errors import MEDH5ValidationError
-from medh5.geometry.affine import ORTHONORMAL_TOL, build_affine, decompose_affine
+from medh5.geometry import ORTHONORMAL_TOL, build_affine, decompose_affine
 from medh5.io.report import ConversionReport
 
 RAS_TO_LPS = np.diag([-1.0, -1.0, 1.0, 1.0])
@@ -955,7 +955,7 @@ def _same_grid(
 
 def _mint_label_set(keys: Sequence[str], log: ConversionReport) -> Any:
     """Mask filenames become class keys with minted ids (Appendix B)."""
-    from medh5.labels.labelset import LabelClass, LabelSet
+    from medh5.labels import LabelClass, LabelSet
 
     classes = [
         LabelClass(i + 1, key, key.replace("_", " ").title())

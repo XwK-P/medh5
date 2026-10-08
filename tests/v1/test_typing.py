@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 # Every class 1.x shipped as a dataclass, by its public home, with its fields.
 DATACLASSES = {
-    "medh5.curation.provenance.Activity": (
+    "medh5.curation.Activity": (
         "id",
         "type",
         "agent",
@@ -34,7 +34,7 @@ DATACLASSES = {
         "outputs",
         "params",
     ),
-    "medh5.curation.provenance.Agent": (
+    "medh5.curation.Agent": (
         "id",
         "type",
         "name",
@@ -43,7 +43,7 @@ DATACLASSES = {
         "qualification",
         "organization",
     ),
-    "medh5.curation.quality.Agreement": ("metric", "value", "against", "per_class"),
+    "medh5.curation.Agreement": ("metric", "value", "against", "per_class"),
     "medh5.annotations.base.AnnotationHeader": (
         "kind",
         "task",
@@ -61,14 +61,14 @@ DATACLASSES = {
         "derived_from",
         "extra",
     ),
-    "medh5.annotations.payload.AnnotationPayload": (
+    "medh5.annotations.base.AnnotationPayload": (
         "kind",
         "datasets",
         "attrs",
         "stacked_axes",
         "class_ids",
     ),
-    "medh5.curation.identity.Cohort": (
+    "medh5.curation.Cohort": (
         "dataset_id",
         "site_id",
         "scanner_id",
@@ -76,7 +76,7 @@ DATACLASSES = {
         "acquisition_protocol",
         "extra",
     ),
-    "medh5.annotations.voxel.select.CostModel": (
+    "medh5.annotations.voxel.CostModel": (
         "labelmap",
         "layers",
         "bitmask",
@@ -84,7 +84,7 @@ DATACLASSES = {
         "probmap",
         "detail",
     ),
-    "medh5.curation.identity.Deidentification": (
+    "medh5.curation.Deidentification": (
         "method",
         "profile",
         "date_shift_days",
@@ -94,7 +94,7 @@ DATACLASSES = {
         "burned_in_annotation_checked",
         "extra",
     ),
-    "medh5.geometry.grid.Grid": (
+    "medh5.geometry.Grid": (
         "grid_id",
         "shape",
         "axis_names",
@@ -112,7 +112,7 @@ DATACLASSES = {
         "patch_hint",
         "extra",
     ),
-    "medh5.curation.identity.Identity": (
+    "medh5.curation.Identity": (
         "sample_id",
         "subject_id",
         "sex",
@@ -120,7 +120,7 @@ DATACLASSES = {
         "bodypart",
         "extra",
     ),
-    "medh5.storage.index.IndexPayload": (
+    "medh5.storage.IndexPayload": (
         "ann_id",
         "class_ids",
         "voxel_counts",
@@ -132,8 +132,8 @@ DATACLASSES = {
         "seed",
         "stats",
     ),
-    "medh5.curation.quality.Issue": ("code", "severity", "class_ids", "note"),
-    "medh5.labels.labelset.LabelClass": (
+    "medh5.curation.Issue": ("code", "severity", "class_ids", "note"),
+    "medh5.labels.LabelClass": (
         "id",
         "key",
         "name",
@@ -144,7 +144,7 @@ DATACLASSES = {
         "laterality",
         "properties",
     ),
-    "medh5.curation.tracking.Observation": (
+    "medh5.curation.Observation": (
         "timepoint",
         "annotation",
         "index",
@@ -157,8 +157,8 @@ DATACLASSES = {
         "score",
         "grid",
     ),
-    "medh5.labels.labelset.OntologyCode": ("system", "code", "name"),
-    "medh5.annotations.voxel.select.OverlapStats": (
+    "medh5.labels.OntologyCode": ("system", "code", "name"),
+    "medh5.annotations.voxel.OverlapStats": (
         "class_ids",
         "spatial_shape",
         "counts",
@@ -167,13 +167,13 @@ DATACLASSES = {
         "localized",
         "n_labelled_voxels",
     ),
-    "medh5.geometry.multiscale.Pyramid": (
+    "medh5.geometry.Pyramid": (
         "levels",
         "downsample_factors",
         "downsample_method",
         "grid_levels",
     ),
-    "medh5.curation.quality.QualityRecord": (
+    "medh5.curation.QualityRecord": (
         "status",
         "confidence",
         "reviewed_by",
@@ -181,7 +181,7 @@ DATACLASSES = {
         "issues",
         "edit_effort_s",
     ),
-    "medh5.labels.labelset.Relation": ("subject", "predicate", "object"),
+    "medh5.labels.Relation": ("subject", "predicate", "object"),
     "medh5.document.SampleDocument": (
         "identity",
         "timepoints",
@@ -194,8 +194,8 @@ DATACLASSES = {
         "deidentification",
         "extra",
     ),
-    "medh5.labels.labelset.Skeleton": ("id", "keypoints", "edges"),
-    "medh5.curation.identity.SplitClaim": (
+    "medh5.labels.Skeleton": ("id", "keypoints", "edges"),
+    "medh5.curation.SplitClaim": (
         "set_id",
         "partition",
         "fold",
@@ -203,7 +203,7 @@ DATACLASSES = {
         "assigned_at",
         "manifest_sha256",
     ),
-    "medh5.curation.timeline.Timepoint": (
+    "medh5.curation.Timepoint": (
         "id",
         "index",
         "label",
@@ -214,13 +214,13 @@ DATACLASSES = {
         "subject_age_years",
         "description",
     ),
-    "medh5.curation.tracking.Track": (
+    "medh5.curation.Track": (
         "instance_id",
         "class_ids",
         "observations",
         "class_key",
     ),
-    "medh5.transforms.base.TransformHeader": (
+    "medh5.transforms.TransformHeader": (
         "kind",
         "from_frame",
         "to_frame",
@@ -281,10 +281,10 @@ def test_a_1x_dataclass_is_still_a_dataclass(dotted: str) -> None:
 
 def test_replace_builds_a_changed_copy() -> None:
     from medh5.annotations.base import AnnotationHeader
-    from medh5.curation.identity import Identity
-    from medh5.geometry.grid import Grid
-    from medh5.labels.labelset import LabelClass
-    from medh5.transforms.base import TransformHeader
+    from medh5.curation import Identity
+    from medh5.geometry import Grid
+    from medh5.labels import LabelClass
+    from medh5.transforms import TransformHeader
 
     liver = LabelClass(1, "liver", "Liver")
     assert dataclasses.replace(liver, name="Hepar").name == "Hepar"
@@ -313,7 +313,7 @@ def test_replace_builds_a_changed_copy() -> None:
 
 
 def test_match_reads_the_fields_in_order() -> None:
-    from medh5.labels.labelset import LabelClass
+    from medh5.labels import LabelClass
 
     match LabelClass(1, "liver", "Liver"):
         case LabelClass(cid, key, name):
@@ -323,8 +323,7 @@ def test_match_reads_the_fields_in_order() -> None:
 
 
 def test_a_missing_required_field_is_the_dataclass_TypeError() -> None:
-    from medh5.curation.identity import Identity
-    from medh5.curation.provenance import Agent
+    from medh5.curation import Agent, Identity
 
     with pytest.raises(
         TypeError, match=r"missing 1 required positional argument: 'subject_id'$"

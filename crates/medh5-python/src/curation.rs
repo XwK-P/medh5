@@ -22,7 +22,7 @@ use crate::records::{field, required, Kind};
 record_class!(
     Identity,
     "Identity",
-    "medh5.curation.identity",
+    "medh5.curation",
     id_engine::Identity,
     parse = id_engine::Identity::from_json,
     dump = |v| v.to_json(),
@@ -39,7 +39,7 @@ record_class!(
 record_class!(
     Cohort,
     "Cohort",
-    "medh5.curation.identity",
+    "medh5.curation",
     id_engine::Cohort,
     parse = |v| id_engine::Cohort::from_json(Some(v)),
     dump = |v| v.to_json(),
@@ -62,7 +62,7 @@ record_class!(
 record_class!(
     SplitClaim,
     "SplitClaim",
-    "medh5.curation.identity",
+    "medh5.curation",
     id_engine::SplitClaim,
     parse = id_engine::SplitClaim::from_json,
     dump = |v| v.to_json(),
@@ -84,7 +84,7 @@ fn parse_deidentification(v: &Value) -> medh5::Result<id_engine::Deidentificatio
 record_class!(
     Deidentification,
     "Deidentification",
-    "medh5.curation.identity",
+    "medh5.curation",
     id_engine::Deidentification,
     parse = parse_deidentification,
     dump = |v| v.to_json(),
@@ -113,7 +113,7 @@ fn splits_from_json<'py>(py: Python<'py>, docs: &Bound<'py, PyAny>) -> R<Bound<'
 record_class!(
     Agent,
     "Agent",
-    "medh5.curation.provenance",
+    "medh5.curation",
     prov_engine::Agent,
     parse = prov_engine::Agent::from_json,
     dump = |v| v.to_json(),
@@ -131,7 +131,7 @@ record_class!(
 record_class!(
     Activity,
     "Activity",
-    "medh5.curation.provenance",
+    "medh5.curation",
     prov_engine::Activity,
     parse = prov_engine::Activity::from_json,
     dump = |v| v.to_json(),
@@ -149,7 +149,7 @@ record_class!(
 );
 
 /// Who did what (§11.1): agents and the activities they performed.
-#[pyclass(module = "medh5.curation.provenance", name = "Provenance", skip_from_py_object)]
+#[pyclass(module = "medh5.curation", name = "Provenance", skip_from_py_object)]
 pub struct Provenance {
     pub inner: prov_engine::Provenance,
 }
@@ -255,7 +255,7 @@ fn check_timestamp(value: &str, r#where: &str) -> R<String> {
 record_class!(
     Agreement,
     "Agreement",
-    "medh5.curation.quality",
+    "medh5.curation",
     q_engine::Agreement,
     parse = q_engine::Agreement::from_json,
     dump = |v| v.to_json(),
@@ -270,7 +270,7 @@ record_class!(
 record_class!(
     Issue,
     "Issue",
-    "medh5.curation.quality",
+    "medh5.curation",
     q_engine::Issue,
     parse = q_engine::Issue::from_json,
     dump = |v| v.to_json(),
@@ -285,7 +285,7 @@ record_class!(
 record_class!(
     QualityRecord,
     "QualityRecord",
-    "medh5.curation.quality",
+    "medh5.curation",
     q_engine::QualityRecord,
     parse = q_engine::QualityRecord::from_json,
     dump = |v| v.to_json(),
@@ -343,7 +343,7 @@ fn dice_agreement(per_class: &Bound<'_, PyAny>, against: Option<String>) -> R<Ag
 record_class!(
     Timepoint,
     "Timepoint",
-    "medh5.curation.timeline",
+    "medh5.curation",
     tl_engine::Timepoint,
     parse = tl_engine::Timepoint::from_json,
     dump = |v| v.to_json(),
@@ -361,7 +361,7 @@ record_class!(
 );
 
 /// The sample's timepoints, in acquisition order; indexable by position or id.
-#[pyclass(module = "medh5.curation.timeline", name = "Timeline", skip_from_py_object, frozen)]
+#[pyclass(module = "medh5.curation", name = "Timeline", skip_from_py_object, frozen)]
 pub struct Timeline {
     pub inner: tl_engine::Timeline,
     points: PyOnceLock<Py<PyTuple>>,

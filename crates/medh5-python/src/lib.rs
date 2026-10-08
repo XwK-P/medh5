@@ -5,7 +5,8 @@
 //! curation tools, the conformance suite and the command line --- is the Rust
 //! engine (`medh5` crate).  This module only translates: Python values in,
 //! engine calls, Python values out.  The `medh5` Python package re-exports
-//! these names under their 1.x import paths.
+//! these names from the module each belongs to (`medh5.geometry`,
+//! `medh5.labels`, ...), which is also what every class's `__module__` names.
 
 use pyo3::prelude::*;
 

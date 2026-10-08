@@ -1,7 +1,7 @@
 //! `medh5.validate`: the validator (spec §15) and the code table.
 //!
-//! Reports cross as their JSON form; `medh5/validate/report.py` turns them
-//! into the `Report` and `Diagnostic` dataclasses 1.x returned.
+//! Reports cross as their JSON form; `medh5/validate.py` turns them into
+//! the `Report` and `Diagnostic` dataclasses 1.x returned.
 
 use std::path::PathBuf;
 

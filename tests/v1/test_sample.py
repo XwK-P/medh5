@@ -13,7 +13,7 @@ import pytest
 
 import medh5
 from medh5.annotations.voxel import InstanceInput
-from medh5.curation.timeline import Timeline, Timepoint
+from medh5.curation import Timeline, Timepoint
 from medh5.errors import (
     MEDH5Error,
     MEDH5FileError,
@@ -170,7 +170,7 @@ class TestWriteRead:
                 image.read([slice(0, 4)])
 
     def test_S4_3_pyramid_levels_are_addressable(self, tmp_path):
-        from medh5.geometry.multiscale import derive_level_grid
+        from medh5.geometry import derive_level_grid
 
         shape = (16, 32, 32)
         path = tmp_path / "pyr.medh5"
@@ -602,7 +602,7 @@ class TestAtomicRewrite:
         here, its outcome: a rewrite in place succeeds and leaves this process
         holding nothing of the file it replaced.
         """
-        from medh5.storage.recompress import recompress
+        from medh5.storage import recompress
 
         path = tmp_path / "rw.medh5"
         with medh5.create(path, codec="portable") as w:

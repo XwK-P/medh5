@@ -17,20 +17,35 @@ annotation, transform and curation record about them in a single file.  See
 the old layout, not an implementation of it.
 
 The format engine is Rust (the ``medh5`` crate); this package is its Python
-face.  The collection, curation and sampling tools load on first use.
+face.  ``__version__`` is the engine's --- the Cargo workspace version, stamped
+on the wheel, into every file's ``generator`` and into every manifest --- and
+``__format_version__`` the format version it writes.  The collection and
+sampling tools load on first use.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from medh5.__about__ import __format_version__, __version__
-from medh5.annotations.base import Annotation, Instance, VoxelAnnotation
-from medh5.curation.identity import Cohort, Deidentification, Identity, SplitClaim
-from medh5.curation.provenance import Activity, Agent, Provenance
-from medh5.curation.quality import Agreement, Issue, QualityRecord
-from medh5.curation.timeline import Timeline, Timepoint
-from medh5.curation.tracking import Observation, Track, Tracking
+from medh5._core import __format_version__, __version__
+from medh5.annotations import Annotation, Instance, VoxelAnnotation
+from medh5.curation import (
+    Activity,
+    Agent,
+    Agreement,
+    Cohort,
+    Deidentification,
+    Identity,
+    Issue,
+    Observation,
+    Provenance,
+    QualityRecord,
+    SplitClaim,
+    Timeline,
+    Timepoint,
+    Track,
+    Tracking,
+)
 from medh5.document import SampleDocument
 from medh5.errors import (
     CODES,
@@ -41,9 +56,9 @@ from medh5.errors import (
     MEDH5ValidationError,
     MEDH5VersionError,
 )
-from medh5.geometry.grid import Grid
+from medh5.geometry import Grid
 from medh5.image import Image
-from medh5.labels.labelset import LabelClass, LabelSet
+from medh5.labels import LabelClass, LabelSet
 from medh5.sample import (
     FORMAT_VERSION,
     PROFILES,

@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from medh5 import _core
-from medh5.__about__ import __format_version__, __version__
+from medh5._core import __format_version__, __version__
 
 SUFFIXES: tuple[str, ...] = _core.MANIFEST_SUFFIXES
 

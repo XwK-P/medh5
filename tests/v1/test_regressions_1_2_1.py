@@ -19,7 +19,7 @@ import medh5
 from medh5.annotations.voxel import InstanceInput
 from medh5.cli import main
 from medh5.errors import MEDH5Error
-from medh5.labels.labelset import LabelClass, LabelSet
+from medh5.labels import LabelClass, LabelSet
 
 SHAPE = (8, 10, 10)
 BIG = 2**32 + 7
@@ -507,8 +507,7 @@ class TestF06DicomSameModality:
 
 class TestOneLiners:
     def test_the_published_readme_counts_its_collections(self, tmp_path: Path) -> None:
-        from medh5.conformance import CASES
-        from medh5.conformance.suite import publish
+        from medh5.conformance import CASES, publish
 
         shards = sum(1 for c in CASES if c.suffix == ".medh5c")
         assert shards == 4

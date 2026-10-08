@@ -24,7 +24,7 @@ import pytest
 import medh5
 from medh5.annotations.voxel import InstanceInput
 from medh5.errors import MEDH5ValidationError
-from medh5.labels.labelset import LabelClass, LabelSet
+from medh5.labels import LabelClass, LabelSet
 
 SHAPE = (8, 12, 12)
 
@@ -193,7 +193,7 @@ class TestW7WriterContracts:
             mask[c] = True
         _, plain = select_encoding(masks, SHAPE)
         _, widened = select_encoding(masks, SHAPE, ignore=True)
-        from medh5.annotations.voxel.select import cost_model
+        from medh5.annotations.voxel import cost_model
 
         assert cost_model(widened, ignore=True).layers > cost_model(plain).layers
 
@@ -237,7 +237,7 @@ class TestW7WriterContracts:
             w.add_segmentation("seg", grid="g", masks=_blocks())
 
     def test_F09_replace_is_available_for_the_one_legitimate_rewrite(self):
-        from medh5.curation.provenance import Agent, Provenance
+        from medh5.curation import Agent, Provenance
 
         graph = Provenance(agents=[Agent("a1", "person", "Alice")])
         graph.add_agent(Agent("a1", "person", "pseudo:abc"), replace=True)
@@ -270,8 +270,11 @@ class TestW7WriterContracts:
             assert annotation.annotated_class_ids == (1, 3)
 
     def test_F13_TRANSCODABLE_is_the_whole_truth(self):
-        from medh5.annotations.voxel import encode_masks
-        from medh5.annotations.voxel.transcode import TRANSCODABLE, transcode_payload
+        from medh5.annotations.voxel import (
+            TRANSCODABLE,
+            encode_masks,
+            transcode_payload,
+        )
 
         assert "mask" not in TRANSCODABLE
         payload = encode_masks(_blocks(), "layers", SHAPE)
@@ -283,7 +286,7 @@ class TestW8Deidentification:
     """F-08: the attestation, the scope it covers, and the exit code."""
 
     def _dirty(self, path: Path) -> Path:
-        from medh5.curation.quality import Issue
+        from medh5.curation import Issue
 
         with medh5.create(path, sample_id="s", subject_id="subj-A") as w:
             w.identity(PatientName="Doe^Jane")
@@ -656,7 +659,7 @@ class TestW10Integrity:
         """
         import h5py
 
-        from medh5.storage.recompress import recompress
+        from medh5.storage import recompress
 
         clean = self._sample(tmp_path / "clean.medh5")
         result = recompress(clean, "archive")
@@ -758,7 +761,7 @@ class TestW11Performance:
             assert reads <= 1, f"{encoding}: {reads} reads of {table}"
 
     def test_P06_the_occupancy_map_equals_the_loop_it_replaced(self):
-        from medh5.storage.index import occupancy as _occupancy
+        from medh5.storage import occupancy as _occupancy
 
         rng = np.random.default_rng(0)
         for shape in [(9, 7, 5), (16, 16, 16), (33, 17, 8)]:
@@ -850,25 +853,25 @@ class TestW12ApiAndCli:
         [
             (
                 lambda: __import__(
-                    "medh5.curation.timeline", fromlist=["Timepoint"]
+                    "medh5.curation", fromlist=["Timepoint"]
                 ).Timepoint.from_json({"id": "tp0", "index": 0, "x": 1}),
                 "timepoint",
             ),
             (
                 lambda: __import__(
-                    "medh5.curation.quality", fromlist=["QualityRecord"]
+                    "medh5.curation", fromlist=["QualityRecord"]
                 ).QualityRecord.from_json({"status": "draft", "x": 1}),
                 "quality record",
             ),
             (
                 lambda: __import__(
-                    "medh5.curation.provenance", fromlist=["Activity"]
+                    "medh5.curation", fromlist=["Activity"]
                 ).Activity.from_json({"id": "a", "type": "import", "x": 1}),
                 "activity",
             ),
             (
                 lambda: __import__(
-                    "medh5.curation.provenance", fromlist=["Agent"]
+                    "medh5.curation", fromlist=["Agent"]
                 ).Agent.from_json({"id": "a", "type": "software", "name": "m", "x": 1}),
                 "agent",
             ),
@@ -889,7 +892,7 @@ class TestW12ApiAndCli:
         assert what in str(exc.value)
 
     def test_L14_an_agent_carries_its_organization_as_a_field(self):
-        from medh5.curation.provenance import Agent
+        from medh5.curation import Agent
 
         agent = Agent.from_json(
             {"id": "p1", "type": "person", "name": "R7", "organization": "org1"}

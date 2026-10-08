@@ -23,7 +23,7 @@ import pytest
 import medh5
 from medh5.annotations.voxel import InstanceInput
 from medh5.errors import MEDH5ValidationError
-from medh5.labels.labelset import LabelClass, LabelSet
+from medh5.labels import LabelClass, LabelSet
 from medh5.validate import validate_file
 
 SHAPE = (8, 16, 16)
@@ -530,7 +530,7 @@ class TestL26Verify:
     def test_L26_recompress_names_the_unattested_dataset(self, tmp_path: Path, capsys):
         """It failed with `FAILED (0)` and no path, in the table and the JSON."""
         from medh5.cli import main
-        from medh5.storage.recompress import recompress
+        from medh5.storage import recompress
 
         path = self._boxes(tmp_path / "det.medh5")
         with h5py.File(path, "r+") as handle:
@@ -547,7 +547,7 @@ class TestL26Verify:
         assert "UNSIGNED  annotations/det/instance_ids" in out
 
     def test_L26_fix_counts_it_as_needing_digests(self, tmp_path: Path):
-        from medh5.integrity.repair import diagnose
+        from medh5.integrity import diagnose
 
         path = self._boxes(tmp_path / "det.medh5")
         with h5py.File(path, "r+") as handle:
@@ -907,8 +907,7 @@ class TestW21Performance:
 
     def test_L28_S14_1_rechunk_chunks_the_way_the_writer_does(self, tmp_path: Path):
         """A `layers` dataset went to h5py's (2, 16, 24, 48), and drew W902."""
-        from medh5.storage.chunking import fit_chunks, grid_chunks
-        from medh5.storage.recompress import recompress
+        from medh5.storage import fit_chunks, grid_chunks, recompress
 
         shape = (32, 48, 48)
         rng = np.random.default_rng(0)
@@ -950,7 +949,7 @@ class TestW21Performance:
         assert "W902" not in validate_file(path, level="strict").codes
 
     def test_L28_rechunk_finds_each_sample_root_in_a_collection(self, tmp_path: Path):
-        from medh5.storage.recompress import recompress
+        from medh5.storage import recompress
 
         shape = (32, 64, 64)  # 256 KiB of layers: chunked
         paths = []
@@ -1051,8 +1050,8 @@ class TestW22Hygiene:
             w.deidentification(method="synthetic")
 
     def test_Q11_the_dead_names_are_gone(self):
-        import medh5.geometry.grid as grid
-        import medh5.transforms.apply as apply
+        import medh5.geometry as grid
+        import medh5.transforms as apply
 
         assert not hasattr(grid, "iter_spatial_slices")
         assert not hasattr(grid, "KNOWN_COORD_SYSTEMS")

@@ -1,7 +1,7 @@
 //! Read handles: a sample, its images, annotations, transforms and indices.
 //!
 //! The Python facades in `medh5/sample.py`, `medh5/image.py`,
-//! `medh5/annotations/` and `medh5/transforms/` wrap these; everything the
+//! `medh5/annotations/` and `medh5/transforms.py` wrap these; everything the
 //! facades answer is computed here, by the engine.
 
 use std::sync::{Arc, Mutex};

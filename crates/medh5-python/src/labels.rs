@@ -11,11 +11,11 @@ use crate::convert::{class_key, class_keys, json_to_py, map_to_py, py_to_json};
 use crate::errors::R;
 use crate::values::{dataclass_repr, json_hash, opt, reduce_via_json};
 
-const MODULE: &str = "medh5.labels.labelset";
+const MODULE: &str = "medh5.labels";
 
 // -- OntologyCode ----------------------------------------------------------------------
 
-#[pyclass(module = "medh5.labels.labelset", name = "OntologyCode", skip_from_py_object, frozen, eq)]
+#[pyclass(module = "medh5.labels", name = "OntologyCode", skip_from_py_object, frozen, eq)]
 #[derive(Clone, PartialEq)]
 pub struct OntologyCode(pub engine::OntologyCode);
 
@@ -86,7 +86,7 @@ impl OntologyCode {
 
 // -- Relation ----------------------------------------------------------------------------
 
-#[pyclass(module = "medh5.labels.labelset", name = "Relation", skip_from_py_object, frozen, eq, hash)]
+#[pyclass(module = "medh5.labels", name = "Relation", skip_from_py_object, frozen, eq, hash)]
 #[derive(Clone, PartialEq, Hash)]
 pub struct Relation(pub engine::Relation);
 
@@ -151,7 +151,7 @@ impl Relation {
 
 // -- Skeleton ----------------------------------------------------------------------------
 
-#[pyclass(module = "medh5.labels.labelset", name = "Skeleton", skip_from_py_object, frozen, eq, hash)]
+#[pyclass(module = "medh5.labels", name = "Skeleton", skip_from_py_object, frozen, eq, hash)]
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Skeleton(pub engine::Skeleton);
 
@@ -220,7 +220,7 @@ impl Skeleton {
 
 // -- LabelClass --------------------------------------------------------------------------
 
-#[pyclass(module = "medh5.labels.labelset", name = "LabelClass", skip_from_py_object, frozen, eq)]
+#[pyclass(module = "medh5.labels", name = "LabelClass", skip_from_py_object, frozen, eq)]
 #[derive(Clone, PartialEq)]
 pub struct LabelClass(pub engine::LabelClass);
 
@@ -365,7 +365,7 @@ impl LabelClass {
 
 // -- LabelSet ------------------------------------------------------------------------------
 
-#[pyclass(module = "medh5.labels.labelset", name = "LabelSet", skip_from_py_object, frozen)]
+#[pyclass(module = "medh5.labels", name = "LabelSet", skip_from_py_object, frozen)]
 pub struct LabelSet(pub engine::LabelSet, PyOnceLock<Py<PyTuple>>);
 
 impl LabelSet {

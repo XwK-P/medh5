@@ -8,7 +8,7 @@ import pytest
 
 import medh5
 from medh5.errors import MEDH5ValidationError
-from medh5.integrity.digest import (
+from medh5.integrity import (
     array_digest,
     canonical_attrs,
     dataset_digest,
@@ -16,8 +16,10 @@ from medh5.integrity.digest import (
     group_digest,
     parse_digest,
     relative_path,
+    stale_index_entries,
+    verify_object,
+    verify_root,
 )
-from medh5.integrity.verify import stale_index_entries, verify_object, verify_root
 from tests.v1._h5 import encode_attr
 from tests.v1.conftest import SHAPE, write_sample
 

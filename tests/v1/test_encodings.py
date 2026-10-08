@@ -11,6 +11,7 @@ import pytest
 import medh5
 from medh5.annotations.geometric import encode_obb
 from medh5.annotations.voxel import (
+    TRANSCODABLE,
     InstanceInput,
     analyse,
     cost_model,
@@ -22,14 +23,14 @@ from medh5.annotations.voxel import (
     encode_masks,
     encode_probmap,
     greedy_colour,
+    layers_from_colouring,
+    masks_equal,
     payload_to_masks,
     select_encoding,
     transcode_payload,
 )
-from medh5.annotations.voxel.select import layers_from_colouring
-from medh5.annotations.voxel.transcode import TRANSCODABLE, masks_equal
 from medh5.errors import MEDH5ValidationError
-from medh5.labels.labelset import LabelClass, LabelSet
+from medh5.labels import LabelClass, LabelSet
 from tests.v1.conftest import block
 
 SHAPE = (12, 16, 16)

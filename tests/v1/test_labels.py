@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
+from medh5 import labels
 from medh5.errors import MEDH5ValidationError
-from medh5.labels import registry
-from medh5.labels.labelset import (
+from medh5.labels import (
     IGNORE_ID,
     LabelClass,
     LabelSet,
@@ -171,30 +171,30 @@ class TestLabelSet:
 
 class TestRegistry:
     def test_bundled_vocabularies_load_and_validate(self):
-        assert set(registry.available()) >= {
+        assert set(labels.available()) >= {
             "amos22-organs",
             "binary-foreground",
             "brats-subregions",
         }
-        for name in registry.available():
-            ls = registry.load(name)
+        for name in labels.available():
+            ls = labels.load(name)
             ls.check()
             assert len(ls) >= 1
 
     def test_unknown_vocabulary_is_a_coded_error(self):
         with pytest.raises(MEDH5ValidationError) as exc:
-            registry.load("nope")
+            labels.load("nope")
         assert exc.value.code == "E305"
 
     def test_register_and_unregister(self):
         ls = LabelSet("tmp", classes=[LabelClass(1, "a", "A")])
-        registry.register("tmp-vocab", ls)
-        assert registry.load("tmp-vocab") is ls
-        registry.unregister("tmp-vocab")
-        assert "tmp-vocab" not in registry.available()
+        labels.register("tmp-vocab", ls)
+        assert labels.load("tmp-vocab") is ls
+        labels.unregister("tmp-vocab")
+        assert "tmp-vocab" not in labels.available()
 
     def test_describe_reports_digests(self):
-        described = registry.describe()
+        described = labels.describe()
         assert described["amos22-organs"]["classes"] == 15
         assert described["amos22-organs"]["sha256"]
 
@@ -204,4 +204,4 @@ class TestRegistry:
             '{"id":"f","version":"1","classes":[{"id":1,"key":"a","name":"A"}]}',
             encoding="utf-8",
         )
-        assert registry.load_file(path)["a"].name == "A"
+        assert labels.load_file(path)["a"].name == "A"

@@ -18,7 +18,7 @@ import pytest
 import medh5
 from medh5.annotations.voxel import InstanceInput
 from medh5.errors import MEDH5ValidationError, MEDH5VersionError
-from medh5.labels.labelset import LabelClass, LabelSet
+from medh5.labels import LabelClass, LabelSet
 
 SHAPE = (8, 10, 10)
 
@@ -227,7 +227,7 @@ class TestW2WriterSideRefusals:
         assert exc.value.code == "E602"
 
     def test_S12_3_and_S11_4_timestamps_are_RFC_3339(self):
-        from medh5.curation.identity import Deidentification, SplitClaim
+        from medh5.curation import Deidentification, SplitClaim
 
         with pytest.raises(MEDH5ValidationError) as exc:
             SplitClaim(set_id="cv", partition="train", assigned_at="yesterday")
@@ -335,7 +335,7 @@ class TestW3LooseEnds:
             entry.field("to_json")
 
     def test_S10_frame_graph_draws_what_the_resolver_walks(self, tmp_path: Path):
-        from medh5.transforms.base import frame_graph
+        from medh5.transforms import frame_graph
 
         path = tmp_path / "graph.medh5"
         with _open_writer(path, frames=True) as w:
@@ -487,7 +487,7 @@ class TestW4PerformanceRewritesAreExact:
     def test_S10_4_windowed_sampling_equals_the_whole_field(
         self, tmp_path: Path, extrapolation: str
     ):
-        from medh5.transforms.apply import sample_field
+        from medh5.transforms import sample_field
 
         rng = np.random.default_rng(7)
         field = rng.normal(0.0, 2.0, (3, 12, 14, 16)).astype(np.float32)
@@ -599,15 +599,13 @@ class TestW4PerformanceRewritesAreExact:
 
 
 class TestW5Structure:
-    def test_the_writer_moved_and_every_name_stayed(self):
+    def test_the_writer_lives_beside_the_reader(self):
         import medh5.sample as sample_module
-        import medh5.writer as writer_module
 
-        assert sample_module.SampleWriter is writer_module.SampleWriter
-        assert medh5.SampleWriter is writer_module.SampleWriter
-        assert medh5.create is writer_module.create
-        assert medh5.amend is writer_module.amend
-        assert "SampleWriter" in sample_module.__all__
+        assert medh5.SampleWriter is sample_module.SampleWriter
+        assert medh5.create is sample_module.create
+        assert medh5.amend is sample_module.amend
+        assert {"SampleWriter", "create", "amend"} <= set(sample_module.__all__)
 
     def test_S5_2_keys_are_schema_valid_wherever_they_are_minted(self):
         from medh5.io._common import sanitize_key, sanitize_stem
@@ -626,11 +624,6 @@ class TestW5Structure:
         with pytest.raises(ImportError, match=r"medh5\[dicomseg\]"):
             require("no_such_module_medh5", extra="dicomseg", purpose="testing")
         assert require("json", extra="x", purpose="y").dumps({}) == "{}"
-
-    def test_one_extrapolations_vocabulary(self):
-        from medh5.transforms import apply, base
-
-        assert base.EXTRAPOLATIONS is apply.EXTRAPOLATIONS
 
 
 class TestW6Tooling:

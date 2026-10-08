@@ -36,7 +36,7 @@ import medh5
 from medh5.annotations.voxel import InstanceInput
 from medh5.collection import pack
 from medh5.dataset.manifest import scan
-from medh5.labels.labelset import LabelClass, LabelSet
+from medh5.labels import LabelClass, LabelSet
 from tests.v1.conftest import SHAPE, block, write_sample
 
 ROOT = Path(__file__).resolve().parents[2]

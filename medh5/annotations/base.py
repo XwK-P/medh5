@@ -18,8 +18,8 @@ import numpy as np
 import numpy.typing as npt
 
 from medh5 import _core
-from medh5.geometry.grid import Grid
-from medh5.labels.labelset import LabelClass, LabelSet
+from medh5.geometry import Grid, box_to_slices
+from medh5.labels import LabelClass, LabelSet
 
 VOXEL_KINDS: tuple[str, ...] = _core.VOXEL_KINDS
 GEOMETRIC_KINDS: tuple[str, ...] = _core.GEOMETRIC_KINDS
@@ -35,6 +35,14 @@ SPEC_ANNOTATION_ATTRS: tuple[str, ...] = _core.SPEC_ANNOTATION_ATTRS
 
 AnnotationHeader = _core.AnnotationHeader
 """The fixed attribute header every annotation carries (spec §6.2)."""
+
+AnnotationPayload = _core.AnnotationPayload
+"""Datasets and kind-specific attributes for one encoded annotation.
+
+What every encoder returns and the writer stores; ``data`` is the ``data``
+dataset, ``class_ids`` the encoding order (§6.2), ``stacked_axes`` the leading
+axes of ``data`` that get chunk extent 1 (§14.1).
+"""
 
 
 def instance_id_dtype(ids: Iterable[int]) -> Any:
@@ -60,8 +68,6 @@ class Instance:
 
     @property
     def slices(self) -> tuple[slice, ...]:
-        from medh5.geometry.affine import box_to_slices
-
         return box_to_slices(self.box)
 
     @property
@@ -265,31 +271,6 @@ class VoxelAnnotation(Annotation):
             yield _instance(row)
 
 
-def readers() -> dict[str, Any]:
-    """``kind`` -> reader class."""
-    from medh5.annotations.classification import ClassificationAnnotation
-    from medh5.annotations.geometric import GEOMETRIC_READERS
-    from medh5.annotations.voxel import READERS as VOXEL_READERS
-
-    return {
-        **VOXEL_READERS,
-        **GEOMETRIC_READERS,
-        "classification": ClassificationAnnotation,
-    }
-
-
-_READERS: dict[str, Any] = {}
-
-
-def open_annotation(handle: Any) -> Annotation:
-    """The reader class for an annotation handle's ``kind``."""
-    if not _READERS:
-        _READERS.update(readers())
-    cls = _READERS.get(handle.kind, Annotation)
-    opened: Annotation = cls(handle)
-    return opened
-
-
 __all__ = [
     "ANNOTATION_KINDS",
     "DEFAULT_TASK_FOR_KIND",
@@ -300,9 +281,8 @@ __all__ = [
     "VOXEL_KINDS",
     "Annotation",
     "AnnotationHeader",
+    "AnnotationPayload",
     "Instance",
     "VoxelAnnotation",
     "instance_id_dtype",
-    "open_annotation",
-    "readers",
 ]

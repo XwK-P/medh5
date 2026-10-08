@@ -12,16 +12,18 @@ import pytest
 
 import medh5
 from medh5.errors import MEDH5ValidationError
-from medh5.transforms.affine import encode_affine
-from medh5.transforms.apply import (
+from medh5.transforms import (
+    ChainTransform,
+    InverseTransform,
+    basis,
+    encode_affine,
+    encode_bspline,
+    encode_composite,
+    encode_displacement,
     folding_fraction,
     linear_sample,
     target_registration_error,
 )
-from medh5.transforms.bspline import basis, encode_bspline
-from medh5.transforms.composite import encode_composite
-from medh5.transforms.displacement import encode_displacement
-from medh5.transforms.resolve import ChainTransform, InverseTransform
 
 SHAPE = (12, 16, 16)
 SHIFT = np.array([2.0, -1.0, 0.5])
@@ -716,7 +718,7 @@ class TestInterpolation:
         and only for cubic fields.
         """
         pytest.importorskip("scipy")
-        from medh5.transforms.apply import cubic_sample
+        from medh5.transforms import cubic_sample
 
         field = np.ones((1, 4, 4))
         outside = np.array([[-5.0, -5.0]])

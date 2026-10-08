@@ -32,7 +32,7 @@ docs/examples/*.json
 target/
 
 # The binary's archives, as `.github/scripts/build-dist.sh` writes them (its
-# wheels go to dist/).  Anchored: `medh5/cli/` is a package.
+# wheels go to dist/).
 /cli/
 
 # The compiled engine, as `maturin develop` leaves it next to the sources.

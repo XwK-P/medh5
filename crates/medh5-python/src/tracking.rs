@@ -1,4 +1,4 @@
-//! `medh5.curation.tracking`: joining `instance_id` across timepoints (§7.4).
+//! `medh5.curation`: joining `instance_id` across timepoints (§7.4).
 
 use ndarray::{ArrayD, IxDyn};
 use pyo3::exceptions::PyKeyError;
@@ -10,7 +10,7 @@ use medh5::curation::tracking as engine;
 use crate::convert::{array_to_py, json_to_py};
 use crate::values::{dataclass_repr, opt};
 
-#[pyclass(module = "medh5.curation.tracking", name = "Observation", skip_from_py_object, frozen)]
+#[pyclass(module = "medh5.curation", name = "Observation", skip_from_py_object, frozen)]
 #[derive(Clone)]
 pub struct Observation(pub engine::Observation);
 
@@ -108,7 +108,7 @@ impl Observation {
     }
 }
 
-#[pyclass(module = "medh5.curation.tracking", name = "Track", skip_from_py_object, frozen)]
+#[pyclass(module = "medh5.curation", name = "Track", skip_from_py_object, frozen)]
 #[derive(Clone)]
 pub struct Track(pub engine::Track);
 
@@ -193,7 +193,7 @@ impl Track {
 
 /// `{instance_id: Track}` with the coverage needed to tell *resolved* from
 /// *unexamined*.
-#[pyclass(module = "medh5.curation.tracking", name = "Tracking", frozen)]
+#[pyclass(module = "medh5.curation", name = "Tracking", frozen)]
 pub struct Tracking(pub engine::Tracking);
 
 impl Tracking {

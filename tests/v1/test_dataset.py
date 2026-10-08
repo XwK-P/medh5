@@ -20,7 +20,7 @@ from medh5.dataset.manifest import Manifest, entries_for, find, scan
 from medh5.dataset.split import make_splits, write_claims
 from medh5.dataset.stats import Moments, compute_stats, stats_for
 from medh5.errors import MEDH5Error, MEDH5ValidationError
-from medh5.labels.labelset import LabelClass, LabelSet
+from medh5.labels import LabelClass, LabelSet
 from tests.v1.conftest import SHAPE, block, write_sample
 
 

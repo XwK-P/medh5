@@ -23,8 +23,8 @@ import pytest
 
 import medh5
 from medh5.errors import MEDH5ValidationError
-from medh5.integrity.digest import array_digest, canonical_attrs, dataset_digest
-from medh5.labels.labelset import canonical_json
+from medh5.integrity import array_digest, canonical_attrs, dataset_digest
+from medh5.labels import canonical_json
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -345,7 +345,7 @@ class TestThe1xNamesStillAnswer:
         self, path: Path
     ) -> None:
         from medh5.annotations.base import AnnotationHeader
-        from medh5.transforms.base import TransformHeader
+        from medh5.transforms import TransformHeader
 
         with medh5.open(path) as sample:
             header = AnnotationHeader.read(sample.root["annotations/seg"])
@@ -358,7 +358,7 @@ class TestThe1xNamesStillAnswer:
     ) -> None:
         from collections.abc import Sequence
 
-        from medh5.curation.identity import Identity
+        from medh5.curation import Identity
 
         with medh5.open(path) as sample:
             timeline = sample.timepoints
@@ -369,8 +369,8 @@ class TestThe1xNamesStillAnswer:
         assert {"sample_id", "subject_id", "extra"} <= set(dir(Identity("x", "y")))
 
     def test_a_codec_still_gives_h5py_its_keywords(self) -> None:
-        from medh5.annotations.voxel.payload import AnnotationPayload
-        from medh5.storage.codecs import PROFILES
+        from medh5.annotations.voxel import AnnotationPayload
+        from medh5.storage import PROFILES
 
         assert AnnotationPayload.__name__ == "AnnotationPayload"
         assert PROFILES["portable"].image.kwargs() == {

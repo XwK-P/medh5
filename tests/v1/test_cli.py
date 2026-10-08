@@ -9,8 +9,7 @@ import numpy as np
 import pytest
 
 import medh5
-from medh5.cli import main
-from medh5.cli._common import EXIT_ERROR, EXIT_OK, EXIT_USAGE, human_bytes, table
+from medh5.cli import EXIT_ERROR, EXIT_OK, EXIT_USAGE, main
 from tests.v1._h5 import encode_attr
 from tests.v1.conftest import write_legacy_sample
 
@@ -226,7 +225,7 @@ class TestLabels:
         assert code == EXIT_OK
 
     def test_check_detects_drift(self, capsys, tmp_path, label_set, masks):
-        from medh5.labels.labelset import LabelClass, LabelSet
+        from medh5.labels import LabelClass, LabelSet
         from tests.v1.conftest import write_sample
 
         a = write_sample(tmp_path / "a.medh5", label_set=label_set, masks=masks)
@@ -660,20 +659,6 @@ class TestDatasetCommands:
 
     def test_usage(self, capsys):
         assert run(capsys, "dataset")[0] == EXIT_ERROR
-
-
-class TestHelpers:
-    def test_human_bytes(self):
-        assert human_bytes(512) == "512 B"
-        assert human_bytes(2048) == "2.0 KiB"
-        assert human_bytes(5 * 1024**3) == "5.0 GiB"
-
-    def test_table_pads_columns(self):
-        rendered = table([["a", 1], ["bbbb", 22]], ["k", "v"])
-        assert rendered.splitlines()[0].startswith("k     v")
-
-    def test_empty_table(self):
-        assert table([], ["k", "v"]).splitlines()[0] == "k  v"
 
 
 class TestPhase3Kinds:

@@ -9,6 +9,7 @@ import pytest
 
 import medh5
 from medh5.annotations.voxel import InstanceInput
+from medh5.curation import PRESENT, RESOLVED, UNEXAMINED, carries_instance_ids
 from medh5.curation.agreement import (
     box_iou,
     compare,
@@ -18,7 +19,6 @@ from medh5.curation.agreement import (
     iou,
 )
 from medh5.curation.splits import audit_splits
-from medh5.curation.tracking import PRESENT, RESOLVED, UNEXAMINED, carries_instance_ids
 from medh5.errors import MEDH5ValidationError
 from medh5.validate import validate_file
 from tests.v1.conftest import SHAPE, block, write_sample

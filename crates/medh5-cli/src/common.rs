@@ -283,10 +283,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn human_bytes_matches_the_python_helper() {
+    fn human_bytes_prints_what_1x_printed() {
         assert_eq!(human_bytes(0.0), "0 B");
         assert_eq!(human_bytes(1023.0), "1023 B");
+        assert_eq!(human_bytes(512.0), "512 B");
         assert_eq!(human_bytes(1024.0), "1.0 KiB");
+        assert_eq!(human_bytes(2048.0), "2.0 KiB");
+        assert_eq!(human_bytes(5.0 * 1024.0 * 1024.0 * 1024.0), "5.0 GiB");
         assert_eq!(human_bytes(1536.0 * 1024.0), "1.5 MiB");
         assert_eq!(human_bytes(5.0 * 1024.0 * 1024.0 * 1024.0 * 1024.0), "5120.0 GiB");
     }
@@ -295,6 +298,9 @@ mod tests {
     fn tables_pad_by_characters() {
         let rows = vec![vec!["§1".to_string(), "x".to_string()]];
         assert_eq!(table(&rows, &["a", "bb"]), "a   bb\n--  --\n§1  x ");
+        let rows = vec![vec!["a".to_string(), "1".to_string()], vec!["bbbb".to_string(), "22".to_string()]];
+        assert!(table(&rows, &["k", "v"]).starts_with("k     v"));
+        assert_eq!(table(&[], &["k", "v"]).lines().next(), Some("k  v"));
     }
 
     #[test]

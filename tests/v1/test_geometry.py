@@ -8,24 +8,22 @@ import numpy as np
 import pytest
 
 from medh5.errors import MEDH5ValidationError
-from medh5.geometry.affine import (
+from medh5.geometry import (
+    Grid,
+    Pyramid,
     apply_affine_to_box,
     box_corners,
     box_to_slices,
     build_affine,
     check_orthonormal,
+    check_pyramid,
     decompose_affine,
+    derive_level_grid,
     index_to_world,
     is_proper_rotation,
+    pyramid_factors,
     slices_to_box,
     world_to_index,
-)
-from medh5.geometry.grid import Grid
-from medh5.geometry.multiscale import (
-    Pyramid,
-    check_pyramid,
-    derive_level_grid,
-    pyramid_factors,
 )
 
 

@@ -17,8 +17,8 @@ from medh5.annotations.geometric import (
     encode_points,
 )
 from medh5.errors import MEDH5ValidationError
-from medh5.geometry.affine import box_to_slices, slices_to_box
-from medh5.labels.labelset import LabelSet, Skeleton
+from medh5.geometry import box_to_slices, slices_to_box
+from medh5.labels import LabelSet, Skeleton
 from tests.v1.conftest import SHAPE
 
 BOXES = np.array(

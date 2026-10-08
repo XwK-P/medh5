@@ -213,7 +213,7 @@ def _label_set(
     document: Mapping[str, Any], log: ConversionReport
 ) -> tuple[Any, dict[int, list[int]]]:
     """nnU-Net ``labels`` as a MEDH5 label set, keeping its integer ids."""
-    from medh5.labels.labelset import LabelClass, LabelSet
+    from medh5.labels import LabelClass, LabelSet
 
     scalars: dict[str, int] = {}
     region_values: dict[str, list[int]] = {}

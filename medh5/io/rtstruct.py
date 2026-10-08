@@ -100,7 +100,7 @@ def from_rtstruct(
     """Import an RTSTRUCT's ROIs as contours, and optionally rasterise them."""
     import medh5
     from medh5.annotations.geometric import Polygon
-    from medh5.labels.labelset import LabelClass, LabelSet
+    from medh5.labels import LabelClass, LabelSet
 
     log = report or ConversionReport(converter="from-rtstruct")
     log.source = os.fspath(path)

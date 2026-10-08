@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 
 import medh5
-from medh5.labels.labelset import LabelClass, LabelSet
+from medh5.labels import LabelClass, LabelSet
 
 SEED = 20260815
 SHAPE = (16, 24, 24)

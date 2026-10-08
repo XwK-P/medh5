@@ -126,7 +126,7 @@ fn encode_options(kwargs: Option<&Bound<'_, PyDict>>) -> R<enc::EncodeOptions> {
 // -- AnnotationPayload ------------------------------------------------------------------------
 
 /// Datasets and kind-specific attributes for one encoded annotation.
-#[pyclass(module = "medh5.annotations.payload", name = "AnnotationPayload", skip_from_py_object)]
+#[pyclass(module = "medh5.annotations.base", name = "AnnotationPayload", skip_from_py_object)]
 #[derive(Clone)]
 pub struct AnnotationPayload {
     pub inner: Payload,
@@ -492,7 +492,7 @@ impl AnnotationHeader {
 // -- OverlapStats and CostModel ---------------------------------------------------------------
 
 /// Measured properties of a set of class masks, and what they imply (§7.6).
-#[pyclass(module = "medh5.annotations.voxel.select", name = "OverlapStats", skip_from_py_object, frozen)]
+#[pyclass(module = "medh5.annotations.voxel", name = "OverlapStats", skip_from_py_object, frozen)]
 #[derive(Clone)]
 pub struct OverlapStats {
     pub inner: select::OverlapStats,
@@ -617,7 +617,7 @@ impl OverlapStats {
 }
 
 /// Raw (pre-compression) bytes per encoding.
-#[pyclass(module = "medh5.annotations.voxel.select", name = "CostModel", skip_from_py_object, frozen)]
+#[pyclass(module = "medh5.annotations.voxel", name = "CostModel", skip_from_py_object, frozen)]
 pub struct CostModel {
     pub inner: select::CostModel,
 }

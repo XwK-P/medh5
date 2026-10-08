@@ -20,7 +20,7 @@ from typing_extensions import Self, disjoint_base
 
 from medh5.annotations.base import VoxelAnnotation
 from medh5.annotations.geometric import Polygon
-from medh5.annotations.voxel.instances import InstanceInput
+from medh5.annotations.voxel import InstanceInput
 
 __all__ = [
     "ACTIVITY_FIELDS",
@@ -254,10 +254,8 @@ __all__ = [
     "check_value_type",
     "chunk_report",
     "cli_command_tree",
-    "cli_human_bytes",
     "cli_lookup_message",
     "cli_main",
-    "cli_table",
     "codec_profiles",
     "codes_table",
     "collect_digests",
@@ -821,10 +819,6 @@ def cli_command_tree() -> Any:
     """The grammar as data: `{"options", "positionals", "commands"}`."""
     ...
 
-def cli_human_bytes(n: float) -> str:
-    """`512 B`, `2.0 KiB`, ... as the CLI prints sizes."""
-    ...
-
 def cli_lookup_message(text: str) -> str:
     """What the command line prints for a failed lookup whose message is `text`:
     the message when it is a sentence, the key named otherwise.
@@ -835,12 +829,8 @@ def cli_main(argv: Sequence[str], host: Any) -> int:
     """Run the command line on `argv` (without the program name); the exit code."""
     ...
 
-def cli_table(rows: Sequence[Sequence[Any]], headers: Sequence[str]) -> str:
-    """A plain-text table as the CLI prints one."""
-    ...
-
 def codec_profiles() -> list[Any]:
-    """The codec profiles, as plain data (`medh5.storage.codecs` builds its
+    """The codec profiles, as plain data (`medh5.storage` builds its
     `CodecProfile` values from this).
     """
     ...

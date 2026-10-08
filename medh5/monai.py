@@ -28,8 +28,8 @@ import numpy.typing as npt
 from medh5._optional import require
 from medh5.annotations.base import VoxelAnnotation
 from medh5.errors import MEDH5ValidationError
-from medh5.geometry.grid import Grid
-from medh5.labels.labelset import IGNORE_ID
+from medh5.geometry import Grid
+from medh5.labels import IGNORE_ID
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from medh5.sample import Sample
@@ -218,7 +218,7 @@ def from_metatensor(tensor: Any) -> tuple[npt.NDArray[Any], dict[str, Any]]:
     tensor's own declared space, so a caller can hand it straight to
     ``SampleWriter.add_grid`` without re-deriving anything.
     """
-    from medh5.geometry.affine import decompose_affine
+    from medh5.geometry import decompose_affine
 
     array = np.asarray(
         tensor.detach().cpu().numpy() if hasattr(tensor, "detach") else tensor

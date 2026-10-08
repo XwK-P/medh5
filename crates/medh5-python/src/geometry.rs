@@ -33,7 +33,7 @@ pub fn dataclass_fields(py: Python<'_>, names: &[&str]) -> PyResult<Py<PyDict>> 
 
 // -- Grid ------------------------------------------------------------------------------
 
-#[pyclass(module = "medh5.geometry.grid", name = "Grid", skip_from_py_object, frozen)]
+#[pyclass(module = "medh5.geometry", name = "Grid", skip_from_py_object, frozen)]
 pub struct Grid(pub EngineGrid, PyOnceLock<Py<PyAny>>);
 
 impl Grid {
@@ -386,7 +386,7 @@ fn points_through<'py>(
 
 // -- Pyramid -----------------------------------------------------------------------------
 
-#[pyclass(module = "medh5.geometry.multiscale", name = "Pyramid", skip_from_py_object, frozen)]
+#[pyclass(module = "medh5.geometry", name = "Pyramid", skip_from_py_object, frozen)]
 pub struct Pyramid(pub multiscale::Pyramid);
 
 impl Pyramid {

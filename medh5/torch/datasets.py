@@ -46,7 +46,7 @@ import numpy.typing as npt
 
 from medh5.annotations.base import VoxelAnnotation
 from medh5.errors import MEDH5ValidationError
-from medh5.labels.labelset import IGNORE_ID
+from medh5.labels import IGNORE_ID
 from medh5.sample import Sample, open_sample
 from medh5.sampling import (
     PairReport,

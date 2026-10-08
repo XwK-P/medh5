@@ -1,10 +1,12 @@
-"""``medh5 convert`` --- the format converters, run for the native CLI.
+"""The ``medh5`` command line.
 
-The command line is native (``medh5-cli``): it parses ``convert``, and hands
-each converter subcommand here with its arguments, keyed as the 1.x parser
-named them.  The converters are Python integrations (nibabel, pydicom,
-highdicom); ``migrate`` --- 0.x files --- is the engine's and never reaches this
-module.
+One native application over the format engine (the ``medh5-cli`` crate): the
+same grammar, output and exit codes --- 0 success, 1 a handled error, 2 a usage
+error --- whether it runs as the standalone ``medh5`` binary or as this
+package's console script.  The commands only Python can run are handed back to
+the package: the format converters (NIfTI, DICOM, DICOM SEG, RTSTRUCT, nnU-Net),
+which wrap nibabel, pydicom and highdicom, and the PyTorch dataloader
+benchmark.  The standalone binary reaches them through ``python -m medh5.cli``.
 
 Every converter writes a conversion report, because the interesting part of an
 import is not that it succeeded but what it had to decide: which encoding, which
@@ -16,35 +18,98 @@ warnings still print.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Mapping
+import sys
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from medh5.cli._common import EXIT_ERROR, EXIT_OK, emit, fail
+from medh5 import _core
 from medh5.errors import MEDH5Error
-from medh5.io.report import ConversionReport
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from medh5.io.report import ConversionReport
+
+EXIT_OK: int = _core.EXIT_OK
+EXIT_ERROR: int = _core.EXIT_ERROR
+EXIT_USAGE: int = _core.EXIT_USAGE
 
 
-def run(command: str, args: Mapping[str, Any]) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
+    """Run ``medh5`` on *argv* (``sys.argv[1:]`` by default); the exit code.
+
+    ``--help`` and ``--version`` return 0 and a usage error 2, like every other
+    outcome: nothing raises ``SystemExit`` but the console script itself.
+    """
+    args = [str(a) for a in (sys.argv[1:] if argv is None else argv)]
+    return int(_core.cli_main(args, _Host()))
+
+
+def command_tree() -> dict[str, Any]:
+    """The grammar as data: ``{"options", "positionals", "commands"}``,
+    recursively --- what documentation is checked against."""
+    found: dict[str, Any] = _core.cli_command_tree()
+    return found
+
+
+class _Host:
+    """What only the Python package can run, on behalf of the native CLI."""
+
+    def convert(self, argv: list[str], command: str, args: dict[str, Any]) -> int:
+        return _convert(command, args)
+
+    def throughput(
+        self, path: str, patch: int, workers: int, annotation: str | None
+    ) -> dict[str, Any]:
+        """Sustained patches/s through the real dataloader, as a measurement
+        record.  Raises ``ImportError`` without PyTorch; the command line
+        reports that as a skipped measurement rather than a failure."""
+        from medh5.bench import throughput
+
+        found: dict[str, Any] = throughput(
+            [path], patch=patch, workers=workers, annotation=annotation
+        ).to_json()
+        return found
+
+
+def _what(exc: LookupError) -> str:
+    """The message a lookup failed with, or what was looked up.
+
+    ``str(KeyError('x'))`` is ``"'x'"``: the key alone, in quotes.  Most of
+    this package's lookups raise with a sentence that names what is available,
+    which is printed as it is; a bare key is named as one.  The rule is the
+    native CLI's, so a converter's error reads as an engine error does.
+    """
+    detail = exc.args[0] if len(exc.args) == 1 else exc
+    return str(_core.cli_lookup_message(str(detail)))
+
+
+def _fail(message: str) -> int:
+    """Report a handled error on stderr: ``medh5: <message>``, exit code 1."""
+    print(f"medh5: {message}", file=sys.stderr)
+    return EXIT_ERROR
+
+
+# -- the converters ``medh5 convert`` hands back to the package -------------------
+
+
+def _convert(command: str, args: Mapping[str, Any]) -> int:
     """Run converter *command* (``from-nifti``, ``to-dicom-seg``, ...) on its
-    parsed arguments; the exit code.
+    parsed arguments, keyed as the 1.x parser named them; the exit code.
 
     A handled failure --- a format error, a missing optional dependency, a
     missing file, a name the file does not have --- prints ``medh5: <why>`` and
     exits 1, as every native command does.
     """
-    from medh5.cli import _what
-
-    handler = HANDLERS.get(command)
+    handler = _HANDLERS.get(command)
     if handler is None:
-        return fail("usage: medh5 convert COMMAND ... (see --help)")
+        return _fail("usage: medh5 convert COMMAND ... (see --help)")
     try:
         return handler(SimpleNamespace(**args))
     except (MEDH5Error, ImportError, FileNotFoundError) as exc:
-        return fail(str(exc))
+        return _fail(str(exc))
     except LookupError as exc:
-        return fail(_what(exc))
+        return _fail(_what(exc))
     except BrokenPipeError:  # pragma: no cover - `medh5 convert ... | head`
         return EXIT_OK
 
@@ -65,13 +130,10 @@ def _finish(report: ConversionReport, args: Any) -> int:
             json.dumps(report.to_json(), indent=2) + "\n", encoding="utf-8"
         )
     if getattr(args, "json", False):
-        emit(report.to_json(), as_json=True)
+        print(json.dumps(report.to_json(), indent=2, default=str))
     else:
         print(report.format(verbose=True))
     return EXIT_OK if report.ok else EXIT_ERROR
-
-
-# -- NIfTI -----------------------------------------------------------------
 
 
 def _from_nifti(args: Any) -> int:
@@ -106,9 +168,6 @@ def _to_nifti(args: Any) -> int:
     return EXIT_OK
 
 
-# -- DICOM -----------------------------------------------------------------
-
-
 def _from_dicom(args: Any) -> int:
     from medh5.io.dicom import from_dicom
 
@@ -131,13 +190,11 @@ def _from_dicom_seg(args: Any) -> int:
 
 def _to_dicom_seg(args: Any) -> int:
     from medh5.io.dicom_seg import to_dicom_seg
+    from medh5.io.report import ConversionReport
 
     report = ConversionReport(converter="to-dicom-seg")
     to_dicom_seg(args.path, args.annotation, args.source, args.out, report=report)
     return _finish(report, args)
-
-
-# -- RTSTRUCT --------------------------------------------------------------
 
 
 def _from_rtstruct(args: Any) -> int:
@@ -154,14 +211,12 @@ def _from_rtstruct(args: Any) -> int:
 
 
 def _to_rtstruct(args: Any) -> int:
+    from medh5.io.report import ConversionReport
     from medh5.io.rtstruct import to_rtstruct
 
     report = ConversionReport(converter="to-rtstruct")
     to_rtstruct(args.path, args.annotation, args.source, args.out, report=report)
     return _finish(report, args)
-
-
-# -- nnU-Net ---------------------------------------------------------------
 
 
 def _from_nnunet(args: Any) -> int:
@@ -183,7 +238,7 @@ def _to_nnunet(args: Any) -> int:
     return _finish(report, args)
 
 
-HANDLERS: dict[str, Callable[[Any], int]] = {
+_HANDLERS: dict[str, Callable[[Any], int]] = {
     "from-nifti": _from_nifti,
     "to-nifti": _to_nifti,
     "from-dicom": _from_dicom,
@@ -197,4 +252,8 @@ HANDLERS: dict[str, Callable[[Any], int]] = {
 """Converter subcommand -> its handler."""
 
 
-__all__ = ["HANDLERS", "run"]
+__all__ = ["EXIT_ERROR", "EXIT_OK", "EXIT_USAGE", "command_tree", "main"]
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

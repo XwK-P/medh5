@@ -49,7 +49,7 @@ inverse where one can be **evaluated** — not merely where a transform declares
 when no path exists. It never fabricates a transform to make a call succeed.
 
 ```python
-from medh5.transforms.apply import target_registration_error
+from medh5.transforms import target_registration_error
 target_registration_error(t, fixed_points, moving_points)   # {"mean", "max", ...}
 ```
 

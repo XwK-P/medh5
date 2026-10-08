@@ -14,8 +14,7 @@ import numpy as np
 import numpy.typing as npt
 
 from medh5 import _core
-from medh5.geometry.grid import Grid
-from medh5.geometry.multiscale import Pyramid
+from medh5.geometry import Grid, Pyramid
 
 VALUE_TYPES: tuple[str, ...] = _core.VALUE_TYPES
 

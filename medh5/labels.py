@@ -1,4 +1,17 @@
-"""Bundled vocabularies and the vocabulary registry (spec §5.1).
+"""The label space: label sets and the vocabulary registry (spec §5).
+
+Annotations reference classes by ``uint16`` id and never by name, so a label set
+is the only thing standing between an integer and a diagnosis.  Two properties
+matter more than the data model:
+
+* The hierarchy is a **DAG, not a tree**.  ``left_kidney`` is a ``kidney`` and is
+  part of the urinary system; forcing that into a tree loses one of the two.
+* ``closure`` is declared per annotation, never inferred.  A reader that helpfully
+  adds ``liver`` because ``liver_segment_iv`` is present has invented ground
+  truth, so the spec forbids it unless ``closure = "implicit"`` says otherwise.
+
+The classes are the engine's (``medh5._core``): construction validates §5.1-§5.3
+and ``to_json`` is the canonical serialization, in every language binding alike.
 
 Three vocabularies ship with the engine, chosen because they cover the shapes a
 label set can take rather than because they are exhaustive: one class
@@ -8,8 +21,8 @@ label set can take rather than because they are exhaustive: one class
 **No ontology codes are bundled.**  A wrong SNOMED-CT or FMA binding is a silent
 data-integrity defect that propagates into every file written with the
 vocabulary, and it is not detectable by any validator.  Bindings are the
-curator's to add --- :class:`~medh5.labels.labelset.OntologyCode` exists for
-exactly that --- and the validator's W912 says so when they are missing.
+curator's to add --- :class:`OntologyCode` exists for exactly that --- and the
+validator's W912 says so when they are missing.
 """
 
 from __future__ import annotations
@@ -18,7 +31,24 @@ import os
 from typing import Any
 
 from medh5 import _core
-from medh5.labels.labelset import LabelSet
+from medh5._core import (
+    BACKGROUND_ID,
+    CLOSURES,
+    FORMS,
+    IGNORE_ID,
+    INLINE_REQUIRED_BELOW,
+    MAX_CLASS_ID,
+    LabelClass,
+    LabelSet,
+    OntologyCode,
+    Relation,
+    Skeleton,
+    canonical_json,
+    check_class_id,
+    from_keys,
+)
+
+# -- the vocabulary registry ---------------------------------------------------
 
 _REGISTERED: dict[str, LabelSet] = {}
 """The objects callers registered, so ``load`` hands back the same one."""
@@ -60,4 +90,25 @@ def describe() -> dict[str, dict[str, Any]]:
     return dict(_core.registry_describe())
 
 
-__all__ = ["available", "describe", "load", "load_file", "register", "unregister"]
+__all__ = [
+    "BACKGROUND_ID",
+    "CLOSURES",
+    "FORMS",
+    "IGNORE_ID",
+    "INLINE_REQUIRED_BELOW",
+    "MAX_CLASS_ID",
+    "LabelClass",
+    "LabelSet",
+    "OntologyCode",
+    "Relation",
+    "Skeleton",
+    "available",
+    "canonical_json",
+    "check_class_id",
+    "describe",
+    "from_keys",
+    "load",
+    "load_file",
+    "register",
+    "unregister",
+]

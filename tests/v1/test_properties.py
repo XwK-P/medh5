@@ -222,7 +222,7 @@ class TestVoxelRoundTrip:
         self, tmp_path_factory, n_classes, overlap, encoding, seed
     ):
         import medh5
-        from medh5.labels.labelset import LabelClass, LabelSet
+        from medh5.labels import LabelClass, LabelSet
 
         shape = (6, 8, 8)
         rng = np.random.default_rng(seed)
@@ -265,7 +265,7 @@ class TestVoxelRoundTrip:
     ):
         """A mask that is not the grid's shape has no defined placement."""
         import medh5
-        from medh5.labels.labelset import LabelClass, LabelSet
+        from medh5.labels import LabelClass, LabelSet
 
         shape = (6, 8, 8)
         masks = {i + 1: np.zeros(shape, bool) for i in range(n_classes)}
@@ -309,8 +309,8 @@ class TestTranscodeRoundTrip:
     def test_every_pair_preserves_the_masks_or_refuses(
         self, source, target, n_classes, overlap, seed
     ):
-        from medh5.annotations.voxel import encode_voxels
-        from medh5.annotations.voxel.transcode import (
+        from medh5.annotations.voxel import (
+            encode_voxels,
             payload_to_masks,
             transcode_payload,
         )

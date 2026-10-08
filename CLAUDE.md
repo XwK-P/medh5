@@ -90,10 +90,13 @@ and the CLI are layers over it, and all three read and write the same bytes.
 - **`crates/medh5-python`** — the PyO3 extension `medh5._core` (not published;
   maturin builds it into the wheel). Engine handles live in a facade's
   `._handle`; result types are rebuilt as the 1.x Python classes.
-- **`medh5/`** — the Python package: thin modules re-exporting `_core` under
-  the 1.x import paths, plus what is Python's — `torch`, `monai`, `io`
-  converters. `medh5/_core.pyi` types the extension; keep it in step with the
-  bindings (`tests/v1/test_typing.py` runs `stubtest` against the build).
+- **`medh5/`** — the Python package: one module per area (`geometry`,
+  `labels`, `storage`, `transforms`, `validate`, …) re-exporting `_core` and
+  holding the facades, plus what is Python's — `torch`, `monai`, `io`
+  converters. A class's `#[pyclass(module = …)]` must name the module that
+  exports it, or `pickle` cannot find it. `medh5/_core.pyi` types the
+  extension; keep it in step with the bindings (`tests/v1/test_typing.py` runs
+  `stubtest` against the build).
 - **`conformance`** — the corpus is a *shipped artifact*, not a test fixture:
   third-party implementations run it. The engine builds it
   (`crates/medh5/src/conformance/build.rs`).
