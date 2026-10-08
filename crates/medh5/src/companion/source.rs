@@ -82,6 +82,10 @@ impl SourceRef {
     /// Whether `sample` is the pinned version: its stored `content_id` is the
     /// pin, the root recomputes to it, and every clinical dataset's bytes
     /// match their digests.  `deep` verifies every dataset.  Empty when it is.
+    ///
+    /// The sample is walked once: the stored digests the root is recomputed
+    /// from are the ones the bytes are checked against.  A dataset whose
+    /// bytes cannot be read --- a damaged chunk --- does not match.
     pub fn check(&self, sample: &Sample, deep: bool) -> Result<Vec<Finding>> {
         let mut out = Vec::new();
         let at = if self.source_id.is_empty() { self.locator() } else { self.source_id.clone() };
@@ -99,7 +103,10 @@ impl SourceRef {
             ));
             return Ok(out);
         }
-        let recomputed = sample.compute_content_id()?;
+        let digests = crate::integrity::collect_digests(&sample.root, &["index"])?;
+        let algo = crate::integrity::digest::root_algo(&sample.root)?;
+        let recomputed =
+            crate::integrity::compute_content_id(&sample.root, &sample.attr_name_map()?, &algo, Some(&digests))?;
         if recomputed != self.content_id {
             out.push(Finding::new(
                 "T302",
@@ -108,25 +115,30 @@ impl SourceRef {
             ));
             return Ok(out);
         }
-        let targets: Option<Vec<String>> = if deep {
-            None
-        } else {
-            let all = crate::integrity::collect_digests(&sample.root, &["index"])?;
-            Some(all.keys().filter(|k| k.starts_with("clinical/")).cloned().collect())
-        };
-        if targets.as_ref().is_none_or(|t| !t.is_empty()) {
-            let verified = sample.verify(targets.as_deref())?;
-            if !verified.mismatched.is_empty() || !verified.malformed.is_empty() {
-                out.push(Finding::new(
-                    "T302",
-                    &at,
-                    format!(
-                        "{}: dataset bytes no longer match their digests ({}), whatever the stored root says",
-                        self.locator(),
-                        verified.mismatched.iter().chain(&verified.malformed).cloned().collect::<Vec<_>>().join(", ")
-                    ),
-                ));
+        let mut failed = Vec::new();
+        for (path, digest) in &digests {
+            if !deep && !path.starts_with("clinical/") {
+                continue;
             }
+            let matches = crate::digest::parse_digest(digest).and_then(|(algo, _)| {
+                let ds = sample.root.dataset(path)?;
+                Ok(&crate::integrity::dataset_digest(&ds, path, &algo)? == digest)
+            });
+            if !matches.unwrap_or(false) {
+                failed.push(path.clone());
+            }
+        }
+        if !failed.is_empty() {
+            failed.sort();
+            out.push(Finding::new(
+                "T302",
+                &at,
+                format!(
+                    "{}: dataset bytes no longer match their digests ({}), whatever the stored root says",
+                    self.locator(),
+                    failed.join(", ")
+                ),
+            ));
         }
         Ok(out)
     }

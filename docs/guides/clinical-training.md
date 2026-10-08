@@ -56,7 +56,11 @@ versions and the cutoff: an example's identity depends on the data it reads, not
 
 Preflight opens every source once, checks every pin --- recomputing the clinical datasets' digests,
 not trusting the stored root --- and says per row what it may read and why it is in or out. No voxel
-or report text is read.
+is read, and no report is *used*: text is read only to verify it (its digest, and its UTF-8, a slab at
+a time) and to compare a document two fragments both hold. Subjects are taken one at a time, their
+files closed before the next subject's open, and every row of a subject indexes one shared history
+(`report.subjects`, `row.selected`) rather than copying it --- so a cohort of thousands of cutoffs
+costs a few arrays, not an object per event per row.
 
 ```python
 from medh5.task import TaskManifest
@@ -128,9 +132,17 @@ What each part of a batch means, and the masks that keep it honest:
 - **`label`, `annotated` and `ignore`** are segmentation supervision for the slot's classes. Like the
   target, supervision may come from after the cutoff, and it never enters an input. `annotated` says
   whether a class was examined: a 0 in an unexamined class is not a negative.
-- **`events`** is the admitted history in clinical order --- concept index, kind, normalised value,
-  hours before the cutoff --- padded to the longest history in the batch, with `mask` marking real
-  events. A revised report contributes the version known at the cutoff.
+- **`events`** is the admitted history in clinical order --- concept, kind, status, normalised value
+  with its comparator, and every time it has --- padded to the longest history in the batch, with
+  `mask` marking real events. A revised report contributes the version known at the cutoff.
+- **Time keeps its uncertainty.** An event's effective start, its end and its availability are each
+  given as bounds, as ages before the cutoff (`start_age_h[..., 0]` the least, `[..., 1]` the most): a
+  diagnosis known to the day keeps its whole day, not a guessed hour. Each has a `*_known` mask, so an
+  unknown time is never read as zero hours. `temporal_type` tells a `static` fact from an event of
+  unknown time; `tie_group` marks events whose times overlap, whose order in the sequence is not
+  evidence; `plan` marks a plan admitted by the `plans` policy, whose start is ahead of the cutoff.
+  `has_value`, `comparator` (`< 5` is not 5) and `missing` (a result not done, never a negative) keep
+  missingness apart from measurement.
 - **`target`** is read from the full history: `observed = False` for a censored row, whose inputs
   still train but whose loss term should be masked.
 
@@ -255,5 +267,8 @@ loader = DataLoader(train, batch_size=8, num_workers=4, persistent_workers=True,
                     worker_init_fn=worker_init_fn, collate_fn=collate_clinical)
 ```
 
-The dataset holds only what pickles: the manifest, the row views from preflight, the fitted
-vocabulary and the cache's path. Workers re-read nothing that preflight decided.
+The dataset holds only what pickles: the manifest, the preflight's columns, the fitted vocabulary
+and the cache's path --- NumPy arrays, which a forked worker shares rather than copies. Workers
+re-read nothing that preflight decided, and read each source as the version its row pins: a handle
+cached from before the file was replaced (`amend` writes a new file) is reopened, and a source that
+changed after the preflight is refused (T302).

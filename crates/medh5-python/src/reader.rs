@@ -1268,6 +1268,22 @@ impl SampleHandle {
         let found = py.detach(move || reader.clinical().map(|c| c.cloned()))?;
         Ok(found.map(|inner| crate::clinical::ClinicalHandle { inner, _sample: sample }))
     }
+    /// One clinical document's text, read on its own: the document table's
+    /// offsets and that document's bytes --- not the events, the links or any
+    /// other document's text (1.1 §6).
+    fn document_text(&self, py: Python<'_>, document_id: &str) -> R<String> {
+        let sample = self.sample()?;
+        let id = document_id.to_string();
+        Ok(py.detach(move || -> medh5::Result<String> {
+            match sample.documents()? {
+                Some(documents) => documents.text(&id),
+                None => Err(medh5::Error::Key(format!(
+                    "{}: the sample does not declare the clinical profile",
+                    medh5::json::repr_str(&id)
+                ))),
+            }
+        })?)
+    }
     /// `{grid_id: Grid}`, with §3.7's implicit timepoint resolved.
     fn grids<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyDict>> {
         let sample = self.sample()?;

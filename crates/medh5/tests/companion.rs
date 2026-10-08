@@ -83,7 +83,7 @@ fn s4_rows_admit_exactly_what_was_available() {
     assert_eq!(r0.reasons, ["missing_required_slot:ct"]);
     let r24 = pre.row("r24").unwrap();
     assert_eq!(r24.status, "eligible", "{:?}", r24.reasons);
-    let ids: Vec<&str> = r24.events.iter().map(|e| e.event_id.as_str()).collect();
+    let ids: Vec<&str> = pre.events_of(r24).iter().map(|e| e.event_id.as_str()).collect();
     assert_eq!(ids, ["lab0", "ct0", "report0_v1"]);
     let ct = &r24.slots[0];
     assert_eq!(ct.image_id.as_deref(), Some("CT_tp0"));
@@ -152,7 +152,9 @@ fn observation(id: &str, record: &str, effective: i64, available: Option<i64>) -
 fn s2_a_changed_source_fails_its_pin_and_a_repin_keeps_the_view() {
     let dir = tempfile::tempdir().unwrap();
     let (mut task, path) = worked_task(dir.path());
-    let before = preflight(&task, None, false).unwrap().row("r24").unwrap().clone();
+    let first = preflight(&task, None, false).unwrap();
+    let before = first.row("r24").unwrap().clone();
+    let before_events: Vec<Event> = first.events_of(&before).into_iter().cloned().collect();
     // A definitely post-cutoff addition.
     add_event(&path, observation("lab_late", "lab_late", 5000 * HOUR, Some(5001 * HOUR)), Vec::new());
     let stale = preflight(&task, None, false).unwrap();
@@ -162,7 +164,8 @@ fn s2_a_changed_source_fails_its_pin_and_a_repin_keeps_the_view() {
     let repinned = preflight(&task, None, false).unwrap();
     assert!(repinned.ok(), "{:?}", repinned.findings);
     let after = repinned.row("r24").unwrap();
-    assert_eq!(after.events, before.events, "a post-cutoff addition does not change the strict input");
+    let after_events: Vec<Event> = repinned.events_of(after).into_iter().cloned().collect();
+    assert_eq!(after_events, before_events, "a post-cutoff addition does not change the strict input");
     assert_eq!(after.slots, before.slots);
     assert_ne!(after.fingerprint, before.fingerprint, "the row pins the new version");
 }
@@ -252,8 +255,9 @@ fn s4_fragments_reconcile_through_collection_members() {
     let pre = preflight(&task, None, false).unwrap();
     assert!(pre.ok(), "{:?}", pre.findings);
     let r24 = pre.row("r24").unwrap();
-    assert_eq!(r24.events.len(), 3);
-    assert_eq!(r24.sources[1].sample_key.as_deref(), Some("twin"), "the member the locator names");
+    assert_eq!(pre.events_of(r24).len(), 3);
+    let sources = &pre.subject_of(r24).unwrap().sources;
+    assert_eq!(sources[1].sample_key.as_deref(), Some("twin"), "the member the locator names");
 
     // Another clock refuses the join.
     let foreign = dir.path().join("foreign.medh5");
@@ -335,7 +339,7 @@ fn s8_caches_are_rejected_when_stale_corrupt_or_inadmissible() {
     let mut w = CacheWriter::create(&patient_path, header("patient")).unwrap();
     let r24 = pre.row("r24").unwrap();
     for (entry_id, versions) in [
-        ("r24", r24.events.iter().map(|e| e.event_id.clone()).collect::<Vec<_>>()),
+        ("r24", pre.events_of(r24).iter().map(|e| e.event_id.clone()).collect::<Vec<_>>()),
         ("r24_whole_history", vec!["lab0".into(), "ct0".into(), "report0_v2".into(), "ct1".into()]),
     ] {
         w.add(

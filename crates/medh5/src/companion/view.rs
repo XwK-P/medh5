@@ -1,16 +1,25 @@
 //! Row views: what a task admits for each row (task-and-cache contract §4--§6).
 //!
-//! [`preflight`] opens every source once, checks every pin, reconciles each
-//! subject's fragments --- one clock, one content per duplicated event id ---
-//! and then, per row, selects at the cutoff, fills the modality slots from
-//! eligible images only, and labels the target from the full history.  The
-//! result says for each row whether it is **eligible**, **uncertifiable**
-//! (a later revision's availability is unknown or straddles the cutoff),
-//! **excluded** (a missing required slot, a censored or prevalent target) or
-//! in **error** (its sources or its manifest are wrong), and why.
+//! [`preflight`] takes the subjects one at a time.  For each it opens every
+//! source once, checks every pin, reconciles the fragments --- one clock, one
+//! content per duplicated event id --- and prepares the merged history for
+//! selection once ([`Prepared`]); then, per row, it selects at the cutoff,
+//! fills the modality slots from eligible images only, and labels the target
+//! from the full history.  The subject's files are closed before the next
+//! subject's are opened, so a cohort of any size holds one subject's handles
+//! at a time.  The result says for each row whether it is **eligible**,
+//! **uncertifiable** (a later revision's availability is unknown or
+//! straddles the cutoff), **excluded** (a missing required slot, a censored
+//! or prevalent target) or in **error** (its sources or its manifest are
+//! wrong), and why.
 //!
-//! Metadata first: nothing here reads a voxel or a report.  The frontends
-//! read only what a row admits, when they build the batch.
+//! Rows do not copy their inputs: each indexes its subject's merged history
+//! ([`SubjectHistory`]), which every row of the subject shares.
+//!
+//! Metadata first: nothing here reads a voxel or uses a report.  Text is read
+//! only to verify it --- against its digest, and as UTF-8, in bounded slabs
+//! --- and to compare a document two fragments both hold.  The frontends read
+//! only what a row admits, when they build the batch.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
@@ -22,7 +31,7 @@ use super::source::SourceRef;
 use super::task::{Row, Slot, Subject, TaskManifest};
 use super::{fingerprint, Finding};
 use crate::clinical::model::{Bounds, Event, Link};
-use crate::clinical::select::{select, Chains, Selection};
+use crate::clinical::select::{Prepared, Selection};
 use crate::clinical::Clinical;
 use crate::json::repr_str;
 use crate::sample::Sample;
@@ -42,29 +51,58 @@ pub struct Fragment {
     pub clinical: Option<Arc<Clinical>>,
 }
 
-/// A subject's history across its fragments, reconciled.
-#[derive(Debug, Default)]
-pub struct History {
-    pub fragments: Vec<Fragment>,
-    /// Event versions, unique by id.
+/// One subject's history, merged across its fragments: what its rows index.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SubjectHistory {
+    pub subject_id: String,
+    pub partition: Option<String>,
+    /// The subject's sources that opened, in manifest order: what a
+    /// `fragment` names.
+    pub sources: Vec<SourceRef>,
+    /// Event versions, unique by id, in the order the fragments hold them.
     pub events: Vec<Event>,
-    /// Where each event version was first found.
-    pub event_fragment: HashMap<String, usize>,
-    /// Every link, with the fragment it came from.
+    /// The fragment each version was first found in.
+    pub event_fragments: Vec<usize>,
+    /// Every fragment's links, each with its fragment: what a selection's
+    /// `links` index.
     pub links: Vec<(usize, Link)>,
-    pub findings: Vec<Finding>,
+    /// `(event, fragment, document_id)`: the documents `document` versions
+    /// own through their structural `describes` link, by event index.
+    pub documents: Vec<(usize, usize, String)>,
 }
 
-impl History {
-    /// The fragments' links, as selection takes them.
+impl SubjectHistory {
+    /// The links as selection takes them.
     pub fn link_refs(&self) -> Vec<(usize, &Link)> {
         self.links.iter().map(|(f, l)| (*f, l)).collect()
     }
+
+    pub fn to_json(&self) -> Value {
+        json!({
+            "subject_id": self.subject_id,
+            "partition": self.partition,
+            "sources": self.sources.iter().map(SourceRef::to_json).collect::<Vec<_>>(),
+            "events": self.events.iter().map(Event::to_json).collect::<Vec<_>>(),
+            "event_fragments": self.event_fragments,
+            "links": self.links.iter().map(|(f, l)| json!({"fragment": f, "link": l.to_json()})).collect::<Vec<_>>(),
+            "documents": self.documents.iter().map(|(e, f, d)| json!([e, f, d])).collect::<Vec<_>>(),
+        })
+    }
+}
+
+/// A subject's sources, opened and checked, and their merged history.
+#[derive(Debug, Default)]
+pub struct History {
+    pub fragments: Vec<Fragment>,
+    pub merged: SubjectHistory,
+    pub findings: Vec<Finding>,
 }
 
 /// Open, check and reconcile one subject's sources.
 pub fn load_subject(manifest: &TaskManifest, subject: &Subject, base: Option<&Path>, deep: bool) -> Result<History> {
     let mut history = History::default();
+    history.merged.subject_id = subject.subject_id.clone();
+    history.merged.partition = subject.partition.clone();
     let at = |src: &SourceRef| if src.source_id.is_empty() { src.locator() } else { src.source_id.clone() };
     for source in &subject.sources {
         let sample = match source.open(base) {
@@ -106,31 +144,42 @@ pub fn load_subject(manifest: &TaskManifest, subject: &Subject, base: Option<&Pa
                 ),
             ));
         }
-        let clinical = match sample.clinical() {
-            Ok(c) => c.cloned(),
-            Err(e) => {
-                history.findings.push(Finding::new("T306", at(source), format!("{}: {e}", source.locator())));
-                None
+        let clinical = if sample.profiles()?.contains(crate::clinical::PROFILE) {
+            // Validated, then read from what the validator read: once.  A
+            // table that cannot be read at all --- a damaged chunk --- is the
+            // source's finding, not the whole preflight's failure.
+            match read_clinical(&sample, &source.locator()) {
+                Ok((problems, clinical)) => {
+                    if let Some(first) = problems.first() {
+                        history.findings.push(Finding::new(
+                            "T306",
+                            at(source),
+                            format!(
+                                "{}: its clinical tables are invalid ({} {}: {})",
+                                source.locator(),
+                                first.code,
+                                first.location,
+                                first.message
+                            ),
+                        ));
+                    }
+                    clinical
+                }
+                Err(e) => {
+                    history.findings.push(Finding::new(
+                        "T306",
+                        at(source),
+                        format!("{}: its clinical tables cannot be read: {e}", source.locator()),
+                    ));
+                    None
+                }
             }
+        } else {
+            None
         };
-        if clinical.is_some() {
-            let problems = crate::validate::clinical_errors(&sample.root, &source.locator())?;
-            if let Some(first) = problems.first() {
-                history.findings.push(Finding::new(
-                    "T306",
-                    at(source),
-                    format!(
-                        "{}: its clinical tables are invalid ({} {}: {})",
-                        source.locator(),
-                        first.code,
-                        first.location,
-                        first.message
-                    ),
-                ));
-            }
-        }
         history.fragments.push(Fragment { source: source.clone(), sample, clinical });
     }
+    history.merged.sources = history.fragments.iter().map(|f| f.source.clone()).collect();
     // One clock (1.1 §3): fragments that share a subject share its origin.
     let clocks: BTreeSet<String> = history
         .fragments
@@ -161,106 +210,172 @@ pub fn load_subject(manifest: &TaskManifest, subject: &Subject, base: Option<&Pa
             }
         }
     }
-    // Merge, checking every duplicate against the manifest's record of it.
-    let mut digests: HashMap<String, (String, Vec<String>)> = HashMap::new();
-    for (i, f) in history.fragments.iter().enumerate() {
+    let findings = merge(&mut history, subject)?;
+    history.findings.extend(findings);
+    let _ = manifest;
+    Ok(history)
+}
+
+/// A source's clinical errors, and the profile read from the tables the
+/// validator read --- when they are sound.
+fn read_clinical(sample: &Sample, locator: &str) -> Result<(Vec<crate::validate::Diagnostic>, Option<Arc<Clinical>>)> {
+    let (problems, tables) = crate::validate::clinical_checked(&sample.root, locator)?;
+    let clinical = match tables {
+        Some(t) if t.sound() && t.events.is_some() && t.descriptor.is_some() => {
+            let projection = crate::version::is_projection(&sample.version()?);
+            Some(Arc::new(Clinical::from_tables(
+                &sample.root,
+                t.descriptor.clone().expect("checked"),
+                t.events.as_ref().expect("checked"),
+                t.documents.as_ref(),
+                t.links.as_ref(),
+                projection,
+            )?))
+        }
+        _ => None,
+    };
+    Ok((problems, clinical))
+}
+
+/// Merge the fragments' events, links and documents into `history.merged`,
+/// checking every duplicate --- and only the duplicates --- against each other
+/// and against the manifest's record of it (§3.3, T305).
+fn merge(history: &mut History, subject: &Subject) -> Result<Vec<Finding>> {
+    let mut findings = Vec::new();
+    let fragments = &history.fragments;
+    let merged = &mut history.merged;
+    let at = |f: &Fragment| if f.source.source_id.is_empty() { f.source.locator() } else { f.source.source_id.clone() };
+    // Every holder of every event id; the first holder's version is merged.
+    let mut holders: HashMap<&str, Vec<(usize, usize)>> = HashMap::new();
+    for (i, f) in fragments.iter().enumerate() {
         let Some(c) = &f.clinical else { continue };
-        for e in &c.events {
-            let digest = event_digest(e);
-            match digests.get_mut(&e.event_id) {
-                None => {
-                    digests.insert(e.event_id.clone(), (digest, vec![f.source.source_id.clone()]));
-                    history.event_fragment.insert(e.event_id.clone(), i);
-                    history.events.push(e.clone());
-                }
-                Some((first, holders)) => {
-                    if first != &digest {
-                        history.findings.push(Finding::new(
-                            "T305",
-                            at(&f.source),
-                            format!("event {} differs between fragments ({first} vs {digest})", repr_str(&e.event_id)),
-                        ));
-                    }
-                    holders.push(f.source.source_id.clone());
-                }
+        for (k, e) in c.events.iter().enumerate() {
+            let found = holders.entry(e.event_id.as_str()).or_default();
+            if found.is_empty() {
+                merged.events.push(e.clone());
+                merged.event_fragments.push(i);
+            }
+            found.push((i, k));
+        }
+        merged.links.extend(c.links.iter().map(|l| (i, l.clone())));
+    }
+    let event = |(f, k): (usize, usize)| &fragments[f].clinical.as_ref().expect("held").events[k];
+    let mut duplicated: Vec<(&str, &Vec<(usize, usize)>)> =
+        holders.iter().filter(|(_, h)| h.len() > 1).map(|(id, h)| (*id, h)).collect();
+    duplicated.sort_unstable();
+    for (event_id, held) in duplicated {
+        let digest = event_digest(event(held[0]));
+        for (f, k) in &held[1..] {
+            let other = event_digest(event((*f, *k)));
+            if other != digest {
+                findings.push(Finding::new(
+                    "T305",
+                    at(&fragments[*f]),
+                    format!("event {} differs between fragments ({digest} vs {other})", repr_str(event_id)),
+                ));
             }
         }
-        for l in &c.links {
-            history.links.push((i, l.clone()));
-        }
-    }
-    for (event_id, (digest, holders)) in &digests {
-        if holders.len() < 2 {
-            continue;
-        }
-        let recorded = subject.reconciled.iter().find(|r| &r.event_id == event_id);
-        match recorded {
-            Some(r) if &r.digest == digest => {}
-            Some(r) => history.findings.push(Finding::new(
+        match subject.reconciled.iter().find(|r| r.event_id == event_id) {
+            Some(r) if r.digest == digest => {}
+            Some(r) => findings.push(Finding::new(
                 "T305",
                 &subject.subject_id,
                 format!("event {} is reconciled at {} but its fragments hold {digest}", repr_str(event_id), r.digest),
             )),
-            None => history.findings.push(Finding::new(
+            None => findings.push(Finding::new(
                 "T305",
                 &subject.subject_id,
                 format!(
                     "event {} is in fragments {} but the manifest records no reconciliation for it",
                     repr_str(event_id),
-                    holders.join(", ")
+                    held.iter().map(|(f, _)| fragments[*f].source.source_id.as_str()).collect::<Vec<_>>().join(", ")
                 ),
             )),
         }
     }
-    // Documents duplicated across fragments must hold the same text.
-    let mut documents: HashMap<String, String> = HashMap::new();
-    for f in &history.fragments {
-        let Some(c) = &f.clinical else { continue };
-        for d in &c.documents {
-            let held = history
-                .fragments
-                .iter()
-                .filter(|g| g.clinical.as_ref().is_some_and(|c| c.document_info(&d.document_id).is_some()))
-                .count();
-            if held < 2 {
-                continue;
+    // Documents several fragments hold must be identical: only those are read.
+    let mut documents: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+    for (i, f) in fragments.iter().enumerate() {
+        if let Some(c) = &f.clinical {
+            for d in c.documents() {
+                documents.entry(d.document_id.as_str()).or_default().push(i);
             }
-            let digest = fingerprint(&c.document(&d.document_id)?.to_json());
-            if let Some(first) = documents.insert(d.document_id.clone(), digest.clone()) {
-                if first != digest {
-                    history.findings.push(Finding::new(
+        }
+    }
+    for (document_id, held) in documents.iter().filter(|(_, h)| h.len() > 1) {
+        let mut digests = Vec::with_capacity(held.len());
+        for f in held {
+            let c = fragments[*f].clinical.as_ref().expect("held");
+            match c.document(document_id) {
+                Ok(d) => digests.push((*f, fingerprint(&d.to_json()))),
+                Err(e) => findings.push(Finding::new(
+                    "T306",
+                    at(&fragments[*f]),
+                    format!("document {} cannot be read: {e}", repr_str(document_id)),
+                )),
+            }
+        }
+        if let Some((_, first)) = digests.first() {
+            for (f, digest) in &digests[1..] {
+                if digest != first {
+                    findings.push(Finding::new(
                         "T305",
-                        at(&f.source),
-                        format!("document {} differs between fragments", repr_str(&d.document_id)),
+                        at(&fragments[*f]),
+                        format!("document {} differs between fragments", repr_str(document_id)),
                     ));
                 }
             }
         }
     }
-    let _ = manifest;
-    Ok(history)
+    // The documents each version owns, structurally.
+    let by_id: HashMap<&str, usize> = merged.events.iter().enumerate().map(|(i, e)| (e.event_id.as_str(), i)).collect();
+    let mut owned = Vec::new();
+    for (f, l) in &merged.links {
+        if l.relation == "describes" && l.source_type == "event" && l.target_type == "document" {
+            if let Some(&e) = by_id.get(l.source_id.as_str()) {
+                if merged.events[e].kind == "document" {
+                    owned.push((e, *f, l.target_id.clone()));
+                }
+            }
+        }
+    }
+    owned.sort();
+    owned.dedup();
+    merged.documents = owned;
+    Ok(findings)
 }
 
 /// The reconciliation records a subject's fragments need (what a manifest
 /// writer stores in `subjects[].reconciled`).
 pub fn reconcile(subject: &Subject, base: Option<&Path>) -> Result<Vec<super::task::Reconciled>> {
-    let mut holders: BTreeMap<String, (String, Vec<String>)> = BTreeMap::new();
+    let mut samples = Vec::new();
     for source in &subject.sources {
-        let sample = source.open(base)?;
+        samples.push((source.source_id.clone(), source.open(base)?));
+    }
+    let mut clinicals = Vec::new();
+    for (id, sample) in &samples {
         if let Some(c) = sample.clinical()? {
-            for e in &c.events {
-                holders
-                    .entry(e.event_id.clone())
-                    .or_insert_with(|| (event_digest(e), Vec::new()))
-                    .1
-                    .push(source.source_id.clone());
-            }
+            clinicals.push((id.clone(), c.clone()));
+        }
+    }
+    // Only an id held twice needs a record; only those are digested.
+    let mut holders: BTreeMap<&str, Vec<(usize, usize)>> = BTreeMap::new();
+    for (i, (_, c)) in clinicals.iter().enumerate() {
+        for (k, e) in c.events.iter().enumerate() {
+            holders.entry(e.event_id.as_str()).or_default().push((i, k));
         }
     }
     Ok(holders
         .into_iter()
-        .filter(|(_, (_, h))| h.len() > 1)
-        .map(|(event_id, (digest, sources))| super::task::Reconciled { event_id, digest, sources })
+        .filter(|(_, h)| h.len() > 1)
+        .map(|(event_id, held)| {
+            let (f, k) = held[0];
+            super::task::Reconciled {
+                event_id: event_id.to_string(),
+                digest: event_digest(&clinicals[f].1.events[k]),
+                sources: held.iter().map(|(f, _)| clinicals[*f].0.clone()).collect(),
+            }
+        })
         .collect())
 }
 
@@ -268,7 +383,7 @@ pub fn reconcile(subject: &Subject, base: Option<&Path>) -> Result<Vec<super::ta
 #[derive(Debug, Clone, PartialEq)]
 pub struct SlotFill {
     pub slot: String,
-    /// The fragment (index into the row's sources) and image filling it.
+    /// The fragment (index into the subject's sources) and image filling it.
     pub fragment: Option<usize>,
     pub image_id: Option<String>,
     pub grid_id: Option<String>,
@@ -289,6 +404,20 @@ pub struct SlotFill {
 }
 
 impl SlotFill {
+    fn empty(slot: &Slot) -> SlotFill {
+        SlotFill {
+            slot: slot.name.clone(),
+            fragment: None,
+            image_id: None,
+            grid_id: None,
+            event_id: None,
+            center: None,
+            roi: slot.roi.clone(),
+            annotations: Vec::new(),
+            label_annotations: Vec::new(),
+        }
+    }
+
     pub fn available(&self) -> bool {
         self.image_id.is_some()
     }
@@ -321,6 +450,10 @@ pub struct TargetLabel {
 }
 
 impl TargetLabel {
+    fn none() -> TargetLabel {
+        TargetLabel { status: "none".into(), value: None, event_id: None, reason: None }
+    }
+
     pub fn observed(&self) -> bool {
         self.value.is_some()
     }
@@ -347,12 +480,11 @@ pub struct RowView {
     /// `eligible`, `uncertifiable`, `excluded` or `error`.
     pub status: String,
     pub reasons: Vec<String>,
-    pub sources: Vec<SourceRef>,
+    /// The subject's merged history in [`Preflight::subjects`]; `None` when
+    /// it was not read (the manifest has findings).
+    pub subject: Option<usize>,
+    /// What the cutoff admits; its `events` index the subject's history.
     pub selection: Option<Selection>,
-    /// The selected versions' records, in input order.
-    pub events: Vec<Event>,
-    /// The fragment each selected version was read from.
-    pub event_fragments: Vec<usize>,
     pub slots: Vec<SlotFill>,
     pub target: TargetLabel,
 }
@@ -362,267 +494,269 @@ impl RowView {
         self.status == "eligible"
     }
 
-    pub fn to_json(&self) -> Value {
+    /// `subject` is the row's history, which its selection indexes.
+    pub fn to_json(&self, subject: Option<&SubjectHistory>) -> Value {
+        let events: &[Event] = subject.map(|s| s.events.as_slice()).unwrap_or(&[]);
         json!({
             "row_id": self.row_id,
             "subject_id": self.subject_id,
+            "subject": self.subject,
             "partition": self.partition,
             "cutoff_us": self.cutoff_us,
             "fingerprint": self.fingerprint,
             "status": self.status,
             "reasons": self.reasons,
-            "sources": self.sources.iter().map(SourceRef::to_json).collect::<Vec<_>>(),
-            "selection": self.selection.as_ref().map(Selection::to_json),
-            "events": self.events.iter().map(Event::to_json).collect::<Vec<_>>(),
-            "event_fragments": self.event_fragments,
+            "selection": self.selection.as_ref().map(|s| s.to_json(events)),
             "slots": self.slots.iter().map(SlotFill::to_json).collect::<Vec<_>>(),
             "target": self.target.to_json(),
         })
     }
 }
 
-/// How slot candidates are ordered: the imaging event's order bounds (`hi`,
-/// then `lo`), then its id --- for storage, not as evidence.
-type Candidate = (i64, i64, String);
-
-/// Fill a slot from the eligible images of its modality: the newest by its
-/// imaging event's time, ties broken by id (for storage, not as evidence).
-fn fill_slot(slot: &Slot, history: &History, selection: &Selection) -> Result<SlotFill> {
-    let mut fill = SlotFill {
-        slot: slot.name.clone(),
-        fragment: None,
-        image_id: None,
-        grid_id: None,
-        event_id: None,
-        center: None,
-        roi: slot.roi.clone(),
-        annotations: Vec::new(),
-        label_annotations: Vec::new(),
-    };
-    let order: HashMap<&str, Option<Bounds>> =
-        selection.events.iter().map(|s| (s.event_id.as_str(), s.order)).collect();
-    // The newest candidate so far: (its order key, fragment, image, event).
-    let mut best: Option<(Candidate, usize, String, String)> = None;
-    for (frag, kind, image_id) in &selection.payloads {
-        if kind != "image" {
-            continue;
-        }
-        let Some(fragment) = history.fragments.get(*frag) else { continue };
-        let Ok(image) = fragment.sample.image(image_id) else { continue };
-        if image.modality()? != slot.modality {
-            continue;
-        }
-        // The selected imaging event that owns this image.
-        let owner = history.links.iter().find(|(f, l)| {
-            f == frag
-                && l.relation == "describes"
-                && l.source_type == "event"
-                && l.target_type == "image"
-                && &l.target_id == image_id
-                && order.contains_key(l.source_id.as_str())
-        });
-        let Some((_, link)) = owner else { continue };
-        let when = order.get(link.source_id.as_str()).copied().flatten();
-        let key = (when.map_or(i64::MIN, |b| b.hi), when.map_or(i64::MIN, |b| b.lo), link.source_id.clone());
-        if best.as_ref().is_none_or(|(k, ..)| &key > k) {
-            best = Some((key, *frag, image_id.clone(), link.source_id.clone()));
-        }
-    }
-    let Some((_, frag, image_id, event_id)) = best else { return Ok(fill) };
-    let sample = &history.fragments[frag].sample;
-    let grid = sample.image(&image_id)?.grid()?.clone();
-    let shape = grid.spatial_shape();
-    fill.fragment = Some(frag);
-    fill.grid_id = Some(grid.grid_id.clone());
-    fill.event_id = Some(event_id);
-    fill.image_id = Some(image_id);
-    let eligible_annotations: BTreeSet<&str> = selection
-        .payloads
-        .iter()
-        .filter(|(f, k, _)| *f == frag && k == "annotation")
-        .map(|(_, _, id)| id.as_str())
-        .collect();
-    for (ann_id, annotation) in sample.annotations()? {
-        if annotation.grid_id() != Some(grid.grid_id.as_str()) || !annotation.is_voxel() || annotation.kind() == "mask"
-        {
-            continue;
-        }
-        fill.label_annotations.push(ann_id.clone());
-        if eligible_annotations.contains(ann_id.as_str()) {
-            fill.annotations.push(ann_id.clone());
-        }
-    }
-    let center: Vec<i64> = shape.iter().map(|n| (*n / 2) as i64).collect();
-    fill.center = Some(center.clone());
-    if slot.roi == "eligible_instances" {
-        let mut found = None;
-        for ann_id in &eligible_annotations {
-            let Ok(annotation) = sample.annotation(ann_id) else { continue };
-            if annotation.grid_id() != Some(grid.grid_id.as_str())
-                || !matches!(annotation.kind(), "instances" | "boxes")
-            {
-                continue;
-            }
-            let mut objects = annotation.instances()?;
-            objects.sort_by_key(|o| o.instance_id);
-            if let Some(first) = objects.first() {
-                let c: Vec<i64> = first
-                    .bbox
-                    .outer_iter()
-                    .map(|r| ((f64::from(r[0]) + f64::from(r[1])) / 2.0 + 0.5).floor() as i64)
-                    .collect();
-                found = Some(c);
-                break;
-            }
-        }
-        match found {
-            Some(c) => fill.center = Some(c),
-            None => fill.roi = "center_fallback".into(),
-        }
-    }
-    Ok(fill)
+/// An image an admitted `imaging` version may fill a slot with.
+#[derive(Debug)]
+struct Candidate {
+    event: usize,
+    fragment: usize,
+    image_id: String,
+    modality: String,
+    grid_id: String,
+    center: Vec<i64>,
+    /// Voxel, non-mask annotations on the grid: supervision, and inputs when
+    /// eligible.
+    voxel: Vec<String>,
+    /// Instance-bearing annotations on the grid (`instances`, `boxes`), each
+    /// with the centre of its first instance by `instance_id`: what an
+    /// `eligible_instances` slot centres on.
+    instances: Vec<(String, Vec<i64>)>,
 }
 
-/// Label a row from the full history (task-and-cache contract §5): the
-/// target may lie in the same file, and never enters the inputs.
-fn label(manifest: &TaskManifest, history: &History, cutoff: i64) -> Result<TargetLabel> {
-    let Some(t) = &manifest.target else {
-        return Ok(TargetLabel { status: "none".into(), value: None, event_id: None, reason: None });
-    };
-    let chains = Chains::build(&history.events, history.links.iter().map(|(_, l)| l))?;
-    let by_id: HashMap<&str, &Event> = history.events.iter().map(|e| (e.event_id.as_str(), e)).collect();
-    let finals: Vec<&Event> = chains
-        .latest()
-        .filter_map(|id| by_id.get(id).copied())
-        .filter(|e| e.status != "entered_in_error")
-        .filter(|e| {
-            e.code_system.as_deref() == Some(t.code_system.as_str()) && e.code.as_deref() == Some(t.code.as_str())
-        })
-        .filter(|e| t.kind.as_deref().is_none_or(|k| k == e.kind))
-        .collect();
-    let value_of = |e: &Event| e.value_text.clone().unwrap_or_default();
-    let (lo_edge, hi_edge) = (cutoff, cutoff.saturating_add(t.horizon_us));
-    let positives: Vec<&Event> = finals.iter().copied().filter(|e| t.positive.contains(&value_of(e))).collect();
-    if t.exclude_prevalent {
-        if let Some(e) = positives.iter().find(|e| e.effective_start.is_some_and(|s| s.hi <= cutoff)) {
-            return Ok(TargetLabel {
-                status: "prevalent".into(),
-                value: None,
-                event_id: Some(e.event_id.clone()),
-                reason: Some("the outcome had occurred by the cutoff".into()),
+/// What every row of one subject shares, computed once.
+struct Rows<'a> {
+    manifest: &'a TaskManifest,
+    history: &'a History,
+    prepared: Prepared<'a>,
+    /// The target's candidates: the final version of each record, not
+    /// entered in error, of the target's concept.
+    targets: Vec<&'a Event>,
+    candidates: Vec<Candidate>,
+}
+
+impl<'a> Rows<'a> {
+    fn new(manifest: &'a TaskManifest, history: &'a History, links: &[(usize, &'a Link)]) -> Result<Rows<'a>> {
+        let events = &history.merged.events;
+        let prepared = Prepared::new(events, links)?;
+        let targets = match &manifest.target {
+            None => Vec::new(),
+            Some(t) => prepared
+                .latest()
+                .map(|i| &events[i])
+                .filter(|e| e.status != "entered_in_error")
+                .filter(|e| {
+                    e.code_system.as_deref() == Some(t.code_system.as_str())
+                        && e.code.as_deref() == Some(t.code.as_str())
+                })
+                .filter(|e| t.kind.as_deref().is_none_or(|k| k == e.kind))
+                .collect(),
+        };
+        let by_id: HashMap<&str, usize> = events.iter().enumerate().map(|(i, e)| (e.event_id.as_str(), i)).collect();
+        let instances = manifest.slots.iter().any(|s| s.roi == "eligible_instances");
+        let mut candidates = Vec::new();
+        for (fragment, l) in links {
+            if l.relation != "describes" || l.source_type != "event" || l.target_type != "image" {
+                continue;
+            }
+            let Some(&event) = by_id.get(l.source_id.as_str()) else { continue };
+            if events[event].kind != "imaging" {
+                continue; // only an imaging version owns an image (1.1 §7.3)
+            }
+            let sample = &history.fragments[*fragment].sample;
+            let Ok(image) = sample.image(&l.target_id) else { continue };
+            let grid = image.grid()?;
+            let (mut voxel, mut bearing) = (Vec::new(), Vec::new());
+            for (ann_id, annotation) in sample.annotations()? {
+                if annotation.grid_id() != Some(grid.grid_id.as_str()) {
+                    continue;
+                }
+                if annotation.is_voxel() && annotation.kind() != "mask" {
+                    voxel.push(ann_id.clone());
+                }
+                if instances && matches!(annotation.kind(), "instances" | "boxes") {
+                    let mut objects = annotation.instances()?;
+                    objects.sort_by_key(|o| o.instance_id);
+                    if let Some(first) = objects.first() {
+                        let center = first
+                            .bbox
+                            .outer_iter()
+                            .map(|r| ((f64::from(r[0]) + f64::from(r[1])) / 2.0 + 0.5).floor() as i64)
+                            .collect();
+                        bearing.push((ann_id.clone(), center));
+                    }
+                }
+            }
+            bearing.sort();
+            candidates.push(Candidate {
+                event,
+                fragment: *fragment,
+                image_id: l.target_id.clone(),
+                modality: image.modality()?,
+                grid_id: grid.grid_id.clone(),
+                center: grid.spatial_shape().iter().map(|n| (*n / 2) as i64).collect(),
+                voxel,
+                instances: bearing,
             });
         }
+        candidates.sort_by(|a, b| (a.fragment, &a.image_id).cmp(&(b.fragment, &b.image_id)));
+        Ok(Rows { manifest, history, prepared, targets, candidates })
     }
-    let inside = |s: Bounds| s.lo > lo_edge && s.hi <= hi_edge;
-    let mut definite: Vec<&Event> =
-        positives.iter().copied().filter(|e| e.effective_start.is_some_and(inside)).collect();
-    definite.sort_by_key(|e| (e.effective_start.map(|s| (s.lo, s.hi)), e.event_id.clone()));
-    if let Some(first) = definite.first() {
-        return Ok(TargetLabel {
-            status: "positive".into(),
-            value: Some(1.0),
-            event_id: Some(first.event_id.clone()),
-            reason: None,
+
+    /// Fill a slot with the newest eligible image of its modality, by its
+    /// imaging version's order time; ties broken by event id (for storage,
+    /// not as evidence).
+    fn fill(&self, slot: &Slot, selection: &Selection, order: &[Option<Option<Bounds>>]) -> SlotFill {
+        let mut fill = SlotFill::empty(slot);
+        let events = &self.history.merged.events;
+        let key = |c: &Candidate| {
+            let when = order[c.event].flatten();
+            (when.map_or(i64::MIN, |b| b.hi), when.map_or(i64::MIN, |b| b.lo), events[c.event].event_id.as_str())
+        };
+        // Candidates are in (fragment, image) order, and a tie keeps the first.
+        let mut best: Option<&Candidate> = None;
+        for c in self.candidates.iter().filter(|c| order[c.event].is_some() && c.modality == slot.modality) {
+            if best.is_none_or(|b| key(c) > key(b)) {
+                best = Some(c);
+            }
+        }
+        let Some(best) = best else { return fill };
+        fill.fragment = Some(best.fragment);
+        fill.grid_id = Some(best.grid_id.clone());
+        fill.event_id = Some(events[best.event].event_id.clone());
+        fill.image_id = Some(best.image_id.clone());
+        fill.center = Some(best.center.clone());
+        let eligible: BTreeSet<&str> = selection
+            .payloads
+            .iter()
+            .filter(|(f, k, _)| *f == best.fragment && k == "annotation")
+            .map(|(_, _, id)| id.as_str())
+            .collect();
+        for ann_id in &best.voxel {
+            fill.label_annotations.push(ann_id.clone());
+            if eligible.contains(ann_id.as_str()) {
+                fill.annotations.push(ann_id.clone());
+            }
+        }
+        if slot.roi == "eligible_instances" {
+            // The first eligible instance-bearing annotation, by id.
+            match best.instances.iter().find(|(id, _)| eligible.contains(id.as_str())) {
+                Some((_, center)) => fill.center = Some(center.clone()),
+                None => fill.roi = "center_fallback".into(),
+            }
+        }
+        fill
+    }
+
+    /// Label a row from the full history (task-and-cache contract §5): the
+    /// target may lie in the same file, and never enters the inputs.
+    fn label(&self, cutoff: i64) -> TargetLabel {
+        let Some(t) = &self.manifest.target else { return TargetLabel::none() };
+        let value_of = |e: &Event| e.value_text.clone().unwrap_or_default();
+        let (lo_edge, hi_edge) = (cutoff, cutoff.saturating_add(t.horizon_us));
+        let positives: Vec<&Event> =
+            self.targets.iter().copied().filter(|e| t.positive.contains(&value_of(e))).collect();
+        if t.exclude_prevalent {
+            if let Some(e) = positives.iter().find(|e| e.effective_start.is_some_and(|s| s.hi <= cutoff)) {
+                return TargetLabel {
+                    status: "prevalent".into(),
+                    value: None,
+                    event_id: Some(e.event_id.clone()),
+                    reason: Some("the outcome had occurred by the cutoff".into()),
+                };
+            }
+        }
+        let inside = |s: Bounds| s.lo > lo_edge && s.hi <= hi_edge;
+        let mut definite: Vec<&Event> =
+            positives.iter().copied().filter(|e| e.effective_start.is_some_and(inside)).collect();
+        definite.sort_by_key(|e| (e.effective_start.map(|s| (s.lo, s.hi)), e.event_id.clone()));
+        if let Some(first) = definite.first() {
+            return TargetLabel {
+                status: "positive".into(),
+                value: Some(1.0),
+                event_id: Some(first.event_id.clone()),
+                reason: None,
+            };
+        }
+        let uncertain = positives.iter().any(|e| {
+            e.effective_start.is_none_or(|s| (s.lo <= lo_edge && s.hi > lo_edge) || (s.lo <= hi_edge && s.hi > hi_edge))
         });
-    }
-    let uncertain = positives.iter().any(|e| {
-        e.effective_start.is_none_or(|s| (s.lo <= lo_edge && s.hi > lo_edge) || (s.lo <= hi_edge && s.hi > hi_edge))
-    });
-    if uncertain {
-        return Ok(TargetLabel {
+        if uncertain {
+            return TargetLabel {
+                status: "censored".into(),
+                value: None,
+                event_id: None,
+                reason: Some("a positive outcome's time straddles the target window".into()),
+            };
+        }
+        let follow_up = cutoff.saturating_add(t.min_follow_up_us);
+        let mut negatives: Vec<&Event> = self
+            .targets
+            .iter()
+            .copied()
+            .filter(|e| t.negative.contains(&value_of(e)))
+            .filter(|e| e.effective_start.is_some_and(|s| inside(s) && s.lo >= follow_up))
+            .collect();
+        negatives.sort_by_key(|e| (e.effective_start.map(|s| (s.lo, s.hi)), e.event_id.clone()));
+        if let Some(last) = negatives.last() {
+            return TargetLabel {
+                status: "negative".into(),
+                value: Some(0.0),
+                event_id: Some(last.event_id.clone()),
+                reason: None,
+            };
+        }
+        TargetLabel {
             status: "censored".into(),
             value: None,
             event_id: None,
-            reason: Some("a positive outcome's time straddles the target window".into()),
-        });
+            reason: Some("no observation inside the window, or none late enough to be a negative".into()),
+        }
     }
-    let follow_up = cutoff.saturating_add(t.min_follow_up_us);
-    let mut negatives: Vec<&Event> = finals
-        .iter()
-        .copied()
-        .filter(|e| t.negative.contains(&value_of(e)))
-        .filter(|e| e.effective_start.is_some_and(|s| inside(s) && s.lo >= follow_up))
-        .collect();
-    negatives.sort_by_key(|e| (e.effective_start.map(|s| (s.lo, s.hi)), e.event_id.clone()));
-    if let Some(last) = negatives.last() {
-        return Ok(TargetLabel {
-            status: "negative".into(),
-            value: Some(0.0),
-            event_id: Some(last.event_id.clone()),
-            reason: None,
-        });
-    }
-    Ok(TargetLabel {
-        status: "censored".into(),
-        value: None,
-        event_id: None,
-        reason: Some("no observation inside the window, or none late enough to be a negative".into()),
-    })
-}
 
-/// The view of one row over its subject's reconciled history.
-pub fn row_view(manifest: &TaskManifest, row: &Row, history: &History) -> Result<RowView> {
-    let mut view = RowView {
-        row_id: row.row_id.clone(),
-        subject_id: row.subject_id.clone(),
-        partition: manifest.partition_of(&row.subject_id).map(str::to_string),
-        cutoff_us: row.cutoff_us,
-        fingerprint: manifest.row_fingerprint(row),
-        status: "eligible".into(),
-        reasons: Vec::new(),
-        sources: history.fragments.iter().map(|f| f.source.clone()).collect(),
-        selection: None,
-        events: Vec::new(),
-        event_fragments: Vec::new(),
-        slots: Vec::new(),
-        target: TargetLabel { status: "none".into(), value: None, event_id: None, reason: None },
-    };
-    if !history.findings.is_empty() {
-        view.status = "error".into();
-        view.reasons = history.findings.iter().map(Finding::line).collect();
-        return Ok(view);
-    }
-    if !history.fragments.iter().any(|f| f.clinical.is_some()) {
-        view.status = "excluded".into();
-        view.reasons
-            .push("no_clinical_source: no fragment declares the clinical profile, so nothing is attributable".into());
-        return Ok(view);
-    }
-    let links = history.link_refs();
-    let selection = select(&history.events, &links, row.cutoff_us, &manifest.policy)?;
-    let by_id: HashMap<&str, &Event> = history.events.iter().map(|e| (e.event_id.as_str(), e)).collect();
-    for s in &selection.events {
-        if let Some(e) = by_id.get(s.event_id.as_str()) {
-            view.events.push((*e).clone());
-            view.event_fragments.push(history.event_fragment.get(&s.event_id).copied().unwrap_or(0));
+    /// The view of one row.
+    fn view(&self, row: &Row, mut view: RowView) -> Result<RowView> {
+        let selection = self.prepared.select(row.cutoff_us, &self.manifest.policy)?;
+        if selection.status == "uncertifiable" {
+            view.status = "uncertifiable".into();
+            view.reasons.extend(selection.uncertain_records.iter().map(|r| format!("uncertain_revision:{r}")));
         }
-    }
-    if selection.status == "uncertifiable" {
-        view.status = "uncertifiable".into();
-        view.reasons.extend(selection.uncertain_records.iter().map(|r| format!("uncertain_revision:{r}")));
-    }
-    for slot in &manifest.slots {
-        let fill = fill_slot(slot, history, &selection)?;
-        if slot.required && !fill.available() && view.status == "eligible" {
-            view.status = "excluded".into();
-            view.reasons.push(format!("missing_required_slot:{}", slot.name));
+        let mut order = vec![None; self.history.merged.events.len()];
+        for s in &selection.events {
+            order[s.index] = Some(s.order);
         }
-        view.slots.push(fill);
-    }
-    view.target = label(manifest, history, row.cutoff_us)?;
-    if view.status == "eligible" {
-        let exclude = match view.target.status.as_str() {
-            "prevalent" => Some("prevalent_target"),
-            "censored" if manifest.target.as_ref().is_some_and(|t| t.censoring == "exclude") => Some("censored"),
-            _ => None,
-        };
-        if let Some(reason) = exclude {
-            view.status = "excluded".into();
-            view.reasons.push(reason.into());
+        for slot in &self.manifest.slots {
+            let fill = self.fill(slot, &selection, &order);
+            if slot.required && !fill.available() && view.status == "eligible" {
+                view.status = "excluded".into();
+                view.reasons.push(format!("missing_required_slot:{}", slot.name));
+            }
+            view.slots.push(fill);
         }
+        view.target = self.label(row.cutoff_us);
+        if view.status == "eligible" {
+            let exclude = match view.target.status.as_str() {
+                "prevalent" => Some("prevalent_target"),
+                "censored" if self.manifest.target.as_ref().is_some_and(|t| t.censoring == "exclude") => {
+                    Some("censored")
+                }
+                _ => None,
+            };
+            if let Some(reason) = exclude {
+                view.status = "excluded".into();
+                view.reasons.push(reason.into());
+            }
+        }
+        view.selection = Some(selection);
+        Ok(view)
     }
-    view.selection = Some(selection);
-    Ok(view)
 }
 
 /// The preflight of a whole task.
@@ -632,6 +766,9 @@ pub struct Preflight {
     pub manifest_fingerprint: String,
     /// Manifest and source findings: any one makes the task unfit to train on.
     pub findings: Vec<Finding>,
+    /// Every subject's merged history, in manifest order; empty when the
+    /// manifest has findings.
+    pub subjects: Vec<SubjectHistory>,
     pub rows: Vec<RowView>,
 }
 
@@ -653,6 +790,19 @@ impl Preflight {
         self.rows.iter().find(|r| r.row_id == row_id)
     }
 
+    /// The merged history a row indexes.
+    pub fn subject_of(&self, row: &RowView) -> Option<&SubjectHistory> {
+        row.subject.and_then(|i| self.subjects.get(i))
+    }
+
+    /// A row's selected event versions, in input order.
+    pub fn events_of(&self, row: &RowView) -> Vec<&Event> {
+        match (self.subject_of(row), &row.selection) {
+            (Some(subject), Some(selection)) => selection.events.iter().map(|s| &subject.events[s.index]).collect(),
+            _ => Vec::new(),
+        }
+    }
+
     pub fn to_json(&self) -> Value {
         json!({
             "task_fingerprint": self.task_fingerprint,
@@ -660,7 +810,8 @@ impl Preflight {
             "ok": self.ok(),
             "counts": self.counts(),
             "findings": self.findings.iter().map(Finding::to_json).collect::<Vec<_>>(),
-            "rows": self.rows.iter().map(RowView::to_json).collect::<Vec<_>>(),
+            "subjects": self.subjects.iter().map(SubjectHistory::to_json).collect::<Vec<_>>(),
+            "rows": self.rows.iter().map(|r| r.to_json(self.subject_of(r))).collect::<Vec<_>>(),
         })
     }
 }
@@ -669,42 +820,151 @@ impl Preflight {
 /// and build every row's view.  `base` resolves relative source URIs (the
 /// manifest's directory); `deep` re-verifies every dataset, not only the
 /// clinical ones.
+///
+/// Subjects are taken one at a time, in manifest order.  (Threads do not
+/// help: every HDF5 call holds the library's one lock, and the work is
+/// mostly HDF5's.)
 pub fn preflight(manifest: &TaskManifest, base: Option<&Path>, deep: bool) -> Result<Preflight> {
-    let mut findings = manifest.validate();
-    let mut rows = Vec::new();
-    let manifest_ok = findings.is_empty();
-    let mut histories: BTreeMap<&str, History> = BTreeMap::new();
-    if manifest_ok {
-        for subject in &manifest.subjects {
-            let history = load_subject(manifest, subject, base, deep)?;
-            findings.extend(history.findings.iter().cloned());
-            histories.insert(subject.subject_id.as_str(), history);
+    let mut subjects = Vec::new();
+    let mut views: Vec<Option<RowView>> = vec![None; manifest.rows.len()];
+    let done = preflight_each(manifest, base, deep, &mut |history, rows| {
+        for (r, view) in rows {
+            views[r] = Some(view);
         }
-    }
-    for row in &manifest.rows {
-        match histories.get(row.subject_id.as_str()) {
-            Some(history) => rows.push(row_view(manifest, row, history)?),
-            None => rows.push(RowView {
-                row_id: row.row_id.clone(),
-                subject_id: row.subject_id.clone(),
-                partition: manifest.partition_of(&row.subject_id).map(str::to_string),
-                cutoff_us: row.cutoff_us,
-                fingerprint: manifest.row_fingerprint(row),
-                status: "error".into(),
-                reasons: vec!["manifest_invalid: the task manifest has findings; see them first".into()],
-                sources: Vec::new(),
-                selection: None,
-                events: Vec::new(),
-                event_fragments: Vec::new(),
-                slots: Vec::new(),
-                target: TargetLabel { status: "none".into(), value: None, event_id: None, reason: None },
-            }),
-        }
-    }
+        subjects.push(history);
+        Ok(())
+    })?;
+    let rows = views.into_iter().zip(done.unclaimed).map(|(view, blank)| view.or(blank).expect("every row")).collect();
     Ok(Preflight {
-        task_fingerprint: manifest.task_fingerprint(),
-        manifest_fingerprint: manifest.manifest_fingerprint(),
-        findings,
+        task_fingerprint: done.task_fingerprint,
+        manifest_fingerprint: done.manifest_fingerprint,
+        findings: done.findings,
+        subjects,
         rows,
     })
+}
+
+/// What [`preflight_each`] reports once every subject has been handed over.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PreflightDone {
+    pub task_fingerprint: String,
+    pub manifest_fingerprint: String,
+    /// Manifest and source findings, in manifest order.
+    pub findings: Vec<Finding>,
+    /// For each row of the manifest, by index: its view when no subject
+    /// claimed it --- every row, when the manifest has findings.
+    pub unclaimed: Vec<Option<RowView>>,
+}
+
+/// [`preflight`], handing each subject to `sink` --- its merged history and
+/// its rows' views, `(row index, view)` --- as soon as they are built, in
+/// manifest order, so a caller that keeps a compact form of them never holds
+/// every subject's records at once.
+pub fn preflight_each(
+    manifest: &TaskManifest,
+    base: Option<&Path>,
+    deep: bool,
+    sink: &mut dyn FnMut(SubjectHistory, Vec<(usize, RowView)>) -> Result<()>,
+) -> Result<PreflightDone> {
+    let mut findings = manifest.validate();
+    let task_fingerprint = manifest.task_fingerprint();
+    let mut rows_of: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (i, row) in manifest.rows.iter().enumerate() {
+        rows_of.entry(row.subject_id.as_str()).or_default().push(i);
+    }
+    let mut claimed = vec![false; manifest.rows.len()];
+    if findings.is_empty() {
+        for (index, subject) in manifest.subjects.iter().enumerate() {
+            let wanted = rows_of.get(subject.subject_id.as_str()).map(Vec::as_slice).unwrap_or(&[]);
+            let (history, found, rows) = subject_part(manifest, &task_fingerprint, subject, index, wanted, base, deep)?;
+            findings.extend(found);
+            for (r, _) in &rows {
+                claimed[*r] = true;
+            }
+            sink(history, rows)?;
+        }
+    }
+    let unclaimed = manifest
+        .rows
+        .iter()
+        .zip(claimed)
+        .map(|(row, claimed)| {
+            (!claimed).then(|| {
+                let mut view = blank(manifest, &task_fingerprint, row, manifest.subject(&row.subject_id), None);
+                view.status = "error".into();
+                view.reasons = vec!["manifest_invalid: the task manifest has findings; see them first".into()];
+                view
+            })
+        })
+        .collect();
+    Ok(PreflightDone { task_fingerprint, manifest_fingerprint: manifest.manifest_fingerprint(), findings, unclaimed })
+}
+
+/// What one subject contributes: its history, its findings, its rows' views.
+type SubjectPart = (SubjectHistory, Vec<Finding>, Vec<(usize, RowView)>);
+
+/// A row's view before its subject decides it: eligible, with nothing yet.
+fn blank(
+    manifest: &TaskManifest,
+    task_fingerprint: &str,
+    row: &Row,
+    subject: Option<&Subject>,
+    index: Option<usize>,
+) -> RowView {
+    RowView {
+        row_id: row.row_id.clone(),
+        subject_id: row.subject_id.clone(),
+        partition: subject.and_then(|s| s.partition.clone()),
+        cutoff_us: row.cutoff_us,
+        fingerprint: manifest.row_fingerprint_with(task_fingerprint, subject, row),
+        status: "eligible".into(),
+        reasons: Vec::new(),
+        subject: index,
+        selection: None,
+        slots: Vec::new(),
+        target: TargetLabel::none(),
+    }
+}
+
+/// One subject: its sources opened, checked and merged, and the views of its
+/// rows (`wanted`, indices into the manifest's rows).  Its files close when
+/// this returns.
+fn subject_part(
+    manifest: &TaskManifest,
+    task_fingerprint: &str,
+    subject: &Subject,
+    index: usize,
+    wanted: &[usize],
+    base: Option<&Path>,
+    deep: bool,
+) -> Result<SubjectPart> {
+    let history = load_subject(manifest, subject, base, deep)?;
+    let view = |r: usize| blank(manifest, task_fingerprint, &manifest.rows[r], Some(subject), Some(index));
+    let mut rows = Vec::with_capacity(wanted.len());
+    if !history.findings.is_empty() {
+        let reasons: Vec<String> = history.findings.iter().map(Finding::line).collect();
+        for &r in wanted {
+            let mut v = view(r);
+            v.status = "error".into();
+            v.reasons = reasons.clone();
+            rows.push((r, v));
+        }
+    } else if !history.fragments.iter().any(|f| f.clinical.is_some()) {
+        for &r in wanted {
+            let mut v = view(r);
+            v.status = "excluded".into();
+            v.reasons.push(
+                "no_clinical_source: no fragment declares the clinical profile, so nothing is attributable".into(),
+            );
+            rows.push((r, v));
+        }
+    } else if !wanted.is_empty() {
+        let links = history.merged.link_refs();
+        let shared = Rows::new(manifest, &history, &links)?;
+        for &r in wanted {
+            rows.push((r, shared.view(&manifest.rows[r], view(r))?));
+        }
+    }
+    let findings = history.findings.clone();
+    Ok((history.merged, findings, rows))
 }

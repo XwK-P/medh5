@@ -17,6 +17,17 @@
 //! problem it meets with the diagnostic code the validator reports for it,
 //! rather than stopping at the first: the validator wants them all, and the
 //! typed reader refuses a table that has any.
+//!
+//! A UTF-8 column may be read **deferred** ([`read_table_deferring`]): its
+//! offsets are read and checked against the byte buffer's stored length, and
+//! the bytes stay in the file.  Document text is read that way --- by the
+//! reader, by the validator and by a task's preflight --- so opening a sample
+//! never decompresses a report.  A deferred column's cells are read one at a
+//! time through a [`TextColumn`], each checked as UTF-8 when it is read, and
+//! the validator checks every cell by streaming the buffer in bounded slabs
+//! ([`TextColumn::scan`]).
+
+use std::collections::BTreeSet;
 
 use indexmap::IndexMap;
 
@@ -133,7 +144,15 @@ pub fn columns_of(table: &str) -> &'static [ColumnSpec] {
 /// A column's cells as stored.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Values {
-    Utf8 { data: Vec<u8>, offsets: Vec<u64> },
+    Utf8 {
+        data: Vec<u8>,
+        offsets: Vec<u64>,
+    },
+    /// A UTF-8 column read by its offsets alone: the bytes stay in the file,
+    /// and are read a cell at a time through a [`TextColumn`].
+    Deferred {
+        offsets: Vec<u64>,
+    },
     I64(Vec<i64>),
     U64(Vec<u64>),
     F64(Vec<f64>),
@@ -151,7 +170,7 @@ pub struct Column {
 impl Column {
     pub fn rows(&self) -> usize {
         match &self.values {
-            Values::Utf8 { offsets, .. } => offsets.len().saturating_sub(1),
+            Values::Utf8 { offsets, .. } | Values::Deferred { offsets } => offsets.len().saturating_sub(1),
             Values::I64(v) => v.len(),
             Values::U64(v) => v.len(),
             Values::F64(v) => v.len(),
@@ -163,7 +182,18 @@ impl Column {
         self.mask.as_ref().is_none_or(|m| m.get(i).copied() == Some(1))
     }
 
-    /// Row `i`'s bytes, for a string column.
+    /// Row `i`'s byte range in a string column's buffer (`None` when null).
+    pub fn span(&self, i: usize) -> Option<(u64, u64)> {
+        match &self.values {
+            Values::Utf8 { offsets, .. } | Values::Deferred { offsets } if self.is_valid(i) => {
+                Some((*offsets.get(i)?, *offsets.get(i + 1)?))
+            }
+            _ => None,
+        }
+    }
+
+    /// Row `i`'s bytes, for a string column read whole (`None` for a deferred
+    /// one, whose bytes are in the file).
     pub fn bytes(&self, i: usize) -> Option<&[u8]> {
         match &self.values {
             Values::Utf8 { data, offsets } if self.is_valid(i) => {
@@ -269,6 +299,19 @@ fn numeric_1d(ds: &hdf5::Dataset) -> Option<DType> {
 /// `projection` reports members this engine does not define as W913 (a later
 /// minor may define them) rather than E804.
 pub fn read_table(group: &hdf5::Group, table: &str, specs: &[ColumnSpec], projection: bool) -> Result<RawTable> {
+    read_table_deferring(group, table, specs, projection, &[])
+}
+
+/// [`read_table`], with the UTF-8 columns named in `deferred` read by their
+/// offsets alone ([`Values::Deferred`]): every structural rule but the
+/// cells' UTF-8 is checked, and no byte of their buffers is read.
+pub fn read_table_deferring(
+    group: &hdf5::Group,
+    table: &str,
+    specs: &[ColumnSpec],
+    projection: bool,
+    deferred: &[&str],
+) -> Result<RawTable> {
     let base = format!("/clinical/{table}");
     let mut out = RawTable { name: table.to_string(), ..Default::default() };
     let members = ops::members(group)?;
@@ -296,7 +339,8 @@ pub fn read_table(group: &hdf5::Group, table: &str, specs: &[ColumnSpec], projec
             }
             continue;
         }
-        let values = match read_values(group, spec, &location, &mut out.problems)? {
+        let defer = deferred.contains(&spec.name);
+        let values = match read_values(group, spec, &location, defer, &mut out.problems)? {
             Some(v) => v,
             None => continue,
         };
@@ -327,6 +371,7 @@ fn read_values(
     group: &hdf5::Group,
     spec: &ColumnSpec,
     location: &str,
+    defer: bool,
     problems: &mut Vec<Problem>,
 ) -> Result<Option<Values>> {
     match spec.ty {
@@ -370,27 +415,31 @@ fn read_values(
                 ));
                 return Ok(None);
             }
-            let data: Vec<u8> = read_vec(&data_ds)?;
+            // The buffer's length is its shape: checking the offsets reads no byte of it.
+            let n_bytes = data_ds.shape().first().copied().unwrap_or(0) as u64;
             let offsets: Vec<u64> = read_vec(&offsets_ds)?;
             if offsets.is_empty() {
                 problems.push(Problem::new("E806", format!("{location}/offsets"), "`offsets` must hold N + 1 entries"));
                 return Ok(None);
             }
-            let mut sound = offsets[0] == 0 && *offsets.last().unwrap_or(&0) == data.len() as u64;
+            let mut sound = offsets[0] == 0 && *offsets.last().unwrap_or(&0) == n_bytes;
             sound &= offsets.windows(2).all(|w| w[0] <= w[1]);
             if !sound {
                 problems.push(Problem::new(
                     "E806",
                     format!("{location}/offsets"),
                     format!(
-                        "offsets must start at 0, never decrease and end at the byte length {} (they run {} .. {})",
-                        data.len(),
+                        "offsets must start at 0, never decrease and end at the byte length {n_bytes} (they run {} .. {})",
                         offsets[0],
                         offsets.last().copied().unwrap_or(0)
                     ),
                 ));
                 return Ok(None);
             }
+            if defer {
+                return Ok(Some(Values::Deferred { offsets }));
+            }
+            let data: Vec<u8> = read_vec(&data_ds)?;
             for (i, w) in offsets.windows(2).enumerate() {
                 if std::str::from_utf8(&data[w[0] as usize..w[1] as usize]).is_err() {
                     problems.push(Problem::new(
@@ -513,7 +562,7 @@ fn check_null_cells(base: &str, out: &mut RawTable) {
         let Some(mask) = &column.mask else { continue };
         let leaking =
             mask.iter().enumerate().filter(|(_, v)| **v == 0).map(|(i, _)| i).find(|i| match &column.values {
-                Values::Utf8 { offsets, .. } => offsets[*i] != offsets[*i + 1],
+                Values::Utf8 { offsets, .. } | Values::Deferred { offsets } => offsets[*i] != offsets[*i + 1],
                 Values::I64(v) => v[*i] != 0,
                 Values::U64(v) => v[*i] != 0,
                 Values::F64(v) => v[*i].to_bits() != 0,
@@ -636,20 +685,251 @@ impl<'a> TableWriter<'a> {
     }
 }
 
-/// Read row `i` of a stored UTF-8 column without reading the whole column:
-/// two offsets, then the bytes between them.  For document text, which the
-/// training path reads only for the documents it selected (task-and-cache
-/// contract §6).
-pub fn read_cell(column: &hdf5::Group, offsets: &[u64], i: usize) -> Result<String> {
-    let (Some(a), Some(b)) = (offsets.get(i), offsets.get(i + 1)) else {
-        return Err(Error::Index(format!("row {i} is outside a column of {} rows", offsets.len().saturating_sub(1))));
+// -- deferred text --------------------------------------------------------------------------
+
+/// How many bytes of a deferred column [`TextColumn::scan`] holds at once.
+pub const SCAN_BYTES: usize = 1 << 20;
+
+/// A deferred UTF-8 column: its offsets in memory, its bytes in the file.
+///
+/// The buffer's dataset stays open, so neighbouring cells share HDF5's chunk
+/// cache; a cell is checked as UTF-8 when it is read (E806), so no invalid
+/// text is ever returned, though nothing was decompressed to open the table.
+#[derive(Debug, Clone)]
+pub struct TextColumn {
+    data: hdf5::Dataset,
+    offsets: Vec<u64>,
+    /// `/clinical/<table>/<column>`, for messages.
+    location: String,
+}
+
+/// What [`TextColumn::scan`] found.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Scan {
+    /// The first row that is not valid UTF-8.
+    pub invalid_row: Option<usize>,
+    /// The probed byte positions that fall inside a character rather than
+    /// before one.
+    pub inside_character: BTreeSet<u64>,
+}
+
+/// Continue checking a UTF-8 stream with `piece`, where the previous piece
+/// left `carry` (a character cut by a slab boundary); leave in `carry` the
+/// character `piece` ends inside of, if any.  `false` on invalid UTF-8.
+fn continue_utf8(carry: &mut Vec<u8>, piece: &[u8]) -> bool {
+    let joined;
+    let bytes: &[u8] = if carry.is_empty() {
+        piece
+    } else {
+        joined = [carry.as_slice(), piece].concat();
+        &joined
     };
-    if a == b {
-        return Ok(String::new());
+    match std::str::from_utf8(bytes) {
+        Ok(_) => {
+            carry.clear();
+            true
+        }
+        Err(e) if e.error_len().is_none() => {
+            *carry = bytes[e.valid_up_to()..].to_vec();
+            true
+        }
+        Err(_) => false,
     }
-    let data = column.dataset("data")?;
-    let block = data::read_region(&data, &[Index::Slice(Slice::new(*a as i64, *b as i64))])?;
-    let bytes: Vec<u8> = block.cast::<u8>().iter().copied().collect();
-    String::from_utf8(bytes)
-        .map_err(|_| Error::coded("E806", format!("row {i} of {} is not valid UTF-8", column.name())))
+}
+
+impl TextColumn {
+    /// The column `name` of a table group, with the offsets
+    /// [`read_table_deferring`] read and checked for it.
+    pub fn open(table: &hdf5::Group, name: &str, offsets: Vec<u64>, location: impl Into<String>) -> Result<TextColumn> {
+        let data = table.group(name)?.dataset("data")?;
+        Ok(TextColumn { data, offsets, location: location.into() })
+    }
+
+    pub fn rows(&self) -> usize {
+        self.offsets.len().saturating_sub(1)
+    }
+
+    /// Row `i`'s byte range in the buffer.
+    pub fn span(&self, i: usize) -> Option<(u64, u64)> {
+        Some((*self.offsets.get(i)?, *self.offsets.get(i + 1)?))
+    }
+
+    fn read(&self, a: u64, b: u64) -> Result<Vec<u8>> {
+        if a == b {
+            return Ok(Vec::new());
+        }
+        let block = data::read_region(&self.data, &[Index::Slice(Slice::new(a as i64, b as i64))])?;
+        Ok(block.cast::<u8>().iter().copied().collect())
+    }
+
+    fn invalid(&self, i: usize) -> Error {
+        Error::coded("E806", format!("{}#row={i}: row {i} is not valid UTF-8", self.location))
+    }
+
+    /// Row `i`, read from the file now: its bytes, and no others.
+    pub fn cell(&self, i: usize) -> Result<String> {
+        let (a, b) =
+            self.span(i).ok_or_else(|| Error::Index(format!("row {i} is outside a column of {} rows", self.rows())))?;
+        String::from_utf8(self.read(a, b)?).map_err(|_| self.invalid(i))
+    }
+
+    /// Every row, in one read: what an export of the whole table needs.
+    pub fn cells(&self) -> Result<Vec<String>> {
+        let bytes = self.read(0, self.offsets.last().copied().unwrap_or(0))?;
+        self.offsets
+            .windows(2)
+            .enumerate()
+            .map(|(i, w)| {
+                std::str::from_utf8(&bytes[w[0] as usize..w[1] as usize])
+                    .map(str::to_string)
+                    .map_err(|_| self.invalid(i))
+            })
+            .collect()
+    }
+
+    /// Stream the whole buffer through about `slab` bytes of memory: check
+    /// that every row is UTF-8 on its own, and find which `probes` (absolute
+    /// byte positions in the buffer, in any order) fall inside a character.
+    /// Stops at the first invalid row.
+    pub fn scan(&self, probes: &[u64], slab: usize) -> Result<Scan> {
+        let mut out = Scan::default();
+        let total = self.offsets.last().copied().unwrap_or(0);
+        let mut probes: Vec<u64> = probes.iter().copied().filter(|p| *p < total).collect();
+        probes.sort_unstable();
+        probes.dedup();
+        let (mut next_probe, mut row, mut at) = (0usize, 0usize, 0u64);
+        let mut carry: Vec<u8> = Vec::new();
+        let slab = slab.max(4) as u64;
+        while at < total {
+            let end = (at + slab).min(total);
+            let block = self.read(at, end)?;
+            while next_probe < probes.len() && probes[next_probe] < end {
+                let p = probes[next_probe];
+                if block[(p - at) as usize] & 0xC0 == 0x80 {
+                    out.inside_character.insert(p);
+                }
+                next_probe += 1;
+            }
+            let mut pos = at;
+            while pos < end {
+                // The row holding byte `pos`: an empty row holds none.
+                while self.offsets[row + 1] <= pos {
+                    row += 1;
+                }
+                let row_end = self.offsets[row + 1];
+                let stop = row_end.min(end);
+                let valid = continue_utf8(&mut carry, &block[(pos - at) as usize..(stop - at) as usize]);
+                // A row may continue into the next slab, but not end inside a character.
+                if !valid || (stop == row_end && !carry.is_empty()) {
+                    out.invalid_row = Some(row);
+                    return Ok(out);
+                }
+                pos = stop;
+            }
+            at = end;
+        }
+        Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::codecs::resolve_profile;
+
+    /// A one-column table of `cells`, its buffer chunked and compressed.
+    fn table(dir: &std::path::Path, cells: &[Option<&str>]) -> (hdf5::File, hdf5::Group) {
+        let file = hdf5::File::create(dir.join("t.h5")).unwrap();
+        let group = file.create_group("documents").unwrap();
+        let profile = resolve_profile(Some("training")).unwrap();
+        let spec = DOCUMENT_COLUMNS[2]; // `text`, required
+        let mut w = TableWriter::new(group.clone(), &profile, cells.len());
+        w.utf8(&spec, cells).unwrap();
+        (file, group)
+    }
+
+    fn offsets(group: &hdf5::Group) -> Vec<u64> {
+        let raw = read_table_deferring(group, "documents", &DOCUMENT_COLUMNS[2..3], false, &["text"]).unwrap();
+        match &raw.column("text").unwrap().values {
+            Values::Deferred { offsets } => offsets.clone(),
+            other => panic!("not deferred: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn s4_a_deferred_column_reads_offsets_and_no_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_file, group) = table(dir.path(), &[Some("first"), Some(""), Some("結節 14 mm")]);
+        let offsets = offsets(&group);
+        assert_eq!(offsets, [0, 5, 5, 5 + "結節 14 mm".len() as u64]);
+        let column = TextColumn::open(&group, "text", offsets, "/clinical/documents/text").unwrap();
+        assert_eq!(column.cell(2).unwrap(), "結節 14 mm");
+        assert_eq!(column.cell(1).unwrap(), "");
+        assert_eq!(column.cells().unwrap(), ["first", "", "結節 14 mm"]);
+    }
+
+    #[test]
+    fn s4_offsets_are_checked_against_the_stored_length_without_reading_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_file, group) = table(dir.path(), &[Some("abc"), Some("de")]);
+        let offsets_ds = group.group("text").unwrap().dataset("offsets").unwrap();
+        let mut bad = vec![0u64, 3, 9];
+        offsets_ds.write(&bad).unwrap();
+        let raw = read_table_deferring(&group, "documents", &DOCUMENT_COLUMNS[2..3], false, &["text"]).unwrap();
+        assert_eq!(raw.problems.iter().map(|p| p.code).collect::<Vec<_>>(), ["E806"]);
+        bad[2] = 5;
+        offsets_ds.write(&bad).unwrap();
+        let raw = read_table_deferring(&group, "documents", &DOCUMENT_COLUMNS[2..3], false, &["text"]).unwrap();
+        assert!(raw.problems.is_empty());
+    }
+
+    #[test]
+    fn s4_a_scan_holds_one_slab_and_checks_every_row() {
+        let dir = tempfile::tempdir().unwrap();
+        // Multibyte characters cut by every slab boundary, an empty row, and a
+        // row longer than a slab.
+        let rows = ["añb", "", "€€€€€€", "x", "日本語のテキスト"];
+        let cells: Vec<Option<&str>> = rows.iter().map(|r| Some(*r)).collect();
+        let (_file, group) = table(dir.path(), &cells);
+        let column = TextColumn::open(&group, "text", offsets(&group), "/clinical/documents/text").unwrap();
+        // 'ñ' is bytes 1..3 of row 0: byte 2 is inside it, byte 1 and 3 are not.
+        for slab in [4, 5, 7, 1 << 20] {
+            let scan = column.scan(&[1, 2, 3, 4, 99_999], slab).unwrap();
+            assert_eq!(scan.invalid_row, None, "slab {slab}");
+            assert_eq!(scan.inside_character.into_iter().collect::<Vec<_>>(), [2], "slab {slab}");
+        }
+    }
+
+    #[test]
+    fn s4_a_scan_finds_the_first_invalid_row_wherever_the_slab_ends() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_file, group) = table(dir.path(), &[Some("ok"), Some("€uro"), Some("tail")]);
+        let data = group.group("text").unwrap().dataset("data").unwrap();
+        let mut bytes: Vec<u8> = data.read_raw().unwrap();
+        // Truncate the euro sign's last byte into the next row: row 1 now ends
+        // inside a character.
+        bytes[2 + 2] = b'X';
+        data.write(&bytes).unwrap();
+        let offsets = offsets(&group);
+        let column = TextColumn::open(&group, "text", offsets, "/clinical/documents/text").unwrap();
+        for slab in [4, 5, 1 << 20] {
+            assert_eq!(column.scan(&[], slab).unwrap().invalid_row, Some(1), "slab {slab}");
+        }
+        assert_eq!(column.cell(0).unwrap(), "ok");
+        assert_eq!(column.cell(2).unwrap(), "tail");
+        let err = column.cell(1).unwrap_err();
+        assert_eq!(err.code(), Some("E806"));
+    }
+
+    #[test]
+    fn s4_each_row_is_utf8_on_its_own() {
+        // "ok€x": a valid stream, but offsets that cut the euro sign between
+        // rows 1 and 2 make row 1 end inside a character.
+        let dir = tempfile::tempdir().unwrap();
+        let (_file, group) = table(dir.path(), &[Some("ok"), Some("€x")]);
+        let column = TextColumn::open(&group, "text", vec![0, 2, 4, 6], "/clinical/documents/text").unwrap();
+        for slab in [3, 4, 1 << 20] {
+            assert_eq!(column.scan(&[], slab).unwrap().invalid_row, Some(1), "slab {slab}");
+        }
+    }
 }

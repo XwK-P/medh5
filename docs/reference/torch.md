@@ -269,13 +269,32 @@ A batch, for `B` rows:
 | `images[slot]` | `(B, C, *patch)` | The slot's window on its image's own grid; zeros where the slot is empty |
 | `present[slot]` | `(B,)` bool | Modality availability: an eligible image filled the slot |
 | `valid[slot]` | `(B, *patch)` bool | Field of view: inside the image and its valid region, never the padding |
-| `image_age_h[slot]` | `(B,)` | Hours from the image's imaging event to the cutoff |
+| `image_time[slot][...]` | `(B, 2)`, `(B,)` | The image's acquisition (`start_age_h`) and availability (`available_age_h`), as ages before the cutoff, with `start_known` and `available_known` |
 | `label[slot]`, `annotated[slot]` | `(B, K, *patch)`, `(B, K)` | Supervision for the slot's `classes`, and whether each was examined (coverage) |
 | `ignore[slot]` | `(B, *patch)` bool | Voxels a loss must not score: ignore regions and padding |
-| `events[...]` | `(B, N)` | `concept`, `kind`, `value`, `has_value`, `age_h`, `time_known`, padded to the longest history; `mask` marks real events, `length` counts them |
-| `documents[...]` | `(B, M, D)`, `(B, M)` | `features` and `age_h` of the admitted documents, with `mask` and `length` |
+| `events[...]` | `(B, N)`, `(B, N, 2)` | The admitted versions in input order, padded to the longest history; `mask` marks real events, `length` counts them (below) |
+| `documents[...]` | `(B, M, D)`, `(B, M)`, `(B, M, 2)` | `features` of the admitted documents, `event` (the owning version's position in `events`), `start_age_h` and `available_age_h` with their `*_known`; `mask` and `length` |
 | `target["value"]`, `target["observed"]` | `(B,)` | The label, and whether it is observed (a censored row is not) |
-| `meta` | list | Row id, subject, partition, cutoff, fingerprint, and per slot the visit that filled it |
+| `meta` | list | Row id, subject, partition, cutoff, fingerprint, the admitted event ids, and per slot the visit that filled it |
+
+The event sequence keeps what 1.1 §5 distinguishes, and never collapses a time
+to one number:
+
+| `events[...]` | Shape | Meaning |
+|---|---|---|
+| `concept`, `kind`, `status`, `temporal_type` | `(B, N)` int | Vocabulary index (0 padding, 1 unseen); the kind, status and temporal type as their vocabulary's index + 1 (0 padding) |
+| `value`, `has_value` | `(B, N)` | The value, normalised by the fitted statistics; whether there is one --- an absent value is not 0 |
+| `comparator` | `(B, N)` int | `eq`, `lt`, ... as `COMPARATORS` index + 1 (`eq` when a value has none); 0 without a value |
+| `missing` | `(B, N)` bool | An expected result missing for a source reason: absence, never a negative |
+| `start_age_h`, `end_age_h`, `available_age_h` | `(B, N, 2)` | Effective start, effective end and availability as ages before the cutoff in hours: `[..., 0]` the least, `[..., 1]` the most, equal for an exact instant |
+| `start_known`, `end_known`, `available_known` | `(B, N)` bool | Whether that time is known; an unknown one is zeros, which are not a time |
+| `tie_group` | `(B, N)` int | Versions whose ordering times overlap share a group: their order is the storage tie-break, not evidence |
+| `plan` | `(B, N)` bool | Admitted as a plan (`plans` policy): its start is ahead of the cutoff |
+
+An age is negative only for what a version available at the cutoff itself recorded about later --- a
+plan's start, a course's recorded end; every `available_age_h` is at least 0. A `static` event has no
+effective time (`temporal_type`), which is not the same as an `unknown` one (strict selection never
+orders an unknown time; `order_by = "available"` admits it, as unknown).
 
 ## MONAI
 

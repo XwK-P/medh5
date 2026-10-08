@@ -26,6 +26,7 @@ pub mod io;
 pub mod labels;
 pub mod misc;
 pub mod nodes;
+pub mod preflight;
 pub mod reader;
 pub mod records;
 pub mod rng;
@@ -62,5 +63,6 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     sampling::register(m)?;
     io::register(m)?;
     clinical::register(m)?;
+    preflight::register(m)?;
     Ok(())
 }

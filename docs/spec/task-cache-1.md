@@ -50,9 +50,10 @@ A URI is a locator, not identity. A reference resolves to a sample, and the samp
 3. the actual bytes of its clinical datasets match their digests --- every dataset's, with `--deep`.
 
 Step 3 is not redundant with steps 1–2: `content_id` is a Merkle root over *stored* digests, so an
-edit that leaves the stored digests alone changes no root. A failure of any step is **T302**; a
-source that does not open, or names a member that does not exist, **T301**. Re-pinning is explicit:
-a changed source is never silently accepted (`SourceRef.pin`).
+edit that leaves the stored digests alone changes no root. A dataset whose bytes cannot be read ---
+a damaged chunk --- does not match. A failure of any step is **T302**; a source that does not open,
+or names a member that does not exist, **T301**. Re-pinning is explicit: a changed source is never
+silently accepted (`SourceRef.pin`).
 
 ## 3. The task manifest
 
@@ -154,8 +155,9 @@ permitted; each is one example under the subject's partition.
 
 ## 4. Preflight
 
-Preflight reads metadata only --- no voxel and no report text --- and decides, per row, before any
-batch is built:
+Preflight reads no voxel and uses no report: text is read only to verify it --- its digest (§2) and its
+UTF-8 (1.1 §4), a bounded slab at a time --- and to compare a document two fragments both hold
+(§3.3). It decides, per row, before any batch is built:
 
 1. the manifest's own findings (T1xx, T2xx); a manifest with any leaves every row in `error`;
 2. per subject: every source opened and checked (§2), identities, clocks and duplicates reconciled
@@ -178,7 +180,11 @@ it unless told to train on the unaffected rows only.
 
 A row's view holds: the selection (status, admitted versions with their order bounds and tie groups,
 attested links and payloads, uncertain records, exclusion counts), the selected event versions with
-the fragment each came from, each slot's fill, and the target label.
+the fragment each came from, each slot's fill, and the target label. The rows of a subject share its
+merged history: a view may name its versions by position in that history rather than copy them, which
+is what keeps a preflight of many cutoffs linear in the history, not in rows times history. A source
+that cannot be read --- a damaged chunk in its clinical tables --- is that source's finding (**T302**,
+**T306**), never the whole preflight's failure.
 
 ## 5. Targets
 
@@ -224,6 +230,22 @@ Masks stay distinct, because they mean different things to a loss: sequence **pa
 **availability** (was the slot filled), voxel **validity** (field of view), annotation **coverage**
 (was the class examined), and target **observation** (is the label observed). A zero-filled missing
 modality is not an observed negative.
+
+Time keeps the meaning 1.1 §5.2 gives it. A frontend **MUST NOT** collapse an input's time to one
+instant chosen from its bounds: each time an input carries --- effective start, effective end,
+availability --- is given as both bounds (relative to the cutoff, in whatever unit), with whether it is
+known; an unknown time is marked unknown, never zero. A `static` event stays distinct from one of
+`unknown` time, events of one **tie group** stay marked as such (their order in a sequence is a storage
+tie-break, not evidence), and a plan admitted by `plans` stays marked as a plan. Missingness stays
+apart from measurement: an absent value, a value known only as a bound (`value_comparator`) and a
+`missing_reason` are each represented, never read as a measured value. Every availability an input
+carries is at or before the cutoff --- what strict selection admits --- and only what a version
+available at the cutoff itself recorded about later (a plan's start, a course's recorded end) lies
+after it.
+
+A frontend reads each source as the version its row pins: a source whose `content_id` is no longer the
+pin when a batch is built --- the file was replaced after preflight --- is refused (**T302**), never
+read in its place.
 
 ## 7. Feature caches
 

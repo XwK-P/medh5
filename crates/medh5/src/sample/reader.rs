@@ -12,7 +12,7 @@ use super::image::{Image, SPEC_IMAGE_ATTRS};
 use crate::annotations::header::SPEC_ANNOTATION_ATTRS;
 use crate::annotations::{Annotation, Grids};
 use crate::array::Slice;
-use crate::clinical::Clinical;
+use crate::clinical::{Clinical, Documents};
 use crate::curation::identity::{Cohort, Identity};
 use crate::curation::timeline::Timeline;
 use crate::document::{SampleDocument, META_DATASET};
@@ -71,6 +71,7 @@ pub struct Sample {
     index: OnceLock<Result<IndexMap<String, SamplingIndex>>>,
     fresh: OnceLock<Result<BTreeSet<String>>>,
     clinical: OnceLock<Result<Option<Arc<Clinical>>>>,
+    documents: OnceLock<Result<Option<Arc<Documents>>>>,
     resolved: Mutex<HashMap<(String, String), Option<Transform>>>,
 }
 
@@ -90,6 +91,7 @@ impl Sample {
             index: OnceLock::new(),
             fresh: OnceLock::new(),
             clinical: OnceLock::new(),
+            documents: OnceLock::new(),
             resolved: Mutex::new(HashMap::new()),
         }
     }
@@ -191,6 +193,20 @@ impl Sample {
             }
             let projection = crate::version::is_projection(&self.version()?);
             Ok(Clinical::open(&self.root, projection)?.map(Arc::new))
+        })?;
+        Ok(found.as_ref())
+    }
+
+    /// The `clinical` profile's documents alone --- metadata and text
+    /// offsets, not the events or the links --- when the sample declares the
+    /// profile: what reading one report needs (1.1 §6).
+    pub fn documents(&self) -> Result<Option<&Arc<Documents>>> {
+        let found = cached(&self.documents, || {
+            if !self.profiles()?.contains(crate::clinical::PROFILE) {
+                return Ok(None);
+            }
+            let projection = crate::version::is_projection(&self.version()?);
+            Ok(Documents::open(&self.root, projection)?.map(Arc::new))
         })?;
         Ok(found.as_ref())
     }

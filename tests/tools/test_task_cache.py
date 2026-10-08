@@ -385,6 +385,101 @@ class TestPreflight:
         assert "T303" in found(other.preflight().findings)
 
 
+class TestPreflightAtScale:
+    """§4 at cohort scale: rows index their subject's history rather than
+    copying it, a damaged source is a finding, and the result pickles small."""
+
+    def many_cutoffs(self, tmp_path: Path, rows: int) -> TaskManifest:
+        paths = cohort(tmp_path / f"c{rows}", {"P-01": "PD"})
+        task = TaskManifest.new(
+            "progression",
+            "1",
+            identity_namespace="site",
+            slots=[Slot("ct", "CT")],
+            target=TARGET,
+            base=tmp_path / f"c{rows}",
+        )
+        task.add_subject("P-01", [SourceRef.pin(paths["P-01"], uri="P-01.medh5")])
+        for k in range(rows):
+            task.add_row(f"r{k}", "P-01", (k + 1) * DAY)
+        return task
+
+    def test_S4_rows_index_one_shared_history(self, tmp_path: Path):
+        report = self.many_cutoffs(tmp_path, 40).preflight()
+        assert report.ok, report.findings
+        (subject,) = report.subjects
+        assert len(subject.events) == len(History.events())
+        for row in report.rows:
+            assert row.subject is subject
+            assert row.events == tuple(subject.events[int(i)] for i in row.selected)
+            assert row.event_fragments == (0,) * len(row.selected)
+            selection = row.selection
+            assert selection is not None
+            assert [e.event_id for e in selection.events] == [
+                e.event_id for e in row.events
+            ]
+        late = report.row("r39")
+        assert [e.event_id for e in late.events] == ["lab0", "ct0", "rep_v2"]
+        assert subject.owned_documents(subject.events.index("rep_v2")) == [
+            (0, "rep_text_v2")
+        ]
+        # Each event version crosses once however many rows admit it: `lab0`
+        # is its own record, so its id is in the pickle twice (event id and
+        # record id), not once per row.
+        blob = pickle.dumps(report)
+        assert blob.count(b"lab0") == 2
+        again = pickle.loads(blob)
+        assert again.counts == report.counts
+        assert again.row("r39").events == late.events
+        assert again.row("r39").selection == late.selection
+
+    def test_S4_a_damaged_source_is_a_finding_not_a_failure(self, tmp_path: Path):
+        from medh5.clinical import Document
+
+        path = tmp_path / "notes.medh5"
+        long = Document("note_text", "a long note " * 20_000)  # chunked, compressed
+        History.write(
+            path,
+            events=[
+                Event(
+                    "note",
+                    "note",
+                    "document",
+                    "point",
+                    "final",
+                    effective_start_us=DAY,
+                    available_us=DAY + HOUR,
+                )
+            ],
+            documents=[long],
+            links=[
+                Link.between(("event", "note"), "describes", ("document", "note_text"))
+            ],
+        )
+        task = TaskManifest.new("t", "1", identity_namespace="site", base=tmp_path)
+        task.add_subject("P-01", [SourceRef.pin(path, uri=path.name)])
+        task.add_row("r", "P-01", 2 * DAY)
+        with h5py.File(path, "r+") as f:
+            data = f["clinical/documents/text/data"]
+            assert data.chunks is not None
+            # A chunk that no longer decompresses, under unchanged digests:
+            # verifying it and checking its text both fail to read it.
+            data.id.write_direct_chunk((0,), b"\x00" * 16)
+        report = task.preflight()
+        assert not report.ok
+        assert {f.code for f in report.findings} == {"T302", "T306"}
+        assert report.row("r").status == "error"
+
+    def test_S4_the_manifest_findings_leave_no_history_read(self, tmp_path: Path):
+        task = self.many_cutoffs(tmp_path, 2)
+        task.add_row("ghost", "P-99", DAY)
+        report = task.preflight()
+        assert {f.code for f in report.findings} == {"T201"}
+        assert report.subjects == ()
+        assert all(r.subject is None and r.events == () for r in report.rows)
+        assert report.row("r0").reasons[0].startswith("manifest_invalid")
+
+
 class TestCaches:
     def test_S7_event_level_caches(self, setup, tmp_path: Path):
         task, _ = setup

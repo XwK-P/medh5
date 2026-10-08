@@ -324,6 +324,13 @@ pub fn validate_file(path: &Path, level: &str, profiles: Option<&[String]>) -> R
 /// and declaration rules they rest on), without the bulk-data rules: what a
 /// task's preflight asks of each source it will select from.
 pub fn clinical_errors(root: &hdf5::Group, path: &str) -> Result<Vec<Diagnostic>> {
+    Ok(clinical_checked(root, path)?.0)
+}
+
+/// [`clinical_errors`], and the tables the rules read --- document text
+/// deferred --- so a caller that goes on to use the profile reads it once
+/// ([`Clinical::from_tables`](crate::clinical::Clinical::from_tables)).
+pub fn clinical_checked(root: &hdf5::Group, path: &str) -> Result<(Vec<Diagnostic>, Option<rules::ClinicalTables>)> {
     let declared = attrs::get_strs(root, "medh5_profiles")?.unwrap_or_default();
     let mut ctx = rules::Context::new(root.clone(), path, "semantic", declared, true);
     let mut out = Vec::new();
@@ -331,7 +338,7 @@ pub fn clinical_errors(root: &hdf5::Group, path: &str) -> Result<Vec<Diagnostic>
         out.extend(rule(&mut ctx)?);
     }
     out.retain(|d| d.severity == "error" && (d.code.starts_with("E8") || d.code == "E009" || d.code == "E004"));
-    Ok(out)
+    Ok((out, ctx.clinical.take()))
 }
 
 /// Validate many files, one report each.

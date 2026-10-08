@@ -556,7 +556,7 @@ pub fn validate_cache(
                         format!("built at cutoff {:?}; the row's cutoff is {}", entry.cutoff_us, view.cutoff_us),
                     ));
                 }
-                let selected: Vec<String> = view.events.iter().map(|e| e.event_id.clone()).collect();
+                let selected: Vec<String> = pre.events_of(view).iter().map(|e| e.event_id.clone()).collect();
                 let pinned = entry.event_versions.clone().unwrap_or_default();
                 if pinned != selected {
                     let extra: Vec<&String> = pinned.iter().filter(|v| !selected.contains(v)).collect();

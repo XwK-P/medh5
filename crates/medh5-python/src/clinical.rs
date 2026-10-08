@@ -111,7 +111,7 @@ impl ClinicalHandle {
     fn documents<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         to_list(
             py,
-            self.inner.documents.iter().map(|d| {
+            self.inner.documents().iter().map(|d| {
                 json!({
                     "document_id": d.document_id,
                     "media_type": d.media_type,
@@ -139,7 +139,7 @@ impl ClinicalHandle {
         let policy = policy_arg(policy)?;
         let links: Vec<(usize, &Link)> = self.inner.links.iter().map(|l| (0, l)).collect();
         let selection = medh5::clinical::select(&self.inner.events, &links, cutoff_us, &policy)?;
-        Ok(json_to_py(py, &selection.to_json())?)
+        Ok(json_to_py(py, &selection.to_json(&self.inner.events))?)
     }
     fn summary<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         json_to_py(py, &self.inner.summary())
@@ -160,7 +160,7 @@ fn clinical_select<'py>(
     let links: Vec<Link> = links.iter().map(|l| Ok(Link::from_json(&record(l)?)?)).collect::<R<_>>()?;
     let refs: Vec<(usize, &Link)> = links.iter().map(|l| (0, l)).collect();
     let selection = medh5::clinical::select(&events, &refs, cutoff_us, &policy_arg(policy)?)?;
-    Ok(json_to_py(py, &selection.to_json())?)
+    Ok(json_to_py(py, &selection.to_json(&events))?)
 }
 
 /// Check a logical-record bundle against its schema and parse it back.
@@ -267,7 +267,7 @@ fn task_reconcile<'py>(py: Python<'py>, doc: &Bound<'py, PyAny>, base: Option<Pa
     Ok(json_to_py(py, &m.to_json())?)
 }
 
-/// The preflight of a task, as JSON.
+/// The preflight of a task, as columns (`crate::preflight`).
 #[pyfunction]
 #[pyo3(signature = (doc, base=None, deep=false))]
 fn task_preflight<'py>(
@@ -277,8 +277,7 @@ fn task_preflight<'py>(
     deep: bool,
 ) -> R<Bound<'py, PyAny>> {
     let m = manifest(doc)?;
-    let pre = py.detach(move || medh5::companion::preflight(&m, base.as_deref(), deep))?;
-    Ok(json_to_py(py, &pre.to_json())?)
+    Ok(crate::preflight::preflight_to_py(py, m, base.as_deref(), deep)?.into_any())
 }
 
 /// A source reference pinned to what the sample is now.

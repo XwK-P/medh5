@@ -40,6 +40,21 @@ cutoff-aware multimodal batches from it.
   fingerprints, and a preflight that reports every row as eligible,
   uncertifiable, excluded or in error, with the reason. Fragmented subjects are
   checked for identity, clock and duplicate agreement, and reconciled.
+- **A preflight scales with the cohort, not with rows times history.**
+  Subjects are taken one at a time (their files closed before the next's open),
+  each subject's history is prepared for selection once and shared by its rows,
+  each source is walked once and its clinical tables read once --- validated,
+  then used --- and only events or documents that several fragments hold are
+  digested or compared. The result crosses into Python as columns:
+  `Preflight.subjects` holds each subject's merged history once
+  (`SubjectHistory`, `EventTable`, `LinkTable`, packed strings), and a
+  `RowView` is a view over arrays (`selected`, `order`, `tie_group`, `plan`)
+  whose `events`, `selection` and `slots` are built when read; the columns are
+  built as each subject is handed over (`preflight_each`), so the cohort is
+  never held as records. On a 60-subject, two-site cohort of 720 rows
+  (`bench_preflight.py`): 45–61 s and 5.2 GB peak → 3.4 s and 131 MB; the
+  engine alone 10.0 s → about 4 s. At 200 subjects and 4 800 rows: 18.8 s and
+  481 MB.
 - **Feature caches** (`medh5.cache/1`, `medh5.cache`): event- and
   patient-level features with a checksummed dependency manifest, validated so
   that *stale* (a source changed, T403) is told apart from *corrupt* (T401,
@@ -51,6 +66,21 @@ cutoff-aware multimodal batches from it.
   with padding, modality availability, field of view, annotation coverage and
   target observation kept as distinct masks. `ConceptVocabulary` is fitted on
   the training partition and records it.
+- **Batches keep time's uncertainty.** Every time an input carries --- an
+  event's effective start and end, its availability, an image's acquisition
+  --- is given as its bounds, as ages before the cutoff (`start_age_h`,
+  `end_age_h`, `available_age_h`, `(…, 2)`), each with a `*_known` mask; a
+  day-precision time keeps its day. Events also carry `status`,
+  `temporal_type` (a `static` fact is not an unknown time), `comparator`
+  (`< 5` is not 5), `missing` (a result not done is not a negative),
+  `tie_group` and `plan`. Images carry `image_time`. The rules are task-cache-1
+  §6's.
+- **Document text is read on demand.** Opening the profile, selecting, a task's
+  preflight and the validator read the text column's offsets, never its bytes
+  whole: a document's text is read --- and checked as UTF-8 --- when it is
+  asked for (`Clinical.text`, and `Sample.document_text`, which reads neither
+  the events nor any other document), and the validator and the pin check
+  stream the buffer a bounded slab at a time.
 - **Commands**: `medh5 clinical show | select | export | augment | strip`,
   `medh5 task validate | preflight | reconcile`, `medh5 cache validate` --- in
   the native binary and the Python console script alike.
@@ -60,8 +90,9 @@ cutoff-aware multimodal batches from it.
 - **Runnable examples**: `clinical_longitudinal.py` (the worked example: write,
   reopen, validate, preflight, batch), `clinical_collection.py` (a subject split
   across two members of a shard, reconciled, loaded through workers),
-  `clinical_cache.py` (every way a cache stops being usable) and
-  `bench_clinical.py` (the measurements on [Runnable examples](docs/examples/index.md)).
+  `clinical_cache.py` (every way a cache stops being usable), and the
+  measurements `bench_clinical.py` and `bench_preflight.py` (a large
+  multi-site cohort; [Runnable examples](docs/examples/index.md)).
 
 ### Behaviour changes
 
@@ -79,6 +110,13 @@ cutoff-aware multimodal batches from it.
 - **The torch handle cache is keyed by `(path, sample_key)`**: `open_cached`
   and `HandleCache.get` / `lease` take an optional member key, so collection
   members are cached, leased and abandoned across a fork like files.
+  `lease(..., content_id=...)` reads the version a task row pins: a handle
+  cached from before its file was replaced is reopened, a changed source
+  refused (T302).
+- **A damaged source is a finding, not a failed preflight**: clinical bytes
+  that cannot be read fail the pin (T302) and the table check (T306).
+- **Only an imaging version fills a slot** (task-cache-1 §3.5): an image some
+  other kind of event `describes` is not the slot's.
 - `medh5.errors.Domain` includes `"clinical"`.
 
 ## [2.0.0] — 2026-10-08

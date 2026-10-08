@@ -7,9 +7,14 @@
 //! every clinical dataset carries.  Actual digest *matches* are E701, checked
 //! with every other dataset's.
 
+use std::collections::{BTreeSet, HashMap};
+
 use super::Context;
-use crate::clinical::check::{check_descriptor, check_records, SampleContext};
-use crate::clinical::columns::{read_table, RawTable, DOCUMENT_COLUMNS, EVENT_COLUMNS, LINK_COLUMNS};
+use crate::clinical::check::{check_descriptor, check_records_with, DocumentTexts, SampleContext};
+use crate::clinical::columns::{
+    read_table_deferring, Problem, RawTable, TextColumn, Values, DOCUMENT_COLUMNS, EVENT_COLUMNS, LINK_COLUMNS,
+    SCAN_BYTES,
+};
 use crate::clinical::model::{
     ClinicalRecords, Descriptor, DESCRIPTOR, DOCUMENTS, EVENTS, GROUP, LINKS, MIN_VERSION, PROFILE,
 };
@@ -22,17 +27,83 @@ use crate::json::repr_str;
 use crate::validate::Diagnostic;
 use crate::Result;
 
-/// The clinical tables as the structural rule read them.
+/// The clinical tables as the structural rule read them: document text
+/// deferred, and what its one scan found.
 #[derive(Debug, Clone, Default)]
 pub struct ClinicalTables {
     pub descriptor: Option<Descriptor>,
     pub events: Option<RawTable>,
     pub documents: Option<RawTable>,
     pub links: Option<RawTable>,
+    pub texts: ScannedTexts,
+}
+
+/// What the span rule needs of the stored document text, from one scan.
+#[derive(Debug, Clone, Default)]
+pub struct ScannedTexts {
+    /// Document id -> its byte range in the buffer (the first row of an id).
+    spans: HashMap<String, (u64, u64)>,
+    /// Probed buffer positions that fall inside a character.
+    inside: BTreeSet<u64>,
+}
+
+impl DocumentTexts for ScannedTexts {
+    fn n_bytes(&self, document_id: &str) -> Option<u64> {
+        self.spans.get(document_id).map(|(a, b)| b - a)
+    }
+
+    fn starts_character(&self, document_id: &str, at: u64) -> bool {
+        self.spans.get(document_id).is_some_and(|(a, _)| !self.inside.contains(&(a + at)))
+    }
+}
+
+/// Scan the deferred `text` of a documents table: every row UTF-8 (E806,
+/// recorded as the table's problem), and where the links' spans fall.  Memory
+/// is one slab of the buffer, whatever its size.
+fn scan_texts(group: &hdf5::Group, documents: &mut RawTable, links: Option<&RawTable>) -> Result<ScannedTexts> {
+    let mut out = ScannedTexts::default();
+    let Some(Values::Deferred { offsets }) = documents.column("text").map(|c| c.values.clone()) else {
+        return Ok(out);
+    };
+    for i in 0..documents.rows {
+        if let (Some(id), Some(span)) =
+            (documents.text("document_id", i), documents.column("text").and_then(|c| c.span(i)))
+        {
+            out.spans.entry(id).or_insert(span);
+        }
+    }
+    let mut probes = Vec::new();
+    if let Some(links) = links {
+        for i in 0..links.rows {
+            if links.text("source_type", i).as_deref() != Some("document") {
+                continue;
+            }
+            let (Some(id), Some(start), Some(end)) =
+                (links.text("source_id", i), links.u64("source_start", i), links.u64("source_end", i))
+            else {
+                continue;
+            };
+            if let Some((a, b)) = out.spans.get(&id) {
+                probes.extend([start, end].into_iter().filter(|p| *p > 0 && a + p < *b).map(|p| a + p));
+            }
+        }
+    }
+    let column = TextColumn::open(group, "text", offsets, "/clinical/documents/text")?;
+    let scan = column.scan(&probes, SCAN_BYTES)?;
+    if let Some(i) = scan.invalid_row {
+        documents.problems.push(Problem::new(
+            "E806",
+            format!("/clinical/documents/text#row={i}"),
+            format!("row {i} of `text` is not valid UTF-8"),
+        ));
+    }
+    out.inside = scan.inside_character;
+    Ok(out)
 }
 
 impl ClinicalTables {
-    fn sound(&self) -> bool {
+    /// Whether every table read without a structural problem.
+    pub fn sound(&self) -> bool {
         [&self.events, &self.documents, &self.links].iter().all(|t| t.as_ref().is_none_or(RawTable::is_sound))
     }
 }
@@ -105,7 +176,9 @@ pub fn check_clinical(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
             }
             continue;
         };
-        let raw = read_table(&g, name, specs, ctx.projection)?;
+        // Text is checked below, in one bounded scan: never held whole.
+        let deferred: &[&str] = if name == DOCUMENTS { &["text"] } else { &[] };
+        let raw = read_table_deferring(&g, name, specs, ctx.projection, deferred)?;
         for p in &raw.problems {
             out.push(ctx.err(p.code, p.location.clone(), p.message.clone()));
         }
@@ -116,6 +189,13 @@ pub fn check_clinical(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
             EVENTS => tables.events = Some(raw),
             DOCUMENTS => tables.documents = Some(raw),
             _ => tables.links = Some(raw),
+        }
+    }
+    if let (Some(documents), Some(g)) = (tables.documents.as_mut(), table(DOCUMENTS)) {
+        let found = documents.problems.len();
+        tables.texts = scan_texts(&g, documents, tables.links.as_ref())?;
+        for p in &documents.problems[found..] {
+            out.push(ctx.err(p.code, p.location.clone(), p.message.clone()));
         }
     }
     ctx.clinical = Some(tables);
@@ -255,7 +335,7 @@ pub fn check_clinical_records(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
         documents: tables.documents.as_ref().map(documents_of).unwrap_or_default(),
         links: tables.links.as_ref().map(links_of).unwrap_or_default(),
     };
-    for f in check_records(&records, &sample, "/clinical") {
+    for f in check_records_with(&records, &tables.texts, &sample, "/clinical") {
         let d = if f.code == "E810" {
             ctx.unknown(f.code, f.location, f.message)
         } else {

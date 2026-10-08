@@ -420,13 +420,18 @@ impl TaskManifest {
     /// Identifies one example: the task, the subject, every pinned source
     /// version and the cutoff.
     pub fn row_fingerprint(&self, row: &Row) -> String {
-        let mut pins: Vec<&str> = self
-            .subject(&row.subject_id)
-            .map(|s| s.sources.iter().map(|r| r.content_id.as_str()).collect())
-            .unwrap_or_default();
+        self.row_fingerprint_with(&self.task_fingerprint(), self.subject(&row.subject_id), row)
+    }
+
+    /// [`row_fingerprint`](Self::row_fingerprint) with the task fingerprint
+    /// and the row's subject already in hand: what a preflight of many rows
+    /// computes once.
+    pub fn row_fingerprint_with(&self, task_fingerprint: &str, subject: Option<&Subject>, row: &Row) -> String {
+        let mut pins: Vec<&str> =
+            subject.map(|s| s.sources.iter().map(|r| r.content_id.as_str()).collect()).unwrap_or_default();
         pins.sort_unstable();
         fingerprint(&json!({
-            "task": self.task_fingerprint(),
+            "task": task_fingerprint,
             "namespace": self.identity_namespace,
             "subject_id": row.subject_id,
             "sources": pins,

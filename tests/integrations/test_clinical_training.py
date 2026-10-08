@@ -99,7 +99,10 @@ class TestWorkedExample:
         censored = rows.index("P-04@d95")
         assert not batch["target"]["observed"][censored]
         assert not batch["annotated"]["ct"][censored].any()
-        assert batch["image_age_h"]["ct"][rows.index("P-02@d95")] > 0
+        ct = batch["image_time"]["ct"]
+        later = rows.index("P-02@d95")
+        assert ct["start_known"][later] and (ct["start_age_h"][later] > 0).all()
+        assert ct["available_known"][later]
 
     def test_S9_1_no_future_reaches_an_input(self, worked: dict[str, Any]):
         ds = ClinicalTaskDataset(
@@ -114,7 +117,10 @@ class TestWorkedExample:
         # them, though they supervise the slot as labels.
         assert item["meta"]["visits"]["ct"]["roi"] == "center_fallback"
         assert item["annotated"]["ct"].all()
-        assert (item["events"]["age_h"] >= 0).all()
+        events = item["events"]
+        assert events["available_known"].all()
+        assert (events["available_age_h"] >= 0).all()
+        assert (events["start_age_h"][events["start_known"]] >= 0).all()
         late = ds[ds.rows.index(next(r for r in ds.rows if r.row_id == "P-02@d95"))]
         assert late["meta"]["visits"]["ct"]["roi"] == "eligible_instances"
         assert "report0_v2" in late["meta"]["document_events"]
@@ -226,6 +232,297 @@ class TestWorkedExample:
         assert torch.equal(alone["events"]["concept"], together["events"]["concept"])
 
 
+def timeline(path: Path) -> None:
+    """The kit's history and the time shapes 1.1 §5.2 distinguishes: a
+    day-precision diagnosis, a course with a known end and one ongoing, a
+    static fact, an event whose time is unknown, a value known only as a bound,
+    a result missing for a reason, two events whose times overlap, and a plan."""
+    from medh5.clinical import Event
+    from tests.kits import History
+
+    def coded(event_id: str, kind: str, temporal: str, **f: Any) -> Event:
+        status = f.pop("status", "final")
+        return Event(
+            event_id,
+            event_id,
+            kind,
+            temporal,
+            status,
+            code_system="org.example",
+            code=event_id,
+            **f,
+        )
+
+    History.write(
+        path,
+        events=[
+            coded(
+                "dx",
+                "diagnosis",
+                "point",
+                effective_start_us=(10 * DAY, 11 * DAY - 1),
+                available_us=11 * DAY,
+            ),
+            coded(
+                "course",
+                "medication_administration",
+                "interval",
+                effective_start_us=(2 * DAY, 2 * DAY + HOUR),
+                effective_end_us=(12 * DAY, 13 * DAY),
+                available_us=13 * DAY,
+            ),
+            coded(
+                "course_open",
+                "medication_administration",
+                "interval",
+                effective_start_us=15 * DAY,
+                available_us=15 * DAY + HOUR,
+            ),
+            coded("sex", "other", "static", available_us=0, value_text="female"),
+            coded(
+                "unknown_time",
+                "other",
+                "unknown",
+                available_us=5 * DAY,
+                value_text="smoker",
+            ),
+            coded(
+                "below",
+                "observation",
+                "point",
+                effective_start_us=8 * DAY,
+                available_us=8 * DAY + HOUR,
+                value_num=5.0,
+                value_comparator="lt",
+                unit="mg/L",
+            ),
+            coded(
+                "missing",
+                "observation",
+                "point",
+                effective_start_us=9 * DAY,
+                available_us=9 * DAY + HOUR,
+                missing_reason="not_done",
+            ),
+            coded(
+                "tie_a",
+                "procedure",
+                "point",
+                effective_start_us=(16 * DAY, 17 * DAY),
+                available_us=17 * DAY,
+            ),
+            coded(
+                "tie_b",
+                "procedure",
+                "point",
+                effective_start_us=16 * DAY + 12 * HOUR,
+                available_us=17 * DAY,
+            ),
+            coded(
+                "plan",
+                "medication_order",
+                "point",
+                status="planned",
+                effective_start_us=30 * DAY,
+                available_us=14 * DAY,
+            ),
+        ],
+    )
+
+
+def timeline_task(tmp_path: Path, **policy: Any) -> TaskManifest:
+    from medh5.task import Slot, SourceRef
+
+    path = tmp_path / "timeline.medh5"
+    if not path.exists():
+        timeline(path)
+    task = TaskManifest.new(
+        "timeline",
+        "1",
+        identity_namespace="site",
+        slots=[Slot("ct", "CT")],
+        policy=policy or None,
+        base=tmp_path,
+    )
+    task.add_subject("P-01", [SourceRef.pin(path, uri=path.name)])
+    task.add_row("d20", "P-01", 20 * DAY)
+    task.add_row("d3", "P-01", 3 * DAY)
+    return task
+
+
+class TestTimeInBatches:
+    """Contract §6 and 1.1 §5.2: a batch keeps every time's bounds, says which
+    times are unknown, and tells a static fact, a plan and a tie apart from an
+    observed order --- and nothing after the cutoff reaches it."""
+
+    def item(
+        self, task: TaskManifest, row_id: str = "d20", **options: Any
+    ) -> dict[str, Any]:
+        ds = ClinicalTaskDataset(task, **options)
+        index = [r.row_id for r in ds.rows].index(row_id)
+        return ds[index]
+
+    def test_S5_2_uncertain_times_keep_their_bounds(self, tmp_path: Path):
+        item = self.item(timeline_task(tmp_path))
+        ev, at = item["events"], item["meta"]["event_ids"].index
+        lo, hi = ev["start_age_h"][at("dx")].tolist()
+        assert lo == pytest.approx((20 * DAY - (11 * DAY - 1)) / HOUR, abs=1e-3)
+        assert hi == pytest.approx(10 * 24.0, abs=1e-3)
+        assert hi - lo == pytest.approx(24.0, abs=1e-3), "a day stays a day"
+        assert ev["start_age_h"][at("ct0")].tolist() == [480.0, 480.0], (
+            "an instant is exact"
+        )
+        # A course with a recorded end, and one still running.
+        assert ev["end_known"][at("course")]
+        assert ev["end_age_h"][at("course")].tolist() == [7 * 24.0, 8 * 24.0]
+        assert not ev["end_known"][at("course_open")]
+        assert ev["end_age_h"][at("course_open")].tolist() == [0.0, 0.0]
+        assert not ev["end_known"][at("dx")], "a point has no end"
+        # Availability is a time of its own, and every input's is known.
+        assert ev["available_age_h"][at("dx")].tolist() == [9 * 24.0, 9 * 24.0]
+        assert ev["available_known"].all()
+
+    def test_S5_2_static_unknown_and_missing_are_not_times_or_values(
+        self, tmp_path: Path
+    ):
+        from medh5.clinical import COMPARATORS, TEMPORAL_TYPES
+
+        item = self.item(timeline_task(tmp_path))
+        ev, ids = item["events"], item["meta"]["event_ids"]
+        at = ids.index
+        assert ev["temporal_type"][at("sex")] == TEMPORAL_TYPES.index("static") + 1
+        assert not ev["start_known"][at("sex")] and ev["available_known"][at("sex")]
+        assert "unknown_time" not in ids, (
+            "strict selection never orders an unknown time"
+        )
+        assert ev["comparator"][at("below")] == COMPARATORS.index("lt") + 1
+        assert ev["comparator"][at("lab0")] == COMPARATORS.index("eq") + 1
+        assert ev["has_value"][at("below")] and ev["has_value"][at("lab0")]
+        assert ev["missing"][at("missing")] and not ev["has_value"][at("missing")]
+        assert ev["comparator"][at("missing")] == 0 and ev["value"][at("missing")] == 0
+        assert not ev["missing"][at("lab0")]
+        # Ordered by availability, the unknown-time event is read --- as
+        # unknown, which is not static.
+        by_availability = self.item(timeline_task(tmp_path, order_by="available"))
+        ev, at = by_availability["events"], by_availability["meta"]["event_ids"].index
+        assert (
+            ev["temporal_type"][at("unknown_time")]
+            == TEMPORAL_TYPES.index("unknown") + 1
+        )
+        assert not ev["start_known"][at("unknown_time")]
+        assert ev["temporal_type"][at("sex")] == TEMPORAL_TYPES.index("static") + 1
+
+    def test_S9_1_ties_and_plans_are_said_not_invented(self, tmp_path: Path):
+        item = self.item(timeline_task(tmp_path))
+        ev, ids = item["events"], item["meta"]["event_ids"]
+        at = ids.index
+        assert ev["tie_group"][at("tie_a")] == ev["tie_group"][at("tie_b")]
+        assert ev["tie_group"][at("tie_a")] != ev["tie_group"][at("course_open")]
+        assert "plan" not in ids and not ev["plan"].any()
+        assert (ev["start_age_h"] >= 0).all()
+        planned = self.item(timeline_task(tmp_path, plans=True))
+        ev, at = planned["events"], planned["meta"]["event_ids"].index
+        assert ev["plan"][at("plan")] and ev["plan"].sum() == 1
+        assert ev["start_age_h"][at("plan")].tolist() == [-240.0, -240.0], (
+            "a plan's start is ahead"
+        )
+        assert ev["available_age_h"][at("plan")].tolist() == [144.0, 144.0], (
+            "but it was known"
+        )
+
+    def test_S6_padding_is_never_a_time(self, tmp_path: Path):
+        ds = ClinicalTaskDataset(timeline_task(tmp_path))
+        batch = collate_clinical([ds[i] for i in range(len(ds))])
+        ev = batch["events"]
+        assert ev["start_age_h"].shape == (*ev["mask"].shape, 2)
+        assert ev["mask"][0].sum() != ev["mask"][1].sum(), (
+            "two histories of different lengths"
+        )
+        for key in ("start_known", "end_known", "available_known", "plan", "has_value"):
+            assert not ev[key][~ev["mask"]].any()
+        for key in ("start_age_h", "end_age_h", "available_age_h"):
+            assert (ev[key][~ev["mask"]] == 0).all()
+        assert batch["image_time"]["ct"]["start_age_h"].shape == (2, 2)
+
+    def test_S9_1_nothing_after_the_cutoff_changes_an_input(self, tmp_path: Path):
+        from medh5.clinical import Document, Event, Link
+
+        task = timeline_task(tmp_path)
+        encoder = HashingTextEncoder(dim=8)
+        before = self.item(task, "d20", documents=encoder)
+        path = tmp_path / "timeline.medh5"
+        with medh5.amend(path) as w:
+            # A later lab, a correction learnt after the cutoff, and a report
+            # written after it: all definitely after day 20.
+            w.add_event(
+                Event(
+                    "late_lab",
+                    "late_lab",
+                    "observation",
+                    "point",
+                    "final",
+                    effective_start_us=25 * DAY,
+                    available_us=25 * DAY,
+                    code_system="org.example",
+                    code="late_lab",
+                    value_num=9.0,
+                    unit="1",
+                )
+            )
+            w.add_event(
+                Event(
+                    "below_v2",
+                    "below",
+                    "observation",
+                    "point",
+                    "amended",
+                    effective_start_us=8 * DAY,
+                    available_us=21 * DAY,
+                    code_system="org.example",
+                    code="below",
+                    value_num=4.0,
+                    unit="mg/L",
+                )
+            )
+            w.add_link(
+                Link.between(("event", "below_v2"), "supersedes", ("event", "below"))
+            )
+            w.add_event(
+                Event(
+                    "late_note",
+                    "late_note",
+                    "document",
+                    "point",
+                    "final",
+                    effective_start_us=19 * DAY,
+                    available_us=22 * DAY,
+                )
+            )
+            w.add_document(Document("late_note_text", "Written after the cutoff."))
+            w.add_link(
+                Link.between(
+                    ("event", "late_note"), "describes", ("document", "late_note_text")
+                )
+            )
+        stale = task.preflight()
+        assert "T302" in {f.code for f in stale.findings}
+        repinned = timeline_task(tmp_path)  # pins the amended sample
+        after = self.item(repinned, "d20", documents=encoder)
+        assert after["meta"]["event_ids"] == before["meta"]["event_ids"]
+        for key, value in before["events"].items():
+            assert torch.equal(after["events"][key], value), key
+        for key, value in before["documents"].items():
+            assert torch.equal(after["documents"][key], value), key
+        assert torch.equal(after["images"]["ct"], before["images"]["ct"])
+        # At a later cutoff the same additions are inputs.
+        repinned.add_row("d26", "P-01", 26 * DAY)
+        late = self.item(repinned, "d26", documents=encoder)
+        assert {"late_lab", "below_v2", "late_note"} <= set(late["meta"]["event_ids"])
+        assert "below" not in late["meta"]["event_ids"], (
+            "the revision replaces the version"
+        )
+
+
 class TestHandles:
     def test_S2_members_are_cached_by_path_and_key(self, tmp_path: Path):
         from medh5.collection import pack
@@ -244,6 +541,47 @@ class TestHandles:
         assert second.identity.subject_id == "P-02"
         with CACHE.lease(shard, "b") as held:
             assert held is second
+        CACHE.clear()
+
+    def test_S2_a_lease_reads_the_pinned_version(self, tmp_path: Path):
+        from medh5.clinical import Event
+        from tests.kits import History
+
+        path = tmp_path / "a.medh5"
+        old = History.write(path)
+        CACHE.clear()
+        with CACHE.lease(path, content_id=old) as held:
+            assert held.content_id == old
+        with medh5.amend(path) as w:  # writes a new file over the old
+            w.add_event(
+                Event(
+                    "x",
+                    "x",
+                    "other",
+                    "static",
+                    "final",
+                    available_us=0,
+                    code_system="org.example",
+                    code="x",
+                    value_text="y",
+                )
+            )
+        with medh5.open(path) as s:
+            new = s.content_id
+        assert new != old
+        opens = CACHE.opens
+        # The cached handle still reads the replaced inode: it is reopened.
+        with CACHE.lease(path, content_id=new) as held:
+            assert held.content_id == new
+            assert held.clinical is not None
+            assert any(e.event_id == "x" for e in held.clinical.events)
+        assert CACHE.opens == opens + 1
+        with (
+            pytest.raises(MEDH5ValidationError) as found,
+            CACHE.lease(path, content_id=old),
+        ):
+            pass  # pragma: no cover - refused before the block
+        assert found.value.code == "T302"
         CACHE.clear()
 
     @pytest.mark.skipif(not hasattr(os, "fork"), reason="fork is POSIX")
@@ -319,6 +657,35 @@ class TestExamples:
         assert (tmp_path / "bench.json").exists()
         assert set(results["window_read_ms"]) == {"1.1", "1.0 projection"}
         assert results["cache_entries"] == 4
+
+
+def test_the_preflight_benchmark_runs(tmp_path: Path):
+    """The large-cohort benchmark, at a size a test can afford."""
+    results = example("bench_preflight").main(
+        [
+            "--subjects",
+            "2",
+            "--events",
+            "60",
+            "--documents",
+            "4",
+            "--cutoffs",
+            "3",
+            "--visits",
+            "2",
+            "--items",
+            "4",
+            "--out",
+            str(tmp_path / "cohort"),
+            "--json",
+            str(tmp_path / "bench.json"),
+        ]
+    )
+    assert results["conditions"]["rows"] == 6
+    for what in ("preflight", "dataset", "items"):
+        assert results[what]["ok"] and results[what]["rows"] == 6
+    assert results["items"]["items_per_s"] > 0
+    assert (tmp_path / "bench.json").exists()
 
 
 def test_the_cutoff_in_hours_reads_the_preliminary_report(tmp_path: Path):

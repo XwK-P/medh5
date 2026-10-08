@@ -36,13 +36,23 @@ import copy
 import json
 import os
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
+import numpy.typing as npt
+
 from medh5 import _core
-from medh5.clinical import Event, Selection, SelectionPolicy
+from medh5.clinical import (
+    SELECTION_POLICIES,
+    Event,
+    Link,
+    SelectedEvent,
+    Selection,
+    SelectionPolicy,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from medh5.sample import Sample
@@ -571,7 +581,7 @@ class TaskManifest:
         self, base: PathLike | None = None, *, deep: bool = False
     ) -> Preflight:
         """Open and check every source, and build every row's view."""
-        return Preflight.from_json(
+        return Preflight.from_core(
             _core.task_preflight(self._doc, self._base(base), deep)
         )
 
@@ -597,6 +607,302 @@ class TaskManifest:
 # --------------------------------------------------------------------------
 # Preflight: what a task admits, per row
 # --------------------------------------------------------------------------
+#
+# A preflight crosses from the engine as columns (``_core.task_preflight``):
+# each subject's merged history once, and per row only indices into it.  A
+# row, an event or a selection becomes a Python object when it is asked for,
+# so a cohort of millions of selected events is a few NumPy arrays, which
+# also pickle compactly into ``DataLoader`` workers.
+
+ROW_STATUSES: tuple[str, ...] = _core.ROW_STATUSES
+SELECTION_STATUSES: tuple[str, ...] = _core.SELECTION_STATUSES
+TARGET_STATUSES: tuple[str, ...] = _core.TARGET_STATUSES
+ROIS: tuple[str, ...] = _core.ROIS
+
+
+class Packed:
+    """A packed UTF-8 column: one buffer, ``int64`` offsets, and a validity
+    mask (``None`` when every cell is valid) --- the clinical tables' own
+    encoding (1.1 §4).  Cell ``i`` is decoded when it is read."""
+
+    __slots__ = ("data", "offsets", "valid")
+
+    def __init__(
+        self,
+        data: bytes,
+        offsets: npt.NDArray[np.int64],
+        valid: npt.NDArray[np.bool_] | None = None,
+    ) -> None:
+        self.data = data
+        self.offsets = offsets
+        self.valid = valid
+
+    @classmethod
+    def from_core(cls, value: Sequence[Any]) -> Packed:
+        data, offsets, valid = value
+        return cls(
+            bytes(data),
+            np.asarray(offsets),
+            None if valid is None else np.asarray(valid),
+        )
+
+    def __len__(self) -> int:
+        return len(self.offsets) - 1
+
+    def __getitem__(self, i: int) -> str | None:
+        if self.valid is not None and not self.valid[i]:
+            return None
+        return self.data[int(self.offsets[i]) : int(self.offsets[i + 1])].decode(
+            "utf-8"
+        )
+
+    def __iter__(self) -> Iterator[str | None]:
+        return (self[i] for i in range(len(self)))
+
+    def tolist(self) -> list[str | None]:
+        return list(self)
+
+    def __getstate__(self) -> tuple[Any, ...]:
+        return (self.data, self.offsets, self.valid)
+
+    def __setstate__(self, state: tuple[Any, ...]) -> None:
+        self.data, self.offsets, self.valid = state
+
+
+def _packed(value: Any) -> Packed | None:
+    """A packed column from the engine; ``None`` for one that is all null."""
+    return None if value is None else Packed.from_core(value)
+
+
+def _cell(column: Packed | None, i: int) -> str | None:
+    """Cell ``i`` of a packed column that may be all null."""
+    return None if column is None else column[i]
+
+
+def _columns(doc: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        k: Packed.from_core(v) if isinstance(v, (tuple, list)) else v
+        for k, v in doc.items()
+    }
+
+
+def _bounds_at(
+    values: npt.NDArray[np.int64], known: npt.NDArray[np.bool_], i: int
+) -> tuple[int, int] | None:
+    return (int(values[i, 0]), int(values[i, 1])) if known[i] else None
+
+
+class EventTable:
+    """One subject's merged event versions, as columns.
+
+    Indexing builds an :class:`~medh5.clinical.Event`; the numeric columns
+    (``column(name)``) serve batches without building any: ``kind_code``,
+    ``temporal_type_code``, ``status_code`` and ``value_comparator_code``
+    index the vocabularies of :mod:`medh5.clinical` (``-1`` for null);
+    ``effective_start``, ``effective_end`` and ``available`` are ``(n, 2)``
+    inclusive bounds with an ``*_known`` mask; ``value_num`` has
+    ``value_num_valid``; ``fragment`` names the source a version was read from.
+    """
+
+    __slots__ = ("_c", "_ids", "_concepts")
+
+    def __init__(self, columns: Mapping[str, Any]) -> None:
+        self._c = _columns(columns)
+        self._ids: dict[str, int] | None = None
+        self._concepts: tuple[tuple[str, ...], npt.NDArray[np.int32]] | None = None
+
+    def __len__(self) -> int:
+        return int(self._c["n"])
+
+    def column(self, name: str) -> Any:
+        return self._c[name]
+
+    def __getitem__(self, i: int) -> Event:
+        c = self._c
+        n = len(self)
+        if not -n <= i < n:
+            raise IndexError(f"event {i} of {n}")
+        i %= n
+
+        def text(name: str) -> str | None:
+            return _cell(c[name], i)
+
+        return Event(
+            str(text("event_id")),
+            str(text("record_id")),
+            str(text("kind")),
+            str(text("temporal_type")),
+            str(text("status")),
+            effective_start_us=_bounds_at(
+                c["effective_start"], c["effective_start_known"], i
+            ),
+            effective_end_us=_bounds_at(
+                c["effective_end"], c["effective_end_known"], i
+            ),
+            available_us=_bounds_at(c["available"], c["available_known"], i),
+            timepoint_id=text("timepoint_id"),
+            encounter_id=text("encounter_id"),
+            code_system=text("code_system"),
+            code=text("code"),
+            code_version=text("code_version"),
+            value_num=float(c["value_num"][i]) if c["value_num_valid"][i] else None,
+            value_comparator=text("value_comparator"),
+            unit=text("unit"),
+            value_text=text("value_text"),
+            missing_reason=text("missing_reason"),
+            prov=text("prov"),
+        )
+
+    def __iter__(self) -> Iterator[Event]:
+        return (self[i] for i in range(len(self)))
+
+    def index(self, event_id: str) -> int:
+        """The position of an event version, by id."""
+        if self._ids is None:
+            self._ids = {
+                e: i for i, e in enumerate(self._c["event_id"]) if e is not None
+            }
+        try:
+            return self._ids[event_id]
+        except KeyError:
+            raise KeyError(f"no event version {event_id!r}") from None
+
+    def concepts(self) -> tuple[tuple[str, ...], npt.NDArray[np.int32]]:
+        """The subject's concept tokens (``kind|code_system|code``, or
+        ``kind|`` uncoded), and each version's index into them."""
+        if self._concepts is None:
+            kinds, systems, codes = (
+                self._c["kind"],
+                self._c["code_system"],
+                self._c["code"],
+            )
+            tokens: dict[str, int] = {}
+            index = np.empty(len(self), dtype=np.int32)
+            for i in range(len(self)):
+                system, code = _cell(systems, i), _cell(codes, i)
+                token = (
+                    f"{kinds[i]}|"
+                    if system is None or code is None
+                    else f"{kinds[i]}|{system}|{code}"
+                )
+                index[i] = tokens.setdefault(token, len(tokens))
+            self._concepts = (tuple(tokens), index)
+        return self._concepts
+
+    def __getstate__(self) -> dict[str, Any]:
+        return self._c
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        self._c = state
+        self._ids = None
+        self._concepts = None
+
+    def __repr__(self) -> str:
+        return f"EventTable({len(self)} event versions)"
+
+
+class LinkTable:
+    """One subject's links, every fragment's, as columns; indexing builds a
+    :class:`~medh5.clinical.Link`, and ``fragment(i)`` says whose it is."""
+
+    __slots__ = ("_c",)
+
+    def __init__(self, columns: Mapping[str, Any]) -> None:
+        self._c = _columns(columns)
+
+    def __len__(self) -> int:
+        return int(self._c["n"])
+
+    def column(self, name: str) -> Any:
+        return self._c[name]
+
+    def fragment(self, i: int) -> int:
+        return int(self._c["fragment"][i])
+
+    def __getitem__(self, i: int) -> Link:
+        c = self._c
+        n = len(self)
+        if not -n <= i < n:
+            raise IndexError(f"link {i} of {n}")
+        i %= n
+        span = _bounds_at(c["source_span"], c["source_span_valid"], i)
+        return Link(
+            str(c["source_type"][i]),
+            str(c["source_id"][i]),
+            str(c["relation"][i]),
+            str(c["target_type"][i]),
+            str(c["target_id"][i]),
+            source_span=span,
+            target_annotation_id=_cell(c["target_annotation_id"], i),
+            asserted_by_event_id=_cell(c["asserted_by_event_id"], i),
+        )
+
+    def __iter__(self) -> Iterator[Link]:
+        return (self[i] for i in range(len(self)))
+
+    def __getstate__(self) -> dict[str, Any]:
+        return self._c
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        self._c = state
+
+    def __repr__(self) -> str:
+        return f"LinkTable({len(self)} links)"
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class SubjectHistory:
+    """One subject's history, merged across its fragments: what every row of
+    the subject indexes.
+
+    ``documents`` lists, per ``document`` version, the documents it owns
+    (``(event, fragment, document_id)``, 1.1 §6); ``payloads`` is the table a
+    row's admitted payloads index.
+    """
+
+    subject_id: str
+    partition: str | None
+    sources: tuple[SourceRef, ...]
+    events: EventTable
+    links: LinkTable
+    document_events: npt.NDArray[np.int32]
+    document_fragments: npt.NDArray[np.int32]
+    document_ids: Packed
+    payload_fragments: npt.NDArray[np.int32]
+    payload_kinds: Packed
+    payload_ids: Packed
+
+    @classmethod
+    def from_core(cls, doc: Mapping[str, Any]) -> SubjectHistory:
+        documents, payloads = doc["documents"], doc["payloads"]
+        return cls(
+            str(doc["subject_id"]),
+            doc.get("partition"),
+            tuple(SourceRef.from_json(s) for s in doc["sources"]),
+            EventTable(doc["events"]),
+            LinkTable(doc["links"]),
+            np.asarray(documents["event"]),
+            np.asarray(documents["fragment"]),
+            Packed.from_core(documents["document_id"]),
+            np.asarray(payloads["fragment"]),
+            Packed.from_core(payloads["kind"]),
+            Packed.from_core(payloads["id"]),
+        )
+
+    def owned_documents(self, event: int) -> list[tuple[int, str]]:
+        """``(fragment, document_id)`` of the documents version ``event`` owns."""
+        lo, hi = np.searchsorted(self.document_events, [event, event + 1])
+        return [
+            (int(self.document_fragments[k]), str(self.document_ids[k]))
+            for k in range(int(lo), int(hi))
+        ]
+
+    def payload(self, k: int) -> tuple[int, str, str]:
+        return (
+            int(self.payload_fragments[k]),
+            str(self.payload_kinds[k]),
+            str(self.payload_ids[k]),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -617,22 +923,6 @@ class SlotFill:
     """Every voxel annotation on the grid: supervision, which --- like the
     target --- may come from after the cutoff and never enters an input."""
 
-    @classmethod
-    def from_json(cls, doc: Mapping[str, Any]) -> SlotFill:
-        center = doc.get("center")
-        return cls(
-            str(doc["slot"]),
-            bool(doc["available"]),
-            doc.get("fragment"),
-            doc.get("image_id"),
-            doc.get("grid_id"),
-            doc.get("event_id"),
-            None if center is None else tuple(int(v) for v in center),
-            str(doc["roi"]),
-            tuple(doc.get("annotations", ())),
-            tuple(doc.get("label_annotations", ())),
-        )
-
 
 @dataclass(frozen=True, slots=True)
 class TargetLabel:
@@ -648,74 +938,331 @@ class TargetLabel:
     def observed(self) -> bool:
         return self.value is not None
 
-    @classmethod
-    def from_json(cls, doc: Mapping[str, Any]) -> TargetLabel:
-        value = doc.get("value")
-        return cls(
-            str(doc["status"]),
-            None if value is None else float(value),
-            doc.get("event_id"),
-            doc.get("reason"),
-        )
+
+def _csr(offsets: npt.NDArray[np.int64], i: int) -> slice:
+    return slice(int(offsets[i]), int(offsets[i + 1]))
 
 
-@dataclass(frozen=True, slots=True)
 class RowView:
-    """Everything a task admits for one row, and nothing else."""
+    """Everything a task admits for one row, and nothing else.
 
-    row_id: str
-    subject_id: str
-    partition: str | None
-    cutoff_us: int
-    fingerprint: str
-    status: str
-    reasons: tuple[str, ...]
-    sources: tuple[SourceRef, ...]
-    selection: Selection | None
-    events: tuple[Event, ...]
-    """The selected event versions, in input order."""
-    event_fragments: tuple[int, ...]
-    """For each selected version, the source (index into ``sources``) it was
-    read from."""
-    slots: dict[str, SlotFill]
-    target: TargetLabel
+    A view over the preflight's columns: ``events``, ``selection`` and
+    ``slots`` are built when asked for.  The arrays a batch reads need no
+    objects at all: ``selected`` (the admitted versions, indices into
+    ``subject.events``, in input order), ``order`` and ``order_known`` (each
+    one's ordering bounds), ``tie_group`` and ``plan``.
+    """
+
+    __slots__ = ("_pre", "_i")
+
+    def __init__(self, pre: Preflight, i: int) -> None:
+        self._pre = pre
+        self._i = i
+
+    def _col(self, name: str) -> Any:
+        return self._pre._rows[name]
+
+    @property
+    def row_id(self) -> str:
+        return str(self._col("row_id")[self._i])
+
+    @property
+    def subject_id(self) -> str:
+        return str(self._col("subject_id")[self._i])
+
+    @property
+    def partition(self) -> str | None:
+        return _cell(self._col("partition"), self._i)
+
+    @property
+    def cutoff_us(self) -> int:
+        return int(self._col("cutoff_us")[self._i])
+
+    @property
+    def fingerprint(self) -> str:
+        return str(self._col("fingerprint")[self._i])
+
+    @property
+    def status(self) -> str:
+        return ROW_STATUSES[int(self._col("status")[self._i])]
+
+    @property
+    def reasons(self) -> tuple[str, ...]:
+        found: tuple[str, ...] = self._col("reasons")[self._i]
+        return found
 
     @property
     def eligible(self) -> bool:
         return self.status == "eligible"
 
-    @classmethod
-    def from_json(cls, doc: Mapping[str, Any]) -> RowView:
-        selection = doc.get("selection")
-        return cls(
-            str(doc["row_id"]),
-            str(doc["subject_id"]),
-            doc.get("partition"),
-            int(doc["cutoff_us"]),
-            str(doc["fingerprint"]),
-            str(doc["status"]),
-            tuple(doc.get("reasons", ())),
-            tuple(SourceRef.from_json(s) for s in doc.get("sources", ())),
-            None if selection is None else Selection.from_json(selection),
-            tuple(Event.from_json(e) for e in doc.get("events", ())),
-            tuple(int(f) for f in doc.get("event_fragments", ())),
-            {s["slot"]: SlotFill.from_json(s) for s in doc.get("slots", ())},
-            TargetLabel.from_json(doc["target"]),
+    @property
+    def subject_index(self) -> int | None:
+        """The subject's position in :attr:`Preflight.subjects`."""
+        k = int(self._col("subject")[self._i])
+        return None if k < 0 else k
+
+    @property
+    def subject(self) -> SubjectHistory | None:
+        """The subject's merged history; ``None`` when the manifest has
+        findings and no source was read."""
+        k = self.subject_index
+        return None if k is None else self._pre.subjects[k]
+
+    @property
+    def sources(self) -> tuple[SourceRef, ...]:
+        subject = self.subject
+        return () if subject is None else subject.sources
+
+    # -- the selection, as arrays -----------------------------------------
+
+    def _events(self) -> slice:
+        return _csr(self._col("events")["offsets"], self._i)
+
+    @property
+    def selected(self) -> npt.NDArray[np.int32]:
+        """The admitted versions, as indices into ``subject.events``, in
+        input order (clinical order, tie groups adjacent)."""
+        found: npt.NDArray[np.int32] = self._col("events")["index"][self._events()]
+        return found
+
+    @property
+    def order(self) -> npt.NDArray[np.int64]:
+        """``(n, 2)``: the bounds each admitted version is ordered by."""
+        found: npt.NDArray[np.int64] = self._col("events")["order"][self._events()]
+        return found
+
+    @property
+    def order_known(self) -> npt.NDArray[np.bool_]:
+        """Whether a version has an ordering time (a static one has none)."""
+        found: npt.NDArray[np.bool_] = self._col("events")["order_known"][
+            self._events()
+        ]
+        return found
+
+    @property
+    def tie_group(self) -> npt.NDArray[np.int32]:
+        """Versions sharing a group have overlapping ordering times: their
+        relative order is unknown."""
+        found: npt.NDArray[np.int32] = self._col("events")["tie_group"][self._events()]
+        return found
+
+    @property
+    def plan(self) -> npt.NDArray[np.bool_]:
+        """Admitted as a plan: planned, or not started by the cutoff."""
+        found: npt.NDArray[np.bool_] = self._col("events")["plan"][self._events()]
+        return found
+
+    # -- as objects -------------------------------------------------------------
+
+    @property
+    def events(self) -> tuple[Event, ...]:
+        """The selected event versions, in input order."""
+        subject = self.subject
+        if subject is None:
+            return ()
+        return tuple(subject.events[int(i)] for i in self.selected)
+
+    @property
+    def event_fragments(self) -> tuple[int, ...]:
+        """For each selected version, the source (index into ``sources``) it
+        was read from."""
+        subject = self.subject
+        if subject is None:
+            return ()
+        fragments = subject.events.column("fragment")
+        return tuple(int(fragments[i]) for i in self.selected)
+
+    @property
+    def selection(self) -> Selection | None:
+        """What the cutoff admits, as :class:`~medh5.clinical.Selection`."""
+        rows, i = self._pre._rows, self._i
+        subject = self.subject
+        if not rows["selection"][i] or subject is None:
+            return None
+        events = subject.events
+        ids, records = events.column("event_id"), events.column("record_id")
+        kinds = events.column("kind")
+        selected = tuple(
+            SelectedEvent(
+                str(ids[k]),
+                str(records[k]),
+                str(kinds[k]),
+                (int(o[0]), int(o[1])) if known else None,
+                int(group),
+                bool(plan),
+            )
+            for k, o, known, group, plan in zip(
+                self.selected,
+                self.order,
+                self.order_known,
+                self.tie_group,
+                self.plan,
+                strict=True,
+            )
+        )
+        excluded = {
+            key: int(n)
+            for key, n in zip(rows["excluded_keys"], rows["excluded"][i], strict=True)
+            if n
+        }
+        payloads = rows["payloads"]["index"][_csr(rows["payloads"]["offsets"], i)]
+        return Selection(
+            self.cutoff_us,
+            SELECTION_POLICIES[int(rows["policy"][i])],
+            SELECTION_STATUSES[int(rows["selection_status"][i])],
+            selected,
+            tuple(
+                int(k)
+                for k in rows["links"]["index"][_csr(rows["links"]["offsets"], i)]
+            ),
+            frozenset(subject.payload(int(k)) for k in payloads),
+            tuple(rows["uncertain_records"][i]),
+            excluded,
         )
 
+    @property
+    def slots(self) -> dict[str, SlotFill]:
+        out: dict[str, SlotFill] = {}
+        i = self._i
+        if not self._col("slotted")[i]:
+            return out
+        for slot in self._col("slots"):
+            fragment = int(slot["fragment"][i])
+            ndim = int(slot["center_ndim"][i])
+            image_id = _cell(slot["image_id"], i)
+            out[slot["name"]] = SlotFill(
+                slot["name"],
+                image_id is not None,
+                None if fragment < 0 else fragment,
+                image_id,
+                _cell(slot["grid_id"], i),
+                _cell(slot["event_id"], i),
+                None if ndim < 0 else tuple(int(v) for v in slot["center"][i, :ndim]),
+                ROIS[int(slot["roi"][i])] if slot["roi"][i] >= 0 else "center",
+                _ids_at(slot["annotations"], i),
+                _ids_at(slot["label_annotations"], i),
+            )
+        return out
 
-@dataclass(frozen=True, slots=True)
+    @property
+    def target(self) -> TargetLabel:
+        t, i = self._col("target"), self._i
+        value = float(t["value"][i])
+        return TargetLabel(
+            TARGET_STATUSES[int(t["status"][i])],
+            None if value != value else value,
+            _cell(t["event_id"], i),
+            _cell(t["reason"], i),
+        )
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, RowView):
+            return NotImplemented
+        mine = (
+            self.row_id,
+            self.fingerprint,
+            self.status,
+            self.reasons,
+            self.events,
+            self.slots,
+            self.target,
+        )
+        theirs = (
+            other.row_id,
+            other.fingerprint,
+            other.status,
+            other.reasons,
+            other.events,
+            other.slots,
+            other.target,
+        )
+        return mine == theirs
+
+    __hash__ = None  # type: ignore[assignment]
+
+    def __repr__(self) -> str:
+        return f"RowView({self.row_id!r}, {self.status}, {len(self.selected)} events)"
+
+
+def _ids_at(column: Mapping[str, Any], i: int) -> tuple[str, ...]:
+    ids = column["ids"]
+    if not isinstance(ids, Packed):
+        ids = Packed.from_core(ids)
+    span = _csr(np.asarray(column["offsets"]), i)
+    return tuple(str(ids[k]) for k in range(span.start, span.stop))
+
+
 class Preflight:
-    """A task's preflight: manifest and source findings, and every row's view.
+    """A task's preflight: manifest and source findings, every subject's
+    merged history, and every row's view.
 
     Any finding makes the task unfit to train on (:attr:`ok` is ``False``);
-    rows whose sources are wrong are in ``error``, with the reason.
+    rows whose sources are wrong are in ``error``, with the reason.  ``rows``
+    is a sequence of :class:`RowView`, built as they are read.
     """
 
-    task_fingerprint: str
-    manifest_fingerprint: str
-    findings: tuple[Finding, ...]
-    rows: tuple[RowView, ...]
+    __slots__ = (
+        "_by_id",
+        "_rows",
+        "_views",
+        "findings",
+        "manifest_fingerprint",
+        "subjects",
+        "task_fingerprint",
+    )
+
+    def __init__(
+        self,
+        task_fingerprint: str,
+        manifest_fingerprint: str,
+        findings: tuple[Finding, ...],
+        subjects: tuple[SubjectHistory, ...],
+        rows: Mapping[str, Any],
+    ) -> None:
+        self.task_fingerprint = task_fingerprint
+        self.manifest_fingerprint = manifest_fingerprint
+        self.findings = findings
+        self.subjects = subjects
+        self._rows = dict(rows)
+        self._by_id: dict[str, int] | None = None
+        self._views: tuple[RowView, ...] | None = None
+
+    @classmethod
+    def from_core(cls, doc: Mapping[str, Any]) -> Preflight:
+        """From ``_core.task_preflight``'s columns."""
+        rows = dict(doc["rows"])
+        for key in ("row_id", "subject_id", "partition", "fingerprint"):
+            rows[key] = _packed(rows[key])
+        target = dict(rows["target"])
+        for key in ("event_id", "reason"):
+            target[key] = _packed(target[key])
+        rows["target"] = target
+        slots = []
+        for slot in rows["slots"]:
+            slot = dict(slot)
+            for key in ("image_id", "grid_id", "event_id"):
+                slot[key] = _packed(slot[key])
+            for key in ("annotations", "label_annotations"):
+                slot[key] = {
+                    "offsets": np.asarray(slot[key]["offsets"]),
+                    "ids": Packed.from_core(slot[key]["ids"]),
+                }
+            slots.append(slot)
+        rows["slots"] = slots
+        rows["excluded_keys"] = tuple(rows["excluded_keys"])
+        return cls(
+            str(doc["task_fingerprint"]),
+            str(doc["manifest_fingerprint"]),
+            _findings(doc.get("findings", ())),
+            tuple(SubjectHistory.from_core(s) for s in doc["subjects"]),
+            rows,
+        )
+
+    @property
+    def rows(self) -> tuple[RowView, ...]:
+        if self._views is None:
+            self._views = tuple(RowView(self, i) for i in range(int(self._rows["n"])))
+        return self._views
 
     @property
     def ok(self) -> bool:
@@ -723,16 +1270,19 @@ class Preflight:
 
     @property
     def counts(self) -> dict[str, int]:
-        out: dict[str, int] = {}
-        for r in self.rows:
-            out[r.status] = out.get(r.status, 0) + 1
-        return dict(sorted(out.items()))
+        codes = np.bincount(
+            np.asarray(self._rows["status"], dtype=np.int64),
+            minlength=len(ROW_STATUSES),
+        )
+        return {ROW_STATUSES[k]: int(n) for k, n in enumerate(codes) if n}
 
     def row(self, row_id: str) -> RowView:
-        for r in self.rows:
-            if r.row_id == row_id:
-                return r
-        raise KeyError(f"no row {row_id!r}")
+        if self._by_id is None:
+            self._by_id = {str(r): i for i, r in enumerate(self._rows["row_id"])}
+        try:
+            return RowView(self, self._by_id[row_id])
+        except KeyError:
+            raise KeyError(f"no row {row_id!r}") from None
 
     def eligible(self, partition: str | None = None) -> tuple[RowView, ...]:
         """The eligible rows, of one partition when given."""
@@ -742,14 +1292,26 @@ class Preflight:
             if r.eligible and (partition is None or r.partition == partition)
         )
 
-    @classmethod
-    def from_json(cls, doc: Mapping[str, Any]) -> Preflight:
-        return cls(
-            str(doc["task_fingerprint"]),
-            str(doc["manifest_fingerprint"]),
-            _findings(doc.get("findings", ())),
-            tuple(RowView.from_json(r) for r in doc.get("rows", ())),
-        )
+    def __getstate__(self) -> dict[str, Any]:
+        return {
+            "task_fingerprint": self.task_fingerprint,
+            "manifest_fingerprint": self.manifest_fingerprint,
+            "findings": self.findings,
+            "subjects": self.subjects,
+            "rows": self._rows,
+        }
+
+    def __setstate__(self, state: Mapping[str, Any]) -> None:
+        self.task_fingerprint = state["task_fingerprint"]
+        self.manifest_fingerprint = state["manifest_fingerprint"]
+        self.findings = state["findings"]
+        self.subjects = state["subjects"]
+        self._rows = dict(state["rows"])
+        self._by_id = None
+        self._views = None
+
+    def __repr__(self) -> str:
+        return f"Preflight({int(self._rows['n'])} rows, {self.counts}, ok={self.ok})"
 
 
 def preflight(
@@ -768,9 +1330,16 @@ __all__ = [
     "CODES",
     "LABELS",
     "ROI",
+    "ROIS",
+    "ROW_STATUSES",
     "SCHEMA",
+    "SELECTION_STATUSES",
     "STATUSES",
+    "TARGET_STATUSES",
+    "EventTable",
     "Finding",
+    "LinkTable",
+    "Packed",
     "Preflight",
     "Reconciled",
     "Row",
@@ -779,6 +1348,7 @@ __all__ = [
     "Slot",
     "SourceRef",
     "Subject",
+    "SubjectHistory",
     "Target",
     "TargetLabel",
     "TaskManifest",

@@ -255,7 +255,7 @@ pub fn strip(path: &Path, out: &Path) -> Result<StripReport> {
     let (content_id_before, removed) = {
         let s = open_sample(path)?;
         let removed = match s.clinical()? {
-            Some(c) => (c.events.len(), c.documents.len(), c.links.len()),
+            Some(c) => (c.events.len(), c.documents().len(), c.links.len()),
             None => {
                 return Err(Error::invalid(format!(
                     "{} declares no `{PROFILE}` profile; there is nothing to strip",

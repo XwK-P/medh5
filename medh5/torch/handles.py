@@ -30,6 +30,13 @@ handle across threads.  :meth:`HandleCache.lease` holds a handle against
 eviction for the length of an item, and the datasets read through it; a
 cache full of leased handles grows past ``maxsize`` rather than closing one,
 and shrinks back as they are released.
+
+**A cached handle can outlive its file.**  ``amend`` is copy-on-write: it
+writes a new file and renames it over the old, and a handle opened before
+keeps reading the old inode.  A lease given the ``content_id`` it must read
+(:meth:`HandleCache.lease`) therefore checks the handle's: a stale one is
+reopened, and a sample that is still another version is refused (T302) ---
+what a task's rows pin is what they read.
 """
 
 from __future__ import annotations
@@ -161,26 +168,63 @@ class HandleCache:
 
     @contextlib.contextmanager
     def lease(
-        self, path: str | os.PathLike[str], sample_key: str | None = None
+        self,
+        path: str | os.PathLike[str],
+        sample_key: str | None = None,
+        *,
+        content_id: str | None = None,
     ) -> Iterator[Sample]:
-        """An open handle that no eviction closes until the block ends."""
+        """An open handle that no eviction closes until the block ends.
+
+        With ``content_id``, the handle is that version of the sample: a
+        cached handle whose file was replaced since it was opened is closed
+        and reopened, and a sample that is another version all the same is
+        refused with ``MEDH5ValidationError`` (T302).
+        """
         self._ensure_owner()
         key = _key(path, sample_key)
+        stale: list[Sample] = []
         with self._lock:
             sample = self._acquire(key, pin=True)
+            if (
+                content_id is not None
+                and sample.content_id != content_id
+                and self._pins.get(key) == 1  # no other lease is reading it
+            ):
+                try:
+                    fresh = _open(key)
+                except BaseException:
+                    self._unpin(key)
+                    raise
+                stale.append(self._items.pop(key))
+                self._items[key] = sample = fresh
+                self.opens += 1
             evicted = self._overflow(keep=key)
-        self._close(evicted)
+        self._close(stale + evicted)
         try:
+            if content_id is not None and sample.content_id != content_id:
+                from medh5.errors import MEDH5ValidationError
+
+                where = path if sample_key is None else f"{path}::{sample_key}"
+                raise MEDH5ValidationError(
+                    f"{where} is now {sample.content_id}; the task pins {content_id} "
+                    "--- the source changed after its preflight: re-run it",
+                    "T302",
+                )
             yield sample
         finally:
             with self._lock:
-                remaining = self._pins.get(key, 0) - 1
-                if remaining > 0:
-                    self._pins[key] = remaining
-                else:
-                    self._pins.pop(key, None)
+                self._unpin(key)
                 evicted = self._overflow()
             self._close(evicted)
+
+    def _unpin(self, key: Key) -> None:
+        """Release one lease of *key*; under the lock."""
+        remaining = self._pins.get(key, 0) - 1
+        if remaining > 0:
+            self._pins[key] = remaining
+        else:
+            self._pins.pop(key, None)
 
     def resize(self, maxsize: int) -> None:
         """Set ``maxsize``, closing idle handles past it now rather than later."""

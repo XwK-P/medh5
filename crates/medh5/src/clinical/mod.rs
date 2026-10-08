@@ -26,11 +26,14 @@ pub mod schema;
 pub mod select;
 pub mod table;
 
-pub use check::{check_document, check_event, check_link, check_records, Finding, SampleContext};
+pub use check::{
+    check_document, check_event, check_link, check_records, check_records_with, DocumentTexts, Finding, SampleContext,
+};
+pub use columns::TextColumn;
 pub use model::{
     Bounds, ClinicalRecords, Clock, Descriptor, Document, Event, Link, ASSESSMENT_SYSTEM, CLOCK_REFERENCES,
     COMPARATORS, DAY, ENDPOINT_TYPES, EVENT_KINDS, GROUP, HOUR, LESION_PRESENCE, LESION_VALUES, MEDIA_TYPES,
     MIN_VERSION, PROFILE, RELATIONS, SCHEMA, SECOND, STATUSES, TEMPORAL_TYPES,
 };
 pub use select::{select, Chains, Selected, Selection, SelectionPolicy, POLICIES};
-pub use table::{recognised, Clinical, DocumentInfo};
+pub use table::{recognised, Clinical, DocumentInfo, Documents};

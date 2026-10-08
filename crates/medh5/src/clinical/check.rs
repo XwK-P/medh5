@@ -7,6 +7,12 @@
 //! chain one chain.  Both report [`Finding`]s carrying the §15.2 code the
 //! validator emits, so a writer's refusal and a validator's report name a
 //! defect identically.
+//!
+//! Of a document's text the rules need only its length and where its
+//! characters begin (a span's ends, §7.1): [`DocumentTexts`].  Records in
+//! memory answer from their text; the validator answers from one bounded
+//! scan of the stored buffer, never holding the text
+//! ([`check_records_with`]).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -309,9 +315,41 @@ pub fn row_location(base: &str, id: Option<&str>, i: usize) -> String {
     }
 }
 
-/// Every rule across the rows and the sample (§5--§7); the descriptor's own
-/// rules are [`check_descriptor`].
+/// What the span rule needs of each document's text (§7.1).
+pub trait DocumentTexts {
+    /// The document's length in UTF-8 bytes; `None` for no such document.
+    fn n_bytes(&self, document_id: &str) -> Option<u64>;
+    /// Whether byte `at`, with `0 < at < n_bytes`, begins a character.
+    fn starts_character(&self, document_id: &str, at: u64) -> bool;
+}
+
+/// Texts held in memory, by document id.
+impl DocumentTexts for HashMap<&str, &str> {
+    fn n_bytes(&self, document_id: &str) -> Option<u64> {
+        self.get(document_id).map(|t| t.len() as u64)
+    }
+
+    fn starts_character(&self, document_id: &str, at: u64) -> bool {
+        self.get(document_id).is_some_and(|t| t.is_char_boundary(at as usize))
+    }
+}
+
+/// Every rule across the rows and the sample (§5--§7), the documents' text
+/// read from the records; the descriptor's own rules are [`check_descriptor`].
 pub fn check_records(records: &ClinicalRecords, ctx: &SampleContext, base: &str) -> Vec<Finding> {
+    let texts: HashMap<&str, &str> =
+        records.documents.iter().map(|d| (d.document_id.as_str(), d.text.as_str())).collect();
+    check_records_with(records, &texts, ctx, base)
+}
+
+/// [`check_records`], with what the rules need of the documents' text from
+/// `texts`: the records' own `text` is not read.
+pub fn check_records_with(
+    records: &ClinicalRecords,
+    texts: &dyn DocumentTexts,
+    ctx: &SampleContext,
+    base: &str,
+) -> Vec<Finding> {
     let mut out = Vec::new();
     let event_loc = |i: usize| row_location(&format!("{base}/events"), Some(&records.events[i].event_id), i);
     let document_loc =
@@ -426,17 +464,13 @@ pub fn check_records(records: &ClinicalRecords, ctx: &SampleContext, base: &str)
             }
         }
         if let (Some((start, end)), "document") = (l.source_span, l.source_type.as_str()) {
-            if let Some(d) = documents.get(l.source_id.as_str()) {
-                let len = d.text.len() as u64;
-                let aligned = |p: u64| d.text.is_char_boundary(p as usize);
+            if let (true, Some(len)) = (documents.contains_key(l.source_id.as_str()), texts.n_bytes(&l.source_id)) {
+                let aligned = |p: u64| p == 0 || p >= len || texts.starts_character(&l.source_id, p);
                 if end > len || start > end {
                     out.push(finding(
                         "E814",
                         &loc,
-                        format!(
-                            "span [{start}, {end}) is outside document {} of {len} bytes",
-                            repr_str(&d.document_id)
-                        ),
+                        format!("span [{start}, {end}) is outside document {} of {len} bytes", repr_str(&l.source_id)),
                     ));
                 } else if !aligned(start) || !aligned(end) {
                     out.push(finding(
@@ -444,7 +478,7 @@ pub fn check_records(records: &ClinicalRecords, ctx: &SampleContext, base: &str)
                         &loc,
                         format!(
                             "span [{start}, {end}) splits a UTF-8 character of document {}",
-                            repr_str(&d.document_id)
+                            repr_str(&l.source_id)
                         ),
                     ));
                 }

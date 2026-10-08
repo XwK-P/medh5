@@ -139,10 +139,10 @@ fn show(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     ctx.print("\nevents");
     let rows: Vec<Vec<String>> = clinical.events.iter().map(event_row).collect();
     ctx.print(indent(&table(&rows, &EVENT_HEADERS)));
-    if !clinical.documents.is_empty() {
+    if !clinical.documents().is_empty() {
         ctx.print("\ndocuments");
         let rows: Vec<Vec<String>> = clinical
-            .documents
+            .documents()
             .iter()
             .map(|d| {
                 vec![
@@ -196,7 +196,7 @@ fn select_cmd(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let links: Vec<(usize, &Link)> = clinical.links.iter().map(|l| (0, l)).collect();
     let selection = medh5::clinical::select(&clinical.events, &links, cutoff, &policy)?;
     if flag(m, "json") {
-        ctx.emit(&selection.to_json(), true);
+        ctx.emit(&selection.to_json(&clinical.events), true);
         return Ok(EXIT_OK);
     }
     ctx.print(format!(
@@ -206,10 +206,7 @@ fn select_cmd(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
         selection.status,
         selection.policy
     ));
-    let by_id: std::collections::HashMap<&str, &Event> =
-        clinical.events.iter().map(|e| (e.event_id.as_str(), e)).collect();
-    let rows: Vec<Vec<String>> =
-        selection.events.iter().filter_map(|s| by_id.get(s.event_id.as_str())).map(|e| event_row(e)).collect();
+    let rows: Vec<Vec<String>> = selection.events.iter().map(|s| event_row(&clinical.events[s.index])).collect();
     ctx.print(format!("\nadmitted events ({})", rows.len()));
     ctx.print(indent(&table(&rows, &EVENT_HEADERS)));
     if !selection.payloads.is_empty() {
@@ -386,7 +383,7 @@ fn task_preflight(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
                 r.partition.clone().unwrap_or_else(|| "-".into()),
                 r.cutoff_us.to_string(),
                 r.status.clone(),
-                r.events.len().to_string(),
+                r.selection.as_ref().map_or(0, |s| s.events.len()).to_string(),
                 if slots.is_empty() { "-".into() } else { slots.join(" ") },
                 r.target.status.clone(),
                 if r.reasons.is_empty() { "-".into() } else { r.reasons.join("; ") },

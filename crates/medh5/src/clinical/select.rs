@@ -17,7 +17,7 @@
 //! events whose ordering times overlap share a tie group, and an event limit
 //! says what it does with the group it cuts.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use serde_json::{json, Map, Value};
 
@@ -44,59 +44,79 @@ pub struct Chains {
     pub records: BTreeMap<String, Vec<String>>,
 }
 
+/// Every record's versions, oldest first, as indices into `events`, in
+/// record-id order.  The chains must be valid (no E816).
+fn chain_indices<'a>(
+    events: &'a [Event],
+    by_id: &HashMap<&'a str, usize>,
+    links: impl IntoIterator<Item = &'a Link>,
+) -> Result<Vec<Vec<usize>>> {
+    let mut versions: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+    for (i, e) in events.iter().enumerate() {
+        versions.entry(e.record_id.as_str()).or_default().push(i);
+    }
+    let mut next: HashMap<usize, usize> = HashMap::new();
+    let mut previous: HashMap<usize, usize> = HashMap::new();
+    let mut seen: HashSet<(usize, usize)> = HashSet::new();
+    for l in links {
+        if l.relation != "supersedes" || l.source_type != "event" || l.target_type != "event" {
+            continue;
+        }
+        let (Some(&new), Some(&old)) = (by_id.get(l.source_id.as_str()), by_id.get(l.target_id.as_str())) else {
+            continue;
+        };
+        if !seen.insert((new, old)) {
+            continue; // the same link from another fragment
+        }
+        if next.insert(old, new).is_some() || previous.insert(new, old).is_some() {
+            return Err(Error::coded(
+                "E816",
+                format!("the revision chain through {} branches", repr_str(&l.target_id)),
+            ));
+        }
+    }
+    let mut out = Vec::with_capacity(versions.len());
+    for (record, members) in versions {
+        let roots: Vec<usize> = members.iter().copied().filter(|v| !previous.contains_key(v)).collect();
+        let disjoint = || {
+            Error::coded(
+                "E816",
+                format!("record {} has {} versions that do not form one chain", repr_str(record), members.len()),
+            )
+        };
+        if roots.len() != 1 {
+            return Err(disjoint());
+        }
+        let mut chain = vec![roots[0]];
+        while let Some(&n) = next.get(chain.last().expect("a root")) {
+            if chain.len() > members.len() {
+                return Err(Error::coded("E816", format!("the revision chain of {} is cyclic", repr_str(record))));
+            }
+            chain.push(n);
+        }
+        if chain.len() != members.len() {
+            return Err(disjoint());
+        }
+        out.push(chain);
+    }
+    Ok(out)
+}
+
+fn index_of(events: &[Event]) -> HashMap<&str, usize> {
+    events.iter().enumerate().map(|(i, e)| (e.event_id.as_str(), i)).collect()
+}
+
 impl Chains {
     /// Order every record's versions.  The chains must be valid (no E816).
-    pub fn build<'a>(events: &[Event], links: impl IntoIterator<Item = &'a Link>) -> Result<Chains> {
-        let mut record_of: HashMap<&str, &str> = HashMap::new();
-        let mut versions: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-        for e in events {
-            record_of.insert(e.event_id.as_str(), e.record_id.as_str());
-            versions.entry(e.record_id.as_str()).or_default().push(e.event_id.as_str());
-        }
-        let mut next: HashMap<&str, &str> = HashMap::new();
-        let mut previous: HashMap<&str, &str> = HashMap::new();
-        let mut seen: BTreeSet<(&str, &str)> = BTreeSet::new();
-        for l in links {
-            if l.relation != "supersedes" || l.source_type != "event" || l.target_type != "event" {
-                continue;
-            }
-            let (new, old) = (l.source_id.as_str(), l.target_id.as_str());
-            if !seen.insert((new, old)) {
-                continue; // the same link from another fragment
-            }
-            if !record_of.contains_key(new) || !record_of.contains_key(old) {
-                continue;
-            }
-            if next.insert(old, new).is_some() || previous.insert(new, old).is_some() {
-                return Err(Error::coded("E816", format!("the revision chain through {} branches", repr_str(old))));
-            }
-        }
-        let mut records = BTreeMap::new();
-        for (record, members) in versions {
-            let roots: Vec<&str> = members.iter().copied().filter(|v| !previous.contains_key(v)).collect();
-            if roots.len() != 1 {
-                return Err(Error::coded(
-                    "E816",
-                    format!("record {} has {} versions that do not form one chain", repr_str(record), members.len()),
-                ));
-            }
-            let mut chain = vec![roots[0].to_string()];
-            let mut at = roots[0];
-            while let Some(n) = next.get(at) {
-                if chain.len() > members.len() {
-                    return Err(Error::coded("E816", format!("the revision chain of {} is cyclic", repr_str(record))));
-                }
-                chain.push(n.to_string());
-                at = n;
-            }
-            if chain.len() != members.len() {
-                return Err(Error::coded(
-                    "E816",
-                    format!("record {} has {} versions that do not form one chain", repr_str(record), members.len()),
-                ));
-            }
-            records.insert(record.to_string(), chain);
-        }
+    pub fn build<'a>(events: &'a [Event], links: impl IntoIterator<Item = &'a Link>) -> Result<Chains> {
+        let by_id = index_of(events);
+        let records = chain_indices(events, &by_id, links)?
+            .into_iter()
+            .map(|chain| {
+                let record = events[chain[0]].record_id.clone();
+                (record, chain.into_iter().map(|i| events[i].event_id.clone()).collect())
+            })
+            .collect();
         Ok(Chains { records })
     }
 
@@ -279,11 +299,10 @@ impl SelectionPolicy {
 }
 
 /// One event version a selection admits, in input order.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Selected {
-    pub event_id: String,
-    pub record_id: String,
-    pub kind: String,
+    /// The version: an index into the events selected from.
+    pub index: usize,
     /// The time the sequence is ordered by: effective start or availability;
     /// `None` for a static event.
     pub order: Option<Bounds>,
@@ -295,11 +314,12 @@ pub struct Selected {
 }
 
 impl Selected {
-    pub fn to_json(&self) -> Value {
+    pub fn to_json(&self, events: &[Event]) -> Value {
+        let e = &events[self.index];
         json!({
-            "event_id": self.event_id,
-            "record_id": self.record_id,
-            "kind": self.kind,
+            "event_id": e.event_id,
+            "record_id": e.record_id,
+            "kind": e.kind,
             "order_us": self.order.map(|b| b.to_json()),
             "tie_group": self.tie_group,
             "plan": self.plan,
@@ -334,8 +354,10 @@ impl Selection {
         self.status == "certified"
     }
 
-    pub fn event_ids(&self) -> Vec<String> {
-        self.events.iter().map(|e| e.event_id.clone()).collect()
+    /// The admitted versions' ids, in input order; `events` is what was
+    /// selected from.
+    pub fn event_ids<'a>(&self, events: &'a [Event]) -> Vec<&'a str> {
+        self.events.iter().map(|s| events[s.index].event_id.as_str()).collect()
     }
 
     /// Whether `(fragment, kind, id)` may be read as input.
@@ -343,7 +365,7 @@ impl Selection {
         self.payloads.contains(&(fragment, kind.to_string(), id.to_string()))
     }
 
-    pub fn to_json(&self) -> Value {
+    pub fn to_json(&self, events: &[Event]) -> Value {
         let payloads: Vec<Value> = self.payloads.iter().map(|(f, k, i)| json!([f, k, i])).collect();
         let mut excluded = Map::new();
         for (k, v) in &self.excluded {
@@ -353,7 +375,7 @@ impl Selection {
             "cutoff_us": self.cutoff_us,
             "policy": self.policy,
             "status": self.status,
-            "events": self.events.iter().map(Selected::to_json).collect::<Vec<_>>(),
+            "events": self.events.iter().map(|s| s.to_json(events)).collect::<Vec<_>>(),
             "links": self.links,
             "payloads": payloads,
             "uncertain_records": self.uncertain_records,
@@ -366,228 +388,291 @@ fn count(excluded: &mut BTreeMap<String, usize>, reason: &str) {
     *excluded.entry(reason.to_string()).or_default() += 1;
 }
 
+/// How a link can attest a payload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Attests {
+    /// The structural link from a `document` or `imaging` event to its own
+    /// payload, attested when its source is selected.
+    Structure { source: usize },
+    /// A link carrying `asserted_by_event_id`, attested when that version is
+    /// selected and its event and document endpoints are admitted too.
+    Assertion { by: usize, source: Option<usize>, target: Option<usize> },
+}
+
+/// One subject's event versions and links, prepared once for selection at
+/// any number of cutoffs: revision chains ordered, versions indexed, links
+/// classified, and a stable rank standing in for each event id when ties
+/// are broken for storage.
+#[derive(Debug, Clone)]
+pub struct Prepared<'a> {
+    events: &'a [Event],
+    links: Vec<(usize, &'a Link)>,
+    chains: Vec<Vec<usize>>,
+    /// The position of each event's id in id order.
+    rank: Vec<usize>,
+    attests: Vec<(usize, Attests)>,
+}
+
+impl<'a> Prepared<'a> {
+    /// Prepare merged event versions (unique by id, reconciled across
+    /// fragments first) and their links, each with the fragment it came from.
+    pub fn new(events: &'a [Event], links: &[(usize, &'a Link)]) -> Result<Prepared<'a>> {
+        let by_id = index_of(events);
+        let chains = chain_indices(events, &by_id, links.iter().map(|(_, l)| *l))?;
+        let mut order: Vec<usize> = (0..events.len()).collect();
+        order.sort_unstable_by(|a, b| events[*a].event_id.cmp(&events[*b].event_id));
+        let mut rank = vec![0; events.len()];
+        for (r, i) in order.into_iter().enumerate() {
+            rank[i] = r;
+        }
+        let event = |kind: &str, id: &str| if kind == "event" { by_id.get(id).copied() } else { None };
+        let mut attests = Vec::new();
+        for (i, (_, l)) in links.iter().enumerate() {
+            let source = event(&l.source_type, &l.source_id);
+            let structural = l.relation == "describes"
+                && source.is_some_and(|s| {
+                    matches!(
+                        (events[s].kind.as_str(), l.target_type.as_str()),
+                        ("document", "document") | ("imaging", "image")
+                    )
+                });
+            if structural {
+                attests.push((i, Attests::Structure { source: source.expect("structural") }));
+            } else if l.relation != "supersedes" {
+                if let Some(by) = l.asserted_by_event_id.as_deref().and_then(|b| by_id.get(b).copied()) {
+                    let target = event(&l.target_type, &l.target_id);
+                    attests.push((i, Attests::Assertion { by, source, target }));
+                }
+            }
+        }
+        Ok(Prepared { events, links: links.to_vec(), chains, rank, attests })
+    }
+
+    pub fn events(&self) -> &'a [Event] {
+        self.events
+    }
+
+    /// The newest version of every record, oldest record id first.
+    pub fn latest(&self) -> impl Iterator<Item = usize> + '_ {
+        self.chains.iter().filter_map(|c| c.last().copied())
+    }
+
+    /// Select at `cutoff` (1.1 §9).
+    pub fn select(&self, cutoff: i64, policy: &SelectionPolicy) -> Result<Selection> {
+        policy.check()?;
+        let events = self.events;
+        let mut excluded = BTreeMap::new();
+        let mut uncertain_records = Vec::new();
+        let mut current: Vec<usize> = Vec::new();
+
+        // 1-2: per record, the newest version available at the cutoff.
+        for chain in &self.chains {
+            let available_at = |i: &usize| events[*i].available.is_some_and(|a| a.at_or_before(cutoff));
+            let Some(k) = chain.iter().rposition(available_at) else {
+                let reason = if chain.iter().any(|i| events[*i].available.is_none()) {
+                    "unknown_availability"
+                } else if chain.iter().any(|i| events[*i].available.is_some_and(|a| a.straddles(cutoff))) {
+                    "straddles_cutoff"
+                } else {
+                    "after_cutoff"
+                };
+                count(&mut excluded, reason);
+                continue;
+            };
+            if chain[k + 1..].iter().any(|i| !events[*i].available.is_some_and(|a| a.after(cutoff))) {
+                uncertain_records.push(events[chain[k]].record_id.clone());
+            }
+            if events[chain[k]].status == "entered_in_error" {
+                count(&mut excluded, "entered_in_error");
+                continue;
+            }
+            current.push(chain[k]);
+        }
+        let status = match (policy.selection.as_str(), uncertain_records.is_empty()) {
+            ("latest_provable", _) => "provable",
+            (_, true) => "certified",
+            (_, false) => "uncertifiable",
+        };
+
+        // 3: kinds, plans, static, context.
+        let mut admitted: Vec<(Option<Bounds>, bool, usize)> = Vec::new();
+        let window_lo = policy.context_us.map(|w| cutoff.saturating_sub(w));
+        for i in current {
+            let e = &events[i];
+            if let Some(kinds) = &policy.kinds {
+                if !kinds.contains(&e.kind) {
+                    count(&mut excluded, "kind");
+                    continue;
+                }
+            }
+            if e.temporal_type == "static" {
+                if !policy.include_static {
+                    count(&mut excluded, "static");
+                    continue;
+                }
+                let order = if policy.order_by == "available" { e.available } else { None };
+                admitted.push((order, false, i));
+                continue;
+            }
+            let order = match policy.order_by.as_str() {
+                "available" => e.available,
+                _ => e.effective_start,
+            };
+            let Some(order) = order else {
+                count(&mut excluded, "unknown_time");
+                continue;
+            };
+            let started = e.effective_start.is_some_and(|s| s.at_or_before(cutoff));
+            let plan = e.status == "planned" || (e.temporal_type != "unknown" && !started);
+            if plan {
+                if !policy.plans {
+                    count(&mut excluded, "plan");
+                    continue;
+                }
+                admitted.push((Some(order), true, i));
+                continue;
+            }
+            if let Some(lo_edge) = window_lo {
+                let inside = |t: i64| if policy.context_boundary == "closed" { t >= lo_edge } else { t > lo_edge };
+                let (fully, partly) = (inside(order.lo), inside(order.hi));
+                let ok = if policy.uncertainty == "contained" { fully } else { partly };
+                if !ok {
+                    count(&mut excluded, if partly { "uncertain_context" } else { "outside_context" });
+                    continue;
+                }
+            }
+            admitted.push((Some(order), false, i));
+        }
+
+        // 4: order, tie groups, and the limit.  Ids break ties for storage
+        // only; their rank stands in for them.
+        admitted.sort_unstable_by_key(|(order, _, i)| (order.is_some(), order.map(|o| (o.lo, o.hi)), self.rank[*i]));
+        // Static events (sorted first) share group 0: they have no order at all.
+        // Timed events open a new group unless their time overlaps the group's
+        // reach so far.
+        let mut selected: Vec<Selected> = Vec::with_capacity(admitted.len());
+        let has_static = admitted.first().is_some_and(|a| a.0.is_none());
+        let mut group = 0usize;
+        let mut reach: Option<i64> = None;
+        for (order, plan, i) in &admitted {
+            if let Some(o) = order {
+                match reach {
+                    Some(r) if o.lo <= r => reach = Some(r.max(o.hi)),
+                    Some(_) => {
+                        group += 1;
+                        reach = Some(o.hi);
+                    }
+                    None => {
+                        group = usize::from(has_static);
+                        reach = Some(o.hi);
+                    }
+                }
+            }
+            selected.push(Selected { index: *i, order: *order, tie_group: group, plan: *plan });
+        }
+        if let Some(max) = policy.max_events {
+            let timed: Vec<usize> = (0..selected.len()).filter(|i| selected[*i].order.is_some()).collect();
+            if timed.len() > max {
+                let (keep_range, cut_at) = if policy.keep == "latest" {
+                    let first_kept = timed.len() - max;
+                    (first_kept..timed.len(), first_kept)
+                } else {
+                    (0..max, max - 1)
+                };
+                let boundary = selected[timed[cut_at]].tie_group;
+                let mut keep: BTreeSet<usize> = keep_range.map(|j| timed[j]).collect();
+                let in_boundary: Vec<usize> =
+                    timed.iter().copied().filter(|i| selected[*i].tie_group == boundary).collect();
+                let splits =
+                    in_boundary.iter().any(|i| keep.contains(i)) && in_boundary.iter().any(|i| !keep.contains(i));
+                if splits {
+                    if policy.ties == "keep_group" {
+                        keep.extend(in_boundary);
+                    } else {
+                        for i in in_boundary {
+                            keep.remove(&i);
+                        }
+                    }
+                }
+                let before = selected.len();
+                selected = selected
+                    .into_iter()
+                    .enumerate()
+                    .filter(|(i, s)| s.order.is_none() || keep.contains(i))
+                    .map(|(_, s)| s)
+                    .collect();
+                *excluded.entry("event_limit".into()).or_default() += before - selected.len();
+            }
+        }
+
+        // 5: the links and payloads the selected versions attest.
+        let mut chosen = vec![false; events.len()];
+        for s in &selected {
+            chosen[s.index] = true;
+        }
+        let mut payloads: BTreeSet<(usize, String, String)> = BTreeSet::new();
+        let mut attested = Vec::new();
+        // Structural links first: a document or imaging event owns its payload.
+        for (i, how) in &self.attests {
+            if let Attests::Structure { source } = how {
+                if chosen[*source] {
+                    let (fragment, l) = self.links[*i];
+                    payloads.insert((fragment, l.target_type.clone(), l.target_id.clone()));
+                    attested.push(*i);
+                }
+            }
+        }
+        let documents: BTreeSet<(usize, &str)> =
+            payloads.iter().filter(|(_, k, _)| k == "document").map(|(f, _, id)| (*f, id.as_str())).collect();
+        let mut asserted: Vec<(usize, String, String)> = Vec::new();
+        for (i, how) in &self.attests {
+            let Attests::Assertion { by, source, target } = how else { continue };
+            if !chosen[*by] {
+                continue;
+            }
+            let (fragment, l) = self.links[*i];
+            let endpoint_ok = |kind: &str, id: &str, event: &Option<usize>| match kind {
+                "event" => event.is_some_and(|e| chosen[e]),
+                "document" => documents.contains(&(fragment, id)),
+                _ => true,
+            };
+            if !(endpoint_ok(&l.source_type, &l.source_id, source) && endpoint_ok(&l.target_type, &l.target_id, target))
+            {
+                continue;
+            }
+            for (kind, id) in [(&l.source_type, &l.source_id), (&l.target_type, &l.target_id)] {
+                if matches!(kind.as_str(), "image" | "annotation" | "transform" | "grid" | "instance" | "document") {
+                    asserted.push((fragment, kind.clone(), id.clone()));
+                }
+            }
+            if let Some(ann) = &l.target_annotation_id {
+                asserted.push((fragment, "annotation".into(), ann.clone()));
+            }
+            attested.push(*i);
+        }
+        payloads.extend(asserted);
+        attested.sort_unstable();
+        Ok(Selection {
+            cutoff_us: cutoff,
+            policy: policy.selection.clone(),
+            status: status.into(),
+            events: selected,
+            links: attested,
+            payloads,
+            uncertain_records,
+            excluded,
+        })
+    }
+}
+
 /// Select at `cutoff` from merged event versions and their links.
 ///
 /// `links` pairs each link with the fragment (source) it came from, so the
 /// payloads it attests are named in that fragment.  The events must be unique
-/// by id (reconciled across fragments first) and their chains valid.
+/// by id (reconciled across fragments first) and their chains valid.  To
+/// select one history at many cutoffs, prepare it once ([`Prepared`]).
 pub fn select(events: &[Event], links: &[(usize, &Link)], cutoff: i64, policy: &SelectionPolicy) -> Result<Selection> {
-    policy.check()?;
-    let chains = Chains::build(events, links.iter().map(|(_, l)| *l))?;
-    let by_id: HashMap<&str, &Event> = events.iter().map(|e| (e.event_id.as_str(), e)).collect();
-    let mut excluded = BTreeMap::new();
-    let mut uncertain_records = Vec::new();
-    let mut current: Vec<&Event> = Vec::new();
-
-    // 1-2: per record, the newest version available at the cutoff.
-    for (record, chain) in &chains.records {
-        let versions: Vec<&Event> = chain.iter().filter_map(|id| by_id.get(id.as_str()).copied()).collect();
-        let available_at = |e: &Event| e.available.is_some_and(|a| a.at_or_before(cutoff));
-        let chosen = versions.iter().rposition(|e| available_at(e));
-        let Some(k) = chosen else {
-            let reason = if versions.iter().any(|e| e.available.is_none()) {
-                "unknown_availability"
-            } else if versions.iter().any(|e| e.available.is_some_and(|a| a.straddles(cutoff))) {
-                "straddles_cutoff"
-            } else {
-                "after_cutoff"
-            };
-            count(&mut excluded, reason);
-            continue;
-        };
-        let later_uncertain = versions[k + 1..].iter().any(|e| !e.available.is_some_and(|a| a.after(cutoff)));
-        if later_uncertain {
-            uncertain_records.push(record.clone());
-        }
-        let chosen = versions[k];
-        if chosen.status == "entered_in_error" {
-            count(&mut excluded, "entered_in_error");
-            continue;
-        }
-        current.push(chosen);
-    }
-    let status = match (policy.selection.as_str(), uncertain_records.is_empty()) {
-        ("latest_provable", _) => "provable",
-        (_, true) => "certified",
-        (_, false) => "uncertifiable",
-    };
-
-    // 3: kinds, plans, static, context.
-    let mut admitted: Vec<(Option<Bounds>, bool, &Event)> = Vec::new();
-    let window_lo = policy.context_us.map(|w| cutoff.saturating_sub(w));
-    for e in current {
-        if let Some(kinds) = &policy.kinds {
-            if !kinds.contains(&e.kind) {
-                count(&mut excluded, "kind");
-                continue;
-            }
-        }
-        if e.temporal_type == "static" {
-            if !policy.include_static {
-                count(&mut excluded, "static");
-                continue;
-            }
-            let order = if policy.order_by == "available" { e.available } else { None };
-            admitted.push((order, false, e));
-            continue;
-        }
-        let order = match policy.order_by.as_str() {
-            "available" => e.available,
-            _ => e.effective_start,
-        };
-        let Some(order) = order else {
-            count(&mut excluded, "unknown_time");
-            continue;
-        };
-        let started = e.effective_start.is_some_and(|s| s.at_or_before(cutoff));
-        let plan = e.status == "planned" || (e.temporal_type != "unknown" && !started);
-        if plan {
-            if !policy.plans {
-                count(&mut excluded, "plan");
-                continue;
-            }
-            admitted.push((Some(order), true, e));
-            continue;
-        }
-        if let Some(lo_edge) = window_lo {
-            let inside = |t: i64| if policy.context_boundary == "closed" { t >= lo_edge } else { t > lo_edge };
-            let (fully, partly) = (inside(order.lo), inside(order.hi));
-            let ok = if policy.uncertainty == "contained" { fully } else { partly };
-            if !ok {
-                count(&mut excluded, if partly { "uncertain_context" } else { "outside_context" });
-                continue;
-            }
-        }
-        admitted.push((Some(order), false, e));
-    }
-
-    // 4: order, tie groups, and the limit.
-    admitted.sort_by(|a, b| {
-        let key = |x: &(Option<Bounds>, bool, &Event)| (x.0.is_some(), x.0.map(|o| (o.lo, o.hi)), x.2.event_id.clone());
-        key(a).cmp(&key(b))
-    });
-    // Static events (sorted first) share group 0: they have no order at all.
-    // Timed events open a new group unless their time overlaps the group's
-    // reach so far.
-    let mut selected: Vec<Selected> = Vec::with_capacity(admitted.len());
-    let has_static = admitted.first().is_some_and(|a| a.0.is_none());
-    let mut group = 0usize;
-    let mut reach: Option<i64> = None;
-    for (order, plan, e) in &admitted {
-        if let Some(o) = order {
-            match reach {
-                Some(r) if o.lo <= r => reach = Some(r.max(o.hi)),
-                Some(_) => {
-                    group += 1;
-                    reach = Some(o.hi);
-                }
-                None => {
-                    group = usize::from(has_static);
-                    reach = Some(o.hi);
-                }
-            }
-        }
-        selected.push(Selected {
-            event_id: e.event_id.clone(),
-            record_id: e.record_id.clone(),
-            kind: e.kind.clone(),
-            order: *order,
-            tie_group: group,
-            plan: *plan,
-        });
-    }
-    if let Some(max) = policy.max_events {
-        let timed: Vec<usize> = (0..selected.len()).filter(|i| selected[*i].order.is_some()).collect();
-        if timed.len() > max {
-            let (keep_range, cut_at) = if policy.keep == "latest" {
-                let first_kept = timed.len() - max;
-                (first_kept..timed.len(), first_kept)
-            } else {
-                (0..max, max - 1)
-            };
-            let boundary = selected[timed[cut_at]].tie_group;
-            let mut keep: BTreeSet<usize> = keep_range.map(|j| timed[j]).collect();
-            let in_boundary: Vec<usize> =
-                timed.iter().copied().filter(|i| selected[*i].tie_group == boundary).collect();
-            let splits = in_boundary.iter().any(|i| keep.contains(i)) && in_boundary.iter().any(|i| !keep.contains(i));
-            if splits {
-                if policy.ties == "keep_group" {
-                    keep.extend(in_boundary);
-                } else {
-                    for i in in_boundary {
-                        keep.remove(&i);
-                    }
-                }
-            }
-            let before = selected.len();
-            selected = selected
-                .into_iter()
-                .enumerate()
-                .filter(|(i, s)| s.order.is_none() || keep.contains(i))
-                .map(|(_, s)| s)
-                .collect();
-            *excluded.entry("event_limit".into()).or_default() += before - selected.len();
-        }
-    }
-
-    // 5: the links and payloads the selected versions attest.
-    let chosen: BTreeSet<&str> = selected.iter().map(|s| s.event_id.as_str()).collect();
-    let kind_of = |id: &str| by_id.get(id).map(|e| e.kind.as_str());
-    let mut payloads: BTreeSet<(usize, String, String)> = BTreeSet::new();
-    let mut attested = Vec::new();
-    // Structural links first: a document or imaging event owns its payload.
-    for (i, (fragment, l)) in links.iter().enumerate() {
-        let structural = l.relation == "describes"
-            && l.source_type == "event"
-            && chosen.contains(l.source_id.as_str())
-            && matches!(
-                (kind_of(&l.source_id), l.target_type.as_str()),
-                (Some("document"), "document") | (Some("imaging"), "image")
-            );
-        if structural {
-            payloads.insert((*fragment, l.target_type.clone(), l.target_id.clone()));
-            attested.push(i);
-        }
-    }
-    let documents: BTreeSet<(usize, String)> =
-        payloads.iter().filter(|(_, k, _)| k == "document").map(|(f, _, id)| (*f, id.clone())).collect();
-    for (i, (fragment, l)) in links.iter().enumerate() {
-        if attested.contains(&i) || l.relation == "supersedes" {
-            continue;
-        }
-        let Some(by) = l.asserted_by_event_id.as_deref() else { continue };
-        if !chosen.contains(by) {
-            continue;
-        }
-        let endpoint_ok = |kind: &str, id: &str| match kind {
-            "event" => chosen.contains(id),
-            "document" => documents.contains(&(*fragment, id.to_string())),
-            _ => true,
-        };
-        if !(endpoint_ok(&l.source_type, &l.source_id) && endpoint_ok(&l.target_type, &l.target_id)) {
-            continue;
-        }
-        for (kind, id) in [(&l.source_type, &l.source_id), (&l.target_type, &l.target_id)] {
-            if matches!(kind.as_str(), "image" | "annotation" | "transform" | "grid" | "instance" | "document") {
-                payloads.insert((*fragment, kind.clone(), id.clone()));
-            }
-        }
-        if let Some(ann) = &l.target_annotation_id {
-            payloads.insert((*fragment, "annotation".into(), ann.clone()));
-        }
-        attested.push(i);
-    }
-    attested.sort_unstable();
-    Ok(Selection {
-        cutoff_us: cutoff,
-        policy: policy.selection.clone(),
-        status: status.into(),
-        events: selected,
-        links: attested,
-        payloads,
-        uncertain_records,
-        excluded,
-    })
+    Prepared::new(events, links)?.select(cutoff, policy)
 }
 
 #[cfg(test)]
@@ -612,8 +697,8 @@ mod tests {
         Link::new(("event", new), "supersedes", ("event", old))
     }
 
-    fn ids(s: &Selection) -> Vec<String> {
-        s.event_ids()
+    fn ids(s: &Selection, events: &[Event]) -> Vec<String> {
+        s.event_ids(events).into_iter().map(str::to_string).collect()
     }
 
     #[test]
@@ -624,10 +709,10 @@ mod tests {
         ];
         let link = sup("r_v2", "r_v1");
         let s = select(&events, &[(0, &link)], 24 * HOUR, &SelectionPolicy::strict()).unwrap();
-        assert_eq!(ids(&s), ["r_v1"]);
+        assert_eq!(ids(&s, &events), ["r_v1"]);
         assert!(s.certified());
         let s = select(&events, &[(0, &link)], 48 * HOUR, &SelectionPolicy::strict()).unwrap();
-        assert_eq!(ids(&s), ["r_v2"]);
+        assert_eq!(ids(&s, &events), ["r_v2"]);
     }
 
     #[test]
@@ -642,7 +727,7 @@ mod tests {
             provable.selection = "latest_provable".into();
             let s = select(&events, &[(0, &link)], 24 * HOUR, &provable).unwrap();
             assert_eq!(s.status, "provable");
-            assert_eq!(ids(&s), ["v1"]);
+            assert_eq!(ids(&s, &events), ["v1"]);
         }
     }
 
@@ -674,16 +759,16 @@ mod tests {
         let c = version("c", "c", 20, Some((20, 20)));
         let events = vec![c, b, a];
         let s = select(&events, &[], 100, &SelectionPolicy::strict()).unwrap();
-        assert_eq!(ids(&s), ["a", "b", "c"]);
+        assert_eq!(ids(&s, &events), ["a", "b", "c"]);
         assert_eq!(s.events[0].tie_group, s.events[1].tie_group);
         assert_ne!(s.events[1].tie_group, s.events[2].tie_group);
         let mut limited = SelectionPolicy::strict();
         limited.max_events = Some(2);
         let kept = select(&events, &[], 100, &limited).unwrap();
-        assert_eq!(ids(&kept), ["a", "b", "c"], "keep_group keeps the whole boundary group");
+        assert_eq!(ids(&kept, &events), ["a", "b", "c"], "keep_group keeps the whole boundary group");
         limited.ties = "drop_group".into();
         let dropped = select(&events, &[], 100, &limited).unwrap();
-        assert_eq!(ids(&dropped), ["c"]);
+        assert_eq!(ids(&dropped, &events), ["c"]);
         assert_eq!(dropped.excluded.get("event_limit"), Some(&2));
     }
 
@@ -732,5 +817,30 @@ mod tests {
         assert!(s.admits(0, "image", "CT_tp0"));
         assert!(!s.admits(0, "image", "CT_tp1"));
         assert!(!s.admits(0, "annotation", "lesions_tp0"), "a later grounding is not available at baseline");
+    }
+
+    #[test]
+    fn s9_1_one_preparation_answers_every_cutoff_as_select_does() {
+        let mut events = Vec::new();
+        let mut links = Vec::new();
+        for i in 0..40i64 {
+            events.push(version(
+                &format!("e{i}"),
+                &format!("r{}", i / 2),
+                i * HOUR,
+                Some(((i + 3) * HOUR, (i + 5) * HOUR)),
+            ));
+        }
+        for i in (1..40).step_by(2) {
+            links.push(sup(&format!("e{i}"), &format!("e{}", i - 1)));
+        }
+        let refs: Vec<(usize, &Link)> = links.iter().map(|l| (0, l)).collect();
+        let prepared = Prepared::new(&events, &refs).unwrap();
+        let mut policy = SelectionPolicy::strict();
+        policy.context_us = Some(10 * HOUR);
+        for cutoff in (-2..50).map(|h| h * HOUR) {
+            let once = select(&events, &refs, cutoff, &policy).unwrap();
+            assert_eq!(prepared.select(cutoff, &policy).unwrap(), once, "cutoff {cutoff}");
+        }
     }
 }

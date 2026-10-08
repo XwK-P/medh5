@@ -498,6 +498,12 @@ with the reason, the event count, the image filling each slot and the target
 label. Exits 1 when anything was found. `--deep` re-verifies every dataset of
 every source, not only the clinical ones.
 
+With `--json`, each subject's merged history is listed once, under
+`subjects` (its sources, event versions, links and owned documents), and each
+row names what it admits in `selection`: the admitted versions in input order
+(`events`, with their order bounds, tie groups and plan flags), the attested
+links by position in its subject's `links`, and the payloads.
+
 ### `medh5 task reconcile`
 
 ```

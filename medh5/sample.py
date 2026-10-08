@@ -299,6 +299,13 @@ class Sample:
             self._clinical = (None if handle is None else Clinical(handle),)
         return self._clinical[0]
 
+    def document_text(self, document_id: str) -> str:
+        """One clinical document's text, read on its own: the document
+        table's offsets and that document's bytes --- not the events, the links
+        or any other document (format 1.1 §6).  ``KeyError`` for no such
+        document, or a sample without the profile."""
+        return str(self._handle.document_text(document_id))
+
     # -- objects -----------------------------------------------------------
 
     @property

@@ -1,13 +1,13 @@
 # Runnable examples
 
-Eight scripts. Four are standalone: the benchmarks behind the measured claims
+Nine scripts. Four are standalone: the benchmarks behind the measured claims
 in the [specification](../spec/medh5-1.0.md) (§7.0, §14.2, §14.3, §14.5) and the
 [design rationale](../explanation/design-rationale.md), and a reference writer
 that builds a complete file from the specification alone. None of those imports
 `medh5` — they measure and exercise the *format*, with h5py and nothing between
 the reader and the bytes.
 
-The other four exercise [format 1.1](../spec/medh5-1.1.md) and the
+The other five exercise [format 1.1](../spec/medh5-1.1.md) and the
 [task and cache contract](../spec/task-cache-1.md) through the package's public
 API, end to end, and the test suite runs each of them
 (`tests/integrations/test_clinical_training.py`):
@@ -18,6 +18,7 @@ API, end to end, and the test suite runs each of them
 | [`clinical_collection.py`](clinical_collection.py) | A subject split across two members of a `.medh5c` shard: refused until its duplicated event is reconciled, then trained on through worker processes |
 | [`clinical_cache.py`](clinical_cache.py) | Event- and patient-level feature caches, then every way one stops being usable --- a source amended (stale), bytes rotted (corrupt), a whole-history embedding (inadmissible), statistics fitted on the wrong split --- and the explicit re-pin |
 | [`bench_clinical.py`](bench_clinical.py) | Write, select, read, batch, cache and amend costs on a synthetic cohort ([results below](#clinical-paths-format-11)) |
+| [`bench_preflight.py`](bench_preflight.py) | A task's preflight, dataset and items on a large multi-site cohort --- many events, documents, fragments and cutoffs --- each measured in its own interpreter: time, peak memory, bytes read ([results below](#preflight-at-cohort-scale)) |
 
 ```bash
 pip install "medh5[torch]"
@@ -25,6 +26,7 @@ python docs/examples/clinical_longitudinal.py out/   # ~5 s
 python docs/examples/clinical_collection.py out2/    # ~5 s
 python docs/examples/clinical_cache.py out3/         # ~5 s
 python docs/examples/bench_clinical.py --json bench.json   # ~1 min at the defaults
+python docs/examples/bench_preflight.py --json pre.json    # ~1 min at the defaults
 ```
 
 | Script | Produces |
@@ -141,6 +143,52 @@ preflight is dominated by re-verifying every pinned sample's clinical digests,
 which is what lets it detect an edit under an unchanged stored root. At this
 size two workers do not beat one process --- each worker pays its own opens for
 48 small rows --- so measure your own shard and worker layout before choosing.
+
+### Preflight at cohort scale
+
+`bench_preflight.py` builds a two-site cohort: each subject split across two
+files on one clock, with coded laboratory values (one in ten revised later, one
+in a hundred of unknown availability), medication orders and courses,
+day-precision diagnoses, static demographics held by both fragments (so
+preflight reconciles them), notes of ≈2 KiB each with every tenth revised, a
+small CT per visit and an MR at the second site; rows monthly from the first
+visit, a CT and an MR slot, a progression target and a one-year context window.
+Each measurement runs in its own interpreter, so its peak resident size and the
+bytes it read (`rchar`) are its own. Same container as above. "Before" is the
+first 1.1 implementation (commit `eeb8c33`), on the same files.
+
+| 60 subjects × 2 fragments, 2 000 events and 100 notes each; 720 rows (43 MiB on disk) | Before | After |
+|---|---|---|
+| `task.preflight()`, end to end | 45–61 s (three runs) | 3.4 s |
+| Peak resident memory of that process | 5 158 MiB | 131 MiB |
+| Bytes read by it | 114 MiB | 78 MiB |
+| The engine alone (`medh5 task preflight`, native) | 10.0 s | 3.7–4.2 s |
+| `ClinicalTaskDataset` pickled, as each spawned worker receives it | 79 MiB, in 10–11 s | 34 MiB, in 0.06 s |
+| Items per second, ≈520 events each, notes encoded on the fly | 24 | 41 |
+
+| 200 subjects × 2 fragments, 3 000 events and 150 notes each; 4 800 rows (201 MiB on disk) | After |
+|---|---|
+| `task.preflight()`, end to end | 18.8 s |
+| Peak resident memory of that process | 481 MiB |
+| Bytes read by it | 374 MiB |
+| `ClinicalTaskDataset` built / pickled | 1.5 s / 219 MiB in 0.38 s |
+| Items per second, ≈785 events each, notes encoded on the fly | 30 |
+
+Where the time went, and what changed: rows had copied their subject's event
+records (every row of every subject, through JSON, into Python objects ---
+5 GB for 720 rows), every row rebuilt the revision chains, every event was
+digested to find the few held twice, each source's tables were read twice and
+its text decompressed three times. Now a subject's history is prepared once and
+shared by its rows as indices, only duplicates are digested, a source is walked
+once and its tables read once, text is read only to verify it, and the result
+crosses into Python as columns built a subject at a time. What remains is the
+guarantee itself (a profile of the engine, by instructions): checking each pin
+--- one walk of the file and a hash of every clinical byte --- is ≈40 % of the
+work, validating each source's clinical tables ≈30 %, opening the sources ≈8 %,
+and selecting at every cutoff and building every row ≈12 %. Threads do not
+help --- every HDF5 call holds one lock; four threads ran slower than one. Items
+with notes are bound by the deliberately naive `HashingTextEncoder`: without
+documents the same items build at ≈130 per second.
 
 ## The reference writer
 

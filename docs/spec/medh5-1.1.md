@@ -272,6 +272,13 @@ Links may cite spans of a document as half-open UTF-8 byte intervals `[start, en
 lie on code-point boundaries within that exact revision (**E814**). De-identification covers the body
 as well as metadata: a date-shift field alone claims nothing about free text.
 
+No text needs to be read to read the rest of the profile. The `text` offsets alone give every
+document's byte length, so a reader can open the profile, select at a cutoff and know which documents
+a row may read without decompressing a report, and read one document's bytes when it is asked for ---
+checking that row's UTF-8 then (**E806**), as every row is checked on its own. A validator still checks
+every row, which it can do a bounded slab of the buffer at a time; a span's endpoints need only the
+bytes at them.
+
 PDFs, raw waveforms, whole-slide tile pyramids and arbitrary external assets are not standardized by
 this profile, and an extension **MUST NOT** replace a required local payload with an unresolvable
 external dependency.

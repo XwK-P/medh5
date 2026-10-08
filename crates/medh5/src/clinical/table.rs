@@ -8,7 +8,10 @@
 
 use std::collections::HashMap;
 
-use super::columns::{read_cell, read_table, RawTable, TableWriter, DOCUMENT_COLUMNS, EVENT_COLUMNS, LINK_COLUMNS};
+use super::columns::{
+    read_table_deferring, Column, RawTable, TableWriter, TextColumn, Values, DOCUMENT_COLUMNS, EVENT_COLUMNS,
+    LINK_COLUMNS,
+};
 use super::model::{
     Bounds, ClinicalRecords, Descriptor, Document, Event, Link, DESCRIPTOR, DOCUMENTS, EVENTS, GROUP, LINKS, SCHEMA,
 };
@@ -18,8 +21,34 @@ use crate::json::repr_str;
 use crate::storage::codecs::CodecProfile;
 use crate::{Error, Result};
 
-fn bounds(table: &RawTable, i: usize, lo: &str, hi: &str) -> Option<Bounds> {
-    match (table.i64(lo, i), table.i64(hi, i)) {
+/// One column's cells, the column looked up once: absent is all null.
+#[derive(Clone, Copy)]
+struct Cells<'a>(Option<&'a Column>);
+
+impl<'a> Cells<'a> {
+    fn of(table: &'a RawTable, name: &str) -> Cells<'a> {
+        Cells(table.column(name))
+    }
+
+    fn text(self, i: usize) -> Option<String> {
+        self.0.and_then(|c| c.text(i))
+    }
+
+    fn i64(self, i: usize) -> Option<i64> {
+        self.0.and_then(|c| c.i64(i))
+    }
+
+    fn u64(self, i: usize) -> Option<u64> {
+        self.0.and_then(|c| c.u64(i))
+    }
+
+    fn f64(self, i: usize) -> Option<f64> {
+        self.0.and_then(|c| c.f64(i))
+    }
+}
+
+fn bounds(lo: Cells<'_>, hi: Cells<'_>, i: usize) -> Option<Bounds> {
+    match (lo.i64(i), hi.i64(i)) {
         (Some(lo), Some(hi)) => Some(Bounds { lo, hi }),
         _ => None,
     }
@@ -27,62 +56,84 @@ fn bounds(table: &RawTable, i: usize, lo: &str, hi: &str) -> Option<Bounds> {
 
 /// The event rows of a sound `events` table.
 pub fn events_of(table: &RawTable) -> Vec<Event> {
+    let c = |name: &str| Cells::of(table, name);
+    let (event_id, record_id, kind, temporal_type, status) =
+        (c("event_id"), c("record_id"), c("kind"), c("temporal_type"), c("status"));
+    let (start_lo, start_hi, end_lo, end_hi, available_lo, available_hi) = (
+        c("effective_start_lo_us"),
+        c("effective_start_hi_us"),
+        c("effective_end_lo_us"),
+        c("effective_end_hi_us"),
+        c("available_lo_us"),
+        c("available_hi_us"),
+    );
+    let (timepoint_id, encounter_id, code_system, code, code_version) =
+        (c("timepoint_id"), c("encounter_id"), c("code_system"), c("code"), c("code_version"));
+    let (value_num, value_comparator, unit, value_text, missing_reason, prov) =
+        (c("value_num"), c("value_comparator"), c("unit"), c("value_text"), c("missing_reason"), c("prov"));
     (0..table.rows)
-        .map(|i| {
-            let text = |c: &str| table.text(c, i);
-            Event {
-                event_id: text("event_id").unwrap_or_default(),
-                record_id: text("record_id").unwrap_or_default(),
-                kind: text("kind").unwrap_or_default(),
-                temporal_type: text("temporal_type").unwrap_or_default(),
-                effective_start: bounds(table, i, "effective_start_lo_us", "effective_start_hi_us"),
-                effective_end: bounds(table, i, "effective_end_lo_us", "effective_end_hi_us"),
-                available: bounds(table, i, "available_lo_us", "available_hi_us"),
-                status: text("status").unwrap_or_default(),
-                timepoint_id: text("timepoint_id"),
-                encounter_id: text("encounter_id"),
-                code_system: text("code_system"),
-                code: text("code"),
-                code_version: text("code_version"),
-                value_num: table.f64("value_num", i),
-                value_comparator: text("value_comparator"),
-                unit: text("unit"),
-                value_text: text("value_text"),
-                missing_reason: text("missing_reason"),
-                prov: text("prov"),
-            }
+        .map(|i| Event {
+            event_id: event_id.text(i).unwrap_or_default(),
+            record_id: record_id.text(i).unwrap_or_default(),
+            kind: kind.text(i).unwrap_or_default(),
+            temporal_type: temporal_type.text(i).unwrap_or_default(),
+            effective_start: bounds(start_lo, start_hi, i),
+            effective_end: bounds(end_lo, end_hi, i),
+            available: bounds(available_lo, available_hi, i),
+            status: status.text(i).unwrap_or_default(),
+            timepoint_id: timepoint_id.text(i),
+            encounter_id: encounter_id.text(i),
+            code_system: code_system.text(i),
+            code: code.text(i),
+            code_version: code_version.text(i),
+            value_num: value_num.f64(i),
+            value_comparator: value_comparator.text(i),
+            unit: unit.text(i),
+            value_text: value_text.text(i),
+            missing_reason: missing_reason.text(i),
+            prov: prov.text(i),
         })
         .collect()
 }
 
-/// The document rows of a sound `documents` table, text included.
+/// The document rows of a sound `documents` table: text included when the
+/// table was read whole, empty when its `text` was deferred (read that
+/// through a [`TextColumn`]).
 pub fn documents_of(table: &RawTable) -> Vec<Document> {
+    let c = |name: &str| Cells::of(table, name);
+    let (document_id, media_type, text, language, source_type) =
+        (c("document_id"), c("media_type"), c("text"), c("language"), c("source_type"));
     (0..table.rows)
         .map(|i| Document {
-            document_id: table.text("document_id", i).unwrap_or_default(),
-            media_type: table.text("media_type", i).unwrap_or_default(),
-            text: table.text("text", i).unwrap_or_default(),
-            language: table.text("language", i),
-            source_type: table.text("source_type", i),
+            document_id: document_id.text(i).unwrap_or_default(),
+            media_type: media_type.text(i).unwrap_or_default(),
+            text: text.text(i).unwrap_or_default(),
+            language: language.text(i),
+            source_type: source_type.text(i),
         })
         .collect()
 }
 
 /// The link rows of a sound `links` table.
 pub fn links_of(table: &RawTable) -> Vec<Link> {
+    let c = |name: &str| Cells::of(table, name);
+    let (source_type, source_id, relation, target_type, target_id) =
+        (c("source_type"), c("source_id"), c("relation"), c("target_type"), c("target_id"));
+    let (start, end, target_annotation_id, asserted_by_event_id) =
+        (c("source_start"), c("source_end"), c("target_annotation_id"), c("asserted_by_event_id"));
     (0..table.rows)
         .map(|i| Link {
-            source_type: table.text("source_type", i).unwrap_or_default(),
-            source_id: table.text("source_id", i).unwrap_or_default(),
-            relation: table.text("relation", i).unwrap_or_default(),
-            target_type: table.text("target_type", i).unwrap_or_default(),
-            target_id: table.text("target_id", i).unwrap_or_default(),
-            source_span: match (table.u64("source_start", i), table.u64("source_end", i)) {
+            source_type: source_type.text(i).unwrap_or_default(),
+            source_id: source_id.text(i).unwrap_or_default(),
+            relation: relation.text(i).unwrap_or_default(),
+            target_type: target_type.text(i).unwrap_or_default(),
+            target_id: target_id.text(i).unwrap_or_default(),
+            source_span: match (start.u64(i), end.u64(i)) {
                 (Some(a), Some(b)) => Some((a, b)),
                 _ => None,
             },
-            target_annotation_id: table.text("target_annotation_id", i),
-            asserted_by_event_id: table.text("asserted_by_event_id", i),
+            target_annotation_id: target_annotation_id.text(i),
+            asserted_by_event_id: asserted_by_event_id.text(i),
         })
         .collect()
 }
@@ -222,22 +273,144 @@ pub struct DocumentInfo {
     row: usize,
 }
 
+/// A sample's documents: their metadata and their text's offsets.
+///
+/// No byte of text is read to open them; a document's text is read --- and
+/// checked as UTF-8 --- when it is asked for, so reading one report
+/// decompresses no other, and needs neither the events nor the links.
+#[derive(Debug, Default)]
+pub struct Documents {
+    infos: Vec<DocumentInfo>,
+    by_id: HashMap<String, usize>,
+    text: Option<TextColumn>,
+}
+
+impl Documents {
+    /// The documents under `root`, and nothing else of the profile; `None`
+    /// when `root` has no `clinical` group, empty without a documents table.
+    pub fn open(root: &hdf5::Group, projection: bool) -> Result<Option<Documents>> {
+        let Some(group) = ops::child_group(root, GROUP) else { return Ok(None) };
+        let table = match ops::child_group(&group, DOCUMENTS) {
+            None => None,
+            Some(g) => {
+                let table = read_table_deferring(&g, DOCUMENTS, &DOCUMENT_COLUMNS, projection, &["text"])?;
+                refuse(&table)?;
+                Some(table)
+            }
+        };
+        Documents::from_table(root, table.as_ref()).map(Some)
+    }
+
+    /// From a documents table read with its `text` deferred.
+    fn from_table(root: &hdf5::Group, table: Option<&RawTable>) -> Result<Documents> {
+        let Some(table) = table else { return Ok(Documents::default()) };
+        refuse(table)?;
+        let column = table.column("text");
+        let text = match column.map(|c| &c.values) {
+            Some(Values::Deferred { offsets }) => {
+                let g = root.group(&format!("{GROUP}/{DOCUMENTS}"))?;
+                Some(TextColumn::open(&g, "text", offsets.clone(), "/clinical/documents/text")?)
+            }
+            Some(_) => return Err(Error::invalid("document text is read on demand: defer the `text` column")),
+            None => None,
+        };
+        let c = |name: &str| Cells::of(table, name);
+        let (document_id, media_type, language, source_type) =
+            (c("document_id"), c("media_type"), c("language"), c("source_type"));
+        let infos: Vec<DocumentInfo> = (0..table.rows)
+            .map(|i| DocumentInfo {
+                document_id: document_id.text(i).unwrap_or_default(),
+                media_type: media_type.text(i).unwrap_or_default(),
+                language: language.text(i),
+                source_type: source_type.text(i),
+                n_bytes: column.and_then(|c| c.span(i)).map_or(0, |(a, b)| b - a),
+                row: i,
+            })
+            .collect();
+        let by_id = infos.iter().enumerate().map(|(i, d)| (d.document_id.clone(), i)).collect();
+        Ok(Documents { infos, by_id, text })
+    }
+
+    pub fn infos(&self) -> &[DocumentInfo] {
+        &self.infos
+    }
+
+    pub fn len(&self) -> usize {
+        self.infos.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.infos.is_empty()
+    }
+
+    pub fn info(&self, document_id: &str) -> Option<&DocumentInfo> {
+        self.by_id.get(document_id).map(|i| &self.infos[*i])
+    }
+
+    /// One document's text, read from the file now: its bytes and no other
+    /// document's, checked as UTF-8 (E806).
+    pub fn text(&self, document_id: &str) -> Result<String> {
+        let info = self.info(document_id).ok_or_else(|| {
+            crate::sample::reader::missing_key(
+                "document",
+                document_id,
+                self.infos.iter().map(|d| d.document_id.clone()),
+            )
+        })?;
+        match &self.text {
+            Some(column) => column.cell(info.row),
+            None => Ok(String::new()),
+        }
+    }
+
+    /// One document, text included.
+    pub fn document(&self, document_id: &str) -> Result<Document> {
+        let text = self.text(document_id)?;
+        let info = self.info(document_id).expect("found above");
+        Ok(Document {
+            document_id: info.document_id.clone(),
+            media_type: info.media_type.clone(),
+            text,
+            language: info.language.clone(),
+            source_type: info.source_type.clone(),
+        })
+    }
+
+    /// Every document, text included, in one read: what an export needs.
+    pub fn all(&self) -> Result<Vec<Document>> {
+        let mut texts = match &self.text {
+            Some(column) => column.cells()?,
+            None => Vec::new(),
+        };
+        Ok(self
+            .infos
+            .iter()
+            .map(|d| Document {
+                document_id: d.document_id.clone(),
+                media_type: d.media_type.clone(),
+                text: texts.get_mut(d.row).map(std::mem::take).unwrap_or_default(),
+                language: d.language.clone(),
+                source_type: d.source_type.clone(),
+            })
+            .collect())
+    }
+}
+
 /// The clinical profile of one sample, read for use.
 ///
 /// Events and links are read whole --- they are small and selection needs all
-/// of them; document text is read one document at a time, when asked for,
-/// so selecting at a cutoff never decompresses a report it does not use.
+/// of them.  Documents are read by their metadata and their text's offsets
+/// ([`Documents`]): no byte of text is read to open the profile, so selecting
+/// at a cutoff never decompresses a report.
 #[derive(Debug)]
 pub struct Clinical {
     pub descriptor: Descriptor,
     pub events: Vec<Event>,
     pub links: Vec<Link>,
-    pub documents: Vec<DocumentInfo>,
     /// Read from a higher minor, as the supported projection (1.1 §2.2).
     pub projection: bool,
-    text: Option<(hdf5::Group, Vec<u64>)>,
+    documents: Documents,
     by_event: HashMap<String, usize>,
-    by_document: HashMap<String, usize>,
 }
 
 fn refuse(table: &RawTable) -> Result<()> {
@@ -261,91 +434,76 @@ impl Clinical {
         let meta =
             ops::child_dataset(&group, DESCRIPTOR).ok_or_else(|| Error::coded("E801", "`clinical/meta` is absent"))?;
         let descriptor = Descriptor::loads(&data::read_scalar_string(&meta)?)?;
-        let read = |name: &str, specs| -> Result<Option<RawTable>> {
+        let read = |name: &str, specs, deferred: &[&str]| -> Result<Option<RawTable>> {
             match ops::child_group(&group, name) {
                 None => Ok(None),
                 Some(g) => {
-                    let table = read_table(&g, name, specs, projection)?;
+                    let table = read_table_deferring(&g, name, specs, projection, deferred)?;
                     refuse(&table)?;
                     Ok(Some(table))
                 }
             }
         };
-        let events =
-            read(EVENTS, &EVENT_COLUMNS[..])?.ok_or_else(|| Error::coded("E804", "`clinical/events` is absent"))?;
-        let links = read(LINKS, &LINK_COLUMNS[..])?;
-        // Documents: metadata now, text on demand.
-        let mut documents = Vec::new();
-        let mut text = None;
-        if let Some(g) = ops::child_group(&group, DOCUMENTS) {
-            let table = read_table(&g, DOCUMENTS, &DOCUMENT_COLUMNS, projection)?;
-            refuse(&table)?;
-            if let Some(column) = table.column("text") {
-                if let super::columns::Values::Utf8 { offsets, .. } = &column.values {
-                    text = Some((g.group("text")?, offsets.clone()));
-                }
-            }
-            for i in 0..table.rows {
-                let n_bytes = table.column("text").and_then(|c| c.bytes(i)).map_or(0, |b| b.len() as u64);
-                documents.push(DocumentInfo {
-                    document_id: table.text("document_id", i).unwrap_or_default(),
-                    media_type: table.text("media_type", i).unwrap_or_default(),
-                    language: table.text("language", i),
-                    source_type: table.text("source_type", i),
-                    n_bytes,
-                    row: i,
-                });
-            }
+        let events = read(EVENTS, &EVENT_COLUMNS[..], &[])?
+            .ok_or_else(|| Error::coded("E804", "`clinical/events` is absent"))?;
+        let links = read(LINKS, &LINK_COLUMNS[..], &[])?;
+        // Documents: metadata and offsets now, text on demand.
+        let documents = read(DOCUMENTS, &DOCUMENT_COLUMNS[..], &["text"])?;
+        Clinical::from_tables(root, descriptor, &events, documents.as_ref(), links.as_ref(), projection).map(Some)
+    }
+
+    /// The profile from tables already read --- by [`Clinical::open`], or by
+    /// the validator ([`clinical_checked`](crate::validate::clinical_checked)),
+    /// so a source that is checked and then used is read once.  The tables
+    /// must be sound; a documents table's `text` must have been deferred.
+    pub fn from_tables(
+        root: &hdf5::Group,
+        descriptor: Descriptor,
+        events: &RawTable,
+        documents: Option<&RawTable>,
+        links: Option<&RawTable>,
+        projection: bool,
+    ) -> Result<Clinical> {
+        for table in [Some(events), links].into_iter().flatten() {
+            refuse(table)?;
         }
-        let events = events_of(&events);
-        let links = links.as_ref().map(links_of).unwrap_or_default();
+        let documents = Documents::from_table(root, documents)?;
+        let events = events_of(events);
+        let links = links.map(links_of).unwrap_or_default();
         let by_event = events.iter().enumerate().map(|(i, e)| (e.event_id.clone(), i)).collect();
-        let by_document = documents.iter().enumerate().map(|(i, d)| (d.document_id.clone(), i)).collect();
-        Ok(Some(Clinical { descriptor, events, links, documents, projection, text, by_event, by_document }))
+        Ok(Clinical { descriptor, events, links, projection, documents, by_event })
     }
 
     pub fn event(&self, event_id: &str) -> Option<&Event> {
         self.by_event.get(event_id).map(|i| &self.events[*i])
     }
 
-    pub fn document_info(&self, document_id: &str) -> Option<&DocumentInfo> {
-        self.by_document.get(document_id).map(|i| &self.documents[*i])
+    /// The documents' metadata (no text).
+    pub fn documents(&self) -> &[DocumentInfo] {
+        self.documents.infos()
     }
 
-    /// One document's text, read from the file now.
+    pub fn document_info(&self, document_id: &str) -> Option<&DocumentInfo> {
+        self.documents.info(document_id)
+    }
+
+    /// One document's text, read from the file now: its bytes and no other
+    /// document's, checked as UTF-8 (E806).
     pub fn text(&self, document_id: &str) -> Result<String> {
-        let info = self.document_info(document_id).ok_or_else(|| {
-            crate::sample::reader::missing_key(
-                "document",
-                document_id,
-                self.documents.iter().map(|d| d.document_id.clone()),
-            )
-        })?;
-        match &self.text {
-            Some((column, offsets)) => read_cell(column, offsets, info.row),
-            None => Ok(String::new()),
-        }
+        self.documents.text(document_id)
     }
 
     /// One document, text included.
     pub fn document(&self, document_id: &str) -> Result<Document> {
-        let text = self.text(document_id)?;
-        let info = self.document_info(document_id).expect("found above");
-        Ok(Document {
-            document_id: info.document_id.clone(),
-            media_type: info.media_type.clone(),
-            text,
-            language: info.language.clone(),
-            source_type: info.source_type.clone(),
-        })
+        self.documents.document(document_id)
     }
 
-    /// Everything, as logical records (every document's text read).
+    /// Everything, as logical records: every document's text, in one read.
     pub fn records(&self) -> Result<ClinicalRecords> {
         Ok(ClinicalRecords {
             descriptor: self.descriptor.clone(),
             events: self.events.clone(),
-            documents: self.documents.iter().map(|d| self.document(&d.document_id)).collect::<Result<_>>()?,
+            documents: self.documents.all()?,
             links: self.links.clone(),
         })
     }

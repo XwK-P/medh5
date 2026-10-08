@@ -280,7 +280,7 @@ fn s9_3_at_hour_24_the_preliminary_report_is_the_input() {
     let links: Vec<(usize, &Link)> = c.links.iter().map(|l| (0, l)).collect();
     let at = select(&c.events, &links, 24 * HOUR, &SelectionPolicy::strict()).unwrap();
     assert!(at.certified());
-    assert_eq!(at.event_ids(), ["lab0", "ct0", "report0_v1"]);
+    assert_eq!(at.event_ids(&c.events), ["lab0", "ct0", "report0_v1"]);
     assert!(at.admits(0, "image", "CT_tp0"));
     assert!(at.admits(0, "document", "report0_text_v1"));
     for (kind, id) in [
@@ -293,10 +293,10 @@ fn s9_3_at_hour_24_the_preliminary_report_is_the_input() {
     }
     // At hour 48 the revision replaces it; the follow-up is still out.
     let later = select(&c.events, &links, 48 * HOUR, &SelectionPolicy::strict()).unwrap();
-    assert_eq!(later.event_ids(), ["lab0", "ct0", "report0_v2"]);
+    assert_eq!(later.event_ids(&c.events), ["lab0", "ct0", "report0_v2"]);
     // A context window of a day drops the pre-baseline lab.
     let mut day = SelectionPolicy::strict();
     day.context_us = Some(24 * HOUR);
     let windowed = select(&c.events, &links, 24 * HOUR, &day).unwrap();
-    assert_eq!(windowed.event_ids(), ["ct0", "report0_v1"]);
+    assert_eq!(windowed.event_ids(&c.events), ["ct0", "report0_v1"]);
 }

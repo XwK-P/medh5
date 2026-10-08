@@ -370,6 +370,104 @@ class TestValidation:
             assert not s.verify().ok
 
 
+def with_notes(path: Path, n: int = 6, size: int = 24_000) -> dict[str, str]:
+    """The kit's history plus `n` long notes: a text buffer big enough to be
+    chunked and compressed.  Returns each note's text by document id."""
+    notes = {
+        f"note{i}_text": f"note {i}: " + "lorem ipsum dolor sit amet " * (size // 27)
+        for i in range(n)
+    }
+    History.write(
+        path,
+        events=[
+            Event(
+                f"note{i}",
+                f"note{i}",
+                "document",
+                "point",
+                "final",
+                effective_start_us=i * DAY,
+                available_us=i * DAY + HOUR,
+            )
+            for i in range(n)
+        ],
+        documents=[Document(k, v) for k, v in notes.items()],
+        links=[
+            Link.between(
+                ("event", f"note{i}"), "describes", ("document", f"note{i}_text")
+            )
+            for i in range(n)
+        ],
+    )
+    return notes
+
+
+class TestDocumentText:
+    """1.1 §6: a document's text is read when it is asked for --- its own
+    bytes, checked as UTF-8 --- and opening or selecting reads none."""
+
+    def test_S6_opening_and_selecting_read_no_text(self, tmp_path: Path):
+        path = tmp_path / "notes.medh5"
+        notes = with_notes(path)
+        with h5py.File(path, "r+") as f:
+            data = f["clinical/documents/text/data"]
+            assert data.chunks is not None and data.compression == "gzip"
+            # Damage the buffer's first compressed chunk: whatever reads it fails.
+            data.id.write_direct_chunk((0,), b"\x00" * 64)
+        with medh5.open(path) as s:
+            c = s.clinical
+            assert c is not None
+            sizes = {d.document_id: d.n_bytes for d in c.documents}
+            assert sizes["note5_text"] == len(notes["note5_text"].encode())
+            assert c.select(10 * DAY).certified
+            # The first note's bytes are in the damaged chunk; the last
+            # report's are not, and read without it.
+            with pytest.raises(OSError):
+                c.text("note0_text")
+            assert c.text("rep_text_v2") == History.documents()[1].text
+            assert s.document_text("note5_text") == notes["note5_text"]
+
+    def test_S4_text_is_checked_as_utf8_when_it_is_read(self, history: Path):
+        with h5py.File(history, "r+") as f:
+            data = f["clinical/documents/text/data"]
+            raw = data[...]
+            raw[0] = 0xFF  # the first byte of `rep_text_v1`, first by id
+            data[...] = raw
+        with medh5.open(history) as s:
+            c = s.clinical  # nothing of the text was read to open it
+            assert c is not None
+            assert c.text("rep_text_v2").endswith("Final.")
+            with pytest.raises(MEDH5ValidationError) as found:
+                c.text("rep_text_v1")
+            assert found.value.code == "E806"
+        assert "E806" in codes(history)
+
+    def test_S6_one_document_reads_without_the_events(self, history: Path):
+        with h5py.File(history, "r+") as f:
+            del f["clinical/events/kind"]  # the events table is now malformed
+        with medh5.open(history) as s:
+            with pytest.raises(MEDH5ValidationError):
+                s.clinical  # noqa: B018 - the property reads the events
+            assert s.document_text("rep_text_v2").endswith("Final.")
+            with pytest.raises(KeyError):
+                s.document_text("no-such-document")
+
+    def test_S4_the_validator_streams_long_text(self, tmp_path: Path):
+        path = tmp_path / "notes.medh5"
+        with_notes(path, n=3, size=1_500_000)  # longer than a scan slab each
+        assert codes(path) == []
+        with h5py.File(path, "r+") as f:
+            data = f["clinical/documents/text/data"]
+            offsets = f["clinical/documents/text/offsets"][...]
+            # A two-byte character at the very end of the second note, cut in
+            # half by the end of its row: invalid however the slabs fall.
+            end = int(offsets[2])
+            tail = data[end - 1 : end]
+            assert tail.tobytes() == b" "
+            data[end - 1] = 0xC3
+        assert "E806" in codes(path)
+
+
 class TestSelection:
     def test_S9_1_the_worked_example_at_hour_24(self, history: Path):
         with medh5.open(history) as s:

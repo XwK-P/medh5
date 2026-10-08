@@ -145,8 +145,10 @@ __all__ = [
     "RESERVED_IDS",
     "RESERVED_KINDS",
     "RESOLVED",
+    "ROIS",
     "ROOT_DIGEST_ATTRS",
     "ROTATION_TOL",
+    "ROW_STATUSES",
     "Relation",
     "SAMPLES_GROUP",
     "SAMPLING_PAIR_MODES",
@@ -168,6 +170,7 @@ __all__ = [
     "SCRUB_UID_KEYS",
     "SCRUB_UNFIXABLE_LOCATIONS",
     "SELECTION_POLICIES",
+    "SELECTION_STATUSES",
     "SEX_VALUES",
     "SLAB_BYTES",
     "SPACES",
@@ -187,6 +190,7 @@ __all__ = [
     "SamplingIndex",
     "Skeleton",
     "SplitClaim",
+    "TARGET_STATUSES",
     "TASKS",
     "TASK_SCHEMA",
     "TEMPORAL_TYPES",
@@ -613,8 +617,10 @@ RELATIONS: tuple[str, ...]
 RESERVED_IDS: tuple[str, ...]
 RESERVED_KINDS: tuple[str, ...]
 RESOLVED: str
+ROIS: tuple[str, ...]
 ROOT_DIGEST_ATTRS: tuple[str, ...]
 ROTATION_TOL: float
+ROW_STATUSES: tuple[str, ...]
 SAMPLES_GROUP: str
 SAMPLING_PAIR_MODES: tuple[str, ...]
 SAMPLING_STRATEGIES: tuple[str, ...]
@@ -635,6 +641,7 @@ SCRUB_STRICT_RULES: tuple[str, ...]
 SCRUB_UID_KEYS: frozenset[str]
 SCRUB_UNFIXABLE_LOCATIONS: tuple[str, ...]
 SELECTION_POLICIES: tuple[str, ...]
+SELECTION_STATUSES: tuple[str, ...]
 SEX_VALUES: tuple[str, ...]
 SLAB_BYTES: int
 SPACES: tuple[str, ...]
@@ -648,6 +655,7 @@ STATES: tuple[str, ...]
 STATUSES: tuple[str, ...]
 STREAM_BYTES: int
 SUPPORTED_ORDERS: tuple[int, ...]
+TARGET_STATUSES: tuple[str, ...]
 TASKS: tuple[str, ...]
 TASK_SCHEMA: str
 TEMPORAL_TYPES: tuple[str, ...]
@@ -1747,7 +1755,7 @@ def task_normalize(doc: Any) -> dict[str, Any]:
 def task_preflight(
     doc: Any, base: str | os.PathLike[str] | None = None, deep: bool = False
 ) -> dict[str, Any]:
-    """The preflight of a task, as JSON."""
+    """The preflight of a task, as columns (`crate::preflight`)."""
     ...
 
 def task_reconcile(
@@ -2828,6 +2836,11 @@ class SampleHandle:
     @property
     def content_id(self) -> str | None: ...
     def document(self) -> SampleDocument: ...
+    def document_text(self, document_id: str) -> str:
+        """One clinical document's text, read on its own: the document table's
+        offsets and that document's bytes --- not the events, the links or any
+        other document's text (1.1 §6)."""
+        ...
     def frames_for(self, key: str) -> list[str]: ...
     def fresh_indices(self) -> list[str]: ...
     def grids(self) -> dict[Any, Any]:

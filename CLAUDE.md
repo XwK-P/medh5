@@ -159,7 +159,19 @@ it into every file's `generator`.
   told apart from a cache whose own bytes are wrong (T401/T402).
 - **`amend` is copy-on-write** and replaces the file, so anything holding an open
   handle across it keeps reading the old inode. A rewrite in place closes its
-  source before the rename (Windows cannot replace an open file).
+  source before the rename (Windows cannot replace an open file). That is why a
+  training lease takes the row's pinned `content_id` (`HandleCache.lease`): a
+  stale cached handle is reopened, a changed source refused (T302).
+- **Document text is read on demand.** The `text` column is read deferred
+  (`read_table_deferring`): offsets only, checked against the buffer's stored
+  length. Opening, selecting, preflight and the validator never decode the
+  column whole --- a document's bytes are read (and checked as UTF-8) when it is
+  asked for, and the validator scans in bounded slabs (`TextColumn::scan`).
+  Only `records()` --- an export --- reads every document.
+- **Rows index, never copy.** A preflight row's selection holds positions in its
+  subject's merged history (`Selected::index`), which every row of the subject
+  shares; Python receives columns (`crate::preflight`, `medh5.task.RowView`).
+  Copying records per row is what made 720 rows cost 5 GB.
 
 ## Linting & style
 

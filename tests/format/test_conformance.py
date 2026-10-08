@@ -326,7 +326,8 @@ class TestPublication:
                 if want is None:
                     continue
                 assert row["status"] == want["status"], (fixture["name"], row["row_id"])
-                assert {e["event_id"] for e in row["events"]} == set(want["events"])
+                admitted = (row["selection"] or {}).get("events", [])
+                assert {e["event_id"] for e in admitted} == set(want["events"])
                 assert row["target"]["status"] == want["target"]
         assert (suite / "SHA256SUMS").exists()
         codes = json.loads((suite / "codes.json").read_text(encoding="utf-8"))

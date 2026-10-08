@@ -451,7 +451,7 @@ fn check(file: &Path, base: &Path, level: &str, rows: &Value) -> Result<(BTreeSe
         if want["status"] != json!(view.status) {
             differences.push(format!("{row_id}: status {} not {}", view.status, want["status"]));
         }
-        let selected: BTreeSet<&str> = view.events.iter().map(|e| e.event_id.as_str()).collect();
+        let selected: BTreeSet<&str> = report.events_of(view).iter().map(|e| e.event_id.as_str()).collect();
         let wanted: BTreeSet<&str> =
             want["events"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
         if selected != wanted {

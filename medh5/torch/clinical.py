@@ -29,6 +29,21 @@ things to a loss:
 ``events["mask"]`` / ``documents["mask"]``
     after :func:`collate_clinical`, which entries of a padded sequence are real.
 
+Time is never collapsed to one number.  Every time an input carries --- an
+event's effective start and end, its availability, an image's acquisition
+--- is given as its inclusive bounds, as *ages* before the cutoff in hours:
+``[..., 0]`` the least it can be, ``[..., 1]`` the most, equal for an exact
+instant, so a day-precision diagnosis keeps its whole day.  A time that is not
+known has a ``*_known`` of ``False`` and zeros, which are not a time.  A
+``static`` event has no effective time at all, which ``temporal_type`` says,
+apart from one whose time is unknown.  Ages are never negative but for what a
+version available at the cutoff itself recorded about later: a plan's start
+(``plan``) or a course's recorded end.  Events whose ordering times overlap
+share a ``tie_group``: their order in the sequence is the storage tie-break,
+not evidence.  An absent value is ``has_value = False``; a value known only as
+``< 5`` has its ``comparator``; an expected result that is missing for a
+reason has ``missing`` --- never a measured zero.
+
 Learned preprocessing --- the concept vocabulary and per-concept value
 statistics --- is fitted on the task's **training partition** only, and
 records the split it was fitted on (``fitted_on``); a vocabulary fitted on
@@ -55,11 +70,11 @@ import numpy as np
 import numpy.typing as npt
 
 from medh5.cache import FeatureCache, fitted_on, validate_cache
-from medh5.clinical import EVENT_KINDS, HOUR, Event
+from medh5.clinical import COMPARATORS, EVENT_KINDS, HOUR, Event
 from medh5.errors import MEDH5ValidationError
 from medh5.sample import Sample
 from medh5.sampling import window_around
-from medh5.task import Preflight, RowView, Slot, TaskManifest
+from medh5.task import Packed, Preflight, RowView, Slot, SubjectHistory, TaskManifest
 from medh5.torch._compat import dataset_base, require_torch, to_tensor
 from medh5.torch.handles import CACHE
 
@@ -102,19 +117,26 @@ class ConceptVocabulary:
         partition; every row when the task declares no split)."""
         report = preflight if preflight is not None else task.preflight()
         chosen = partition if partition is not None else task.training_partition
-        seen: set[str] = set()
-        values: dict[str, list[float]] = {}
-        counted: set[tuple[str, str]] = set()
+        # Each subject's admitted versions, counted once however many of its
+        # rows admit them.
+        admitted: dict[int, list[npt.NDArray[np.int32]]] = {}
         for row in report.rows:
             if not row.eligible or (chosen is not None and row.partition != chosen):
                 continue
-            for event in row.events:
-                token = concept_of(event)
-                seen.add(token)
-                key = (row.subject_id, event.event_id)
-                if event.value_num is not None and key not in counted:
-                    counted.add(key)
-                    values.setdefault(token, []).append(float(event.value_num))
+            k = row.subject_index
+            if k is not None:
+                admitted.setdefault(k, []).append(row.selected)
+        seen: set[str] = set()
+        values: dict[str, list[float]] = {}
+        for k, parts in admitted.items():
+            events = report.subjects[k].events
+            tokens, codes = events.concepts()
+            index = np.unique(np.concatenate(parts))
+            seen.update(tokens[c] for c in np.unique(codes[index]))
+            valid = events.column("value_num_valid")[index]
+            numbers = events.column("value_num")[index][valid]
+            for c, v in zip(codes[index][valid], numbers, strict=True):
+                values.setdefault(tokens[c], []).append(float(v))
         stats = {}
         for token, found in sorted(values.items()):
             array = np.asarray(found, dtype=np.float64)
@@ -320,6 +342,12 @@ class ClinicalTaskDataset(_DatasetBase):  # type: ignore[misc,valid-type]
                 self._documents = _LazyCache(documents)
             else:
                 self._encoder = documents
+        self._vocabularies: dict[
+            int,
+            tuple[
+                npt.NDArray[np.int64], npt.NDArray[np.float64], npt.NDArray[np.float64]
+            ],
+        ] = {}
         self._rows_cache: _LazyCache | None = None
         if row_features is not None:
             checked = validate_cache(row_features, base=self.base, task=self.task)
@@ -351,7 +379,7 @@ class ClinicalTaskDataset(_DatasetBase):  # type: ignore[misc,valid-type]
                 "label": np.zeros((len(classes), *shape), dtype=np.float32),
                 "annotated": np.zeros(len(classes), dtype=bool),
                 "ignore": np.ones(shape, dtype=bool),
-                "age_h": 0.0,
+                "time": _no_time(),
             }
         image = sample.images[fill.image_id]
         spatial = image.grid.spatial_shape
@@ -403,13 +431,17 @@ class ClinicalTaskDataset(_DatasetBase):  # type: ignore[misc,valid-type]
             ignore |= np.pad(
                 sample.ignore_region(ann_id, list(roi)), pad, constant_values=True
             )
-        age = 0.0
-        if row.selection is not None:
-            when = next(
-                (e for e in row.selection.events if e.event_id == fill.event_id), None
-            )
-            if when is not None and when.order_us is not None:
-                age = (row.cutoff_us - when.order_us[1]) / HOUR
+        time = _no_time()
+        subject = row.subject
+        if subject is not None and fill.event_id is not None:
+            # The acquisition and its availability, as the imaging version
+            # that owns the image records them.
+            k = np.asarray([subject.events.index(fill.event_id)], dtype=np.int64)
+            for name in ("effective_start", "available"):
+                ages, known = _ages(subject, k, name, row.cutoff_us)
+                key = "start" if name == "effective_start" else "available"
+                time[f"{key}_age_h"] = ages[0]
+                time[f"{key}_known"] = bool(known[0])
         return {
             "image": array,
             "valid": valid,
@@ -417,107 +449,131 @@ class ClinicalTaskDataset(_DatasetBase):  # type: ignore[misc,valid-type]
             "label": label,
             "annotated": annotated,
             "ignore": ignore,
-            "age_h": float(age),
+            "time": time,
         }
 
+    def _vocabulary_of(
+        self, k: int, subject: SubjectHistory
+    ) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+        """Per concept of one subject: its vocabulary index, and the fitted
+        mean and standard deviation its values are normalised with."""
+        found = self._vocabularies.get(k)
+        if found is None:
+            tokens, _ = subject.events.concepts()
+            index = np.asarray([self.concepts.index(t) for t in tokens], dtype=np.int64)
+            fitted = [self.concepts.stats.get(t, (0.0, 1.0)) for t in tokens]
+            mean = np.asarray([m for m, _ in fitted], dtype=np.float64)
+            std = np.asarray([d for _, d in fitted], dtype=np.float64)
+            found = (index, mean, std)
+            self._vocabularies[k] = found
+        return found
+
     def _events(self, row: RowView) -> dict[str, npt.NDArray[Any]]:
-        order = {}
-        if row.selection is not None:
-            order = {e.event_id: e.order_us for e in row.selection.events}
-        items = []
-        for event in row.events:
-            bounds = order.get(event.event_id)
-            known = bounds is not None
-            age = (row.cutoff_us - bounds[1]) / HOUR if bounds is not None else 0.0
-            token = concept_of(event)
-            has_value = event.value_num is not None
-            value = (
-                0.0
-                if event.value_num is None
-                else self.concepts.normalise(token, event.value_num)
-            )
-            items.append(
-                (
-                    (0 if not known else 1, -age, event.event_id),
-                    self.concepts.index(token),
-                    EVENT_KINDS.index(event.kind) + 1,
-                    value,
-                    has_value,
-                    age,
-                    known,
-                )
-            )
-        items.sort(key=lambda t: t[0])
-        return {
-            "concept": np.asarray([t[1] for t in items], dtype=np.int64),
-            "kind": np.asarray([t[2] for t in items], dtype=np.int64),
-            "value": np.asarray([t[3] for t in items], dtype=np.float32),
-            "has_value": np.asarray([t[4] for t in items], dtype=bool),
-            "age_h": np.asarray([t[5] for t in items], dtype=np.float32),
-            "time_known": np.asarray([t[6] for t in items], dtype=bool),
+        """The admitted versions, in input order, as arrays (see the module
+        notes on time): read from the subject's columns, not from objects."""
+        subject = row.subject
+        if subject is None:
+            return _no_events()
+        events = subject.events
+        k = row.selected.astype(np.int64)
+        _, codes = events.concepts()
+        index, mean, std = self._vocabulary_of(int(row.subject_index or 0), subject)
+        local = codes[k]
+        has_value = events.column("value_num_valid")[k]
+        raw = events.column("value_num")[k]
+        value = np.where(has_value, (raw - mean[local]) / std[local], 0.0)
+        # `eq` when absent and a value is valid (1.1 §5.1); 0 when no value.
+        comparator = events.column("value_comparator_code")[k].astype(np.int64) + 1
+        comparator = np.where(
+            comparator > 0,
+            comparator,
+            np.where(has_value, COMPARATORS.index("eq") + 1, 0),
+        )
+        out: dict[str, npt.NDArray[Any]] = {
+            "concept": index[local],
+            "kind": events.column("kind_code")[k].astype(np.int64) + 1,
+            "status": events.column("status_code")[k].astype(np.int64) + 1,
+            "temporal_type": events.column("temporal_type_code")[k].astype(np.int64)
+            + 1,
+            "value": value.astype(np.float32),
+            "has_value": np.asarray(has_value, dtype=bool),
+            "comparator": comparator,
+            "missing": _present(events.column("missing_reason"), k),
         }
+        for name, key in (
+            ("effective_start", "start"),
+            ("effective_end", "end"),
+            ("available", "available"),
+        ):
+            ages, known = _ages(subject, k, name, row.cutoff_us)
+            out[f"{key}_age_h"] = ages
+            out[f"{key}_known"] = known
+        out["tie_group"] = row.tie_group.astype(np.int64)
+        out["plan"] = np.asarray(row.plan, dtype=bool)
+        return out
+
+    def _documents_of(self, row: RowView) -> list[tuple[int, int, int, str]]:
+        """``(position, event, fragment, document_id)`` of every document an
+        admitted ``document`` version owns, in input order: what a row may
+        read as text (1.1 §7.3)."""
+        subject = row.subject
+        if subject is None:
+            return []
+        selected = row.selected
+        kinds = subject.events.column("kind_code")[selected]
+        found = []
+        for position in np.flatnonzero(kinds == EVENT_KINDS.index("document")):
+            event = int(selected[position])
+            for fragment, document_id in subject.owned_documents(event):
+                found.append((int(position), event, fragment, document_id))
+        return found
 
     def _document_features(
         self, row: RowView, samples: dict[int, Sample]
-    ) -> tuple[npt.NDArray[np.float32], npt.NDArray[np.float32], list[str]] | None:
+    ) -> dict[str, npt.NDArray[Any]] | None:
         if self._documents is None and self._encoder is None:
             return None
-        if row.selection is None:
-            return None
-        order = {e.event_id: e.order_us for e in row.selection.events}
-        found: list[tuple[float, str, npt.NDArray[np.float32]]] = []
-        for event, fragment in zip(row.events, row.event_fragments, strict=True):
-            if event.kind != "document":
-                continue
-            sample = samples[fragment]
-            clinical = sample.clinical
-            if clinical is None:  # pragma: no cover - a selected event has a profile
-                continue
-            for link in clinical.links:
-                if not (
-                    link.relation == "describes"
-                    and link.source_type == "event"
-                    and link.source_id == event.event_id
-                    and link.target_type == "document"
-                ):
-                    continue
-                if not row.selection.admits("document", link.target_id, fragment):
-                    continue  # pragma: no cover - a structural link is admitted
-                if self._documents is not None:
-                    content_id = row.sources[fragment].content_id
-                    feature = self._documents.get().event_feature(
-                        content_id, event.event_id
+        subject = row.subject
+        owned = self._documents_of(row)
+        features = []
+        for _, event, fragment, document_id in owned:
+            assert subject is not None
+            if self._documents is not None:
+                content_id = row.sources[fragment].content_id
+                event_id = str(subject.events.column("event_id")[event])
+                feature = self._documents.get().event_feature(content_id, event_id)
+                if feature is None:
+                    raise MEDH5ValidationError(
+                        f"the document cache has no feature for event "
+                        f"{event_id!r} of {row.sources[fragment].locator} "
+                        f"at {content_id}: rebuild it for these sources",
+                        "T403",
                     )
-                    if feature is None:
-                        raise MEDH5ValidationError(
-                            f"the document cache has no feature for event "
-                            f"{event.event_id!r} of {row.sources[fragment].locator} "
-                            f"at {content_id}: rebuild it for these sources",
-                            "T403",
-                        )
-                else:
-                    feature = np.asarray(
-                        self._encoder.encode(clinical.text(link.target_id)),
-                        dtype=np.float32,
-                    )
-                bounds = order.get(event.event_id)
-                age = (row.cutoff_us - bounds[1]) / HOUR if bounds is not None else 0.0
-                found.append(
-                    (age, event.event_id, np.asarray(feature, dtype=np.float32))
+            else:
+                # The document's own bytes: no other text, and not the events.
+                feature = self._encoder.encode(
+                    samples[fragment].document_text(document_id)
                 )
-        found.sort(key=lambda t: (-t[0], t[1]))
-        if not found:
-            dim = self._feature_dim()
-            return (
-                np.zeros((0, dim), dtype=np.float32),
-                np.zeros(0, dtype=np.float32),
-                [],
-            )
-        return (
-            np.stack([t[2] for t in found]),
-            np.asarray([t[0] for t in found], dtype=np.float32),
-            [t[1] for t in found],
-        )
+            features.append(np.asarray(feature, dtype=np.float32))
+        dim = self._feature_dim() if not features else int(features[0].shape[0])
+        k = np.asarray([e for _, e, _, _ in owned], dtype=np.int64)
+        out: dict[str, npt.NDArray[Any]] = {
+            "features": np.stack(features)
+            if features
+            else np.zeros((0, dim), dtype=np.float32),
+            "event": np.asarray([p for p, _, _, _ in owned], dtype=np.int64),
+        }
+        for name, key in (("effective_start", "start"), ("available", "available")):
+            if subject is None:
+                ages, known = (
+                    np.zeros((0, 2), dtype=np.float32),
+                    np.zeros(0, dtype=bool),
+                )
+            else:
+                ages, known = _ages(subject, k, name, row.cutoff_us)
+            out[f"{key}_age_h"] = ages
+            out[f"{key}_known"] = known
+        return out
 
     def _feature_dim(self) -> int:
         if self._documents is not None:
@@ -533,12 +589,19 @@ class ClinicalTaskDataset(_DatasetBase):  # type: ignore[misc,valid-type]
 
         row = self.rows[index]
         reads_documents = self._documents is not None or self._encoder is not None
-        needed = {f.fragment for f in row.slots.values() if f.fragment is not None}
-        if reads_documents:
-            needed |= set(row.event_fragments)
+        fills = row.slots
+        needed = {f.fragment for f in fills.values() if f.fragment is not None}
+        if self._encoder is not None:
+            needed |= {fragment for _, _, fragment, _ in self._documents_of(row)}
         with contextlib.ExitStack() as stack:
+            # Each source as the version the row pins: a handle cached from
+            # before a replacement is reopened, a changed source refused.
             samples: dict[int, Sample] = {
-                i: stack.enter_context(CACHE.lease(*self._source(row, i)))
+                i: stack.enter_context(
+                    CACHE.lease(
+                        *self._source(row, i), content_id=row.sources[i].content_id
+                    )
+                )
                 for i in sorted(needed)
             }
             images: dict[str, Any] = {}
@@ -547,16 +610,23 @@ class ClinicalTaskDataset(_DatasetBase):  # type: ignore[misc,valid-type]
             label: dict[str, Any] = {}
             annotated: dict[str, Any] = {}
             ignore: dict[str, Any] = {}
-            age: dict[str, Any] = {}
+            times: dict[str, Any] = {}
             visits: dict[str, Any] = {}
             for slot in self.slots:
-                fill = row.slots[slot.name]
+                fill = fills[slot.name]
                 sample = None if fill.fragment is None else samples[fill.fragment]
                 read = self._slot(sample, slot, row)
                 images[slot.name] = to_tensor(read["image"])
                 valid[slot.name] = to_tensor(read["valid"])
                 present[slot.name] = _scalar(read["present"], torch.bool)
-                age[slot.name] = _scalar(read["age_h"], torch.float32)
+                times[slot.name] = {
+                    "start_age_h": to_tensor(read["time"]["start_age_h"]),
+                    "start_known": _scalar(read["time"]["start_known"], torch.bool),
+                    "available_age_h": to_tensor(read["time"]["available_age_h"]),
+                    "available_known": _scalar(
+                        read["time"]["available_known"], torch.bool
+                    ),
+                }
                 ignore[slot.name] = to_tensor(read["ignore"])
                 if slot.classes:
                     label[slot.name] = to_tensor(read["label"])
@@ -573,17 +643,26 @@ class ClinicalTaskDataset(_DatasetBase):  # type: ignore[misc,valid-type]
                     "roi": fill.roi,
                 }
             events = {k: to_tensor(v) for k, v in self._events(row).items()}
-            target_value = row.target.value if row.target.value is not None else 0.0
+            target = row.target
+            target_value = target.value if target.value is not None else 0.0
+            subject = row.subject
+            ids = (
+                []
+                if subject is None
+                else [
+                    str(subject.events.column("event_id")[int(k)]) for k in row.selected
+                ]
+            )
             item: dict[str, Any] = {
                 "images": images,
                 "valid": valid,
                 "present": present,
-                "image_age_h": age,
+                "image_time": times,
                 "ignore": ignore,
                 "events": events,
                 "target": {
                     "value": _scalar(target_value, torch.float32),
-                    "observed": _scalar(row.target.observed, torch.bool),
+                    "observed": _scalar(target.observed, torch.bool),
                 },
                 "meta": {
                     "row_id": row.row_id,
@@ -592,22 +671,19 @@ class ClinicalTaskDataset(_DatasetBase):  # type: ignore[misc,valid-type]
                     "cutoff_us": row.cutoff_us,
                     "fingerprint": row.fingerprint,
                     "status": row.status,
-                    "target_status": row.target.status,
-                    "event_ids": [e.event_id for e in row.events],
+                    "target_status": target.status,
+                    "event_ids": ids,
                     "visits": visits,
                 },
             }
             if label:
                 item["label"] = label
                 item["annotated"] = annotated
-            docs = self._document_features(row, samples)
-            if docs is not None:
-                features, doc_age, doc_ids = docs
-                item["documents"] = {
-                    "features": to_tensor(features),
-                    "age_h": to_tensor(doc_age),
-                }
-                item["meta"]["document_events"] = doc_ids
+            if reads_documents:
+                docs = self._document_features(row, samples)
+                assert docs is not None
+                item["documents"] = {k: to_tensor(v) for k, v in docs.items()}
+                item["meta"]["document_events"] = [ids[int(p)] for p in docs["event"]]
             if self._rows_cache is not None:
                 feature = self._rows_cache.get().row_feature(row.row_id)
                 if feature is None:
@@ -617,6 +693,60 @@ class ClinicalTaskDataset(_DatasetBase):  # type: ignore[misc,valid-type]
                     )
                 item["row_feature"] = to_tensor(np.asarray(feature))
             return item
+
+
+def _no_time() -> dict[str, Any]:
+    return {
+        "start_age_h": np.zeros(2, dtype=np.float32),
+        "start_known": False,
+        "available_age_h": np.zeros(2, dtype=np.float32),
+        "available_known": False,
+    }
+
+
+def _ages(
+    subject: SubjectHistory, k: npt.NDArray[np.int64], name: str, cutoff_us: int
+) -> tuple[npt.NDArray[np.float32], npt.NDArray[np.bool_]]:
+    """Versions `k`'s `name` bounds as ages before the cutoff, in hours:
+    ``[:, 0]`` the least, ``[:, 1]`` the most; zeros where unknown."""
+    bounds = subject.events.column(name)[k]
+    known = np.asarray(subject.events.column(f"{name}_known")[k], dtype=bool)
+    ages = np.stack([cutoff_us - bounds[:, 1], cutoff_us - bounds[:, 0]], axis=1) / HOUR
+    ages[~known] = 0.0
+    return ages.astype(np.float32).reshape(-1, 2), known
+
+
+def _present(column: Packed | None, k: npt.NDArray[np.int64]) -> npt.NDArray[np.bool_]:
+    """Which cells of a packed column are not null (``None``: none are)."""
+    if column is None:
+        return np.zeros(len(k), dtype=bool)
+    if column.valid is None:
+        return np.ones(len(k), dtype=bool)
+    return np.asarray(column.valid[k], dtype=bool)
+
+
+def _no_events() -> dict[str, npt.NDArray[Any]]:
+    out: dict[str, npt.NDArray[Any]] = {
+        name: np.zeros(0, dtype=np.int64)
+        for name in (
+            "concept",
+            "kind",
+            "status",
+            "temporal_type",
+            "comparator",
+            "tie_group",
+        )
+    }
+    out.update(
+        value=np.zeros(0, dtype=np.float32),
+        has_value=np.zeros(0, dtype=bool),
+        missing=np.zeros(0, dtype=bool),
+        plan=np.zeros(0, dtype=bool),
+    )
+    for key in ("start", "end", "available"):
+        out[f"{key}_age_h"] = np.zeros((0, 2), dtype=np.float32)
+        out[f"{key}_known"] = np.zeros(0, dtype=bool)
+    return out
 
 
 _SEQUENCES = ("events", "documents")
