@@ -130,6 +130,8 @@ features = ["extension-module"]
 # engine's sources, which hold the JSON Schema and the code table: a format
 # release whose source distribution omits the format is not one.
 include = [
+  # NDEBUG for HDF5 on MSVC targets: see the file.
+  { path = ".cargo/config.toml", format = "sdist" },
   { path = "LICENSE", format = "sdist" },
   { path = "CHANGELOG.md", format = "sdist" },
   { path = "CONTRIBUTING.md", format = "sdist" },

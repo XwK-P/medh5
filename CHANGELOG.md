@@ -164,7 +164,10 @@ behaviour changes below.
   (`convert …`, `migrate`) are Python integrations: the binary runs them
   through a Python that has the package (`python3`, or `MEDH5_PYTHON`).
 - **Wheels** for Linux (x86_64, aarch64), macOS (x86_64, arm64) and Windows
-  (x64): one `abi3` wheel per platform serves CPython 3.10 and later.
+  (x64): one `abi3` wheel per platform serves CPython 3.10 and later. For MSVC
+  targets `.cargo/config.toml` gives the C builds `/DNDEBUG`: cmake-rs drops
+  CMake's release flags under the Visual Studio generator, and HDF5's
+  assertions would abort the process on a damaged file instead of reporting it.
 - **Types for the engine**: `medh5/_core.pyi`, checked against the built module
   by `stubtest` in the test suite, so `mypy --strict` users keep the 1.x
   signatures.
