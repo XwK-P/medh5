@@ -69,7 +69,7 @@ guides, the Python and CLI reference, and the normative specification.
 - **Every claim is checkable** — per-object digests, a Merkle `content_id` that
   survives recompression, a stable diagnostic-code table, and a 117-case
   conformance corpus.
-- **Reading a patch is fast** — a 64³ multi-class patch in ~4 ms, and O(1)
+- **Reading a patch is fast** — a 64³ multi-class patch in ~3.5 ms, and O(1)
   foreground sampling once `build_index()` has run.
 
 [The reasoning behind each](https://medh5.readthedocs.io/en/latest/explanation/design-rationale/).
