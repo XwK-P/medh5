@@ -208,6 +208,37 @@ class TestSources:
         assert repinned.content_id != source.content_id
         assert repinned.check(task.base) == []
 
+    def test_S2_a_repin_keeps_the_view_of_a_post_cutoff_addition(self, setup):
+        """An old pin fails against a changed source; once repinned on purpose,
+        an addition definitely after a row's cutoff leaves its view unchanged."""
+        task, paths = setup
+        before = task.preflight().row("P-01@24h")
+        with medh5.amend(paths["P-01"]) as w:
+            w.add_event(
+                Event(
+                    "late_lab",
+                    "late_lab",
+                    "observation",
+                    "point",
+                    "final",
+                    effective_start_us=300 * DAY,
+                    available_us=300 * DAY,
+                    code_system="local",
+                    code="x",
+                    value_text="high",
+                )
+            )
+        assert found(task.preflight().findings) == ["T302"]
+        doc = task.to_json()
+        source = doc["subjects"][0]["sources"][0]
+        source["content_id"] = SourceRef.pin(paths["P-01"]).content_id
+        repinned = TaskManifest(doc, base=task.base)
+        after = repinned.preflight().row("P-01@24h")
+        assert repinned.preflight().ok
+        assert after.events == before.events and after.slots == before.slots
+        assert after.target == before.target
+        assert after.fingerprint != before.fingerprint  # it pins other bytes
+
     def test_S2_edited_clinical_bytes_fail_under_an_unchanged_root(self, setup):
         task, paths = setup
         with h5py.File(paths["P-02"], "r+") as f:

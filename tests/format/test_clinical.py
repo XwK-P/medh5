@@ -428,6 +428,98 @@ class TestSelection:
         assert limited.event_ids == ["ct1", "recist1"]
         assert SelectionPolicy.from_json(SelectionPolicy(kinds=("imaging",)).to_json())
 
+    def test_S5_2_an_interval_is_read_with_the_fields_of_its_eligible_version(self):
+        """A course whose end was learned later is a new version (1.1 §5.2)."""
+        course = Event(
+            "rx_v1",
+            "rx",
+            "medication_administration",
+            "interval",
+            "in_progress",
+            effective_start_us=0,
+            available_us=HOUR,
+        )
+        ended = Event(
+            "rx_v2",
+            "rx",
+            "medication_administration",
+            "interval",
+            "completed",
+            effective_start_us=0,
+            effective_end_us=(20 * DAY, 21 * DAY),
+            available_us=30 * DAY,
+        )
+        links = [Link.between(("event", "rx_v2"), "supersedes", ("event", "rx_v1"))]
+        at_day_ten = clinical.select([course, ended], links, 10 * DAY)
+        assert at_day_ten.event_ids == ["rx_v1"] and at_day_ten.certified
+        assert clinical.select([course, ended], links, 31 * DAY).event_ids == ["rx_v2"]
+
+    def test_S5_2_day_precision_is_never_narrowed(self):
+        """A result known to the day is available somewhere in that day."""
+        day = Event(
+            "lab",
+            "lab",
+            "observation",
+            "point",
+            "final",
+            effective_start_us=(3 * DAY, 4 * DAY - 1),
+            available_us=(3 * DAY, 4 * DAY - 1),
+            code_system="local",
+            code="x",
+            value_text="high",
+        )
+        assert clinical.select([day], [], 3 * DAY + 12 * HOUR).event_ids == []
+        later = clinical.select([day], [], 4 * DAY)
+        assert later.event_ids == ["lab"]
+        assert later.events[0].order_us == (3 * DAY, 4 * DAY - 1)
+
+    def test_S5_2_an_order_is_not_an_administration(self):
+        order = Event(
+            "order",
+            "order",
+            "medication_order",
+            "point",
+            "planned",
+            effective_start_us=10 * DAY,
+            available_us=DAY,
+        )
+        given = Event(
+            "given",
+            "given",
+            "medication_administration",
+            "point",
+            "completed",
+            effective_start_us=10 * DAY,
+            available_us=10 * DAY + HOUR,
+        )
+        events = [order, given]
+        assert clinical.select(events, [], 2 * DAY).event_ids == []
+        plans = clinical.select(events, [], 2 * DAY, SelectionPolicy(plans=True))
+        assert plans.event_ids == ["order"] and plans.events[0].plan
+        assert clinical.select(events, [], 11 * DAY).event_ids == ["given"]
+
+    def test_S9_1_ties_are_kept_or_dropped_whole(self):
+        def at(event_id: str, lo: int, hi: int) -> Event:
+            return Event(
+                event_id,
+                event_id,
+                "other",
+                "point",
+                "final",
+                effective_start_us=(lo, hi),
+                available_us=hi,
+            )
+
+        events = [at("a", 0, 0), at("b", DAY, 2 * DAY), at("c", DAY, 2 * DAY)]
+        keep = clinical.select(events, [], 3 * DAY, SelectionPolicy(max_events=1))
+        drop = clinical.select(
+            events, [], 3 * DAY, SelectionPolicy(max_events=1, ties="drop_group")
+        )
+        assert keep.event_ids == ["b", "c"]
+        assert keep.events[0].tie_group == keep.events[1].tie_group
+        assert drop.event_ids == []
+        assert drop.excluded["event_limit"] == 3
+
     def test_S9_1_select_from_records_not_in_a_file(self):
         events = History.events()
         chosen = clinical.select(events, History.links(), 24 * HOUR)

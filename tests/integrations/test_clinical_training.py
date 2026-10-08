@@ -246,6 +246,7 @@ class TestHandles:
             assert held is second
         CACHE.clear()
 
+    @pytest.mark.skipif(not hasattr(os, "fork"), reason="fork is POSIX")
     def test_S2_a_forked_worker_abandons_its_parents_cache(self, tmp_path: Path):
         from medh5.cache import FeatureCache
         from medh5.task import SourceRef
