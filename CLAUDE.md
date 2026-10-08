@@ -77,7 +77,8 @@ and the CLI are layers over it, and all three read and write the same bytes.
   specification sections, so a spec change has one obvious home: `sample`
   (§2, §4, §14.4), `geometry` (§3), `annotations` (§5–§9), `transforms` (§10),
   `labels`, `curation` (§11–§12), `integrity` (§13), `storage` (§14),
-  `validate` (§15), `collection`, `dataset`, `sampling`, `conformance`.
+  `validate` (§15; its rules one module per domain of the code table, E0xx …
+  E7xx), `collection`, `dataset`, `sampling`, `conformance`.
   `data/codes.json` is the §15.2 diagnostic code table (a test asserts the
   table and the spec agree); `data/` also holds the schema and vocabularies,
   embedded at compile time.
