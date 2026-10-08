@@ -10,9 +10,12 @@ corrected text to what the engine writes, byte for byte.
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import math
+import re
 from pathlib import Path
+from types import ModuleType
 
 import h5py
 import numpy as np
@@ -430,3 +433,46 @@ def test_S14_2_a_window_reads_what_hdf5plugin_wrote(
             window = tuple(slice(a, b) for a, b in zip(lo, hi, strict=True))
             np.testing.assert_array_equal(ds[window], values[window])
         np.testing.assert_array_equal(ds[5, 3:40, 7], values[5, 3:40, 7])
+
+
+def _release_script(name: str) -> ModuleType:
+    path = ROOT / ".github" / "scripts" / name
+    spec = importlib.util.spec_from_file_location(path.stem, path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_release_the_homebrew_formula_names_the_binaries_ci_builds() -> None:
+    """The release writes the formula from the checksums of the binaries CI
+    built.  A target the formula expects and CI never builds --- or an archive
+    named one way by the build and another by the formula --- would publish a
+    formula whose download 404s."""
+    brew = _release_script("homebrew_formula.py")
+    ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    release = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    build = (ROOT / ".github/scripts/build-dist.sh").read_text(encoding="utf-8")
+    built = set(re.findall(r"- target: (\S+)", ci))
+    assert set(brew.TARGETS.values()) <= built
+    assert all(target in release for target in built)
+    assert 'name="medh5-$version-$target"' in build
+    assert brew.archive("2.0.0", "x") == "medh5-2.0.0-x.tar.gz"
+
+    sums = {brew.archive("2.0.0", t): f"{i:064x}" for i, t in enumerate(sorted(built))}
+    text = brew.formula("2.0.0", sums, "XwK-P/medh5")
+    base = "https://github.com/XwK-P/medh5/releases/download/v2.0.0"
+    for target in brew.TARGETS.values():
+        name = brew.archive("2.0.0", target)
+        assert f'url "{base}/{name}"' in text
+        assert f'sha256 "{sums[name]}"' in text
+    assert 'bin.install "medh5"' in text
+
+    del sums[brew.archive("2.0.0", "x86_64-apple-darwin")]
+    with pytest.raises(SystemExit, match="x86_64-apple-darwin"):
+        brew.formula("2.0.0", sums, "XwK-P/medh5")
+    listing = f"{'a' * 64}  medh5-2.0.0-x.tar.gz\n\n{'b' * 64} *y.zip\n"
+    assert brew.read_sums(listing) == {
+        "medh5-2.0.0-x.tar.gz": "a" * 64,
+        "y.zip": "b" * 64,
+    }

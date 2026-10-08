@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
-## [2.0.0] — 2026-10-07
+## [2.0.0] — 2026-10-08
 
 **One format engine, three frontends.** The format is now implemented once, in
 Rust: the [`medh5`](https://crates.io/crates/medh5) crate is the canonical

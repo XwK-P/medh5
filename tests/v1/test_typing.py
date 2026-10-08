@@ -260,7 +260,10 @@ def test_the_stub_matches_the_extension(tmp_path: Path) -> None:
         ],
         capture_output=True,
         text=True,
-        cwd=ROOT,
+        # Not the checkout: `-m` imports from the working directory first, and
+        # the module to check is the one installed --- an editable build or a
+        # wheel --- not the source tree beside it.
+        cwd=tmp_path,
         timeout=900,
         check=False,
     )

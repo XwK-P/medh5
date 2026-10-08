@@ -125,7 +125,20 @@ module-name = "medh5._core"
 python-source = "."
 python-packages = ["medh5"]
 features = ["extension-module"]
-include = [{ path = "LICENSE", format = "sdist" }]
+# The sdist carries what makes the package auditable --- the normative
+# specification, the JSON Schema, the documentation and the test suite --- as
+# the engine's sources: a format release whose source distribution omits the
+# format is not one.
+include = [
+  { path = "LICENSE", format = "sdist" },
+  { path = "CHANGELOG.md", format = "sdist" },
+  { path = "CONTRIBUTING.md", format = "sdist" },
+  { path = "schemas/*.json", format = "sdist" },
+  { path = "docs/**/*.md", format = "sdist" },
+  { path = "docs/**/*.py", format = "sdist" },
+  { path = "tests/**/*.py", format = "sdist" },
+  { path = "tests/**/*.txt", format = "sdist" },
+]
 exclude = ["medh5/**/CLAUDE.md"]
 
 [tool.pytest.ini_options]

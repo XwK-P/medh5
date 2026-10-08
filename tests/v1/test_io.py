@@ -1979,7 +1979,7 @@ class TestLazyImports:
         with pytest.raises(AttributeError, match="from_parquet"):
             _ = io.from_parquet
 
-    def test_importing_medh5_does_not_import_the_optional_stacks(self):
+    def test_importing_medh5_does_not_import_the_optional_stacks(self, tmp_path):
         """`import medh5` must not need nibabel, pydicom or highdicom."""
         import subprocess
         import sys
@@ -1990,8 +1990,13 @@ class TestLazyImports:
             "assert 'pydicom' not in sys.modules; "
             "assert 'highdicom' not in sys.modules; print('clean')"
         )
+        # Away from the checkout, whose `medh5/` would shadow the installed one.
         result = subprocess.run(
-            [sys.executable, "-c", script], capture_output=True, text=True, check=True
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            check=True,
+            cwd=tmp_path,
         )
         assert "clean" in result.stdout
 
