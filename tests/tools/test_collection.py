@@ -52,7 +52,8 @@ class TestPack:
         with open_collection(shard) as collection:
             assert list(collection) == ["case_0", "case_1", "case_2"]
             assert collection.kind == "collection"
-            assert collection.version == medh5.FORMAT_VERSION
+            # A shard declares its newest member's version (1.1 §8).
+            assert collection.version == "1.0"
             assert "3 samples" in repr(collection)
 
     def test_explicit_keys_are_used_in_order(self, tmp_path, members):

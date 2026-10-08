@@ -3,8 +3,10 @@
 pub mod annotations;
 pub mod array;
 pub mod bench;
+pub mod clinical;
 pub mod codes;
 pub mod collection;
+pub mod companion;
 pub mod conformance;
 pub mod convert;
 pub mod curation;
@@ -26,6 +28,7 @@ pub mod sampling;
 pub mod storage;
 pub mod transforms;
 pub mod validate;
+pub mod version;
 
 pub use error::{Error, Result};
 /// The HDF5 bindings the engine is built on, for frontends that need a handle.
@@ -38,5 +41,9 @@ pub(crate) use medh5_sys::hdf5_sys as h5sys;
 
 /// The package version, stamped into every file's `generator` attribute.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-/// The MEDH5 format version this engine reads and writes.
-pub const FORMAT_VERSION: &str = "1.0";
+/// The newest MEDH5 format version this engine implements.
+///
+/// It implements every version in [`version::FORMAT_VERSIONS`], and writes the
+/// lowest one a sample's content needs: 1.0 for imaging, 1.1 once a sample
+/// carries the `clinical` profile ([`version`]).
+pub const FORMAT_VERSION: &str = version::LATEST_VERSION;

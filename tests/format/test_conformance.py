@@ -132,7 +132,15 @@ class TestManifest:
         build_corpus(tmp_path, names=[c.name for c in valid])
         for case in valid:
             for sample in _samples_of(tmp_path / f"{case.name}{case.suffix}"):
-                assert sample.version == medh5.FORMAT_VERSION
+                # Written at the lowest version the content needs (1.1 §2.3):
+                # 1.0 for imaging, 1.1 with the clinical profile --- and the
+                # higher-minor case is a projection, read as what is known.
+                if "W913" in case.warnings:
+                    assert sample.support == "projection", case.name
+                else:
+                    expected = "1.1" if "clinical" in sample.profiles else "1.0"
+                    assert sample.version == expected, case.name
+                    assert sample.support == "full", case.name
                 assert len(sample.images) >= 1
 
     def test_unmutated_valid_cases_verify(self, tmp_path):
@@ -217,14 +225,34 @@ class TestSpecSync:
 
     @staticmethod
     def _spec_codes() -> set[str]:
-
+        """1.0 §15.2's table, and the codes 1.1 §11.2 adds to it."""
         spec = (ROOT / "docs" / "spec" / "medh5-1.0.md").read_text(encoding="utf-8")
         start = spec.index("### 15.2 Error codes")
         table = spec[start : spec.index("## 16. Versioning")]
-        return set(re.findall(r"`([EW]\d{3})`", table))
+        minor = (ROOT / "docs" / "spec" / "medh5-1.1.md").read_text(encoding="utf-8")
+        added = minor[
+            minor.index("### 11.2 Diagnostic codes") : minor.index("### 11.3")
+        ]
+        return set(re.findall(r"`([EW]\d{3})`", table + added))
 
     def test_S15_2_the_table_matches_the_registry(self):
         assert self._spec_codes() == set(CODES)
+
+    def test_S11_2_a_minor_version_adds_codes_and_redefines_none(self):
+        """1.1 only adds: no code of its table is also one of 1.0's."""
+        spec = (ROOT / "docs" / "spec" / "medh5-1.0.md").read_text(encoding="utf-8")
+        table = spec[
+            spec.index("### 15.2 Error codes") : spec.index("## 16. Versioning")
+        ]
+        minor = (ROOT / "docs" / "spec" / "medh5-1.1.md").read_text(encoding="utf-8")
+        added = minor[
+            minor.index("### 11.2 Diagnostic codes") : minor.index("### 11.3")
+        ]
+        base = set(re.findall(r"`([EW]\d{3})`", table))
+        new = set(re.findall(r"`([EW]\d{3})`", added))
+        assert new and not base & new
+        assert {"E011", "W913", "W914"} <= new
+        assert {f"E8{i:02d}" for i in range(1, 20)} <= new
 
     def test_every_code_has_a_summary_and_a_domain(self):
         for code in CODES.values():
@@ -256,6 +284,7 @@ class TestSpecSync:
             23: "Twenty-three",
             24: "Twenty-four",
             25: "Twenty-five",
+            26: "Twenty-six",
         }
         assert f"{words[len(rows)]} clauses have been corrected" in section
         # The 1.4.2 correction is recorded; 2.0's three follow it.
@@ -274,7 +303,31 @@ class TestPublication:
         assert (suite / "expected.json").exists()
         assert (suite / "codes.json").exists()
         assert (suite / "medh5-sample-1.0.schema.json").exists()
+        assert (suite / "medh5-clinical-1.schema.json").exists()
+        assert (suite / "medh5-task-1.schema.json").exists()
+        assert (suite / "medh5-cache-1.schema.json").exists()
         assert (suite / "README.md").exists()
+
+    def test_the_task_and_cache_fixtures_score_through_the_cli(self, suite, capsys):
+        """task-cache-1 §10: every fixture, through the public door."""
+        from medh5.cli import main
+
+        expected = json.loads((suite / "companion" / "expected.json").read_text())
+        fixtures = expected["fixtures"]
+        assert len(fixtures) == 14
+        for fixture in fixtures:
+            path = suite / "companion" / fixture["file"]
+            main(["task", fixture["level"], str(path), "--json"])
+            report = json.loads(capsys.readouterr().out)
+            found = {f["code"] for f in report["findings"]}
+            assert found == set(fixture["findings"]), fixture["name"]
+            for row in report.get("rows", []):
+                want = fixture["rows"].get(row["row_id"])
+                if want is None:
+                    continue
+                assert row["status"] == want["status"], (fixture["name"], row["row_id"])
+                assert {e["event_id"] for e in row["events"]} == set(want["events"])
+                assert row["target"]["status"] == want["target"]
         assert (suite / "SHA256SUMS").exists()
         codes = json.loads((suite / "codes.json").read_text(encoding="utf-8"))
         assert {c["code"] for c in codes["codes"]} == set(CODES)
@@ -390,7 +443,7 @@ class TestPublication:
         from medh5.conformance import CASES, publish
 
         shards = sum(1 for c in CASES if c.suffix == ".medh5c")
-        assert shards == 4
+        assert shards == 6
         readme = (publish(tmp_path / "suite") / "README.md").read_text("utf-8")
         assert f"{len(CASES) - shards} samples and {shards} collections" in readme
 

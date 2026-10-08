@@ -15,6 +15,7 @@ use serde_json::{Map, Value};
 
 use super::reader::{annotation_id, attr_name_map_of, frame_references, require_major, FRAME_ATTRS, PROFILES};
 use crate::array::NdArray;
+use crate::clinical::ClinicalRecords;
 use crate::curation::identity::{Cohort, Deidentification, Identity, SplitClaim, ID_SOURCE};
 use crate::curation::provenance::{Activity, Agent};
 use crate::curation::quality::QualityRecord;
@@ -34,7 +35,7 @@ use crate::json::{repr_int_tuple, repr_list, repr_str};
 use crate::labels::{ClassKey, LabelSet};
 use crate::storage::chunking::grid_chunks;
 use crate::storage::codecs::{dataset_layout, profile_family, resolve_profile, Role};
-use crate::{Error, Result, FORMAT_VERSION, VERSION};
+use crate::{Error, Result, VERSION};
 
 /// Root attributes `commit` writes itself, so an amend must not copy them.
 pub const MANAGED_ROOT_ATTRS: [&str; 7] =
@@ -66,20 +67,31 @@ pub fn civil_from_days(z: i64) -> (i64, u32, u32) {
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
-/// The `medh5_version` a commit writes: this writer's, or a later minor's
-/// when amending a file that already claims one (§16).
-pub fn written_version(source: Option<&str>) -> String {
-    let Some(source) = source else {
-        return FORMAT_VERSION.to_string();
-    };
-    let parse = |v: &str| -> Option<(i64, i64)> {
-        let (a, b) = v.split_once('.')?;
-        Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
-    };
-    match (parse(source), parse(FORMAT_VERSION)) {
-        (Some((smaj, smin)), Some((wmaj, wmin))) if smaj == wmaj && smin > wmin => source.to_string(),
-        _ => FORMAT_VERSION.to_string(),
+/// The `medh5_version` a commit writes: the lowest version the declared
+/// profiles need (1.0, or 1.1 with `clinical`), never below what an amended
+/// file already declared --- a no-op amend does not downgrade (1.1 §2.3).
+pub fn written_version(source: Option<&str>, profiles: &[String]) -> String {
+    let needed = crate::version::required_for(profiles);
+    match source {
+        Some(v) if crate::version::support(v) == crate::version::Support::Full => {
+            crate::version::later(v, needed).to_string()
+        }
+        _ => needed.to_string(),
     }
+}
+
+/// Where a writer's `clinical/` group came from (1.1 §3, §10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ClinicalSource {
+    /// None: the sample has no `clinical` group.
+    #[default]
+    Absent,
+    /// The profile's own content, declared and recognised, copied through
+    /// untouched until something changes it.
+    Inherited,
+    /// A `clinical` group that is not the profile's --- a 1.0 file's own
+    /// extension.  Copied through untouched, and never reinterpreted.
+    Foreign,
 }
 
 /// Which classes an annotation claims were looked for (§11.3).
@@ -149,6 +161,12 @@ pub struct SampleWriter {
     default_timeline: bool,
     source_version: Option<String>,
     pub(crate) document: SampleDocument,
+    /// The clinical records, once written to or changed in this writer.
+    pub(crate) clinical: Option<ClinicalRecords>,
+    pub(crate) clinical_source: ClinicalSource,
+    /// Event and document ids already in `clinical`, so a duplicate is
+    /// refused without scanning every row.
+    pub(crate) clinical_ids: (std::collections::HashSet<String>, std::collections::HashSet<String>),
 }
 
 impl std::fmt::Debug for SampleWriter {
@@ -170,11 +188,17 @@ pub fn create(
 
 /// Copy-on-write amend: build a new file from the old and replace it (§14.4).
 ///
-/// Unknown objects are copied through untouched; a future *major* is
-/// refused.  `codec` defaults to the family the file was written in.
+/// Unknown objects are copied through untouched; known profiles are re-derived
+/// from what the amended file holds, and a recognised `clinical` profile is
+/// carried with its group.  A file this engine cannot preserve --- another
+/// major, a higher minor, a profile it does not implement --- is refused before
+/// anything is written (1.1 §2.3).  `codec` defaults to the family the file was
+/// written in.
 pub fn amend(path: &Path, codec: Option<&str>) -> Result<SampleWriter> {
     let source = open_read(path)?;
-    require_major(&source, path)?;
+    let version = require_major(&source, path)?;
+    let declared = attrs::get_strs(&source, "medh5_profiles")?.unwrap_or_default();
+    crate::version::require_amendable(&version, &declared, &repr_str(&path.to_string_lossy()))?;
     let kind = attrs::get_str(&source, "medh5_kind")?.unwrap_or_else(|| "sample".into());
     if kind != "sample" {
         return Err(Error::File(format!(
@@ -225,6 +249,9 @@ impl SampleWriter {
             default_timeline: true,
             source_version: None,
             document: SampleDocument::new(identity?, Timeline::single("tp0")?),
+            clinical: None,
+            clinical_source: ClinicalSource::Absent,
+            clinical_ids: Default::default(),
         };
         let setup = (|| -> Result<()> {
             for name in ["grids", "images", "annotations"] {
@@ -285,10 +312,38 @@ impl SampleWriter {
         self.document = document;
     }
 
+    /// Remove the `clinical` profile --- its group, its records and its
+    /// declaration --- for the imaging projection (1.1 §10).  The sample is
+    /// then written in the lowest version its remaining profiles need, and is
+    /// a different sample with a different `content_id`.
+    pub fn drop_clinical(&mut self) -> Result<()> {
+        let root = self.root()?;
+        ops::unlink(&root, crate::clinical::GROUP)?;
+        self.clinical = None;
+        self.clinical_ids = Default::default();
+        self.clinical_source = ClinicalSource::Absent;
+        self.declared_profiles.remove(crate::clinical::PROFILE);
+        self.source_version = None;
+        Ok(())
+    }
+
     fn inherit(&mut self, source: &hdf5::Group) -> Result<()> {
         self.source_version = attrs::get_str(source, "medh5_version")?;
         self.document = super::reader::read_document(source)?;
         self.default_timeline = false;
+        // Known profiles are re-derived from the amended content, so a claim
+        // an edit no longer justifies is dropped rather than kept false; an
+        // unknown one was refused before the amend began (1.1 §2.3), and a
+        // recognised `clinical` group carries its profile with it.
+        let declared = attrs::get_strs(source, "medh5_profiles")?.unwrap_or_default();
+        if ops::exists(source, crate::clinical::GROUP) {
+            self.clinical_source =
+                if declared.iter().any(|p| p == crate::clinical::PROFILE) && crate::clinical::recognised(source) {
+                    ClinicalSource::Inherited
+                } else {
+                    ClinicalSource::Foreign
+                };
+        }
         let root = self.root()?;
         for name in ["grids", "images", "annotations", "transforms", "index"] {
             if !ops::exists(source, name) {
@@ -866,6 +921,9 @@ impl SampleWriter {
         {
             found.insert("longitudinal".into());
         }
+        if self.clinical.is_some() || self.clinical_source == ClinicalSource::Inherited {
+            found.insert(crate::clinical::PROFILE.into());
+        }
         let mut unknown: Vec<String> =
             self.declared_profiles.union(&found).filter(|p| !PROFILES.contains(&p.as_str())).cloned().collect();
         unknown.sort();
@@ -1119,8 +1177,10 @@ impl SampleWriter {
         let root = self.root()?;
         ops::unlink(&root, META_DATASET)?;
         data::create_scalar_string(&root, META_DATASET, &self.document.dumps())?;
+        self.write_clinical()?;
         let profiles: Vec<String> = self.infer_profiles()?.into_iter().collect();
-        attrs::write(&root, "medh5_version", &AttrValue::Str(written_version(self.source_version.as_deref())))?;
+        let version = written_version(self.source_version.as_deref(), &profiles);
+        attrs::write(&root, "medh5_version", &AttrValue::Str(version))?;
         attrs::write(&root, "medh5_kind", &AttrValue::Str("sample".into()))?;
         attrs::write(&root, "medh5_profiles", &crate::annotations::header::list_attr(&profiles))?;
         attrs::write(&root, "created", &AttrValue::Str(utcnow()))?;

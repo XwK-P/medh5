@@ -48,15 +48,23 @@ __all__ = [
     "BUILTIN_FILTER_IDS",
     "BULK_MIN_BYTES",
     "CACHE_SAFETY",
+    "CACHE_SCHEMA",
     "CHECK_CODES",
     "CHECK_SEVERITIES",
+    "CLINICAL_PROFILE",
+    "CLINICAL_SCHEMA",
+    "CLOCK_REFERENCES",
     "CLOSURES",
     "COLLECTION_SUFFIX",
+    "COMPANION_CODES",
+    "COMPARATORS",
     "COMPRESS_MIN_BYTES",
     "CONFORMANCE_CHECKSUMS",
     "CONFORMANCE_SCHEMA",
     "CONFORMANCE_SEED",
     "CONTOUR_ROLES",
+    "CacheWriterHandle",
+    "ClinicalHandle",
     "Cohort",
     "CollectionHandle",
     "CostModel",
@@ -72,14 +80,18 @@ __all__ = [
     "DOWNSAMPLE_METHODS",
     "Dataset",
     "Deidentification",
+    "ENDPOINT_TYPES",
     "ENTRY_FIELDS",
+    "EVENT_KINDS",
     "EXIT_ERROR",
     "EXIT_OK",
     "EXIT_USAGE",
     "EXTRAPOLATIONS",
     "FLOAT16_SAFE_VOXELS",
     "FORMAT_VERSION",
+    "FORMAT_VERSIONS",
     "FORMS",
+    "FeatureCacheHandle",
     "GEOMETRIC_KINDS",
     "GEOMETRY_RTOL",
     "GROUPABLE",
@@ -103,6 +115,7 @@ __all__ = [
     "LATERALITY_VALUES",
     "LEGACY_BOX_SHIFT",
     "LEGACY_SCHEMA_VERSION",
+    "LESION_VALUES",
     "LEVELS",
     "LOCALIZED_BBOX_FRACTION",
     "LabelClass",
@@ -128,6 +141,7 @@ __all__ = [
     "QUALITY_FIELDS",
     "QUALITY_STATUS",
     "QualityRecord",
+    "RELATIONS",
     "RESERVED_IDS",
     "RESERVED_KINDS",
     "RESOLVED",
@@ -153,6 +167,7 @@ __all__ = [
     "SCRUB_STRICT_RULES",
     "SCRUB_UID_KEYS",
     "SCRUB_UNFIXABLE_LOCATIONS",
+    "SELECTION_POLICIES",
     "SEX_VALUES",
     "SLAB_BYTES",
     "SPACES",
@@ -163,6 +178,7 @@ __all__ = [
     "SPEC_TRANSFORM_ATTRS",
     "STANDARD_GROUPS",
     "STATES",
+    "STATUSES",
     "STREAM_BYTES",
     "SUPPORTED_ORDERS",
     "SampleDocument",
@@ -172,6 +188,8 @@ __all__ = [
     "Skeleton",
     "SplitClaim",
     "TASKS",
+    "TASK_SCHEMA",
+    "TEMPORAL_TYPES",
     "TIMEPOINT_FIELDS",
     "TIME_UNITS",
     "TRANSCODABLE",
@@ -223,6 +241,7 @@ __all__ = [
     "audit_partitions",
     "audit_set_ids",
     "audit_splits",
+    "baseline_day_clock",
     "basis",
     "bench_benchmark_file",
     "bench_line",
@@ -236,11 +255,16 @@ __all__ = [
     "box_to_slices",
     "build_affine",
     "build_index",
+    "cache_create",
+    "cache_event_entry_id",
+    "cache_fitted_on",
+    "cache_open",
+    "cache_schema_text",
+    "cache_validate",
     "canonical_attrs",
     "canonical_attrs_at",
     "canonical_json",
     "carries_instance_ids",
-    "check_class_id",
     "check_class_id",
     "check_contour_role",
     "check_orthonormal",
@@ -256,6 +280,11 @@ __all__ = [
     "cli_command_tree",
     "cli_lookup_message",
     "cli_main",
+    "clinical_augment",
+    "clinical_records",
+    "clinical_schema_text",
+    "clinical_select",
+    "clinical_strip",
     "codec_profiles",
     "codes_table",
     "collect_digests",
@@ -359,6 +388,7 @@ __all__ = [
     "grid_chunks",
     "group_digest",
     "group_digest_at",
+    "imaging_events_from_timepoints",
     "index_to_world",
     "inside_extent",
     "instance_id_dtype",
@@ -453,6 +483,8 @@ __all__ = [
     "scrub_scan_document",
     "select_encoding",
     "slices_to_box",
+    "source_check",
+    "source_pin",
     "spatial_chunk_for",
     "splits_from_json",
     "stale_index_entries",
@@ -461,6 +493,14 @@ __all__ = [
     "subtrees_identical",
     "subtrees_identical_at",
     "target_registration_error",
+    "task_fingerprints",
+    "task_normalize",
+    "task_preflight",
+    "task_reconcile",
+    "task_row_fingerprint",
+    "task_schema_text",
+    "task_subjects_digest",
+    "task_validate",
     "to_world_vectors",
     "transcode",
     "transcode_payload",
@@ -499,10 +539,16 @@ BLOSC_FILTER_ID: int
 BUILTIN_FILTER_IDS: tuple[int, ...]
 BULK_MIN_BYTES: int
 CACHE_SAFETY: float
+CACHE_SCHEMA: str
 CHECK_CODES: dict[str, str]
 CHECK_SEVERITIES: tuple[str, ...]
+CLINICAL_PROFILE: str
+CLINICAL_SCHEMA: str
+CLOCK_REFERENCES: tuple[str, ...]
 CLOSURES: tuple[str, ...]
 COLLECTION_SUFFIX: str
+COMPANION_CODES: dict[str, str]
+COMPARATORS: tuple[str, ...]
 COMPRESS_MIN_BYTES: int
 CONFORMANCE_CHECKSUMS: str
 CONFORMANCE_SCHEMA: str
@@ -518,13 +564,16 @@ DEFAULT_PROFILE: str
 DEFAULT_THRESHOLD: float
 DIGEST_ALGOS: tuple[str, ...]
 DOWNSAMPLE_METHODS: tuple[str, ...]
+ENDPOINT_TYPES: tuple[str, ...]
 ENTRY_FIELDS: tuple[str, ...]
+EVENT_KINDS: tuple[str, ...]
 EXIT_ERROR: int
 EXIT_OK: int
 EXIT_USAGE: int
 EXTRAPOLATIONS: tuple[str, ...]
 FLOAT16_SAFE_VOXELS: float
 FORMAT_VERSION: str
+FORMAT_VERSIONS: tuple[str, ...]
 FORMS: tuple[str, ...]
 GEOMETRIC_KINDS: tuple[str, ...]
 GEOMETRY_RTOL: float
@@ -543,6 +592,7 @@ LAST_ROW_TOL: float
 LATERALITY_VALUES: tuple[str, ...]
 LEGACY_BOX_SHIFT: float
 LEGACY_SCHEMA_VERSION: str
+LESION_VALUES: tuple[str, ...]
 LEVELS: tuple[str, ...]
 LOCALIZED_BBOX_FRACTION: float
 MANAGED_ROOT_ATTRS: tuple[str, ...]
@@ -559,6 +609,7 @@ PROFILES: tuple[str, ...]
 PSEUDONYM_SOURCE: str
 QUALITY_FIELDS: frozenset[str]
 QUALITY_STATUS: tuple[str, ...]
+RELATIONS: tuple[str, ...]
 RESERVED_IDS: tuple[str, ...]
 RESERVED_KINDS: tuple[str, ...]
 RESOLVED: str
@@ -583,6 +634,7 @@ SCRUB_QUASI_IDENTIFYING_KEYS: frozenset[str]
 SCRUB_STRICT_RULES: tuple[str, ...]
 SCRUB_UID_KEYS: frozenset[str]
 SCRUB_UNFIXABLE_LOCATIONS: tuple[str, ...]
+SELECTION_POLICIES: tuple[str, ...]
 SEX_VALUES: tuple[str, ...]
 SLAB_BYTES: int
 SPACES: tuple[str, ...]
@@ -593,9 +645,12 @@ SPEC_IMAGE_ATTRS: tuple[str, ...]
 SPEC_TRANSFORM_ATTRS: tuple[str, ...]
 STANDARD_GROUPS: tuple[str, ...]
 STATES: tuple[str, ...]
+STATUSES: tuple[str, ...]
 STREAM_BYTES: int
 SUPPORTED_ORDERS: tuple[int, ...]
 TASKS: tuple[str, ...]
+TASK_SCHEMA: str
+TEMPORAL_TYPES: tuple[str, ...]
 TIMEPOINT_FIELDS: frozenset[str]
 TIME_UNITS: tuple[str, ...]
 TRANSCODABLE: tuple[str, ...]
@@ -706,6 +761,10 @@ def audit_splits(paths: Sequence[str | os.PathLike[str]]) -> dict[Any, Any]:
     """Read every file's claims and cross-check them (§12.3): the audit's fields."""
     ...
 
+def baseline_day_clock(clock_id: str) -> dict[str, Any]:
+    """The clock `imaging_events_from_timepoints` measures on."""
+    ...
+
 def basis(order: int, t: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
     """The B-spline basis weights at `t`: `(order + 1, *t.shape)`."""
     ...
@@ -771,6 +830,25 @@ def build_index(
     """Compute the sampling index of one voxel annotation (not written)."""
     ...
 
+def cache_create(
+    path: str | os.PathLike[str], header_doc: Mapping[str, Any]
+) -> CacheWriterHandle:
+    """Start writing a feature cache (`medh5.cache/1`)."""
+    ...
+
+def cache_event_entry_id(content_id: str, event_id: str) -> str: ...
+def cache_fitted_on(doc: Any, partition: str) -> dict[str, Any]: ...
+def cache_open(path: str | os.PathLike[str]) -> FeatureCacheHandle: ...
+def cache_schema_text() -> str: ...
+def cache_validate(
+    path: str | os.PathLike[str],
+    base: str | os.PathLike[str] | None = None,
+    task: Any = None,
+    task_base: str | os.PathLike[str] | None = None,
+) -> dict[str, Any]:
+    """Validate a cache; with a task, also against that task's preflight."""
+    ...
+
 def canonical_attrs(obj: Any, names: Iterable[str]) -> str:
     """Canonical JSON over an object's named attributes (§13.2)."""
     ...
@@ -829,6 +907,25 @@ def cli_main(argv: Sequence[str], host: Any) -> int:
     """Run the command line on `argv` (without the program name); the exit code."""
     ...
 
+def clinical_augment(
+    path: str | os.PathLike[str],
+    records: Any,
+    out: str | os.PathLike[str] | None = None,
+) -> dict[str, Any]: ...
+def clinical_records(records: Any) -> dict[str, Any]:
+    """Check a logical-record bundle against its schema and parse it back."""
+    ...
+
+def clinical_schema_text() -> str: ...
+def clinical_select(
+    events: Sequence[Any], links: Sequence[Any], cutoff_us: int, policy: Any = None
+) -> dict[str, Any]:
+    """Select from records not read from a file: `events` and `links` as dicts."""
+    ...
+
+def clinical_strip(
+    path: str | os.PathLike[str], out: str | os.PathLike[str]
+) -> dict[str, Any]: ...
 def codec_profiles() -> list[Any]:
     """The codec profiles, as plain data (`medh5.storage` builds its
     `CodecProfile` values from this).
@@ -1234,6 +1331,10 @@ def group_digest(
 def group_digest_at(
     file: str | os.PathLike[str], group: str, root: str = "", algo: str = "sha256"
 ) -> str: ...
+def imaging_events_from_timepoints(path: str | os.PathLike[str]) -> list[Any]:
+    """`(events, links, notes)`: imaging events from `days_from_baseline`."""
+    ...
+
 def index_to_world(
     affine: npt.ArrayLike, indices: npt.ArrayLike
 ) -> npt.NDArray[np.float64]: ...
@@ -1586,6 +1687,21 @@ def select_encoding(
     ...
 
 def slices_to_box(slices: Sequence[slice]) -> npt.NDArray[np.float32]: ...
+def source_check(
+    source: Any, base: str | os.PathLike[str] | None = None, deep: bool = False
+) -> list[dict[str, Any]]:
+    """The findings of checking a reference against its sample now."""
+    ...
+
+def source_pin(
+    path: str | os.PathLike[str],
+    sample_key: str | None = None,
+    source_id: str | None = None,
+    uri: str | None = None,
+) -> dict[str, Any]:
+    """A source reference pinned to what the sample is now."""
+    ...
+
 def spatial_chunk_for(
     spatial_shape: Sequence[int],
     patch: Sequence[int] | int | None = None,
@@ -1618,6 +1734,33 @@ def target_registration_error(
     """TRE `‖T(p_F) − p_M‖` over world landmarks with matching row order
     (§10.6): `{mean, median, max, n}`.
     """
+    ...
+
+def task_fingerprints(doc: Any) -> dict[str, str]:
+    """`{"task": ..., "manifest": ...}`."""
+    ...
+
+def task_normalize(doc: Any) -> dict[str, Any]:
+    """Parse, check the schema, and return the normalised manifest."""
+    ...
+
+def task_preflight(
+    doc: Any, base: str | os.PathLike[str] | None = None, deep: bool = False
+) -> dict[str, Any]:
+    """The preflight of a task, as JSON."""
+    ...
+
+def task_reconcile(
+    doc: Any, base: str | os.PathLike[str] | None = None
+) -> dict[str, Any]:
+    """The manifest with every subject's duplicated events recorded."""
+    ...
+
+def task_row_fingerprint(doc: Any, row_id: str) -> str: ...
+def task_schema_text() -> str: ...
+def task_subjects_digest(doc: Any, partition: str) -> str: ...
+def task_validate(doc: Any) -> list[dict[str, Any]]:
+    """Everything wrong with a manifest that opening no file can find."""
     ...
 
 def to_world_vectors(
@@ -1707,7 +1850,7 @@ def voxel_volume(spacing: Sequence[float]) -> float: ...
 def world_to_index(
     affine: npt.ArrayLike, points: npt.ArrayLike
 ) -> npt.NDArray[np.float64]: ...
-def written_version(source: str | None) -> str: ...
+def written_version(source: str | None, profiles: Sequence[str] = ...) -> str: ...
 
 @final
 @dataclass(frozen=True)
@@ -2013,6 +2156,40 @@ class Attrs:
     def values(self) -> list[Any]: ...
 
 @final
+class CacheWriterHandle:
+    """Writes a feature cache; `commit()` moves it into place."""
+    def abort(self) -> None:
+        """Discard the half-written cache."""
+        ...
+    def add(self, entry: Any, values: Any) -> dict[str, Any]:
+        """Add one feature: `entry` as a dict (its `digest` is computed)."""
+        ...
+    def commit(self) -> str:
+        """Write the manifest and its checksum; returns the checksum."""
+        ...
+
+@final
+class ClinicalHandle:
+    """One sample's clinical profile, read."""
+    def descriptor(self) -> dict[str, Any]: ...
+    def document(self, document_id: str) -> dict[str, Any]: ...
+    def documents(self) -> list[dict[str, Any]]:
+        """Document metadata (no text): id, media type, language, source type,
+        and the text's length in UTF-8 bytes.
+        """
+        ...
+    def events(self) -> list[dict[str, Any]]: ...
+    def links(self) -> list[dict[str, Any]]: ...
+    @property
+    def projection(self) -> bool: ...
+    def records(self) -> dict[str, Any]: ...
+    def select(self, cutoff_us: int, policy: Any = None) -> dict[str, Any]: ...
+    def summary(self) -> dict[str, Any]: ...
+    def text(self, document_id: str) -> str:
+        """One document's text, read from the file now."""
+        ...
+
+@final
 @dataclass(frozen=True)
 class Cohort:
     dataset_id: str | None = ...
@@ -2126,6 +2303,29 @@ class Deidentification:
     @classmethod
     def from_json(cls, doc: Mapping[str, Any] | None) -> Deidentification | None: ...
     def to_json(self) -> dict[str, Any]: ...
+
+@final
+class FeatureCacheHandle:
+    """An open feature cache; `close()` releases the file."""
+    def abandon(self) -> None:
+        """Forget the handle without closing it: what a forked child does with
+        its parent's (§14.4) --- the descriptor is the parent's to close.
+        """
+        ...
+    def close(self) -> None: ...
+    def entries(self) -> list[dict[str, Any]]: ...
+    def event_entry(self, content_id: str, event_id: str) -> dict[str, Any] | None: ...
+    def get(self, entry_id: str) -> npt.NDArray[Any]:
+        """An entry's payload, its checksum verified."""
+        ...
+    def header(self) -> dict[str, Any]: ...
+    @property
+    def is_open(self) -> bool: ...
+    @property
+    def manifest_digest(self) -> str: ...
+    @property
+    def path(self) -> str: ...
+    def row_entry(self, row_id: str) -> dict[str, Any] | None: ...
 
 @final
 @dataclass(frozen=True)
@@ -2614,6 +2814,9 @@ class SampleHandle:
     def annotation_ids(self) -> list[str]: ...
     def annotations_at(self, timepoint: str) -> list[str]: ...
     def attr_name_map(self) -> dict[Any, Any]: ...
+    def clinical(self) -> ClinicalHandle | None:
+        """The clinical profile's records, when the sample declares it (1.1)."""
+        ...
     def close(self) -> None:
         """Close the file and everything read from it, as 1.x's sample did: an
         image, annotation or group still held becomes invalid rather than
@@ -2654,6 +2857,10 @@ class SampleHandle:
         """The sample's root group (read-only use)."""
         ...
     def summary(self) -> Any: ...
+    @property
+    def support(self) -> str:
+        """`full` or `projection` (a higher minor, read as what this engine knows)."""
+        ...
     def tracks(self, class_key: Any = None, *, measure: bool = True) -> Tracking: ...
     def transform(self, transform_id: str) -> TransformHandle: ...
     def transform_between(self, source: str, target: str) -> TransformHandle | None: ...
@@ -2767,6 +2974,12 @@ class SampleWriter:
     ) -> Group:
         """Planar polygons (§8.6) --- the RTSTRUCT-shaped annotation."""
         ...
+    def add_document(self, document: Any = None, **fields: Any) -> dict[str, Any]:
+        """Add one source document (1.1 §6)."""
+        ...
+    def add_event(self, event: Any = None, **fields: Any) -> dict[str, Any]:
+        """Add one event version (1.1 §5): an `Event`, a dict, or keywords."""
+        ...
     def add_grid(
         self,
         grid_id: str,
@@ -2832,6 +3045,9 @@ class SampleWriter:
         codec: str | None = None,
     ) -> Group:
         """`(N, K, S)` keypoints with per-slot classes (§8.4)."""
+        ...
+    def add_link(self, link: Any = None, **fields: Any) -> dict[str, Any]:
+        """Add one typed link (1.1 §7)."""
         ...
     def add_mask(
         self,
@@ -2934,6 +3150,9 @@ class SampleWriter:
     ) -> Group:
         """Write a multiscale image (§4.3); level geometry is checked here."""
         ...
+    def add_records(self, records: Any) -> None:
+        """Add a logical-record bundle: `clinical`, `events`, `documents`, `links`."""
+        ...
     def add_segmentation(
         self,
         ann_id: str,
@@ -3005,6 +3224,9 @@ class SampleWriter:
         `ann_ids` is `None`.  `occupancy=None` writes no occupancy planes.
         """
         ...
+    def clinical(self) -> dict[str, Any] | None:
+        """The clinical records so far (an amended file's once loaded), or `None`."""
+        ...
     @property
     def closed(self) -> bool:
         """Whether `commit` or `abort` has run."""
@@ -3029,6 +3251,9 @@ class SampleWriter:
         ...
     @document.setter
     def document(self, value: SampleDocument) -> None: ...
+    def drop_clinical(self) -> None:
+        """Remove the clinical profile: the imaging projection (1.1 §10)."""
+        ...
     def extra(self, namespace: str, value: Any) -> None:
         """Set a namespaced extension member of the document."""
         ...
@@ -3045,6 +3270,8 @@ class SampleWriter:
         model.  `commit` restamps every digest from what it finds.
         """
         ...
+    @property
+    def has_clinical(self) -> bool: ...
     def identity(self, **fields: Any) -> Identity:
         """Merge fields into the identity (`sample_id`, `subject_id`, ...)."""
         ...
@@ -3065,6 +3292,9 @@ class SampleWriter:
         ...
     def remove_annotation(self, ann_id: str) -> None:
         """Drop an annotation, and any index entry derived from it."""
+        ...
+    def set_clock(self, clock: Any = None, **fields: Any) -> dict[str, Any]:
+        """Declare the subject clock, starting the `clinical` profile (1.1 §3)."""
         ...
     def set_quality(self, key: str, **fields: Any) -> QualityRecord:
         """Create or replace a quality record (status defaults to `draft`)."""

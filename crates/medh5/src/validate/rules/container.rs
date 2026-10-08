@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 
 use super::{child, loc, str_attr, strs_attr, Context};
 use crate::annotations::header::VOXEL_KINDS;
-use crate::document::{validate_against_schema, SampleDocument};
+use crate::document::{validate_document_version, SampleDocument};
 use crate::h5::attrs;
 use crate::h5::data;
 use crate::h5::ops;
@@ -31,6 +31,17 @@ pub fn check_container(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
                     "/",
                     format!("declares MEDH5 {version}; this validator implements {SUPPORTED_MAJOR}.x"),
                 ));
+            } else if ctx.projection {
+                out.push(ctx.err(
+                    "W913",
+                    "/",
+                    format!(
+                        "declares MEDH5 {version}; this validator implements up to {}: only the supported \
+                         projection was validated, which is not conformance to {version}, and the file must not be \
+                         amended by this engine",
+                        crate::FORMAT_VERSION
+                    ),
+                ));
             }
         }
     }
@@ -49,7 +60,7 @@ pub fn check_container(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
         unknown.sort();
         unknown.dedup();
         if !unknown.is_empty() {
-            out.push(ctx.err("E007", "/", format!("unknown profile(s) {}", repr_list(&unknown))));
+            out.push(ctx.unknown("E007", "/", format!("unknown profile(s) {}", repr_list(&unknown))));
         }
     }
     for required in ["grids", "images"] {
@@ -79,11 +90,20 @@ pub fn check_container(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
 pub fn check_collection(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     let mut out = Vec::new();
     let root = ctx.root.clone();
-    match str_attr(&root, "medh5_version")? {
+    let outer = str_attr(&root, "medh5_version")?;
+    match &outer {
         None => out.push(ctx.err("E001", "/", "collection root has no `medh5_version` attribute")),
         Some(v) if v.split('.').next().unwrap_or("") != SUPPORTED_MAJOR => {
             out.push(ctx.err("E002", "/", format!("declares MEDH5 {v}; this validator implements {SUPPORTED_MAJOR}.x")))
         }
+        Some(v) if ctx.projection => out.push(ctx.err(
+            "W913",
+            "/",
+            format!(
+                "declares MEDH5 {v}; this validator implements up to {}: only the supported projection was validated",
+                crate::FORMAT_VERSION
+            ),
+        )),
         _ => {}
     }
     let Some(node) = ops::child_group(&root, SAMPLES_GROUP) else {
@@ -108,6 +128,22 @@ pub fn check_collection(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
             ));
         }
         let Some(member) = child(&node, &key) else { continue };
+        // 1.1 §8: the outer root declares a version no lower than any
+        // member's, so a reader that stops at the outer version sees every
+        // member it can read.
+        if let (Some(outer), Some(inner)) = (outer.as_deref(), str_attr(loc(&member), "medh5_version")?) {
+            if !crate::version::at_least(outer, &inner) && crate::version::parse(&inner).is_some() {
+                out.push(ctx.err(
+                    "E011",
+                    location.clone(),
+                    format!(
+                        "member {} is MEDH5 {inner}, but the collection declares {outer}; a collection declares \
+                         the highest version of the samples it holds",
+                        repr_str(&key)
+                    ),
+                ));
+            }
+        }
         if !attrs::has(loc(&member), "medh5_profiles") {
             out.push(ctx.err(
                 "E007",
@@ -156,16 +192,28 @@ pub fn check_document(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     }
     ctx.schema_checked = true;
     let mut schema_failed = false;
-    for message in validate_against_schema(&parsed) {
+    let split = |message: &str| match message.split_once(": ") {
+        Some((l, d)) if !d.is_empty() => (l.to_string(), d.to_string()),
+        _ => (message.to_string(), message.to_string()),
+    };
+    let version = ctx.version.clone().unwrap_or_else(|| crate::version::BASE_VERSION.to_string());
+    let (errors, tolerated) = validate_document_version(&parsed, &version);
+    for message in errors {
         schema_failed = true;
-        let (location, detail) = match message.split_once(": ") {
-            Some((l, d)) if !d.is_empty() => (l.to_string(), d.to_string()),
-            _ => (message.clone(), message.clone()),
-        };
+        let (location, detail) = split(&message);
         out.push(ctx.err("E005", format!("/meta#{location}"), detail));
+    }
+    for message in tolerated {
+        let (location, detail) = split(&message);
+        out.push(ctx.unknown("E005", format!("/meta#{location}"), detail));
     }
     match SampleDocument::from_json(&parsed) {
         Ok(doc) => ctx.document = Some(doc),
+        Err(e) if ctx.projection => out.push(ctx.unknown(
+            e.code().unwrap_or("E005"),
+            "/meta",
+            format!("{}; the rules that read the document were not run", e.message()),
+        )),
         Err(e) => {
             let code = e.code().unwrap_or("E005").to_string();
             if !(schema_failed && code == "E005") {

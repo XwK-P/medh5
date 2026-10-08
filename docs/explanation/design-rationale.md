@@ -222,6 +222,32 @@ now defined in HDF5 and JSON terms, and one promised a reproducibility only
 NumPy's generator could give (Appendix C.1). A specification only one
 implementation can satisfy is a description of that implementation.
 
+## Clinical context and prediction tasks (1.1)
+
+Imaging rarely stands alone at training time. A model asked to forecast
+progression wants the laboratory trend, the report and the earlier visit ---
+and the moment it is asked to predict at. The question 1.1 answers is not
+"how do we store clinical data" (EHRs and MEDS do) but "how does a training
+pipeline know what was knowable when". Each choice below follows from that.
+
+| Decision | Why | Alternative weighed |
+|---|---|---|
+| **A minor version, and an optional profile** | Additive: no image, grid, annotation or transform changes meaning, a 1.0 file stays valid, and a sample without clinical records is still written as 1.0 --- so every existing reader keeps working on the data it already reads. | A 2.0 with a subject-first core. Right if image-free subjects become a requirement, which they are not yet; it would have cost every 1.x reader for nothing they need. |
+| **Two times per event, each a pair of bounds** | When something happened and when it became known are different, and a model may only use the second. A date known to the day is the day's bounds, not midnight; an unknown time is null. Precision a source never had is never invented. | One timestamp per event, which is how leakage enters most EHR-derived datasets: the final report, dated by the scan. |
+| **Immutable versions, linked by `supersedes`** | A revision is new information at a new time; editing a row would destroy what was known before it. Selection then picks the newest version available at the cutoff. | Mutable rows with an audit log --- which every reader would have to replay correctly. |
+| **Columns of primitives, text as bytes plus offsets** | Range-readable, chunkable, compressible, and digestible with the 1.0 rules unchanged: no compound types, no pickles, no group per event. Null is a mask, and a null cell is zero, so stale bytes never leak. | HDF5 compound tables (opaque to most tools, awkward to evolve); one group per event (a 100 000-event history is 100 000 groups). |
+| **Semantics in datasets, never attributes** | The 1.0 `content_id` covers dataset digests and a fixed attribute list. Keeping clinical meaning in datasets --- the descriptor included --- means the Merkle construction did not change, and an edit is found by recomputing the bytes. | New attribute lines in `content_id`, which every 1.0 verifier would compute differently. |
+| **Selection is the format's, defined once, in the engine** | What a record says about what was known when is part of its meaning. Two implementations of "strict prospective" that disagree would make "certified" meaningless, so the rules are normative (1.1 §9) and Python, Rust and the command line call one function. | A selection helper per frontend --- the drift the 2.0 engine exists to prevent. |
+| **Uncertifiable, not silently older** | A later revision of unknown availability means the older version may not have been current at the cutoff. Using it anyway turns a dependence on the future into an ordinary missing feature --- leakage that looks like data. Strict selection says so; `latest_provable` is the named alternative. | Using the newest provable version without saying so, which is what most pipelines do. |
+| **Payloads need attestation** | An annotation drawn after the cutoff is future information even when it sits on a baseline image. Inputs --- including crop centres --- come only from what an admitted event attests; supervision, like the target, may come from later. | Eligibility by visit date, under which a lesion mask drawn at follow-up centres the baseline crop. |
+| **Tasks and caches are companions, not payload** | The file is the patient source; a task is one question asked of many files, and a cache one encoder's view of them. Each is versioned on its own and pinned to the source versions it read, so a changed sample makes a cache *stale* --- told apart from a cache that is *corrupt* --- and never the other way round. | Storing training views inside samples, which would make every new task an amendment of every file. |
+| **Splits before windows, by subject** | A partition belongs to a subject, so no cutoff can put one patient on both sides; learned preprocessing records the partition it was fitted on, and a training frontend refuses one fitted on anything else. | Row-level splitting, which leaks through the rows of one patient. |
+
+The draft this implements was reviewed before a line of it was written, and
+implementing it still corrected sixteen of its clauses --- an unallocated code,
+an ambiguous dtype, a rule a validator could not check. Each correction, and
+why, is in [1.1 Appendix A](../spec/medh5-1.1.md#appendix-a--changes-from-the-reviewed-draft-and-why).
+
 ## Non-goals
 
 - **Not a PACS or an archive format.** DICOM is the archive. medh5 is the
@@ -236,6 +262,10 @@ implementation can satisfy is a description of that implementation.
   producing it is somebody else's job.
 - **Not multi-writer.** HDF5 cannot do it, and pretending otherwise would be a
   correctness lie (§14.4).
+- **Not an EHR, and not a live timeline.** The clinical profile holds the
+  source-backed history a training set needs beside its images, de-identified
+  and copied in; it is not an authoritative patient record, and appending to a
+  timeline is an amendment, not a stream.
 
 ## Where the numbers come from
 
@@ -250,5 +280,6 @@ in [Tune performance](../guides/performance.md).
 
 - **[The data model](data-model.md)** — the model these decisions produced.
 - **[What the converters refuse, and why](refusals.md)** — principle 3 applied to import and export.
-- **[Specification](../spec/medh5-1.0.md)** — the normative statement.
+- **[Specification](../spec/medh5-1.0.md)** — the normative statement, with
+  [1.1](../spec/medh5-1.1.md) and the [task and cache contract](../spec/task-cache-1.md).
 - **[Changelog](../changelog.md)** — what changed in each release since 1.0.

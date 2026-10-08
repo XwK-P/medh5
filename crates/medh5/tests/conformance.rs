@@ -55,3 +55,27 @@ fn a_published_suite_scores_a_foreign_report() {
     std::fs::write(dir.path().join("core-minimal.medh5"), b"not the published bytes").unwrap();
     assert_eq!(check_checksums(dir.path()).unwrap(), ["core-minimal.medh5"]);
 }
+
+#[test]
+fn the_task_and_cache_fixtures_hold() {
+    use medh5::conformance::companion::{run_fixtures, write_fixtures, SOURCES};
+    let dir = tempfile::tempdir().unwrap();
+    let names: Vec<String> = SOURCES.iter().map(|f| f.trim_end_matches(".medh5").to_string()).collect();
+    build_corpus(dir.path(), Some(&names)).unwrap();
+    let written = write_fixtures(dir.path()).unwrap();
+    assert!(written.len() >= 14);
+    let codes: std::collections::BTreeSet<String> = written.iter().flat_map(|f| f.findings.iter().cloned()).collect();
+    for code in ["T101", "T102", "T103", "T201", "T202", "T203", "T204", "T301", "T302", "T303", "T304", "T305", "T306"]
+    {
+        assert!(codes.contains(code), "no fixture for {code}");
+    }
+    let results = run_fixtures(dir.path()).unwrap();
+    let failures: Vec<_> = results.iter().filter(|r| !r.ok()).collect();
+    assert!(failures.is_empty(), "{failures:#?}");
+
+    // A published suite carries them, under its checksums.
+    let suite = tempfile::tempdir().unwrap();
+    publish(suite.path(), Some(&names)).unwrap();
+    assert!(suite.path().join("companion/expected.json").exists());
+    assert!(check_checksums(suite.path()).unwrap().is_empty());
+}

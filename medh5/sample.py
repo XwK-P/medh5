@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterator, Mapping, Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import numpy.typing as npt
@@ -42,6 +42,9 @@ from medh5.image import Image
 from medh5.labels import LabelSet
 from medh5.storage import SamplingIndex
 from medh5.transforms import Transform, wrap_transform
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from medh5.clinical import Clinical
 
 FORMAT_VERSION: str = _core.FORMAT_VERSION
 PROFILES: tuple[str, ...] = _core.PROFILES
@@ -186,6 +189,7 @@ class Sample:
 
     __slots__ = (
         "_annotations",
+        "_clinical",
         "_document",
         "_grids",
         "_handle",
@@ -206,6 +210,7 @@ class Sample:
         self._transforms: _Collection | None = None
         self._index: dict[str, SamplingIndex] | None = None
         self._resolved: dict[tuple[str, str], Transform | None] = {}
+        self._clinical: tuple[Clinical | None] | None = None
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -275,6 +280,24 @@ class Sample:
     def content_id(self) -> str | None:
         found: str | None = self._handle.content_id
         return found
+
+    @property
+    def support(self) -> str:
+        """``"full"``, or ``"projection"`` for a higher minor version: read as
+        what this engine knows, validated with W913, and never amended
+        (1.1 §2.2)."""
+        return str(self._handle.support)
+
+    @property
+    def clinical(self) -> Clinical | None:
+        """The ``clinical`` profile's records (format 1.1), or ``None`` when
+        the sample does not declare the profile."""
+        if self._clinical is None:
+            from medh5.clinical import Clinical
+
+            handle = self._handle.clinical()
+            self._clinical = (None if handle is None else Clinical(handle),)
+        return self._clinical[0]
 
     # -- objects -----------------------------------------------------------
 

@@ -11,7 +11,8 @@
 //! ```text
 //! E0xx  container      E1xx  geometry     E2xx  images
 //! E3xx  label set      E4xx  annotations  E5xx  transforms
-//! E6xx  curation       E7xx  integrity    W9xx  warnings
+//! E6xx  curation       E7xx  integrity    E8xx  clinical (1.1)
+//! W9xx  warnings
 //! ```
 
 use std::sync::OnceLock;
@@ -39,8 +40,8 @@ struct Table {
 }
 
 /// The domains, in the order the specification lists them.
-pub const DOMAINS: [&str; 8] =
-    ["container", "geometry", "images", "labels", "annotations", "transforms", "curation", "integrity"];
+pub const DOMAINS: [&str; 9] =
+    ["container", "geometry", "images", "labels", "annotations", "transforms", "curation", "integrity", "clinical"];
 
 /// Every code, in table order.
 pub fn all() -> &'static [Code] {
@@ -78,7 +79,7 @@ mod tests {
     #[test]
     fn table_is_complete_and_well_formed() {
         let codes = all();
-        assert_eq!(codes.len(), 71);
+        assert_eq!(codes.len(), 93);
         for c in codes {
             let expected = if c.code.starts_with('W') { "warning" } else { "error" };
             assert_eq!(c.severity, expected, "{}", c.code);

@@ -34,11 +34,11 @@ use crate::{Error, Result, VERSION};
 /// The seed every case draws its voxels from.
 pub const SEED: u64 = 20260815;
 
-const SHAPE: [usize; 3] = [16, 24, 24];
-const SPACING: [f64; 3] = [1.5, 0.8, 0.8];
+pub(super) const SHAPE: [usize; 3] = [16, 24, 24];
+pub(super) const SPACING: [f64; 3] = [1.5, 0.8, 0.8];
 const ORIGIN: [f64; 3] = [-12.0, -9.6, -9.6];
-const FRAME0: &str = "pseudo:frame-100";
-const FRAME1: &str = "pseudo:frame-101";
+pub(super) const FRAME0: &str = "pseudo:frame-100";
+pub(super) const FRAME1: &str = "pseudo:frame-101";
 
 /// The classes `_seg_base` annotates by default: liver, spleen, and a lesion
 /// overlapping the liver --- two layers' worth.
@@ -48,7 +48,7 @@ const EXCLUSIVE: [(i64, [usize; 3]); 3] = [(1, [2, 2, 2]), (2, [2, 12, 2]), (4, 
 
 // -- case construction ------------------------------------------------------------
 
-fn case(
+pub(super) fn case(
     name: &str,
     description: &str,
     clause: &str,
@@ -68,34 +68,34 @@ fn case(
 }
 
 impl Case {
-    fn errors(mut self, codes: &[&str]) -> Case {
+    pub(super) fn errors(mut self, codes: &[&str]) -> Case {
         self.errors = codes.iter().map(|c| c.to_string()).collect();
         self
     }
 
-    fn warnings(mut self, codes: &[&str]) -> Case {
+    pub(super) fn warnings(mut self, codes: &[&str]) -> Case {
         self.warnings = codes.iter().map(|c| c.to_string()).collect();
         self
     }
 
-    fn level(mut self, level: &str) -> Case {
+    pub(super) fn level(mut self, level: &str) -> Case {
         self.level = level.into();
         self
     }
 
-    fn collection(mut self) -> Case {
+    pub(super) fn collection(mut self) -> Case {
         self.suffix = ".medh5c".into();
         self
     }
 
-    fn mutated(mut self) -> Case {
+    pub(super) fn mutated(mut self) -> Case {
         self.mutated = true;
         self
     }
 }
 
 /// A case made by building `base` and then editing it with `mutation`.
-fn invalid(
+pub(super) fn invalid(
     name: &str,
     description: &str,
     clause: &str,
@@ -135,7 +135,7 @@ fn invalid_seg(
 
 // -- small helpers ------------------------------------------------------------------
 
-fn fields(value: Value) -> Map<String, Value> {
+pub(super) fn fields(value: Value) -> Map<String, Value> {
     match value {
         Value::Object(m) => m,
         _ => Map::new(),
@@ -150,11 +150,11 @@ fn ids(values: &[i64]) -> Vec<ClassKey> {
     values.iter().map(|v| ClassKey::Id(*v)).collect()
 }
 
-fn dims(shape: &[usize]) -> Vec<i64> {
+pub(super) fn dims(shape: &[usize]) -> Vec<i64> {
     shape.iter().map(|v| *v as i64).collect()
 }
 
-fn stem(path: &Path) -> String {
+pub(super) fn stem(path: &Path) -> String {
     path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
@@ -169,12 +169,12 @@ fn eye4() -> ArrayD<f64> {
 }
 
 /// Random `int16` values in `[-1000, 1500)`: a CT volume.
-fn ct_volume(rng: &mut Rng, shape: &[usize]) -> Result<NdArray> {
+pub(super) fn ct_volume(rng: &mut Rng, shape: &[usize]) -> Result<NdArray> {
     integers(rng, -1000, 1500, shape, DType::I16)
 }
 
 /// Random integers in `[low, high)`, as `dtype`.
-fn integers(rng: &mut Rng, low: i64, high: i64, shape: &[usize], dtype: DType) -> Result<NdArray> {
+pub(super) fn integers(rng: &mut Rng, low: i64, high: i64, shape: &[usize], dtype: DType) -> Result<NdArray> {
     let n = shape.iter().product();
     NdArray::from_vec(shape, rng.integers(low, high, n)?)?.reshape(shape).map(|a| a.astype(dtype))
 }
@@ -192,7 +192,7 @@ fn uniform32(rng: &mut Rng, shape: &[usize]) -> Result<NdArray> {
 }
 
 /// `mask[c0:c0+e0, c1:c1+e1, ...] = True`, clipped like a NumPy slice.
-fn block(shape: &[usize], corner: &[usize], extent: &[usize]) -> ArrayD<bool> {
+pub(super) fn block(shape: &[usize], corner: &[usize], extent: &[usize]) -> ArrayD<bool> {
     let mut mask = ArrayD::from_elem(IxDyn(shape), false);
     mask.slice_each_axis_mut(|ax| {
         let i = ax.axis.index();
@@ -244,7 +244,7 @@ fn label_set() -> Result<LabelSet> {
     label_set_with(Vec::new())
 }
 
-fn quantitative(prov: Option<String>) -> ImageOptions {
+pub(super) fn quantitative(prov: Option<String>) -> ImageOptions {
     ImageOptions { value_type: Some("quantitative".into()), value_units: Some("HU".into()), prov, ..Default::default() }
 }
 
@@ -252,12 +252,16 @@ fn on_timepoint(timepoint: &str) -> GridOptions {
     GridOptions { timepoint: Some(timepoint.into()), ..Default::default() }
 }
 
-fn psi() -> Map<String, Value> {
+pub(super) fn psi() -> Map<String, Value> {
     fields(json!({"method": "dicom-psi-profile"}))
 }
 
 /// Create, fill, commit: `with medh5.create(...) as w:`.
-fn write(path: &Path, subject: Option<&str>, body: impl FnOnce(&mut SampleWriter) -> Result<()>) -> Result<()> {
+pub(super) fn write(
+    path: &Path,
+    subject: Option<&str>,
+    body: impl FnOnce(&mut SampleWriter) -> Result<()>,
+) -> Result<()> {
     let mut writer = create(path, Some(&stem(path)), subject, "portable", &[])?;
     body(&mut writer)?;
     writer.commit(true)?;
@@ -267,7 +271,7 @@ fn write(path: &Path, subject: Option<&str>, body: impl FnOnce(&mut SampleWriter
 // -- editing a committed file -----------------------------------------------------------
 
 /// Open `path` read-write, edit it, close it.
-fn mutate(path: &Path, edit: impl FnOnce(&hdf5::Group) -> Result<()>) -> Result<()> {
+pub(super) fn mutate(path: &Path, edit: impl FnOnce(&hdf5::Group) -> Result<()>) -> Result<()> {
     crate::h5::init();
     let file = hdf5::File::open_rw(path)?;
     let root = file.as_group()?;
@@ -278,7 +282,7 @@ fn mutate(path: &Path, edit: impl FnOnce(&hdf5::Group) -> Result<()>) -> Result<
 }
 
 /// Run `op` on the object at `path` (`""` is the root).
-fn on_object<T>(root: &hdf5::Group, path: &str, op: impl FnOnce(&hdf5::Location) -> Result<T>) -> Result<T> {
+pub(super) fn on_object<T>(root: &hdf5::Group, path: &str, op: impl FnOnce(&hdf5::Location) -> Result<T>) -> Result<T> {
     if path.is_empty() {
         return op(root);
     }
@@ -295,15 +299,15 @@ fn on_object<T>(root: &hdf5::Group, path: &str, op: impl FnOnce(&hdf5::Location)
     }
 }
 
-fn set_attr(root: &hdf5::Group, path: &str, name: &str, value: AttrValue) -> Result<()> {
+pub(super) fn set_attr(root: &hdf5::Group, path: &str, name: &str, value: AttrValue) -> Result<()> {
     on_object(root, path, |obj| attrs::write(obj, name, &value))
 }
 
-fn set_str(root: &hdf5::Group, path: &str, name: &str, value: &str) -> Result<()> {
+pub(super) fn set_str(root: &hdf5::Group, path: &str, name: &str, value: &str) -> Result<()> {
     set_attr(root, path, name, AttrValue::Str(value.into()))
 }
 
-fn del_attr(root: &hdf5::Group, path: &str, name: &str) -> Result<()> {
+pub(super) fn del_attr(root: &hdf5::Group, path: &str, name: &str) -> Result<()> {
     on_object(root, path, |obj| attrs::delete(obj, name))
 }
 
@@ -311,11 +315,11 @@ fn uint16s(values: &[u16]) -> Result<AttrValue> {
     Ok(AttrValue::Array(NdArray::from_vec(&[values.len()], values.to_vec())?))
 }
 
-fn split_path(path: &str) -> (&str, &str) {
+pub(super) fn split_path(path: &str) -> (&str, &str) {
     path.rsplit_once('/').unwrap_or(("", path))
 }
 
-fn parent_of(root: &hdf5::Group, path: &str) -> Result<(hdf5::Group, String)> {
+pub(super) fn parent_of(root: &hdf5::Group, path: &str) -> Result<(hdf5::Group, String)> {
     let (parent, name) = split_path(path);
     let group = if parent.is_empty() { root.clone() } else { root.group(parent)? };
     Ok((group, name.to_string()))
@@ -324,7 +328,7 @@ fn parent_of(root: &hdf5::Group, path: &str) -> Result<(hdf5::Group, String)> {
 /// Replace a dataset by a contiguous, unfiltered copy of its values in
 /// `dtype`, keeping its attributes --- what `del d; create_dataset(data=...)`
 /// does in h5py.
-fn rewrite_dataset(root: &hdf5::Group, path: &str, dtype: Option<DType>) -> Result<()> {
+pub(super) fn rewrite_dataset(root: &hdf5::Group, path: &str, dtype: Option<DType>) -> Result<()> {
     let (group, name) = parent_of(root, path)?;
     let old = group.dataset(&name)?;
     let values = data::read(&old)?;
@@ -355,7 +359,7 @@ fn edit_values(root: &hdf5::Group, path: &str, edit: impl FnOnce(&mut ArrayD<f64
 }
 
 /// Re-read `/meta`, edit the document, store it back as `json.dumps` would.
-fn set_meta(root: &hdf5::Group, edit: impl FnOnce(&mut Map<String, Value>)) -> Result<()> {
+pub(super) fn set_meta(root: &hdf5::Group, edit: impl FnOnce(&mut Map<String, Value>)) -> Result<()> {
     let text = data::read_scalar_string(&root.dataset("meta")?)?;
     let mut doc = fields(serde_json::from_str(&text)?);
     edit(&mut doc);
@@ -403,7 +407,7 @@ fn label_classes(doc: &mut Map<String, Value>) -> &mut Vec<Value> {
 ///
 /// Used only where the edit is something a writer would do; invalid cases
 /// deliberately skip it, which is what makes E701/E702 reachable at all.
-fn restamp(path: &Path) -> Result<()> {
+pub(super) fn restamp(path: &Path) -> Result<()> {
     mutate(path, |root| {
         stamp_digests(root, "sha256", &["index"], false)?;
         let names = attr_name_map_of(root)?;
@@ -1425,7 +1429,7 @@ fn break_affine_last_row(root: &hdf5::Group) -> Result<()> {
 
 /// Every case, in corpus order.
 pub(super) fn registry() -> Vec<Case> {
-    let mut cases = Vec::with_capacity(117);
+    let mut cases = Vec::with_capacity(152);
     valid_cases(&mut cases);
     first_invalid_batch(&mut cases);
     second_batch(&mut cases);
@@ -1435,6 +1439,8 @@ pub(super) fn registry() -> Vec<Case> {
     tracking_and_collection_cases(&mut cases);
     fourth_batch(&mut cases);
     fifth_batch(&mut cases);
+    // 2.1 / format 1.1: the clinical profile.
+    cases.extend(super::clinical::cases());
     cases
 }
 
@@ -2250,11 +2256,11 @@ mod tests {
     #[test]
     fn the_registry_holds_every_case_once() {
         let cases = registry();
-        assert_eq!(cases.len(), 117);
+        assert_eq!(cases.len(), 152);
         let mut names: Vec<&str> = cases.iter().map(|c| c.name.as_str()).collect();
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), 117);
+        assert_eq!(names.len(), 152);
     }
 
     #[test]

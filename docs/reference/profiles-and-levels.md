@@ -74,6 +74,7 @@ s.profiles   # {"core", "seg", "det", "curation", "longitudinal"}
 | `multiscale` | the §4.3 pyramid layout on every image |
 | `training` | a sampling index, present and current |
 | `longitudinal` | at least two declared timepoints, each grid bound to one, and stable instance ids for objects seen at more than one visit (§7.4) |
+| `clinical` | **format 1.1**: the `clinical/` group --- a canonical descriptor with the subject clock, at least one event, and the documents and links the events use ([1.1](../spec/medh5-1.1.md) §3–§7) |
 
 `--profile` **overrides** what the file claims, which is the useful direction: a
 tool can require `det` and get a diagnostic whether or not the file thought to
@@ -100,8 +101,16 @@ requirement can be checked that way:
   different visits sharing a `frame_uid`, and `W911` a multi-timepoint sample
   with no transform relating any two visits.
 
+- **`clinical`** — declaring it in a 1.0 file, or declaring it without the
+  group or without events, is `E009`; the group without the declaration is
+  `E803`. The profile's own rules are the `E8xx` codes, and a numeric value
+  without a unit is `W914`. A file of a later minor than this package
+  implements is validated as a *projection*: what is known is checked, what is
+  not is `W913`.
+
 `w.infer_profiles()` sets them from what was actually written, so a writer
-rarely declares them by hand.
+rarely declares them by hand. It also sets the version: a sample is written as
+1.0 unless it declares `clinical`.
 
 ## Related
 

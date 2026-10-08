@@ -1,8 +1,11 @@
 """medh5 --- a self-describing HDF5 container for one medical imaging sample.
 
 A **sample** is one subject at one or more timepoints, with every image,
-annotation, transform and curation record about them in a single file.  See
-``docs/spec/medh5-1.0.md`` for the normative format specification.
+annotation, transform and curation record about them in a single file --- and,
+from format 1.1, the clinical history around them (``medh5.clinical``).  See
+``docs/spec/medh5-1.0.md`` and ``docs/spec/medh5-1.1.md`` for the normative
+format specification; tasks and feature caches over samples are the companion
+contract of ``docs/spec/task-cache-1.md`` (``medh5.task``, ``medh5.cache``).
 
 .. code-block:: python
 
@@ -19,8 +22,10 @@ the old layout, not an implementation of it.
 The format engine is Rust (the ``medh5`` crate); this package is its Python
 face.  ``__version__`` is the engine's --- the Cargo workspace version, stamped
 on the wheel, into every file's ``generator`` and into every manifest --- and
-``__format_version__`` the format version it writes.  The collection and
-sampling tools load on first use.
+``__format_version__`` the newest format version it writes.  A sample is
+written at the lowest version its content needs: 1.0 for imaging alone, 1.1
+with the clinical profile.  The collection, sampling, task and cache tools load
+on first use.
 """
 
 from __future__ import annotations
@@ -84,6 +89,9 @@ _LAZY: dict[str, tuple[str, str]] = {
     "TimepointPair": ("medh5.sampling", "TimepointPair"),
     "TimepointPairSampler": ("medh5.sampling", "TimepointPairSampler"),
     "grid_patches": ("medh5.sampling", "grid_patches"),
+    "TaskManifest": ("medh5.task", "TaskManifest"),
+    "FeatureCache": ("medh5.cache", "FeatureCache"),
+    "validate_cache": ("medh5.cache", "validate_cache"),
 }
 
 
@@ -115,6 +123,7 @@ __all__ = [
     "Cohort",
     "Collection",
     "Deidentification",
+    "FeatureCache",
     "Grid",
     "Identity",
     "Image",
@@ -138,6 +147,7 @@ __all__ = [
     "SampleWriter",
     "SplitAudit",
     "SplitClaim",
+    "TaskManifest",
     "Timeline",
     "Timepoint",
     "TimepointPair",
@@ -157,4 +167,5 @@ __all__ = [
     "open_sample",
     "pack",
     "unpack",
+    "validate_cache",
 ]

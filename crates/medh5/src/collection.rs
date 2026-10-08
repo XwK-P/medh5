@@ -15,7 +15,7 @@ use crate::h5::ops;
 use crate::ids::validate_sample_key;
 use crate::json::{repr_list, repr_str};
 use crate::sample::{require_major, Sample};
-use crate::{Error, Result, FORMAT_VERSION};
+use crate::{Error, Result};
 
 /// Conventional extension for a collection file (§2.1).
 pub const SUFFIX: &str = ".medh5c";
@@ -257,12 +257,23 @@ pub fn pack(sources: &[&Path], out: &Path, keys: Option<&[String]>) -> Result<Pa
     let file = AtomicFile::create(out)?;
     let result = (|| -> Result<()> {
         let handle = file.handle();
-        attrs::write(handle, "medh5_version", &AttrValue::Str(FORMAT_VERSION.into()))?;
         attrs::write(handle, "medh5_kind", &AttrValue::Str("collection".into()))?;
         let group = handle.create_group(SAMPLES_GROUP)?;
+        // The outer root declares the highest version of what it holds
+        // (1.1 §8); each member keeps its own.
+        let mut outer = crate::version::BASE_VERSION.to_string();
         for (key, source) in chosen.iter().zip(sources) {
             let src = open_read(source)?;
-            require_major(&src, source)?;
+            let version = require_major(&src, source)?;
+            if crate::version::support(&version) != crate::version::Support::Full {
+                return Err(Error::Version(format!(
+                    "{} is MEDH5 {version}; this engine packs only versions it implements (up to {}), because the \
+                     collection's own version must cover every member's",
+                    repr_str(&source.to_string_lossy()),
+                    crate::FORMAT_VERSION
+                )));
+            }
+            outer = crate::version::later(&outer, &version).to_string();
             if is_collection(&src)? {
                 return Err(Error::coded(
                     "E006",
@@ -272,6 +283,7 @@ pub fn pack(sources: &[&Path], out: &Path, keys: Option<&[String]>) -> Result<Pa
             let member = group.create_group(key)?;
             copy_root(&src.as_group()?, &member)?;
         }
+        attrs::write(handle, "medh5_version", &AttrValue::Str(outer))?;
         Ok(())
     })();
     match result {
@@ -294,7 +306,9 @@ fn write_sample_root(src: &hdf5::Group, destination: &Path) -> Result<()> {
         copy_root(src, &root)?;
         attrs::write(handle, "medh5_kind", &AttrValue::Str("sample".into()))?;
         if !attrs::has(handle, "medh5_version") {
-            attrs::write(handle, "medh5_version", &AttrValue::Str(FORMAT_VERSION.into()))?;
+            // A member always carries its own version; one that lost it is
+            // read as the oldest version, never promoted (1.1 §8).
+            attrs::write(handle, "medh5_version", &AttrValue::Str(crate::version::BASE_VERSION.into()))?;
         }
         Ok(())
     })();

@@ -392,10 +392,72 @@ with medh5.amend("case.medh5") as w:
 ```
 
 Copy-on-write: a new file is built from the old and replaced atomically.
-Objects this reader does not understand — including ones written by a future
-minor version — are copied through untouched, so amending never silently drops
-what it cannot read. Anything holding the file open across an `amend` keeps
-reading the old version.
+Objects this reader does not understand — a `x_` group, an unknown attribute —
+are copied through untouched, so amending never silently drops what it cannot
+read. A file it cannot preserve is refused before anything is written: a later
+minor version (read as a projection, `MEDH5VersionError`) or a profile this
+package does not implement (`E007`). Anything holding the file open across an
+`amend` keeps reading the old version.
+
+## Clinical history (format 1.1)
+
+```python
+from medh5.clinical import HOUR
+
+with medh5.open("cohort/P-03.medh5") as s:
+    s.version                          # "1.1"; imaging-only samples stay "1.0"
+    s.support                          # "full", or "projection" for a later minor
+    c = s.clinical                     # -> Clinical, or None without the profile
+    c.clock                            # Clock(id, reference, origin_description, unit)
+    c.events                           # (Event, ...) in stored order
+    c.event("lab0").available_us       # inclusive (lo, hi) bounds, or None
+    c.documents                        # (DocumentInfo, ...): no text read yet
+    c.text("report0_text_v1")          # one document's text, read now
+    c.links                            # (Link, ...)
+    chosen = c.select(24 * HOUR)       # -> Selection, strict prospective
+    chosen.certified, chosen.event_ids
+    chosen.admits("image", "CT_tp0")   # may an input read this payload?
+    c.records()                        # -> ClinicalRecords: everything, as one bundle
+```
+
+| | |
+|---|---|
+| `Clock.relative(id, origin)` | The subject clock every time is measured on |
+| `Event(event_id, record_id, kind, temporal_type, status, ...)` | One immutable version; times as `(lo, hi)` microseconds (an `int` is an exact instant) |
+| `Document(document_id, text, ...)` | Source text, owned by one `document` event |
+| `Link.between(source, relation, target, asserted_by=None, span=None)` | A typed relationship between sample-relative objects |
+| `SelectionPolicy(...)` | Context window, kinds, plans, limits, ties (contract §3.4) |
+| `select(events, links, cutoff_us, policy)` | Selection over records not read from a file |
+| `augment(path, records, out=None)` | Add a history to a 1.0 or 1.1 sample; returns the report |
+| `strip(path, out)` | The imaging projection, as a new 1.0 file |
+| `imaging_events_from_timepoints(path)` | Day-precision imaging events from `days_from_baseline` |
+
+The writer takes the records one at a time --- `w.set_clock(...)`,
+`w.add_event(...)`, `w.add_document(...)`, `w.add_link(...)` --- or as a
+bundle, `w.add_records(records)`; each accepts the dataclass, a dict, or
+keywords. See [Clinical history beside the images](../guides/clinical.md).
+
+## Tasks and caches
+
+```python
+from medh5.task import TaskManifest
+
+task = TaskManifest.load("cohort/progression.task.json")
+task.task_fingerprint                  # the definition; not the rows
+report = task.preflight()              # -> Preflight: every row, eligible or why not
+report.counts, report.findings
+row = report.row("P-01@24h")           # -> RowView
+row.events, row.slots["ct"].image_id, row.target.status
+```
+
+| Module | |
+|---|---|
+| `medh5.task` | `TaskManifest`, `SourceRef` (`pin`, `check`), `Slot`, `Target`, `preflight`, `Preflight`, `RowView`, `Finding` |
+| `medh5.cache` | `CacheWriter`, `FeatureCache`, `validate_cache` (`CacheReport.stale` / `.corrupt`), `fitted_on`, `build_document_cache`, `HashingTextEncoder` |
+| `medh5.torch` | `ClinicalTaskDataset`, `ConceptVocabulary`, `collate_clinical` ([PyTorch](torch.md#clinical-tasks-format-11)) |
+
+The contract is [Task and cache contract 1](../spec/task-cache-1.md); the
+walk-through is [Train on clinical tasks](../guides/clinical-training.md).
 
 ## Collections
 
@@ -449,6 +511,8 @@ so a caller can branch on the defect rather than on the message text.
 | `medh5.dataset` | [Cohort manifests, splits, statistics](../guides/cohorts.md) |
 | `medh5.curation` | [Provenance, agreement, tracking, de-identification](curation.md) |
 | `medh5.conformance` | [The conformance suite](../spec/conformance.md) |
+| `medh5.clinical` | [The clinical profile](../guides/clinical.md) (format 1.1) |
+| `medh5.task`, `medh5.cache` | [Tasks and feature caches](../guides/clinical-training.md) |
 | `medh5.storage` | [Codecs, chunking, recompression](storage.md) |
 
 ## Related
@@ -456,4 +520,5 @@ so a caller can branch on the defect rather than on the message text.
 - **[Write and read your first sample](../tutorials/first-sample.md)** — this API end to end.
 - **[How-to guides](../guides/index.md)** — the same calls, arranged by task.
 - **[Sample document schema](schema.md)** — the fields the writer writes.
-- **[Specification](../spec/medh5-1.0.md)** — the normative model behind it.
+- **[Specification](../spec/medh5-1.0.md)** — the normative model behind it, and
+  [1.1](../spec/medh5-1.1.md) for the clinical profile.

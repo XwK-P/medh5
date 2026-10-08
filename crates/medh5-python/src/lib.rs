@@ -12,6 +12,7 @@ use pyo3::prelude::*;
 
 pub mod annotations;
 pub mod cli;
+pub mod clinical;
 pub mod conformance;
 pub mod convert;
 pub mod curation;
@@ -60,5 +61,6 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     curation_tools::register(m)?;
     sampling::register(m)?;
     io::register(m)?;
+    clinical::register(m)?;
     Ok(())
 }

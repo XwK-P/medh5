@@ -320,6 +320,20 @@ pub fn validate_file(path: &Path, level: &str, profiles: Option<&[String]>) -> R
     }
 }
 
+/// The clinical profile's errors in one sample root (E8xx, and the document
+/// and declaration rules they rest on), without the bulk-data rules: what a
+/// task's preflight asks of each source it will select from.
+pub fn clinical_errors(root: &hdf5::Group, path: &str) -> Result<Vec<Diagnostic>> {
+    let declared = attrs::get_strs(root, "medh5_profiles")?.unwrap_or_default();
+    let mut ctx = rules::Context::new(root.clone(), path, "semantic", declared, true);
+    let mut out = Vec::new();
+    for rule in [rules::check_document as rules::Rule, rules::check_clinical, rules::check_clinical_records] {
+        out.extend(rule(&mut ctx)?);
+    }
+    out.retain(|d| d.severity == "error" && (d.code.starts_with("E8") || d.code == "E009" || d.code == "E004"));
+    Ok(out)
+}
+
 /// Validate many files, one report each.
 pub fn validate_paths(paths: &[&Path], level: &str, profiles: Option<&[String]>) -> Result<Vec<Report>> {
     paths.iter().map(|p| validate_file(p, level, profiles)).collect()

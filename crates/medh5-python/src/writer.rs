@@ -1228,6 +1228,79 @@ impl SampleWriter {
         Ok(py.detach(move || writer.commit(digests))?)
     }
 
+    // -- the clinical profile (format 1.1) --------------------------------------------------------
+
+    /// Declare the subject clock, starting the `clinical` profile (1.1 §3).
+    #[pyo3(signature = (clock=None, **fields))]
+    fn set_clock<'py>(
+        &mut self,
+        py: Python<'py>,
+        clock: Option<&Bound<'py, PyAny>>,
+        fields: Option<&Bound<'py, PyDict>>,
+    ) -> R<Bound<'py, PyAny>> {
+        let doc = crate::clinical::record_with(clock, fields)?;
+        let clock = medh5::clinical::Clock::from_json(&doc)?;
+        Ok(crate::convert::json_to_py(py, &self.writer()?.set_clock(clock)?.to_json())?)
+    }
+
+    /// Add one event version (1.1 §5): an `Event`, a dict, or keywords.
+    #[pyo3(signature = (event=None, **fields))]
+    fn add_event<'py>(
+        &mut self,
+        py: Python<'py>,
+        event: Option<&Bound<'py, PyAny>>,
+        fields: Option<&Bound<'py, PyDict>>,
+    ) -> R<Bound<'py, PyAny>> {
+        let event = crate::clinical::event_arg(event, fields)?;
+        Ok(crate::convert::json_to_py(py, &self.writer()?.add_event(event)?.to_json())?)
+    }
+
+    /// Add one source document (1.1 §6).
+    #[pyo3(signature = (document=None, **fields))]
+    fn add_document<'py>(
+        &mut self,
+        py: Python<'py>,
+        document: Option<&Bound<'py, PyAny>>,
+        fields: Option<&Bound<'py, PyDict>>,
+    ) -> R<Bound<'py, PyAny>> {
+        let doc = medh5::clinical::Document::from_json(&crate::clinical::record_with(document, fields)?)?;
+        Ok(crate::convert::json_to_py(py, &self.writer()?.add_document(doc)?.to_json())?)
+    }
+
+    /// Add one typed link (1.1 §7).
+    #[pyo3(signature = (link=None, **fields))]
+    fn add_link<'py>(
+        &mut self,
+        py: Python<'py>,
+        link: Option<&Bound<'py, PyAny>>,
+        fields: Option<&Bound<'py, PyDict>>,
+    ) -> R<Bound<'py, PyAny>> {
+        let link = medh5::clinical::Link::from_json(&crate::clinical::record_with(link, fields)?)?;
+        Ok(crate::convert::json_to_py(py, &self.writer()?.add_link(link)?.to_json())?)
+    }
+
+    /// Add a logical-record bundle (`{"clinical", "events", "documents", "links"}`).
+    fn add_records(&mut self, records: &Bound<'_, PyAny>) -> R<()> {
+        let records = medh5::clinical::ClinicalRecords::from_json(&crate::clinical::record(records)?)?;
+        Ok(self.writer()?.add_records(records)?)
+    }
+
+    /// The clinical records so far (an amended file's once loaded), or `None`.
+    fn clinical<'py>(&mut self, py: Python<'py>) -> R<Option<Bound<'py, PyAny>>> {
+        let found = self.writer()?.clinical()?.map(|r| r.to_json());
+        Ok(found.map(|v| crate::convert::json_to_py(py, &v)).transpose()?)
+    }
+
+    #[getter]
+    fn has_clinical(&self) -> bool {
+        self.inner.has_clinical()
+    }
+
+    /// Remove the clinical profile: the imaging projection (1.1 §10).
+    fn drop_clinical(&mut self) -> R<()> {
+        Ok(self.writer()?.drop_clinical()?)
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "SampleWriter({}, codec={}{})",
@@ -1272,9 +1345,11 @@ fn utcnow() -> String {
     medh5::sample::writer::utcnow()
 }
 
+/// The `medh5_version` a commit writes for these profiles (1.1 §2.3).
 #[pyfunction]
-fn written_version(source: Option<&str>) -> String {
-    medh5::sample::writer::written_version(source)
+#[pyo3(signature = (source, profiles = Vec::new()))]
+fn written_version(source: Option<&str>, profiles: Vec<String>) -> String {
+    medh5::sample::writer::written_version(source, &profiles)
 }
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {

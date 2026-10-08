@@ -3,9 +3,11 @@
 The MEDH5 format engine.  A `.medh5` file is **one subject at one or more
 timepoints**, with every image, annotation, transform and curation record about
 them, in one self-describing HDF5 container.  This crate is the canonical
-implementation of format 1.0 ([the specification]): the data model, HDF5 I/O,
-validation, chunked access, compression, geometry and transforms, annotations,
-provenance and integrity.
+implementation of formats 1.0 and 1.1 ([the specification], and [1.1] for the
+optional clinical profile): the data model, HDF5 I/O, validation, chunked
+access, compression, geometry and transforms, annotations, provenance,
+integrity --- and, for 1.1, clinical events on a subject clock, strict
+prospective selection, and the [task and cache contract] training builds on.
 
 It has two siblings, and all three read and write the same bytes:
 
@@ -66,11 +68,19 @@ fn main() -> medh5::Result<()> {
 | [`collection`] | §2.2 --- packing samples into a `.medh5c` shard |
 | [`dataset`], [`sampling`] | cohort manifests, splits, statistics; patch sampling |
 | [`conformance`] | the conformance corpus third-party implementations run |
+| [`version`] | 1.1 §2 --- which versions are read fully, read as a projection, or refused |
+| [`clinical`] | 1.1 §3--§10 --- the clinical profile: records, columns, checks, selection, augmentation |
+| [`companion`] | task-cache-1 --- task manifests, source pins, preflight row views, feature caches |
 
 Errors are one [`Error`] type whose diagnostic code, when it has one, is the
 §15.2 code the validator reports for the same defect.
 
 [the specification]: https://medh5.readthedocs.io/en/latest/spec/medh5-1.0/
+[1.1]: https://medh5.readthedocs.io/en/latest/spec/medh5-1.1/
+[task and cache contract]: https://medh5.readthedocs.io/en/latest/spec/task-cache-1/
+[`version`]: https://docs.rs/medh5/latest/medh5/version/
+[`clinical`]: https://docs.rs/medh5/latest/medh5/clinical/
+[`companion`]: https://docs.rs/medh5/latest/medh5/companion/
 [`medh5-cli`]: https://crates.io/crates/medh5-cli
 [`medh5-sys`]: https://crates.io/crates/medh5-sys
 [`sample`]: https://docs.rs/medh5/latest/medh5/sample/

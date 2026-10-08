@@ -30,6 +30,12 @@ use crate::{codes, Error, Result, FORMAT_VERSION, VERSION};
 
 /// The file name the `/meta` JSON Schema is published under.
 pub const SCHEMA: &str = "medh5-sample-1.0.schema.json";
+/// The clinical profile's schema (format 1.1): `clinical/meta` and the
+/// logical-record bundle.
+pub const CLINICAL_SCHEMA: &str = crate::clinical::schema::SCHEMA_FILE;
+/// The task-and-cache contract's schemas, published beside the format's so a
+/// third-party training layer has them in the same place.
+pub const COMPANION_SCHEMAS: [&str; 2] = [crate::companion::task::SCHEMA_FILE, crate::companion::cache::SCHEMA_FILE];
 /// The checksum file covering every other published file.
 pub const CHECKSUMS: &str = "SHA256SUMS";
 
@@ -49,6 +55,14 @@ pub fn publish(outdir: &Path, names: Option<&[String]>) -> Result<PathBuf> {
     });
     fs::write(outdir.join("codes.json"), pretty(&table) + "\n")?;
     fs::write(outdir.join(SCHEMA), crate::document::schema_text())?;
+    fs::write(outdir.join(CLINICAL_SCHEMA), crate::clinical::schema::schema_text())?;
+    fs::write(outdir.join(COMPANION_SCHEMAS[0]), crate::companion::task::schema_text())?;
+    fs::write(outdir.join(COMPANION_SCHEMAS[1]), crate::companion::cache::schema_text())?;
+    // The task-and-cache fixtures read the corpus's clinical samples: they
+    // are published whenever those were.
+    if super::companion::SOURCES.iter().all(|f| outdir.join(f).exists()) {
+        super::companion::write_fixtures(outdir)?;
+    }
     fs::write(outdir.join("README.md"), readme(&chosen))?;
     write_checksums(outdir)?;
     Ok(outdir.to_path_buf())
@@ -221,6 +235,7 @@ fn readme(cases: &[&Case]) -> String {
         cases.iter().flat_map(|c| c.errors.iter().chain(&c.warnings)).map(String::as_str).collect();
     let invalid = total - valid;
     let n_covered = covered.len();
+    let (task_schema, cache_schema) = (COMPANION_SCHEMAS[0], COMPANION_SCHEMAS[1]);
     format!(
         r#"# MEDH5 {FORMAT_VERSION} conformance suite
 
@@ -237,6 +252,8 @@ specification's §15.2 table appear here.
 | `expected.json` | per case, the exact codes a conforming validator must emit |
 | `codes.json` | the §15.2 diagnostic code table as data |
 | `{SCHEMA}` | the JSON Schema for the `/meta` document |
+| `{CLINICAL_SCHEMA}` | the JSON Schema for `clinical/meta` and clinical records (format 1.1) |
+| `{task_schema}`, `{cache_schema}` | the task-and-cache contract's schemas (not part of the corpus) |
 | `{CHECKSUMS}` | sha256 of every file above |
 
 ## Running it
@@ -301,8 +318,26 @@ than being one. `"file_suffix"` in the manifest tells you which.
 conformance score` warns when a case has drifted, because a score over files
 that are not the published files is not a score.
 
-The specification is `docs/spec/medh5-{FORMAT_VERSION}.md` in the medh5
-repository, and every case names the clause it tests in `expected.json`.
+The specification is `docs/spec/medh5-1.0.md` with `docs/spec/medh5-1.1.md`
+in the medh5 repository, and every case names the clause it tests in
+`expected.json`.
+
+## The task-and-cache fixtures
+
+`companion/` holds task manifests (`medh5.task/1`) over this suite's own
+clinical samples, each pinned to the content those samples have here, and
+`companion/expected.json`: for each, the level it is checked at ---
+`validate` (the manifest alone, no file opened) or `preflight` (its sources
+opened too) --- the exact set of `T` codes checking it must find, and for a
+valid task each row's status, selected event versions, slot images and target
+label. They score an implementation of the separately versioned task-and-cache
+contract (`docs/spec/task-cache-1.md`), not the format. Resolve each source
+`uri` against the manifest's directory. With the reference implementation:
+
+```
+medh5 task validate companion/<fixture>.task.json --json
+medh5 task preflight companion/<fixture>.task.json --json
+```
 "#
     )
 }

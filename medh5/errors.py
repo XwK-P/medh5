@@ -11,7 +11,8 @@ Codes are grouped by domain::
 
     E0xx  container      E1xx  geometry     E2xx  images
     E3xx  label set      E4xx  annotations  E5xx  transforms
-    E6xx  curation       E7xx  integrity    W9xx  warnings
+    E6xx  curation       E7xx  integrity    E8xx  clinical (1.1)
+    W9xx  warnings
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ Domain = Literal[
     "transforms",
     "curation",
     "integrity",
+    "clinical",
 ]
 
 

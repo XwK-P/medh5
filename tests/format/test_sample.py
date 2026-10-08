@@ -45,7 +45,10 @@ class TestWriteRead:
         with medh5.open(sample_path) as sample:
             assert sample.identity.sample_id == "case"
             assert sample.identity.subject_id == "subj-A"
-            assert sample.version == medh5.FORMAT_VERSION
+            # Imaging alone needs 1.0, and a writer writes the lowest version
+            # its content needs (1.1 §2.3); FORMAT_VERSION is the newest.
+            assert sample.version == "1.0"
+            assert medh5.FORMAT_VERSION == "1.1"
             assert sample.kind == "sample"
             image = sample.images["CT_tp0"]
             assert image.shape == SHAPE
@@ -567,8 +570,9 @@ class TestAmendPreservesWhatItDoesNotOwn:
             assert handle.attrs["x_future_root"] == "keep-me"
             assert handle.attrs["medh5_future_thing"] == "also-keep"
             # The ones `commit` owns are still rewritten from the amended state,
-            # and `profiles` is still derived rather than inherited.
-            assert handle.attrs["medh5_version"] == medh5.__format_version__
+            # and `profiles` is still derived rather than inherited: imaging
+            # alone is written as 1.0, whatever the newest version is.
+            assert handle.attrs["medh5_version"] == "1.0"
             assert "images" in handle and "CT2" in handle["images"]
 
     @posix_modes

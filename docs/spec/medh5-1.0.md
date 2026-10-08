@@ -1481,7 +1481,10 @@ one.
   activity types and error codes. It **MUST NOT** change the meaning of existing ones, remove a
   requirement, or alter a coordinate or direction convention.
 * Readers **MUST** reject an unknown MAJOR, **MUST** accept a higher MINOR, and **MUST** ignore
-  objects, attributes and enum values they do not recognise.
+  objects, attributes and enum values they do not recognise. Accepting a higher minor is reading
+  its **supported projection**: validating that projection is not conformance to the newer version,
+  and a writer **MUST NOT** amend, recompress or pack such a file, since it cannot preserve what it
+  does not know ([1.1](medh5-1.1.md) §2.2).
 * Third-party extensions live under `/meta → extra.<reverse-dns-namespace>` and under HDF5 groups
   named `x_<namespace>_<name>`. Neither is touched by validators, and both survive amend.
 * Registering a new annotation `kind` or transform `kind` requires a MINOR bump and an entry in
@@ -1581,13 +1584,15 @@ grouping, since a 0.x file carries no reliable subject key of its own.
 
 Sections §2–§15 are **implemented** by the `medh5` format engine --- the Rust crate `medh5`, which the
 Python package and the `medh5` command line wrap --- and exercised by a conformance corpus (§15) of
-117 files: valid samples covering every encoding, annotation kind, transform kind,
+152 files: valid samples covering every encoding, annotation kind, transform kind,
 dimensionality, profile and container kind, plus one deliberately-invalid file per diagnostic code.
+The corpus includes the cases of the [1.1](medh5-1.1.md) `clinical` profile, which the same engine
+implements.
 Running the corpus against a validator is how a third-party implementation demonstrates conformance:
 
 ```
 $ medh5 conformance run ./corpus
-117/117 cases pass
+152/152 cases pass
 ```
 
 **Every code in §15.2 has a corpus case.** The implementation gates on `cargo clippy` and `rustfmt`
@@ -1600,10 +1605,10 @@ any machine. On one, with a 192×256×256 synthetic CT and eight classes, a mult
 costs 3.4 ms, foreground centre sampling 0.03 ms (O(1) in volume size, via §14.3; 0.05 ms at 63
 classes), a metadata-only read 0.19 ms, and `open()` → first patch 2.3 ms.
 
-Twenty-five clauses have been corrected — ten during implementation, eleven in the 1.x package
-releases that followed, and four when the engine was written a second time, in Rust, for the 2.0
-package — each because writing the code showed the text was not implementable, not unambiguous, or
-not what the implementation could honestly promise, as written:
+Twenty-six clauses have been corrected — ten during implementation, eleven in the 1.x package
+releases that followed, four when the engine was written a second time, in Rust, for the 2.0
+package, and one when it implemented 1.1 — each because writing the code showed the text was not
+implementable, not unambiguous, or not what the implementation could honestly promise, as written:
 
 | Clause | Correction |
 |---|---|
@@ -1632,6 +1637,7 @@ not what the implementation could honestly promise, as written:
 | §5.1, §13.2 | Canonical JSON is defined to the byte, once, for both digests that use it. §13.2 asked for "sorted-key JSON" with floats "in `repr` shortest round-trip form" --- one language's function --- and said nothing of separators or non-ASCII text, while §5.1 named those and said nothing of numbers; Python's default separators carry spaces, so a literal reading of §13.2 gave a different `content_id` for the same file. The definition is what the 1.x implementation always wrote: no digest changes. |
 | §13.1 | `dtype_str` is spelled out for every stored type, including `|O` for variable-length strings, and `shape_csv` is defined. "The NumPy dtype string" left a string dataset's header to whatever a reader's string type is called, and a second implementation would have digested every point `names` and classification `schemes` column differently. |
 | §14.3 | An index's `seed` reproduces a subsample only within the implementation that drew it. The table said `max_coords` and `seed` gave "reproducibility of the subsample", but nothing specifies the generator: 1.x drew from NumPy's, and matching it meant carrying a copy of NumPy's seeding and bounded-integer algorithms in every implementation. An index is derived and outside every digest (§13.1), so a different subsample is a different cache of the same sample. |
+| §16 | "**MUST** accept a higher MINOR" is acceptance for *reading* the supported projection, not validation of the newer version or permission to amend it. Read literally beside "amend preserves", it promised what no implementation can: a writer that rewrites a file of a later minor drops or misattests whatever that minor defines, and a validator passing such a file claims conformance to rules it has never seen. 1.1 §2.2 defines the projection, W913 and the refusal. |
 
 ### C.2 Prototype checks
 

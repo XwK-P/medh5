@@ -25,6 +25,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import sys
 import warnings
 from pathlib import Path
 from typing import Any
@@ -242,6 +243,14 @@ def workspace(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
 
     # The tutorial's own file name, so its opening example runs as written.
     shutil.copyfile(case, root / "case_0001.medh5")
+
+    # The clinical pages' cohort (format 1.1): the runnable example's own files
+    # and task manifest, so a page and the example cannot describe two cohorts.
+    example = _clinical_example()
+    cohort = example.write_cohort(root / "cohort")
+    example.progression_task(root / "cohort", cohort).save(
+        root / "cohort" / "progression.task.json"
+    )
     manifest, _ = scan(root)
     manifest.save(root / "cohort.json")
 
@@ -272,6 +281,21 @@ def workspace(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
         "paths": [str(case), str(other)],
         "nifti": nifti,
     }
+
+
+def _clinical_example() -> Any:
+    """``docs/examples/clinical_longitudinal.py``, imported from its path."""
+    import importlib.util
+
+    path = DOCS / "examples" / "clinical_longitudinal.py"
+    spec = importlib.util.spec_from_file_location("clinical_longitudinal", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    # Registered first: `dataclass` resolves its string annotations through
+    # `sys.modules`, so an unregistered module cannot define one.
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def _torch_names(workspace: dict[str, Any]) -> dict[str, Any]:

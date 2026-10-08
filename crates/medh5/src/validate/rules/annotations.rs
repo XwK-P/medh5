@@ -82,15 +82,15 @@ pub fn check_annotations(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
             continue;
         };
         if RESERVED_KINDS.contains(&kind.as_str()) {
-            out.push(ctx.err(
+            out.push(ctx.unknown(
                 "E401",
                 location,
-                format!("kind {} is reserved by spec §16 and must not appear in a 1.0 file", repr_str(&kind)),
+                format!("kind {} is reserved by spec §16 and must not appear in a 1.0 or 1.1 file", repr_str(&kind)),
             ));
             continue;
         }
         if !ANNOTATION_KINDS.contains(&kind.as_str()) {
-            out.push(ctx.err("E401", location, format!("unknown annotation kind {}", repr_str(&kind))));
+            out.push(ctx.unknown("E401", location, format!("unknown annotation kind {}", repr_str(&kind))));
             continue;
         }
         if let Some(task) = str_attr(a, "task")? {

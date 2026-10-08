@@ -56,17 +56,24 @@ cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warni
 
 ## The model
 
-**Format 1.0, package 2.0.** A `.medh5` file is **one subject at one or more
+**Format 1.1, package 2.0.** A `.medh5` file is **one subject at one or more
 timepoints**, with every image, annotation, transform and curation record about
 them. Not one scan — one subject. Most of the design follows from that: splitting
 by file is subject-safe, a change annotation has a referent, and registration
 between visits is an object in the file rather than a convention between
-filenames.
+filenames. 1.1 adds one optional profile, `clinical` — the subject's history on
+one clock, every event with when it happened *and* when it became known — and
+nothing else; a sample is written at the lowest version its content needs, so
+imaging alone is still 1.0.
 
-`docs/spec/medh5-1.0.md` is **normative**. Code implements it; when they
-disagree, one of them is a bug. Appendix C records the clauses corrected
-because implementing them showed the text was not implementable — including
-the four the Rust re-implementation found.
+`docs/spec/medh5-1.0.md` and `docs/spec/medh5-1.1.md` are **normative**. Code
+implements them; when they disagree, one of them is a bug. 1.0 Appendix C
+records the clauses corrected because implementing them showed the text was not
+implementable — including the four the Rust re-implementation found and the one
+1.1 found; 1.1 Appendix A records the changes to the reviewed 1.1 draft.
+`docs/spec/task-cache-1.md` is the **separately versioned** task-and-cache
+contract (`medh5.task/1`, `medh5.cache/1`): nothing in it is a payload
+requirement.
 
 ## Architecture
 
@@ -78,7 +85,10 @@ and the CLI are layers over it, and all three read and write the same bytes.
   (§2, §4, §14.4), `geometry` (§3), `annotations` (§5–§9), `transforms` (§10),
   `labels`, `curation` (§11–§12), `integrity` (§13), `storage` (§14),
   `validate` (§15; its rules one module per domain of the code table, E0xx …
-  E7xx), `collection`, `dataset`, `sampling`, `conformance`.
+  E8xx), `collection`, `dataset`, `sampling`, `conformance`; and for 1.1,
+  `version` (1.1 §2: full, projection, unsupported), `clinical` (1.1 §3–§10:
+  model, columns, tables, checks, schema, selection, augmentation) and
+  `companion` (task-cache-1: tasks, source pins, preflight row views, caches).
   `data/codes.json` is the §15.2 diagnostic code table (a test asserts the
   table and the spec agree); `data/` also holds the schema and vocabularies,
   embedded at compile time.
@@ -134,6 +144,19 @@ it into every file's `generator`.
   cannot read exactly as HDF5 would (another filter, a converted type, an
   unwritten chunk, a strided selection) returns `None` and `read_region` falls
   back. Widen what it accepts only with a test against `read_hyperslab`.
+- **Two times, never one.** A clinical event's *effective* time (when it
+  happened) and *available* time (when it became known) are separate pairs of
+  inclusive bounds; unknown stays null and strict selection never uses it. A
+  revision is a new immutable event linked by `supersedes`, never an edit.
+- **Inputs only through attestation.** A row reads a payload only when a
+  selected event attests it (structurally, or as `asserted_by_event_id`); crop
+  centres come from eligible annotations only. Supervision, like the target,
+  may come from after the cutoff — and never enters an input.
+- **A later minor is a projection**: read, validated as what is known, unknowns
+  `W913`, and never amended, recompressed or packed. An unknown profile refuses
+  an amendment. Known profiles are re-derived from content, as in 1.0.
+- **Caches pin `content_id`**: a changed source makes an entry *stale* (T403),
+  told apart from a cache whose own bytes are wrong (T401/T402).
 - **`amend` is copy-on-write** and replaces the file, so anything holding an open
   handle across it keeps reading the old inode. A rewrite in place closes its
   source before the rename (Windows cannot replace an open file).

@@ -128,6 +128,8 @@ nav:
       - Partial labels and coverage: guides/partial-labels.md
       - Longitudinal studies: guides/longitudinal.md
       - Registration between visits: guides/registration.md
+      - Clinical history beside the images: guides/clinical.md
+      - Train on clinical tasks: guides/clinical-training.md
       - Classification and change labels: guides/classification.md
       - Import from DICOM: guides/import-dicom.md
       - Import from NIfTI and nnU-Net: guides/import-nifti.md
@@ -162,6 +164,8 @@ nav:
 
   - Specification:
       - Format specification 1.0: spec/medh5-1.0.md
+      - Format specification 1.1 (clinical): spec/medh5-1.1.md
+      - Task and cache contract 1: spec/task-cache-1.md
       - Conformance suite: spec/conformance.md
 
   - Changelog: changelog.md

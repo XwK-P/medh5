@@ -34,7 +34,19 @@ pub fn check_integrity(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     for path in &result.mismatched {
         out.push(ctx.err("E701", format!("/{path}"), "digest does not match the stored data"));
     }
-    if result.content_id_ok() == Some(false) {
+    if result.content_id_ok() == Some(false) && ctx.projection {
+        // A later minor may cover root attributes this engine does not know:
+        // the root's integrity is unsupported here, not refuted (1.1 §2.2).
+        out.push(ctx.err(
+            "W913",
+            "/",
+            format!(
+                "`content_id` does not recompute under the rules of MEDH5 {}: the root's integrity is unsupported in \
+                 this projection, not verified (per-dataset digests were checked)",
+                crate::FORMAT_VERSION
+            ),
+        ));
+    } else if result.content_id_ok() == Some(false) {
         out.push(ctx.err(
             "E702",
             "/",

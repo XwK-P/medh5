@@ -1,11 +1,31 @@
 # Runnable examples
 
-Four standalone scripts: the benchmarks behind the measured claims in the
-[specification](../spec/medh5-1.0.md) (§7.0, §14.2, §14.3, §14.5) and the
+Eight scripts. Four are standalone: the benchmarks behind the measured claims
+in the [specification](../spec/medh5-1.0.md) (§7.0, §14.2, §14.3, §14.5) and the
 [design rationale](../explanation/design-rationale.md), and a reference writer
-that builds a complete file from the specification alone. None of them imports
+that builds a complete file from the specification alone. None of those imports
 `medh5` — they measure and exercise the *format*, with h5py and nothing between
 the reader and the bytes.
+
+The other four exercise [format 1.1](../spec/medh5-1.1.md) and the
+[task and cache contract](../spec/task-cache-1.md) through the package's public
+API, end to end, and the test suite runs each of them
+(`tests/integrations/test_clinical_training.py`):
+
+| Script | Does |
+|---|---|
+| [`clinical_longitudinal.py`](clinical_longitudinal.py) | The worked example of 1.1 §9.3 as a cohort: two CT visits, an intervening lab, a report and its revision, follow-up responses. Writes, reopens and validates every file, preflights a progression task, and prints a training batch whose rows see different visits, missing modalities and histories of different lengths |
+| [`clinical_collection.py`](clinical_collection.py) | A subject split across two members of a `.medh5c` shard: refused until its duplicated event is reconciled, then trained on through worker processes |
+| [`clinical_cache.py`](clinical_cache.py) | Event- and patient-level feature caches, then every way one stops being usable --- a source amended (stale), bytes rotted (corrupt), a whole-history embedding (inadmissible), statistics fitted on the wrong split --- and the explicit re-pin |
+| [`bench_clinical.py`](bench_clinical.py) | Write, select, read, batch, cache and amend costs on a synthetic cohort ([results below](#clinical-paths-format-11)) |
+
+```bash
+pip install "medh5[torch]"
+python docs/examples/clinical_longitudinal.py out/   # ~5 s
+python docs/examples/clinical_collection.py out2/    # ~5 s
+python docs/examples/clinical_cache.py out3/         # ~5 s
+python docs/examples/bench_clinical.py --json bench.json   # ~1 min at the defaults
+```
 
 | Script | Produces |
 |---|---|
@@ -85,6 +105,42 @@ for its current numbers, and `medh5 bench` to reproduce them.
 `d[k][roi]` against `d[(k, *roi)]` on a 160³ `uint64` bit plane: **32.8 ms
 against 0.8 ms**. The first form materialises the whole plane before slicing,
 which is why spec §14.5 requires one-call slicing of the reference reader.
+
+### Clinical paths (format 1.1)
+
+`bench_clinical.py` at its defaults: 24 subjects, each with two `64×128×128`
+`int16` CT visits (stored in `64×32×32` chunks, `training` codec), an MR at
+follow-up for every second subject, 500 coded laboratory values over four
+years, a report and its revision (≈2 KiB of text each) and two responses; a
+task of 48 rows (two cutoffs per subject) with a CT slot of `32³` and an MR slot
+of `16³`. Linux x86_64 container, 4 vCPUs, Python 3.13, NumPy 2.5, local disk;
+medians of 20 repetitions where a measurement repeats. One machine, a
+synthetic cohort: these validate the path and show where its costs are, and are
+not clinical-scale performance.
+
+| Measurement | Result |
+|---|---|
+| Write one sample, 1.1 with its history / 1.0 without | 116 ms / 87 ms |
+| Bytes per sample, 1.1 / 1.0 | 2.88 MB / 2.76 MB (+4 %) |
+| Open, read the clinical tables, select at a cutoff (cold) | 4.6 ms |
+| Select again on the open sample (507 events) | 1.5 ms |
+| One document's text | 0.02 ms |
+| A `32³` slot window: from the 1.1 file / from its 1.0 imaging projection | 0.06 ms / 0.08 ms |
+| Preflight of the whole task (24 sources, 48 rows; every pin and clinical digest re-verified) | 0.86 s |
+| Build / validate the event-level report cache (48 entries) | 0.47 s / 0.27 s |
+| Batches of 8, documents encoded on the fly: 0 / 2 workers | 171 / 158 rows/s |
+| Batches of 8, documents from the cache: 0 / 2 workers | 505 / 187 rows/s |
+| Amend one sample by one event (copy-on-write of the whole file) | 54 ms |
+| Peak resident memory of the measuring process | 604 MiB |
+
+The imaging path is unchanged: a window reads the same chunks from a 1.1 file
+as from its 1.0 projection, and opening a sample reads no clinical table until
+`Sample.clinical` is asked for. A history adds a few percent to a sample whose
+images dominate it. Selection is metadata-only and milliseconds per subject;
+preflight is dominated by re-verifying every pinned sample's clinical digests,
+which is what lets it detect an edit under an unchanged stored root. At this
+size two workers do not beat one process --- each worker pays its own opens for
+48 small rows --- so measure your own shard and worker layout before choosing.
 
 ## The reference writer
 

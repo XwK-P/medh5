@@ -415,6 +415,109 @@ to its target where the class count is large. A longitudinal sample given as
 `PATH` gets the paired row when a transform relates its first two visits.
 Progress goes to stderr, so `--json` output is only the document.
 
+## Clinical history (format 1.1)
+
+### `medh5 clinical show`
+
+```
+medh5 clinical show PATH [--key K] [--json]
+```
+
+The subject clock, every event version with its effective and available times,
+the documents (metadata, not text) and the links. See
+[Clinical history beside the images](../guides/clinical.md).
+
+### `medh5 clinical select`
+
+```
+medh5 clinical select PATH --cutoff-hours H [--policy POLICY] [--context-us W] [--key K] [--json]
+medh5 clinical select PATH --cutoff-us T [--policy-file POLICY.json] [--json]
+```
+
+What strict prospective selection (1.1 §9) admits at the cutoff: the event
+versions, the payloads they attest, the records a later revision of unknown
+availability makes uncertifiable, and how many events each rule excluded.
+`--policy latest_provable` names the one alternative; `--policy-file` takes a
+whole policy (contract §3.4).
+
+### `medh5 clinical export`
+
+```
+medh5 clinical export PATH [--key K] [--out RECORDS.json]
+```
+
+The logical-record bundle --- clock, events, documents with their text, links ---
+as JSON, checked against `medh5-clinical-1.schema.json`.
+
+### `medh5 clinical augment`
+
+```
+medh5 clinical augment PATH RECORDS.json [--out OUT] [--json]
+```
+
+Add a record bundle to a sample, in place or into `--out`: images and
+annotations are copied as stored (their digests do not change), the sample
+becomes 1.1 with a new `content_id`, and what the records leave unknown is
+reported. A `clinical` group the profile did not write is refused, never
+reinterpreted.
+
+### `medh5 clinical strip`
+
+```
+medh5 clinical strip PATH --out OUT [--json]
+```
+
+The imaging projection: a new file without the clinical profile, written as
+1.0, with the loss reported. Never in place.
+
+## Tasks and caches
+
+The [task and cache contract](../spec/task-cache-1.md): task manifests
+(`medh5.task/1`) and feature caches (`medh5.cache/1`). See
+[Train on clinical tasks](../guides/clinical-training.md).
+
+### `medh5 task validate`
+
+```
+medh5 task validate MANIFEST [--json]
+```
+
+Everything wrong with a manifest that opening no file can find: its schema,
+its policy, slots and target, its fingerprint, and its subjects, partitions,
+rows and source ids (T1xx, T2xx). Prints the task and manifest fingerprints.
+
+### `medh5 task preflight`
+
+```
+medh5 task preflight MANIFEST [--base DIR] [--deep] [--json]
+```
+
+Open and check every source --- pins, identities, clocks, duplicated events
+--- and report every row: `eligible`, `uncertifiable`, `excluded` or `error`,
+with the reason, the event count, the image filling each slot and the target
+label. Exits 1 when anything was found. `--deep` re-verifies every dataset of
+every source, not only the clinical ones.
+
+### `medh5 task reconcile`
+
+```
+medh5 task reconcile MANIFEST [--base DIR] [--out OUT]
+```
+
+Record, per subject, the event versions several of its fragments hold and the
+digest they share --- what preflight checks duplicates against.
+
+### `medh5 cache validate`
+
+```
+medh5 cache validate CACHE [--task MANIFEST] [--base DIR] [--json]
+```
+
+Check a feature cache's checksums and every source pin it records: *stale*
+entries (T403) are told apart from *corrupt* ones (T401, T402). With `--task`,
+also that it was built for this task and its cutoffs (T404), fitted on its
+training partition (T405), and encodes only versions its rows admit (T406).
+
 ## Conformance
 
 ### `medh5 conformance list`
@@ -450,7 +553,8 @@ medh5 conformance publish OUTDIR [--case NAME]
 ```
 
 Write the distributable suite: cases, `expected.json`, the code table, the JSON
-Schema, `SHA256SUMS` and a README.
+Schemas (`/meta`, the clinical profile, and the task and cache contract's),
+`SHA256SUMS` and a README.
 
 ### `medh5 conformance score`
 
@@ -466,4 +570,5 @@ Score any implementation's results against a published suite. See
 - **[Check a file before training on it](../guides/validate.md)** — `validate` versus `verify`.
 - **[Diagnostic codes](diagnostic-codes.md)** — every code these commands report.
 - **[Cohort check codes](cohort-checks.md)** — what `medh5 dataset check` reports.
+- **[Task and cache contract](../spec/task-cache-1.md#9-finding-codes)** — the T-codes `medh5 task` and `medh5 cache` report.
 - **[How-to guides](../guides/index.md)** — these commands in the tasks they belong to.

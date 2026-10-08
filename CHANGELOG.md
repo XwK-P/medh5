@@ -4,6 +4,83 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+**Format 1.1: clinical context beside the images, and what was known when.**
+The format gains one optional profile, `clinical`, and nothing else: a sample
+may carry its subject's laboratory values, reports and their revisions,
+diagnoses, medications and assessments on one subject clock, each event an
+immutable version with when it happened *and* when it became available
+([MEDH5 1.1](docs/spec/medh5-1.1.md)). A sample is still written at the lowest
+version its content needs, so imaging-only data stays 1.0 and every 1.x reader
+keeps reading it. Training gets a separately versioned companion contract ---
+task manifests and feature caches pinned to the sample versions they read
+([task-cache-1](docs/spec/task-cache-1.md)) --- and a dataset that builds
+cutoff-aware multimodal batches from it.
+
+### Added
+
+- **The `clinical` profile** (`clinical/meta`, `events`, `documents`,
+  `links`): a column layout of primitives --- packed UTF-8, `int64` time
+  bounds, `float64` values, validity masks --- written, read, validated and
+  digested by the engine. `SampleWriter.set_clock`, `add_event`,
+  `add_document`, `add_link`, `add_records`, `drop_clinical`; `Sample.clinical`
+  and `Sample.support`; the `medh5.clinical` module (`Clock`, `Event`,
+  `Document`, `Link`, `ClinicalRecords`, `Selection`, `SelectionPolicy`,
+  `select`, `augment`, `strip`, `imaging_events_from_timepoints`).
+- **Strict prospective selection**, normative in 1.1 §9 and implemented once in
+  the engine: only versions known available by the cutoff, the newest of each
+  revision chain, *uncertifiable* when a later revision's availability is
+  unknown, plans and unknown times excluded, tie groups kept whole, and only the
+  payloads the selected versions attest. `latest_provable` is the one named
+  alternative.
+- **Task manifests** (`medh5.task/1`, `medh5.task`): sources pinned by
+  `content_id` (files or collection members), subjects split before rows,
+  modality slots, targets with explicit censoring, task / manifest / row
+  fingerprints, and a preflight that reports every row as eligible,
+  uncertifiable, excluded or in error, with the reason. Fragmented subjects are
+  checked for identity, clock and duplicate agreement, and reconciled.
+- **Feature caches** (`medh5.cache/1`, `medh5.cache`): event- and
+  patient-level features with a checksummed dependency manifest, validated so
+  that *stale* (a source changed, T403) is told apart from *corrupt* (T401,
+  T402) and from *inadmissible* (another task, T404; fitted on the wrong split,
+  T405; encoding versions a row cannot have read, T406).
+- **`medh5.torch.ClinicalTaskDataset`** and **`collate_clinical`**: one item per
+  admitted row --- slot windows on each image's own grid, the admitted event
+  history, document features from an encoder or a cache, and the target ---
+  with padding, modality availability, field of view, annotation coverage and
+  target observation kept as distinct masks. `ConceptVocabulary` is fitted on
+  the training partition and records it.
+- **Commands**: `medh5 clinical show | select | export | augment | strip`,
+  `medh5 task validate | preflight | reconcile`, `medh5 cache validate` --- in
+  the native binary and the Python console script alike.
+- **Diagnostic codes** `E011`, `E801`–`E819`, `W913`, `W914`, and 35
+  conformance cases (152 in all). The published suite also carries
+  `medh5-clinical-1.schema.json` and the task and cache schemas.
+- **Runnable examples**: `clinical_longitudinal.py` (the worked example: write,
+  reopen, validate, preflight, batch), `clinical_collection.py` (a subject split
+  across two members of a shard, reconciled, loaded through workers),
+  `clinical_cache.py` (every way a cache stops being usable) and
+  `bench_clinical.py` (the measurements on [Runnable examples](docs/examples/index.md)).
+
+### Behaviour changes
+
+- **`FORMAT_VERSION` is `"1.1"`**, the newest version the package writes. A
+  sample without the clinical profile is still written as `1.0`;
+  `written_version(source, profiles)` says which.
+- **A later minor is a projection.** A file of a minor version newer than the
+  package implements opens and validates as what it knows, with every unknown
+  item reported as `W913` --- an unrecomputable `content_id` too, rather than
+  `E702` --- and is never amended, recompressed or packed (`MEDH5VersionError`).
+  1.0 §16's "accept a higher MINOR" is corrected accordingly (Appendix C.1).
+- **An unknown profile refuses an amendment** (`E007`) before anything is
+  written, instead of being re-derived away.
+- **A collection declares its newest member's version** (`E011` when lower).
+- **The torch handle cache is keyed by `(path, sample_key)`**: `open_cached`
+  and `HandleCache.get` / `lease` take an optional member key, so collection
+  members are cached, leased and abandoned across a fork like files.
+- `medh5.errors.Domain` includes `"clinical"`.
+
 ## [2.0.0] — 2026-10-08
 
 **One format engine, three frontends.** The format is now implemented once, in

@@ -102,6 +102,7 @@ pub fn recompress(path: &Path, profile: &str, out: Option<&Path>, rechunk: bool)
         )));
     }
     let codec = resolve_profile(Some(profile))?;
+    refuse_projection(path)?;
     let target = out.unwrap_or(path);
     let mut result =
         RecompressResult { path: target.to_string_lossy().into_owned(), profile: profile.into(), ..Default::default() };
@@ -134,6 +135,32 @@ pub fn recompress(path: &Path, profile: &str, out: Option<&Path>, rechunk: bool)
     result.verified = all_ok;
     result.content_id_preserved = before == after && ids_ok;
     Ok(result)
+}
+
+/// Refuse a file holding a version this engine reads only as a projection:
+/// recompression replaces the file and then verifies it under the integrity
+/// contract this engine implements, which a later minor may have extended
+/// (1.1 §2.1) --- so the check could not vouch for what it rewrote.
+fn refuse_projection(path: &Path) -> Result<()> {
+    let source = open_read(path)?;
+    require_major(&source, path)?;
+    for (prefix, root) in sample_roots(&source.as_group()?)? {
+        let version = attrs::get_str(&root, "medh5_version")?.unwrap_or_default();
+        if crate::version::is_projection(&version) {
+            return Err(Error::Version(format!(
+                "{}{} is MEDH5 {version}; this engine implements up to {} and cannot verify a recompression of it \
+                 (1.1 §2.1)",
+                repr_str(&path.to_string_lossy()),
+                if prefix.is_empty() {
+                    String::new()
+                } else {
+                    format!(" member {}", repr_str(prefix.trim_end_matches('/')))
+                },
+                crate::FORMAT_VERSION
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// `(path prefix, sample root)` for a sample, or each collection member.

@@ -1,0 +1,470 @@
+"""The clinical profile (format 1.1), through the public Python API.
+
+Every fixture is written by the public writer (``tests.kits.History``); defects
+are planted afterwards with ``h5py``.  Test names cite the 1.1 clause they hold.
+"""
+
+from __future__ import annotations
+
+import shutil
+from pathlib import Path
+
+import h5py
+import numpy as np
+import pytest
+
+import medh5
+import medh5.clinical as clinical
+from medh5.clinical import (
+    DAY,
+    HOUR,
+    ClinicalRecords,
+    Clock,
+    Document,
+    Event,
+    Link,
+    SelectionPolicy,
+)
+from medh5.collection import open_collection, pack, unpack
+from medh5.errors import MEDH5ValidationError, MEDH5VersionError
+from medh5.storage import recompress
+from medh5.validate import validate_file
+from tests.helpers import write_sample
+from tests.kits import History
+
+
+@pytest.fixture
+def history(tmp_path: Path) -> Path:
+    path = tmp_path / "history.medh5"
+    History.write(path)
+    return path
+
+
+def codes(path: Path, level: str = "semantic") -> list[str]:
+    """Every code but the 1.0 warnings the kit's samples carry by design (no
+    de-identification, no registration, no ontology binding)."""
+    found = validate_file(path, level=level).codes
+    return sorted(c for c in found if c not in {"W903", "W911", "W912"})
+
+
+class TestVersions:
+    def test_S2_1_imaging_alone_is_written_as_1_0(self, sample_path: Path):
+        with medh5.open(sample_path) as s:
+            assert s.version == "1.0"
+            assert s.support == "full"
+            assert "clinical" not in s.profiles
+            assert s.clinical is None
+
+    def test_S2_1_a_history_makes_the_sample_1_1(self, history: Path):
+        with medh5.open(history) as s:
+            assert s.version == "1.1"
+            assert {"core", "clinical", "longitudinal"} <= s.profiles
+            assert s.clinical is not None
+            assert s.clinical is s.clinical  # read once
+        assert codes(history, "integrity") == []
+
+    def test_S2_1_the_lowest_version_a_content_needs(self):
+        assert medh5.FORMAT_VERSION == "1.1"
+        from medh5._core import written_version
+
+        assert written_version(None, ["core"]) == "1.0"
+        assert written_version(None, ["core", "clinical"]) == "1.1"
+        assert written_version("1.1", ["core"]) == "1.1"  # never downgraded
+
+    def test_S2_2_a_higher_minor_is_a_projection(self, history: Path, tmp_path: Path):
+        future = tmp_path / "future.medh5"
+        shutil.copyfile(history, future)
+        with h5py.File(future, "r+") as f:
+            f.attrs["medh5_version"] = "1.2"
+            f["clinical/events"].attrs["defined_by"] = "MEDH5 1.2"
+        with medh5.open(future) as s:
+            assert s.support == "projection"
+            assert s.clinical is not None and s.clinical.projection
+            assert len(s.clinical.events) == 6
+        report = validate_file(future, level="integrity")
+        assert codes(future, "integrity") == ["W913"], report.codes
+        where = {d.location for d in report.diagnostics if d.code == "W913"}
+        # The version, the attribute 1.2 defined, and the root this engine
+        # cannot recompute (a later minor may cover more): reported, not E702.
+        assert {"/", "/clinical/events@defined_by"} <= where, where
+        assert report.ok
+        with pytest.raises(MEDH5VersionError), medh5.amend(future):
+            pass
+        with pytest.raises(MEDH5VersionError):
+            recompress(future, profile="portable")
+        with pytest.raises(MEDH5VersionError):
+            pack([future], tmp_path / "shard.medh5c")
+
+    def test_S2_2_another_major_is_refused(self, history: Path, tmp_path: Path):
+        future = tmp_path / "major.medh5"
+        shutil.copyfile(history, future)
+        with h5py.File(future, "r+") as f:
+            f.attrs["medh5_version"] = "2.0"
+        assert "E002" in codes(future)
+
+    def test_S2_3_an_unknown_profile_refuses_the_amendment(
+        self, history: Path, tmp_path: Path
+    ):
+        odd = tmp_path / "odd.medh5"
+        shutil.copyfile(history, odd)
+        with h5py.File(odd, "r+") as f:
+            f.attrs["medh5_profiles"] = ["clinical", "core", "x_unknown"]
+        before = odd.read_bytes()
+        with pytest.raises(MEDH5ValidationError) as caught, medh5.amend(odd):
+            pass
+        assert caught.value.code == "E007"
+        assert odd.read_bytes() == before
+
+
+class TestRecords:
+    def test_S5_records_round_trip(self, history: Path):
+        with medh5.open(history) as s:
+            c = s.clinical
+            assert c is not None
+            assert c.clock == Clock.relative("clock", "baseline CT acquisition")
+            assert [e.event_id for e in c.events] == [
+                "lab0",
+                "ct0",
+                "rep_v1",
+                "rep_v2",
+                "ct1",
+                "recist1",
+            ]
+            lab = c.event("lab0")
+            assert lab.effective_start_us == (-48 * HOUR, -48 * HOUR)
+            assert (lab.value_num, lab.unit, lab.code) == (1.1, "mg/dL", "2160-0")
+            assert c.text("rep_text_v1").endswith("Preliminary.")
+            info = {d.document_id: d for d in c.documents}
+            assert info["rep_text_v1"].n_bytes == len(c.text("rep_text_v1").encode())
+            assert c.document("rep_text_v2").text.endswith("Final.")
+            assert len(c.links) == 5
+            records = c.records()
+            assert ClinicalRecords.from_json(records.to_json()) == records
+            assert "events" in c.summary() and "Clinical(" in repr(c)
+            with pytest.raises(KeyError):
+                c.event("nope")
+
+    def test_S5_1_a_record_is_checked_as_it_is_added(self, tmp_path: Path):
+        with History.writer_for(tmp_path / "w.medh5") as w:
+            with pytest.raises(MEDH5ValidationError, match="clock first"):
+                w.add_event(Event("z", "z", "other", "static", "final"))
+            w.set_clock(Clock.relative("clock", "baseline CT acquisition"))
+            with pytest.raises(MEDH5ValidationError) as caught:
+                w.add_event(Event("x", "x", "observation", "point", "final"))
+            assert caught.value.code == "E811"
+            with pytest.raises(MEDH5ValidationError) as caught:
+                w.add_event(
+                    Event(
+                        "y",
+                        "y",
+                        "observation",
+                        "point",
+                        "final",
+                        effective_start_us=0,
+                        value_num=2.0,
+                    )
+                )
+            assert caught.value.code == "E812"
+            w.add_event(Event("z", "z", "other", "static", "final"))
+            with pytest.raises(MEDH5ValidationError) as caught:
+                w.add_event(Event("z", "z", "other", "static", "final"))
+            assert caught.value.code == "E809"
+            w.abort()
+
+    def test_S3_the_clock_is_fixed_once(self, tmp_path: Path):
+        with History.writer_for(tmp_path / "w.medh5") as w:
+            w.set_clock(Clock.relative("other", "a different origin"))
+            with pytest.raises(MEDH5ValidationError) as caught:
+                w.set_clock(Clock.relative("clock", "baseline CT acquisition"))
+            assert caught.value.code == "E802"
+            w.abort()
+
+    def test_S7_a_dangling_link_is_refused_at_commit(self, tmp_path: Path):
+        path = tmp_path / "dangling.medh5"
+        with pytest.raises(MEDH5ValidationError) as caught:
+            History.write(
+                path,
+                links=[Link.between(("event", "ct0"), "describes", ("image", "MR"))],
+            )
+        assert "E813" in str(caught.value)
+        assert not path.exists()
+
+    def test_S5_keyword_and_dict_forms(self, tmp_path: Path):
+        path = tmp_path / "kw.medh5"
+        with History.writer_for(path) as w:
+            w.set_clock(
+                id="clock", unit="us", reference="relative", origin_description="scan"
+            )
+            w.add_event(
+                event_id="ct0",
+                record_id="ct0",
+                kind="imaging",
+                temporal_type="point",
+                status="final",
+                effective_start_us=0,
+                available_us=HOUR,
+                timepoint_id="tp0",
+            )
+            w.add_link(
+                {
+                    "source_type": "event",
+                    "source_id": "ct0",
+                    "relation": "describes",
+                    "target_type": "image",
+                    "target_id": "CT_tp0",
+                }
+            )
+            w.add_document(document_id="note", text="")
+            w.add_event(Event("note_ev", "note_ev", "document", "static", "final"))
+            w.add_link(
+                Link.between(("event", "note_ev"), "describes", ("document", "note"))
+            )
+            assert w.has_clinical
+            assert len(w.clinical()["events"]) == 2
+        with medh5.open(path) as s:
+            assert s.clinical is not None and s.clinical.text("note") == ""
+
+    def test_S5_add_records_takes_a_bundle(self, history: Path, tmp_path: Path):
+        with medh5.open(history) as s:
+            assert s.clinical is not None
+            bundle = s.clinical.records()
+        path = tmp_path / "bundle.medh5"
+        with History.writer_for(path) as w:
+            w.add_records(bundle.to_json())
+        with medh5.open(path) as s:
+            assert s.clinical is not None and s.clinical.records() == bundle
+
+    def test_S5_1_clinical_vocabularies(self):
+        assert "medication_administration" in clinical.EVENT_KINDS
+        assert clinical.PROFILE == "clinical" and clinical.SCHEMA == "medh5.clinical/1"
+        assert "resolved" in clinical.LESION_VALUES
+        assert clinical.hours(1.5) == 90 * 60 * 1_000_000 and clinical.days(1) == DAY
+        assert '"descriptor"' in clinical.schema_text()
+        assert set(clinical.SELECTION_POLICIES) == {
+            "strict_prospective",
+            "latest_provable",
+        }
+
+
+class TestAmendment:
+    def test_S8_a_no_op_amend_keeps_the_address(self, history: Path):
+        with medh5.open(history) as s:
+            before = s.content_id
+        with medh5.amend(history):
+            pass
+        with medh5.open(history) as s:
+            assert s.content_id == before and s.version == "1.1"
+
+    def test_S8_a_revision_changes_the_address_not_the_payloads(self, history: Path):
+        with medh5.open(history) as s:
+            before = s.content_id
+            image = s.images["CT_tp0"].digest
+        with medh5.amend(history) as w:
+            w.add_event(
+                Event(
+                    "rep_v3",
+                    "rep",
+                    "document",
+                    "point",
+                    "amended",
+                    effective_start_us=0,
+                    available_us=72 * HOUR,
+                )
+            )
+            w.add_document(Document("rep_text_v3", "Addendum."))
+            w.add_link(
+                Link.between(
+                    ("event", "rep_v3"), "describes", ("document", "rep_text_v3")
+                )
+            )
+            w.add_link(
+                Link.between(("event", "rep_v3"), "supersedes", ("event", "rep_v2"))
+            )
+        with medh5.open(history) as s:
+            assert s.content_id != before
+            assert s.images["CT_tp0"].digest == image
+            assert s.clinical is not None
+            assert s.clinical.select(80 * HOUR).event_ids[-1] == "rep_v3"
+
+    def test_S10_strip_and_augment(self, history: Path, tmp_path: Path):
+        projection = tmp_path / "imaging.medh5"
+        report = clinical.strip(history, projection)
+        assert report["version_after"] == "1.0"
+        assert report["lost"]["events"] == 6
+        with medh5.open(projection) as s:
+            assert s.version == "1.0" and s.clinical is None
+        with medh5.open(history) as s:
+            assert s.clinical is not None
+            records = s.clinical.records()
+        back = tmp_path / "back.medh5"
+        augmented = clinical.augment(projection, records, out=back)
+        assert augmented["version_before"] == "1.0"
+        assert augmented["version_after"] == "1.1"
+        assert augmented["unchanged_digests"] > 0
+        with medh5.open(back) as a, medh5.open(history) as b:
+            assert a.clinical is not None and b.clinical is not None
+            assert a.clinical.records() == b.clinical.records()
+        with pytest.raises(MEDH5ValidationError):
+            clinical.strip(history, history)
+
+    def test_S10_augment_in_place_reports_what_is_unknown(
+        self, sample_path: Path, tmp_path: Path
+    ):
+        events, links, notes = clinical.imaging_events_from_timepoints(sample_path)
+        assert events and all(e.available_us is None for e in events)
+        assert notes
+        records = clinical.records_from(
+            clinical.baseline_day_clock("clock"), events, (), links
+        )
+        report = clinical.augment(sample_path, records)
+        assert report["assumptions"]
+        with medh5.open(sample_path) as s:
+            assert s.version == "1.1"
+            assert s.clinical is not None
+            # Unknown availability: strict selection never uses them.
+            assert s.clinical.select(365 * DAY).event_ids == []
+
+    def test_S10_a_foreign_clinical_group_is_refused_not_reinterpreted(
+        self, sample_path: Path
+    ):
+        with h5py.File(sample_path, "r+") as f:
+            f.create_group("clinical").create_dataset("ours", data=np.arange(3))
+        with medh5.open(sample_path) as s:
+            assert s.clinical is None
+        with medh5.amend(sample_path):
+            pass  # copied through, untouched
+        with h5py.File(sample_path) as f:
+            assert list(f["clinical/ours"][()]) == [0, 1, 2]
+        records = ClinicalRecords(Clock.relative("c", "origin"))
+        with pytest.raises(MEDH5ValidationError):
+            clinical.augment(sample_path, records)
+
+
+class TestValidation:
+    def test_S4_columns_are_checked(self, history: Path):
+        with h5py.File(history, "r+") as f:
+            del f["clinical/events/available_lo_us"]
+            f["clinical/events"].create_dataset(
+                "available_lo_us", data=np.zeros(6, dtype=np.int32)
+            )
+        assert "E805" in codes(history, "structural")
+
+    def test_S4_a_null_cell_holds_nothing(self, history: Path):
+        with h5py.File(history, "r+") as f:
+            valid = f["clinical/events/valid/value_num"][()]
+            row = int(np.flatnonzero(valid == 0)[0])
+            f["clinical/events/value_num"][row] = 7.0
+        assert "E807" in codes(history, "structural")
+
+    def test_S3_undeclared_content_is_E803(self, history: Path):
+        with h5py.File(history, "r+") as f:
+            f.attrs["medh5_profiles"] = ["core", "longitudinal", "seg"]
+        assert "E803" in codes(history, "structural")
+
+    def test_S8_edited_text_is_found_under_an_unchanged_root(self, history: Path):
+        with h5py.File(history, "r+") as f:
+            data = f["clinical/documents/text/data"]
+            data[0] = data[0] ^ 1
+        assert "E701" in codes(history, "integrity")
+        with medh5.open(history) as s:
+            assert not s.verify().ok
+
+
+class TestSelection:
+    def test_S9_1_the_worked_example_at_hour_24(self, history: Path):
+        with medh5.open(history) as s:
+            assert s.clinical is not None
+            chosen = s.clinical.select(24 * HOUR)
+        assert chosen.certified and chosen.status == "certified"
+        assert chosen.event_ids == ["lab0", "ct0", "rep_v1"]
+        assert chosen.admits("document", "rep_text_v1")
+        assert not chosen.admits("document", "rep_text_v2")
+        assert chosen.admits("image", "CT_tp0") and not chosen.admits("image", "CT_tp1")
+        assert chosen.excluded == {"after_cutoff": 2}
+        assert chosen.events[1].order_us == (0, 0)
+
+    def test_S9_1_an_uncertain_revision_is_uncertifiable(self, tmp_path: Path):
+        path = tmp_path / "uncertain.medh5"
+        History.write(
+            path,
+            events=[
+                Event(
+                    "rep_v3",
+                    "rep",
+                    "document",
+                    "point",
+                    "amended",
+                    effective_start_us=0,
+                )
+            ],
+            documents=[Document("rep_text_v3", "Unknown when.")],
+            links=[
+                Link.between(
+                    ("event", "rep_v3"), "describes", ("document", "rep_text_v3")
+                ),
+                Link.between(("event", "rep_v3"), "supersedes", ("event", "rep_v2")),
+            ],
+        )
+        with medh5.open(path) as s:
+            assert s.clinical is not None
+            strict = s.clinical.select(72 * HOUR)
+            provable = s.clinical.select(72 * HOUR, policy="latest_provable")
+        assert strict.status == "uncertifiable" and strict.uncertain_records == ("rep",)
+        assert not strict.certified
+        assert provable.status == "provable"
+        assert "rep_v2" in provable.event_ids
+
+    def test_S9_1_policies(self, history: Path):
+        with medh5.open(history) as s:
+            assert s.clinical is not None
+            window = s.clinical.select(24 * HOUR, SelectionPolicy(context_us=24 * HOUR))
+            kinds = s.clinical.select(24 * HOUR, {"kinds": ["document"]})
+            limited = s.clinical.select(
+                95 * DAY, SelectionPolicy(max_events=2, keep="latest")
+            )
+        assert window.event_ids == ["ct0", "rep_v1"]
+        assert window.excluded["outside_context"] == 1
+        assert kinds.event_ids == ["rep_v1"]
+        assert limited.event_ids == ["ct1", "recist1"]
+        assert SelectionPolicy.from_json(SelectionPolicy(kinds=("imaging",)).to_json())
+
+    def test_S9_1_select_from_records_not_in_a_file(self):
+        events = History.events()
+        chosen = clinical.select(events, History.links(), 24 * HOUR)
+        assert chosen.event_ids == ["lab0", "ct0", "rep_v1"]
+        as_dicts = clinical.select(
+            [e.to_json() for e in events],
+            [link.to_json() for link in History.links()],
+            0,
+        )
+        assert as_dicts.event_ids == ["lab0"]
+
+
+class TestCollections:
+    def test_S8_mixed_versions_keep_their_own(
+        self, history: Path, sample_path: Path, tmp_path: Path
+    ):
+        shard = pack([history, sample_path], tmp_path / "mixed.medh5c", keys=["a", "b"])
+        with open_collection(shard) as c:
+            assert c.version == "1.1"
+            assert c["a"].version == "1.1" and c["b"].version == "1.0"
+            assert c["a"].clinical is not None and c["b"].clinical is None
+        assert codes(shard) == []
+        out = unpack(shard, tmp_path / "out")
+        with medh5.open(out[0]) as a, medh5.open(history) as b:
+            assert a.content_id == b.content_id
+
+    def test_S8_recompression_keeps_the_address(self, history: Path, tmp_path: Path):
+        with medh5.open(history) as s:
+            before = s.content_id
+        out = tmp_path / "re.medh5"
+        recompress(history, profile="archive", out=out)
+        with medh5.open(out) as s:
+            assert s.content_id == before
+            assert s.clinical is not None and len(s.clinical.events) == 6
+
+
+def test_write_sample_helper_stays_1_0(tmp_path: Path, label_set, masks):
+    path = write_sample(tmp_path / "plain.medh5", label_set=label_set, masks=masks)
+    with medh5.open(path) as s:
+        assert s.version == "1.0"

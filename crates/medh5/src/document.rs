@@ -32,17 +32,46 @@ pub fn schema() -> &'static Value {
     SCHEMA.get_or_init(|| serde_json::from_str(SCHEMA_TEXT).expect("bundled schema is valid JSON"))
 }
 
+/// Compile a bundled Draft 2020-12 schema.
+///
+/// Formats are annotations, not assertions, under Draft 2020-12 --- the
+/// reference validator never checked `date-time` here; timestamps are E604's
+/// business, checked by the curation rules.
+pub(crate) fn compile(schema: &Value) -> jsonschema::Validator {
+    jsonschema::draft202012::options().should_validate_formats(false).build(schema).expect("bundled schema compiles")
+}
+
 fn validator() -> &'static jsonschema::Validator {
     static VALIDATOR: OnceLock<jsonschema::Validator> = OnceLock::new();
-    VALIDATOR.get_or_init(|| {
-        // Formats are annotations, not assertions, under Draft 2020-12 --- the
-        // reference validator never checked `date-time` here; timestamps are
-        // E604's business, checked by the curation rules.
-        jsonschema::draft202012::options()
-            .should_validate_formats(false)
-            .build(schema())
-            .expect("bundled schema compiles")
-    })
+    VALIDATOR.get_or_init(|| compile(schema()))
+}
+
+/// A schema with every closed object opened and every vocabulary widened:
+/// what a reader holds a *higher minor* version's document to (1.1 §2.2).
+///
+/// A minor version may add members and enum values (1.0 §16), so a reader
+/// that implements an earlier minor checks what it knows --- types, required
+/// members, patterns --- and tolerates what it does not.
+pub fn projection_of(schema: &Value) -> Value {
+    match schema {
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .filter(|(k, v)| {
+                    !(k.as_str() == "enum"
+                        || ((k.as_str() == "additionalProperties" || k.as_str() == "unevaluatedProperties")
+                            && v.as_bool() == Some(false)))
+                })
+                .map(|(k, v)| (k.clone(), projection_of(v)))
+                .collect(),
+        ),
+        Value::Array(items) => Value::Array(items.iter().map(projection_of).collect()),
+        other => other.clone(),
+    }
+}
+
+fn projection_validator() -> &'static jsonschema::Validator {
+    static VALIDATOR: OnceLock<jsonschema::Validator> = OnceLock::new();
+    VALIDATOR.get_or_init(|| compile(&projection_of(schema())))
 }
 
 /// Validate a document, returning human-readable messages (empty when valid).
@@ -50,7 +79,32 @@ fn validator() -> &'static jsonschema::Validator {
 /// Each message is `<path>: <message>`, the path `/`-joined from the
 /// document root (`<root>` for the root itself).  Messages are sorted by path.
 pub fn validate_against_schema(doc: &Value) -> Vec<String> {
-    let mut errors: Vec<(Vec<String>, String)> = validator()
+    schema_messages(validator(), doc)
+}
+
+/// [`validate_against_schema`] for a file's `medh5_version`: `(errors,
+/// tolerated)`.
+///
+/// 1.1 changes nothing in `/meta` (1.1 §3), so 1.0 and 1.1 documents are held
+/// to the one schema exactly and nothing is tolerated.  A higher minor is held
+/// to its *projection* ([`projection_of`]): `errors` are what even that
+/// rejects, and `tolerated` what only the exact schema rejects --- members and
+/// values a later minor may define, which a validator reports as W913 rather
+/// than as E005.
+pub fn validate_document_version(doc: &Value, version: &str) -> (Vec<String>, Vec<String>) {
+    let exact = validate_against_schema(doc);
+    if !crate::version::is_projection(version) || exact.is_empty() {
+        return (exact, Vec::new());
+    }
+    let relaxed = schema_messages(projection_validator(), doc);
+    let tolerated = exact.into_iter().filter(|m| !relaxed.contains(m)).collect();
+    (relaxed, tolerated)
+}
+
+/// Every error `validator` finds in `doc`, worded as Python's `jsonschema`
+/// words it, sorted by path.
+pub(crate) fn schema_messages(validator: &jsonschema::Validator, doc: &Value) -> Vec<String> {
+    let mut errors: Vec<(Vec<String>, String)> = validator
         .iter_errors(doc)
         .map(|err| {
             let path: Vec<String> = err

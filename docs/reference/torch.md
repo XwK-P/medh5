@@ -237,6 +237,46 @@ $ medh5 index build cohort/*.medh5
 
 Without one the sampler scans, still works, and records `used_index=False`.
 
+## Clinical tasks (format 1.1)
+
+`ClinicalTaskDataset` turns the rows of a [task manifest](../spec/task-cache-1.md)
+--- a subject at a cutoff --- into items; `collate_clinical` batches them.
+Every decision about what a row may read is the engine's, made once by the
+task's preflight; the dataset reads only that.
+
+```python
+from torch.utils.data import DataLoader
+from medh5.torch import ClinicalTaskDataset, collate_clinical
+
+train = ClinicalTaskDataset("cohort/progression.task.json", partition="train")
+batch = next(iter(DataLoader(train, batch_size=8, collate_fn=collate_clinical)))
+```
+
+| Argument | |
+|---|---|
+| `task` | A `TaskManifest` or the path of one |
+| `partition` | One partition of the task's split |
+| `statuses` | Preflight statuses to keep (`("eligible",)`) |
+| `concepts` | A `ConceptVocabulary` --- fitted on the training partition when omitted, refused when fitted on anything else (T405) |
+| `documents` | An event-level feature cache's path, or an encoder with `encode(text)` and `dim` |
+| `row_features` | A patient-level cache, validated against the task before any row reads it |
+| `strict` | Refuse a task whose preflight has findings (default), or keep only the unaffected rows |
+
+A batch, for `B` rows:
+
+| Key | Shape | Meaning |
+|---|---|---|
+| `images[slot]` | `(B, C, *patch)` | The slot's window on its image's own grid; zeros where the slot is empty |
+| `present[slot]` | `(B,)` bool | Modality availability: an eligible image filled the slot |
+| `valid[slot]` | `(B, *patch)` bool | Field of view: inside the image and its valid region, never the padding |
+| `image_age_h[slot]` | `(B,)` | Hours from the image's imaging event to the cutoff |
+| `label[slot]`, `annotated[slot]` | `(B, K, *patch)`, `(B, K)` | Supervision for the slot's `classes`, and whether each was examined (coverage) |
+| `ignore[slot]` | `(B, *patch)` bool | Voxels a loss must not score: ignore regions and padding |
+| `events[...]` | `(B, N)` | `concept`, `kind`, `value`, `has_value`, `age_h`, `time_known`, padded to the longest history; `mask` marks real events, `length` counts them |
+| `documents[...]` | `(B, M, D)`, `(B, M)` | `features` and `age_h` of the admitted documents, with `mask` and `length` |
+| `target["value"]`, `target["observed"]` | `(B,)` | The label, and whether it is observed (a censored row is not) |
+| `meta` | list | Row id, subject, partition, cutoff, fingerprint, and per slot the visit that filled it |
+
 ## MONAI
 
 ```bash
@@ -277,3 +317,5 @@ so the geometry is testable — and tested — in an environment without it.
   these datasets read.
 - **[Longitudinal studies](../guides/longitudinal.md)** — what `PairedPatchDataset`
   is for.
+- **[Train on clinical tasks](../guides/clinical-training.md)** — what
+  `ClinicalTaskDataset` is for, and the masks it keeps apart.

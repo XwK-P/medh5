@@ -17,7 +17,7 @@ pub fn check_curation(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     for activity in prov.activities() {
         let location = format!("/meta#provenance/activities/{}", activity.id);
         if !ACTIVITY_TYPES.contains(&activity.r#type.as_str()) {
-            out.push(ctx.err(
+            out.push(ctx.unknown(
                 "E603",
                 location.clone(),
                 format!("unknown activity type {}", repr_str(&activity.r#type)),

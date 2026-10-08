@@ -15,6 +15,8 @@
 //! is its diagnostic codes.
 
 mod build;
+pub mod clinical;
+pub mod companion;
 pub mod suite;
 
 use std::collections::BTreeSet;

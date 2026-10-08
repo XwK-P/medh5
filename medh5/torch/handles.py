@@ -16,6 +16,12 @@ with a 1000-file dataset and 8 workers that is the dominant cost in the
 dataloader.  An LRU of open samples per worker removes it while keeping the
 number of descriptors bounded.
 
+**A handle is a sample, not a file.**  The cache is keyed by ``(path,
+sample_key)``: a ``.medh5`` is ``(path, None)``, and each member of a
+``.medh5c`` collection is its own entry --- opened, leased, evicted and
+abandoned across a fork exactly like a standalone file, so a task whose
+sources are collection members reads them through the same rules.
+
 **Threads share the cache, so it is locked, and a handle in use is never
 closed.**  A thread-based loader calls ``__getitem__`` from several threads of
 one process; without a lock one thread's eviction could close the ``Sample``
@@ -40,6 +46,27 @@ from medh5.sample import Sample, open_sample
 
 DEFAULT_MAXSIZE = 32
 
+Key = tuple[str, str | None]
+"""``(path, sample_key)``: a standalone file is ``(path, None)``."""
+
+
+def _key(path: str | os.PathLike[str], member: str | None) -> Key:
+    return (str(Path(path)), member)
+
+
+def _open(key: Key) -> Sample:
+    path, member = key
+    if member is None:
+        return open_sample(path)
+    from medh5.collection import open_any
+
+    found = open_any(path, key=member)
+    if not isinstance(found, Sample):  # pragma: no cover - open_any with a key
+        found.close()
+        raise TypeError(f"{path}::{member} is not a sample")
+    return found
+
+
 _ABANDONED: list[Sample] = []
 """Samples inherited across a fork: pinned, never closed, never collected."""
 
@@ -58,8 +85,8 @@ class HandleCache:
 
     def __init__(self, maxsize: int = DEFAULT_MAXSIZE) -> None:
         self.maxsize = int(maxsize)
-        self._items: OrderedDict[str, Sample] = OrderedDict()
-        self._pins: dict[str, int] = {}
+        self._items: OrderedDict[Key, Sample] = OrderedDict()
+        self._pins: dict[Key, int] = {}
         self._lock = threading.Lock()
         self._owner_pid = os.getpid()
         self.opens = 0
@@ -83,20 +110,20 @@ class HandleCache:
             self._pins = {}
             self._owner_pid = pid
 
-    def _acquire(self, key: str, *, pin: bool) -> Sample:
+    def _acquire(self, key: Key, *, pin: bool) -> Sample:
         """The handle for *key*, opened if need be; the caller holds the lock."""
         cached = self._items.get(key)
         if cached is not None:
             self._items.move_to_end(key)
         else:
-            cached = open_sample(key)
+            cached = _open(key)
             self.opens += 1
             self._items[key] = cached
         if pin:
             self._pins[key] = self._pins.get(key, 0) + 1
         return cached
 
-    def _overflow(self, keep: str | None = None) -> list[Sample]:
+    def _overflow(self, keep: Key | None = None) -> list[Sample]:
         """Evict least-recently-used idle handles past ``maxsize``; under the lock.
 
         *keep* is the handle being handed out: evicting it would return a
@@ -117,10 +144,15 @@ class HandleCache:
             with contextlib.suppress(Exception):  # pragma: no cover - best effort
                 sample.close()
 
-    def get(self, path: str | os.PathLike[str]) -> Sample:
-        """An open handle, not held against eviction; see :meth:`lease`."""
+    def get(
+        self, path: str | os.PathLike[str], sample_key: str | None = None
+    ) -> Sample:
+        """An open handle, not held against eviction; see :meth:`lease`.
+
+        ``sample_key`` names a member of a ``.medh5c`` collection.
+        """
         self._ensure_owner()
-        key = str(Path(path))
+        key = _key(path, sample_key)
         with self._lock:
             sample = self._acquire(key, pin=False)
             evicted = self._overflow(keep=key)
@@ -128,10 +160,12 @@ class HandleCache:
         return sample
 
     @contextlib.contextmanager
-    def lease(self, path: str | os.PathLike[str]) -> Iterator[Sample]:
+    def lease(
+        self, path: str | os.PathLike[str], sample_key: str | None = None
+    ) -> Iterator[Sample]:
         """An open handle that no eviction closes until the block ends."""
         self._ensure_owner()
-        key = str(Path(path))
+        key = _key(path, sample_key)
         with self._lock:
             sample = self._acquire(key, pin=True)
             evicted = self._overflow(keep=key)
@@ -190,9 +224,9 @@ def _close_cache() -> None:  # pragma: no cover - process exit hook
     CACHE.close_all()
 
 
-def open_cached(path: str | os.PathLike[str]) -> Sample:
-    """Open a sample through the per-worker cache."""
-    return CACHE.get(path)
+def open_cached(path: str | os.PathLike[str], sample_key: str | None = None) -> Sample:
+    """Open a sample --- or a collection member --- through the per-worker cache."""
+    return CACHE.get(path, sample_key)
 
 
 def worker_init_fn(worker_id: int) -> None:

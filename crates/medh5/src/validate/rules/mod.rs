@@ -16,6 +16,7 @@
 //! - `integrity` --- §13
 
 mod annotations;
+mod clinical;
 mod container;
 mod curation;
 mod geometric;
@@ -42,6 +43,7 @@ pub use annotations::{
     allowed_dtypes, check_annotations, check_instance_identity, check_references, geometric_dtypes, required_datasets,
     W908_TOLERANCE,
 };
+pub use clinical::{check_clinical, check_clinical_digests, check_clinical_records, ClinicalTables};
 pub use container::{
     check_bulk_storage, check_collection, check_container, check_document, check_profiles, SUPPORTED_MAJOR,
 };
@@ -62,6 +64,15 @@ pub struct Context {
     pub errors_only: bool,
     pub schema_checked: bool,
     pub attr_names: Option<AttrNameMap>,
+    /// The root's `medh5_version`, when it has one.
+    pub version: Option<String>,
+    /// A higher minor than this validator implements: only its supported
+    /// projection is checked, and what a later minor may define is W913
+    /// rather than an error (1.1 §2.2).
+    pub projection: bool,
+    /// The clinical tables, read once by the structural rule for the rules
+    /// after it.
+    pub clinical: Option<ClinicalTables>,
 }
 
 /// One rule: a name and the check.
@@ -69,6 +80,8 @@ pub type Rule = fn(&mut Context) -> Result<Vec<Diagnostic>>;
 
 impl Context {
     pub fn new(root: hdf5::Group, path: &str, level: &str, profiles: Vec<String>, errors_only: bool) -> Context {
+        let version = attrs::get_str(&root, "medh5_version").ok().flatten();
+        let projection = version.as_deref().is_some_and(crate::version::is_projection);
         Context {
             root,
             path: path.into(),
@@ -78,6 +91,28 @@ impl Context {
             errors_only,
             schema_checked: false,
             attr_names: None,
+            version,
+            projection,
+            clinical: None,
+        }
+    }
+
+    /// A value this validator does not know: `code` for a file of a version it
+    /// implements, W913 for a higher minor --- which may define it (1.1 §2.2).
+    pub fn unknown(&self, code: &str, location: impl Into<String>, message: impl Into<String>) -> Diagnostic {
+        if self.projection {
+            self.err(
+                "W913",
+                location,
+                format!(
+                    "{} --- not defined by MEDH5 {}, which this validator implements; a later minor may define it, \
+                     so it is ignored in this projection ({code})",
+                    message.into(),
+                    crate::FORMAT_VERSION
+                ),
+            )
+        } else {
+            self.err(code, location, message)
         }
     }
 
@@ -196,6 +231,7 @@ pub fn rules_for(level: &str) -> Vec<(&'static str, Rule)> {
         ("check_images", check_images),
         ("check_annotations", check_annotations),
         ("check_bulk_storage", check_bulk_storage),
+        ("check_clinical", check_clinical),
     ];
     let semantic: Vec<(&'static str, Rule)> = vec![
         ("check_timepoints", check_timepoints),
@@ -208,8 +244,10 @@ pub fn rules_for(level: &str) -> Vec<(&'static str, Rule)> {
         ("check_splits", check_splits),
         ("check_profiles", check_profiles),
         ("check_ontology_bindings", check_ontology_bindings),
+        ("check_clinical_records", check_clinical_records),
     ];
-    let integrity: Vec<(&'static str, Rule)> = vec![("check_integrity", check_integrity)];
+    let integrity: Vec<(&'static str, Rule)> =
+        vec![("check_integrity", check_integrity), ("check_clinical_digests", check_clinical_digests)];
     match level {
         "structural" => structural,
         "semantic" => [structural, semantic].concat(),

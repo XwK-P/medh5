@@ -37,7 +37,7 @@ twenty minutes, start to finish, then
 [Migrate from 0.x](guides/migrate-0x.md)
 
 **Writing your own reader?** [The specification](spec/medh5-1.0.md) is
-normative, the [conformance suite](spec/conformance.md) is 117 cases you can run
+normative, the [conformance suite](spec/conformance.md) is 152 cases you can run
 against your implementation, and the
 [diagnostic codes](reference/diagnostic-codes.md) are the stable contract
 between the two.
@@ -66,8 +66,18 @@ signal from a class nobody examined. See
 
 **Every claim is checkable.** Per-object SHA-256 over decompressed content and a
 Merkle `content_id` that survives recompression; a validator with a
-[stable diagnostic-code table](reference/diagnostic-codes.md); and a 117-case
+[stable diagnostic-code table](reference/diagnostic-codes.md); and a 152-case
 conformance corpus, one case per code, that any implementation can run.
+
+**What was known, when.** From format 1.1 a sample may carry the subject's
+clinical history beside the images --- labs, reports and their revisions,
+diagnoses, medications, assessments --- each with when it happened *and* when
+it became known. A model trained at a cutoff reads only what was available
+then: the preliminary report, not the amendment two days later; the baseline
+scan, not the follow-up; a lesion mask only after someone drew it. Tasks and
+feature caches are separately versioned companions, pinned to the exact sample
+versions they read. See [clinical history](guides/clinical.md) and
+[training on clinical tasks](guides/clinical-training.md).
 
 **Reading a patch is fast.** A 64³ multi-class patch reads in ~3.5 ms, against
 117 ms measured on 0.x, because chunks are sized for it and the sampling index
@@ -88,6 +98,8 @@ $ medh5 dataset split cohort.json --group-by group_id --stratify-by site_id
 $ medh5 convert from-dicom /studies out/ # one sample per patient, all visits
 $ medh5 scrub out/*.medh5 --apply --date-shift-days -117
 $ medh5 bench                            # reproduce the performance targets
+$ medh5 clinical select case_0001.medh5 --cutoff-hours 24   # what was known then
+$ medh5 task preflight progression.task.json                 # every row, in or out, and why
 ```
 
 Every command is in the [CLI reference](reference/cli.md).
@@ -109,12 +121,16 @@ Every command is in the [CLI reference](reference/cli.md).
 
 ## Versioning
 
-The **format** is 1.0 and versioned by `medh5_version`. A minor version may add
-optional objects, profiles, encodings and diagnostic codes; it may not change
-what an existing one means. See spec §16.
+The **format** is versioned by `medh5_version`: [1.0](spec/medh5-1.0.md), and
+[1.1](spec/medh5-1.1.md), which adds the optional `clinical` profile and
+nothing else. A sample is written at the lowest version its content needs, so
+imaging-only data is still 1.0. A minor version may add optional objects,
+profiles, encodings and diagnostic codes; it may not change what an existing
+one means, and a reader opens a later minor as a projection --- validated for
+what it knows, never amended. See spec §16 and 1.1 §2.
 
 The **package** follows semantic versioning from 1.0.0. `medh5.__version__` is
-the package; `medh5.FORMAT_VERSION` is the format.
+the package; `medh5.FORMAT_VERSION` is the newest format it writes.
 
 0.x files are not readable by 1.0 and are not meant to be: `medh5 migrate`
 converts them once, reporting every decision it took. See

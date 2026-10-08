@@ -25,7 +25,7 @@ pub fn check_transforms(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
             continue;
         };
         if !TRANSFORM_KINDS.contains(&kind.as_str()) {
-            out.push(ctx.err(
+            out.push(ctx.unknown(
                 "E502",
                 location,
                 format!("unknown transform kind {}; expected one of {}", repr_str(&kind), repr_list(&TRANSFORM_KINDS)),

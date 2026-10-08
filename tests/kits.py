@@ -12,11 +12,14 @@ defined once, here, under a name for what it builds:
 * :class:`Numbered` --- classes ``c1`` … ``cn`` on 8×12×12, for subject
   ``subj-1``;
 * :class:`Framed` --- classes ``c1`` … ``cn`` on 8×16×16, the grid in a frame of
-  reference.
+  reference;
+* :class:`History` --- two CT visits with a clinical history (format 1.1),
+  8×12×12.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -265,3 +268,149 @@ class Framed:
         w.build_index()
         w.commit()
         return path
+
+
+class History:
+    """Two CT visits with a clinical history on one subject clock (format 1.1).
+
+    The 1.1 §9.3 shape, small: a laboratory value before the scan, the
+    baseline CT, a report and its revision two days later, the follow-up CT and
+    a response at day 90 --- plus whatever a test adds through ``events``,
+    ``documents`` and ``links``.  Built by the public writer, so every reader
+    test is a writer test too.
+    """
+
+    SHAPE = (8, 12, 12)
+    RECIST = "org.example.recist"
+
+    @staticmethod
+    def label_set() -> LabelSet:
+        return LabelSet(
+            "history-v1", version="1.0.0", classes=[LabelClass(3, "lesion", "Lesion")]
+        )
+
+    @staticmethod
+    def events(response: str = "SD") -> list[Any]:
+        from medh5.clinical import DAY, HOUR, Event
+
+        def point(event_id: str, kind: str, t: int, avail: int, **f: Any) -> Any:
+            status = f.pop("status", "final")
+            record = f.pop("record_id", event_id)
+            return Event(
+                event_id,
+                record,
+                kind,
+                "point",
+                status,
+                effective_start_us=t,
+                available_us=avail,
+                **f,
+            )
+
+        return [
+            point(
+                "lab0",
+                "observation",
+                -48 * HOUR,
+                -47 * HOUR,
+                code_system="http://loinc.org",
+                code="2160-0",
+                value_num=1.1,
+                unit="mg/dL",
+            ),
+            point("ct0", "imaging", 0, HOUR, timepoint_id="tp0"),
+            point(
+                "rep_v1", "document", 0, 4 * HOUR, status="preliminary", record_id="rep"
+            ),
+            point(
+                "rep_v2", "document", 0, 48 * HOUR, status="amended", record_id="rep"
+            ),
+            point("ct1", "imaging", 90 * DAY, 90 * DAY + HOUR, timepoint_id="tp1"),
+            point(
+                "recist1",
+                "assessment",
+                90 * DAY,
+                91 * DAY,
+                code_system=History.RECIST,
+                code="overall_response",
+                value_text=response,
+            ),
+        ]
+
+    @staticmethod
+    def links() -> list[Any]:
+        from medh5.clinical import Link
+
+        return [
+            Link.between(("event", "ct0"), "describes", ("image", "CT_tp0")),
+            Link.between(("event", "ct1"), "describes", ("image", "CT_tp1")),
+            Link.between(("event", "rep_v1"), "describes", ("document", "rep_text_v1")),
+            Link.between(("event", "rep_v2"), "describes", ("document", "rep_text_v2")),
+            Link.between(("event", "rep_v2"), "supersedes", ("event", "rep_v1")),
+        ]
+
+    @staticmethod
+    def documents() -> list[Any]:
+        from medh5.clinical import Document
+
+        return [
+            Document("rep_text_v1", "Baseline: a 14 mm nodule ≈ 1.4 cm. Preliminary."),
+            Document("rep_text_v2", "Baseline: a 14 mm nodule ≈ 1.4 cm. Final."),
+        ]
+
+    @staticmethod
+    def writer_for(path: Path, *, subject_id: str = "P-01") -> Any:
+        """A writer holding the label set and the two CT visits, no history."""
+        rng = np.random.default_rng(len(subject_id))
+        w = medh5.create(
+            path, sample_id=path.stem, subject_id=subject_id, codec="portable"
+        )
+        w.label_set(History.label_set())
+        for tp, days in (("tp0", 0), ("tp1", 90)):
+            w.add_timepoint(tp, days_from_baseline=days)
+            w.add_grid(
+                f"ct_{tp}",
+                shape=History.SHAPE,
+                spacing=(2.0, 0.8, 0.8),
+                timepoint=tp,
+                frame_uid=f"{subject_id}-{tp}",
+            )
+            volume = rng.integers(-100, 200, History.SHAPE).astype(np.int16)
+            w.add_image(f"CT_{tp}", volume, grid=f"ct_{tp}", modality="CT")
+        return w
+
+    @staticmethod
+    def write(
+        path: Path,
+        *,
+        subject_id: str = "P-01",
+        response: str = "SD",
+        events: Sequence[Any] = (),
+        documents: Sequence[Any] = (),
+        links: Sequence[Any] = (),
+        lesion: bool = True,
+        clock: Any = None,
+    ) -> str:
+        """Write the sample; returns its ``content_id``."""
+        from medh5.clinical import Clock
+
+        with History.writer_for(path, subject_id=subject_id) as w:
+            if lesion:
+                w.add_segmentation(
+                    "lesions_tp0",
+                    grid="ct_tp0",
+                    instances=[
+                        InstanceInput(3, 1, mask=block(History.SHAPE, (2, 1, 6), 3))
+                    ],
+                    annotated_classes=[3],
+                )
+            w.set_clock(clock or Clock.relative("clock", "baseline CT acquisition"))
+            for event in [*History.events(response), *events]:
+                w.add_event(event)
+            for document in [*History.documents(), *documents]:
+                w.add_document(document)
+            for link in [*History.links(), *links]:
+                w.add_link(link)
+            content_id = w.commit()
+        assert content_id is not None
+        return str(content_id)

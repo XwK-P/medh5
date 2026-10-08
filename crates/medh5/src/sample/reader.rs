@@ -12,6 +12,7 @@ use super::image::{Image, SPEC_IMAGE_ATTRS};
 use crate::annotations::header::SPEC_ANNOTATION_ATTRS;
 use crate::annotations::{Annotation, Grids};
 use crate::array::Slice;
+use crate::clinical::Clinical;
 use crate::curation::identity::{Cohort, Identity};
 use crate::curation::timeline::Timeline;
 use crate::document::{SampleDocument, META_DATASET};
@@ -26,9 +27,9 @@ use crate::transforms::model::{read_transforms, Transform, SPEC_TRANSFORM_ATTRS}
 use crate::transforms::resolve::{frames_of_timepoint, resolve_between};
 use crate::{Error, Result, FORMAT_VERSION};
 
-/// The conformance profiles a sample may declare (§2.1).
-pub const PROFILES: [&str; 9] =
-    ["core", "seg", "det", "cls", "reg", "curation", "multiscale", "training", "longitudinal"];
+/// The conformance profiles a sample may declare (1.0 §1.3; `clinical`, 1.1 §1).
+pub const PROFILES: [&str; 10] =
+    ["core", "seg", "det", "cls", "reg", "curation", "multiscale", "training", "longitudinal", "clinical"];
 
 /// Root attributes covered by `content_id`; `created` and `generator` are
 /// excluded so byte-identical samples written apart share an address (§13.2).
@@ -69,6 +70,7 @@ pub struct Sample {
     transforms: OnceLock<Result<Arc<IndexMap<String, Transform>>>>,
     index: OnceLock<Result<IndexMap<String, SamplingIndex>>>,
     fresh: OnceLock<Result<BTreeSet<String>>>,
+    clinical: OnceLock<Result<Option<Arc<Clinical>>>>,
     resolved: Mutex<HashMap<(String, String), Option<Transform>>>,
 }
 
@@ -87,6 +89,7 @@ impl Sample {
             transforms: OnceLock::new(),
             index: OnceLock::new(),
             fresh: OnceLock::new(),
+            clinical: OnceLock::new(),
             resolved: Mutex::new(HashMap::new()),
         }
     }
@@ -166,6 +169,30 @@ impl Sample {
 
     pub fn content_id(&self) -> Result<Option<String>> {
         attrs::get_str(&self.root, "content_id")
+    }
+
+    /// What this engine can do with the sample: [`Full`] for 1.0 and 1.1;
+    /// [`Projection`] for a higher minor, which reads only what this engine
+    /// knows and is never amended (1.1 §2).
+    ///
+    /// [`Full`]: crate::version::Support::Full
+    /// [`Projection`]: crate::version::Support::Projection
+    pub fn support(&self) -> Result<crate::version::Support> {
+        Ok(crate::version::support(&self.version()?))
+    }
+
+    /// The `clinical` profile's records (1.1 §3--§7), when the sample
+    /// declares the profile; `None` otherwise.  Events and links are read
+    /// now, document text when asked for.
+    pub fn clinical(&self) -> Result<Option<&Arc<Clinical>>> {
+        let found = cached(&self.clinical, || {
+            if !self.profiles()?.contains(crate::clinical::PROFILE) {
+                return Ok(None);
+            }
+            let projection = crate::version::is_projection(&self.version()?);
+            Ok(Clinical::open(&self.root, projection)?.map(Arc::new))
+        })?;
+        Ok(found.as_ref())
     }
 
     // -- objects -----------------------------------------------------------------
@@ -499,6 +526,9 @@ impl Sample {
         let mut index: Vec<String> = self.index()?.keys().cloned().collect();
         index.sort();
         out.insert("index".into(), json!(index));
+        if let Some(clinical) = self.clinical()? {
+            out.insert("clinical".into(), clinical.summary());
+        }
         Ok(Value::Object(out))
     }
 }

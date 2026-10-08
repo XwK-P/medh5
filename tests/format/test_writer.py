@@ -819,9 +819,10 @@ class TestW19WriterEqualsValidator:
         The writer and the validator each enforced a hand-kept list of rules,
         and the two drifted (L-19...L-22).  With ``commit()`` running the
         validator there is one list --- which this checks from the outside, over
-        the conformance corpus: a no-op amend of each of its 117 files either
+        the conformance corpus: a no-op amend of each of its files either
         refuses the file or writes one the validator passes, and a valid case
-        comes back valid.
+        comes back valid.  A valid higher-minor file is the one valid sample
+        that must be refused: 1.1 §2.3 forbids amending a projection.
         """
         from medh5.conformance import CASES
         from medh5.errors import MEDH5Error
@@ -835,7 +836,10 @@ class TestW19WriterEqualsValidator:
                     pass
             except (MEDH5Error, OSError):
                 refused += 1
-                assert not case.valid or case.suffix == ".medh5c", case.name
+                projection = "W913" in case.warnings
+                assert not case.valid or case.suffix == ".medh5c" or projection, (
+                    case.name
+                )
                 continue
             written += 1
             errors = [c for c in validate_file(path).codes if c.startswith("E")]

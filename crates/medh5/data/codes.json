@@ -1,5 +1,5 @@
 {
-  "$comment": "The normative diagnostic code table (spec §15.2). The single source: the engine embeds it, the validator, conformance corpus and documentation all read it. Codes are stable API: a meaning never changes and a retired code is never reused.",
+  "$comment": "The normative diagnostic code table (spec 1.0 §15.2, extended by 1.1 §9). The single source: the engine embeds it, the validator, conformance corpus and documentation all read it. Codes are stable API: a meaning never changes and a retired code is never reused.",
   "codes": [
     {
       "code": "E001",
@@ -60,6 +60,12 @@
       "severity": "error",
       "domain": "container",
       "summary": "sample root in a `collection` lacks its own `content_id`"
+    },
+    {
+      "code": "E011",
+      "severity": "error",
+      "domain": "container",
+      "summary": "a collection's `medh5_version` is lower than a member's"
     },
     {
       "code": "E101",
@@ -356,6 +362,120 @@
       "summary": "malformed digest string"
     },
     {
+      "code": "E801",
+      "severity": "error",
+      "domain": "clinical",
+      "summary": "`clinical/meta` is absent, not a scalar UTF-8 string, not JSON, or not canonical JSON"
+    },
+    {
+      "code": "E802",
+      "severity": "error",
+      "domain": "clinical",
+      "summary": "`clinical/meta` fails the clinical descriptor schema or its clock rules"
+    },
+    {
+      "code": "E803",
+      "severity": "error",
+      "domain": "clinical",
+      "summary": "clinical content is present but the `clinical` profile is not declared"
+    },
+    {
+      "code": "E804",
+      "severity": "error",
+      "domain": "clinical",
+      "summary": "a required clinical table or column is absent, or a member is not one the profile defines"
+    },
+    {
+      "code": "E805",
+      "severity": "error",
+      "domain": "clinical",
+      "summary": "a clinical column has the wrong dtype, rank or row count"
+    },
+    {
+      "code": "E806",
+      "severity": "error",
+      "domain": "clinical",
+      "summary": "a packed UTF-8 column's offsets are malformed or a cell is not valid UTF-8"
+    },
+    {
+      "code": "E807",
+      "severity": "error",
+      "domain": "clinical",
+      "summary": "a validity mask is malformed or misplaced, or a null cell holds a value"
+    },
+    {
+      "code": "E808",
+      "severity": "error",
+      "domain": "clinical",
+      "summary": "a valid floating-point clinical value is NaN or infinite"
+    },
+    {
+      "code": "E809",
+      "severity": "error",
+      "domain": "clinical",
+      "summary": "a clinical identifier is empty, malformed or not unique"
+    },
+    {
+      "code": "E810",
+      "severity": "error",
+      "domain": "clinical",
+      "summary": "an enumerated clinical value is outside its vocabulary"
+    },
+    {
+      "code": "E811",
+      "severity": "error",
+      "domain": "clinical",
+      "summary": "event time bounds are incomplete, inverted or inconsistent with `temporal_type`"
+    },
+    {
+      "code": "E812",
+      "severity": "error",
+      "domain": "clinical",
+      "summary": "event value, code, comparator, unit or missing-reason fields are inconsistent"
+    },
+    {
+      "code": "E813",
+      "severity": "error",
+      "domain": "clinical",
+      "summary": "a clinical reference does not resolve within the sample"
+    },
+    {
+      "code": "E814",
+      "severity": "error",
+      "domain": "clinical",
+      "summary": "a link's text span, instance annotation or imaging timepoint constraint is violated"
+    },
+    {
+      "code": "E815",
+      "severity": "error",
+      "domain": "clinical",
+      "summary": "a document is not owned by exactly one `document` event"
+    },
+    {
+      "code": "E816",
+      "severity": "error",
+      "domain": "clinical",
+      "summary": "a revision chain is broken, branching, cyclic or contradicted by availability"
+    },
+    {
+      "code": "E817",
+      "severity": "error",
+      "domain": "clinical",
+      "summary": "a lesion assessment lacks its timepoint, its instance link or a permitted value"
+    },
+    {
+      "code": "E818",
+      "severity": "error",
+      "domain": "clinical",
+      "summary": "a dataset under `clinical/` carries no `digest`"
+    },
+    {
+      "code": "E819",
+      "severity": "error",
+      "domain": "clinical",
+      "summary": "a clinical object carries an attribute the profile does not define"
+    },
+    {
       "code": "W901",
       "severity": "warning",
       "domain": "integrity",
@@ -426,6 +546,18 @@
       "severity": "warning",
       "domain": "labels",
       "summary": "class id used by an annotation has no ontology binding"
+    },
+    {
+      "code": "W913",
+      "severity": "warning",
+      "domain": "container",
+      "summary": "a higher minor version: only the supported projection was validated, or an unsupported item was ignored"
+    },
+    {
+      "code": "W914",
+      "severity": "warning",
+      "domain": "clinical",
+      "summary": "a numeric clinical value carries no unit"
     }
   ]
 }

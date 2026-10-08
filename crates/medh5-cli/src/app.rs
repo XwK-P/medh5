@@ -105,6 +105,9 @@ pub fn command() -> Command {
         .subcommands(convert())
         .subcommands(perf())
         .subcommand(conformance())
+        .subcommand(clinical())
+        .subcommand(task())
+        .subcommand(cache())
 }
 
 fn inspect() -> Vec<Command> {
@@ -567,6 +570,87 @@ fn conformance() -> Command {
                 .arg(positional("results", "JSON: [{file, errors, warnings}, ...]"))
                 .arg(json()),
         )
+}
+
+fn float(name: &'static str, long: &'static str, help: &'static str) -> Arg {
+    opt(name, long, help).value_parser(clap::value_parser!(f64)).allow_negative_numbers(true)
+}
+
+fn clinical() -> Command {
+    let sample =
+        |cmd: Command| cmd.arg(positional("path", "a MEDH5 1.1 sample (or collection, with --key)")).arg(key());
+    group("clinical", "the clinical profile: events, documents and links on a subject clock (format 1.1)")
+        .subcommand(
+            sample(Command::new("show").about("the clock, events, documents and links of a sample")).arg(json()),
+        )
+        .subcommand(
+            sample(Command::new("select").about("what strict prospective selection admits at a cutoff"))
+                .arg(int("cutoff_us", "cutoff-us", "the cutoff, in microseconds on the subject clock"))
+                .arg(float("cutoff_hours", "cutoff-hours", "the cutoff, in hours on the subject clock"))
+                .arg(
+                    opt("policy", "policy", "strict_prospective (default) or latest_provable")
+                        .value_parser(medh5::clinical::POLICIES),
+                )
+                .arg(int("context_us", "context-us", "only events this long before the cutoff (closed boundary)"))
+                .arg(opt("policy_file", "policy-file", "a JSON selection policy (task-and-cache contract §3.4)"))
+                .arg(json()),
+        )
+        .subcommand(
+            sample(Command::new("export").about("write the logical-record bundle (every text included) as JSON"))
+                .arg(opt("out", "out", "write to this file instead of stdout").short('o')),
+        )
+        .subcommand(
+            Command::new("augment")
+                .about("add clinical records to a sample: in place, or into --out (1.1 §10)")
+                .arg(positional("path", "the sample to augment"))
+                .arg(positional("records", "a logical-record bundle (JSON)"))
+                .arg(opt("out", "out", "write a new file instead of replacing the sample").short('o'))
+                .arg(json()),
+        )
+        .subcommand(
+            Command::new("strip")
+                .about("write the imaging projection: the sample without its clinical profile (a reported loss)")
+                .arg(positional("path", "the sample to project"))
+                .arg(out_required("the new file (never the source)"))
+                .arg(json()),
+        )
+}
+
+fn task() -> Command {
+    let manifest = || positional("manifest", "a medh5.task/1 manifest (JSON)");
+    group("task", "task manifests: rows, cutoffs, sources and what they admit (medh5.task/1)")
+        .subcommand(
+            Command::new("validate")
+                .about("check a manifest without opening its sources (T1xx, T2xx)")
+                .arg(manifest())
+                .arg(json()),
+        )
+        .subcommand(
+            Command::new("preflight")
+                .about("open and check every source, and report each row: eligible, uncertifiable, excluded or error")
+                .arg(manifest())
+                .arg(opt("base", "base", "resolve relative source URIs here (default: the manifest's directory)"))
+                .arg(flag("deep", "deep", "re-verify every dataset of every source, not only the clinical ones"))
+                .arg(json()),
+        )
+        .subcommand(
+            Command::new("reconcile")
+                .about("record the events several fragments of a subject share, and their digests")
+                .arg(manifest())
+                .arg(opt("base", "base", "resolve relative source URIs here (default: the manifest's directory)"))
+                .arg(opt("out", "out", "write the reconciled manifest here (default: in place)").short('o')),
+        )
+}
+
+fn cache() -> Command {
+    group("cache", "feature caches derived from MEDH5 sources (medh5.cache/1)").subcommand(
+        Command::new("validate")
+            .about("check a cache's checksums and pins, and --- given a task --- its admissibility (T4xx)")
+            .arg(positional("path", "a .medh5cache file"))
+            .arg(opt("task", "task", "also check the cache against this task manifest (T404-T406)"))
+            .arg(opt("base", "base", "resolve the entries' relative source URIs here (default: the cache's directory)"))
+            .arg(json()),
+    )
 }
 
 #[cfg(test)]

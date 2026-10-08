@@ -13,9 +13,12 @@ ground truth — in a single self-describing HDF5 file.**
 
 Multi-modality images, segmentation in five encodings, detection boxes,
 keypoints, contours, meshes, classification, registration between visits,
-provenance and quality records, and per-object integrity digests. Format
-version **1.0**, with a [normative specification](https://medh5.readthedocs.io/en/latest/spec/medh5-1.0/) and a
-[117-case conformance suite](https://medh5.readthedocs.io/en/latest/spec/conformance/) any implementation can run.
+provenance and quality records, and per-object integrity digests --- and, from
+format **1.1**, the clinical history around the images, with *when each fact
+became known*, so a model trained at a cutoff reads only what was available
+then. Format versions [**1.0**](https://medh5.readthedocs.io/en/latest/spec/medh5-1.0/) and
+[**1.1**](https://medh5.readthedocs.io/en/latest/spec/medh5-1.1/), with normative specifications and a
+[152-case conformance suite](https://medh5.readthedocs.io/en/latest/spec/conformance/) any implementation can run.
 
 ```python
 import medh5
@@ -67,10 +70,14 @@ guides, the Python and CLI reference, and the normative specification.
 - **Absence is not silence** — a class examined and not found is recorded as
   such, which is a different training signal from one nobody examined.
 - **Every claim is checkable** — per-object digests, a Merkle `content_id` that
-  survives recompression, a stable diagnostic-code table, and a 117-case
+  survives recompression, a stable diagnostic-code table, and a 152-case
   conformance corpus.
 - **Reading a patch is fast** — a 64³ multi-class patch in ~3.5 ms, and O(1)
   foreground sampling once `build_index()` has run.
+- **What was known, when** — labs, reports and their revisions, diagnoses and
+  assessments on one subject clock, each with when it happened and when it
+  became available; strict prospective selection decides what a row may read,
+  and tasks and feature caches are pinned to the sample versions they read.
 
 [The reasoning behind each](https://medh5.readthedocs.io/en/latest/explanation/design-rationale/).
 
@@ -133,6 +140,26 @@ rather than required: the handle cache is PID-keyed and re-checks ownership on
 every access, so a forked worker abandons the parent's handles on first use
 rather than reading through or closing them.
 
+With a clinical history (format 1.1), a **task** asks a question at a cutoff,
+and the batch holds only what was known then --- images from the visit
+available at the cutoff, the report version current at it, missing modalities
+and censored targets as masks rather than zeros:
+
+```python
+from torch.utils.data import DataLoader
+from medh5.task import TaskManifest
+from medh5.torch import ClinicalTaskDataset, collate_clinical
+
+task = TaskManifest.load("cohort/progression.task.json")
+assert task.preflight().ok                  # every pin, clock and duplicate checked
+train = ClinicalTaskDataset(task, partition="train")
+batch = next(iter(DataLoader(train, batch_size=8, collate_fn=collate_clinical)))
+batch["present"]["mr"], batch["events"]["mask"], batch["target"]["observed"]
+```
+
+See [clinical history](https://medh5.readthedocs.io/en/latest/guides/clinical/) and
+[training on clinical tasks](https://medh5.readthedocs.io/en/latest/guides/clinical-training/).
+
 ## Command line
 
 `pip install medh5` puts `medh5` on the path; so does the standalone binary,
@@ -160,6 +187,10 @@ medh5 pack cohort/*.medh5 -o shard.medh5c
 medh5 recompress cohort/*.medh5 --profile training
 medh5 bench                                # reproduce the performance targets
 medh5 conformance publish suite/           # the suite, for another implementation
+
+medh5 clinical select case.medh5 --cutoff-hours 24    # what was known then (1.1)
+medh5 task preflight progression.task.json           # every row: in or out, and why
+medh5 cache validate reports.medh5cache --task progression.task.json
 ```
 
 ## Interoperability
@@ -198,12 +229,14 @@ with h5py.File("case_0001.medh5") as f:
 
 ## Versioning
 
-The **format** is 1.0. A minor version may add optional objects, profiles,
-encodings and diagnostic codes; it may not change what an existing one means
-(spec §16). The **package** follows semantic versioning from 1.0.0: 2.0 moved
-the implementation to the Rust engine and changed the Python API at the HDF5
-boundary ([what changed](https://medh5.readthedocs.io/en/latest/changelog/)),
-and writes format 1.0, which 1.x reads.
+The **format** is 1.1: 1.0 plus the optional `clinical` profile, and nothing
+else. A sample is written at the lowest version its content needs, so
+imaging-only data is still 1.0, which 1.x reads; a reader opens a later minor
+as a projection, never amending it. A minor version may add optional objects,
+profiles, encodings and diagnostic codes; it may not change what an existing
+one means (spec §16). The **package** follows semantic versioning from 1.0.0:
+2.0 moved the implementation to the Rust engine and changed the Python API at
+the HDF5 boundary ([what changed](https://medh5.readthedocs.io/en/latest/changelog/)).
 
 0.x files are not readable by 1.0 and are not meant to be — `medh5 migrate`
 converts them once. See [Migrate from 0.x](https://medh5.readthedocs.io/en/latest/guides/migrate-0x/).

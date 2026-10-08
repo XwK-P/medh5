@@ -1,0 +1,158 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/XwK-P/medh5/schemas/medh5-task-1.schema.json",
+  "title": "MEDH5 task manifest, version 1 (medh5.task/1)",
+  "description": "A versioned prediction task over MEDH5 sources: what may be read at a cutoff, from which pinned sample versions, for which subjects in which partition, and what the target is. Separately versioned from the MEDH5 format; see docs/spec/task-cache-1.md. Integers are microseconds on the subject clock. JSON Schema checks shapes and vocabularies; the engine checks identity, splits, pins and fingerprints (T-codes).",
+  "type": "object",
+  "required": ["schema", "task", "identity_namespace", "subjects", "rows"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": { "const": "medh5.task/1" },
+    "task": {
+      "type": "object",
+      "required": ["id", "version"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "version": { "type": "string", "minLength": 1 },
+        "description": { "type": "string" }
+      }
+    },
+    "identity_namespace": { "type": "string", "minLength": 1,
+      "description": "The namespace subject ids are scoped by; clock ids are scoped by it too." },
+    "policy": { "$ref": "#/$defs/policy" },
+    "slots": { "type": "array", "items": { "$ref": "#/$defs/slot" } },
+    "target": { "anyOf": [{ "$ref": "#/$defs/target" }, { "type": "null" }] },
+    "split": {
+      "type": "object",
+      "required": ["set_id", "partitions"],
+      "additionalProperties": false,
+      "properties": {
+        "set_id": { "type": "string", "minLength": 1 },
+        "partitions": { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1, "uniqueItems": true }
+      }
+    },
+    "subjects": { "type": "array", "items": { "$ref": "#/$defs/subject" } },
+    "rows": { "type": "array", "items": { "$ref": "#/$defs/row" } },
+    "fingerprint": { "$ref": "#/$defs/digest",
+      "description": "Optional: sha256 over the canonical manifest without this member. When present it must match." }
+  },
+
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9_.@:-]{1,128}$" },
+    "digest": { "type": "string", "pattern": "^(sha256|sha512|blake2b):[0-9a-f]+$" },
+
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "selection": { "enum": ["strict_prospective", "latest_provable"] },
+        "order_by": { "enum": ["effective", "available"] },
+        "context_us": { "type": ["integer", "null"], "minimum": 0 },
+        "context_boundary": { "enum": ["closed", "open"] },
+        "uncertainty": { "enum": ["contained", "overlaps"] },
+        "kinds": { "type": ["array", "null"], "items": { "enum": ["imaging", "document", "observation", "diagnosis",
+          "medication_order", "medication_administration", "procedure", "assessment", "other"] } },
+        "plans": { "type": "boolean" },
+        "static": { "type": "boolean" },
+        "max_events": { "type": ["integer", "null"], "minimum": 0 },
+        "keep": { "enum": ["latest", "earliest"] },
+        "ties": { "enum": ["keep_group", "drop_group"] }
+      }
+    },
+
+    "slot": {
+      "type": "object",
+      "required": ["name", "modality"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "$ref": "#/$defs/id", "description": "Stable across the cohort: never a filename or a visit-specific image id." },
+        "modality": { "type": "string", "minLength": 1 },
+        "required": { "type": "boolean" },
+        "patch": { "type": ["array", "null"], "items": { "type": "integer", "minimum": 1 }, "minItems": 2, "maxItems": 3,
+          "description": "The region read around the centre, in the image's own voxels; null reads the whole volume." },
+        "roi": { "enum": ["center", "eligible_instances"] },
+        "classes": { "type": "array", "items": { "type": "integer", "minimum": 1, "maximum": 65534 } }
+      }
+    },
+
+    "target": {
+      "type": "object",
+      "required": ["id", "version", "event", "positive", "negative", "horizon_us"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "version": { "type": "string", "minLength": 1 },
+        "event": {
+          "type": "object",
+          "required": ["code_system", "code"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "type": "string" },
+            "code_system": { "type": "string", "minLength": 1 },
+            "code": { "type": "string", "minLength": 1 }
+          }
+        },
+        "positive": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+        "negative": { "type": "array", "items": { "type": "string" } },
+        "horizon_us": { "type": "integer", "minimum": 1 },
+        "min_follow_up_us": { "type": "integer", "minimum": 0 },
+        "censoring": { "enum": ["censor", "exclude"] },
+        "exclude_prevalent": { "type": "boolean" }
+      }
+    },
+
+    "source": {
+      "type": "object",
+      "required": ["source_id", "uri", "content_id"],
+      "additionalProperties": false,
+      "properties": {
+        "source_id": { "$ref": "#/$defs/id" },
+        "uri": { "type": "string", "minLength": 1,
+          "description": "A locator, relative to the manifest's directory or absolute; never identity." },
+        "sample_key": { "type": ["string", "null"], "pattern": "^[A-Za-z0-9_.-]{1,255}$",
+          "description": "The member of a .medh5c collection; null for a standalone sample." },
+        "content_id": { "$ref": "#/$defs/digest", "description": "The pinned sample version." },
+        "local_subject_id": { "type": ["string", "null"], "minLength": 1,
+          "description": "The sample's own identity.subject_id, mapped to the namespace's subject here." }
+      }
+    },
+
+    "subject": {
+      "type": "object",
+      "required": ["subject_id", "sources"],
+      "additionalProperties": false,
+      "properties": {
+        "subject_id": { "type": "string", "minLength": 1 },
+        "clock_id": { "type": ["string", "null"], "minLength": 1 },
+        "partition": { "type": ["string", "null"], "minLength": 1 },
+        "sources": { "type": "array", "items": { "$ref": "#/$defs/source" }, "minItems": 1 },
+        "reconciled": {
+          "type": "array",
+          "description": "Event versions present in more than one source, with the digest they agree on.",
+          "items": {
+            "type": "object",
+            "required": ["event_id", "digest", "sources"],
+            "additionalProperties": false,
+            "properties": {
+              "event_id": { "type": "string", "minLength": 1 },
+              "digest": { "$ref": "#/$defs/digest" },
+              "sources": { "type": "array", "items": { "$ref": "#/$defs/id" }, "minItems": 2 }
+            }
+          }
+        }
+      }
+    },
+
+    "row": {
+      "type": "object",
+      "required": ["row_id", "subject_id", "cutoff_us"],
+      "additionalProperties": false,
+      "properties": {
+        "row_id": { "$ref": "#/$defs/id" },
+        "subject_id": { "type": "string", "minLength": 1 },
+        "cutoff_us": { "type": "integer" }
+      }
+    }
+  }
+}

@@ -1,8 +1,10 @@
 # Contributing to medh5
 
 medh5 is two things kept in step: a **format** — the normative
-[specification](docs/spec/medh5-1.0.md), its JSON Schema and its conformance
-corpus — and an **implementation**: one format engine in Rust, with three
+specifications ([1.0](docs/spec/medh5-1.0.md), and [1.1](docs/spec/medh5-1.1.md)
+for the clinical profile), their JSON Schemas and their conformance corpus, with
+the separately versioned [task and cache contract](docs/spec/task-cache-1.md)
+beside them — and an **implementation**: one format engine in Rust, with three
 frontends over it (the Rust crate, the Python package and the `medh5` command
 line). Most of what follows is about keeping the format, the engine, its
 frontends and the documentation that describes them from drifting apart.
@@ -89,8 +91,10 @@ honest.
 
 ## Changing the format
 
-`docs/spec/medh5-1.0.md` is **normative**: the code implements it, and when the
-two disagree one of them is a bug. Decide which before changing either. Engine
+`docs/spec/medh5-1.0.md` and `docs/spec/medh5-1.1.md` are **normative**: the
+code implements them, and when the two disagree one of them is a bug. A new
+code is allocated in `crates/medh5/data/codes.json` *and* the spec's code table
+of the version that adds it (1.0 §15.2, 1.1 §11.2); a test compares the two. Decide which before changing either. Engine
 modules map onto specification sections (`crates/medh5/README.md` lists them),
 so a clause has one obvious home in the code.
 

@@ -13,6 +13,7 @@ use serde_json::{json, Map, Value};
 
 pub mod app;
 mod bench;
+mod clinical;
 pub mod common;
 mod conformance;
 mod convert;
@@ -114,6 +115,7 @@ pub fn run_with(args: &[String], out: &mut dyn Write, err: &mut dyn Write, host:
         "migrate" => convert::migrate(sub, &mut ctx),
         "recompress" | "bench" => perf::dispatch(name, sub, &mut ctx),
         "conformance" => conformance::dispatch(sub, &mut ctx),
+        "clinical" | "task" | "cache" => clinical::dispatch(name, sub, &mut ctx),
         _ => Ok(EXIT_USAGE),
     };
     let code = match result {

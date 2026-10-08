@@ -15,7 +15,8 @@ is rewritten on the way in, so `CHANGELOG.md` stays correct on GitHub and the
 copy served here resolves too.  `mkdocs build --strict` fails if it does not.
 
 The second job is the tables.  The diagnostic codes, the cohort check codes and
-the sample-document schema are all *already* defined precisely somewhere in the
+the companion (task and cache) codes and the sample-document schema are all
+*already* defined precisely somewhere in the
 repository, and were all *also* being retyped by hand into prose pages --- in
 two different wordings, in the case of the C1xx codes.  The code table says in
 its own `$comment` that "the validator, conformance corpus and documentation
@@ -27,8 +28,9 @@ Reading those sources costs the build nothing, which matters because
 hand-written Markdown, and a build should not need a Rust toolchain to compile
 the engine.  So the engine's data is read where it lives: the diagnostic code
 table is `crates/medh5/data/codes.json` and the schema the JSON file beside it,
-both embedded by the engine, and the cohort codes are the `CHECK_CODES` table
-in `crates/medh5/src/dataset/check.rs`, *parsed* rather than compiled.
+both embedded by the engine, the cohort codes are the `CHECK_CODES` table in
+`crates/medh5/src/dataset/check.rs` and the companion codes the `CODES` table in
+`crates/medh5/src/companion/mod.rs`, both *parsed* rather than compiled.
 """
 
 from __future__ import annotations
@@ -214,6 +216,7 @@ _DOMAIN_TITLES: tuple[tuple[str, str], ...] = (
     ("transforms", "Transforms"),
     ("curation", "Curation"),
     ("integrity", "Integrity"),
+    ("clinical", "Clinical (format 1.1)"),
 )
 
 
@@ -249,6 +252,53 @@ def _codes_markdown(root: Path) -> str:
             f"{len(codes) - seen} diagnostic code(s) are in a domain this page does "
             f"not render; add it to _DOMAIN_TITLES in {__file__}"
         )
+    return "\n".join(out)
+
+
+# The task-and-cache contract's finding codes: `CODES: [(&str, &str); N]` in
+# the engine's companion module, parsed the way `CHECK_CODES` is.
+COMPANION_SOURCE = "crates/medh5/src/companion/mod.rs"
+_COMPANION_TABLE = re.compile(
+    r"pub const CODES: \[\(&str, &str\); \d+\] = \[(?P<rows>.*?)\n\];", re.S
+)
+_COMPANION_ROW = re.compile(
+    r'\(\s*"(?P<code>T\d{3})",\s*"(?P<summary>[^"\\]*)",?\s*\),?'
+)
+
+
+def _companion_codes(root: Path) -> dict[str, str]:
+    """The companion contract's ``CODES``, read from the engine's source."""
+    path = root / COMPANION_SOURCE
+    if not path.is_file():
+        raise FileNotFoundError(f"the companion code table is not at {path}")
+    table = _COMPANION_TABLE.search(path.read_text(encoding="utf-8"))
+    if table is None:
+        raise ValueError(
+            f"CODES is no longer a `[(&str, &str); N]` table in {path}; the "
+            "task-and-cache code table cannot be generated from it"
+        )
+    rows = table.group("rows")
+    codes = {m["code"]: m["summary"] for m in _COMPANION_ROW.finditer(rows)}
+    leftover = _COMPANION_ROW.sub("", rows).strip()
+    if leftover or not codes:
+        raise ValueError(f"unparsed CODES rows in {path}: {leftover[:200]!r}")
+    return codes
+
+
+def _companion_codes_markdown(root: Path) -> str:
+    """The T1xx--T4xx task-and-cache finding table."""
+    codes = _companion_codes(root)
+    out = [
+        f"{len(codes)} codes, distinct from the format's E/W codes: a task can be "
+        "wrong about perfectly valid files.",
+        "",
+        "| Code | Meaning |",
+        "|---|---|",
+    ]
+    out += [
+        f"| `{code}`{{ #{code.lower()} }} | {_cell(summary)} |"
+        for code, summary in sorted(codes.items())
+    ]
     return "\n".join(out)
 
 
@@ -498,6 +548,7 @@ def _schema_markdown(root: Path) -> str:
 _MARKERS: dict[str, Any] = {
     "<!--@diagnostic-codes-->": _codes_markdown,
     "<!--@cohort-codes-->": _cohort_codes_markdown,
+    "<!--@companion-codes-->": _companion_codes_markdown,
     "<!--@schema-->": _schema_markdown,
 }
 

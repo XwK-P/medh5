@@ -78,7 +78,8 @@ def test_the_wheel_version_and_the_stamped_version_agree():
 
 
 def test_the_format_version_is_not_the_package_version():
-    """§1: the *format* is 1.0. The package ships releases against it.
+    """§1: the *format* is 1.1 (1.0 plus the optional clinical profile). The
+    package ships releases against it.
 
     Tying them together would force a format-version bump for every package
     release, and the format version is what tells a reader whether it can open
@@ -90,11 +91,12 @@ def test_the_format_version_is_not_the_package_version():
     package minor bump against an unchanged format failed it.  1.x then held
     the package MAJOR equal to the format's; 2.0 is the architectural reset
     that broke that on purpose (a Rust engine, one format), so what has to
-    hold is that the format version is 1.0, the package version is a
+    hold is that the newest format version is 1.1, the package version is a
     well-formed release of its own, and the package MAJOR never trails the
-    format MAJOR it writes.
+    format MAJOR it writes.  A file is still written at the lowest version its
+    content needs, so an imaging-only sample stays 1.0.
     """
-    assert medh5.__format_version__ == "1.0"
+    assert medh5.__format_version__ == "1.1"
     assert re.fullmatch(r"\d+\.\d+\.\d+(?:[.-]?[0-9A-Za-z.]+)?", _declared())
     package_major = int(_declared().split(".")[0])
     assert package_major >= int(medh5.__format_version__.split(".")[0])

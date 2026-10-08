@@ -1252,6 +1252,22 @@ impl SampleHandle {
     fn content_id(&self) -> R<Option<String>> {
         Ok(self.sample()?.content_id()?)
     }
+    /// `full` or `projection` (a higher minor, read as what this engine knows).
+    #[getter]
+    fn support(&self) -> R<&'static str> {
+        Ok(match self.sample()?.support()? {
+            medh5::version::Support::Full => "full",
+            medh5::version::Support::Projection => "projection",
+            medh5::version::Support::Unsupported => "unsupported",
+        })
+    }
+    /// The clinical profile's records, when the sample declares it (1.1).
+    fn clinical(&self, py: Python<'_>) -> R<Option<crate::clinical::ClinicalHandle>> {
+        let sample = self.sample()?;
+        let reader = sample.clone();
+        let found = py.detach(move || reader.clinical().map(|c| c.cloned()))?;
+        Ok(found.map(|inner| crate::clinical::ClinicalHandle { inner, _sample: sample }))
+    }
     /// `{grid_id: Grid}`, with §3.7's implicit timepoint resolved.
     fn grids<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyDict>> {
         let sample = self.sample()?;

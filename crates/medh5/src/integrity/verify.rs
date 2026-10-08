@@ -162,9 +162,14 @@ pub fn verify_root(
         }
     }
     if declared.is_some() && partial.is_none() {
+        // `clinical/` is attested where the profile is declared (1.1 §8); in a
+        // 1.0 file a group of that name is somebody's extension.
+        let clinical =
+            attrs::get_strs(root, "medh5_profiles")?.unwrap_or_default().iter().any(|p| p == crate::clinical::PROFILE);
+        let attested = |group: &str| ATTESTED_GROUPS.contains(&group) || (clinical && group == crate::clinical::GROUP);
         result.unattested = undigested
             .iter()
-            .filter(|n| n.contains('/') && ATTESTED_GROUPS.contains(&n.split('/').next().unwrap_or("")))
+            .filter(|n| n.contains('/') && attested(n.split('/').next().unwrap_or("")))
             .cloned()
             .collect();
     }

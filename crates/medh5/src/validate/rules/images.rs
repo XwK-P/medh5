@@ -33,7 +33,7 @@ pub fn check_images(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
         }
         if let Some(vt) = str_attr(a, "value_type")? {
             if !VALUE_TYPES.contains(&vt.as_str()) {
-                out.push(ctx.err("E203", location.clone(), format!("unknown value_type {}", repr_str(&vt))));
+                out.push(ctx.unknown("E203", location.clone(), format!("unknown value_type {}", repr_str(&vt))));
             }
         }
         let Some(grid_id) = str_attr(a, "grid")? else { continue };
