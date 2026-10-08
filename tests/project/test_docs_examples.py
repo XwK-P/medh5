@@ -1,0 +1,285 @@
+"""The documentation is checked against the code, not proofread.
+
+Every defect this file guards against was found in review after being written
+confidently and shipped: a `--source ct/*.dcm` that argparse rejects before doing
+anything, a `--out cold/` that dies with `IsADirectoryError`, a response label
+naming one visit when it describes an interval.  Each was a claim about the code
+that the code disagreed with, and each was reachable by asking the code.
+
+So the documentation gets the same treatment as anything else here.  A prose page
+is not a comment; it is an assertion about behaviour, and an assertion nobody
+executes decays.
+"""
+
+from __future__ import annotations
+
+import re
+import shlex
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from medh5.cli import command_tree
+from tests.helpers import ROOT
+
+DOCS = ROOT / "docs"
+
+
+README = ROOT / "README.md"
+
+
+# The normative specification is excluded: its examples are illustrative of the
+# format rather than of this package's API, and it is versioned separately.
+PAGES = sorted(p for p in DOCS.rglob("*.md") if "spec/medh5-1.0.md" not in str(p))
+
+
+def _shell_lines() -> list[tuple[Path, str]]:
+    """Every `medh5 ...` invocation in a fenced block, line continuations joined."""
+    out: list[tuple[Path, str]] = []
+    for path in [*PAGES, README]:
+        for block in re.findall(
+            r"```(?:bash|sh|console)?\n(.*?)```", path.read_text(encoding="utf-8"), re.S
+        ):
+            for line in re.sub(r"\\\n\s*", " ", block).splitlines():
+                line = line.strip().removeprefix("$ ").strip()
+                if not line.startswith("medh5 "):
+                    continue
+                # Placeholder forms (`PATH...`, `medh5 COMMAND [args]`) and
+                # pipelines are prose, not invocations.
+                if line.endswith("...") or any(c in line for c in "|<>&"):
+                    continue
+                out.append((path, line))
+    return out
+
+
+def _parser_tree() -> dict[tuple[str, ...], dict[str, Any]]:
+    """Every command of the CLI's grammar, by its path of subcommand names."""
+    tree: dict[tuple[str, ...], dict[str, Any]] = {}
+
+    def walk(node: dict[str, Any], prefix: tuple[str, ...]) -> None:
+        tree[prefix] = node
+        for name, sub in node["commands"].items():
+            walk(sub, (*prefix, name))
+
+    walk(command_tree(), ())
+    return tree
+
+
+# Claims corrected during review, each with the shape that was wrong.  A pattern
+# here is cheaper than the round trip that found it the first time.
+STALE_CLAIMS: tuple[tuple[str, str, str, str | None], ...] = (
+    (
+        "ignore region read as a class",
+        r"dense\(\[?65535",
+        "the ignore id is not a class; `layers` gives an all-zero plane. "
+        "Use ignore_mask().",
+        None,
+    ),
+    (
+        "worker_init_fn called mandatory",
+        r"worker_init_fn[^.]{0,80}?(required|mandatory|not optional|must not omit)",
+        "the handle cache is PID-keyed, so the callback is an eager reset, "
+        "not a requirement.",
+        None,
+    ),
+    (
+        "validation described as metadata-only",
+        r"touches no voxel|never touches a voxel|costs nothing to run",
+        "`structural` and `semantic` do bounded payload scans; "
+        "measured 62 ms on 12.6 Mvox.",
+        None,
+    ),
+    (
+        "glob passed to --source",
+        r"--source [^\s]*\*\.dcm",
+        "`--source` takes one value per occurrence; a glob is rejected "
+        "as extra arguments.",
+        None,
+    ),
+    (
+        "recompress --out given a directory",
+        r"--out [^\s]*/(\s|$)",
+        "`--out` is a single destination filename, not a directory.",
+        None,
+    ),
+    (
+        "PairReport credited with resolving transforms",
+        r"aligned by a transform",
+        "`PairReport` holds files, pairs and cross-sectional skips; "
+        "it resolves nothing.",
+        None,
+    ),
+    (
+        "change label naming one endpoint",
+        r'"response"[^)]*timepoints=\["tp[01]"\]',
+        "a label describing an interval names both visits, in acquisition order.",
+        None,
+    ),
+    (
+        "probmap export described as keeping every nonzero value",
+        r"every nonzero\s+probability becomes 1",
+        "`dense()` applies the stored threshold (default 0.5), so sub-threshold "
+        "voxels become background.",
+        None,
+    ),
+    (
+        "det profile presented as requiring boxes",
+        r"(needs boxes can require `det`|require `det`[^.]{0,60}(instead of|rather "
+        r"than) a `KeyError`|`det`[^.\n]{0,40}(guarantees|means) boxes)",
+        "the check is task='detection'; keypoints and contours satisfy it too, so "
+        "requiring `det` does not guarantee a box annotation.",
+        None,
+    ),
+    (
+        "ignore_mask() promised on every encoding",
+        r"ignore_mask\(\)[^.\n]{0,60}(every encoding|all encodings|any encoding)",
+        "only labelmap and layers implement it; bitmask and probmap reference a "
+        "separate mask annotation.",
+        None,
+    ),
+    (
+        "cohort checked against a pre-scrub manifest",
+        r"medh5 dataset check[^\n]*# C501",
+        "`deidentified` is captured at index time; re-index after `scrub --apply` "
+        "or C501 cannot fire.",
+        # Legitimate when the block re-indexes first, which is the fix.
+        r"dataset index",
+    ),
+    (
+        "entry-level coverage used as a loss mask",
+        r"e\.annotated_class_ids for e in manifest",
+        "`Entry.annotated_class_ids` unions every annotation; a loss mask needs "
+        "the one being trained on.",
+        None,
+    ),
+    (
+        "registration preflight resolved per timepoint",
+        r"transform_between\(pair\.first, pair\.second\)",
+        "a visit may hold several grids on different frames; resolve between the "
+        "grids the images are on.",
+        None,
+    ),
+    (
+        "inverse_id offered for graph resolution",
+        r"store it under `inverse_id`",
+        "`inverse_id` adds a second one-hop path and makes the reverse "
+        "direction raise E501.",
+        None,
+    ),
+)
+
+
+@pytest.mark.parametrize(("path", "line"), _shell_lines(), ids=lambda v: str(v)[:60])
+def test_documented_cli_flags_exist(path: Path, line: str) -> None:
+    """A flag in the documentation is a flag the CLI defines.
+
+    `--source ct/*.dcm` looked right for years and never worked: the option takes
+    one value per occurrence, so the glob expanded and argparse exited with
+    `unrecognized arguments` before the export began.
+    """
+    tree = _parser_tree()
+    tokens = shlex.split(line)[1:]
+    command: tuple[str, ...] = ()
+    for token in tokens:
+        if token.startswith("-") or (*command, token) not in tree:
+            break
+        command = (*command, token)
+    parser = tree.get(command)
+    if parser is None:  # a placeholder command name; nothing to check
+        return
+    defined = set(parser["options"])
+    used = [
+        token
+        for token in tokens[len(command) :]
+        # A negative number is a value (`--date-shift-days -117`), not a flag.
+        if token.startswith("-") and not re.fullmatch(r"-\d+(\.\d+)?", token)
+    ]
+    unknown = [f for f in used if f.split("=")[0] not in defined]
+    assert not unknown, f"{path.name}: `{line}` uses undefined flag(s) {unknown}"
+
+
+def test_the_registration_preflight_resolves_on_frames() -> None:
+    """The preflight must ask about frames, and nothing else.
+
+    It resolved by *grid* id, which reads correctly and is still wrong: grid ids
+    and timepoint ids are separate namespaces (§2.3), so a grid may be named
+    `tp0`, and `Sample._frames_for` matches a timepoint before a grid --- which
+    hands the question back to the whole visit and re-answers "registered" for a
+    PET pair carrying only a CT registration.  A frame uid is matched last.
+
+    This one is out of reach of `STALE_CLAIMS` below: the recipe contains
+    `is not None`, and the paragraph-scoped disclaimer check reads that `not` as
+    a correction and exempts the block.
+    """
+    text = (DOCS / "guides" / "longitudinal.md").read_text(encoding="utf-8")
+    block = next(
+        b
+        for b in re.findall(r"```python\n(.*?)```", text, re.S)
+        if "transform_between" in b and "TimepointPairSampler" in b
+    )
+    returned = re.findall(r"^\s*return\s+(.+)$", block, re.M)
+    assert returned, "the preflight names what it resolves on through a helper"
+    assert all("frame_uid" in value for value in returned), (
+        f"the preflight helper must yield a frame uid, not a grid id: {returned}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("label", "pattern", "why", "unless"), STALE_CLAIMS, ids=lambda v: str(v)[:40]
+)
+def test_corrected_claims_stay_corrected(
+    label: str, pattern: str, why: str, unless: str | None
+) -> None:
+    """Each of these was true of the documentation once, and is not true of the code.
+
+    They recur because a correction lands on the page that was reported and not
+    on its three siblings.  Instances kept coming back until the class was
+    checked, which is what this does.
+    """
+    # Scoped to the paragraph, not the line: a correction names the wrong form
+    # in order to warn against it, and the warning is usually a sentence away
+    # from the mention.  Line-scoped matching flags the fix as the defect.
+    disclaimed = re.compile(
+        r"\bnot\b|instead|rather than|does not|never|finds nothing|all-zero|"
+        r"expands to|is rejected|no longer|used to",
+        re.I,
+    )
+    hits: list[str] = []
+    for path in [*PAGES, README]:
+        text = path.read_text(encoding="utf-8")
+        offset = 0
+        for para in text.split("\n\n"):
+            if unless and re.search(unless, para, re.I):
+                offset += len(para) + 2
+                continue
+            if re.search(pattern, para, re.I) and not disclaimed.search(para):
+                line_no = text.count("\n", 0, offset) + 1
+                first = next(
+                    (ln for ln in para.splitlines() if re.search(pattern, ln, re.I)),
+                    para,
+                )
+                hits.append(f"{path.name}:{line_no}: {first.strip()[:80]}")
+            offset += len(para) + 2
+    assert not hits, f"{label}: {why}\n  " + "\n  ".join(hits)
+
+
+def test_the_rust_example_on_the_docs_page_is_the_tested_one() -> None:
+    """`cargo test` compiles and runs the engine crate's README; the docs page
+    shows the same block, so it is tested too --- as long as they are one."""
+    import re
+
+    block = re.compile(r"```rust\n.*?```\n", re.S)
+    readme = (ROOT / "crates/medh5/README.md").read_text(encoding="utf-8")
+    page = (ROOT / "docs/reference/rust.md").read_text(encoding="utf-8")
+    assert block.findall(page) == block.findall(readme)[:1]
+    assert '#![doc = include_str!("../README.md")]' in (
+        ROOT / "crates/medh5/src/lib.rs"
+    ).read_text(encoding="utf-8")
+
+
+def test_the_torch_docstring_agrees_with_the_docs() -> None:
+    import medh5.torch as torch_pkg
+
+    assert "not optional" not in (torch_pkg.__doc__ or "")
+    assert "recommended" in (torch_pkg.__doc__ or "")

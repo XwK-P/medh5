@@ -18,8 +18,8 @@ cargo test --workspace            # unit tests, the corpus, the README doctest
 pytest tests/ --cov=medh5 --cov-report=term-missing --cov-fail-under=90
 
 # A single file or test
-pytest tests/v1/test_sample.py -v
-pytest tests/v1/test_dataset.py::TestSplits -v
+pytest tests/format/test_sample.py -v
+pytest tests/tools/test_dataset.py::TestSplits -v
 cargo test -p medh5 --lib h5::file
 
 # Lint, format, types
@@ -95,7 +95,7 @@ and the CLI are layers over it, and all three read and write the same bytes.
   holding the facades, plus what is Python's — `torch`, `monai`, `io`
   converters. A class's `#[pyclass(module = …)]` must name the module that
   exports it, or `pickle` cannot find it. `medh5/_core.pyi` types the
-  extension; keep it in step with the bindings (`tests/v1/test_typing.py` runs
+  extension; keep it in step with the bindings (`tests/project/test_typing.py` runs
   `stubtest` against the build).
 - **`conformance`** — the corpus is a *shipped artifact*, not a test fixture:
   third-party implementations run it. The engine builds it
@@ -144,13 +144,21 @@ it into every file's `generator`.
 
 ## Testing patterns
 
-- Python tests live in `tests/v1/`; Rust tests sit beside the code
+- Python tests are grouped by purpose under `tests/`: `format/` (one module
+  per area of the spec, through the public API), `tools/` (collections, cohorts,
+  curation, repair, sampling, the CLI), `integrations/` (torch, MONAI, the
+  converters) and `project/` (docs, packaging, types). A test lives with what it
+  tests, not with the release that added it. Rust tests sit beside the code
   (`#[cfg(test)]`) and in `crates/medh5/tests/`. Optional Python deps are
-  guarded with `pytest.importorskip`.
+  guarded with `pytest.importorskip` --- per test, or at the top of a module
+  whose every test needs one.
 - Test names cite the clause they hold: `test_S8_1_boxes_shift_by_half_a_voxel`,
   `s14_4_the_source_is_closed_before_the_replace`.
 - Fixtures are built by the **public writer**, so every reader test is also a
-  writer test. Tests plant defects with `h5py` (a test dependency only).
+  writer test. Shared builders are in `tests/helpers.py`, fixtures in
+  `tests/conftest.py`, and the small samples of the regression tests in
+  `tests/kits.py` (one class per kit). Tests plant defects with `h5py` (a test
+  dependency only).
 - Engine internals with no Python door (slab budgets, temporary names, the
   rename order) are held by Rust tests; the Python test keeps the observable
   outcome.
@@ -171,13 +179,13 @@ the reasoning lives in `docs/explanation/design-rationale.md`.
 
 The docs are tested, not proofread:
 
-- `tests/v1/test_docs_python.py` executes every `python` block against a real
+- `tests/project/test_docs_python.py` executes every `python` block against a real
   sample. A block that cannot run gets `<!-- illustrative -->` on the line above
   its fence; fewer than half may.
-- `tests/v1/test_docs_examples.py` checks every documented `medh5 …` flag
+- `tests/project/test_docs_examples.py` checks every documented `medh5 …` flag
   against the parser, and keeps `STALE_CLAIMS` — statements once wrong in the
   docs that must not come back.
-- `TestStatedCounts` in `tests/v1/test_conformance.py` compares every stated
+- `TestStatedCounts` in `tests/format/test_conformance.py` compares every stated
   corpus size and breakdown with the corpus.
 - The engine crate's README is its crate documentation, so its Rust example is a
   doctest; `docs/reference/rust.md` shows the same block (a test compares them).

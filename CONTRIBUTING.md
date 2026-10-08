@@ -51,9 +51,10 @@ cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warni
 - **Lint and format** — `ruff`, pinned in the `dev` extra and in
   `.pre-commit-config.yaml`; bump the two together.
 - **Types** — `mypy --strict` over `medh5/`. The engine's Python types are
-  `medh5/_core.pyi`; `tests/v1/test_typing.py` runs `stubtest` against the
+  `medh5/_core.pyi`; `tests/project/test_typing.py` runs `stubtest` against the
   built module, so a binding change without its stub fails.
-- **Tests** — `tests/v1/`, with a 90 % coverage floor.
+- **Tests** — `tests/`, with a 90 % coverage floor: `format/`, `tools/`,
+  `integrations/` and `project/`, each module named for what it tests.
 - **Conformance** — the corpus is a shipped artifact that third-party
   implementations run, not a test fixture. It must stay green through both
   command lines.
@@ -73,8 +74,13 @@ honest.
 
 - Name a test after the clause it holds: `test_S8_1_boxes_shift_by_half_a_voxel`,
   `s14_4_the_source_is_closed_before_the_replace`.
+- Put a test with what it tests, not with the release that fixed it: the module
+  for that part of the spec, tool or integration. A regression test cites its
+  finding in its name; the changelog says which release fixed it.
 - Build fixtures with the **public writer**, so every reader test is also a
-  writer test. Plant defects with `h5py`, a test dependency only.
+  writer test: shared builders are in `tests/helpers.py`, fixtures in
+  `tests/conftest.py`, and the small samples the regression tests use in
+  `tests/kits.py`. Plant defects with `h5py`, a test dependency only.
 - Engine internals with no Python door are held by Rust tests beside the code;
   the Python test keeps the observable outcome.
 - Guard an optional dependency with `pytest.importorskip` — and make sure some
@@ -113,13 +119,13 @@ where its reader will look for it, and link rather than repeat.
 
 Documentation here is checked against the code, not proofread:
 
-- **Every `python` block runs.** `tests/v1/test_docs_python.py` executes each
+- **Every `python` block runs.** `tests/project/test_docs_python.py` executes each
   one against a real sample, with the names the pages use by convention (`s`,
   `w`, `ann`, `paths`, …) already bound. A block that genuinely cannot run —
   it needs a DICOM series, or it elides arguments with `...` — carries an
   `<!-- illustrative -->` comment on the line above its fence, where readers
   see it too. Most blocks must stay runnable.
-- **Every documented CLI flag exists.** `tests/v1/test_docs_examples.py` parses
+- **Every documented CLI flag exists.** `tests/project/test_docs_examples.py` parses
   each `medh5 …` line in a fenced block against the command line's grammar.
 - **Corrected claims stay corrected.** The same file keeps a list of statements
   that were once wrong in the documentation; add to it when you fix a claim

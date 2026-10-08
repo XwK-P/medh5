@@ -1,0 +1,339 @@
+"""Curation records and the sample document (spec §2.4, §11, §12)."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+import medh5
+from medh5.curation import (
+    Activity,
+    Agent,
+    Agreement,
+    Cohort,
+    Deidentification,
+    Identity,
+    Issue,
+    Provenance,
+    QualityRecord,
+    SplitClaim,
+    Timeline,
+    Timepoint,
+    check_timestamp,
+    dice_agreement,
+    quality_from_json,
+    quality_to_json,
+    splits_from_json,
+)
+from medh5.document import SampleDocument, new_document, validate_against_schema
+from medh5.errors import MEDH5SchemaError, MEDH5ValidationError
+from tests.kits import Framed
+
+
+class TestProvenance:
+    def test_S11_1_two_node_graph_describes_model_then_human(self):
+        """The workflow a review-status field cannot express."""
+        graph = Provenance(
+            agents=[
+                Agent("m1", "model", "nnU-Net", version="2.5.1"),
+                Agent("r1", "person", "pseudonym:RAD-07", role="annotator"),
+            ],
+            activities=[
+                Activity("a1", "predict", agent="m1", outputs=("annotations/organs",)),
+                Activity(
+                    "a2",
+                    "annotate",
+                    agent="r1",
+                    inputs=("annotations/organs",),
+                    outputs=("annotations/organs",),
+                ),
+            ],
+        )
+        assert graph
+        assert len(graph.produced_by("annotations/organs")) == 2
+        assert graph.activities_by_type("predict")[0].id == "a1"
+        assert graph.agent("r1").role == "annotator"
+        assert graph.has_activity("a2")
+        assert not graph.dangling_agent_refs()
+        assert [a.id for a in graph] == ["a1", "a2"]
+        assert "2 activities" in repr(graph)
+
+    def test_dangling_agents_are_reported_not_raised(self):
+        graph = Provenance(activities=[Activity("a1", "import", agent="ghost")])
+        assert graph.dangling_agent_refs() == (("a1", "ghost"),)
+
+    def test_unknown_lookups_raise_clearly(self):
+        graph = Provenance()
+        assert not graph
+        with pytest.raises(KeyError, match="unknown agent"):
+            graph.agent("nope")
+        with pytest.raises(KeyError, match="unknown activity"):
+            graph.activity("nope")
+
+    def test_unknown_types_are_refused(self):
+        with pytest.raises(MEDH5ValidationError) as exc:
+            Agent("a", "wizard", "Merlin")
+        assert exc.value.code == "E603"
+        with pytest.raises(MEDH5ValidationError) as exc:
+            Activity("a", "divination")
+        assert exc.value.code == "E603"
+
+    def test_S11_1_timestamps_must_be_rfc3339(self):
+        Activity("a", "import", ended="2026-02-03T09:11:40Z")
+        with pytest.raises(MEDH5ValidationError) as exc:
+            Activity("a", "import", ended="yesterday")
+        assert exc.value.code == "E604"
+        with pytest.raises(MEDH5ValidationError):
+            check_timestamp("2026-02-03", where="test")
+
+    def test_json_round_trip_keeps_every_schema_field(self):
+        graph = Provenance(
+            agents=[Agent("a", "software", "medh5", organization="org1")],
+            activities=[Activity("t", "import", params={"kernel": "B30f"})],
+        )
+        back = Provenance.from_json(graph.to_json())
+        assert back.agent("a").organization == "org1"
+        assert back.activity("t").params == {"kernel": "B30f"}
+        assert Provenance.from_json(None).to_json()["agents"] == []
+
+    def test_S2_4_a_key_the_schema_forbids_is_refused_at_parse(self):
+        """`agent` and `activity` are closed objects, so E005 comes early.
+
+        Both used to collect unknown keys into an `extra` mapping and write
+        them straight back out --- an extension point that could not reach a
+        file, since `commit()` failed the whole document on it.
+        """
+        for build, what in (
+            (
+                lambda: Agent.from_json(
+                    {"id": "a", "type": "software", "name": "m", "x_site": "B"}
+                ),
+                "agent",
+            ),
+            (
+                lambda: Activity.from_json({"id": "t", "type": "import", "x_run": 3}),
+                "activity",
+            ),
+        ):
+            with pytest.raises(MEDH5ValidationError) as exc:
+                build()
+            assert exc.value.code == "E005"
+            assert what in str(exc.value)
+
+    def test_L14_an_agent_carries_its_organization_as_a_field(self):
+        from medh5.curation import Agent
+
+        agent = Agent.from_json(
+            {"id": "p1", "type": "person", "name": "R7", "organization": "org1"}
+        )
+        assert agent.organization == "org1"
+        assert agent.to_json()["organization"] == "org1"
+
+
+class TestQuality:
+    def test_S11_2_status_is_current_state_not_history(self):
+        record = QualityRecord(
+            status="approved",
+            confidence=0.92,
+            reviewed_by=("r2",),
+            agreement=(Agreement("dice", 0.913, against="annotations/organs_rater2"),),
+            issues=(Issue("boundary_uncertain", "info", (12,), "motion"),),
+            edit_effort_s=640,
+        )
+        assert record.is_usable
+        assert not QualityRecord(status="draft").is_usable
+        payload = record.to_json()
+        assert QualityRecord.from_json(payload) == record
+
+    def test_unknown_status_and_severity_are_refused(self):
+        with pytest.raises(MEDH5ValidationError):
+            QualityRecord(status="vibes")
+        with pytest.raises(MEDH5ValidationError):
+            Issue("x", "catastrophic")
+
+    def test_dice_agreement_averages_per_class(self):
+        agreement = dice_agreement({5: 1.0, 12: 0.5}, against="annotations/other")
+        assert agreement.value == pytest.approx(0.75)
+        assert agreement.per_class == {"5": 1.0, "12": 0.5}
+        assert Agreement.from_json(agreement.to_json()) == agreement
+        assert dice_agreement({}).value == 0.0
+
+    def test_mapping_helpers(self):
+        records = {"organs": QualityRecord(status="approved")}
+        assert quality_from_json(quality_to_json(records)) == records
+        assert quality_from_json(None) == {}
+
+
+class TestIdentity:
+    def test_S12_1_identity_requires_both_ids(self):
+        with pytest.raises(MEDH5ValidationError):
+            Identity(sample_id="", subject_id="s")
+        with pytest.raises(MEDH5ValidationError):
+            Identity(sample_id="s", subject_id="s", sex="yes")
+        with pytest.raises(MEDH5ValidationError):
+            Identity(sample_id="s", subject_id="s", laterality="upwards")
+
+    def test_S12_2_group_id_defaults_to_subject(self):
+        assert Cohort().grouping_key("subj-A") == "subj-A"
+        assert Cohort(group_id="family-3").grouping_key("subj-A") == "family-3"
+        assert Cohort.from_json(None).to_json() == {}
+
+    def test_S12_3_split_claims_round_trip(self):
+        claim = SplitClaim("cv5", "train", fold=2, manifest_sha256="a" * 64)
+        assert SplitClaim.from_json(claim.to_json()) == claim
+        with pytest.raises(MEDH5ValidationError):
+            SplitClaim("cv5", "everything")
+        assert splits_from_json(None) == ()
+
+    def test_S11_4_deidentification_round_trips(self):
+        record = Deidentification(
+            method="dicom-psi-profile",
+            date_shift_days=-117,
+            burned_in_annotation_checked=True,
+            extra={"x_tool": "ctp"},
+        )
+        assert record is not None
+        back = Deidentification.from_json(record.to_json())
+        assert back == record
+        assert Deidentification.from_json(None) is None
+
+    def test_Q11_a_deidentification_record_without_a_method_is_refused(
+        self, tmp_path: Path
+    ):
+        """An `assert` stood here, and `python -O` cleared the record instead."""
+        with Framed.writer(tmp_path / "d.medh5") as w:
+            with pytest.raises(MEDH5ValidationError, match="method"):
+                w.deidentification()
+            w.deidentification(method="synthetic")
+
+
+class TestTimeline:
+    def test_sequence_protocol(self):
+        timeline = Timeline([Timepoint("tp0", 0), Timepoint("tp1", 1)])
+        assert len(timeline) == 2
+        assert timeline[1].id == "tp1"
+        assert timeline["tp0"].index == 0
+        assert "tp1" in timeline
+        assert timeline[0] in timeline
+        assert timeline.baseline.id == "tp0"
+        assert timeline.ids == ("tp0", "tp1")
+        assert "tp0" in repr(timeline)
+
+    def test_interval_is_none_without_both_endpoints(self):
+        timeline = Timeline(
+            [Timepoint("tp0", 0, days_from_baseline=0), Timepoint("tp1", 1)]
+        )
+        assert timeline.interval_days("tp0", "tp1") is None
+
+    def test_require_reports_the_declared_set(self):
+        timeline = Timeline.single()
+        assert timeline.require("tp0").index == 0
+        with pytest.raises(MEDH5ValidationError) as exc:
+            timeline.require("tp9", where="annotations/x")
+        assert exc.value.code == "E409"
+        assert "annotations/x" in str(exc.value)
+
+    def test_bad_ids_and_dates_are_refused(self):
+        with pytest.raises(MEDH5ValidationError) as exc:
+            Timepoint("bad id", 0)
+        assert exc.value.code == "E003"
+        with pytest.raises(MEDH5ValidationError) as exc:
+            Timepoint("tp0", 0, date="last tuesday")
+        assert exc.value.code == "E604"
+        with pytest.raises(MEDH5ValidationError):
+            Timepoint("tp0", -1)
+
+    def test_duplicate_ids_are_refused(self):
+        with pytest.raises(MEDH5ValidationError):
+            Timeline([Timepoint("tp0", 0), Timepoint("tp0", 1)])
+
+    def test_json_round_trip_keeps_every_schema_field(self):
+        timeline = Timeline(
+            [Timepoint("tp0", 0, series_uids={"CT": "s1"}, description="baseline CT")]
+        )
+        back = Timeline.from_json(timeline.to_json())
+        assert back["tp0"].series_uids == {"CT": "s1"}
+        assert back["tp0"].description == "baseline CT"
+
+    def test_S2_4_a_key_the_schema_forbids_is_refused_at_parse(self):
+        with pytest.raises(MEDH5ValidationError) as exc:
+            Timepoint.from_json({"id": "tp0", "index": 0, "x_note": "n"})
+        assert exc.value.code == "E005"
+
+
+class TestDocument:
+    def test_new_document_defaults_subject_to_sample(self):
+        document = new_document("case_1")
+        assert document.subject_id == "case_1"
+        assert document.timepoints.ids == ("tp0",)
+        assert new_document("c", timepoints=["a", "b"]).timepoints.ids == ("a", "b")
+
+    def test_missing_required_members_are_named(self):
+        with pytest.raises(MEDH5SchemaError, match="identity"):
+            SampleDocument.from_json({"timepoints": [{"id": "tp0", "index": 0}]})
+
+    def test_bad_json_is_reported(self):
+        with pytest.raises(MEDH5SchemaError, match="not valid JSON"):
+            SampleDocument.loads("{oops")
+        with pytest.raises(MEDH5SchemaError, match="JSON object"):
+            SampleDocument.loads("[1]")
+
+    def test_round_trip_through_bytes(self):
+        document = new_document("c")
+        assert SampleDocument.loads(document.dumps().encode()).subject_id == "c"
+
+    def test_schema_errors_are_readable(self):
+        errors = validate_against_schema({"identity": {}, "timepoints": []})
+        assert errors
+        assert all(":" in message for message in errors)
+
+    def test_written_documents_validate(self, sample_path):
+        with medh5.open(sample_path) as sample:
+            assert sample.document.check_schema() == []
+            json.dumps(sample.summary(), default=str)
+
+    @pytest.mark.parametrize(
+        ("build", "what"),
+        [
+            (
+                lambda: __import__(
+                    "medh5.curation", fromlist=["Timepoint"]
+                ).Timepoint.from_json({"id": "tp0", "index": 0, "x": 1}),
+                "timepoint",
+            ),
+            (
+                lambda: __import__(
+                    "medh5.curation", fromlist=["QualityRecord"]
+                ).QualityRecord.from_json({"status": "draft", "x": 1}),
+                "quality record",
+            ),
+            (
+                lambda: __import__(
+                    "medh5.curation", fromlist=["Activity"]
+                ).Activity.from_json({"id": "a", "type": "import", "x": 1}),
+                "activity",
+            ),
+            (
+                lambda: __import__(
+                    "medh5.curation", fromlist=["Agent"]
+                ).Agent.from_json({"id": "a", "type": "software", "name": "m", "x": 1}),
+                "agent",
+            ),
+        ],
+    )
+    def test_L14_S2_4_a_closed_object_refuses_an_unknown_key(
+        self, build: Any, what: str
+    ):
+        """Four objects are `additionalProperties: false`, and three had `extra`.
+
+        Anything placed there failed E005 at `commit()`, so the mapping was an
+        extension point that could not reach a file.  The refusal moves to the
+        call that introduces the value, with the field named.
+        """
+        with pytest.raises(MEDH5ValidationError) as exc:
+            build()
+        assert exc.value.code == "E005"
+        assert what in str(exc.value)
