@@ -11,7 +11,11 @@ The table below is generated from
 [`crates/medh5/data/codes.json`](https://github.com/XwK-P/medh5/blob/main/crates/medh5/data/codes.json)
 at build time — the same table the validator and the conformance corpus read, so
 it cannot drift from what the tool actually emits. Its normative statement is
-[specification §15.2](../spec/medh5-1.0.md#152-error-codes).
+[specification §15.2](../spec/medh5-1.0.md#152-error-codes), with the codes
+[1.1 §11.2](../spec/medh5-1.1.md#112-diagnostic-codes) adds (`E011`,
+`E801`–`E819`, `W913`, `W914`). Task manifests and feature caches are checked
+under a separate space of `T` codes ([task-cache-1 §9](../spec/task-cache-1.md#9-finding-codes)):
+a task can be wrong about perfectly valid files.
 
 ```python
 from medh5 import CODES
@@ -36,6 +40,7 @@ file to look at:
 | `E5xx` | transforms |
 | `E6xx` | curation |
 | `E7xx` | integrity |
+| `E8xx` | the clinical profile (format 1.1) |
 | `W9xx` | warnings, across every domain |
 
 An **error** means the file does not conform. A **warning** means it conforms

@@ -1,8 +1,9 @@
 # Design rationale
 
-Why format 1.0 is shaped the way it is: what 0.x could not express, the
+Why the format is shaped the way it is: what 0.x could not express, the
 alternatives that were weighed for each load-bearing decision, the costs that
-were accepted, and what the format deliberately does not try to be.
+were accepted, and what the format deliberately does not try to be --- for 1.0,
+and for what 1.1 added ([below](#clinical-context-and-prediction-tasks-11)).
 
 This page is explanation, not specification. Where it and
 [the specification](../spec/medh5-1.0.md) disagree, the specification is right.
