@@ -122,7 +122,7 @@ pub fn load_manifest(root: &Path) -> Result<Value> {
         )));
     }
     let text = fs::read_to_string(&path).map_err(|e| crate::error::os_error(&e, py_path(&path)))?;
-    crate::json::loads(&text).map_err(|e| Error::Value(crate::json::decode_error(&text, &e)))
+    crate::json::loads(&text).map_err(|e| Error::Value(format!("not valid JSON: {e}")))
 }
 
 /// Errors and warnings from either accepted submission shape.

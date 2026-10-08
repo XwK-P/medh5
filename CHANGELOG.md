@@ -63,9 +63,23 @@ behaviour changes below.
   file this object was read from has been closed") instead of answering from a
   stale handle or keeping the file open and locked.
 - **NumPy is the only runtime dependency.** `h5py`, `hdf5plugin` and
-  `jsonschema` are no longer installed; HDF5, the filters and the JSON Schema
-  validator are compiled into the engine. The `schema` and `interp` extras
-  install nothing and remain so that existing install lines keep working.
+  `jsonschema` are no longer installed; HDF5, the filters, the JSON Schema
+  validator and the interpolation SciPy did are compiled into the engine.
+- **Random draws come from the engine.** Patch sampling, foreground draws and
+  index subsampling use one small generator (PCG-64) in the engine, so a seed
+  fixes the draws from Python, Rust and the command line alike. `rng=` takes
+  an `int`, a sequence of `int`s --- `PatchDataset` passes
+  `(seed, epoch, index)` --- or `None` for fresh entropy; a
+  `numpy.random.Generator` still works, and now supplies one seed (advancing)
+  rather than being drawn from. The streams are not NumPy's, so a seeded 1.x
+  pipeline picks different patches under 2.0, from the same distributions.
+  No file depends on it: `index/` is outside every digest and `content_id`
+  (§13.1), and its `seed` attribute still reproduces the subsample.
+- **`medh5.cli.main()` returns the exit code** for every outcome --- `--help`
+  and `--version` return 0 and a usage error 2 --- instead of raising
+  `SystemExit` for those three. Only the console script exits.
+- **`E004` quotes the engine's JSON parser** ("key must be a string at line 1
+  column 2") rather than Python's `json` module.
 - **A NaN or infinity in the sample document is refused** with
   `MEDH5ValidationError`. JSON has neither, and §2.4 requires `/meta` to be
   JSON; 1.x wrote Python's `NaN` and `Infinity` tokens, which no JSON parser
@@ -87,6 +101,10 @@ behaviour changes below.
   vocabularies are compiled in) and `voxel.payload`'s scan helpers. Writing goes
   through `SampleWriter`, which stamps digests and indices at commit; reading
   through `medh5.open`.
+- The `schema` and `interp` extras, which installed `jsonschema` and SciPy for
+  work the engine now does, and `medh5.document.schema_available()`, which
+  could only answer `True`. `pip install "medh5[schema]"` warns that the extra
+  is unknown and installs the package.
 
 ### Fixed
 
@@ -98,17 +116,28 @@ behaviour changes below.
   nothing for a string dataset. Each is now defined in HDF5 and JSON terms and
   recorded in [Appendix C.1](docs/spec/medh5-1.0.md#c1-reference-implementation).
   The definitions are what 1.x always wrote: no file and no digest changes.
+- **An index's `seed` promises what it can.** §14.3 said `max_coords` and
+  `seed` gave "reproducibility of the subsample", which across implementations
+  needs a generator the specification never named. The implementation that
+  drew a subsample reproduces it from them; another draws a different one,
+  equally conforming (Appendix C.1).
 - **NaN in `/meta` is reported.** 1.x's validator parsed `/meta` with Python's
   `json`, which accepts `NaN`, so a document that is not JSON passed.
 
 ### Performance
 
-Measured with `medh5 bench` on one machine, 1.4.4 → 2.0.0: `open()` to the
-first patch 7.6 → 3.9 ms, a metadata-only read 0.80 → 0.19 ms, foreground
-centre sampling 0.08 → 0.03 ms (0.35 → 0.05 ms at 63 classes), a 64³ image patch
-0.24 → 0.14 ms, a paired-visit centre 8.7 → 5.5 ms. A multi-class label patch is
-unchanged (11 ms here): it is decompression, and the codecs are the same C
+Measured with `medh5 bench`'s metrics on one machine and the same files, the
+median of five alternating runs, 1.4.4 → 2.0.0: `open()` to the first patch
+8.0 → 5.7 ms, a metadata-only read 0.79 → 0.19 ms, foreground centre sampling
+0.088 → 0.034 ms (0.32 → 0.045 ms at 63 classes), a 64³ image patch
+0.23 → 0.14 ms, a paired-visit centre 10.2 → 9.1 ms. A multi-class label patch
+is unchanged (7.7 ms here): it is decompression, and the codecs are the same C
 libraries.
+
+Choosing a patch window the way `PatchDataset` does, from a seed per item,
+costs 4.5 µs instead of 37 µs for a uniform draw, 44 µs instead of 106 µs for a
+foreground one and 25 µs instead of 76 µs for `balanced` (the median per draw
+over 3000 draws): 1.x built a NumPy generator per item.
 
 ## [1.4.4] — 2026-10-02
 

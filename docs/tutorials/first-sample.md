@@ -28,7 +28,7 @@ pip install "medh5[torch,nifti,dicom]"
 Nothing but NumPy is needed to read or write a file. The package is a layer over
 the format engine, which is written in Rust and carries HDF5, its compression
 filters and the JSON Schema check that `/meta` passes on every write and every
-validation. The old `schema` and `interp` extras still install and add nothing.
+validation.
 
 ## Write a sample
 

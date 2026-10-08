@@ -10,7 +10,6 @@ use std::io::Write;
 
 use pyo3::exceptions::PyBrokenPipeError;
 use pyo3::prelude::*;
-use pyo3::types::PyTuple;
 use serde_json::Value;
 
 use crate::convert::{json_to_py, py_to_json};
@@ -120,22 +119,13 @@ impl medh5_cli::Host for PyHost {
     }
 }
 
-/// Run the command line on `argv` (without the program name):
-/// `(exit code, parser_exit)`, where `parser_exit` says the 1.x parser would
-/// have raised `SystemExit` (`--help`, `--version`, a usage error).
+/// Run the command line on `argv` (without the program name); the exit code.
 #[pyfunction]
-fn cli_main<'py>(py: Python<'py>, argv: Vec<String>, host: Py<PyAny>) -> PyResult<Bound<'py, PyTuple>> {
+fn cli_main(py: Python<'_>, argv: Vec<String>, host: Py<PyAny>) -> i32 {
     let host = PyHost { host };
     let mut out = PyStream::new("stdout");
     let mut err = PyStream::new("stderr");
-    let outcome = py.detach(|| medh5_cli::run_with(&argv, &mut out, &mut err, &host));
-    PyTuple::new(
-        py,
-        [
-            outcome.code.into_pyobject(py)?.into_any(),
-            pyo3::types::PyBool::new(py, outcome.parser_exit).to_owned().into_any(),
-        ],
-    )
+    py.detach(|| medh5_cli::run_with(&argv, &mut out, &mut err, &host))
 }
 
 /// The grammar as data: `{"options", "positionals", "commands"}`.

@@ -26,10 +26,12 @@ class TestEntryPoint:
         assert code == EXIT_USAGE
         assert "COMMAND" in out.out
 
-    def test_version(self, capsys):
-        with pytest.raises(SystemExit):
-            main(["--version"])
+    def test_version_and_help_return_their_code(self, capsys):
+        assert main(["--version"]) == EXIT_OK
         assert "medh5" in capsys.readouterr().out
+        assert main(["--help"]) == EXIT_OK
+        assert "COMMAND" in capsys.readouterr().out
+        assert main(["--no-such-flag"]) == EXIT_USAGE
 
 
 class TestInfo:

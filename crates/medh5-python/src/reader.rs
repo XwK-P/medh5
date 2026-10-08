@@ -1106,8 +1106,8 @@ impl IndexHandle {
     fn coords<'py>(&self, py: Python<'py>, class_id: i64) -> R<Bound<'py, PyAny>> {
         Ok(array_to_py(py, self.inner.coords(class_id)?.into_dyn()))
     }
-    /// Draw `n` foreground voxel coordinates of a class, with `rng` (a
-    /// `numpy.random.Generator`; fresh entropy when `None`).
+    /// Draw `n` foreground voxel coordinates of a class; `rng` seeds the draw
+    /// (an int, ints, or a `numpy.random.Generator`; fresh entropy when `None`).
     #[pyo3(signature = (class_id, n=1, rng=None))]
     fn sample_foreground<'py>(
         &self,
@@ -1116,8 +1116,8 @@ impl IndexHandle {
         n: usize,
         rng: Option<Bound<'py, PyAny>>,
     ) -> R<Bound<'py, PyAny>> {
-        let mut rng = crate::rng::AnyRng::from_arg(rng);
-        Ok(array_to_py(py, self.inner.sample_foreground(class_id, n, rng.as_dyn())?.into_dyn()))
+        let mut rng = crate::rng::rng_arg(rng.as_ref())?;
+        Ok(array_to_py(py, self.inner.sample_foreground(class_id, n, &mut rng)?.into_dyn()))
     }
     #[pyo3(signature = (mode="inverse_frequency"))]
     fn class_weights<'py>(&self, py: Python<'py>, mode: &str) -> R<Bound<'py, PyDict>> {

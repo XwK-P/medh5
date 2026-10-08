@@ -337,8 +337,7 @@ pub fn check_document(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
             v
         }
         Err(e) => {
-            let reason = crate::json::decode_error(&text, &e);
-            out.push(ctx.err("E004", "/meta", format!("`meta` is not valid JSON: {reason}")));
+            out.push(ctx.err("E004", "/meta", format!("`meta` is not valid JSON: {e}")));
             return Ok(out);
         }
     };

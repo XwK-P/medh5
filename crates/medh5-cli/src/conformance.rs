@@ -66,7 +66,7 @@ fn score_cmd(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let scored = (|| -> Result<(Vec<String>, Vec<CaseResult>), Error> {
         let text =
             std::fs::read_to_string(results_path).map_err(|e| medh5::error::os_error(&e, py_path(results_path)))?;
-        let submitted = medh5::json::loads(&text).map_err(|e| Error::Value(medh5::json::decode_error(&text, &e)))?;
+        let submitted = medh5::json::loads(&text).map_err(|e| Error::Value(format!("not valid JSON: {e}")))?;
         let stale = check_checksums(suite)?;
         let entries: Vec<Value> = match submitted {
             Value::Array(items) => items,

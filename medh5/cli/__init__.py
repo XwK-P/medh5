@@ -36,16 +36,13 @@ class _Host:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Run ``medh5`` on *argv* (``sys.argv[1:]`` by default).
+    """Run ``medh5`` on *argv* (``sys.argv[1:]`` by default); the exit code.
 
-    Returns the exit code.  ``--help``, ``--version`` and usage errors raise
-    ``SystemExit`` instead, as an ``argparse`` command line does.
+    ``--help`` and ``--version`` return 0 and a usage error 2, like every other
+    outcome: nothing raises ``SystemExit`` but the console script itself.
     """
     args = [str(a) for a in (sys.argv[1:] if argv is None else argv)]
-    code, parser_exit = _core.cli_main(args, _Host())
-    if parser_exit:
-        raise SystemExit(code)
-    return int(code)
+    return int(_core.cli_main(args, _Host()))
 
 
 def _what(exc: LookupError) -> str:

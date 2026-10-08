@@ -831,11 +831,8 @@ def cli_lookup_message(text: str) -> str:
     """
     ...
 
-def cli_main(argv: Sequence[str], host: Any) -> tuple[Any, ...]:
-    """Run the command line on `argv` (without the program name):
-    `(exit code, parser_exit)`, where `parser_exit` says the 1.x parser would
-    have raised `SystemExit` (`--help`, `--version`, a usage error).
-    """
+def cli_main(argv: Sequence[str], host: Any) -> int:
+    """Run the command line on `argv` (without the program name); the exit code."""
     ...
 
 def cli_table(rows: Sequence[Sequence[Any]], headers: Sequence[str]) -> str:
@@ -2483,13 +2480,26 @@ class PatchSamplerHandle:
         self,
         sample: Any,
         annotation: str | None = None,
-        rng: Any = None,
+        rng: int | Sequence[int] | np.random.Generator | None = None,
         *,
         grid: str | None = None,
-    ) -> dict[Any, Any]:
+    ) -> dict[str, Any]:
         """One draw: the fields of a `Patch`."""
         ...
-    def pick_class(self, counts: Any, rng: Any = None) -> int | None:
+    def draws(
+        self,
+        sample: Any,
+        annotation: str | None = None,
+        n: int = 1,
+        rng: int | Sequence[int] | np.random.Generator | None = None,
+    ) -> list[dict[str, Any]]:
+        """`n` draws from one generator: the fields of each `Patch`."""
+        ...
+    def pick_class(
+        self,
+        counts: Mapping[int, int],
+        rng: int | Sequence[int] | np.random.Generator | None = None,
+    ) -> int | None:
         """A class to sample from, weighted as configured; `None` when no class
         has foreground.
         """
@@ -3107,10 +3117,13 @@ class SamplingIndex:
     def max_coords(self) -> int: ...
     def occupancy_plane(self, position: int) -> npt.NDArray[np.bool_] | None: ...
     def sample_foreground(
-        self, class_id: int, n: int = 1, rng: np.random.Generator | None = None
+        self,
+        class_id: int,
+        n: int = 1,
+        rng: int | Sequence[int] | np.random.Generator | None = None,
     ) -> npt.NDArray[np.int32]:
-        """Draw `n` foreground voxel coordinates of a class, with `rng` (a
-        `numpy.random.Generator`; fresh entropy when `None`).
+        """Draw `n` foreground voxel coordinates of a class; `rng` seeds the draw
+        (an int, ints, or a `numpy.random.Generator`; fresh entropy when `None`).
         """
         ...
     @property

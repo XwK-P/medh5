@@ -33,6 +33,13 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 STRATEGIES: tuple[str, ...] = _core.SAMPLING_STRATEGIES
 PAIR_MODES: tuple[str, ...] = _core.SAMPLING_PAIR_MODES
 
+Seed = int | Sequence[int] | np.random.Generator | None
+"""What seeds a draw: an integer, a sequence of integers --- ``(seed, epoch,
+index)`` --- a ``numpy.random.Generator``, which supplies one seed and
+advances, or ``None`` for fresh entropy.  The engine draws from its own
+generator, so a seed gives the same patches from Python, Rust and the command
+line."""
+
 
 @dataclass(frozen=True, slots=True)
 class Patch:
@@ -220,16 +227,17 @@ class PatchSampler:
         self,
         sample: Sample,
         annotation: str | None = None,
-        rng: np.random.Generator | None = None,
+        rng: Seed = None,
         *,
         grid: str | None = None,
     ) -> Patch:
         """Draw one patch window from *sample*.
 
-        *grid* pins the grid the window is measured in, for a caller that wants
-        a window in a particular space whether or not an annotation happens to
-        live there --- ``annotation=None`` on its own means "find me one",
-        which for a longitudinal sample can find another visit's.
+        *rng* seeds the draw (see :data:`Seed`).  *grid* pins the grid the
+        window is measured in, for a caller that wants a window in a particular
+        space whether or not an annotation happens to live there ---
+        ``annotation=None`` on its own means "find me one", which for a
+        longitudinal sample can find another visit's.
         """
         return Patch(**self._engine().draw(sample, annotation, rng, grid=grid))
 
@@ -238,10 +246,10 @@ class PatchSampler:
         sample: Sample,
         annotation: str | None = None,
         n: int = 1,
-        rng: np.random.Generator | None = None,
+        rng: Seed = None,
     ) -> list[Patch]:
-        generator = rng if rng is not None else np.random.default_rng()
-        return [self.draw(sample, annotation, generator) for _ in range(n)]
+        """*n* draws from one generator seeded by *rng*."""
+        return [Patch(**f) for f in self._engine().draws(sample, annotation, n, rng)]
 
     # -- the decisions a draw makes, for callers that need one alone ---------
 
@@ -264,9 +272,7 @@ class PatchSampler:
         found: str = self._engine().window_grid(sample, annotation, grid)
         return found
 
-    def _pick_class(
-        self, counts: Mapping[int, int], rng: np.random.Generator
-    ) -> int | None:
+    def _pick_class(self, counts: Mapping[int, int], rng: Seed) -> int | None:
         """Choose a class to sample from, weighted as configured."""
         found: int | None = self._engine().pick_class(counts, rng)
         return found
@@ -351,12 +357,10 @@ def iter_patches(
     *,
     annotation: str | None = None,
     n: int = 1,
-    rng: np.random.Generator | None = None,
+    rng: Seed = None,
 ) -> Iterator[Patch]:
-    """Convenience generator over :meth:`PatchSampler.draw`."""
-    generator = rng if rng is not None else np.random.default_rng()
-    for _ in range(n):
-        yield sampler.draw(sample, annotation, generator)
+    """The patches of :meth:`PatchSampler.draws`, one at a time."""
+    yield from sampler.draws(sample, annotation, n, rng)
 
 
 def grid_patches(
@@ -382,6 +386,7 @@ def grid_patches(
 __all__ = [
     "PAIR_MODES",
     "STRATEGIES",
+    "Seed",
     "PairReport",
     "Patch",
     "PatchSampler",

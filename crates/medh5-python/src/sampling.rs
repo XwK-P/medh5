@@ -3,10 +3,9 @@
 //!
 //! The decisions are the engine's: which annotation and grid a draw is
 //! measured in, foreground from the index or a scan, class weighting, window
-//! placement.  A generator passed in is a `numpy.random.Generator`, drawn from
-//! in the order 1.x drew, so a seeded draw is the 1.x draw.  The result types
-//! (`Patch`, `TimepointPair`) stay the 1.x dataclasses; this module hands back
-//! their fields.
+//! placement --- and the draws, from the engine's generator, which `rng=`
+//! seeds ([`rng_arg`]).  The result types (`Patch`, `TimepointPair`) stay the
+//! 1.x dataclasses; this module hands back their fields.
 
 use indexmap::IndexMap;
 use pyo3::prelude::*;
@@ -17,7 +16,7 @@ use medh5::sampling::{self as engine, ClassWeights, PatchSize};
 use crate::convert::class_keys;
 use crate::errors::R;
 use crate::reader::sample_arg;
-use crate::rng::AnyRng;
+use crate::rng::rng_arg;
 
 /// A patch size: one length for every axis, or one per axis.
 fn patch_size_arg(obj: &Bound<'_, PyAny>) -> PyResult<PatchSize> {
@@ -114,9 +113,25 @@ impl PatchSamplerHandle {
         grid: Option<String>,
     ) -> R<Bound<'py, PyDict>> {
         let sample = sample_arg(sample)?;
-        let mut rng = AnyRng::from_arg(rng);
-        let patch = self.inner.draw(&sample, annotation.as_deref(), rng.as_dyn(), grid.as_deref())?;
+        let mut rng = rng_arg(rng.as_ref())?;
+        let patch = self.inner.draw(&sample, annotation.as_deref(), &mut rng, grid.as_deref())?;
         Ok(patch_fields(py, &patch)?)
+    }
+
+    /// `n` draws from one generator: the fields of each `Patch`.
+    #[pyo3(signature = (sample, annotation=None, n=1, rng=None))]
+    fn draws<'py>(
+        &self,
+        py: Python<'py>,
+        sample: &Bound<'py, PyAny>,
+        annotation: Option<String>,
+        n: usize,
+        rng: Option<Bound<'py, PyAny>>,
+    ) -> R<Vec<Bound<'py, PyDict>>> {
+        let sample = sample_arg(sample)?;
+        let mut rng = rng_arg(rng.as_ref())?;
+        let patches = py.detach(|| self.inner.draws(&sample, annotation.as_deref(), n, &mut rng))?;
+        Ok(patches.iter().map(|p| patch_fields(py, p)).collect::<PyResult<Vec<_>>>()?)
     }
 
     /// The annotation a draw takes foreground from, auto-selected if `None`.
@@ -147,8 +162,8 @@ impl PatchSamplerHandle {
             let (k, v): (i64, i64) = item?.extract()?;
             map.insert(k, v);
         }
-        let mut rng = AnyRng::from_arg(rng);
-        Ok(self.inner.pick_class(&map, rng.as_dyn())?)
+        let mut rng = rng_arg(rng.as_ref())?;
+        Ok(self.inner.pick_class(&map, &mut rng)?)
     }
 }
 

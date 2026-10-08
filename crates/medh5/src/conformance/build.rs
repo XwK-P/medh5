@@ -24,7 +24,7 @@ use crate::h5::ops;
 use crate::integrity::digest::{compute_content_id, stamp_digests};
 use crate::json::{dumps, Style};
 use crate::labels::{ClassKey, LabelClass, LabelSet, Skeleton};
-use crate::rng::{Rng, SeededRng};
+use crate::rng::Rng;
 use crate::sample::{
     attr_name_map_of, create, Annotated, AnnotationOptions, GridOptions, ImageOptions, ObjectFields, Placement,
     QualityArg, SampleWriter, SegmentationOptions, SegmentationSource, TransformSpec,
@@ -168,26 +168,26 @@ fn eye4() -> ArrayD<f64> {
     Array2::<f64>::eye(4).into_dyn()
 }
 
-/// `rng.integers(-1000, 1500, shape).astype(np.int16)`: a CT volume.
-fn ct_volume(rng: &mut SeededRng, shape: &[usize]) -> Result<NdArray> {
+/// Random `int16` values in `[-1000, 1500)`: a CT volume.
+fn ct_volume(rng: &mut Rng, shape: &[usize]) -> Result<NdArray> {
     integers(rng, -1000, 1500, shape, DType::I16)
 }
 
-/// `rng.integers(low, high, shape).astype(dtype)`.
-fn integers(rng: &mut SeededRng, low: i64, high: i64, shape: &[usize], dtype: DType) -> Result<NdArray> {
+/// Random integers in `[low, high)`, as `dtype`.
+fn integers(rng: &mut Rng, low: i64, high: i64, shape: &[usize], dtype: DType) -> Result<NdArray> {
     let n = shape.iter().product();
     NdArray::from_vec(shape, rng.integers(low, high, n)?)?.reshape(shape).map(|a| a.astype(dtype))
 }
 
-/// `rng.random(shape)`.
-fn uniform(rng: &mut SeededRng, shape: &[usize]) -> Result<ArrayD<f64>> {
+/// Random floats in `[0, 1)`.
+fn uniform(rng: &mut Rng, shape: &[usize]) -> Result<ArrayD<f64>> {
     let n: usize = shape.iter().product();
     let values: Vec<f64> = (0..n).map(|_| rng.next_f64()).collect();
     Ok(ArrayD::from_shape_vec(IxDyn(shape), values)?)
 }
 
-/// `rng.random(shape).astype(np.float32)`.
-fn uniform32(rng: &mut SeededRng, shape: &[usize]) -> Result<NdArray> {
+/// Random `float32` values in `[0, 1)`.
+fn uniform32(rng: &mut Rng, shape: &[usize]) -> Result<NdArray> {
     Ok(NdArray::from(uniform(rng, shape)?.mapv(|v| v as f32)))
 }
 
@@ -416,7 +416,7 @@ fn restamp(path: &Path) -> Result<()> {
 
 /// A valid, minimal-but-complete sample: one grid, one image, one timepoint.
 fn base(path: &Path, shape: &[usize]) -> Result<()> {
-    let mut rng = SeededRng::new(SEED);
+    let mut rng = Rng::new(SEED);
     write(path, Some("subj-A"), |w| {
         w.identity(fields(json!({"sex": "F", "bodypart": "abdomen"})))?;
         w.cohort(fields(json!({"dataset_id": "conformance", "site_id": "site-A"})))?;
@@ -443,7 +443,7 @@ fn base(path: &Path, shape: &[usize]) -> Result<()> {
 
 /// A valid sample carrying one voxel annotation, `organs`.
 fn seg_base(path: &Path, encoding: &str, classes: &[(i64, [usize; 3])], index: bool) -> Result<()> {
-    let mut rng = SeededRng::new(SEED);
+    let mut rng = Rng::new(SEED);
     write(path, Some("subj-A"), |w| {
         w.identity(fields(json!({"sex": "F", "bodypart": "abdomen"})))?;
         w.add_timepoint("tp0", fields(json!({"label": "baseline"})))?;
@@ -490,7 +490,7 @@ fn seg_base(path: &Path, encoding: &str, classes: &[(i64, [usize; 3])], index: b
 
 /// One CT grid and image on `tp0`, the frame left unset: the shape the
 /// annotation-kind cases share.
-fn plain_ct(w: &mut SampleWriter, rng: &mut SeededRng) -> Result<()> {
+fn plain_ct(w: &mut SampleWriter, rng: &mut Rng) -> Result<()> {
     w.add_timepoint("tp0", Map::new())?;
     w.label_set(label_set()?);
     w.add_grid("ct", &dims(&SHAPE), &SPACING, on_timepoint("tp0"))?;
@@ -499,7 +499,7 @@ fn plain_ct(w: &mut SampleWriter, rng: &mut SeededRng) -> Result<()> {
 }
 
 fn core_two_images(path: &Path) -> Result<()> {
-    let mut rng = SeededRng::new(SEED);
+    let mut rng = Rng::new(SEED);
     write(path, None, |w| {
         w.add_timepoint("tp0", fields(json!({"label": "baseline"})))?;
         w.add_grid(
@@ -532,7 +532,7 @@ fn core_two_images(path: &Path) -> Result<()> {
 }
 
 fn core_2d(path: &Path) -> Result<()> {
-    let mut rng = SeededRng::new(SEED);
+    let mut rng = Rng::new(SEED);
     write(path, None, |w| {
         w.add_timepoint("tp0", Map::new())?;
         w.add_grid("dx", &[64, 64], &[0.2, 0.2], on_timepoint("tp0"))?;
@@ -549,7 +549,7 @@ fn core_2d(path: &Path) -> Result<()> {
 }
 
 fn core_4d(path: &Path) -> Result<()> {
-    let mut rng = SeededRng::new(SEED);
+    let mut rng = Rng::new(SEED);
     let shape = [4, 8, 16, 16];
     write(path, None, |w| {
         w.add_timepoint("tp0", Map::new())?;
@@ -579,7 +579,7 @@ fn core_4d(path: &Path) -> Result<()> {
 }
 
 fn core_rgb(path: &Path) -> Result<()> {
-    let mut rng = SeededRng::new(SEED);
+    let mut rng = Rng::new(SEED);
     let shape = [3, 32, 32];
     write(path, None, |w| {
         w.add_timepoint("tp0", Map::new())?;
@@ -612,7 +612,7 @@ fn core_rgb(path: &Path) -> Result<()> {
 }
 
 fn seg_probmap(path: &Path, threshold: Option<f64>) -> Result<()> {
-    let mut rng = SeededRng::new(SEED);
+    let mut rng = Rng::new(SEED);
     write(path, None, |w| {
         plain_ct(w, &mut rng)?;
         let first = uniform(&mut rng, &SHAPE)?;
@@ -629,7 +629,7 @@ fn seg_probmap(path: &Path, threshold: Option<f64>) -> Result<()> {
 }
 
 fn seg_instances(path: &Path) -> Result<()> {
-    let mut rng = SeededRng::new(SEED);
+    let mut rng = Rng::new(SEED);
     let objects: Vec<InstanceInput> = [[2, 2, 2], [6, 12, 6], [10, 4, 14]]
         .iter()
         .enumerate()
@@ -651,7 +651,7 @@ fn seg_instances(path: &Path) -> Result<()> {
 }
 
 fn seg_instances_empty(path: &Path) -> Result<()> {
-    let mut rng = SeededRng::new(SEED);
+    let mut rng = Rng::new(SEED);
     write(path, None, |w| {
         plain_ct(w, &mut rng)?;
         w.add_segmentation(
@@ -674,7 +674,7 @@ fn ignore_region() -> ArrayD<bool> {
 }
 
 fn seg_partial_ignore(path: &Path) -> Result<()> {
-    let mut rng = SeededRng::new(SEED);
+    let mut rng = Rng::new(SEED);
     write(path, None, |w| {
         plain_ct(w, &mut rng)?;
         w.add_segmentation(
@@ -694,7 +694,7 @@ fn seg_partial_ignore(path: &Path) -> Result<()> {
 }
 
 fn seg_bitmask_ignore_mask(path: &Path) -> Result<()> {
-    let mut rng = SeededRng::new(SEED);
+    let mut rng = Rng::new(SEED);
     write(path, None, |w| {
         plain_ct(w, &mut rng)?;
         let tool = w.software("medh5", Some(VERSION), Map::new())?;
@@ -725,7 +725,7 @@ fn seg_bitmask_ignore_mask(path: &Path) -> Result<()> {
 }
 
 fn longitudinal(path: &Path) -> Result<()> {
-    let mut rng = SeededRng::new(SEED);
+    let mut rng = Rng::new(SEED);
     let (shape, shape_fu) = (SHAPE, [14, 24, 24]);
     write(path, Some("subj-A"), |w| {
         w.add_timepoint("tp0", fields(json!({"label": "baseline", "days_from_baseline": 0})))?;
@@ -770,7 +770,7 @@ fn longitudinal(path: &Path) -> Result<()> {
 
 /// Two timepoints, with the failure modes §3.7 warns about as switches.
 fn longitudinal_base(path: &Path, shared_frame: bool, drop_timepoint: bool, bad_timepoint: bool) -> Result<()> {
-    let mut rng = SeededRng::new(SEED);
+    let mut rng = Rng::new(SEED);
     let shape = [12, 16, 16];
     write(path, Some("subj-A"), |w| {
         w.add_timepoint("tp0", fields(json!({"label": "baseline", "days_from_baseline": 0})))?;
@@ -800,7 +800,7 @@ fn longitudinal_base(path: &Path, shared_frame: bool, drop_timepoint: bool, bad_
 }
 
 fn pyramid_base(path: &Path, break_origin: bool) -> Result<()> {
-    let mut rng = SeededRng::new(SEED);
+    let mut rng = Rng::new(SEED);
     let shape = [16, 32, 32];
     write(path, None, |w| {
         w.add_timepoint("tp0", Map::new())?;
@@ -843,7 +843,7 @@ struct Detection {
 
 /// A detection sample: boxes, oriented boxes and optionally keypoints.
 fn det_base(path: &Path, opts: Detection) -> Result<()> {
-    let mut rng = SeededRng::new(SEED);
+    let mut rng = Rng::new(SEED);
     let space = if opts.world { "world" } else { "index" };
     let boxes = ArrayD::from_shape_vec(
         IxDyn(&[2, 3, 2]),
@@ -928,7 +928,7 @@ fn det_base(path: &Path, opts: Detection) -> Result<()> {
 
 /// A two-timepoint sample with per-visit staging and a change label.
 fn cls_base(path: &Path) -> Result<()> {
-    let mut rng = SeededRng::new(SEED);
+    let mut rng = Rng::new(SEED);
     let shape = [12, 16, 16];
     write(path, None, |w| {
         w.add_timepoint("tp0", fields(json!({"label": "baseline", "days_from_baseline": 0})))?;
@@ -973,7 +973,7 @@ fn cls_base(path: &Path) -> Result<()> {
 
 /// Contours and a surface mesh, the two non-voxel shape representations.
 fn shape_base(path: &Path) -> Result<()> {
-    let mut rng = SeededRng::new(SEED);
+    let mut rng = Rng::new(SEED);
     let shape = [12, 16, 16];
     let square = matrix(&[&[4.0, 4.0, 4.0], &[4.0, 4.0, 9.0], &[4.0, 9.0, 9.0], &[4.0, 9.0, 4.0]])?;
     let hole = matrix(&[&[4.0, 6.0, 6.0], &[4.0, 6.0, 7.0], &[4.0, 7.0, 7.0]])?;
@@ -1032,7 +1032,7 @@ struct Registration {
 
 /// Two timepoints related by a transform, with landmark ground truth (§10).
 fn reg_base(path: &Path, opts: Registration) -> Result<()> {
-    let mut rng = SeededRng::new(SEED);
+    let mut rng = Rng::new(SEED);
     let shape = [12, 16, 16];
     let shift = [2.0, -1.0, 0.5];
     let affine = |sign: f64| {
@@ -1172,7 +1172,7 @@ fn reg_base(path: &Path, opts: Registration) -> Result<()> {
 /// cross-annotation tracking error W909 exists to catch; `partial_coverage`
 /// withdraws the follow-up commitment so absence becomes *unexamined*.
 fn tracking_sample(path: &Path, reclassify: bool, partial_coverage: bool) -> Result<()> {
-    let mut rng = SeededRng::new(SEED);
+    let mut rng = Rng::new(SEED);
     let shape = [12, 16, 16];
     let lesion = |z: usize, y: usize, x: usize, r: usize| block(&shape, &[z - r, y - r, x - r], &[2 * r, 2 * r, 2 * r]);
     let instance = |class_id: i64, instance_id: u64, mask: ArrayD<bool>| InstanceInput {

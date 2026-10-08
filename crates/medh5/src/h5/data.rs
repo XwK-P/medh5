@@ -447,7 +447,7 @@ pub fn recreate_fixed_strings(ds: &hdf5::Dataset, values: &[String], width: usiz
     let file = ds.file()?;
     let parent = file.group(&parent_path)?;
     let suffix: String = {
-        let mut rng = crate::rng::SeededRng::from_entropy();
+        let mut rng = crate::rng::Rng::from_entropy();
         format!("{:08x}", rng.next_u32())
     };
     let staging = format!("{name}.scrub-{suffix}");

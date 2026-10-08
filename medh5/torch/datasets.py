@@ -52,6 +52,7 @@ from medh5.sampling import (
     PairReport,
     Patch,
     PatchSampler,
+    Seed,
     TimepointPair,
     TimepointPairSampler,
     grid_patches,
@@ -438,8 +439,9 @@ class PatchDataset(_Base):
     def __getitem__(self, index: int) -> dict[str, Any]:
         path = self.paths[index // self.samples_per_volume]
         with self._lease(path) as sample:
-            rng = np.random.default_rng((self.seed, self.epoch, index))
-            patch = self.sampler.draw(sample, self.annotation, rng)
+            patch = self.sampler.draw(
+                sample, self.annotation, (self.seed, self.epoch, index)
+            )
             return self._item(sample, patch)
 
 
@@ -566,8 +568,7 @@ class PairedPatchDataset(_Base):
 
     def _paired_item(self, sample: Sample, index: int) -> dict[str, Any]:
         _, pair = self._plan[index // self.samples_per_pair]
-        rng = np.random.default_rng((self.seed, self.epoch, index))
-        first = self._patch_for(sample, pair.first, rng)
+        first = self._patch_for(sample, pair.first, (self.seed, self.epoch, index))
         second = self._corresponding(sample, pair, first)
         images = {
             pair.first: self._read_at(sample, pair.first, first),
@@ -653,9 +654,7 @@ class PairedPatchDataset(_Base):
             sample, {f"image {n!r}": sample.images[n].grid_id for n in names}
         )
 
-    def _patch_for(
-        self, sample: Sample, timepoint: str, rng: np.random.Generator
-    ) -> Patch:
+    def _patch_for(self, sample: Sample, timepoint: str, rng: Seed) -> Patch:
         """A window in *timepoint*'s own grid, annotated or not.
 
         The grid is named rather than left to the sampler.  `_annotation_at`

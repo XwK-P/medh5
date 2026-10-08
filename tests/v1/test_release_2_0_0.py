@@ -212,12 +212,12 @@ def test_S2_5_a_boolean_is_an_int8_enumeration_FALSE_TRUE(tmp_path: Path) -> Non
         assert members == {"FALSE": 0, "TRUE": 1}
 
 
-def test_S12_appendix_C_records_the_three_2_0_corrections() -> None:
+def test_S12_appendix_C_records_the_four_2_0_corrections() -> None:
     spec = (ROOT / "docs/spec/medh5-1.0.md").read_text(encoding="utf-8")
     section = spec[spec.index("### C.1") : spec.index("### C.2")]
-    for clause in ("| §2.5 |", "| §5.1, §13.2 |", "| §13.1 |"):
+    for clause in ("| §2.5 |", "| §5.1, §13.2 |", "| §13.1 |", "| §14.3 |"):
         assert clause in section
-    assert "three when the engine was written a second time, in Rust" in section
+    assert "four when the engine was written a second time, in Rust" in section
 
 
 @pytest.mark.parametrize("value", NON_FINITE, ids=repr)

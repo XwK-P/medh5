@@ -7,8 +7,8 @@
 //! every [`Patch`] says which happened, because a silent 20x slowdown in a
 //! dataloader is indistinguishable from a slow disk.
 //!
-//! Draws go through [`Rng`] in exactly the order the 1.x implementation made
-//! them, so a seeded draw is the 1.x draw.
+//! Every draw comes from one [`Rng`], so a seed fixes the patches whichever
+//! frontend asks.
 
 use indexmap::IndexMap;
 use ndarray::Axis;
@@ -149,7 +149,7 @@ pub fn window_around(center: &[i64], patch: &[i64], shape: &[i64]) -> Window {
 /// trailing half-patches onto the first and last window; drawing from the
 /// range that maps one-to-one onto the valid window starts makes the window
 /// uniform, which is what `uniform` means.
-fn uniform_center(shape: &[i64], patch: &[i64], rng: &mut dyn Rng) -> Result<Vec<i64>> {
+fn uniform_center(shape: &[i64], patch: &[i64], rng: &mut Rng) -> Result<Vec<i64>> {
     let mut center = Vec::with_capacity(shape.len());
     for (extent, size) in shape.iter().zip(patch) {
         if size >= extent {
@@ -207,7 +207,7 @@ impl PatchSampler {
         Ok(PatchSampler { patch_size, strategy: strategy.into(), foreground_prob, foreground_classes, class_weights })
     }
 
-    /// The 1.x defaults: `balanced`, `foreground_prob = 0.5`, uniform weights.
+    /// The defaults: `balanced`, `foreground_prob = 0.5`, uniform weights.
     pub fn with_size(patch_size: PatchSize) -> PatchSampler {
         PatchSampler {
             patch_size,
@@ -228,19 +228,13 @@ impl PatchSampler {
     /// `grid` pins the grid the window is measured in; `annotation = None`
     /// alone means "find me one", which for a longitudinal sample can find
     /// another visit's.
-    pub fn draw(
-        &self,
-        sample: &Sample,
-        annotation: Option<&str>,
-        rng: &mut dyn Rng,
-        grid: Option<&str>,
-    ) -> Result<Patch> {
+    pub fn draw(&self, sample: &Sample, annotation: Option<&str>, rng: &mut Rng, grid: Option<&str>) -> Result<Patch> {
         let ann = self.annotation(sample, annotation, grid)?;
         let grid_id = self.window_grid(sample, ann.as_deref(), grid)?;
         let shape: Vec<i64> = sample.grid(&grid_id)?.spatial_shape().iter().map(|v| *v as i64).collect();
         let patch = coerce_patch_size(&self.patch_size, shape.len())?;
         let want_foreground =
-            self.strategy == "foreground" || (self.strategy == "balanced" && rng.random()? < self.foreground_prob);
+            self.strategy == "foreground" || (self.strategy == "balanced" && rng.random() < self.foreground_prob);
         if want_foreground {
             if let Some(name) = &ann {
                 if let Some((center, class_id, used_index)) = self.foreground_center(sample, name, rng)? {
@@ -271,7 +265,7 @@ impl PatchSampler {
     }
 
     /// `n` draws from one generator.
-    pub fn draws(&self, sample: &Sample, annotation: Option<&str>, n: usize, rng: &mut dyn Rng) -> Result<Vec<Patch>> {
+    pub fn draws(&self, sample: &Sample, annotation: Option<&str>, n: usize, rng: &mut Rng) -> Result<Vec<Patch>> {
         (0..n).map(|_| self.draw(sample, annotation, rng, None)).collect()
     }
 
@@ -330,7 +324,7 @@ impl PatchSampler {
         &self,
         sample: &Sample,
         annotation: &str,
-        rng: &mut dyn Rng,
+        rng: &mut Rng,
     ) -> Result<Option<(Vec<i64>, i64, bool)>> {
         let ann = sample.annotation(annotation)?;
         let classes = self.classes(ann)?;
@@ -363,7 +357,7 @@ impl PatchSampler {
     }
 
     /// Choose a class to sample from, weighted as configured.
-    pub fn pick_class(&self, counts: &IndexMap<i64, i64>, rng: &mut dyn Rng) -> Result<Option<i64>> {
+    pub fn pick_class(&self, counts: &IndexMap<i64, i64>, rng: &mut Rng) -> Result<Option<i64>> {
         let present: Vec<(i64, i64)> = counts.iter().filter(|(_, n)| **n > 0).map(|(c, n)| (*c, *n)).collect();
         if present.is_empty() {
             return Ok(None);
@@ -392,14 +386,9 @@ impl PatchSampler {
     }
 
     /// The O(volume) fallback for a file with no current sampling index.
-    fn scan_center(
-        &self,
-        ann: &Annotation,
-        classes: &[i64],
-        rng: &mut dyn Rng,
-    ) -> Result<Option<(Vec<i64>, i64, bool)>> {
+    fn scan_center(&self, ann: &Annotation, classes: &[i64], rng: &mut Rng) -> Result<Option<(Vec<i64>, i64, bool)>> {
         let mut order = classes.to_vec();
-        rng.shuffle(&mut order)?;
+        rng.shuffle(&mut order);
         for class_id in order {
             let mask = ann.dense(Some(&[ClassKey::Id(class_id)]), None)?.index_axis_move(Axis(0), 0);
             let total = mask.iter().filter(|v| **v).count();

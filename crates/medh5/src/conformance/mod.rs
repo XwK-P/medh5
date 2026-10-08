@@ -10,8 +10,9 @@
 //! implementation that is not this one, in any language, from the codes it
 //! reports back.
 //!
-//! Voxel data is drawn from [`SeededRng`](crate::rng::SeededRng), which is
-//! NumPy's generator, so the corpus holds the same values the 1.x corpus did.
+//! Voxel data is drawn from [`Rng`](crate::rng::Rng) with fixed seeds, so a
+//! build is reproducible.  No case depends on the values: what a case states
+//! is its diagnostic codes.
 
 mod build;
 pub mod suite;

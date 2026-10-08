@@ -172,7 +172,7 @@ sampling O(1) in the volume instead of a scan, and gives `dataset stats` its
 class counts for a few hundred bytes instead of a decompression pass.
 
 A reader loads the class table and counts once per open, and a draw reads the
-one coordinate it picked — O(1) in the class count too: 0.10 ms at 63 classes.
+one coordinate it picked — O(1) in the class count too: 0.05 ms at 63 classes.
 The index's datasets are stored with the file's label codec, and the coarse
 `occupancy` map is chunked one class per chunk — the unit a reader asks about.
 

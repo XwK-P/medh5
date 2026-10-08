@@ -66,7 +66,7 @@ filenames.
 `docs/spec/medh5-1.0.md` is **normative**. Code implements it; when they
 disagree, one of them is a bug. Appendix C records the clauses corrected
 because implementing them showed the text was not implementable — including
-the three the Rust re-implementation found.
+the four the Rust re-implementation found.
 
 ## Architecture
 

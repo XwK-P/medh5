@@ -16,7 +16,7 @@ use serde_json::{json, Map, Value};
 
 use crate::array::{NdArray, Slice};
 use crate::labels::{ClassKey, LabelClass, LabelSet};
-use crate::rng::{Rng, SeededRng};
+use crate::rng::Rng;
 use crate::sample::open_sample;
 use crate::sample::writer::{create, GridOptions, ImageOptions};
 use crate::sample::writer_annotations::{SegmentationOptions, SegmentationSource, TransformSpec};
@@ -176,7 +176,7 @@ pub fn benchmark_file(path: &Path, annotation: Option<&str>, patch: usize, repea
             None,
             crate::sampling::ClassWeights::Named("uniform".into()),
         )?;
-        let mut rng = SeededRng::new(0);
+        let mut rng = Rng::new(0);
         let indexed = sample.index()?.contains_key(ann_id.as_str());
         let value = timed(|| sampler.draw(&sample, Some(ann_id), &mut rng, None).map(|_| ()), repeats, 3)?;
         out.push(Measurement::targeted("foreground_sample_ms", value, json!({"used_index": indexed})));
@@ -243,7 +243,7 @@ fn paired_measurements(sample: &crate::sample::Sample, repeats: usize) -> Result
     }])
 }
 
-fn int16_volume(shape: &[usize], rng: &mut SeededRng) -> Result<NdArray> {
+fn int16_volume(shape: &[usize], rng: &mut Rng) -> Result<NdArray> {
     let n: usize = shape.iter().product();
     let values: Vec<i16> = rng.integers(-1000, 1500, n)?.into_iter().map(|v| v as i16).collect();
     NdArray::from_vec(shape, values)
@@ -251,7 +251,7 @@ fn int16_volume(shape: &[usize], rng: &mut SeededRng) -> Result<NdArray> {
 
 /// A standard normal draw (Box-Muller); the values only have to look like a
 /// displacement field.
-fn normal(rng: &mut SeededRng, sigma: f64) -> f64 {
+fn normal(rng: &mut Rng, sigma: f64) -> f64 {
     let u1 = rng.next_f64().max(f64::MIN_POSITIVE);
     let u2 = rng.next_f64();
     sigma * (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
@@ -263,7 +263,7 @@ fn object(value: Value) -> Map<String, Value> {
 
 /// Two visits of one subject related by a dense displacement field.
 pub fn synthetic_pair(directory: &Path, shape: &[usize], codec: &str, seed: u64) -> Result<PathBuf> {
-    let mut rng = SeededRng::new(seed);
+    let mut rng = Rng::new(seed);
     std::fs::create_dir_all(directory)?;
     let path = directory.join("bench-pair.medh5");
     let mut writer = create(&path, Some("bench-pair"), None, codec, &[])?;
@@ -326,7 +326,7 @@ pub fn synthetic_sample(
     seed: u64,
     name: &str,
 ) -> Result<PathBuf> {
-    let mut rng = SeededRng::new(seed);
+    let mut rng = Rng::new(seed);
     std::fs::create_dir_all(directory)?;
     let path = directory.join(name);
     let classes_of: Vec<LabelClass> = (0..classes)
@@ -394,7 +394,7 @@ pub fn many_class_measurement(path: &Path, patch: usize, repeats: usize) -> Resu
         None,
         crate::sampling::ClassWeights::Named("uniform".into()),
     )?;
-    let mut rng = SeededRng::new(0);
+    let mut rng = Rng::new(0);
     let value = timed(|| sampler.draw(&sample, Some(&ann_id), &mut rng, None).map(|_| ()), repeats, 3)?;
     let indexed = sample.index()?.contains_key(ann_id.as_str());
     Ok(Measurement::targeted("foreground_sample_many_ms", value, json!({"classes": classes, "used_index": indexed})))

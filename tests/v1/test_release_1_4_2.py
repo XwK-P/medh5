@@ -700,20 +700,29 @@ class TestW21Performance:
         assert reads["n"] <= 2 * draws
 
     def test_P08_a_draw_picks_what_it_picked_before(self, tmp_path: Path):
-        """One row is read instead of the pool, and the same row: runs reproduce."""
+        """One row is read instead of the pool, and the same row: runs reproduce.
+
+        A seed --- an int, or a NumPy generator in a given state --- picks the
+        same row every time; the row is the pool's.  (1.x picked the row NumPy
+        would; 2.0 draws from the engine's generator, so the rows differ.)"""
         path = _many_classes(tmp_path / "many.medh5", classes=4)
         with medh5.open(path) as s:
             index = s.index["organs"]
             for class_id in index.class_ids:
-                pool = index.coords(class_id)
+                pool = index.coords(class_id).tolist()
+                picked = set()
                 for seed in range(5):
+                    row = index.sample_foreground(class_id, 1, seed).tolist()
+                    assert row == index.sample_foreground(class_id, 1, seed).tolist()
+                    assert row[0] in pool
+                    picked.add(tuple(row[0]))
                     rng = np.random.default_rng(seed)
-                    expected = pool[
-                        np.random.default_rng(seed).integers(0, len(pool), 1)
-                    ]
-                    assert index.sample_foreground(class_id, 1, rng).tolist() == (
-                        expected.tolist()
+                    again = np.random.default_rng(seed)
+                    assert (
+                        index.sample_foreground(class_id, 1, rng).tolist()
+                        == index.sample_foreground(class_id, 1, again).tolist()
                     )
+                assert len(pool) == 1 or len(picked) > 1
             assert index.has_class(1) and not index.has_class(99)
             assert index.voxel_counts == dict(index.voxel_counts)
 

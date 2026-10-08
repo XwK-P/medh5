@@ -1386,7 +1386,7 @@ is readable by stock `h5py`, MATLAB, R `rhdf5` and `h5dump` with no plugins.
 | `fg_coords/<class_id>` | `(n_c, S)` `int32` | uniform subsample of foreground voxel coordinates, `n_c ≤ max_coords` |
 | `occupancy` | `(C, *coarse_shape)` `bool` | OPTIONAL low-res occupancy (default 1/8 per axis) for block-level rejection sampling |
 | attr `source_digest` | `str` | §13.3 |
-| attr `max_coords`, `seed` | | reproducibility of the subsample |
+| attr `max_coords`, `seed` | | the subsample's parameters: the implementation that drew it reproduces it from them; the generator is not specified, so another implementation's subsample differs and conforms equally |
 
 Measured effect on foreground patch sampling (160³ volume, one class, 33 533 foreground voxels):
 
@@ -1593,12 +1593,12 @@ corpus through both the Python and the native command line; a test asserts that 
 the implementation's code registry are identical, so the two cannot drift.
 
 The §14 performance claims are reproducible rather than asserted: `medh5 bench` re-measures them on
-any machine. On a 192×256×256 synthetic CT with eight classes, a multi-class 64³ label read costs
-4.0 ms, foreground centre sampling 0.03 ms (O(1) in volume size, via §14.3; 0.10 ms at 63 classes),
-a metadata-only read 0.21 ms, and `open()` → first patch 2.4 ms.
+any machine. On one, with a 192×256×256 synthetic CT and eight classes, a multi-class 64³ label read
+costs 7.8 ms, foreground centre sampling 0.03 ms (O(1) in volume size, via §14.3; 0.05 ms at 63
+classes), a metadata-only read 0.19 ms, and `open()` → first patch 5.7 ms.
 
-Twenty-four clauses have been corrected — ten during implementation, eleven in the 1.x package
-releases that followed, and three when the engine was written a second time, in Rust, for the 2.0
+Twenty-five clauses have been corrected — ten during implementation, eleven in the 1.x package
+releases that followed, and four when the engine was written a second time, in Rust, for the 2.0
 package — each because writing the code showed the text was not implementable, not unambiguous, or
 not what the implementation could honestly promise, as written:
 
@@ -1628,6 +1628,7 @@ not what the implementation could honestly promise, as written:
 | §2.5 | Booleans and strings are defined as HDF5 types --- an 8-bit enumeration `FALSE = 0`, `TRUE = 1`; a variable-length UTF-8 string --- and so is what a reader must accept. The table said `np.bool_` and `h5py.string_dtype()`, which are one library's names for them; an implementation without that library had to read `h5py`'s source to write a boolean every 1.x reader would accept. |
 | §5.1, §13.2 | Canonical JSON is defined to the byte, once, for both digests that use it. §13.2 asked for "sorted-key JSON" with floats "in `repr` shortest round-trip form" --- one language's function --- and said nothing of separators or non-ASCII text, while §5.1 named those and said nothing of numbers; Python's default separators carry spaces, so a literal reading of §13.2 gave a different `content_id` for the same file. The definition is what the 1.x implementation always wrote: no digest changes. |
 | §13.1 | `dtype_str` is spelled out for every stored type, including `|O` for variable-length strings, and `shape_csv` is defined. "The NumPy dtype string" left a string dataset's header to whatever a reader's string type is called, and a second implementation would have digested every point `names` and classification `schemes` column differently. |
+| §14.3 | An index's `seed` reproduces a subsample only within the implementation that drew it. The table said `max_coords` and `seed` gave "reproducibility of the subsample", but nothing specifies the generator: 1.x drew from NumPy's, and matching it meant carrying a copy of NumPy's seeding and bounded-integer algorithms in every implementation. An index is derived and outside every digest (§13.1), so a different subsample is a different cache of the same sample. |
 
 ### C.2 Prototype checks
 

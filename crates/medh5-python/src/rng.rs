@@ -1,109 +1,34 @@
-//! A NumPy `Generator` as the engine's [`Rng`](medh5::rng::Rng).
+//! The `rng=` argument: what seeds the engine's generator.
 //!
-//! The engine makes the same draws, in the same order, as the 1.x Python
-//! implementation; handing it the caller's generator through these calls
-//! keeps a seeded pipeline bit-for-bit reproducible across the port.
+//! The engine draws from its own generator ([`medh5::rng::Rng`]); a caller
+//! names the seed.  A `numpy.random.Generator` supplies one seed and advances,
+//! so a seeded pipeline stays reproducible and a shared generator still gives
+//! every call different draws --- without a call back into Python per draw.
 
+use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList};
 
-use medh5::rng::{Rng, SeededRng};
+use medh5::rng::Rng;
 
-fn engine_error(e: PyErr) -> medh5::Error {
-    medh5::Error::Runtime(format!("the random generator failed: {e}"))
-}
-
-/// Calls a `numpy.random.Generator`.
-pub struct PyRng<'py> {
-    generator: Bound<'py, PyAny>,
-}
-
-impl<'py> PyRng<'py> {
-    pub fn new(generator: Bound<'py, PyAny>) -> Self {
-        PyRng { generator }
+/// The generator an `rng=` argument names: `None` for fresh entropy, an
+/// integer or a sequence of integers as the seed, or a
+/// `numpy.random.Generator`, which supplies the seed.
+pub fn rng_arg(rng: Option<&Bound<'_, PyAny>>) -> PyResult<Rng> {
+    let Some(obj) = rng.filter(|r| !r.is_none()) else {
+        return Ok(Rng::from_entropy());
+    };
+    if let Ok(seed) = obj.extract::<i128>() {
+        return Ok(Rng::new(seed as u64));
     }
-
-    fn call<A: pyo3::call::PyCallArgs<'py>>(
-        &self,
-        name: &str,
-        args: A,
-        kwargs: Option<&Bound<'py, PyDict>>,
-    ) -> PyResult<Bound<'py, PyAny>> {
-        self.generator.call_method(name, args, kwargs)
+    if obj.hasattr("integers")? {
+        let seed: i64 = obj.call_method1("integers", (0i64, i64::MAX))?.extract()?;
+        return Ok(Rng::new(seed as u64));
     }
-}
-
-impl Rng for PyRng<'_> {
-    fn integer(&mut self, low: i64, high: i64) -> medh5::Result<i64> {
-        self.call("integers", (low, high), None).and_then(|v| v.extract::<i64>()).map_err(engine_error)
+    if let Ok(seeds) = obj.extract::<Vec<i128>>() {
+        return Ok(Rng::from_seeds(&seeds.into_iter().map(|s| s as u64).collect::<Vec<_>>()));
     }
-
-    fn integers(&mut self, low: i64, high: i64, n: usize) -> medh5::Result<Vec<i64>> {
-        let py = self.generator.py();
-        (|| -> PyResult<Vec<i64>> {
-            let kwargs = PyDict::new(py);
-            kwargs.set_item("size", n)?;
-            self.call("integers", (low, high), Some(&kwargs))?.call_method0("tolist")?.extract()
-        })()
-        .map_err(engine_error)
-    }
-
-    fn random(&mut self) -> medh5::Result<f64> {
-        self.generator.call_method0("random").and_then(|v| v.extract::<f64>()).map_err(engine_error)
-    }
-
-    fn choice_weighted(&mut self, keys: &[i64], p: &[f64]) -> medh5::Result<i64> {
-        let py = self.generator.py();
-        (|| -> PyResult<i64> {
-            let kwargs = PyDict::new(py);
-            kwargs.set_item("p", PyList::new(py, p)?)?;
-            self.call("choice", (PyList::new(py, keys)?,), Some(&kwargs))?.extract()
-        })()
-        .map_err(engine_error)
-    }
-
-    fn shuffle(&mut self, values: &mut Vec<i64>) -> medh5::Result<()> {
-        let py = self.generator.py();
-        let shuffled = (|| -> PyResult<Vec<i64>> {
-            let array = crate::convert::numpy(py)?.call_method1("array", (PyList::new(py, values.iter())?,))?;
-            self.generator.call_method1("shuffle", (&array,))?;
-            array.call_method0("tolist")?.extract()
-        })()
-        .map_err(engine_error)?;
-        *values = shuffled;
-        Ok(())
-    }
-
-    fn sample_without_replacement(&mut self, total: usize, k: usize) -> medh5::Result<Vec<usize>> {
-        let py = self.generator.py();
-        (|| -> PyResult<Vec<usize>> {
-            let kwargs = PyDict::new(py);
-            kwargs.set_item("size", k)?;
-            kwargs.set_item("replace", false)?;
-            self.call("choice", (total,), Some(&kwargs))?.call_method0("tolist")?.extract()
-        })()
-        .map_err(engine_error)
-    }
-}
-
-/// A generator for an optional `rng=` argument: the caller's, or fresh entropy.
-pub enum AnyRng<'py> {
-    Python(PyRng<'py>),
-    Seeded(SeededRng),
-}
-
-impl<'py> AnyRng<'py> {
-    pub fn from_arg(rng: Option<Bound<'py, PyAny>>) -> AnyRng<'py> {
-        match rng.filter(|r| !r.is_none()) {
-            Some(g) => AnyRng::Python(PyRng::new(g)),
-            None => AnyRng::Seeded(SeededRng::from_entropy()),
-        }
-    }
-
-    pub fn as_dyn(&mut self) -> &mut dyn Rng {
-        match self {
-            AnyRng::Python(p) => p,
-            AnyRng::Seeded(s) => s,
-        }
-    }
+    Err(PyTypeError::new_err(format!(
+        "rng must be None, an int, a sequence of ints or a numpy.random.Generator, not {}",
+        obj.get_type().name()?
+    )))
 }

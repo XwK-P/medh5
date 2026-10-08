@@ -193,7 +193,7 @@ honestly** — coverage, provenance, geometry and integrity.
 |---|---|
 | **A larger specification** than 0.x | Conformance profiles let a segmentation-only implementation implement `core` and `seg` and ignore the rest — and `core` is smaller than 0.x's implicit schema, because the derived flags are gone. |
 | **Several voxel encodings to implement and test** | Bounded: each is a small `contains` / `dense` / `instances` implementation, and the transcoding matrix is covered by property-based tests over every encoding rather than by twenty hand-written cases. |
-| **A JSON parse on every open** | A metadata-only read measures 0.21 ms — faster than 0.x's attribute-by-attribute reconstruction ([the numbers](../guides/performance.md#the-numbers)). |
+| **A JSON parse on every open** | A metadata-only read measures 0.19 ms — faster than 0.x's attribute-by-attribute reconstruction ([the numbers](../guides/performance.md#the-numbers)). |
 | **Multiple grids complicate every consumer** | Real complexity, but it is the domain's: PET and CT genuinely have different lattices. A consumer that wants one grid reads the reference grid and is no more complex than before. |
 | **Copy-on-write amend rewrites the whole file** | The alternative, in-place deletion, leaks space monotonically and fragments the chunk index, because HDF5 does not reclaim it (§14.4). |
 | **Subject-scoped files are larger** | A file holds every visit, so amend costs scale with the record and a new visit is a rewrite, not an append. Mitigated by the curator's freedom to emit one sample per timepoint for a long series, and by the fact that annotation edits — the frequent operation — touch small objects. |

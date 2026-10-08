@@ -1499,11 +1499,10 @@ class TestW19WriterEqualsValidator:
         only runtime dependency, and the check is always there."""
         from importlib.metadata import requires
 
-        from medh5.document import schema_available, validate_against_schema
+        from medh5.document import validate_against_schema
 
         core = [r for r in requires("medh5") or () if "extra ==" not in r]
         assert [re.split(r"[<>=!~ ;\[]", r, maxsplit=1)[0] for r in core] == ["numpy"]
-        assert schema_available()
         assert validate_against_schema({"identity": {}})
 
     def test_L21_S2_4_commit_checks_the_schema(self, tmp_path: Path):

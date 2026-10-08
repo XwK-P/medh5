@@ -19,7 +19,7 @@ use crate::h5::attrs::{self, AttrValue};
 use crate::h5::{data, ops};
 use crate::json::repr_str;
 use crate::labels::ClassKey;
-use crate::rng::{Rng, SeededRng};
+use crate::rng::Rng;
 use crate::{Error, Result};
 
 /// Coordinates cached per class.
@@ -44,7 +44,7 @@ pub struct IndexPayload {
 }
 
 /// Uniformly subsample foreground voxel coordinates.
-pub fn sample_foreground_coords(mask: &ArrayD<bool>, max_coords: usize, rng: &mut dyn Rng) -> Result<Array2<i32>> {
+pub fn sample_foreground_coords(mask: &ArrayD<bool>, max_coords: usize, rng: &mut Rng) -> Result<Array2<i32>> {
     let ndim = mask.ndim();
     let total = mask.iter().filter(|v| **v).count();
     if total == 0 {
@@ -112,7 +112,7 @@ pub fn build_index(
     source_digest: Option<String>,
 ) -> Result<IndexPayload> {
     let ids = annotation.resolve_classes(classes)?;
-    let mut rng = SeededRng::new(seed);
+    let mut rng = Rng::new(seed);
     let window = annotation.window(None)?;
     let n_spatial = annotation.spatial_shape()?.len();
     let mut counts = vec![0i64; ids.len()];
@@ -293,7 +293,7 @@ impl SamplingIndex {
     }
 
     /// Draw `n` foreground voxel coordinates in O(1) time and memory.
-    pub fn sample_foreground(&self, class_id: i64, n: usize, rng: &mut dyn Rng) -> Result<Array2<i32>> {
+    pub fn sample_foreground(&self, class_id: i64, n: usize, rng: &mut Rng) -> Result<Array2<i32>> {
         let pool = self.coord_node(class_id)?;
         let size = pool.shape().first().copied().unwrap_or(0);
         if size == 0 {

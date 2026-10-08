@@ -59,12 +59,6 @@ def schema() -> dict[str, Any]:
     return found
 
 
-def schema_available() -> bool:
-    """Whether E005 can be checked.  Always ``True``: the engine embeds the
-    schema and its validator, so no optional dependency decides this."""
-    return True
-
-
 def validate_against_schema(doc: Mapping[str, Any]) -> list[str]:
     """Validate a document, returning human-readable messages (empty when valid).
 
@@ -82,7 +76,6 @@ __all__ = [
     "read_document",
     "read_document_text",
     "schema",
-    "schema_available",
     "schema_text",
     "validate_against_schema",
 ]

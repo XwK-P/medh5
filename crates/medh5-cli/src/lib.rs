@@ -27,15 +27,6 @@ mod seg;
 use common::{top_level_message, Ctx};
 pub use common::{Host, EXIT_ERROR, EXIT_OK, EXIT_USAGE};
 
-/// How a run ended: its exit code, and whether the 1.x parser would have
-/// ended it by raising `SystemExit` (`--help`, `--version`, a usage error)
-/// rather than by returning the code.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Outcome {
-    pub code: i32,
-    pub parser_exit: bool,
-}
-
 /// The host of the standalone binary: hands converters to a Python
 /// interpreter that has the `medh5` package, when there is one.
 pub struct NativeHost;
@@ -78,11 +69,11 @@ impl Host for NativeHost {
 pub fn run(args: Vec<String>) -> i32 {
     let mut out = std::io::stdout().lock();
     let mut err = std::io::stderr().lock();
-    run_with(&args, &mut out, &mut err, &NativeHost).code
+    run_with(&args, &mut out, &mut err, &NativeHost)
 }
 
-/// Run the command line on `args` (without the program name).
-pub fn run_with(args: &[String], out: &mut dyn Write, err: &mut dyn Write, host: &dyn Host) -> Outcome {
+/// Run the command line on `args` (without the program name); the exit code.
+pub fn run_with(args: &[String], out: &mut dyn Write, err: &mut dyn Write, host: &dyn Host) -> i32 {
     medh5::h5::init();
     let argv = std::iter::once("medh5".to_string()).chain(args.iter().cloned());
     let mut command = app::command();
@@ -101,7 +92,7 @@ pub fn run_with(args: &[String], out: &mut dyn Write, err: &mut dyn Write, host:
             };
             let _ = out.flush();
             let _ = err.flush();
-            return Outcome { code, parser_exit: true };
+            return code;
         }
     };
     let mut ctx = Ctx::new(out, err, host);
@@ -109,7 +100,7 @@ pub fn run_with(args: &[String], out: &mut dyn Write, err: &mut dyn Write, host:
         let help = command.render_help();
         ctx.print(help.to_string().trim_end());
         ctx.flush();
-        return Outcome { code: EXIT_USAGE, parser_exit: false };
+        return EXIT_USAGE;
     };
     let result = match name {
         "info" | "tree" | "validate" | "verify" | "fix" | "timeline" | "track" => {
@@ -134,9 +125,9 @@ pub fn run_with(args: &[String], out: &mut dyn Write, err: &mut dyn Write, host:
     };
     ctx.flush();
     if ctx.broken_pipe {
-        return Outcome { code: EXIT_OK, parser_exit: false };
+        return EXIT_OK;
     }
-    Outcome { code, parser_exit: false }
+    code
 }
 
 /// The grammar as data: `{"options": [...], "positionals": [...],
