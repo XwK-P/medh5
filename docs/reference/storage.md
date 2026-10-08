@@ -78,7 +78,11 @@ PROFILES["archive"].description
 
 ## Chunking
 
-The chunk is the real unit of I/O: reading one voxel reads a whole chunk. Two
+The chunk is the unit a read fetches: reading one voxel reads a whole stored
+chunk. Blosc2 compresses a chunk as a grid of blocks, and under the Blosc2
+profiles a window decompresses only the blocks it covers --- from the stored
+chunk, outside HDF5's lock --- so a chunk larger than the patch costs I/O rather
+than decompression; under `portable`, HDF5 decompresses the whole chunk. Two
 forces pull against each other — sizing to the L3 cache keeps a patch inside
 cache after decompression, sizing to the training patch keeps read
 amplification low — and the optimiser resolves them by starting at the patch,
@@ -101,7 +105,8 @@ annotation — and a displacement field's components — is chunked
 `(1, *spatial_chunk)`, so reading one plane does not decompress the others
 (§14.1). Combined with reading a multi-class `dense()` **by plane rather than by
 class**, a 200-class annotation packed into four layers is four reads and not
-two hundred — which is where the 64³ patch time went from 117 ms to 4 ms.
+two hundred — which, with block-level reads, is where the 64³ patch time went
+from 117 ms to about 3.5 ms.
 
 ```
 $ medh5 recompress case.medh5 --profile training --rechunk

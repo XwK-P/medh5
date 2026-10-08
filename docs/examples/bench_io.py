@@ -22,12 +22,14 @@ def bench_write_read(path, data, chunks, **kw):
         f.create_dataset("d", data=data, chunks=chunks, **kw)
     wt = time.perf_counter() - t
     size = os.path.getsize(path) / 1024**2
-    sl = (slice(64, 128), slice(96, 160), slice(96, 160))
+    # A new window each read, as a dataloader reads: the same window thirty
+    # times would time HDF5's chunk cache, not a decompression.
+    at = np.random.default_rng(2).integers(0, np.array(data.shape) - 64, size=(30, 3))
     ts = []
     with h5py.File(path, "r") as f:
         d = f["d"]
-        for _ in range(30):
-            t = time.perf_counter(); _ = d[sl]; ts.append(time.perf_counter() - t)
+        for z, y, x in at:
+            t = time.perf_counter(); _ = d[z:z + 64, y:y + 64, x:x + 64]; ts.append(time.perf_counter() - t)
         t = time.perf_counter(); _ = d[...]; full = time.perf_counter() - t
     return wt, size, float(np.median(ts)) * 1000, full
 

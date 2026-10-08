@@ -391,3 +391,42 @@ def test_the_rust_example_on_the_docs_page_is_the_tested_one() -> None:
     assert '#![doc = include_str!("../README.md")]' in (
         ROOT / "crates/medh5/src/lib.rs"
     ).read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("byteorder", ["<", ">"])
+def test_S14_2_a_window_reads_what_hdf5plugin_wrote(
+    byteorder: str, tmp_path: Path
+) -> None:
+    """A window decompresses only the Blosc2 blocks it covers, from the stored
+    chunk.  What another tool wrote must read the same as HDF5 reads it:
+    `hdf5plugin`'s B2ND chunks through that path, a big-endian dataset --- whose
+    bytes HDF5 converts on the way out --- through HDF5's."""
+    hdf5plugin = pytest.importorskip("hdf5plugin")
+    path = tmp_path / "other.medh5"
+    w = medh5.create(path, sample_id="o", subject_id="s")
+    w.add_grid("g", shape=(8, 8, 8), spacing=(1.0, 1.0, 1.0))
+    w.add_image("CT", np.zeros((8, 8, 8), np.int16), grid="g", modality="CT")
+    w.commit()
+    rng = np.random.default_rng(7)
+    values = rng.integers(-1000, 1500, (37, 45, 53)).astype(f"{byteorder}i2")
+    values[:, :20] = 3  # runs, so blocks compress unevenly
+    with h5py.File(path, "r+") as f:
+        f.create_dataset(
+            "x_other/ct",
+            data=values,
+            chunks=(16, 16, 32),
+            **hdf5plugin.Blosc2(
+                cname="zstd", clevel=3, filters=hdf5plugin.Blosc2.SHUFFLE
+            ),
+        )
+    with medh5.open(path) as s:
+        ds = s.root["x_other/ct"]
+        for _ in range(40):
+            lo = [int(rng.integers(0, n)) for n in values.shape]
+            hi = [
+                int(rng.integers(a + 1, n + 1))
+                for a, n in zip(lo, values.shape, strict=True)
+            ]
+            window = tuple(slice(a, b) for a, b in zip(lo, hi, strict=True))
+            np.testing.assert_array_equal(ds[window], values[window])
+        np.testing.assert_array_equal(ds[5, 3:40, 7], values[5, 3:40, 7])

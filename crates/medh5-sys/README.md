@@ -11,7 +11,9 @@ needs nothing installed:
   distribution, MIT/BSD), byte-compatible with what `h5py` + `hdf5plugin`
   write and read;
 - the **HDF5 Zstandard filter** (filter id 32015), in `hdf5plugin`'s chunk
-  format, so files compressed by that plugin read here too.
+  format, so files compressed by that plugin read here too;
+- `medh5_b2nd_read_slice`, which decompresses only the part of a stored
+  Blosc2 chunk a window covers, for reads that skip HDF5's filter pipeline.
 
 The engine calls `register_blosc2_filter()` and `register_zstd_filter()` once
 before touching a file.  Licences of the vendored code are in

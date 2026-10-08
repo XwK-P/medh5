@@ -52,14 +52,15 @@ because its cost tracks object volume rather than image volume.
 
 ### Codec profiles
 
-192×256×256 `int16` CT, 32×64×64 chunks:
+192×256×256 `int16` CT, 32×64×64 chunks, read with h5py, a new 64³ window
+each read:
 
 | Codec | Write | Size | Ratio | 64³ read | Full read |
 |---|---|---|---|---|---|
-| lz4 L1 (`training`) | 0.03 s | 12.80 MiB | 1.9× | 0.08 ms | 0.01 s |
-| lz4hc L8 (the 0.x default) | 0.34 s | 12.33 MiB | 1.9× | 0.08 ms | 0.01 s |
-| zstd L9 + bitshuffle (`archive`) | 2.39 s | 9.53 MiB | 2.5× | 0.08 ms | 0.03 s |
-| gzip L4 (`portable`) | 0.37 s | 9.72 MiB | 2.5× | 0.08 ms | 0.09 s |
+| lz4 L1 (`training`) | 0.07 s | 12.80 MiB | 1.9× | 1.3 ms | 0.02 s |
+| lz4hc L8 (the 0.x default) | 0.54 s | 12.33 MiB | 1.9× | 1.0 ms | 0.02 s |
+| zstd L9 + bitshuffle (`archive`) | 5.37 s | 9.53 MiB | 2.5× | 2.3 ms | 0.03 s |
+| gzip L4 (`portable`) | 0.48 s | 9.72 MiB | 2.5× | 8.9 ms | 0.08 s |
 
 The same volume stored as `float32` rather than `int16` plus a rescale is
 36.75 MiB against 12.33 MiB at lz4hc L8 — three times the disk for no

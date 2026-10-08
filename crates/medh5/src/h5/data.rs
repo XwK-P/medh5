@@ -151,7 +151,7 @@ fn read_enum_region(
 
 /// Resolve a selection against a shape: per-axis `(start, count, step)` and
 /// whether the axis is kept in the output.
-fn resolve(shape: &[usize], index: &[Index]) -> Result<Vec<(usize, usize, usize, bool)>> {
+pub(crate) fn resolve(shape: &[usize], index: &[Index]) -> Result<Vec<(usize, usize, usize, bool)>> {
     if index.len() > shape.len() {
         return Err(Error::Index(format!(
             "too many indices: {} for a {}-dimensional dataset",
@@ -196,6 +196,20 @@ pub fn read_region(ds: &hdf5::Dataset, index: &[Index]) -> Result<NdArray> {
     if is_plain_enum(ds) {
         return read_enum_region(ds, dtype, &axes, &out_shape);
     }
+    if let Some(window) = super::window::read_window(ds, dtype, &axes, &out_shape)? {
+        return Ok(window);
+    }
+    read_hyperslab(ds, dtype, &axes, &out_shape)
+}
+
+/// [`read_region`] through HDF5's filter pipeline: whole chunks, decompressed
+/// under HDF5's lock.
+pub(crate) fn read_hyperslab(
+    ds: &hdf5::Dataset,
+    dtype: DType,
+    axes: &[(usize, usize, usize, bool)],
+    out_shape: &[usize],
+) -> Result<NdArray> {
     let selection: Vec<SliceOrIndex> = axes
         .iter()
         .map(|(start, count, step, kept)| {
@@ -209,7 +223,7 @@ pub fn read_region(ds: &hdf5::Dataset, index: &[Index]) -> Result<NdArray> {
     let hyper = Hyperslab::from(selection);
     Ok(with_dtype!(dtype, T => {
         let a: ArrayD<T> = ds.read_slice::<T, _, IxDyn>(hyper)?;
-        NdArray::from(a.into_shape_with_order(IxDyn(&out_shape))?)
+        NdArray::from(a.into_shape_with_order(IxDyn(out_shape))?)
     }))
 }
 

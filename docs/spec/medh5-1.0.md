@@ -1358,18 +1358,21 @@ actually used is discoverable from the HDF5 filter pipeline.
 | `archive` | Blosc2 zstd L9 + bitshuffle | Blosc2 zstd L9 + bitshuffle | cold storage, distribution |
 | `portable` | gzip L4 + shuffle | gzip L4 + shuffle | readers without `hdf5plugin` |
 
-Measured on a 192×256×256 synthetic CT (12.6 M voxels, `int16` HU, 32×64×64 chunks):
+Measured on a 192×256×256 synthetic CT (12.6 M voxels, `int16` HU, 32×64×64 chunks), with h5py and
+a new 64³ window for every read ([`bench_io.py`](../examples/bench_io.py)):
 
 | Profile | Write | Size | Ratio | 64³ patch read | Full-volume read |
 |---|---|---|---|---|---|
-| `training` (lz4 L1) | 0.03 s | 12.80 MiB | 1.9× | 0.08 ms | 0.01 s |
-| `balanced`-ish (lz4hc L8) | 0.34 s | 12.33 MiB | 1.9× | 0.08 ms | 0.01 s |
-| `archive` (zstd L9 + bitshuffle) | 2.39 s | 9.53 MiB | 2.5× | 0.08 ms | 0.03 s |
-| `portable` (gzip L4) | 0.37 s | 9.72 MiB | 2.5× | 0.08 ms | 0.09 s |
+| `training` (lz4 L1) | 0.07 s | 12.80 MiB | 1.9× | 1.3 ms | 0.02 s |
+| `balanced`-ish (lz4hc L8) | 0.54 s | 12.33 MiB | 1.9× | 1.0 ms | 0.02 s |
+| `archive` (zstd L9 + bitshuffle) | 5.37 s | 9.53 MiB | 2.5× | 2.3 ms | 0.03 s |
+| `portable` (gzip L4) | 0.48 s | 9.72 MiB | 2.5× | 8.9 ms | 0.08 s |
 
-`portable` reaches archive-class ratios but decompresses ~3× slower in bulk; `training` writes ~80×
-faster than `archive` for a ~34 % size penalty. Patch reads are codec-insensitive at this chunk size
-because a 64³ patch touches few chunks — which is exactly what §14.1 is for.
+`portable` reaches archive-class ratios but decompresses ~3× slower in bulk and ~4× slower per patch;
+`training` writes ~75× faster than `archive` for a ~34 % size penalty. A patch read decompresses
+every chunk the window touches --- twelve here --- so the codec shows in it. (An earlier version of
+this table timed one window thirty times, which HDF5's chunk cache answers after the first read,
+and reported 0.08 ms for every codec.)
 
 `portable` exists because Blosc2 requires `hdf5plugin` on the reader. A file written with `portable`
 is readable by stock `h5py`, MATLAB, R `rhdf5` and `h5dump` with no plugins.
@@ -1594,8 +1597,8 @@ the implementation's code registry are identical, so the two cannot drift.
 
 The §14 performance claims are reproducible rather than asserted: `medh5 bench` re-measures them on
 any machine. On one, with a 192×256×256 synthetic CT and eight classes, a multi-class 64³ label read
-costs 7.8 ms, foreground centre sampling 0.03 ms (O(1) in volume size, via §14.3; 0.05 ms at 63
-classes), a metadata-only read 0.19 ms, and `open()` → first patch 5.7 ms.
+costs 3.4 ms, foreground centre sampling 0.03 ms (O(1) in volume size, via §14.3; 0.05 ms at 63
+classes), a metadata-only read 0.19 ms, and `open()` → first patch 2.3 ms.
 
 Twenty-five clauses have been corrected — ten during implementation, eleven in the 1.x package
 releases that followed, and four when the engine was written a second time, in Rust, for the 2.0

@@ -9,6 +9,7 @@ pub mod attrs;
 pub mod data;
 pub mod file;
 pub mod ops;
+mod window;
 
 pub use attrs::AttrValue;
 pub use hdf5::{Dataset, File, Group, Location};

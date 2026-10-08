@@ -125,6 +125,11 @@ it into every file's `generator`.
   than closing them.
 - **Closing a file closes what was opened through it** (`close_everything`), as
   `h5py`'s `File.close()` does; a view used afterwards raises `MEDH5FileError`.
+- **A window read is HDF5's bytes or HDF5's read.** `h5/window.rs` decompresses
+  only the Blosc2 blocks a window covers, from the stored chunk; anything it
+  cannot read exactly as HDF5 would (another filter, a converted type, an
+  unwritten chunk, a strided selection) returns `None` and `read_region` falls
+  back. Widen what it accepts only with a test against `read_hyperslab`.
 - **`amend` is copy-on-write** and replaces the file, so anything holding an open
   handle across it keeps reading the old inode. A rewrite in place closes its
   source before the rename (Windows cannot replace an open file).

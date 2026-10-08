@@ -123,21 +123,51 @@ behaviour changes below.
   equally conforming (Appendix C.1).
 - **NaN in `/meta` is reported.** 1.x's validator parsed `/meta` with Python's
   `json`, which accepts `NaN`, so a document that is not JSON passed.
+- **The §14.2 codec table timed a cache.** Its 64³ patch reads --- 0.08 ms for
+  every codec, gzip included --- re-read one window through one open dataset,
+  which HDF5's chunk cache answers after the first read, and the text concluded
+  that patch reads are codec-insensitive. Re-measured with a new window per
+  read, the codec shows: 1.3 ms for `training`'s lz4, 8.9 ms for `portable`'s
+  gzip.
 
 ### Performance
 
-Measured with `medh5 bench`'s metrics on one machine and the same files, the
-median of five alternating runs, 1.4.4 → 2.0.0: `open()` to the first patch
-8.0 → 5.7 ms, a metadata-only read 0.79 → 0.19 ms, foreground centre sampling
-0.088 → 0.034 ms (0.32 → 0.045 ms at 63 classes), a 64³ image patch
-0.23 → 0.14 ms, a paired-visit centre 10.2 → 9.1 ms. A multi-class label patch
-is unchanged (7.7 ms here): it is decompression, and the codecs are the same C
-libraries.
+**A window decompresses only what it covers.** The Blosc2 profiles store each
+chunk as a grid of independently compressed blocks, and HDF5's filter pipeline
+decompresses whole chunks: a 96³ patch over the default 1 MiB chunks
+decompressed up to eighteen of them. A windowed read now takes each stored
+chunk as it is and has Blosc2 decompress only the blocks the window touches,
+outside HDF5's global lock. Whatever that path cannot read exactly as HDF5
+would --- another codec, a byte order HDF5 converts, an unwritten chunk, a
+strided selection --- goes through HDF5 as before.
 
-Choosing a patch window the way `PatchDataset` does, from a seed per item,
-costs 4.5 µs instead of 37 µs for a uniform draw, 44 µs instead of 106 µs for a
-foreground one and 25 µs instead of 76 µs for `balanced` (the median per draw
-over 3000 draws): 1.x built a NumPy generator per item.
+Measured on one machine and the same files, 1.4.4 → 2.0.0, with a new random
+window for every read:
+
+- a 64³ image patch 3.9 → 1.4 ms and its eight-class labels 9.3 → 3.5 ms; at
+  96³, 6.9 → 3.3 ms and 15.0 → 12.1 ms;
+- `open()` and the first 64³ patch 12–13 → 3–3.5 ms;
+- four threads reading 64³ patches at once: 7.2 → 1.2 ms per read, wall clock;
+- sliding-window inference, 96³ at 50 % overlap: 5.4 → 3.1 ms per window;
+- a paired-visit centre, which reads the displacement field around one point,
+  10.2 → 1.9 ms;
+- the training loader (`balanced`, images only), in one process and with four
+  workers on four cores: 172 → 376 and 440 → 600 patches/s at 64³, 110 → 189
+  and 269 → 335 at 96³.
+
+The one read it does not speed up is the same chunks again, through one open
+dataset, while HDF5 still caches them: one 64³ window re-read twenty times
+costs 0.66 ms a read where HDF5's cache answered in 0.13 ms. `medh5 bench`
+timed exactly that, which made an image patch look like 0.13 ms; its patch
+metrics now read a different seeded window every time.
+
+Also on one machine and the same files: a metadata-only read 0.79 → 0.19 ms,
+foreground centre sampling 0.088 → 0.034 ms (0.32 → 0.045 ms at 63 classes).
+Choosing a patch window the way
+`PatchDataset` does, from a seed per item, costs 4.5 µs instead of 37 µs for a
+uniform draw, 44 µs instead of 106 µs for a foreground one and 25 µs instead of
+76 µs for `balanced` (the median per draw over 3000 draws): 1.x built a NumPy
+generator per item.
 
 ## [1.4.4] — 2026-10-02
 

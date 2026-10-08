@@ -213,11 +213,13 @@ format.
 | **Three frontends over it** | The Rust crate, the Python package (through PyO3) and the native `medh5` binary run the same code, so there is one behaviour to specify, test and keep conformant --- the corpus runs through both the Python and the native command line. |
 | **Python keeps what is Python's** | NumPy at the API, PyTorch and MONAI datasets, and the converters, whose job is to call nibabel, pydicom and highdicom. Moving those into Rust would re-implement libraries the ecosystem already maintains. |
 | **HDF5 compiled in, statically** | A wheel, a crate and a binary that need nothing installed, and one HDF5 and one Blosc2 everywhere --- so a chunk one frontend writes is the chunk the others read. |
+| **Reads below the filter pipeline** | HDF5 decompresses every chunk a window touches, whole, under its global lock; a Blosc2 chunk is a grid of separately compressed blocks. The engine reads the stored chunk and decompresses only the blocks the window covers, outside the lock --- a random 64³ label patch about three times faster, and threads that decompress at once. The bytes are HDF5's or the read goes through HDF5. |
 | **The format stayed 1.0** | Nothing in the file needed to change: a new major format would have bought nothing and cost every 1.x reader. The package is 2.0 because its Python API changed at the HDF5 boundary --- it no longer hands out `h5py` objects --- and semantic versioning says so. |
 
 Re-implementing the format was also a test of the specification: three
 clauses turned out to name a Python function where they meant bytes, and are
-now defined in HDF5 and JSON terms (Appendix C.1). A specification only one
+now defined in HDF5 and JSON terms, and one promised a reproducibility only
+NumPy's generator could give (Appendix C.1). A specification only one
 implementation can satisfy is a description of that implementation.
 
 ## Non-goals

@@ -131,13 +131,23 @@ pub fn timed(mut f: impl FnMut() -> Result<()>, repeats: usize, warmup: usize) -
     Ok(if n % 2 == 1 { samples[n / 2] } else { (samples[n / 2 - 1] + samples[n / 2]) / 2.0 })
 }
 
-/// A centred window of side `patch` over `shape`.
-fn centred_window(shape: &[usize], patch: usize) -> Vec<Slice> {
-    shape
-        .iter()
-        .map(|n| {
-            let start = (n / 2).saturating_sub(patch / 2);
-            Slice::new(start as i64, (start + patch.min(*n)) as i64)
+/// `n` windows of side `patch` over `shape`, at seeded random places.
+///
+/// A dataloader reads a different window every time.  Timing one window
+/// over and over times HDF5's chunk cache, which holds that window's chunks
+/// after the first read, rather than a read.
+fn windows(shape: &[usize], patch: usize, n: usize) -> Result<Vec<Vec<Slice>>> {
+    let mut rng = Rng::new(0);
+    (0..n)
+        .map(|_| {
+            shape
+                .iter()
+                .map(|extent| {
+                    let side = patch.min(*extent);
+                    let start = rng.integer(0, (extent - side + 1) as i64)?;
+                    Ok(Slice::new(start, start + side as i64))
+                })
+                .collect()
         })
         .collect()
 }
@@ -155,7 +165,12 @@ pub fn benchmark_file(path: &Path, annotation: Option<&str>, patch: usize, repea
     let image_id =
         image_ids.first().cloned().ok_or_else(|| Error::coded("E201", "a sample must contain at least one image"))?;
     let shape = sample.image(&image_id)?.grid()?.spatial_shape();
-    let window = centred_window(&shape, patch);
+    // One window per call, warm-up included.
+    let windows = windows(&shape, patch, repeats + 3)?;
+    let next = |k: &mut usize| {
+        *k += 1;
+        &windows[(*k - 1) % windows.len()]
+    };
 
     if sample.is_longitudinal()? {
         out.extend(paired_measurements(&sample, repeats)?);
@@ -163,7 +178,8 @@ pub fn benchmark_file(path: &Path, annotation: Option<&str>, patch: usize, repea
     if let Some(ann_id) = &ann_id {
         let ann = sample.annotation(ann_id)?.clone();
         let classes: Vec<ClassKey> = ann.class_ids().iter().map(|c| ClassKey::Id(*c)).collect();
-        let value = timed(|| ann.dense(Some(&classes), Some(&window)).map(|_| ()), repeats, 3)?;
+        let mut k = 0;
+        let value = timed(|| ann.dense(Some(&classes), Some(next(&mut k))).map(|_| ()), repeats, 3)?;
         out.push(Measurement::targeted(
             "patch_labels_ms",
             value,
@@ -182,7 +198,8 @@ pub fn benchmark_file(path: &Path, annotation: Option<&str>, patch: usize, repea
         out.push(Measurement::targeted("foreground_sample_ms", value, json!({"used_index": indexed})));
     }
     let image = sample.image(&image_id)?;
-    let value = timed(|| image.read(Some(&window), false, None).map(|_| ()), repeats, 3)?;
+    let mut k = 0;
+    let value = timed(|| image.read(Some(next(&mut k)), false, None).map(|_| ()), repeats, 3)?;
     out.push(Measurement {
         name: "image_patch_ms".into(),
         value,
@@ -195,8 +212,9 @@ pub fn benchmark_file(path: &Path, annotation: Option<&str>, patch: usize, repea
 
     let value = timed(|| open_sample(path)?.document().map(|_| ()), repeats, 3)?;
     out.push(Measurement::targeted("meta_read_ms", value, json!({})));
+    let mut k = 0;
     let value =
-        timed(|| open_sample(path)?.image(&image_id)?.read(Some(&window), false, None).map(|_| ()), repeats, 3)?;
+        timed(|| open_sample(path)?.image(&image_id)?.read(Some(next(&mut k)), false, None).map(|_| ()), repeats, 3)?;
     out.push(Measurement::targeted("open_to_first_patch_ms", value, json!({})));
     Ok(out)
 }

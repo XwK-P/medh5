@@ -29,6 +29,7 @@ fn main() {
 
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=vendor");
+    println!("cargo:rerun-if-changed=src/b2nd_slice.c");
 
     let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
@@ -111,6 +112,8 @@ fn main() {
         filter.include(dir);
     }
     filter.file(filter_src.join("blosc2_filter.c"));
+    // Ours, not upstream's: the window reads that skip the filter pipeline.
+    filter.file(manifest.join("src").join("b2nd_slice.c"));
     objects.extend(filter.compile_intermediates());
 
     // --- the portable core, the dispatcher, and everything above -----------

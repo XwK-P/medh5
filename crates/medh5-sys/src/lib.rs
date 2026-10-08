@@ -10,7 +10,9 @@
 //!   source, so chunks are written and read exactly as `hdf5plugin` writes and
 //!   reads them;
 //! * the **HDF5 Zstandard filter** (id 32015) in the chunk format `hdf5plugin`
-//!   uses, for datasets other tools wrote into a file's extension groups.
+//!   uses, for datasets other tools wrote into a file's extension groups;
+//! * [`medh5_b2nd_read_slice`], which decompresses only the part of a stored
+//!   chunk a window covers.
 //!
 //! Nothing here interprets a MEDH5 file; the `medh5` crate does.  The entry
 //! points beyond the raw bindings are [`register_blosc2_filter`] and
@@ -19,7 +21,7 @@
 
 #![allow(non_camel_case_types)]
 
-use std::os::raw::{c_char, c_int};
+use std::os::raw::{c_char, c_int, c_void};
 
 pub use hdf5_metno_sys as hdf5_sys;
 
@@ -47,6 +49,30 @@ unsafe extern "C" {
     pub fn register_blosc2(version: *mut *mut c_char, date: *mut *mut c_char) -> c_int;
 
     fn blosc2_init();
+
+    /// Decompress the slice `[start, stop)` of one stored chunk --- a B2ND
+    /// frame of `frame_len` bytes --- into `out`, in C order, touching only
+    /// the blocks the slice covers.
+    ///
+    /// Returns 0 on success; 1 when the frame is not a B2ND frame of rank
+    /// `ndim`, shape `chunk_shape` and item size `typesize`, or the slice does
+    /// not fit in it or in `out_len` bytes (read the chunk through HDF5
+    /// instead); a negative Blosc2 error code when the blocks do not
+    /// decompress.  `frame` is not modified.
+    ///
+    /// It touches no HDF5 state, so it needs no HDF5 lock, and each call
+    /// builds its own Blosc2 contexts.
+    pub fn medh5_b2nd_read_slice(
+        frame: *const u8,
+        frame_len: i64,
+        ndim: i8,
+        chunk_shape: *const i64,
+        typesize: i32,
+        start: *const i64,
+        stop: *const i64,
+        out: *mut c_void,
+        out_len: i64,
+    ) -> c_int;
 }
 
 /// Register the HDF5-Blosc2 filter with the process's HDF5 library.
