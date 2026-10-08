@@ -20,7 +20,6 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from functools import lru_cache
-from pathlib import Path
 from typing import Any
 
 from medh5 import _core
@@ -39,16 +38,11 @@ read_document = _core.read_document
 read_document_text = _core.read_document_text
 """The raw ``/meta`` text under a sample root."""
 
-SCHEMA_NAME = "medh5-sample-1.0.schema.json"
-"""The schema's file name, as published beside the specification."""
-
-SCHEMA_PATH = Path(__file__).parent / "schemas" / SCHEMA_NAME
-"""The schema as a file, for tools that want one: the same bytes the engine
-embeds (a test compares the copies)."""
-
 
 def schema_text() -> str:
-    """The sample-document JSON Schema (draft 2020-12), as published."""
+    """The sample-document JSON Schema (draft 2020-12), as published: the
+    engine's embedded copy of ``medh5-sample-1.0.schema.json``.  Write it to a
+    file for a tool that wants one."""
     return str(_core.schema_text())
 
 
@@ -69,8 +63,6 @@ def validate_against_schema(doc: Mapping[str, Any]) -> list[str]:
 
 __all__ = [
     "META_DATASET",
-    "SCHEMA_NAME",
-    "SCHEMA_PATH",
     "SampleDocument",
     "new_document",
     "read_document",

@@ -100,9 +100,9 @@ so a clause has one obvious home in the code.
   a test fails until it has one.
 - **Versioning follows §16**: a minor format version may add objects, kinds,
   profiles and codes; it may not change what an existing one means.
-- The JSON Schema exists three times — `schemas/` beside the specification, the
-  engine's embedded copy in `crates/medh5/data/`, and the package's
-  `medh5/schemas/` — and a test holds them byte-identical.
+- The JSON Schema lives in one place, `crates/medh5/data/`, beside the code
+  table: the engine embeds it, §2.4 names it, the documentation site publishes
+  it, and `medh5 conformance publish` writes it into the suite.
 
 ## Writing documentation
 

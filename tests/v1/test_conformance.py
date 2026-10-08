@@ -183,24 +183,20 @@ class TestManifest:
 
 
 class TestPublishedSchema:
-    def test_the_packaged_schema_matches_the_published_copy(self):
-        """`schemas/` beside the spec and the engine's embedded copy must not
-        drift: the engine is what validates E005, the published file is what a
-        third-party implementation reads."""
-        from medh5.document import SCHEMA_NAME, SCHEMA_PATH, schema_text
+    def test_S2_4_the_spec_names_the_schema_the_engine_embeds(self):
+        """§2.4 names one file, and the engine embeds that file: E005 is checked
+        against exactly the schema a third-party implementation reads."""
+        from medh5.document import schema_text
 
         repo = Path(__file__).resolve().parents[2]
-        published = repo / "schemas" / SCHEMA_NAME
-        embedded = repo / "crates" / "medh5" / "data" / SCHEMA_NAME
-        assert published.exists(), f"published schema missing at {published}"
-        assert published.read_bytes() == embedded.read_bytes()
-        # The file the Python package ships, for tools that want a path.
-        assert SCHEMA_PATH.read_bytes() == embedded.read_bytes()
-        assert json.loads(published.read_text(encoding="utf-8")) == json.loads(
+        source = "crates/medh5/data/medh5-sample-1.0.schema.json"
+        spec = (repo / "docs" / "spec" / "medh5-1.0.md").read_text(encoding="utf-8")
+        assert f"`{source}`" in spec
+        assert json.loads((repo / source).read_text(encoding="utf-8")) == json.loads(
             schema_text()
         )
 
-    def test_the_schema_is_reachable_as_package_data(self):
+    def test_the_schema_is_reachable_from_the_package(self):
         from medh5.document import schema
 
         assert schema()["$schema"].endswith("2020-12/schema")

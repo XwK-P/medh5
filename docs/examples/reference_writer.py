@@ -23,7 +23,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # from HERE rather than hard-coding the hops keeps this working if the
 # directory moves again.
 ROOT = os.path.dirname(os.path.dirname(HERE))
-SCHEMA = os.path.join(ROOT, "schemas", "medh5-sample-1.0.schema.json")
+SCHEMA = os.path.join(ROOT, "crates", "medh5", "data", "medh5-sample-1.0.schema.json")
 S = h5py.string_dtype()
 FRAME0 = "pseudo:1.2.826.0.1.3680043.9.7.100"   # baseline study frame
 FRAME1 = "pseudo:1.2.826.0.1.3680043.9.7.101"   # follow-up: a NEW frame (spec 3.4)
@@ -411,7 +411,7 @@ with h5py.File(PATH, "r") as f:
     doc = json.loads(f["meta"][()])
     jsonschema.Draft202012Validator.check_schema(schema)
     jsonschema.Draft202012Validator(schema, format_checker=jsonschema.FormatChecker()).validate(doc)
-    print("[ok] /meta validates against schemas/medh5-sample-1.0.schema.json")
+    print("[ok] /meta validates against medh5-sample-1.0.schema.json")
 
     errs = []
     known = {c["id"] for c in doc["label_set"]["classes"]}

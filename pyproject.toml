@@ -126,14 +126,13 @@ python-source = "."
 python-packages = ["medh5"]
 features = ["extension-module"]
 # The sdist carries what makes the package auditable --- the normative
-# specification, the JSON Schema, the documentation and the test suite --- as
-# the engine's sources: a format release whose source distribution omits the
-# format is not one.
+# specification, the documentation and the test suite --- as well as the
+# engine's sources, which hold the JSON Schema and the code table: a format
+# release whose source distribution omits the format is not one.
 include = [
   { path = "LICENSE", format = "sdist" },
   { path = "CHANGELOG.md", format = "sdist" },
   { path = "CONTRIBUTING.md", format = "sdist" },
-  { path = "schemas/*.json", format = "sdist" },
   { path = "docs/**/*.md", format = "sdist" },
   { path = "docs/**/*.py", format = "sdist" },
   { path = "tests/**/*.py", format = "sdist" },

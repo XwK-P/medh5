@@ -145,10 +145,10 @@ performing an amend **MUST** preserve them (§14.4).
 
 `meta` is a **scalar dataset of HDF5 variable-length UTF-8 string** holding a single JSON object: the
 *sample document*. It **MUST** be valid UTF-8 JSON and **MUST** validate against
-`schemas/medh5-sample-1.0.schema.json`. It **MUST NOT** be compressed: HDF5 filters do not apply to
-variable-length data, which lives in the file's global heap, so a compression request on `meta` is
-either silently ignored or an error depending on the library. A vocabulary large enough for the size
-to matter uses `form = "ref"` (§5.1) instead of an inline copy.
+`crates/medh5/data/medh5-sample-1.0.schema.json`. It **MUST NOT** be compressed: HDF5 filters do
+not apply to variable-length data, which lives in the file's global heap, so a compression request
+on `meta` is either silently ignored or an error depending on the library. A vocabulary large
+enough for the size to matter uses `form = "ref"` (§5.1) instead of an inline copy.
 
 > **Note.** JSON has no NaN or infinity. The 1.x package wrote Python's `NaN` and `Infinity` tokens
 > into `meta` when handed such a value, so a file it wrote can fail this clause (E004); the reference
@@ -1645,7 +1645,7 @@ registration relating them. It confirms:
 
 | Check | Result |
 |---|---|
-| `/meta` against `schemas/medh5-sample-1.0.schema.json` | passes |
+| `/meta` against `crates/medh5/data/medh5-sample-1.0.schema.json` | passes |
 | Cross-reference checks (grids, label set, `prov`, `quality` — E101/E402/E403/E601/E602) | clean |
 | `direction` orthonormality and 2-D storage (E102) | clean |
 | `layers` invariant: every class in exactly one layer (E404) | clean |

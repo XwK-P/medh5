@@ -26,9 +26,9 @@ Reading those sources costs the build nothing, which matters because
 `docs/requirements.txt` deliberately does not install `medh5` --- the site is
 hand-written Markdown, and a build should not need a Rust toolchain to compile
 the engine.  So the engine's data is read where it lives: the diagnostic code
-table is `crates/medh5/data/codes.json`, which the engine embeds, and the
-cohort codes are the `CHECK_CODES` table in `crates/medh5/src/dataset/check.rs`,
-*parsed* rather than compiled.
+table is `crates/medh5/data/codes.json` and the schema the JSON file beside it,
+both embedded by the engine, and the cohort codes are the `CHECK_CODES` table
+in `crates/medh5/src/dataset/check.rs`, *parsed* rather than compiled.
 """
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ INCLUDED: tuple[tuple[str, str], ...] = (("CHANGELOG.md", "changelog.md"),)
 
 # The sample-document schema, published verbatim so that it has a stable URL to
 # cite and to download, next to the page that explains it.
-SCHEMA_SOURCE = "schemas/medh5-sample-1.0.schema.json"
+SCHEMA_SOURCE = "crates/medh5/data/medh5-sample-1.0.schema.json"
 SCHEMA_TARGET = "reference/medh5-sample-1.0.schema.json"
 
 # Files that were published verbatim at one path and now live at another.
@@ -481,7 +481,8 @@ def _schema_markdown(root: Path) -> str:
         "## The schema itself",
         "",
         f"Published verbatim at [`{SCHEMA_TARGET.rsplit('/', 1)[-1]}`]"
-        f"({SCHEMA_TARGET.rsplit('/', 1)[-1]}), and shipped inside the package.",
+        f"({SCHEMA_TARGET.rsplit('/', 1)[-1]}). The format engine embeds the same "
+        "file, and `medh5.document.schema()` returns it.",
         "",
         "```json",
         raw.rstrip(),

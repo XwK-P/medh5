@@ -105,6 +105,14 @@ behaviour changes below.
   work the engine now does, and `medh5.document.schema_available()`, which
   could only answer `True`. `pip install "medh5[schema]"` warns that the extra
   is unknown and installs the package.
+- **The second and third copies of the JSON Schema.** `schemas/` and the
+  package's `medh5/schemas/` held the bytes the engine embeds, kept equal by a
+  test. The one file is `crates/medh5/data/medh5-sample-1.0.schema.json`: §2.4
+  names it, the documentation site publishes it at
+  `reference/medh5-sample-1.0.schema.json`, and `medh5 conformance publish`
+  writes it into every suite. `medh5.document.SCHEMA_PATH` and `SCHEMA_NAME`
+  went with the package's copy; `medh5.document.schema_text()` returns the
+  schema.
 
 ### Fixed
 

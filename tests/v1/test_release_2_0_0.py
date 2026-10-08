@@ -316,11 +316,10 @@ class TestThe1xNamesStillAnswer:
         return path
 
     def test_documents_grids_and_digests_read_from_a_view(self, path: Path) -> None:
-        from medh5.document import SCHEMA_PATH, read_document, read_document_text
+        from medh5.document import read_document, read_document_text
         from medh5.geometry import read_grid, read_grids
         from medh5.integrity import collect_digests
 
-        assert json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))["title"]
         with medh5.open(path) as sample:
             assert read_document(sample.root).identity.subject_id == "s"
             assert (
