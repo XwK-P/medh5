@@ -174,21 +174,34 @@ first 1.1 implementation (commit `eeb8c33`), on the same files.
 | `ClinicalTaskDataset` built / pickled | 1.5 s / 219 MiB in 0.38 s |
 | Items per second, ≈785 events each, notes encoded on the fly | 30 |
 
+The native command line on the same 200 subjects, before and after it took the
+subjects one at a time too (commit `3921e74` → now):
+
+| `medh5 task preflight`, 200 subjects | Before | After |
+|---|---|---|
+| The table | 18.6 s, 742 MiB | 13.5 s, 34 MiB |
+| `--json` (1.6 GB written) | 130 s, 12.3 GB | 70 s, 315 MiB |
+
 Where the time went, and what changed: rows had copied their subject's event
-records (every row of every subject, through JSON, into Python objects ---
-5 GB for 720 rows), every row rebuilt the revision chains, every event was
-digested to find the few held twice, each source's tables were read twice and
-its text decompressed three times. Now a subject's history is prepared once and
-shared by its rows as indices, only duplicates are digested, a source is walked
-once and its tables read once, text is read only to verify it, and the result
-crosses into Python as columns built a subject at a time. What remains is the
-guarantee itself (a profile of the engine, by instructions): checking each pin
---- one walk of the file and a hash of every clinical byte --- is ≈40 % of the
-work, validating each source's clinical tables ≈30 %, opening the sources ≈8 %,
-and selecting at every cutoff and building every row ≈12 %. Threads do not
-help --- every HDF5 call holds one lock; four threads ran slower than one. Items
-with notes are bound by the deliberately naive `HashingTextEncoder`: without
-documents the same items build at ≈130 per second.
+records (every row of every subject, through JSON, into Python objects --- 5 GB
+for 720 rows), every row rebuilt the revision chains, every event was digested
+to find the few held twice, each source's tables were read twice and its text
+decompressed three times. Now a subject's history is prepared once and shared by
+its rows as indices, only duplicates are digested, a source is walked once and
+its tables read once, text is read only to verify it, and the result crosses
+into Python as columns built a subject at a time. What remains is the guarantee
+itself (a profile of the engine, by instructions): checking each pin --- one
+walk of the file and a hash of every clinical byte --- is ≈40 % of the work,
+validating each source's clinical tables ≈30 %, opening the sources ≈8 %, and
+selecting at every cutoff and building every row ≈12 %. The hash is SHA-256 in
+software here (this CPU has no SHA extensions; the `sha2` crate uses them where
+they exist), ≈14 % on its own. Reading the clinical tables twice --- hashed,
+then validated --- is not where the time goes: every HDF5 read with its
+decompression, in both passes, is 6.5 %, so one pass would save 3–4 % and tie
+the digest code to clinical parsing. Threads do not help --- every HDF5 call
+holds one lock; four threads ran slower than one. Items with notes are bound by
+the deliberately naive `HashingTextEncoder`: without documents the same items
+build at ≈130 per second.
 
 ## The reference writer
 

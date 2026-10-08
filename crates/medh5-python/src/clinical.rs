@@ -476,11 +476,11 @@ fn cache_validate<'py>(
         _ => None,
     };
     let report = py.detach(move || -> medh5::Result<medh5::companion::CacheReport> {
-        let pre = match &task {
-            Some(t) => Some(medh5::companion::preflight(t, task_base.as_deref(), false)?),
+        let admitted = match &task {
+            Some(t) => Some(medh5::companion::Admitted::preflight(t, task_base.as_deref(), false)?),
             None => None,
         };
-        medh5::companion::validate_cache(&path, base.as_deref(), task.as_ref(), pre.as_ref())
+        medh5::companion::validate_cache(&path, base.as_deref(), task.as_ref(), admitted.as_ref())
     })?;
     Ok(json_to_py(py, &report.to_json())?)
 }

@@ -54,7 +54,12 @@ cutoff-aware multimodal batches from it.
   never held as records. On a 60-subject, two-site cohort of 720 rows
   (`bench_preflight.py`): 45–61 s and 5.2 GB peak → 3.4 s and 131 MB; the
   engine alone 10.0 s → about 4 s. At 200 subjects and 4 800 rows: 18.8 s and
-  481 MB.
+  481 MB. The command line takes the subjects one at a time too
+  (`write_preflight`, `preflight_each`): at 200 subjects its table went from
+  18.6 s and 742 MiB to 13.5 s and 34 MiB, and `--json` --- 1.6 GB of output,
+  written a subject at a time --- from 130 s and 12.3 GB to 70 s and 315 MiB.
+  Validating a cache against a task keeps only what each row admits
+  (`Admitted`).
 - **Feature caches** (`medh5.cache/1`, `medh5.cache`): event- and
   patient-level features with a checksummed dependency manifest, validated so
   that *stale* (a source changed, T403) is told apart from *corrupt* (T401,
@@ -84,8 +89,8 @@ cutoff-aware multimodal batches from it.
 - **Commands**: `medh5 clinical show | select | export | augment | strip`,
   `medh5 task validate | preflight | reconcile`, `medh5 cache validate` --- in
   the native binary and the Python console script alike.
-- **Diagnostic codes** `E011`, `E801`–`E819`, `W913`, `W914`, and 35
-  conformance cases (152 in all). The published suite also carries
+- **Diagnostic codes** `E011`, `E801`–`E819`, `W913`, `W914`, and 36
+  conformance cases (153 in all). The published suite also carries
   `medh5-clinical-1.schema.json` and the task and cache schemas.
 - **Runnable examples**: `clinical_longitudinal.py` (the worked example: write,
   reopen, validate, preflight, batch), `clinical_collection.py` (a subject split
@@ -111,8 +116,19 @@ cutoff-aware multimodal batches from it.
   and `HandleCache.get` / `lease` take an optional member key, so collection
   members are cached, leased and abandoned across a fork like files.
   `lease(..., content_id=...)` reads the version a task row pins: a handle
-  cached from before its file was replaced is reopened, a changed source
-  refused (T302).
+  cached from before its file was replaced is reopened --- for that lease
+  alone while another lease is still reading the old one, rather than refused
+  --- and a changed source refused (T302).
+- **A `document` event owns at most one document** (`E815`, 1.1 §6, recorded
+  in Appendix A): two texts under one event version would share its
+  availability and revision chain, and an event-level feature would name
+  neither --- `build_document_cache` failed on such a file.
+- **`medh5 task preflight --json` lists its members in the order they become
+  known**: the fingerprints, `subjects`, `rows`, then `ok`, `counts` and
+  `findings` (`Preflight::to_json` likewise). The content is unchanged.
+- **`validate_cache` takes what a preflight admits** (`Admitted`, built a
+  subject at a time by `Admitted::preflight` or from a `Preflight` by
+  `Admitted::of`) instead of the whole preflight.
 - **A damaged source is a finding, not a failed preflight**: clinical bytes
   that cannot be read fail the pin (T302) and the table check (T306).
 - **Only an imaging version fills a slot** (task-cache-1 §3.5): an image some

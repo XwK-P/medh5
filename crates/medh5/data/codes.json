@@ -449,7 +449,7 @@
       "code": "E815",
       "severity": "error",
       "domain": "clinical",
-      "summary": "a document is not owned by exactly one `document` event"
+      "summary": "a document is not owned by exactly one `document` event, or a `document` event owns more than one"
     },
     {
       "code": "E816",

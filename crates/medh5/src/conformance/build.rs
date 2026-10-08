@@ -1429,7 +1429,7 @@ fn break_affine_last_row(root: &hdf5::Group) -> Result<()> {
 
 /// Every case, in corpus order.
 pub(super) fn registry() -> Vec<Case> {
-    let mut cases = Vec::with_capacity(152);
+    let mut cases = Vec::with_capacity(153);
     valid_cases(&mut cases);
     first_invalid_batch(&mut cases);
     second_batch(&mut cases);
@@ -2256,11 +2256,11 @@ mod tests {
     #[test]
     fn the_registry_holds_every_case_once() {
         let cases = registry();
-        assert_eq!(cases.len(), 152);
+        assert_eq!(cases.len(), 153);
         let mut names: Vec<&str> = cases.iter().map(|c| c.name.as_str()).collect();
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), 152);
+        assert_eq!(names.len(), 153);
     }
 
     #[test]

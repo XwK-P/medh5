@@ -22,6 +22,7 @@
 //! only what a row admits, when they build the batch.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -31,9 +32,9 @@ use super::source::SourceRef;
 use super::task::{Row, Slot, Subject, TaskManifest};
 use super::{fingerprint, Finding};
 use crate::clinical::model::{Bounds, Event, Link};
-use crate::clinical::select::{Prepared, Selection};
+use crate::clinical::select::{names, Prepared, Selection};
 use crate::clinical::Clinical;
-use crate::json::repr_str;
+use crate::json::{pretty_at, repr_str};
 use crate::sample::Sample;
 use crate::Result;
 
@@ -497,6 +498,11 @@ impl RowView {
     /// `subject` is the row's history, which its selection indexes.
     pub fn to_json(&self, subject: Option<&SubjectHistory>) -> Value {
         let events: &[Event] = subject.map(|s| s.events.as_slice()).unwrap_or(&[]);
+        self.to_json_named(&|i| names(&events[i]))
+    }
+
+    /// [`RowView::to_json`], naming its selection's versions through `name`.
+    pub fn to_json_named<'a>(&self, name: &dyn Fn(usize) -> [&'a str; 3]) -> Value {
         json!({
             "row_id": self.row_id,
             "subject_id": self.subject_id,
@@ -506,7 +512,7 @@ impl RowView {
             "fingerprint": self.fingerprint,
             "status": self.status,
             "reasons": self.reasons,
-            "selection": self.selection.as_ref().map(|s| s.to_json(events)),
+            "selection": self.selection.as_ref().map(|s| s.to_json_named(name)),
             "slots": self.slots.iter().map(SlotFill::to_json).collect::<Vec<_>>(),
             "target": self.target.to_json(),
         })
@@ -803,15 +809,18 @@ impl Preflight {
         }
     }
 
+    /// Members in the order they become known, which is the order
+    /// [`write_preflight`] streams them in: the fingerprints, the subjects,
+    /// the rows, then the verdict.
     pub fn to_json(&self) -> Value {
         json!({
             "task_fingerprint": self.task_fingerprint,
             "manifest_fingerprint": self.manifest_fingerprint,
+            "subjects": self.subjects.iter().map(SubjectHistory::to_json).collect::<Vec<_>>(),
+            "rows": self.rows.iter().map(|r| r.to_json(self.subject_of(r))).collect::<Vec<_>>(),
             "ok": self.ok(),
             "counts": self.counts(),
             "findings": self.findings.iter().map(Finding::to_json).collect::<Vec<_>>(),
-            "subjects": self.subjects.iter().map(SubjectHistory::to_json).collect::<Vec<_>>(),
-            "rows": self.rows.iter().map(|r| r.to_json(self.subject_of(r))).collect::<Vec<_>>(),
         })
     }
 }
@@ -898,6 +907,155 @@ pub fn preflight_each(
         })
         .collect();
     Ok(PreflightDone { task_fingerprint, manifest_fingerprint: manifest.manifest_fingerprint(), findings, unclaimed })
+}
+
+/// [`preflight`] written as `pretty(&preflight(..)?.to_json())` --- the same
+/// bytes --- one subject at a time: each subject's history is written as soon
+/// as it is merged and then dropped.  What is held until the end is what the
+/// rows need: their views, which index the histories, and the names of the
+/// versions they admit.  Returns whether the task is fit to train on.
+pub fn write_preflight(manifest: &TaskManifest, base: Option<&Path>, deep: bool, out: &mut dyn Write) -> Result<bool> {
+    let fingerprints = [manifest.task_fingerprint(), manifest.manifest_fingerprint()];
+    write!(out, "{{\n  \"task_fingerprint\": {}", pretty_at(&json!(fingerprints[0]), 1))?;
+    write!(out, ",\n  \"manifest_fingerprint\": {},\n  \"subjects\": ", pretty_at(&json!(fingerprints[1]), 1))?;
+    let mut items = Items::default();
+    let mut names: Vec<Names> = Vec::new();
+    let mut views: Vec<Option<RowView>> = vec![None; manifest.rows.len()];
+    let done = preflight_each(manifest, base, deep, &mut |history, rows| {
+        items.next(out, &history.to_json())?;
+        names.push(Names::of(&history.events));
+        for (r, view) in rows {
+            views[r] = Some(view);
+        }
+        Ok(())
+    })?;
+    items.close(out)?;
+    out.write_all(b",\n  \"rows\": ")?;
+    let mut items = Items::default();
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for (view, blank) in views.into_iter().zip(done.unclaimed) {
+        let view = view.or(blank).expect("every row");
+        *counts.entry(view.status.clone()).or_default() += 1;
+        let subject = view.subject.and_then(|i| names.get(i));
+        items.next(out, &view.to_json_named(&|i| subject.expect("a selection has its subject").get(i)))?;
+    }
+    items.close(out)?;
+    let ok = done.findings.is_empty();
+    let findings: Vec<Value> = done.findings.iter().map(Finding::to_json).collect();
+    write!(out, ",\n  \"ok\": {ok},\n  \"counts\": {}", pretty_at(&json!(counts), 1))?;
+    write!(out, ",\n  \"findings\": {}\n}}", pretty_at(&json!(findings), 1))?;
+    Ok(ok)
+}
+
+/// The items of a top-level array, written one at a time as `pretty` would.
+#[derive(Default)]
+struct Items {
+    written: bool,
+}
+
+impl Items {
+    fn next(&mut self, out: &mut dyn Write, item: &Value) -> Result<()> {
+        out.write_all(if self.written { b",\n    " } else { b"[\n    " })?;
+        out.write_all(pretty_at(item, 2).as_bytes())?;
+        self.written = true;
+        Ok(())
+    }
+
+    fn close(self, out: &mut dyn Write) -> Result<()> {
+        out.write_all(if self.written { b"\n  ]" } else { b"[]" })?;
+        Ok(())
+    }
+}
+
+/// What a row's JSON calls each version of one subject's history ---
+/// [`names`], packed --- kept once the history itself is gone.
+#[derive(Debug, Default, Clone, PartialEq)]
+struct Names {
+    text: String,
+    /// Where each name ends in `text`: three per version.
+    ends: Vec<usize>,
+}
+
+impl Names {
+    fn of(events: &[Event]) -> Names {
+        let mut out = Names { text: String::new(), ends: Vec::with_capacity(3 * events.len()) };
+        for event in events {
+            for name in names(event) {
+                out.text.push_str(name);
+                out.ends.push(out.text.len());
+            }
+        }
+        out
+    }
+
+    fn get(&self, index: usize) -> [&str; 3] {
+        let name = |k: usize| &self.text[if k == 0 { 0 } else { self.ends[k - 1] }..self.ends[k]];
+        [name(3 * index), name(3 * index + 1), name(3 * index + 2)]
+    }
+}
+
+/// What validating a cache against a task needs of its preflight
+/// ([`super::validate_cache`]): each row's cutoff and the event versions it
+/// admits --- without every subject's history.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct Admitted {
+    /// Each row id's first row, as [`Preflight::row`] finds it.
+    rows: HashMap<String, usize>,
+    /// Per row: its cutoff, its subject, and its admitted versions' positions.
+    views: Vec<Admits>,
+    names: Vec<Names>,
+}
+
+/// One row of [`Admitted`].
+type Admits = (i64, Option<usize>, Vec<usize>);
+
+impl Admitted {
+    /// From a preflight already in hand.
+    pub fn of(pre: &Preflight) -> Admitted {
+        let mut out =
+            Admitted { names: pre.subjects.iter().map(|s| Names::of(&s.events)).collect(), ..Default::default() };
+        for view in &pre.rows {
+            out.insert(&view.row_id, Admitted::admits(view));
+        }
+        out
+    }
+
+    /// Preflight `manifest` a subject at a time, keeping only this.
+    pub fn preflight(manifest: &TaskManifest, base: Option<&Path>, deep: bool) -> Result<Admitted> {
+        let mut names = Vec::new();
+        let mut found: Vec<Option<Admits>> = vec![None; manifest.rows.len()];
+        let done = preflight_each(manifest, base, deep, &mut |history, rows| {
+            names.push(Names::of(&history.events));
+            for (r, view) in rows {
+                found[r] = Some(Admitted::admits(&view));
+            }
+            Ok(())
+        })?;
+        let mut out = Admitted { names, ..Default::default() };
+        for ((row, found), blank) in manifest.rows.iter().zip(found).zip(done.unclaimed) {
+            out.insert(&row.row_id, found.or_else(|| blank.as_ref().map(Admitted::admits)).expect("every row"));
+        }
+        Ok(out)
+    }
+
+    fn admits(view: &RowView) -> Admits {
+        let positions = view.selection.as_ref().map_or_else(Vec::new, |s| s.events.iter().map(|e| e.index).collect());
+        (view.cutoff_us, view.subject, positions)
+    }
+
+    fn insert(&mut self, row_id: &str, admits: Admits) {
+        self.rows.entry(row_id.to_string()).or_insert(self.views.len());
+        self.views.push(admits);
+    }
+
+    /// A row's cutoff and the ids of the versions it admits, in input order.
+    pub fn row(&self, row_id: &str) -> Option<(i64, Vec<&str>)> {
+        let (cutoff, subject, positions) = &self.views[*self.rows.get(row_id)?];
+        let ids = subject
+            .and_then(|i| self.names.get(i))
+            .map_or_else(Vec::new, |names| positions.iter().map(|&i| names.get(i)[0]).collect());
+        Some((*cutoff, ids))
+    }
 }
 
 /// What one subject contributes: its history, its findings, its rows' views.

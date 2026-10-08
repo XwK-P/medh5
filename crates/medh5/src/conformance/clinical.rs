@@ -810,6 +810,18 @@ fn invalid_cases() -> Vec<Case> {
             },
         ),
         on_worked(
+            "E815-document-event-owning-two",
+            "A report event that also describes a second document.",
+            "§6 (1.1)",
+            &["E815"],
+            |f| {
+                rewrite_clinical(f, |r| {
+                    r.documents.push(Document::text("report0_addendum", "Addendum: no change."));
+                    r.links.push(Link::new(("event", "report0_v1"), "describes", ("document", "report0_addendum")));
+                })
+            },
+        ),
+        on_worked(
             "E816-branching-revisions",
             "Two versions both superseding the preliminary report.",
             "§5.2, §7 (1.1)",

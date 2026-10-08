@@ -85,6 +85,14 @@ pub fn pretty(value: &Value) -> String {
     dumps(value, Style::PRETTY)
 }
 
+/// [`pretty`] for a value nested `level` deep: the bytes `pretty` writes for
+/// it inside its parents, for a document written a member at a time.
+pub fn pretty_at(value: &Value, level: usize) -> String {
+    let mut out = String::new();
+    write_value(&mut out, value, Style::PRETTY, level);
+    out
+}
+
 fn write_value(out: &mut String, value: &Value, style: Style, level: usize) {
     match value {
         Value::Null => out.push_str("null"),

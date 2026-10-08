@@ -189,6 +189,32 @@ class TestRecords:
         assert "E813" in str(caught.value)
         assert not path.exists()
 
+    def test_S6_a_document_event_owns_at_most_one_document(self, tmp_path: Path):
+        """One text per event version: two would share one availability and
+        one revision chain, and an event-level feature would name neither."""
+        path = tmp_path / "two.medh5"
+        note = Event(
+            "note",
+            "note",
+            "document",
+            "point",
+            "final",
+            effective_start_us=DAY,
+            available_us=DAY + HOUR,
+        )
+        with pytest.raises(MEDH5ValidationError) as caught:
+            History.write(
+                path,
+                events=[note],
+                documents=[Document("note_body", "body"), Document("note_add", "add")],
+                links=[
+                    Link.between(("event", "note"), "describes", ("document", d))
+                    for d in ("note_body", "note_add")
+                ],
+            )
+        assert "E815" in str(caught.value) and "owns 2 documents" in str(caught.value)
+        assert not path.exists()
+
     def test_S5_keyword_and_dict_forms(self, tmp_path: Path):
         path = tmp_path / "kw.medh5"
         with History.writer_for(path) as w:

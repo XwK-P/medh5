@@ -584,6 +584,36 @@ class TestHandles:
         assert found.value.code == "T302"
         CACHE.clear()
 
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="Windows cannot replace an open file"
+    )
+    def test_S2_a_stale_handle_in_use_elsewhere_is_not_a_changed_source(
+        self, tmp_path: Path
+    ):
+        from medh5.clinical import Event
+        from tests.kits import History
+
+        path = tmp_path / "a.medh5"
+        old = History.write(path)
+        CACHE.clear()
+        with CACHE.lease(path, content_id=old) as reading:
+            with medh5.amend(path) as w:  # another thread's reader keeps the old inode
+                w.add_event(Event("x", "x", "other", "static", "final", available_us=0))
+            with medh5.open(path) as s:
+                new = s.content_id
+            # The file is the version the row pins: this lease reads it, on a
+            # handle of its own, while the other keeps reading the old one.
+            with CACHE.lease(path, content_id=new) as held:
+                assert held is not reading and held.content_id == new
+                assert reading.content_id == old and reading.clinical is not None
+            assert not held.is_open
+        # Once nothing reads the old handle, the cache replaces it.
+        with CACHE.lease(path, content_id=new) as held:
+            assert held.content_id == new
+        with CACHE.lease(path, content_id=new) as again:
+            assert again is held
+        CACHE.clear()
+
     @pytest.mark.skipif(not hasattr(os, "fork"), reason="fork is POSIX")
     def test_S2_a_forked_worker_abandons_its_parents_cache(self, tmp_path: Path):
         from medh5.cache import FeatureCache

@@ -35,7 +35,8 @@ and shrinks back as they are released.
 writes a new file and renames it over the old, and a handle opened before
 keeps reading the old inode.  A lease given the ``content_id`` it must read
 (:meth:`HandleCache.lease`) therefore checks the handle's: a stale one is
-reopened, and a sample that is still another version is refused (T302) ---
+reopened (for that lease alone while another is still reading the old
+handle), and a sample that is still another version is refused (T302) ---
 what a task's rows pin is what they read.
 """
 
@@ -177,28 +178,29 @@ class HandleCache:
         """An open handle that no eviction closes until the block ends.
 
         With ``content_id``, the handle is that version of the sample: a
-        cached handle whose file was replaced since it was opened is closed
-        and reopened, and a sample that is another version all the same is
-        refused with ``MEDH5ValidationError`` (T302).
+        cached handle whose file was replaced since it was opened is reopened
+        --- in the cache, or, while another lease is still reading the old
+        handle, for this lease alone --- and a sample that is another version
+        all the same is refused with ``MEDH5ValidationError`` (T302).
         """
         self._ensure_owner()
         key = _key(path, sample_key)
         stale: list[Sample] = []
+        private: list[Sample] = []
         with self._lock:
             sample = self._acquire(key, pin=True)
-            if (
-                content_id is not None
-                and sample.content_id != content_id
-                and self._pins.get(key) == 1  # no other lease is reading it
-            ):
+            if content_id is not None and sample.content_id != content_id:
                 try:
-                    fresh = _open(key)
+                    sample = _open(key)
                 except BaseException:
                     self._unpin(key)
                     raise
-                stale.append(self._items.pop(key))
-                self._items[key] = sample = fresh
                 self.opens += 1
+                if self._pins.get(key) == 1:  # no other lease is reading it
+                    stale.append(self._items.pop(key))
+                    self._items[key] = sample
+                else:
+                    private.append(sample)
             evicted = self._overflow(keep=key)
         self._close(stale + evicted)
         try:
@@ -216,7 +218,7 @@ class HandleCache:
             with self._lock:
                 self._unpin(key)
                 evicted = self._overflow()
-            self._close(evicted)
+            self._close(private + evicted)
 
     def _unpin(self, key: Key) -> None:
         """Release one lease of *key*; under the lock."""

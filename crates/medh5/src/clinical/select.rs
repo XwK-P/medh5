@@ -315,16 +315,25 @@ pub struct Selected {
 
 impl Selected {
     pub fn to_json(&self, events: &[Event]) -> Value {
-        let e = &events[self.index];
+        self.to_json_as(names(&events[self.index]))
+    }
+
+    /// [`Selected::to_json`] for a version named `[event_id, record_id, kind]`.
+    pub fn to_json_as(&self, [event_id, record_id, kind]: [&str; 3]) -> Value {
         json!({
-            "event_id": e.event_id,
-            "record_id": e.record_id,
-            "kind": e.kind,
+            "event_id": event_id,
+            "record_id": record_id,
+            "kind": kind,
             "order_us": self.order.map(|b| b.to_json()),
             "tie_group": self.tie_group,
             "plan": self.plan,
         })
     }
+}
+
+/// What a selection's JSON names a version by: `[event_id, record_id, kind]`.
+pub fn names(event: &Event) -> [&str; 3] {
+    [&event.event_id, &event.record_id, &event.kind]
 }
 
 /// What a cutoff admits.
@@ -366,6 +375,12 @@ impl Selection {
     }
 
     pub fn to_json(&self, events: &[Event]) -> Value {
+        self.to_json_named(&|i| names(&events[i]))
+    }
+
+    /// [`Selection::to_json`], naming the version at each index through
+    /// `name` --- for a caller that kept the names and not the events.
+    pub fn to_json_named<'a>(&self, name: &dyn Fn(usize) -> [&'a str; 3]) -> Value {
         let payloads: Vec<Value> = self.payloads.iter().map(|(f, k, i)| json!([f, k, i])).collect();
         let mut excluded = Map::new();
         for (k, v) in &self.excluded {
@@ -375,7 +390,7 @@ impl Selection {
             "cutoff_us": self.cutoff_us,
             "policy": self.policy,
             "status": self.status,
-            "events": self.events.iter().map(|s| s.to_json(events)).collect::<Vec<_>>(),
+            "events": self.events.iter().map(|s| s.to_json_as(name(s.index))).collect::<Vec<_>>(),
             "links": self.links,
             "payloads": payloads,
             "uncertain_records": self.uncertain_records,

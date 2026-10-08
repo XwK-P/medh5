@@ -101,6 +101,32 @@ impl<'a> Ctx<'a> {
     }
 }
 
+/// A command's standard output as a [`Write`], for a document written as it
+/// is produced: once the reader has gone it goes quiet, as [`Ctx::print`]
+/// does, and any other failure is the command's error.
+pub struct Stdout<'c, 'a>(pub &'c mut Ctx<'a>);
+
+impl Write for Stdout<'_, '_> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if !self.0.broken_pipe {
+            if let Err(e) = self.0.out.write_all(buf) {
+                if e.kind() != std::io::ErrorKind::BrokenPipe {
+                    return Err(e);
+                }
+                self.0.broken_pipe = true;
+            }
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        if self.0.broken_pipe {
+            return Ok(());
+        }
+        self.0.out.flush()
+    }
+}
+
 /// A command's result: an exit code, or an engine error to report.
 pub type CmdResult = Result<i32, Error>;
 

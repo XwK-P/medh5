@@ -259,14 +259,15 @@ patient clock, and channel axes or acquisition parameters are never elapsed visi
 syntax), `media_type` and `text`, and optional `language` (BCP 47 where known) and `source_type`. In
 this profile `media_type` **MUST** be `text/plain` (**E810**); the text may be in any language.
 
-Each document is **owned by exactly one** `document` event, which links it by `describes` and owns
-its timing, status and provenance (**E815**). A revision is a new document *and* a new event version;
-the `record_id` persists. The text is the canonical, de-identified source content --- not token ids, a
-summary or an embedding. Imported whitespace and Unicode are preserved after documented
-de-identification; any change to the stored bytes is a new document and a new event version with
-explicit provenance, and is not a newly issued report: its source availability is retained when the
-same information is being represented. Model summaries belong in separately identified derived records
-or caches.
+Each document is **owned by exactly one** `document` event, which links it by `describes` and owns its
+timing, status and provenance, and a `document` event owns **at most one** document (**E815**): one
+text, one event version, one availability --- an event whose text is not stored owns none. A revision
+is a new document *and* a new event version; the `record_id` persists. The text is the canonical,
+de-identified source content --- not token ids, a summary or an embedding. Imported whitespace and
+Unicode are preserved after documented de-identification; any change to the stored bytes is a new
+document and a new event version with explicit provenance, and is not a newly issued report: its source
+availability is retained when the same information is being represented. Model summaries belong in
+separately identified derived records or caches.
 
 Links may cite spans of a document as half-open UTF-8 byte intervals `[start, end)` whose endpoints
 lie on code-point boundaries within that exact revision (**E814**). De-identification covers the body
@@ -479,7 +480,7 @@ complete table, generated from the engine's registry, is
 | Range | Domain | Codes |
 |---|---|---|
 | `E0xx` | container | `E011` a collection's `medh5_version` is lower than a member's |
-| `E8xx` | clinical | `E801` `clinical/meta` absent, not a scalar UTF-8 string, not JSON, or not canonical JSON; `E802` the descriptor fails its schema or its clock rules; `E803` clinical content present without the declared profile; `E804` a required table or column is absent, or a member is not one the profile defines; `E805` a column of the wrong dtype, rank or row count; `E806` malformed offsets or invalid UTF-8; `E807` a malformed or misplaced validity mask, or a null cell holding a value; `E808` a NaN or infinite value; `E809` an empty, malformed or repeated identifier; `E810` a value outside its vocabulary; `E811` time bounds incomplete, inverted or inconsistent with `temporal_type`; `E812` inconsistent value, code, comparator, unit or missing-reason fields; `E813` a reference that does not resolve in the sample; `E814` a span, instance-annotation or imaging-timepoint constraint violated; `E815` a document not owned by exactly one `document` event; `E816` a broken, branching, cyclic or availability-contradicted revision chain; `E817` a lesion assessment without its timepoint, its instance link or a permitted value; `E818` a clinical dataset without a digest; `E819` an attribute the profile does not define |
+| `E8xx` | clinical | `E801` `clinical/meta` absent, not a scalar UTF-8 string, not JSON, or not canonical JSON; `E802` the descriptor fails its schema or its clock rules; `E803` clinical content present without the declared profile; `E804` a required table or column is absent, or a member is not one the profile defines; `E805` a column of the wrong dtype, rank or row count; `E806` malformed offsets or invalid UTF-8; `E807` a malformed or misplaced validity mask, or a null cell holding a value; `E808` a NaN or infinite value; `E809` an empty, malformed or repeated identifier; `E810` a value outside its vocabulary; `E811` time bounds incomplete, inverted or inconsistent with `temporal_type`; `E812` inconsistent value, code, comparator, unit or missing-reason fields; `E813` a reference that does not resolve in the sample; `E814` a span, instance-annotation or imaging-timepoint constraint violated; `E815` a document not owned by exactly one `document` event, or a `document` event owning more than one; `E816` a broken, branching, cyclic or availability-contradicted revision chain; `E817` a lesion assessment without its timepoint, its instance link or a permitted value; `E818` a clinical dataset without a digest; `E819` an attribute the profile does not define |
 | `W9xx` | warnings | `W913` a higher minor version: only the supported projection was validated, or an unsupported item was ignored; `W914` a numeric clinical value without a unit |
 
 ### 11.3 Conformance
@@ -511,7 +512,7 @@ showed it was needed.
 | §4 | A mask for a required or omitted column, or with values other than 0/1, is E807. | The draft defined mask values but not where a mask may appear. |
 | §5.1 | `W914` for a numeric value without a unit. | The draft's "SHOULD carry a unit" needed a reportable form that is not an error. |
 | §5.3 | An imaging event's `timepoint_id` must equal its image's grid timepoint (E814). | Stated in the draft without a code. |
-| §6 | A document is owned by **exactly one** `document` event (E815). | "MUST be linked from an immutable `document` event" allowed two owners, and then the document's availability would be ambiguous. |
+| §6 | A document is owned by **exactly one** `document` event, and a `document` event owns **at most one** document (E815). | "MUST be linked from an immutable `document` event" allowed two owners, and then the document's availability would be ambiguous. The converse was found implementing the cache contract: two texts under one event would share one availability, status and revision chain --- revising either would force a copy of the other --- and an event-level feature (task contract §7) would no longer name one text. |
 | §7.2 | Merging chains (two predecessors) and a record whose versions the links do not order into one chain are E816, beside branches, cycles and contradicted availability. | The draft required "an acyclic, unambiguous `supersedes` chain"; a record with two unrelated versions is ambiguous in exactly the way selection cannot resolve. |
 | §8 | A collection's outer version must be at least each member's (E011); the packer declares the newest member's, and refuses a higher-minor member. | The draft required `1.1` outside a 1.1 member but gave no code, and said nothing of a member newer than the packer. |
 | §9 | Strict selection, the plan rule, tie groups, the event-limit boundary and payload attestation are defined here, normatively, and the task contract only names a policy. | The draft placed them in a companion "not an additional payload requirement". They define what a record *means* about what was known when; two implementations of one selection must agree, so they belong to the profile. |

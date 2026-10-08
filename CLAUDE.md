@@ -171,7 +171,10 @@ it into every file's `generator`.
 - **Rows index, never copy.** A preflight row's selection holds positions in its
   subject's merged history (`Selected::index`), which every row of the subject
   shares; Python receives columns (`crate::preflight`, `medh5.task.RowView`).
-  Copying records per row is what made 720 rows cost 5 GB.
+  Copying records per row is what made 720 rows cost 5 GB. Whatever reports a
+  whole cohort takes it a subject at a time (`preflight_each`): the command
+  line's `--json` (`write_preflight`), once built as one tree, took 12 GB at
+  200 subjects.
 
 ## Linting & style
 

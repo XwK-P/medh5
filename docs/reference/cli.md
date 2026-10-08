@@ -504,6 +504,13 @@ row names what it admits in `selection`: the admitted versions in input order
 (`events`, with their order bounds, tie groups and plan flags), the attested
 links by position in its subject's `links`, and the payloads.
 
+Both forms take the subjects one at a time and hold neither the cohort's
+histories nor its document: `--json` writes each subject's history as soon as
+it is merged, with the members in the order they become known --- the two
+fingerprints, `subjects`, `rows`, then `ok`, `counts` and `findings` --- and
+the table keeps one line per row. Memory follows the largest subject and the
+rows, not the cohort.
+
 ### `medh5 task reconcile`
 
 ```
@@ -522,7 +529,9 @@ medh5 cache validate CACHE [--task MANIFEST] [--base DIR] [--json]
 Check a feature cache's checksums and every source pin it records: *stale*
 entries (T403) are told apart from *corrupt* ones (T401, T402). With `--task`,
 also that it was built for this task and its cutoffs (T404), fitted on its
-training partition (T405), and encodes only versions its rows admit (T406).
+training partition (T405), and encodes only versions its rows admit (T406) ---
+the task is preflighted a subject at a time, keeping only each row's cutoff
+and admitted versions.
 
 ## Conformance
 

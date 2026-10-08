@@ -6,6 +6,7 @@
 //! `medh5::companion::validate_cache` --- the same calls the Python package
 //! makes, so the command line, Rust and Python agree by construction.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use clap::ArgMatches;
@@ -15,7 +16,7 @@ use medh5::clinical::model::{Event, Link, HOUR};
 use medh5::clinical::select::SelectionPolicy;
 use medh5::clinical::ClinicalRecords;
 use medh5::collection::{open_any, AnyFile};
-use medh5::companion::{preflight, validate_cache, TaskManifest};
+use medh5::companion::{preflight_each, validate_cache, write_preflight, Admitted, RowView, TaskManifest};
 use medh5::json::{pretty, repr_str};
 use medh5::sample::Sample;
 use medh5::Error;
@@ -356,43 +357,64 @@ fn task_validate(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     Ok(if findings.is_empty() { EXIT_OK } else { EXIT_ERROR })
 }
 
+/// Both forms take the subjects one at a time (`preflight_each`): `--json`
+/// writes each subject's history as soon as it is merged, and the summary
+/// keeps one line per row --- neither holds every subject's records.
 fn task_preflight(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let (manifest, base) = load_task(m)?;
-    let report = preflight(&manifest, base.as_deref(), flag(m, "deep"))?;
+    let deep = flag(m, "deep");
     if flag(m, "json") {
-        ctx.emit(&report.to_json(), true);
-        return Ok(if report.ok() { EXIT_OK } else { EXIT_ERROR });
+        let ok = write_preflight(&manifest, base.as_deref(), deep, &mut Stdout(ctx))?;
+        ctx.print("");
+        return Ok(if ok { EXIT_OK } else { EXIT_ERROR });
     }
-    let counts: Vec<String> = report.counts().iter().map(|(k, v)| format!("{v} {k}")).collect();
+    let mut lines: Vec<Option<(String, Vec<String>)>> = vec![None; manifest.rows.len()];
+    let done = preflight_each(&manifest, base.as_deref(), deep, &mut |_, rows| {
+        for (r, view) in rows {
+            lines[r] = Some(row_line(&view));
+        }
+        Ok(())
+    })?;
+    let lines: Vec<(String, Vec<String>)> = lines
+        .into_iter()
+        .zip(&done.unclaimed)
+        .map(|(line, blank)| line.or_else(|| blank.as_ref().map(row_line)).expect("every row"))
+        .collect();
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for (status, _) in &lines {
+        *counts.entry(status).or_default() += 1;
+    }
+    let ok = done.findings.is_empty();
+    let counts: Vec<String> = counts.iter().map(|(k, v)| format!("{v} {k}")).collect();
     ctx.print(format!(
         "{}: {} ({} rows: {})",
         req_str(m, "manifest"),
-        if report.ok() { "OK" } else { "FAILED" },
-        report.rows.len(),
+        if ok { "OK" } else { "FAILED" },
+        lines.len(),
         if counts.is_empty() { "none".into() } else { counts.join(", ") }
     ));
-    findings_text(&report.findings, ctx);
-    let rows: Vec<Vec<String>> = report
-        .rows
-        .iter()
-        .map(|r| {
-            let slots: Vec<String> =
-                r.slots.iter().map(|s| format!("{}={}", s.slot, s.image_id.as_deref().unwrap_or("-"))).collect();
-            vec![
-                r.row_id.clone(),
-                r.partition.clone().unwrap_or_else(|| "-".into()),
-                r.cutoff_us.to_string(),
-                r.status.clone(),
-                r.selection.as_ref().map_or(0, |s| s.events.len()).to_string(),
-                if slots.is_empty() { "-".into() } else { slots.join(" ") },
-                r.target.status.clone(),
-                if r.reasons.is_empty() { "-".into() } else { r.reasons.join("; ") },
-            ]
-        })
-        .collect();
+    findings_text(&done.findings, ctx);
+    let rows: Vec<Vec<String>> = lines.into_iter().map(|(_, line)| line).collect();
     ctx.print(String::new());
     ctx.print(table(&rows, &["row", "partition", "cutoff_us", "status", "events", "slots", "target", "why"]));
-    Ok(if report.ok() { EXIT_OK } else { EXIT_ERROR })
+    Ok(if ok { EXIT_OK } else { EXIT_ERROR })
+}
+
+/// A row's status and its line of the summary table.
+fn row_line(r: &RowView) -> (String, Vec<String>) {
+    let slots: Vec<String> =
+        r.slots.iter().map(|s| format!("{}={}", s.slot, s.image_id.as_deref().unwrap_or("-"))).collect();
+    let line = vec![
+        r.row_id.clone(),
+        r.partition.clone().unwrap_or_else(|| "-".into()),
+        r.cutoff_us.to_string(),
+        r.status.clone(),
+        r.selection.as_ref().map_or(0, |s| s.events.len()).to_string(),
+        if slots.is_empty() { "-".into() } else { slots.join(" ") },
+        r.target.status.clone(),
+        if r.reasons.is_empty() { "-".into() } else { r.reasons.join("; ") },
+    ];
+    (r.status.clone(), line)
 }
 
 fn task_reconcile(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
@@ -413,16 +435,16 @@ fn task_reconcile(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
 fn cache_validate(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let path = Path::new(req_str(m, "path"));
     let base = get_str(m, "base").map(PathBuf::from);
-    let (task, pre) = match get_str(m, "task") {
+    let (task, admitted) = match get_str(m, "task") {
         Some(file) => {
             let file = Path::new(file);
             let manifest = TaskManifest::load(file)?;
-            let pre = preflight(&manifest, file.parent(), false)?;
-            (Some(manifest), Some(pre))
+            let admitted = Admitted::preflight(&manifest, file.parent(), false)?;
+            (Some(manifest), Some(admitted))
         }
         None => (None, None),
     };
-    let report = validate_cache(path, base.as_deref(), task.as_ref(), pre.as_ref())?;
+    let report = validate_cache(path, base.as_deref(), task.as_ref(), admitted.as_ref())?;
     if flag(m, "json") {
         ctx.emit(&report.to_json(), true);
     } else {

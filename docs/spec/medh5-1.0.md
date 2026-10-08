@@ -1584,7 +1584,7 @@ grouping, since a 0.x file carries no reliable subject key of its own.
 
 Sections §2–§15 are **implemented** by the `medh5` format engine --- the Rust crate `medh5`, which the
 Python package and the `medh5` command line wrap --- and exercised by a conformance corpus (§15) of
-152 files: valid samples covering every encoding, annotation kind, transform kind,
+153 files: valid samples covering every encoding, annotation kind, transform kind,
 dimensionality, profile and container kind, plus one deliberately-invalid file per diagnostic code.
 The corpus includes the cases of the [1.1](medh5-1.1.md) `clinical` profile, which the same engine
 implements.
@@ -1592,7 +1592,7 @@ Running the corpus against a validator is how a third-party implementation demon
 
 ```
 $ medh5 conformance run ./corpus
-152/152 cases pass
+153/153 cases pass
 ```
 
 **Every code in §15.2 has a corpus case.** The implementation gates on `cargo clippy` and `rustfmt`

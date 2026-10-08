@@ -14,7 +14,7 @@
 //! scan of the stored buffer, never holding the text
 //! ([`check_records_with`]).
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use super::model::{
     ClinicalRecords, Descriptor, Document, Event, Link, ASSESSMENT_SYSTEM, COMPARATORS, ENDPOINT_TYPES, EVENT_KINDS,
@@ -511,16 +511,35 @@ pub fn check_records_with(
 }
 
 /// §6: every document is owned by exactly one `document` event, through
-/// `describes`.
+/// `describes`, and a `document` event owns at most one document.
 fn check_ownership(records: &ClinicalRecords, events: &HashMap<&str, &Event>, base: &str, out: &mut Vec<Finding>) {
+    let documents: HashSet<&str> = records.documents.iter().map(|d| d.document_id.as_str()).collect();
     let mut owners: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    let mut owned: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
     for l in &records.links {
         if l.relation == "describes" && l.source_type == "event" && l.target_type == "document" {
             if let Some(e) = events.get(l.source_id.as_str()) {
                 if e.kind == "document" {
                     owners.entry(l.target_id.as_str()).or_default().insert(l.source_id.as_str());
+                    if documents.contains(l.target_id.as_str()) {
+                        owned.entry(l.source_id.as_str()).or_default().insert(l.target_id.as_str());
+                    }
                 }
             }
+        }
+    }
+    for (i, e) in records.events.iter().enumerate() {
+        if let Some(texts) = owned.get(e.event_id.as_str()).filter(|t| t.len() > 1) {
+            out.push(finding(
+                "E815",
+                &row_location(&format!("{base}/events"), Some(&e.event_id), i),
+                format!(
+                    "document event {} owns {} documents ({}); each text is a document of its own event",
+                    repr_str(&e.event_id),
+                    texts.len(),
+                    texts.iter().copied().collect::<Vec<_>>().join(", ")
+                ),
+            ));
         }
     }
     for (i, d) in records.documents.iter().enumerate() {

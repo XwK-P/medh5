@@ -23,7 +23,7 @@ use serde_json::{json, Value};
 
 use super::source::SourceRef;
 use super::task::TaskManifest;
-use super::view::Preflight;
+use super::view::Admitted;
 use super::{sha256, Finding};
 use crate::array::{DType, NdArray};
 use crate::h5::attrs::{self, AttrValue};
@@ -455,15 +455,15 @@ impl CacheReport {
 }
 
 /// Validate a cache: its manifest's and every payload's checksum, every
-/// source pin, and --- given the task and its preflight --- that it was built
-/// for this task, at these cutoffs, from these selections, and fitted on this
-/// task's training partition.  `base` resolves relative source URIs (by
-/// default, the cache's directory).
+/// source pin, and --- given the task and what its preflight admits
+/// ([`Admitted`]) --- that it was built for this task, at these cutoffs, from
+/// these selections, and fitted on this task's training partition.  `base`
+/// resolves relative source URIs (by default, the cache's directory).
 pub fn validate_cache(
     path: &Path,
     base: Option<&Path>,
     task: Option<&TaskManifest>,
-    preflight: Option<&Preflight>,
+    admitted: Option<&Admitted>,
 ) -> Result<CacheReport> {
     let mut report = CacheReport { path: path.to_string_lossy().into_owned(), ..Default::default() };
     let cache = match FeatureCache::open(path) {
@@ -538,10 +538,10 @@ pub fn validate_cache(
                 ));
             }
         }
-        if let Some(pre) = preflight {
+        if let Some(admitted) = admitted {
             for entry in cache.entries.iter().filter(|e| e.row_id.is_some()) {
                 let row_id = entry.row_id.as_deref().unwrap_or_default();
-                let Some(view) = pre.row(row_id) else {
+                let Some((cutoff_us, selected)) = admitted.row(row_id) else {
                     report.findings.push(Finding::new(
                         "T404",
                         &entry.entry_id,
@@ -549,17 +549,16 @@ pub fn validate_cache(
                     ));
                     continue;
                 };
-                if entry.cutoff_us != Some(view.cutoff_us) {
+                if entry.cutoff_us != Some(cutoff_us) {
                     report.findings.push(Finding::new(
                         "T404",
                         &entry.entry_id,
-                        format!("built at cutoff {:?}; the row's cutoff is {}", entry.cutoff_us, view.cutoff_us),
+                        format!("built at cutoff {:?}; the row's cutoff is {}", entry.cutoff_us, cutoff_us),
                     ));
                 }
-                let selected: Vec<String> = pre.events_of(view).iter().map(|e| e.event_id.clone()).collect();
-                let pinned = entry.event_versions.clone().unwrap_or_default();
+                let pinned: Vec<&str> = entry.event_versions.iter().flatten().map(String::as_str).collect();
                 if pinned != selected {
-                    let extra: Vec<&String> = pinned.iter().filter(|v| !selected.contains(v)).collect();
+                    let extra: Vec<&str> = pinned.iter().copied().filter(|v| !selected.contains(v)).collect();
                     report.findings.push(Finding::new(
                         "T406",
                         &entry.entry_id,

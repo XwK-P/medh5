@@ -18,7 +18,7 @@ format **1.1**, the clinical history around the images, with *when each fact
 became known*, so a model trained at a cutoff reads only what was available
 then. Format versions [**1.0**](https://medh5.readthedocs.io/en/latest/spec/medh5-1.0/) and
 [**1.1**](https://medh5.readthedocs.io/en/latest/spec/medh5-1.1/), with normative specifications and a
-[152-case conformance suite](https://medh5.readthedocs.io/en/latest/spec/conformance/) any implementation can run.
+[153-case conformance suite](https://medh5.readthedocs.io/en/latest/spec/conformance/) any implementation can run.
 
 ```python
 import medh5
@@ -70,7 +70,7 @@ guides, the Python and CLI reference, and the normative specification.
 - **Absence is not silence** — a class examined and not found is recorded as
   such, which is a different training signal from one nobody examined.
 - **Every claim is checkable** — per-object digests, a Merkle `content_id` that
-  survives recompression, a stable diagnostic-code table, and a 152-case
+  survives recompression, a stable diagnostic-code table, and a 153-case
   conformance corpus.
 - **Reading a patch is fast** — a 64³ multi-class patch in ~3.5 ms, and O(1)
   foreground sampling once `build_index()` has run.

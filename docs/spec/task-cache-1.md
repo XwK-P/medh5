@@ -245,7 +245,10 @@ after it.
 
 A frontend reads each source as the version its row pins: a source whose `content_id` is no longer the
 pin when a batch is built --- the file was replaced after preflight --- is refused (**T302**), never
-read in its place.
+read in its place. That check is §2's step 1 alone: it compares the *stored* `content_id`, and
+re-hashes nothing. The bytes are verified by preflight (step 3: the clinical datasets always, every
+dataset with `--deep`), so an edit made in place after preflight that leaves the stored digests and
+`content_id` as they were is found by running preflight again, not by building a batch.
 
 ## 7. Feature caches
 

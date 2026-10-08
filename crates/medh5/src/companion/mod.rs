@@ -31,7 +31,9 @@ use serde_json::{json, Value};
 pub use cache::{validate_cache, CacheReport, CacheWriter, FeatureCache};
 pub use source::SourceRef;
 pub use task::TaskManifest;
-pub use view::{preflight, preflight_each, Preflight, PreflightDone, RowView, SubjectHistory};
+pub use view::{
+    preflight, preflight_each, write_preflight, Admitted, Preflight, PreflightDone, RowView, SubjectHistory,
+};
 
 /// The companion contract's finding codes, and what each means.
 pub const CODES: [(&str, &str); 19] = [

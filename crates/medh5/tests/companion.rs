@@ -7,10 +7,11 @@ use medh5::array::NdArray;
 use medh5::clinical::model::{Bounds, Clock, Event, Link, HOUR};
 use medh5::collection::pack;
 use medh5::companion::cache::{event_entry_id, validate_cache, CacheEntry, CacheHeader, CacheWriter, FeatureCache};
-use medh5::companion::task::{Slot, Subject, TargetSpec, TaskManifest};
+use medh5::companion::task::{Row, Slot, Subject, TargetSpec, TaskManifest};
 use medh5::companion::view::reconcile;
-use medh5::companion::{preflight, SourceRef};
+use medh5::companion::{preflight, write_preflight, Admitted, SourceRef};
 use medh5::conformance::clinical::worked_example;
+use medh5::json::pretty;
 use medh5::sample::{amend, create, open_sample, GridOptions, ImageOptions};
 use serde_json::json;
 
@@ -269,6 +270,40 @@ fn s4_fragments_reconcile_through_collection_members() {
 }
 
 #[test]
+fn s4_a_streamed_preflight_is_the_document_byte_for_byte() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut task, _) = worked_task(dir.path());
+    let other = dir.path().join("other.medh5");
+    fragment(&other, "subj-02", "clock-02", 1.0);
+    task.subjects.push(Subject {
+        subject_id: "P-02".into(),
+        clock_id: Some("clock-02".into()),
+        partition: Some("test".into()),
+        sources: vec![pinned(&other, "s1", None)],
+        reconciled: Vec::new(),
+    });
+    // Rows out of subject order: the document keeps the manifest's.
+    let row = |id: &str, subject: &str, hours: i64| Row {
+        row_id: id.into(),
+        subject_id: subject.into(),
+        cutoff_us: hours * HOUR,
+    };
+    task.rows.insert(0, row("q0", "P-02", 0));
+    task.rows.push(row("q24", "P-02", 24));
+    let mut unfit = task.clone();
+    unfit.rows.push(row("ghost", "P-99", 0));
+    for (task, fit) in [(task, true), (unfit, false)] {
+        let whole = preflight(&task, None, false).unwrap();
+        assert_eq!(whole.ok(), fit, "{:?}", whole.findings);
+        assert_eq!(whole.subjects.len(), if fit { 2 } else { 0 });
+        assert_eq!(whole.rows[0].row_id, "q0");
+        let mut streamed = Vec::new();
+        assert_eq!(write_preflight(&task, None, false, &mut streamed).unwrap(), whole.ok());
+        assert_eq!(String::from_utf8(streamed).unwrap(), pretty(&whole.to_json()));
+    }
+}
+
+#[test]
 fn s3_3_splits_are_by_subject_and_never_share_a_sample() {
     let dir = tempfile::tempdir().unwrap();
     let (mut task, path) = worked_task(dir.path());
@@ -297,6 +332,14 @@ fn s8_caches_are_rejected_when_stale_corrupt_or_inadmissible() {
     let dir = tempfile::tempdir().unwrap();
     let (task, path) = worked_task(dir.path());
     let pre = preflight(&task, None, false).unwrap();
+    // What a cache is checked against, kept a subject at a time.
+    let admitted = Admitted::preflight(&task, None, false).unwrap();
+    assert_eq!(admitted, Admitted::of(&pre));
+    assert_eq!(
+        admitted.row("r24").unwrap().1,
+        pre.events_of(pre.row("r24").unwrap()).iter().map(|e| e.event_id.as_str()).collect::<Vec<_>>()
+    );
+    assert!(admitted.row("nope").is_none());
     let source = task.subjects[0].sources[0].clone();
     let header = |level: &str| CacheHeader {
         level: level.into(),
@@ -327,7 +370,7 @@ fn s8_caches_are_rejected_when_stale_corrupt_or_inadmissible() {
         .unwrap();
     }
     w.commit().unwrap();
-    assert!(validate_cache(&events_path, None, Some(&task), Some(&pre)).unwrap().ok());
+    assert!(validate_cache(&events_path, None, Some(&task), Some(&admitted)).unwrap().ok());
     let cache = FeatureCache::open(&events_path).unwrap();
     let entry = cache.event_entry(&source.content_id, "report0_v1").unwrap();
     assert_eq!(cache.get(&entry.entry_id).unwrap(), feature(0.5));
@@ -358,7 +401,7 @@ fn s8_caches_are_rejected_when_stale_corrupt_or_inadmissible() {
         .unwrap();
     }
     w.commit().unwrap();
-    let report = validate_cache(&patient_path, None, Some(&task), Some(&pre)).unwrap();
+    let report = validate_cache(&patient_path, None, Some(&task), Some(&admitted)).unwrap();
     let inadmissible: Vec<&str> =
         report.findings.iter().filter(|f| f.code == "T406").map(|f| f.location.as_str()).collect();
     assert_eq!(inadmissible, ["r24_whole_history"]);
@@ -374,7 +417,7 @@ fn s8_caches_are_rejected_when_stale_corrupt_or_inadmissible() {
     let name = format!("entries/{}", event_entry_id(&source.content_id, "report0_v2"));
     file.dataset(&name).unwrap().write_raw(&[9.0f32; 4]).unwrap();
     drop(file);
-    let report = validate_cache(&events_path, None, Some(&task), Some(&pre)).unwrap();
+    let report = validate_cache(&events_path, None, Some(&task), Some(&admitted)).unwrap();
     assert_eq!(report.corrupt(), [event_entry_id(&source.content_id, "report0_v2")]);
     assert!(report.stale().is_empty());
 
