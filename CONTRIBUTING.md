@@ -119,14 +119,15 @@ where its reader will look for it, and link rather than repeat.
 
 Documentation here is checked against the code, not proofread:
 
-- **Every `python` block runs.** `tests/project/test_docs_python.py` executes each
-  one against a real sample, with the names the pages use by convention (`s`,
-  `w`, `ann`, `paths`, …) already bound. A block that genuinely cannot run —
-  it needs a DICOM series, or it elides arguments with `...` — carries an
+- **Every `python` block runs.** `tests/project/test_docs_python.py` executes
+  each one against a real sample, with the names the pages use by convention
+  (`s`, `w`, `ann`, `paths`, …) already bound. A block that genuinely cannot
+  run — it needs a DICOM series, or it elides arguments with `...` — carries an
   `<!-- illustrative -->` comment on the line above its fence, where readers
   see it too. Most blocks must stay runnable.
-- **Every documented CLI flag exists.** `tests/project/test_docs_examples.py` parses
-  each `medh5 …` line in a fenced block against the command line's grammar.
+- **Every documented CLI flag exists.** `tests/project/test_docs_examples.py`
+  parses each `medh5 …` line in a fenced block against the command line's
+  grammar.
 - **Corrected claims stay corrected.** The same file keeps a list of statements
   that were once wrong in the documentation; add to it when you fix a claim
   that could plausibly come back.

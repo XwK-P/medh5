@@ -96,8 +96,8 @@ and the CLI are layers over it, and all three read and write the same bytes.
   holding the facades, plus what is Python's — `torch`, `monai`, `io`
   converters. A class's `#[pyclass(module = …)]` must name the module that
   exports it, or `pickle` cannot find it. `medh5/_core.pyi` types the
-  extension; keep it in step with the bindings (`tests/project/test_typing.py` runs
-  `stubtest` against the build).
+  extension; keep it in step with the bindings
+  (`tests/project/test_typing.py` runs `stubtest` against the build).
 - **`conformance`** — the corpus is a *shipped artifact*, not a test fixture:
   third-party implementations run it. The engine builds it
   (`crates/medh5/src/conformance/build.rs`).
@@ -180,9 +180,9 @@ the reasoning lives in `docs/explanation/design-rationale.md`.
 
 The docs are tested, not proofread:
 
-- `tests/project/test_docs_python.py` executes every `python` block against a real
-  sample. A block that cannot run gets `<!-- illustrative -->` on the line above
-  its fence; fewer than half may.
+- `tests/project/test_docs_python.py` executes every `python` block against a
+  real sample. A block that cannot run gets `<!-- illustrative -->` on the line
+  above its fence; fewer than half may.
 - `tests/project/test_docs_examples.py` checks every documented `medh5 …` flag
   against the parser, and keeps `STALE_CLAIMS` — statements once wrong in the
   docs that must not come back.
