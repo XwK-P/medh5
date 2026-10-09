@@ -151,6 +151,8 @@ def place_frames(
             "drawn on a different reconstruction",
             code="E405",
         )
+    signs, scale = _from_patient(grid)
+    _check_plane(geometry, grid, signs, scale)
     dtype = np.float32 if geometry["fractional"] else bool
     volumes: dict[int, npt.NDArray[Any]] = {
         number: np.zeros(shape, dtype=dtype) for number in geometry["segments"]
@@ -159,8 +161,9 @@ def place_frames(
         segment = int(frame["segment"])
         if segment not in volumes:
             continue
-        index = np.asarray(grid.world_to_index(frame["position"]), dtype=np.float64)
-        position = float(index.reshape(-1)[0])
+        world = signs * np.asarray(frame["position"], dtype=np.float64) / scale
+        index = np.asarray(grid.world_to_index(world), dtype=np.float64).reshape(-1)
+        position = float(index[0])
         nearest = int(np.round(position))
         if abs(position - nearest) > SLICE_TOLERANCE or not 0 <= nearest < shape[0]:
             raise MEDH5ValidationError(
@@ -170,8 +173,73 @@ def place_frames(
                 "different reconstruction",
                 code="E405",
             )
+        # Its first pixel must be the slice's first voxel, too: rows and
+        # columns that match in number and not in place shifted every label.
+        if np.any(np.abs(index[1:3]) > SLICE_TOLERANCE):
+            raise MEDH5ValidationError(
+                f"SEG frame {frame['index']} (segment {segment}) starts at "
+                f"in-plane index ({index[1]:.3f}, {index[2]:.3f}) of grid "
+                f"{grid.grid_id!r}, not at (0, 0); the segmentation was drawn on a "
+                "shifted or different reconstruction",
+                code="E405",
+            )
         volumes[segment][nearest] = frame["data"]
     return volumes
+
+
+def _from_patient(grid: Any) -> tuple[npt.NDArray[np.float64], float]:
+    """The world-axis signs and the millimetres per grid unit that take a
+    DICOM patient position (LPS, mm) into *grid*'s world coordinates."""
+    from medh5.io.nifti import MM_PER_UNIT
+
+    if grid.coord_system not in ("LPS", "RAS"):
+        raise MEDH5ValidationError(
+            f"grid {grid.grid_id!r} is in {grid.coord_system!r}; a DICOM SEG is "
+            "placed by patient position (LPS), which only an LPS or RAS grid "
+            "can relate to",
+            code="E405",
+        )
+    scale = MM_PER_UNIT.get(grid.units)
+    if scale is None:
+        raise MEDH5ValidationError(
+            f"grid {grid.grid_id!r} is uncalibrated ({grid.units!r}), so no "
+            "patient position is a place on it",
+            code="E405",
+        )
+    flip = 1.0 if grid.coord_system == "LPS" else -1.0
+    return np.array([flip, flip, 1.0]), scale
+
+
+def _check_plane(
+    geometry: Mapping[str, Any],
+    grid: Any,
+    signs: npt.NDArray[np.float64],
+    scale: float,
+) -> None:
+    """The SEG's rows and columns run the way the grid's do, at its spacing.
+
+    Rows and columns were compared by count alone, so a SEG with the source's
+    matrix size but another orientation or pixel spacing --- another
+    reconstruction --- had its frames laid on this grid as they were.
+    """
+    seg = signs[:, None] * np.asarray(geometry["direction"], dtype=np.float64)
+    ours = np.asarray(grid.direction, dtype=np.float64)
+    if not np.allclose(seg[:, 1:], ours[:, 1:], atol=1e-4):
+        raise MEDH5ValidationError(
+            f"the SEG's rows and columns run along {seg[:, 1:].T.round(4).tolist()}, "
+            f"grid {grid.grid_id!r}'s along {ours[:, 1:].T.round(4).tolist()}; it "
+            "was drawn on a different reconstruction",
+            code="E405",
+        )
+    pixel = np.asarray(geometry["spacing"][1:], dtype=np.float64)
+    voxel = np.asarray(grid.spacing[1:], dtype=np.float64) * scale
+    if not np.allclose(pixel, voxel, rtol=1e-4, atol=1e-4):
+        raise MEDH5ValidationError(
+            f"the SEG's pixel spacing is {pixel.tolist()} mm, grid "
+            f"{grid.grid_id!r}'s {voxel.tolist()} mm; it was drawn on a "
+            "different reconstruction",
+            code="E405",
+        )
 
 
 def read_dicom_seg(

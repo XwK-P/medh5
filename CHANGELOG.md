@@ -282,6 +282,36 @@ out `h5py` objects --- and the behaviour changes below.
 - **A split ratio is a finite number of at least 0** (`MEDH5ValidationError`):
   1.x accepted a negative share and wrote it into the split.
 
+- **A NIfTI mask added to a sample must sit on its grid** (`import_seg_nifti`):
+  spacing, origin and direction are compared with the grid's, lengths in
+  millimetres, and a mask from another grid is refused. Shape alone admitted a
+  mask translated, rotated, mirrored or rescaled onto voxels nobody drew on, with
+  at most a warning about spacing. `assume_aligned=True` takes the voxels anyway
+  and records a guess; `coord_system=` may only repeat the grid's.
+- **NIfTI volumes share a grid in units and frame times too** (`from_nifti`,
+  `from_nnunetv2`): lengths compare in millimetres, so the same grid stated in
+  metres converts, and frame times two volumes both state must agree --- the
+  first file's times stood for every other's. A volume that states times lends
+  them to one that does not.
+- **A DICOM SEG must sit on the grid in plane, too** (`from_dicom_seg`): each
+  frame must start at its slice's first voxel, and the SEG's row and column
+  directions and pixel spacing must be the grid's (`E405` otherwise); patient
+  positions are converted for an RAS grid or other length units rather than
+  read as the grid's own.
+- **`from_nnunetv2` reads what the header's scaling means**: an image keeps
+  `scl_slope`/`scl_inter` as its rescale (they were dropped, leaving a CT at its
+  stored counts), and label ids are matched after the scale, which must leave
+  integers. **`to_nnunetv2`** writes labels on their own grid and refuses labels
+  that are not on the channels' grid; the reference grid's affine was written
+  whatever grid they were on.
+- **NIfTI exports state their units and timing** (`to_nifti`, `to_nnunetv2`):
+  lengths in millimetres (a grid in `m` or `um` scaled to them, `px` as
+  "unknown"), evenly spaced frames as `pixdim[4]` and `toffset`, and uneven ones
+  in a BIDS sidecar's `VolumeTiming`, which `from_nifti` reads back; the header
+  said nothing, so a metre grid read back as millimetres and every series as 1 s
+  frames from 0. `to_nifti(annotation=…)` exports on the annotation's grid,
+  where it took the named image's affine; it takes `report=` for the notes.
+
 ### Removed
 
 - The private `medh5._hdf5` and `medh5.document_fields` modules.

@@ -307,3 +307,89 @@ class TestNnunet:
         for output in report.outputs:
             assert Path(output).exists(), output
         assert not any("labelsTr" in o for o in report.outputs)
+
+
+class TestNnunetScaling:
+    """A NIfTI's `scl_slope`/`scl_inter` are what its voxels mean, to nnU-Net
+    as to any reader (L03 of the 2.0 audit): an image's were dropped, and a
+    label volume's ids were matched before them."""
+
+    @staticmethod
+    def _dataset(
+        tmp_path: Path,
+        *,
+        image_scale: tuple[float, float] | None = None,
+        label_scale: tuple[float, float] | None = None,
+    ) -> tuple[Path, np.ndarray, np.ndarray]:
+        root = tmp_path / "Dataset002_Scaled"
+        (root / "imagesTr").mkdir(parents=True)
+        (root / "labelsTr").mkdir()
+        shape = (6, 5, 4)
+        stored = np.arange(np.prod(shape), dtype=np.int16).reshape(shape)
+        labels = np.zeros(shape, np.uint8)
+        labels[1:3, 1:3, 1:3] = 1
+        for array, scale, name in (
+            (stored, image_scale, "imagesTr/CASE_0000.nii.gz"),
+            (labels, label_scale, "labelsTr/CASE.nii.gz"),
+        ):
+            image = nib.Nifti1Image(array, np.eye(4))
+            if scale is not None:
+                image.header.set_slope_inter(*scale)
+            nib.save(image, str(root / name))
+            if scale is not None:
+                assert float(nib.load(str(root / name)).dataobj.slope) == scale[0]
+        (root / "dataset.json").write_text(
+            json.dumps(
+                {
+                    "channel_names": {"0": "CT"},
+                    "labels": {"background": 0, "organ": 32},
+                    "numTraining": 1,
+                    "file_ending": ".nii.gz",
+                }
+            ),
+            encoding="utf-8",
+        )
+        return root, stored, labels
+
+    def test_L03_an_image_keeps_its_scale_as_its_rescale(self, tmp_path):
+        from medh5.io.nnunetv2 import from_nnunetv2
+
+        root, stored, _ = self._dataset(tmp_path, image_scale=(1.0, -1024.0))
+        report = from_nnunetv2(root, tmp_path / "out")
+        with medh5.open(tmp_path / "out" / "CASE.medh5") as sample:
+            image = sample.images["CT"]
+            assert image.rescale == (1.0, -1024.0)
+            physical = image.read(physical=True)
+            assert np.allclose(physical, np.transpose(stored, (2, 1, 0)) - 1024.0)
+        assert report.of_kind("value_scale")
+
+    def test_L03_labels_are_matched_after_their_scale(self, tmp_path):
+        """Stored 1 with slope 32 is class 32 to every reader of the file."""
+        from medh5.io.nnunetv2 import from_nnunetv2
+
+        root, _, labels = self._dataset(tmp_path, label_scale=(32.0, 0.0))
+        from_nnunetv2(root, tmp_path / "out")
+        with medh5.open(tmp_path / "out" / "CASE.medh5") as sample:
+            organ = sample.annotations["seg"].dense(["organ"])[0]
+            assert int(organ.sum()) == int(labels.sum()) == 8
+
+    def test_L03_a_scale_that_makes_fractional_labels_is_refused(self, tmp_path):
+        from medh5.io.nnunetv2 import from_nnunetv2
+
+        root, _, _ = self._dataset(tmp_path, label_scale=(0.5, 0.0))
+        with pytest.raises(MEDH5ValidationError, match="not integers"):
+            from_nnunetv2(root, tmp_path / "out")
+
+    def test_L04_labels_on_another_grid_than_the_channels_are_refused(self, tmp_path):
+        """The export wrote the labels with the reference grid's affine,
+        whatever grid they were on."""
+        from medh5.io.nnunetv2 import to_nnunetv2
+
+        path = tmp_path / "s.medh5"
+        with Organs.writer(path) as w:
+            w.add_grid("pet", shape=(4, 6, 6), spacing=(4.0, 1.6, 1.6), timepoint="tp0")
+            mask = np.zeros((4, 6, 6), bool)
+            mask[1:3, 2:4, 2:4] = True
+            w.add_segmentation("seg", grid="pet", masks={1: mask})
+        with pytest.raises(MEDH5ValidationError, match="channels' grid"):
+            to_nnunetv2([path], tmp_path / "nn", dataset_name="D1")

@@ -107,6 +107,10 @@ def write_nifti(
     path: str | os.PathLike[str],
     *,
     rescale: tuple[float, float] | None = None,
+    units: str = "mm",
+    time_values: Sequence[float] | None = None,
+    time_units: str | None = None,
+    report: ConversionReport | None = None,
 ) -> Path:
     """Write one NIfTI file, recording *rescale* in the header (§4.2).
 
@@ -117,16 +121,96 @@ def write_nifti(
     nothing in it said so.  NIfTI has the two fields for exactly this, and
     every reader --- nibabel, SimpleITK, and therefore nnU-Net --- applies them
     on load, so writing them makes the stored volume mean what it meant here.
+
+    The header says what the numbers are in, too.  The exports wrote no units,
+    so a grid in metres read back as millimetres and every frame series as one
+    second apart from time 0.  *affine* is in the grid's *units*: lengths are
+    written in millimetres (a grid in ``m`` or ``um`` scaled to them), and an
+    uncalibrated ``px`` grid says so with NIfTI's "unknown".  A fourth axis
+    with *time_values* evenly spaced becomes ``pixdim[4]`` and ``toffset``;
+    uneven frames, which one temporal step cannot state, are written to a BIDS
+    sidecar's ``VolumeTiming`` beside the file --- which :func:`read_nifti`
+    reads back --- and the header's step is left at 0, which says nothing.
     """
     nib = require_nibabel()
     target = Path(os.fspath(path))
     data = np.ascontiguousarray(array)
-    image = nib.Nifti1Image(data, np.asarray(affine, dtype=np.float64))
-    image.header.set_data_dtype(data.dtype)
+    matrix = np.array(affine, dtype=np.float64, copy=True)
+    scale = MM_PER_UNIT.get(units)
+    if scale is not None:
+        matrix[:3, :] *= scale
+    image = nib.Nifti1Image(data, matrix)
+    header = image.header
+    header.set_data_dtype(data.dtype)
     if rescale is not None:
-        image.header.set_slope_inter(float(rescale[0]), float(rescale[1]))
+        header.set_slope_inter(float(rescale[0]), float(rescale[1]))
+    if scale is None and report is not None:
+        report.decision(
+            "units",
+            f"the grid is in {units!r}, which has no physical size; the file's "
+            "spatial unit is NIfTI's 'unknown'",
+            {"units": units},
+        )
+    temporal = "unknown"
+    if time_values is not None and data.ndim == 4:
+        temporal = _write_timing(
+            header, target, data.shape[3], time_values, time_units, report
+        )
+    header.set_xyzt_units(xyz="mm" if scale is not None else "unknown", t=temporal)
     nib.save(image, str(target))
     return target
+
+
+def _write_timing(
+    header: Any,
+    target: Path,
+    frames: int,
+    time_values: Sequence[float],
+    time_units: str | None,
+    report: ConversionReport | None,
+) -> str:
+    """Put a time axis in *header* (or, uneven, in a sidecar); its NIfTI unit."""
+    unit = time_units if time_units in SECONDS_PER_UNIT else "s"
+    times = np.asarray(time_values, dtype=np.float64)
+    if times.shape != (frames,):
+        raise MEDH5ValidationError(
+            f"{len(times)} frame times for a fourth axis of {frames} frames"
+        )
+    steps = np.diff(times)
+    if frames < 2 or (
+        np.all(steps > 0) and np.allclose(steps, steps[0], rtol=1e-6, atol=1e-9)
+    ):
+        zooms = list(header.get_zooms())
+        if frames >= 2:
+            zooms[3] = float(steps[0])
+        header.set_zooms(zooms)
+        header["toffset"] = float(times[0])
+        return {"s": "sec", "ms": "msec"}[unit]
+    zooms = list(header.get_zooms())
+    zooms[3] = 0.0
+    header.set_zooms(zooms)
+    seconds = times * SECONDS_PER_UNIT[unit]
+    sidecar = _sidecar_for(target)
+    sidecar.write_text(
+        json.dumps({"VolumeTiming": [float(v) for v in seconds]}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    if report is not None:
+        report.decision(
+            "time_values",
+            "the frames are unevenly spaced, which one NIfTI temporal step cannot "
+            f"state; their times were written to {sidecar.name} as VolumeTiming",
+            {"sidecar": str(sidecar), "frames": frames},
+        )
+    return "unknown"
+
+
+def _sidecar_for(target: Path) -> Path:
+    """The BIDS JSON sidecar path beside a NIfTI file."""
+    for extension in (".nii.gz", ".nii"):
+        if target.name.endswith(extension):
+            return target.with_name(target.name[: -len(extension)] + ".json")
+    return target.with_suffix(".json")
 
 
 def _geometry_notes(
@@ -922,6 +1006,51 @@ def from_nifti(
     return log
 
 
+# Millimetres in one §3.5 length unit; `px` has no physical size.
+MM_PER_UNIT = {"mm": 1.0, "m": 1000.0, "um": 1e-3}
+# Seconds in one §3.2 time unit.
+SECONDS_PER_UNIT = {"s": 1.0, "ms": 1e-3}
+
+
+def _lengths(geometry: Mapping[str, Any], key: str) -> npt.NDArray[np.float64]:
+    """*key* (``spacing`` or ``origin``) in millimetres where the unit has a size."""
+    values = np.asarray(geometry[key], dtype=np.float64)
+    return values * MM_PER_UNIT.get(str(geometry.get("units") or "mm"), 1.0)
+
+
+def _geometry_mismatch(
+    first: Mapping[str, Any], other: Mapping[str, Any]
+) -> str | None:
+    """The first of units, spacing, origin and direction two geometries
+    disagree on, or ``None``.
+
+    Lengths are compared in millimetres, so one grid stated in metres and in
+    millimetres agrees with itself; an uncalibrated (``px``) grid agrees only
+    with another.  Comparing the raw numbers took a grid in metres for one
+    1000 times smaller, and a mask with no origin check anywhere it pleased.
+    """
+    pixels = [str(g.get("units") or "mm") == "px" for g in (first, other)]
+    if pixels[0] != pixels[1]:
+        return "units"
+    for key in ("spacing", "origin", "direction"):
+        if key == "direction":
+            ours = np.asarray(first[key], dtype=np.float64)
+            theirs = np.asarray(other[key], dtype=np.float64)
+        else:
+            ours, theirs = _lengths(first, key), _lengths(other, key)
+        if ours.shape != theirs.shape or not np.allclose(ours, theirs, atol=1e-4):
+            return key
+    return None
+
+
+def _seconds(geometry: Mapping[str, Any]) -> npt.NDArray[np.float64] | None:
+    values = geometry.get("time_values")
+    if values is None:
+        return None
+    unit = str(geometry.get("time_units") or "s")
+    return np.asarray(values, dtype=np.float64) * SECONDS_PER_UNIT.get(unit, 1.0)
+
+
 def _same_grid(
     first: dict[str, Any], other: dict[str, Any], name: str, log: ConversionReport
 ) -> dict[str, Any]:
@@ -934,23 +1063,47 @@ def _same_grid(
     grid that does not exist --- nothing here is referenced). Reporting them
     under those codes told anything branching on the code an untrue story about
     what had gone wrong.
+
+    A grid is its timing as much as its space (§3.2), so frame times two
+    volumes both *state* must agree; only space was compared, and the first
+    file's times stood for every other's.  Where one states them and the other
+    does not, the stated ones are the grid's.
     """
     if tuple(first["shape"]) != tuple(other["shape"]):
         raise MEDH5ValidationError(
             f"{name!r} has shape {other['shape']}, but the first volume has "
             f"{first['shape']}; resample before converting"
         )
-    for key in ("spacing", "origin", "direction"):
-        if not np.allclose(
-            np.asarray(first[key], dtype=np.float64),
-            np.asarray(other[key], dtype=np.float64),
-            atol=1e-4,
-        ):
-            raise MEDH5ValidationError(
-                f"{name!r} disagrees with the first volume on {key}; resample "
-                "before converting rather than letting a converter do it silently"
-            )
-    return first
+    key = _geometry_mismatch(first, other)
+    if key is not None:
+        raise MEDH5ValidationError(
+            f"{name!r} disagrees with the first volume on {key}; resample "
+            "before converting rather than letting a converter do it silently"
+        )
+    ours, theirs = _seconds(first), _seconds(other)
+    if ours is None or theirs is None or np.allclose(ours, theirs, atol=1e-6):
+        return first
+    if first.get("time_measured") and other.get("time_measured"):
+        raise MEDH5ValidationError(
+            f"{name!r} states frame times {other['time_values']} "
+            f"{other['time_units']}, the first volume {first['time_values']} "
+            f"{first['time_units']}; one grid has one set of `time_values` "
+            "(§3.2), so convert them separately"
+        )
+    if not other.get("time_measured"):
+        return first
+    log.decision(
+        "time_values",
+        f"{name!r} states its frame times and the first volume does not, so "
+        "the grid takes them",
+        {"from": name, "time_units": other["time_units"]},
+    )
+    return {
+        **first,
+        "time_values": other["time_values"],
+        "time_units": other["time_units"],
+        "time_measured": True,
+    }
 
 
 def _mint_label_set(keys: Sequence[str], log: ConversionReport) -> Any:
@@ -978,6 +1131,7 @@ def to_nifti(
     physical: bool = True,
     annotation: str | None = None,
     class_key: int | str | None = None,
+    report: ConversionReport | None = None,
 ) -> Path:
     """Export one image, or one class of one annotation, as a NIfTI file.
 
@@ -988,6 +1142,11 @@ def to_nifti(
     rescale is written into the header, so the numbers a conforming reader
     gets are the physical ones either way.  A label volume has no rescale and
     is written as it is.
+
+    An annotation is written on **its own** grid, whatever *image_id* is on:
+    its voxels are that grid's, and the image's affine put a PET-grid mask at
+    the CT's origin.  *report*, when given, collects what the header could not
+    say as the grid does (see :func:`write_nifti`).
     """
     import medh5
 
@@ -998,6 +1157,7 @@ def to_nifti(
         rescale: tuple[float, float] | None = None
         if annotation is not None:
             ann = sample.annotations[annotation]
+            grid = ann.grid
             data = (
                 np.asarray(ann.labelmap(), dtype=np.uint16)
                 if class_key is None
@@ -1008,7 +1168,17 @@ def to_nifti(
             if not physical:
                 rescale = image.rescale
         data, out_affine = for_export(grid, data)
-    return write_nifti(data, out_affine, target, rescale=rescale)
+        units, times, time_units = grid.units, grid.time_values, grid.time_units
+    return write_nifti(
+        data,
+        out_affine,
+        target,
+        rescale=rescale,
+        units=units,
+        time_values=times,
+        time_units=time_units,
+        report=report,
+    )
 
 
 def for_export(
@@ -1045,9 +1215,20 @@ def import_seg_nifti(
     coord_system: str | None = None,
     transpose: bool = True,
     annotated_classes: Sequence[str] | str = "all_given",
+    assume_aligned: bool = False,
     report: ConversionReport | None = None,
 ) -> ConversionReport:
-    """Add NIfTI masks to an existing sample, checking they sit on its grid."""
+    """Add NIfTI masks to an existing sample, checking they sit on its grid.
+
+    A mask must match the grid in shape *and* geometry --- spacing, origin and
+    direction, lengths compared in millimetres.  Shape alone let a mask
+    translated 10 cm, rotated or mirrored onto voxels nobody drew on, with a
+    warning at most.  A mismatch is refused unless *assume_aligned*, which
+    takes the voxels as the grid's anyway and records that as a guess: for a
+    header known to be wrong, never for a mask from another grid, which needs
+    resampling (by a tool that records it).  The comparison is in the grid's
+    coordinate system; *coord_system* may only repeat it.
+    """
     import medh5
 
     log = report or ConversionReport(converter="import-seg-nifti")
@@ -1055,8 +1236,19 @@ def import_seg_nifti(
     with medh5.open(path) as sample:
         grid_id = grid or sample.reference_grid.grid_id
         target_grid = sample.grids[grid_id]
-        system = coord_system or target_grid.coord_system
         existing = sample.label_set
+        system = target_grid.coord_system
+        reference = {
+            "spacing": list(target_grid.spacing),
+            "origin": list(target_grid.origin),
+            "direction": np.asarray(target_grid.direction).tolist(),
+            "units": target_grid.units,
+        }
+    if coord_system is not None and coord_system != system:
+        raise MEDH5ValidationError(
+            f"grid {grid_id!r} is in {system}, and masks are compared with it "
+            f"there; coord_system={coord_system!r} cannot apply"
+        )
 
     arrays: dict[str, npt.NDArray[np.bool_]] = {}
     for name, mask_path in masks.items():
@@ -1067,14 +1259,27 @@ def import_seg_nifti(
                 f"{target_grid.spatial_shape}",
                 code="E405",
             )
-        if not np.allclose(
-            np.asarray(geo["spacing"]), np.asarray(target_grid.spacing), atol=1e-4
-        ):
-            log.warn(
+        key = _geometry_mismatch(reference, geo)
+        if key is not None:
+            detail = {
+                "mask": name,
+                "field": key,
+                "mask_value": geo[key],
+                "grid_value": reference[key],
+            }
+            if not assume_aligned:
+                raise MEDH5ValidationError(
+                    f"mask {name!r} disagrees with grid {grid_id!r} on {key}: "
+                    "it was drawn on another grid, and taking its voxels as this "
+                    "one's would put the labels where nobody drew them --- "
+                    "resample it onto the grid first, or pass "
+                    "assume_aligned=True if its header is what is wrong"
+                )
+            log.guess(
                 "geometry",
-                f"mask {name!r} declares spacing {geo['spacing']}, the grid says "
-                f"{list(target_grid.spacing)}; the voxels were taken as aligned",
-                {"mask": name},
+                f"mask {name!r} disagrees with grid {grid_id!r} on {key}; its "
+                "voxels were taken as the grid's because assume_aligned=True",
+                detail,
             )
         arrays[name] = _as_mask(data, geo)
 

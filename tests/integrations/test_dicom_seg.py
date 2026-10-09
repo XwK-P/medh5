@@ -225,6 +225,8 @@ class TestDicomSeg:
                 "columns": Organs.SHAPE[2],
                 "segments": {1: {"label": "liver"}},
                 "fractional": False,
+                "direction": np.asarray(grid.direction).tolist(),
+                "spacing": list(grid.spacing),
             }
             good = [
                 {
@@ -360,3 +362,88 @@ class TestDicomSegExtras:
             assert [c.key for c in sample.label_set] == ["liver"]
             assert sample.label_set["liver"].codes[0].code == "10200004"
         assert report.of_kind("fractional")
+
+
+class TestSegFramesSitOnTheGrid:
+    """A frame's position, its rows and columns, and its pixel spacing are the
+    grid's (L02 of the 2.0 audit).  Only the first index of a frame's position
+    was read, and rows and columns compared by count, so a SEG shifted in
+    plane, turned, or at another pixel spacing was laid on the grid as it was."""
+
+    @staticmethod
+    def _grid(tmp_path: Path, **options: Any) -> Path:
+        path = tmp_path / "grid.medh5"
+        spacing = options.pop("spacing", (2.0, 0.8, 0.8))
+        with medh5.create(path, sample_id="g") as w:
+            w.add_grid(
+                "g", shape=Organs.SHAPE, spacing=spacing, timepoint="tp0", **options
+            )
+            w.add_image("CT", np.zeros(Organs.SHAPE, np.int16), grid="g", modality="CT")
+        return path
+
+    @staticmethod
+    def _geometry(grid: Any, *, direction: Any = None, spacing: Any = None) -> dict:
+        return {
+            "rows": Organs.SHAPE[1],
+            "columns": Organs.SHAPE[2],
+            "segments": {1: {"label": "liver"}},
+            "fractional": False,
+            "direction": np.asarray(
+                grid.direction if direction is None else direction
+            ).tolist(),
+            "spacing": list(grid.spacing if spacing is None else spacing),
+        }
+
+    @staticmethod
+    def _frame(position: Any, index: int = 0) -> dict[str, Any]:
+        return {
+            "index": index,
+            "segment": 1,
+            "position": position,
+            "data": np.ones(Organs.SHAPE[1:], bool),
+        }
+
+    def test_L02_a_frame_shifted_in_plane_is_refused(self, tmp_path):
+        from medh5.io.dicom_seg import place_frames
+
+        with medh5.open(self._grid(tmp_path)) as sample:
+            grid = sample.grids["g"]
+            shifted = [self._frame(grid.index_to_world([2, 3, 0]), index=4)]
+            with pytest.raises(
+                MEDH5ValidationError, match=r"\(3\.000, 0\.000\)"
+            ) as exc:
+                place_frames(shifted, self._geometry(grid), grid)
+            assert exc.value.code == "E405" and "frame 4" in str(exc.value)
+
+    def test_L02_another_orientation_or_pixel_spacing_is_refused(self, tmp_path):
+        from medh5.io.dicom_seg import place_frames
+
+        with medh5.open(self._grid(tmp_path)) as sample:
+            grid = sample.grids["g"]
+            frames = [self._frame(grid.index_to_world([2, 0, 0]))]
+            swapped = np.asarray(grid.direction)[:, [0, 2, 1]]
+            with pytest.raises(MEDH5ValidationError, match="rows and columns run"):
+                place_frames(frames, self._geometry(grid, direction=swapped), grid)
+            with pytest.raises(MEDH5ValidationError, match="pixel spacing"):
+                place_frames(
+                    frames, self._geometry(grid, spacing=(2.0, 0.7, 0.7)), grid
+                )
+
+    def test_L02_patient_positions_are_LPS_millimetres_whatever_the_grid(
+        self, tmp_path
+    ):
+        """An RAS grid in metres takes the same SEG, converted rather than refused."""
+        from medh5.io.dicom_seg import place_frames
+
+        path = self._grid(
+            tmp_path, coord_system="RAS", units="m", spacing=(0.002, 0.0008, 0.0008)
+        )
+        with medh5.open(path) as sample:
+            grid = sample.grids["g"]
+            lps = np.array([-1.0, -1.0, 1.0])
+            position = lps * np.asarray(grid.index_to_world([2, 0, 0])) * 1000.0
+            direction = lps[:, None] * np.asarray(grid.direction)
+            spacing = [v * 1000.0 for v in grid.spacing]
+            geometry = self._geometry(grid, direction=direction, spacing=spacing)
+            placed = place_frames([self._frame(position)], geometry, grid)
+            assert placed[1][2].all() and not placed[1][3].any()

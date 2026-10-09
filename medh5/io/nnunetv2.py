@@ -120,6 +120,7 @@ def from_nnunetv2(
 
     for case in wanted:
         images: dict[str, npt.NDArray[Any]] = {}
+        rescales: dict[str, tuple[float, float] | None] = {}
         geometry: dict[str, Any] | None = None
         for index, name in sorted(channels.items()):
             path = source / "imagesTr" / f"{case}_{index:04d}{ending}"
@@ -134,6 +135,7 @@ def from_nnunetv2(
             # voxels intact and its position silently wrong.
             geometry = _same_grid(geometry, geo, name, log) if geometry else geo
             images[name] = data
+            rescales[name] = geo["rescale"]
         assert geometry is not None
         label_path = source / "labelsTr" / f"{case}{ending}"
         masks: dict[int, npt.NDArray[np.bool_]] | None = None
@@ -143,7 +145,8 @@ def from_nnunetv2(
             # by some other tool is the ordinary way this goes wrong, and the
             # result annotates voxels nobody drew on.
             _same_grid(geometry, label_geo, f"{case} labels", log)
-            masks = _masks_from(volume, label_set, regions)
+            ids = _label_ids(volume, label_geo["rescale"], case)
+            masks = _masks_from(ids, label_set, regions)
 
         target = directory / f"{case}.medh5"
         with medh5.create(
@@ -169,8 +172,25 @@ def from_nnunetv2(
                 timepoint="tp0",
             )
             for name, array in images.items():
+                # The header's scl_slope/scl_inter, kept as the image's §4.2
+                # rescale: dropping them left a CT with intercept -1024 at the
+                # stored counts, 1024 HU off what nnU-Net itself reads.
+                rescale = rescales[name]
+                if rescale is not None:
+                    log.decision(
+                        "value_scale",
+                        f"case {case}: {name}'s scl_slope/scl_inter were stored as "
+                        "its rescale; read(physical=True) applies them (§4.2)",
+                        {"case": case, "slope": rescale[0], "intercept": rescale[1]},
+                    )
                 writer.add_image(
-                    name, array, grid="ref", modality=_modality(name), prov=activity
+                    name,
+                    array,
+                    grid="ref",
+                    modality=_modality(name),
+                    rescale_slope=None if rescale is None else rescale[0],
+                    rescale_intercept=None if rescale is None else rescale[1],
+                    prov=activity,
                 )
             if masks:
                 kind, _ = writer.add_segmentation(
@@ -285,6 +305,31 @@ def _label_set(
     return LabelSet("nnunetv2", version="1.0.0", classes=classes), regions
 
 
+def _label_ids(
+    volume: npt.NDArray[Any], rescale: tuple[float, float] | None, case: str
+) -> npt.NDArray[Any]:
+    """The label volume's class ids as every reader of the file sees them.
+
+    nnU-Net loads labels through nibabel or SimpleITK, which apply the header's
+    ``scl_slope``/``scl_inter``, so a file storing 1 with slope 32 is class 32
+    to the model; matching the stored integers imported it as class 1, or as
+    nothing.  A scaling that leaves a voxel between two ids is no label volume,
+    and is refused.
+    """
+    if rescale is None:
+        return np.asarray(volume)
+    slope, intercept = rescale
+    physical = np.asarray(volume, dtype=np.float64) * slope + intercept
+    ids = np.round(physical)
+    if not np.allclose(physical, ids, atol=1e-6):
+        raise MEDH5ValidationError(
+            f"case {case!r}: the label volume's scl_slope/scl_inter ({slope}, "
+            f"{intercept}) make labels that are not integers; a label volume "
+            "holds class ids"
+        )
+    return ids.astype(np.int64)
+
+
 def _masks_from(
     volume: npt.NDArray[Any], label_set: Any, regions: Mapping[int, Sequence[int]]
 ) -> dict[int, npt.NDArray[np.bool_]]:
@@ -351,10 +396,9 @@ def to_nnunetv2(
                     )
                 _save(
                     nib,
-                    sample,
+                    sample.images[image_id].grid,
                     sample.images[image_id].read(),
                     root / "imagesTr" / f"{case}_{index:04d}{file_ending}",
-                    image_id,
                     rescale=sample.images[image_id].rescale,
                 )
                 log.outputs.append(
@@ -363,12 +407,22 @@ def to_nnunetv2(
             if annotation in sample.annotations:
                 ann = sample.annotations[annotation]
                 labels = labels or _labels_for(ann, stashed)
+                # On the annotation's own grid, which nnU-Net needs to be the
+                # channels': the reference grid's affine was written whatever
+                # grid the labels were on.
+                channels = sample.images[channel_order[0]].grid
+                if not ann.grid.is_congruent(channels):
+                    raise MEDH5ValidationError(
+                        f"{path}: annotation {annotation!r} is on grid "
+                        f"{ann.grid.grid_id!r} and channel {channel_order[0]!r} on "
+                        f"{channels.grid_id!r}; nnU-Net needs labels on the "
+                        "channels' grid, and resampling is not a converter's to do"
+                    )
                 _save(
                     nib,
-                    sample,
+                    ann.grid,
                     _labelmap_for(ann, labels),
                     root / "labelsTr" / f"{case}{file_ending}",
-                    None,
                 )
                 # Listed only when written.  A sample without the annotation
                 # produced no label file and the report named one anyway, so a
@@ -467,10 +521,9 @@ def _resolve_or_none(ann: Any, name: str) -> int | None:
 
 def _save(
     nib: Any,
-    sample: Any,
+    grid: Any,
     array: npt.NDArray[Any],
     path: Path,
-    image: str | None,
     *,
     rescale: tuple[float, float] | None = None,
 ) -> None:
@@ -484,9 +537,16 @@ def _save(
     del nib  # every write goes through `write_nifti`, which requires nibabel
     from medh5.io.nifti import for_export, write_nifti
 
-    grid = sample.images[image].grid if image else sample.reference_grid
     data, affine = for_export(grid, np.asarray(array))
-    write_nifti(data, affine, path, rescale=rescale)
+    write_nifti(
+        data,
+        affine,
+        path,
+        rescale=rescale,
+        units=grid.units,
+        time_values=grid.time_values,
+        time_units=grid.time_units,
+    )
 
 
 __all__ = [

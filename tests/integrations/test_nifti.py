@@ -835,3 +835,205 @@ class TestDimensionality:
         source = self._write(tmp_path, "bad", (24, 20, 12, 3))
         with pytest.raises(MEDH5ValidationError, match="fourth_axis"):
             from_nifti({"IM": source}, tmp_path / "bad.medh5", fourth_axis="vibes")
+
+
+class TestImportedMasksSitOnTheGrid:
+    """A mask's geometry is the grid's, not only its shape (L01 of the 2.0
+    audit): a translated, rotated, mirrored or rescaled mask of the right
+    shape was imported onto voxels nobody drew on, with a warning at most."""
+
+    @staticmethod
+    def _mask(tmp_path: Path, affine: Any, name: str = "moved") -> Path:
+        data = np.zeros(SHAPE_XYZ, np.uint8)
+        data[4:8, 4:8, 2:4] = 1
+        path = tmp_path / f"{name}.nii.gz"
+        nib.save(nib.Nifti1Image(data, affine), str(path))
+        return path
+
+    @pytest.mark.parametrize(
+        ("change", "field"),
+        [
+            ("translated", "origin"),
+            ("rotated", "direction"),
+            ("mirrored", "direction"),
+            ("rescaled", "spacing"),
+        ],
+    )
+    def test_L01_a_mask_from_another_grid_is_refused(
+        self, volumes, tmp_path, change, field
+    ):
+        sample = tmp_path / "i.medh5"
+        from_nifti({"CT": volumes["ct"]}, sample)
+        affine = AFFINE.copy()
+        if change == "translated":
+            affine[:3, 3] += [100.0, 0.0, 0.0]
+        elif change == "rotated":
+            quarter = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+            affine[:3, :3] = quarter @ AFFINE[:3, :3]
+        elif change == "mirrored":
+            affine[:3, 0] *= -1
+        else:
+            affine[:3, :3] *= 1.5
+        with pytest.raises(MEDH5ValidationError, match=f"on {field}: it was drawn"):
+            import_seg_nifti(sample, {"liver": self._mask(tmp_path, affine)})
+        with medh5.open(sample) as opened:
+            assert "seg" not in opened.annotations, "nothing was written"
+
+    def test_L01_assume_aligned_takes_the_voxels_and_says_so(self, volumes, tmp_path):
+        sample = tmp_path / "i.medh5"
+        from_nifti({"CT": volumes["ct"]}, sample)
+        affine = AFFINE.copy()
+        affine[:3, 3] += [100.0, 0.0, 0.0]
+        report = import_seg_nifti(
+            sample, {"liver": self._mask(tmp_path, affine)}, assume_aligned=True
+        )
+        (guess,) = [g for g in report.guesses if g.kind == "geometry"]
+        assert guess.detail["field"] == "origin"
+        with medh5.open(sample) as opened:
+            assert opened.annotations["seg"].dense(["liver"])[0].any()
+
+    def test_L01_the_same_grid_in_metres_is_the_same_grid(self, volumes, tmp_path):
+        """Lengths are compared in millimetres, whatever the header's unit."""
+        sample = tmp_path / "i.medh5"
+        from_nifti({"CT": volumes["ct"]}, sample)
+        metres = AFFINE.copy()
+        metres[:3, :] /= 1000.0
+        image = nib.Nifti1Image(np.asarray(nib.load(volumes["liver"]).dataobj), metres)
+        image.header.set_xyzt_units(xyz="meter")
+        path = tmp_path / "liver_m.nii.gz"
+        nib.save(image, str(path))
+        report = import_seg_nifti(sample, {"liver": path})
+        assert not [g for g in report.guesses if g.kind == "geometry"]
+
+    def test_L01_masks_are_compared_in_the_grid_s_coordinate_system(
+        self, volumes, tmp_path
+    ):
+        sample = tmp_path / "i.medh5"
+        from_nifti({"CT": volumes["ct"]}, sample)
+        with pytest.raises(MEDH5ValidationError, match="cannot apply"):
+            import_seg_nifti(sample, {"liver": volumes["liver"]}, coord_system="RAS")
+        import_seg_nifti(sample, {"liver": volumes["liver"]}, coord_system="LPS")
+
+
+class TestGridsAgreeInTimeAndUnits:
+    """Volumes share a grid in units and frame times too (L06), and an export
+    says what its numbers are in (L07, L04)."""
+
+    @staticmethod
+    def _series(
+        path: Path, *, step: float | None, offset: float = 0.0, unit: str = "sec"
+    ) -> Path:
+        image = nib.Nifti1Image(np.zeros((*SHAPE_XYZ, 3), np.int16), AFFINE)
+        if step is not None:
+            zooms = list(image.header.get_zooms())
+            zooms[3] = step
+            image.header.set_zooms(zooms)
+            image.header["toffset"] = offset
+            image.header.set_xyzt_units(xyz="mm", t=unit)
+        nib.save(image, str(path))
+        return path
+
+    def test_L06_the_same_grid_in_metres_converts(self, volumes, tmp_path):
+        metres = AFFINE.copy()
+        metres[:3, :] /= 1000.0
+        image = nib.Nifti1Image(np.asarray(nib.load(volumes["ct"]).dataobj), metres)
+        image.header.set_xyzt_units(xyz="meter")
+        path = tmp_path / "ct_m.nii.gz"
+        nib.save(image, str(path))
+        from_nifti({"CT": volumes["ct"], "CT_m": path}, tmp_path / "s.medh5")
+        with medh5.open(tmp_path / "s.medh5") as sample:
+            assert sample.grids["ref"].units == "mm"
+
+    def test_L06_stated_frame_times_that_disagree_are_refused(self, tmp_path):
+        a = self._series(tmp_path / "a.nii.gz", step=2.0, offset=5.0)
+        b = self._series(tmp_path / "b.nii.gz", step=10.0, offset=20.0)
+        with pytest.raises(MEDH5ValidationError, match="states frame times"):
+            from_nifti({"A": a, "B": b}, tmp_path / "s.medh5")
+
+    def test_L06_frame_times_compare_in_seconds(self, tmp_path):
+        a = self._series(tmp_path / "a.nii.gz", step=2.0, offset=5.0)
+        b = self._series(tmp_path / "b.nii.gz", step=2000.0, offset=5000.0, unit="msec")
+        from_nifti({"A": a, "B": b}, tmp_path / "s.medh5")
+
+    def test_L06_a_volume_stating_times_lends_them_to_one_that_does_not(self, tmp_path):
+        a = self._series(tmp_path / "a.nii.gz", step=None)
+        b = self._series(tmp_path / "b.nii.gz", step=2.0, offset=5.0)
+        report = from_nifti({"A": a, "B": b}, tmp_path / "s.medh5")
+        with medh5.open(tmp_path / "s.medh5") as sample:
+            assert sample.grids["ref"].time_values == (5.0, 7.0, 9.0)
+        (taken,) = [n for n in report.of_kind("time_values") if "takes them" in str(n)]
+        assert taken.detail["from"] == "B"
+
+    def test_L07_an_export_states_its_units_and_frame_times(self, tmp_path):
+        source = self._series(tmp_path / "a.nii.gz", step=2.5, offset=10.0)
+        from_nifti({"A": source}, tmp_path / "s.medh5")
+        out = to_nifti(tmp_path / "s.medh5", "A", tmp_path / "out.nii.gz")
+        header = nib.load(str(out)).header
+        assert header.get_xyzt_units() == ("mm", "sec")
+        assert header.get_zooms()[3] == pytest.approx(2.5)
+        assert float(header["toffset"]) == pytest.approx(10.0)
+        _, geometry = read_nifti(out)
+        assert geometry["time_values"] == pytest.approx([10.0, 12.5, 15.0])
+        assert geometry["time_measured"]
+
+    def test_L07_uneven_frames_go_to_a_sidecar_and_come_back(self, tmp_path):
+        path = tmp_path / "s.medh5"
+        with medh5.create(path, sample_id="s") as w:
+            w.add_grid(
+                "g",
+                shape=(4, 6, 5, 4),
+                spacing=(2.0, 1.0, 1.0),
+                axis_names=("t", "z", "y", "x"),
+                axis_kinds=("time", "spatial", "spatial", "spatial"),
+                time_values=[0.0, 1.0, 3.0, 7.0],
+                time_units="s",
+                timepoint="tp0",
+            )
+            w.add_image(
+                "DCE", np.zeros((4, 6, 5, 4), np.int16), grid="g", modality="MR"
+            )
+        from medh5.io.report import ConversionReport
+
+        report = ConversionReport(converter="to-nifti")
+        out = to_nifti(path, "DCE", tmp_path / "dce.nii.gz", report=report)
+        header = nib.load(str(out)).header
+        assert header.get_zooms()[3] == 0.0 and header.get_xyzt_units()[1] == "unknown"
+        sidecar = json.loads((tmp_path / "dce.json").read_text(encoding="utf-8"))
+        assert sidecar == {"VolumeTiming": [0.0, 1.0, 3.0, 7.0]}
+        assert report.of_kind("time_values")
+        _, geometry = read_nifti(out)
+        assert geometry["time_values"] == [0.0, 1.0, 3.0, 7.0]
+
+    def test_L07_a_grid_in_metres_exports_in_millimetres(self, tmp_path):
+        path = tmp_path / "s.medh5"
+        with medh5.create(path, sample_id="s") as w:
+            w.add_grid(
+                "g", shape=(4, 5, 6), spacing=(0.002, 0.001, 0.001), units="m",
+                origin=(0.01, 0.02, 0.03), timepoint="tp0",
+            )  # fmt: skip
+            w.add_image("CT", np.zeros((4, 5, 6), np.int16), grid="g", modality="CT")
+        out = to_nifti(path, "CT", tmp_path / "ct.nii.gz")
+        restored = nib.load(str(out))
+        assert restored.header.get_xyzt_units()[0] == "mm"
+        assert np.allclose(restored.header.get_zooms(), [1.0, 1.0, 2.0])
+        assert np.allclose(np.abs(restored.affine[:3, 3]), [10.0, 20.0, 30.0])
+
+    def test_L04_an_annotation_exports_on_its_own_grid(self, tmp_path):
+        """A PET-grid mask exported beside the CT took the CT's affine."""
+        path = tmp_path / "s.medh5"
+        with Organs.writer(path) as w:
+            w.add_grid(
+                "pet", shape=(4, 6, 6), spacing=(4.0, 1.6, 1.6),
+                origin=(30.0, 40.0, 50.0), timepoint="tp0",
+            )  # fmt: skip
+            w.add_image(
+                "PET", np.zeros((4, 6, 6), np.float32), grid="pet", modality="PT"
+            )
+            mask = np.zeros((4, 6, 6), bool)
+            mask[1:3, 2:4, 2:4] = True
+            w.add_segmentation("petseg", grid="pet", masks={1: mask})
+        mask_out = to_nifti(path, "CT", tmp_path / "m.nii.gz", annotation="petseg")
+        pet_out = to_nifti(path, "PET", tmp_path / "pet.nii.gz")
+        exported = nib.load(str(mask_out))
+        assert np.allclose(exported.affine, nib.load(str(pet_out)).affine)
+        assert exported.shape == (6, 6, 4)

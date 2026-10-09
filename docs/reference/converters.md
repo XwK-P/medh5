@@ -63,6 +63,22 @@ conversion is a sign flip on the affine, `diag(-1, -1, 1, 1)`, and nothing else
 **Round trip.** `from_nifti` → `to_nifti` reproduces the affine and the voxels
 bit-for-bit.
 
+**An export says what its numbers are in.** Lengths are written in millimetres
+--- a grid in `m` or `um` is scaled to them, and an uncalibrated `px` grid gets
+NIfTI's "unknown" --- and a time axis whose frames are evenly spaced becomes
+`pixdim[4]` and `toffset`, in the grid's time unit. Uneven frames cannot be one
+temporal step: their times go to a BIDS sidecar's `VolumeTiming` beside the
+file (`out.json` for `out.nii.gz`), which `from_nifti` reads back, and the
+header's step is left at 0. An annotation is exported on **its own** grid,
+whichever image is named.
+
+**Volumes must share one grid** --- shape, spacing, origin and direction, with
+lengths compared in millimetres, and frame times where both volumes state them.
+**A mask added with `import_seg_nifti` must sit on the sample's grid** in the
+same sense, not only match its shape: a mask from another grid is refused
+rather than laid onto voxels nobody drew on. `assume_aligned=True` takes its
+voxels anyway, for a header known to be wrong, and records the guess.
+
 **`scl_slope` and `scl_inter` become the image's rescale**, the way the DICOM
 modality LUT does. The voxels keep the dtype the file stores them in;
 `read(physical=True)` applies the scale and `read()` returns the stored values
@@ -136,7 +152,12 @@ $ medh5 convert to-dicom-seg case.medh5 organs out.dcm \
 ```
 
 **Frames are placed by geometry**, from each frame's `PlanePositionSequence` —
-not by frame index. **Segments match by label, not by number.**
+not by frame index. Each frame must lie on one of the grid's slices and start at
+its first voxel, and the SEG's row and column directions and pixel spacing must
+be the grid's; a SEG drawn on another reconstruction is refused (`E405`) rather
+than force-fitted. Positions are DICOM's (LPS, millimetres), converted for an
+RAS grid or one in other length units. **Segments match by label, not by
+number.**
 
 <!-- illustrative -->
 ```python
@@ -193,7 +214,10 @@ to_nnunetv2(["case1.medh5", "case2.medh5"], "/out", dataset_name="Dataset001_Liv
 Each case's channels and per-class masks are bundled into one sample.
 
 **nnU-Net's class ids are kept**, so a model trained against the original
-dataset still means the same thing. **Region labels become §5.1 DAG parents**: a
+dataset still means the same thing. A file's `scl_slope`/`scl_inter` mean what
+they mean to nnU-Net: an image keeps them as its rescale, and label ids are read
+after them (a scaling that makes non-integer labels is refused). The export
+needs the labels on the channels' grid. **Region labels become §5.1 DAG parents**: a
 region that is the union of two components is a class whose components name it
 as a parent, which is exactly what the hierarchy is for.
 
