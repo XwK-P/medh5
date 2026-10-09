@@ -30,7 +30,7 @@ from medh5.cache import (
     validate_cache,
 )
 from medh5.cli import EXIT_ERROR, EXIT_OK, main
-from medh5.clinical import DAY, HOUR, Clock, Event, Link
+from medh5.clinical import DAY, HOUR, Clock, Document, Event, Link
 from medh5.collection import pack
 from medh5.errors import MEDH5ValidationError
 from medh5.task import (
@@ -409,6 +409,128 @@ class TestPreflight:
         other = TaskManifest.new("t", "1", identity_namespace="n", base=root)
         other.add_subject("P-01", [wrong])
         assert "T303" in found(other.preflight().findings)
+
+    @staticmethod
+    def _observation(event_id: str, record_id: str, available_us: int) -> Event:
+        return Event(
+            event_id,
+            record_id,
+            "observation",
+            "point",
+            "final",
+            effective_start_us=-10 * HOUR,
+            available_us=available_us,
+            code_system="http://loinc.org",
+            code="1-1",
+            value_num=1.0,
+        )
+
+    def test_C07_fragments_that_contradict_are_their_subjects_finding(
+        self, tmp_path: Path
+    ):
+        """Each fragment's revision chain was sound, but merged v0 was
+        superseded twice: the whole preflight raised E816, and the cohort's
+        other subject got no report."""
+        root = tmp_path / "c7"
+        root.mkdir()
+        obs = self._observation
+        for name, newer in (("f1", "v1"), ("f2", "v2")):
+            History.write(
+                root / f"{name}.medh5",
+                subject_id="P-01",
+                events=[obs("v0", "r", -9 * HOUR), obs(newer, "r", -8 * HOUR)],
+                links=[Link.between(("event", newer), "supersedes", ("event", "v0"))],
+            )
+        History.write(root / "good.medh5", subject_id="P-02")
+        task = TaskManifest.new("t", "1", identity_namespace="n", base=root)
+        task.add_subject(
+            "P-01",
+            [
+                SourceRef.pin(root / "f1.medh5", uri="f1.medh5"),
+                SourceRef.pin(root / "f2.medh5", uri="f2.medh5"),
+            ],
+        )
+        task.add_subject("P-02", [SourceRef.pin(root / "good.medh5", uri="good.medh5")])
+        task.add_row("bad", "P-01", 24 * HOUR)
+        task.add_row("good", "P-02", 24 * HOUR)
+        task.reconcile()
+        report = task.preflight()
+        assert found(report.findings) == ["T305"]
+        assert "contradict" in str(report.findings[0])
+        assert report.row("bad").status == "error"
+        assert report.row("good").status == "eligible"
+
+    def test_C13_a_reconciled_document_event_owns_one_text(self, tmp_path: Path):
+        """The event JSON agreed while each fragment's event owned another
+        text --- "NO metastasis" and "Metastasis CONFIRMED" --- and the merged
+        version owned both.  A copy under another id is the same text."""
+        root = tmp_path / "c13"
+        root.mkdir()
+        report_event = Event(
+            "rep_x",
+            "rep_x",
+            "document",
+            "point",
+            "final",
+            effective_start_us=0,
+            available_us=2 * HOUR,
+        )
+
+        def fragment(name: str, document_id: str, text: str) -> SourceRef:
+            path = root / f"{name}.medh5"
+            History.write(
+                path,
+                subject_id="P-01",
+                events=[report_event],
+                documents=[Document(document_id, text)],
+                links=[
+                    Link.between(
+                        ("event", "rep_x"), "describes", ("document", document_id)
+                    )
+                ],
+            )
+            return SourceRef.pin(path, uri=path.name, source_id=name)
+
+        def task(*sources: SourceRef) -> TaskManifest:
+            t = TaskManifest.new("t", "1", identity_namespace="n", base=root)
+            t.add_subject("P-01", list(sources))
+            t.add_row("r", "P-01", 24 * HOUR)
+            return t.reconcile()
+
+        contradicting = task(
+            fragment("A", "doc_a", "NO metastasis."),
+            fragment("B", "doc_b", "Metastasis CONFIRMED."),
+        )
+        report = contradicting.preflight()
+        assert found(report.findings) == ["T305"]
+        assert "owns another text" in str(report.findings[0])
+
+        aliased = task(
+            fragment("C", "doc_c", "NO metastasis."),
+            fragment("D", "doc_d", "NO metastasis."),
+        )
+        report = aliased.preflight()
+        assert report.ok
+        row = report.row("r")
+        owned = row.subject.owned_documents(row.subject.events.index("rep_x"))
+        assert len(owned) == 1, owned
+
+        # The record names who holds the event; a record of no shared event,
+        # or a second record of one, is not a reconciliation.
+        doc = aliased.to_json()
+        records = doc["subjects"][0]["reconciled"]
+        bogus = [dict(r, sources=["nowhere-1", "nowhere-2"]) for r in records]
+        stale = [*records, dict(records[0], event_id="no_such_event")]
+        twice = [*records, records[0]]
+        for reconciled, why in (
+            (bogus, "held by"),
+            (stale, "no two"),
+            (twice, "twice"),
+        ):
+            doc["subjects"][0]["reconciled"] = reconciled
+            findings = TaskManifest(doc, base=root).preflight().findings
+            assert "T305" in found(findings), why
+            assert any(why in str(f) for f in findings), (why, findings)
 
 
 class TestPreflightAtScale:

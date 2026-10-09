@@ -525,8 +525,10 @@ impl<'a> Prepared<'a> {
                     count(&mut excluded, "static");
                     continue;
                 }
-                let order = if policy.order_by == "available" { e.available } else { None };
-                admitted.push((order, false, i));
+                // Unordered whatever orders the timed events (1.1 §9.1): ordered
+                // by its availability, a static fact became a timed event, and a
+                // limit on timed events dropped it.
+                admitted.push((None, false, i));
                 continue;
             }
             let order = match policy.order_by.as_str() {
@@ -813,6 +815,27 @@ mod tests {
                 let only = select(&events[1..], &[], 100, &policy).unwrap();
                 assert_eq!(ids(&only, &events[1..]), ["s"]);
             }
+        }
+    }
+
+    /// C02: under `order_by = available` a static fact took its availability
+    /// as an order, joined the timed events, and a limit dropped it.
+    #[test]
+    fn s9_1_a_static_fact_is_unordered_whatever_orders_the_timed() {
+        let timed = version("t", "t", 5, Some((6, 6)));
+        let mut fact = version("s", "s", 0, Some((1, 1)));
+        fact.temporal_type = "static".into();
+        fact.effective_start = None;
+        let events = vec![timed, fact];
+        for order_by in ["effective", "available"] {
+            let mut policy = SelectionPolicy::strict();
+            policy.order_by = order_by.into();
+            policy.max_events = Some(1);
+            let s = select(&events, &[], 100, &policy).unwrap();
+            assert_eq!(ids(&s, &events), ["s", "t"], "{order_by}");
+            assert!(s.events[0].order.is_none() && s.events[1].order.is_some());
+            assert_eq!(s.events[0].tie_group, 0);
+            assert_ne!(s.events[1].tie_group, 0);
         }
     }
 

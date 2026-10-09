@@ -387,6 +387,29 @@ class TestValidation:
             f.attrs["medh5_profiles"] = ["core", "longitudinal", "seg"]
         assert "E803" in codes(history, "structural")
 
+    @pytest.mark.parametrize("dropped", ["source_end", "source_start"])
+    def test_S7_1_a_span_is_both_endpoints_or_neither(self, tmp_path: Path, dropped):
+        """C05: a link record has a span or none, so a stored half-null pair
+        reached the span rules as no span, validated, and lost the endpoint
+        that was there on export."""
+        path = tmp_path / "spans.medh5"
+        grounding = Link.between(
+            ("document", "rep_text_v1"),
+            "describes",
+            ("instance", "1"),
+            span=(0, 8),
+            target_annotation_id="lesions_tp0",
+        )
+        History.write(path, links=[grounding])
+        assert "E814" not in codes(path)
+        with h5py.File(path, "r+") as f:
+            links = f["clinical/links"]
+            # The kit's other links carry no span, so the masks exist.
+            row = int(np.flatnonzero(links["valid/source_start"][()] == 1)[0])
+            links["valid"][dropped][row] = 0
+            links[dropped][row] = 0  # a null cell holds 0
+        assert "E814" in codes(path)
+
     def test_S8_edited_text_is_found_under_an_unchanged_root(self, history: Path):
         with h5py.File(history, "r+") as f:
             data = f["clinical/documents/text/data"]
@@ -643,6 +666,38 @@ class TestSelection:
         assert keep.events[0].tie_group == keep.events[1].tie_group
         assert drop.event_ids == []
         assert drop.excluded["event_limit"] == 3
+
+    @pytest.mark.parametrize("keep", ["latest", "earliest"])
+    def test_S9_1_a_limit_of_zero_keeps_no_timed_event(self, keep):
+        """C01: the schema admits 0, which panicked the engine."""
+        timed = Event(
+            "t", "t", "other", "point", "final", effective_start_us=0, available_us=HOUR
+        )
+        fact = Event("s", "s", "other", "static", "final", available_us=0)
+        chosen = clinical.select(
+            [timed, fact], [], DAY, SelectionPolicy(max_events=0, keep=keep)
+        )
+        assert chosen.event_ids == ["s"]
+        assert chosen.excluded["event_limit"] == 1
+
+    @pytest.mark.parametrize("order_by", ["effective", "available"])
+    def test_S9_1_a_static_fact_is_not_a_timed_event(self, order_by):
+        """C02: ordered by availability, a static fact counted against the
+        limit on timed events and was dropped."""
+        timed = Event(
+            "t",
+            "t",
+            "other",
+            "point",
+            "final",
+            effective_start_us=0,
+            available_us=2 * HOUR,
+        )
+        fact = Event("s", "s", "other", "static", "final", available_us=HOUR)
+        chosen = clinical.select(
+            [timed, fact], [], DAY, SelectionPolicy(max_events=1, order_by=order_by)
+        )
+        assert chosen.event_ids == ["s", "t"]
 
     def test_S9_1_select_from_records_not_in_a_file(self):
         events = History.events()

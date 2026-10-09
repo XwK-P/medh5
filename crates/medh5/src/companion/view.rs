@@ -261,9 +261,50 @@ fn merge(history: &mut History, subject: &Subject) -> Result<Vec<Finding>> {
         merged.links.extend(c.links.iter().map(|l| (i, l.clone())));
     }
     let event = |(f, k): (usize, usize)| &fragments[f].clinical.as_ref().expect("held").events[k];
+    // What a fragment's version of a document event owns, by content: a
+    // fragment's own copy of a text may carry another id, but one event
+    // version owns one document (1.1 §6), so its holders must agree on it.
+    let owned_contents = |f: usize, event_id: &str| -> std::result::Result<BTreeSet<String>, String> {
+        let c = fragments[f].clinical.as_ref().expect("held");
+        let mut out = BTreeSet::new();
+        for l in c.links.iter().filter(|l| {
+            l.relation == "describes"
+                && l.source_type == "event"
+                && l.source_id == event_id
+                && l.target_type == "document"
+        }) {
+            let d = c
+                .document(&l.target_id)
+                .map_err(|e| format!("document {} cannot be read: {e}", repr_str(&l.target_id)))?;
+            out.insert(fingerprint(&json!({
+                "media_type": d.media_type,
+                "text": d.text,
+                "language": d.language,
+                "source_type": d.source_type,
+            })));
+        }
+        Ok(out)
+    };
     let mut duplicated: Vec<(&str, &Vec<(usize, usize)>)> =
         holders.iter().filter(|(_, h)| h.len() > 1).map(|(id, h)| (*id, h)).collect();
     duplicated.sort_unstable();
+    // A reconciliation record names an event several fragments hold, once.
+    let mut recorded: BTreeSet<&str> = BTreeSet::new();
+    for r in &subject.reconciled {
+        if !recorded.insert(r.event_id.as_str()) {
+            findings.push(Finding::new(
+                "T305",
+                &subject.subject_id,
+                format!("event {} is reconciled twice", repr_str(&r.event_id)),
+            ));
+        } else if !duplicated.iter().any(|(id, _)| *id == r.event_id) {
+            findings.push(Finding::new(
+                "T305",
+                &subject.subject_id,
+                format!("event {} is reconciled, but no two of the subject's fragments hold it", repr_str(&r.event_id)),
+            ));
+        }
+    }
     for (event_id, held) in duplicated {
         let digest = event_digest(event(held[0]));
         for (f, k) in &held[1..] {
@@ -276,8 +317,46 @@ fn merge(history: &mut History, subject: &Subject) -> Result<Vec<Finding>> {
                 ));
             }
         }
+        if event(held[0]).kind == "document" {
+            match owned_contents(held[0].0, event_id) {
+                Err(why) => findings.push(Finding::new("T306", at(&fragments[held[0].0]), why)),
+                Ok(first) => {
+                    for (f, _) in &held[1..] {
+                        match owned_contents(*f, event_id) {
+                            Err(why) => findings.push(Finding::new("T306", at(&fragments[*f]), why)),
+                            Ok(other) if other != first => findings.push(Finding::new(
+                                "T305",
+                                at(&fragments[*f]),
+                                format!(
+                                    "document event {} owns another text here than in {}: one event version owns \
+                                     one document, so the fragments contradict each other",
+                                    repr_str(event_id),
+                                    at(&fragments[held[0].0])
+                                ),
+                            )),
+                            Ok(_) => {}
+                        }
+                    }
+                }
+            }
+        }
+        let holders: BTreeSet<&str> = held.iter().map(|(f, _)| fragments[*f].source.source_id.as_str()).collect();
         match subject.reconciled.iter().find(|r| r.event_id == event_id) {
-            Some(r) if r.digest == digest => {}
+            Some(r) if r.digest == digest => {
+                let declared: BTreeSet<&str> = r.sources.iter().map(String::as_str).collect();
+                if declared != holders {
+                    findings.push(Finding::new(
+                        "T305",
+                        &subject.subject_id,
+                        format!(
+                            "event {} is reconciled as held by {}, but is held by {}",
+                            repr_str(event_id),
+                            declared.iter().copied().collect::<Vec<_>>().join(", "),
+                            holders.iter().copied().collect::<Vec<_>>().join(", ")
+                        ),
+                    ));
+                }
+            }
             Some(r) => findings.push(Finding::new(
                 "T305",
                 &subject.subject_id,
@@ -328,13 +407,15 @@ fn merge(history: &mut History, subject: &Subject) -> Result<Vec<Finding>> {
             }
         }
     }
-    // The documents each version owns, structurally.
+    // The documents each version owns, structurally --- through the fragment
+    // whose version was merged.  Its other holders own the same text (checked
+    // above), so taking theirs too would read one document twice.
     let by_id: HashMap<&str, usize> = merged.events.iter().enumerate().map(|(i, e)| (e.event_id.as_str(), i)).collect();
     let mut owned = Vec::new();
     for (f, l) in &merged.links {
         if l.relation == "describes" && l.source_type == "event" && l.target_type == "document" {
             if let Some(&e) = by_id.get(l.source_id.as_str()) {
-                if merged.events[e].kind == "document" {
+                if merged.events[e].kind == "document" && merged.event_fragments[e] == *f {
                     owned.push((e, *f, l.target_id.clone()));
                 }
             }
@@ -1120,6 +1201,7 @@ fn subject_part(
     let history = load_subject(manifest, subject, base, deep)?;
     let view = |r: usize| blank(manifest, task_fingerprint, &manifest.rows[r], Some(subject), Some(index));
     let mut rows = Vec::with_capacity(wanted.len());
+    let mut findings = history.findings.clone();
     if !history.findings.is_empty() {
         let reasons: Vec<String> = history.findings.iter().map(Finding::line).collect();
         for &r in wanted {
@@ -1139,11 +1221,32 @@ fn subject_part(
         }
     } else if !wanted.is_empty() {
         let links = history.merged.link_refs();
-        let shared = Rows::new(manifest, &history, &links)?;
-        for &r in wanted {
-            rows.push((r, shared.view(&manifest.rows[r], view(r))?));
+        match Rows::new(manifest, &history, &links) {
+            Ok(shared) => {
+                for &r in wanted {
+                    rows.push((r, shared.view(&manifest.rows[r], view(r))?));
+                }
+            }
+            // Each fragment's chains passed its own check (E816 is per file),
+            // so a broken chain here is the fragments contradicting each other
+            // --- v0 superseded by v1 in one and by v2 in another.  It is this
+            // subject's finding, its rows in error, never the cohort's failure.
+            Err(e) if e.code() == Some("E816") => {
+                let finding = Finding::new(
+                    "T305",
+                    &subject.subject_id,
+                    format!("its fragments' revision chains contradict each other once merged: {}", e.message()),
+                );
+                for &r in wanted {
+                    let mut v = view(r);
+                    v.status = "error".into();
+                    v.reasons = vec![finding.line()];
+                    rows.push((r, v));
+                }
+                findings.push(finding);
+            }
+            Err(e) => return Err(e),
         }
     }
-    let findings = history.findings.clone();
     Ok((history.merged, findings, rows))
 }

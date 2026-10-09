@@ -107,9 +107,18 @@ clock. Preflight (§4) opens them all, checks each source's identity against the
 to (**T303**) and their clocks against each other and the subject's `clock_id` (**T304**), and merges
 their events. An event version present in several fragments **MUST** have one content, and the
 manifest records it --- `reconciled: [{"event_id", "digest", "sources"}]`, the digest being the
-fingerprint of the event's logical record --- before selection; a difference, or a duplicate with no
-record, is **T305**. Documents present in several fragments must be identical (**T305**).
-`medh5 task reconcile` writes the records.
+fingerprint of the event's logical record and `sources` exactly the fragments that hold it --- before
+selection; a difference, a duplicate with no record, a record whose `sources` are not the holders, a
+second record of one event, or a record of an event no two fragments hold is **T305**. Documents
+present in several fragments must be identical (**T305**). A `document` event's content includes the
+document it owns: its holders **MUST** own one text --- the same media type, text, language and source
+type, whatever id each fragment gives it --- and the merged version owns that one document (1.1 §6;
+a document event owns at most one). `medh5 task reconcile` writes the records.
+
+Preflight checks each fragment's revision chains as part of its clinical tables, and the merged
+history's once: chains each sound but contradicting once merged --- a version superseded in one
+fragment by one version and in another by a different one --- are the subject's **T305**, its rows in
+error, never the whole preflight's failure.
 
 ### 3.4 Selection policy
 

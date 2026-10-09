@@ -307,6 +307,26 @@ fn half_null_bounds(ctx: &Context, events: &RawTable, out: &mut Vec<Diagnostic>)
     }
 }
 
+/// A link's span is both endpoints or neither (1.1 §7.1, E814), checked on
+/// the stored columns: a link record has a span or none, so a half-null pair
+/// reached the span rules as no span at all, and an export dropped the
+/// endpoint that was there.
+fn half_null_spans(ctx: &Context, links: &RawTable, out: &mut Vec<Diagnostic>) {
+    for i in 0..links.rows {
+        let (start, end) = (links.u64("source_start", i), links.u64("source_end", i));
+        if start.is_some() != end.is_some() {
+            out.push(ctx.err(
+                "E814",
+                crate::clinical::check::row_location("/clinical/links", None, i),
+                format!(
+                    "`source_start` and `source_end` are both valid or both null; this link has only `{}`",
+                    if start.is_some() { "source_start" } else { "source_end" }
+                ),
+            ));
+        }
+    }
+}
+
 /// Semantic: the rows against each other and the sample (E808--E817, W914).
 pub fn check_clinical_records(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     let mut out = Vec::new();
@@ -316,6 +336,9 @@ pub fn check_clinical_records(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
         return Ok(out); // the structural findings come first
     }
     half_null_bounds(ctx, events, &mut out);
+    if let Some(links) = &tables.links {
+        half_null_spans(ctx, links, &mut out);
+    }
     let sample = SampleContext::from_root(&ctx.root, ctx.document.as_ref())?;
     if let Some(descriptor) = &tables.descriptor {
         for f in check_descriptor(descriptor, &sample, "/clinical/meta") {

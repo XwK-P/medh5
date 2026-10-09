@@ -398,7 +398,9 @@ For cutoff `c` (`selection = strict_prospective`, the default):
 4. **Order and ties.** Admitted events are ordered by their order bounds. Events whose bounds overlap
    form one **tie group**: an uncertain or tied time is never fabricated into distinct exact times,
    and stable ids break ties only for storage. An event-count limit keeps the latest (or earliest)
-   events, and a tie group straddling the boundary is kept or dropped **whole**, as the policy says.
+   **timed** events, and a tie group straddling the boundary is kept or dropped **whole**, as the
+   policy says; a limit of 0 keeps none. Static events are unordered under every ordering, so a limit
+   never counts or drops them.
 5. **Payloads.** Only payloads the selected versions attest are admitted (§7.3): the structural
    targets of selected `document` and `imaging` events, and the endpoints --- with any
    `target_annotation_id` --- of links asserted by a selected event whose event and document endpoints
@@ -518,6 +520,7 @@ showed it was needed.
 | §9 | Strict selection, the plan rule, tie groups, the event-limit boundary and payload attestation are defined here, normatively, and the task contract only names a policy. | The draft placed them in a companion "not an additional payload requirement". They define what a record *means* about what was known when; two implementations of one selection must agree, so they belong to the profile. |
 | §9.1 | An event with no order time (`unknown`, or without the time `order_by` names) is excluded as `unknown_time`. | "Unknown/coarse times may be excluded or handled by an explicitly named alternative policy": strict excludes them, and the exclusion is counted. |
 | §9.1 | A selected `entered_in_error` version withdraws the record; an uncertain later revision makes the row *uncertifiable* while still reporting the earlier version. | Draft step 2 said to exclude the row and also that an earlier version "remains usable"; the preflight needs both facts --- why the row is excluded, and what it would otherwise have read. |
+| §9.1 | An event-count limit counts **timed** events only, and a limit of 0 keeps none of them; a static event is unordered under every `order_by`. | Found by the 2.0 audit: ordered by availability, a static fact became a timed event a limit could drop, though step 3 calls it unordered and the task contract limits timed events; and 0, which the task schema admits, had no defined boundary. |
 | §11 | Diagnostic codes E011, E801–E819, W913 and W914 are allocated, each with a conformance case. | The draft did not allocate codes for unimplemented rules; they are now implemented. |
 
 ## Appendix B — Schemas
