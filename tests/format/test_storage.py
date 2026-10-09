@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 import medh5
-from medh5.errors import MEDH5ValidationError
+from medh5.errors import MEDH5FileError, MEDH5ValidationError
 from medh5.storage import (
     COMPRESS_MIN_BYTES,
     MAX_CHUNK_BYTES,
@@ -445,6 +445,54 @@ class TestRecompress:
                 assert data.chunks is not None and data.chunks[0] == 1
         with medh5.open_collection(shard) as collection:
             assert all(collection[key].verify().ok for key in collection)
+
+
+class TestC10References:
+    """A file holding HDF5 references is not rewritten (C10 of the 2.0 audit).
+
+    A reference is an address in its own file.  Amend, recompress, pack and
+    repack write a new file, where a copied object reference pointed wherever
+    its address landed --- and a no-op amend nulled the ones in an extension
+    group --- with every digest still verifying."""
+
+    @staticmethod
+    def _with_reference(path: Path, where: str) -> Path:
+        write_sample(path)
+        with h5py.File(path, "r+") as f:
+            target = f["images"].ref
+            if where == "attribute":
+                f["images"].attrs["x_ref"] = target
+            elif where == "dataset":
+                group = f.require_group("x_ext")
+                group.create_dataset("refs", data=[target], dtype=h5py.ref_dtype)
+            else:
+                compound = np.dtype([("id", "<i4"), ("ref", h5py.ref_dtype)])
+                group = f.require_group("x_ext")
+                group.create_dataset(
+                    "rows", data=np.array([(1, target)], dtype=compound)
+                )
+        return path
+
+    @pytest.mark.parametrize("where", ["attribute", "dataset", "compound"])
+    def test_C10_a_file_holding_references_is_not_rewritten(self, tmp_path, where):
+        from medh5.collection import pack
+        from medh5.storage import recompress
+
+        path = self._with_reference(tmp_path / "ref.medh5", where)
+        before = path.read_bytes()
+        attempts = [
+            lambda: medh5.amend(path).__enter__(),
+            lambda: recompress(path, profile="portable"),
+            lambda: pack([path], tmp_path / "shard.medh5c"),
+        ]
+        for attempt in attempts:
+            with pytest.raises(MEDH5FileError, match="holds HDF5 references"):
+                attempt()
+        assert path.read_bytes() == before, "the source was not touched"
+        assert not (tmp_path / "shard.medh5c").exists()
+        # Reading it is unaffected: the file is still a valid sample.
+        with medh5.open(path) as sample:
+            assert sample.images
 
 
 class TestB02LinkGraphs:

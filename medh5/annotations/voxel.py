@@ -292,7 +292,8 @@ def storage_dtype(
     planes: Any, threshold: float, requested: npt.DTypeLike = np.float16
 ) -> np.dtype[Any]:
     """The narrowest of ``float16``/``float32`` that keeps every voxel's
-    containment decision (§7.5)."""
+    containment decision (§7.5); E411 when neither does --- a value within
+    ``float32`` rounding of the threshold, on its other side."""
     found: np.dtype[Any] = _core.storage_dtype(planes, threshold, requested)
     return found
 

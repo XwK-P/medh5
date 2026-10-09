@@ -395,8 +395,9 @@ Copy-on-write: a new file is built from the old and replaced atomically.
 Objects this reader does not understand — a `x_` group, an unknown attribute —
 are copied through untouched, so amending never silently drops what it cannot
 read. A file it cannot preserve is refused before anything is written: a later
-minor version (read as a projection, `MEDH5VersionError`) or a profile this
-package does not implement (`E007`). Anything holding the file open across an
+minor version (read as a projection, `MEDH5VersionError`), a profile this
+package does not implement (`E007`), or one holding HDF5 references --- addresses
+in the old file, which no copy preserves (`MEDH5FileError`). Anything holding the file open across an
 `amend` keeps reading the old version.
 
 ## Clinical history (format 1.1)

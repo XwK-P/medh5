@@ -64,6 +64,22 @@ pub fn dataset_digest(ds: &hdf5::Dataset, path: &str, algo: &str) -> Result<Stri
 /// [`dataset_digest`] reading about `stream_bytes` at a time: the slab size
 /// changes the reads, never the digest.
 pub fn dataset_digest_streamed(ds: &hdf5::Dataset, path: &str, algo: &str, stream_bytes: usize) -> Result<String> {
+    dataset_digest_inspected(ds, path, algo, stream_bytes, None)
+}
+
+/// What [`dataset_digest_inspected`] hands each block it reads to.
+pub type Inspect<'a> = &'a mut dyn FnMut(&NdArray) -> Result<()>;
+
+/// [`dataset_digest_streamed`], handing every block of a numeric dataset it
+/// reads to `inspect` --- in order, leading axis first --- so a check of the
+/// stored values costs no second read.
+pub fn dataset_digest_inspected(
+    ds: &hdf5::Dataset,
+    path: &str,
+    algo: &str,
+    stream_bytes: usize,
+    mut inspect: Option<Inspect<'_>>,
+) -> Result<String> {
     let mut hasher = Hasher::new(algo)?;
     let shape = ds.shape();
     match data::kind(ds)? {
@@ -83,7 +99,11 @@ pub fn dataset_digest_streamed(ds: &hdf5::Dataset, path: &str, algo: &str, strea
                 return Ok(hasher.finish());
             }
             if shape.is_empty() || data::is_enum(ds) {
-                hasher.update(&data::read(ds)?.le_bytes());
+                let all = data::read(ds)?;
+                if let Some(f) = inspect.as_mut() {
+                    f(&all)?;
+                }
+                hasher.update(&all.le_bytes());
                 return Ok(hasher.finish());
             }
             let row_bytes = (shape[1..].iter().product::<usize>() * dtype.itemsize()).max(1);
@@ -91,6 +111,9 @@ pub fn dataset_digest_streamed(ds: &hdf5::Dataset, path: &str, algo: &str, strea
             let mut start = 0;
             while start < shape[0] {
                 let block = data::read_region(ds, &[Index::Slice(Slice::new(start as i64, (start + step) as i64))])?;
+                if let Some(f) = inspect.as_mut() {
+                    f(&block)?;
+                }
                 hasher.update(&block.le_bytes());
                 start += step;
             }

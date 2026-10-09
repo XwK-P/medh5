@@ -308,6 +308,25 @@ out `h5py` objects --- and the behaviour changes below.
   integers. **`to_nnunetv2`** writes labels on their own grid and refuses labels
   that are not on the channels' grid; the reference grid's affine was written
   whatever grid they were on.
+- **A `probmap` is refused where it cannot mean what it was given** (`E411`):
+  a probability that is not a number (the range check skipped NaN), and a map
+  in which some value is within `float32` rounding of the threshold on the
+  other side of it --- §7.5 says a writer MUST keep every voxel's side, and the
+  map was stored as `float32` anyway, moving that voxel across. A map written
+  `normalized=True` whose classes do not sum to 1 is `E404`.
+- **Stored probabilities are validated** at the integrity level, on the bytes
+  the digest pass reads: a value outside [0, 1] or not a number is `E411`, and
+  a `normalized` map whose classes do not sum to 1 (within the stored
+  precision) is `E404`. Only `threshold` was checked.
+- **A clinical numeric column stored big-endian is `E805`** (1.1 §4 stores them
+  little-endian; HDF5 converted on read, so it validated clean), and a member a
+  UTF-8 column does not define is `W913` under a projection, as an unknown
+  column is --- it was `E804` at any version.
+- **`amend`, `recompress` and `pack` refuse a file holding HDF5 references**
+  (`MEDH5FileError`), before writing anything: a reference is an address in the
+  file that holds it, so a copied one pointed wherever its address landed in the
+  new file, and a no-op amend nulled those in an extension group, while every
+  digest still verified. 1.0 §16 and Appendix C say so.
 - **NIfTI exports state their units and timing** (`to_nifti`, `to_nnunetv2`):
   lengths in millimetres (a grid in `m` or `um` scaled to them, `px` as
   "unknown"), evenly spaced frames as `pixdim[4]` and `toffset`, and uneven ones

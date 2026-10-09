@@ -286,6 +286,14 @@ fn read_vec<T: crate::array::Element>(ds: &hdf5::Dataset) -> Result<Vec<T>> {
     Ok(data::read(ds)?.cast::<T>().iter().copied().collect())
 }
 
+/// Whether a dataset's numbers are stored big-endian.  1.1 §4 stores a
+/// numeric column little-endian; HDF5 converts one stored the other way on
+/// read, so its values read correctly, and it is still another dtype than the
+/// profile's (C11 of the 2.0 audit).
+fn big_endian(ds: &hdf5::Dataset) -> bool {
+    ds.dtype().is_ok_and(|t| t.size() > 1 && t.byte_order() == hdf5::datatype::ByteOrder::BigEndian)
+}
+
 /// What a dataset holds, when it is a 1-D numeric dataset.
 fn numeric_1d(ds: &hdf5::Dataset) -> Option<DType> {
     match data::kind(ds) {
@@ -340,7 +348,7 @@ pub fn read_table_deferring(
             continue;
         }
         let defer = deferred.contains(&spec.name);
-        let values = match read_values(group, spec, &location, defer, &mut out.problems)? {
+        let values = match read_values(group, spec, &location, defer, projection, &mut out.problems)? {
             Some(v) => v,
             None => continue,
         };
@@ -372,6 +380,7 @@ fn read_values(
     spec: &ColumnSpec,
     location: &str,
     defer: bool,
+    projection: bool,
     problems: &mut Vec<Problem>,
 ) -> Result<Option<Values>> {
     match spec.ty {
@@ -384,12 +393,23 @@ fn read_values(
                 ));
                 return Ok(None);
             };
+            // A member this engine does not define is a later minor's under a
+            // projection (1.1 §2.2), as at the table's level; it was E804
+            // whatever the version (C06 of the 2.0 audit).
             for member in ops::members(&column)? {
                 if member != "data" && member != "offsets" {
+                    let (code, why) = if projection {
+                        (
+                            "W913",
+                            "is not defined by the clinical profile this engine implements; ignored in this projection",
+                        )
+                    } else {
+                        ("E804", "is not a member of a UTF-8 column, which holds only `data` and `offsets`")
+                    };
                     problems.push(Problem::new(
-                        "E804",
+                        code,
                         format!("{location}/{member}"),
-                        "a UTF-8 column holds only `data` and `offsets`",
+                        format!("{} {why}", crate::json::repr_str(&member)),
                     ));
                 }
             }
@@ -473,6 +493,14 @@ fn read_values(
                     "E805",
                     location,
                     format!("`{}` must be a 1-D {} dataset, not {found}", spec.name, expected.name()),
+                ));
+                return Ok(None);
+            }
+            if big_endian(&ds) {
+                problems.push(Problem::new(
+                    "E805",
+                    location,
+                    format!("`{}` is stored big-endian; §4 stores a numeric column little-endian", spec.name),
                 ));
                 return Ok(None);
             }

@@ -851,7 +851,7 @@ fn storage_dtype<'py>(
         Some(d) => dtype_arg(&d)?,
         None => DType::F16,
     };
-    Ok(dtype_to_py(py, enc::storage_dtype(&arrays, threshold, requested))?)
+    Ok(dtype_to_py(py, enc::storage_dtype(&arrays, threshold, requested)?)?)
 }
 
 /// `uint32` unless an id needs the wider form (§7.4, §8.2).

@@ -243,24 +243,55 @@ pub fn contains_at(values: &NdArray, threshold: f64) -> ArrayD<bool> {
 }
 
 /// The narrowest allowed dtype, no narrower than `requested`, under which every
-/// voxel lands on the same side of `threshold` as it was given.
-pub fn storage_dtype(planes: &[ArrayD<f64>], threshold: f64, requested: DType) -> DType {
+/// voxel lands on the same side of `threshold` as it was given (§7.5).
+///
+/// When none does --- a value within `float32` rounding of the threshold, on
+/// the other side of it --- the map is refused (E411) rather than stored as
+/// `float32` anyway, which moved that voxel across the threshold at write time
+/// while §7.5 says a writer MUST NOT (C08 of the 2.0 audit).
+pub fn storage_dtype(planes: &[ArrayD<f64>], threshold: f64, requested: DType) -> Result<DType> {
     let allowed = [DType::F16, DType::F32];
     let mut candidates: Vec<DType> = allowed.iter().copied().filter(|d| d.itemsize() >= requested.itemsize()).collect();
     if candidates.is_empty() {
         candidates.push(requested);
     }
+    let flipped = |arr: &ArrayD<f64>, candidate: DType| {
+        let stored = contains_at(&NdArray::F64(arr.clone()).astype(candidate), threshold);
+        arr.indexed_iter().zip(stored.iter()).find(|((_, v), s)| (**v >= threshold) != **s).map(|((i, v), _)| (i, *v))
+    };
     for candidate in &candidates {
-        let ok = planes.iter().all(|arr| {
-            let given = arr.mapv(|v| v >= threshold);
-            let stored = contains_at(&NdArray::F64(arr.clone()).astype(*candidate), threshold);
-            given == stored
-        });
-        if ok {
-            return *candidate;
+        if planes.iter().all(|arr| flipped(arr, *candidate).is_none()) {
+            return Ok(*candidate);
         }
     }
-    *candidates.last().unwrap()
+    let widest = *candidates.last().unwrap();
+    for (plane, arr) in planes.iter().enumerate() {
+        if let Some((index, value)) = flipped(arr, widest) {
+            return Err(Error::coded(
+                "E411",
+                format!(
+                    "probability {} (map {plane}, voxel {}) is on the other side of the threshold {} once stored as \
+                     {}, the widest dtype §7.5 allows; move it or the threshold off the rounding",
+                    crate::json::py_float(value),
+                    repr_int_tuple(index.slice()),
+                    crate::json::py_float(threshold),
+                    widest.name(),
+                ),
+            ));
+        }
+    }
+    Ok(widest)
+}
+
+/// How far a `normalized` map's per-voxel sum may be from 1 in `dtype`: the
+/// rounding of `classes` stored values, and a little for the input's.
+pub fn normalization_tolerance(dtype: DType, classes: usize) -> f64 {
+    let epsilon = match dtype {
+        DType::F16 => 2f64.powi(-10),
+        DType::F32 => 2f64.powi(-23),
+        _ => 2f64.powi(-52),
+    };
+    1e-6 + classes as f64 * epsilon
 }
 
 /// Stack per-class probability volumes on a leading class axis (§7.5).
@@ -302,20 +333,34 @@ pub fn encode_probmap(
             }
             _ => {}
         }
-        if !arr.is_empty() {
-            let lo = arr.iter().copied().fold(f64::INFINITY, f64::min);
-            let hi = arr.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-            if lo < 0.0 || hi > 1.0 {
-                return Err(Error::coded(
-                    "E411",
-                    format!("probability map for class {class_id} has values outside [0, 1]"),
-                ));
-            }
+        // `f64::min`/`max` skip NaN, so a fold over them passed a map of NaN
+        // (C09 of the 2.0 audit): every value is tested.
+        if let Some(bad) = arr.iter().find(|v| !(0.0..=1.0).contains(*v)) {
+            let what = if bad.is_nan() { "values that are not numbers" } else { "values outside [0, 1]" };
+            return Err(Error::coded("E411", format!("probability map for class {class_id} has {what}")));
         }
         planes.push(arr.clone());
     }
     let shape = shape.ok_or_else(|| Error::coded("E410", "no probability maps were supplied"))?;
-    let chosen = storage_dtype(&planes, decide, dtype);
+    if normalized && !planes.is_empty() {
+        let mut sums = ArrayD::<f64>::zeros(IxDyn(&shape));
+        for plane in &planes {
+            sums += plane;
+        }
+        let tolerance = normalization_tolerance(DType::F64, planes.len());
+        if let Some((index, sum)) = sums.indexed_iter().find(|(_, s)| (**s - 1.0).abs() > tolerance) {
+            return Err(Error::coded(
+                "E404",
+                format!(
+                    "`normalized` is true, but the classes sum to {} at voxel {}; §7.5 has them sum to 1 at every \
+                     voxel",
+                    crate::json::py_float(*sum),
+                    repr_int_tuple(index.slice())
+                ),
+            ));
+        }
+    }
+    let chosen = storage_dtype(&planes, decide, dtype)?;
     let mut full_shape = vec![planes.len()];
     full_shape.extend(&shape);
     let mut stacked = ArrayD::<f64>::zeros(IxDyn(&full_shape));

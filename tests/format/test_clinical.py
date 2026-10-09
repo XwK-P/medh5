@@ -95,6 +95,43 @@ class TestVersions:
         with pytest.raises(MEDH5VersionError):
             pack([future], tmp_path / "shard.medh5c")
 
+    def test_C06_a_member_of_a_text_column_follows_the_version(
+        self, history: Path, tmp_path: Path
+    ):
+        """A member a UTF-8 column does not define is a later minor's under a
+        projection (W913), as an unknown column is; it was E804 at any version."""
+        for version, expected in (("1.1", "E804"), ("1.2", "W913")):
+            path = tmp_path / f"v{version}.medh5"
+            shutil.copyfile(history, path)
+            with h5py.File(path, "r+") as f:
+                f.attrs["medh5_version"] = version
+                f["clinical/events/kind"].create_dataset(
+                    "index", data=np.zeros(3, np.uint8)
+                )
+            found = {
+                d.code
+                for d in validate_file(path).diagnostics
+                if d.location == "/clinical/events/kind/index"
+            }
+            assert found == {expected}, (version, found)
+
+    def test_C11_S4_a_big_endian_numeric_column_is_E805(
+        self, history: Path, tmp_path: Path
+    ):
+        """1.1 §4 stores numeric columns little-endian; HDF5 converts on read,
+        so a big-endian column read correctly and validated clean."""
+        path = tmp_path / "big.medh5"
+        shutil.copyfile(history, path)
+        with h5py.File(path, "r+") as f:
+            table = f["clinical/events"]
+            values = table["value_num"][...]
+            del table["value_num"]
+            table.create_dataset("value_num", data=values.astype(">f8"))
+        report = validate_file(path)
+        (found,) = [d for d in report.diagnostics if d.code == "E805"]
+        assert found.location == "/clinical/events/value_num"
+        assert "big-endian" in found.message
+
     def test_S2_2_another_major_is_refused(self, history: Path, tmp_path: Path):
         future = tmp_path / "major.medh5"
         shutil.copyfile(history, future)

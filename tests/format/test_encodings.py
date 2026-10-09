@@ -276,6 +276,40 @@ class TestEncoders:
             encode_probmap({1: np.full(SHAPE, 1.5)}, SHAPE)
         assert exc.value.code == "E411"
 
+    def test_C09_a_probability_that_is_not_a_number_is_refused(self):
+        """`f64::min` and `max` skip NaN, so the range check passed a map of NaN."""
+        with pytest.raises(MEDH5ValidationError, match="not numbers") as exc:
+            encode_probmap({1: np.full(SHAPE, np.nan)}, SHAPE)
+        assert exc.value.code == "E411"
+
+    def test_C09_a_normalized_map_sums_to_one(self):
+        with pytest.raises(MEDH5ValidationError, match="sum to 0.9") as exc:
+            encode_probmap(
+                {1: np.full(SHAPE, 0.5), 2: np.full(SHAPE, 0.4)}, SHAPE, normalized=True
+            )
+        assert exc.value.code == "E404"
+        encode_probmap(
+            {1: np.full(SHAPE, 0.6), 2: np.full(SHAPE, 0.4)}, SHAPE, normalized=True
+        )
+
+    def test_C08_S7_5_a_value_no_dtype_keeps_on_its_side_is_refused(self):
+        """§7.5: a writer MUST store a dtype under which every voxel keeps its
+        side of the threshold.  Within float32 rounding of it, none does, and
+        the map was stored as float32 anyway --- one voxel across the line."""
+        from medh5.annotations.voxel import storage_dtype
+
+        votes = np.full(SHAPE, 0.25)
+        votes.flat[3] = 0.5 - 1e-10  # below 0.5; 0.5 itself in float32
+        with pytest.raises(
+            MEDH5ValidationError, match="other side of the threshold"
+        ) as exc:
+            encode_probmap({1: votes}, SHAPE)
+        assert exc.value.code == "E411"
+        with pytest.raises(MEDH5ValidationError):
+            storage_dtype([votes], 0.5)
+        votes.flat[3] = 0.5 - 1e-6  # float32 tells this one apart
+        assert storage_dtype([votes], 0.5) == np.float32
+
     def test_mask_encoding_carries_no_classes(self):
         payload = encode_mask(np.ones(SHAPE, dtype=bool))
         assert payload.class_ids == ()

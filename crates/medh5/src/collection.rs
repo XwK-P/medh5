@@ -214,6 +214,7 @@ pub fn default_key(path: &Path) -> Result<String> {
 }
 
 fn copy_root(src: &hdf5::Group, dst: &hdf5::Group) -> Result<()> {
+    ops::refuse_references(src, "packing or unpacking")?;
     for name in ops::members(src)? {
         ops::copy_object(src, &name, dst, &name)?;
     }

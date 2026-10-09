@@ -14,7 +14,7 @@ use std::os::raw::{c_char, c_void};
 use std::path::Path;
 use std::sync::Mutex;
 
-use crate::h5sys::{h5, h5d, h5i, h5l, h5o, h5p};
+use crate::h5sys::{h5, h5d, h5i, h5l, h5o, h5p, h5t};
 use crate::json::repr_str;
 use crate::{Error, Result};
 
@@ -359,6 +359,95 @@ unsafe extern "C" fn visit_link(
         let _ = state.file;
         0
     }
+}
+
+/// Whether a datatype is, or holds, an HDF5 reference: an object or region
+/// reference, alone or as a member of a compound, array or variable-length
+/// type.  The caller holds the HDF5 lock.
+fn holds_reference(tid: h5i::hid_t) -> bool {
+    use h5t::H5T_class_t as Class;
+    unsafe {
+        match h5t::H5Tget_class(tid) {
+            Class::H5T_REFERENCE => true,
+            Class::H5T_COMPOUND => {
+                let members = h5t::H5Tget_nmembers(tid).max(0) as u32;
+                (0..members).any(|i| {
+                    let member = h5t::H5Tget_member_type(tid, i);
+                    if member < 0 {
+                        return false;
+                    }
+                    let found = holds_reference(member);
+                    h5t::H5Tclose(member);
+                    found
+                })
+            }
+            Class::H5T_ARRAY | Class::H5T_VLEN => {
+                let base = h5t::H5Tget_super(tid);
+                if base < 0 {
+                    return false;
+                }
+                let found = holds_reference(base);
+                h5t::H5Tclose(base);
+                found
+            }
+            _ => false,
+        }
+    }
+}
+
+/// Every dataset and attribute under `root` whose type holds an HDF5
+/// reference: `/path` for a dataset, `/path@name` for an attribute.
+pub fn reference_carriers(root: &hdf5::Group) -> Result<Vec<String>> {
+    fn attributes(obj: &hdf5::Location, path: &str, found: &mut Vec<String>) -> Result<()> {
+        for name in obj.attr_names()? {
+            let dtype = obj.attr(&name)?.dtype()?;
+            if super::locked(|| holds_reference(dtype.id())) {
+                found.push(format!("{path}@{name}"));
+            }
+        }
+        Ok(())
+    }
+    let mut found = Vec::new();
+    attributes(root, "/", &mut found)?;
+    visit(root, &mut |name, node| {
+        let path = format!("/{name}");
+        match node {
+            Node::Dataset(ds) => {
+                let dtype = ds.dtype()?;
+                if super::locked(|| holds_reference(dtype.id())) {
+                    found.push(path.clone());
+                }
+                attributes(ds, &path, &mut found)?;
+            }
+            Node::Group(g) => attributes(g, &path, &mut found)?,
+        }
+        Ok(true)
+    })?;
+    Ok(found)
+}
+
+/// Refuse to copy a file that holds HDF5 references into a new one.
+///
+/// A reference is an address in the file that holds it.  MEDH5 stores none,
+/// so any is another tool's content, which amend, recompress, pack and repack
+/// carry over without understanding: copied, an object reference pointed
+/// wherever its address happened to land in the new file, and a no-op amend
+/// nulled the ones in an extension group --- while every digest still
+/// verified (C10 of the 2.0 audit).
+pub fn refuse_references(root: &hdf5::Group, action: &str) -> Result<()> {
+    let found = reference_carriers(root)?;
+    if found.is_empty() {
+        return Ok(());
+    }
+    let named = found.iter().take(5).cloned().collect::<Vec<_>>().join(", ");
+    let more = if found.len() > 5 { format!(" (and {} more)", found.len() - 5) } else { String::new() };
+    Err(Error::File(format!(
+        "{} holds HDF5 references ({named}{more}). A reference is an address in the file that holds it, and \
+         {action} writes a new file, where it would point at whatever lands at that address; MEDH5 stores no \
+         references and does not rewrite another tool's, so the file is refused --- remove them, or rewrite it \
+         with the tool that wrote them",
+        repr_str(&root.filename())
+    )))
 }
 
 /// Objects that read bytes from outside the file: `(path, what)` pairs.

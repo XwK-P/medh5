@@ -111,6 +111,7 @@ pub fn recompress(path: &Path, profile: &str, out: Option<&Path>, rechunk: bool)
         require_major(src, path)?;
         let before = attrs::get_str(src, "content_id")?;
         let src_root = src.as_group()?;
+        ops::refuse_references(&src_root, "recompression")?;
         let dst_root = dst.as_group()?;
         let mut copied = Copied::default();
         copied.note(&src_root, &dst_root);

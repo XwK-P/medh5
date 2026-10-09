@@ -1486,7 +1486,10 @@ one.
   and a writer **MUST NOT** amend, recompress or pack such a file, since it cannot preserve what it
   does not know ([1.1](medh5-1.1.md) §2.2).
 * Third-party extensions live under `/meta → extra.<reverse-dns-namespace>` and under HDF5 groups
-  named `x_<namespace>_<name>`. Neither is touched by validators, and both survive amend.
+  named `x_<namespace>_<name>`. Neither is touched by validators, and both survive amend --- unless
+  they hold an HDF5 reference (an object or region reference, alone or inside a compound, array or
+  variable-length type). A reference is an address in the file that holds it, which no copy into a
+  new file preserves, so a writer **MUST NOT** amend, recompress or pack a file holding one.
 * Registering a new annotation `kind` or transform `kind` requires a MINOR bump and an entry in
   §6.3 / §10.1.
 
@@ -1605,10 +1608,11 @@ any machine. On one, with a 192×256×256 synthetic CT and eight classes, a mult
 costs 3.4 ms, foreground centre sampling 0.03 ms (O(1) in volume size, via §14.3; 0.05 ms at 63
 classes), a metadata-only read 0.19 ms, and `open()` → first patch 2.3 ms.
 
-Twenty-six clauses have been corrected — ten during implementation, eleven in the 1.x package
+Twenty-seven clauses have been corrected — ten during implementation, eleven in the 1.x package
 releases that followed, four when the engine was written a second time, in Rust, for the 2.0
-package, and one when it implemented 1.1 — each because writing the code showed the text was not
-implementable, not unambiguous, or not what the implementation could honestly promise, as written:
+package, one when it implemented 1.1, and one in the audit of 2.0 before its release — each because
+writing the code showed the text was not implementable, not unambiguous, or not what the
+implementation could honestly promise, as written:
 
 | Clause | Correction |
 |---|---|
@@ -1638,6 +1642,7 @@ implementable, not unambiguous, or not what the implementation could honestly pr
 | §13.1 | `dtype_str` is spelled out for every stored type, including `|O` for variable-length strings, and `shape_csv` is defined. "The NumPy dtype string" left a string dataset's header to whatever a reader's string type is called, and a second implementation would have digested every point `names` and classification `schemes` column differently. |
 | §14.3 | An index's `seed` reproduces a subsample only within the implementation that drew it. The table said `max_coords` and `seed` gave "reproducibility of the subsample", but nothing specifies the generator: 1.x drew from NumPy's, and matching it meant carrying a copy of NumPy's seeding and bounded-integer algorithms in every implementation. An index is derived and outside every digest (§13.1), so a different subsample is a different cache of the same sample. |
 | §16 | "**MUST** accept a higher MINOR" is acceptance for *reading* the supported projection, not validation of the newer version or permission to amend it. Read literally beside "amend preserves", it promised what no implementation can: a writer that rewrites a file of a later minor drops or misattests whatever that minor defines, and a validator passing such a file claims conformance to rules it has never seen. 1.1 §2.2 defines the projection, W913 and the refusal. |
+| §16 | Extensions survive amend *except* HDF5 references, which a writer refuses to copy. "Both survive amend" could not hold for a reference: it is an address in the file that holds it, and amend, recompress and pack write a new file, where a copied reference pointed wherever its address happened to land --- and a no-op amend nulled those in an extension group --- while every digest still verified. |
 
 ### C.2 Prototype checks
 

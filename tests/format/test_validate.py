@@ -194,6 +194,52 @@ class TestRules:
         assert medh5.CODES["E603"].summary == "unknown agent or activity type"
 
 
+class TestStoredProbabilities:
+    """§7.5 at the integrity level, on the bytes the digest pass reads: values
+    are numbers in [0, 1], and a `normalized` map's classes sum to 1 (C09 of
+    the 2.0 audit).  Only `threshold` was checked."""
+
+    @staticmethod
+    def _probmap(path: Path) -> Path:
+        votes = np.zeros(Numbered.SHAPE)
+        votes[2:4] = 0.75
+        with Numbered.writer(path) as w:
+            w.add_segmentation("soft", grid="g", probabilities={1: votes, 2: 1 - votes})
+        return path
+
+    @pytest.mark.parametrize("value", [np.nan, 1.5, -0.25])
+    def test_C09_a_stored_value_outside_the_unit_interval_is_E411(
+        self, tmp_path, value
+    ):
+        path = self._probmap(tmp_path / "pm.medh5")
+        with h5py.File(path, "r+") as f:
+            data = f["annotations/soft/data"]
+            stored = data[...]
+            stored[1, 3, 2, 1] = value
+            data[...] = stored
+        report = validate_file(path, level="integrity")
+        (found,) = [d for d in report.diagnostics if d.code == "E411"]
+        assert found.location == "/annotations/soft/data"
+        assert "class 2, voxel (3, 2, 1)" in found.message
+        # Values are read where the digests are: not below the integrity level.
+        assert "E411" not in validate_file(path, level="semantic").codes
+
+    def test_C09_a_normalized_map_that_does_not_sum_to_one_is_E404(self, tmp_path):
+        path = self._probmap(tmp_path / "pm.medh5")
+        assert validate_file(path, level="integrity").ok
+        with h5py.File(path, "r+") as f:
+            f["annotations/soft"].attrs["normalized"] = True
+        assert "E404" not in validate_file(path, level="integrity").codes
+        with h5py.File(path, "r+") as f:
+            data = f["annotations/soft/data"]
+            stored = data[...]
+            stored[0, 5, 0, 0] = 0.25
+            data[...] = stored
+        report = validate_file(path, level="integrity")
+        (found,) = [d for d in report.diagnostics if d.code == "E404"]
+        assert "sum to 1.25 at voxel (5, 0, 0)" in found.message
+
+
 class TestCorruptFiles:
     """A validator is pointed at files of unknown provenance; it may not crash."""
 

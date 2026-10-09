@@ -208,6 +208,7 @@ pub fn amend(path: &Path, codec: Option<&str>) -> Result<SampleWriter> {
         )));
     }
     let root = source.as_group()?;
+    ops::refuse_references(&root, "an amendment")?;
     let chosen = match codec {
         Some(c) => c.to_string(),
         None => profile_family(&root)?.to_string(),

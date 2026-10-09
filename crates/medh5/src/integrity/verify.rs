@@ -2,7 +2,11 @@
 
 use serde_json::{json, Value};
 
-use super::digest::{collect_digests, compute_content_id, dataset_digest, group_digest, root_algo, AttrNameMap};
+use super::digest::{
+    collect_digests, compute_content_id, dataset_digest, dataset_digest_inspected, group_digest, root_algo,
+    AttrNameMap, STREAM_BYTES,
+};
+use crate::array::NdArray;
 use crate::digest::{parse_digest, DEFAULT_ALGO};
 use crate::h5::attrs::{self, AttrValue};
 use crate::h5::ops::{self, Node, NodeKind};
@@ -129,6 +133,19 @@ pub fn verify_root(
     partial: Option<&[String]>,
     check_content_id: bool,
 ) -> Result<VerifyResult> {
+    verify_root_inspecting(root, attr_names, partial, check_content_id, &mut |_, _| Ok(()))
+}
+
+/// [`verify_root`], handing every block of every digested dataset it reads to
+/// `inspect` with the dataset's path (relative to `root`): what a check of
+/// stored values needs, at the cost of no second read.
+pub fn verify_root_inspecting(
+    root: &hdf5::Group,
+    attr_names: Option<&AttrNameMap>,
+    partial: Option<&[String]>,
+    check_content_id: bool,
+    inspect: &mut dyn FnMut(&str, &NdArray) -> Result<()>,
+) -> Result<VerifyResult> {
     let stored = collect_digests(root, &["index"])?;
     let targets: Vec<String> = match partial {
         Some(p) => p.to_vec(),
@@ -150,7 +167,8 @@ pub fn verify_root(
         };
         result.checked.push(path.clone());
         let ds = root.dataset(&path)?;
-        if &dataset_digest(&ds, &path, &algo)? != value {
+        let mut each = |block: &NdArray| inspect(&path, block);
+        if &dataset_digest_inspected(&ds, &path, &algo, STREAM_BYTES, Some(&mut each))? != value {
             result.mismatched.push(path);
         }
     }

@@ -668,6 +668,7 @@ pub fn repack(path: &Path) -> Result<()> {
     crate::h5::file::atomic_rewrite(path, None, |src, dst| {
         require_major(src, path)?;
         let (src_root, dst_root) = (src.as_group()?, dst.as_group()?);
+        ops::refuse_references(&src_root, "a repack")?;
         for name in ops::members(&src_root)? {
             ops::copy_object(&src_root, &name, &dst_root, &name)?;
         }
