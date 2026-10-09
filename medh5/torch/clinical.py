@@ -42,7 +42,9 @@ version available at the cutoff itself recorded about later: a plan's start
 share a ``tie_group``: their order in the sequence is the storage tie-break,
 not evidence.  An absent value is ``has_value = False``; a value known only as
 ``< 5`` has its ``comparator``; an expected result that is missing for a
-reason has ``missing`` --- never a measured zero.
+reason has ``missing`` --- never a measured zero.  A value is normalised only
+in the unit its concept was fitted in (``unit`` 2; another unit is 1, with
+``value`` 0), and a text value is a fitted category (``value_index``).
 
 Learned preprocessing --- the concept vocabulary and per-concept value
 statistics --- is fitted on the task's **training partition** only, and
@@ -95,15 +97,25 @@ def concept_of(event: Event) -> str:
 
 @dataclass(frozen=True)
 class ConceptVocabulary:
-    """Concept indices and per-concept value statistics, fitted on one
-    partition of one task --- and saying which.
+    """Concept indices, per-concept value statistics and the categories each
+    concept's text values took, fitted on one partition of one task --- and
+    saying which.
 
     Index 0 is padding and 1 an unseen concept; fitted concepts start at 2.
+    Categorical values (an event's ``value_text``) are indexed the same way,
+    as ``(concept, value)`` pairs: 0 for no value, 1 for one the concept never
+    took in training, fitted pairs from 2.  A concept's statistics are in the
+    one unit its training values were in (``units``): values in two units are
+    refused at fit time, and a value in another unit is never normalised with
+    them.  Without both, ``female`` and ``male`` --- and 5 mg/dL and 5 mmol/L
+    --- were the same input (B07 of the 2.0 audit).
     """
 
     concepts: tuple[str, ...]
     stats: Mapping[str, tuple[float, float]] = field(default_factory=dict)
     fitted_on: Mapping[str, Any] | None = None
+    units: Mapping[str, str | None] = field(default_factory=dict)
+    categories: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
 
     @classmethod
     def fit(
@@ -129,22 +141,49 @@ class ConceptVocabulary:
                 admitted.setdefault(k, []).append(row.selected)
         seen: set[str] = set()
         values: dict[str, list[float]] = {}
+        units: dict[str, set[str | None]] = {}
+        texts: dict[str, set[str]] = {}
         for k, parts in admitted.items():
             events = report.subjects[k].events
             tokens, codes = events.concepts()
             index = np.unique(np.concatenate(parts))
             seen.update(tokens[c] for c in np.unique(codes[index]))
-            valid = events.column("value_num_valid")[index]
-            numbers = events.column("value_num")[index][valid]
-            for c, v in zip(codes[index][valid], numbers, strict=True):
-                values.setdefault(tokens[c], []).append(float(v))
+            valid = events.column("value_num_valid")
+            numbers = events.column("value_num")
+            unit, text = events.column("unit"), events.column("value_text")
+            for i in index.tolist():
+                token = tokens[codes[i]]
+                if valid[i]:
+                    values.setdefault(token, []).append(float(numbers[i]))
+                    units.setdefault(token, set()).add(_text_at(unit, i))
+                label = _text_at(text, i)
+                if label is not None:
+                    texts.setdefault(token, set()).add(label)
+        mixed = {token: found for token, found in units.items() if len(found) > 1}
+        if mixed:
+            listed = "; ".join(
+                f"{token}: {sorted(found, key=str)}"
+                for token, found in sorted(mixed.items())
+            )
+            raise MEDH5ValidationError(
+                "these concepts have values in more than one unit among the "
+                f"training rows ({listed}); one mean and deviation cannot "
+                "normalise both --- convert them to one unit, or code them as "
+                "different concepts"
+            )
         stats = {}
         for token, found in sorted(values.items()):
             array = np.asarray(found, dtype=np.float64)
             std = float(array.std()) if array.size > 1 else 0.0
             stats[token] = (float(array.mean()), std if std > 1e-12 else 1.0)
         record = None if chosen is None else fitted_on(task, chosen)
-        return cls(tuple(sorted(seen)), stats, record)
+        return cls(
+            tuple(sorted(seen)),
+            stats,
+            record,
+            {token: next(iter(found)) for token, found in sorted(units.items())},
+            {token: tuple(sorted(found)) for token, found in sorted(texts.items())},
+        )
 
     def index(self, token: str) -> int:
         try:
@@ -161,9 +200,36 @@ class ConceptVocabulary:
 
     def normalise(self, token: str, value: float) -> float:
         """``(value - mean) / std`` with the fitted statistics (identity when
-        the concept was not fitted)."""
+        the concept was not fitted).  The statistics are in
+        ``units[token]``: a value in another unit must not be passed."""
         mean, std = self.stats.get(token, (0.0, 1.0))
         return (float(value) - mean) / std
+
+    def fits_unit(self, token: str, unit: str | None) -> bool:
+        """Whether a value of *token* in *unit* is one the statistics describe:
+        the concept was fitted, and in this unit."""
+        return token in self.stats and self.units.get(token) == unit
+
+    def value_index(self, token: str, text: str | None) -> int:
+        """A categorical value's index: 0 none, 1 unseen, fitted pairs from 2."""
+        if text is None:
+            return PAD
+        return self._value_lookup().get((token, text), UNKNOWN)
+
+    def _value_lookup(self) -> dict[tuple[str, str], int]:
+        cached: dict[tuple[str, str], int] | None = self.__dict__.get("_values")
+        if cached is None:
+            pairs = [
+                (t, v) for t in sorted(self.categories) for v in self.categories[t]
+            ]
+            cached = {pair: i + 2 for i, pair in enumerate(pairs)}
+            object.__setattr__(self, "_values", cached)
+        return cached
+
+    @property
+    def n_values(self) -> int:
+        """Categorical indices in use: none, unseen, and the fitted pairs."""
+        return sum(len(v) for v in self.categories.values()) + 2
 
     def __len__(self) -> int:
         """Indices in use: padding, unknown, and the fitted concepts."""
@@ -173,6 +239,8 @@ class ConceptVocabulary:
         return {
             "concepts": list(self.concepts),
             "stats": {k: list(v) for k, v in sorted(self.stats.items())},
+            "units": dict(sorted(self.units.items())),
+            "categories": {k: list(v) for k, v in sorted(self.categories.items())},
             "fitted_on": None if self.fitted_on is None else dict(self.fitted_on),
         }
 
@@ -185,6 +253,14 @@ class ConceptVocabulary:
                 for k, v in doc.get("stats", {}).items()
             },
             doc.get("fitted_on"),
+            {
+                str(k): None if v is None else str(v)
+                for k, v in doc.get("units", {}).items()
+            },
+            {
+                str(k): tuple(str(x) for x in v)
+                for k, v in doc.get("categories", {}).items()
+            },
         )
 
     @property
@@ -226,6 +302,12 @@ class ConceptVocabulary:
                     f"this task's training partition is {expected[key]!r}",
                     "T405",
                 )
+
+
+def _text_at(column: Any, i: int) -> str | None:
+    """Cell *i* of a text column that may be all null; empty reads as null."""
+    value = None if column is None else column[i]
+    return value or None
 
 
 def _require_preflight_of(task: TaskManifest, report: Preflight) -> None:
@@ -387,6 +469,9 @@ class ClinicalTaskDataset(_DatasetBase):  # type: ignore[misc,valid-type]
                 npt.NDArray[np.int64], npt.NDArray[np.float64], npt.NDArray[np.float64]
             ],
         ] = {}
+        self._values: dict[
+            int, tuple[npt.NDArray[np.int64], npt.NDArray[np.bool_]]
+        ] = {}
         self._rows_cache: _LazyCache | None = None
         if row_features is not None:
             _require_level(row_features, "patient", "row_features")
@@ -508,6 +593,27 @@ class ClinicalTaskDataset(_DatasetBase):  # type: ignore[misc,valid-type]
             self._vocabularies[k] = found
         return found
 
+    def _values_of(
+        self, k: int, subject: SubjectHistory
+    ) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.bool_]]:
+        """Per event version of one subject: its categorical value's index,
+        and whether its numeric value is in the unit its concept was fitted in."""
+        found = self._values.get(k)
+        if found is None:
+            events = subject.events
+            tokens, codes = events.concepts()
+            unit, text = events.column("unit"), events.column("value_text")
+            n = len(events)
+            index = np.zeros(n, dtype=np.int64)
+            fits = np.zeros(n, dtype=bool)
+            for i in range(n):
+                token = tokens[codes[i]]
+                index[i] = self.concepts.value_index(token, _text_at(text, i))
+                fits[i] = self.concepts.fits_unit(token, _text_at(unit, i))
+            found = (index, fits)
+            self._values[k] = found
+        return found
+
     def _events(self, row: RowView) -> dict[str, npt.NDArray[Any]]:
         """The admitted versions, in input order, as arrays (see the module
         notes on time): read from the subject's columns, not from objects."""
@@ -518,10 +624,16 @@ class ClinicalTaskDataset(_DatasetBase):  # type: ignore[misc,valid-type]
         k = row.selected.astype(np.int64)
         _, codes = events.concepts()
         index, mean, std = self._vocabulary_of(int(row.subject_index or 0), subject)
+        categories, fits = self._values_of(int(row.subject_index or 0), subject)
         local = codes[k]
         has_value = events.column("value_num_valid")[k]
         raw = events.column("value_num")[k]
-        value = np.where(has_value, (raw - mean[local]) / std[local], 0.0)
+        # Normalised only in the unit the statistics are in: a value in another
+        # unit, or of a concept never fitted, is 0 with `unit` 1 --- present,
+        # and not comparable --- rather than a raw number among standard scores.
+        fitted = has_value & fits[k]
+        value = np.where(fitted, (raw - mean[local]) / std[local], 0.0)
+        unit = np.where(has_value, np.where(fitted, 2, 1), 0).astype(np.int64)
         # `eq` when absent and a value is valid (1.1 §5.1); 0 when no value.
         comparator = events.column("value_comparator_code")[k].astype(np.int64) + 1
         comparator = np.where(
@@ -537,6 +649,8 @@ class ClinicalTaskDataset(_DatasetBase):  # type: ignore[misc,valid-type]
             + 1,
             "value": value.astype(np.float32),
             "has_value": np.asarray(has_value, dtype=bool),
+            "unit": unit,
+            "value_index": categories[k],
             "comparator": comparator,
             "missing": _present(events.column("missing_reason"), k),
         }
@@ -775,6 +889,8 @@ def _no_events() -> dict[str, npt.NDArray[Any]]:
             "temporal_type",
             "comparator",
             "tie_group",
+            "unit",
+            "value_index",
         )
     }
     out.update(

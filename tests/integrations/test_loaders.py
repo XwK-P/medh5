@@ -157,6 +157,100 @@ class TestPatchDataset:
         for obj in objects:
             assert set(obj) == {"instance_id", "class_id", "box", "score"}
 
+    @staticmethod
+    def _instances(path: Path, label_set: Any, shape: tuple[int, ...]) -> None:
+        liver = np.zeros(shape, dtype=bool)
+        liver[0:3, 0:3, 0:3] = True
+        lesion = np.zeros(shape, dtype=bool)
+        lesion[1:3, 1:3, 1:3] = True
+        with medh5.create(path, codec="portable") as w:
+            w.label_set(label_set)
+            w.add_grid("g", shape=shape, spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", np.zeros(shape, dtype=np.int16), grid="g", modality="CT")
+            w.add_segmentation(
+                "les",
+                grid="g",
+                instances=[
+                    InstanceInput(class_id=1, instance_id=1, mask=liver),
+                    InstanceInput(class_id=3, instance_id=2, mask=lesion),
+                ],
+            )
+
+    def test_L05_a_padded_patch_shifts_boxes_by_its_padding(self, tmp_path, label_set):
+        """A 4^3 volume in an 8^3 patch is padded before as well as after; the
+        boxes kept the unpadded crop's coordinates, two voxels off."""
+        path = tmp_path / "small.medh5"
+        self._instances(path, label_set, (4, 4, 4))
+        ds = PatchDataset(
+            [path],
+            PatchSampler(8, strategy="uniform"),
+            annotations={"les": []},
+            label_format="instances",
+        )
+        item = ds[0]
+        patch = item["meta"]["patch"]
+        before = np.asarray([pad[0] for pad in patch["pad"]], dtype=np.float64)
+        start = np.asarray(patch["start"], dtype=np.float64)
+        assert before.any(), "the patch is padded before"
+        with medh5.open(path) as sample:
+            boxes = {
+                o.instance_id: np.asarray(o.box)
+                for o in sample.annotations["les"].instances()
+            }
+        for obj in item["label"]["les"]:
+            expected = boxes[obj["instance_id"]] - start[:, None] + before[:, None]
+            assert np.allclose(obj["box"], expected)
+        # The lesion's voxels in the padded tensor are where its box says.
+        dense = PatchDataset(
+            [path],
+            PatchSampler(8, strategy="uniform"),
+            annotations={"les": ["lesion"]},
+            label_format="onehot",
+        )[0]["label"]["les"][0]
+        (lesion,) = [o for o in item["label"]["les"] if o["class_id"] == 3]
+        found = np.argwhere(np.asarray(dense))
+        assert np.allclose(lesion["box"][:, 0] + 0.5, found.min(axis=0))
+        assert np.allclose(lesion["box"][:, 1] - 0.5, found.max(axis=0))
+
+    def test_L09_instances_are_the_requested_classes(self, tmp_path, label_set):
+        path = tmp_path / "two.medh5"
+        self._instances(path, label_set, (4, 4, 4))
+        every = PatchDataset(
+            [path],
+            PatchSampler(8, strategy="uniform"),
+            annotations={"les": []},
+            label_format="instances",
+        )
+        assert sorted(o["class_id"] for o in every[0]["label"]["les"]) == [1, 3]
+        ds = PatchDataset(
+            [path],
+            PatchSampler(8, strategy="uniform"),
+            annotations={"les": ["lesion"]},
+            label_format="instances",
+        )
+        assert [o["class_id"] for o in ds[0]["label"]["les"]] == [3]
+
+    def test_L05_a_box_touching_the_patch_edge_does_not_overlap_it(self):
+        """Edges sit half a voxel out: a box ending at ``start - 0.5`` covers
+        no voxel of the patch, and one starting at ``stop - 0.5`` none either."""
+        from types import SimpleNamespace
+
+        from medh5.sampling import Patch
+
+        def ann(*boxes: Any) -> Any:
+            objects = [
+                SimpleNamespace(instance_id=i, class_id=1, box=box, score=None)
+                for i, box in enumerate(boxes)
+            ]
+            return SimpleNamespace(instances=lambda: iter(objects))
+
+        patch = Patch(slices=(slice(4, 8),))
+        touching = ann([[1.5, 3.5]], [[7.5, 9.5]])
+        assert PatchDataset._instances_in(touching, patch) == []
+        inside = ann([[2.5, 4.0]], [[7.0, 9.5]])
+        boxes = [o["box"].tolist() for o in PatchDataset._instances_in(inside, patch)]
+        assert boxes == [[[-1.5, 0.0]], [[3.0, 5.5]]]
+
 
 class TestPatchGrids:
     def test_S14_3_a_patch_is_not_read_out_of_two_grids(

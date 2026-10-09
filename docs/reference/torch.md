@@ -257,7 +257,7 @@ batch = next(iter(DataLoader(train, batch_size=8, collate_fn=collate_clinical)))
 | `task` | A `TaskManifest` or the path of one |
 | `partition` | One partition of the task's split |
 | `statuses` | Preflight statuses to keep (`("eligible",)`) |
-| `concepts` | A `ConceptVocabulary` --- fitted on the training partition when omitted, refused when fitted on anything else (T405) |
+| `concepts` | A `ConceptVocabulary` --- fitted on the training partition when omitted, refused when fitted on anything else (T405). It holds each concept's statistics in the one unit its training values were in (a concept whose training values are in two units is refused at fit time) and the text values each concept took |
 | `documents` | An event-level feature cache's path, or an encoder with `encode(text)` and `dim` |
 | `row_features` | A patient-level cache, validated against the task before any row reads it |
 | `strict` | Refuse a task whose preflight has findings (default), or keep only the unaffected rows |
@@ -284,6 +284,8 @@ to one number:
 |---|---|---|
 | `concept`, `kind`, `status`, `temporal_type` | `(B, N)` int | Vocabulary index (0 padding, 1 unseen); the kind, status and temporal type as their vocabulary's index + 1 (0 padding) |
 | `value`, `has_value` | `(B, N)` | The value, normalised by the fitted statistics; whether there is one --- an absent value is not 0 |
+| `unit` | `(B, N)` int | 2 when the value is in the unit its concept was fitted in (and so normalised); 1 when it is in another, or its concept was not fitted --- then `value` is 0; 0 without a value |
+| `value_index` | `(B, N)` int | The text value (`value_text`) as a fitted `(concept, value)` pair's index: 0 none, 1 a value the concept never took in training, fitted pairs from 2 (`ConceptVocabulary.n_values` in all) |
 | `comparator` | `(B, N)` int | `eq`, `lt`, ... as `COMPARATORS` index + 1 (`eq` when a value has none); 0 without a value |
 | `missing` | `(B, N)` bool | An expected result missing for a source reason: absence, never a negative |
 | `start_age_h`, `end_age_h`, `available_age_h` | `(B, N, 2)` | Effective start, effective end and availability as ages before the cutoff in hours: `[..., 0]` the least, `[..., 1]` the most, equal for an exact instant |

@@ -135,6 +135,11 @@ What each part of a batch means, and the masks that keep it honest:
 - **`events`** is the admitted history in clinical order --- concept, kind, status, normalised value
   with its comparator, and every time it has --- padded to the longest history in the batch, with
   `mask` marking real events. A revised report contributes the version known at the cutoff.
+- **A value keeps its category and its unit.** `value_index` indexes a text value (`female`,
+  `positive`) as the fitted pair of concept and value. A numeric value is normalised only in the unit
+  its concept was fitted in: `unit` is 2 for those, 1 for a value in another unit --- present, and
+  left at 0 rather than mixed in among standard scores --- and fitting refuses a concept whose
+  training values come in two units.
 - **Time keeps its uncertainty.** An event's effective start, its end and its availability are each
   given as bounds, as ages before the cutoff (`start_age_h[..., 0]` the least, `[..., 1]` the most): a
   diagnosis known to the day keeps its whole day, not a guessed hour. Each has a `*_known` mask, so an

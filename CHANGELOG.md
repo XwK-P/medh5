@@ -140,7 +140,11 @@ out `h5py` objects --- and the behaviour changes below.
   target observation kept as distinct masks. `ConceptVocabulary` is fitted on
   the training partition and records it. Both take only the manifest's own
   preflight (T404), and document features only from an event-level cache
-  fitted on the training split.
+  fitted on the training split. The vocabulary keeps each concept's text
+  values (`value_index`: `female` and `male` are different inputs) and the one
+  unit its statistics are in: a concept with training values in two units is
+  refused at fit time, and a value in another unit is flagged (`unit`) rather
+  than normalised with statistics it does not share.
 - **Batches keep time's uncertainty.** Every time an input carries --- an
   event's effective start and end, its availability, an image's acquisition
   --- is given as its bounds, as ages before the cutoff (`start_age_h`,
@@ -370,6 +374,19 @@ out `h5py` objects --- and the behaviour changes below.
   that patch reads are codec-insensitive. Re-measured with a new window per
   read, the codec shows: 1.3 ms for `training`'s lz4, 8.9 ms for `portable`'s
   gzip.
+- **Detection boxes in a padded patch are where their voxels are.** A patch
+  reaching past the volume is padded before as well as after, and
+  `label_format="instances"` subtracted the patch start alone, leaving every box
+  `pad_before` voxels from the anatomy; it now adds the padding, and tests
+  overlap at voxel edges (a box ending at `start - 0.5` covers none of the
+  patch). It also returns only the requested classes, as every other label
+  format does --- it returned every class.
+- **A MONAI ROI's affine follows the read.** `to_metatensor(roi=…)` shifted the
+  origin by `slice.start or 0`: a negative start counted from the first voxel
+  rather than the last, and a step kept the full spacing. The ROI is resolved
+  against the level's shape, its step composed into the affine, the resolved
+  `[start, stop, step]` recorded in `meta["medh5"]["roi"]`, and an integer
+  index --- which drops an axis the affine keeps --- refused.
 
 ### Performance
 

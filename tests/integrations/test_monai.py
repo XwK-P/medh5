@@ -159,10 +159,55 @@ class TestMonai:
         with medh5.open(indexed_cohort[0]) as sample:
             grid = sample.grids["ct_tp0"]
             affine = affine_for(sample, "CT_tp0")
-            roi = (slice(2, 6), slice(4, 8), slice(0, 4))
+            roi = (slice(2, 6, 1), slice(4, 8, 1), slice(0, 4, 1))
             shifted = _shift_origin(affine, roi)
         assert np.allclose(shifted[:3, 3], grid.index_to_world([[2, 4, 0]])[0])
         assert np.allclose(shifted[:3, :3], affine[:3, :3])
+
+    def test_L08_a_negative_or_strided_roi_lands_where_its_voxels_are(self, tmp_path):
+        """A negative start counted from the first voxel, and a step was
+        dropped: the crop's affine pointed at the wrong end of the volume, at
+        the full spacing."""
+        pytest.importorskip("monai")
+        from medh5.monai import to_metatensor
+
+        path = tmp_path / "roi.medh5"
+        shape = (6, 7, 8)
+        with medh5.create(path, sample_id="roi") as w:
+            w.add_grid("g", shape=shape, spacing=(2.0, 1.0, 0.5), timepoint="tp0")
+            w.add_image("CT", np.zeros(shape, np.int16), grid="g", modality="CT")
+        roi = [slice(-3, None), slice(None, None, 2), slice(1, 8, 3)]
+        with medh5.open(path) as sample:
+            grid = sample.grids["g"]
+            tensor = to_metatensor(sample, "CT", roi=roi, space="LPS")
+            affine = np.asarray(tensor.affine, dtype=np.float64)
+            expected = [
+                [3 + i, 2 * j, 1 + 3 * k]
+                for i in range(3)
+                for j in range(4)
+                for k in range(3)
+            ]
+            local = [[i, j, k] for i in range(3) for j in range(4) for k in range(3)]
+            world = grid.index_to_world(expected)
+        assert tuple(tensor.shape) == (3, 4, 3)
+        assert np.allclose(
+            (affine[:3, :3] @ np.asarray(local).T).T + affine[:3, 3], world
+        )
+        assert tensor.meta["medh5"]["roi"] == [[3, 6, 1], [0, 7, 2], [1, 8, 3]]
+
+    def test_L08_an_index_in_the_roi_is_refused(self, tmp_path):
+        pytest.importorskip("monai")
+        from medh5.monai import to_metatensor
+
+        path = tmp_path / "roi.medh5"
+        with medh5.create(path, sample_id="roi") as w:
+            w.add_grid("g", shape=(6, 7, 8), spacing=(2.0, 1.0, 0.5), timepoint="tp0")
+            w.add_image("CT", np.zeros((6, 7, 8), np.int16), grid="g", modality="CT")
+        with (
+            medh5.open(path) as sample,
+            pytest.raises(MEDH5ValidationError, match="slice"),
+        ):
+            to_metatensor(sample, "CT", roi=[slice(0, 2), 3, slice(None)])
 
     def test_S4_3_a_MetaTensor_reads_the_level_its_affine_describes(self, tmp_path):
         """Level-0 voxels under a level-1 affine misplace every saved prediction.

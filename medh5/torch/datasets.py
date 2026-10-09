@@ -283,7 +283,8 @@ class _Base(_DatasetBase):  # type: ignore[misc,valid-type]
                     region if patch is None else patch.apply_padding(region, value=True)
                 )
             if self.label_format == "instances":
-                labels[ann_id] = self._instances_in(ann, patch)
+                chosen = None if wanted is None else ann.resolve_classes(wanted)
+                labels[ann_id] = self._instances_in(ann, patch, chosen)
                 continue
             if self.label_format == "labelmap":
                 array = np.asarray(ann.labelmap(roi=roi, priority=wanted))
@@ -299,20 +300,34 @@ class _Base(_DatasetBase):  # type: ignore[misc,valid-type]
         return labels, ignore, annotated
 
     @staticmethod
-    def _instances_in(ann: Any, patch: Patch | None) -> list[dict[str, Any]]:
-        """Objects overlapping the patch, with boxes in patch coordinates."""
+    def _instances_in(
+        ann: Any, patch: Patch | None, classes: Sequence[int] | None = None
+    ) -> list[dict[str, Any]]:
+        """Objects of *classes* (all, when ``None``) overlapping the patch, with
+        boxes in patch coordinates.
+
+        A box ``[a, b]`` sits at voxel edges --- it is the slice
+        ``a+0.5 : b+0.5`` --- so it overlaps the voxels the patch read,
+        ``start .. stop - 1``, when ``b > start - 0.5`` and ``a < stop - 0.5``.
+        Patch coordinates count from the *padded* patch's first voxel, so a
+        patch reaching past the volume shifts every box by the padding before
+        it: subtracting the start alone left boxes ``pad_before`` voxels from
+        the anatomy they bound (L05 of the 2.0 audit).  Only the requested
+        classes are returned, as every other label format does (L09).
+        """
+        wanted = None if classes is None else set(classes)
         objects = []
         for obj in ann.instances():
+            if wanted is not None and obj.class_id not in wanted:
+                continue
             box = np.asarray(obj.box, dtype=np.float64)
             if patch is not None:
-                offset = np.asarray([s.start for s in patch.slices], dtype=np.float64)
-                extent = np.asarray(
-                    [s.stop - s.start for s in patch.slices], dtype=np.float64
-                )
-                local = box - offset[:, None]
-                if np.any(local[:, 1] < 0) or np.any(local[:, 0] > extent):
+                start = np.asarray([s.start for s in patch.slices], dtype=np.float64)
+                stop = np.asarray([s.stop for s in patch.slices], dtype=np.float64)
+                before = np.asarray([b for b, _ in patch.padding], dtype=np.float64)
+                if np.any(box[:, 1] <= start - 0.5) or np.any(box[:, 0] >= stop - 0.5):
                     continue
-                box = local
+                box = box - start[:, None] + before[:, None]
             objects.append(
                 {
                     "instance_id": obj.instance_id,

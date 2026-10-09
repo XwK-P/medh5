@@ -854,3 +854,140 @@ class TestAdmissibility:
         train_fitted = documents(tmp_path / "train.medh5cache", "train")
         dataset = ClinicalTaskDataset(task, partition="train", documents=train_fitted)
         assert dataset[0]["documents"]["features"].tolist() == [[1.0]]
+
+
+class TestValuesKeepTheirMeaning:
+    """A value's category and unit reach the batch (audit B07): `female` and
+    `male` were the same input, and 5 mg/dL and 5 mmol/L were normalised with
+    one pooled mean."""
+
+    SEX = "observation|http://loinc.org|76689-9"
+    GLUCOSE = "observation|http://loinc.org|2345-7"
+
+    @staticmethod
+    def _task(
+        tmp_path: Path,
+        histories: dict[str, list[Any]],
+        partitions: dict[str, str] | None = None,
+    ) -> TaskManifest:
+        from medh5.task import Slot, SourceRef
+        from tests.kits import History
+
+        task = TaskManifest.new(
+            "c",
+            "1",
+            identity_namespace="site",
+            slots=[Slot("ct", "CT", required=True, patch=(4, 8, 8))],
+            split=None if partitions is None else ("fold-0", ["train", "val"]),
+            base=tmp_path,
+        )
+        for subject, events in histories.items():
+            path = tmp_path / f"{subject}.medh5"
+            History.write(path, subject_id=subject, events=events)
+            partition = None if partitions is None else partitions[subject]
+            task.add_subject(
+                subject, [SourceRef.pin(path, uri=path.name)], partition=partition
+            )
+            task.add_row(f"{subject}@24h", subject, 24 * HOUR)
+        return task
+
+    @staticmethod
+    def _sex(value: str) -> Any:
+        from medh5.clinical import Event
+
+        return Event(
+            "sex",
+            "sex",
+            "observation",
+            "static",
+            "final",
+            available_us=-10 * HOUR,
+            code_system="http://loinc.org",
+            code="76689-9",
+            value_text=value,
+        )
+
+    @staticmethod
+    def _glucose(value: float, unit: str) -> Any:
+        from medh5.clinical import Event
+
+        return Event(
+            "glu",
+            "glu",
+            "observation",
+            "point",
+            "final",
+            effective_start_us=-30 * HOUR,
+            available_us=-29 * HOUR,
+            code_system="http://loinc.org",
+            code="2345-7",
+            value_num=value,
+            unit=unit,
+        )
+
+    @staticmethod
+    def _field(item: dict[str, Any], event_id: str, name: str) -> Any:
+        return item["events"][name][item["meta"]["event_ids"].index(event_id)]
+
+    def test_B07_categorical_values_are_inputs(self, tmp_path: Path):
+        task = self._task(
+            tmp_path, {"F": [self._sex("female")], "M": [self._sex("male")]}
+        )
+        ds = ClinicalTaskDataset(task)
+        assert ds.concepts.categories[self.SEX] == ("female", "male")
+        index = {
+            ds.rows[i].subject_id: int(self._field(ds[i], "sex", "value_index"))
+            for i in range(len(ds))
+        }
+        assert index["F"] != index["M"] and min(index.values()) >= 2
+        assert ds.concepts.value_index(self.SEX, "not-seen") == UNKNOWN
+        assert ds.concepts.value_index(self.SEX, None) == 0
+
+    def test_B07_values_in_two_units_are_refused_at_fit(self, tmp_path: Path):
+        task = self._task(
+            tmp_path,
+            {"A": [self._glucose(5.0, "mg/dL")], "B": [self._glucose(5.0, "mmol/L")]},
+        )
+        with pytest.raises(MEDH5ValidationError, match="more than one unit"):
+            ConceptVocabulary.fit(task)
+
+    def test_B07_a_value_in_another_unit_is_present_and_not_normalised(
+        self, tmp_path: Path
+    ):
+        task = self._task(
+            tmp_path,
+            {
+                "A": [self._glucose(90.0, "mg/dL")],
+                "B": [self._glucose(110.0, "mg/dL")],
+                "C": [self._glucose(5.5, "mmol/L")],
+            },
+            partitions={"A": "train", "B": "train", "C": "val"},
+        )
+        train = ClinicalTaskDataset(task, partition="train")
+        assert train.concepts.units[self.GLUCOSE] == "mg/dL"
+        fitted = train[0]
+        assert int(self._field(fitted, "glu", "unit")) == 2
+        assert float(self._field(fitted, "glu", "value")) == pytest.approx(-1.0)
+        other = ClinicalTaskDataset(task, partition="val")[0]
+        assert bool(self._field(other, "glu", "has_value"))
+        assert int(self._field(other, "glu", "unit")) == 1
+        assert float(self._field(other, "glu", "value")) == 0.0
+
+    def test_B07_the_vocabulary_records_units_and_categories(self, tmp_path: Path):
+        task = self._task(
+            tmp_path,
+            {
+                "F": [self._sex("female"), self._glucose(5.0, "mg/dL")],
+                "M": [self._sex("male"), self._glucose(7.0, "mg/dL")],
+            },
+        )
+        vocab = ConceptVocabulary.fit(task)
+        assert vocab.units[self.GLUCOSE] == "mg/dL"
+        assert vocab.n_values >= 4
+        again = ConceptVocabulary.from_json(vocab.to_json())
+        assert again == vocab and again.digest == vocab.digest
+        batch = collate_clinical(
+            [ClinicalTaskDataset(task, concepts=vocab)[i] for i in range(2)]
+        )
+        assert batch["events"]["unit"].dtype == torch.int64
+        assert batch["events"]["value_index"].shape == batch["events"]["concept"].shape
