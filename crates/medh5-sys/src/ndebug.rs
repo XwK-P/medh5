@@ -44,9 +44,14 @@ pub fn defines_ndebug(flags: &str) -> bool {
 /// build (whose HDF5 keeps its assertions, as a debug build should), an HDF5
 /// compiled with `NDEBUG`, or the opt-out set.  `settings` is the settings
 /// file's location and text, or why it could not be read.
+///
+/// The flag it names is `-DNDEBUG` on every target, MSVC's included: `cl`
+/// takes `-D` as it takes `/D`, and a POSIX shell on Windows --- Git Bash, the
+/// shell of a GitHub runner's `bash` steps --- rewrites `/DNDEBUG` in the
+/// environment into a path (`C:/Program Files/Git/DNDEBUG`), which CMake's
+/// compiler check then fails on.
 pub fn refusal(
     target: &str,
-    msvc: bool,
     optimised: bool,
     settings: Result<(&str, &str), &str>,
     opt_out: Option<&str>,
@@ -71,15 +76,15 @@ pub fn refusal(
         return None;
     }
     let var = format!("CFLAGS_{}", target.replace(['-', '.'], "_"));
-    let define = if msvc { "/DNDEBUG" } else { "-DNDEBUG" };
     Some(format!(
         "medh5-sys: the HDF5 this build links was compiled without NDEBUG, so it kept its \
          assertions: a damaged file would abort the process instead of returning an error.\n\n    \
          {place}\n    CFLAGS: {flags}\n\n\
          cmake-rs, which builds HDF5, replaces CMake's release flags under MSVC's Visual Studio \
          generator, /DNDEBUG included.  Give the C build NDEBUG in the environment:\n\n    \
-         {var}={define}\n\n\
-         (the medh5 repository's .cargo/config.toml does), and build again; if HDF5 is not rebuilt \
+         {var}=-DNDEBUG\n\n\
+         (`-D`, not `/D`, which a POSIX shell on Windows rewrites into a path; the medh5 repository's \
+         .cargo/config.toml sets it), and build again; if HDF5 is not rebuilt \
          with it, `cargo clean --release -p hdf5-metno-src` makes it so (a `cargo install` starts \
          clean).  Set {OPT_OUT}=1 to build anyway."
     ))
@@ -118,16 +123,17 @@ mod tests {
         let text = settings("/DWIN32 /D_WINDOWS /nologo /MD /Brepro");
         assert_eq!(settings_cflags(&text), Some("/DWIN32 /D_WINDOWS /nologo /MD /Brepro"));
         // H5_CFLAGS names NDEBUG here; it is not what reached the compiler.
-        assert!(refusal(MSVC, true, true, Ok((PLACE, &text)), None).is_some());
+        assert!(refusal(MSVC, true, Ok((PLACE, &text)), None).is_some());
         assert_eq!(settings_cflags("H5_CFLAGS: -DNDEBUG\n"), None);
     }
 
     #[test]
     fn w02_an_hdf5_compiled_without_ndebug_is_refused() {
         let text = settings("/DWIN32 /D_WINDOWS /nologo /MD /Brepro");
-        let message = refusal(MSVC, true, true, Ok((PLACE, &text)), None).unwrap();
+        let message = refusal(MSVC, true, Ok((PLACE, &text)), None).unwrap();
         for expected in [
-            "CFLAGS_x86_64_pc_windows_msvc=/DNDEBUG",
+            // `-D` on MSVC too: Git Bash rewrites `/DNDEBUG` into a path.
+            "CFLAGS_x86_64_pc_windows_msvc=-DNDEBUG",
             "cargo clean --release -p hdf5-metno-src",
             PLACE,
             "/nologo /MD /Brepro",
@@ -136,22 +142,22 @@ mod tests {
             assert!(message.contains(expected), "{expected} missing from:\n{message}");
         }
         let linux = "x86_64-unknown-linux-gnu";
-        let message = refusal(linux, false, true, Ok((PLACE, &settings("-O3"))), None).unwrap();
+        let message = refusal(linux, true, Ok((PLACE, &settings("-O3"))), None).unwrap();
         assert!(message.contains("CFLAGS_x86_64_unknown_linux_gnu=-DNDEBUG"), "{message}");
     }
 
     #[test]
     fn w02_an_hdf5_compiled_with_it_builds() {
         for flags in ["/DWIN32 /nologo /MD /DNDEBUG", "-std=c11 -fPIC -O3 -DNDEBUG"] {
-            assert!(refusal(MSVC, true, true, Ok((PLACE, &settings(flags))), None).is_none(), "{flags}");
+            assert!(refusal(MSVC, true, Ok((PLACE, &settings(flags))), None).is_none(), "{flags}");
         }
     }
 
     #[test]
     fn w02_what_cannot_be_read_is_refused_too() {
-        let message = refusal(MSVC, true, true, Err("no such file"), None).unwrap();
+        let message = refusal(MSVC, true, Err("no such file"), None).unwrap();
         assert!(message.contains("no such file") && message.contains(OPT_OUT), "{message}");
-        let message = refusal(MSVC, true, true, Ok((PLACE, "Build Mode: Release\n")), None).unwrap();
+        let message = refusal(MSVC, true, Ok((PLACE, "Build Mode: Release\n")), None).unwrap();
         assert!(message.contains("has no CFLAGS line"), "{message}");
     }
 
@@ -159,11 +165,11 @@ mod tests {
     fn w02_a_debug_build_and_the_opt_out_build() {
         let text = settings("/MD /Zi");
         // An unoptimised build keeps HDF5's assertions on every target.
-        assert!(refusal(MSVC, true, false, Ok((PLACE, &text)), None).is_none());
-        assert!(refusal(MSVC, true, false, Err("unread"), None).is_none());
-        assert!(refusal(MSVC, true, true, Ok((PLACE, &text)), Some("1")).is_none());
+        assert!(refusal(MSVC, false, Ok((PLACE, &text)), None).is_none());
+        assert!(refusal(MSVC, false, Err("unread"), None).is_none());
+        assert!(refusal(MSVC, true, Ok((PLACE, &text)), Some("1")).is_none());
         // An empty or zero opt-out is not one.
-        assert!(refusal(MSVC, true, true, Ok((PLACE, &text)), Some("")).is_some());
-        assert!(refusal(MSVC, true, true, Ok((PLACE, &text)), Some("0")).is_some());
+        assert!(refusal(MSVC, true, Ok((PLACE, &text)), Some("")).is_some());
+        assert!(refusal(MSVC, true, Ok((PLACE, &text)), Some("0")).is_some());
     }
 }

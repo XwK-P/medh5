@@ -51,14 +51,17 @@ out `h5py` objects --- and the behaviour changes below.
   through a Python that has the package (`python3`, or `MEDH5_PYTHON`).
 - **Wheels** for Linux (x86_64, aarch64), macOS (x86_64, arm64) and Windows
   (x64): one `abi3` wheel per platform serves CPython 3.10 and later. For MSVC
-  targets `.cargo/config.toml` gives the C builds `/DNDEBUG`: cmake-rs drops
+  targets `.cargo/config.toml` gives the C builds `-DNDEBUG`: cmake-rs drops
   CMake's release flags under the Visual Studio generator, and HDF5's
   assertions would abort the process on a damaged file instead of reporting it.
   A build that never reads that file --- `cargo install medh5-cli` from
   crates.io --- is stopped by `medh5-sys` when the HDF5 it links was compiled
   without `NDEBUG` (read from HDF5's own `libhdf5.settings`), naming the
-  variable to set; `MEDH5_SYS_SKIP_NDEBUG_CHECK=1` overrides. CI damages files
-  for every platform's binary, and for such a build, and fails on an abort.
+  variable to set --- `-DNDEBUG`, which `cl` takes as it takes `/DNDEBUG` and no
+  shell rewrites, where Git Bash turns `/DNDEBUG` into a path
+  (`C:/Program Files/Git/DNDEBUG`) and CMake's compiler check fails;
+  `MEDH5_SYS_SKIP_NDEBUG_CHECK=1` overrides. CI damages files for every
+  platform's binary, and for such a build, and fails on an abort.
 - **`THIRD_PARTY_NOTICES`**: the licences of everything the engine compiles in
   --- HDF5, C-Blosc2 and its codecs, the HDF5-Blosc2 filter and every Rust
   crate --- in the wheel's `.dist-info/licenses/`, the sdist and every binary

@@ -20,7 +20,7 @@ HDF5 is linked statically: the binary needs nothing installed. Building it
 **On Windows (MSVC)**, give HDF5's C build `NDEBUG` before installing:
 
 ```powershell
-$env:CFLAGS_x86_64_pc_windows_msvc = "/DNDEBUG"
+$env:CFLAGS_x86_64_pc_windows_msvc = "-DNDEBUG"
 cargo install medh5-cli
 ```
 

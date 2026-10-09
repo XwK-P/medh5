@@ -16,8 +16,9 @@ HDF5 and the compression filters are built from source and linked statically
 C compiler and CMake at build time, which HDF5's build uses.
 
 **For an MSVC target**, give the C build `NDEBUG`:
-`CFLAGS_x86_64_pc_windows_msvc=/DNDEBUG` (or the variable for your target), in
-the environment or under `[env]` in your `.cargo/config.toml`. cmake-rs drops
+`CFLAGS_x86_64_pc_windows_msvc=-DNDEBUG` (or the variable for your target), in
+the environment or under `[env]` in your `.cargo/config.toml` --- `-D`, which
+`cl` takes as it takes `/D`, since Git Bash rewrites `/DNDEBUG` into a path. cmake-rs drops
 CMake's release flags under the Visual Studio generator, `/DNDEBUG` with them,
 so HDF5 would keep its assertions and abort the process on a damaged file where
 every other build reports it. An optimised build whose HDF5 lacks the flag

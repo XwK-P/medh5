@@ -5,7 +5,9 @@
 # `H5A__attr_release_table`, for one) where every other build returns the
 # error the validator reports. `cc` reads `CFLAGS_<target>` into those flags,
 # so NDEBUG is given here, to every C build of these targets --- as a release
-# build of each would have it.
+# build of each would have it.  `-D`, which `cl` takes as it takes `/D`, is the
+# spelling medh5-sys asks for: a POSIX shell on Windows rewrites `/DNDEBUG` in
+# the environment into a path.
 [env]
-CFLAGS_x86_64_pc_windows_msvc = "/DNDEBUG"
-CFLAGS_aarch64_pc_windows_msvc = "/DNDEBUG"
+CFLAGS_x86_64_pc_windows_msvc = "-DNDEBUG"
+CFLAGS_aarch64_pc_windows_msvc = "-DNDEBUG"

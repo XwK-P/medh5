@@ -262,10 +262,13 @@ jobs:
             exit 1
           fi
           grep -F "compiled without NDEBUG" build.log
-          grep -F "CFLAGS_x86_64_pc_windows_msvc=/DNDEBUG" build.log
+          grep -F "CFLAGS_x86_64_pc_windows_msvc=-DNDEBUG" build.log
       - name: With the variable it names, the binary reports damage, never aborts
+        # `-D`, not `/D`: this bash rewrites `/DNDEBUG` in the environment of
+        # a native program into a path, `C:/Program Files/Git/DNDEBUG`, which
+        # broke CMake's compiler check --- as it would in any user's Git Bash.
         env:
-          CFLAGS_x86_64_pc_windows_msvc: /DNDEBUG
+          CFLAGS_x86_64_pc_windows_msvc: -DNDEBUG
         run: |
           cd "$RUNNER_TEMP/ws"
           # Setting the variable rebuilds HDF5 (through the zlib it links,

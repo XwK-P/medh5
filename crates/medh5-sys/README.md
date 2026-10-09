@@ -21,8 +21,10 @@ before touching a file.
 **Building for MSVC targets:** cmake-rs, which builds HDF5, replaces CMake's
 release flags under the Visual Studio generator, `/DNDEBUG` included, so HDF5
 keeps its assertions and a damaged file aborts the process instead of
-returning an error. Set `CFLAGS_x86_64_pc_windows_msvc=/DNDEBUG` (or the
-variable for your target) when building; this repository's
+returning an error. Set `CFLAGS_x86_64_pc_windows_msvc=-DNDEBUG` (or the
+variable for your target) when building --- `-D`, which `cl` takes as it takes
+`/D`, because a POSIX shell on Windows such as Git Bash rewrites `/DNDEBUG` into
+a path; this repository's
 `.cargo/config.toml` does, and a crates.io build never reads that file.  So
 the build script reads the flags HDF5 was compiled with (`libhdf5.settings`)
 and stops an optimised build whose HDF5 lacks `NDEBUG`, naming the variable.

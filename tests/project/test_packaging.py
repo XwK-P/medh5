@@ -473,3 +473,5 @@ class TestDistribution:
         msvc = jobs["msvc-from-crates-io"]
         assert "rm -r ws/.cargo" in msvc and "damaged.py" in msvc
         assert "cargo clean --release -p hdf5-metno-src" in msvc
+        # The job's bash rewrote `/DNDEBUG` into `C:/Program Files/Git/DNDEBUG`.
+        assert "CFLAGS_x86_64_pc_windows_msvc: -DNDEBUG" in msvc

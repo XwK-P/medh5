@@ -53,7 +53,6 @@ fn main() {
         });
     let refusal = ndebug::refusal(
         &env::var("TARGET").unwrap_or_default(),
-        msvc,
         env::var("OPT_LEVEL").map_or(true, |level| level != "0"),
         settings.as_ref().map(|(place, text)| (place.as_str(), text.as_str())).map_err(String::as_str),
         env::var(ndebug::OPT_OUT).ok().as_deref(),
