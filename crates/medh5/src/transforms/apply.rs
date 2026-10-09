@@ -5,7 +5,10 @@
 //! samples and the determinant of its Jacobian --- must agree with each other.
 //! Cubic sampling reproduces SciPy's `map_coordinates(order=3)` --- the same
 //! prefilter, boundary handling and accumulation order --- so a file declaring
-//! `interpolation = "cubic"` evaluates identically from every frontend.
+//! `interpolation = "cubic"` evaluates identically from every frontend.  At the
+//! field's edge it follows §10.4 instead, as linear sampling does: within the
+//! extent's half-voxel margin a point takes the outermost sample's value, where
+//! SciPy's constant mode gives zero.
 
 use ndarray::{Array2, ArrayD, Axis, Dimension, IxDyn};
 
@@ -295,16 +298,37 @@ fn spline_interpolate(coeffs: &ArrayD<f64>, coords: &Array2<f64>, boundary: Boun
 }
 
 /// Cubic interpolation of `(C, *spatial)` data at `(N, S)` continuous indices,
-/// as `scipy.ndimage.map_coordinates(order=3)` computes it.
+/// as `scipy.ndimage.map_coordinates(order=3)` computes it between the
+/// outermost samples.
+///
+/// The field covers its voxel extent, `[-0.5, n - 0.5]` per axis (§10.4).
+/// Under `zero` and `error` a point in the half-voxel margin between the
+/// outermost sample and the extent's edge takes that sample's value, as
+/// [`linear_sample`] gives it; SciPy's constant mode is zero beyond the
+/// outermost samples, so such a point --- one `error` had admitted --- came
+/// out with no displacement (D5 of the 2.0 audit).  `nearest` interpolates the
+/// edge-extended field, as SciPy does.
 pub fn cubic_sample(field: &ArrayD<f64>, coords: &Array2<f64>, extrapolation: &str) -> Result<Array2<f64>> {
     check_extrapolation(extrapolation)?;
     let spatial: Vec<usize> = field.shape()[1..].to_vec();
+    let inside = inside_extent(&spatial, coords);
     if extrapolation == "error" {
         // SciPy has no raising mode; the domain check happens here, against the
         // bounds `linear_sample` uses, rather than folding into constant-zero.
-        refuse_outside(&inside_extent(&spatial, coords))?;
+        refuse_outside(&inside)?;
     }
     let boundary = if extrapolation == "nearest" { Boundary::Nearest } else { Boundary::Constant };
+    // Clamped to the outermost samples, every point is interpolated; `zero`
+    // then zeroes the points beyond the extent, as `linear_sample` does.
+    let clamped;
+    let coords = if boundary == Boundary::Constant {
+        clamped = Array2::from_shape_fn(coords.dim(), |(row, axis)| {
+            coords[[row, axis]].clamp(0.0, (spatial[axis] as f64 - 1.0).max(0.0))
+        });
+        &clamped
+    } else {
+        coords
+    };
     let components = field.shape()[0];
     let mut out = Array2::<f64>::zeros((coords.nrows(), components));
     for c in 0..components {
@@ -315,7 +339,7 @@ pub fn cubic_sample(field: &ArrayD<f64>, coords: &Array2<f64>, extrapolation: &s
         };
         spline_filter(&mut coeffs, boundary);
         for (row, v) in spline_interpolate(&coeffs, coords, boundary, npad).into_iter().enumerate() {
-            out[[row, c]] = v;
+            out[[row, c]] = if extrapolation == "zero" && !inside[row] { 0.0 } else { v };
         }
     }
     Ok(out)
@@ -525,6 +549,36 @@ mod tests {
         assert_eq!(cubic_sample(&ones, &outside, "zero").unwrap()[[0, 0]], 0.0);
         assert!((cubic_sample(&ones, &outside, "nearest").unwrap()[[0, 0]] - 1.0).abs() < 1e-6);
         assert!(cubic_sample(&ones, &outside, "error").is_err());
+    }
+
+    #[test]
+    fn d5_s10_4_the_margin_takes_the_outermost_samples_value_as_linear_gives_it() {
+        // Constant mode is zero beyond the outermost samples, so a point `error`
+        // admitted --- half a voxel inside the extent --- had no displacement.
+        let field = ArrayD::from_shape_fn(IxDyn(&[1, 3, 4]), |i| {
+            let v = (i[1] * 4 + i[2]) as f64;
+            v * v * 0.37 + v / 3.0
+        });
+        let margin = Array2::from_shape_vec((3, 2), vec![-0.5, 1.0, 2.0, 3.5, 2.4, -0.3]).unwrap();
+        let samples = Array2::from_shape_vec((3, 2), vec![0.0, 1.0, 2.0, 3.0, 2.0, 0.0]).unwrap();
+        for mode in ["zero", "error"] {
+            let cubic = cubic_sample(&field, &margin, mode).unwrap();
+            let at_samples = cubic_sample(&field, &samples, mode).unwrap();
+            let linear = linear_sample(&field, &margin, mode).unwrap();
+            for row in 0..3 {
+                assert_eq!(cubic[[row, 0]], at_samples[[row, 0]], "{mode} row {row}");
+                assert!((cubic[[row, 0]] - linear[[row, 0]]).abs() < 1e-9, "{mode} row {row}");
+                assert!(cubic[[row, 0]] != 0.0, "{mode} row {row}");
+            }
+        }
+        // Beyond the extent `zero` is still zero and `error` still refuses; the
+        // samples themselves are unchanged.
+        let beyond = Array2::from_shape_vec((1, 2), vec![-0.6, 1.0]).unwrap();
+        assert_eq!(cubic_sample(&field, &beyond, "zero").unwrap()[[0, 0]], 0.0);
+        assert!(cubic_sample(&field, &beyond, "error").is_err());
+        let interior = Array2::from_shape_vec((1, 2), vec![1.3, 2.7]).unwrap();
+        let before = cubic_sample(&field, &interior, "zero").unwrap()[[0, 0]];
+        assert_eq!(cubic_sample(&field, &interior, "error").unwrap()[[0, 0]], before);
     }
 
     #[test]

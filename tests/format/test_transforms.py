@@ -820,9 +820,9 @@ class TestInterpolation:
 
         Mapping it onto ``mode="constant"`` answers an out-of-domain query with
         "no displacement" --- the silence the declared contract exists to break,
-        and only for cubic fields.
+        and only for cubic fields.  (The engine computes cubic itself, so this
+        needs no SciPy; it was skipped wherever SciPy was absent.)
         """
-        pytest.importorskip("scipy")
         from medh5.transforms import cubic_sample
 
         field = np.ones((1, 4, 4))
@@ -836,6 +836,24 @@ class TestInterpolation:
             cubic_sample(field, outside, extrapolation="error")
         with pytest.raises(MEDH5ValidationError):
             cubic_sample(field, outside, extrapolation="wing-it")
+
+    def test_D5_S10_4_the_margin_takes_the_outermost_samples_value(self):
+        """Half a voxel inside the extent, `error` admitted a point and cubic ---
+        SciPy's constant mode --- gave it no displacement, where linear gave the
+        outermost sample's value."""
+        from medh5.transforms import cubic_sample, linear_sample
+
+        field = (np.arange(12, dtype=np.float64) ** 2).reshape(1, 3, 4)
+        margin = np.array([[-0.5, 1.0], [2.0, 3.5]])
+        for mode in ("zero", "error"):
+            cubic = cubic_sample(field, margin, extrapolation=mode)[:, 0]
+            linear = linear_sample(field, margin, extrapolation=mode)[:, 0]
+            assert cubic == pytest.approx(linear)
+            assert cubic == pytest.approx([field[0, 0, 1], field[0, 2, 3]])
+        beyond = np.array([[-0.6, 1.0]])
+        assert cubic_sample(field, beyond)[0, 0] == 0.0
+        with pytest.raises(MEDH5ValidationError, match="outside"):
+            cubic_sample(field, beyond, extrapolation="error")
 
     def test_folding_fraction_of_an_empty_field(self):
         assert folding_fraction(np.zeros(0)) == 0.0

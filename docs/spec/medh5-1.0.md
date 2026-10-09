@@ -695,7 +695,7 @@ Constraints:
 
 * Every id in `class_ids` **MUST** appear in exactly one layer.
 * `data` **MUST** be chunked as `(1, *spatial_chunk)` so one layer is readable without decompressing
-  the others (§14.1).
+  the others (§14.1, which lets a dataset below 64 KiB stay contiguous).
 * Writers **MUST** produce a minimal or near-minimal *L* by colouring the class overlap graph
   (§7.6).
 
@@ -711,7 +711,8 @@ One bit per class per voxel, packed into `uint64` planes.
 | `data` | `(P, *grid.shape_spatial)` | `uint64` | `P = ceil(len(class_ids)/64)` |
 | `bit_class_ids` | `(len(class_ids),)` | `uint16` | position *p* ↔ plane `p//64`, bit `p%64` (LSB-first) |
 
-`data` **MUST** be chunked `(1, *spatial_chunk)`. Bit ordering is LSB-first within each `uint64`, and
+`data` **MUST** be chunked `(1, *spatial_chunk)`, or below 64 KiB may be contiguous (§14.1). Bit
+ordering is LSB-first within each `uint64`, and
 the value is interpreted in **native machine integer semantics**, not byte order — readers **MUST** use
 integer shifts, never byte offsets.
 
@@ -767,7 +768,8 @@ a 45× reduction, because storage is proportional to object volume, not image vo
 | `threshold` | attr `float64` | | OPTIONAL, default `0.5`: the probability at or above which a voxel *contains* the class (§7.6); in [0, 1] |
 
 For soft ground truth, inter-rater probability maps, distillation targets and predicted logits after
-sigmoid/softmax. **MUST** be chunked `(1, *spatial_chunk)`. `threshold` is a spec-defined attribute
+sigmoid/softmax. **MUST** be chunked `(1, *spatial_chunk)`, or below 64 KiB may be contiguous
+(§14.1). `threshold` is a spec-defined attribute
 and so is covered by `content_id` (§13.2): two readers of one file answer `contains` identically.
 
 `contains` is decided **at the stored precision**: a voxel contains the class where its stored value
@@ -1061,6 +1063,12 @@ field grid. Component order matches the field grid's spatial axes. Storing compo
 axis (`(S, Z, Y, X)`, chunked `(1, …)`) lets a reader fetch one component or one ROI without touching
 the rest — the reason for that axis order rather than a trailing `(Z, Y, X, S)`.
 
+The field covers its grid's voxel extent, `[-0.5, n - 0.5]` along an axis of `n` samples (§3.3), and
+`extrapolation` decides what `u` is beyond it: `zero` is no displacement, `nearest` interpolates the
+field extended by repeating its edge samples, and `error` refuses the point. Under `zero` and `error`, a
+point inside the extent but beyond the outermost sample --- in its half-voxel margin --- takes the
+outermost sample's value, for `linear` and `cubic` alike.
+
 `float16` is permitted and **RECOMMENDED** for displacement magnitudes below ~64 voxels; the loss of
 precision (≈ 5e-4 relative) is far below registration accuracy and halves field size.
 
@@ -1343,6 +1351,10 @@ Normative requirements:
 * Image and voxel-annotation datasets **MUST** be chunked.
 * `layers`, `bitmask`, `probmap` and `displacement` **MUST** use chunk shape `(1, *spatial_chunk)`, so
   one layer / plane / channel / component is readable without decompressing the others.
+* A dataset whose raw size is below 64 KiB, or which is empty, **MAY** instead be stored contiguous
+  and unfiltered --- the requirements above, and those of §7.2, §7.3 and §7.5, apply from 64 KiB.
+  At that size chunking and a filter pipeline cost more than they save, and a reader reads it
+  whole.
 * Voxel annotations on a grid **SHOULD** use the same `spatial_chunk` as the images on that grid, so an
   image patch and its labels touch congruent chunk sets.
 
@@ -1616,9 +1628,9 @@ any machine. On one, with a 192×256×256 synthetic CT and eight classes, a mult
 costs 3.4 ms, foreground centre sampling 0.03 ms (O(1) in volume size, via §14.3; 0.05 ms at 63
 classes), a metadata-only read 0.19 ms, and `open()` → first patch 2.3 ms.
 
-Twenty-eight clauses have been corrected — ten during implementation, eleven in the 1.x package
+Thirty clauses have been corrected — ten during implementation, eleven in the 1.x package
 releases that followed, four when the engine was written a second time, in Rust, for the 2.0
-package, one when it implemented 1.1, and two in the audit of 2.0 before its release — each because
+package, one when it implemented 1.1, and four in the audit of 2.0 before its release — each because
 writing the code showed the text was not implementable, not unambiguous, or not what the
 implementation could honestly promise, as written:
 
@@ -1652,6 +1664,8 @@ implementation could honestly promise, as written:
 | §16 | "**MUST** accept a higher MINOR" is acceptance for *reading* the supported projection, not validation of the newer version or permission to amend it. Read literally beside "amend preserves", it promised what no implementation can: a writer that rewrites a file of a later minor drops or misattests whatever that minor defines, and a validator passing such a file claims conformance to rules it has never seen. 1.1 §2.2 defines the projection, W913 and the refusal. |
 | §16 | Extensions survive amend *except* HDF5 references, which a writer refuses to copy. "Both survive amend" could not hold for a reference: it is an address in the file that holds it, and amend, recompress and pack write a new file, where a copied reference pointed wherever its address happened to land --- and a no-op amend nulled those in an extension group --- while every digest still verified. |
 | §13.2 | Each kind of line's spelling is stated: a dataset line carries the stored `<algo>:<hex>` digest, an attribute line `<algo>:` and the hex digest, and the `meta` line the bare hex digest; and the objects that have an attribute line are named --- the root and every member of `grids/`, `images/`, `annotations/` and `transforms/`, with `{}` when one carries none of its attributes. The pseudo-code wrote `H(...)` for the `meta` and the attribute lines alike, which reads as one spelling, and named no objects. The executable prototype (§C.2), which follows this text with no implementation between it and the bytes, computed a `content_id` that matched no implementation, and reported it checked. The text now says what every implementation has written since 1.0: no digest changes. |
+| §14.1 | A dataset below 64 KiB, or an empty one, **MAY** be stored contiguous and unfiltered: "Image and voxel-annotation datasets **MUST** be chunked" had no exception, and every implementation since 1.0 has stored such datasets contiguous, because at that size chunking and a filter pipeline cost more than they save --- so the text forbade what both implementations write for every small sample, and no validator checked it. The exception covers the `(1, *spatial_chunk)` clauses of §7.2, §7.3 and §7.5 too. |
+| §10.4 | A displacement field covers its grid's voxel extent, `[-0.5, n - 0.5]` per axis, and under `zero` and `error` a point in the half-voxel margin beyond the outermost sample takes that sample's value, for `linear` and `cubic` alike. The clause named the extrapolation modes and not the extent they start at: linear interpolation clamped the margin to the edge value, while cubic --- SciPy's constant mode, since 1.x --- was zero beyond the outermost samples, so a point `error` admitted came out with no displacement, and `zero` meant a different region for each interpolation. Values between the outermost samples are unchanged. |
 
 ### C.2 Prototype checks
 

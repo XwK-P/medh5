@@ -11,8 +11,10 @@ where the inverse can be evaluated, refuses an ambiguous pair, and returns
 ``None`` --- never an invented transform --- when no path exists.
 
 The field numerics are the engine's too --- linear and cubic interpolation match
-SciPy's ``map_coordinates``, and the Jacobian matches NumPy's gradient --- so
-every frontend evaluates a stored field identically (§10.4--§10.6).
+SciPy's ``map_coordinates`` between a field's outermost samples, and take the
+outermost sample's value in the half-voxel margin beyond them (§10.4), and the
+Jacobian matches NumPy's gradient --- so every frontend evaluates a stored field
+identically (§10.4--§10.6).
 """
 
 from __future__ import annotations

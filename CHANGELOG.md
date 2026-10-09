@@ -358,6 +358,11 @@ out `h5py` objects --- and the behaviour changes below.
   are refused; `at` and `volume` answered with the first rater and `volumes`
   with the last. `observations_at()` and `measurements_at()` list them, and
   `Observation.kind` says which annotation kind each came from.
+- **A cubic displacement field takes the outermost sample's value in the
+  half-voxel margin**, as a linear one does (§10.4): under `zero` and `error`, a
+  point between the outermost sample and the extent's edge was zero --- SciPy's
+  constant mode, as in 1.x --- so under `error` a point admitted was given no
+  displacement. Values between the outermost samples are unchanged.
 - **`fix(rewrite_digests=True, rebuild_index=True)` leaves the index
   current**: the index entries to rebuild are found after the restamp. They were
   the diagnosis from before it, so an index the restamp made stale was left
@@ -426,6 +431,13 @@ out `h5py` objects --- and the behaviour changes below.
   `index/`, raises on a failed check, and checks the round trips the appendix
   listed and it never ran. CI validates what it writes with the wheel and the
   native binary.
+- **§14.1 lets a small dataset stay contiguous** (Appendix C.1): below 64 KiB,
+  or empty, a dataset **MAY** be stored contiguous and unfiltered, as every
+  implementation since 1.0 has stored it; the clause said image and
+  voxel-annotation datasets **MUST** be chunked, without exception. **§10.4**
+  says where a displacement field ends --- its voxel extent --- and what its
+  half-voxel margin holds, which linear and cubic interpolation answered
+  differently.
 - **§13.2 spells each line** (Appendix C.1): a dataset line carries the stored
   `<algo>:<hex>`, an attribute line `<algo>:` and the hex digest, the `meta`
   line the bare hex digest, and every member of `grids/`, `images/`,
