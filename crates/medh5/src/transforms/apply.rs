@@ -27,6 +27,22 @@ fn check_extrapolation(extrapolation: &str) -> Result<()> {
     Ok(())
 }
 
+/// Refuse `points` that are not `(N, S)` for a lattice of `spatial` extent:
+/// one coordinate per spatial axis.  The samplers indexed a point by axis, so
+/// one with fewer coordinates panicked --- a `PanicException`, which `except
+/// Exception` does not catch --- and one with more had the rest ignored, where
+/// 1.x's SciPy refused the shape.
+pub fn check_points(spatial: &[usize], points: &Array2<f64>) -> Result<()> {
+    if points.ncols() != spatial.len() {
+        return Err(Error::Value(format!(
+            "points have {} coordinate(s) and the field {} spatial axes; each point needs one per axis",
+            points.ncols(),
+            spatial.len()
+        )));
+    }
+    Ok(())
+}
+
 /// Which `(N, S)` points lie within a lattice of `spatial` extent, edges included.
 pub fn inside_extent(spatial: &[usize], points: &Array2<f64>) -> Vec<bool> {
     points.outer_iter().map(|p| p.iter().zip(spatial).all(|(v, n)| *v >= -0.5 && *v <= *n as f64 - 0.5)).collect()
@@ -59,6 +75,7 @@ pub fn linear_sample(field: &ArrayD<f64>, coords: &Array2<f64>, extrapolation: &
     let spatial: Vec<usize> = field.shape()[1..].to_vec();
     let dim = spatial.len();
     check_extrapolation(extrapolation)?;
+    check_points(&spatial, coords)?;
     let inside = inside_extent(&spatial, coords);
     if extrapolation == "error" {
         refuse_outside(&inside)?;
@@ -311,6 +328,7 @@ fn spline_interpolate(coeffs: &ArrayD<f64>, coords: &Array2<f64>, boundary: Boun
 pub fn cubic_sample(field: &ArrayD<f64>, coords: &Array2<f64>, extrapolation: &str) -> Result<Array2<f64>> {
     check_extrapolation(extrapolation)?;
     let spatial: Vec<usize> = field.shape()[1..].to_vec();
+    check_points(&spatial, coords)?;
     let inside = inside_extent(&spatial, coords);
     if extrapolation == "error" {
         // SciPy has no raising mode; the domain check happens here, against the
@@ -495,7 +513,17 @@ pub fn tre_from_warped(warped: &Array2<f64>, moving: &Array2<f64>, weights: Opti
         .zip(moving.outer_iter())
         .map(|(a, b)| a.iter().zip(b.iter()).map(|(x, y)| (x - y) * (x - y)).sum::<f64>().sqrt())
         .collect();
+    // One weight per landmark: `zip` dropped the weights or landmarks past the
+    // shorter list while the total summed every weight, so two landmarks with
+    // one weight scored the first alone --- 0.0 for a 10 mm miss.
     let w: Vec<f64> = match weights {
+        Some(w) if w.len() != errors.len() => {
+            return Err(Error::invalid(format!(
+                "{} weight(s) for {} landmark(s); TRE takes one weight per landmark (§10.6)",
+                w.len(),
+                errors.len()
+            )));
+        }
         Some(w) => w.to_vec(),
         None => vec![1.0; errors.len()],
     };
@@ -579,6 +607,39 @@ mod tests {
         let interior = Array2::from_shape_vec((1, 2), vec![1.3, 2.7]).unwrap();
         let before = cubic_sample(&field, &interior, "zero").unwrap()[[0, 0]];
         assert_eq!(cubic_sample(&field, &interior, "error").unwrap()[[0, 0]], before);
+    }
+
+    #[test]
+    fn samplers_refuse_points_of_another_dimensionality() {
+        // Fewer coordinates than axes panicked; more were ignored.
+        let field = ArrayD::from_elem(IxDyn(&[1, 4, 4]), 1.0);
+        for columns in [1, 3] {
+            let points = Array2::zeros((2, columns));
+            for mode in EXTRAPOLATIONS {
+                let linear = linear_sample(&field, &points, mode).unwrap_err().to_string();
+                let cubic = cubic_sample(&field, &points, mode).unwrap_err().to_string();
+                for message in [linear, cubic] {
+                    assert!(message.contains(&format!("{columns} coordinate(s)")), "{message}");
+                }
+            }
+            assert!(check_points(&[4, 4], &points).is_err());
+        }
+        assert!(check_points(&[4, 4], &Array2::zeros((2, 2))).is_ok());
+    }
+
+    #[test]
+    fn tre_takes_one_weight_per_landmark() {
+        // Errors of 0 and 10: one weight scored the first landmark alone (0.0),
+        // three deflated the mean to 3.3.
+        let moving = Array2::from_shape_vec((2, 3), vec![0.0, 0.0, 0.0, 10.0, 0.0, 0.0]).unwrap();
+        let warped = Array2::zeros((2, 3));
+        for weights in [vec![1.0], vec![1.0, 1.0, 1.0]] {
+            let message = tre_from_warped(&warped, &moving, Some(&weights)).unwrap_err().to_string();
+            assert!(message.contains("one weight per landmark"), "{message}");
+        }
+        let tre = tre_from_warped(&warped, &moving, Some(&[3.0, 1.0])).unwrap();
+        assert!((tre.mean - 2.5).abs() < 1e-12);
+        assert!((tre_from_warped(&warped, &moving, None).unwrap().mean - 5.0).abs() < 1e-12);
     }
 
     #[test]

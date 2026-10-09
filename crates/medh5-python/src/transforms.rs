@@ -106,7 +106,9 @@ fn check_transform_id(transform_id: &str) -> R<String> {
 
 #[pyfunction]
 fn inside_extent<'py>(py: Python<'py>, spatial: Vec<usize>, points: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
-    let inside = apply::inside_extent(&spatial, &points2(points)?);
+    let points = points2(points)?;
+    apply::check_points(&spatial, &points)?;
+    let inside = apply::inside_extent(&spatial, &points);
     Ok(array_to_py(py, ArrayD::from_shape_vec(IxDyn(&[inside.len()]), inside)?))
 }
 

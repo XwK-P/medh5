@@ -363,6 +363,14 @@ out `h5py` objects --- and the behaviour changes below.
   point between the outermost sample and the extent's edge was zero --- SciPy's
   constant mode, as in 1.x --- so under `error` a point admitted was given no
   displacement. Values between the outermost samples are unchanged.
+- **Field sampling and TRE check the shape of what they are given**:
+  `linear_sample`, `cubic_sample`, `sample_field` and `inside_extent` refuse
+  points without one coordinate per spatial axis (`ValueError`), and
+  `target_registration_error` refuses weights that are not one per landmark
+  (`MEDH5ValidationError`). The engine panicked on too few coordinates and
+  ignored extra ones, and paired weights with landmarks by position, dropping
+  the excess: two landmarks with one weight reported the first one's error
+  alone. 1.x refused the coordinates, and broadcast a single weight.
 - **`fix(rewrite_digests=True, rebuild_index=True)` leaves the index
   current**: the index entries to rebuild are found after the restamp. They were
   the diagnosis from before it, so an index the restamp made stale was left

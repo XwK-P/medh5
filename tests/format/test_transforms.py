@@ -791,8 +791,43 @@ class TestLandmarksAndMetrics:
             )["mean"]
             assert weighted < unweighted
 
+    @pytest.mark.parametrize("weights", [[1.0], [1.0, 1.0, 1.0]])
+    def test_S10_6_tre_takes_one_weight_per_landmark(self, tmp_path, weights):
+        """Errors of 0 and 10 mm: one weight reported a mean of 0.0 --- the
+        second landmark dropped --- and three a mean of 3.3."""
+        path = registered(tmp_path / "reg.medh5")
+        fixed = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+        moving = fixed + SHIFT + np.array([[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]])
+        with (
+            medh5.open(path) as sample,
+            pytest.raises(MEDH5ValidationError, match="one weight per landmark"),
+        ):
+            target_registration_error(
+                sample.transforms["tp0_to_tp1"], fixed, moving, weights=weights
+            )
+
 
 class TestInterpolation:
+    @pytest.mark.parametrize("columns", [1, 3])
+    def test_points_of_another_dimensionality_are_refused(self, columns):
+        """A point with fewer coordinates than the field has axes panicked --- a
+        ``PanicException``, which ``except Exception`` does not catch --- and one
+        with more had the rest ignored.  1.x's SciPy refused the shape."""
+        from medh5.transforms import cubic_sample, inside_extent, sample_field
+
+        field = np.ones((1, 4, 4))
+        points = np.zeros((2, columns))
+        calls = [
+            lambda: linear_sample(field, points),
+            lambda: cubic_sample(field, points),
+            lambda: cubic_sample(field, points, extrapolation="nearest"),
+            lambda: sample_field(field, points, interpolation="cubic"),
+            lambda: inside_extent([4, 4], points),
+        ]
+        for call in calls:
+            with pytest.raises(ValueError, match=f"{columns} coordinate"):
+                call()
+
     def test_linear_sample_reproduces_grid_values(self):
         field = np.arange(2 * 4 * 4, dtype=np.float64).reshape(2, 4, 4)
         at_nodes = linear_sample(field, np.array([[1.0, 2.0], [0.0, 0.0]]))
