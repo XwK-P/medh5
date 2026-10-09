@@ -195,6 +195,60 @@ class TestMonai:
         )
         assert tensor.meta["medh5"]["roi"] == [[3, 6, 1], [0, 7, 2], [1, 8, 3]]
 
+    def test_L08_a_cropped_channel_image_keeps_its_channels(self, tmp_path):
+        """`spatial_shape` was the crop's whole shape, channel axis included,
+        and SaveImage wrote a two-channel crop as one (L08 of the 2.0
+        re-audit).  It is the image's spatial shape, beside the
+        `original_affine` it goes with, as after a MONAI crop: a resampling
+        writer puts the crop back where it came from."""
+        pytest.importorskip("monai")
+        nib = pytest.importorskip("nibabel")
+        from monai.transforms import SaveImage
+
+        from medh5.monai import to_metatensor
+
+        path = tmp_path / "mr.medh5"
+        volume = np.zeros((2, 4, 5, 6), np.float32)
+        volume[0, 1:3, 1:4, 2:5] = 1.0
+        volume[1, 1:3, 1:4, 2:5] = 2.0
+        with medh5.create(path, sample_id="mr") as w:
+            w.add_grid(
+                "g",
+                shape=(2, 4, 5, 6),
+                spacing=(2.0, 1.0, 1.0),
+                axis_names=("c", "z", "y", "x"),
+                axis_kinds=("channel", "spatial", "spatial", "spatial"),
+                timepoint="tp0",
+            )
+            w.add_image("MR", volume, grid="g", modality="MR")
+        roi = (slice(1, 3), slice(1, 4), slice(2, 5))
+        with medh5.open(path) as sample:
+            tensor = to_metatensor(sample, "MR", roi=roi)
+        assert tuple(tensor.shape) == (2, 2, 3, 3)
+        assert list(tensor.meta["spatial_shape"]) == [4, 5, 6]
+        written = {}
+        for resample in (False, True):
+            out = tmp_path / f"resample-{resample}"
+            SaveImage(
+                output_dir=out,
+                output_ext=".nii.gz",
+                resample=resample,
+                separate_folder=False,
+                print_log=False,
+                padding_mode="zeros",
+            )(tensor)
+            (saved,) = out.glob("*.nii.gz")
+            written[resample] = np.asarray(nib.load(str(saved)).dataobj)
+        crop = written[False]
+        assert crop.shape == (2, 3, 3, 2)
+        assert crop[..., 0].max() == 1.0 and crop[..., 1].max() == 2.0
+        assert np.count_nonzero(crop.reshape(-1, 2), axis=0).tolist() == [18, 18]
+        # Resampled: the image's extent, both channels.  MONAI's channel-last
+        # interpolation decides the values, as it does after its own crop.
+        back = written[True]
+        assert back.shape == (4, 5, 6, 2)
+        assert np.count_nonzero(back.reshape(-1, 2), axis=0).all()
+
     def test_L08_an_index_in_the_roi_is_refused(self, tmp_path):
         pytest.importorskip("monai")
         from medh5.monai import to_metatensor

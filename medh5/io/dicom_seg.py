@@ -94,6 +94,8 @@ def read_dicom_seg_frames(
             "index": index,
             "segment": placement["segments"][index],
             "position": placement["positions"][index],
+            "orientation": placement["orientations"][index],
+            "pixel_spacing": placement["pixel_spacings"][index],
             "plane": placement["indices"][index],
             "data": (
                 pixels[index].astype(np.float32) / scale
@@ -153,6 +155,19 @@ def place_frames(
         )
     signs, scale = _from_patient(grid)
     _check_plane(geometry, grid, signs, scale)
+    for frame in frames:
+        # A frame read from a file carries its own plane; every one is checked,
+        # not only the file's first (L02 of the 2.0 re-audit).
+        if frame.get("orientation") is not None:
+            own = {
+                "direction": _direction(np.asarray(frame["orientation"], np.float64)),
+                "spacing": [
+                    geometry["spacing"][0],
+                    *(float(v) for v in frame["pixel_spacing"]),
+                ],
+            }
+            whose = f"SEG frame {frame['index']}'s"
+            _check_plane(own, grid, signs, scale, whose=whose)
     dtype = np.float32 if geometry["fractional"] else bool
     volumes: dict[int, npt.NDArray[Any]] = {
         number: np.zeros(shape, dtype=dtype) for number in geometry["segments"]
@@ -215,6 +230,8 @@ def _check_plane(
     grid: Any,
     signs: npt.NDArray[np.float64],
     scale: float,
+    *,
+    whose: str = "the SEG's",
 ) -> None:
     """The SEG's rows and columns run the way the grid's do, at its spacing.
 
@@ -226,7 +243,7 @@ def _check_plane(
     ours = np.asarray(grid.direction, dtype=np.float64)
     if not np.allclose(seg[:, 1:], ours[:, 1:], atol=1e-4):
         raise MEDH5ValidationError(
-            f"the SEG's rows and columns run along {seg[:, 1:].T.round(4).tolist()}, "
+            f"{whose} rows and columns run along {seg[:, 1:].T.round(4).tolist()}, "
             f"grid {grid.grid_id!r}'s along {ours[:, 1:].T.round(4).tolist()}; it "
             "was drawn on a different reconstruction",
             code="E405",
@@ -235,7 +252,7 @@ def _check_plane(
     voxel = np.asarray(grid.spacing[1:], dtype=np.float64) * scale
     if not np.allclose(pixel, voxel, rtol=1e-4, atol=1e-4):
         raise MEDH5ValidationError(
-            f"the SEG's pixel spacing is {pixel.tolist()} mm, grid "
+            f"{whose} pixel spacing is {pixel.tolist()} mm, grid "
             f"{grid.grid_id!r}'s {voxel.tolist()} mm; it was drawn on a "
             "different reconstruction",
             code="E405",
@@ -310,21 +327,35 @@ def _segments(dataset: Any) -> dict[int, dict[str, Any]]:
 
 
 def _frame_placement(dataset: Any, n_frames: int) -> dict[str, Any]:
-    """Where each frame belongs, from the per-frame functional groups."""
+    """Where each frame belongs, from the per-frame functional groups.
+
+    A functional group may sit in the shared item or in each frame's own
+    (PS3.3 C.7.6.16), so every frame's orientation and pixel spacing are read
+    where they are --- and the frames must agree on them, being one volume's
+    slices.  The first orientation found and the shared spacing stood for
+    every frame: a frame turned in plane was placed as the first one was, and
+    spacing kept in the frames read as 1 mm (L02 of the 2.0 re-audit).
+    """
     shared = _first_item(dataset, "SharedFunctionalGroupsSequence")
     per_frame = list(getattr(dataset, "PerFrameFunctionalGroupsSequence", []))
-    orientation = _orientation(shared, per_frame)
-    normal = np.cross(orientation[:3], orientation[3:])
     positions: list[npt.NDArray[np.float64]] = []
     segments: list[int] = []
+    orientations: list[npt.NDArray[np.float64]] = []
+    pixels: list[npt.NDArray[np.float64]] = []
     for index in range(n_frames):
         group = per_frame[index] if index < len(per_frame) else None
         positions.append(_position(group, shared))
         segments.append(_segment_number(group))
+        orientations.append(_orientation(group, shared, index))
+        pixels.append(_pixel_spacing(group, shared, index))
+    _congruent(orientations, pixels)
+    orientation = orientations[0]
+    normal = np.cross(orientation[:3], orientation[3:])
     projected = [float(np.dot(p, normal)) for p in positions]
     planes = sorted(set(np.round(projected, 4)))
     indices = [planes.index(round(v, 4)) for v in projected]
-    spacing = _spacing(shared, planes)
+    first = per_frame[0] if per_frame else None
+    spacing = _spacing(pixels[0], planes, _between(first, shared))
     origin_index = indices.index(0) if 0 in indices else 0
     return {
         "planes": planes,
@@ -335,25 +366,34 @@ def _frame_placement(dataset: Any, n_frames: int) -> dict[str, Any]:
         # onto needs the position, and the index is only meaningful among the
         # planes this file happens to carry.
         "positions": positions,
+        "orientations": orientations,
+        "pixel_spacings": pixels,
         "spacing": spacing,
         "origin": [float(v) for v in positions[origin_index]],
-        "direction": [
-            [float(v) for v in row]
-            for row in np.stack([normal, orientation[3:], orientation[:3]], axis=1)
-        ],
+        "direction": _direction(orientation),
         "source_series": _source_series(dataset),
     }
 
 
-def _orientation(shared: Any, per_frame: Sequence[Any]) -> npt.NDArray[np.float64]:
-    for holder in (shared, *per_frame):
-        group = _first_item(holder, "PlaneOrientationSequence")
-        if group is not None and hasattr(group, "ImageOrientationPatient"):
+def _direction(orientation: npt.NDArray[np.float64]) -> list[list[float]]:
+    """A frame's `ImageOrientationPatient` as a (slice, row, column) direction."""
+    normal = np.cross(orientation[:3], orientation[3:])
+    return [
+        [float(v) for v in row]
+        for row in np.stack([normal, orientation[3:], orientation[:3]], axis=1)
+    ]
+
+
+def _orientation(group: Any, shared: Any, index: int) -> npt.NDArray[np.float64]:
+    for holder in (group, shared):
+        plane = _first_item(holder, "PlaneOrientationSequence")
+        if plane is not None and hasattr(plane, "ImageOrientationPatient"):
             return np.asarray(
-                [float(v) for v in group.ImageOrientationPatient], dtype=np.float64
+                [float(v) for v in plane.ImageOrientationPatient], dtype=np.float64
             )
     raise MEDH5ValidationError(
-        "the SEG carries no ImageOrientationPatient, so its frames cannot be placed"
+        f"SEG frame {index} carries no ImageOrientationPatient, in its own "
+        "functional groups or the shared ones, so it cannot be placed"
     )
 
 
@@ -367,6 +407,51 @@ def _position(group: Any, shared: Any) -> npt.NDArray[np.float64]:
     raise MEDH5ValidationError("a SEG frame carries no ImagePositionPatient")
 
 
+def _pixel_spacing(group: Any, shared: Any, index: int) -> npt.NDArray[np.float64]:
+    for holder in (group, shared):
+        measures = _first_item(holder, "PixelMeasuresSequence")
+        if measures is not None and getattr(measures, "PixelSpacing", None):
+            return np.asarray(
+                [float(v) for v in measures.PixelSpacing], dtype=np.float64
+            )
+    raise MEDH5ValidationError(
+        f"SEG frame {index} carries no PixelSpacing, in its own functional "
+        "groups or the shared ones; where its pixels lie is not stated, and "
+        "it is refused rather than read as 1 mm"
+    )
+
+
+def _between(group: Any, shared: Any) -> float | None:
+    for holder in (group, shared):
+        measures = _first_item(holder, "PixelMeasuresSequence")
+        if measures is not None and getattr(measures, "SpacingBetweenSlices", None):
+            return float(measures.SpacingBetweenSlices)
+    return None
+
+
+def _congruent(
+    orientations: Sequence[npt.NDArray[np.float64]],
+    pixels: Sequence[npt.NDArray[np.float64]],
+) -> None:
+    """Every frame oriented and spaced as the first: one volume's slices."""
+    pairs = zip(orientations, pixels, strict=True)
+    for index, (orientation, pixel) in enumerate(pairs):
+        if not np.allclose(orientation, orientations[0], atol=1e-4):
+            raise MEDH5ValidationError(
+                f"SEG frame {index} is oriented {orientation.round(4).tolist()} and "
+                f"frame 0 {orientations[0].round(4).tolist()}: frames turned "
+                "against each other are not one volume's slices",
+                code="E405",
+            )
+        if not np.allclose(pixel, pixels[0], rtol=1e-4, atol=1e-6):
+            raise MEDH5ValidationError(
+                f"SEG frame {index} has pixel spacing {pixel.tolist()} mm and frame "
+                f"0 {pixels[0].tolist()} mm: frames of different spacing are not "
+                "one volume's slices",
+                code="E405",
+            )
+
+
 def _segment_number(group: Any) -> int:
     identification = _first_item(group, "SegmentIdentificationSequence")
     if identification is None:
@@ -374,19 +459,15 @@ def _segment_number(group: Any) -> int:
     return int(getattr(identification, "ReferencedSegmentNumber", 1))
 
 
-def _spacing(shared: Any, planes: Sequence[float]) -> list[float]:
-    measures = _first_item(shared, "PixelMeasuresSequence")
-    in_plane = [1.0, 1.0]
-    if measures is not None and hasattr(measures, "PixelSpacing"):
-        in_plane = [float(v) for v in measures.PixelSpacing]
+def _spacing(
+    in_plane: npt.NDArray[np.float64], planes: Sequence[float], between: float | None
+) -> list[float]:
     if len(planes) > 1:
         gaps = np.diff(np.asarray(planes, dtype=np.float64))
         through = float(np.median(np.abs(gaps)))
-    elif measures is not None and getattr(measures, "SpacingBetweenSlices", None):
-        through = float(measures.SpacingBetweenSlices)
     else:
-        through = 1.0
-    return [through, in_plane[0], in_plane[1]]
+        through = between or 1.0
+    return [through, float(in_plane[0]), float(in_plane[1])]
 
 
 def _first_item(holder: Any, name: str) -> Any:
@@ -656,6 +737,7 @@ def to_dicom_seg(
 
     with medh5.open(sample) as opened:
         annotation = opened.annotations[ann_id]
+        slices = _source_slices(annotation.grid, datasets, log)
         ids = annotation.resolve_classes(classes)
         planes = np.asarray(annotation.dense(list(ids)), dtype=bool)
         descriptions = [
@@ -672,9 +754,9 @@ def to_dicom_seg(
             )
             for i, class_id in enumerate(ids)
         ]
-        # highdicom wants (frames, rows, columns, segments); `dense` returns
-        # (segments, z, y, x).
-        pixels = np.transpose(planes, (1, 2, 3, 0))
+        # highdicom wants (frames, rows, columns, segments), a frame per
+        # source image in the order given; `dense` returns (segments, z, y, x).
+        pixels = np.transpose(planes, (1, 2, 3, 0))[slices]
         segmentation = hd.seg.Segmentation(
             source_images=datasets,
             pixel_array=pixels,
@@ -708,6 +790,88 @@ def to_dicom_seg(
     )
     log.outputs.append(str(target))
     return target
+
+
+def _source_slices(
+    grid: Any, datasets: Sequence[Any], log: ConversionReport
+) -> list[int]:
+    """The slice of *grid* each source image is, in the images' order.
+
+    A SEG is written against its source images: highdicom gives frame ``k``
+    the geometry of image ``k``, so the annotation's grid must be theirs ---
+    one frame of reference, rows and columns running the same way at the same
+    spacing, and each image one of its slices whose first pixel is the
+    slice's first voxel.  The export compared nothing, so an annotation on a
+    grid turned in plane, or shifted 10 mm in the same frame, was written
+    onto the source geometry, centimetres from where it was drawn (N01 of
+    the 2.0 re-audit).  A grid that is not the images' is refused; nothing is
+    resampled.
+    """
+    signs, scale = _from_patient(grid)
+    shape = tuple(grid.spatial_shape)
+    if len(shape) != 3 or len(datasets) != shape[0]:
+        raise MEDH5ValidationError(
+            f"grid {grid.grid_id!r} is {shape} and {len(datasets)} source "
+            "image(s) were given: a SEG is written a frame per source image, "
+            "so they must be the grid's slices, one each",
+            code="E405",
+        )
+    frames = {str(getattr(d, "FrameOfReferenceUID", "") or "") for d in datasets}
+    if grid.frame_uid and frames != {grid.frame_uid}:
+        raise MEDH5ValidationError(
+            f"grid {grid.grid_id!r} is in frame {grid.frame_uid!r} and the source "
+            f"images in {sorted(frames)}; a segmentation is not placed across "
+            "frames of reference",
+            code="E405",
+        )
+    if not grid.frame_uid:
+        log.guess(
+            "frame_of_reference",
+            f"grid {grid.grid_id!r} declares no frame_uid, so the source images "
+            "were matched to it by position alone",
+            {"grid": grid.grid_id},
+        )
+    order: list[int] = []
+    for k, dataset in enumerate(datasets):
+        whose = f"source image {k}'s"
+        if (int(dataset.Rows), int(dataset.Columns)) != shape[1:]:
+            raise MEDH5ValidationError(
+                f"{whose} matrix is {int(dataset.Rows)}x{int(dataset.Columns)} and "
+                f"grid {grid.grid_id!r}'s {shape[1]}x{shape[2]}; it is another "
+                "reconstruction",
+                code="E405",
+            )
+        orientation = np.asarray(
+            [float(v) for v in dataset.ImageOrientationPatient], dtype=np.float64
+        )
+        own = {
+            "direction": _direction(orientation),
+            "spacing": [0.0, *(float(v) for v in dataset.PixelSpacing)],
+        }
+        _check_plane(own, grid, signs, scale, whose=whose)
+        world = signs * _ipp(dataset) / scale
+        index = np.asarray(grid.world_to_index(world), dtype=np.float64).reshape(-1)
+        nearest = int(np.round(index[0]))
+        if (
+            abs(index[0] - nearest) > SLICE_TOLERANCE
+            or not 0 <= nearest < shape[0]
+            or np.any(np.abs(index[1:3]) > SLICE_TOLERANCE)
+        ):
+            raise MEDH5ValidationError(
+                f"source image {k} starts at index "
+                f"({index[0]:.3f}, {index[1]:.3f}, {index[2]:.3f}) of grid "
+                f"{grid.grid_id!r}, which is not the first voxel of one of its "
+                "slices; the annotation was drawn on another grid",
+                code="E405",
+            )
+        order.append(nearest)
+    if sorted(order) != list(range(shape[0])):
+        raise MEDH5ValidationError(
+            f"the source images fall on slices {order} of grid {grid.grid_id!r}; "
+            "a SEG needs each slice once",
+            code="E405",
+        )
+    return order
 
 
 def _source_normal(dataset: Any) -> npt.NDArray[np.float64]:

@@ -110,6 +110,8 @@ def write_nifti(
     units: str = "mm",
     time_values: Sequence[float] | None = None,
     time_units: str | None = None,
+    leading: str | None = None,
+    channels: Mapping[str, Any] | None = None,
     report: ConversionReport | None = None,
 ) -> Path:
     """Write one NIfTI file, recording *rescale* in the header (§4.2).
@@ -131,6 +133,17 @@ def write_nifti(
     uneven frames, which one temporal step cannot state, are written to a BIDS
     sidecar's ``VolumeTiming`` beside the file --- which :func:`read_nifti`
     reads back --- and the header's step is left at 0, which says nothing.
+
+    A fourth axis that is a *channel* axis (*leading*, §3.6) is said to be one
+    (see :func:`_channel_layout`), with what its channels mean taken from
+    *channels* --- the image's per-channel acquisition values.  Written as a
+    plain fourth axis it read back as time, with invented frame times.
+
+    The file owns the statements about its volumes beside it --- the
+    sidecar's per-volume fields and a ``.bval`` --- and an overwrite replaces
+    them: the old ones are withdrawn before the image is replaced, and the new
+    ones written after, so no reader ever pairs the image with another
+    export's timeline (see :func:`_withdraw_volume_statements`).
     """
     nib = require_nibabel()
     target = Path(os.fspath(path))
@@ -139,9 +152,16 @@ def write_nifti(
     scale = MM_PER_UNIT.get(units)
     if scale is not None:
         matrix[:3, :] *= scale
+    statements: dict[str, Any] = {}
+    b_values: list[float] | None = None
+    intent: str | None = None
+    if data.ndim == 4 and leading == "channel":
+        data, intent, statements, b_values = _channel_layout(data, channels, report)
     image = nib.Nifti1Image(data, matrix)
     header = image.header
     header.set_data_dtype(data.dtype)
+    if intent is not None:
+        header.set_intent(intent)
     if rescale is not None:
         header.set_slope_inter(float(rescale[0]), float(rescale[1]))
     if scale is None and report is not None:
@@ -152,24 +172,152 @@ def write_nifti(
             {"units": units},
         )
     temporal = "unknown"
-    if time_values is not None and data.ndim == 4:
-        temporal = _write_timing(
-            header, target, data.shape[3], time_values, time_units, report
+    if time_values is not None and data.ndim == 4 and leading != "channel":
+        temporal, timing = _write_timing(
+            header, data.shape[3], time_values, time_units, report
         )
+        if timing is not None:
+            statements["VolumeTiming"] = timing
     header.set_xyzt_units(xyz="mm" if scale is not None else "unknown", t=temporal)
-    nib.save(image, str(target))
+    sidecar = _sidecar_for(target)
+    kept = _withdraw_volume_statements(target, sidecar, needed=bool(statements))
+    temporary = target.with_name(f".{os.getpid()}-{target.name}")
+    try:
+        nib.save(image, str(temporary))
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+    if statements:
+        _replace_text(sidecar, json.dumps({**kept, **statements}, indent=2) + "\n")
+        if report is not None and "VolumeTiming" in statements:
+            report.decision(
+                "time_values",
+                "the frames are unevenly spaced, which one NIfTI temporal step "
+                f"cannot state; their times were written to {sidecar.name} as "
+                "VolumeTiming",
+                {"sidecar": str(sidecar), "frames": len(statements["VolumeTiming"])},
+            )
+    if b_values is not None:
+        _replace_text(
+            _sidecar_path(target, ".bval"), " ".join(f"{v:g}" for v in b_values) + "\n"
+        )
     return target
+
+
+def _channel_layout(
+    data: npt.NDArray[Any],
+    channels: Mapping[str, Any] | None,
+    report: ConversionReport | None,
+) -> tuple[npt.NDArray[Any], str | None, dict[str, Any], list[float] | None]:
+    """A channel axis as NIfTI states one (§3.6), and what its channels mean.
+
+    With a b-value per channel it is a diffusion series: four dimensions and
+    a ``.bval`` beside the file, the layout every diffusion tool reads.
+    Otherwise the voxels are vectors: NIfTI-1 puts a vector's components on
+    ``dim[5]``, with ``dim[4]`` --- time --- of 1, under a vector intent.
+    Either is what :func:`read_nifti` reads back as channels; per-channel echo
+    and inversion times, and flip angles, go to the sidecar as BIDS fields.
+    """
+    frames = int(data.shape[3])
+
+    def per_channel(keyword: str) -> list[float] | None:
+        """*keyword*'s numbers, one per channel, or nothing."""
+        values = (channels or {}).get(keyword)
+        if not isinstance(values, (list, tuple)) or len(values) != frames:
+            return None
+        try:
+            return [float(v) for v in values]
+        except (TypeError, ValueError):  # a list of something else
+            return None
+
+    statements = {
+        field: found
+        for keyword, field in CHANNEL_FIELDS.items()
+        if (found := per_channel(keyword)) is not None
+    }
+    b_values = per_channel("b_values")
+    intent: str | None = None
+    if b_values is None:
+        data = data.reshape((*data.shape[:3], 1, frames))
+        intent = "vector"
+    if report is not None:
+        report.decision(
+            "channels",
+            f"the fourth axis is a channel axis of {frames}; it was written "
+            + (
+                "with its b-values in a .bval beside the file"
+                if b_values is not None
+                else "as NIfTI's vector dimension (dim[5], vector intent)"
+            )
+            + (f", and {sorted(statements)} in the sidecar" if statements else ""),
+            {"channels": frames, "fields": sorted(statements)},
+        )
+    return data, intent, statements, b_values
+
+
+def _withdraw_volume_statements(
+    target: Path, sidecar: Path, *, needed: bool
+) -> dict[str, Any]:
+    """Withdraw what was said beside *target* about the volumes it is about
+    to replace; returns the sidecar's other fields, kept.
+
+    The regular-timing branch wrote nothing beside its file, and the reader
+    prefers a sidecar's ``VolumeTiming`` to the header: an overwrite of an
+    irregular series by a regular one read back the old timeline (N03 of the
+    2.0 re-audit).  The per-volume fields and a ``.bval`` are withdrawn before
+    the image is replaced and the new ones written after it, so an
+    interrupted export leaves an image whose timing reads as unmeasured,
+    never as another image's.  A sidecar that is not a JSON object is left
+    alone, and refused when this export has fields to put in it.
+    """
+    _sidecar_path(target, ".bval").unlink(missing_ok=True)
+    if not sidecar.exists():
+        return {}
+    try:
+        fields = json.loads(sidecar.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        fields = None
+    if not isinstance(fields, dict):
+        if needed:
+            raise MEDH5ValidationError(
+                f"{sidecar} is not a JSON object, and this export writes its "
+                "per-volume fields there; move it aside first"
+            )
+        return {}
+    # A list is a statement about each volume; a scalar `EchoTime` is the
+    # scanner's, about all of them, and stays.
+    kept = {
+        k: v
+        for k, v in fields.items()
+        if not (k in VOLUME_FIELDS and isinstance(v, list))
+    }
+    if len(kept) != len(fields):
+        _replace_text(sidecar, json.dumps(kept, indent=2) + "\n" if kept else None)
+    return kept
+
+
+def _replace_text(path: Path, text: str | None) -> None:
+    """*text* as *path*'s content through a rename, or *path* removed."""
+    if text is None:
+        path.unlink(missing_ok=True)
+        return
+    temporary = path.with_name(f".{os.getpid()}-{path.name}")
+    try:
+        temporary.write_text(text, encoding="utf-8")
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _write_timing(
     header: Any,
-    target: Path,
     frames: int,
     time_values: Sequence[float],
     time_units: str | None,
     report: ConversionReport | None,
-) -> str:
-    """Put a time axis in *header* (or, uneven, in a sidecar); its NIfTI unit."""
+) -> tuple[str, list[float] | None]:
+    """Put a time axis in *header*; its NIfTI unit, and --- uneven frames,
+    which one step cannot state --- their times in seconds for the sidecar."""
     unit = time_units if time_units in SECONDS_PER_UNIT else "s"
     times = np.asarray(time_values, dtype=np.float64)
     if times.shape != (frames,):
@@ -185,32 +333,24 @@ def _write_timing(
             zooms[3] = float(steps[0])
         header.set_zooms(zooms)
         header["toffset"] = float(times[0])
-        return {"s": "sec", "ms": "msec"}[unit]
+        return {"s": "sec", "ms": "msec"}[unit], None
     zooms = list(header.get_zooms())
     zooms[3] = 0.0
     header.set_zooms(zooms)
-    seconds = times * SECONDS_PER_UNIT[unit]
-    sidecar = _sidecar_for(target)
-    sidecar.write_text(
-        json.dumps({"VolumeTiming": [float(v) for v in seconds]}, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    if report is not None:
-        report.decision(
-            "time_values",
-            "the frames are unevenly spaced, which one NIfTI temporal step cannot "
-            f"state; their times were written to {sidecar.name} as VolumeTiming",
-            {"sidecar": str(sidecar), "frames": frames},
-        )
-    return "unknown"
+    return "unknown", [float(v) for v in times * SECONDS_PER_UNIT[unit]]
 
 
 def _sidecar_for(target: Path) -> Path:
     """The BIDS JSON sidecar path beside a NIfTI file."""
+    return _sidecar_path(target, ".json")
+
+
+def _sidecar_path(target: Path, suffix: str) -> Path:
+    """The file beside a NIfTI sharing its stem and ending in *suffix*."""
     for extension in (".nii.gz", ".nii"):
         if target.name.endswith(extension):
-            return target.with_name(target.name[: -len(extension)] + ".json")
-    return target.with_suffix(".json")
+            return target.with_name(target.name[: -len(extension)] + suffix)
+    return target.with_suffix(suffix)
 
 
 def _geometry_notes(
@@ -493,6 +633,19 @@ PER_VOLUME_CHANNEL = {
     "FlipAngle": ("FlipAngle", "FA"),
 }
 PER_VOLUME_TIME = ("VolumeTiming",)
+
+# Sidecar fields stating one value per volume: what `read_nifti` reads as
+# the fourth axis's meaning, and so what an export owns beside its file.
+VOLUME_FIELDS = (*PER_VOLUME_TIME, *PER_VOLUME_CHANNEL)
+
+# A channel axis's per-channel acquisition values (§4.5), by the DICOM
+# keyword `read_nifti` stores them under, as the BIDS field it reads them from.
+CHANNEL_FIELDS = {
+    "EchoTime": "EchoTime",
+    "EchoNumbers": "EchoNumber",
+    "InversionTime": "InversionTime",
+    "FlipAngle": "FlipAngle",
+}
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -1169,6 +1322,12 @@ def to_nifti(
                 rescale = image.rescale
         data, out_affine = for_export(grid, data)
         units, times, time_units = grid.units, grid.time_values, grid.time_units
+        leading = grid.axis_kinds[0] if len(grid.axis_kinds) == 4 else None
+        channels = (
+            sample.document.acquisition.get(image_id, {})
+            if annotation is None and leading == "channel"
+            else {}
+        )
     return write_nifti(
         data,
         out_affine,
@@ -1177,6 +1336,8 @@ def to_nifti(
         units=units,
         time_values=times,
         time_units=time_units,
+        leading=leading,
+        channels={k: v for k, v in channels.items() if isinstance(v, (list, tuple))},
         report=report,
     )
 
@@ -1197,6 +1358,12 @@ def for_export(
     """
     affine = convert_world(grid.affine, source=grid.coord_system, target="RAS")
     spacing, origin, direction = decompose_affine(affine)
+    if len(spacing) == 2 and data.ndim > 2:
+        raise MEDH5ValidationError(
+            f"grid {grid.grid_id!r} is a 2-D plane with a {grid.axis_kinds[0]} "
+            "axis, which no NIfTI layout this exporter writes can state; export "
+            "its planes one at a time"
+        )
     if data.ndim >= 3:
         spatial = (data.ndim - 1, data.ndim - 2, data.ndim - 3)
         data = np.transpose(data, spatial + tuple(range(data.ndim - 3)))

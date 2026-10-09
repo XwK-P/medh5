@@ -436,3 +436,102 @@ class TestU03IgnoredVoxels:
             result = compare_voxel(s.annotations["a"], s.annotations["b"])
             assert result.value is None
             assert result.skipped == ("c1 (empty in both outside the ignore region)",)
+
+
+class TestN10AcrossSamples:
+    """A grid id is its sample's own name (N10 of the 2.0 re-audit): two
+    samples each calling a grid `g` were compared voxel for voxel and box for
+    box though one was 100 mm away or in an unrelated frame, scoring 1.0, and
+    grids of two shapes, each with an ignore region, panicked the merge."""
+
+    @staticmethod
+    def _sample(
+        path: Path,
+        *,
+        origin: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        frame: str = "1.2.3.4",
+        shape: tuple[int, int, int] = Framed.SHAPE,
+        ignore: np.ndarray | None = None,
+    ) -> Path:
+        mask = np.zeros(shape, bool)
+        mask[2:4, 2:5, 2:5] = True
+        with medh5.create(path, sample_id=path.stem, codec="portable") as w:
+            w.add_grid(
+                "g",
+                shape=shape,
+                spacing=(2.0, 1.0, 1.0),
+                origin=origin,
+                frame_uid=frame,
+            )
+            w.add_image("CT", np.zeros(shape, np.int16), grid="g", modality="CT")
+            w.label_set(Framed.label_set())
+            w.add_segmentation(
+                "seg", grid="g", masks={1: mask}, annotated_classes=[1], ignore=ignore
+            )
+            if shape == Framed.SHAPE:
+                box = np.array([Framed.box(2, 4)], np.float32)
+                w.add_boxes("boxes", box, ["c1"], grid="g")
+                w.add_boxes("world", box, ["c1"], space="world", frame_uid=frame)
+        return path
+
+    def test_N10_a_grid_of_the_same_name_elsewhere_is_another_grid(
+        self, tmp_path: Path
+    ):
+        here = self._sample(tmp_path / "here.medh5")
+        moved = self._sample(tmp_path / "moved.medh5", origin=(0.0, 0.0, 100.0))
+        other = self._sample(tmp_path / "other.medh5", frame="9.9.9")
+        with (
+            medh5.open(here) as h,
+            medh5.open(moved) as m,
+            medh5.open(other) as o,
+        ):
+            for there in (m, o):
+                for name, compare_of in (
+                    ("seg", compare_voxel),
+                    ("boxes", compare_instances),
+                ):
+                    with pytest.raises(
+                        MEDH5ValidationError, match="two samples"
+                    ) as caught:
+                        compare_of(h.annotations[name], there.annotations[name])
+                    assert caught.value.code == "E101"
+            with pytest.raises(MEDH5ValidationError) as caught:
+                compare_instances(h.annotations["world"], o.annotations["world"])
+            assert caught.value.code == "E414"
+
+    def test_N10_grids_of_two_shapes_are_refused_not_merged(self, tmp_path: Path):
+        def ignored(shape: tuple[int, int, int]) -> np.ndarray:
+            region = np.zeros(shape, bool)
+            region[0] = True
+            return region
+
+        small = self._sample(
+            tmp_path / "s.medh5", shape=(4, 4, 4), ignore=ignored((4, 4, 4))
+        )
+        large = self._sample(
+            tmp_path / "l.medh5", shape=(5, 5, 5), ignore=ignored((5, 5, 5))
+        )
+        with (
+            medh5.open(small) as s,
+            medh5.open(large) as big,
+            pytest.raises(MEDH5ValidationError) as caught,
+        ):
+            compare_voxel(s.annotations["seg"], big.annotations["seg"])
+        assert caught.value.code == "E101"
+
+    def test_N10_one_lattice_in_one_frame_compares_across_samples(self, tmp_path: Path):
+        """Two raters' files of one scan: their grids share a frame and are
+        one lattice, whatever they are called."""
+        a = self._sample(tmp_path / "a.medh5")
+        b = self._sample(tmp_path / "b.medh5")
+        with medh5.open(a) as sa, medh5.open(b) as sb:
+            assert (
+                compare_voxel(sa.annotations["seg"], sb.annotations["seg"]).value == 1.0
+            )
+            for name in ("boxes", "world"):
+                found = compare_instances(sa.annotations[name], sb.annotations[name])
+                assert found.value == pytest.approx(1.0)
+        # One file, opened twice, is one sample's grids again.
+        with medh5.open(a) as first, medh5.open(a) as second:
+            same = compare_voxel(first.annotations["seg"], second.annotations["seg"])
+            assert same.value == 1.0

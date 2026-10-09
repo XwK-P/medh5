@@ -179,8 +179,12 @@ def to_metatensor(
         roi = _normalised_roi(roi, tuple(source.shape), len(meta["affine"]) - 1)
     array = np.ascontiguousarray(source.read(roi, physical=physical, dtype=dtype))
     if roi is not None:
+        # The crop's own affine; `original_affine` and `spatial_shape` stay the
+        # image's, as after a MONAI crop, so a resampling writer puts the
+        # crop back where it came from.  `spatial_shape` was the crop's whole
+        # shape, channel axis included, and SaveImage(resample=True) wrote a
+        # two-channel crop as one (L08 of the 2.0 re-audit).
         meta["affine"] = _shift_origin(meta["affine"], roi)
-        meta["spatial_shape"] = np.asarray(array.shape, dtype=np.int64)
         meta["medh5"]["roi"] = [[s.start, s.stop, s.step] for s in roi]
 
     return _metatensor(array, meta)

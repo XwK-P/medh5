@@ -10,7 +10,7 @@ import pytest
 
 import medh5
 from medh5.errors import MEDH5ValidationError
-from tests.kits import Organs
+from tests.kits import Numbered, Organs
 
 nib = pytest.importorskip("nibabel")
 
@@ -393,3 +393,63 @@ class TestNnunetScaling:
             w.add_segmentation("seg", grid="pet", masks={1: mask})
         with pytest.raises(MEDH5ValidationError, match="channels' grid"):
             to_nnunetv2([path], tmp_path / "nn", dataset_name="D1")
+
+
+class TestNnunetIgnore:
+    """nnU-Net's declared ignore label is the annotation's §7.7 ignore region,
+    both ways (N02 of the 2.0 re-audit): the export wrote ignored voxels as 0
+    --- verified background for every class --- and declared no ignore label,
+    and the import read nnU-Net's ignore label as a class named ``ignore``."""
+
+    @pytest.mark.parametrize("overlap", [False, True])
+    def test_N02_ignored_voxels_round_trip_as_the_ignore_label(self, tmp_path, overlap):
+        from medh5.io.nnunetv2 import from_nnunetv2, to_nnunetv2
+
+        liver, spleen, region = Numbered.two_classes()
+        if overlap:  # a region over a class is stored as the sibling mask (§7.7)
+            region = region.copy()
+            region[1:3, 1:3, 1:3] = True
+        path = tmp_path / "s1.medh5"
+        with Numbered.writer(path) as w:
+            w.add_segmentation(
+                "seg",
+                grid="g",
+                masks={1: liver, 2: spleen},
+                annotated_classes="all",
+                ignore=region,
+            )
+        report = to_nnunetv2([path], tmp_path / "nn", dataset_name="D9")
+        labels = json.loads((tmp_path / "nn/D9/dataset.json").read_text())["labels"]
+        assert labels["ignore"] == 4  # one above every other value
+        (decision,) = report.of_kind("ignore")
+        assert ("over a class" in decision.message) is overlap
+
+        back = from_nnunetv2(tmp_path / "nn/D9", tmp_path / "back")
+        assert back.of_kind("ignore")
+        with medh5.open(tmp_path / "back/s1.medh5") as sample:
+            assert "ignore" not in [c.key for c in sample.label_set]
+            assert np.array_equal(sample.ignore_region("seg"), region)
+            seg = sample.annotations["seg"]
+            for class_id, mask in ((1, liver), (2, spleen)):
+                assert np.array_equal(seg.dense([class_id])[0], mask & ~region)
+
+    def test_N02_without_an_ignore_region_no_label_is_declared(self, tmp_path):
+        from medh5.io.nnunetv2 import to_nnunetv2
+
+        liver, spleen, _ = Numbered.two_classes()
+        path = tmp_path / "s1.medh5"
+        with Numbered.writer(path) as w:
+            w.add_segmentation("seg", grid="g", masks={1: liver, 2: spleen})
+        report = to_nnunetv2([path], tmp_path / "nn", dataset_name="D9")
+        labels = json.loads((tmp_path / "nn/D9/dataset.json").read_text())["labels"]
+        assert "ignore" not in labels and not report.of_kind("ignore")
+
+    def test_N02_an_ignore_label_that_cannot_be_highest_is_refused(self):
+        """nnU-Net's ignore label must be the highest value, and the label
+        volume is uint16: above a class 65535 there is no room for it."""
+        from medh5.io.nnunetv2 import _ignore_value
+
+        assert _ignore_value({"background": 0, "a": 3, "r": [1, 7]}) == 8
+        assert _ignore_value({"background": 0, "a": 3, "ignore": 9}) == 9
+        with pytest.raises(MEDH5ValidationError, match="does not fit"):
+            _ignore_value({"background": 0, "top": 65535})

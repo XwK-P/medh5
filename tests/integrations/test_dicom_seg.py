@@ -17,51 +17,52 @@ from tests.kits import Organs
 pydicom = pytest.importorskip("pydicom")
 
 
-class TestDicomSeg:
-    @pytest.fixture
-    def prepared(self, tmp_path: Path) -> dict[str, Any]:
-        """A one-series sample plus two overlapping masks on its grid."""
-        from pydicom.uid import generate_uid
+@pytest.fixture
+def prepared(tmp_path: Path) -> dict[str, Any]:
+    """A one-series sample plus two overlapping masks on its grid."""
+    from pydicom.uid import generate_uid
 
-        from medh5.io.dicom import from_dicom
-        from tests.helpers import write_dicom_series
+    from medh5.io.dicom import from_dicom
+    from tests.helpers import write_dicom_series
 
-        root = tmp_path / "dcm"
-        series = write_dicom_series(
-            root,
-            patient_id="PSEUDO-002",
-            study_uid=generate_uid(),
-            study_date="20260101",
-        )
-        path = tmp_path / "case.medh5"
-        from_dicom(root, path, group_by="study")
-        with medh5.open(path) as sample:
-            grid_id = sorted(sample.grids)[0]
-            shape = sample.grids[grid_id].spatial_shape
-        liver = np.zeros(shape, bool)
-        liver[1:5, 2:12, 3:16] = True
-        lesion = np.zeros(shape, bool)
-        lesion[2:4, 5:8, 6:10] = True  # entirely inside the liver
-        with medh5.amend(path) as writer:
-            writer.label_set(
-                LabelSet(
-                    "d",
-                    version="1.0.0",
-                    classes=[
-                        LabelClass(1, "liver", "Liver"),
-                        LabelClass(3, "lesion", "Lesion"),
-                    ],
-                )
+    root = tmp_path / "dcm"
+    series = write_dicom_series(
+        root,
+        patient_id="PSEUDO-002",
+        study_uid=generate_uid(),
+        study_date="20260101",
+    )
+    path = tmp_path / "case.medh5"
+    from_dicom(root, path, group_by="study")
+    with medh5.open(path) as sample:
+        grid_id = sorted(sample.grids)[0]
+        shape = sample.grids[grid_id].spatial_shape
+    liver = np.zeros(shape, bool)
+    liver[1:5, 2:12, 3:16] = True
+    lesion = np.zeros(shape, bool)
+    lesion[2:4, 5:8, 6:10] = True  # entirely inside the liver
+    with medh5.amend(path) as writer:
+        writer.label_set(
+            LabelSet(
+                "d",
+                version="1.0.0",
+                classes=[
+                    LabelClass(1, "liver", "Liver"),
+                    LabelClass(3, "lesion", "Lesion"),
+                ],
             )
-            writer.add_segmentation("organs", grid=grid_id, masks={1: liver, 3: lesion})
-        return {
-            "path": path,
-            "series": series,
-            "liver": liver,
-            "lesion": lesion,
-            "grid": grid_id,
-        }
+        )
+        writer.add_segmentation("organs", grid=grid_id, masks={1: liver, 3: lesion})
+    return {
+        "path": path,
+        "series": series,
+        "liver": liver,
+        "lesion": lesion,
+        "grid": grid_id,
+    }
 
+
+class TestDicomSeg:
     def test_S7_overlapping_segments_survive_the_round_trip(self, prepared, tmp_path):
         from medh5.io.dicom_seg import from_dicom_seg, to_dicom_seg
 
@@ -447,3 +448,184 @@ class TestSegFramesSitOnTheGrid:
             geometry = self._geometry(grid, direction=direction, spacing=spacing)
             placed = place_frames([self._frame(position)], geometry, grid)
             assert placed[1][2].all() and not placed[1][3].any()
+
+
+def _rewrite_frames(seg: Path, out: Path, change: Any = None) -> Path:
+    """The SEG with its plane orientation and pixel measures moved out of the
+    shared functional groups into each frame's own, as PS3.3 C.7.6.16 permits;
+    *change*, given each frame's item and index, may then alter them."""
+    import copy
+
+    dataset = pydicom.dcmread(str(seg))
+    shared = dataset.SharedFunctionalGroupsSequence[0]
+    orientation = shared.PlaneOrientationSequence
+    measures = shared.PixelMeasuresSequence
+    del shared.PlaneOrientationSequence
+    del shared.PixelMeasuresSequence
+    items = dataset.PerFrameFunctionalGroupsSequence
+    for index, item in enumerate(items):
+        item.PlaneOrientationSequence = copy.deepcopy(orientation)
+        item.PixelMeasuresSequence = copy.deepcopy(measures)
+        if change is not None:
+            change(item, index, len(items))
+    dataset.save_as(str(out), enforce_file_format=True)
+    return out
+
+
+class TestSegGeometryPerFrame:
+    """A functional group may sit in the shared item or in each frame's (L02 of
+    the 2.0 re-audit): the import took the first orientation it found and the
+    shared pixel spacing for every frame, so a frame turned in plane was
+    placed as the first was, and spacing kept per frame read as 1 mm."""
+
+    @staticmethod
+    def _exported(prepared: dict[str, Any], tmp_path: Path) -> Path:
+        from medh5.io.dicom_seg import to_dicom_seg
+
+        return to_dicom_seg(
+            prepared["path"], "organs", prepared["series"]["paths"], tmp_path / "s.dcm"
+        )
+
+    def test_L02_geometry_kept_in_each_frame_imports_as_shared(
+        self, prepared, tmp_path
+    ):
+        """The series is 0.8 x 0.9 mm in plane, which the shared default of
+        1 mm refused as another reconstruction."""
+        from medh5.io.dicom_seg import from_dicom_seg
+
+        out = _rewrite_frames(self._exported(prepared, tmp_path), tmp_path / "f.dcm")
+        from_dicom_seg(out, prepared["path"], ann_id="per_frame")
+        with medh5.open(prepared["path"]) as sample:
+            imported = sample.annotations["per_frame"]
+            assert np.array_equal(imported.dense(["liver"])[0], prepared["liver"])
+            assert np.array_equal(imported.dense(["lesion"])[0], prepared["lesion"])
+
+    @pytest.mark.parametrize("what", ["orientation", "spacing"])
+    def test_L02_a_later_frame_unlike_the_first_is_refused(
+        self, prepared, tmp_path, what
+    ):
+        from medh5.io.dicom_seg import from_dicom_seg
+
+        def turn(item: Any, index: int, count: int) -> None:
+            if index != count - 1:
+                return
+            if what == "orientation":  # 180 degrees in plane
+                plane = item.PlaneOrientationSequence[0]
+                plane.ImageOrientationPatient = [
+                    -float(v) for v in plane.ImageOrientationPatient
+                ]
+            else:
+                item.PixelMeasuresSequence[0].PixelSpacing = [0.7, 0.7]
+
+        out = _rewrite_frames(
+            self._exported(prepared, tmp_path), tmp_path / "f.dcm", turn
+        )
+        with pytest.raises(MEDH5ValidationError, match="not one volume") as caught:
+            from_dicom_seg(out, prepared["path"], ann_id="turned")
+        assert caught.value.code == "E405"
+        with medh5.open(prepared["path"]) as sample:
+            assert "turned" not in sample.annotations
+
+    def test_L02_a_frame_without_pixel_spacing_is_refused(self, prepared, tmp_path):
+        from medh5.io.dicom_seg import read_dicom_seg_frames
+
+        def drop(item: Any, index: int, count: int) -> None:
+            del item.PixelMeasuresSequence
+
+        out = _rewrite_frames(
+            self._exported(prepared, tmp_path), tmp_path / "f.dcm", drop
+        )
+        with pytest.raises(MEDH5ValidationError, match="no PixelSpacing"):
+            read_dicom_seg_frames(out)
+
+
+class TestSegExportGeometry:
+    """A SEG is written against its source images, frame k with image k's
+    geometry, and the export compared the annotation's grid with neither:
+    an annotation on a grid turned in plane, or shifted 10 mm in the same
+    frame, was written onto the source geometry (N01 of the 2.0 re-audit)."""
+
+    @staticmethod
+    def _variant(prepared: dict[str, Any], name: str, how: str) -> None:
+        """An annotation of the liver on a grid of the sample's frame: turned
+        in plane over the same lattice, shifted 10 mm, or resampled."""
+        with medh5.open(prepared["path"]) as sample:
+            grid = sample.grids[prepared["grid"]]
+            shape, spacing = grid.shape, np.asarray(grid.spacing, np.float64)
+            direction = np.array(grid.direction, np.float64)
+            origin = np.asarray(grid.origin, np.float64)
+            corner = np.asarray(
+                grid.index_to_world([0, shape[1] - 1, shape[2] - 1]), np.float64
+            ).reshape(-1)
+            frame, timepoint = grid.frame_uid, grid.timepoint
+        liver = prepared["liver"]
+        if how == "turned":
+            direction[:, 1:] *= -1
+            origin, liver = corner, liver[:, ::-1, ::-1]
+        elif how == "shifted":
+            origin = origin + 10.0 * direction[:, 2]
+        else:
+            spacing = spacing * np.array([1.0, 1.1, 1.1])
+        with medh5.amend(prepared["path"]) as w:
+            w.add_grid(
+                name,
+                shape=shape,
+                spacing=tuple(spacing),
+                origin=tuple(origin),
+                direction=direction,
+                frame_uid=frame,
+                timepoint=timepoint,
+            )
+            w.add_segmentation(name, grid=name, masks={1: np.ascontiguousarray(liver)})
+
+    @pytest.mark.parametrize("how", ["turned", "shifted", "resampled"])
+    def test_N01_an_annotation_on_another_grid_is_refused(
+        self, prepared, tmp_path, how
+    ):
+        from medh5.io.dicom_seg import to_dicom_seg
+
+        self._variant(prepared, how, how)
+        out = tmp_path / "s.dcm"
+        with pytest.raises(MEDH5ValidationError) as caught:
+            to_dicom_seg(prepared["path"], how, prepared["series"]["paths"], out)
+        assert caught.value.code == "E405" and not out.exists()
+
+    def test_N01_exported_frames_sit_where_the_annotation_does(
+        self, prepared, tmp_path
+    ):
+        """Every labelled SEG pixel, placed by its frame's own position,
+        orientation and spacing, is a labelled voxel of the annotation."""
+        from medh5.io.dicom_seg import to_dicom_seg
+
+        out = to_dicom_seg(
+            prepared["path"], "organs", prepared["series"]["paths"], tmp_path / "s.dcm"
+        )
+        seg = pydicom.dcmread(str(out))
+        shared = seg.SharedFunctionalGroupsSequence[0]
+        cosines = np.asarray(
+            shared.PlaneOrientationSequence[0].ImageOrientationPatient, np.float64
+        )
+        rows, columns = (float(v) for v in shared.PixelMeasuresSequence[0].PixelSpacing)
+        pixels = np.asarray(seg.pixel_array).reshape(-1, seg.Rows, seg.Columns)
+        exported = set()
+        for item, frame in zip(
+            seg.PerFrameFunctionalGroupsSequence, pixels, strict=True
+        ):
+            segment = item.SegmentIdentificationSequence[0].ReferencedSegmentNumber
+            if segment != 1:
+                continue
+            position = np.asarray(
+                item.PlanePositionSequence[0].ImagePositionPatient, np.float64
+            )
+            for r, c in zip(*np.nonzero(frame), strict=True):
+                world = position + r * rows * cosines[3:] + c * columns * cosines[:3]
+                exported.add(tuple(np.round(world, 3)))
+        with medh5.open(prepared["path"]) as sample:
+            grid = sample.grids[prepared["grid"]]
+            assert grid.coord_system == "LPS"
+            voxels = np.argwhere(prepared["liver"])
+            drawn = {
+                tuple(np.round(np.asarray(grid.index_to_world(v)).reshape(-1), 3))
+                for v in voxels
+            }
+        assert exported == drawn

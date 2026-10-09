@@ -11,13 +11,13 @@
 //! A record is keyed the way §11.2 keys it, `per_class` by class **id**.
 
 use indexmap::IndexMap;
-use ndarray::{Array2, Axis};
+use ndarray::{Array2, ArrayD, Axis};
 use serde_json::{json, Map, Value};
 
 use crate::annotations::{Annotation, Instance};
 use crate::curation::quality::Agreement;
 use crate::curation::tracking::carries_instance_ids;
-use crate::json::{num, repr, repr_str};
+use crate::json::{num, repr, repr_int_tuple, repr_str};
 use crate::labels::ClassKey;
 use crate::numeric::mean;
 use crate::{Error, Result};
@@ -294,15 +294,16 @@ pub fn compare_voxel(
     if metric != "dice" && metric != "iou" {
         return Err(Error::invalid(format!("unknown agreement metric {}", repr_str(metric))));
     }
-    if a.grid_id() != b.grid_id() {
+    if !on_one_grid(a, b) {
         return Err(Error::coded(
             "E101",
             format!(
-                "annotations {} and {} are on different grids ({} vs {}); resample before comparing",
+                "annotations {} and {} are on different grids ({} vs {}){}; resample before comparing",
                 repr_str(&a.ann_id),
                 repr_str(&b.ann_id),
                 repr_opt(a.grid_id()),
-                repr_opt(b.grid_id())
+                repr_opt(b.grid_id()),
+                if one_sample(a, b) { "" } else { ACROSS_SAMPLES }
             ),
         ));
     }
@@ -312,6 +313,7 @@ pub fn compare_voxel(
     // against voxels the other declared unexamined (U03 of the 2.0 audit).
     let ignored = match (a.ignore_region()?, b.ignore_region()?) {
         (Some(mut left), Some(right)) => {
+            same_shape(&left, &right, a, b)?;
             left.zip_mut_with(&right, |l, r| *l |= *r);
             Some(left)
         }
@@ -324,7 +326,9 @@ pub fn compare_voxel(
         let wanted = [ClassKey::Id(class_id)];
         let mut left = a.dense(Some(&wanted), None)?.index_axis_move(Axis(0), 0);
         let mut right = b.dense(Some(&wanted), None)?.index_axis_move(Axis(0), 0);
+        same_shape(&left, &right, a, b)?;
         if let Some(ignored) = &ignored {
+            same_shape(&left, ignored, a, b)?;
             left.zip_mut_with(ignored, |v, i| *v &= !*i);
             right.zip_mut_with(ignored, |v, i| *v &= !*i);
         }
@@ -346,6 +350,52 @@ pub fn compare_voxel(
         against: Some(format!("annotations/{}", b.ann_id)),
         class_ids: ids,
     })
+}
+
+/// Said of two grids in two samples that do not count one lattice.
+const ACROSS_SAMPLES: &str = " --- in two samples, whose grid ids are each their own, grids are one only when they \
+                              share a declared frame and are one lattice in it";
+
+/// Whether two annotations were read from one sample, whose grid ids name
+/// one set of grids.
+fn one_sample(a: &Annotation, b: &Annotation) -> bool {
+    std::ptr::eq(a.grids(), b.grids())
+}
+
+/// Whether two annotations count voxels of one grid: within one sample, one
+/// grid id; across two, grids physically comparable (§3.3 rule 4: one
+/// declared `frame_uid`, one `coord_system`) that are one lattice --- shape,
+/// axes, spacing, origin and direction --- in one unit.
+///
+/// A grid id is a sample's own name.  Two samples each calling a grid `g`
+/// were compared voxel for voxel though one was shifted 100 mm, and their
+/// ignore regions merged though their shapes differed, which panicked (N10
+/// of the 2.0 re-audit).
+fn on_one_grid(a: &Annotation, b: &Annotation) -> bool {
+    if one_sample(a, b) {
+        return a.grid_id() == b.grid_id();
+    }
+    let (Ok(ga), Ok(gb)) = (a.grid(), b.grid()) else { return false };
+    ga.comparable_with(gb) && ga.is_congruent(gb, 1e-6) && ga.units == gb.units
+}
+
+/// Refuse two voxel arrays that do not cover one grid, rather than let an
+/// elementwise merge of them panic (a sibling ignore mask on another grid,
+/// say).
+fn same_shape(x: &ArrayD<bool>, y: &ArrayD<bool>, a: &Annotation, b: &Annotation) -> Result<()> {
+    if x.shape() == y.shape() {
+        return Ok(());
+    }
+    Err(Error::coded(
+        "E405",
+        format!(
+            "annotations {} and {} cover voxels of shapes {} and {}; voxel agreement compares one grid's voxels",
+            repr_str(&a.ann_id),
+            repr_str(&b.ann_id),
+            repr_int_tuple(x.shape()),
+            repr_int_tuple(y.shape())
+        ),
+    ))
 }
 
 fn space_of(ann: &Annotation) -> String {
@@ -375,7 +425,7 @@ fn check_same_space(a: &Annotation, b: &Annotation) -> Result<()> {
         ));
     }
     if space_a == "world" {
-        if a.grid_id().is_some() && a.grid_id() == b.grid_id() {
+        if a.grid_id().is_some() && on_one_grid(a, b) {
             return Ok(());
         }
         let (frame_a, frame_b) = (frame_of(a), frame_of(b));
@@ -393,16 +443,17 @@ fn check_same_space(a: &Annotation, b: &Annotation) -> Result<()> {
             ),
         ));
     }
-    if a.grid_id() != b.grid_id() {
+    if !on_one_grid(a, b) {
         return Err(Error::coded(
             "E101",
             format!(
-                "annotations {} and {} are on different grids ({} vs {}); their index coordinates count different \
-                 voxels, so resample or convert before comparing",
+                "annotations {} and {} are on different grids ({} vs {}){}; their index coordinates count \
+                 different voxels, so resample or convert before comparing",
                 repr_str(&a.ann_id),
                 repr_str(&b.ann_id),
                 repr_opt(a.grid_id()),
-                repr_opt(b.grid_id())
+                repr_opt(b.grid_id()),
+                if one_sample(a, b) { "" } else { ACROSS_SAMPLES }
             ),
         ));
     }

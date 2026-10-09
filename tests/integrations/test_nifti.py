@@ -1037,3 +1037,144 @@ class TestGridsAgreeInTimeAndUnits:
         exported = nib.load(str(mask_out))
         assert np.allclose(exported.affine, nib.load(str(pet_out)).affine)
         assert exported.shape == (6, 6, 4)
+
+
+class TestExportsOwnTheirVolumeStatements:
+    """What an export says about its volumes beside the file --- a sidecar's
+    per-volume fields, a ``.bval`` --- is replaced with the file (N03 of the
+    2.0 re-audit), and a channel axis is written as one (N04)."""
+
+    @staticmethod
+    def _series(path: Path, times: list[float]) -> Path:
+        n = len(times)
+        with medh5.create(path, sample_id=path.stem) as w:
+            w.add_grid(
+                "g",
+                shape=(n, 6, 5, 4),
+                spacing=(2.0, 1.0, 1.0),
+                axis_names=("t", "z", "y", "x"),
+                axis_kinds=("time", "spatial", "spatial", "spatial"),
+                time_values=times,
+                time_units="s",
+                timepoint="tp0",
+            )
+            w.add_image(
+                "DCE", np.zeros((n, 6, 5, 4), np.int16), grid="g", modality="MR"
+            )
+        return path
+
+    @staticmethod
+    def _channels(path: Path, **acquisition: Any) -> Path:
+        volume = np.stack(
+            [np.full((6, 5, 4), 10 * (c + 1), np.int16) for c in range(2)]
+        )
+        with medh5.create(path, sample_id=path.stem) as w:
+            w.add_grid(
+                "g",
+                shape=(2, 6, 5, 4),
+                spacing=(2.0, 1.0, 1.0),
+                axis_names=("c", "z", "y", "x"),
+                axis_kinds=("channel", "spatial", "spatial", "spatial"),
+                timepoint="tp0",
+            )
+            w.add_image("MR", volume, grid="g", modality="MR")
+            if acquisition:
+                w.acquisition("MR", **acquisition)
+        return path
+
+    def test_N03_an_overwrite_replaces_the_timing_beside_the_file(self, tmp_path):
+        """Uneven frames wrote `VolumeTiming`; an even series written over the
+        file left it, and the reader, which prefers it, read the old timeline
+        for the new image.  Fields of no volume's are kept."""
+        out, sidecar = tmp_path / "dce.nii.gz", tmp_path / "dce.json"
+        to_nifti(self._series(tmp_path / "a.medh5", [0.0, 1.0, 3.0]), "DCE", out)
+        fields = json.loads(sidecar.read_text(encoding="utf-8"))
+        assert fields == {"VolumeTiming": [0.0, 1.0, 3.0]}
+        sidecar.write_text(json.dumps({**fields, "Manufacturer": "x"}), "utf-8")
+        to_nifti(self._series(tmp_path / "b.medh5", [10.0, 12.0, 14.0]), "DCE", out)
+        assert json.loads(sidecar.read_text(encoding="utf-8")) == {"Manufacturer": "x"}
+        assert read_nifti(out)[1]["time_values"] == [10.0, 12.0, 14.0]
+        # And back: another frame count, uneven again.
+        to_nifti(self._series(tmp_path / "c.medh5", [0.0, 2.0, 3.0, 9.0]), "DCE", out)
+        fields = json.loads(sidecar.read_text(encoding="utf-8"))
+        assert fields == {"Manufacturer": "x", "VolumeTiming": [0.0, 2.0, 3.0, 9.0]}
+        assert read_nifti(out)[1]["time_values"] == [0.0, 2.0, 3.0, 9.0]
+        assert (
+            sorted(p.name for p in tmp_path.iterdir() if p.name.startswith(".")) == []
+        )
+
+    def test_N03_an_interrupted_overwrite_never_reads_another_timeline(
+        self, tmp_path, monkeypatch
+    ):
+        """The old timing is withdrawn before the image is replaced: an export
+        that fails between them leaves the old image with its timing
+        unmeasured, not the new one with the old image's."""
+        import nibabel
+
+        out = tmp_path / "dce.nii.gz"
+        to_nifti(self._series(tmp_path / "a.medh5", [0.0, 1.0, 3.0]), "DCE", out)
+
+        def interrupted(*args: Any, **kwargs: Any) -> None:
+            raise OSError("disk full")
+
+        monkeypatch.setattr(nibabel, "save", interrupted)
+        with pytest.raises(OSError, match="disk full"):
+            to_nifti(self._series(tmp_path / "b.medh5", [0.0, 5.0, 6.0]), "DCE", out)
+        monkeypatch.undo()
+        _, geometry = read_nifti(out)
+        assert not geometry["time_measured"]
+        assert not (tmp_path / "dce.json").exists()
+        assert not [p for p in tmp_path.iterdir() if p.name.startswith(".")]
+
+    def test_N04_a_channel_axis_exports_as_one(self, tmp_path):
+        """Written as a plain fourth axis, two MR channels read back as two
+        frames of time, one second apart, unmeasured.  NIfTI-1 keeps a
+        voxel's components on dim[5] under a vector intent."""
+        out = to_nifti(
+            self._channels(tmp_path / "mr.medh5"), "MR", tmp_path / "mr.nii.gz"
+        )
+        image = nib.load(str(out))
+        assert image.shape == (4, 5, 6, 1, 2)
+        assert image.header.get_intent()[0] == "vector"
+        _, geometry = read_nifti(out)
+        assert geometry["leading_kind"] == "channel" and geometry["time_values"] is None
+        from_nifti({"MR": out}, tmp_path / "back.medh5")
+        with medh5.open(tmp_path / "back.medh5") as sample:
+            grid = sample.grids["ref"]
+            assert grid.axis_kinds == ("channel", "spatial", "spatial", "spatial")
+            assert grid.time_values is None
+            channels = sample.images["MR"].read()
+            assert channels[0].max() == 10 and channels[1].max() == 20
+        # Told outright, the reader agrees.
+        assert read_nifti(out, fourth_axis="channel")[1]["leading_kind"] == "channel"
+
+    def test_N04_what_the_channels_mean_comes_back(self, tmp_path):
+        """b-values in a .bval beside a four-dimensional file, the layout every
+        diffusion tool reads; echo times in the sidecar."""
+        dwi = self._channels(tmp_path / "dwi.medh5", b_values=[0.0, 1000.0])
+        to_nifti(dwi, "MR", tmp_path / "dwi.nii.gz")
+        assert nib.load(str(tmp_path / "dwi.nii.gz")).shape == (4, 5, 6, 2)
+        assert (tmp_path / "dwi.bval").read_text().split() == ["0", "1000"]
+        echo = self._channels(
+            tmp_path / "echo.medh5",
+            EchoTime=[0.005, 0.01],
+            ImageType=["ORIGINAL", "PRIMARY"],  # one per channel, and no numbers
+        )
+        to_nifti(echo, "MR", tmp_path / "echo.nii.gz")
+        from_nifti(
+            {"DWI": tmp_path / "dwi.nii.gz", "ME": tmp_path / "echo.nii.gz"},
+            tmp_path / "back.medh5",
+        )
+        with medh5.open(tmp_path / "back.medh5") as sample:
+            acquisition = sample.document.acquisition
+            assert acquisition["DWI"]["b_values"] == [0.0, 1000.0]
+            assert acquisition["ME"]["EchoTime"] == [0.005, 0.01]
+            assert sample.images["ME"].channel_names == ("TE=0.005", "TE=0.01")
+        # A time series written over the DWI takes its b-values with it.
+        to_nifti(
+            self._series(tmp_path / "t.medh5", [0.0, 1.0]),
+            "DCE",
+            tmp_path / "dwi.nii.gz",
+        )
+        assert not (tmp_path / "dwi.bval").exists()
+        assert read_nifti(tmp_path / "dwi.nii.gz")[1]["leading_kind"] == "time"

@@ -330,7 +330,20 @@ out `h5py` objects --- and the behaviour changes below.
   frame must start at its slice's first voxel, and the SEG's row and column
   directions and pixel spacing must be the grid's (`E405` otherwise); patient
   positions are converted for an RAS grid or other length units rather than
-  read as the grid's own.
+  read as the grid's own. Every frame's orientation and pixel spacing are read
+  where the file keeps them --- its own functional groups or the shared ones
+  --- and every frame is checked: the first orientation found stood for all of
+  them, so a frame turned in plane was placed as the first one, and spacing
+  kept per frame read as 1 mm. Frames turned or spaced against each other are
+  refused (`E405`), and a frame stating no pixel spacing is refused rather
+  than read as 1 mm.
+- **`to_dicom_seg` writes an annotation only onto its own grid**: the source
+  images must be the annotation grid's slices --- one frame of reference, rows
+  and columns running the same way at the same spacing, each image a slice
+  starting at its first voxel (`E405` otherwise). Their geometry was given to
+  every frame unchecked, so an annotation on a grid turned in plane, or shifted
+  10 mm in the same frame, was exported centimetres from where it was drawn.
+  Images in either slice order are matched to their slices.
 - **`from_nnunetv2` reads what the header's scaling means**: an image keeps
   `scl_slope`/`scl_inter` as its rescale (they were dropped, leaving a CT at its
   stored counts), and label ids are matched after the scale, which must leave
@@ -377,6 +390,31 @@ out `h5py` objects --- and the behaviour changes below.
   said nothing, so a metre grid read back as millimetres and every series as 1 s
   frames from 0. `to_nifti(annotation=…)` exports on the annotation's grid,
   where it took the named image's affine; it takes `report=` for the notes.
+- **An export replaces what was said beside its file**: the per-volume fields
+  of the sidecar (`VolumeTiming`, and per-volume echo and inversion times and
+  flip angles) and a `.bval` are withdrawn before the image is replaced and the
+  new ones written after it, other fields kept. An even series written over an
+  uneven one left its `VolumeTiming`, which the reader prefers to the header,
+  so the new image read back with the old timeline; an interrupted export now
+  leaves timing unmeasured, never another image's.
+- **A channel axis is exported as one** (`to_nifti`): with a b-value per
+  channel as four dimensions and a `.bval`, the layout diffusion tools read;
+  otherwise as NIfTI's vector dimension (`dim[5]`, vector intent), with
+  per-channel echo and inversion times and flip angles in the sidecar. Written
+  as a plain fourth axis it read back as time, with invented frame times. A 2-D
+  grid with a time or channel axis is refused, where it failed with an
+  `IndexError`.
+- **nnU-Net's ignore label is an ignore region, both ways**: `to_nnunetv2`
+  writes an annotation's §7.7 ignore region as nnU-Net's `ignore` label --- one
+  above every other value, declared in `dataset.json` --- where it wrote
+  ignored voxels as background, verified negatives for every class; a region
+  over a class is written as ignore, which nnU-Net neither trains nor scores.
+  `from_nnunetv2` reads the label back as the region, where it made it a class
+  called `ignore`.
+- **A MONAI crop keeps the image's `spatial_shape`** (`to_metatensor(roi=…)`):
+  it was the crop's whole shape, channel axis included, and `SaveImage` wrote a
+  two-channel crop as one channel. As after a MONAI crop, `spatial_shape` and
+  `original_affine` describe the image and `affine` the crop.
 - **A split names each member of a collection** (`Split.paths`, the `entries`
   of `medh5 dataset split -o`): `path::key`, the locator task sources use. It
   was the collection's path, so members placed in two partitions put the whole
@@ -391,6 +429,10 @@ out `h5py` objects --- and the behaviour changes below.
   (`compare_voxel`, `medh5 agree`): a voxel either annotation declares ignored
   (§7.7, in band or as the `mask` its `ignore_mask` names) counts neither for
   nor against agreement. It counted against the rater who declared it.
+  Annotations of two samples are compared only on grids that share a declared
+  frame and are one lattice (`E101`, §3.3 rule 4): a grid id is its sample's
+  own name, and two samples each calling a grid `g` were scored 1.0 though 100
+  mm apart, and grids of two shapes with ignore regions panicked the merge.
 - **Tracking answers one observation per visit**, in every accessor
   (`Track.at`, `volume`, `volumes`, `relative_change`, `medh5 track`): the
   object's mask where an `instances` annotation saw it, else its box, whose

@@ -21,6 +21,12 @@ reserves it (§5.3), so a class explicitly named for 0 is dropped and reported.
 overlapping case §7 exists for: the regions are stored as their own classes
 alongside the components, and the encoding is chosen by measurement.
 
+**Ignore is not background.**  nnU-Net declares an ``ignore`` label --- the
+highest value in ``labels`` --- for voxels nobody examined, which training
+and evaluation leave out.  It is read as the annotation's §7.7 ignore region
+and written back from it: written as 0 instead, every unexamined voxel became
+a verified negative for every class.
+
 ``dataset.json`` is stashed verbatim in ``/meta → extra.nnunetv2`` so an export
 reproduces the dataset that was imported rather than a reconstruction of it.
 """
@@ -42,6 +48,8 @@ from medh5.io.report import ConversionReport
 
 REQUIRED_KEYS = ("channel_names", "labels", "numTraining", "file_ending")
 BACKGROUND = 0
+IGNORE = "ignore"
+"""nnU-Net v2's name for the ignore label, whose value is the highest."""
 
 
 def read_dataset_json(path: str | os.PathLike[str]) -> dict[str, Any]:
@@ -112,7 +120,7 @@ def from_nnunetv2(
     source = Path(os.fspath(root))
     document = read_dataset_json(source)
     channels = _channels(document)
-    label_set, regions = _label_set(document, log)
+    label_set, regions, ignore_value = _label_set(document, log)
     ending = str(document["file_ending"])
     wanted = list(case_ids) if case_ids is not None else cases(source, document)
     directory = Path(os.fspath(out))
@@ -139,6 +147,7 @@ def from_nnunetv2(
         assert geometry is not None
         label_path = source / "labelsTr" / f"{case}{ending}"
         masks: dict[int, npt.NDArray[np.bool_]] | None = None
+        ignored: npt.NDArray[np.bool_] | None = None
         if label_path.exists():
             volume, label_geo = read_nifti(label_path, coord_system=coord_system)
             # The label volume above all: a label resampled onto a different grid
@@ -147,6 +156,8 @@ def from_nnunetv2(
             _same_grid(geometry, label_geo, f"{case} labels", log)
             ids = _label_ids(volume, label_geo["rescale"], case)
             masks = _masks_from(ids, label_set, regions)
+            if ignore_value is not None and np.any(ids == ignore_value):
+                ignored = np.asarray(ids == ignore_value)
 
         target = directory / f"{case}.medh5"
         with medh5.create(
@@ -198,8 +209,17 @@ def from_nnunetv2(
                     grid="ref",
                     masks=masks,
                     annotated_classes="all",
+                    ignore=ignored,
                     prov=activity,
                 )
+                if ignored is not None:
+                    log.decision(
+                        "ignore",
+                        f"case {case}: {int(ignored.sum())} voxel(s) of nnU-Net's "
+                        f"ignore label {ignore_value} became the annotation's "
+                        "ignore region (§7.7), unexamined rather than background",
+                        {"case": case, "voxels": int(ignored.sum())},
+                    )
                 log.decision(
                     "encoding",
                     f"case {case}: labels were stored as {kind!r}",
@@ -231,15 +251,19 @@ def _modality(name: str) -> str:
 
 def _label_set(
     document: Mapping[str, Any], log: ConversionReport
-) -> tuple[Any, dict[int, list[int]]]:
-    """nnU-Net ``labels`` as a MEDH5 label set, keeping its integer ids."""
+) -> tuple[Any, dict[int, list[int]], int | None]:
+    """nnU-Net ``labels`` as a MEDH5 label set, keeping its integer ids, and
+    the value of its ignore label, which is no class."""
     from medh5.labels import LabelClass, LabelSet
 
     scalars: dict[str, int] = {}
     region_values: dict[str, list[int]] = {}
     dropped: list[str] = []
+    ignore_value: int | None = None
     for name, value in _labels(document).items():
-        if isinstance(value, list):
+        if name == IGNORE and not isinstance(value, list):
+            ignore_value = int(value)
+        elif isinstance(value, list):
             region_values[name] = [int(v) for v in value]
         elif int(value) == BACKGROUND:
             dropped.append(name)
@@ -302,7 +326,7 @@ def _label_set(
         "without a translation table",
         {"ids": {c.key: c.id for c in classes}},
     )
-    return LabelSet("nnunetv2", version="1.0.0", classes=classes), regions
+    return LabelSet("nnunetv2", version="1.0.0", classes=classes), regions, ignore_value
 
 
 def _label_ids(
@@ -378,6 +402,7 @@ def to_nnunetv2(
     stashed: dict[str, Any] | None = None
     channel_order: list[str] = []
     labels: dict[str, Any] = {}
+    ignore_value: int | None = None
     for path in paths:
         with medh5.open(path) as sample:
             case = sample.identity.sample_id
@@ -418,12 +443,29 @@ def to_nnunetv2(
                         f"{channels.grid_id!r}; nnU-Net needs labels on the "
                         "channels' grid, and resampling is not a converter's to do"
                     )
-                _save(
-                    nib,
-                    ann.grid,
-                    _labelmap_for(ann, labels),
-                    root / "labelsTr" / f"{case}{file_ending}",
-                )
+                volume = _labelmap_for(ann, labels)
+                ignored = np.asarray(sample.ignore_region(annotation), dtype=bool)
+                if ignored.any():
+                    # nnU-Net's ignore label is the highest value (§7.7): ignored
+                    # voxels written as 0 were verified negatives for every class.
+                    if ignore_value is None:
+                        ignore_value = _ignore_value(labels)
+                        labels[IGNORE] = ignore_value
+                    covered = int(np.count_nonzero(ignored & (volume != BACKGROUND)))
+                    volume[ignored] = ignore_value
+                    log.decision(
+                        "ignore",
+                        f"{path}: {int(ignored.sum())} ignored voxel(s) were written "
+                        f"as nnU-Net's ignore label {ignore_value}"
+                        + (
+                            f", {covered} of them over a class, which nnU-Net "
+                            "neither trains nor scores there"
+                            if covered
+                            else ""
+                        ),
+                        {"case": case, "voxels": int(ignored.sum()), "over": covered},
+                    )
+                _save(nib, ann.grid, volume, root / "labelsTr" / f"{case}{file_ending}")
                 # Listed only when written.  A sample without the annotation
                 # produced no label file and the report named one anyway, so a
                 # caller checking `outputs` for what to ship was told about a
@@ -434,7 +476,7 @@ def to_nnunetv2(
     document.update(
         {
             "channel_names": {str(i): n for i, n in enumerate(channel_order)},
-            "labels": document.get("labels") or labels,
+            "labels": labels or document.get("labels") or {},
             "numTraining": len(list(paths)),
             "file_ending": file_ending,
         }
@@ -451,6 +493,22 @@ def to_nnunetv2(
         {"reused": bool(stashed)},
     )
     return log
+
+
+def _ignore_value(labels: Mapping[str, Any]) -> int:
+    """The value nnU-Net's ignore label takes: its own, or one above every
+    other, as nnU-Net requires."""
+    if IGNORE in labels and not isinstance(labels[IGNORE], list):
+        return int(labels[IGNORE])
+    values = [BACKGROUND]
+    for value in labels.values():
+        values.extend(int(v) for v in (value if isinstance(value, list) else [value]))
+    if max(values) + 1 > np.iinfo(np.uint16).max:
+        raise MEDH5ValidationError(
+            f"labels use {max(values)}, so nnU-Net's ignore label, which must be "
+            "the highest, does not fit the uint16 label volume"
+        )
+    return max(values) + 1
 
 
 def _stashed_channels(stashed: Mapping[str, Any] | None) -> dict[int, str]:
@@ -486,7 +544,7 @@ def _labelmap_for(ann: Any, labels: Mapping[str, Any]) -> npt.NDArray[np.uint16]
     scalar = {
         name: int(value)
         for name, value in labels.items()
-        if not isinstance(value, list)
+        if not isinstance(value, list) and name != IGNORE
     }
     known = set(ann.class_ids)
     out = np.zeros(ann.spatial_shape, dtype=np.uint16)

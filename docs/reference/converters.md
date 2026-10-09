@@ -69,8 +69,12 @@ NIfTI's "unknown" --- and a time axis whose frames are evenly spaced becomes
 `pixdim[4]` and `toffset`, in the grid's time unit. Uneven frames cannot be one
 temporal step: their times go to a BIDS sidecar's `VolumeTiming` beside the
 file (`out.json` for `out.nii.gz`), which `from_nifti` reads back, and the
-header's step is left at 0. An annotation is exported on **its own** grid,
-whichever image is named.
+header's step is left at 0. A channel axis is written as one: with a b-value per
+channel, four dimensions and a `.bval`; otherwise NIfTI's vector dimension
+(`dim[5]`, vector intent), with per-channel echo and inversion times and flip
+angles in the sidecar. An export replaces the per-volume fields and `.bval` an
+earlier export left beside the file, and keeps the sidecar's other fields. An
+annotation is exported on **its own** grid, whichever image is named.
 
 **Volumes must share one grid** --- shape, spacing, origin and direction, with
 lengths compared in millimetres, and frame times where both volumes state them.
@@ -153,11 +157,18 @@ $ medh5 convert to-dicom-seg case.medh5 organs out.dcm \
 
 **Frames are placed by geometry**, from each frame's `PlanePositionSequence` —
 not by frame index. Each frame must lie on one of the grid's slices and start at
-its first voxel, and the SEG's row and column directions and pixel spacing must
-be the grid's; a SEG drawn on another reconstruction is refused (`E405`) rather
-than force-fitted. Positions are DICOM's (LPS, millimetres), converted for an
-RAS grid or one in other length units. **Segments match by label, not by
-number.**
+its first voxel, and its row and column directions and pixel spacing must be the
+grid's; a SEG drawn on another reconstruction is refused (`E405`) rather than
+force-fitted. A frame's orientation and pixel spacing are read where the file
+keeps them, in its own functional groups or the shared ones; frames turned or
+spaced against each other are refused, and so is a frame stating no pixel
+spacing. Positions are DICOM's (LPS, millimetres), converted for an RAS grid or
+one in other length units. **Segments match by label, not by number.**
+
+**Export writes an annotation onto its own grid only**: the source images must
+be that grid's slices --- one frame of reference, rows and columns running the
+same way at the same spacing, each image starting at its slice's first voxel ---
+or the export is refused (`E405`); nothing is resampled.
 
 <!-- illustrative -->
 ```python
@@ -219,7 +230,9 @@ they mean to nnU-Net: an image keeps them as its rescale, and label ids are read
 after them (a scaling that makes non-integer labels is refused). The export
 needs the labels on the channels' grid. **Region labels become §5.1 DAG parents**: a
 region that is the union of two components is a class whose components name it
-as a parent, which is exactly what the hierarchy is for.
+as a parent, which is exactly what the hierarchy is for. **nnU-Net's `ignore`
+label is the annotation's ignore region** (§7.7), both ways: never a class, and
+never background.
 
 The parsed `dataset.json` is stashed in `extra["nnunetv2"]`, so `to-nnunet`
 reproduces the original dataset definition rather than inventing one.
