@@ -637,6 +637,7 @@ dependencies = [
  "hex",
  "indexmap",
  "jsonschema",
+ "libc",
  "medh5-sys",
  "ndarray",
  "regex",

@@ -75,6 +75,19 @@ fn is_plain_enum(ds: &hdf5::Dataset) -> bool {
 /// Reads at least this large reserve their buffer fallibly first.
 const PROBE_BYTES: usize = 64 * 1024 * 1024;
 
+/// The machine's physical memory, where the platform states it.
+fn physical_memory() -> Option<usize> {
+    #[cfg(unix)]
+    {
+        // SAFETY: `sysconf` reads a system constant and has no preconditions.
+        let (pages, size) = unsafe { (libc::sysconf(libc::_SC_PHYS_PAGES), libc::sysconf(libc::_SC_PAGESIZE)) };
+        if pages > 0 && size > 0 {
+            return usize::try_from(pages).ok()?.checked_mul(usize::try_from(size).ok()?);
+        }
+    }
+    None
+}
+
 /// Refuse a read of `extents` elements of `itemsize` bytes that no buffer
 /// can hold, rather than let the allocation fail.
 ///
@@ -82,19 +95,13 @@ const PROBE_BYTES: usize = 64 * 1024 * 1024;
 /// unallocated chunk reads as the fill value --- so a 10 KiB file asked the
 /// allocator for 2**63 bytes, which panicked (`capacity overflow`), or for
 /// 9 TB, which aborted the process (N07 of the 2.0 re-audit).  The size is
-/// computed with checked arithmetic and a large buffer reserved fallibly, so
-/// such a read is an error the caller reports.
+/// computed with checked arithmetic, a buffer larger than the machine's
+/// memory is refused outright --- where the system overcommits (macOS, say)
+/// reserving one succeeds, and filling it is what kills the process --- and
+/// a large one is reserved fallibly, so such a read is an error the caller
+/// reports.
 pub(crate) fn ensure_allocatable(ds: &hdf5::Dataset, extents: &[usize], itemsize: usize) -> Result<()> {
-    if extents.contains(&0) {
-        return Ok(());
-    }
-    let bytes = extents.iter().try_fold(itemsize, |n, e| n.checked_mul(*e)).filter(|b| *b <= isize::MAX as usize);
-    let held = match bytes {
-        Some(b) if b >= PROBE_BYTES => Vec::<u8>::new().try_reserve_exact(b).is_ok(),
-        Some(_) => true,
-        None => false,
-    };
-    if held {
+    if holdable(extents, itemsize) {
         return Ok(());
     }
     Err(Error::Io(format!(
@@ -102,6 +109,21 @@ pub(crate) fn ensure_allocatable(ds: &hdf5::Dataset, extents: &[usize], itemsize
         ds.name(),
         extents.iter().map(usize::to_string).collect::<Vec<_>>().join(" x ")
     )))
+}
+
+/// Whether a buffer of `extents` elements of `itemsize` bytes can be held.
+fn holdable(extents: &[usize], itemsize: usize) -> bool {
+    if extents.contains(&0) {
+        return true;
+    }
+    let bytes = extents.iter().try_fold(itemsize, |n, e| n.checked_mul(*e)).filter(|b| *b <= isize::MAX as usize);
+    match bytes {
+        Some(b) if b >= PROBE_BYTES => {
+            physical_memory().is_none_or(|memory| b <= memory) && Vec::<u8>::new().try_reserve_exact(b).is_ok()
+        }
+        Some(_) => true,
+        None => false,
+    }
 }
 
 /// Read a whole numeric dataset.
@@ -618,5 +640,20 @@ mod tests {
         let ds = file.new_dataset::<u8>().shape([1]).create("n").unwrap();
         let err = write_fixed_strings(&ds, &["x".to_string()], 8, true).unwrap_err();
         assert!(err.to_string().contains("does not hold strings"), "{err}");
+    }
+
+    /// A read is refused before anything is reserved when it overflows or
+    /// exceeds the machine's memory: where the system overcommits, a
+    /// reservation of terabytes succeeds and filling it killed the process
+    /// (N07 of the 2.0 re-audit, on macOS).
+    #[test]
+    fn n07_a_read_no_machine_can_hold_is_refused_before_it_is_reserved() {
+        assert!(holdable(&[4, 4], 8));
+        assert!(holdable(&[0, usize::MAX], 8), "empty, whatever the other extents");
+        assert!(!holdable(&[usize::MAX, 2], 8), "overflows");
+        assert!(!holdable(&[1 << 62], 2), "beyond isize::MAX");
+        if let Some(memory) = physical_memory() {
+            assert!(!holdable(&[memory, 2], 1), "twice the machine's memory");
+        }
     }
 }
