@@ -454,7 +454,7 @@ row.events, row.slots["ct"].image_id, row.target.status
 | Module | |
 |---|---|
 | `medh5.task` | `TaskManifest`, `SourceRef` (`pin`, `check`), `Slot`, `Target`, `preflight`, `Preflight`, `RowView`, `Finding` |
-| `medh5.cache` | `CacheWriter`, `FeatureCache`, `validate_cache` (`CacheReport.stale` / `.corrupt`), `fitted_on`, `build_document_cache`, `HashingTextEncoder` |
+| `medh5.cache` | `CacheWriter`, `FeatureCache`, `validate_cache` (`CacheReport.stale` / `.corrupt`), `fitted_on`, `fitted_on_mismatches`, `build_document_cache`, `HashingTextEncoder` |
 | `medh5.torch` | `ClinicalTaskDataset`, `ConceptVocabulary`, `collate_clinical` ([PyTorch](torch.md#clinical-tasks-format-11)) |
 
 The contract is [Task and cache contract 1](../spec/task-cache-1.md); the

@@ -267,6 +267,32 @@ out `h5py` objects --- and the behaviour changes below.
   that cannot be read fail the pin (T302) and the table check (T306).
 - **Only an imaging version fills a slot** (task-cache-1 §3.5): an image some
   other kind of event `describes` is not the slot's.
+- **A row's fingerprint determines its inputs, and a row feature pins it**
+  (task-cache-1 §3.3, §3.5, §7.2): a slot tie between fragments --- one
+  reconciled imaging version, each fragment's own image --- went to the source
+  the manifest listed first, and the merged version came from it, while the row
+  fingerprint sorts the pins, so reordering two sources changed a row's input
+  under one identity. Ties now go to the smallest pinned `content_id`, then
+  image id. A patient-level cache entry names the fingerprint of the row it was
+  built for (`row_fingerprint`, required by `medh5.cache/1`), and validation
+  refuses an entry for another version of its row (`T404`): a source added to
+  the subject changed what a slot read with the cutoff and the admitted
+  versions unchanged, and the old feature still validated.
+  `CacheWriter.add(row_fingerprint=…)`, and `CacheWriter.add_row(row, values)`
+  pins a preflight row's id, fingerprint, cutoff and admitted versions. An
+  event-level entry names no row, cutoff or versions (`T404` from the writer,
+  `T401` in a manifest): a lookup by event version served one declaring a later
+  row's history to every row.
+- **A vocabulary is held to the cache's `fitted_on` comparison**, the split's
+  `set_id` included (`T405`): one fitted under another split of the same
+  subjects passed. `medh5.cache.fitted_on_mismatches` is that comparison.
+- **A pin covers a column however it is linked** (task-cache-1 §2): which
+  datasets an object holds was decided by the path a walk of the root first
+  reached them at, so an undigested clinical column linked first at the root
+  --- an alias sorting before `clinical` --- was no clinical dataset, and the
+  shallow and deep checks and a preflight passed it while the rows read it.
+  Each attested group is walked on its own, and the shallow check re-reads
+  every object reachable through `clinical/`.
 - `medh5.errors.Domain` includes `"clinical"`.
 - **`recompress` keeps a file's link graph.** A soft link is copied as a soft
   link and a second hard link to an object as a link to its copy, where 1.x

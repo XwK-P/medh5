@@ -58,7 +58,7 @@
   },
   "allOf": [
     {
-      "description": "A patient-level cache names the task it was built for, and every entry pins its row, the row's cutoff and the versions it selected.",
+      "description": "A patient-level cache names the task it was built for, and every entry pins its row (by id and fingerprint), the row's cutoff and the versions it selected.",
       "if": { "properties": { "level": { "const": "patient" } }, "required": ["level"] },
       "then": {
         "required": ["task_fingerprint"],
@@ -69,7 +69,7 @@
       }
     },
     {
-      "description": "An event-level entry names the event version it encodes.",
+      "description": "An event-level entry names the event version it encodes, and no row: it is free of any cutoff.",
       "if": { "properties": { "level": { "const": "event" } }, "required": ["level"] },
       "then": { "properties": { "entries": { "items": { "$ref": "#/$defs/event_entry" } } } }
     }
@@ -79,16 +79,23 @@
     "digest": { "type": "string", "pattern": "^(sha256|sha512|blake2b):[0-9a-f]+$" },
     "int64": { "type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807 },
     "patient_entry": {
-      "required": ["row_id", "cutoff_us", "event_versions"],
+      "required": ["row_id", "row_fingerprint", "cutoff_us", "event_versions"],
       "properties": {
         "row_id": { "type": "string", "minLength": 1 },
+        "row_fingerprint": { "$ref": "#/$defs/digest" },
         "cutoff_us": { "$ref": "#/$defs/int64" },
         "event_versions": { "type": "array", "items": { "type": "string" } }
       }
     },
     "event_entry": {
       "required": ["event_id"],
-      "properties": { "event_id": { "type": "string", "minLength": 1 } }
+      "properties": {
+        "event_id": { "type": "string", "minLength": 1 },
+        "row_id": { "type": "null" },
+        "row_fingerprint": { "type": "null" },
+        "cutoff_us": { "type": "null" },
+        "event_versions": { "type": "null" }
+      }
     },
     "source": {
       "type": "object",
@@ -113,6 +120,8 @@
         "row_id": { "type": ["string", "null"] },
         "cutoff_us": { "anyOf": [{ "$ref": "#/$defs/int64" }, { "type": "null" }] },
         "event_versions": { "type": ["array", "null"], "items": { "type": "string" } },
+        "row_fingerprint": { "anyOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }],
+          "description": "Patient level: the fingerprint of the row the feature was built for (task-cache-1 §3.2)." },
         "digest": { "$ref": "#/$defs/digest" }
       }
     }

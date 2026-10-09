@@ -15,17 +15,41 @@ use crate::Result;
 /// Where every dataset is part of an object a `content_id` speaks for.
 pub const ATTESTED_GROUPS: [&str; 4] = ["grids", "images", "annotations", "transforms"];
 
-/// Of `undigested` (paths relative to `root`), the datasets inside objects a
-/// `content_id` speaks for.  The root is a Merkle root over *stored* digests
-/// (§13.2), so a dataset there without one is content no address covers: a
-/// pin, a cache entry and `verify` would all pass over it.  `clinical/` is
-/// attested where the profile is declared (1.1 §8, E818); in a 1.0 file a
-/// group of that name is somebody's extension.
-pub fn unattested(root: &hdf5::Group, undigested: &[String]) -> Result<Vec<String>> {
+/// Every dataset of an object a `content_id` speaks for, at its path through
+/// the attested group that holds it.  `clinical/` is attested where the
+/// profile is declared (1.1 §8, E818); in a 1.0 file a group of that name is
+/// somebody's extension.
+///
+/// Each group is walked on its own.  A walk of the whole root visits an
+/// object once, at the first path that reaches it, so a hard link elsewhere
+/// --- a root alias sorting before `clinical` --- reached an undigested column
+/// first and took it out of its group: a pin, `verify` and a deep preflight
+/// passed over it while the clinical reader read it (B03 of the 2.0
+/// re-audit).
+pub fn attested_datasets(root: &hdf5::Group) -> Result<Vec<(String, hdf5::Dataset)>> {
     let clinical =
         attrs::get_strs(root, "medh5_profiles")?.unwrap_or_default().iter().any(|p| p == crate::clinical::PROFILE);
-    let attested = |group: &str| ATTESTED_GROUPS.contains(&group) || (clinical && group == crate::clinical::GROUP);
-    Ok(undigested.iter().filter(|n| n.contains('/') && attested(n.split('/').next().unwrap_or(""))).cloned().collect())
+    let mut out = Vec::new();
+    for name in ATTESTED_GROUPS.into_iter().chain(clinical.then_some(crate::clinical::GROUP)) {
+        let Some(group) = ops::child_group(root, name) else { continue };
+        for (path, ds) in ops::datasets(&group)? {
+            out.push((format!("{name}/{path}"), ds));
+        }
+    }
+    Ok(out)
+}
+
+/// Of [`attested_datasets`], those that carry no digest.  The root is a
+/// Merkle root over *stored* digests (§13.2), so such a dataset is content no
+/// address covers: a pin, a cache entry and `verify` would all pass over it.
+pub fn unattested(root: &hdf5::Group) -> Result<Vec<String>> {
+    let mut out: Vec<String> = attested_datasets(root)?
+        .into_iter()
+        .filter(|(_, ds)| !attrs::has(ds, "digest"))
+        .map(|(path, _)| path)
+        .collect();
+    out.sort();
+    Ok(out)
 }
 
 /// Outcome of a verification pass.
@@ -193,7 +217,7 @@ pub fn verify_root_inspecting(
         }
     }
     if declared.is_some() && partial.is_none() {
-        result.unattested = unattested(root, &undigested)?;
+        result.unattested = unattested(root)?;
     }
     result.undigested = undigested;
     result.content_id_declared = declared;

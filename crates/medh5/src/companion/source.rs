@@ -7,12 +7,14 @@
 //! re-verifies the clinical datasets' actual bytes --- a stored root alone
 //! would miss an edit under unchanged digests (1.1 §8).
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 
 use super::Finding;
 use crate::collection::{open_any, AnyFile};
+use crate::h5::ops::{self, ObjectId};
 use crate::json::repr_str;
 use crate::sample::Sample;
 use crate::{Error, Result};
@@ -104,11 +106,12 @@ impl SourceRef {
             ));
             return Ok(out);
         }
-        let (digests, gaps) = crate::integrity::collect_digests_with_gaps(&sample.root, &["index"])?;
+        let digests = crate::integrity::collect_digests(&sample.root, &["index"])?;
         // The root covers stored digests only, so a dataset that carries none
         // --- a column added later, say --- is bytes no pin speaks for: refused
-        // before anything is recomputed (1.0 §13.2, 1.1 §8, E818).
-        let uncovered = crate::integrity::unattested(&sample.root, &gaps)?;
+        // before anything is recomputed (1.0 §13.2, 1.1 §8, E818).  Found
+        // through the groups that hold it, whatever other path reaches it.
+        let uncovered = crate::integrity::unattested(&sample.root)?;
         if !uncovered.is_empty() {
             out.push(Finding::new(
                 "T302",
@@ -134,9 +137,25 @@ impl SourceRef {
             ));
             return Ok(out);
         }
+        // A digest is keyed by an object's first path, which for a column
+        // aliased at the root is not under `clinical/`: the clinical datasets
+        // are the objects reachable through it, by identity (B03).
+        let clinical: HashSet<ObjectId> = if deep {
+            HashSet::new()
+        } else {
+            crate::integrity::attested_datasets(&sample.root)?
+                .iter()
+                .filter(|(path, _)| path.starts_with("clinical/"))
+                .filter_map(|(_, ds)| ops::object_id_of(ds))
+                .collect()
+        };
+        let in_clinical = |path: &str| {
+            path.starts_with("clinical/")
+                || ops::object_id_by_name(&sample.root, path).is_some_and(|id| clinical.contains(&id))
+        };
         let mut failed = Vec::new();
         for (path, digest) in &digests {
-            if !deep && !path.starts_with("clinical/") {
+            if !deep && !in_clinical(path) {
                 continue;
             }
             let matches = crate::digest::parse_digest(digest).and_then(|(algo, _)| {

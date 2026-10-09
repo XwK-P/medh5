@@ -158,6 +158,7 @@ class TestWorkedExample:
                     np.full(3, row.cutoff_us / DAY, np.float32),
                     sources=list(row.sources),
                     row_id=row.row_id,
+                    row_fingerprint=row.fingerprint,
                     cutoff_us=row.cutoff_us,
                     event_versions=versions,
                 )
@@ -801,6 +802,25 @@ class TestAdmissibility:
         assert "observation|http://loinc.org|only-P-B" not in own.concepts.concepts
         assert "observation|http://loinc.org|only-P-A" in own.concepts.concepts
 
+    def test_N05_a_vocabulary_is_held_to_the_cache_comparison(self, tmp_path: Path):
+        """A vocabulary compared its task, partition and membership but not the
+        split, so one fitted under another `set_id` of the same subjects passed
+        (N05 of the 2.0 re-audit).  It is held to the comparison a cache is;
+        another membership or the held-out partition stays refused."""
+        current, swapped = self._tasks(tmp_path)
+        vocabulary = ConceptVocabulary.fit(current, current.preflight())
+        vocabulary.check_fitted_on(current)
+        doc = current.to_json()
+        doc["split"]["set_id"] = "fold-1"
+        renamed = TaskManifest(doc, base=tmp_path)
+        assert renamed.task_fingerprint == current.task_fingerprint
+        for other, why in ((renamed, "set_id"), (swapped, "subjects_digest")):
+            with pytest.raises(MEDH5ValidationError, match=why) as caught:
+                vocabulary.check_fitted_on(other)
+            assert caught.value.code == "T405"
+        with pytest.raises(MEDH5ValidationError, match="set_id"):
+            ClinicalTaskDataset(renamed, partition="train", concepts=vocabulary)
+
     def test_B06_a_document_cache_is_event_level_and_fitted_on_training(
         self, tmp_path: Path
     ):
@@ -840,6 +860,7 @@ class TestAdmissibility:
                 np.full(1, 999.0, np.float32),
                 sources=list(row.sources),
                 row_id=row.row_id,
+                row_fingerprint=row.fingerprint,
                 cutoff_us=row.cutoff_us,
                 event_versions=[e.event_id for e in row.events],
                 event_id="rep_v1",

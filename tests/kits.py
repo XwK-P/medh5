@@ -359,8 +359,11 @@ class History:
         ]
 
     @staticmethod
-    def writer_for(path: Path, *, subject_id: str = "P-01") -> Any:
-        """A writer holding the label set and the two CT visits, no history."""
+    def writer_for(
+        path: Path, *, subject_id: str = "P-01", fill: int | None = None
+    ) -> Any:
+        """A writer holding the label set and the two CT visits, no history;
+        *fill* gives every voxel of both one value."""
         rng = np.random.default_rng(len(subject_id))
         w = medh5.create(
             path, sample_id=path.stem, subject_id=subject_id, codec="portable"
@@ -376,6 +379,8 @@ class History:
                 frame_uid=f"{subject_id}-{tp}",
             )
             volume = rng.integers(-100, 200, History.SHAPE).astype(np.int16)
+            if fill is not None:
+                volume[...] = fill
             w.add_image(f"CT_{tp}", volume, grid=f"ct_{tp}", modality="CT")
         return w
 
@@ -390,11 +395,12 @@ class History:
         links: Sequence[Any] = (),
         lesion: bool = True,
         clock: Any = None,
+        fill: int | None = None,
     ) -> str:
         """Write the sample; returns its ``content_id``."""
         from medh5.clinical import Clock
 
-        with History.writer_for(path, subject_id=subject_id) as w:
+        with History.writer_for(path, subject_id=subject_id, fill=fill) as w:
             if lesion:
                 w.add_segmentation(
                     "lesions_tp0",

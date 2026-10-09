@@ -246,13 +246,15 @@ fn merge(history: &mut History, subject: &Subject) -> Result<Vec<Finding>> {
     let fragments = &history.fragments;
     let merged = &mut history.merged;
     let at = |f: &Fragment| if f.source.source_id.is_empty() { f.source.locator() } else { f.source.source_id.clone() };
-    // Every holder of every event id; the first holder's version is merged.
+    // Every holder of every event id, and where each id was merged.
     let mut holders: HashMap<&str, Vec<(usize, usize)>> = HashMap::new();
+    let mut at_position: HashMap<&str, usize> = HashMap::new();
     for (i, f) in fragments.iter().enumerate() {
         let Some(c) = &f.clinical else { continue };
         for (k, e) in c.events.iter().enumerate() {
             let found = holders.entry(e.event_id.as_str()).or_default();
             if found.is_empty() {
+                at_position.insert(e.event_id.as_str(), merged.events.len());
                 merged.events.push(e.clone());
                 merged.event_fragments.push(i);
             }
@@ -261,6 +263,19 @@ fn merge(history: &mut History, subject: &Subject) -> Result<Vec<Finding>> {
         merged.links.extend(c.links.iter().map(|l| (i, l.clone())));
     }
     let event = |(f, k): (usize, usize)| &fragments[f].clinical.as_ref().expect("held").events[k];
+    // A version several fragments hold is merged from the one with the
+    // smallest pinned `content_id`, not the first listed: what a row reads
+    // through it --- the document it owns, the key of its event feature ---
+    // must not depend on the order the manifest names its sources (B04).
+    for (id, held) in holders.iter().filter(|(_, h)| h.len() > 1) {
+        let chosen = *held
+            .iter()
+            .min_by(|a, b| fragments[a.0].source.content_id.cmp(&fragments[b.0].source.content_id))
+            .expect("held");
+        let position = at_position[id];
+        merged.events[position] = event(chosen).clone();
+        merged.event_fragments[position] = chosen.0;
+    }
     // What a fragment's version of a document event owns, by content: a
     // fragment's own copy of a text may carry another id, but one event
     // version owns one document (1.1 §6), so its holders must agree on it.
@@ -699,18 +714,30 @@ impl<'a> Rows<'a> {
 
     /// Fill a slot with the newest eligible image of its modality, by its
     /// imaging version's order time; ties broken by event id (for storage,
-    /// not as evidence).
+    /// not as evidence), then --- one version held by several fragments, or
+    /// one describing several images --- by the smallest pinned `content_id`
+    /// and image id.
+    ///
+    /// Never by the order the manifest lists sources in: the row fingerprint
+    /// sorts the pins, so a tie kept by the first fragment made one row
+    /// identity two inputs, and a feature cached for one served the other
+    /// (B04 of the 2.0 re-audit).
     fn fill(&self, slot: &Slot, selection: &Selection, order: &[Option<Option<Bounds>>]) -> SlotFill {
         let mut fill = SlotFill::empty(slot);
         let events = &self.history.merged.events;
+        let fragments = &self.history.fragments;
         let key = |c: &Candidate| {
             let when = order[c.event].flatten();
             (when.map_or(i64::MIN, |b| b.hi), when.map_or(i64::MIN, |b| b.lo), events[c.event].event_id.as_str())
         };
-        // Candidates are in (fragment, image) order, and a tie keeps the first.
+        // Between equal keys the smaller place wins.
+        let earlier = |a: &Candidate, b: &Candidate| {
+            let pin = |c: &Candidate| &fragments[c.fragment].source.content_id;
+            pin(a).cmp(pin(b)).then_with(|| a.image_id.cmp(&b.image_id))
+        };
         let mut best: Option<&Candidate> = None;
         for c in self.candidates.iter().filter(|c| order[c.event].is_some() && c.modality == slot.modality) {
-            if best.is_none_or(|b| key(c) > key(b)) {
+            if best.is_none_or(|b| key(c).cmp(&key(b)).then_with(|| earlier(b, c)).is_gt()) {
                 best = Some(c);
             }
         }
@@ -1090,8 +1117,9 @@ pub struct Admitted {
     pins: Vec<BTreeSet<String>>,
 }
 
-/// One row of [`Admitted`].
-type Admits = (i64, Option<usize>, Vec<usize>);
+/// One row of [`Admitted`]: its cutoff, its subject, its admitted versions'
+/// positions and its fingerprint.
+type Admits = (i64, Option<usize>, Vec<usize>, String);
 
 impl Admitted {
     /// From a preflight already in hand.
@@ -1129,7 +1157,7 @@ impl Admitted {
 
     fn admits(view: &RowView) -> Admits {
         let positions = view.selection.as_ref().map_or_else(Vec::new, |s| s.events.iter().map(|e| e.index).collect());
-        (view.cutoff_us, view.subject, positions)
+        (view.cutoff_us, view.subject, positions, view.fingerprint.clone())
     }
 
     fn insert(&mut self, row_id: &str, admits: Admits) {
@@ -1141,13 +1169,20 @@ impl Admitted {
     /// this task does not have, empty when its subject is unknown.
     pub fn row_pins(&self, row_id: &str) -> Option<&BTreeSet<String>> {
         static NONE: std::sync::OnceLock<BTreeSet<String>> = std::sync::OnceLock::new();
-        let (_, subject, _) = &self.views[*self.rows.get(row_id)?];
+        let (_, subject, _, _) = &self.views[*self.rows.get(row_id)?];
         Some(subject.and_then(|i| self.pins.get(i)).unwrap_or_else(|| NONE.get_or_init(BTreeSet::new)))
+    }
+
+    /// A row's fingerprint (task-cache-1 §3.2): the task, the subject, every
+    /// pinned source version and the cutoff --- the identity a patient-level
+    /// feature pins.
+    pub fn row_fingerprint(&self, row_id: &str) -> Option<&str> {
+        Some(self.views[*self.rows.get(row_id)?].3.as_str())
     }
 
     /// A row's cutoff and the ids of the versions it admits, in input order.
     pub fn row(&self, row_id: &str) -> Option<(i64, Vec<&str>)> {
-        let (cutoff, subject, positions) = &self.views[*self.rows.get(row_id)?];
+        let (cutoff, subject, positions, _) = &self.views[*self.rows.get(row_id)?];
         let ids = subject
             .and_then(|i| self.names.get(i))
             .map_or_else(Vec::new, |names| positions.iter().map(|&i| names.get(i)[0]).collect());

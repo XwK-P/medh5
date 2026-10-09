@@ -367,6 +367,7 @@ impl CacheWriterHandle {
                 .get("event_versions")
                 .and_then(Value::as_array)
                 .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()),
+            row_fingerprint: text("row_fingerprint"),
             digest: String::new(),
         };
         let values = py_to_nd(values)?;
@@ -491,6 +492,12 @@ fn cache_fitted_on<'py>(py: Python<'py>, doc: &Bound<'py, PyAny>, partition: &st
     Ok(json_to_py(py, &CacheHeader::fitted_on(&manifest(doc)?, partition))?)
 }
 
+/// Why a `fitted_on` record is not this task's training partition (T405).
+#[pyfunction]
+fn cache_fitted_on_mismatches(doc: &Bound<'_, PyAny>, fitted: &Bound<'_, PyAny>) -> R<Vec<String>> {
+    Ok(CacheHeader::fitted_on_mismatches(&manifest(doc)?, &record(fitted)?))
+}
+
 #[pyfunction]
 fn cache_event_entry_id(content_id: &str, event_id: &str) -> String {
     medh5::companion::cache::event_entry_id(content_id, event_id)
@@ -531,6 +538,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         wrap_pyfunction!(cache_open, m)?,
         wrap_pyfunction!(cache_validate, m)?,
         wrap_pyfunction!(cache_fitted_on, m)?,
+        wrap_pyfunction!(cache_fitted_on_mismatches, m)?,
         wrap_pyfunction!(cache_event_entry_id, m)?,
         wrap_pyfunction!(task_schema_text, m)?,
         wrap_pyfunction!(cache_schema_text, m)?,

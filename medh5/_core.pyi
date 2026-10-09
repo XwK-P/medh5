@@ -262,6 +262,7 @@ __all__ = [
     "cache_create",
     "cache_event_entry_id",
     "cache_fitted_on",
+    "cache_fitted_on_mismatches",
     "cache_open",
     "cache_schema_text",
     "cache_validate",
@@ -846,6 +847,10 @@ def cache_create(
 
 def cache_event_entry_id(content_id: str, event_id: str) -> str: ...
 def cache_fitted_on(doc: Any, partition: str) -> dict[str, Any]: ...
+def cache_fitted_on_mismatches(doc: Any, fitted: Mapping[str, Any]) -> list[str]:
+    """Why a `fitted_on` record is not this task's training partition (T405)."""
+    ...
+
 def cache_open(path: str | os.PathLike[str]) -> FeatureCacheHandle: ...
 def cache_schema_text() -> str: ...
 def cache_validate(

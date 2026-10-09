@@ -113,7 +113,10 @@ second record of one event, or a record of an event no two fragments hold is **T
 present in several fragments must be identical (**T305**). A `document` event's content includes the
 document it owns: its holders **MUST** own one text --- the same media type, text, language and source
 type, whatever id each fragment gives it --- and the merged version owns that one document (1.1 §6;
-a document event owns at most one). `medh5 task reconcile` writes the records.
+a document event owns at most one). A version several fragments hold is merged from the one whose
+pinned `content_id` is smallest, never from the first the manifest lists: the row fingerprint (§3.2)
+sorts the pins, so nothing a row reads may depend on their order. `medh5 task reconcile` writes the
+records.
 
 Preflight checks each fragment's revision chains as part of its clinical tables, and the merged
 history's once: chains each sound but contradicting once merged --- a version superseded in one
@@ -154,7 +157,10 @@ positive and negative, a follow-up longer than the horizon --- is **T102**.
 | `classes` | `[]` | Class ids read as label supervision from voxel annotations on the image's grid (§6) |
 
 A slot is filled per row by the **newest eligible image** of its modality: an image an admitted
-`imaging` event `describes` (1.1 §7.3), ordered by that event's order time, ties broken by event id.
+`imaging` event `describes` (1.1 §7.3), ordered by that event's order time, ties broken by event id,
+then --- one version held by several fragments, or one describing several images --- by the smallest
+pinned `content_id` of the source holding the image, then the smallest image id. With the merge rule
+of §3.3, a row's selection and fills are a function of its fingerprint.
 An eligible image of another visit is a different fill, not an error; no image is resampled onto
 another's grid, and no registration is invented. With `roi = eligible_instances` the centre is that of
 the first instance (by `instance_id`) of an **eligible** instance-bearing annotation on the image's
@@ -296,7 +302,7 @@ One HDF5 file, conventionally `*.medh5cache`:
 | `task_fingerprint` | The task a patient-level cache was built for (required at that level) |
 | `selection` | The selection policy it read under |
 | `fitted_on` | For learned preprocessing: `{"task_fingerprint", "set_id", "partition", "subjects_digest"}` |
-| `entries` | `[{"entry_id", "sources", "event_id"?, "document_id"?, "row_id"?, "cutoff_us"?, "event_versions"?, "digest"}]` |
+| `entries` | `[{"entry_id", "sources", "event_id"?, "document_id"?, "row_id"?, "row_fingerprint"?, "cutoff_us"?, "event_versions"?, "digest"}]` |
 
 Every entry names **every source version it read**, as `{uri, sample_key, content_id}`. The full
 sample `content_id` is the source key: a conservative, sufficient one --- any change to the sample
@@ -306,13 +312,18 @@ makes its entries stale. A finer dependency key would need its own specification
 
 - **Event level**: one feature per event version of a pinned source (or the document it owns),
   conventionally entry `e` + 24 hex digits of `sha256(content_id + "\n" + event_id)`; every entry names
-  its `event_id`. An event version is immutable, so its feature is free of any cutoff and shared by
-  every row --- each row's selection decides which of them it may read.
-- **Patient level**: one feature per row, pinning the row, its cutoff and the exact event versions it
-  encodes (`event_versions`), under the task it was built for (`task_fingerprint`). Every entry names
-  all three, and its sources are **its row's subject's**: event ids are local to a sample, so two
+  its `event_id`, and **no row**: no `row_id`, `row_fingerprint`, `cutoff_us` or `event_versions`.
+  An event version is immutable, so its feature is free of any cutoff and shared by every row ---
+  each row's selection decides which of them it may read; an entry declaring a row's history would
+  say otherwise, and a reader looking it up by event would serve it to every row.
+- **Patient level**: one feature per row, pinning the row --- its id and its fingerprint
+  (`row_fingerprint`, §3.2) --- its cutoff and the exact event versions it encodes
+  (`event_versions`), under the task it was built for (`task_fingerprint`). Every entry names all of
+  them, and its sources are **its row's subject's**: event ids are local to a sample, so two
   subjects' rows can admit the same ids at one cutoff, and only the pins say whose history a feature
-  encodes.
+  encodes. The fingerprint is what binds a feature to its inputs: a source added to the subject
+  changes what a slot reads without changing the cutoff or an admitted version, and changes the
+  fingerprint; reordering the sources changes neither (§3.3, §3.5).
 
 A schema-valid manifest holds what its level requires (**T401** otherwise). Each level answers its own
 question: a reader looks event features up by `(content_id, event_id)` in an event-level cache only,
@@ -323,7 +334,8 @@ encodes its row's history, never that event alone.
 
 Normalisation statistics, code bins, vocabularies and anything else fitted to data record `fitted_on`:
 the task fingerprint, the split, the partition and that partition's subjects digest (§3.2). They are
-fitted on the **training partition** --- the split's first --- and nothing else.
+fitted on the **training partition** --- the split's first --- and nothing else, and every artifact
+recording `fitted_on` is held to the one comparison of §8 (T405), a vocabulary as a cache.
 
 ## 8. Cache validation
 
@@ -338,8 +350,9 @@ Validation never modifies a source. Two failures are told apart, because they ne
 Given a task (and its preflight), validation also checks that the cache belongs to it:
 
 - **T404** --- built for another task (`task_fingerprint`), or a patient-level entry for a row the
-  task does not have, at another cutoff, or reading a source version its row's subject does not pin
-  (compared by `content_id`, so a relocated copy is the same version);
+  task does not have, at another cutoff, for another version of its row (`row_fingerprint`: a source
+  of its subject added, removed or re-pinned), or reading a source version its row's subject does
+  not pin (compared by `content_id`, so a relocated copy is the same version);
 - **T405** --- learned preprocessing fitted on another task, another split (`set_id`), another
   membership, or a partition other than the task's training partition;
 - **T406** --- a patient-level entry encodes event versions other than those its row admits at its

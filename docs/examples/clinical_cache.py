@@ -97,6 +97,7 @@ def patient_cache(
                 ((feature - mean) / std).astype(np.float32),
                 sources=list(row.sources),
                 row_id=row_id,
+                row_fingerprint=row.fingerprint,
                 cutoff_us=row.cutoff_us,
                 event_versions=versions,
             )

@@ -45,7 +45,7 @@ from medh5 import _core
 from medh5.task import Finding, SourceRef
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from medh5.task import TaskManifest
+    from medh5.task import RowView, TaskManifest
 
 SCHEMA: str = _core.CACHE_SCHEMA
 SUFFIX = ".medh5cache"
@@ -80,6 +80,14 @@ def fitted_on(task: TaskManifest, partition: str | None = None) -> dict[str, Any
     return found
 
 
+def fitted_on_mismatches(task: TaskManifest, fitted: Mapping[str, Any]) -> list[str]:
+    """Why preprocessing recorded as *fitted* was not fitted on *task*'s
+    training partition (T405): another task, split (``set_id``), membership or
+    partition.  Empty when it was --- the one comparison caches and
+    vocabularies are held to."""
+    return list(_core.cache_fitted_on_mismatches(task.to_json(), dict(fitted)))
+
+
 @dataclass(frozen=True, slots=True)
 class CacheEntry:
     """One cached feature and everything it depends on."""
@@ -92,6 +100,7 @@ class CacheEntry:
     row_id: str | None = None
     cutoff_us: int | None = None
     event_versions: tuple[str, ...] | None = None
+    row_fingerprint: str | None = None
 
     @classmethod
     def from_json(cls, doc: Mapping[str, Any]) -> CacheEntry:
@@ -108,6 +117,7 @@ class CacheEntry:
             doc.get("row_id"),
             doc.get("cutoff_us"),
             None if versions is None else tuple(versions),
+            doc.get("row_fingerprint"),
         )
 
 
@@ -117,7 +127,8 @@ class CacheWriter:
     As a context manager it commits when the block succeeds and leaves nothing
     behind when it raises.  Every entry must match the declared output dtype
     and shape (T402), name the source versions it read (T403), and --- at the
-    patient level --- pin its row, cutoff and selected versions (T404).
+    patient level --- pin its row (by id and fingerprint), cutoff and selected
+    versions (T404); an event-level entry names no row.
     """
 
     __slots__ = ("_handle", "digest", "path")
@@ -160,6 +171,7 @@ class CacheWriter:
         row_id: str | None = None,
         cutoff_us: int | None = None,
         event_versions: Sequence[str] | None = None,
+        row_fingerprint: str | None = None,
     ) -> CacheEntry:
         """Add one feature."""
         entry = {
@@ -170,8 +182,31 @@ class CacheWriter:
             "row_id": row_id,
             "cutoff_us": cutoff_us,
             "event_versions": None if event_versions is None else list(event_versions),
+            "row_fingerprint": row_fingerprint,
         }
         return CacheEntry.from_json(self._handle.add(entry, np.asarray(values)))
+
+    def add_row(
+        self,
+        row: RowView,
+        values: npt.ArrayLike,
+        *,
+        entry_id: str | None = None,
+        sources: Sequence[SourceRef] | None = None,
+    ) -> CacheEntry:
+        """Add the feature of one preflight row: its id, fingerprint, cutoff
+        and admitted versions pinned from the row itself (§7.2).  *sources*
+        are the source versions the feature read --- default, every one the
+        row's subject pins."""
+        return self.add(
+            entry_id if entry_id is not None else row.row_id,
+            values,
+            sources=list(row.sources) if sources is None else sources,
+            row_id=row.row_id,
+            cutoff_us=row.cutoff_us,
+            event_versions=[e.event_id for e in row.events],
+            row_fingerprint=row.fingerprint,
+        )
 
     def add_event(
         self,
@@ -463,6 +498,7 @@ __all__ = [
     "build_document_cache",
     "event_entry_id",
     "fitted_on",
+    "fitted_on_mismatches",
     "open_cache",
     "schema_text",
     "validate_cache",

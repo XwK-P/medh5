@@ -71,7 +71,7 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
-from medh5.cache import FeatureCache, fitted_on, validate_cache
+from medh5.cache import FeatureCache, fitted_on, fitted_on_mismatches, validate_cache
 from medh5.clinical import COMPARATORS, EVENT_KINDS, HOUR, Event
 from medh5.errors import MEDH5ValidationError
 from medh5.sample import Sample
@@ -288,20 +288,17 @@ class ConceptVocabulary:
                     "T405",
                 )
             return
-        wanted = task.training_partition
-        if wanted is None:
+        if task.training_partition is None:
             raise MEDH5ValidationError(
                 "the vocabulary was fitted on a split, and this task declares none",
                 "T405",
             )
-        expected = fitted_on(task, wanted)
-        for key in ("task_fingerprint", "partition", "subjects_digest"):
-            if self.fitted_on.get(key) != expected[key]:
-                raise MEDH5ValidationError(
-                    f"the vocabulary was fitted on {key} {self.fitted_on.get(key)!r}; "
-                    f"this task's training partition is {expected[key]!r}",
-                    "T405",
-                )
+        # The cache's comparison, set_id included: a vocabulary fitted under
+        # another split of the same subjects passed its own (N05 of the 2.0
+        # re-audit).
+        problems = fitted_on_mismatches(task, self.fitted_on)
+        if problems:
+            raise MEDH5ValidationError(f"the vocabulary was {problems[0]}", "T405")
 
 
 def _text_at(column: Any, i: int) -> str | None:

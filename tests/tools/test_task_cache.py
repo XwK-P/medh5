@@ -273,6 +273,68 @@ class TestSources:
         assert {r.status for r in report.rows if r.subject_id != "P-01"} == {"error"}
         assert "E818" in validate_file(paths["P-02"], level="integrity").codes
 
+    @pytest.mark.parametrize("alias", ["aaa", "zzz"])
+    def test_B03_a_root_alias_does_not_hide_an_undigested_column(self, setup, alias):
+        """A walk of the root visits an object once, at its first path, and the
+        pin decided what an object belongs to by that path: an undigested
+        column linked first at the root, before `clinical` in name order, was
+        no clinical dataset, and the shallow and deep checks and a preflight
+        passed it while the rows read it (B03 of the 2.0 re-audit).  Membership
+        is reached through each attested group, whatever else links to it."""
+        task, paths = setup
+        with h5py.File(paths["P-02"], "r+") as f:
+            events = f["clinical/events"]
+            n = events["available_lo_us"].shape[0]
+            for name in ("effective_end_lo_us", "effective_end_hi_us"):
+                events.create_dataset(name, data=np.zeros(n, dtype="<i8"))
+                events["valid"].create_dataset(name, data=np.zeros(n, dtype="u1"))
+                f[f"{alias}_{name}"] = events[name]
+                f[f"{alias}_valid_{name}"] = events[f"valid/{name}"]
+        source = task.subjects[1].sources[0]
+        for deep in (False, True):
+            (finding,) = source.check(task.base, deep=deep)
+            assert finding.code == "T302"
+            assert "clinical/events/valid/effective_end_lo_us" in str(finding)
+        report = task.preflight()
+        assert found(report.findings) == ["T302"]
+        assert {r.status for r in report.rows if r.subject_id == "P-02"} == {"error"}
+
+    def test_B03_an_aliased_clinical_column_is_judged_by_its_bytes(self, setup):
+        """The controls.  A later alias of a digested column changes no root and
+        breaks no pin.  An earlier one is the column's first path, so its digest
+        and the root are stamped there --- and the shallow check, which read
+        only digests keyed under `clinical/`, passed its edited bytes.  It reads
+        every object reachable through `clinical/`, by identity."""
+        from medh5.integrity import dataset_digest
+
+        task, paths = setup
+        path = paths["P-02"]
+        source = task.subjects[1].sources[0]
+        with h5py.File(path, "r+") as f:
+            f["zzz_value"] = f["clinical/events/value_num"]
+        assert source.check(task.base) == []
+        assert source.check(task.base, deep=True) == []
+        with h5py.File(path, "r+") as f:
+            del f["zzz_value"]
+            f["aaa_value"] = f["clinical/events/value_num"]
+        with medh5.open(path) as sample:
+            digest = dataset_digest(sample.root["aaa_value"], "aaa_value")
+        with h5py.File(path, "r+") as f:
+            f["aaa_value"].attrs["digest"] = digest
+        with medh5.open(path) as sample:
+            content_id = sample.compute_content_id()
+        with h5py.File(path, "r+") as f:
+            f.attrs["content_id"] = content_id
+        repinned = SourceRef.pin(path, uri=source.uri)
+        assert repinned.check(task.base) == []
+        assert repinned.check(task.base, deep=True) == []
+        with h5py.File(path, "r+") as f:
+            values = f["clinical/events/value_num"]
+            values[0] = values[0] + 1.0
+        for deep in (False, True):
+            (finding,) = repinned.check(task.base, deep=deep)
+            assert finding.code == "T302" and "aaa_value" in str(finding)
+
     def test_S2_a_missing_source_is_T301(self, setup, tmp_path: Path):
         task, paths = setup
         paths["P-03"].unlink()
@@ -459,6 +521,42 @@ class TestPreflight:
         assert "contradict" in str(report.findings[0])
         assert report.row("bad").status == "error"
         assert report.row("good").status == "eligible"
+
+    def test_B04_one_row_identity_reads_one_input(self, tmp_path: Path):
+        """Two fragments of one subject hold the same reconciled imaging event,
+        each describing its own CT --- every voxel 11 in one, 93 in the other.
+        The slot kept the first fragment the manifest listed while the row
+        fingerprint sorts the pins, so reordering two sources changed the
+        input under one row identity (B04 of the 2.0 re-audit).  A tie goes to
+        the smallest pinned `content_id`, whatever the order."""
+        root = tmp_path / "b04"
+        root.mkdir()
+        refs = {}
+        for name, value in (("a", 11), ("b", 93)):
+            History.write(root / f"{name}.medh5", subject_id="P-01", fill=value)
+            refs[name] = SourceRef.pin(root / f"{name}.medh5", uri=f"{name}.medh5")
+        canonical = min(refs.values(), key=lambda r: r.content_id)
+
+        def read(*names: str) -> tuple[str, float, str]:
+            task = TaskManifest.new(
+                "t", "1", identity_namespace="n", slots=[Slot("ct", "CT")], base=root
+            )
+            task.add_subject("P-01", [refs[n] for n in names])
+            task.add_row("r", "P-01", 24 * HOUR)
+            report = task.reconcile().preflight()
+            assert report.ok, report.findings
+            row = report.row("r")
+            fill = row.slots["ct"]
+            assert fill.fragment is not None and fill.image_id == "CT_tp0"
+            source = row.sources[fill.fragment]
+            with source.open(root) as sample:
+                value = float(np.mean(sample.images[fill.image_id].read()))
+            return row.fingerprint, value, source.content_id
+
+        forward, backward = read("a", "b"), read("b", "a")
+        assert forward == backward
+        assert forward[2] == canonical.content_id
+        assert forward[1] == (11.0 if canonical is refs["a"] else 93.0)
 
     def test_C13_a_reconciled_document_event_owns_one_text(self, tmp_path: Path):
         """The event JSON agreed while each fragment's event owned another
@@ -670,6 +768,7 @@ class TestCaches:
                     np.zeros(2, np.float32),
                     sources=list(row.sources),
                     row_id=row.row_id,
+                    row_fingerprint=row.fingerprint,
                     cutoff_us=row.cutoff_us,
                     event_versions=[e.event_id for e in row.events],
                 )
@@ -690,6 +789,7 @@ class TestCaches:
                 np.zeros(2, np.float32),
                 sources=list(row.sources),
                 row_id=row.row_id,
+                row_fingerprint=row.fingerprint,
                 cutoff_us=row.cutoff_us,
                 event_versions=["lab0", "ct0", "rep_v2"],
             )
@@ -773,6 +873,110 @@ class TestCaches:
         abandoned = FeatureCache.open(path)
         abandoned.abandon()
 
+    def test_B04_a_row_feature_holds_for_the_row_it_was_built_from(
+        self, tmp_path: Path
+    ):
+        """An honest patient-level feature --- the mean of the CT the row's slot
+        reads --- built while the subject had one fragment still validated
+        after a second fragment of the same visit was added and the slot read
+        that one instead: the cutoff and the admitted versions were the same,
+        the image and so the feature were not (B04 of the 2.0 re-audit).  The
+        entry pins the fingerprint of the row it was built from; a relocated
+        copy of unchanged content is the same row."""
+        root = tmp_path / "b04"
+        root.mkdir()
+        refs = {}
+        for name, value in (("a", 11), ("b", 93)):
+            History.write(root / f"{name}.medh5", subject_id="P-01", fill=value)
+            refs[name] = SourceRef.pin(root / f"{name}.medh5", uri=f"{name}.medh5")
+        # With both listed the slot reads the smaller pin; the feature is
+        # first built from the other.
+        later = min(refs, key=lambda n: refs[n].content_id)
+        first = "b" if later == "a" else "a"
+
+        def task_of(*sources: SourceRef) -> TaskManifest:
+            task = TaskManifest.new(
+                "t", "1", identity_namespace="n", slots=[Slot("ct", "CT")], base=root
+            )
+            task.add_subject("P-01", list(sources))
+            task.add_row("r", "P-01", 24 * HOUR)
+            return task.reconcile()
+
+        def honest(task: TaskManifest, path: Path) -> float:
+            row = task.preflight().row("r")
+            fill = row.slots["ct"]
+            assert fill.fragment is not None and fill.image_id is not None
+            read = row.sources[fill.fragment]
+            with read.open(root) as sample:
+                mean = float(np.mean(sample.images[fill.image_id].read()))
+            with CacheWriter(
+                path,
+                level="patient",
+                encoder={"name": "mean-ct", "revision": "1"},
+                output={"dtype": "float32", "shape": [1]},
+                task=task,
+            ) as w:
+                w.add_row(row, np.full(1, mean, np.float32), sources=[read])
+            return mean
+
+        alone = task_of(refs[first])
+        cache = root / "rows.medh5cache"
+        assert honest(alone, cache) == (11.0 if first == "a" else 93.0)
+        assert validate_cache(cache, task=alone).ok
+        both = task_of(refs[first], refs[later])
+        assert honest(both, root / "now.medh5cache") != honest(alone, cache)
+        findings = validate_cache(cache, task=both).findings
+        assert found(findings) == ["T404"]
+        assert "built for row 'r'" in str(findings[0])
+        # The same content elsewhere is the same row.
+        moved = root / "moved"
+        moved.mkdir()
+        shutil.copyfile(root / f"{first}.medh5", moved / "copy.medh5")
+        relocated = task_of(SourceRef.pin(moved / "copy.medh5", uri="moved/copy.medh5"))
+        assert relocated.preflight().row("r").fingerprint == (
+            alone.preflight().row("r").fingerprint
+        )
+        assert validate_cache(cache, task=relocated).ok
+
+    def test_N06_an_event_feature_names_no_row(self, setup, tmp_path: Path):
+        """An event-level entry declaring a later row, its cutoff and its
+        history validated against that row, while a lookup by event version
+        --- which `documents=` makes --- served it to every row (N06 of the
+        2.0 re-audit).  An event feature names no row: the writer refuses
+        one, and a manifest declaring one fails its schema."""
+        task, _ = setup
+        later = task.preflight().row("P-01@d95")
+        source = task.subjects[0].sources[0]
+        path = tmp_path / "cohort" / "events.medh5cache"
+        header: dict[str, Any] = {
+            "level": "event",
+            "encoder": {"name": "fixture", "revision": "1"},
+            "output": {"dtype": "float32", "shape": [1]},
+        }
+        row_fields: dict[str, Any] = {
+            "row_id": later.row_id,
+            "cutoff_us": later.cutoff_us,
+            "event_versions": [e.event_id for e in later.events],
+        }
+        with (
+            pytest.raises(MEDH5ValidationError, match="no row") as caught,
+            CacheWriter(path, **header) as w,
+        ):
+            w.add(
+                "e1",
+                np.ones(1, np.float32),
+                sources=[source],
+                event_id="rep_v1",
+                **row_fields,
+            )
+        assert caught.value.code == "T404" and not path.exists()
+        with CacheWriter(path, **header) as w:
+            w.add_event(source, "rep_v1", np.ones(1, np.float32))
+        assert validate_cache(path, task=task).ok  # stateless reuse
+        self._rewrite_manifest(path, lambda doc: doc["entries"][0].update(row_fields))
+        report = validate_cache(path, task=task)
+        assert found(report.findings) == ["T401"] and report.corrupt == ("manifest",)
+
     @staticmethod
     def _rewrite_manifest(path: Path, change: Any) -> None:
         """Edit a cache's manifest and re-checksum it, as a writer would."""
@@ -814,6 +1018,7 @@ class TestCaches:
                     np.zeros(2, np.float32),
                     sources=sources,
                     row_id=mine.row_id,
+                    row_fingerprint=mine.fingerprint,
                     cutoff_us=mine.cutoff_us,
                     event_versions=[e.event_id for e in mine.events],
                 )

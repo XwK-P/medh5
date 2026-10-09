@@ -73,6 +73,10 @@ pub struct CacheEntry {
     pub row_id: Option<String>,
     pub cutoff_us: Option<i64>,
     pub event_versions: Option<Vec<String>>,
+    /// Patient level: the row's fingerprint (task-cache-1 §3.2) --- the task,
+    /// the subject, every pinned source version and the cutoff it was built
+    /// from.
+    pub row_fingerprint: Option<String>,
     /// The payload's §13.1 digest.
     pub digest: String,
 }
@@ -87,6 +91,7 @@ impl CacheEntry {
             "row_id": self.row_id,
             "cutoff_us": self.cutoff_us,
             "event_versions": self.event_versions,
+            "row_fingerprint": self.row_fingerprint,
             "digest": self.digest,
         })
     }
@@ -111,8 +116,18 @@ impl CacheEntry {
                 .get("event_versions")
                 .and_then(Value::as_array)
                 .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()),
+            row_fingerprint: text("row_fingerprint"),
             digest: text("digest").unwrap_or_default(),
         })
+    }
+
+    /// Whether the entry names anything of a row: what an event-level
+    /// feature, free of any cutoff, never does (§7.2).
+    fn names_a_row(&self) -> bool {
+        self.row_id.is_some()
+            || self.cutoff_us.is_some()
+            || self.event_versions.is_some()
+            || self.row_fingerprint.is_some()
     }
 }
 
@@ -182,6 +197,35 @@ impl CacheHeader {
             "partition": partition,
             "subjects_digest": task.subjects_digest(partition),
         })
+    }
+
+    /// Why preprocessing recorded as `fitted` on a partition was not fitted on
+    /// this task's training partition (§7.3, T405): another task, another
+    /// split (`set_id`), another membership, or another partition.  Empty
+    /// when it was.
+    ///
+    /// One comparison for whatever records `fitted_on`: a vocabulary checked
+    /// its own, without `set_id`, and accepted one fitted under another split
+    /// of the same subjects (N05 of the 2.0 re-audit).
+    pub fn fitted_on_mismatches(task: &TaskManifest, fitted: &Value) -> Vec<String> {
+        let mut out = Vec::new();
+        let partition = fitted["partition"].as_str().unwrap_or_default();
+        let wanted = CacheHeader::fitted_on(task, partition);
+        for key in ["task_fingerprint", "set_id", "subjects_digest"] {
+            let (found, expected) = (fitted.get(key).unwrap_or(&Value::Null), &wanted[key]);
+            if found != expected {
+                out.push(format!(
+                    "fitted on {key} {found}, but this task's {} partition is {expected}",
+                    repr_str(partition)
+                ));
+            }
+        }
+        // The split lists its training partition first (contract §3.3).
+        let trains = task.split.as_ref().and_then(|(_, p)| p.first().cloned());
+        if trains.as_deref().is_some_and(|t| t != partition) {
+            out.push(format!("fitted on partition {}, not the task's training partition", repr_str(partition)));
+        }
+        out
     }
 }
 
@@ -263,11 +307,20 @@ impl CacheWriter {
             ));
         }
         if self.header.level == "patient"
-            && (entry.row_id.is_none() || entry.cutoff_us.is_none() || entry.event_versions.is_none())
+            && (entry.row_id.is_none()
+                || entry.cutoff_us.is_none()
+                || entry.event_versions.is_none()
+                || entry.row_fingerprint.is_none())
         {
             return Err(Error::coded(
                 "T404",
-                "a patient-level feature pins its row, cutoff and selected event versions",
+                "a patient-level feature pins its row (by id and fingerprint), cutoff and selected event versions",
+            ));
+        }
+        if self.header.level == "event" && entry.names_a_row() {
+            return Err(Error::coded(
+                "T404",
+                "an event-level feature is free of any row: it names no row, cutoff or selected versions (§7.2)",
             ));
         }
         if entry.sources.is_empty() {
@@ -552,30 +605,8 @@ pub fn validate_cache(
             }
         }
         if let Some(fitted) = &cache.header.fitted_on {
-            let partition = fitted["partition"].as_str().unwrap_or_default();
-            let wanted = CacheHeader::fitted_on(task, partition);
-            for key in ["task_fingerprint", "set_id", "subjects_digest"] {
-                if fitted.get(key) != wanted.get(key) {
-                    report.findings.push(Finding::new(
-                        "T405",
-                        "manifest",
-                        format!(
-                            "fitted on {key} {}, but this task's {} partition is {}",
-                            fitted.get(key).cloned().unwrap_or(Value::Null),
-                            repr_str(partition),
-                            wanted[key]
-                        ),
-                    ));
-                }
-            }
-            // The split lists its training partition first (contract §3.3).
-            let trains = task.split.as_ref().and_then(|(_, p)| p.first().cloned());
-            if trains.as_deref().is_some_and(|t| t != partition) {
-                report.findings.push(Finding::new(
-                    "T405",
-                    "manifest",
-                    format!("fitted on partition {}, not the task's training partition", repr_str(partition)),
-                ));
+            for why in CacheHeader::fitted_on_mismatches(task, fitted) {
+                report.findings.push(Finding::new("T405", "manifest", why));
             }
         }
         if let Some(admitted) = admitted {
@@ -594,6 +625,24 @@ pub fn validate_cache(
                         "T404",
                         &entry.entry_id,
                         format!("built at cutoff {:?}; the row's cutoff is {}", entry.cutoff_us, cutoff_us),
+                    ));
+                }
+                // The row as it was built from: a source added to its subject
+                // changes what its slots read without changing a cutoff or an
+                // admitted version, so only the fingerprint, which pins every
+                // source version, binds the feature to its inputs (B04 of the
+                // 2.0 re-audit).
+                let current = admitted.row_fingerprint(row_id).unwrap_or_default();
+                if entry.row_fingerprint.as_deref() != Some(current) {
+                    report.findings.push(Finding::new(
+                        "T404",
+                        &entry.entry_id,
+                        format!(
+                            "built for row {} as {}; the row is now {current} --- its task, subject, sources or cutoff \
+                             changed, and a row's feature holds for the row it was built from",
+                            repr_str(row_id),
+                            entry.row_fingerprint.as_deref().unwrap_or("unpinned")
+                        ),
                     ));
                 }
                 // The versions an entry read are its row's subject's: event
