@@ -232,6 +232,19 @@ out `h5py` objects --- and the behaviour changes below.
 - **Only an imaging version fills a slot** (task-cache-1 §3.5): an image some
   other kind of event `describes` is not the slot's.
 - `medh5.errors.Domain` includes `"clinical"`.
+- **`recompress` keeps a file's link graph.** A soft link is copied as a soft
+  link and a second hard link to an object as a link to its copy, where 1.x
+  followed a soft link and copied its target again under the link's name. Every
+  walk visits an object once, at its first path, as 1.x did; a group nested
+  more than 64 levels deep is refused rather than followed, so no arrangement
+  of links can exhaust the stack.
+- **Where a file's identity cannot be read, every open is checked for outside
+  references** (`MEDH5FileError`, §2). POSIX keys the memo by device and inode;
+  off POSIX the engine had only size and modification time, which a crafted
+  file can match, so nothing is remembered there (1.x keyed Windows on the
+  volume serial and file index).
+- **A split ratio is a finite number of at least 0** (`MEDH5ValidationError`):
+  1.x accepted a negative share and wrote it into the split.
 
 ### Removed
 

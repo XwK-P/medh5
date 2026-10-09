@@ -292,7 +292,23 @@ pub fn make_splits(manifest: &Manifest, options: &SplitOptions) -> Result<Split>
                     repr_list(&PARTITIONS)
                 )));
             }
-            let total = shares.values().fold(0.0, |acc, v| acc + v);
+            // A share is a finite number of at least zero.  NaN and infinity
+            // left no partition with a positive share, and dealing from none
+            // panicked; a negative share was accepted and written down.
+            if let Some((name, share)) = shares.iter().find(|(_, v)| !v.is_finite() || **v < 0.0) {
+                return Err(Error::invalid(format!(
+                    "split ratio {} is {}; a ratio is a finite number of at least 0",
+                    repr_str(name),
+                    crate::json::py_float(*share)
+                )));
+            }
+            let mut total = shares.values().fold(0.0, |acc, v| acc + v);
+            if total.is_infinite() {
+                // Finite shares can still overflow their sum: scale them first.
+                let largest = shares.values().copied().fold(0.0, f64::max);
+                shares = shares.into_iter().map(|(k, v)| (k, v / largest)).collect();
+                total = shares.values().fold(0.0, |acc, v| acc + v);
+            }
             if total <= 0.0 {
                 return Err(Error::invalid("split ratios must sum to more than zero"));
             }

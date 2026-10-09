@@ -417,6 +417,33 @@ fn fixed_string_type(width: usize, ascii: bool) -> Result<crate::h5sys::h5i::hid
     Ok(tid)
 }
 
+/// What [`write_fixed_strings`] and [`recreate_fixed_strings`] hand HDF5 must
+/// be what it reads: both write through `H5S_ALL`, which takes one
+/// `width`-byte element from the buffer for every element of the dataset,
+/// whatever length the buffer has.  A shorter buffer is a read past its end.
+fn check_fixed_strings(ds: &hdf5::Dataset, values: &[String], width: usize) -> Result<()> {
+    super::alive(ds)?;
+    if !is_strings(ds) {
+        return Err(Error::Type(format!("{} does not hold strings", ds.name())));
+    }
+    if width == 0 {
+        return Err(Error::Value("a fixed-length string is at least one byte wide".into()));
+    }
+    // Counted as `read_strings` counts them: a scalar holds one.
+    let n = ds.size().max(usize::from(ds.is_scalar()));
+    if values.len() != n {
+        return Err(Error::Value(format!(
+            "{} holds {n} string(s) and {} were given: every element is rewritten",
+            ds.name(),
+            values.len()
+        )));
+    }
+    if n.checked_mul(width).is_none() {
+        return Err(Error::Value(format!("{n} strings of {width} bytes do not fit in memory")));
+    }
+    Ok(())
+}
+
 fn fixed_bytes(values: &[String], width: usize) -> Vec<u8> {
     let mut buf = vec![0u8; values.len() * width.max(1)];
     for (i, value) in values.iter().enumerate() {
@@ -427,9 +454,11 @@ fn fixed_bytes(values: &[String], width: usize) -> Vec<u8> {
     buf
 }
 
-/// Overwrite a fixed-length string dataset whose width fits `values`.
+/// Overwrite a fixed-length string dataset whose width fits `values`, one
+/// value per element of the dataset.
 pub fn write_fixed_strings(ds: &hdf5::Dataset, values: &[String], width: usize, ascii: bool) -> Result<()> {
     use crate::h5sys::{h5d, h5p, h5s, h5t};
+    check_fixed_strings(ds, values, width)?;
     let buf = fixed_bytes(values, width);
     super::locked(|| -> Result<()> {
         let mtype = fixed_string_type(width, ascii)?;
@@ -449,10 +478,12 @@ pub fn write_fixed_strings(ds: &hdf5::Dataset, values: &[String], width: usize, 
 /// property list (filters, chunking, fill value) and its attributes.
 ///
 /// Built under a temporary name and moved into place, so a pipeline HDF5
-/// cannot rebuild for the new type leaves the original untouched.
+/// cannot rebuild for the new type leaves the original untouched.  One value
+/// per element of the dataset, as [`write_fixed_strings`].
 pub fn recreate_fixed_strings(ds: &hdf5::Dataset, values: &[String], width: usize, ascii: bool) -> Result<()> {
     use crate::h5sys::{h5d, h5i, h5l, h5p, h5s, h5t};
     use std::ffi::CString;
+    check_fixed_strings(ds, values, width)?;
     let full = ds.name();
     let (parent_path, name) = match full.rsplit_once('/') {
         Some((p, n)) => (if p.is_empty() { "/".to_string() } else { p.to_string() }, n.to_string()),
@@ -515,4 +546,43 @@ pub fn recreate_fixed_strings(ds: &hdf5::Dataset, values: &[String], width: usiz
         }
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixed(n: usize) -> (tempfile::TempDir, hdf5::File, hdf5::Dataset) {
+        let dir = tempfile::tempdir().unwrap();
+        let file = hdf5::File::create(dir.path().join("s.h5")).unwrap();
+        let ds = file.new_dataset::<hdf5::types::FixedAscii<8>>().shape([n]).create("s").unwrap();
+        (dir, file, ds)
+    }
+
+    /// B01: both writers hand HDF5 a buffer through `H5S_ALL`, which reads one
+    /// element per element of the dataset whatever the buffer holds.  Fewer
+    /// values read past the buffer (none at all was a segfault); more were
+    /// silently dropped.
+    #[test]
+    fn b01_fixed_strings_take_one_value_per_element() {
+        let (_dir, _file, ds) = fixed(3);
+        let values: Vec<String> = ["a", "bb", "ccc", "d"].iter().map(|s| s.to_string()).collect();
+        for wrong in [&values[..0], &values[..1], &values[..]] {
+            assert!(write_fixed_strings(&ds, wrong, 8, true).is_err(), "{} values", wrong.len());
+            assert!(recreate_fixed_strings(&ds, wrong, 16, true).is_err(), "{} values", wrong.len());
+        }
+        assert!(write_fixed_strings(&ds, &values[..3], 0, true).is_err(), "a zero width");
+        write_fixed_strings(&ds, &values[..3], 8, true).unwrap();
+        assert_eq!(read_strings(&ds).unwrap(), values[..3]);
+    }
+
+    /// B01: the element count is checked against a dataset of strings only.
+    #[test]
+    fn b01_only_strings_are_rewritten_as_strings() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = hdf5::File::create(dir.path().join("n.h5")).unwrap();
+        let ds = file.new_dataset::<u8>().shape([1]).create("n").unwrap();
+        let err = write_fixed_strings(&ds, &["x".to_string()], 8, true).unwrap_err();
+        assert!(err.to_string().contains("does not hold strings"), "{err}");
+    }
 }

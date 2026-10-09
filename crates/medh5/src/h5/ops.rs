@@ -8,7 +8,7 @@
 //! file once wrote the contents of a local private key into its output.  Every
 //! file is checked on open and refused if it carries any of them.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_void};
 use std::path::Path;
@@ -122,14 +122,76 @@ pub enum Node {
     Dataset(hdf5::Dataset),
 }
 
+/// An object's identity within its file: two paths to one object share it.
+pub type ObjectId = (std::os::raw::c_ulong, [u8; 16]);
+
+// `H5O_token_t` is `repr(C)` around one `[u8; H5O_MAX_TOKEN_SIZE]`.
+const _: () = assert!(std::mem::size_of::<h5o::H5O_token_t>() == 16);
+
+fn object_id(info: &h5o::H5O_info2_t) -> ObjectId {
+    // SAFETY: a plain-bytes struct of exactly 16 bytes (asserted above).
+    let token = unsafe { std::mem::transmute::<h5o::H5O_token_t, [u8; 16]>(info.token) };
+    (info.fileno, token)
+}
+
+/// The identity of the object `name` in `group` names, without opening it.
+pub fn object_id_by_name(group: &hdf5::Group, name: &str) -> Option<ObjectId> {
+    let cname = cstring(name).ok()?;
+    super::locked(|| unsafe {
+        let mut info: h5o::H5O_info2_t = std::mem::zeroed();
+        if h5o::H5Oget_info_by_name3(group.id(), cname.as_ptr(), &mut info, h5o::H5O_INFO_BASIC, h5p::H5P_DEFAULT) < 0 {
+            return None;
+        }
+        Some(object_id(&info))
+    })
+}
+
+/// The identity of an open object.
+pub fn object_id_of(obj: &hdf5::Location) -> Option<ObjectId> {
+    super::locked(|| unsafe {
+        let mut info: h5o::H5O_info2_t = std::mem::zeroed();
+        if h5o::H5Oget_info3(obj.id(), &mut info, h5o::H5O_INFO_BASIC) < 0 {
+            return None;
+        }
+        Some(object_id(&info))
+    })
+}
+
+/// How deep [`visit`] goes.  A sample is a handful of levels deep; a group
+/// nested past this is refused rather than followed, so no file can exhaust
+/// the stack, whatever its links.
+pub const MAX_DEPTH: usize = 64;
+
 /// Recursively visit every object under `group` through hard links, depth
 /// first in name order --- h5py's `visititems`.  Paths are relative to
 /// `group`.  `f` returns `false` to stop.
+///
+/// Each object is visited **once**, at the first path that reaches it, as
+/// `H5Ovisit` does: a hard link back to an ancestor is a cycle, not an
+/// infinite tree, and a second link to an object is an alias of it, not a
+/// second object (1.x digested an alias once, under its first path).
 pub fn visit(group: &hdf5::Group, f: &mut dyn FnMut(&str, &Node) -> Result<bool>) -> Result<()> {
-    fn walk(group: &hdf5::Group, prefix: &str, f: &mut dyn FnMut(&str, &Node) -> Result<bool>) -> Result<bool> {
+    fn walk(
+        group: &hdf5::Group,
+        prefix: &str,
+        depth: usize,
+        seen: &mut HashSet<ObjectId>,
+        f: &mut dyn FnMut(&str, &Node) -> Result<bool>,
+    ) -> Result<bool> {
+        if depth > MAX_DEPTH {
+            return Err(Error::File(format!(
+                "{} is nested more than {MAX_DEPTH} groups deep; it is refused rather than followed",
+                repr_str(&group.name())
+            )));
+        }
         for name in members(group)? {
             if link_kind(group, &name) != Some(LinkKind::Hard) {
                 continue;
+            }
+            if let Some(id) = object_id_by_name(group, &name) {
+                if !seen.insert(id) {
+                    continue;
+                }
             }
             let path = if prefix.is_empty() { name.clone() } else { format!("{prefix}/{name}") };
             match node_kind(group, &name) {
@@ -138,7 +200,7 @@ pub fn visit(group: &hdf5::Group, f: &mut dyn FnMut(&str, &Node) -> Result<bool>
                     if !f(&path, &Node::Group(child.clone()))? {
                         return Ok(false);
                     }
-                    if !walk(&child, &path, f)? {
+                    if !walk(&child, &path, depth + 1, seen, f)? {
                         return Ok(false);
                     }
                 }
@@ -153,7 +215,9 @@ pub fn visit(group: &hdf5::Group, f: &mut dyn FnMut(&str, &Node) -> Result<bool>
         }
         Ok(true)
     }
-    walk(group, "", f)?;
+    // The starting group itself: a link back to it is a cycle too.
+    let mut seen: HashSet<ObjectId> = object_id_of(group).into_iter().collect();
+    walk(group, "", 0, &mut seen, f)?;
     Ok(())
 }
 
@@ -206,6 +270,26 @@ pub fn copy_unknown(src: &hdf5::Group, dst: &hdf5::Group, known: &[&str]) -> Res
         }
     }
     Ok(kept)
+}
+
+/// The path a soft link holds, as stored --- not what it resolves to.
+pub fn soft_link_target(group: &hdf5::Group, name: &str) -> Result<String> {
+    let cname = cstring(name)?;
+    super::locked(|| unsafe {
+        let mut info: h5l::H5L_info2_t = std::mem::zeroed();
+        if h5l::H5Lget_info2(group.id(), cname.as_ptr(), &mut info, h5p::H5P_DEFAULT) < 0
+            || !matches!(info.type_, h5l::H5L_type_t::H5L_TYPE_SOFT)
+        {
+            return Err(Error::Value(format!("{} is not a soft link", repr_str(name))));
+        }
+        let size = *info.u.val_size();
+        let mut buf = vec![0u8; size.max(1)];
+        if h5l::H5Lget_val(group.id(), cname.as_ptr(), buf.as_mut_ptr().cast(), buf.len(), h5p::H5P_DEFAULT) < 0 {
+            return Err(Error::Io(format!("could not read the soft link {}", repr_str(name))));
+        }
+        let end = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
+        Ok(String::from_utf8_lossy(&buf[..end]).into_owned())
+    })
 }
 
 /// Delete a link if present.
@@ -315,23 +399,16 @@ fn checked_files() -> &'static Mutex<HashMap<FileIdentity, ()>> {
 
 const CHECKED_LIMIT: usize = 65_536;
 
+#[cfg(unix)]
 fn identity(meta: &std::fs::Metadata) -> Option<FileIdentity> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        Some((
-            meta.dev(),
-            meta.ino(),
-            meta.size(),
-            meta.mtime() as i128 * 1_000_000_000 + meta.mtime_nsec() as i128,
-            meta.ctime() as i128 * 1_000_000_000 + meta.ctime_nsec() as i128,
-        ))
-    }
-    #[cfg(not(unix))]
-    {
-        let modified = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos() as i128;
-        Some((0, 0, meta.len(), modified, 0))
-    }
+    use std::os::unix::fs::MetadataExt;
+    Some((
+        meta.dev(),
+        meta.ino(),
+        meta.size(),
+        meta.mtime() as i128 * 1_000_000_000 + meta.mtime_nsec() as i128,
+        meta.ctime() as i128 * 1_000_000_000 + meta.ctime_nsec() as i128,
+    ))
 }
 
 /// The descriptor HDF5 reads `handle` through, when its driver has one.
@@ -357,11 +434,16 @@ fn descriptor(handle: &hdf5::File) -> Option<std::os::raw::c_int> {
 /// Between an open and a stat by name, another process can atomically replace
 /// the path; recording the replacement as checked would let it skip the check
 /// on its next open, and the next `recompress` would copy whatever it points
-/// at.  So on POSIX the identity comes from the descriptor HDF5 read through.
-/// Windows refuses to replace a file another handle holds open, so there the
-/// path names the opened file for as long as the handle lives, and a stat by
-/// name gives the same answer.  No identity means no memo: the file is checked
-/// on every open rather than trusted on a guess.
+/// at.  So on POSIX the identity comes from the descriptor HDF5 read through:
+/// device, inode, size, and modification and change times.
+///
+/// Elsewhere there is none.  Size and modification time alone do not tell two
+/// files apart --- an archive extracts many with one mtime, and the time is
+/// the author's to set --- so keying on them let a crafted file of a checked
+/// file's length and time skip the check (W01 of the 2.0 audit; 1.x keyed
+/// Windows on the volume serial and file index, which `std` cannot read).  No
+/// identity means no memo: the file is checked on every open rather than
+/// trusted on a guess.
 fn opened_identity(handle: &hdf5::File, path: Option<&Path>) -> Option<FileIdentity> {
     #[cfg(unix)]
     {
@@ -374,8 +456,8 @@ fn opened_identity(handle: &hdf5::File, path: Option<&Path>) -> Option<FileIdent
     }
     #[cfg(not(unix))]
     {
-        let _ = handle;
-        identity(&std::fs::metadata(path?).ok()?)
+        let _ = (handle, path);
+        None
     }
 }
 
@@ -414,8 +496,21 @@ pub fn check_self_contained(handle: &hdf5::File, path: Option<&Path>) -> Result<
 
 /// Read one stored (still compressed) chunk by its logical offset.
 ///
-/// Returns the filter mask and the bytes exactly as stored.
+/// Returns the filter mask and the bytes exactly as stored.  `offset` has one
+/// coordinate per axis: HDF5 reads that many from it, whatever its length.
 pub fn read_raw_chunk(ds: &hdf5::Dataset, offset: &[u64]) -> Result<(u32, Vec<u8>)> {
+    super::alive(ds)?;
+    if offset.len() != ds.ndim() {
+        return Err(Error::Value(format!(
+            "a chunk offset names one coordinate per axis: {} has {} axes, the offset {offset:?} has {}",
+            ds.name(),
+            ds.ndim(),
+            offset.len()
+        )));
+    }
+    if ds.chunk().is_none() {
+        return Err(Error::Value(format!("{} is not chunked, so it stores no chunks", ds.name())));
+    }
     super::locked(|| unsafe {
         let mut mask: u32 = 0;
         let mut addr: u64 = 0;
@@ -509,7 +604,24 @@ mod tests {
         assert!(err.to_string().contains("external link"), "{err}");
     }
 
+    /// B01: HDF5 reads one coordinate per axis from the offset, so an offset
+    /// of the wrong length read past it (an empty one was a segfault).
+    #[test]
+    fn b01_a_chunk_offset_has_one_coordinate_per_axis() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = hdf5::File::create(dir.path().join("c.h5")).unwrap();
+        let ds = file.new_dataset::<u8>().chunk((2, 2)).shape((4, 4)).create("c").unwrap();
+        ds.write(&ndarray::Array2::<u8>::ones((4, 4))).unwrap();
+        for wrong in [&[][..], &[0][..], &[0, 0, 0][..]] {
+            assert!(read_raw_chunk(&ds, wrong).is_err(), "{wrong:?}");
+        }
+        assert_eq!(read_raw_chunk(&ds, &[0, 2]).unwrap().1, vec![1u8; 4]);
+        let flat = file.new_dataset::<u8>().shape([4]).create("flat").unwrap();
+        assert!(read_raw_chunk(&flat, &[0]).is_err(), "a contiguous dataset stores no chunks");
+    }
+
     /// An unchanged file is checked once; the memo is what keeps re-opens cheap.
+    #[cfg(unix)]
     #[test]
     fn f22_an_unchanged_file_is_remembered() {
         let dir = tempfile::tempdir().unwrap();
@@ -518,5 +630,18 @@ mod tests {
         let handle = crate::h5::file::open_read(&path).unwrap();
         let key = opened_identity(&handle, Some(&path)).expect("a sec2 file has an identity");
         assert!(checked_files().lock().unwrap().contains_key(&key));
+    }
+
+    /// W01: without the opened file's identity nothing is remembered, so
+    /// every open is checked --- a file of a checked file's length and
+    /// modification time is not taken for it.
+    #[cfg(not(unix))]
+    #[test]
+    fn w01_without_an_identity_every_open_is_checked() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("clean.medh5");
+        plain(&path);
+        let handle = crate::h5::file::open_read(&path).unwrap();
+        assert!(opened_identity(&handle, Some(&path)).is_none());
     }
 }

@@ -445,3 +445,79 @@ class TestRecompress:
                 assert data.chunks is not None and data.chunks[0] == 1
         with medh5.open_collection(shard) as collection:
             assert all(collection[key].verify().ok for key in collection)
+
+
+class TestB02LinkGraphs:
+    """A file's links form a graph, which every tool walks once per object and
+    `recompress` copies as a graph.
+
+    The 2.0 walkers followed paths: a hard link back to an ancestor made
+    validation and `verify` run without end, and `recompress` --- which also
+    followed soft links --- recursed until the stack ran out (SIGSEGV) on a
+    13 KiB file.  1.x walked each object once (`H5Ovisit`), so these are also
+    the 1.x answers.  Each tool runs in a child process with a time limit: a
+    regression hangs or crashes rather than failing.
+    """
+
+    @staticmethod
+    def _linked(tmp_path: Path, kind: str) -> Path:
+        from tests.kits import Numbered
+
+        path = Numbered.plain(tmp_path / f"{kind}.medh5")
+        with h5py.File(path, "r+") as handle:
+            ext = handle.create_group("x_ext")
+            ext.create_dataset("d", data=np.arange(4))
+            if kind == "hard":
+                ext["loop"] = ext  # to itself
+                ext["root"] = handle  # to an ancestor
+            elif kind == "soft":
+                ext["loop"] = h5py.SoftLink("/x_ext")
+            else:
+                ext["alias"] = ext["d"]
+        return path
+
+    @pytest.mark.parametrize("kind", ["hard", "soft", "alias"])
+    def test_B02_every_tool_finishes_on_a_linked_graph(self, tmp_path: Path, kind):
+        import subprocess
+        import sys
+
+        path = self._linked(tmp_path, kind)
+        out = tmp_path / "out.medh5"
+        code = (
+            "import medh5\n"
+            "from medh5.curation import scrub\n"
+            "from medh5.storage import recompress\n"
+            "from medh5.validate import validate_file\n"
+            f"path = {str(path)!r}\n"
+            "assert not validate_file(path, level='integrity').errors\n"
+            "with medh5.open(path) as sample:\n"
+            "    assert sample.verify().ok\n"
+            f"assert recompress(path, 'portable', out={str(out)!r}).verified\n"
+            "scrub.scan(path)\n"
+            "print('finished')\n"
+        )
+        done = subprocess.run(
+            [sys.executable, "-c", code], capture_output=True, text=True, timeout=120
+        )
+        assert done.returncode == 0, done.stderr[-2000:]
+        assert done.stdout.strip().endswith("finished")
+
+    def test_B02_recompress_keeps_soft_links_aliases_and_cycles(self, tmp_path: Path):
+        from medh5.storage import recompress
+
+        path = self._linked(tmp_path, "alias")
+        with h5py.File(path, "r+") as handle:
+            ext = handle["x_ext"]
+            ext["soft"] = h5py.SoftLink("/x_ext/d")
+            ext["loop"] = ext
+        with medh5.open(path) as sample:
+            before = sample.content_id
+        out = tmp_path / "out.medh5"
+        result = recompress(path, "portable", out=out)
+        assert result.verified and result.content_id == before
+        with h5py.File(out, "r") as handle:
+            ext = handle["x_ext"]
+            link = ext.get("soft", getlink=True)
+            assert isinstance(link, h5py.SoftLink) and link.path == "/x_ext/d"
+            assert ext["alias"] == ext["d"]  # one object, two names
+            assert ext["loop"] == ext  # the cycle, as stored

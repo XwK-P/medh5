@@ -112,7 +112,9 @@ pub fn recompress(path: &Path, profile: &str, out: Option<&Path>, rechunk: bool)
         let before = attrs::get_str(src, "content_id")?;
         let src_root = src.as_group()?;
         let dst_root = dst.as_group()?;
-        copy_group(&src_root, &dst_root, &codec, rechunk, &mut result, None)?;
+        let mut copied = Copied::default();
+        copied.note(&src_root, &dst_root);
+        copy_group(&src_root, &dst_root, &codec, rechunk, &mut result, None, &mut copied, 0)?;
         Ok(before)
     })?;
     result.bytes_after = std::fs::metadata(target)?.len();
@@ -245,6 +247,20 @@ impl Layout {
     }
 }
 
+/// Where each source object went in the copy, by its identity: the copy keeps
+/// the source's graph, so a second link to one object stays a link to one.
+#[derive(Default)]
+struct Copied(std::collections::HashMap<ops::ObjectId, String>);
+
+impl Copied {
+    fn note(&mut self, src: &hdf5::Group, dst: &hdf5::Group) {
+        if let Some(id) = ops::object_id_of(src) {
+            self.0.insert(id, dst.name());
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn copy_group(
     src: &hdf5::Group,
     dst: &hdf5::Group,
@@ -252,7 +268,16 @@ fn copy_group(
     rechunk: bool,
     result: &mut RecompressResult,
     layout: Option<&mut Layout>,
+    copied: &mut Copied,
+    depth: usize,
 ) -> Result<()> {
+    if depth > ops::MAX_DEPTH {
+        return Err(Error::File(format!(
+            "{} is nested more than {} groups deep; it is refused rather than followed",
+            repr_str(&src.name()),
+            ops::MAX_DEPTH
+        )));
+    }
     for key in attrs::names(src)? {
         attrs::copy_raw(src, dst, &key)?;
     }
@@ -262,13 +287,41 @@ fn copy_group(
         None => layout,
     };
     for name in ops::members(src)? {
+        match ops::link_kind(src, &name) {
+            // A soft link stays a soft link: it holds a path, and the copy has
+            // the same paths.  Following it copied its target a second time
+            // under another name --- and one pointing at an ancestor never
+            // stopped.
+            Some(ops::LinkKind::Soft) => {
+                dst.link_soft(&ops::soft_link_target(src, &name)?, &name)?;
+                continue;
+            }
+            // A second hard link to an object already copied is a link to the
+            // copy, not a second copy; a link back to an ancestor is how a
+            // cycle is stored, and stays one.
+            Some(ops::LinkKind::Hard) => {
+                if let Some(id) = ops::object_id_by_name(src, &name) {
+                    if let Some(first) = copied.0.get(&id) {
+                        dst.link_hard(first, &name)?;
+                        continue;
+                    }
+                }
+            }
+            _ => {}
+        }
         match ops::node_kind(src, &name) {
             Some(NodeKind::Group) => {
                 let child = dst.create_group(&name)?;
-                copy_group(&src.group(&name)?, &child, codec, rechunk, result, layout.as_deref_mut())?;
+                let source = src.group(&name)?;
+                copied.note(&source, &child);
+                copy_group(&source, &child, codec, rechunk, result, layout.as_deref_mut(), copied, depth + 1)?;
             }
             Some(NodeKind::Dataset) => {
+                let id = ops::object_id_by_name(src, &name);
                 copy_dataset(src, &name, dst, codec, rechunk, result, layout.as_deref_mut())?;
+                if let Some(id) = id {
+                    copied.0.insert(id, format!("{}/{name}", dst.name().trim_end_matches('/')));
+                }
             }
             _ => ops::copy_object(src, &name, dst, &name)?,
         }

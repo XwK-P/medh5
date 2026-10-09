@@ -503,6 +503,33 @@ class TestW14RewriteGate:
         with pytest.raises(MEDH5FileError, match="not self-contained"):
             medh5.open(target)
 
+    def test_W01_a_file_of_a_checked_files_length_and_time_is_still_checked(
+        self, tmp_path: Path
+    ):
+        """The memo is keyed by the opened file's identity, never by its length
+        and modification time alone.
+
+        Off POSIX the key was ``(0, 0, size, mtime, 0)``: a crafted file padded
+        to a checked file's length, with its time set to match, skipped the
+        check on open.  (On POSIX the inode tells them apart; on Windows this
+        holds only because nothing is remembered there.)
+        """
+        checked = Numbered.plain(tmp_path / "checked.medh5")
+        other = Numbered.plain(tmp_path / "other.medh5")
+        crafted = Numbered.plain(tmp_path / "crafted.medh5")
+        with h5py.File(crafted, "r+") as handle:
+            handle["x_link"] = h5py.ExternalLink(str(other), "/images")
+        small, big = sorted((checked, crafted), key=lambda p: p.stat().st_size)
+        with open(small, "ab") as handle:  # HDF5 ignores bytes past its end
+            handle.write(b"\0" * (big.stat().st_size - small.stat().st_size))
+        times = checked.stat()
+        os.utime(crafted, ns=(times.st_atime_ns, times.st_mtime_ns))
+        assert checked.stat().st_size == crafted.stat().st_size
+        with medh5.open(checked) as sample:  # checked, and remembered if it can be
+            assert "CT" in sample.images
+        with pytest.raises(MEDH5FileError, match="external link"):
+            medh5.open(crafted)
+
     @pytest.mark.skipif(
         sys.platform == "win32" or getattr(os, "geteuid", lambda: 1)() == 0,
         reason="POSIX file modes, which root ignores",

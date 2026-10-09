@@ -345,6 +345,38 @@ class TestSplits:
         assert set(split.counts) <= {"train", "val"}
         assert sum(split.counts.values()) == 6
 
+    @pytest.mark.parametrize(
+        "ratios",
+        [
+            {"train": float("nan"), "test": 1.0},
+            {"train": float("inf"), "test": 1.0},
+            {"train": -1.0, "val": 2.0},
+        ],
+    )
+    def test_U01_a_ratio_is_a_finite_number_of_at_least_zero(self, manifest, ratios):
+        """NaN and infinity panicked the engine (a ``BaseException`` no
+        ``except Exception`` catches); a negative share was written down."""
+        with pytest.raises(MEDH5ValidationError, match="finite number"):
+            make_splits(manifest, ratios=ratios)
+
+    def test_U01_finite_shares_whose_sum_overflows_still_split(self, manifest):
+        split = make_splits(manifest, ratios={"train": 1e308, "test": 1e308}, seed=0)
+        assert set(split.counts) == {"train", "test"}
+        assert sum(split.counts.values()) == 6
+
+    def test_U01_the_command_line_refuses_a_ratio_that_is_not_a_number(
+        self, cohort, tmp_path, capsys
+    ):
+        from medh5.cli import EXIT_ERROR, main
+
+        manifest_path = tmp_path / "m.json"
+        assert main(["dataset", "index", str(cohort), "-o", str(manifest_path)]) == 0
+        code = main(
+            ["dataset", "split", str(manifest_path), "--ratios", "train=nan,test=1"]
+        )
+        assert code == EXIT_ERROR
+        assert "finite number" in capsys.readouterr().err
+
     def test_the_split_records_the_manifest_it_came_from(self, manifest):
         split = make_splits(manifest)
         assert split.manifest_sha256 == manifest.sha256()

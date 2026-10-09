@@ -588,24 +588,29 @@ impl<'a> Prepared<'a> {
         if let Some(max) = policy.max_events {
             let timed: Vec<usize> = (0..selected.len()).filter(|i| selected[*i].order.is_some()).collect();
             if timed.len() > max {
-                let (keep_range, cut_at) = if policy.keep == "latest" {
-                    let first_kept = timed.len() - max;
-                    (first_kept..timed.len(), first_kept)
-                } else {
-                    (0..max, max - 1)
-                };
-                let boundary = selected[timed[cut_at]].tie_group;
-                let mut keep: BTreeSet<usize> = keep_range.map(|j| timed[j]).collect();
-                let in_boundary: Vec<usize> =
-                    timed.iter().copied().filter(|i| selected[*i].tie_group == boundary).collect();
-                let splits =
-                    in_boundary.iter().any(|i| keep.contains(i)) && in_boundary.iter().any(|i| !keep.contains(i));
-                if splits {
-                    if policy.ties == "keep_group" {
-                        keep.extend(in_boundary);
+                // A limit of zero keeps no timed event, so no tie group
+                // straddles it (the schema admits 0; static events stay).
+                let mut keep: BTreeSet<usize> = BTreeSet::new();
+                if max > 0 {
+                    let (keep_range, cut_at) = if policy.keep == "latest" {
+                        let first_kept = timed.len() - max;
+                        (first_kept..timed.len(), first_kept)
                     } else {
-                        for i in in_boundary {
-                            keep.remove(&i);
+                        (0..max, max - 1)
+                    };
+                    let boundary = selected[timed[cut_at]].tie_group;
+                    keep = keep_range.map(|j| timed[j]).collect();
+                    let in_boundary: Vec<usize> =
+                        timed.iter().copied().filter(|i| selected[*i].tie_group == boundary).collect();
+                    let splits =
+                        in_boundary.iter().any(|i| keep.contains(i)) && in_boundary.iter().any(|i| !keep.contains(i));
+                    if splits {
+                        if policy.ties == "keep_group" {
+                            keep.extend(in_boundary);
+                        } else {
+                            for i in in_boundary {
+                                keep.remove(&i);
+                            }
                         }
                     }
                 }
@@ -785,6 +790,30 @@ mod tests {
         let dropped = select(&events, &[], 100, &limited).unwrap();
         assert_eq!(ids(&dropped, &events), ["c"]);
         assert_eq!(dropped.excluded.get("event_limit"), Some(&2));
+    }
+
+    /// C01: the schema admits `max_events = 0`, which indexed one past the
+    /// kept range (`keep = latest`) or underflowed `max - 1` (`earliest`).
+    #[test]
+    fn s9_1_a_limit_of_zero_keeps_no_timed_event() {
+        let timed = version("t", "t", 5, Some((5, 5)));
+        let mut fact = version("s", "s", 0, Some((1, 1)));
+        fact.temporal_type = "static".into();
+        fact.effective_start = None;
+        for keep in ["latest", "earliest"] {
+            for ties in ["keep_group", "drop_group"] {
+                let mut policy = SelectionPolicy::strict();
+                policy.max_events = Some(0);
+                policy.keep = keep.into();
+                policy.ties = ties.into();
+                let events = vec![timed.clone(), fact.clone()];
+                let s = select(&events, &[], 100, &policy).unwrap();
+                assert_eq!(ids(&s, &events), ["s"], "{keep} {ties}");
+                assert_eq!(s.excluded.get("event_limit"), Some(&1));
+                let only = select(&events[1..], &[], 100, &policy).unwrap();
+                assert_eq!(ids(&only, &events[1..]), ["s"]);
+            }
+        }
     }
 
     #[test]
