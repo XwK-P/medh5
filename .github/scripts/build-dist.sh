@@ -4,7 +4,8 @@
 #     .github/scripts/build-dist.sh TARGET
 #
 # The wheel goes to dist/ (one abi3 wheel serves CPython 3.10 and later) and the
-# binary, archived with its licence and README, to cli/.  CI runs this on every
+# binary, archived with its licence, the notices of what it links and its
+# README, to cli/.  CI runs this on every
 # platform the project ships --- inside a manylinux_2_28 container on Linux, so
 # both run on any glibc from 2.28 --- and the release publishes what CI built.
 set -euo pipefail
@@ -44,7 +45,7 @@ fi
 version=$("$python" -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')
 name="medh5-$version-$target"
 mkdir -p "cli/$name"
-cp "$exe" LICENSE "cli/$name/"
+cp "$exe" LICENSE THIRD_PARTY_NOTICES "cli/$name/"
 cp crates/medh5-cli/README.md "cli/$name/README.md"
 cd cli
 if [[ "$target" == *windows* ]]; then

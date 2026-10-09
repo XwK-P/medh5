@@ -28,6 +28,10 @@ pub use hdf5_metno_sys as hdf5_sys;
 mod zstd_filter;
 pub use zstd_filter::ZSTD_FILTER_ID;
 
+// The build script's MSVC check, included here for its tests.
+#[cfg(test)]
+mod ndebug;
+
 // The codec libraries are linked for their symbols alone; naming the crates
 // keeps them in the link even though no Rust code here calls them.
 use libz_sys as _;

@@ -20,6 +20,9 @@
 use std::env;
 use std::path::{Path, PathBuf};
 
+#[path = "src/ndebug.rs"]
+mod ndebug;
+
 fn main() {
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let vendor = manifest.join("vendor");
@@ -35,6 +38,30 @@ fn main() {
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
     let msvc = target_env == "msvc";
+
+    // HDF5 is compiled by now (hdf5-metno-src builds it for hdf5-metno-sys,
+    // whose build script runs before this one): stop an optimised build that
+    // would link an HDF5 which kept its assertions (see `ndebug`).
+    println!("cargo:rerun-if-env-changed={}", ndebug::OPT_OUT);
+    let settings = env::var("DEP_HDF5_ROOT")
+        .map(|root| Path::new(&root).join("lib").join("libhdf5.settings"))
+        .map_err(|_| "hdf5-metno-sys did not say where HDF5 is installed (DEP_HDF5_ROOT)".to_string())
+        .and_then(|path| {
+            println!("cargo:rerun-if-changed={}", path.display());
+            let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+            Ok((path.display().to_string(), text))
+        });
+    let refusal = ndebug::refusal(
+        &env::var("TARGET").unwrap_or_default(),
+        msvc,
+        env::var("OPT_LEVEL").map_or(true, |level| level != "0"),
+        settings.as_ref().map(|(place, text)| (place.as_str(), text.as_str())).map_err(String::as_str),
+        env::var(ndebug::OPT_OUT).ok().as_deref(),
+    );
+    if let Some(message) = refusal {
+        eprintln!("{message}");
+        std::process::exit(1);
+    }
     let x86 = arch == "x86_64" || arch == "x86";
     let neon = arch == "aarch64" && !msvc;
 

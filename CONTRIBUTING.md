@@ -174,9 +174,10 @@ it into every file's `generator`. To release, set it (and `Cargo.lock` with
 1. runs the full CI on the tagged commit, which builds every wheel, the sdist
    and every binary;
 2. checks the tag against the workspace version, every platform's wheel and
-   binary against the tag, and extracts the version's section of
-   `CHANGELOG.md` — a tag with no section fails here, before anything is
-   published;
+   binary against the tag (each carrying `LICENSE` and `THIRD_PARTY_NOTICES`),
+   and extracts the version's section of `CHANGELOG.md` — a tag with no
+   section, or a CHANGELOG with entries still under `[Unreleased]`, fails here,
+   before anything is published;
 3. publishes the wheels and the sdist to PyPI through Trusted Publishing, and
    the crates to crates.io (`medh5-sys`, `medh5`, `medh5-cli`, in that order,
    with the `CARGO_REGISTRY_TOKEN` secret);
@@ -184,11 +185,45 @@ it into every file's `generator`. To release, set it (and `Cargo.lock` with
    distributions, the binaries and their `SHA256SUMS` attached;
 5. pushes the Homebrew formula for the binaries to the tap
    (`<owner>/homebrew-medh5`, or the `HOMEBREW_TAP` variable) with the
-   `HOMEBREW_TAP_TOKEN` secret. Pre-releases skip this step.
+   `HOMEBREW_TAP_TOKEN` secret. Pre-releases skip this step;
+6. checks that PyPI, crates.io, the release page and the tap all have the
+   version.
 
-Without `CARGO_REGISTRY_TOKEN` or `HOMEBREW_TAP_TOKEN` the step that needs it
-warns and does nothing, so a fork can release to PyPI alone. The format version
-(`medh5.FORMAT_VERSION`) is separate and changes only with the specification.
+In this repository a missing `CARGO_REGISTRY_TOKEN` or `HOMEBREW_TAP_TOKEN`
+fails the step that needs it; in a fork the step warns and does nothing, so a
+fork can release to PyPI alone. The format version (`medh5.FORMAT_VERSION`) is
+separate and changes only with the specification.
+
+`THIRD_PARTY_NOTICES` holds the licences of everything the wheel and the binary
+compile in, generated from `Cargo.lock`. After changing `Cargo.lock`, run
+`python .github/scripts/third_party_notices.py`; CI fails while it is stale.
+
+### If a release fails partway
+
+Nothing published can be taken back, and nothing has to be: every publishing
+step skips what is already published *and identical* to the run's build,
+publishes what is missing, and stops on anything published from something
+else (`.github/scripts/release.py`).
+
+1. Read the failed job's log, and fix the cause outside the repository if it is
+   there: a secret, a token's scope, the tap's permissions, a registry outage.
+2. **Re-run the failed jobs** of the same workflow run (not "Re-run all jobs",
+   and not a new tag). Re-running reuses that run's artifacts, so what is
+   published next is byte-for-byte what was published first.
+   - PyPI skips the files it has, then checks that each one has this run's
+     digest.
+   - crates.io skips a crate whose version exists only if its contents equal
+     `cargo package` of the tagged commit, then publishes the rest in order.
+   - The GitHub Release is created if missing; otherwise the missing files are
+     attached, and a file of the same name with other content stops the job.
+   - The tap is committed to only if its formula changed.
+3. The `verify` job names anything still missing. It runs however the jobs
+   before it ended, so a partial release is never reported as green.
+
+If a fix needs a code change, the version cannot be reused on any registry that
+already has it: bump the version, add a CHANGELOG section, and tag again. A
+version that reached PyPI but not crates.io (or the reverse) is then a gap to
+note in the new version's notes.
 
 GitHub Actions are pinned by commit SHA; Dependabot proposes the updates as pull
 requests.

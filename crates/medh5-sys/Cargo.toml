@@ -20,6 +20,7 @@ include = [
   "src/**",
   "vendor/**",
   "README.md",
+  "LICENSE",
 ]
 readme = "README.md"
 

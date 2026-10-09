@@ -567,6 +567,11 @@ class TestStatedCounts:
         "docs/index.md",
         "docs/spec/conformance.md",
         "docs/spec/medh5-1.0.md",
+        # The crates' READMEs are their pages on crates.io; the CLI's said 117
+        # for the release whose corpus had 153 (R08 of the 2.0 audit).
+        *sorted(
+            p.relative_to(ROOT).as_posix() for p in ROOT.glob("crates/*/README.md")
+        ),
     )
     STATED = (
         r"(\d+)-case",

@@ -39,6 +39,10 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
+      # The wheel and the binary compile in every crate Cargo.lock names, and
+      # HDF5 and C-Blosc2 besides; their licences ship as THIRD_PARTY_NOTICES,
+      # which is generated from the lock and must be regenerated with it.
+      - run: python .github/scripts/third_party_notices.py --check
 
   msrv:
     # `rust-version` in Cargo.toml is a promise to everyone who depends on the
@@ -143,6 +147,9 @@ jobs:
           "$exe" --version
           "$exe" conformance build "$RUNNER_TEMP/corpus-native"
           "$exe" conformance run "$RUNNER_TEMP/corpus-native"
+          # Damage is a report, never an abort: what an HDF5 built without
+          # NDEBUG does on a damaged file.
+          python .github/scripts/damaged.py "$exe" "$RUNNER_TEMP/corpus-native"
       - name: The wheel installs and runs the conformance corpus
         shell: bash
         run: |
@@ -167,27 +174,116 @@ jobs:
 
   sdist:
     # A platform without a wheel builds from the sdist, so CI does too: the
-    # whole engine from the source distribution alone, in a clean directory.
+    # whole engine from the source distribution alone, in a clean directory ---
+    # with the oldest maturin `pyproject.toml` accepts, so the floor it states
+    # is one that builds, and writes the licence as PEP 639 says.  `build`
+    # runs the newest.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - run: pip install --upgrade maturin twine
+      - name: Install the oldest maturin pyproject.toml accepts
+        run: |
+          floor=$(python -c 'import re, tomllib; print(re.search(r">=([0-9.]+)", tomllib.load(open("pyproject.toml", "rb"))["build-system"]["requires"][0]).group(1))')
+          pip install "maturin==$floor" twine
       - run: maturin sdist --out dist
       - run: twine check dist/*
-      - run: |
+      - name: The sdist states the licence, and carries the notices
+        run: |
+          python - <<'PY'
+          import glob, tarfile
+          (sdist,) = glob.glob("dist/*.tar.gz")
+          with tarfile.open(sdist) as tar:
+              top = tar.getnames()[0].split("/")[0]
+              names = set(tar.getnames())
+              fields = tar.extractfile(f"{top}/PKG-INFO").read().decode().splitlines()
+          for field in ("License-Expression: MIT", "License-File: LICENSE",
+                        "License-File: THIRD_PARTY_NOTICES"):
+              assert field in fields, f"PKG-INFO lacks {field!r}"
+          assert f"{top}/THIRD_PARTY_NOTICES" in names, "the sdist lacks the notices"
+          PY
+      - name: Build from the sdist alone, with that maturin, in a clean directory
+        run: |
+          mkdir "$RUNNER_TEMP/sdist"
+          tar -xzf dist/*.tar.gz -C "$RUNNER_TEMP/sdist" --strip-components 1
+          cd "$RUNNER_TEMP/sdist"
+          # No build isolation: an isolated build would fetch the newest maturin.
+          pip install --no-build-isolation ".[dev]"
+          python -c "from importlib.metadata import metadata; assert metadata('medh5')['License-Expression'] == 'MIT'"
+      - name: The build runs the conformance corpus
+        run: |
           cd "$RUNNER_TEMP"
-          pip install "$GITHUB_WORKSPACE"/dist/*.tar.gz
           python -c "import medh5; print(medh5.__version__, medh5.__file__)"
           medh5 conformance build corpus
           medh5 conformance run corpus
+      # The tests that check the project itself --- the workflows, the release
+      # scripts, the documentation --- run from what the sdist carries.  The
+      # unpacked `medh5/` has no compiled engine; the installed one is tested.
+      - name: The shipped project tests pass from the sdist
+        run: |
+          cd "$RUNNER_TEMP/sdist"
+          rm -rf medh5
+          pytest tests/project -v -rs --no-cov -p no:cacheprovider
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ci-dist-sdist
           path: dist/*.tar.gz
           if-no-files-found: error
+
+  msvc-from-crates-io:
+    # `cargo install medh5-cli` builds from crates.io, where this repository's
+    # .cargo/config.toml --- which gives HDF5 NDEBUG on MSVC --- is never read.
+    # A copy of the workspace without the file is that build.  medh5-sys must
+    # stop it, naming the variable to set; must stop it again while the HDF5
+    # already built lacks the flag, since setting the variable does not
+    # rebuild HDF5; and, rebuilt with it, the binary must report damaged files
+    # rather than abort on them.
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - run: rustup toolchain install stable --profile minimal && rustup default stable
+      - name: The workspace, without its cargo configuration
+        run: |
+          cd "$RUNNER_TEMP"
+          mkdir ws
+          git -C "$GITHUB_WORKSPACE" archive HEAD | tar -xf - -C ws
+          rm -r ws/.cargo
+      - name: Without NDEBUG, medh5-sys stops the build
+        run: |
+          cd "$RUNNER_TEMP/ws"
+          if cargo build --release --locked -p medh5-cli 2> build.log; then
+            echo "::error::medh5-sys linked an HDF5 compiled without NDEBUG"
+            exit 1
+          fi
+          grep -F "compiled without NDEBUG" build.log
+          grep -F "CFLAGS_x86_64_pc_windows_msvc=/DNDEBUG" build.log
+      - name: Setting the variable alone does not rebuild HDF5, and is refused
+        env:
+          CFLAGS_x86_64_pc_windows_msvc: /DNDEBUG
+        run: |
+          cd "$RUNNER_TEMP/ws"
+          if cargo build --release --locked -p medh5-cli 2> stale.log; then
+            echo "::error::medh5-sys linked the HDF5 built before NDEBUG was set"
+            exit 1
+          fi
+          grep -F "cargo clean --release -p hdf5-metno-src" stale.log
+      - name: Rebuilt with it, damage is reported, not an abort
+        env:
+          CFLAGS_x86_64_pc_windows_msvc: /DNDEBUG
+        run: |
+          cd "$RUNNER_TEMP/ws"
+          cargo clean --release -p hdf5-metno-src
+          cargo build --release --locked -p medh5-cli
+          target/release/medh5.exe conformance build corpus
+          python .github/scripts/damaged.py target/release/medh5.exe corpus
 
   test:
     # The suite against the Linux wheel the release ships, on every supported
@@ -370,3 +466,45 @@ jobs:
         with:
           name: conformance-suite
           path: suite/
+
+  ci-ok:
+    # The one check the branch ruleset requires.  A ruleset names checks as
+    # they report, and a matrix job reports once per entry --- `build
+    # (x86_64-pc-windows-msvc)`, never `build` --- so a ruleset that names
+    # jobs one by one can wait on a name nothing reports, and misses every job
+    # added after it was written.  This needs every other job and passes only
+    # when each of them passed: `if: always()` makes it run, and fail, when
+    # one failed or was skipped, where a skipped required check counts as
+    # passing.
+    if: always()
+    needs:
+      - rust
+      - msrv
+      - lint
+      - typecheck
+      - docs
+      - build
+      - sdist
+      - msvc-from-crates-io
+      - test
+      - test-macos
+      - test-windows
+      - test-min-deps
+      - test-monai
+      - prototype
+      - conformance
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every job passed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          results = {job: needed["result"] for job, needed in json.loads(os.environ["NEEDS"]).items()}
+          for job, result in sorted(results.items()):
+              print(f"{job}: {result}")
+          failed = sorted(job for job, result in results.items() if result != "success")
+          if failed:
+              sys.exit(f"not every job passed: {', '.join(failed)}")
+          PY

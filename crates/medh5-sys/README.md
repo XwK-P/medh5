@@ -23,5 +23,13 @@ release flags under the Visual Studio generator, `/DNDEBUG` included, so HDF5
 keeps its assertions and a damaged file aborts the process instead of
 returning an error. Set `CFLAGS_x86_64_pc_windows_msvc=/DNDEBUG` (or the
 variable for your target) when building; this repository's
-`.cargo/config.toml` does.  Licences of the vendored code are in
-`vendor/*/LICENSES`.
+`.cargo/config.toml` does, and a crates.io build never reads that file.  So
+the build script reads the flags HDF5 was compiled with (`libhdf5.settings`)
+and stops an optimised build whose HDF5 lacks `NDEBUG`, naming the variable.
+HDF5 does not rebuild when the variable changes: after setting it, run
+`cargo clean --release -p hdf5-metno-src` (a `cargo install` starts clean).
+`MEDH5_SYS_SKIP_NDEBUG_CHECK=1` builds anyway.
+
+Licences: this crate's own code is MIT (`LICENSE`); the vendored code's are in
+`vendor/c-blosc2/LICENSE.txt`, `vendor/c-blosc2/LICENSES/` and
+`vendor/hdf5-blosc2/LICENSE.txt`.

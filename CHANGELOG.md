@@ -54,6 +54,29 @@ out `h5py` objects --- and the behaviour changes below.
   targets `.cargo/config.toml` gives the C builds `/DNDEBUG`: cmake-rs drops
   CMake's release flags under the Visual Studio generator, and HDF5's
   assertions would abort the process on a damaged file instead of reporting it.
+  A build that never reads that file --- `cargo install medh5-cli` from
+  crates.io --- is stopped by `medh5-sys` when the HDF5 it links was compiled
+  without `NDEBUG` (read from HDF5's own `libhdf5.settings`), naming the
+  variable to set; `MEDH5_SYS_SKIP_NDEBUG_CHECK=1` overrides. CI damages files
+  for every platform's binary, and for such a build, and fails on an abort.
+- **`THIRD_PARTY_NOTICES`**: the licences of everything the engine compiles in
+  --- HDF5, C-Blosc2 and its codecs, the HDF5-Blosc2 filter and every Rust
+  crate --- in the wheel's `.dist-info/licenses/`, the sdist and every binary
+  archive; each crate carries `LICENSE`. The file is generated from
+  `Cargo.lock` (`.github/scripts/third_party_notices.py`), and CI fails while
+  it is stale.
+- **A release that fails partway can be finished** by re-running its failed
+  jobs: each publishing step skips what is already published *and identical*
+  to the run's build, publishes the rest, and stops on anything published from
+  something else; a last job checks PyPI, crates.io, the release page and the
+  tap. In this repository a missing `CARGO_REGISTRY_TOKEN` or
+  `HOMEBREW_TAP_TOKEN` fails its job instead of warning. `CONTRIBUTING.md` has
+  the runbook. CI's one required check is `ci-ok`, which needs every other job.
+- **The sdist** builds with maturin 1.9.3 or later, the first to write PEP
+  639's `License-Expression` (CI builds it with exactly 1.9.3), and carries
+  the workflows, release scripts, `mkdocs.yml` and docs hooks its own
+  `tests/project` and the documentation read; CI runs those tests from the
+  unpacked archive.
 - **Types for the engine**: `medh5/_core.pyi`, checked against the built module
   by `stubtest` in the test suite, so `mypy --strict` users keep the 1.x
   signatures.

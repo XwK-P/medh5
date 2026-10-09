@@ -11,11 +11,23 @@ cargo install medh5-cli          # or a binary from the GitHub Release, or Homeb
 medh5 info case.medh5            # grids, images, annotations, coverage
 medh5 validate case.medh5 --level strict
 medh5 verify case.medh5          # digests and content_id
-medh5 conformance run corpus/    # the 117-case conformance corpus
+medh5 conformance run corpus/    # the 153-case conformance corpus
 ```
 
 HDF5 is linked statically: the binary needs nothing installed. Building it
 (`cargo install`) needs a C compiler and CMake, which HDF5's build uses.
+
+**On Windows (MSVC)**, give HDF5's C build `NDEBUG` before installing:
+
+```powershell
+$env:CFLAGS_x86_64_pc_windows_msvc = "/DNDEBUG"
+cargo install medh5-cli
+```
+
+cmake-rs, which builds HDF5, drops CMake's release flags under the Visual
+Studio generator, `/DNDEBUG` with them; HDF5 would keep its assertions, and a
+damaged file would abort the process instead of being reported. The build stops
+and says so when the flag is missing. The release binaries are built with it.
 
 ## Converters
 

@@ -16,7 +16,9 @@ It has two siblings, and all three read and write the same bytes:
 - the **`medh5` command line** ([`medh5-cli`]), a native binary over this crate.
 
 HDF5 and C-Blosc2 are built from source and linked statically (see
-[`medh5-sys`]), so a dependent crate needs no HDF5 installation.
+[`medh5-sys`]), so a dependent crate needs no HDF5 installation.  For an MSVC
+target, set `CFLAGS_x86_64_pc_windows_msvc=/DNDEBUG` (or the variable for your
+target): without it HDF5 keeps its assertions, and `medh5-sys` stops the build.
 
 ## Write and read a sample
 

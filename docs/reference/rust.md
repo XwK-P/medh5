@@ -15,6 +15,16 @@ HDF5 and the compression filters are built from source and linked statically
 (the `medh5-sys` crate), so a dependent crate needs nothing installed --- only a
 C compiler and CMake at build time, which HDF5's build uses.
 
+**For an MSVC target**, give the C build `NDEBUG`:
+`CFLAGS_x86_64_pc_windows_msvc=/DNDEBUG` (or the variable for your target), in
+the environment or under `[env]` in your `.cargo/config.toml`. cmake-rs drops
+CMake's release flags under the Visual Studio generator, `/DNDEBUG` with them,
+so HDF5 would keep its assertions and abort the process on a damaged file where
+every other build reports it. An optimised build whose HDF5 lacks the flag
+stops with the variable to set; HDF5 does not rebuild when the variable
+changes, so clean it after setting it (`cargo clean --release -p
+hdf5-metno-src`). `MEDH5_SYS_SKIP_NDEBUG_CHECK=1` builds anyway.
+
 ## Write and read a sample
 
 ```rust
