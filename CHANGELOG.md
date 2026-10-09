@@ -249,6 +249,13 @@ out `h5py` objects --- and the behaviour changes below.
   off POSIX the engine had only size and modification time, which a crafted
   file can match, so nothing is remembered there (1.x keyed Windows on the
   volume serial and file index).
+- **`scrub` does not de-identify the clinical profile, and says so.** Its text
+  is packed UTF-8, which the sweep does not read, and a date shift moves
+  `/meta`'s dates, not the clinical clock (1.1 §3, §6). A scan of a sample that
+  carries the profile reports it as not examined --- never clean --- and
+  `--apply` refuses the file rather than write an attestation the records would
+  contradict; `medh5 clinical strip` writes the imaging projection to share
+  instead.
 - **A split ratio is a finite number of at least 0** (`MEDH5ValidationError`):
   1.x accepted a negative share and wrote it into the split.
 

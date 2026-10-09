@@ -27,7 +27,7 @@ use crate::h5::attrs::{self, AttrValue};
 use crate::h5::{data, ops};
 use crate::json::{py_float, py_str, repr_list, repr_str};
 use crate::sample::writer::amend;
-use crate::sample::{frame_references, open_sample, repack, FRAME_ATTRS};
+use crate::sample::{frame_references, open_sample, repack, Sample, FRAME_ATTRS};
 use crate::{Error, Result};
 
 pub const PROFILES: [&str; 2] = ["basic", "strict"];
@@ -1546,8 +1546,41 @@ pub fn scan(path: &Path, profile: &str) -> Result<ScrubReport> {
         sweep.hdf5(&sample.root)?;
     }
     scan_file_name(path, &document.identity.sample_id, &document.identity.subject_id, &mut report);
+    if let Some(extent) = clinical_extent(&sample)? {
+        report.add(
+            "clinical",
+            "clinical",
+            &format!(
+                "the clinical profile ({extent}) is not examined by this tool: its documents, coded and free-text \
+                 values and its clock carry what the sweep does not read, and a date shift would not move that clock \
+                 (1.1 §6) --- a person must review it, or share the imaging projection (`medh5 clinical strip`)"
+            ),
+            None,
+            false,
+            false,
+        );
+        report.not_checked.push("the clinical profile: its documents, its event text and its clock".into());
+    }
     escalate(&mut report);
     Ok(report)
+}
+
+/// How much a sample's clinical profile holds, when it declares one.
+///
+/// The profile is outside what this tool examines.  Its text is packed UTF-8
+/// (`uint8` buffers), which the string sweep never reads, and a date shift
+/// moves `/meta`'s dates, not the clinical clock, so the images and the
+/// history would tell two times.  1.1 §6 says de-identification covers the
+/// body as well as the metadata; until this tool covers it, a clinical sample
+/// is never reported clean and is not scrubbed (see [`apply`]).
+fn clinical_extent(sample: &Sample) -> Result<Option<String>> {
+    if !sample.profiles()?.contains(crate::clinical::PROFILE) {
+        return Ok(None);
+    }
+    Ok(Some(match sample.clinical() {
+        Ok(Some(c)) => format!("{} event version(s), {} document(s)", c.events.len(), c.documents().len()),
+        _ => "tables this tool could not read".into(),
+    }))
 }
 
 /// What `apply` does beyond scanning.
@@ -1572,6 +1605,17 @@ pub fn apply(path: &Path, options: &ApplyOptions) -> Result<ScrubReport> {
         ));
     }
     let mut report = scan(path, profile)?;
+    if let Some(extent) = clinical_extent(&open_sample(path)?)? {
+        // Refused before anything is written: the attestation would claim a
+        // de-identification this tool did not do (`clinical_extent`).
+        return Err(Error::invalid(format!(
+            "{} carries the clinical profile ({extent}), which this tool does not de-identify: its text and clock \
+             would keep what a scrub removes elsewhere, under an attestation that says otherwise. Share the imaging \
+             projection (`medh5 clinical strip`), or de-identify the clinical records with a tool that covers them \
+             and record it",
+            repr_str(&path.to_string_lossy())
+        )));
+    }
     let strict = profile == "strict";
     let mut replaced: Vec<(String, String)> = Vec::new();
     let mut writer = amend(path, None)?;

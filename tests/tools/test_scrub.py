@@ -1033,3 +1033,71 @@ class TestScrubApplies:
         assert first["timepoints"] == second["timepoints"]
         assert first["acquisition"] == second["acquisition"]
         assert not [f for f in second_run.findings if f.rule == "identifier"]
+
+
+class TestB08ClinicalIsNotScrubbed:
+    """The clinical profile is outside what this tool examines (1.1 §6:
+    de-identification covers the body as well as the metadata).  Its text is
+    packed UTF-8, which the string sweep never read, and a date shift moved
+    `/meta` and not the clinical clock --- yet a strict scan of a clinical
+    sample with a name in its report said `clean`, and apply attested a
+    de-identification and kept the name.  Until the tool covers the profile, a
+    clinical sample is never clean and is not scrubbed."""
+
+    @staticmethod
+    def _clinical(tmp_path: Path) -> Path:
+        from medh5.clinical import HOUR, Document, Event, Link
+        from tests.kits import History
+
+        path = tmp_path / "clinical.medh5"
+        note = Event(
+            "note",
+            "note",
+            "document",
+            "point",
+            "final",
+            effective_start_us=0,
+            available_us=HOUR,
+        )
+        History.write(
+            path,
+            events=[note],
+            documents=[Document("note_text", "Seen with Smith^Alice today.")],
+            links=[
+                Link.between(("event", "note"), "describes", ("document", "note_text"))
+            ],
+        )
+        return path
+
+    @pytest.mark.parametrize("profile", ["basic", "strict"])
+    def test_B08_a_clinical_sample_is_never_clean(self, tmp_path: Path, profile):
+        report = scrubber.scan(self._clinical(tmp_path), profile=profile)
+        assert not report.clean
+        found = [f for f in report.findings if f.rule == "clinical"]
+        assert len(found) == 1 and not found[0].actionable
+        assert "not examined" in found[0].detail
+        assert any("clinical" in item for item in report.not_checked)
+
+    @pytest.mark.parametrize(
+        "options", [{}, {"profile": "strict"}, {"date_shift_days": -117}]
+    )
+    def test_B08_apply_refuses_a_clinical_sample(self, tmp_path: Path, options):
+        path = self._clinical(tmp_path)
+        with medh5.open(path) as sample:
+            before = sample.content_id
+        with pytest.raises(MEDH5ValidationError, match="clinical strip"):
+            scrubber.apply(path, **options)
+        with medh5.open(path) as sample:
+            assert sample.content_id == before
+            assert sample.document.deidentification is None
+
+    def test_B08_the_imaging_projection_is_scrubbed(self, tmp_path: Path):
+        from medh5.clinical import strip
+
+        projection = tmp_path / "imaging.medh5"
+        strip(self._clinical(tmp_path), projection)
+        assert not [
+            f for f in scrubber.scan(projection).findings if f.rule == "clinical"
+        ]
+        report = scrubber.apply(projection, profile="strict")
+        assert report.applied
