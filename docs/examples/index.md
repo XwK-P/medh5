@@ -206,11 +206,15 @@ build at ≈130 per second.
 ## The reference writer
 
 `reference_writer.py` is the executable proof that the specification is
-self-consistent: it follows the spec literally and its output passes JSON Schema
-validation, cross-reference checks (E1xx–E6xx), per-object digests and
-`content_id` (E7xx), plus reader-side round trips for the affine, the box↔slice
-convention, instance mask decoding and lossless `layers ↔ bitmask` transcoding.
-CI runs it on every push.
+self-consistent: it follows the spec literally, with `h5py` and no `medh5`, and
+its output passes JSON Schema validation, cross-reference checks (E1xx–E6xx),
+per-object digests, `content_id` and `source_digest` (§13), plus reader-side
+round trips for the affine, the box↔slice convention, instance mask decoding and
+lossless `layers ↔ bitmask` transcoding. Each check raises when it fails. CI
+runs it on every push, then validates the file it wrote at integrity level with
+the wheel and the native binary --- its own checks are its own reading of the
+text, and for a while that reading computed a `content_id` no implementation
+agreed with.
 
 The sample it writes is longitudinal: baseline CT and PET sharing one frame of
 reference, a follow-up CT on its own grid with shorter z coverage and its own

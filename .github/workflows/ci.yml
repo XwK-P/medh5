@@ -401,9 +401,14 @@ jobs:
 
   prototype:
     # Appendix C.2 publishes a table of results from the executable prototype
-    # next to the spec.  Nothing referenced it, so that table was an ungated
-    # claim -- unlike the corpus beside it, which CI runs on every push.  It
-    # follows the specification with h5py alone, not with this package.
+    # next to the spec.  It follows the specification with h5py alone, not
+    # with this package, and each of its checks raises.  But a check is the
+    # prototype's own reading of the text: its `content_id` and
+    # `source_digest` once disagreed with the spec and with every
+    # implementation while it printed "[ok]" (U07 of the 2.0 audit).  So the
+    # file it writes is validated, at integrity level, by the wheel and by the
+    # native binary this run built.
+    needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -411,15 +416,45 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install numpy h5py hdf5plugin jsonschema
+      # Before the wheel is installed: the prototype must not need it.
       - run: |
           mkdir -p "$RUNNER_TEMP/prototype"
           cd "$RUNNER_TEMP/prototype"
           python "$GITHUB_WORKSPACE/docs/examples/reference_writer.py"
-      # The prototype prints "[ok] ..." per check and raises otherwise, so a
-      # non-zero exit above is the gate. Confirm it wrote where it was told,
-      # rather than into the checkout.
+      # Confirm it wrote where it was told, rather than into the checkout.
       - run: test -f "$RUNNER_TEMP/prototype/case_0001.medh5"
       - run: git diff --exit-code
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ci-dist-x86_64-unknown-linux-gnu
+          path: dist/
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ci-cli-x86_64-unknown-linux-gnu
+          path: cli/
+      - name: The wheel and the native binary find nothing the prototype missed
+        run: |
+          pip install dist/*.whl
+          tar -xzf cli/medh5-*.tar.gz -C cli
+          python - "$RUNNER_TEMP/prototype/case_0001.medh5" medh5 cli/medh5-*/medh5 <<'PY'
+          import json, subprocess, sys
+          path, *executables = sys.argv[1:]
+          # W912: the prototype binds one class to an ontology code, not all of
+          # them, as the corpus's segmentation sample does (Appendix C.2).
+          tolerated = {"W912"}
+          for exe in executables:
+              # No `check=True`: validate exits non-zero on errors, and the
+              # report says which.
+              run = subprocess.run([exe, "validate", path, "--level", "integrity", "--json"],
+                                   capture_output=True, text=True)
+              [report] = json.loads(run.stdout)
+              found = [d for d in report["diagnostics"] if d["code"] not in tolerated]
+              print(f"{exe}: {report['errors']} errors, {report['warnings']} warnings")
+              for d in found:
+                  print(f"  {d['code']} {d['location']}: {d['message']}")
+              if report["errors"] or found:
+                  sys.exit(f"{exe} finds what the prototype's own checks passed")
+          PY
 
   conformance:
     # The corpus is a shipped artifact, not a test fixture: a third-party

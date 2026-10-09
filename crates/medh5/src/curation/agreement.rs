@@ -307,16 +307,31 @@ pub fn compare_voxel(
         ));
     }
     let pair = classes_to_compare(a, b, classes)?;
+    // A voxel either annotation ignores (§7.7) is evidence neither for nor
+    // against agreement, so it is left out of both: counted, it scored a rater
+    // against voxels the other declared unexamined (U03 of the 2.0 audit).
+    let ignored = match (a.ignore_region()?, b.ignore_region()?) {
+        (Some(mut left), Some(right)) => {
+            left.zip_mut_with(&right, |l, r| *l |= *r);
+            Some(left)
+        }
+        (left, right) => left.or(right),
+    };
     let mut per_class = IndexMap::new();
     let mut ids = IndexMap::new();
     let mut skipped = pair.skipped;
     for class_id in pair.classes {
         let wanted = [ClassKey::Id(class_id)];
-        let left = a.dense(Some(&wanted), None)?.index_axis_move(Axis(0), 0);
-        let right = b.dense(Some(&wanted), None)?.index_axis_move(Axis(0), 0);
+        let mut left = a.dense(Some(&wanted), None)?.index_axis_move(Axis(0), 0);
+        let mut right = b.dense(Some(&wanted), None)?.index_axis_move(Axis(0), 0);
+        if let Some(ignored) = &ignored {
+            left.zip_mut_with(ignored, |v, i| *v &= !*i);
+            right.zip_mut_with(ignored, |v, i| *v &= !*i);
+        }
         let score = if metric == "dice" { dice(&left, &right) } else { iou(&left, &right) };
         let key = a.class_key(class_id);
         match score {
+            None if ignored.is_some() => skipped.push(format!("{key} (empty in both outside the ignore region)")),
             None => skipped.push(format!("{key} (empty in both)")),
             Some(s) => {
                 per_class.insert(key.clone(), s);

@@ -365,3 +365,74 @@ class TestAgreement:
             assert result.value == 0.0
             # A mean over no matched pairs is undefined, not zero overlap.
             assert result.mean_iou is None
+
+
+class TestU03IgnoredVoxels:
+    """§7.7: a voxel either rater declared unexamined is evidence neither way
+    (U03 of the 2.0 audit)."""
+
+    @staticmethod
+    def _slab(z0: int, z1: int) -> np.ndarray:
+        mask = np.zeros(Framed.SHAPE, bool)
+        mask[z0:z1, 2:5, 2:5] = True
+        return mask
+
+    @staticmethod
+    def _ignore(z0: int, z1: int) -> np.ndarray:
+        region = np.zeros(Framed.SHAPE, bool)
+        region[z0:z1] = True
+        return region
+
+    @pytest.mark.parametrize("encoding", ["labelmap", "bitmask"])
+    def test_U03_what_one_rater_never_examined_is_not_scored(
+        self, tmp_path: Path, encoding: str
+    ):
+        """Identical work scored 0.75: rater b's finding where rater a declared
+        the slab unexamined counted against a.  In band (`labelmap`) and as the
+        sibling `mask` its `ignore_mask` names (`bitmask`) alike."""
+        path = tmp_path / "ignore.medh5"
+        with Framed.writer(path) as w:
+            w.add_segmentation(
+                "a",
+                grid="g",
+                masks={1: self._slab(2, 5)},
+                annotated_classes=[1],
+                ignore=self._ignore(6, 8),
+                encoding=encoding,
+            )
+            w.add_segmentation(
+                "b",
+                grid="g",
+                masks={1: self._slab(2, 5) | self._slab(6, 8)},
+                annotated_classes=[1],
+            )
+        with medh5.open(path) as s:
+            a, b = s.annotations["a"], s.annotations["b"]
+            assert compare_voxel(a, b).value == pytest.approx(1.0)
+            assert compare_voxel(b, a).value == pytest.approx(1.0)
+            assert compare_voxel(a, b, metric="iou").value == pytest.approx(1.0)
+
+    def test_U03_nothing_outside_the_ignore_regions_is_nothing_comparable(
+        self, tmp_path: Path
+    ):
+        """Each rater found the class only where the other never looked."""
+        path = tmp_path / "disjoint.medh5"
+        with Framed.writer(path) as w:
+            w.add_segmentation(
+                "a",
+                grid="g",
+                masks={1: self._slab(2, 5)},
+                annotated_classes=[1],
+                ignore=self._ignore(6, 8),
+            )
+            w.add_segmentation(
+                "b",
+                grid="g",
+                masks={1: self._slab(6, 8)},
+                annotated_classes=[1],
+                ignore=self._ignore(2, 5),
+            )
+        with medh5.open(path) as s:
+            result = compare_voxel(s.annotations["a"], s.annotations["b"])
+            assert result.value is None
+            assert result.skipped == ("c1 (empty in both outside the ignore region)",)

@@ -70,6 +70,11 @@ impl Split {
         Ok(self.assignments.iter().find(|a| a.group == key).and_then(|a| a.fold))
     }
 
+    /// The entries of `partition`: a file's path, or `path::key` for a sample
+    /// inside a collection --- the locator task sources use.  Two members of
+    /// one collection in different partitions were both its path, so a loader
+    /// building per-partition file lists put the whole collection in both
+    /// (U02 of the 2.0 audit).  A split written before carries paths alone.
     pub fn paths(&self, partition: &str) -> Vec<String> {
         self.assignments.iter().filter(|a| a.partition == partition).flat_map(|a| a.entries.iter().cloned()).collect()
     }
@@ -113,15 +118,23 @@ impl Split {
             .collect()
     }
 
-    /// Groups that ended up in more than one partition: structurally
-    /// impossible here, so a self-check.
+    /// Groups that ended up in more than one partition, and entries placed in
+    /// more than one: structurally impossible here, so a self-check --- and
+    /// the check a split loaded from a file needs.
     pub fn leaks(&self) -> Vec<String> {
         let mut seen: IndexMap<&str, &str> = IndexMap::new();
+        let mut placed: IndexMap<&str, &str> = IndexMap::new();
         let mut bad = BTreeSet::new();
         for a in &self.assignments {
             let previous = *seen.entry(a.group.as_str()).or_insert(a.partition.as_str());
             if previous != a.partition {
                 bad.insert(a.group.clone());
+            }
+            for entry in &a.entries {
+                let previous = *placed.entry(entry.as_str()).or_insert(a.partition.as_str());
+                if previous != a.partition {
+                    bad.insert(entry.clone());
+                }
             }
         }
         bad.into_iter().collect()
@@ -365,7 +378,7 @@ pub fn make_splits(manifest: &Manifest, options: &SplitOptions) -> Result<Split>
                     partition: "holdout".into(),
                     fold: Some(position as i64 % k),
                     stratum,
-                    entries: entries.iter().map(|e| e.path.clone()).collect(),
+                    entries: entries.iter().map(|e| locator(e)).collect(),
                 });
             }
         }
@@ -376,7 +389,7 @@ pub fn make_splits(manifest: &Manifest, options: &SplitOptions) -> Result<Split>
                     partition,
                     fold: None,
                     stratum,
-                    entries: entries.iter().map(|e| e.path.clone()).collect(),
+                    entries: entries.iter().map(|e| locator(e)).collect(),
                 });
             }
         }
@@ -424,15 +437,34 @@ pub fn write_claims(
     assigned_by: Option<&str>,
     fold: Option<i64>,
 ) -> Result<Vec<String>> {
+    // Every precondition of the whole operation is checked before the first
+    // file is amended.  A refusal halfway through left some files claiming the
+    // split and the rest not, and a fold outside the split's range was not a
+    // refusal at all: no assignment matched it, so every file was written as
+    // `train` and the split had no validation partition (U06 of the 2.0 audit).
+    if let Some(k) = split.k_folds {
+        let Some(chosen) = fold else {
+            return Err(Error::invalid("a k-fold split needs --fold N to say which fold is validation"));
+        };
+        if !(0..k).contains(&chosen) {
+            return Err(Error::invalid(format!(
+                "fold {chosen} is not a fold of this {k}-fold split, which numbers them 0 to {}",
+                k - 1
+            )));
+        }
+    }
     let mut by_path: IndexMap<&str, &Assignment> = IndexMap::new();
     for assignment in &split.assignments {
         for path in &assignment.entries {
             by_path.insert(path.as_str(), assignment);
         }
     }
-    let mut written = Vec::new();
+    let mut planned = Vec::new();
     for entry in &manifest.entries {
-        let Some(placed) = by_path.get(entry.path.as_str()) else { continue };
+        let named = locator(entry);
+        let Some(placed) = by_path.get(named.as_str()).or_else(|| by_path.get(entry.path.as_str())) else {
+            continue;
+        };
         if let Some(key) = &entry.key {
             return Err(Error::invalid(format!(
                 "{}#{key} is inside a collection --- unpack it before writing split claims",
@@ -441,10 +473,7 @@ pub fn write_claims(
         }
         let mut partition = placed.partition.clone();
         if split.k_folds.is_some() {
-            let Some(chosen) = fold else {
-                return Err(Error::invalid("a k-fold split needs --fold N to say which fold is validation"));
-            };
-            partition = if placed.fold == Some(chosen) { "val".into() } else { "train".into() };
+            partition = if placed.fold == fold { "val".into() } else { "train".into() };
         }
         let claim = SplitClaim {
             set_id: split.set_id.clone(),
@@ -455,16 +484,29 @@ pub fn write_claims(
             manifest_sha256: Some(split.manifest_sha256.clone()),
         };
         claim.check()?;
-        let mut writer = amend(Path::new(&entry.path), None)?;
+        planned.push((entry.path.clone(), claim));
+    }
+    let mut written = Vec::new();
+    for (path, claim) in planned {
+        let mut writer = amend(Path::new(&path), None)?;
         let fields = match claim.to_json() {
             Value::Object(m) => m,
             _ => Map::new(),
         };
         writer.split(fields)?;
         writer.commit(true)?;
-        written.push(entry.path.clone());
+        written.push(path);
     }
     Ok(written)
+}
+
+/// How a split names one manifest entry: its path, or `path::key` for a
+/// sample inside a collection (the locator task sources use).
+pub fn locator(entry: &Entry) -> String {
+    match entry.key.as_deref() {
+        Some(key) if !key.is_empty() => format!("{}::{key}", entry.path),
+        _ => entry.path.clone(),
+    }
 }
 
 /// Read a split written by `medh5 dataset split -o`.

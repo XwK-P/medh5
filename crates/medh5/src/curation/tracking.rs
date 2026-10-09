@@ -15,10 +15,10 @@ use serde_json::{json, Map, Value};
 use crate::annotations::{Annotation, Instance};
 use crate::geometry::affine::{box_to_slices, voxel_volume};
 use crate::geometry::grid::Grid;
-use crate::json::{format_g, num};
+use crate::json::{format_g, num, repr_str};
 use crate::labels::ClassKey;
 use crate::sample::Sample;
-use crate::Result;
+use crate::{Error, Result};
 
 pub const PRESENT: &str = "present";
 pub const RESOLVED: &str = "resolved";
@@ -30,6 +30,8 @@ pub const STATES: [&str; 3] = [PRESENT, RESOLVED, UNEXAMINED];
 pub struct Observation {
     pub timepoint: String,
     pub annotation: String,
+    /// The annotation's kind: `instances` (a mask) or `boxes`.
+    pub kind: String,
     pub index: usize,
     pub instance_id: u64,
     pub class_id: i64,
@@ -108,26 +110,68 @@ impl Track {
         out
     }
 
-    pub fn at(&self, timepoint: &str) -> Option<&Observation> {
-        self.observations.iter().find(|o| o.timepoint == timepoint)
+    /// Every observation at `timepoint`: one per annotation that saw the
+    /// object there --- several where raters annotated the same visit, or a
+    /// detection sits beside a segmentation.
+    pub fn observations_at(&self, timepoint: &str) -> Vec<&Observation> {
+        self.observations.iter().filter(|o| o.timepoint == timepoint).collect()
     }
 
-    pub fn volume(&self, timepoint: &str) -> Option<f64> {
-        self.at(timepoint).and_then(|o| o.volume)
+    /// The observations that measure the object at `timepoint`: its masks
+    /// (`instances`), or --- where no mask saw it --- its boxes.  A box beside
+    /// a mask of the same object is a detection of it, and its volume is its
+    /// bounding box's.
+    pub fn measurements_at(&self, timepoint: &str) -> Vec<&Observation> {
+        let seen = self.observations_at(timepoint);
+        let masks: Vec<&Observation> = seen.iter().copied().filter(|o| o.kind == "instances").collect();
+        if masks.is_empty() {
+            seen
+        } else {
+            masks
+        }
     }
 
-    pub fn volumes(&self) -> IndexMap<String, Option<f64>> {
-        self.observations.iter().map(|o| (o.timepoint.clone(), o.volume)).collect()
+    /// The observation that answers for `timepoint` --- the one
+    /// [`Track::measurements_at`] finds --- or `None` where the object was not
+    /// seen.  Refused where it finds two, two raters' masks of one visit: the
+    /// first rater's answered `at` and `volume` and the last one's `volumes`,
+    /// so one track reported two volumes for one visit (U04 of the 2.0 audit).
+    /// Every accessor below answers by this rule.
+    pub fn at(&self, timepoint: &str) -> Result<Option<&Observation>> {
+        let found = self.measurements_at(timepoint);
+        if found.len() > 1 {
+            let names: Vec<String> = found.iter().map(|o| o.annotation.clone()).collect();
+            return Err(Error::invalid(format!(
+                "instance {} is measured at {} by {} annotations ({}); which is meant is the caller's to choose --- \
+                 observations_at() lists them",
+                self.instance_id,
+                repr_str(timepoint),
+                found.len(),
+                crate::json::repr_list(&names)
+            )));
+        }
+        Ok(found.first().copied())
+    }
+
+    pub fn volume(&self, timepoint: &str) -> Result<Option<f64>> {
+        Ok(self.at(timepoint)?.and_then(|o| o.volume))
+    }
+
+    /// The volume at every timepoint the object was seen at, under the same
+    /// rule as [`Track::at`].
+    pub fn volumes(&self) -> Result<IndexMap<String, Option<f64>>> {
+        self.timepoints().into_iter().map(|t| Ok((t.clone(), self.volume(&t)?))).collect()
     }
 
     /// `(v2 - v1) / v1` between two timepoints, or `None` if unmeasured.
-    pub fn relative_change(&self, first: &str, second: &str) -> Option<f64> {
-        let before = self.volume(first)?;
-        let after = self.volume(second)?;
+    pub fn relative_change(&self, first: &str, second: &str) -> Result<Option<f64>> {
+        let (Some(before), Some(after)) = (self.volume(first)?, self.volume(second)?) else {
+            return Ok(None);
+        };
         if before <= 0.0 {
-            return None;
+            return Ok(None);
         }
-        Some((after - before) / before)
+        Ok(Some((after - before) / before))
     }
 
     pub fn to_json(&self) -> Value {
@@ -160,7 +204,7 @@ impl Tracking {
     /// `present`, `resolved` or `unexamined`.
     pub fn state_at(&self, instance_id: u64, timepoint: &str) -> Option<&'static str> {
         let track = self.tracks.get(&instance_id)?;
-        if track.at(timepoint).is_some() {
+        if !track.observations_at(timepoint).is_empty() {
             return Some(PRESENT);
         }
         let examined = self.coverage.get(timepoint);
@@ -312,6 +356,7 @@ pub fn build_tracks(sample: &Sample, class_key: Option<&ClassKey>, do_measure: b
                 tracks.entry(obj.instance_id).or_default().push(Observation {
                     timepoint: tp.clone(),
                     annotation: ann.ann_id.clone(),
+                    kind: ann.kind().to_string(),
                     index: obj.index,
                     instance_id: obj.instance_id,
                     class_id: obj.class_id,

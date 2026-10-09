@@ -337,6 +337,32 @@ out `h5py` objects --- and the behaviour changes below.
   said nothing, so a metre grid read back as millimetres and every series as 1 s
   frames from 0. `to_nifti(annotation=…)` exports on the annotation's grid,
   where it took the named image's affine; it takes `report=` for the notes.
+- **A split names each member of a collection** (`Split.paths`, the `entries`
+  of `medh5 dataset split -o`): `path::key`, the locator task sources use. It
+  was the collection's path, so members placed in two partitions put the whole
+  collection in both partitions' file lists. `leaks()` also reports an entry
+  placed in two partitions, which a split loaded from a file can do.
+- **`write_claims` checks everything before it writes**
+  (`medh5 dataset split --write-claims`): a fold a k-fold split does not have is
+  refused --- it matched no assignment, so every file was written as `train` ---
+  and a sample inside a collection is refused before the first file is amended,
+  where the files before it had been.
+- **Voxel agreement leaves out what either rater did not examine**
+  (`compare_voxel`, `medh5 agree`): a voxel either annotation declares ignored
+  (§7.7, in band or as the `mask` its `ignore_mask` names) counts neither for
+  nor against agreement. It counted against the rater who declared it.
+- **Tracking answers one observation per visit**, in every accessor
+  (`Track.at`, `volume`, `volumes`, `relative_change`, `medh5 track`): the
+  object's mask where an `instances` annotation saw it, else its box, whose
+  volume is only its bounding box's. Two masks of one visit --- two raters ---
+  are refused; `at` and `volume` answered with the first rater and `volumes`
+  with the last. `observations_at()` and `measurements_at()` list them, and
+  `Observation.kind` says which annotation kind each came from.
+- **`fix(rewrite_digests=True, rebuild_index=True)` leaves the index
+  current**: the index entries to rebuild are found after the restamp. They were
+  the diagnosis from before it, so an index the restamp made stale was left
+  stale by the call asked to rebuild it. Restamping alone names the entries it
+  leaves stale.
 
 ### Removed
 
@@ -390,6 +416,22 @@ out `h5py` objects --- and the behaviour changes below.
   equally conforming (Appendix C.1).
 - **NaN in `/meta` is reported.** 1.x's validator parsed `/meta` with Python's
   `json`, which accepts `NaN`, so a document that is not JSON passed.
+- **The executable prototype agrees with the specification**
+  (`docs/examples/reference_writer.py`, Appendix C.2). Its `content_id` hashed
+  `index/` and every attribute, sorted every line as one group and spelled the
+  `meta` line `sha256:`; its `source_digest` was the `data` dataset's digest, not
+  §13.3's group digest; and its checks printed `[ok]` whatever they found --- the
+  engine reported E702 and W905 for the file it passed, as 1.x did. It now
+  computes both as §13.2 and §13.3 define them, stamps no digest under
+  `index/`, raises on a failed check, and checks the round trips the appendix
+  listed and it never ran. CI validates what it writes with the wheel and the
+  native binary.
+- **§13.2 spells each line** (Appendix C.1): a dataset line carries the stored
+  `<algo>:<hex>`, an attribute line `<algo>:` and the hex digest, the `meta`
+  line the bare hex digest, and every member of `grids/`, `images/`,
+  `annotations/` and `transforms/` has an attribute line. The pseudo-code wrote
+  `H(...)` for both kinds and named no objects; the text now says what every
+  implementation has written since 1.0, and no digest changes.
 - **The §14.2 codec table timed a cache.** Its 64³ patch reads --- 0.08 ms for
   every codec, gzip included --- re-read one window through one open dataset,
   which HDF5's chunk cache answers after the first read, and the text concluded

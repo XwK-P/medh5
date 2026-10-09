@@ -93,8 +93,8 @@ split = make_splits(manifest, set_id="cv5", group_by="group_id",
 split.counts            # {"test": 62, "train": 288, "val": 62}
 split.balance()         # achieved stratum counts per partition
 split.underfilled       # partitions that were asked for and got nothing
-split.leaks()           # groups in more than one partition — structurally ()
-split.paths("train")
+split.leaks()           # groups or entries in more than one partition — structurally ()
+split.paths("train")    # files, and `path::key` for a sample inside a collection
 
 write_claims(split, manifest, assigned_by="pipeline@v3")
 ```
@@ -124,7 +124,11 @@ what was actually achieved rather than what was asked for.
 **A claim in a file is not the split.** `write_claims` stamps each sample with
 its partition *and* the manifest digest it came from. A later reader can then
 tell a current claim from one that predates a re-split. Writing a claim for a
-`set_id` replaces any earlier claim for that set.
+`set_id` replaces any earlier claim for that set. A k-fold split's claims name
+the validation fold (`fold=2`, `--fold 2`): that fold's samples are written as
+`val` and the rest as `train`. Everything a write needs --- a fold the split
+has, no sample inside a collection --- is checked before the first file
+changes, so a refused write leaves every file as it was.
 
 Assignment is deterministic given `(manifest digest, seed, parameters)` — a
 hash, not a shuffle — so two machines produce the same partitions.

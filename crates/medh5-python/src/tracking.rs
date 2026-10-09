@@ -8,6 +8,7 @@ use pyo3::types::{PyDict, PyTuple};
 use medh5::curation::tracking as engine;
 
 use crate::convert::{array_to_py, json_to_py};
+use crate::errors::R;
 use crate::values::{dataclass_repr, opt};
 
 #[pyclass(module = "medh5.curation", name = "Observation", skip_from_py_object, frozen)]
@@ -50,6 +51,12 @@ impl Observation {
     #[getter]
     fn annotation(&self) -> &str {
         &self.0.annotation
+    }
+    /// The annotation's kind, `instances` or `boxes`: not one of the 1.x
+    /// dataclass's fields, so its shape and `repr` are unchanged.
+    #[getter]
+    fn kind(&self) -> &str {
+        &self.0.kind
     }
     #[getter]
     fn index(&self) -> usize {
@@ -157,22 +164,28 @@ impl Track {
     fn timepoints<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
         PyTuple::new(py, self.0.timepoints())
     }
-    fn at(&self, timepoint: &str) -> Option<Observation> {
-        self.0.at(timepoint).cloned().map(Observation)
+    fn at(&self, timepoint: &str) -> R<Option<Observation>> {
+        Ok(self.0.at(timepoint)?.cloned().map(Observation))
     }
-    fn volume(&self, timepoint: &str) -> Option<f64> {
-        self.0.volume(timepoint)
+    fn observations_at<'py>(&self, py: Python<'py>, timepoint: &str) -> PyResult<Bound<'py, PyTuple>> {
+        PyTuple::new(py, self.0.observations_at(timepoint).into_iter().cloned().map(Observation))
+    }
+    fn measurements_at<'py>(&self, py: Python<'py>, timepoint: &str) -> PyResult<Bound<'py, PyTuple>> {
+        PyTuple::new(py, self.0.measurements_at(timepoint).into_iter().cloned().map(Observation))
+    }
+    fn volume(&self, timepoint: &str) -> R<Option<f64>> {
+        Ok(self.0.volume(timepoint)?)
     }
     #[getter]
-    fn volumes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+    fn volumes<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyDict>> {
         let out = PyDict::new(py);
-        for (k, v) in self.0.volumes() {
+        for (k, v) in self.0.volumes()? {
             out.set_item(k, v)?;
         }
         Ok(out)
     }
-    fn relative_change(&self, first: &str, second: &str) -> Option<f64> {
-        self.0.relative_change(first, second)
+    fn relative_change(&self, first: &str, second: &str) -> R<Option<f64>> {
+        Ok(self.0.relative_change(first, second)?)
     }
     fn to_json<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         json_to_py(py, &self.0.to_json())

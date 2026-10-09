@@ -571,7 +571,12 @@ fn track(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
                 row.push(if state != "present" {
                     state.to_string()
                 } else {
-                    track.volume(tp).map(|v| gp(v, 4)).unwrap_or_else(|| "present".into())
+                    // Two raters measured it there: no one volume is the visit's.
+                    match track.volume(tp) {
+                        Ok(Some(v)) => gp(v, 4),
+                        Ok(None) => "present".into(),
+                        Err(_) => format!("{} raters", track.measurements_at(tp).len()),
+                    }
                 });
             }
             row.push(trend(&tracking, *instance_id, track, &timepoints));
@@ -604,8 +609,10 @@ fn trend(tracking: &Tracking, instance_id: u64, track: &Track, timepoints: &[Str
     if timepoints.len() < 2 {
         return "-".into();
     }
-    if let Some(change) = track.relative_change(&timepoints[0], &timepoints[timepoints.len() - 1]) {
-        return percent(change, 1, true);
+    match track.relative_change(&timepoints[0], &timepoints[timepoints.len() - 1]) {
+        Ok(Some(change)) => return percent(change, 1, true),
+        Err(_) => return "-".into(),
+        Ok(None) => {}
     }
     if tracking.is_new(instance_id) {
         return "new".into();

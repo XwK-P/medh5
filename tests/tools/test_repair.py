@@ -82,6 +82,36 @@ class TestFix:
             direct = sample.annotations["organs_tp0"].voxel_counts()
             assert counts == direct
 
+    def test_U05_restamping_and_rebuilding_at_once_leave_the_index_current(
+        self, indexed
+    ):
+        """The rebuild list was the diagnosis from before the restamp: the index
+        matched the digests the file had, went stale when they were restamped,
+        and was not rebuilt by the call asked to rebuild it."""
+        _edit_mask_in_place(indexed)
+        assert diagnose(indexed).stale_index == ()
+        repair = fix(
+            indexed,
+            rebuild_index=True,
+            rewrite_digests=True,
+            reason="edited by an external tool",
+        )
+        assert repair.rebuilt_index == ("organs_tp0",)
+        after = diagnose(indexed)
+        assert after.stale_index == () and not after.mismatched
+        with medh5.open(indexed) as sample:
+            counts = sample.index["organs_tp0"].voxel_counts
+            assert counts == sample.annotations["organs_tp0"].voxel_counts()
+
+    def test_U05_restamping_alone_names_the_index_it_leaves_stale(self, indexed):
+        _edit_mask_in_place(indexed)
+        repair = fix(indexed, rewrite_digests=True, reason="edited by an external tool")
+        assert repair.rebuilt_index == ()
+        assert any(
+            "organs_tp0" in note and "rebuild_index" in note for note in repair.notes
+        ), repair.notes
+        assert diagnose(indexed).stale_index == ("organs_tp0",)
+
     def test_S13_3_rebuilding_an_index_will_not_launder_a_digest_mismatch(
         self, indexed
     ):

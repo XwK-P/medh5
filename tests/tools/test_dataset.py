@@ -422,6 +422,70 @@ class TestSplits:
         with pytest.raises(MEDH5ValidationError, match="unpack"):
             write_claims(make_splits(built), built)
 
+    def test_U02_members_of_one_collection_are_named_one_by_one(self, cohort, tmp_path):
+        """A split's entries held the file's path alone, so the members of one
+        collection placed in two partitions put the whole collection in both
+        per-partition file lists."""
+        shard = tmp_path / "shard.medh5c"
+        medh5.pack(sorted(cohort.glob("*.medh5")), shard)
+        built, _ = scan(shard)
+        split = make_splits(built, ratios={"train": 0.5, "test": 0.5}, seed=0)
+        placed = {name: split.paths(name) for name in ("train", "test")}
+        assert all(placed.values()), placed
+        named = [entry for entries in placed.values() for entry in entries]
+        assert sorted(named) == sorted(f"{e.path}::{e.key}" for e in built)
+        assert not set(placed["train"]) & set(placed["test"])
+        assert split.leaks() == ()
+        for entry in built:
+            assert f"{entry.path}::{entry.key}" in placed[split.partition_of(entry)]
+
+    def test_U02_an_entry_in_two_partitions_is_a_leak(self, manifest):
+        """`leaks()` checked groups alone: a loaded split placing one file
+        under two groups in two partitions passed it."""
+        from medh5.dataset.split import Assignment, Split
+
+        split = Split(
+            "s",
+            manifest.sha256(),
+            [
+                Assignment("g1", "train", entries=("a.medh5", "b.medh5")),
+                Assignment("g2", "test", entries=("b.medh5",)),
+            ],
+        )
+        assert split.leaks() == ("b.medh5",)
+
+    @staticmethod
+    def _claims(path: str) -> list[tuple[str, str]]:
+        with medh5.open(path) as sample:
+            return [(c.set_id, c.partition) for c in sample.document.splits]
+
+    @pytest.mark.parametrize("fold", [2, 7, -1])
+    def test_U06_a_fold_the_split_lacks_is_refused_before_any_write(
+        self, manifest, fold
+    ):
+        """Fold 7 of a 2-fold split matched no assignment, so every file was
+        written as `train` and the split had no validation partition."""
+        split = make_splits(manifest, k_folds=2, seed=0)
+        with pytest.raises(MEDH5ValidationError, match="not a fold of this 2-fold"):
+            write_claims(split, manifest, fold=fold)
+        assert all(self._claims(entry.path) == [] for entry in manifest)
+
+    def test_U06_a_refused_write_leaves_every_file_as_it_was(self, cohort):
+        """The member of a collection was refused after the files before it
+        had been amended: half a cohort claimed the split."""
+        members = sorted(cohort.glob("case-[45].medh5"))
+        medh5.pack(members, cohort / "zz-shard.medh5")
+        for member in members:
+            member.unlink()
+        built, failures = scan(cohort)
+        assert not failures
+        assert [e.key is not None for e in built][-1], "the member must come last"
+        with pytest.raises(MEDH5ValidationError, match="unpack"):
+            write_claims(make_splits(built, seed=0), built)
+        plain = [entry.path for entry in built if entry.key is None]
+        assert len(plain) == 4
+        assert all(self._claims(path) == [] for path in plain)
+
 
 class TestStats:
     def test_welford_merges_exactly(self):

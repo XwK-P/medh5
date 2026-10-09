@@ -12,6 +12,7 @@ use std::path::Path;
 
 use serde_json::{json, Map, Value};
 
+use super::{stale_index_entries, stamp_digests};
 use crate::json::repr_str;
 use crate::sample::{amend, open_sample};
 use crate::{Error, Result, VERSION};
@@ -155,16 +156,31 @@ pub fn fix(path: &Path, options: &FixOptions) -> Result<Repair> {
         );
         return Err(Error::invalid(message));
     }
-    let mut names = if options.rebuild_index { diagnosis.stale_index.clone() } else { Vec::new() };
-    names.sort();
-    if names.is_empty() && !options.rewrite_digests {
+    if diagnosis.stale_index.is_empty() && !options.rewrite_digests {
         repair.notes.push("nothing to rebuild: no sampling index is stale or missing".into());
         return Ok(repair);
     }
     let mut writer = amend(path, None)?;
     let result = (|| -> Result<()> {
-        if !names.is_empty() {
+        if options.rewrite_digests {
+            // Restamped before the index is planned: an entry pins its
+            // annotation's digest (§13.3), so one rebuilt from the digests the
+            // file had went stale when the commit restamped them --- and one
+            // that matched before the restamp went stale without being rebuilt
+            // (U05 of the 2.0 audit).
+            stamp_digests(&writer.root()?, "sha256", &["index"], false)?;
+        }
+        let mut names = stale_index_entries(&writer.root()?)?;
+        names.sort();
+        if options.rebuild_index && !names.is_empty() {
             repair.rebuilt_index = writer.build_index(Some(&names), options.max_coords, None, 0)?;
+        } else if !names.is_empty() {
+            repair.notes.push(format!(
+                "{} sampling index entr{} no longer match their annotations ({}); rebuild them with rebuild_index",
+                names.len(),
+                if names.len() == 1 { "y" } else { "ies" },
+                names.join(", ")
+            ));
         }
         if options.rewrite_digests {
             let agent = match &options.performed_by {

@@ -69,8 +69,8 @@ Windows x64 — and runs the conformance corpus through each. It runs the suite
 against the built wheel on Python 3.10–3.14, on macOS (for the `spawn` start
 method), on Windows (for the atomic-replace paths) and at the NumPy floor;
 checks the minimum Rust version; builds the sdist from source; and runs the
-reference writer in `docs/examples/` to keep the specification's Appendix C.2
-honest.
+reference writer in `docs/examples/`, then validates what it writes with the
+built wheel and binary, to keep the specification's Appendix C.2 honest.
 
 ## Writing tests
 

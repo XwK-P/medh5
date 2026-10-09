@@ -88,6 +88,13 @@ class Split:
         return found
 
     def paths(self, partition: str) -> tuple[str, ...]:
+        """The entries of *partition*: a file's path, or ``path::key`` for a
+        sample inside a collection (``open_any(path, key=key)`` opens it).
+
+        Two members of one collection in different partitions were both its
+        path, so a loader building per-partition file lists put the whole
+        collection in both.  A split written before 2.0 carries paths alone.
+        """
         return tuple(_core.dataset_split_paths(self._doc(), partition))
 
     @property
@@ -123,11 +130,12 @@ class Split:
         return tuple(_core.dataset_split_underfilled(self._doc()))
 
     def leaks(self) -> tuple[str, ...]:
-        """Groups that ended up in more than one partition.
+        """Groups, and entries, that ended up in more than one partition.
 
         Structurally impossible here --- a group is assigned once --- so this is
-        a self-check, not a feature.  It exists because "impossible" is what
-        every leakage bug was called before it shipped.
+        a self-check, not a feature, and the check a split loaded from a file
+        needs.  It exists because "impossible" is what every leakage bug was
+        called before it shipped.
         """
         return tuple(_core.dataset_split_leaks(self._doc()))
 
@@ -200,6 +208,11 @@ def write_claims(
     With ``k_folds``, ``fold`` selects which fold is the validation set for this
     claim; every other fold becomes ``train``.  Without it the claim is the
     partition as assigned.
+
+    Everything the write needs --- a ``fold`` the split has, no sample inside a
+    collection --- is checked before the first file is amended, so a refusal
+    leaves every file as it was.  A fold outside the split's range was not a
+    refusal at all: every file was written as ``train``.
 
     Amending rewrites each file, so this is not free --- and it is optional.  A
     split is fully usable as a JSON file; the claim exists for the case where a

@@ -11,6 +11,7 @@ import pytest
 import medh5
 from medh5.annotations.voxel import InstanceInput
 from medh5.curation import PRESENT, RESOLVED, UNEXAMINED, carries_instance_ids
+from medh5.errors import MEDH5ValidationError
 from medh5.validate import validate_file
 from tests.helpers import SHAPE, lesion, write_series
 from tests.kits import Hierarchy
@@ -331,3 +332,82 @@ class TestF01InstanceIdsBeyondUint32:
             assert list(tracking) == [Hierarchy.BIG]
             assert tracking[Hierarchy.BIG].timepoints == ("tp0", "tp1")
             assert tracking.is_persistent(Hierarchy.BIG)
+
+
+class TestU04OneAnswerPerVisit:
+    """One object seen by several annotations at one visit (U04 of the 2.0 audit)."""
+
+    def test_U04_two_raters_masks_of_a_visit_are_refused_by_every_accessor(
+        self, series
+    ):
+        """`at` and `volume` answered with the first rater, `volumes` with the
+        last: one track reported two volumes for one visit."""
+        with medh5.amend(series) as w:
+            w.add_segmentation(
+                "les_tp0_r2",
+                grid="g_tp0",
+                instances=[
+                    InstanceInput(class_id=3, instance_id=7, mask=lesion(8, 8, 8, 3))
+                ],
+                annotated_classes=[3],
+            )
+        with medh5.open(series) as sample:
+            tracking = sample.tracks()
+            track = tracking[7]
+            seen = track.observations_at("tp0")
+            assert sorted(o.annotation for o in seen) == ["les_tp0", "les_tp0_r2"]
+            assert sorted(o.volume for o in seen) == [4 * 4 * 4 * 2.0, 6 * 6 * 6 * 2.0]
+            assert len(track.measurements_at("tp0")) == 2
+            for ask in (
+                lambda: track.at("tp0"),
+                lambda: track.volume("tp0"),
+                lambda: track.volumes,
+                lambda: track.relative_change("tp0", "tp1"),
+            ):
+                with pytest.raises(MEDH5ValidationError, match="by 2 annotations"):
+                    ask()
+            # The visit one rater measured still answers, and the object is
+            # still present where both saw it.
+            assert track.volume("tp1") == pytest.approx(6 * 6 * 6 * 2.0)
+            assert tracking.state_at(7, "tp0") == PRESENT
+
+    def test_U04_a_box_beside_a_mask_defers_to_the_mask(self, series):
+        """A detection of the lesion beside its segmentation is one answer, the
+        mask's: a box's volume is its bounding box's."""
+        with medh5.amend(series) as w:
+            w.add_boxes(
+                "det_tp0",
+                np.array([[[3.5, 12.5], [3.5, 12.5], [3.5, 12.5]]], np.float32),
+                class_ids=["lesion"],
+                grid="g_tp0",
+                space="index",
+                instance_ids=[7],
+            )
+        with medh5.open(series) as sample:
+            track = sample.tracks()[7]
+            kinds = sorted(o.kind for o in track.observations_at("tp0"))
+            assert kinds == ["boxes", "instances"]
+            assert [o.kind for o in track.measurements_at("tp0")] == ["instances"]
+            assert track.at("tp0").annotation == "les_tp0"
+            assert track.volumes == pytest.approx(
+                {"tp0": 4 * 4 * 4 * 2.0, "tp1": 6 * 6 * 6 * 2.0}
+            )
+            assert track.relative_change("tp0", "tp1") == pytest.approx((216 - 64) / 64)
+
+    def test_U04_the_command_line_names_an_ambiguous_visit(self, series, capsys):
+        from medh5.cli import main
+
+        with medh5.amend(series) as w:
+            w.add_segmentation(
+                "les_tp0_r2",
+                grid="g_tp0",
+                instances=[
+                    InstanceInput(class_id=3, instance_id=7, mask=lesion(8, 8, 8, 3))
+                ],
+                annotated_classes=[3],
+            )
+        assert main(["track", str(series)]) == 0
+        row = next(
+            line for line in capsys.readouterr().out.splitlines() if "2 raters" in line
+        )
+        assert row.split()[0] == "7"

@@ -749,6 +749,45 @@ impl Annotation {
         Ok(block.map_axis(Axis(0), |lane| lane.iter().any(|v| *v)))
     }
 
+    /// The §7.7 ignore region over the whole grid, from the annotation alone:
+    /// in band (`labelmap`, `layers`) and the sibling `mask` its
+    /// `ignore_mask` names, read beside it in the same `annotations/` group.
+    /// `None` where no voxel is ignored.
+    pub fn ignore_region(&self) -> Result<Option<ArrayD<bool>>> {
+        let mut region = None;
+        if matches!(self.kind(), "labelmap" | "layers") {
+            region = Some(self.ignore_mask(None)?);
+        }
+        if let Some(reference) = self.header.ignore_mask.clone() {
+            let name = crate::sample::annotation_id(&reference);
+            let path = self.group.name();
+            let parent = path.rsplit_once('/').map_or("/", |(p, _)| p);
+            let sibling = ops::child_group(&self.group.file()?.group(parent)?, name)
+                .map(|g| Annotation::open(name, g, self.grids.clone(), self.label_set.clone()))
+                .transpose()?
+                .filter(|a| a.kind() == "mask")
+                .ok_or_else(|| {
+                    Error::coded(
+                        "E413",
+                        format!(
+                            "{}: ignore_mask names {}, which is not a `mask` annotation in this file",
+                            repr_str(&self.ann_id),
+                            repr_str(name)
+                        ),
+                    )
+                })?;
+            let mask = sibling.read_mask(None)?;
+            region = Some(match region {
+                Some(mut inband) => {
+                    inband.zip_mut_with(&mask, |r, m| *r |= *m);
+                    inband
+                }
+                None => mask,
+            });
+        }
+        Ok(region.filter(|r| r.iter().any(|v| *v)))
+    }
+
     /// A `mask` annotation's volume over a window.
     pub fn read_mask(&self, roi: Option<&[Slice]>) -> Result<ArrayD<bool>> {
         self.require_kind(&["mask"], "read()")?;

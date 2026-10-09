@@ -1276,10 +1276,18 @@ The sample root **SHOULD** carry `content_id`, the Merkle root over the sorted d
 
 ```
 lines = sorted( f"{path}\t{digest}\n" for every dataset with a digest )
-       + [ f"meta\t{H(meta_json_utf8)}\n" ]
-       + [ f"@{obj}\t{H(canonical_attrs(obj))}\n" for every object with spec-defined attributes ]
+       + [ "meta\t" + hex( H(meta_json_utf8) ) + "\n" ]
+       + sorted( f"@{obj}\t" + "<algo>:" + hex( H(canonical_attrs(obj)) ) + "\n"
+                 for every object with spec-defined attributes )
 content_id = "<algo>:" + hex( H( "".join(lines) ) )
 ```
+
+`hex` is lowercase hexadecimal. The three kinds of line spell a digest differently, and an
+implementation reproduces each to the byte: a dataset line carries the dataset's `digest` attribute as
+stored (`<algo>:<hex>`, §13.1), an attribute line carries `<algo>:` before the hex digest, and the
+`meta` line carries the bare hex digest. The objects with spec-defined attributes are the sample root
+and every member of `grids/`, `images/`, `annotations/` and `transforms/`; each has its line whichever
+of its section's attributes it carries, `{}` when it carries none.
 
 `canonical_attrs` serialises the object's spec-defined attributes as one JSON object in the
 canonical JSON of §5.1, keyed by attribute name: a string as a string, a boolean as `true`/`false`,
@@ -1608,9 +1616,9 @@ any machine. On one, with a 192×256×256 synthetic CT and eight classes, a mult
 costs 3.4 ms, foreground centre sampling 0.03 ms (O(1) in volume size, via §14.3; 0.05 ms at 63
 classes), a metadata-only read 0.19 ms, and `open()` → first patch 2.3 ms.
 
-Twenty-seven clauses have been corrected — ten during implementation, eleven in the 1.x package
+Twenty-eight clauses have been corrected — ten during implementation, eleven in the 1.x package
 releases that followed, four when the engine was written a second time, in Rust, for the 2.0
-package, one when it implemented 1.1, and one in the audit of 2.0 before its release — each because
+package, one when it implemented 1.1, and two in the audit of 2.0 before its release — each because
 writing the code showed the text was not implementable, not unambiguous, or not what the
 implementation could honestly promise, as written:
 
@@ -1643,6 +1651,7 @@ implementation could honestly promise, as written:
 | §14.3 | An index's `seed` reproduces a subsample only within the implementation that drew it. The table said `max_coords` and `seed` gave "reproducibility of the subsample", but nothing specifies the generator: 1.x drew from NumPy's, and matching it meant carrying a copy of NumPy's seeding and bounded-integer algorithms in every implementation. An index is derived and outside every digest (§13.1), so a different subsample is a different cache of the same sample. |
 | §16 | "**MUST** accept a higher MINOR" is acceptance for *reading* the supported projection, not validation of the newer version or permission to amend it. Read literally beside "amend preserves", it promised what no implementation can: a writer that rewrites a file of a later minor drops or misattests whatever that minor defines, and a validator passing such a file claims conformance to rules it has never seen. 1.1 §2.2 defines the projection, W913 and the refusal. |
 | §16 | Extensions survive amend *except* HDF5 references, which a writer refuses to copy. "Both survive amend" could not hold for a reference: it is an address in the file that holds it, and amend, recompress and pack write a new file, where a copied reference pointed wherever its address happened to land --- and a no-op amend nulled those in an extension group --- while every digest still verified. |
+| §13.2 | Each kind of line's spelling is stated: a dataset line carries the stored `<algo>:<hex>` digest, an attribute line `<algo>:` and the hex digest, and the `meta` line the bare hex digest; and the objects that have an attribute line are named --- the root and every member of `grids/`, `images/`, `annotations/` and `transforms/`, with `{}` when one carries none of its attributes. The pseudo-code wrote `H(...)` for the `meta` and the attribute lines alike, which reads as one spelling, and named no objects. The executable prototype (§C.2), which follows this text with no implementation between it and the bytes, computed a `content_id` that matched no implementation, and reported it checked. The text now says what every implementation has written since 1.0: no digest changes. |
 
 ### C.2 Prototype checks
 
@@ -1661,9 +1670,11 @@ registration relating them. It confirms:
 | `direction` orthonormality and 2-D storage (E102) | clean |
 | `layers` invariant: every class in exactly one layer (E404) | clean |
 | Box `lo ≤ hi` (E406) | clean |
-| Per-object digests and `content_id` (§13) | all match |
+| Per-object digests (§13.1), and no digest under `index/` | all match; none |
+| `content_id` (§13.2) | matches |
 | `index/` `source_digest` currency (§13.3, W905) | current |
-| index→world→index round-trip (§3.3) | exact (0.0 error) |
+| The file, validated at integrity level by the Python package and by the native binary | clean but for W912 |
+| index→world→index round-trip at every grid corner (§3.3) | exact (0.0 error) |
 | box ↔ slice round-trip (§8.1): `[11.5, 39.5] ↔ slice(12, 40)`, extent 28 | exact |
 | `instances` decode: box extents match stored mask shapes (§7.4) | exact |
 | Lossless transcoding `layers ↔ bitmask` for every class (§7.6) | exact |
@@ -1675,6 +1686,15 @@ registration relating them. It confirms:
 | Change label `scope = "sample"` with `timepoints = ["tp0","tp1"]` (§9, E409) | clean |
 | One `instance_id` never carrying two class ids (W909) | clean |
 | A transform relating two timepoints exists (W911) | clean |
+
+Every check raises when it fails, and CI runs the prototype on every push, then validates the file it
+wrote with the built wheel and the built binary. Until 2.0 its checks printed `[ok]` whatever they
+found, and two of its integrity computations were its own: it wrote `source_digest` as the `data`
+dataset's digest, where §13.3 defines the group's, and checked that same quantity; and it wrote a
+`content_id` over lines §13.2 does not define --- `index/` included, every attribute hashed, one sort
+--- and never recomputed it. The implementation reported E702 and W905 for the file it passed, which
+is how the §13.2 entry above was found. W912 remains because the prototype binds one class, the
+liver, to an ontology code; inventing codes for the rest would be worse than the warning.
 
 The prototype predates the reference implementation and is kept because it is short enough to read
 end to end: it demonstrates the format with no library between the reader and the bytes. The
