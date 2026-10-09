@@ -104,14 +104,20 @@ out `h5py` objects --- and the behaviour changes below.
 - **Feature caches** (`medh5.cache/1`, `medh5.cache`): event- and
   patient-level features with a checksummed dependency manifest, validated so
   that *stale* (a source changed, T403) is told apart from *corrupt* (T401,
-  T402) and from *inadmissible* (another task, T404; fitted on the wrong split,
-  T405; encoding versions a row cannot have read, T406).
+  T402: a manifest missing what its level requires, a payload that is not the
+  declared dtype and shape) and from *inadmissible* (another task, row, cutoff
+  or subject's sources, T404; fitted on another split, T405; encoding versions
+  a row cannot have read, T406). A source pin also requires every dataset the
+  sample's `content_id` speaks for to carry its digest (T302), so a column
+  added without one is not read under an unchanged pin.
 - **`medh5.torch.ClinicalTaskDataset`** and **`collate_clinical`**: one item per
   admitted row --- slot windows on each image's own grid, the admitted event
   history, document features from an encoder or a cache, and the target ---
   with padding, modality availability, field of view, annotation coverage and
   target observation kept as distinct masks. `ConceptVocabulary` is fitted on
-  the training partition and records it.
+  the training partition and records it. Both take only the manifest's own
+  preflight (T404), and document features only from an event-level cache
+  fitted on the training split.
 - **Batches keep time's uncertainty.** Every time an input carries --- an
   event's effective start and end, its availability, an image's acquisition
   --- is given as its bounds, as ages before the cutoff (`start_age_h`,

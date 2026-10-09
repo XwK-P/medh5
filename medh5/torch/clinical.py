@@ -116,6 +116,7 @@ class ConceptVocabulary:
         """Fit on the eligible rows of ``partition`` (default: the training
         partition; every row when the task declares no split)."""
         report = preflight if preflight is not None else task.preflight()
+        _require_preflight_of(task, report)
         chosen = partition if partition is not None else task.training_partition
         # Each subject's admitted versions, counted once however many of its
         # rows admit them.
@@ -227,6 +228,41 @@ class ConceptVocabulary:
                 )
 
 
+def _require_preflight_of(task: TaskManifest, report: Preflight) -> None:
+    """Refuse a preflight of anything but this task instance (T404).
+
+    The *definition* fingerprint is shared by every instance of a task: two
+    manifests with the rows' partitions swapped had the same one, and a
+    preflight of the other put this task's validation subjects in its training
+    rows --- and its vocabulary fit on them while recording this task's
+    training split.  The manifest fingerprint covers the split, rows and pins.
+    """
+    if report.task_fingerprint != task.task_fingerprint:
+        raise MEDH5ValidationError(
+            "the preflight is of another task definition", "T404"
+        )
+    if report.manifest_fingerprint != task.manifest_fingerprint:
+        raise MEDH5ValidationError(
+            "the preflight is of another instance of this task --- its split, rows "
+            "or pins differ: run this manifest's own preflight",
+            "T404",
+        )
+
+
+def _require_level(path: PathLike, level: str, role: str) -> None:
+    """A cache serves the role its level answers (T404): an event-level cache
+    encodes event versions any row may read; a patient-level one, one row's
+    whole history at its cutoff, which no other row may read."""
+    with FeatureCache.open(path) as cache:
+        found = cache.level
+    if found != level:
+        raise MEDH5ValidationError(
+            f"{role}= takes a cache of level {level!r}; {os.fspath(path)!r} is "
+            f"of level {found!r}",
+            "T404",
+        )
+
+
 class _LazyCache:
     """A feature cache opened in the process that reads it (§14.4)."""
 
@@ -276,7 +312,7 @@ class ClinicalTaskDataset(_DatasetBase):  # type: ignore[misc,valid-type]
     refused unless ``strict=False``, which keeps only the unaffected rows.
 
     ``documents`` gives each admitted document a feature: a feature-cache path
-    (event-level, validated at construction), or an encoder with
+    (event-level, validated against the task at construction), or an encoder with
     ``encode(text) -> array`` that reads the admitted text when the item is
     built.  ``row_features`` is a patient-level cache built for this task; it
     is validated against the task (T404--T406) before any row reads it.
@@ -299,10 +335,7 @@ class ClinicalTaskDataset(_DatasetBase):  # type: ignore[misc,valid-type]
         self.task = task if isinstance(task, TaskManifest) else TaskManifest.load(task)
         self.base = Path(base) if base is not None else self.task.base
         report = preflight if preflight is not None else self.task.preflight(self.base)
-        if report.task_fingerprint != self.task.task_fingerprint:
-            raise MEDH5ValidationError(
-                "the preflight is of another task definition", "T404"
-            )
+        _require_preflight_of(self.task, report)
         if strict and not report.ok:
             listed = "; ".join(str(f) for f in report.findings[:5])
             raise MEDH5ValidationError(
@@ -333,7 +366,13 @@ class ClinicalTaskDataset(_DatasetBase):  # type: ignore[misc,valid-type]
         self._encoder: Any = None
         if documents is not None:
             if isinstance(documents, (str, os.PathLike)):
-                checked = validate_cache(documents, base=self.base)
+                _require_level(documents, "event", "documents")
+                # With the task, so a feature fitted on another split is
+                # refused (T405); an event-level cache has no row entries, so
+                # the rows are not re-checked.
+                checked = validate_cache(
+                    documents, base=self.base, task=self.task, check_rows=False
+                )
                 if not checked.ok:
                     raise MEDH5ValidationError(
                         f"the document cache does not validate: {checked.findings[0]}",
@@ -350,6 +389,7 @@ class ClinicalTaskDataset(_DatasetBase):  # type: ignore[misc,valid-type]
         ] = {}
         self._rows_cache: _LazyCache | None = None
         if row_features is not None:
+            _require_level(row_features, "patient", "row_features")
             checked = validate_cache(row_features, base=self.base, task=self.task)
             if not checked.ok:
                 raise MEDH5ValidationError(

@@ -46,11 +46,15 @@ A **source reference** names one sample --- a standalone file or a member of a `
 A URI is a locator, not identity. A reference resolves to a sample, and the sample counts only while:
 
 1. its stored `content_id` is the pin;
-2. its `content_id` **recomputes** to the pin from its stored digests;
-3. the actual bytes of its clinical datasets match their digests --- every dataset's, with `--deep`.
+2. every dataset of an object the root speaks for --- `grids/`, `images/`, `annotations/`,
+   `transforms/`, and `clinical/` where the profile is declared --- carries its digest (1.0 §13.1,
+   1.1 §8);
+3. its `content_id` **recomputes** to the pin from its stored digests;
+4. the actual bytes of its clinical datasets match their digests --- every dataset's, with `--deep`.
 
-Step 3 is not redundant with steps 1–2: `content_id` is a Merkle root over *stored* digests, so an
-edit that leaves the stored digests alone changes no root. A dataset whose bytes cannot be read ---
+Steps 2 and 4 are not redundant with steps 1 and 3: `content_id` is a Merkle root over *stored*
+digests, so a dataset added without one --- a column the file did not have --- changes no root, and
+neither does an edit that leaves the stored digests alone. A dataset whose bytes cannot be read ---
 a damaged chunk --- does not match. A failure of any step is **T302**; a source that does not open,
 or names a member that does not exist, **T301**. Re-pinning is explicit: a changed source is never
 silently accepted (`SourceRef.pin`).
@@ -214,12 +218,20 @@ inputs, and it never enters them. In order:
 
 ## 6. Input views
 
+What a row admits is what **this manifest's** preflight says. A preflight is of one manifest
+(`manifest_fingerprint`), not of a task definition: two instances of one definition with different
+splits, rows or pins share the task fingerprint, and building one's views from the other's preflight
+would put one's validation subjects in the other's training rows. A frontend refuses such a preflight
+(**T404**) --- for its views and for anything it fits on them (§7.3).
+
 A frontend reads **only** what a row admits, and only when it builds the batch:
 
 - **events** --- the selected versions, in clinical order, as the row's sequence; their count varies
   per row;
 - **documents** --- the text (or a cached feature, §7) of documents the selection admits, i.e. owned
-  by a selected `document` event;
+  by a selected `document` event. A cached document feature comes from an **event-level** cache,
+  validated against the task (§8: a cache fitted on another split is **T405**); a patient-level
+  cache is a row's feature and is read only as that row's (**T404**);
 - **images** --- each slot's fill, read as the region of §3.5 on the image's own grid, with the
   region's validity: inside the image and inside its 1.0 §4.4 valid region, never the padding;
 - **labels** --- supervision for a slot's classes, read from the voxel annotations on the slot
@@ -246,7 +258,7 @@ after it.
 A frontend reads each source as the version its row pins: a source whose `content_id` is no longer the
 pin when a batch is built --- the file was replaced after preflight --- is refused (**T302**), never
 read in its place. That check is §2's step 1 alone: it compares the *stored* `content_id`, and
-re-hashes nothing. The bytes are verified by preflight (step 3: the clinical datasets always, every
+re-hashes nothing. The bytes are verified by preflight (step 4: the clinical datasets always, every
 dataset with `--deep`), so an edit made in place after preflight that leaves the stored digests and
 `content_id` as they were is found by running preflight again, not by building a batch.
 
@@ -284,11 +296,19 @@ makes its entries stale. A finer dependency key would need its own specification
 ### 7.2 Levels
 
 - **Event level**: one feature per event version of a pinned source (or the document it owns),
-  conventionally entry `e` + 24 hex digits of `sha256(content_id + "\n" + event_id)`. An event version
-  is immutable, so its feature is free of any cutoff and shared by every row --- each row's selection
-  decides which of them it may read.
+  conventionally entry `e` + 24 hex digits of `sha256(content_id + "\n" + event_id)`; every entry names
+  its `event_id`. An event version is immutable, so its feature is free of any cutoff and shared by
+  every row --- each row's selection decides which of them it may read.
 - **Patient level**: one feature per row, pinning the row, its cutoff and the exact event versions it
-  encodes (`event_versions`), under the task it was built for.
+  encodes (`event_versions`), under the task it was built for (`task_fingerprint`). Every entry names
+  all three, and its sources are **its row's subject's**: event ids are local to a sample, so two
+  subjects' rows can admit the same ids at one cutoff, and only the pins say whose history a feature
+  encodes.
+
+A schema-valid manifest holds what its level requires (**T401** otherwise). Each level answers its own
+question: a reader looks event features up by `(content_id, event_id)` in an event-level cache only,
+and row features by row in a patient-level one --- a patient-level entry that also names an event
+encodes its row's history, never that event alone.
 
 ### 7.3 Learned preprocessing
 
@@ -309,9 +329,10 @@ Validation never modifies a source. Two failures are told apart, because they ne
 Given a task (and its preflight), validation also checks that the cache belongs to it:
 
 - **T404** --- built for another task (`task_fingerprint`), or a patient-level entry for a row the
-  task does not have, or at another cutoff;
-- **T405** --- learned preprocessing fitted on another task, another membership, or a partition
-  other than the task's training partition;
+  task does not have, at another cutoff, or reading a source version its row's subject does not pin
+  (compared by `content_id`, so a relocated copy is the same version);
+- **T405** --- learned preprocessing fitted on another task, another split (`set_id`), another
+  membership, or a partition other than the task's training partition;
 - **T406** --- a patient-level entry encodes event versions other than those its row admits at its
   cutoff: a whole-history embedding, or one built under another policy, is inadmissible.
 

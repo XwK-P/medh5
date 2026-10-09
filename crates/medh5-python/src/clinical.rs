@@ -463,13 +463,14 @@ fn cache_open(py: Python<'_>, path: PathBuf) -> R<FeatureCacheHandle> {
 
 /// Validate a cache; with a task, also against that task's preflight.
 #[pyfunction]
-#[pyo3(signature = (path, base=None, task=None, task_base=None))]
+#[pyo3(signature = (path, base=None, task=None, task_base=None, check_rows=true))]
 fn cache_validate<'py>(
     py: Python<'py>,
     path: PathBuf,
     base: Option<PathBuf>,
     task: Option<&Bound<'py, PyAny>>,
     task_base: Option<PathBuf>,
+    check_rows: bool,
 ) -> R<Bound<'py, PyAny>> {
     let task = match task {
         Some(t) if !t.is_none() => Some(manifest(t)?),
@@ -477,8 +478,8 @@ fn cache_validate<'py>(
     };
     let report = py.detach(move || -> medh5::Result<medh5::companion::CacheReport> {
         let admitted = match &task {
-            Some(t) => Some(medh5::companion::Admitted::preflight(t, task_base.as_deref(), false)?),
-            None => None,
+            Some(t) if check_rows => Some(medh5::companion::Admitted::preflight(t, task_base.as_deref(), false)?),
+            _ => None,
         };
         medh5::companion::validate_cache(&path, base.as_deref(), task.as_ref(), admitted.as_ref())
     })?;

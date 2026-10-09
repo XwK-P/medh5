@@ -11,6 +11,19 @@ use crate::Result;
 /// Where every dataset is part of an object a `content_id` speaks for.
 pub const ATTESTED_GROUPS: [&str; 4] = ["grids", "images", "annotations", "transforms"];
 
+/// Of `undigested` (paths relative to `root`), the datasets inside objects a
+/// `content_id` speaks for.  The root is a Merkle root over *stored* digests
+/// (§13.2), so a dataset there without one is content no address covers: a
+/// pin, a cache entry and `verify` would all pass over it.  `clinical/` is
+/// attested where the profile is declared (1.1 §8, E818); in a 1.0 file a
+/// group of that name is somebody's extension.
+pub fn unattested(root: &hdf5::Group, undigested: &[String]) -> Result<Vec<String>> {
+    let clinical =
+        attrs::get_strs(root, "medh5_profiles")?.unwrap_or_default().iter().any(|p| p == crate::clinical::PROFILE);
+    let attested = |group: &str| ATTESTED_GROUPS.contains(&group) || (clinical && group == crate::clinical::GROUP);
+    Ok(undigested.iter().filter(|n| n.contains('/') && attested(n.split('/').next().unwrap_or(""))).cloned().collect())
+}
+
 /// Outcome of a verification pass.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct VerifyResult {
@@ -162,16 +175,7 @@ pub fn verify_root(
         }
     }
     if declared.is_some() && partial.is_none() {
-        // `clinical/` is attested where the profile is declared (1.1 §8); in a
-        // 1.0 file a group of that name is somebody's extension.
-        let clinical =
-            attrs::get_strs(root, "medh5_profiles")?.unwrap_or_default().iter().any(|p| p == crate::clinical::PROFILE);
-        let attested = |group: &str| ATTESTED_GROUPS.contains(&group) || (clinical && group == crate::clinical::GROUP);
-        result.unattested = undigested
-            .iter()
-            .filter(|n| n.contains('/') && attested(n.split('/').next().unwrap_or("")))
-            .cloned()
-            .collect();
+        result.unattested = unattested(root, &undigested)?;
     }
     result.undigested = undigested;
     result.content_id_declared = declared;

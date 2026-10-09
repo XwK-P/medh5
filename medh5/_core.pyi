@@ -853,8 +853,10 @@ def cache_validate(
     base: str | os.PathLike[str] | None = None,
     task: Any = None,
     task_base: str | os.PathLike[str] | None = None,
+    check_rows: bool = True,
 ) -> dict[str, Any]:
-    """Validate a cache; with a task, also against that task's preflight."""
+    """Validate a cache; with a task, also against that task (and, with
+    ``check_rows``, against what its preflight admits)."""
     ...
 
 def canonical_attrs(obj: Any, names: Iterable[str]) -> str:

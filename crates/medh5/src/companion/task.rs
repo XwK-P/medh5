@@ -148,7 +148,11 @@ impl TargetSpec {
                 .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
                 .unwrap_or_default()
         };
-        let horizon = v["horizon_us"].as_i64().unwrap_or(0);
+        let horizon = micros(&v["horizon_us"], "target horizon_us")?;
+        let min_follow_up_us = match v.get("min_follow_up_us") {
+            None | Some(Value::Null) => horizon,
+            Some(m) => micros(m, "target min_follow_up_us")?,
+        };
         Ok(TargetSpec {
             id: v["id"].as_str().unwrap_or_default().to_string(),
             version: v["version"].as_str().unwrap_or_default().to_string(),
@@ -158,11 +162,21 @@ impl TargetSpec {
             positive: strings("positive"),
             negative: strings("negative"),
             horizon_us: horizon,
-            min_follow_up_us: v.get("min_follow_up_us").and_then(Value::as_i64).unwrap_or(horizon),
+            min_follow_up_us,
             censoring: v.get("censoring").and_then(Value::as_str).unwrap_or("censor").to_string(),
             exclude_prevalent: v.get("exclude_prevalent").and_then(Value::as_bool).unwrap_or(true),
         })
     }
+}
+
+/// A time in microseconds, as the manifest states it: a 64-bit integer, and
+/// refused otherwise (T101).  JSON Schema's `integer` admits `3600000000.0`
+/// and values past `i64`, and reading either as 0 moved a row's cutoff, and
+/// with it what the row may read, without a finding.
+fn micros(value: &Value, what: &str) -> Result<i64> {
+    value
+        .as_i64()
+        .ok_or_else(|| Error::coded("T101", format!("{what} is {value}, not a 64-bit integer number of microseconds")))
 }
 
 /// An event version present in several fragments, and the digest they share.
@@ -329,12 +343,14 @@ impl TaskManifest {
                 .as_array()
                 .into_iter()
                 .flatten()
-                .map(|r| Row {
-                    row_id: r["row_id"].as_str().unwrap_or_default().to_string(),
-                    subject_id: r["subject_id"].as_str().unwrap_or_default().to_string(),
-                    cutoff_us: r["cutoff_us"].as_i64().unwrap_or(0),
+                .map(|r| {
+                    Ok(Row {
+                        row_id: r["row_id"].as_str().unwrap_or_default().to_string(),
+                        subject_id: r["subject_id"].as_str().unwrap_or_default().to_string(),
+                        cutoff_us: micros(&r["cutoff_us"], "a row's cutoff_us")?,
+                    })
                 })
-                .collect(),
+                .collect::<Result<_>>()?,
             fingerprint: doc.get("fingerprint").and_then(Value::as_str).map(str::to_string),
         })
     }

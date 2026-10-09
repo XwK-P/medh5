@@ -80,8 +80,9 @@ impl SourceRef {
     }
 
     /// Whether `sample` is the pinned version: its stored `content_id` is the
-    /// pin, the root recomputes to it, and every clinical dataset's bytes
-    /// match their digests.  `deep` verifies every dataset.  Empty when it is.
+    /// pin, every dataset the root speaks for carries a digest, the root
+    /// recomputes to it, and every clinical dataset's bytes match their
+    /// digests.  `deep` verifies every dataset.  Empty when it is.
     ///
     /// The sample is walked once: the stored digests the root is recomputed
     /// from are the ones the bytes are checked against.  A dataset whose
@@ -103,7 +104,25 @@ impl SourceRef {
             ));
             return Ok(out);
         }
-        let digests = crate::integrity::collect_digests(&sample.root, &["index"])?;
+        let (digests, gaps) = crate::integrity::collect_digests_with_gaps(&sample.root, &["index"])?;
+        // The root covers stored digests only, so a dataset that carries none
+        // --- a column added later, say --- is bytes no pin speaks for: refused
+        // before anything is recomputed (1.0 §13.2, 1.1 §8, E818).
+        let uncovered = crate::integrity::unattested(&sample.root, &gaps)?;
+        if !uncovered.is_empty() {
+            out.push(Finding::new(
+                "T302",
+                &at,
+                format!(
+                    "{}: {} carr{} no digest, so the pinned content_id does not cover {}",
+                    self.locator(),
+                    uncovered.join(", "),
+                    if uncovered.len() == 1 { "ies" } else { "y" },
+                    if uncovered.len() == 1 { "it" } else { "them" }
+                ),
+            ));
+            return Ok(out);
+        }
         let algo = crate::integrity::digest::root_algo(&sample.root)?;
         let recomputed =
             crate::integrity::compute_content_id(&sample.root, &sample.attr_name_map()?, &algo, Some(&digests))?;

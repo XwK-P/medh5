@@ -175,16 +175,28 @@ pub fn stamp_digests(
 
 /// The `digest` attribute of every dataset that carries one.
 pub fn collect_digests(root: &hdf5::Group, skip: &[&str]) -> Result<IndexMap<String, String>> {
+    Ok(collect_digests_with_gaps(root, skip)?.0)
+}
+
+/// [`collect_digests`], and in the same walk the datasets that carry no
+/// `digest` --- the root `meta` aside, which §13.2 hashes as its own line.
+pub fn collect_digests_with_gaps(root: &hdf5::Group, skip: &[&str]) -> Result<(IndexMap<String, String>, Vec<String>)> {
     let mut out = IndexMap::new();
+    let mut gaps = Vec::new();
     for (name, ds) in ops::datasets(root)? {
         if skip.contains(&top_level(&name)) {
             continue;
         }
-        if let Some(value) = attrs::get_str(&ds, "digest")? {
-            out.insert(name, value);
+        match attrs::get_str(&ds, "digest")? {
+            Some(value) => {
+                out.insert(name, value);
+            }
+            None if name != "meta" => gaps.push(name),
+            None => {}
         }
     }
-    Ok(out)
+    gaps.sort();
+    Ok((out, gaps))
 }
 
 /// A digest over every dataset in a group --- an annotation's identity.

@@ -1004,6 +1004,9 @@ pub struct Admitted {
     /// Per row: its cutoff, its subject, and its admitted versions' positions.
     views: Vec<Admits>,
     names: Vec<Names>,
+    /// Per subject: the `content_id`s its sources pin --- the only source
+    /// versions a feature of one of its rows may have read.
+    pins: Vec<BTreeSet<String>>,
 }
 
 /// One row of [`Admitted`].
@@ -1012,8 +1015,11 @@ type Admits = (i64, Option<usize>, Vec<usize>);
 impl Admitted {
     /// From a preflight already in hand.
     pub fn of(pre: &Preflight) -> Admitted {
-        let mut out =
-            Admitted { names: pre.subjects.iter().map(|s| Names::of(&s.events)).collect(), ..Default::default() };
+        let mut out = Admitted {
+            names: pre.subjects.iter().map(|s| Names::of(&s.events)).collect(),
+            pins: pre.subjects.iter().map(pins_of).collect(),
+            ..Default::default()
+        };
         for view in &pre.rows {
             out.insert(&view.row_id, Admitted::admits(view));
         }
@@ -1023,15 +1029,17 @@ impl Admitted {
     /// Preflight `manifest` a subject at a time, keeping only this.
     pub fn preflight(manifest: &TaskManifest, base: Option<&Path>, deep: bool) -> Result<Admitted> {
         let mut names = Vec::new();
+        let mut pins = Vec::new();
         let mut found: Vec<Option<Admits>> = vec![None; manifest.rows.len()];
         let done = preflight_each(manifest, base, deep, &mut |history, rows| {
             names.push(Names::of(&history.events));
+            pins.push(pins_of(&history));
             for (r, view) in rows {
                 found[r] = Some(Admitted::admits(&view));
             }
             Ok(())
         })?;
-        let mut out = Admitted { names, ..Default::default() };
+        let mut out = Admitted { names, pins, ..Default::default() };
         for ((row, found), blank) in manifest.rows.iter().zip(found).zip(done.unclaimed) {
             out.insert(&row.row_id, found.or_else(|| blank.as_ref().map(Admitted::admits)).expect("every row"));
         }
@@ -1048,6 +1056,14 @@ impl Admitted {
         self.views.push(admits);
     }
 
+    /// The `content_id`s the sources of a row's subject pin; `None` for a row
+    /// this task does not have, empty when its subject is unknown.
+    pub fn row_pins(&self, row_id: &str) -> Option<&BTreeSet<String>> {
+        static NONE: std::sync::OnceLock<BTreeSet<String>> = std::sync::OnceLock::new();
+        let (_, subject, _) = &self.views[*self.rows.get(row_id)?];
+        Some(subject.and_then(|i| self.pins.get(i)).unwrap_or_else(|| NONE.get_or_init(BTreeSet::new)))
+    }
+
     /// A row's cutoff and the ids of the versions it admits, in input order.
     pub fn row(&self, row_id: &str) -> Option<(i64, Vec<&str>)> {
         let (cutoff, subject, positions) = &self.views[*self.rows.get(row_id)?];
@@ -1056,6 +1072,11 @@ impl Admitted {
             .map_or_else(Vec::new, |names| positions.iter().map(|&i| names.get(i)[0]).collect());
         Some((*cutoff, ids))
     }
+}
+
+/// The `content_id`s a subject's sources pin.
+fn pins_of(history: &SubjectHistory) -> BTreeSet<String> {
+    history.sources.iter().map(|s| s.content_id.clone()).collect()
 }
 
 /// What one subject contributes: its history, its findings, its rows' views.

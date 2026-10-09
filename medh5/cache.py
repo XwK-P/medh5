@@ -335,13 +335,17 @@ def validate_cache(
     base: PathLike | None = None,
     task: TaskManifest | None = None,
     task_base: PathLike | None = None,
+    check_rows: bool = True,
 ) -> CacheReport:
     """Validate a cache: its checksums, every source pin, and --- given a task
-    --- that it was built for this task, at these cutoffs, from versions each
-    row admits, and fitted on this task's training partition.
+    --- that it was built for this task, fitted on this task's training
+    partition, and (``check_rows``) that each row's entry was built at its
+    cutoff, from versions it admits, of its own subject's sources.
 
     ``base`` resolves the entries' relative source URIs (default: the cache's
-    directory); ``task_base`` the task's (default: the manifest's).
+    directory); ``task_base`` the task's (default: the manifest's).  The row
+    checks run the task's preflight; an event-level cache has no row entries,
+    so ``check_rows=False`` spares it that.
     """
     if task is not None and task_base is None:
         task_base = task.base
@@ -350,6 +354,7 @@ def validate_cache(
         None if base is None else os.fspath(base),
         None if task is None else task.to_json(),
         None if task_base is None else os.fspath(task_base),
+        check_rows,
     )
     return CacheReport.from_json(found)
 

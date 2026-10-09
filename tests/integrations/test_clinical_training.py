@@ -727,3 +727,130 @@ def test_the_cutoff_in_hours_reads_the_preliminary_report(tmp_path: Path):
     with medh5.open(path) as s:
         assert s.clinical is not None
         assert s.clinical.select(24 * HOUR).event_ids == ["lab0", "ct0", "rep_v1"]
+
+
+class TestAdmissibility:
+    """What a dataset is built from: this task's own preflight, and feature
+    caches of the level its role needs, fitted on this task's training split
+    (audit B05, B06)."""
+
+    @staticmethod
+    def _tasks(tmp_path: Path) -> tuple[TaskManifest, TaskManifest]:
+        """One cohort as two instances of one task definition, the split
+        swapped: A trains and B validates, then the other way round."""
+        from medh5.clinical import Event
+        from medh5.task import Slot, SourceRef
+        from tests.kits import History
+
+        paths = {}
+        for subject in ("P-A", "P-B"):
+            paths[subject] = tmp_path / f"{subject}.medh5"
+            only = Event(
+                f"x{subject}",
+                f"x{subject}",
+                "observation",
+                "point",
+                "final",
+                effective_start_us=-30 * HOUR,
+                available_us=-29 * HOUR,
+                code_system="http://loinc.org",
+                code=f"only-{subject}",
+                value_num=5.0,
+                unit="mg/dL",
+            )
+            History.write(paths[subject], subject_id=subject, events=[only])
+
+        def task(train: str, val: str) -> TaskManifest:
+            t = TaskManifest.new(
+                "t",
+                "1",
+                identity_namespace="site",
+                slots=[Slot("ct", "CT", required=True, patch=(4, 8, 8))],
+                split=("fold-0", ["train", "val"]),
+                base=tmp_path,
+            )
+            for subject, part in ((train, "train"), (val, "val")):
+                source = SourceRef.pin(paths[subject], uri=paths[subject].name)
+                t.add_subject(subject, [source], partition=part)
+                t.add_row(f"{subject}@24h", subject, 24 * HOUR)
+            return t
+
+        return task("P-A", "P-B"), task("P-B", "P-A")
+
+    def test_B05_a_preflight_of_another_split_is_refused(self, tmp_path: Path):
+        """The definition fingerprint is shared by both instances; a preflight
+        of the other one put this task's validation subject in its training
+        rows, and the vocabulary fitted on it recorded this task's split."""
+        current, swapped = self._tasks(tmp_path)
+        assert current.task_fingerprint == swapped.task_fingerprint
+        assert current.manifest_fingerprint != swapped.manifest_fingerprint
+        other = swapped.preflight()
+        for build in (
+            lambda: ClinicalTaskDataset(current, partition="train", preflight=other),
+            lambda: ConceptVocabulary.fit(current, other),
+        ):
+            with pytest.raises(
+                MEDH5ValidationError, match="another instance"
+            ) as caught:
+                build()
+            assert caught.value.code == "T404"
+        own = ClinicalTaskDataset(
+            current, partition="train", preflight=current.preflight()
+        )
+        assert [r.subject_id for r in own.rows] == ["P-A"]
+        assert "observation|http://loinc.org|only-P-B" not in own.concepts.concepts
+        assert "observation|http://loinc.org|only-P-A" in own.concepts.concepts
+
+    def test_B06_a_document_cache_is_event_level_and_fitted_on_training(
+        self, tmp_path: Path
+    ):
+        """`documents=` was validated without the task --- so a cache fitted on
+        the validation split was accepted --- and served any entry naming an
+        event, a patient-level one included: the 24 h row read a feature of a
+        later row's whole history."""
+        from medh5.cache import fitted_on
+
+        task, _ = self._tasks(tmp_path)
+        report = task.preflight()
+        header = {
+            "encoder": {"name": "enc", "revision": "1"},
+            "output": {"dtype": "float32", "shape": [1]},
+        }
+
+        def documents(path: Path, partition: str) -> Path:
+            with CacheWriter(
+                path, level="event", fitted_on=fitted_on(task, partition), **header
+            ) as w:
+                for subject in task.subjects:
+                    for source in subject.sources:
+                        for event in ("rep_v1", "rep_v2"):
+                            w.add_event(source, event, np.ones(1, np.float32))
+            return path
+
+        val_fitted = documents(tmp_path / "val.medh5cache", "val")
+        with pytest.raises(MEDH5ValidationError) as caught:
+            ClinicalTaskDataset(task, partition="train", documents=val_fitted)
+        assert caught.value.code == "T405"
+
+        row = report.row("P-A@24h")
+        rows = tmp_path / "rows.medh5cache"
+        with CacheWriter(rows, level="patient", task=task, **header) as w:
+            w.add(
+                row.row_id,
+                np.full(1, 999.0, np.float32),
+                sources=list(row.sources),
+                row_id=row.row_id,
+                cutoff_us=row.cutoff_us,
+                event_versions=[e.event_id for e in row.events],
+                event_id="rep_v1",
+            )
+        with pytest.raises(MEDH5ValidationError, match="level 'event'") as caught:
+            ClinicalTaskDataset(task, partition="train", documents=rows)
+        assert caught.value.code == "T404"
+        with pytest.raises(MEDH5ValidationError, match="level 'patient'"):
+            ClinicalTaskDataset(task, partition="train", row_features=val_fitted)
+
+        # Event-level features fitted on the training split serve every row.
+        train_fitted = documents(tmp_path / "train.medh5cache", "train")
+        dataset = ClinicalTaskDataset(task, partition="train", documents=train_fitted)
+        assert dataset[0]["documents"]["features"].tolist() == [[1.0]]

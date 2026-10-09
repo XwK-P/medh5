@@ -56,9 +56,40 @@
     },
     "entries": { "type": "array", "items": { "$ref": "#/$defs/entry" } }
   },
+  "allOf": [
+    {
+      "description": "A patient-level cache names the task it was built for, and every entry pins its row, the row's cutoff and the versions it selected.",
+      "if": { "properties": { "level": { "const": "patient" } }, "required": ["level"] },
+      "then": {
+        "required": ["task_fingerprint"],
+        "properties": {
+          "task_fingerprint": { "$ref": "#/$defs/digest" },
+          "entries": { "items": { "$ref": "#/$defs/patient_entry" } }
+        }
+      }
+    },
+    {
+      "description": "An event-level entry names the event version it encodes.",
+      "if": { "properties": { "level": { "const": "event" } }, "required": ["level"] },
+      "then": { "properties": { "entries": { "items": { "$ref": "#/$defs/event_entry" } } } }
+    }
+  ],
 
   "$defs": {
     "digest": { "type": "string", "pattern": "^(sha256|sha512|blake2b):[0-9a-f]+$" },
+    "int64": { "type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807 },
+    "patient_entry": {
+      "required": ["row_id", "cutoff_us", "event_versions"],
+      "properties": {
+        "row_id": { "type": "string", "minLength": 1 },
+        "cutoff_us": { "$ref": "#/$defs/int64" },
+        "event_versions": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "event_entry": {
+      "required": ["event_id"],
+      "properties": { "event_id": { "type": "string", "minLength": 1 } }
+    },
     "source": {
       "type": "object",
       "required": ["uri", "content_id"],
@@ -80,7 +111,7 @@
         "event_id": { "type": ["string", "null"] },
         "document_id": { "type": ["string", "null"] },
         "row_id": { "type": ["string", "null"] },
-        "cutoff_us": { "type": ["integer", "null"] },
+        "cutoff_us": { "anyOf": [{ "$ref": "#/$defs/int64" }, { "type": "null" }] },
         "event_versions": { "type": ["array", "null"], "items": { "type": "string" } },
         "digest": { "$ref": "#/$defs/digest" }
       }

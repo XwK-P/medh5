@@ -93,13 +93,20 @@ impl CacheEntry {
 
     fn from_json(v: &Value) -> Result<CacheEntry> {
         let text = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_string);
+        // A cutoff present but not an int64 is refused, never read as absent.
+        let cutoff_us = match v.get("cutoff_us") {
+            None | Some(Value::Null) => None,
+            Some(c) => Some(c.as_i64().ok_or_else(|| {
+                Error::coded("T401", format!("cutoff_us {c} is not a 64-bit integer number of microseconds"))
+            })?),
+        };
         Ok(CacheEntry {
             entry_id: text("entry_id").unwrap_or_default(),
             sources: v["sources"].as_array().into_iter().flatten().map(SourceRef::from_json).collect::<Result<_>>()?,
             event_id: text("event_id"),
             document_id: text("document_id"),
             row_id: text("row_id"),
-            cutoff_us: v.get("cutoff_us").and_then(Value::as_i64),
+            cutoff_us,
             event_versions: v
                 .get("event_versions")
                 .and_then(Value::as_array)
@@ -210,15 +217,17 @@ impl std::fmt::Debug for CacheWriter {
 
 impl CacheWriter {
     pub fn create(path: &Path, header: CacheHeader) -> Result<CacheWriter> {
-        let messages = crate::document::schema_messages(validator(), &header.manifest(&[]));
-        if let Some(first) = messages.first() {
-            return Err(Error::coded("T401", format!("the cache header fails its schema: {first}")));
-        }
+        // Before the schema, which requires it too: this is the refusal that
+        // says what is missing.
         if header.level == "patient" && header.task_fingerprint.is_none() {
             return Err(Error::coded(
                 "T404",
                 "a patient-level cache names the task (`task_fingerprint`) it was built for",
             ));
+        }
+        let messages = crate::document::schema_messages(validator(), &header.manifest(&[]));
+        if let Some(first) = messages.first() {
+            return Err(Error::coded("T401", format!("the cache header fails its schema: {first}")));
         }
         let layout = header.output_layout()?;
         let file = AtomicFile::create(path)?;
@@ -263,6 +272,9 @@ impl CacheWriter {
         }
         if entry.sources.is_empty() {
             return Err(Error::coded("T403", "a feature names every source version it read"));
+        }
+        if self.header.level == "event" && entry.event_id.as_deref().is_none_or(str::is_empty) {
+            return Err(Error::coded("T404", "an event-level feature names the event version it encodes"));
         }
         if !is_entry_id(&entry.entry_id) || !self.ids.insert(entry.entry_id.clone()) {
             return Err(Error::invalid(format!("entry id {} is malformed or not unique", repr_str(&entry.entry_id))));
@@ -352,21 +364,32 @@ impl FeatureCache {
         }
         let entries: Vec<CacheEntry> =
             doc["entries"].as_array().into_iter().flatten().map(CacheEntry::from_json).collect::<Result<_>>()?;
+        let header = CacheHeader::from_manifest(&doc);
         let mut by_id = HashMap::new();
         let mut by_event = HashMap::new();
         let mut by_row = HashMap::new();
+        // Each level answers its own question only: a patient-level entry
+        // that also names an event encodes its *row's* history, which a
+        // lookup by event version must never hand out as that event's.
         for (i, e) in entries.iter().enumerate() {
             by_id.insert(e.entry_id.clone(), i);
-            if let (Some(event), Some(source)) = (&e.event_id, e.sources.first()) {
-                by_event.insert((source.content_id.clone(), event.clone()), i);
-            }
-            if let Some(row) = &e.row_id {
-                by_row.insert(row.clone(), i);
+            match header.level.as_str() {
+                "event" => {
+                    if let (Some(event), Some(source)) = (&e.event_id, e.sources.first()) {
+                        by_event.insert((source.content_id.clone(), event.clone()), i);
+                    }
+                }
+                "patient" => {
+                    if let Some(row) = &e.row_id {
+                        by_row.insert(row.clone(), i);
+                    }
+                }
+                _ => {}
             }
         }
         Ok(FeatureCache {
             path: path.to_path_buf(),
-            header: CacheHeader::from_manifest(&doc),
+            header,
             entries,
             manifest_digest: digest,
             file,
@@ -405,6 +428,23 @@ impl FeatureCache {
             return Err(Error::coded(
                 "T402",
                 format!("entry {}'s bytes do not match its checksum", repr_str(entry_id)),
+            ));
+        }
+        // The checksum vouches for the bytes, not for the declaration a model
+        // is built against: the layout is the header's or the entry is wrong.
+        let (dtype, shape) =
+            self.header.output_layout().map_err(|e| Error::coded("T401", format!("the cache's output: {e}")))?;
+        if values.dtype() != dtype || values.shape() != shape {
+            return Err(Error::coded(
+                "T402",
+                format!(
+                    "entry {} is {} {:?}; the cache declares {} {:?}",
+                    repr_str(entry_id),
+                    values.dtype().name(),
+                    values.shape(),
+                    dtype.name(),
+                    shape
+                ),
             ));
         }
         Ok(values)
@@ -514,7 +554,7 @@ pub fn validate_cache(
         if let Some(fitted) = &cache.header.fitted_on {
             let partition = fitted["partition"].as_str().unwrap_or_default();
             let wanted = CacheHeader::fitted_on(task, partition);
-            for key in ["task_fingerprint", "subjects_digest"] {
+            for key in ["task_fingerprint", "set_id", "subjects_digest"] {
                 if fitted.get(key) != wanted.get(key) {
                     report.findings.push(Finding::new(
                         "T405",
@@ -554,6 +594,30 @@ pub fn validate_cache(
                         "T404",
                         &entry.entry_id,
                         format!("built at cutoff {:?}; the row's cutoff is {}", entry.cutoff_us, cutoff_us),
+                    ));
+                }
+                // The versions an entry read are its row's subject's: event
+                // ids are local to a sample, so two patients' rows can admit
+                // the same ids, and only the pins tell whose history a feature
+                // encodes.  By `content_id`, not URI: a relocated copy is the
+                // same version.
+                let pins = admitted.row_pins(row_id).cloned().unwrap_or_default();
+                let foreign: Vec<String> = entry
+                    .sources
+                    .iter()
+                    .filter(|s| !pins.contains(&s.content_id))
+                    .map(|s| format!("{} at {}", s.locator(), s.content_id))
+                    .collect();
+                if !foreign.is_empty() {
+                    report.findings.push(Finding::new(
+                        "T404",
+                        &entry.entry_id,
+                        format!(
+                            "reads {}, which row {}'s subject does not pin: a feature of a row reads only its \
+                             subject's sources",
+                            foreign.join(", "),
+                            repr_str(row_id)
+                        ),
                     ));
                 }
                 let pinned: Vec<&str> = entry.event_versions.iter().flatten().map(String::as_str).collect();

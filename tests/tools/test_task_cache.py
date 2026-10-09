@@ -43,6 +43,7 @@ from medh5.task import (
     preflight,
     schema_text,
 )
+from medh5.validate import validate_file
 from tests.kits import History
 
 TARGET = Target(
@@ -246,6 +247,31 @@ class TestSources:
             data[1] = data[1] ^ 1
         source = task.subjects[1].sources[0]
         assert found(source.check(task.base)) == ["T302"]
+
+    def test_B03_a_dataset_the_root_does_not_cover_breaks_the_pin(self, setup):
+        """`content_id` is a root over *stored* digests, so a dataset added
+        without one changes no root: a planted column passed the shallow and
+        the deep check and a fresh preflight while the rows read its values
+        (1.1 §8, E818).  Every dataset of an attested object must carry its
+        digest (task-cache-1 §2, step 2)."""
+        task, paths = setup
+        with h5py.File(paths["P-02"], "r+") as f:
+            events = f["clinical/events"]
+            n = events["available_lo_us"].shape[0]
+            for name in ("effective_end_lo_us", "effective_end_hi_us"):
+                events.create_dataset(name, data=np.zeros(n, dtype="<i8"))
+                events["valid"].create_dataset(name, data=np.zeros(n, dtype="u1"))
+        with h5py.File(paths["P-03"], "r+") as f:
+            f["images"].create_dataset("extra", data=np.zeros(4, dtype="u1"))
+        for i in (1, 2):
+            source = task.subjects[i].sources[0]
+            assert found(source.check(task.base)) == ["T302"]
+            assert found(source.check(task.base, deep=True)) == ["T302"]
+        assert "carry no digest" in str(task.subjects[1].sources[0].check(task.base)[0])
+        report = task.preflight()
+        assert found(report.findings) == ["T302"]
+        assert {r.status for r in report.rows if r.subject_id != "P-01"} == {"error"}
+        assert "E818" in validate_file(paths["P-02"], level="integrity").codes
 
     def test_S2_a_missing_source_is_T301(self, setup, tmp_path: Path):
         task, paths = setup
@@ -624,6 +650,144 @@ class TestCaches:
         cache.close()
         abandoned = FeatureCache.open(path)
         abandoned.abandon()
+
+    @staticmethod
+    def _rewrite_manifest(path: Path, change: Any) -> None:
+        """Edit a cache's manifest and re-checksum it, as a writer would."""
+        import hashlib
+
+        from medh5._core import canonical_json
+
+        with h5py.File(path, "r+") as f:
+            doc = json.loads(f["manifest"][()].decode())
+            change(doc)
+            text = canonical_json(doc)
+            del f["manifest"]
+            f.create_dataset(
+                "manifest", data=text.decode(), dtype=h5py.string_dtype("utf-8")
+            )
+            f.attrs["manifest_digest"] = "sha256:" + hashlib.sha256(text).hexdigest()
+
+    def test_B04_a_row_feature_reads_only_its_subjects_sources(
+        self, setup, tmp_path: Path
+    ):
+        """Event ids are local to a sample, so two patients' rows admit the same
+        ids at one cutoff: an entry for one row pinned to the other patient's
+        source validated against the task, and served that patient's feature."""
+        task, paths = setup
+        report = task.preflight()
+        mine, theirs = report.row("P-01@24h"), report.row("P-02@24h")
+        assert [e.event_id for e in mine.events] == [e.event_id for e in theirs.events]
+        header = {
+            "level": "patient",
+            "encoder": {"name": "fixture", "revision": "1"},
+            "output": {"dtype": "float32", "shape": [2]},
+            "task": task,
+        }
+
+        def write(path: Path, sources: list[SourceRef]) -> Path:
+            with CacheWriter(path, **header) as w:
+                w.add(
+                    mine.row_id,
+                    np.zeros(2, np.float32),
+                    sources=sources,
+                    row_id=mine.row_id,
+                    cutoff_us=mine.cutoff_us,
+                    event_versions=[e.event_id for e in mine.events],
+                )
+            return path
+
+        crossed = write(
+            tmp_path / "cohort" / "crossed.medh5cache", list(theirs.sources)
+        )
+        findings = validate_cache(crossed, task=task).findings
+        assert found(findings) == ["T404"]
+        assert "does not pin" in str(findings[0])
+        # A relocated copy of the row's own source is the same version.
+        moved = tmp_path / "elsewhere" / "P-01.medh5"
+        moved.parent.mkdir()
+        shutil.copyfile(paths["P-01"], moved)
+        relocated = SourceRef.pin(moved, uri=str(moved))
+        assert relocated.content_id == mine.sources[0].content_id
+        own = write(tmp_path / "cohort" / "own.medh5cache", [relocated])
+        assert validate_cache(own, task=task).ok
+
+    def test_C03_an_entry_is_the_layout_its_cache_declares(self, setup, tmp_path: Path):
+        """The checksum vouches for the bytes, not for the declaration: a header
+        relabelled `float64[999]` validated and served `float32[2]`."""
+        task, _ = setup
+        source = task.subjects[0].sources[0]
+        path = tmp_path / "cohort" / "events.medh5cache"
+        with CacheWriter(
+            path,
+            level="event",
+            encoder={"name": "fixture", "revision": "1"},
+            output={"dtype": "float32", "shape": [2]},
+        ) as w:
+            w.add_event(source, "rep_v1", np.ones(2, np.float32))
+        for output in (
+            {"dtype": "float64", "shape": [2]},
+            {"dtype": "float32", "shape": [3]},
+        ):
+            self._rewrite_manifest(path, lambda doc, o=output: doc.update(output=o))
+            report = validate_cache(path)
+            assert found(report.findings) == ["T402"] and report.corrupt
+            with (
+                FeatureCache.open(path) as cache,
+                pytest.raises(MEDH5ValidationError) as caught,
+            ):
+                cache.event_feature(source.content_id, "rep_v1")
+            assert caught.value.code == "T402"
+
+    def test_C04_a_cache_holds_what_its_level_requires(self, setup, tmp_path: Path):
+        """The writer required a patient cache to name its task and every entry
+        its row, cutoff and selection, and nothing read it back: a cache
+        relabelled `patient` with none of it validated against the task."""
+        task, _ = setup
+        source = task.subjects[0].sources[0]
+        header = {
+            "encoder": {"name": "fixture", "revision": "1"},
+            "output": {"dtype": "float32", "shape": [1]},
+        }
+        path = tmp_path / "cohort" / "relabelled.medh5cache"
+        with CacheWriter(path, level="event", **header) as w:
+            w.add_event(source, "rep_v1", np.ones(1, np.float32))
+        self._rewrite_manifest(path, lambda doc: doc.update(level="patient"))
+        assert found(validate_cache(path, task=task).findings) == ["T401"]
+        writer = CacheWriter(
+            tmp_path / "cohort" / "x.medh5cache", level="event", **header
+        )
+        with pytest.raises(MEDH5ValidationError) as caught:
+            writer.add("x", np.ones(1, np.float32), sources=[source])
+        writer.abort()
+        assert caught.value.code == "T404", "an event-level entry names its event"
+        # Fitted on another split with the same training subjects is still
+        # another split: the record names it.
+        foreign = tmp_path / "cohort" / "foreign.medh5cache"
+        record = dict(fitted_on(task), set_id="another-split")
+        with CacheWriter(foreign, level="event", fitted_on=record, **header) as w:
+            w.add_event(source, "rep_v1", np.ones(1, np.float32))
+        findings = validate_cache(foreign, task=task).findings
+        assert found(findings) == ["T405"] and "set_id" in str(findings[0])
+
+    @pytest.mark.parametrize("cutoff", [2**63, -(2**63) - 1, 3600000000.0])
+    def test_C12_a_cutoff_is_a_64_bit_integer(self, setup, cutoff):
+        """JSON Schema's `integer` admits `3600000000.0`, which serialisers
+        write for integers, and values past int64; both read as cutoff 0 and
+        validated --- moving the row, and what it may read."""
+        task, _ = setup
+        doc = task.to_json()
+        bad = dict(doc, rows=[dict(doc["rows"][0], cutoff_us=cutoff)])
+        with pytest.raises(MEDH5ValidationError) as caught:
+            TaskManifest(bad, base=task.base)
+        assert caught.value.code == "T101"
+
+    @pytest.mark.parametrize("cutoff", [2**63 - 1, -(2**63)])
+    def test_C12_both_int64_endpoints_are_cutoffs(self, setup, cutoff):
+        task, _ = setup
+        doc = task.to_json()
+        fine = TaskManifest(dict(doc, rows=[dict(doc["rows"][0], cutoff_us=cutoff)]))
+        assert fine.validate() == [] and fine.rows[0].cutoff_us == cutoff
 
     def test_findings_print_their_code(self):
         finding = Finding("T302", "P-01", "changed")
