@@ -136,6 +136,28 @@ def test_release_the_homebrew_formula_names_the_binaries_ci_builds() -> None:
     }
 
 
+def test_R03_the_2_0_0_notes_describe_the_format_it_writes() -> None:
+    """The release publishes its CHANGELOG section, and only that section.
+
+    2.0.0's said "The file format is unchanged: 1.0" while the engine writes
+    1.1 for a clinical sample, and the clinical work sat under [Unreleased],
+    which no release extracts.  The release now refuses a CHANGELOG with
+    entries still under [Unreleased].
+    """
+    notes = _release_script("release_notes.py")
+    text = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    body = notes.notes(text, "2.0.0", "XwK-P/medh5", "v2.0.0")
+    assert "**format 1.1**" in body and "**The `clinical` profile**" in body
+    assert "format is unchanged" not in body
+    pinned = "https://github.com/XwK-P/medh5/blob/v2.0.0/docs/spec/medh5-1.1.md"
+    assert f"]({pinned})" in body
+    with pytest.raises(SystemExit, match="no section for 0.0.0"):
+        notes.notes(text, "0.0.0", "o/r", "v0.0.0")
+    notes.check_unreleased("## [Unreleased]\n\n## [9.9.9]\n\n- shipped\n")
+    with pytest.raises(SystemExit, match="Unreleased"):
+        notes.check_unreleased("## [Unreleased]\n\n- not yet\n\n## [9.9.9]\n\n- x\n")
+
+
 class TestPublicNames:
     """Where the public names live."""
 

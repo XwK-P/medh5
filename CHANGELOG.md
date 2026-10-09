@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [2.0.0] — 2026-10-08
+
+**One format engine, three frontends.** The format is now implemented once, in
+Rust: the [`medh5`](https://crates.io/crates/medh5) crate is the canonical
+implementation of the specification --- data model, HDF5 I/O, validation,
+chunked access, compression, geometry and transforms, annotations, provenance
+and integrity. The Python package is a layer over it (`medh5._core`, built with
+PyO3), and the command line is a native binary over the same code. Python keeps
+what is Python's: NumPy at the API, PyTorch and MONAI, and the NIfTI, DICOM,
+RTSTRUCT and nnU-Net converters.
+
 **Format 1.1: clinical context beside the images, and what was known when.**
 The format gains one optional profile, `clinical`, and nothing else: a sample
 may carry its subject's laboratory values, reports and their revisions,
@@ -18,8 +29,38 @@ task manifests and feature caches pinned to the sample versions they read
 ([task-cache-1](docs/spec/task-cache-1.md)) --- and a dataset that builds
 cutoff-aware multimodal batches from it.
 
+**What a file is.** A sample is written at the lowest format version its
+content needs. Imaging-only samples are still **format 1.0**: files written by
+1.x and 2.0 are the same format, read by both, and a sample's `content_id` does
+not depend on which wrote it. A sample carrying the clinical profile is
+**format 1.1**; 1.x opens it and reads its imaging, and its validator reports
+the profile it does not know (`E007`). The package version is a major one
+because of the Python API at the HDF5 boundary --- the package no longer hands
+out `h5py` objects --- and the behaviour changes below.
+
 ### Added
 
+- **The Rust crates.** `medh5` (the engine), `medh5-sys` (HDF5 built from
+  source and linked statically, C-Blosc2, and the Blosc2 and Zstandard HDF5
+  filters --- nothing to install) and `medh5-cli` (the `medh5` binary). Their
+  version is the package's, from one place: the Cargo workspace.
+- **The native command line**, from `cargo install medh5-cli`, the binaries on
+  each GitHub Release, or Homebrew. The `medh5` command `pip` installs runs the
+  same Rust code, so both give the same output and exit codes. The converters
+  (`convert …`, `migrate`) are Python integrations: the binary runs them
+  through a Python that has the package (`python3`, or `MEDH5_PYTHON`).
+- **Wheels** for Linux (x86_64, aarch64), macOS (x86_64, arm64) and Windows
+  (x64): one `abi3` wheel per platform serves CPython 3.10 and later. For MSVC
+  targets `.cargo/config.toml` gives the C builds `/DNDEBUG`: cmake-rs drops
+  CMake's release flags under the Visual Studio generator, and HDF5's
+  assertions would abort the process on a damaged file instead of reporting it.
+- **Types for the engine**: `medh5/_core.pyi`, checked against the built module
+  by `stubtest` in the test suite, so `mypy --strict` users keep the 1.x
+  signatures.
+- `medh5.nodes` --- `Group`, `Dataset` and `Attrs`, the package's views of
+  stored objects (see below); `Sample.is_open`; `medh5.cli.command_tree()`, the
+  command line's grammar as data; and an `h5py` extra (`h5py` and `hdf5plugin`)
+  for reading a file with `h5py` directly.
 - **The `clinical` profile** (`clinical/meta`, `events`, `documents`,
   `links`): a column layout of primitives --- packed UTF-8, `int64` time
   bounds, `float64` values, validity masks --- written, read, validated and
@@ -101,83 +142,6 @@ cutoff-aware multimodal batches from it.
 
 ### Behaviour changes
 
-- **`FORMAT_VERSION` is `"1.1"`**, the newest version the package writes. A
-  sample without the clinical profile is still written as `1.0`;
-  `written_version(source, profiles)` says which.
-- **A later minor is a projection.** A file of a minor version newer than the
-  package implements opens and validates as what it knows, with every unknown
-  item reported as `W913` --- an unrecomputable `content_id` too, rather than
-  `E702` --- and is never amended, recompressed or packed (`MEDH5VersionError`).
-  1.0 §16's "accept a higher MINOR" is corrected accordingly (Appendix C.1).
-- **An unknown profile refuses an amendment** (`E007`) before anything is
-  written, instead of being re-derived away.
-- **A collection declares its newest member's version** (`E011` when lower).
-- **The torch handle cache is keyed by `(path, sample_key)`**: `open_cached`
-  and `HandleCache.get` / `lease` take an optional member key, so collection
-  members are cached, leased and abandoned across a fork like files.
-  `lease(..., content_id=...)` reads the version a task row pins: a handle
-  cached from before its file was replaced is reopened --- for that lease
-  alone while another lease is still reading the old one, rather than refused
-  --- and a changed source refused (T302).
-- **A `document` event owns at most one document** (`E815`, 1.1 §6, recorded
-  in Appendix A): two texts under one event version would share its
-  availability and revision chain, and an event-level feature would name
-  neither --- `build_document_cache` failed on such a file.
-- **`medh5 task preflight --json` lists its members in the order they become
-  known**: the fingerprints, `subjects`, `rows`, then `ok`, `counts` and
-  `findings` (`Preflight::to_json` likewise). The content is unchanged.
-- **`validate_cache` takes what a preflight admits** (`Admitted`, built a
-  subject at a time by `Admitted::preflight` or from a `Preflight` by
-  `Admitted::of`) instead of the whole preflight.
-- **A damaged source is a finding, not a failed preflight**: clinical bytes
-  that cannot be read fail the pin (T302) and the table check (T306).
-- **Only an imaging version fills a slot** (task-cache-1 §3.5): an image some
-  other kind of event `describes` is not the slot's.
-- `medh5.errors.Domain` includes `"clinical"`.
-
-## [2.0.0] — 2026-10-08
-
-**One format engine, three frontends.** The format is now implemented once, in
-Rust: the [`medh5`](https://crates.io/crates/medh5) crate is the canonical
-implementation of the specification --- data model, HDF5 I/O, validation,
-chunked access, compression, geometry and transforms, annotations, provenance
-and integrity. The Python package is a layer over it (`medh5._core`, built with
-PyO3), and the command line is a native binary over the same code. Python keeps
-what is Python's: NumPy at the API, PyTorch and MONAI, and the NIfTI, DICOM,
-RTSTRUCT and nnU-Net converters.
-
-**The file format is unchanged: 1.0.** Files written by 1.x and 2.0 are the
-same format, read by both, and a sample's `content_id` does not depend on which
-wrote it. The version is a major one because of the Python API at the HDF5
-boundary --- the package no longer hands out `h5py` objects --- and the
-behaviour changes below.
-
-### Added
-
-- **The Rust crates.** `medh5` (the engine), `medh5-sys` (HDF5 built from
-  source and linked statically, C-Blosc2, and the Blosc2 and Zstandard HDF5
-  filters --- nothing to install) and `medh5-cli` (the `medh5` binary). Their
-  version is the package's, from one place: the Cargo workspace.
-- **The native command line**, from `cargo install medh5-cli`, the binaries on
-  each GitHub Release, or Homebrew. The `medh5` command `pip` installs runs the
-  same Rust code, so both give the same output and exit codes. The converters
-  (`convert …`, `migrate`) are Python integrations: the binary runs them
-  through a Python that has the package (`python3`, or `MEDH5_PYTHON`).
-- **Wheels** for Linux (x86_64, aarch64), macOS (x86_64, arm64) and Windows
-  (x64): one `abi3` wheel per platform serves CPython 3.10 and later. For MSVC
-  targets `.cargo/config.toml` gives the C builds `/DNDEBUG`: cmake-rs drops
-  CMake's release flags under the Visual Studio generator, and HDF5's
-  assertions would abort the process on a damaged file instead of reporting it.
-- **Types for the engine**: `medh5/_core.pyi`, checked against the built module
-  by `stubtest` in the test suite, so `mypy --strict` users keep the 1.x
-  signatures.
-- `medh5.nodes` --- `Group`, `Dataset` and `Attrs`, the package's views of
-  stored objects (see below); `Sample.is_open`; `medh5.cli.command_tree()`, the
-  command line's grammar as data; and an `h5py` extra (`h5py` and `hdf5plugin`)
-  for reading a file with `h5py` directly.
-
-### Behaviour changes
-
 - **Views, not `h5py` objects.** `Sample.root`, `Image.dataset`,
   `Annotation.group`, `Transform.group`, `SamplingIndex.group`,
   `SampleWriter.handle` and the writer's `add_*` return values are
@@ -235,6 +199,39 @@ behaviour changes below.
   outside Python accepts. A file 1.x wrote that way still opens --- the tokens
   read as `None` --- and now validates with **E004**. An *attribute* may still
   hold one, and hashes exactly as 1.x hashed it.
+- **`FORMAT_VERSION` is `"1.1"`**, the newest version the package writes. A
+  sample without the clinical profile is still written as `1.0`;
+  `written_version(source, profiles)` says which.
+- **A later minor is a projection.** A file of a minor version newer than the
+  package implements opens and validates as what it knows, with every unknown
+  item reported as `W913` --- an unrecomputable `content_id` too, rather than
+  `E702` --- and is never amended, recompressed or packed (`MEDH5VersionError`).
+  1.0 §16's "accept a higher MINOR" is corrected accordingly (Appendix C.1).
+- **An unknown profile refuses an amendment** (`E007`) before anything is
+  written, instead of being re-derived away.
+- **A collection declares its newest member's version** (`E011` when lower).
+- **The torch handle cache is keyed by `(path, sample_key)`**: `open_cached`
+  and `HandleCache.get` / `lease` take an optional member key, so collection
+  members are cached, leased and abandoned across a fork like files.
+  `lease(..., content_id=...)` reads the version a task row pins: a handle
+  cached from before its file was replaced is reopened --- for that lease
+  alone while another lease is still reading the old one, rather than refused
+  --- and a changed source refused (T302).
+- **A `document` event owns at most one document** (`E815`, 1.1 §6, recorded
+  in Appendix A): two texts under one event version would share its
+  availability and revision chain, and an event-level feature would name
+  neither --- `build_document_cache` failed on such a file.
+- **`medh5 task preflight --json` lists its members in the order they become
+  known**: the fingerprints, `subjects`, `rows`, then `ok`, `counts` and
+  `findings` (`Preflight::to_json` likewise). The content is unchanged.
+- **`validate_cache` takes what a preflight admits** (`Admitted`, built a
+  subject at a time by `Admitted::preflight` or from a `Preflight` by
+  `Admitted::of`) instead of the whole preflight.
+- **A damaged source is a finding, not a failed preflight**: clinical bytes
+  that cannot be read fail the pin (T302) and the table check (T306).
+- **Only an imaging version fills a slot** (task-cache-1 §3.5): an image some
+  other kind of event `describes` is not the slot's.
+- `medh5.errors.Domain` includes `"clinical"`.
 
 ### Removed
 
