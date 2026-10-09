@@ -779,6 +779,13 @@ to `float32` where it would not. `float16` represents few fractions exactly (a v
 stored as 0.33325), so a rater-vote map written without this check loses every voxel that sits
 exactly on its threshold, at write time, beyond any reader's reach.
 
+`normalized` holds **at the stored precision** too: at every voxel the stored values, summed in
+`float64`, lie within `10⁻⁶ + u·σ + n·t/2` of 1 --- `σ` the sum, `n` the number of classes, `u` the
+stored dtype's unit roundoff (2⁻¹¹ for `float16`, 2⁻²⁴ for `float32`) and `t` its smallest subnormal ---
+allowing as well for the error of the `float64` sums, `3·n·ε·max(1, σ)` with `ε = 2⁻⁵²`. That is the
+rounding of the values stored and no more, so a map that lost its mass is refused at any class count
+(**E404**). A writer holds the values it is given to `10⁻⁶`, so every map it stores meets the bound.
+
 ### 7.6 Encoding equivalence and selection
 
 All voxel encodings define the same predicate:
@@ -1628,9 +1635,9 @@ any machine. On one, with a 192×256×256 synthetic CT and eight classes, a mult
 costs 3.4 ms, foreground centre sampling 0.03 ms (O(1) in volume size, via §14.3; 0.05 ms at 63
 classes), a metadata-only read 0.19 ms, and `open()` → first patch 2.3 ms.
 
-Thirty clauses have been corrected — ten during implementation, eleven in the 1.x package
+Thirty-one clauses have been corrected — ten during implementation, eleven in the 1.x package
 releases that followed, four when the engine was written a second time, in Rust, for the 2.0
-package, one when it implemented 1.1, and four in the audit of 2.0 before its release — each because
+package, one when it implemented 1.1, and five in the audits of 2.0 before its release — each because
 writing the code showed the text was not implementable, not unambiguous, or not what the
 implementation could honestly promise, as written:
 
@@ -1666,6 +1673,7 @@ implementation could honestly promise, as written:
 | §13.2 | Each kind of line's spelling is stated: a dataset line carries the stored `<algo>:<hex>` digest, an attribute line `<algo>:` and the hex digest, and the `meta` line the bare hex digest; and the objects that have an attribute line are named --- the root and every member of `grids/`, `images/`, `annotations/` and `transforms/`, with `{}` when one carries none of its attributes. The pseudo-code wrote `H(...)` for the `meta` and the attribute lines alike, which reads as one spelling, and named no objects. The executable prototype (§C.2), which follows this text with no implementation between it and the bytes, computed a `content_id` that matched no implementation, and reported it checked. The text now says what every implementation has written since 1.0: no digest changes. |
 | §14.1 | A dataset below 64 KiB, or an empty one, **MAY** be stored contiguous and unfiltered: "Image and voxel-annotation datasets **MUST** be chunked" had no exception, and every implementation since 1.0 has stored such datasets contiguous, because at that size chunking and a filter pipeline cost more than they save --- so the text forbade what both implementations write for every small sample, and no validator checked it. The exception covers the `(1, *spatial_chunk)` clauses of §7.2, §7.3 and §7.5 too. |
 | §10.4 | A displacement field covers its grid's voxel extent, `[-0.5, n - 0.5]` per axis, and under `zero` and `error` a point in the half-voxel margin beyond the outermost sample takes that sample's value, for `linear` and `cubic` alike. The clause named the extrapolation modes and not the extent they start at: linear interpolation clamped the margin to the edge value, while cubic --- SciPy's constant mode, since 1.x --- was zero beyond the outermost samples, so a point `error` admitted came out with no displacement, and `zero` meant a different region for each interpolation. Values between the outermost samples are unchanged. |
+| §7.5 | `normalized` holds at the stored precision: at each voxel the stored values sum to 1 within `10⁻⁶ + u·σ + n·t/2`, and the error of summing them in `float64`, where `σ` is that sum, `n` the number of classes, `u` the stored dtype's unit roundoff (2⁻¹¹ for `float16`, 2⁻²⁴ for `float32`) and `t` its smallest subnormal: the rounding of the values stored, and no more. "Sum to 1" named no tolerance, and no stored map meets it exactly; the one implemented, `n` times the dtype's epsilon, grew with the class count until at 1,024 `float16` classes a map whose every value had been zeroed validated as normalized. A writer holds the values it is given to `10⁻⁶`, so every map it stores meets the bound. |
 
 ### C.2 Prototype checks
 

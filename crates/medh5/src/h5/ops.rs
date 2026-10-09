@@ -397,6 +397,12 @@ fn holds_reference(tid: h5i::hid_t) -> bool {
 
 /// Every dataset and attribute under `root` whose type holds an HDF5
 /// reference: `/path` for a dataset, `/path@name` for an attribute.
+///
+/// Attributes are read on every kind of object that carries them: groups,
+/// datasets and committed (named) datatypes.  [`visit`] walks groups and
+/// datasets, so a reference in an attribute of a committed datatype was
+/// missed, and a rewrite that copies the type nulled it (C10 of the 2.0
+/// re-audit).
 pub fn reference_carriers(root: &hdf5::Group) -> Result<Vec<String>> {
     fn attributes(obj: &hdf5::Location, path: &str, found: &mut Vec<String>) -> Result<()> {
         for name in obj.attr_names()? {
@@ -407,8 +413,32 @@ pub fn reference_carriers(root: &hdf5::Group) -> Result<Vec<String>> {
         }
         Ok(())
     }
+    // The committed datatypes a group links to, each once.
+    fn named_types(
+        group: &hdf5::Group,
+        prefix: &str,
+        seen: &mut HashSet<ObjectId>,
+        found: &mut Vec<String>,
+    ) -> Result<()> {
+        for name in members(group)? {
+            if link_kind(group, &name) != Some(LinkKind::Hard)
+                || group.loc_type_by_name(&name).ok() != Some(hdf5::LocationType::NamedDatatype)
+            {
+                continue;
+            }
+            if object_id_by_name(group, &name).is_some_and(|id| !seen.insert(id)) {
+                continue;
+            }
+            let path = if prefix.is_empty() { format!("/{name}") } else { format!("/{prefix}/{name}") };
+            let named = group.committed_datatype(&name)?;
+            attributes(&named, &path, found)?;
+        }
+        Ok(())
+    }
     let mut found = Vec::new();
+    let mut types = HashSet::new();
     attributes(root, "/", &mut found)?;
+    named_types(root, "", &mut types, &mut found)?;
     visit(root, &mut |name, node| {
         let path = format!("/{name}");
         match node {
@@ -419,7 +449,10 @@ pub fn reference_carriers(root: &hdf5::Group) -> Result<Vec<String>> {
                 }
                 attributes(ds, &path, &mut found)?;
             }
-            Node::Group(g) => attributes(g, &path, &mut found)?,
+            Node::Group(g) => {
+                attributes(g, &path, &mut found)?;
+                named_types(g, name, &mut types, &mut found)?;
+            }
         }
         Ok(true)
     })?;

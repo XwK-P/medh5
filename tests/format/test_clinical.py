@@ -132,6 +132,30 @@ class TestVersions:
         assert found.location == "/clinical/events/value_num"
         assert "big-endian" in found.message
 
+    @pytest.mark.parametrize(
+        "column",
+        ["events/event_id", "events/value_text", "documents/text", "links/relation"],
+    )
+    def test_C11_S4_big_endian_offsets_are_E805(
+        self, history: Path, tmp_path: Path, column: str
+    ):
+        """A UTF-8 column's offsets are little-endian too: the packed branch
+        checked their dtype and rank and not their byte order, so big-endian
+        offsets validated (C11 of the 2.0 re-audit) --- required, nullable
+        (empty in every row here) and deferred columns alike."""
+        assert "E805" not in validate_file(history).codes
+        path = tmp_path / "big.medh5"
+        shutil.copyfile(history, path)
+        with h5py.File(path, "r+") as f:
+            group = f[f"clinical/{column}"]
+            offsets = group["offsets"][...]
+            del group["offsets"]
+            group.create_dataset("offsets", data=offsets.astype(">u8"))
+        report = validate_file(path)
+        (found,) = [d for d in report.diagnostics if d.code == "E805"]
+        assert found.location == f"/clinical/{column}/offsets"
+        assert "big-endian" in found.message
+
     def test_S2_2_another_major_is_refused(self, history: Path, tmp_path: Path):
         future = tmp_path / "major.medh5"
         shutil.copyfile(history, future)

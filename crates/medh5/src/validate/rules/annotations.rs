@@ -339,6 +339,22 @@ fn check_voxel_shape(
             ),
         ));
     }
+    // A probmap's leading axis is its classes (§7.5): a plane per class id.
+    // Absent or unreadable `class_ids` are another rule's finding.
+    let declared = attrs::get_i64s(loc(group), "class_ids").ok().flatten();
+    if let (true, Some(ids)) = (kind == "probmap", declared) {
+        let classes = ids.len();
+        if shape.first().copied() != Some(classes as i64) {
+            out.push(ctx.err(
+                "E405",
+                format!("/annotations/{name}/data"),
+                format!(
+                    "{} planes for {classes} class id(s); a probmap stores one plane per class, in `class_ids` order",
+                    shape.first().copied().unwrap_or(0)
+                ),
+            ));
+        }
+    }
     if stacked {
         if let Some(chunks) = data::chunks(&ds) {
             if chunks.first().copied() != Some(1) {

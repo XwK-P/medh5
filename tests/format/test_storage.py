@@ -465,15 +465,29 @@ class TestC10References:
             elif where == "dataset":
                 group = f.require_group("x_ext")
                 group.create_dataset("refs", data=[target], dtype=h5py.ref_dtype)
-            else:
+            elif where == "compound":
                 compound = np.dtype([("id", "<i4"), ("ref", h5py.ref_dtype)])
                 group = f.require_group("x_ext")
                 group.create_dataset(
                     "rows", data=np.array([(1, target)], dtype=compound)
                 )
+            elif where == "named_type":
+                # A committed datatype carries attributes too (C10 of the 2.0
+                # re-audit): the walk of groups and datasets passed it by.
+                group = f.require_group("x_ext")
+                group["t"] = np.dtype("<f4")
+                group["t"].attrs["x_ref"] = target
+            else:
+                compound = np.dtype([("id", "<i4"), ("ref", h5py.ref_dtype)])
+                f["x_type"] = np.dtype("<i2")
+                f["x_type"].attrs.create(
+                    "rows", data=np.array([(1, target)], dtype=compound)
+                )
         return path
 
-    @pytest.mark.parametrize("where", ["attribute", "dataset", "compound"])
+    @pytest.mark.parametrize(
+        "where", ["attribute", "dataset", "compound", "named_type", "root_named_type"]
+    )
     def test_C10_a_file_holding_references_is_not_rewritten(self, tmp_path, where):
         from medh5.collection import pack
         from medh5.storage import recompress

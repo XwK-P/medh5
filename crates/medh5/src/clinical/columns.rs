@@ -435,6 +435,16 @@ fn read_values(
                 ));
                 return Ok(None);
             }
+            // The scalar columns' rule holds for offsets too (C11 of the 2.0
+            // re-audit): a reader may take the buffer as stored.
+            if big_endian(&offsets_ds) {
+                problems.push(Problem::new(
+                    "E805",
+                    format!("{location}/offsets"),
+                    "`offsets` is stored big-endian; §4 stores a UTF-8 column's offsets little-endian",
+                ));
+                return Ok(None);
+            }
             // The buffer's length is its shape: checking the offsets reads no byte of it.
             let n_bytes = data_ds.shape().first().copied().unwrap_or(0) as u64;
             let offsets: Vec<u64> = read_vec(&offsets_ds)?;

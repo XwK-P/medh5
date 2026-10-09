@@ -2,12 +2,12 @@
 
 use std::collections::BTreeMap;
 
-use super::{loc, str_attr, sub_dataset, Context};
+use super::{grid_spatial, loc, str_attr, sub_dataset, Context};
 use crate::annotations::encode::normalization_tolerance;
-use crate::array::NdArray;
+use crate::array::{DType, NdArray};
 use crate::digest::{parse_digest, DEFAULT_ALGO};
-use crate::h5::attrs;
 use crate::h5::data::{self, Kind};
+use crate::h5::{attrs, ops};
 use crate::integrity::digest::{dataset_digest_inspected, STREAM_BYTES};
 use crate::integrity::{stale_index_entries, verify_root_inspecting};
 use crate::json::{py_float, repr_int_tuple, repr_str};
@@ -103,19 +103,34 @@ pub fn check_integrity(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
 /// checked on the bytes the integrity pass reads anyway.  Only the threshold
 /// was checked, so a map of NaN, or one declared normalised that was not,
 /// validated clean (C09 of the 2.0 audit).
+///
+/// The sums are checked only on a map whose shape is one --- a row per class
+/// it declares, on its grid's spatial shape, which the semantic level holds it
+/// to (E405) --- and held one map at a time: allocated, fallibly, when its
+/// first row is read, and judged and freed after its last.  A shape of
+/// `(0, 2**62)` allocated a sum per voxel before anything was checked, and
+/// the validator panicked (N07 of the 2.0 re-audit).
 struct ProbmapCheck {
     class_ids: Vec<i64>,
     spatial: Vec<usize>,
-    normalized: bool,
-    tolerance: f64,
+    dtype: DType,
+    classes: usize,
+    /// Voxels per class where the sums are checked: declared normalized, on a
+    /// sound shape.
+    summed: Option<usize>,
     rows: usize,
     sums: Vec<f64>,
     bad: Option<(usize, usize, f64)>,
+    /// The first voxel whose sum is off, and the sum.
+    off: Option<(usize, f64)>,
+    /// Why the sums could not be held, if they could not.
+    unsummed: Option<String>,
     read: bool,
 }
 
 fn probmaps(ctx: &Context) -> Result<BTreeMap<String, ProbmapCheck>> {
     let mut out = BTreeMap::new();
+    let grids = ops::child_group(&ctx.root, "grids");
     for (name, group) in ctx.children("annotations")? {
         if str_attr(loc(&group), "kind")?.as_deref() != Some("probmap") {
             continue;
@@ -123,19 +138,34 @@ fn probmaps(ctx: &Context) -> Result<BTreeMap<String, ProbmapCheck>> {
         let Some(ds) = sub_dataset(&group, "data") else { continue };
         let Kind::Numeric(dtype) = data::kind(&ds)? else { continue };
         let shape = ds.shape();
-        let Some((classes, spatial)) = shape.split_first() else { continue };
+        let Some((&classes, spatial)) = shape.split_first() else { continue };
+        let class_ids = attrs::get_i64s(loc(&group), "class_ids")?.unwrap_or_default();
+        // A grid that cannot be read is the semantic level's finding; here it
+        // only means the map is not summed.
+        let on_grid = match (str_attr(loc(&group), "grid").ok().flatten(), &grids) {
+            (Some(grid), Some(grids)) if ops::exists(grids, &grid) => grid_spatial(grids, &grid)
+                .is_ok_and(|g| g.iter().map(|v| usize::try_from(*v).ok()).eq(spatial.iter().map(|v| Some(*v)))),
+            _ => false,
+        };
+        let sound = classes > 0 && classes == class_ids.len() && !spatial.is_empty() && on_grid;
         let normalized = attrs::get_bool(loc(&group), "normalized")?.unwrap_or(false);
-        let voxels: usize = spatial.iter().product();
         out.insert(
             format!("annotations/{name}/data"),
             ProbmapCheck {
-                class_ids: attrs::get_i64s(loc(&group), "class_ids")?.unwrap_or_default(),
+                class_ids,
                 spatial: spatial.to_vec(),
-                normalized,
-                tolerance: normalization_tolerance(dtype, *classes),
+                dtype,
+                classes,
+                summed: if normalized && sound {
+                    spatial.iter().try_fold(1usize, |n, e| n.checked_mul(*e))
+                } else {
+                    None
+                },
                 rows: 0,
-                sums: if normalized { vec![0.0; voxels] } else { Vec::new() },
+                sums: Vec::new(),
                 bad: None,
+                off: None,
+                unsummed: None,
                 read: false,
             },
         );
@@ -146,17 +176,39 @@ fn probmaps(ctx: &Context) -> Result<BTreeMap<String, ProbmapCheck>> {
 impl ProbmapCheck {
     fn feed(&mut self, block: &NdArray) {
         self.read = true;
-        let voxels = self.spatial.iter().product::<usize>().max(1);
         let values = block.to_f64();
+        let rows = values.shape().first().copied().unwrap_or(0);
+        let voxels = values.len() / rows.max(1);
+        if self.rows == 0 && self.unsummed.is_none() {
+            if let Some(n) = self.summed {
+                if let Err(e) = self.sums.try_reserve_exact(n) {
+                    self.unsummed = Some(format!("the sums of its {n} voxels do not fit in memory ({e})"));
+                    self.summed = None;
+                } else {
+                    self.sums.resize(n, 0.0);
+                }
+            }
+        }
         for (k, v) in values.iter().enumerate() {
             if self.bad.is_none() && !(0.0..=1.0).contains(v) {
-                self.bad = Some((self.rows + k / voxels, k % voxels, *v));
+                self.bad = Some((self.rows + k / voxels.max(1), k % voxels.max(1), *v));
             }
-            if self.normalized {
+            if self.summed.is_some() {
                 self.sums[k % voxels] += *v;
             }
         }
-        self.rows += values.shape().first().copied().unwrap_or(0);
+        self.rows += rows;
+        if self.rows >= self.classes && self.summed.is_some() {
+            // The last row: judged now, so the next map's sums are not held
+            // beside these.
+            let (dtype, classes) = (self.dtype, self.classes);
+            self.off = self
+                .sums
+                .iter()
+                .position(|s| (*s - 1.0).abs() > normalization_tolerance(dtype, classes, *s))
+                .map(|voxel| (voxel, self.sums[voxel]));
+            self.sums = Vec::new();
+        }
     }
 
     fn voxel(&self, flat: usize) -> String {
@@ -183,20 +235,20 @@ impl ProbmapCheck {
                     self.voxel(voxel)
                 ),
             ));
+        } else if let Some((voxel, sum)) = self.off {
+            out.push(ctx.err(
+                "E404",
+                format!("/{path}"),
+                format!(
+                    "`normalized` is true, but the classes sum to {} at voxel {}; §7.5 has them sum to 1 at every \
+                     voxel",
+                    py_float(sum),
+                    self.voxel(voxel)
+                ),
+            ));
         }
-        if self.normalized && self.bad.is_none() {
-            if let Some((voxel, sum)) = self.sums.iter().enumerate().find(|(_, s)| (**s - 1.0).abs() > self.tolerance) {
-                out.push(ctx.err(
-                    "E404",
-                    format!("/{path}"),
-                    format!(
-                        "`normalized` is true, but the classes sum to {} at voxel {}; §7.5 has them sum to 1 at every \
-                         voxel",
-                        py_float(*sum),
-                        self.voxel(voxel)
-                    ),
-                ));
-            }
+        if let Some(why) = &self.unsummed {
+            out.push(ctx.err("E001", format!("/{path}"), format!("`normalized` could not be checked: {why}")));
         }
         out
     }

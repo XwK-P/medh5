@@ -345,17 +345,31 @@ out `h5py` objects --- and the behaviour changes below.
   `normalized=True` whose classes do not sum to 1 is `E404`.
 - **Stored probabilities are validated** at the integrity level, on the bytes
   the digest pass reads: a value outside [0, 1] or not a number is `E411`, and
-  a `normalized` map whose classes do not sum to 1 (within the stored
-  precision) is `E404`. Only `threshold` was checked.
+  a `normalized` map whose classes do not sum to 1 is `E404`. Only `threshold`
+  was checked. "Sum to 1" holds to the rounding of the values stored (§7.5,
+  Appendix C.1) --- under 2·10⁻³ at any class count, where an allowance of the
+  class count times the dtype's epsilon let a map of 1,024 `float16` classes
+  whose every value had been zeroed validate. A probmap's planes are one per
+  class id (`E405` otherwise), and a map is summed only on that shape: a
+  declared shape of `(0, 2**62)` allocated a sum per voxel and panicked the
+  validator.
+- **A dataset too large to hold is reported, not a crash.** A file may declare
+  a dataset of any extent and store none of it; reading one asked the
+  allocator for, say, 2⁶³ bytes, which panicked, or 9 TB, which aborted the
+  process --- a 10 KiB file stopped a validator. Every read sizes its buffer
+  with checked arithmetic and reserves a large one fallibly first
+  (`OSError` from Python, `E001` in a report).
 - **A clinical numeric column stored big-endian is `E805`** (1.1 §4 stores them
-  little-endian; HDF5 converted on read, so it validated clean), and a member a
+  little-endian; HDF5 converted on read, so it validated clean), as are a UTF-8
+  column's big-endian `offsets` (1.1 Appendix A), and a member a
   UTF-8 column does not define is `W913` under a projection, as an unknown
   column is --- it was `E804` at any version.
 - **`amend`, `recompress` and `pack` refuse a file holding HDF5 references**
   (`MEDH5FileError`), before writing anything: a reference is an address in the
   file that holds it, so a copied one pointed wherever its address landed in the
   new file, and a no-op amend nulled those in an extension group, while every
-  digest still verified. 1.0 §16 and Appendix C say so.
+  digest still verified. 1.0 §16 and Appendix C say so. An attribute of a
+  committed (named) datatype counts: the walk read groups and datasets only.
 - **NIfTI exports state their units and timing** (`to_nifti`, `to_nnunetv2`):
   lengths in millimetres (a grid in `m` or `um` scaled to them, `px` as
   "unknown"), evenly spaced frames as `pixdim[4]` and `toffset`, and uneven ones

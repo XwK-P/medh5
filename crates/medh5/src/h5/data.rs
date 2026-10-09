@@ -72,10 +72,43 @@ fn is_plain_enum(ds: &hdf5::Dataset) -> bool {
     matches!(ds.dtype().and_then(|t| t.to_descriptor()), Ok(TD::Enum(_)))
 }
 
+/// Reads at least this large reserve their buffer fallibly first.
+const PROBE_BYTES: usize = 64 * 1024 * 1024;
+
+/// Refuse a read of `extents` elements of `itemsize` bytes that no buffer
+/// can hold, rather than let the allocation fail.
+///
+/// A file can declare a dataset of any extent and store none of it --- an
+/// unallocated chunk reads as the fill value --- so a 10 KiB file asked the
+/// allocator for 2**63 bytes, which panicked (`capacity overflow`), or for
+/// 9 TB, which aborted the process (N07 of the 2.0 re-audit).  The size is
+/// computed with checked arithmetic and a large buffer reserved fallibly, so
+/// such a read is an error the caller reports.
+pub(crate) fn ensure_allocatable(ds: &hdf5::Dataset, extents: &[usize], itemsize: usize) -> Result<()> {
+    if extents.contains(&0) {
+        return Ok(());
+    }
+    let bytes = extents.iter().try_fold(itemsize, |n, e| n.checked_mul(*e)).filter(|b| *b <= isize::MAX as usize);
+    let held = match bytes {
+        Some(b) if b >= PROBE_BYTES => Vec::<u8>::new().try_reserve_exact(b).is_ok(),
+        Some(_) => true,
+        None => false,
+    };
+    if held {
+        return Ok(());
+    }
+    Err(Error::Io(format!(
+        "{} cannot be read: {} elements of {itemsize} bytes are more than this process can hold",
+        ds.name(),
+        extents.iter().map(usize::to_string).collect::<Vec<_>>().join(" x ")
+    )))
+}
+
 /// Read a whole numeric dataset.
 pub fn read(ds: &hdf5::Dataset) -> Result<NdArray> {
     super::alive(ds)?;
     let dtype = dtype(ds)?;
+    ensure_allocatable(ds, &ds.shape(), dtype.itemsize())?;
     if is_plain_enum(ds) {
         return read_enum(ds, dtype);
     }
@@ -185,6 +218,7 @@ pub fn read_region(ds: &hdf5::Dataset, index: &[Index]) -> Result<NdArray> {
     let shape = ds.shape();
     let axes = resolve(&shape, index)?;
     let out_shape: Vec<usize> = axes.iter().filter(|a| a.3).map(|a| a.1).collect();
+    ensure_allocatable(ds, &axes.iter().map(|a| a.1).collect::<Vec<_>>(), dtype.itemsize())?;
     if axes.iter().all(|(start, _count, step, kept)| *kept && *start == 0 && *step == 1)
         && axes.iter().zip(&shape).all(|(a, n)| a.1 == *n)
     {

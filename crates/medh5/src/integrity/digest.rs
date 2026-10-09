@@ -94,8 +94,9 @@ pub fn dataset_digest_inspected(
         Kind::Other(t) => Err(Error::Type(format!("{} has an unsupported datatype {t}", ds.name()))),
         Kind::Numeric(dtype) => {
             feed_header(&mut hasher, path, dtype.numpy_str(), &shape);
-            let size: usize = shape.iter().product();
-            if !shape.is_empty() && size == 0 {
+            // Empty by any extent of 0, whatever the others: a product of the
+            // extents can overflow first (N07 of the 2.0 re-audit).
+            if shape.contains(&0) {
                 return Ok(hasher.finish());
             }
             if shape.is_empty() || data::is_enum(ds) {
@@ -106,7 +107,9 @@ pub fn dataset_digest_inspected(
                 hasher.update(&all.le_bytes());
                 return Ok(hasher.finish());
             }
-            let row_bytes = (shape[1..].iter().product::<usize>() * dtype.itemsize()).max(1);
+            // A row too large to hold is refused by the read, not wrapped.
+            let row_bytes =
+                shape[1..].iter().try_fold(dtype.itemsize(), |n, e| n.checked_mul(*e)).unwrap_or(usize::MAX).max(1);
             let step = (stream_bytes / row_bytes).max(1);
             let mut start = 0;
             while start < shape[0] {

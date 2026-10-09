@@ -283,15 +283,28 @@ pub fn storage_dtype(planes: &[ArrayD<f64>], threshold: f64, requested: DType) -
     Ok(widest)
 }
 
-/// How far a `normalized` map's per-voxel sum may be from 1 in `dtype`: the
-/// rounding of `classes` stored values, and a little for the input's.
-pub fn normalization_tolerance(dtype: DType, classes: usize) -> f64 {
-    let epsilon = match dtype {
-        DType::F16 => 2f64.powi(-10),
-        DType::F32 => 2f64.powi(-23),
-        _ => 2f64.powi(-52),
+/// How far `sum`, the per-voxel sum of a `normalized` map's `classes` values
+/// stored as `dtype`, may be from 1 (§7.5): the 1e-6 a writer allows the
+/// values it is given, the rounding of each stored value --- half a unit in
+/// its last place, at most `u·v` for a normal `v` and half the smallest
+/// subnormal below them --- and the float64 sums of the writer and the
+/// reader, `n·ε/2` of the sum each, which with the writer's own allowance for
+/// its sum make three.
+///
+/// The rounding is bounded by the values stored, not by the class count
+/// alone: `classes · epsilon` reached 1 at 1,024 float16 classes, and a map
+/// whose every value was zeroed then validated as normalized (C09 of the 2.0
+/// re-audit).  This bound stays below 2e-3 at every count a class id allows.
+pub fn normalization_tolerance(dtype: DType, classes: usize, sum: f64) -> f64 {
+    // The unit roundoff and the smallest positive subnormal.
+    let (unit, tiny) = match dtype {
+        DType::F16 => (2f64.powi(-11), 2f64.powi(-24)),
+        DType::F32 => (2f64.powi(-24), 2f64.powi(-149)),
+        _ => (0.0, 0.0),
     };
-    1e-6 + classes as f64 * epsilon
+    let n = classes as f64;
+    let sum = sum.abs();
+    1e-6 + unit * sum + n * tiny / 2.0 + 3.0 * n * f64::EPSILON * sum.max(1.0)
 }
 
 /// Stack per-class probability volumes on a leading class axis (§7.5).
@@ -347,8 +360,13 @@ pub fn encode_probmap(
         for plane in &planes {
             sums += plane;
         }
-        let tolerance = normalization_tolerance(DType::F64, planes.len());
-        if let Some((index, sum)) = sums.indexed_iter().find(|(_, s)| (**s - 1.0).abs() > tolerance) {
+        // The values as given, to 1e-6 and the error of this sum: what the
+        // stored map is then held to adds only their rounding (see
+        // `normalization_tolerance`), so a map written here always validates.
+        let n = planes.len() as f64;
+        if let Some((index, sum)) =
+            sums.indexed_iter().find(|(_, s)| (**s - 1.0).abs() > 1e-6 + n * f64::EPSILON * s.abs().max(1.0))
+        {
             return Err(Error::coded(
                 "E404",
                 format!(
@@ -889,5 +907,81 @@ mod tests {
         assert_eq!(data.dtype(), DType::F16);
         let back = payload_to_masks(&p, None, None).unwrap();
         assert_eq!(back[&1].iter().copied().collect::<Vec<_>>(), vec![true, false, true]);
+    }
+
+    /// The stored sums, as the validator forms them: class by class, in
+    /// float64, from the values the payload stores.
+    fn stored_sums(p: &Payload) -> Vec<f64> {
+        let data = p.data().unwrap().to_f64();
+        let classes = data.shape()[0];
+        let voxels = data.len() / classes;
+        let mut sums = vec![0.0; voxels];
+        for (k, v) in data.iter().enumerate() {
+            sums[k % voxels] += *v;
+        }
+        sums
+    }
+
+    /// The allowance is bounded by the values stored, at every class count a
+    /// class id allows: `classes · epsilon` was 1.000001 at 1,024 float16
+    /// classes, and a map whose every value was zeroed validated as normalized
+    /// (C09 of the 2.0 re-audit).
+    #[test]
+    fn c09_s7_5_no_class_count_admits_a_lost_mass() {
+        for dtype in [DType::F16, DType::F32] {
+            for classes in [1, 2, 1024, 65536] {
+                assert!(normalization_tolerance(dtype, classes, 0.0) < 2e-3, "{dtype:?}, {classes}");
+                assert!(normalization_tolerance(dtype, classes, 1.0) < 3e-3, "{dtype:?}, {classes}");
+            }
+        }
+        assert!(normalization_tolerance(DType::F16, 1024, 0.0) < 1e-4);
+        assert!(normalization_tolerance(DType::F32, 1024, 1.0) < 2e-6);
+    }
+
+    /// Whatever the writer accepts, its stored map meets the bound: here 1,000
+    /// classes each just below the midpoint above a float16 power of two, so
+    /// every one rounds down by almost half a unit in its last place --- the
+    /// worst float16 can do --- and a softmax over 1,024 classes.
+    #[test]
+    fn c09_s7_5_a_map_the_writer_stores_meets_the_bound() {
+        let shape = [2usize, 2];
+        let b = 2f64.powi(-10);
+        let below = b + 2f64.powi(-21) * (1.0 - 2f64.powi(-20));
+        let mut worst: BTreeMap<i64, ArrayD<f64>> =
+            (1..=1000).map(|c| (c, ArrayD::from_elem(IxDyn(&shape), below))).collect();
+        worst.insert(1001, ArrayD::from_elem(IxDyn(&shape), 1.0 - 1000.0 * below));
+        let mut softmax: BTreeMap<i64, ArrayD<f64>> = BTreeMap::new();
+        let mut state = 0x2545_f491_4f6c_dd1du64;
+        let logits: Vec<f64> = (0..1024)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                (state % 10_000) as f64 / 1_000.0
+            })
+            .collect();
+        let total: f64 = logits.iter().map(|l| l.exp()).sum();
+        for (c, l) in logits.iter().enumerate() {
+            softmax.insert(c as i64 + 1, ArrayD::from_elem(IxDyn(&shape), l.exp() / total));
+        }
+        for planes in [worst, softmax] {
+            let n = planes.len();
+            let p = encode_probmap(&planes, None, DType::F16, true, None).unwrap();
+            assert_eq!(p.data().unwrap().dtype(), DType::F16);
+            for sum in stored_sums(&p) {
+                assert!((sum - 1.0).abs() <= normalization_tolerance(DType::F16, n, sum), "{n} classes sum to {sum}");
+            }
+        }
+        // The worst case is not slack the bound has to spare.
+        let p = encode_probmap(
+            &(1..=1000).map(|c| (c, ArrayD::from_elem(IxDyn(&shape), below))).collect(),
+            None,
+            DType::F16,
+            false,
+            None,
+        )
+        .unwrap();
+        let lost = 1000.0 * below - stored_sums(&p)[0];
+        assert!(lost > 4.7e-4 && lost <= normalization_tolerance(DType::F16, 1000, 1.0), "{lost}");
     }
 }

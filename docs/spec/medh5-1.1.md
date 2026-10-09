@@ -148,7 +148,7 @@ of a table has the same row count `N`.
 | Logical column | HDF5 representation |
 |---|---|
 | Integer, floating point | Dataset `(N,)` of the column's dtype (§5–§7): `int64`, `uint64` or `float64`, little-endian |
-| UTF-8 string | Group `<column>/` holding `data: uint8[B]` and `offsets: uint64[N+1]` |
+| UTF-8 string | Group `<column>/` holding `data: uint8[B]` and `offsets: uint64[N+1]`, little-endian |
 | Nullable column | Optional `valid/<column>: uint8[N]`, values exactly 0 or 1 |
 
 A column of another dtype, rank or row count is **E805**. For a packed string, `offsets[0] = 0`,
@@ -512,6 +512,7 @@ showed it was needed.
 | §3 | The declaration without the group, without events, or in a 1.0 file is E009; the group without the declaration E803. | The draft said "A recognized `clinical/meta` descriptor without that profile declaration is invalid" and that events need "at least one row", but gave no codes. |
 | §4 | Each numeric column has one dtype (`int64` times, `float64` values, `uint64` spans); the column set is closed (E804) except in a higher minor's projection (W913). | "A fixed-width numeric dtype" let two writers store the same time as `int32` and `int64`, which digest differently; a closed set is what lets a 1.1 validator tell an unknown column from a misspelled one. |
 | §4 | A mask for a required or omitted column, or with values other than 0/1, is E807. | The draft defined mask values but not where a mask may appear. |
+| §4 | A UTF-8 column's `offsets` are little-endian, as the numeric columns are (E805). | Found by the re-audit of 2.0: the table said it of the numeric columns only, and a column whose offsets were stored big-endian validated --- correct to a reader converting through HDF5, and not to one reading the buffer as the format lays it out. |
 | §5.1 | `W914` for a numeric value without a unit. | The draft's "SHOULD carry a unit" needed a reportable form that is not an error. |
 | §5.3 | An imaging event's `timepoint_id` must equal its image's grid timepoint (E814). | Stated in the draft without a code. |
 | §6 | A document is owned by **exactly one** `document` event, and a `document` event owns **at most one** document (E815). | "MUST be linked from an immutable `document` event" allowed two owners, and then the document's availability would be ambiguous. The converse was found implementing the cache contract: two texts under one event would share one availability, status and revision chain --- revising either would force a copy of the other --- and an event-level feature (task contract §7) would no longer name one text. |

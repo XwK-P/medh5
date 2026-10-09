@@ -239,6 +239,93 @@ class TestStoredProbabilities:
         (found,) = [d for d in report.diagnostics if d.code == "E404"]
         assert "sum to 1.25 at voxel (5, 0, 0)" in found.message
 
+    @staticmethod
+    def _many(path: Path, planes: np.ndarray) -> Path:
+        """One float16 class per plane of *planes*, on a 2x2x2 grid, declared
+        normalized."""
+        from medh5.labels import LabelClass, LabelSet
+
+        n = len(planes)
+        labels = LabelSet(
+            "many",
+            version="1.0.0",
+            classes=[LabelClass(i, f"c{i}", f"C{i}") for i in range(1, n + 1)],
+        )
+        with medh5.create(path, sample_id="s1", subject_id="subj-1") as w:
+            w.add_grid("g", shape=(2, 2, 2), spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", np.zeros((2, 2, 2), np.int16), grid="g", modality="CT")
+            w.label_set(labels)
+            w.add_segmentation(
+                "soft",
+                grid="g",
+                probabilities={i + 1: plane for i, plane in enumerate(planes)},
+            )
+        with h5py.File(path, "r+") as f:
+            f["annotations/soft"].attrs["normalized"] = True
+            assert f["annotations/soft/data"].dtype == np.float16
+        return path
+
+    def test_C09_a_map_that_lost_its_mass_is_E404_at_any_class_count(self, tmp_path):
+        """The allowance was `classes · epsilon`: 1.000001 at 1,024 float16
+        classes, so a normalized map whose every value was zeroed validated
+        (C09 of the 2.0 re-audit).  It is the rounding of the values stored,
+        so a softmax's rounding passes and a lost, halved or grown mass does
+        not."""
+        rng = np.random.default_rng(9)
+        logits = rng.normal(size=(1024, 2, 2, 2))
+        softmax = np.exp(logits) / np.exp(logits).sum(axis=0)
+        path = self._many(tmp_path / "many.medh5", softmax)
+        assert "E404" not in validate_file(path, level="integrity").codes
+        for scale, shown in (
+            (0.0, "sum to 0.0 "),
+            (0.99, "sum to 0.98"),
+            (1.01, "sum to 1.0"),
+        ):
+            with h5py.File(path, "r+") as f:
+                data = f["annotations/soft/data"]
+                data[...] = (softmax * scale).astype(np.float16)
+            report = validate_file(path, level="integrity")
+            (found,) = [d for d in report.diagnostics if d.code == "E404"]
+            assert shown in found.message, (scale, found.message)
+
+    @pytest.mark.parametrize(
+        "shape",
+        [(0, 2**62), (0, 2**62, 1, 1), (2, 0, 2**62, 2**62), (0,), (0, 8, 12, 12)],
+    )
+    def test_N07_a_malformed_normalized_shape_is_reported(self, tmp_path, shape):
+        """The sums were allocated for the declared voxels before the shape was
+        checked: `(0, 2**62)` asked for 2**65 bytes and the validator panicked
+        --- a PanicException, which `except Exception` does not catch (N07 of
+        the 2.0 re-audit).  A map is summed only on its own shape, a row per
+        declared class on its grid; any other is the semantic level's E405."""
+        path = self._probmap(tmp_path / "pm.medh5")
+        with h5py.File(path, "r+") as f:
+            group = f["annotations/soft"]
+            del group["data"]
+            group.create_dataset("data", shape=shape, dtype="f2")
+            group.attrs["normalized"] = True
+        report = validate_file(path, level="integrity")
+        assert "E404" not in report.codes
+        assert "E405" in report.codes
+
+    @pytest.mark.parametrize("shape", [(1, 2**62), (2, 8, 12, 12 * 10**9)])
+    def test_N07_a_dataset_too_large_to_hold_is_reported(self, tmp_path, shape):
+        """A file may declare a dataset of any extent and store none of it: the
+        digest pass asked the allocator for a row of 2**63 bytes (a panic) or of
+        9 TB (an abort, killing the process) for a 10 KiB file.  A read that
+        cannot be held is refused, and the validator reports it."""
+        path = self._probmap(tmp_path / "pm.medh5")
+        with h5py.File(path, "r+") as f:
+            group = f["annotations/soft"]
+            del group["data"]
+            group.create_dataset(
+                "data", shape=shape, dtype="f2", chunks=(1,) * len(shape)
+            )
+            group["data"].attrs["digest"] = "sha256:" + "0" * 64
+        report = validate_file(path, level="integrity")
+        (found,) = [d for d in report.diagnostics if d.code == "E001"]
+        assert "more than this process can hold" in found.message
+
 
 class TestCorruptFiles:
     """A validator is pointed at files of unknown provenance; it may not crash."""
