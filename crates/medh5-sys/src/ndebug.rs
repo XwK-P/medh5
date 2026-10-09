@@ -10,9 +10,8 @@
 //! build rather than produce that binary (W02 of the 2.0 audit).
 //!
 //! It reads the flags HDF5 *was* compiled with --- the `CFLAGS` line of the
-//! `libhdf5.settings` HDF5 installs --- not the environment: `hdf5-metno-src`
-//! does not rebuild when `CFLAGS_<target>` changes, so an environment that now
-//! carries `NDEBUG` says nothing about an HDF5 built before it did.
+//! `libhdf5.settings` HDF5 installs --- not the environment, which says what
+//! the next build of HDF5 would get, not what the one being linked got.
 
 /// Set to build anyway: a build that aborts on a damaged file is acceptable,
 /// or the settings file does not tell the truth.
@@ -80,9 +79,9 @@ pub fn refusal(
          cmake-rs, which builds HDF5, replaces CMake's release flags under MSVC's Visual Studio \
          generator, /DNDEBUG included.  Give the C build NDEBUG in the environment:\n\n    \
          {var}={define}\n\n\
-         (the medh5 repository's .cargo/config.toml does), then rebuild HDF5 with it --- it does \
-         not rebuild when the variable changes: `cargo clean --release -p hdf5-metno-src` (a \
-         `cargo install` starts clean).  Set {OPT_OUT}=1 to build anyway."
+         (the medh5 repository's .cargo/config.toml does), and build again; if HDF5 is not rebuilt \
+         with it, `cargo clean --release -p hdf5-metno-src` makes it so (a `cargo install` starts \
+         clean).  Set {OPT_OUT}=1 to build anyway."
     ))
 }
 

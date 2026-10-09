@@ -26,8 +26,8 @@ variable for your target) when building; this repository's
 `.cargo/config.toml` does, and a crates.io build never reads that file.  So
 the build script reads the flags HDF5 was compiled with (`libhdf5.settings`)
 and stops an optimised build whose HDF5 lacks `NDEBUG`, naming the variable.
-HDF5 does not rebuild when the variable changes: after setting it, run
-`cargo clean --release -p hdf5-metno-src` (a `cargo install` starts clean).
+Should HDF5 not be rebuilt once it is set, `cargo clean --release -p
+hdf5-metno-src` makes it so (a `cargo install` starts clean).
 `MEDH5_SYS_SKIP_NDEBUG_CHECK=1` builds anyway.
 
 Licences: this crate's own code is MIT (`LICENSE`); the vendored code's are in

@@ -236,10 +236,8 @@ jobs:
     # `cargo install medh5-cli` builds from crates.io, where this repository's
     # .cargo/config.toml --- which gives HDF5 NDEBUG on MSVC --- is never read.
     # A copy of the workspace without the file is that build.  medh5-sys must
-    # stop it, naming the variable to set; must stop it again while the HDF5
-    # already built lacks the flag, since setting the variable does not
-    # rebuild HDF5; and, rebuilt with it, the binary must report damaged files
-    # rather than abort on them.
+    # stop it, naming the variable to set, and the binary built with that
+    # variable must report damaged files rather than abort on them.
     runs-on: windows-latest
     defaults:
       run:
@@ -265,23 +263,20 @@ jobs:
           fi
           grep -F "compiled without NDEBUG" build.log
           grep -F "CFLAGS_x86_64_pc_windows_msvc=/DNDEBUG" build.log
-      - name: Setting the variable alone does not rebuild HDF5, and is refused
+      - name: With the variable it names, the binary reports damage, never aborts
         env:
           CFLAGS_x86_64_pc_windows_msvc: /DNDEBUG
         run: |
           cd "$RUNNER_TEMP/ws"
-          if cargo build --release --locked -p medh5-cli 2> stale.log; then
-            echo "::error::medh5-sys linked the HDF5 built before NDEBUG was set"
-            exit 1
+          # Setting the variable rebuilds HDF5 (through the zlib it links,
+          # which cc rebuilds with the new flags).  Should that build fail or
+          # leave HDF5 without the flag, a clean HDF5 build is the remedy the
+          # refusal names; the log of the first attempt stays in this one.
+          if ! cargo build --release --locked -p medh5-cli 2> stale.log; then
+            tail -n 80 stale.log
+            cargo clean --release -p hdf5-metno-src
+            cargo build --release --locked -p medh5-cli
           fi
-          grep -F "cargo clean --release -p hdf5-metno-src" stale.log
-      - name: Rebuilt with it, damage is reported, not an abort
-        env:
-          CFLAGS_x86_64_pc_windows_msvc: /DNDEBUG
-        run: |
-          cd "$RUNNER_TEMP/ws"
-          cargo clean --release -p hdf5-metno-src
-          cargo build --release --locked -p medh5-cli
           target/release/medh5.exe conformance build corpus
           python .github/scripts/damaged.py target/release/medh5.exe corpus
 

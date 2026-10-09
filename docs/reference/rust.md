@@ -21,9 +21,9 @@ the environment or under `[env]` in your `.cargo/config.toml`. cmake-rs drops
 CMake's release flags under the Visual Studio generator, `/DNDEBUG` with them,
 so HDF5 would keep its assertions and abort the process on a damaged file where
 every other build reports it. An optimised build whose HDF5 lacks the flag
-stops with the variable to set; HDF5 does not rebuild when the variable
-changes, so clean it after setting it (`cargo clean --release -p
-hdf5-metno-src`). `MEDH5_SYS_SKIP_NDEBUG_CHECK=1` builds anyway.
+stops with the variable to set; should HDF5 not be rebuilt once it is set,
+`cargo clean --release -p hdf5-metno-src` makes it so.
+`MEDH5_SYS_SKIP_NDEBUG_CHECK=1` builds anyway.
 
 ## Write and read a sample
 
