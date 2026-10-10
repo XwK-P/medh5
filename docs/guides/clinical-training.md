@@ -149,7 +149,8 @@ What each part of a batch means, and the masks that keep it honest:
   `has_value`, `comparator` (`< 5` is not 5) and `missing` (a result not done, never a negative) keep
   missingness apart from measurement.
 - **`target`** is read from the full history: `observed = False` for a censored row, whose inputs
-  still train but whose loss term should be masked.
+  still train but whose loss term should be masked. It reads occurrences: a `cancelled` outcome
+  did not happen and labels nothing, and a `planned` one censors the window it may fall in.
 
 **Learned preprocessing is fitted on the training partition.** The concept vocabulary and its
 per-concept value statistics record the split they were fitted on (`fitted_on`); a vocabulary fitted

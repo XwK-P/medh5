@@ -621,6 +621,49 @@ class TestPreflight:
         assert censored.target.status == "censored" and not censored.target.observed
         assert censored.status == "eligible"
 
+    @staticmethod
+    def _response(event_id: str, status: str, day: int, value: str = "PD") -> Event:
+        return Event(
+            event_id,
+            event_id,
+            "assessment",
+            "point",
+            status,
+            effective_start_us=day * DAY,
+            available_us=day * DAY + HOUR,
+            code_system=History.RECIST,
+            code="overall_response",
+            value_text=value,
+        )
+
+    def _target(self, tmp_path: Path, response: str, *events: Event) -> Any:
+        root = tmp_path / "o"
+        root.mkdir()
+        path = root / "P-01.medh5"
+        History.write(path, response=response, events=list(events))
+        return task_for(root, {"P-01": path}).preflight().row("P-01@24h").target
+
+    def test_S5_a_cancelled_outcome_is_neither_positive_nor_negative(
+        self, tmp_path: Path
+    ):
+        """A cancelled progression assessment at day 100 did not happen: the
+        response observed at day 90 still labels the row.  It labelled the row
+        positive."""
+        target = self._target(tmp_path, "SD", self._response("pd", "cancelled", 100))
+        assert (target.status, target.value) == ("negative", 0.0)
+
+    def test_S5_a_planned_outcome_censors_its_window(self, tmp_path: Path):
+        target = self._target(tmp_path, "SD", self._response("pd", "planned", 100))
+        assert target.status == "censored" and not target.observed
+        assert target.reason is not None and "planned" in target.reason
+
+    def test_S5_a_planned_negative_observes_nothing(self, tmp_path: Path):
+        """`NE` is neither outcome nor absence, so the only negative is a plan."""
+        target = self._target(
+            tmp_path, "NE", self._response("sd", "planned", 100, value="SD")
+        )
+        assert target.status == "censored" and not target.observed
+
     def test_S5_censored_rows_can_be_excluded(self, tmp_path: Path):
         paths = cohort(tmp_path / "c")
         doc = task_for(tmp_path / "c", paths).to_json()

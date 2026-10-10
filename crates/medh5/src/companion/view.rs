@@ -771,12 +771,23 @@ impl<'a> Rows<'a> {
 
     /// Label a row from the full history (task-and-cache contract §5): the
     /// target may lie in the same file, and never enters the inputs.
+    ///
+    /// It reads occurrences.  A `cancelled` event did not happen, and is
+    /// neither outcome nor absence; a `planned` one is not known to have
+    /// happened, so a planned positive labels no row positive or prevalent,
+    /// and one that may fall in the window censors the row.  Both were read
+    /// as having occurred: a cancelled operation in the window labelled its
+    /// row positive.
     fn label(&self, cutoff: i64) -> TargetLabel {
         let Some(t) = &self.manifest.target else { return TargetLabel::none() };
         let value_of = |e: &Event| e.value_text.clone().unwrap_or_default();
         let (lo_edge, hi_edge) = (cutoff, cutoff.saturating_add(t.horizon_us));
-        let positives: Vec<&Event> =
-            self.targets.iter().copied().filter(|e| t.positive.contains(&value_of(e))).collect();
+        let (planned, positives): (Vec<&Event>, Vec<&Event>) = self
+            .targets
+            .iter()
+            .copied()
+            .filter(|e| e.status != "cancelled" && t.positive.contains(&value_of(e)))
+            .partition(|e| e.status == "planned");
         if t.exclude_prevalent {
             if let Some(e) = positives.iter().find(|e| e.effective_start.is_some_and(|s| s.hi <= cutoff)) {
                 return TargetLabel {
@@ -810,11 +821,20 @@ impl<'a> Rows<'a> {
                 reason: Some("a positive outcome's time straddles the target window".into()),
             };
         }
+        if planned.iter().any(|e| e.effective_start.is_none_or(|s| s.hi > lo_edge && s.lo <= hi_edge)) {
+            return TargetLabel {
+                status: "censored".into(),
+                value: None,
+                event_id: None,
+                reason: Some("a positive outcome in the target window is only planned".into()),
+            };
+        }
         let follow_up = cutoff.saturating_add(t.min_follow_up_us);
         let mut negatives: Vec<&Event> = self
             .targets
             .iter()
             .copied()
+            .filter(|e| e.status != "planned" && e.status != "cancelled")
             .filter(|e| t.negative.contains(&value_of(e)))
             .filter(|e| e.effective_start.is_some_and(|s| inside(s) && s.lo >= follow_up))
             .collect();

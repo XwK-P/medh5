@@ -220,13 +220,17 @@ that cannot be read --- a damaged chunk in its clinical tables --- is that sourc
 
 The target is read from the **full history** --- the final version of each record, `entered_in_error`
 withdrawn --- because it lies after the cutoff by definition; it can live in the same file as the
-inputs, and it never enters them. In order:
+inputs, and it never enters them. It reads **occurrences**: a final version whose `status` is
+`cancelled` did not happen, and is neither a positive nor a negative; one that is `planned` is not
+known to have happened, so a planned positive makes no row positive or prevalent, and a planned
+negative observes nothing. In order:
 
 1. **prevalent** --- a positive whose effective start is definitely at or before `c`
    (`exclude_prevalent`);
 2. **positive** --- a positive whose effective start is definitely inside `(c, c + h]`: value `1.0`;
-3. **censored** --- a positive whose time straddles either edge of the window, or is unknown: the
-   outcome cannot be placed, and is not a negative;
+3. **censored** --- a positive whose time straddles either edge of the window, or is unknown, or a
+   planned positive whose time may fall inside the window: the outcome cannot be placed, and is not
+   a negative;
 4. **negative** --- a negative observed inside the window at or after `c + min_follow_up`: value
    `0.0`;
 5. **censored** otherwise --- insufficient follow-up is not a negative label.
