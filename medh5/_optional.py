@@ -1,8 +1,12 @@
 """One place that says how to install an optional dependency.
 
-Every converter and bridge had a ``require_<package>`` of its own, each
-spelling the same three lines.  They stay, as names callers already import;
-this is what they call.
+The converters and the MONAI bridge each keep the ``require_<package>``
+callers already import (``require_nibabel``, ``require_pydicom``,
+``require_highdicom``, ``require_monai``), and each is a call to
+:func:`require`; ``Codec.kwargs`` calls it for ``hdf5plugin``.  The torch
+bridge is the exception: ``medh5.torch`` tries ``import torch`` once, when it
+is imported, and its ``require_torch`` raises its own ``ImportError`` from
+what that found.
 """
 
 from __future__ import annotations

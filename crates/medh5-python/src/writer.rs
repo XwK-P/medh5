@@ -1281,7 +1281,7 @@ impl SampleWriter {
         Ok(crate::convert::json_to_py(py, &self.writer()?.add_link(link)?.to_json())?)
     }
 
-    /// Add a logical-record bundle (`{"clinical", "events", "documents", "links"}`).
+    /// Add a logical-record bundle: `clinical`, `events`, `documents`, `links`.
     fn add_records(&mut self, records: &Bound<'_, PyAny>) -> R<()> {
         let records = medh5::clinical::ClinicalRecords::from_json(&crate::clinical::record(records)?)?;
         Ok(self.writer()?.add_records(records)?)
@@ -1341,7 +1341,9 @@ fn amend(py: Python<'_>, path: PathBuf, codec: Option<String>) -> R<SampleWriter
     Ok(SampleWriter { inner })
 }
 
-/// The `medh5_version` a commit writes for these profiles (1.1 §2.3).
+/// The `medh5_version` a commit writes: the lowest version `profiles` need
+/// (`1.0`, or `1.1` with `clinical`), and never below `source`, the version
+/// an amended file already declared (1.1 §2.3).
 #[pyfunction]
 #[pyo3(signature = (source, profiles = Vec::new()))]
 fn written_version(source: Option<&str>, profiles: Vec<String>) -> String {

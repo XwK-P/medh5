@@ -1248,6 +1248,8 @@ impl SampleHandle {
     fn repr(&self) -> R<String> {
         Ok(self.sample()?.repr()?)
     }
+    /// The sample document (§2), as read: a copy, so editing it changes
+    /// nothing in the file.
     fn document(&self) -> R<crate::document::SampleDocument> {
         Ok(crate::document::SampleDocument::owned(self.sample()?.document()?.clone()))
     }

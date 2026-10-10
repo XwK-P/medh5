@@ -11,6 +11,7 @@ use medh5::curation::tracking as engine;
 use crate::convert::{array_to_py, json_to_py, typed_array};
 use crate::errors::R;
 
+/// One object seen once: a row of one annotation.
 #[pyclass(module = "medh5.curation", name = "Observation", skip_from_py_object, frozen)]
 #[derive(Clone)]
 pub struct Observation(pub engine::Observation);
@@ -68,8 +69,9 @@ impl Observation {
     fn annotation(&self) -> &str {
         &self.0.annotation
     }
-    /// The annotation's kind, `instances` or `boxes`: not one of the 1.x
-    /// dataclass's fields, so its shape and `repr` are unchanged.
+    /// The annotation's kind: `instances` (a mask), `boxes`, `obb`, or
+    /// `points` (presence only).  Not one of the 1.x dataclass's fields, so
+    /// its shape and `repr` are unchanged.
     #[getter]
     fn kind(&self) -> &str {
         &self.0.kind
@@ -94,6 +96,10 @@ impl Observation {
     fn voxel_count(&self) -> Option<u64> {
         self.0.voxel_count
     }
+    /// Physical volume, in `units` to the power of the box's axes; `None`
+    /// where nothing measured the object: a point, which marks it without
+    /// measuring it, a box or mask in index space without a grid, or a join
+    /// run with `measure=False`.
     #[getter]
     fn volume(&self) -> Option<f64> {
         self.0.volume
@@ -174,6 +180,7 @@ impl Observation {
     }
 }
 
+/// Every observation of one physical object, ordered by timepoint.
 #[pyclass(module = "medh5.curation", name = "Track", skip_from_py_object, frozen)]
 #[derive(Clone)]
 pub struct Track(pub engine::Track);
@@ -223,18 +230,34 @@ impl Track {
     fn timepoints<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
         PyTuple::new(py, self.0.timepoints())
     }
+    /// The observation that answers for `timepoint` --- the one
+    /// `measurements_at` finds --- or `None` where the object was not seen.
+    /// Refused (`MEDH5ValidationError`) where it finds two, as two raters'
+    /// masks of one visit: which one is meant is the caller's to choose.
+    /// `volume`, `volumes` and `relative_change` answer by the same rule.
     fn at(&self, timepoint: &str) -> R<Option<Observation>> {
         Ok(self.0.at(timepoint)?.cloned().map(Observation))
     }
+    /// Every observation at `timepoint`: one per annotation that saw the
+    /// object there --- several where raters annotated the same visit, or a
+    /// detection sits beside a segmentation.
     fn observations_at<'py>(&self, py: Python<'py>, timepoint: &str) -> PyResult<Bound<'py, PyTuple>> {
         PyTuple::new(py, self.0.observations_at(timepoint).into_iter().cloned().map(Observation))
     }
+    /// The observations that measure the object at `timepoint`: its masks
+    /// (`instances`), or --- where no mask saw it --- its boxes, axis-aligned
+    /// or oriented.  A point marks the object and measures nothing, so it
+    /// answers only where nothing else saw it.
     fn measurements_at<'py>(&self, py: Python<'py>, timepoint: &str) -> PyResult<Bound<'py, PyTuple>> {
         PyTuple::new(py, self.0.measurements_at(timepoint).into_iter().cloned().map(Observation))
     }
+    /// The volume of the observation `at` finds, or `None`; refused where
+    /// `at` is.
     fn volume(&self, timepoint: &str) -> R<Option<f64>> {
         Ok(self.0.volume(timepoint)?)
     }
+    /// `{timepoint: volume}` for every timepoint the object was seen at,
+    /// under the rule of `at`.
     #[getter]
     fn volumes<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyDict>> {
         let out = PyDict::new(py);
@@ -243,6 +266,10 @@ impl Track {
         }
         Ok(out)
     }
+    /// `(v2 - v1) / v1` between the volumes at `first` and `second`, compared
+    /// in millimetres; `None` where either is unmeasured, or the two share no
+    /// physical measure (an uncalibrated grid beside a calibrated one, an
+    /// area beside a volume).
     fn relative_change(&self, first: &str, second: &str) -> R<Option<f64>> {
         Ok(self.0.relative_change(first, second)?)
     }
@@ -351,6 +378,9 @@ impl Tracking {
         }
         Ok(out)
     }
+    /// `{timepoint: frozenset of class ids}`: the classes the annotators at
+    /// each timepoint committed to finding (§11.3), whose absence is
+    /// therefore a finding.
     #[getter]
     fn coverage<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let out = PyDict::new(py);
@@ -359,10 +389,16 @@ impl Tracking {
         }
         Ok(out)
     }
+    /// `present`, `resolved` or `unexamined`.  `resolved` is claimed only
+    /// where the object's class is in that timepoint's `coverage`; anywhere
+    /// else an unseen object is `unexamined`: nobody looked, so its absence
+    /// measures nothing.  `KeyError` for an id no track has.
     fn state_at(&self, instance_id: u64, timepoint: &str) -> PyResult<&'static str> {
         self.require(instance_id)?;
         Ok(self.0.state_at(instance_id, timepoint).unwrap_or(engine::UNEXAMINED))
     }
+    /// `{timepoint: state_at(instance_id, timepoint)}` over every timepoint,
+    /// in order.
     fn states<'py>(&self, py: Python<'py>, instance_id: u64) -> PyResult<Bound<'py, PyDict>> {
         self.require(instance_id)?;
         let out = PyDict::new(py);
@@ -371,10 +407,14 @@ impl Tracking {
         }
         Ok(out)
     }
+    /// Absent-then-present: `resolved` at the first timepoint (looked for
+    /// and not seen) and `present` at a later one.
     fn is_new(&self, instance_id: u64) -> PyResult<bool> {
         self.require(instance_id)?;
         Ok(self.0.is_new(instance_id))
     }
+    /// Present-then-gone: `present` at the first timepoint and `resolved` at
+    /// the last, whose annotators looked for it.
     fn is_resolved(&self, instance_id: u64) -> PyResult<bool> {
         self.require(instance_id)?;
         Ok(self.0.is_resolved(instance_id))
@@ -390,6 +430,8 @@ impl Tracking {
         }
         Ok(out)
     }
+    /// `{timepoint: instance ids}` of the objects that are `unexamined`
+    /// there: not seen, and of a class nobody committed to finding.
     fn unexamined<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let out = PyDict::new(py);
         for (k, v) in self.0.unexamined() {

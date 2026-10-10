@@ -2,7 +2,7 @@
 
 The extension is the Rust engine's Python face; the modules of the
 ``medh5`` package re-export it under the names 1.x users know.  Keep this
-file in step with ``crates/medh5-python``: ``tests/v1/test_typing.py``
+file in step with ``crates/medh5-python``: ``tests/project/test_typing.py``
 checks every name and parameter against the built module.
 """
 
@@ -1821,7 +1821,12 @@ def voxel_volume(spacing: Sequence[float]) -> float: ...
 def world_to_index(
     affine: npt.ArrayLike, points: npt.ArrayLike
 ) -> npt.NDArray[np.float64]: ...
-def written_version(source: str | None, profiles: Sequence[str] = ...) -> str: ...
+def written_version(source: str | None, profiles: Sequence[str] = ...) -> str:
+    """The `medh5_version` a commit writes: the lowest version `profiles` need
+    (`1.0`, or `1.1` with `clinical`), and never below `source`, the version
+    an amended file already declared (1.1 §2.3).
+    """
+    ...
 
 @final
 @dataclass(frozen=True)
@@ -2356,9 +2361,11 @@ class Grid:
     def summary(self) -> dict[str, Any]: ...
     @property
     def time_axis(self) -> int | None: ...
-    def world_into(
-        self, other: Grid, points: npt.ArrayLike
-    ) -> npt.NDArray[np.float64]: ...
+    def world_into(self, other: Grid, points: npt.ArrayLike) -> npt.NDArray[np.float64]:
+        """`(..., S)` world points of this grid, in `other`'s units (E414 across
+        `coord_system`s, or from `px`).
+        """
+        ...
     def world_to_index(self, points: npt.ArrayLike) -> npt.NDArray[np.float64]: ...
 
 @final
@@ -2573,6 +2580,8 @@ class LabelSet:
 @final
 @dataclass(frozen=True, init=False)
 class Observation:
+    """One object seen once: a row of one annotation."""
+
     timepoint: str
     annotation: str
     index: int
@@ -2589,7 +2598,12 @@ class Observation:
     @property
     def extent(self) -> npt.NDArray[np.float64]: ...
     @property
-    def kind(self) -> str: ...
+    def kind(self) -> str:
+        """The annotation's kind: `instances` (a mask), `boxes`, `obb`, or
+        `points` (presence only).  Not one of the 1.x dataclass's fields, so
+        its shape and `repr` are unchanged.
+        """
+        ...
     def to_json(self) -> dict[str, Any]: ...
     @property
     def volume_mm(self) -> float | None:
@@ -2820,7 +2834,11 @@ class SampleHandle:
     def compute_content_id(self) -> str: ...
     @property
     def content_id(self) -> str | None: ...
-    def document(self) -> SampleDocument: ...
+    def document(self) -> SampleDocument:
+        """The sample document (§2), as read: a copy, so editing it changes
+        nothing in the file.
+        """
+        ...
     def document_text(self, document_id: str) -> str:
         """One clinical document's text, read on its own: the document table's
         offsets and that document's bytes --- not the events, the links or any
@@ -3434,6 +3452,8 @@ class Timepoint:
 @final
 @dataclass(frozen=True, init=False)
 class Track:
+    """Every observation of one physical object, ordered by timepoint."""
+
     instance_id: int
     class_ids: tuple[int, ...]
     observations: tuple[Observation, ...]
@@ -3442,20 +3462,52 @@ class Track:
         """Implement iter(self)."""
         ...
     def __len__(self) -> int: ...
-    def at(self, timepoint: str) -> Observation | None: ...
+    def at(self, timepoint: str) -> Observation | None:
+        """The observation that answers for `timepoint` --- the one
+        `measurements_at` finds --- or `None` where the object was not seen.
+        Refused (`MEDH5ValidationError`) where it finds two, as two raters'
+        masks of one visit: which one is meant is the caller's to choose.
+        `volume`, `volumes` and `relative_change` answer by the same rule.
+        """
+        ...
     @property
     def class_id(self) -> int: ...
     @property
     def has_class_conflict(self) -> bool: ...
-    def measurements_at(self, timepoint: str) -> tuple[Observation, ...]: ...
-    def observations_at(self, timepoint: str) -> tuple[Observation, ...]: ...
-    def relative_change(self, first: str, second: str) -> float | None: ...
+    def measurements_at(self, timepoint: str) -> tuple[Observation, ...]:
+        """The observations that measure the object at `timepoint`: its masks
+        (`instances`), or --- where no mask saw it --- its boxes, axis-aligned
+        or oriented.  A point marks the object and measures nothing, so it
+        answers only where nothing else saw it.
+        """
+        ...
+    def observations_at(self, timepoint: str) -> tuple[Observation, ...]:
+        """Every observation at `timepoint`: one per annotation that saw the
+        object there --- several where raters annotated the same visit, or a
+        detection sits beside a segmentation.
+        """
+        ...
+    def relative_change(self, first: str, second: str) -> float | None:
+        """`(v2 - v1) / v1` between the volumes at `first` and `second`, compared
+        in millimetres; `None` where either is unmeasured, or the two share no
+        physical measure (an uncalibrated grid beside a calibrated one, an
+        area beside a volume).
+        """
+        ...
     @property
     def timepoints(self) -> tuple[str, ...]: ...
     def to_json(self) -> dict[str, Any]: ...
-    def volume(self, timepoint: str) -> float | None: ...
+    def volume(self, timepoint: str) -> float | None:
+        """The volume of the observation `at` finds, or `None`; refused where
+        `at` is.
+        """
+        ...
     @property
-    def volumes(self) -> dict[str, float | None]: ...
+    def volumes(self) -> dict[str, float | None]:
+        """`{timepoint: volume}` for every timepoint the object was seen at,
+        under the rule of `at`.
+        """
+        ...
 
 @final
 class Tracking:
@@ -3474,11 +3526,24 @@ class Tracking:
     def __len__(self) -> int: ...
     def class_conflicts(self) -> dict[int, tuple[int, ...]]: ...
     @property
-    def coverage(self) -> dict[Any, Any]: ...
+    def coverage(self) -> dict[Any, Any]:
+        """`{timepoint: frozenset of class ids}`: the classes the annotators at
+        each timepoint committed to finding (§11.3), whose absence is
+        therefore a finding.
+        """
+        ...
     def get(self, instance_id: Any, default: Any = None) -> Any: ...
-    def is_new(self, instance_id: int) -> bool: ...
+    def is_new(self, instance_id: int) -> bool:
+        """Absent-then-present: `resolved` at the first timepoint (looked for
+        and not seen) and `present` at a later one.
+        """
+        ...
     def is_persistent(self, instance_id: int) -> bool: ...
-    def is_resolved(self, instance_id: int) -> bool: ...
+    def is_resolved(self, instance_id: int) -> bool:
+        """Present-then-gone: `present` at the first timepoint and `resolved` at
+        the last, whose annotators looked for it.
+        """
+        ...
     def items(self) -> tuple[tuple[int, Track], ...]: ...
     def keys(self) -> tuple[int, ...]: ...
     @property
@@ -3487,13 +3552,27 @@ class Tracking:
         and that no track joined.
         """
         ...
-    def state_at(self, instance_id: int, timepoint: str) -> str: ...
-    def states(self, instance_id: int) -> dict[str, str]: ...
+    def state_at(self, instance_id: int, timepoint: str) -> str:
+        """`present`, `resolved` or `unexamined`.  `resolved` is claimed only
+        where the object's class is in that timepoint's `coverage`; anywhere
+        else an unseen object is `unexamined`: nobody looked, so its absence
+        measures nothing.  `KeyError` for an id no track has.
+        """
+        ...
+    def states(self, instance_id: int) -> dict[str, str]:
+        """`{timepoint: state_at(instance_id, timepoint)}` over every timepoint,
+        in order.
+        """
+        ...
     def summary(self) -> dict[str, Any]: ...
     @property
     def timepoints(self) -> tuple[str, ...]: ...
     def to_json(self) -> dict[str, Any]: ...
-    def unexamined(self) -> dict[str, tuple[int, ...]]: ...
+    def unexamined(self) -> dict[str, tuple[int, ...]]:
+        """`{timepoint: instance ids}` of the objects that are `unexamined`
+        there: not seen, and of a class nobody committed to finding.
+        """
+        ...
     def values(self) -> tuple[Track, ...]: ...
 
 @final

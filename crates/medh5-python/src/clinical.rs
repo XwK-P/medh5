@@ -201,6 +201,7 @@ fn imaging_events_from_timepoints<'py>(py: Python<'py>, path: PathBuf) -> R<Boun
     Ok(json_to_py(py, &value)?)
 }
 
+/// The clock `imaging_events_from_timepoints` measures on.
 #[pyfunction]
 fn baseline_day_clock<'py>(py: Python<'py>, clock_id: &str) -> PyResult<Bound<'py, PyAny>> {
     json_to_py(py, &medh5::clinical::augment::baseline_day_clock(clock_id).to_json())
@@ -392,6 +393,7 @@ impl CacheWriterHandle {
     }
 }
 
+/// Start writing a feature cache (`medh5.cache/1`).
 #[pyfunction]
 fn cache_create(path: PathBuf, header_doc: &Bound<'_, PyAny>) -> R<CacheWriterHandle> {
     let h = header(&record(header_doc)?);
@@ -469,7 +471,8 @@ fn cache_open(py: Python<'_>, path: PathBuf) -> R<FeatureCacheHandle> {
     Ok(FeatureCacheHandle { inner: std::sync::Mutex::new(Some(Arc::new(cache))) })
 }
 
-/// Validate a cache; with a task, also against that task's preflight.
+/// Validate a cache; with a task, also against that task (and, with
+/// `check_rows`, against what its preflight admits).
 #[pyfunction]
 #[pyo3(signature = (path, base=None, task=None, task_base=None, check_rows=true))]
 fn cache_validate<'py>(
