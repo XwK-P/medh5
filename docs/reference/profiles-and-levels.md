@@ -13,17 +13,18 @@ Each level includes the ones before it, so `strict` runs everything.
 
 | Level | Checks | Reads |
 |---|---|---|
-| `structural` | layout, required attributes, dtypes, shapes, identifier syntax, the [JSON Schema](schema.md) | metadata, plus bounded payload scans |
+| `structural` | layout, required attributes, dtypes, shapes, identifier syntax, the [JSON Schema](schema.md) | metadata, plus payload scans in bounded slabs |
 | `semantic` *(default)* | cross-references resolve, geometry consistency, class ids in the label set, encoding invariants, profile requirements | the same, plus layer data |
-| `integrity` | per-object digests, `content_id`, sampling-index `source_digest` currency | every byte |
+| `integrity` | per-object digests, `content_id`, sampling-index `source_digest` currency, and the `probmap` value checks (values in [0, 1], `normalized` sums) made in the same full read | every byte |
 | `strict` | the same rules as `integrity`, with warnings promoted to errors | every byte |
 
 **None of the levels is free.** Even `structural` decompresses voxels: it reads
-an image to decide whether a float array would be lossless as `int16` (capped at
-4 M values), and scans a labelmap or layers payload to find an in-band ignore
-region (capped at 64 M). `semantic` additionally reads layer data to judge
-encoding optimality, under the same 64 M cap. The caps bound the work on a large
-volume; they do not make it metadata.
+an image to decide whether a float array would be lossless as `int16` (only an
+image of at most 4 M values), and scans a labelmap or layers payload to find an
+in-band ignore region. `semantic` additionally reads layer data to judge
+encoding optimality. Both scans read the whole payload, in slabs of at most
+8 MiB: the slabs bound the memory a large volume takes, not the work, which
+grows with its size.
 
 Measured on a 12.6 Mvox, 18.7 MB sample — against a metadata-only `open()` of
 0.5 ms:
@@ -108,9 +109,10 @@ requirement can be checked that way:
   implements is validated as a *projection*: what is known is checked, what is
   not is `W913`.
 
-`w.infer_profiles()` sets them from what was actually written, so a writer
-rarely declares them by hand. It also sets the version: a sample is written as
-1.0 unless it declares `clinical`.
+`w.infer_profiles()` returns the profiles the content written so far
+satisfies, together with any declared; commit writes that set, so a writer
+rarely declares them by hand. Commit writes the version from it too: a new
+sample is 1.0 unless it carries `clinical`.
 
 ## Related
 
