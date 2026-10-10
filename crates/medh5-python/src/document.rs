@@ -1,12 +1,14 @@
 //! `medh5.document`: the `/meta` sample document (spec §2.4).
 
+use pyo3::exceptions::PyKeyError;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyTuple};
+use pyo3::sync::PyOnceLock;
+use pyo3::types::{PyDict, PyList, PyTuple};
 use serde_json::{Map, Value};
 
 use medh5::document as engine;
 
-use crate::convert::{json_to_py, map_to_py, py_to_json};
+use crate::convert::{json_to_py, py_to_json};
 use crate::curation::{timeline_arg, Cohort, Deidentification, Identity, QualityRecord, SplitClaim, Timeline};
 use crate::errors::R;
 use crate::labels::{label_set_arg, LabelSet};
@@ -69,6 +71,57 @@ impl SampleDocument {
     pub fn current(&self, py: Python<'_>) -> PyResult<engine::SampleDocument> {
         self.read(py, |doc| doc.clone())
     }
+}
+
+/// A free-form member mapping, which a caller edits in place (`medh5._live`).
+#[derive(Clone, Copy)]
+enum Members {
+    Quality,
+    Acquisition,
+    Extra,
+}
+
+impl Members {
+    fn of(field: &str) -> PyResult<Members> {
+        match field {
+            "quality" => Ok(Members::Quality),
+            "acquisition" => Ok(Members::Acquisition),
+            "extra" => Ok(Members::Extra),
+            other => Err(PyKeyError::new_err(other.to_string())),
+        }
+    }
+
+    /// The JSON members of `acquisition` or `extra`.
+    fn json(self, doc: &engine::SampleDocument) -> &Map<String, Value> {
+        match self {
+            Members::Acquisition => &doc.acquisition,
+            _ => &doc.extra,
+        }
+    }
+
+    /// The JSON members of `acquisition` or `extra`, to edit.
+    fn json_mut(self, doc: &mut engine::SampleDocument) -> &mut Map<String, Value> {
+        match self {
+            Members::Acquisition => &mut doc.acquisition,
+            _ => &mut doc.extra,
+        }
+    }
+}
+
+/// The live view of one free-form member mapping of `doc`.
+fn live_members<'py>(doc: &Bound<'py, SampleDocument>, field: &str) -> PyResult<Bound<'py, PyAny>> {
+    static MEMBERS: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+    let py = doc.py();
+    let class = MEMBERS.get_or_try_init(py, || py.import("medh5._live")?.getattr("Members").map(Bound::unbind))?;
+    class.bind(py).call_method1("_of", (doc, field))
+}
+
+fn changed(field: &str, key: &str) -> medh5::Error {
+    medh5::Error::Runtime(format!(
+        "`document.{field}[{}]` has changed since it was read, and an edit to what was read would undo that; \
+         read it again and edit that",
+        medh5::json::repr_str(key)
+    ))
 }
 
 impl SampleDocument {
@@ -193,14 +246,10 @@ impl SampleDocument {
         let value = provenance_arg(value)?;
         self.edit(py, |d| d.provenance = value)
     }
+    /// Review records by key: a dict whose edits reach the document.
     #[getter]
-    fn quality<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let records = self.read(py, |d| d.quality.clone())?;
-        let out = PyDict::new(py);
-        for (k, v) in records {
-            out.set_item(k, QualityRecord::wrap(v))?;
-        }
-        Ok(out)
+    fn quality<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
+        live_members(slf, "quality")
     }
     #[setter]
     fn set_quality(&mut self, py: Python<'_>, value: &Bound<'_, PyAny>) -> R<()> {
@@ -217,9 +266,11 @@ impl SampleDocument {
         let value = value.try_iter()?.map(|i| SplitClaim::arg(&i?)).collect::<R<Vec<_>>>()?;
         self.edit(py, |d| d.splits = value)
     }
+    /// Acquisition parameters by image id: a dict whose edits, nested ones
+    /// too, reach the document.
     #[getter]
-    fn acquisition<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        map_to_py(py, &self.read(py, |d| d.acquisition.clone())?)
+    fn acquisition<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
+        live_members(slf, "acquisition")
     }
     #[setter]
     fn set_acquisition(&mut self, py: Python<'_>, value: &Bound<'_, PyAny>) -> R<()> {
@@ -235,9 +286,11 @@ impl SampleDocument {
         let value = if value.is_none() { None } else { Some(Deidentification::arg(value)?) };
         self.edit(py, |d| d.deidentification = value)
     }
+    /// Namespaced extensions: a dict whose edits, nested ones too, reach the
+    /// document.
     #[getter]
-    fn extra<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        map_to_py(py, &self.read(py, |d| d.extra.clone())?)
+    fn extra<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
+        live_members(slf, "extra")
     }
     #[setter]
     fn set_extra(&mut self, py: Python<'_>, value: &Bound<'_, PyAny>) -> R<()> {
@@ -303,6 +356,97 @@ impl SampleDocument {
     }
     fn __reduce__<'py>(slf: &Bound<'py, Self>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyTuple>)> {
         crate::values::reduce_via_json(slf.as_any())
+    }
+
+    // -- what the live views of `quality`, `acquisition` and `extra` call -----
+
+    /// The members of `field` as `(key, value, token)`: the token is the
+    /// member's canonical JSON, which `_replace_member` compares.
+    fn _members<'py>(&self, py: Python<'py>, field: &str) -> PyResult<Bound<'py, PyList>> {
+        let out = PyList::empty(py);
+        match Members::of(field)? {
+            Members::Quality => {
+                for (k, v) in self.read(py, |d| d.quality.clone())? {
+                    out.append((k, QualityRecord::wrap(v), ""))?;
+                }
+            }
+            members => {
+                let found = self.read(py, |d| members.json(d).clone())?;
+                for (k, v) in found {
+                    out.append((k, json_to_py(py, &v)?, medh5::json::canonical(&v)))?;
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Set (or replace) one member, converted as `SampleWriter.extra`
+    /// converts a value.
+    fn _set_member(&mut self, py: Python<'_>, field: &str, key: &str, value: &Bound<'_, PyAny>) -> R<()> {
+        match Members::of(field)? {
+            Members::Quality => {
+                let record = QualityRecord::arg(value)?;
+                self.edit(py, |d| d.quality.insert(key.to_string(), record))?;
+            }
+            members => {
+                let value = py_to_json(value)?;
+                self.edit(py, |d| members.json_mut(d).insert(key.to_string(), value))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Replace one member with `value`, if it is still the one read as
+    /// `token`; the new token.
+    fn _replace_member(
+        &mut self,
+        py: Python<'_>,
+        field: &str,
+        key: &str,
+        token: &str,
+        value: &Bound<'_, PyAny>,
+    ) -> R<String> {
+        let members = Members::of(field)?;
+        let value = py_to_json(value)?;
+        let written = medh5::json::canonical(&value);
+        self.edit(py, |d| {
+            let found = members.json_mut(d);
+            match found.get(key) {
+                Some(current) if medh5::json::canonical(current) == token => {
+                    found.insert(key.to_string(), value);
+                    Ok(written)
+                }
+                _ => Err(changed(field, key)),
+            }
+        })?
+        .map_err(Into::into)
+    }
+
+    /// Delete one member (`KeyError` when there is none).
+    fn _delete_member(&mut self, py: Python<'_>, field: &str, key: &str) -> R<()> {
+        let removed = match Members::of(field)? {
+            Members::Quality => self.edit(py, |d| d.quality.shift_remove(key).is_some())?,
+            members => self.edit(py, |d| members.json_mut(d).shift_remove(key).is_some())?,
+        };
+        if !removed {
+            return Err(PyKeyError::new_err(key.to_string()).into());
+        }
+        Ok(())
+    }
+
+    /// Delete every member.
+    fn _clear_members(&mut self, py: Python<'_>, field: &str) -> R<()> {
+        match Members::of(field)? {
+            Members::Quality => self.edit(py, |d| d.quality.clear()),
+            members => self.edit(py, |d| members.json_mut(d).clear()),
+        }
+    }
+
+    /// A value as a member holds it: converted to JSON and back, detached
+    /// from the object given.
+    #[staticmethod]
+    fn _plain<'py>(py: Python<'py>, value: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+        json_to_py(py, &py_to_json(value)?)
     }
 }
 

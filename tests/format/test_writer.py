@@ -1065,3 +1065,69 @@ class TestJsonValues:
             w.extra("tool", {"edges": edges, "decimal": Decimal("1.5")})
         with medh5.open(path) as sample:
             assert sample.document.extra["tool"] == {"edges": edges, "decimal": 1.5}
+
+
+class TestDocumentEdits:
+    """§2.4: ``SampleWriter.document`` is the document being written, and its
+    free-form members --- ``extra``, ``acquisition``, ``quality`` --- are dicts
+    whose edits reach the file, nested ones too, as 1.x's fields did."""
+
+    def test_S2_4_an_edit_in_place_reaches_the_file(self, tmp_path: Path):
+        path = tmp_path / "edits.medh5"
+        with Flat.open_writer(path) as w:
+            w.document.extra["mytool"] = {"a": 1}
+            w.document.extra["mytool"]["b"] = [1, 2]
+            w.document.extra["mytool"]["b"].append(3)
+            w.document.extra.setdefault("other", {})["k"] = "v"
+            w.document.extra.update(gone=1)
+            del w.document.extra["gone"]
+            w.document.acquisition["CT"] = {"kvp": 120}
+            w.document.acquisition["CT"]["mA"] = 300
+            w.document.quality["CT"] = {"status": "draft"}
+            assert json.loads(json.dumps(w.document.extra))["mytool"]["b"] == [1, 2, 3]
+        with medh5.open(path) as sample:
+            document = sample.document
+            assert document.extra == {
+                "mytool": {"a": 1, "b": [1, 2, 3]},
+                "other": {"k": "v"},
+            }
+            assert document.acquisition == {"CT": {"kvp": 120, "mA": 300}}
+            assert document.quality["CT"].status == "draft"
+
+    def test_S2_4_an_edit_to_a_member_changed_since_is_refused(self, tmp_path: Path):
+        """Writing the stale copy back would undo the other change."""
+        with Flat.open_writer(tmp_path / "stale.medh5") as w:
+            w.document.acquisition["CT"] = {"kvp": 120}
+            held = w.document.acquisition["CT"]
+            w.acquisition("CT", mA=300)
+            with pytest.raises(RuntimeError, match="has changed since it was read"):
+                held["ms"] = 5
+            with pytest.raises(RuntimeError, match="read it again"):
+                held["kvp"] = 100
+            w.document.acquisition["CT"]["ms"] = 5  # read again: accepted
+            assert w.document.acquisition["CT"] == {"kvp": 120, "mA": 300, "ms": 5}
+
+    def test_S2_4_a_copy_of_a_member_is_a_plain_detached_dict(self, tmp_path: Path):
+        import copy
+        import pickle
+
+        with Flat.open_writer(tmp_path / "copy.medh5") as w:
+            w.document.extra["mytool"] = {"a": [1]}
+            for copied in (
+                pickle.loads(pickle.dumps(w.document.extra)),
+                copy.copy(w.document.extra),
+                copy.deepcopy(w.document.extra),
+            ):
+                assert type(copied) is dict
+                assert copied == {"mytool": {"a": [1]}}
+            detached = copy.deepcopy(w.document.extra)
+            detached["mytool"]["a"].append(2)
+            assert w.document.extra == {"mytool": {"a": [1]}}
+
+    def test_S2_4_a_value_set_is_held_as_converted(self, tmp_path: Path):
+        """The view holds what the document holds, not the object handed in."""
+        with Flat.open_writer(tmp_path / "held.medh5") as w:
+            given = {"shape": (2, 3), "scale": np.float32(0.5)}
+            w.document.extra["mytool"] = given
+            given["shape"] = (9, 9)
+            assert w.document.extra["mytool"] == {"shape": [2, 3], "scale": 0.5}
