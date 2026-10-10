@@ -208,6 +208,14 @@ class TestManifest:
             )
         assert caught.value.code in {"T101", "T102"}
 
+    def test_S5_a_target_names_its_horizon(self):
+        """`horizon_us` has no default: it defaulted to 0, which the schema
+        refuses, so a target built without it failed every manifest (T101)."""
+        with pytest.raises(TypeError, match="horizon_us"):
+            Target("t", "1", "s", "c", ("PD",))
+        target = Target("t", "1", "s", "c", ("PD",), ("SD",), horizon_us=DAY)
+        assert Target.from_json(target.to_json()) == target
+
     def test_S5_a_target_without_negatives_is_the_default(self, setup):
         """`negative` defaults to none: a target that leaves it out is the task
         that writes `[]`.  The schema required it, so the manifest failed

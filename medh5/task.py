@@ -37,7 +37,7 @@ import json
 import os
 import re
 from collections.abc import Iterable, Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import KW_ONLY, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -254,11 +254,14 @@ class Target:
     ``value_text`` falls in ``positive`` or ``negative`` inside
     ``(cutoff, cutoff + horizon_us]``, read from the full history.
 
-    A negative needs an observation at least ``min_follow_up_us`` after the
-    cutoff (default: the horizon).  A row it cannot label is censored ---
-    kept with its target unobserved --- or, with ``censoring="exclude"``,
-    excluded; a row whose outcome had already occurred is excluded as
-    prevalent unless ``exclude_prevalent=False``.
+    ``horizon_us`` and the members after it are keyword-only, and
+    ``horizon_us`` has no default: a window of no length labels nothing, and
+    the schema requires at least one microsecond (T101).  A negative needs an
+    observation at least ``min_follow_up_us`` after the cutoff (default: the
+    horizon).  A row it cannot label is censored --- kept with its target
+    unobserved --- or, with ``censoring="exclude"``, excluded; a row whose
+    outcome had already occurred is excluded as prevalent unless
+    ``exclude_prevalent=False``.
     """
 
     id: str
@@ -267,7 +270,8 @@ class Target:
     code: str
     positive: tuple[str, ...]
     negative: tuple[str, ...] = ()
-    horizon_us: int = 0
+    _: KW_ONLY
+    horizon_us: int
     min_follow_up_us: int | None = None
     censoring: str = "censor"
     exclude_prevalent: bool = True
@@ -301,11 +305,11 @@ class Target:
             str(event["code"]),
             tuple(doc.get("positive", ())),
             tuple(doc.get("negative", ())),
-            int(doc.get("horizon_us", 0)),
-            doc.get("min_follow_up_us"),
-            str(doc.get("censoring", "censor")),
-            bool(doc.get("exclude_prevalent", True)),
-            event.get("kind"),
+            horizon_us=int(doc["horizon_us"]),
+            min_follow_up_us=doc.get("min_follow_up_us"),
+            censoring=str(doc.get("censoring", "censor")),
+            exclude_prevalent=bool(doc.get("exclude_prevalent", True)),
+            kind=event.get("kind"),
         )
 
 
