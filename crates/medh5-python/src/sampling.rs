@@ -178,6 +178,19 @@ fn sampling_coerce_patch_size<'py>(
     Ok(PyTuple::new(py, size)?)
 }
 
+/// Refuse a volume shape with a negative extent: the windows over it would
+/// run backwards (`slice(0, -5)`), which reads nothing.
+fn check_shape(shape: &[i64]) -> R<()> {
+    if shape.iter().any(|n| *n < 0) {
+        return Err(medh5::Error::invalid(format!(
+            "shape {} must be non-negative on every axis",
+            medh5::json::repr_int_tuple(shape)
+        ))
+        .into());
+    }
+    Ok(())
+}
+
 /// `(slices, pad)` covering `patch` voxels around `center`.
 #[pyfunction]
 fn sampling_window_around<'py>(
@@ -185,7 +198,24 @@ fn sampling_window_around<'py>(
     center: Vec<i64>,
     patch: Vec<i64>,
     shape: Vec<i64>,
-) -> PyResult<(Bound<'py, PyTuple>, Bound<'py, PyTuple>)> {
+) -> R<(Bound<'py, PyTuple>, Bound<'py, PyTuple>)> {
+    if center.len() != patch.len() || shape.len() != patch.len() {
+        return Err(medh5::Error::invalid(format!(
+            "center, patch and shape must have one entry per axis, not {}, {} and {}",
+            center.len(),
+            patch.len(),
+            shape.len()
+        ))
+        .into());
+    }
+    if patch.iter().any(|v| *v <= 0) {
+        return Err(medh5::Error::invalid(format!(
+            "patch {} must be positive on every axis",
+            medh5::json::repr_int_tuple(&patch)
+        ))
+        .into());
+    }
+    check_shape(&shape)?;
     let (slices, pad) = engine::window_around(&center, &patch, &shape);
     Ok((slices_of(py, &slices)?, PyTuple::new(py, pad)?))
 }
@@ -200,6 +230,7 @@ fn sampling_grid_patches<'py>(
     overlap: i64,
     grid_id: Option<String>,
 ) -> R<Bound<'py, PyList>> {
+    check_shape(&shape)?;
     let patches = engine::grid_patches(&shape, &patch_size_arg(patch_size)?, overlap, grid_id.as_deref())?;
     let out = PyList::empty(py);
     for p in &patches {

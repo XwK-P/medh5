@@ -99,8 +99,19 @@ impl PatchSize {
     }
 }
 
+/// The most axes a patch can have: HDF5's limit on a dataset's rank.
+const MAX_PATCH_AXES: usize = 32;
+
 /// Broadcast a patch size across `ndim` spatial axes.
 pub fn coerce_patch_size(patch_size: &PatchSize, ndim: usize) -> Result<Vec<i64>> {
+    // Checked before anything is allocated: a size broadcast across an `ndim`
+    // a caller got wrong would ask for gigabytes, and a failed allocation
+    // aborts the process rather than raising.
+    if ndim > MAX_PATCH_AXES {
+        return Err(Error::invalid(format!(
+            "a patch has at most {MAX_PATCH_AXES} axes (HDF5's limit on a dataset's rank), not {ndim}"
+        )));
+    }
     let size = match patch_size {
         PatchSize::Scalar(v) => vec![*v; ndim],
         PatchSize::Axes(v) => v.clone(),
@@ -684,5 +695,13 @@ mod tests {
             assert!(err.to_string().starts_with("class_weights gives class 2 the weight"), "{err}");
         }
         assert!(sampler(ClassWeights::Explicit(IndexMap::from([(1, 0.0), (2, 2.5)]))).is_ok());
+    }
+
+    #[test]
+    fn s14_3_an_impossible_axis_count_is_refused_before_anything_is_allocated() {
+        let err = coerce_patch_size(&PatchSize::Scalar(4), 1 << 31).unwrap_err();
+        assert!(err.to_string().contains("at most 32 axes"), "{err}");
+        assert!(coerce_patch_size(&PatchSize::Scalar(4), usize::MAX).is_err());
+        assert_eq!(coerce_patch_size(&PatchSize::Scalar(4), 32).unwrap().len(), 32);
     }
 }

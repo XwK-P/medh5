@@ -71,6 +71,25 @@ class TestWindow:
         with pytest.raises(MEDH5ValidationError):
             coerce_patch_size(0, 2)
 
+    @pytest.mark.parametrize("ndim", [33, 2**31, 2**63 - 1])
+    def test_S14_3_an_axis_count_no_dataset_has_is_refused(self, ndim):
+        """Refused before the size is broadcast: allocating ``ndim`` sizes
+        first aborted the process (or panicked) rather than raising."""
+        with pytest.raises(MEDH5ValidationError, match="at most 32 axes"):
+            coerce_patch_size(4, ndim)
+        assert len(coerce_patch_size(4, 32)) == 32
+
+    def test_S14_3_a_window_never_runs_backwards(self):
+        """A negative extent would give ``slice(3, -1)`` and read nothing."""
+        with pytest.raises(MEDH5ValidationError, match="positive"):
+            window_around((1, 1), (-4, -4), (4, 4))
+        with pytest.raises(MEDH5ValidationError, match="non-negative"):
+            window_around((1, 1), (4, 4), (-4, 4))
+        with pytest.raises(MEDH5ValidationError, match="one entry per axis"):
+            window_around((1,), (4, 4), (8, 8))
+        with pytest.raises(MEDH5ValidationError, match="non-negative"):
+            grid_patches((-5, 4, 4), 2)
+
 
 class TestPatchSampler:
     def test_S14_3_foreground_centres_land_in_the_class(self, indexed, masks):
