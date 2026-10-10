@@ -192,10 +192,24 @@ fn stats(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let options = StatsOptions {
         images: get_strs(m, "images"),
         annotations: get_strs(m, "annotations"),
-        sample_stride: get_i64(m, "stride").unwrap_or(1).max(0) as usize,
+        // The parser refuses a stride below 1 and a negative worker count.
+        sample_stride: get_i64(m, "stride").unwrap_or(1) as usize,
         physical: !flag(m, "stored"),
     };
-    let workers = get_i64(m, "workers").unwrap_or(1).max(0) as usize;
+    let workers = get_i64(m, "workers").unwrap_or(1) as usize;
+    // An id no sample has would measure nothing and succeed with an empty
+    // table --- a typo, most likely.  The manifest answers without a read.
+    let scope = match get_str(m, "partition") {
+        Some(partition) => format!(" in partition {} of set {}", repr_str(partition), repr_str(req_str(m, "set_id"))),
+        None => String::new(),
+    };
+    if let Some(id) = options.images.iter().flatten().find(|id| !entries.iter().any(|e| e.images.contains(id))) {
+        return Ok(ctx.fail(format!("no sample{scope} has an image {}", repr_str(id))));
+    }
+    let annotated = |id: &&String| entries.iter().any(|e| e.annotations.contains_key(id.as_str()));
+    if let Some(id) = options.annotations.iter().flatten().find(|id| !annotated(id)) {
+        return Ok(ctx.fail(format!("no sample{scope} has an annotation {}", repr_str(id))));
+    }
     let result = compute_stats(&paths, &options, workers)?;
     if let Some(out) = get_str(m, "out") {
         std::fs::write(out, medh5::json::pretty(&result.to_json()) + "\n").map_err(|e| os_error(&e, out))?;

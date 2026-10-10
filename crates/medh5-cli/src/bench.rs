@@ -13,8 +13,9 @@ use medh5::bench::{
 use crate::common::*;
 
 pub fn bench(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
-    let patch = get_i64(m, "patch").unwrap_or(64).max(1) as usize;
-    let repeats = get_i64(m, "repeats").unwrap_or(20).max(1) as usize;
+    // At least 1 each: the parser refuses less.
+    let patch = get_i64(m, "patch").unwrap_or(64) as usize;
+    let repeats = get_i64(m, "repeats").unwrap_or(20) as usize;
     let annotation = get_str(m, "annotation");
     let result = (|| -> CmdResult {
         // Progress goes to stderr: with `--json`, stdout is the document.

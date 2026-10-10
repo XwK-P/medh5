@@ -214,10 +214,10 @@ fn convert(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
 
 fn index_build(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let as_json = flag(m, "json");
-    let max_coords = get_i64(m, "max_coords").unwrap_or(0).max(0) as usize;
-    let occupancy = get_i64(m, "occupancy").unwrap_or(0);
-    // `--occupancy 0` turns the occupancy map off, as `occupancy or None` did.
-    let occupancy = if occupancy == 0 { None } else { Some(occupancy.max(0) as usize) };
+    // The parser holds both in range: at least one coordinate, a block of 0
+    // or more --- and `--occupancy 0` builds no occupancy map.
+    let max_coords = get_i64(m, "max_coords").unwrap_or(1) as usize;
+    let occupancy = get_i64(m, "occupancy").filter(|&n| n > 0).map(|n| n as usize);
     let seed = get_i64(m, "seed").unwrap_or(0);
     let mut built = Map::new();
     let mut failed = false;

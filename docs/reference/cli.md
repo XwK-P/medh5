@@ -155,9 +155,10 @@ medh5 index build PATH... [--max-coords N] [--occupancy K] [--seed S] [--json]
 
 Build or refresh sampling indices, which make foreground patch sampling O(1) in
 the volume. `--max-coords` bounds the stored coordinates per class (default
-4096); `--occupancy` sets the block size of the coarse per-class occupancy map,
-in voxels per axis (default 8, so the map is 1/8 resolution); `--seed` (default
-0) fixes the coordinate subsample, so rebuilding an index reproduces it.
+4096, at least 1); `--occupancy` sets the block size of the coarse per-class
+occupancy map, in voxels per axis (default 8, so the map is 1/8 resolution;
+`0` builds no map); `--seed` (default 0) fixes the coordinate subsample, so
+rebuilding an index reproduces it.
 
 ### `medh5 labels`
 
@@ -314,6 +315,8 @@ sampling index when it is current. `--partition train` restricts the pass to
 one partition of `--set-id` (default `default`), which is how you compute
 normalisation constants without looking at your test set. `--stride N` reads
 every Nth slab along the first axis — faster, approximate, and opt-in.
+`--image` or `--annotation` naming an id that no sample in the manifest (or the
+partition) has is an error, not an empty table.
 
 Intensity moments are over **physical** values: each image's rescale is applied
 first, which is what the loaders read with `physical=True`. `--stored` measures

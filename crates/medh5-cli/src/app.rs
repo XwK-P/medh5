@@ -59,6 +59,12 @@ fn int(name: &'static str, long: &'static str, help: &'static str) -> Arg {
     opt(name, long, help).value_parser(clap::value_parser!(i64)).allow_negative_numbers(true)
 }
 
+/// An integer that counts something, so is at least `min`: a negative
+/// number of workers or a stride of 0 is refused, not quietly clamped.
+fn count(name: &'static str, long: &'static str, help: &'static str, min: i64) -> Arg {
+    opt(name, long, help).value_parser(clap::value_parser!(i64).range(min..)).allow_negative_numbers(true)
+}
+
 fn json() -> Arg {
     flag("json", "json", "machine-readable output on stdout")
 }
@@ -210,12 +216,17 @@ fn seg() -> Vec<Command> {
             .about("build or refresh sampling indices")
             .arg(paths("one or more files"))
             .arg(
-                int("max_coords", "max-coords", "how many foreground coordinates to sample per class")
+                count("max_coords", "max-coords", "how many foreground coordinates to sample per class", 1)
                     .default_value(DEFAULT_MAX_COORDS.to_string()),
             )
             .arg(
-                int("occupancy", "occupancy", "block size, in voxels per axis, of the coarse occupancy map")
-                    .default_value(DEFAULT_OCCUPANCY_FACTOR.to_string()),
+                count(
+                    "occupancy",
+                    "occupancy",
+                    "block size, in voxels per axis, of the coarse occupancy map; 0 builds none",
+                    0,
+                )
+                .default_value(DEFAULT_OCCUPANCY_FACTOR.to_string()),
             )
             .arg(int("seed", "seed", "seed for the coordinate sample, so the index is reproducible").default_value("0"))
             .arg(json()),
@@ -368,9 +379,9 @@ fn dataset() -> Command {
                     append("annotations", "annotation", "annotation ids to include; repeatable")
                         .value_name("ANNOTATION"),
                 )
-                .arg(int("workers", "workers", "threads to read with").default_value("1"))
+                .arg(count("workers", "workers", "threads to read with", 0).default_value("1"))
                 .arg(
-                    int("stride", "stride", "read every Nth slab along the first axis (approximate, opt-in)")
+                    count("stride", "stride", "read every Nth slab along the first axis (approximate, opt-in)", 1)
                         .default_value("1"),
                 )
                 .arg(flag(
@@ -582,9 +593,12 @@ fn perf() -> Vec<Command> {
             .about("reproduce the performance targets")
             .arg(Arg::new("path").help("a sample to measure; omitted, a synthetic one is written and used"))
             .arg(opt("annotation", "annotation", "annotation to time label reads against"))
-            .arg(int("patch", "patch", "patch side length to measure with").default_value("64"))
-            .arg(int("repeats", "repeats", "repetitions per measurement; the median is reported").default_value("20"))
-            .arg(int("workers", "workers", "dataloader workers for the throughput run").default_value("0"))
+            .arg(count("patch", "patch", "patch side length to measure with", 1).default_value("64"))
+            .arg(
+                count("repeats", "repeats", "repetitions per measurement; the median is reported", 1)
+                    .default_value("20"),
+            )
+            .arg(count("workers", "workers", "dataloader workers for the throughput run", 0).default_value("0"))
             .arg(flag("no_throughput", "no-throughput", "skip the dataloader run (it needs PyTorch)"))
             .arg(json()),
     ]

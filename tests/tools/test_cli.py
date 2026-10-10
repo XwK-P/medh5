@@ -145,6 +145,28 @@ class TestUsageErrors:
         assert code == EXIT_USAGE
         assert "subject clock" in out.err
 
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["index", "build", "--max-coords", "0"],
+            ["index", "build", "--max-coords", "-7"],
+            ["index", "build", "--occupancy", "-3"],
+            ["dataset", "stats", "--stride", "0"],
+            ["dataset", "stats", "--workers", "-1"],
+            ["bench", "--patch", "0"],
+            ["bench", "--repeats", "0"],
+        ],
+    )
+    def test_a_count_below_its_least_value_is_refused(self, capsys, tmp_path, argv):
+        """``--max-coords -7`` stored no coordinates, ``--occupancy -3`` built
+        no map, and a stride of 0 or a negative worker count was taken as
+        some other number, all without a word."""
+        *command, option, value = argv
+        missing = str(tmp_path / "missing")
+        code, out = run(capsys, *command, missing, f"{option}={value}")
+        assert code == EXIT_USAGE
+        assert f"invalid value '{value}' for '{option}" in out.err
+
     def test_pseudonymising_ids_needs_apply_and_a_salt(self, capsys, tmp_path):
         missing = str(tmp_path / "missing.medh5")
         code, out = run(capsys, "scrub", missing, "--pseudonymise-ids")
@@ -553,6 +575,12 @@ class TestSegAndIndex:
         with medh5.open(sample_path) as sample:
             assert "organs_tp0" in sample.index
 
+    def test_S14_3_an_occupancy_block_of_0_builds_no_map(self, capsys, sample_path):
+        code, out = run(capsys, "index", "build", str(sample_path), "--occupancy", "0")
+        assert code == EXIT_OK
+        with medh5.open(sample_path) as sample:
+            assert not sample.index["organs_tp0"].has_occupancy
+
     def test_index_build_on_a_sample_without_annotations(self, capsys, tmp_path):
         import medh5
         from tests.helpers import SHAPE
@@ -797,7 +825,9 @@ class TestErrorsNameTheFile:
         assert code == EXIT_OK
         target = tmp_path / "nodir" / "x.json"
         for command in ("split", "stats"):
-            code, out = run(capsys, "dataset", command, str(manifest), "-o", str(target))
+            code, out = run(
+                capsys, "dataset", command, str(manifest), "-o", str(target)
+            )
             assert code == EXIT_ERROR, command
             assert repr(str(target)) in out.err, command
 
@@ -806,7 +836,13 @@ class TestErrorsNameTheFile:
         write_legacy_sample(old, images={"CT": np.zeros((4, 4, 4), np.int16)})
         report = tmp_path / "nodir" / "r.json"
         code, out = run(
-            capsys, "migrate", str(old), "-o", str(tmp_path / "m"), "--report", str(report)
+            capsys,
+            "migrate",
+            str(old),
+            "-o",
+            str(tmp_path / "m"),
+            "--report",
+            str(report),
         )
         assert code == EXIT_ERROR
         assert repr(str(report)) in out.err
@@ -1054,6 +1090,20 @@ class TestDatasetCommands:
         )
         assert code == EXIT_OK
         assert 0 < json.loads(out.out)["samples"] < 6
+
+    @pytest.mark.parametrize(
+        ("option", "what"), [("--image", "an image"), ("--annotation", "an annotation")]
+    )
+    def test_stats_refuses_an_id_no_sample_has(
+        self, capsys, cohort, tmp_path, option, what
+    ):
+        """A misspelt id measured nothing and exited 0 with an empty table."""
+        manifest = tmp_path / "m.json"
+        run(capsys, "dataset", "index", str(cohort), "-o", str(manifest))
+        code, out = run(capsys, "dataset", "stats", str(manifest), option, "CT")
+        assert code == EXIT_ERROR
+        assert out.err == f"medh5: no sample has {what} 'CT'\n"
+        assert out.out == ""
 
     def test_stats_says_so_when_no_sample_claims_the_partition(
         self, capsys, cohort, tmp_path
