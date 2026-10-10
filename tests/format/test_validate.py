@@ -194,7 +194,9 @@ class TestRules:
                 node.attrs[key] = value
         assert "W902" in codes(path, "structural")
 
-    def test_W908_fires_on_a_poor_colouring(self, sample_path):
+    @staticmethod
+    def _poor_colouring(sample_path: Path) -> Path:
+        """Every class in a layer of its own: six layers where two would do."""
         with h5py.File(sample_path, "r+") as handle:
             group = handle["annotations/organs_tp0"]
             data = np.asarray(group["data"][...])
@@ -213,7 +215,28 @@ class TestRules:
             del group["data"], group["layer_class_ids"]
             group.create_dataset("data", data=wide)
             group.create_dataset("layer_class_ids", data=new_table)
-        assert "W908" in codes(sample_path)
+        return sample_path
+
+    def test_W908_fires_on_a_poor_colouring(self, sample_path):
+        assert "W908" in codes(self._poor_colouring(sample_path))
+
+    @pytest.mark.parametrize(
+        ("level", "fires"),
+        [
+            ("structural", False),
+            ("semantic", True),
+            ("integrity", True),
+            ("strict", True),
+        ],
+    )
+    def test_S15_1_W908_runs_at_every_level_above_structural(
+        self, sample_path, level, fires
+    ):
+        """Each level includes the ones before it: `integrity` skipped W908,
+        which `semantic` and `strict` ran.  It reads layer data, so
+        `structural` does not."""
+        path = self._poor_colouring(sample_path)
+        assert ("W908" in codes(path, level)) is fires
 
     def test_S15_2_E603_names_agents_too(self):
         assert medh5.CODES["E603"].summary == "unknown agent or activity type"

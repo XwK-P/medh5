@@ -494,7 +494,9 @@ fn check_layer_optimality(
     n_layers: usize,
     n_classes: usize,
 ) -> Result<Vec<Diagnostic>> {
-    if ctx.errors_only || !(ctx.level == "semantic" || ctx.level == "strict") || n_classes == 0 {
+    // A layer-data read, so not at `structural`; every level above runs it,
+    // as each level runs everything the ones before it do.
+    if ctx.errors_only || ctx.level == "structural" || n_classes == 0 {
         return Ok(Vec::new());
     }
     let (Some(table_ds), Some(ds)) = (sub_dataset(group, "layer_class_ids"), sub_dataset(group, "data")) else {
