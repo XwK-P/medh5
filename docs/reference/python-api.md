@@ -80,7 +80,7 @@ g.spatial_shape            # spatial axes only, for a 4-D grid
 g.coord_system             # "LPS"
 g.timepoint                # "tp0"
 g.frame_uid                # frame of reference
-g.physical_size            # extent in mm
+g.physical_size            # extent per spatial axis, in g.units
 g.world_into(s.reference_grid, [[0.0, 0.0, 0.0]])   # in that grid's units
 ```
 
@@ -163,7 +163,7 @@ t.kind                             # "identity" | "affine" | "displacement" |
 t.from_frame, t.to_frame
 t.is_invertible                    # the mapping is invertible
 t.inverse()                        # the *stored* inverse, when the file has one
-t.transform_points(points)         # world -> world, in mm
+t.transform_points(points)         # world -> world, in t.units
 
 from medh5.transforms import jacobian_determinant, target_registration_error
 target_registration_error(t, fixed_points, moving_points)   # {"mean", "max", ...}
@@ -195,7 +195,7 @@ tracking.unexamined()                   # {timepoint: instance ids nobody looked
 tracking.coverage                       # {timepoint: class ids examined there}
 
 for instance_id, track in tracking.items():
-    track.volumes                       # {timepoint: mm^3}
+    track.volumes                       # {timepoint: volume in its grid's units cubed}
     track.relative_change("tp0", "tp1")
     track.at("tp1")                     # the Observation, or None
 ```

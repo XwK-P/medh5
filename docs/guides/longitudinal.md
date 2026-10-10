@@ -79,7 +79,7 @@ Then the join is a method:
 tracking = s.tracks("lesion")
 
 for instance_id, track in tracking.items():
-    track.volumes                        # {"tp0": 812.4, "tp1": 1140.0} mm^3
+    track.volumes                        # {"tp0": 812.4, "tp1": 1140.0}: the grids' units cubed (mm³ here)
     track.relative_change("tp0", "tp1")  # 0.403
     track.at("tp1")                      # the Observation, or None
 ```
