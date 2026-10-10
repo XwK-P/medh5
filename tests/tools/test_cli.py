@@ -142,6 +142,29 @@ class TestEntryPoint:
         assert _what(KeyError("PET")) == "no such entry: 'PET'"
         assert _what(KeyError("no image 'PET'; available: []")).startswith("no image")
 
+    def test_every_command_words_a_failed_lookup_alike(
+        self, capsys, tmp_path, sample_path
+    ):
+        """``seg stats``, ``agree`` and the clinical commands printed the
+        engine's sentence in quotes, and ``agree`` put a second "no such
+        annotation" before it."""
+        from medh5.collection import pack
+
+        for argv in (
+            ["seg", "stats", str(sample_path), "nope"],
+            ["agree", str(sample_path), "nope", "organs_tp0"],
+        ):
+            code, out = run(capsys, *argv)
+            assert code == EXIT_ERROR
+            assert out.err.startswith("medh5: no annotation 'nope'; available: ["), argv
+        shard = tmp_path / "s.medh5c"
+        pack([sample_path], shard)
+        code, expected = run(capsys, "info", str(shard), "--key", "nope")
+        assert code == EXIT_ERROR
+        assert expected.err.startswith("medh5: collection has no sample 'nope'")
+        code, out = run(capsys, "clinical", "show", str(shard), "--key", "nope")
+        assert (code, out.err) == (EXIT_ERROR, expected.err)
+
 
 class TestOutput:
     """What the command line does when its stdout cannot take the output."""

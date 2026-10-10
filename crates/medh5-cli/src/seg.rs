@@ -45,10 +45,11 @@ fn open_voxel(path: &str, ann_id: &str) -> medh5::Result<(Sample, Arc<Annotation
     Ok((sample, annotation))
 }
 
-/// `fail(str(exc))` for the errors the 1.x command caught by name.
+/// `medh5: why` for the errors the 1.x command caught by name, worded as
+/// every command words them.
 fn caught(e: Error, ctx: &mut Ctx) -> CmdResult {
     if e.is_medh5() || matches!(e, Error::Key(_)) {
-        Ok(ctx.fail(e.python_str()))
+        Ok(ctx.fail(top_level_message(&e)))
     } else {
         Err(e)
     }

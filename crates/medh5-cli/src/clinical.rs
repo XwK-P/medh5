@@ -40,7 +40,7 @@ pub fn dispatch(name: &str, m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     };
     match result {
         Err(e) if e.is_medh5() || matches!(e, Error::Io(_) | Error::Value(_) | Error::Key(_)) => {
-            Ok(ctx.fail(e.python_str()))
+            Ok(ctx.fail(top_level_message(&e)))
         }
         other => other,
     }

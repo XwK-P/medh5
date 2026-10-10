@@ -305,10 +305,7 @@ fn agree(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
         Ok(EXIT_OK)
     })();
     match result {
-        Err(Error::Key(_)) => {
-            let e = result.unwrap_err();
-            Ok(ctx.fail(format!("no such annotation: {}", e.python_str())))
-        }
+        Err(e @ Error::Key(_)) => Ok(ctx.fail(top_level_message(&e))),
         other => medh5_fail(other, ctx),
     }
 }
