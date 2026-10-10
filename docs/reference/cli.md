@@ -8,10 +8,10 @@ The command line is a native program over the format engine. `pip install
 medh5` puts it on the path; so do `cargo install --locked medh5-cli`, the binaries
 attached to every GitHub Release, and `brew install XwK-P/medh5/medh5`. Each is
 the same code, with the same output and exit codes. The converters
-(`medh5 convert …`, `medh5 migrate`) are Python integrations: the standalone
-binary runs them through a Python that has the package installed (`python3`,
-or the interpreter `MEDH5_PYTHON` names), and says what to install when there
-is none.
+(`medh5 convert …`) and the dataloader row of `medh5 bench` are Python
+integrations: the standalone binary runs them through a Python that has the
+package installed (`python3`, or the interpreter `MEDH5_PYTHON` names), and
+says what to install when there is none. `medh5 migrate` is native.
 
 Exit codes are Unix-conventional: **0** success, **1** a handled error or a
 failed check, **2** a usage error. Every inspection command takes `--json` and
@@ -424,6 +424,11 @@ sample for the `foreground_sample_many_ms` row, which holds the foreground draw
 to its target where the class count is large. A longitudinal sample given as
 `PATH` gets the paired row when a transform relates its first two visits.
 Progress goes to stderr, so `--json` output is only the document.
+
+The `patch_throughput` row runs the PyTorch dataloader, so it needs
+`medh5[torch]`; the standalone binary hands it to Python as it does the
+converters. Without PyTorch the row is skipped with the reason on stderr, and
+`--no-throughput` skips it outright.
 
 ## Clinical history (format 1.1)
 

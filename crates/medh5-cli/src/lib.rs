@@ -32,8 +32,9 @@ mod seg;
 use common::{top_level_message, Ctx};
 pub use common::{Host, EXIT_ERROR, EXIT_OK, EXIT_USAGE};
 
-/// The host of the standalone binary: hands converters to a Python
-/// interpreter that has the `medh5` package, when there is one.
+/// The host of the standalone binary: hands the converters and the dataloader
+/// benchmark to a Python interpreter that has the `medh5` package, when there
+/// is one (`MEDH5_PYTHON`, else `python3`, or `python` on Windows).
 pub struct NativeHost;
 
 impl NativeHost {
@@ -80,9 +81,40 @@ impl Host for NativeHost {
         Some(status.code().unwrap_or(EXIT_ERROR))
     }
 
-    fn throughput(&self, _path: &str, _patch: i64, _workers: i64, _annotation: Option<&str>) -> Result<Value, String> {
-        Err("the dataloader benchmark needs the Python package with PyTorch (pip install 'medh5[torch]')".into())
+    fn throughput(&self, path: &str, patch: i64, workers: i64, annotation: Option<&str>) -> Result<Value, String> {
+        measure_throughput(&Self::python(), path, patch, workers, annotation)
     }
+}
+
+/// The dataloader benchmark, run by `python`'s `medh5` package as the console
+/// script runs it: `Measurement.to_json()`, or why it could not run there.
+fn measure_throughput(
+    python: &str,
+    path: &str,
+    patch: i64,
+    workers: i64,
+    annotation: Option<&str>,
+) -> Result<Value, String> {
+    const CODE: &str = "import json; from medh5.bench import throughput; print(json.dumps(throughput([sys.argv[1]], \
+                        patch=int(sys.argv[2]), workers=int(sys.argv[3]), annotation=sys.argv[4] or None).to_json()))";
+    let needs = format!(
+        "the dataloader benchmark runs in the Python package, with PyTorch (pip install 'medh5[torch]'); {python} \
+         could not run it (MEDH5_PYTHON names another interpreter)"
+    );
+    let ran = python_running(python, CODE)
+        .args([path, &patch.to_string(), &workers.to_string(), annotation.unwrap_or("")])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("{needs}: {e}"))?;
+    let last_line = |bytes: &[u8]| {
+        String::from_utf8_lossy(bytes).lines().map(str::trim).filter(|l| !l.is_empty()).last().map(str::to_string)
+    };
+    if !ran.status.success() {
+        // The last line of a traceback is the exception: `No module named 'torch'`.
+        return Err(format!("{needs}: {}", last_line(&ran.stderr).unwrap_or_else(|| ran.status.to_string())));
+    }
+    let printed = last_line(&ran.stdout).unwrap_or_default();
+    serde_json::from_str(&printed).map_err(|e| format!("{needs}: it printed no measurement ({e})"))
 }
 
 /// Run the command line on `args` (without the program name) against the
@@ -242,5 +274,11 @@ mod tests {
         assert_eq!(unguarded.code(), Some(99));
         let guarded = planted(&mut python_running(&python, "import json; json.dumps([])")).unwrap();
         assert_eq!(guarded.code(), Some(0));
+    }
+
+    #[test]
+    fn a_throughput_run_python_cannot_make_says_what_it_needs() {
+        let why = measure_throughput("/nonexistent/python3", "case.medh5", 64, 0, None).unwrap_err();
+        assert!(why.contains("pip install 'medh5[torch]'") && why.contains("MEDH5_PYTHON"), "{why}");
     }
 }
