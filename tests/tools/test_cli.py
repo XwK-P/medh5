@@ -54,6 +54,22 @@ class TestEntryPoint:
         assert code == EXIT_USAGE
         assert out.err == "medh5: argument 'caf�.medh5' is not valid UTF-8\n"
 
+    def test_the_grammar_lists_each_option_once(self):
+        """``command_tree()`` listed ``-h``, ``--help`` and ``--version``
+        twice at every level: once as clap builds them, once by hand."""
+        from medh5.cli import command_tree
+
+        def check(node: dict[str, Any], where: str) -> None:
+            options = node["options"]
+            assert len(options) == len(set(options)), where
+            assert {"-h", "--help"} <= set(options), where
+            for name, sub in node["commands"].items():
+                check(sub, f"{where} {name}")
+
+        tree = command_tree()
+        assert "--version" in tree["options"]
+        check(tree, "medh5")
+
     @pytest.mark.skipif(sys.platform == "win32", reason="Ctrl-C is no signal there")
     def test_ctrl_c_ends_the_console_script_at_once(self, tmp_path):
         """The command runs in native code, where Python's handler only marks

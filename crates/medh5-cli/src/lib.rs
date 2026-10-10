@@ -218,23 +218,16 @@ pub fn command_tree() -> Value {
                 options.push(json!(format!("--{long}")));
             }
         }
-        options.push(json!("-h"));
-        options.push(json!("--help"));
         let mut commands = Map::new();
         for sub in cmd.get_subcommands() {
             commands.insert(sub.get_name().to_string(), walk(sub));
         }
         json!({"options": options, "positionals": positionals, "commands": commands})
     }
+    // Built, the grammar has the `--help` and `--version` clap adds.
     let mut command = app::command();
     command.build();
-    let mut tree = walk(&command);
-    if let Value::Object(m) = &mut tree {
-        if let Some(Value::Array(options)) = m.get_mut("options") {
-            options.push(json!("--version"));
-        }
-    }
-    tree
+    walk(&command)
 }
 
 #[cfg(test)]
