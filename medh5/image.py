@@ -163,6 +163,12 @@ class Image:
         time axes are then read whole).  ``physical=True`` applies
         ``rescale_slope``/``rescale_intercept`` (into ``float32`` unless
         *dtype* says otherwise).
+
+        *dtype* converts as NumPy's ``astype`` does, except that a value the
+        target cannot hold **saturates** to the nearest value it does hold
+        rather than wrapping: ``300`` read as ``uint8`` is ``255`` (NumPy
+        gives ``44``) and ``-1`` is ``0``.  A float becomes an integer by
+        truncation toward zero, and NaN becomes ``0``.
         """
         found: npt.NDArray[Any] = self._handle.read(roi, physical=physical, dtype=dtype)
         return found

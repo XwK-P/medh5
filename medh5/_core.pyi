@@ -1228,7 +1228,14 @@ def encode_labelmap(
     *,
     ignore: npt.NDArray[np.bool_] | None = None,
     ignore_id: int = ...,
-) -> AnnotationPayload: ...
+) -> AnnotationPayload:
+    """Pack mutually exclusive class masks into one integer volume (§7.1).
+    `ignore` is painted as `ignore_id` where no class claims the voxel; a
+    region of another shape (E405), or an `ignore_id` outside 1..65535 or
+    equal to a class id (E404), is refused.
+    """
+    ...
+
 def encode_layers(
     masks: Any,
     spatial_shape: tuple[int, ...] | None = None,
@@ -1236,7 +1243,13 @@ def encode_layers(
     colouring: dict[int, int] | None = None,
     ignore: npt.NDArray[np.bool_] | None = None,
     ignore_id: int = ...,
-) -> AnnotationPayload: ...
+) -> AnnotationPayload:
+    """Colour the overlap graph and pack each colour into one labelmap (§7.2);
+    `ignore` and `ignore_id` are checked and painted as `encode_labelmap`
+    does.
+    """
+    ...
+
 def encode_mask(mask: npt.NDArray[Any]) -> AnnotationPayload: ...
 def encode_masks(
     masks: Mapping[int, npt.NDArray[np.bool_]],

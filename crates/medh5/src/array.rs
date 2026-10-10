@@ -131,6 +131,14 @@ impl DType {
         matches!(self.kind(), 'i' | 'u')
     }
 
+    /// Whether the integer `value` comes through a conversion to this dtype
+    /// unchanged: inside an integer type's range, exactly representable in a
+    /// float type (every integer up to 2048 in `float16`, 2**24 in
+    /// `float32`), `0` or `1` in `bool`.
+    pub fn holds(self, value: i128) -> bool {
+        crate::with_dtype!(self, T => T::from_i128(value).to_i128() == value)
+    }
+
     /// The inclusive range of an integer dtype.
     pub fn int_range(self) -> Option<(i128, i128)> {
         Some(match self {
@@ -432,7 +440,13 @@ impl NdArray {
         with_array!(self, a => a.mapv(|v| v.to_f64()))
     }
 
-    /// Every element converted to `T` (saturating for floats, wrapping-free).
+    /// Every element converted to `T`, **saturating**: a value outside `T`'s
+    /// range becomes the nearest value `T` holds, never another value by
+    /// wrapping --- `300` is `255` as `uint8` and `-1` is `0`, where NumPy's
+    /// `astype` gives `44` and `255`.  A float becomes an integer by
+    /// truncation toward zero, and NaN becomes `0`; an integer too large for
+    /// a float type becomes infinity.  Integer to integer goes through
+    /// `i128`, so 64-bit values stay exact.
     pub fn cast<T: Element>(&self) -> ArrayD<T> {
         if let Some(same) = self.as_typed::<T>() {
             return same.clone();
@@ -450,7 +464,10 @@ impl NdArray {
         }
     }
 
-    /// The array converted to another dtype (NumPy `astype`).
+    /// The array converted to another dtype, saturating as [`Self::cast`]
+    /// does --- NumPy's `astype` except at values the target cannot hold,
+    /// which NumPy wraps.  A reader that must not lose a value checks it
+    /// fits first ([`DType::holds`]), as `Annotation::labelmap` does.
     pub fn astype(&self, dtype: DType) -> NdArray {
         if dtype == self.dtype() {
             return self.clone();

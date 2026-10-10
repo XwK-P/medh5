@@ -15,6 +15,7 @@ use crate::annotations::encode_geometric::{
     encode_mesh, encode_obb, encode_points, Assertions, ObjectColumns, Polygon,
 };
 use crate::annotations::header::{AnnotationHeader, VOXEL_KINDS};
+use crate::annotations::layout;
 use crate::annotations::payload::{normalize_masks, Masks, Payload, PayloadData};
 use crate::annotations::select::{analyse, select_encoding, OverlapStats};
 use crate::annotations::Annotation;
@@ -550,6 +551,23 @@ impl SampleWriter {
         }
         let mut frame = placement.frame_uid.clone();
         if space == Some("world") {
+            if let (Some(named), Some(t)) = (&frame, &target) {
+                if let Some(own) = t.frame_uid.as_ref().filter(|own| *own != named) {
+                    return Err(Error::coded(
+                        "E414",
+                        format!(
+                            "annotation {}: space='world' names frame {}, but grid {} is in frame {}; the grid's \
+                             affine would read coordinates of one frame as the other's, so name the grid in frame {} \
+                             or relate the two frames with a transform (§3.4)",
+                            repr_str(ann_id),
+                            repr_str(named),
+                            repr_str(&t.grid_id),
+                            repr_str(own),
+                            repr_str(named)
+                        ),
+                    ));
+                }
+            }
             if frame.is_none() {
                 frame = target.as_ref().and_then(|t| t.frame_uid.clone());
             }
@@ -574,6 +592,13 @@ impl SampleWriter {
                     ),
                 ));
             }
+        }
+        // What a reader of the stored annotation will hold it to (§8.1):
+        // index coordinates have the grid's spatial rank.
+        let rank = target.as_ref().filter(|_| layout::ranked(&payload.kind, space)).map(Grid::n_spatial);
+        let shape_of = |name: &str| payload.datasets.get(name).map(PayloadData::shape);
+        if let Some(problem) = layout::column_problems(&payload.kind, &shape_of, rank).first() {
+            return Err(problem.error(ann_id));
         }
         let annotated = self.resolve_annotated(&options.annotated_classes, &payload.class_ids)?;
         let mut declared: Vec<i64> = payload.class_ids.iter().chain(&annotated).copied().collect();
@@ -1041,7 +1066,7 @@ impl SampleWriter {
             return Err(Error::coded(
                 "E503",
                 format!(
-                    "transform {}: field lattice {} is not grid {}'s spatial shape {}; the field is sampled at that grid's voxels (§10.3)",
+                    "transform {}: field lattice {} is not grid {}'s spatial shape {}; the field is sampled at that grid's voxels (§10.4)",
                     repr_str(transform_id),
                     repr_int_tuple(&shape[1..]),
                     repr_str(grid_id),

@@ -123,15 +123,21 @@ impl Annotation {
 
     /// Refuse a grid these coordinates cannot be read on (E414).
     ///
-    /// The annotation's own grid always relates; any other grid only through a
-    /// shared frame of reference, and a grid without a `frame_uid` shares
-    /// nothing, another frame-less grid included.
+    /// The annotation's own grid relates --- unless the coordinates are
+    /// `world` ones in a frame the file declares and that grid is in another,
+    /// which the own grid's affine would read as its own world all the same
+    /// (§3.4).  Any other grid relates only through a shared frame of
+    /// reference, and a grid without a `frame_uid` shares nothing, another
+    /// frame-less grid included.
     pub fn require_related(&self, target: &Grid) -> Result<()> {
-        if self.is_own(target) {
-            return Ok(());
-        }
         let frame = self.frame_uid();
-        if frame.is_some() && frame == target.frame_uid {
+        if self.is_own(target) {
+            let declared = self.header.frame_uid.as_ref();
+            let elsewhere = matches!((declared, &target.frame_uid), (Some(a), Some(b)) if a != b);
+            if !elsewhere || self.space()? != "world" {
+                return Ok(());
+            }
+        } else if frame.is_some() && frame == target.frame_uid {
             return Ok(());
         }
         Err(Error::coded(
@@ -347,6 +353,9 @@ impl Annotation {
             other => self.is_own(self.resolve_grid(other)?),
         };
         if own && self.space()? == "world" {
+            if let Some(grid) = self.world_grid() {
+                self.require_related(grid)?;
+            }
             let boxes = self.boxes()?;
             let n = boxes.shape().first().copied().unwrap_or(0);
             let s = self.box_ndim()?;
@@ -370,6 +379,9 @@ impl Annotation {
         let rotations = self.read_as::<f32>("rotations")?.mapv(f64::from);
         let n = centers.shape().first().copied().unwrap_or(0);
         let dim = centers.shape().get(1).copied().unwrap_or(0);
+        if dim > crate::geometry::affine::MAX_CORNER_AXES {
+            return Err(Error::Value(format!("an oriented box with {dim} axes has too many corners to enumerate")));
+        }
         let m = 1usize << dim;
         let mut out = ndarray::Array3::zeros((n, m, dim));
         for i in 0..n {
@@ -486,14 +498,19 @@ impl Annotation {
         Ok(self.read_as::<i64>("contour_offsets")?.iter().copied().collect())
     }
 
-    /// `(n, 2)` `(axis, index)` per polygon; `(-1, -1)` when not stored.
+    /// `(n, 2)` `(axis, index)` per polygon; `(-1, 0)` --- out of plane, the
+    /// writer's own default --- when not stored.
     pub fn contour_planes(&self) -> Result<Array2<i32>> {
         match self.read_optional::<i32>("contour_plane")? {
             Some(p) => {
                 let n = p.shape().first().copied().unwrap_or(0);
                 Ok(p.into_shape_with_order((n, 2))?)
             }
-            None => Ok(Array2::from_elem((self.n_items()?, 2), -1)),
+            None => {
+                let mut planes = Array2::zeros((self.n_items()?, 2));
+                planes.column_mut(0).fill(-1);
+                Ok(planes)
+            }
         }
     }
 

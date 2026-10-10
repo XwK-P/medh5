@@ -23,6 +23,7 @@ from medh5.annotations.voxel import (
     encode_mask,
     encode_masks,
     encode_probmap,
+    encode_voxels,
     greedy_colour,
     layers_from_colouring,
     masks_equal,
@@ -184,7 +185,7 @@ class TestEncoders:
         [
             ([[-2.5, 9.5]], 12, slice(2, 5), [0, 1, 2]),
             ([[5.5, 14.5]], 9, slice(0, 3), [6, 7, 8]),
-            ([[-1.5, 11.5]], 14, slice(1, 4), [0, 1, 2]),
+            ([[-1.5, 11.5]], 13, slice(1, 4), [0, 1, 2]),
             ([[2.5, 5.5]], 3, slice(0, 3), [3, 4, 5]),
         ],
     )
@@ -227,6 +228,12 @@ class TestEncoders:
                 [3], roi=[slice(0, 10), slice(0, 10), slice(0, 10)]
             )[0]
             assert np.array_equal(windowed, dense)
+        # A payload decodes in the same frame: it refused every box hanging
+        # off the grid, so such an object could not be transcoded at all.
+        payload = encode_instances(
+            [InstanceInput(3, 1, box=full_box, crop=crop)], shape
+        )
+        assert np.array_equal(payload_to_masks(payload, spatial_shape=shape)[3], dense)
 
     @pytest.mark.parametrize("plane", [None, 0, 15])
     def test_S7_2_has_ignore_region_reads_in_slabs(self, tmp_path, plane):
@@ -466,8 +473,9 @@ class TestTheIgnoreIdIsNotAClass:
         first = np.zeros(self.SHAPE, bool)
         first[:3] = True
         second = np.zeros(self.SHAPE, bool)
-        # overlapping, so the multi-class encodings are all writable
-        second[2:5] = True
+        # Overlapping where the encoding holds an overlap; a labelmap holds
+        # none (§7.1), so its two classes sit side by side.
+        second[3 if encoding == "labelmap" else 2 : 5] = True
         path = tmp_path / f"{encoding}.medh5"
         with medh5.create(path, codec="portable") as w:
             w.label_set(self._labels())
@@ -489,8 +497,6 @@ class TestTheIgnoreIdIsNotAClass:
     def test_S5_2_no_encoding_returns_a_plane_for_the_ignore_id(
         self, tmp_path, encoding
     ):
-        if encoding == "labelmap":
-            pytest.skip("labelmap cannot hold the overlapping masks this uses")
         path = self._annotation(tmp_path, encoding)
         with medh5.open(path) as sample:
             annotation = sample.annotations["seg"]
@@ -508,8 +514,6 @@ class TestTheIgnoreIdIsNotAClass:
         no argument and must keep working untouched, and a named class still
         selects nothing rather than starting to raise.
         """
-        if encoding == "labelmap":
-            pytest.skip("labelmap cannot hold the overlapping masks this uses")
         path = self._annotation(tmp_path, encoding)
         with medh5.open(path) as sample:
             annotation = sample.annotations["seg"]
@@ -780,3 +784,72 @@ class TestPayloadEncoderGuards:
             with pytest.raises(MEDH5ValidationError) as caught:
                 encode()
             assert caught.value.code == "E303"
+
+    @pytest.mark.parametrize("encode", [encode_labelmap, encode_layers])
+    def test_S7_7_an_ignore_region_of_another_shape_is_E405(self, encode):
+        """The writer checks the region's shape; the encoders under it zipped it
+        with the masks unchecked and panicked."""
+        mask = np.zeros(self.SHAPE, bool)
+        mask[1] = True
+        with pytest.raises(MEDH5ValidationError) as exc:
+            encode({1: mask}, self.SHAPE, ignore=np.zeros((4, 6, 7), bool))
+        assert exc.value.code == "E405"
+        with pytest.raises(MEDH5ValidationError) as exc:
+            encode_voxels(
+                {1: mask},
+                self.SHAPE,
+                encoding=encode.__name__.removeprefix("encode_"),
+                ignore=np.zeros((4, 6, 7), bool),
+            )
+        assert exc.value.code == "E405"
+
+    @pytest.mark.parametrize("encode", [encode_labelmap, encode_layers])
+    @pytest.mark.parametrize("ignore_id", [70000, -1, 0, 1])
+    def test_S6_2_the_ignore_id_is_a_uint16_no_class_uses(self, encode, ignore_id):
+        """Cast unchecked, 70000 was stored as 4464, -1 as 65535, 0 as
+        background and 1 as class 1."""
+        mask = np.zeros(self.SHAPE, bool)
+        mask[1] = True
+        ignore = np.zeros(self.SHAPE, bool)
+        ignore[3] = True
+        with pytest.raises(MEDH5ValidationError) as exc:
+            encode({1: mask}, self.SHAPE, ignore=ignore, ignore_id=ignore_id)
+        assert exc.value.code == "E404"
+        stored = encode({1: mask}, self.SHAPE, ignore=ignore, ignore_id=300)
+        data = np.asarray(stored.datasets["data"])
+        assert np.array_equal(
+            (data == 300).any(axis=0) if data.ndim == 4 else data == 300, ignore
+        )
+
+    @pytest.mark.parametrize("encode", [encode_labelmap, encode_layers])
+    def test_S7_1_an_ignore_region_no_voxel_carries_stays_uint8(
+        self, tmp_path: Path, encode
+    ):
+        """The dtype followed whether `ignore` was passed, not whether a voxel
+        holds the ignore id: an all-false region stored `uint16`, which §7.1
+        refuses for class ids that fit `uint8` --- so the writer refused its
+        own file (E411)."""
+        mask = np.zeros(self.SHAPE, bool)
+        mask[1] = True
+        empty = np.zeros(self.SHAPE, bool)
+        assert (
+            encode({1: mask}, self.SHAPE, ignore=empty).datasets["data"].dtype
+            == np.uint8
+        )
+        ignore = np.zeros(self.SHAPE, bool)
+        ignore[3] = True
+        assert (
+            encode({1: mask}, self.SHAPE, ignore=ignore).datasets["data"].dtype
+            == np.uint16
+        )
+        kind = encode.__name__.removeprefix("encode_")
+        path = tmp_path / f"{kind}.medh5"
+        with medh5.create(path, sample_id="s", codec="portable") as w:
+            w.add_grid("g", shape=self.SHAPE, spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", np.zeros(self.SHAPE, np.int16), grid="g", modality="CT")
+            w.add_segmentation(
+                "seg", grid="g", masks={1: mask}, encoding=kind, ignore=empty
+            )
+        assert not validate_file(path).errors
+        with medh5.open(path) as sample:
+            assert not sample.annotations["seg"].has_ignore_region

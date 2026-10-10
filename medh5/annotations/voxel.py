@@ -268,8 +268,12 @@ def encode_instances(
 ) -> Any:
     """Pack objects into boxes, ids and bit-packed crops (spec §7.4).
 
-    ``class_ids`` declares the classes examined; with no objects it is what
-    makes "examined, none found" expressible.
+    ``class_ids`` names classes the annotation can express beyond its
+    objects' own --- a class examined and not found --- and the objects'
+    classes are always declared with them, as §6.2 requires.  With no objects
+    it is what makes "examined, none found" expressible.  A crop given with
+    its box is the object's mask cut to that box, so its shape is the box's
+    extent (E405 otherwise).
     """
     return _core.encode_instances(
         objects, spatial_shape, store_masks=store_masks, class_ids=class_ids

@@ -17,7 +17,8 @@ use serde_json::{json, Map, Value};
 
 use super::encode::{contains_at, decode_crop, BITS_PER_PLANE, DEFAULT_THRESHOLD};
 use super::header::{is_geometric_kind, is_voxel_kind, AnnotationHeader};
-use super::payload::{contains_value, count_nonzero, popcounts, value_counts};
+use super::layout;
+use super::payload::{any_nonzero, contains_value, count_nonzero, popcounts, value_counts};
 use crate::array::{DType, Element, Index, NdArray, Slice};
 use crate::geometry::affine::{box_to_slices, slices_to_box};
 use crate::geometry::grid::Grid;
@@ -110,9 +111,10 @@ struct InstanceColumns {
 /// One annotation group, opened (spec §6).
 ///
 /// The small per-kind tables --- `layers`' layer table, `bitmask`'s bit
-/// table, `instances`' object columns --- are read once per open annotation
-/// and kept: a sample is read-only and `amend` replaces the inode rather than
-/// editing in place, so an open reader cannot see them change.
+/// table, `instances`' object columns --- and whether any voxel is ignored
+/// are read once per open annotation and kept: a sample is read-only and
+/// `amend` replaces the inode rather than editing in place, so an open
+/// reader cannot see them change.
 #[derive(Debug)]
 pub struct Annotation {
     pub ann_id: String,
@@ -123,6 +125,7 @@ pub struct Annotation {
     layers: OnceLock<Result<LayerTable>>,
     bits: OnceLock<Result<BitTable>>,
     columns: OnceLock<Result<InstanceColumns>>,
+    ignored: OnceLock<Result<bool>>,
 }
 
 fn cached<T>(cell: &OnceLock<Result<T>>, init: impl FnOnce() -> Result<T>) -> Result<&T> {
@@ -162,7 +165,7 @@ impl Annotation {
         label_set: Option<Arc<LabelSet>>,
     ) -> Result<Annotation> {
         let header = AnnotationHeader::read(&group)?;
-        Ok(Annotation {
+        let annotation = Annotation {
             ann_id: ann_id.to_string(),
             group,
             header,
@@ -171,7 +174,58 @@ impl Annotation {
             layers: OnceLock::new(),
             bits: OnceLock::new(),
             columns: OnceLock::new(),
-        })
+            ignored: OnceLock::new(),
+        };
+        annotation.check_columns()?;
+        Ok(annotation)
+    }
+
+    /// Refuse an annotation whose datasets disagree in shape (E405): every
+    /// reader of one indexes its columns by row, and a column one row short
+    /// was read past its end; every voxel read is a window of the grid, and a
+    /// volume of another shape cannot answer one.  Shapes only --- nothing is
+    /// read.
+    fn check_columns(&self) -> Result<()> {
+        let grid = self.header.grid.as_deref().and_then(|g| self.grids.get(g).map(|grid| (g, grid)));
+        let rank =
+            grid.filter(|_| layout::ranked(self.kind(), self.header.space.as_deref())).map(|(_, g)| g.n_spatial());
+        let shape_of = |name: &str| self.optional_dataset(name).map(|d| d.shape());
+        if let Some(problem) = layout::column_problems(self.kind(), &shape_of, rank).first() {
+            return Err(problem.error(&self.ann_id));
+        }
+        let data = if is_voxel_kind(self.kind()) { self.optional_dataset("data") } else { None };
+        if let (Some((gid, grid)), Some(data)) = (grid, data) {
+            let shape = data.shape();
+            let stacked = matches!(self.kind(), "layers" | "bitmask" | "probmap");
+            let tail = if stacked { shape.get(1..).unwrap_or(&[]) } else { &shape[..] };
+            let spatial = grid.spatial_shape();
+            if tail != spatial.as_slice() {
+                return Err(Error::coded(
+                    "E405",
+                    format!(
+                        "annotation {}: `data` has spatial shape {}, but grid {} has spatial shape {}; a voxel \
+                         annotation covers its grid exactly",
+                        repr_str(&self.ann_id),
+                        crate::json::repr_int_tuple(tail),
+                        repr_str(gid),
+                        crate::json::repr_int_tuple(&spatial)
+                    ),
+                ));
+            }
+            if self.kind() == "probmap" && shape.first() != Some(&self.class_ids().len()) {
+                return Err(Error::coded(
+                    "E405",
+                    format!(
+                        "annotation {}: `data` has {} plane(s) for {} class id(s); a probmap stores one plane per \
+                         class, in `class_ids` order",
+                        repr_str(&self.ann_id),
+                        shape.first().copied().unwrap_or(0),
+                        self.class_ids().len()
+                    ),
+                ));
+            }
+        }
+        Ok(())
     }
 
     // -- header passthrough -------------------------------------------------
@@ -450,6 +504,11 @@ impl Annotation {
     }
 
     /// Resolve a region of interest against the grid; `None` is the whole grid.
+    ///
+    /// A window is contiguous: a slice with a step other than 1 is refused
+    /// (`ValueError`) rather than read as if it had none --- `slice(0, 4, 2)`
+    /// would hand back four planes where `Image.read` returns two, and a
+    /// label patch would no longer line up with its image patch.
     pub fn window(&self, roi: Option<&[Slice]>) -> Result<Window> {
         let shape = self.spatial_shape()?;
         let Some(roi) = roi else {
@@ -461,7 +520,14 @@ impl Annotation {
         roi.iter()
             .zip(&shape)
             .map(|(s, n)| {
-                let (a, b, _) = Slice { step: None, ..*s }.resolve(*n)?;
+                let (a, b, step) = s.resolve(*n)?;
+                if step != 1 {
+                    return Err(Error::Value(format!(
+                        "annotation {}: a region of interest is read whole, so a slice with step {step} is refused; \
+                         read the region, then slice the result with the step",
+                        repr_str(&self.ann_id)
+                    )));
+                }
                 Ok((a, b))
             })
             .collect()
@@ -621,9 +687,20 @@ impl Annotation {
     /// Flatten to one integer volume, breaking overlap ties explicitly.
     ///
     /// `priority` is ordered highest-precedence first; classes it omits are
-    /// painted first, in `class_ids` order.  Returns the volume and, when no
-    /// priority was given, how many voxels a later class overwrote --- the
-    /// frontends warn on a nonzero count with [`Annotation::flatten_warning`].
+    /// painted first, in `class_ids` order.  The §7.7 ignore region is
+    /// painted over them as `ignore_id`, whichever encoding holds it --- in
+    /// band, or in the sibling `mask` the header names --- so an ignored
+    /// voxel never reads as `0`, which means verified absent.
+    ///
+    /// `dtype` must hold every class id, and `ignore_id` where the
+    /// annotation has an ignore region; a narrower one is refused
+    /// (`ValueError`) rather than saturating two values into one --- class 300
+    /// and the ignore id both read as 255 in `uint8` --- and `bool` holds no
+    /// class id at all.
+    ///
+    /// Returns the volume and, when no priority was given, how many voxels a
+    /// later class overwrote --- the frontends warn on a nonzero count with
+    /// [`Annotation::flatten_warning`].
     pub fn labelmap(
         &self,
         roi: Option<&[Slice]>,
@@ -631,33 +708,74 @@ impl Annotation {
         dtype: DType,
     ) -> Result<(NdArray, u64, Vec<i64>)> {
         self.require_voxel("labelmap()")?;
+        self.check_label_dtype(dtype)?;
         let window = self.window(roi)?;
-        if self.kind() == "labelmap" {
+        let (mut out, overwritten, ordered) = if self.kind() == "labelmap" {
+            // Cast once, from the stored width: its in-band region already
+            // reads as `ignore_id`.
             let block = data::read_region(&self.data()?, &window_index(None, &window))?;
-            return Ok((block.astype(dtype), 0, self.class_ids().to_vec()));
-        }
-        let shape = window_shape(&window);
-        let mut out = ArrayD::<i64>::zeros(IxDyn(&shape));
-        let mut ordered = self.class_ids().to_vec();
-        if let Some(priority) = priority {
-            let ranked = self.resolve_classes(Some(priority))?;
-            let mut rest: Vec<i64> = ordered.iter().copied().filter(|c| !ranked.contains(c)).collect();
-            rest.extend(ranked.iter().rev());
-            ordered = rest;
-        }
-        let mut overwritten = 0u64;
-        for class_id in &ordered {
-            let mask = self.dense_class(*class_id, &window)?;
-            ndarray::Zip::from(&mut out).and(&mask).for_each(|o, m| {
-                if *m {
-                    if priority.is_none() && *o != 0 {
-                        overwritten += 1;
+            (block.astype(dtype), 0, self.class_ids().to_vec())
+        } else {
+            let mut out = ArrayD::<i64>::zeros(IxDyn(&window_shape(&window)));
+            let mut ordered = self.class_ids().to_vec();
+            if let Some(priority) = priority {
+                let ranked = self.resolve_classes(Some(priority))?;
+                let mut rest: Vec<i64> = ordered.iter().copied().filter(|c| !ranked.contains(c)).collect();
+                rest.extend(ranked.iter().rev());
+                ordered = rest;
+            }
+            let mut overwritten = 0u64;
+            for class_id in &ordered {
+                let mask = self.dense_class(*class_id, &window)?;
+                ndarray::Zip::from(&mut out).and(&mask).for_each(|o, m| {
+                    if *m {
+                        if priority.is_none() && *o != 0 {
+                            overwritten += 1;
+                        }
+                        *o = *class_id;
                     }
-                    *o = *class_id;
+                });
+            }
+            (NdArray::from(out).astype(dtype), overwritten, ordered)
+        };
+        // `check_label_dtype` has made sure `dtype` holds the ignore id.
+        if let Some(region) = self.ignore_within(&window, self.kind() != "labelmap")? {
+            let ignore = i128::from(self.ignore_id());
+            with_array!(&mut out, a => a.zip_mut_with(&region, |o, r| {
+                if *r {
+                    *o = Element::from_i128(ignore);
                 }
-            });
+            }));
         }
-        Ok((NdArray::from(out).astype(dtype), overwritten, ordered))
+        Ok((out, overwritten, ordered))
+    }
+
+    /// Refuse a `labelmap()` dtype that cannot hold the values the volume
+    /// holds: every class id, and the ignore id where a voxel is ignored.
+    fn check_label_dtype(&self, dtype: DType) -> Result<()> {
+        let id = repr_str(&self.ann_id);
+        if dtype == DType::Bool {
+            return Err(Error::Value(format!(
+                "annotation {id}: labelmap() returns class ids, which a bool volume cannot hold; dense() returns one \
+                 boolean plane per class"
+            )));
+        }
+        if let Some(class_id) = self.class_ids().iter().find(|c| !dtype.holds(i128::from(**c))) {
+            return Err(Error::Value(format!(
+                "annotation {id}: {} cannot hold class id {class_id}, and labelmap() returns class ids as they are; \
+                 ask for a dtype that holds every one (uint16 does)",
+                dtype.name()
+            )));
+        }
+        let ignore = self.ignore_id();
+        if !dtype.holds(i128::from(ignore)) && *cached(&self.ignored, || self.ignore_present())? {
+            return Err(Error::Value(format!(
+                "annotation {id}: {} cannot hold the ignore id {ignore}, which labelmap() writes at every ignored \
+                 voxel; ask for a dtype that holds it (uint16 does)",
+                dtype.name()
+            )));
+        }
+        Ok(())
     }
 
     /// The warning a lossy, unprioritised flatten raises.
@@ -754,29 +872,30 @@ impl Annotation {
     /// `ignore_mask` names, read beside it in the same `annotations/` group.
     /// `None` where no voxel is ignored.
     pub fn ignore_region(&self) -> Result<Option<ArrayD<bool>>> {
+        self.ignore_within(&self.window(None)?, true)
+    }
+
+    /// [`Self::ignore_region`] over a window, with the in-band part only when
+    /// `in_band` asks for it.
+    fn ignore_within(&self, window: &Window, in_band: bool) -> Result<Option<ArrayD<bool>>> {
+        let slices: Vec<Slice> = window.iter().map(|(a, b)| Slice::new(*a as i64, *b as i64)).collect();
         let mut region = None;
-        if matches!(self.kind(), "labelmap" | "layers") {
-            region = Some(self.ignore_mask(None)?);
+        if in_band && matches!(self.kind(), "labelmap" | "layers") {
+            region = Some(self.ignore_mask(Some(&slices))?);
         }
-        if let Some(reference) = self.header.ignore_mask.clone() {
-            let name = crate::sample::annotation_id(&reference);
-            let path = self.group.name();
-            let parent = path.rsplit_once('/').map_or("/", |(p, _)| p);
-            let sibling = ops::child_group(&self.group.file()?.group(parent)?, name)
-                .map(|g| Annotation::open(name, g, self.grids.clone(), self.label_set.clone()))
-                .transpose()?
-                .filter(|a| a.kind() == "mask")
-                .ok_or_else(|| {
-                    Error::coded(
-                        "E413",
-                        format!(
-                            "{}: ignore_mask names {}, which is not a `mask` annotation in this file",
-                            repr_str(&self.ann_id),
-                            repr_str(name)
-                        ),
-                    )
-                })?;
-            let mask = sibling.read_mask(None)?;
+        if let Some(sibling) = self.ignore_sibling()? {
+            let mask = sibling.read_mask(Some(&slices))?;
+            if mask.shape() != window_shape(window).as_slice() {
+                return Err(Error::coded(
+                    "E413",
+                    format!(
+                        "{}: ignore_mask names {}, whose grid is not this annotation's; a mask delimits the voxels \
+                         of the grid it shares",
+                        repr_str(&self.ann_id),
+                        repr_str(&sibling.ann_id)
+                    ),
+                ));
+            }
             region = Some(match region {
                 Some(mut inband) => {
                     inband.zip_mut_with(&mask, |r, m| *r |= *m);
@@ -786,6 +905,45 @@ impl Annotation {
             });
         }
         Ok(region.filter(|r| r.iter().any(|v| *v)))
+    }
+
+    /// Whether any voxel of the annotation is ignored (§7.7): a scan, in
+    /// slabs, of the in-band data and of the sibling mask.
+    fn ignore_present(&self) -> Result<bool> {
+        if self.encodes_ignore()? {
+            return Ok(true);
+        }
+        match self.ignore_sibling()? {
+            Some(sibling) => any_nonzero(&sibling.data()?),
+            None => Ok(false),
+        }
+    }
+
+    /// The sibling `mask` annotation the header's `ignore_mask` names, read
+    /// beside this one in the same `annotations/` group (E413 when there is
+    /// no such `mask`).
+    fn ignore_sibling(&self) -> Result<Option<Annotation>> {
+        let Some(reference) = self.header.ignore_mask.clone() else {
+            return Ok(None);
+        };
+        let name = crate::sample::annotation_id(&reference);
+        let path = self.group.name();
+        let parent = path.rsplit_once('/').map_or("/", |(p, _)| p);
+        let sibling = ops::child_group(&self.group.file()?.group(parent)?, name)
+            .map(|g| Annotation::open(name, g, self.grids.clone(), self.label_set.clone()))
+            .transpose()?
+            .filter(|a| a.kind() == "mask")
+            .ok_or_else(|| {
+                Error::coded(
+                    "E413",
+                    format!(
+                        "{}: ignore_mask names {}, which is not a `mask` annotation in this file",
+                        repr_str(&self.ann_id),
+                        repr_str(name)
+                    ),
+                )
+            })?;
+        Ok(Some(sibling))
     }
 
     /// A `mask` annotation's volume over a window.
@@ -966,20 +1124,32 @@ impl Annotation {
 
     // -- instances ----------------------------------------------------------
 
+    /// The object columns, read once.  Stored masks are held to their boxes
+    /// and their grid here, before any is decoded: a mask shape is an
+    /// allocation, and one nobody bounded aborted the process (§7.4).
     fn instance_columns(&self) -> Result<&InstanceColumns> {
         cached(&self.columns, || {
-            let has_masks = self.has_masks();
+            let boxes = self.read_as::<f32>("boxes")?;
+            let (mask_offsets, mask_shapes) = if self.has_masks() {
+                let offsets: Vec<i64> = self.read_as::<i64>("mask_offsets")?.iter().copied().collect();
+                let shapes = self.read_as::<i64>("mask_shapes")?;
+                let stored = self.dataset_shape("mask_data")?.iter().product();
+                let grid = self.spatial_shape()?;
+                let found = layout::mask_problems(&boxes.mapv(f64::from), &offsets, &shapes, stored, Some(&grid));
+                if let Some(problem) = found.first() {
+                    return Err(problem.error(&self.ann_id));
+                }
+                (Some(offsets.iter().map(|v| *v as u64).collect()), Some(shapes))
+            } else {
+                (None, None)
+            };
             Ok(InstanceColumns {
-                boxes: self.read_as::<f32>("boxes")?,
+                boxes,
                 class_ids: self.read_as::<u16>("class_ids")?.iter().copied().collect(),
                 instance_ids: self.read_as::<u64>("instance_ids")?.iter().copied().collect(),
                 scores: self.read_optional::<f32>("scores")?.map(|a| a.iter().copied().collect()),
-                mask_offsets: if has_masks {
-                    Some(self.read_as::<i64>("mask_offsets")?.iter().map(|v| (*v).max(0) as u64).collect())
-                } else {
-                    None
-                },
-                mask_shapes: if has_masks { Some(self.read_as::<i64>("mask_shapes")?) } else { None },
+                mask_offsets,
+                mask_shapes,
             })
         })
     }

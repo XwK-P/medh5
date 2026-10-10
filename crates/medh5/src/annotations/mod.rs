@@ -8,6 +8,7 @@
 pub mod encode;
 pub mod encode_geometric;
 pub mod header;
+pub mod layout;
 pub mod payload;
 pub mod read;
 pub mod read_geometric;

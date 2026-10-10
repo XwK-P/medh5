@@ -753,6 +753,10 @@ fn select_encoding<'py>(
 
 // -- voxel encoders ---------------------------------------------------------------------------
 
+/// Pack mutually exclusive class masks into one integer volume (§7.1).
+/// `ignore` is painted as `ignore_id` where no class claims the voxel; a
+/// region of another shape (E405), or an `ignore_id` outside 1..65535 or
+/// equal to a class id (E404), is refused.
 #[pyfunction]
 #[pyo3(signature = (masks, spatial_shape=None, *, ignore=None, ignore_id=medh5::labels::IGNORE_ID))]
 fn encode_labelmap(
@@ -767,6 +771,9 @@ fn encode_labelmap(
     Ok(AnnotationPayload::wrap(enc::encode_labelmap(&masks, shape.as_deref(), ignore.as_ref(), ignore_id)?))
 }
 
+/// Colour the overlap graph and pack each colour into one labelmap (§7.2);
+/// `ignore` and `ignore_id` are checked and painted as `encode_labelmap`
+/// does.
 #[pyfunction]
 #[pyo3(signature = (masks, spatial_shape=None, *, colouring=None, ignore=None, ignore_id=medh5::labels::IGNORE_ID))]
 fn encode_layers(

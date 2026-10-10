@@ -222,7 +222,10 @@ class VoxelAnnotation(Annotation):
         classes: Sequence[int | str] | None = None,
         roi: Sequence[slice] | None = None,
     ) -> npt.NDArray[np.bool_]:
-        """``(C, *roi)`` boolean planes, one per class, whatever the encoding."""
+        """``(C, *roi)`` boolean planes, one per class, whatever the encoding.
+
+        *roi* slices take no step: a step other than 1 raises ``ValueError``.
+        """
         found: npt.NDArray[np.bool_] = self._handle.dense(classes, roi)
         return found
 
@@ -243,6 +246,16 @@ class VoxelAnnotation(Annotation):
         annotation is lossy, and which class survives is the caller's decision,
         not the format's --- so when voxels are actually lost and the caller
         expressed no preference, this warns rather than picking silently.
+
+        The §7.7 ignore region reads as ``ignore_id`` under every encoding,
+        whether it is held in band or in the sibling mask ``ignore_mask``
+        names: ``0`` means verified absent, and an ignored voxel is not.
+
+        *dtype* must hold every class id, and ``ignore_id`` when a voxel is
+        ignored; a narrower one raises ``ValueError`` rather than saturating
+        two values into one, and ``bool`` is refused (``dense()`` returns
+        boolean planes).  *roi* slices take no step: a step other than 1
+        raises ``ValueError``.
         """
         volume, _, _, warning = self._handle.labelmap(roi, priority, dtype)
         if warning is not None:

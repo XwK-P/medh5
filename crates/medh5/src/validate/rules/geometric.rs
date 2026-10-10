@@ -10,10 +10,13 @@ use crate::annotations::header::GEOMETRIC_KINDS;
 use crate::geometry::affine::is_proper_rotation;
 use crate::h5::attrs;
 use crate::h5::ops::{self, Node};
-use crate::json::{repr_int_list, repr_int_tuple, repr_str};
+use crate::json::{repr_int_list, repr_str};
 use crate::validate::Diagnostic;
 use crate::Result;
 
+/// `consistent` is whether the annotation's per-object columns agree in
+/// shape (`layout::column_problems`); a rule pairing one column's rows with
+/// another's runs only then.
 pub(super) fn check_geometric(
     ctx: &Context,
     name: &str,
@@ -21,6 +24,7 @@ pub(super) fn check_geometric(
     kind: &str,
     grid_id: Option<&str>,
     grids: Option<&hdf5::Group>,
+    consistent: bool,
 ) -> Result<Vec<Diagnostic>> {
     let mut out = Vec::new();
     if !GEOMETRIC_KINDS.contains(&kind) {
@@ -58,6 +62,23 @@ pub(super) fn check_geometric(
                     ),
                 ));
             }
+            // World coordinates in a frame the grid is not in are read
+            // through the grid's affine all the same (§3.4).
+            if let (Some(named), Some(own)) = (str_attr(a, "frame_uid")?, str_attr(&grid_group, "frame_uid")?) {
+                if s == "world" && named != own {
+                    out.push(ctx.err(
+                        "E414",
+                        location.clone(),
+                        format!(
+                            "space='world' names frame {}, but grid {} is in frame {}; its affine would read one \
+                             frame's coordinates as the other's",
+                            repr_str(&named),
+                            repr_str(gid),
+                            repr_str(&own)
+                        ),
+                    ));
+                }
+            }
         }
     }
     if kind == "boxes" {
@@ -69,7 +90,7 @@ pub(super) fn check_geometric(
                     out.push(ctx.err("E406", location.clone(), format!("{bad} box(es) have lo > hi")));
                 }
             }
-            if let (Some(planes_ds), 3) = (sub_dataset(group, "slice_index"), boxes.ndim()) {
+            if let (Some(planes_ds), true) = (sub_dataset(group, "slice_index"), consistent) {
                 let planes: Vec<i64> = read_i64(&planes_ds)?.iter().copied().collect();
                 let n = boxes.shape()[0];
                 let dims = boxes.shape()[1];
@@ -156,39 +177,13 @@ pub(super) fn bad_boxes(boxes: &ArrayD<f64>) -> usize {
     boxes.outer_iter().filter(|b| b.outer_iter().any(|axis| axis.len() == 2 && axis[0] > axis[1])).count()
 }
 
+/// The shapes of `points`, `visibility` and `keypoint_class_ids` are the
+/// column table's (E405); what is left is what their values mean.
 fn check_keypoints(ctx: &Context, name: &str, group: &Node) -> Result<Vec<Diagnostic>> {
     let mut out = Vec::new();
     let location = format!("/annotations/{name}");
-    let Some(points) = sub_dataset(group, "points") else { return Ok(out) };
-    let shape = points.shape();
-    if shape.len() != 3 {
-        out.push(ctx.err(
-            "E405",
-            format!("{location}/points"),
-            format!("expected (N, K, S), got {}", repr_int_tuple(&shape)),
-        ));
-        return Ok(out);
-    }
-    let (n, k) = (shape[0], shape[1]);
-    if let Some(kc) = sub_dataset(group, "keypoint_class_ids") {
-        let got = kc.shape().first().copied().unwrap_or(0);
-        if got != k {
-            out.push(ctx.err(
-                "E405",
-                location.clone(),
-                format!("`keypoint_class_ids` has {got} entries for {k} keypoint slots"),
-            ));
-        }
-    }
     if let Some(vis) = sub_dataset(group, "visibility") {
-        let v = read_i64(&vis)?;
-        if v.shape() != [n, k] {
-            out.push(ctx.err(
-                "E405",
-                location.clone(),
-                format!("`visibility` {} must be ({n}, {k})", repr_int_tuple(v.shape())),
-            ));
-        } else if !v.is_empty() && v.iter().copied().max().unwrap_or(0) > 2 {
+        if read_i64(&vis)?.iter().any(|v| !(0..=2).contains(v)) {
             out.push(ctx.err(
                 "E411",
                 format!("{location}/visibility"),
@@ -249,23 +244,19 @@ fn check_mesh(ctx: &Context, name: &str, group: &Node) -> Result<Vec<Diagnostic>
             ));
         }
     }
-    if let Some(normals) = sub_dataset(group, "normals") {
-        if normals.shape() != vertices.shape() {
-            out.push(ctx.err(
-                "E405",
-                format!("{location}/normals"),
-                format!(
-                    "{} must match vertices {}",
-                    repr_int_tuple(&normals.shape()),
-                    repr_int_tuple(&vertices.shape())
-                ),
-            ));
-        }
-    }
     Ok(out)
 }
 
-pub(super) fn check_classification(ctx: &Context, name: &str, group: &Node, kind: &str) -> Result<Vec<Diagnostic>> {
+/// The columns' shapes are the column table's (E405); `consistent` says they
+/// agree, which the one-positive-per-unit rule needs to pair units with
+/// values.
+pub(super) fn check_classification(
+    ctx: &Context,
+    name: &str,
+    group: &Node,
+    kind: &str,
+    consistent: bool,
+) -> Result<Vec<Diagnostic>> {
     let mut out = Vec::new();
     if kind != "classification" {
         return Ok(out);
@@ -280,54 +271,25 @@ pub(super) fn check_classification(ctx: &Context, name: &str, group: &Node, kind
         }
         _ => {}
     }
-    let (Some(cds), Some(vds)) = (sub_dataset(group, "class_ids"), sub_dataset(group, "values")) else {
+    let Some(vds) = sub_dataset(group, "values") else {
         return Ok(out);
     };
-    let class_shape = cds.shape();
     let values: Vec<f64> = read_f64(&vds)?.iter().copied().collect();
-    if vds.shape() != class_shape {
+    // Every value is tested: a fold over `f64::min`/`max` skips NaN, so a
+    // value that is no number passed where the writer refuses it.
+    if values.iter().any(|v| !(0.0..=1.0).contains(v)) {
         out.push(ctx.err(
-            "E405",
-            location,
-            format!(
-                "`values` {} must match `class_ids` {}",
-                repr_int_tuple(&vds.shape()),
-                repr_int_tuple(&class_shape)
-            ),
+            "E404",
+            location.clone(),
+            "values must lie in [0, 1]; 1.0 is a hard positive, 0.0 an explicit negative",
         ));
-        return Ok(out);
     }
-    if !values.is_empty() {
-        let lo = values.iter().copied().fold(f64::INFINITY, f64::min);
-        let hi = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-        if lo < 0.0 || hi > 1.0 {
-            out.push(ctx.err(
-                "E404",
-                location.clone(),
-                "values must lie in [0, 1]; 1.0 is a hard positive, 0.0 an explicit negative",
-            ));
-        }
-    }
-    let mut scope_ids: Option<Vec<i64>> = match sub_dataset(group, "scope_ids") {
+    let scope_ids: Option<Vec<i64>> = match sub_dataset(group, "scope_ids") {
         Some(ds) => Some(read_i64(&ds)?.iter().copied().collect()),
         None => None,
     };
-    if let Some(ds) = sub_dataset(group, "scope_ids") {
-        if ds.shape() != class_shape {
-            out.push(ctx.err(
-                "E405",
-                location.clone(),
-                format!(
-                    "`scope_ids` {} must match `class_ids` {}",
-                    repr_int_tuple(&ds.shape()),
-                    repr_int_tuple(&class_shape)
-                ),
-            ));
-            scope_ids = None;
-        }
-    }
     let multilabel = attrs::get_bool(a, "multilabel")?.unwrap_or(true);
-    if !multilabel && !values.is_empty() {
+    if consistent && !multilabel && !values.is_empty() {
         let units: Vec<i64> = scope_ids.clone().unwrap_or_else(|| vec![0; values.len()]);
         let mut positives: BTreeMap<i64, usize> = BTreeMap::new();
         for (u, v) in units.iter().zip(&values) {
@@ -362,17 +324,6 @@ pub(super) fn check_classification(ctx: &Context, name: &str, group: &Node, kind
                     declared - 1
                 ),
             ));
-        }
-    }
-    for column in ["schemes", "scheme_values"] {
-        if let Some(ds) = sub_dataset(group, column) {
-            if ds.shape() != class_shape {
-                out.push(ctx.err(
-                    "E405",
-                    format!("{location}/{column}"),
-                    format!("{} must match `class_ids` {}", repr_int_tuple(&ds.shape()), repr_int_tuple(&class_shape)),
-                ));
-            }
         }
     }
     Ok(out)

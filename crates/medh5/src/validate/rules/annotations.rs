@@ -7,6 +7,7 @@ use super::{
     dtype_name, grid_spatial, has_member, int_set, loc, read_f64, read_i64, str_attr, strs_attr, sub_dataset, Context,
 };
 use crate::annotations::header::{ANNOTATION_KINDS, RESERVED_KINDS, TASKS, VOXEL_KINDS};
+use crate::annotations::layout::{self, mask_problems};
 use crate::annotations::payload::{contains_value, SLAB_BYTES};
 use crate::annotations::select::greedy_colour;
 use crate::array::{Index, Slice};
@@ -182,11 +183,30 @@ pub fn check_annotations(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
                 ));
             }
         }
+        // The grid's spatial axes, where it has them: what index coordinates
+        // and instance masks are measured against.
+        let spatial: Option<Vec<usize>> = match (&grid_id, &grids) {
+            (Some(gid), Some(g)) if ops::exists(g, gid) => grid_spatial(g, gid)
+                .ok()
+                .filter(|s| !s.is_empty())
+                .map(|s| s.iter().map(|v| (*v).max(0) as usize).collect()),
+            _ => None,
+        };
+        let space = str_attr(a, "space")?;
+        let rank = spatial.as_ref().filter(|_| layout::ranked(&kind, space.as_deref())).map(Vec::len);
+        let columns = layout::column_problems(&kind, &|n| sub_dataset(&group, n).map(|d| d.shape()), rank);
+        // Rules that index one column by another's rows run only where the
+        // columns agree; the disagreement is the finding.
+        let consistent = columns.is_empty();
+        for problem in columns {
+            out.push(ctx.err(problem.code, format!("{location}/{}", problem.dataset), problem.message));
+        }
         out.extend(check_voxel_shape(ctx, &name, &group, &kind, grid_id.as_deref(), grids.as_ref())?);
-        out.extend(check_encoding_invariants(ctx, &name, &group, &kind)?);
+        out.extend(check_encoding_invariants(ctx, &name, &group, &kind, consistent, spatial.as_deref())?);
         out.extend(check_dataset_dtypes(ctx, &name, &group, &kind));
-        out.extend(check_geometric(ctx, &name, &group, &kind, grid_id.as_deref(), grids.as_ref())?);
-        out.extend(check_classification(ctx, &name, &group, &kind)?);
+        out.extend(check_object_classes(ctx, &name, &group, &kind, &class_ids)?);
+        out.extend(check_geometric(ctx, &name, &group, &kind, grid_id.as_deref(), grids.as_ref(), consistent)?);
+        out.extend(check_classification(ctx, &name, &group, &kind, consistent)?);
         if !ctx.errors_only
             && kind != "mask"
             && annotated.is_subset(&class_ids)
@@ -372,7 +392,14 @@ fn check_voxel_shape(
     Ok(out)
 }
 
-fn check_encoding_invariants(ctx: &Context, name: &str, group: &Node, kind: &str) -> Result<Vec<Diagnostic>> {
+fn check_encoding_invariants(
+    ctx: &Context,
+    name: &str,
+    group: &Node,
+    kind: &str,
+    consistent: bool,
+    spatial: Option<&[usize]>,
+) -> Result<Vec<Diagnostic>> {
     let mut out = Vec::new();
     let location = format!("/annotations/{name}");
     let declared = int_set(loc(group), "class_ids")?;
@@ -455,7 +482,7 @@ fn check_encoding_invariants(ctx: &Context, name: &str, group: &Node, kind: &str
         }
     }
     if kind == "instances" {
-        out.extend(check_instances(ctx, name, group)?);
+        out.extend(check_instances(ctx, name, group, consistent, spatial)?);
     }
     Ok(out)
 }
@@ -564,23 +591,93 @@ fn check_dataset_dtypes(ctx: &Context, name: &str, group: &Node, kind: &str) -> 
     out
 }
 
-fn check_instances(ctx: &Context, name: &str, group: &Node) -> Result<Vec<Diagnostic>> {
+/// `consistent` is whether the object columns agree in shape; `spatial` the
+/// grid's spatial shape, which no object's mask may outgrow.
+/// The datasets whose values are class ids: the per-object and per-element
+/// classes, and the tables `layers` and `bitmask` index by class.
+fn class_columns(kind: &str) -> &'static [&'static str] {
+    match kind {
+        "instances" | "boxes" | "obb" | "points" | "classification" => &["class_ids"],
+        "keypoints" => &["class_ids", "keypoint_class_ids"],
+        "contours" => &["contour_class_ids"],
+        "mesh" => &["vertex_class_ids", "mesh_class_ids"],
+        "layers" => &["layer_class_ids"],
+        "bitmask" => &["bit_class_ids"],
+        _ => &[],
+    }
+}
+
+/// Every class the data can encode is in the `class_ids` attribute (§6.2,
+/// E404).
+///
+/// Coverage is read from the attribute, never from the data: a class the
+/// data holds and the attribute omits is answered for by `contains()` and
+/// missing from every question about what the annotation can express.
+fn check_object_classes(
+    ctx: &Context,
+    name: &str,
+    group: &Node,
+    kind: &str,
+    declared: &BTreeSet<i64>,
+) -> Result<Vec<Diagnostic>> {
     let mut out = Vec::new();
-    let location = format!("/annotations/{name}");
-    if let Some(ds) = sub_dataset(group, "boxes") {
-        let boxes = read_f64(&ds)?;
-        if boxes.ndim() == 3 {
-            let bad = bad_boxes(&boxes);
-            if bad > 0 {
-                out.push(ctx.err("E406", location.clone(), format!("{bad} box(es) have lo > hi")));
-            }
+    for column in class_columns(kind) {
+        // An unreadable column is another rule's finding (E411).
+        let Some(values) = sub_dataset(group, column).and_then(|ds| read_i64(&ds).ok()) else { continue };
+        // `layer_class_ids` pads its rows with 0, which is no class.
+        let padding = |c: &i64| kind == "layers" && *c == BACKGROUND_ID;
+        let mut undeclared: Vec<i64> =
+            values.iter().copied().filter(|c| !declared.contains(c) && !padding(c)).collect();
+        undeclared.sort_unstable();
+        undeclared.dedup();
+        if !undeclared.is_empty() {
+            out.push(ctx.err(
+                "E404",
+                format!("/annotations/{name}/{column}"),
+                format!(
+                    "class id(s) {} in `{column}` are not in the `class_ids` attribute, which declares every class \
+                     the annotation can express (§6.2)",
+                    repr_int_list(&undeclared)
+                ),
+            ));
         }
     }
-    if let Some(ds) = sub_dataset(group, "mask_offsets") {
-        let offsets: Vec<i64> = read_i64(&ds)?.iter().copied().collect();
-        if offsets.windows(2).any(|w| w[1] < w[0]) {
-            out.push(ctx.err("E408", location.clone(), "`mask_offsets` are not monotonic"));
+    Ok(out)
+}
+
+fn check_instances(
+    ctx: &Context,
+    name: &str,
+    group: &Node,
+    consistent: bool,
+    spatial: Option<&[usize]>,
+) -> Result<Vec<Diagnostic>> {
+    let mut out = Vec::new();
+    let location = format!("/annotations/{name}");
+    let boxes = match sub_dataset(group, "boxes") {
+        Some(ds) => Some(read_f64(&ds)?),
+        None => None,
+    };
+    if let Some(boxes) = boxes.as_ref().filter(|b| b.ndim() == 3) {
+        let bad = bad_boxes(boxes);
+        if bad > 0 {
+            out.push(ctx.err("E406", location.clone(), format!("{bad} box(es) have lo > hi")));
         }
+    }
+    let offsets: Option<Vec<i64>> = match sub_dataset(group, "mask_offsets") {
+        Some(ds) => Some(read_i64(&ds)?.iter().copied().collect()),
+        None => None,
+    };
+    let stored = (sub_dataset(group, "mask_shapes"), sub_dataset(group, "mask_data"));
+    if let (true, Some(boxes), Some(offsets), (Some(shapes), Some(bytes))) = (consistent, &boxes, &offsets, stored) {
+        // What a reader holds the masks to before it decodes one (§7.4).
+        let shapes = read_i64(&shapes)?;
+        let stored = bytes.shape().iter().product();
+        for problem in mask_problems(boxes, offsets, &shapes, stored, spatial) {
+            out.push(ctx.err(problem.code, format!("{location}/{}", problem.dataset), problem.message));
+        }
+    } else if offsets.as_ref().is_some_and(|o| o.windows(2).any(|w| w[1] < w[0])) {
+        out.push(ctx.err("E408", format!("{location}/mask_offsets"), "`mask_offsets` are not monotonic"));
     }
     let ids: Option<Vec<u64>> = match sub_dataset(group, "instance_ids") {
         Some(ds) => Some(data::read(&ds)?.cast::<u64>().iter().copied().collect()),
@@ -603,15 +700,10 @@ fn check_instances(ctx: &Context, name: &str, group: &Node) -> Result<Vec<Diagno
             ));
         }
     }
-    if let (Some(ids), Some(cds)) = (&ids, sub_dataset(group, "class_ids")) {
+    // A row count the columns disagree on is already E405; pairing them
+    // past the shorter one has no answer.
+    if let (true, Some(ids), Some(cds)) = (consistent, &ids, sub_dataset(group, "class_ids")) {
         let classes: Vec<i64> = read_i64(&cds)?.iter().copied().collect();
-        if ids.len() != classes.len() {
-            return Err(crate::Error::Value(format!(
-                "zip() argument 2 is shorter than argument 1 ({} ids, {} classes)",
-                ids.len(),
-                classes.len()
-            )));
-        }
         let mut table: HashMap<u64, i64> = HashMap::new();
         let mut conflicting = BTreeSet::new();
         for (i, c) in ids.iter().zip(&classes) {

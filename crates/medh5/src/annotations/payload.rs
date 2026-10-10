@@ -209,6 +209,18 @@ pub fn contains_value_within(ds: &hdf5::Dataset, value: i64, budget: usize) -> R
     Ok(false)
 }
 
+/// Whether any element of a dataset is nonzero, scanning in slabs and
+/// stopping at the first.
+pub fn any_nonzero(ds: &hdf5::Dataset) -> Result<bool> {
+    let dtype = data::dtype(ds)?;
+    for sel in slabs(&ds.shape(), dtype.itemsize(), &[]) {
+        if data::read_region(ds, &sel)?.nonzero_mask().iter().any(|v| *v) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// The number of nonzero elements of a dataset, in slabs.
 pub fn count_nonzero(ds: &hdf5::Dataset) -> Result<u64> {
     count_nonzero_within(ds, SLAB_BYTES)

@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use half::f16;
 use ndarray::{ArrayD, Axis, Dimension, IxDyn, Slice as NdSlice};
 
+use super::layout::{column_problems, mask_problems};
 use super::payload::{normalize_masks, packbits, unpackbits, Masks, Payload, PayloadData};
 use super::select::{analyse, bbox, label_dtype_size, layers_from_colouring};
 use crate::array::{DType, NdArray};
@@ -54,12 +55,53 @@ fn first_true(mask: &ArrayD<bool>) -> Option<Vec<usize>> {
     mask.indexed_iter().find(|(_, v)| **v).map(|(idx, _)| idx.slice().to_vec())
 }
 
+/// Refuse an in-band ignore region the volume cannot hold (§6.2, §7.7): a
+/// region of another shape than the masks (E405), or an `ignore_id` that is
+/// no `uint16`, is background, or is one of the classes (E404) --- stored
+/// beside the class ids, it would wrap to another value or read as one.
+fn check_ignore(ignore: Option<&ArrayD<bool>>, shape: &[usize], ignore_id: i64, class_ids: &[i64]) -> Result<()> {
+    if let Some(region) = ignore {
+        if region.shape() != shape {
+            return Err(Error::coded(
+                "E405",
+                format!(
+                    "ignore has shape {}; the masks' spatial shape is {}",
+                    repr_int_tuple(region.shape()),
+                    repr_int_tuple(shape)
+                ),
+            ));
+        }
+    }
+    if !(1..=i64::from(u16::MAX)).contains(&ignore_id) {
+        return Err(Error::coded(
+            "E404",
+            format!(
+                "ignore_id {ignore_id} is outside 1..65535: it is stored as a uint16 beside the class ids, and 0 is \
+                 background (§6.2)"
+            ),
+        ));
+    }
+    if class_ids.contains(&ignore_id) {
+        return Err(Error::coded(
+            "E404",
+            format!(
+                "ignore_id {ignore_id} is also a class id; one value cannot mark both the class and the ignore region"
+            ),
+        ));
+    }
+    Ok(())
+}
+
 // -- labelmap -------------------------------------------------------------------
 
 /// Pack mutually exclusive class masks into one integer volume (§7.1).
 ///
 /// Raises E404 when two classes claim the same voxel: silently letting the last
 /// writer win would turn a curation error into a training set nobody can audit.
+/// `ignore` is painted as `ignore_id` where no class claims the voxel; a region
+/// of another shape (E405), or an `ignore_id` outside `1..=65535` or equal to
+/// a class id (E404), is refused.  The volume is `uint16` only when a class id
+/// or a painted ignore voxel needs it.
 pub fn encode_labelmap(
     masks: &Masks,
     spatial_shape: Option<&[usize]>,
@@ -68,7 +110,7 @@ pub fn encode_labelmap(
 ) -> Result<Payload> {
     let shape = normalize_masks(masks, spatial_shape)?;
     let class_ids: Vec<i64> = masks.keys().copied().collect();
-    let itemsize = label_dtype_size(&class_ids, ignore.is_some());
+    check_ignore(ignore, &shape, ignore_id, &class_ids)?;
     let mut data = ArrayD::<u16>::zeros(IxDyn(&shape));
     let mut claimed = ArrayD::from_elem(IxDyn(&shape), false);
     for (class_id, mask) in masks {
@@ -90,14 +132,19 @@ pub fn encode_labelmap(
             }
         });
     }
+    // The dtype follows what is stored: an ignore region no voxel carries
+    // (all false, or every voxel claimed) leaves a `uint8` volume `uint8`.
+    let mut ignored = false;
     if let Some(ign) = ignore {
         let value = ignore_id as u16;
         ndarray::Zip::from(&mut data).and(ign).and(&claimed).for_each(|d, i, c| {
             if *i && !*c {
                 *d = value;
+                ignored = true;
             }
         });
     }
+    let itemsize = label_dtype_size(&class_ids, ignored);
     let stored = if itemsize == 1 { NdArray::U8(data.mapv(|v| v as u8)) } else { NdArray::U16(data) };
     let mut p = Payload::new("labelmap");
     p.datasets.insert("data".into(), stored.into());
@@ -108,6 +155,9 @@ pub fn encode_labelmap(
 // -- layers ----------------------------------------------------------------------
 
 /// Colour the overlap graph and pack each colour into one labelmap (§7.2).
+///
+/// `ignore` and `ignore_id` are checked and painted per layer as
+/// [`encode_labelmap`] does.
 pub fn encode_layers(
     masks: &Masks,
     spatial_shape: Option<&[usize]>,
@@ -128,9 +178,10 @@ pub fn encode_layers(
             class_ids.iter().map(|c| (*c, given[c])).collect()
         }
     };
+    check_ignore(ignore, &shape, ignore_id, &class_ids)?;
     let buckets = layers_from_colouring(&colouring);
     let n_layers = buckets.len().max(1);
-    let itemsize = label_dtype_size(&class_ids, ignore.is_some());
+    let mut ignored = false;
     let mut full_shape = vec![n_layers];
     full_shape.extend(&shape);
     let mut data = ArrayD::<u16>::zeros(IxDyn(&full_shape));
@@ -162,10 +213,12 @@ pub fn encode_layers(
             ndarray::Zip::from(&mut plane).and(ign).and(&claimed).for_each(|d, i, c| {
                 if *i && !*c {
                     *d = value;
+                    ignored = true;
                 }
             });
         }
     }
+    let itemsize = label_dtype_size(&class_ids, ignored);
     let width = buckets.iter().map(Vec::len).max().unwrap_or(1).max(1);
     let mut table = ArrayD::<u16>::zeros(IxDyn(&[n_layers, width]));
     for (layer, bucket) in buckets.iter().enumerate() {
@@ -429,9 +482,18 @@ pub fn instance_id_array(ids: &[u64]) -> NdArray {
 
 /// Pack objects into boxes, ids, offsets and one concatenated bit stream (§7.4).
 ///
-/// `class_ids` declares the classes the annotation can express; a class
-/// searched for and not found must stay in it.  No objects at all is written
-/// as `N = 0` columns: "examined, none found".
+/// `class_ids` names classes the annotation can express beyond its objects'
+/// own --- a class searched for and not found must stay in it.  The objects'
+/// classes are always declared with them: §6.2 has `class_ids` hold every
+/// class the data can encode, and `contains()` answers for every object's
+/// class.  No objects at all is written as `N = 0` columns: "examined, none
+/// found".
+///
+/// A `crop` given with its `bbox` is the object's mask cut to that box, so
+/// its shape is the box's extent; and with `spatial_shape`, a box has the
+/// grid's spatial rank and a crop no more voxels than the grid.  A reader
+/// holds a stored annotation to the same (E405), so nothing written here
+/// reads back as other than it was given.
 pub fn encode_instances(
     objects: &[InstanceInput],
     spatial_shape: Option<&[usize]>,
@@ -516,6 +578,44 @@ pub fn encode_instances(
             Some(n) if n != s => return Err(Error::coded("E405", "instances disagree on dimensionality")),
             _ => {}
         }
+        if let Some(shape) = spatial_shape.filter(|shape| shape.len() != s) {
+            return Err(Error::coded(
+                "E405",
+                format!(
+                    "instance {}: a box with {s} axes on a grid with {} spatial axes",
+                    obj.instance_id,
+                    shape.len()
+                ),
+            ));
+        }
+        if let Some(c) = &crop {
+            let flat: Vec<f64> = bx.iter().map(|v| f64::from(*v)).collect();
+            let extent: Vec<i64> = box_to_slices(&flat, None)?.iter().map(|(lo, hi)| hi - lo).collect();
+            let given: Vec<i64> = c.shape().iter().map(|v| *v as i64).collect();
+            if given != extent {
+                return Err(Error::coded(
+                    "E405",
+                    format!(
+                        "instance {}: the crop is {} voxels and its box spans {}; a crop is the object's mask cut to its \
+                         box",
+                        obj.instance_id,
+                        repr_int_tuple(&given),
+                        repr_int_tuple(&extent)
+                    ),
+                ));
+            }
+            if let Some(shape) = spatial_shape.filter(|shape| c.len() > shape.iter().product::<usize>()) {
+                return Err(Error::coded(
+                    "E405",
+                    format!(
+                        "instance {}: the crop is {} voxels, more than the grid {} it is cut from",
+                        obj.instance_id,
+                        repr_int_tuple(&given),
+                        repr_int_tuple(shape)
+                    ),
+                ));
+            }
+        }
         boxes.extend(&bx);
         object_classes.push(check_class_id(obj.class_id)? as i64);
         instance_ids.push(obj.instance_id);
@@ -557,23 +657,13 @@ pub fn encode_instances(
         let len = data.len();
         p.datasets.insert("mask_data".into(), NdArray::from_vec(&[len], data)?.into());
     }
-    p.class_ids = match class_ids {
-        Some(ids) => {
-            let mut v = Vec::new();
-            for c in ids {
-                v.push(check_class_id(*c)? as i64);
-            }
-            v.sort();
-            v.dedup();
-            v
-        }
-        None => {
-            let mut v = object_classes.clone();
-            v.sort();
-            v.dedup();
-            v
-        }
-    };
+    let mut declared = object_classes;
+    for c in class_ids.unwrap_or(&[]) {
+        declared.push(check_class_id(*c)? as i64);
+    }
+    declared.sort();
+    declared.dedup();
+    p.class_ids = declared;
     Ok(p)
 }
 
@@ -612,13 +702,38 @@ pub fn instances_from_masks(masks: &Masks, start_id: u64) -> Vec<InstanceInput> 
 }
 
 /// Decode one object's bbox-local crop from the packed columns.
+///
+/// Columns that cannot describe the object are refused rather than read past
+/// an edge or padded: an index with no offsets or no shape row, or a negative
+/// or overflowing shape (E405), and offsets that do not delimit exactly the
+/// bytes that shape packs into, inside `mask_data` (E408).
 pub fn decode_crop(mask_data: &[u8], offsets: &[u64], shapes: &ArrayD<i64>, index: usize) -> Result<ArrayD<bool>> {
-    let start = offsets[index] as usize;
-    let stop = offsets[index + 1] as usize;
-    let shape: Vec<usize> = shapes.index_axis(Axis(0), index).iter().map(|v| (*v).max(0) as usize).collect();
-    let n: usize = shape.iter().product();
-    let bits = unpackbits(&mask_data[start.min(mask_data.len())..stop.min(mask_data.len())], n);
-    Ok(ArrayD::from_shape_vec(IxDyn(&shape), bits)?)
+    let refuse = |code: &str, why: String| Error::coded(code, format!("object {index}: {why}"));
+    let (Some(start), Some(stop)) = (offsets.get(index), offsets.get(index + 1)) else {
+        return Err(refuse("E405", format!("`mask_offsets` has {} entries, none of them its own", offsets.len())));
+    };
+    if shapes.ndim() != 2 || index >= shapes.shape()[0] {
+        return Err(refuse("E405", format!("`mask_shapes` {} has no row for it", repr_int_tuple(shapes.shape()))));
+    }
+    let row: Vec<i64> = shapes.index_axis(Axis(0), index).iter().copied().collect();
+    let shape: Option<Vec<usize>> = row.iter().map(|v| usize::try_from(*v).ok()).collect();
+    let size = shape.as_ref().and_then(|s| s.iter().try_fold(1usize, |a, b| a.checked_mul(*b)));
+    let (Some(shape), Some(n)) = (shape, size) else {
+        return Err(refuse("E405", format!("`mask_shapes` gives it the shape {}", repr_int_tuple(&row))));
+    };
+    let (start, stop) = (usize::try_from(*start).unwrap_or(usize::MAX), usize::try_from(*stop).unwrap_or(usize::MAX));
+    if start > stop || stop > mask_data.len() || stop - start != n.div_ceil(8) {
+        return Err(refuse(
+            "E408",
+            format!(
+                "`mask_offsets` give it bytes {start}..{stop} of the {} in `mask_data`, and its {} mask packs into {}",
+                mask_data.len(),
+                repr_int_tuple(&row),
+                n.div_ceil(8)
+            ),
+        ));
+    }
+    Ok(ArrayD::from_shape_vec(IxDyn(&shape), unpackbits(&mask_data[start..stop], n))?)
 }
 
 // -- decoding and transcoding -------------------------------------------------------
@@ -682,6 +797,12 @@ pub fn payload_to_masks(payload: &Payload, spatial_shape: Option<&[usize]>, thre
 }
 
 fn instances_to_masks(payload: &Payload, spatial_shape: &[usize]) -> Result<Masks> {
+    // The columns are held to what a stored annotation is held to when it is
+    // opened: a hand-built payload is input like any file.
+    let shape_of = |name: &str| payload.datasets.get(name).map(PayloadData::shape);
+    if let Some(problem) = column_problems("instances", &shape_of, Some(spatial_shape.len())).first() {
+        return Err(Error::coded(problem.code, problem.message.clone()));
+    }
     let boxes = payload.array("boxes")?.to_f64();
     let classes = payload.array("class_ids")?.cast::<i64>();
     let mut declared: Vec<i64> = payload.class_ids.clone();
@@ -690,27 +811,48 @@ fn instances_to_masks(payload: &Payload, spatial_shape: &[usize]) -> Result<Mask
         declared.sort();
         declared.dedup();
     }
+    let packed = if payload.datasets.contains_key("mask_data") {
+        let offsets: Vec<i64> = payload.array("mask_offsets")?.cast::<i64>().iter().copied().collect();
+        let shapes = payload.array("mask_shapes")?.cast::<i64>();
+        let mask_data: Vec<u8> = payload.array("mask_data")?.cast::<u8>().iter().copied().collect();
+        if let Some(problem) = mask_problems(&boxes, &offsets, &shapes, mask_data.len(), Some(spatial_shape)).first() {
+            return Err(Error::coded(problem.code, problem.message.clone()));
+        }
+        Some((offsets.iter().map(|v| *v as u64).collect::<Vec<u64>>(), shapes, mask_data))
+    } else {
+        None
+    };
     let mut out: Masks = declared.iter().map(|c| (*c, ArrayD::from_elem(IxDyn(spatial_shape), false))).collect();
-    let has_masks = payload.datasets.contains_key("mask_data");
     let n = boxes.shape()[0];
     for index in 0..n {
         let bx: Vec<f64> = boxes.index_axis(Axis(0), index).iter().copied().collect();
-        let slices = box_to_slices(&bx, Some(spatial_shape))?;
         let class_id = classes[[index]];
         let target = out.entry(class_id).or_insert_with(|| ArrayD::from_elem(IxDyn(spatial_shape), false));
-        let mut view = target.view_mut();
-        for (axis, (lo, hi)) in slices.iter().enumerate() {
-            view.slice_axis_inplace(Axis(axis), NdSlice::from(*lo as usize..*hi as usize));
+        // Unclipped, deliberately: these slices are the frame the stored crop
+        // was cut in, and the object paints the part of it inside the grid,
+        // as a reader paints it.
+        let mut inside = Vec::with_capacity(spatial_shape.len());
+        let mut local = Vec::with_capacity(spatial_shape.len());
+        for ((lo, hi), extent) in box_to_slices(&bx, None)?.into_iter().zip(spatial_shape) {
+            let (a, b) = (lo.max(0), hi.min(*extent as i64));
+            inside.push((a, b));
+            local.push((a - lo, b - lo));
         }
-        if has_masks {
-            let offsets: Vec<u64> = payload.array("mask_offsets")?.cast::<u64>().iter().copied().collect();
-            let shapes = payload.array("mask_shapes")?.cast::<i64>();
-            let mask_data: Vec<u8> = payload.array("mask_data")?.cast::<u8>().iter().copied().collect();
-            let crop = decode_crop(&mask_data, &offsets, &shapes, index)?;
-            if crop.shape() != view.shape() {
-                return Err(Error::coded("E405", format!("instance {index}: crop shape does not match its box")));
+        if inside.iter().any(|(a, b)| b <= a) {
+            continue;
+        }
+        let mut view = target.view_mut();
+        for (axis, (a, b)) in inside.iter().enumerate() {
+            view.slice_axis_inplace(Axis(axis), NdSlice::from(*a as usize..*b as usize));
+        }
+        if let Some((offsets, shapes, mask_data)) = &packed {
+            // `mask_problems` has held the crop to its box's extent.
+            let crop = decode_crop(mask_data, offsets, shapes, index)?;
+            let mut part = crop.view();
+            for (axis, (a, b)) in local.iter().enumerate() {
+                part.slice_axis_inplace(Axis(axis), NdSlice::from(*a as usize..*b as usize));
             }
-            ndarray::Zip::from(&mut view).and(&crop).for_each(|t, c| *t |= *c);
+            ndarray::Zip::from(&mut view).and(&part).for_each(|t, c| *t |= *c);
         } else {
             view.fill(true);
         }
@@ -742,6 +884,7 @@ pub fn encode_masks(
             )
         }
         "mask" => {
+            normalize_masks(masks, spatial_shape)?;
             let mut planes = masks.values();
             let Some(first) = planes.next() else {
                 return Err(Error::coded("E410", "no masks were supplied"));

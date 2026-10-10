@@ -142,9 +142,15 @@ pub fn check_slice_index(
         return Some(problem);
     }
     let (Some(boxes), Some(shape)) = (boxes, shape) else { return None };
-    for i in 0..n_boxes {
-        let Some(axis) = degenerate_axis(&boxes[i]) else { continue };
-        let extent = shape[axis] as i64;
+    for (i, bbox) in boxes.iter().enumerate().take(n_boxes) {
+        let Some(axis) = degenerate_axis(bbox) else { continue };
+        let Some(extent) = shape.get(axis).map(|v| *v as i64) else {
+            return Some(format!(
+                "box {i} has {} axes, and the grid it names planes of has {}",
+                bbox.len() / 2,
+                shape.len()
+            ));
+        };
         let plane = planes[i];
         if !(0 <= plane && plane < extent) {
             return Some(format!(
@@ -184,6 +190,12 @@ pub fn encode_boxes(boxes: &ArrayD<f64>, cols: &ObjectColumns, slice_index: Opti
     if let Some(planes) = slice_index {
         if let Some(problem) = check_slice_index(planes, n, None, None) {
             return Err(Error::coded("E405", problem));
+        }
+        if let Some(plane) = planes.iter().find(|v| i32::try_from(**v).is_err()) {
+            return Err(Error::coded(
+                "E405",
+                format!("`slice_index` names plane {plane}, which the int32 column cannot hold"),
+            ));
         }
         p.datasets.insert(
             "slice_index".into(),
@@ -288,14 +300,15 @@ pub fn encode_keypoints(
                     format!("visibility {} must be (N, K) = ({n}, {k})", repr_int_tuple(v.shape())),
                 ));
             }
-            let cast = v.mapv(|x| x as u8);
-            if cast.iter().any(|x| *x > 2) {
+            // Checked before the narrowing cast, which would wrap 256 to 0 and
+            // 258 to 2 and store an out-of-range code as a valid one.
+            if v.iter().any(|x| !(0..=2).contains(x)) {
                 return Err(Error::coded(
                     "E411",
                     "visibility values must be 0 (unlabelled), 1 (occluded) or 2 (visible)",
                 ));
             }
-            cast
+            v.mapv(|x| x as u8)
         }
     };
     let mut p = Payload::new("keypoints");
@@ -442,6 +455,21 @@ pub fn encode_contours(polygons: &[Polygon], ndim: Option<usize>) -> Result<Payl
     for poly in polygons {
         class_ids.push(check_class_id(poly.class_id)?);
     }
+    // `contour_plane` is int32 (§8.6); a value past its range is refused
+    // rather than wrapped onto another plane by the cast.
+    if let Some((i, poly)) = polygons
+        .iter()
+        .enumerate()
+        .find(|(_, p)| i32::try_from(p.plane.0).is_err() || i32::try_from(p.plane.1).is_err())
+    {
+        return Err(Error::coded(
+            "E405",
+            format!(
+                "polygon {i}'s plane ({}, {}) does not fit the int32 `contour_plane` stores it in",
+                poly.plane.0, poly.plane.1
+            ),
+        ));
+    }
     let planes: Vec<i32> = polygons.iter().flat_map(|p| [p.plane.0 as i32, p.plane.1 as i32]).collect();
     let roles: Vec<u8> =
         polygons.iter().map(|p| CONTOUR_ROLES.iter().position(|r| *r == p.role).unwrap_or(0) as u8).collect();
@@ -479,14 +507,13 @@ pub fn encode_mesh(
         ));
     }
     let n_vertices = vertices.shape()[0] as i64;
-    let f = faces.mapv(|v| v as i32);
-    if !f.is_empty() {
-        let lo = f.iter().copied().min().unwrap_or(0) as i64;
-        let hi = f.iter().copied().max().unwrap_or(0) as i64;
-        if lo < 0 || hi >= n_vertices {
-            return Err(Error::coded("E405", format!("mesh faces index outside the {n_vertices} vertices")));
-        }
+    // The range is checked on the indices as given, then narrowed: narrowing
+    // first would wrap an index past 2**31 into the range it is checked
+    // against.
+    if faces.iter().any(|v| *v < 0 || *v >= n_vertices) {
+        return Err(Error::coded("E405", format!("mesh faces index outside the {n_vertices} vertices")));
     }
+    let f = faces.mapv(|v| v as i32);
     let mut p = Payload::new("mesh");
     p.datasets.insert("vertices".into(), NdArray::F32(vertices.mapv(|v| v as f32)).into());
     p.datasets.insert("faces".into(), NdArray::I32(f).into());
@@ -548,6 +575,12 @@ pub fn encode_classification(assertions: &Assertions, scope: &str, multilabel: b
         class_ids.push(check_class_id(*c)?);
     }
     let values = &assertions.values;
+    if values.len() != class_ids.len() {
+        return Err(Error::coded(
+            "E405",
+            format!("values has {} entries for {} assertions", values.len(), class_ids.len()),
+        ));
+    }
     if values.iter().any(|v| !(0.0..=1.0).contains(v)) {
         return Err(Error::coded(
             "E404",
@@ -630,5 +663,36 @@ mod tests {
         let a = Assertions { class_ids: vec![1, 2], values: vec![1.0, 1.0], ..Default::default() };
         assert_eq!(encode_classification(&a, "sample", false).unwrap_err().code(), Some("E404"));
         assert!(encode_classification(&a, "sample", true).is_ok());
+    }
+
+    #[test]
+    fn s9_one_value_per_assertion() {
+        for values in [vec![1.0], vec![1.0, 0.0, 0.0]] {
+            let a = Assertions { class_ids: vec![1, 2], values, ..Default::default() };
+            assert_eq!(encode_classification(&a, "sample", true).unwrap_err().code(), Some("E405"));
+        }
+    }
+
+    #[test]
+    fn s8_4_s8_6_s8_7_values_are_checked_before_they_are_narrowed() {
+        let cols = ObjectColumns { class_ids: &[1], instance_ids: None, scores: None, attributes: None };
+        let points = ArrayD::<f64>::zeros(IxDyn(&[1, 2, 3]));
+        for codes in [[256, 2], [2, 258], [-1, 0]] {
+            let visibility = ArrayD::from_shape_vec(IxDyn(&[1, 2]), codes.to_vec()).unwrap();
+            let refused = encode_keypoints(&points, &[1, 2], &cols, Some(&visibility), None).unwrap_err();
+            assert_eq!(refused.code(), Some("E411"), "{codes:?}");
+        }
+        let vertices = ArrayD::<f64>::zeros(IxDyn(&[3, 3]));
+        let faces = ArrayD::from_shape_vec(IxDyn(&[1, 3]), vec![0, 1, (1i64 << 32) + 2]).unwrap();
+        let refused = encode_mesh(&vertices, &faces, None, None, None, None).unwrap_err();
+        assert_eq!(refused.code(), Some("E405"));
+        let polygon =
+            |plane| Polygon { vertices: ArrayD::zeros(IxDyn(&[3, 3])), class_id: 1, plane, role: "outer".into() };
+        let refused = encode_contours(&[polygon((0, (1i64 << 32) + 3))], Some(3)).unwrap_err();
+        assert_eq!(refused.code(), Some("E405"));
+        assert!(encode_contours(&[polygon((0, 3))], Some(3)).is_ok());
+        let boxes = ArrayD::from_shape_vec(IxDyn(&[1, 3, 2]), vec![2.0, 2.0, 0.0, 1.0, 0.0, 1.0]).unwrap();
+        let refused = encode_boxes(&boxes, &cols, Some(&[(1i64 << 32) + 2])).unwrap_err();
+        assert_eq!(refused.code(), Some("E405"));
     }
 }

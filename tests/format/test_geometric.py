@@ -504,6 +504,26 @@ class TestContours:
         with pytest.raises(MEDH5ValidationError):
             Polygon(np.zeros((3, 3)), class_id=1, role="inner")
 
+    def test_S8_6_a_polygon_without_a_stored_plane_is_out_of_plane(
+        self, tmp_path, label_set
+    ):
+        """With no `contour_plane` the reader answered `(-1, -1)`, a plane no
+        writer produces; out of plane is `(-1, 0)`, `Polygon`'s own default."""
+        path = tmp_path / "rt.medh5"
+        with medh5.create(path, codec="portable") as w:
+            w.label_set(label_set)
+            w.add_grid("ct", shape=SHAPE, spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", np.zeros(SHAPE, dtype=np.int16), grid="ct", modality="CT")
+            w.add_contours(
+                "rtstruct", [Polygon(np.ones((3, 3)), class_id=1)], grid="ct"
+            )
+        with h5py.File(path, "r+") as f:
+            del f["annotations/rtstruct/contour_plane"]
+        with medh5.open(path) as sample:
+            (polygon,) = sample.annotations["rtstruct"].polygons()
+        assert tuple(polygon.plane) == (-1, 0)
+        assert tuple(polygon.plane) == tuple(Polygon(np.ones((3, 3)), 1).plane)
+
     def test_empty_and_ragged_input_is_refused(self):
         with pytest.raises(MEDH5ValidationError) as exc:
             encode_contours([])
@@ -605,6 +625,74 @@ class TestSpace:
         with pytest.raises(MEDH5ValidationError) as exc:
             check_space("hyperbolic")
         assert exc.value.code == "E412"
+
+    def test_S8_4_S8_6_S8_7_values_are_range_checked_before_they_are_narrowed(self):
+        """Narrowed first, visibility 256 was stored as 0 and 258 as 2, and a
+        face index or a plane past 2**32 wrapped into the range it was checked
+        against."""
+        points = np.zeros((1, 2, 3))
+        for visibility in ([[256, 2]], [[2, 258]]):
+            with pytest.raises(MEDH5ValidationError) as exc:
+                encode_keypoints(points, [1, 2], [1], visibility=np.array(visibility))
+            assert exc.value.code == "E411"
+        with pytest.raises(MEDH5ValidationError) as exc:
+            encode_mesh(np.zeros((3, 3)), np.array([[0, 1, 2**32 + 2]]))
+        assert exc.value.code == "E405"
+        with pytest.raises(MEDH5ValidationError) as exc:
+            encode_contours([Polygon(np.zeros((3, 3)), 1, plane=(0, 2**32 + 3))])
+        assert exc.value.code == "E405"
+        with pytest.raises(MEDH5ValidationError) as exc:
+            encode_boxes(
+                np.array([[[2, 2], [0, 1], [0, 1]]], float),
+                [1],
+                slice_index=[2**32 + 2],
+            )
+        assert exc.value.code == "E405"
+
+
+class TestWorldFrame:
+    """§3.4, §8.1: world coordinates are read in the frame they were taken in."""
+
+    BOX = np.array([[[4.5, 6.5], [0.5, 1.5], [0.5, 1.5]]])
+
+    def _sample(self, path: Path, **frame: str) -> Path:
+        with medh5.create(path, codec="portable") as w:
+            w.add_grid(
+                "g",
+                shape=SHAPE,
+                spacing=(1.0, 1.0, 1.0),
+                origin=(4.0, 0.0, 0.0),
+                frame_uid="pseudo:F1",
+            )
+            w.add_grid("h", shape=SHAPE, spacing=(1.0, 1.0, 1.0), frame_uid="pseudo:F2")
+            w.add_image("CT", np.zeros(SHAPE, np.int16), grid="g", modality="CT")
+            w.add_boxes("bx", self.BOX, class_ids=[1], grid="g", space="world", **frame)
+        return path
+
+    def test_S3_4_the_writer_refuses_a_frame_its_grid_is_not_in(self, tmp_path):
+        """Kept as given, the frame was read through the grid's affine as if
+        it were the grid's own, and every box landed somewhere else."""
+        with pytest.raises(MEDH5ValidationError) as exc:
+            self._sample(tmp_path / "other.medh5", frame_uid="pseudo:F2")
+        assert exc.value.code == "E414"
+        path = self._sample(tmp_path / "same.medh5", frame_uid="pseudo:F1")
+        with medh5.open(path) as sample:
+            assert sample.annotations["bx"].frame_uid == "pseudo:F1"
+
+    def test_S3_4_a_stored_frame_its_grid_is_not_in_is_E414(self, tmp_path):
+        path = self._sample(tmp_path / "planted.medh5")
+        with h5py.File(path, "r+") as f:
+            f["annotations/bx"].attrs["frame_uid"] = np.array(
+                "pseudo:F2", dtype=h5py.string_dtype()
+            )
+        with medh5.open(path) as sample:
+            boxes = sample.annotations["bx"]
+            with pytest.raises(MEDH5ValidationError) as exc:
+                boxes.as_slices()
+            assert exc.value.code == "E414"
+            # On a grid in the frame the coordinates name, they read.
+            assert boxes.as_slices("h") == [(slice(5, 7), slice(1, 2), slice(1, 2))]
+        assert [e.code for e in validate_file(path).errors] == ["E414"]
 
     def test_summary_is_json_safe(self, tmp_path, label_set):
 
