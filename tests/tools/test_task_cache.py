@@ -8,6 +8,7 @@ contract's clause.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import pickle
 import shutil
@@ -278,6 +279,200 @@ class TestF14Integers:
         saved.write_text(json.dumps(doc), encoding="utf-8")
         with pytest.raises(ValueError, match="which is not"):
             Manifest.load(saved)
+
+
+def _without(doc: dict[str, Any], defaults: dict[str, Any]) -> dict[str, Any]:
+    """``doc`` less every member that holds its default."""
+    return {k: v for k, v in doc.items() if k not in defaults or v != defaults[k]}
+
+
+class TestDigestsFromTheText:
+    """Every digest the contract compares is defined to the byte (§3.1--§3.3,
+    §7.1).  Computed from those definitions alone --- `json`, `hashlib`, `h5py`
+    --- each is the engine's; were it not, a second implementation would find
+    T103, T305, T404, T405 or T401 in what the engine wrote."""
+
+    POLICY = {  # §3.4
+        "selection": "strict_prospective",
+        "order_by": "effective",
+        "context_us": None,
+        "context_boundary": "closed",
+        "uncertainty": "contained",
+        "kinds": None,
+        "plans": False,
+        "static": True,
+        "max_events": None,
+        "keep": "latest",
+        "ties": "keep_group",
+    }
+    SLOT = {"required": False, "patch": None, "roi": "center", "classes": []}  # §3.5
+    TARGET = {"negative": [], "censoring": "censor", "exclude_prevalent": True}  # §5
+
+    @staticmethod
+    def fingerprint(value: Any) -> str:
+        """§3.2: sha256 over the canonical JSON (1.0 §5.1) of ``value``."""
+        text = json.dumps(
+            value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        )
+        return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    @classmethod
+    def normal_form(cls, doc: dict[str, Any]) -> dict[str, Any]:
+        """§3.1's normal form of a manifest."""
+        task = {"id": doc["task"]["id"], "version": doc["task"]["version"]}
+        if "description" in doc["task"]:
+            task["description"] = doc["task"]["description"]
+        target = doc.get("target")
+        if target is not None:
+            target = {
+                **cls.TARGET,
+                "min_follow_up_us": target["horizon_us"],
+                **target,
+            }
+        out = {
+            "schema": doc["schema"],
+            "task": task,
+            "identity_namespace": doc["identity_namespace"],
+            "policy": {**cls.POLICY, **doc.get("policy", {})},
+            "slots": [{**cls.SLOT, **slot} for slot in doc.get("slots", [])],
+            "target": target,
+            "subjects": [
+                {
+                    "clock_id": None,
+                    "partition": None,
+                    "reconciled": [],
+                    **subject,
+                    "sources": [
+                        {"sample_key": None, "local_subject_id": None, **source}
+                        for source in subject["sources"]
+                    ],
+                }
+                for subject in doc["subjects"]
+            ],
+            "rows": doc["rows"],
+        }
+        for optional in ("split", "fingerprint"):
+            if optional in doc:
+                out[optional] = doc[optional]
+        return out
+
+    def test_S3_1_the_normal_form_fills_what_the_text_says(self, setup):
+        task, _ = setup
+        full = task.to_json()
+        terse = {k: v for k, v in full.items() if k != "policy"}
+        terse["slots"] = [_without(slot, self.SLOT) for slot in full["slots"]]
+        terse["target"] = _without(full["target"], self.TARGET)
+        terse["subjects"] = [
+            {
+                **_without(s, {"clock_id": None, "partition": None, "reconciled": []}),
+                "sources": [
+                    _without(r, {"sample_key": None, "local_subject_id": None})
+                    for r in s["sources"]
+                ],
+            }
+            for s in full["subjects"]
+        ]
+        assert terse != full and self.normal_form(terse) == full
+        assert TaskManifest(terse).to_json() == full
+        described = dict(terse, task={**terse["task"], "description": "progression"})
+        assert TaskManifest(described).to_json() == self.normal_form(described)
+
+    def test_S3_2_every_fingerprint_reproduces_from_the_text(self, setup):
+        task, _ = setup
+        full = task.to_json()
+        definition = {
+            "schema": full["schema"],
+            "task": {"id": full["task"]["id"], "version": full["task"]["version"]},
+            "identity_namespace": full["identity_namespace"],
+            "policy": full["policy"],
+            "slots": full["slots"],
+            "target": full["target"],
+        }
+        assert task.task_fingerprint == self.fingerprint(definition)
+        assert task.manifest_fingerprint == self.fingerprint(full)
+        described = dict(full, task={**full["task"], "description": "progression"})
+        assert TaskManifest(described).task_fingerprint == task.task_fingerprint
+        assert TaskManifest(described).manifest_fingerprint == self.fingerprint(
+            described
+        )
+        namespace = full["identity_namespace"]
+        subjects = {s["subject_id"]: s for s in full["subjects"]}
+        for row in full["rows"]:
+            pins = sorted(
+                r["content_id"] for r in subjects[row["subject_id"]]["sources"]
+            )
+            assert task.row_fingerprint(row["row_id"]) == self.fingerprint(
+                {
+                    "task": task.task_fingerprint,
+                    "namespace": namespace,
+                    "subject_id": row["subject_id"],
+                    "sources": pins,
+                    "cutoff_us": row["cutoff_us"],
+                }
+            )
+        for partition in ("train", "val"):
+            members = sorted(
+                [namespace, s["subject_id"]]
+                for s in full["subjects"]
+                if s["partition"] == partition
+            )
+            assert task.subjects_digest(partition) == self.fingerprint(members)
+
+    def test_S3_3_a_reconciliation_digest_is_the_event_version_spelled_out(
+        self, tmp_path: Path
+    ):
+        root = tmp_path / "f"
+        root.mkdir()
+        a, b = root / "a.medh5", root / "b.medh5"
+        History.write(a, subject_id="P-01")
+        History.write(b, subject_id="P-01")
+        task = TaskManifest.new("t", "1", identity_namespace="n", base=root)
+        task.add_subject(
+            "P-01", [SourceRef.pin(a, uri="a.medh5"), SourceRef.pin(b, uri="b.medh5")]
+        )
+        task.reconcile()
+        with medh5.open(a) as sample:
+            clinical = sample.clinical
+            assert clinical is not None
+            events = {e.event_id: e.to_json() for e in clinical.records().events}
+        records = task.to_json()["subjects"][0]["reconciled"]
+        assert len(records) == len(events)
+        for record in records:
+            event = events[record["event_id"]]
+            assert len(event) == 19 and None in event.values()
+            assert record["digest"] == self.fingerprint(event)
+            assert record["sources"] == ["a", "b"]
+
+    def test_S7_1_the_manifest_digest_is_over_the_stored_bytes(
+        self, setup, tmp_path: Path
+    ):
+        task, _ = setup
+        path = tmp_path / "cohort" / "docs.medh5cache"
+        build_document_cache(task, path, HashingTextEncoder(dim=4))
+        with h5py.File(path, "r") as f:
+            stored = f["manifest"][()]
+            declared = f.attrs["manifest_digest"]
+        declared = declared.decode() if isinstance(declared, bytes) else declared
+        assert declared == "sha256:" + hashlib.sha256(stored).hexdigest()
+        manifest = json.loads(stored)
+        assert stored.decode("utf-8") == json.dumps(
+            manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        )
+        # `selection` names the policy a cache read under: none, for features
+        # of event versions, which are free of any cutoff.
+        assert manifest["selection"] is None
+        rows = tmp_path / "cohort" / "rows.medh5cache"
+        with CacheWriter(
+            rows,
+            level="patient",
+            encoder={"name": "fixture", "revision": "1"},
+            output={"dtype": "float32", "shape": [2]},
+            task=task,
+        ):
+            pass
+        with h5py.File(rows, "r") as f:
+            assert json.loads(f["manifest"][()])["selection"] == "strict_prospective"
+        assert validate_cache(rows, task=task).ok
 
 
 class TestSources:

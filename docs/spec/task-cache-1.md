@@ -75,23 +75,43 @@ schema):
 | `slots` | The modality slots (§3.5) |
 | `target` | The target (§5), or null for an unlabelled task |
 | `split` | `{"set_id", "partitions"}` --- **the training partition first** |
-| `subjects` | `[{"subject_id", "partition"?, "clock_id"?, "sources": [...], "reconciled": [...]}]` |
+| `subjects` | `[{"subject_id", "partition"?, "clock_id"?, "sources": [...], "reconciled"?: [...]}]` |
 | `rows` | `[{"row_id", "subject_id", "cutoff_us"}]` |
 | `fingerprint` | Optional: the manifest fingerprint (§3.2); when present it **MUST** match (**T103**) |
 
 An implementation normalises a manifest by filling every default, so two spellings of one task are
-one task.
+one task. The **normal form** of a manifest writes every member, null where a nullable one is
+absent, and keeps every list in the manifest's order:
+
+- `schema`; `task` as `{"id", "version"}`, with `description` only when it is given;
+  `identity_namespace`;
+- `policy` with all eleven members of §3.4, whether or not the manifest has a `policy`;
+- `slots`, `[]` when absent, each slot `{"name", "modality", "required", "patch", "roi",
+  "classes"}` (§3.5);
+- `target`, null when absent, or `{"id", "version", "event", "positive", "negative", "horizon_us",
+  "min_follow_up_us", "censoring", "exclude_prevalent"}` (§5), whose `event` is `{"code_system",
+  "code"}` with `kind` only when it is given;
+- `split` only when it is given;
+- `subjects`, each `{"subject_id", "clock_id", "partition", "sources", "reconciled"}` with
+  `reconciled` `[]` when absent, each source `{"source_id", "uri", "sample_key", "content_id",
+  "local_subject_id"}` (§2) and each record `{"event_id", "digest", "sources"}`;
+- `rows`, each `{"row_id", "subject_id", "cutoff_us"}`;
+- `fingerprint` only when the manifest declares one.
+
+Times, voxel counts, class ids and `max_events` stay integers.
 
 ### 3.2 Identity and fingerprints
 
-A fingerprint is `"sha256:" + hex(sha256(canonical JSON))`, with 1.0 §5.1's canonical JSON.
+A fingerprint is `"sha256:" + hex(sha256(c))`, `hex` lowercase, where `c` is the UTF-8 canonical
+JSON (1.0 §5.1) of the value the table gives. Members are written as the normal form (§3.1) writes
+them, and "sorted" is by code point.
 
-| Fingerprint | Over | Identifies |
+| Fingerprint | The value hashed | Identifies |
 |---|---|---|
-| **task** | `schema`, `task` id and version, `identity_namespace`, the normalised `policy`, `slots`, `target` | The task *definition* --- not its rows, not its sources |
-| **manifest** | The whole normalised manifest without `fingerprint` | One frozen task instance, rows and pins included |
-| **row** | The task fingerprint, the namespace, the subject, the **sorted pinned `content_id`s** of the subject's sources, the cutoff | One example. A cohort-membership digest or a URI alone pins no data |
-| **subjects digest** | The sorted `(namespace, subject_id)` pairs of one partition | Who a partition holds --- what learned preprocessing records (§7.3) |
+| **task** | `{"schema", "task": {"id", "version"}, "identity_namespace", "policy", "slots", "target"}` --- `task` without its `description` | The task *definition* --- not its rows, not its sources |
+| **manifest** | The normal form without `fingerprint` | One frozen task instance, rows and pins included |
+| **row** | `{"task": <task fingerprint>, "namespace": <identity_namespace>, "subject_id", "sources": <the pinned content_ids of every source the manifest gives the subject, sorted>, "cutoff_us"}` | One example. A cohort-membership digest or a URI alone pins no data |
+| **subjects digest** | The array of `[identity_namespace, subject_id]` arrays, one per subject in the partition, sorted | Who a partition holds --- what learned preprocessing records (§7.3) |
 
 ### 3.3 Subjects, fragments and splits
 
@@ -107,8 +127,9 @@ clock. Preflight (§4) opens them all, checks each source's identity against the
 to (**T303**) and their clocks against each other and the subject's `clock_id` (**T304**), and merges
 their events. An event version present in several fragments **MUST** have one content, and the
 manifest records it --- `reconciled: [{"event_id", "digest", "sources"}]`, the digest being the
-fingerprint of the event's logical record and `sources` exactly the fragments that hold it --- before
-selection; a difference, a duplicate with no record, a record whose `sources` are not the holders, a
+fingerprint (§3.2) of the version as `medh5-clinical-1.schema.json#/$defs/event` spells it, all
+nineteen members present (null where the column is null, each pair of bounds `[lo, hi]`, `value_num`
+a float), and `sources` the `source_id`s of exactly the fragments that hold it --- before selection; a difference, a duplicate with no record, a record whose `sources` are not the holders, a
 second record of one event, or a record of an event no two fragments hold is **T305**. Documents
 present in several fragments must be identical (**T305**). A `document` event's content includes the
 document it owns: its holders **MUST** own one text --- the same media type, text, language and source
@@ -153,19 +174,26 @@ positive and negative, a follow-up longer than the horizon --- is **T102**.
 | `modality` | --- | The image `modality` that fills it |
 | `required` | `false` | A row with no eligible image for a required slot is excluded (`missing_required_slot`) |
 | `patch` | null | The region read, in voxels of the image's **own** grid; null reads the whole volume |
-| `roi` | `center` | `center` (the grid's centre) or `eligible_instances` (the first eligible instance) |
+| `roi` | `center` | `center` (voxel `⌊n/2⌋` on each spatial axis of `n` voxels) or `eligible_instances` (the centre of the first eligible instance) |
 | `classes` | `[]` | Class ids read as label supervision from voxel annotations on the image's grid (§6) |
 
 A slot is filled per row by the **newest eligible image** of its modality: an image an admitted
-`imaging` event `describes` (1.1 §7.3), ordered by that event's order time, ties broken by event id,
-then --- one version held by several fragments, or one describing several images --- by the smallest
-pinned `content_id` of the source holding the image, then the smallest image id. With the merge rule
-of §3.3, a row's selection and fills are a function of its fingerprint.
-An eligible image of another visit is a different fill, not an error; no image is resampled onto
-another's grid, and no registration is invented. With `roi = eligible_instances` the centre is that of
-the first instance (by `instance_id`) of an **eligible** instance-bearing annotation on the image's
-grid --- an annotation drawn after the cutoff never chooses a crop --- and `center_fallback` records
-that there was none.
+`imaging` event `describes` (1.1 §7.3). Newest is by that event's order bounds (1.1 §9.1): the
+greater upper bound, then the greater lower bound --- a `static` version, which has none, is older
+than any timed one --- then the greater event id; then --- one version held by several fragments, or
+one describing several images --- the smallest pinned `content_id` of the source holding the image,
+then the smallest image id. With the merge rule of §3.3, a row's selection and fills are a function
+of its fingerprint. An eligible image of another visit is a different fill, not an error; no image
+is resampled onto another's grid, and no registration is invented.
+
+With `roi = eligible_instances` the centre comes from the **eligible** (1.1 §9.1 step 5)
+`instances` and `boxes` annotations on the image's grid that hold an object --- an annotation drawn
+after the cutoff never chooses a crop. The first of them, in byte order of annotation id, gives its
+first object by `instance_id` (a `boxes` annotation without `instance_ids` numbers its boxes from 0,
+in row order), and the centre is voxel `⌊(lo + hi)/2 + ½⌋` on each spatial axis of that object's box
+in the grid's index space (1.0 §8.1) --- a box stored in world space is carried there first, and an
+annotation whose boxes cannot be is passed over. `center_fallback` records that there was none, and
+the crop is then centred as `center` is.
 
 ### 3.6 Rows
 
@@ -293,8 +321,8 @@ One HDF5 file, conventionally `*.medh5cache`:
 └── entries/<id>     one feature array per entry, with its 1.0 §13.1 `digest`
 ```
 
-`manifest_digest` is `sha256` over the manifest's bytes. The manifest is validated by
-`medh5-cache-1.schema.json`:
+`manifest_digest` is `"sha256:" + hex(sha256(b))`, `hex` lowercase, where `b` is the bytes of the
+`manifest` dataset as stored (UTF-8). The manifest is validated by `medh5-cache-1.schema.json`:
 
 | Member | Content |
 |---|---|
@@ -304,7 +332,7 @@ One HDF5 file, conventionally `*.medh5cache`:
 | `preprocessing` | Everything else that determines the output |
 | `output` | `{"dtype", "shape", "pooling"?, "chunking"?}`; every entry has this dtype and shape (**T402**) |
 | `task_fingerprint` | The task a patient-level cache was built for (required at that level) |
-| `selection` | The selection policy it read under |
+| `selection` | The `selection` it read under (§3.4) --- `strict_prospective` or `latest_provable` --- or null |
 | `fitted_on` | For learned preprocessing: `{"task_fingerprint", "set_id", "partition", "subjects_digest"}` |
 | `entries` | `[{"entry_id", "sources", "event_id"?, "document_id"?, "row_id"?, "row_fingerprint"?, "cutoff_us"?, "event_versions"?, "digest"}]` |
 
