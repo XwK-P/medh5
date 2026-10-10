@@ -339,11 +339,16 @@ with medh5.open(path) as s:
 the affine is right. `to_metatensor(..., roi=...)` shifts the origin to the
 ROI, so a patch keeps its world position.
 
-The affine is passed through in the grid's own `coord_system` — usually LPS —
-and labelled with it in the metadata MONAI reads, rather than silently converted.
-Pass `space="RAS"` when a consumer needs RAS: the conversion is a sign flip on
-the first two world axes of the affine, never a flip of the voxels.
-`from_metatensor(tensor)` returns the array and its metadata.
+The affine is in millimetres, which is what MONAI and the NIfTI files it saves
+read: a grid in `m` or `um` is scaled, and one in `px`, which has no size,
+stays in pixels (`meta["medh5"]["units"]` names the grid's unit). It is passed
+through in the grid's own `coord_system` — usually LPS — and labelled with it in
+the metadata MONAI reads, rather than silently converted. Pass `space="RAS"`
+when a consumer needs RAS: the conversion is a sign flip on the first two world
+axes of the affine, never a flip of the voxels. `from_metatensor(tensor)`
+returns the array and its geometry --- spacing, origin and direction in the
+tensor's space, and their `units` --- and refuses a tensor whose metadata states
+no affine or no space, which has none to return.
 
 `to_dict(sample, images, annotations)` builds a dictionary-transform item, with
 the same `space=` and `physical=` options.

@@ -2,8 +2,11 @@
 
 ``to_metatensor`` hands MONAI a tensor with the **correct affine**, so
 ``Spacingd``, ``Orientationd`` and ``SaveImaged`` work unmodified.  That is the
-whole job, and the only part of it that is subtle is which world convention the
-affine is expressed in.
+whole job, and the parts of it that are subtle are which world convention the
+affine is expressed in, and its unit: MONAI --- and every NIfTI it saves ---
+reads an affine in millimetres, so a grid in ``m`` or ``um`` is scaled to them.
+A grid in ``px`` has no size to scale; its affine stays in pixels, and
+``meta["medh5"]["units"]`` says so.
 
 MEDH5 grids declare their ``coord_system`` (§3.1) --- usually ``LPS``, the DICOM
 convention.  MONAI's transforms read `MetaKeys.SPACE`, so the honest thing is to
@@ -87,11 +90,28 @@ def convert_affine(
 def affine_for(
     sample: Sample, image_id: str, *, space: str | None = None, level: int = 0
 ) -> npt.NDArray[np.float64]:
-    """The index→world affine of one image, optionally re-expressed."""
-    grid = _grid_for(sample, image_id, level)
-    if space is None or space == grid.coord_system:
-        return grid.affine
-    return convert_affine(grid.affine, source=grid.coord_system, target=space)
+    """The index→world affine of one image, as MONAI receives it: optionally
+    re-expressed in *space*, and in millimetres (see :func:`_monai_affine`)."""
+    return _monai_affine(_grid_for(sample, image_id, level), space)
+
+
+def _monai_affine(grid: Grid, space: str | None) -> npt.NDArray[np.float64]:
+    """*grid*'s affine in *space* (its own when ``None``) and in millimetres.
+
+    MONAI reads an affine's lengths as millimetres, and so does the NIfTI its
+    ``SaveImage`` writes: passed in the grid's own units, a metre grid's
+    affine said 2 µm voxels.  A ``px`` grid has no size, and stays in pixels.
+    """
+    from medh5.io.nifti import MM_PER_UNIT
+
+    affine = (
+        grid.affine
+        if space is None or space == grid.coord_system
+        else convert_affine(grid.affine, source=grid.coord_system, target=space)
+    )
+    out = np.array(affine, dtype=np.float64, copy=True)
+    out[: out.shape[0] - 1, :] *= MM_PER_UNIT.get(grid.units, 1.0)
+    return out
 
 
 def _grid_for(sample: Sample, image_id: str, level: int) -> Grid:
@@ -183,7 +203,7 @@ def to_metatensor(
         # image's, as after a MONAI crop, so a resampling writer puts the
         # crop back where it came from.  `spatial_shape` was the crop's whole
         # shape, channel axis included, and SaveImage(resample=True) wrote a
-        # two-channel crop as one (L08 of the 2.0 re-audit).
+        # two-channel crop as one.
         meta["affine"] = _shift_origin(meta["affine"], roi)
         meta["medh5"]["roi"] = [[s.start, s.stop, s.step] for s in roi]
 
@@ -214,8 +234,8 @@ def _normalised_roi(
     The affine was shifted by ``sl.start or 0``: a negative start counted from
     the volume's first voxel rather than its last, and a step was ignored, so
     ``slice(-8, None)`` placed the crop at the wrong end of the volume and a
-    strided read kept the full spacing (L08 of the 2.0 audit).  An integer
-    index drops an axis the affine still has, so it is refused.
+    strided read kept the full spacing.  An integer index drops an axis the
+    affine still has, so it is refused.
     """
     if not spatial <= len(roi) <= len(shape):
         raise MEDH5ValidationError(
@@ -252,8 +272,14 @@ def from_metatensor(tensor: Any) -> tuple[npt.NDArray[Any], dict[str, Any]]:
     """A ``MetaTensor`` back to ``(array, geometry)`` a writer can consume.
 
     The geometry comes out as ``spacing``/``origin``/``direction`` in the
-    tensor's own declared space, so a caller can hand it straight to
-    ``SampleWriter.add_grid`` without re-deriving anything.
+    tensor's own declared space, and ``units`` --- millimetres, MONAI's,
+    unless :func:`to_metatensor` passed a ``px`` grid through --- so a caller
+    can hand it to ``SampleWriter.add_grid`` without re-deriving anything.
+
+    A tensor whose metadata states no ``affine`` or no ``space`` is refused.
+    A ``MetaTensor`` always states both, and anything else has no geometry:
+    an identity affine and ``LPS`` stood in for them, and a ``(C, Z, Y, X)``
+    array came back with four spacings, its channel axis among them.
     """
     from medh5.geometry import decompose_affine
 
@@ -261,14 +287,23 @@ def from_metatensor(tensor: Any) -> tuple[npt.NDArray[Any], dict[str, Any]]:
         tensor.detach().cpu().numpy() if hasattr(tensor, "detach") else tensor
     )
     meta = dict(getattr(tensor, "meta", {}) or {})
-    affine = np.asarray(meta.get("affine", np.eye(array.ndim + 1)), dtype=np.float64)
+    missing = [key for key in ("affine", "space") if meta.get(key) is None]
+    if missing:
+        raise MEDH5ValidationError(
+            f"the tensor's metadata states no {' and no '.join(missing)}, so it "
+            "has no geometry to recover --- a MetaTensor carries both, and one "
+            "would be invented here"
+        )
+    affine = np.asarray(meta["affine"], dtype=np.float64)
     spacing, origin, direction = decompose_affine(affine)
+    medh5_meta = meta.get("medh5", {}) or {}
     return array, {
         "spacing": [float(v) for v in spacing],
         "origin": [float(v) for v in origin],
         "direction": [[float(v) for v in row] for row in direction],
-        "coord_system": str(meta.get("space", "LPS")),
-        "medh5": meta.get("medh5", {}),
+        "coord_system": str(meta["space"]),
+        "units": "px" if medh5_meta.get("units") == "px" else "mm",
+        "medh5": medh5_meta,
     }
 
 
@@ -326,11 +361,7 @@ def _annotation_meta(
 ) -> dict[str, Any]:
     """Meta for an annotation, built from the grid the annotation is bound to."""
     grid = ann.grid
-    affine = (
-        grid.affine
-        if space is None or space == grid.coord_system
-        else convert_affine(grid.affine, source=grid.coord_system, target=space)
-    )
+    affine = _monai_affine(grid, space)
     return {
         "affine": affine,
         "original_affine": affine,

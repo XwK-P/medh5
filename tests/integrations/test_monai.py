@@ -341,12 +341,82 @@ class TestWithoutMonai:
         assert geometry["origin"] == [5.0, 6.0, 7.0]
         assert geometry["coord_system"] == "RAS"
 
-    def test_a_tensor_without_metadata_still_decomposes(self):
+    def test_S3_3_a_tensor_without_geometry_is_refused(self):
+        """An identity affine and `LPS` stood in for a tensor's missing ones,
+        and a `(C, Z, Y, X)` array came back with four spacings."""
         from medh5.monai import from_metatensor
 
-        array, geometry = from_metatensor(np.zeros((2, 2)))
-        assert geometry["spacing"] == [1.0, 1.0]
-        assert geometry["coord_system"] == "LPS"
+        with pytest.raises(MEDH5ValidationError, match="no affine and no space"):
+            from_metatensor(np.zeros((2, 4, 4, 4)))
+
+        class Duck:
+            def __init__(self, meta):
+                self.meta = meta
+
+            def __array__(self, dtype=None, copy=None):
+                return np.zeros((4, 4, 4), dtype=dtype)
+
+        with pytest.raises(MEDH5ValidationError, match="no space"):
+            from_metatensor(Duck({"affine": np.eye(4)}))
+
+    @pytest.mark.parametrize(("units", "scale"), [("m", 1000.0), ("mm", 1.0)])
+    def test_S3_5_monai_receives_the_affine_in_millimetres(
+        self, tmp_path: Path, units: str, scale: float
+    ):
+        """MONAI reads an affine in millimetres: in the grid's own units, a
+        metre grid's 2 mm voxels said 2 µm."""
+        from medh5.monai import affine_for, from_metatensor, meta_dict
+
+        path = tmp_path / "units.medh5"
+        spacing = np.array([2.0, 1.0, 0.5]) / scale
+        with medh5.create(path, sample_id="s", codec="portable") as w:
+            w.add_grid(
+                "g",
+                shape=(4, 5, 6),
+                spacing=spacing,
+                origin=(0.1, 0.2, 0.3),
+                units=units,
+            )
+            w.add_image("CT", np.zeros((4, 5, 6), np.int16), grid="g", modality="CT")
+        with medh5.open(path) as sample:
+            grid = sample.grids["g"]
+            affine = affine_for(sample, "CT")
+            meta = meta_dict(sample, "CT")
+        assert np.allclose(np.diag(affine)[:3], [2.0, 1.0, 0.5])
+        assert np.allclose(affine[:3, 3], np.array([0.1, 0.2, 0.3]) * scale)
+        assert np.allclose(affine[:3, :3], grid.affine[:3, :3] * scale)
+        assert np.allclose(meta["affine"], affine)
+        assert meta["medh5"]["units"] == units
+
+        class Duck:
+            def __array__(self, dtype=None, copy=None):
+                return np.zeros((4, 5, 6), dtype=dtype)
+
+        duck = Duck()
+        duck.meta = meta  # type: ignore[attr-defined]
+        _, geometry = from_metatensor(duck)
+        assert np.allclose(geometry["spacing"], [2.0, 1.0, 0.5])
+        assert geometry["units"] == "mm"
+
+    def test_S3_5_a_pixel_grid_stays_in_pixels(self, tmp_path: Path):
+        """`px` has no size to scale, and the metadata says which it is."""
+        from medh5.monai import affine_for, from_metatensor, meta_dict
+
+        path = tmp_path / "px.medh5"
+        with medh5.create(path, sample_id="s", codec="portable") as w:
+            w.add_grid("g", shape=(4, 5, 6), spacing=(1.0, 1.0, 1.0), units="px")
+            w.add_image("CT", np.zeros((4, 5, 6), np.int16), grid="g", modality="CT")
+        with medh5.open(path) as sample:
+            assert np.allclose(affine_for(sample, "CT"), sample.grids["g"].affine)
+            meta = meta_dict(sample, "CT")
+
+        class Duck:
+            def __array__(self, dtype=None, copy=None):
+                return np.zeros((4, 5, 6), dtype=dtype)
+
+        duck = Duck()
+        duck.meta = meta  # type: ignore[attr-defined]
+        assert from_metatensor(duck)[1]["units"] == "px"
 
     def test_Q17_original_channel_dim_follows_the_grid(self, tmp_path: Path):
         """`no_channel` on an RGB grid made `EnsureChannelFirst` add a second axis."""
