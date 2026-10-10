@@ -19,7 +19,7 @@ them. Build the index first if you are running it over a large study.
 
 ```
 $ medh5 dataset index studies/ -o cohort.json
-studies/: 412 sample(s), 289 subject(s), sha256 4f21c8ab90e1
+cohort.json: 412 sample(s), 289 subject(s), sha256 4f21c8ab90e1
 ```
 
 ```python
@@ -63,12 +63,18 @@ Covers the cohort's **membership** — which samples, grouped how — and nothin
 else. Not paths, sizes, mtimes, the generating version, and deliberately not
 `content_id`.
 
-Membership and grouping are exactly what a split is computed from, which makes
-this the right thing for a claim to be checkable against. Including content
-would make it useless for that: writing a claim into a file changes the file,
-so every claim would be stale the moment it was written. Content drift is a
-different question, and `dataset check` answers it separately (`C401`, and
-`--deep`).
+Membership and grouping by `group_id` are what a default split is computed
+from, which makes this the right thing for a claim to be checkable against.
+Including content would make it useless for that: writing a claim into a file
+changes the file, so every claim would be stale the moment it was written.
+Content drift is a different question, and `dataset check` answers it
+separately (`C401`, and `--deep`).
+
+A split made with `--group-by` or `--stratify-by` on another field depends on
+that field's values too, and the digest does not cover them: re-curate
+`site_id` and a `--stratify-by site_id` split comes out differently while every
+claim still matches the digest, so `C201` cannot see it. Re-split after changing
+a field you split on.
 
 Re-scanning the same cohort on another machine produces the same digest.
 Filtering the manifest changes it, so a split made from a subset cannot be
@@ -126,12 +132,17 @@ its partition *and* the manifest digest it came from. A later reader can then
 tell a current claim from one that predates a re-split. Writing a claim for a
 `set_id` replaces any earlier claim for that set. A k-fold split's claims name
 the validation fold (`fold=2`, `--fold 2`): that fold's samples are written as
-`val` and the rest as `train`. Everything a write needs --- a fold the split
-has, no sample inside a collection --- is checked before the first file
-changes, so a refused write leaves every file as it was.
+`val` and the rest as `train`. Every refusal is met before the first file
+changes, so a refused write leaves every file as it was: a fold the split does
+not have (or a fold given for a split made with ratios), a split that places
+something twice, a sample inside a collection, and each file an amendment would
+refuse — a later minor version, a profile this engine does not implement, HDF5
+references, or a file the validator rejects. Only a failure while writing, such
+as a full disk, can stop it part way.
 
-Assignment is deterministic given `(manifest digest, seed, parameters)` — a
-hash, not a shuffle — so two machines produce the same partitions.
+Assignment is deterministic given the manifest's entries, the seed and the
+parameters — a hash, not a shuffle — so two machines produce the same
+partitions.
 
 ### Small cohorts
 
@@ -158,13 +169,21 @@ $ medh5 dataset split cohort.json --k-folds 5 --set-id cv5 --write-claims --fold
 ```
 
 `--fold N` says which fold is the validation set for the claims being written;
-every other fold becomes `train`.
+every other fold becomes `train`. Every fold gets at least one group, so more
+folds than groups is refused rather than run fewer ways than it says, and
+`--ratios` does not apply.
 
 ## Compute the statistics
 
 ```
+$ medh5 dataset index studies/ -o cohort.json     # record the claims just written
 $ medh5 dataset stats cohort.json --partition train --set-id cv5 --workers 8 -o stats.json
 ```
+
+`--partition` reads the claims from the manifest, which holds what the files
+carried when it was indexed. `--write-claims` writes into the files, not into
+the manifest, so re-index after it — the digest is unchanged, and the claims
+still match it.
 
 ```python
 from medh5.dataset import compute_stats

@@ -15,7 +15,9 @@ use serde_json::{json, Map, Value};
 
 use crate::curation::identity::{SplitClaim, PARTITIONS};
 use crate::dataset::manifest::{Entry, Manifest};
+use crate::h5::{attrs, ops};
 use crate::json::{num, repr_list, repr_str};
+use crate::sample::open_sample;
 use crate::sample::writer::amend;
 use crate::{Error, Result};
 
@@ -98,7 +100,8 @@ impl Split {
         out
     }
 
-    /// Folds that were asked for and got no groups.
+    /// Folds that were asked for and got no groups.  [`make_splits`] refuses
+    /// more folds than groups, so only a split written before 2.0 has any.
     pub fn empty_folds(&self) -> Vec<i64> {
         let Some(k) = self.k_folds else { return Vec::new() };
         let filled: BTreeSet<i64> = self.assignments.iter().filter_map(|a| a.fold).collect();
@@ -120,19 +123,20 @@ impl Split {
 
     /// Groups that ended up in more than one partition, and entries placed in
     /// more than one: structurally impossible here, so a self-check --- and
-    /// the check a split loaded from a file needs.
+    /// the check a split loaded from a file needs.  A fold is a partition of
+    /// its own: every k-fold assignment is `holdout`, so comparing partitions
+    /// alone saw no group placed in two folds.
     pub fn leaks(&self) -> Vec<String> {
-        let mut seen: IndexMap<&str, &str> = IndexMap::new();
-        let mut placed: IndexMap<&str, &str> = IndexMap::new();
+        let mut seen: IndexMap<&str, (&str, Option<i64>)> = IndexMap::new();
+        let mut placed: IndexMap<&str, (&str, Option<i64>)> = IndexMap::new();
         let mut bad = BTreeSet::new();
         for a in &self.assignments {
-            let previous = *seen.entry(a.group.as_str()).or_insert(a.partition.as_str());
-            if previous != a.partition {
+            let here = (a.partition.as_str(), a.fold);
+            if *seen.entry(a.group.as_str()).or_insert(here) != here {
                 bad.insert(a.group.clone());
             }
             for entry in &a.entries {
-                let previous = *placed.entry(entry.as_str()).or_insert(a.partition.as_str());
-                if previous != a.partition {
+                if *placed.entry(entry.as_str()).or_insert(here) != here {
                     bad.insert(entry.clone());
                 }
             }
@@ -287,7 +291,8 @@ type Stratum<'a> = (Option<String>, Vec<(String, Vec<&'a Entry>)>);
 /// Assign every group in `manifest` to a partition, or to a fold.
 ///
 /// With `k_folds` the folds are recorded as `holdout` assignments with a fold
-/// number; without it, groups go to `train`/`val`/`test` in the ratios.
+/// number, and every fold gets at least one group; without it, groups go to
+/// `train`/`val`/`test` in the ratios.
 pub fn make_splits(manifest: &Manifest, options: &SplitOptions) -> Result<Split> {
     if manifest.is_empty() {
         return Err(Error::invalid("cannot split an empty manifest"));
@@ -328,10 +333,31 @@ pub fn make_splits(manifest: &Manifest, options: &SplitOptions) -> Result<Split>
             shares = shares.into_iter().map(|(k, v)| (k, v / total)).collect();
         }
         Some(k) if k < 2 => return Err(Error::invalid("k_folds must be at least 2")),
-        Some(_) => {}
+        Some(_) => {
+            // Folds take every group; a ratio has nothing to apply to, and
+            // one written into the split, unchecked, said otherwise.
+            if options.ratios.as_ref().is_some_and(|r| !r.is_empty()) {
+                return Err(Error::invalid(
+                    "ratios and k_folds are two ways to split a cohort: a k-fold split deals every group to a \
+                     fold, so give one or the other",
+                ));
+            }
+            shares = IndexMap::new();
+        }
     }
     let grouped = manifest.groups(&options.group_by)?;
     refuse_split_subjects(&grouped, &options.group_by)?;
+    if let Some(k) = options.k_folds.filter(|k| *k > grouped.len() as i64) {
+        // An empty fold validates on nothing, and listing a billion of them
+        // took the memory the process had.
+        return Err(Error::invalid(format!(
+            "k_folds {k} is more than the {} group(s) to deal by {}: every fold needs at least one group, so this \
+             cohort splits at most {}-fold",
+            grouped.len(),
+            repr_str(&options.group_by),
+            grouped.len()
+        )));
+    }
     let mut split = Split {
         set_id: options.set_id.clone(),
         manifest_sha256: manifest.sha256(),
@@ -431,27 +457,54 @@ fn deal<'a>(ordered: Vec<(Option<String>, String, Vec<&'a Entry>)>, shares: &Ind
 /// With `k_folds`, `fold` selects which fold is validation for this claim;
 /// every other fold becomes `train`.  Amending rewrites each file, so this is
 /// optional: a split is fully usable as a JSON file.
+///
+/// Every refusal is met before the first file is amended: the fold, a split
+/// that places something twice, a sample inside a collection, and each file
+/// amending would refuse --- another major or a later minor (1.1 §2.3), a
+/// profile this engine does not implement, HDF5 references, and a file the
+/// validator rejects, which a commit refuses to write (§15).  Only a failure
+/// while writing, such as a full disk, can stop it part way.
 pub fn write_claims(
     split: &Split,
     manifest: &Manifest,
     assigned_by: Option<&str>,
     fold: Option<i64>,
 ) -> Result<Vec<String>> {
-    // Every precondition of the whole operation is checked before the first
-    // file is amended.  A refusal halfway through left some files claiming the
-    // split and the rest not, and a fold outside the split's range was not a
-    // refusal at all: no assignment matched it, so every file was written as
-    // `train` and the split had no validation partition (U06 of the 2.0 audit).
-    if let Some(k) = split.k_folds {
-        let Some(chosen) = fold else {
+    // A refusal halfway through left some files claiming the split and the
+    // rest not, and a fold outside the split's range was not a refusal at
+    // all: no assignment matched it, so every file was written as `train`
+    // and the split had no validation partition.
+    match (split.k_folds, fold) {
+        (Some(_), None) => {
             return Err(Error::invalid("a k-fold split needs --fold N to say which fold is validation"));
-        };
-        if !(0..k).contains(&chosen) {
+        }
+        (Some(k), Some(chosen)) if !(0..k).contains(&chosen) => {
             return Err(Error::invalid(format!(
                 "fold {chosen} is not a fold of this {k}-fold split, which numbers them 0 to {}",
                 k - 1
             )));
         }
+        (Some(k), Some(chosen)) if !split.assignments.iter().any(|a| a.fold == Some(chosen)) => {
+            return Err(Error::invalid(format!(
+                "fold {chosen} of this {k}-fold split holds no group, so claims naming it validation would have \
+                 no validation partition"
+            )));
+        }
+        (None, Some(chosen)) => {
+            // Ignored, it left the caller believing fold `chosen` was validation.
+            return Err(Error::invalid(format!(
+                "fold {chosen} names a fold, but this split has none: it was made with ratios, not k_folds"
+            )));
+        }
+        _ => {}
+    }
+    let leaks = split.leaks();
+    if !leaks.is_empty() {
+        return Err(Error::invalid(format!(
+            "the split places {} in more than one partition, so a claim could record only one of them; it is not \
+             a split to write",
+            repr_list(&leaks)
+        )));
     }
     let mut by_path: IndexMap<&str, &Assignment> = IndexMap::new();
     for assignment in &split.assignments {
@@ -486,6 +539,9 @@ pub fn write_claims(
         claim.check()?;
         planned.push((entry.path.clone(), claim));
     }
+    for (path, _) in &planned {
+        claimable(Path::new(path))?;
+    }
     let mut written = Vec::new();
     for (path, claim) in planned {
         let mut writer = amend(Path::new(&path), None)?;
@@ -498,6 +554,29 @@ pub fn write_claims(
         written.push(path);
     }
     Ok(written)
+}
+
+/// What amending `path` and committing it would refuse, found by reading:
+/// a collection or another major (on opening), a later minor or a profile
+/// this engine does not implement (1.1 §2.3), HDF5 references, and an error
+/// the validator reports at the level a commit checks (§15).
+fn claimable(path: &Path) -> Result<()> {
+    let shown = repr_str(&path.to_string_lossy());
+    let sample = open_sample(path)?;
+    let declared = attrs::get_strs(&sample.root, "medh5_profiles")?.unwrap_or_default();
+    crate::version::require_amendable(&sample.version()?, &declared, &shown)?;
+    ops::refuse_references(&sample.root, "an amendment")?;
+    let report = crate::validate::validate_root(&sample.root, Some(path), "semantic", true)?;
+    if let Some(error) = report.diagnostics.iter().find(|d| d.severity == "error") {
+        return Err(Error::coded(
+            &error.code,
+            format!(
+                "{shown} fails validation, so amending it to claim the split would be refused: {} {}: {}",
+                error.code, error.location, error.message
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// How a split names one manifest entry: its path, or `path::key` for a

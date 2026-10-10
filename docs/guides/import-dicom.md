@@ -84,7 +84,8 @@ makes the split subject-safe.
 
 ```bash
 medh5 dataset index out/ -o cohort.json   # re-scan, so the manifest sees it
-medh5 dataset split cohort.json --group-by group_id   # C204 if a group splits a subject
+medh5 dataset split cohort.json --group-by group_id --write-claims  # C204 if a group splits a subject
+medh5 dataset index out/ -o cohort.json   # re-scan, so the manifest sees the claims
 medh5 dataset check cohort.json           # C202 if the written claims disagree
 ```
 

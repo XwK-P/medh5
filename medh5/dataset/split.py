@@ -15,8 +15,13 @@ Three rules, and they are the whole module:
    with its partition *and the manifest digest it came from*, so a later reader
    can tell a current claim from one that predates a re-split.
 
-Assignment is deterministic given ``(manifest digest, seed, parameters)``: the
-same cohort split twice on two machines produces the same partitions.
+Assignment is deterministic given the manifest's entries, the seed and the
+parameters: the same cohort split twice on two machines produces the same
+partitions.  The manifest *digest* covers less --- sample, subject and group ids
+--- so a split grouped or stratified on another field (``site_id``) also depends
+on that field's values, which the digest does not cover: re-curating them
+changes the split while every claim still matches the digest, and C201 cannot
+see it.  Re-split after changing a field you split on.
 """
 
 from __future__ import annotations
@@ -111,9 +116,10 @@ class Split:
     def empty_folds(self) -> tuple[int, ...]:
         """Folds that were asked for and got no groups.
 
-        `--k-folds 5` over three groups yields three folds, and a cross
-        validation that quietly runs three ways instead of five is not one
-        anybody would notice until they compared results with a colleague.
+        A cross validation that quietly runs three ways instead of five is not
+        one anybody would notice until they compared results with a colleague,
+        so :func:`make_splits` refuses more folds than groups; only a split
+        written before 2.0 has an empty fold.
         """
         return tuple(_core.dataset_split_empty_folds(self._doc()))
 
@@ -130,7 +136,8 @@ class Split:
         return tuple(_core.dataset_split_underfilled(self._doc()))
 
     def leaks(self) -> tuple[str, ...]:
-        """Groups, and entries, that ended up in more than one partition.
+        """Groups, and entries, that ended up in more than one partition ---
+        or, in a k-fold split, in more than one fold.
 
         Structurally impossible here --- a group is assigned once --- so this is
         a self-check, not a feature, and the check a split loaded from a file
@@ -178,10 +185,14 @@ def make_splits(
 ) -> Split:
     """Assign every group in *manifest* to a partition, or to a fold.
 
-    With ``k_folds`` the partitions are ``fold-0 … fold-(k-1)`` recorded as
-    ``holdout`` claims with a ``fold`` number; without it, groups go to
-    ``train``/``val``/``test`` in the given ratios.  Deterministic given the
-    manifest digest, *seed* and the parameters.
+    With ``k_folds`` every group goes to one of folds ``0`` to ``k - 1``,
+    recorded as a ``holdout`` assignment with its ``fold`` number, so
+    ``paths("holdout")`` is the whole cohort and :func:`write_claims` with
+    ``fold=n`` makes fold *n* validation.  Every fold gets a group, so
+    ``k_folds`` above the number of groups is refused, and so are ``ratios``,
+    which a k-fold split has nothing to apply to.  Without ``k_folds``, groups
+    go to ``train``/``val``/``test`` in the given ratios.  Deterministic given
+    the manifest's entries, *seed* and the parameters.
     """
     return Split.from_json(
         _core.dataset_make_splits(
@@ -207,12 +218,16 @@ def write_claims(
 
     With ``k_folds``, ``fold`` selects which fold is the validation set for this
     claim; every other fold becomes ``train``.  Without it the claim is the
-    partition as assigned.
+    partition as assigned, and a ``fold`` is refused rather than ignored.
 
-    Everything the write needs --- a ``fold`` the split has, no sample inside a
-    collection --- is checked before the first file is amended, so a refusal
-    leaves every file as it was.  A fold outside the split's range was not a
-    refusal at all: every file was written as ``train``.
+    Every refusal is met before the first file is amended, so a refused write
+    leaves every file as it was: a ``fold`` the split lacks, a split whose
+    :meth:`~Split.leaks` is not empty, a sample inside a collection, and each
+    file amending would refuse --- a later minor version, an unknown profile,
+    HDF5 references, or a file the validator rejects.  Only a failure while
+    writing, such as a full disk, can stop it part way.  A fold outside the
+    split's range was not a refusal at all: every file was written as
+    ``train``.
 
     Amending rewrites each file, so this is not free --- and it is optional.  A
     split is fully usable as a JSON file; the claim exists for the case where a

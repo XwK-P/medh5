@@ -139,15 +139,6 @@ fn split(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
         if !written.is_empty() {
             ctx.print(format!("wrote split claims into {} file(s)", written.len()));
         }
-        let empty = split.empty_folds();
-        if !empty.is_empty() {
-            ctx.print(format!(
-                "WARNING: fold(s) {} got no groups --- {} group(s) cannot fill {} folds",
-                empty.iter().map(|f| f.to_string()).collect::<Vec<_>>().join(", "),
-                split.assignments.len(),
-                split.k_folds.map(|k| k.to_string()).unwrap_or_else(|| "None".into())
-            ));
-        }
         let underfilled = split.underfilled();
         if !underfilled.is_empty() {
             ctx.print(format!(
@@ -177,8 +168,13 @@ fn stats(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
             })
         });
         if entries.is_empty() {
+            // The manifest records the claims its scan saw; `--write-claims`
+            // writes them into the samples, not into it.
             return Ok(ctx.fail(format!(
-                "no sample claims partition {} of set {} --- run `medh5 dataset split --write-claims` first",
+                "no sample in {} claims partition {} of set {}: a manifest holds the claims the files carried when \
+                 it was indexed, so after `medh5 dataset split --write-claims` re-run `medh5 dataset index` to \
+                 record them",
+                req_str(m, "manifest"),
                 repr_str(partition),
                 repr_str(set_id)
             )));

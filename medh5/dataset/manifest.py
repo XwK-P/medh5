@@ -225,12 +225,16 @@ class Manifest:
         paths, sizes, mtimes, the generating version, and deliberately **not**
         ``content_id``.
 
-        Membership and grouping are exactly what a split is computed from, so
-        this is what a split claim should be checkable against.  Including
-        content would make the digest unusable for that: writing a claim into a
-        file changes the file's content, so every claim would be stale the
-        instant it was written.  Content drift is a different question, and
-        ``dataset check`` answers it separately (C401, and ``--deep``).
+        Membership and grouping by ``group_id`` are what a default split is
+        computed from, so this is what a split claim should be checkable
+        against.  A split grouped or stratified on another field also depends
+        on that field's values, which this does not cover: re-curating them
+        changes the split and not the digest, so re-split after changing a
+        field you split on.  Including content would make the digest unusable
+        for claims: writing a claim into a file changes the file's content, so
+        every claim would be stale the instant it was written.  Content drift
+        is a different question, and ``dataset check`` answers it separately
+        (C401, and ``--deep``).
         """
         return str(_core.dataset_manifest_sha256(self._doc()))
 

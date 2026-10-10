@@ -379,6 +379,8 @@ impl Manifest {
     /// sizes, mtimes, and deliberately not `content_id`: writing a claim into
     /// a file changes its content, so every claim would be stale the instant
     /// it was written.  Content drift is `dataset check`'s question (C401).
+    /// A split grouped or stratified on another field depends on values this
+    /// does not cover, so re-curating them changes the split, not the digest.
     pub fn sha256(&self) -> String {
         use sha2::{Digest, Sha256};
         let mut sorted: Vec<&Entry> = self.entries.iter().collect();

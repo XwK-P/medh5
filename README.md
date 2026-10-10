@@ -181,14 +181,15 @@ medh5 timeline case.medh5              # visits and intervals
 medh5 track case.medh5 --class lesion  # per-lesion volumes across visits
 
 medh5 dataset index studies/ -o cohort.json
-medh5 dataset split cohort.json --group-by group_id --stratify-by site_id
+medh5 dataset split cohort.json --group-by group_id --stratify-by site_id --write-claims
+medh5 dataset index studies/ -o cohort.json  # record the claims just written
 medh5 dataset stats cohort.json --partition train --workers 8
 medh5 dataset check cohort.json --deep
 
 medh5 convert from-dicom /studies out/     # one sample per patient, all visits
 medh5 convert from-nifti case.medh5 --image CT=ct.nii.gz
 medh5 convert from-rtstruct plan.dcm case.medh5 --rasterize
-medh5 migrate old/*.medh5 -o new/ --group-by subject
+medh5 migrate old/*.medh5 -o new/ --group-by subject --subject-key extra.patient_id
 
 medh5 scrub out/*.medh5 --apply --date-shift-days -117
 medh5 pack cohort/*.medh5 -o shard.medh5c

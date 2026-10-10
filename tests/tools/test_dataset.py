@@ -314,17 +314,43 @@ class TestSplits:
         assert folds == {0, 1}
         assert all(a.partition == "holdout" for a in split.assignments)
 
-    def test_more_folds_than_groups_says_so(self, manifest):
-        """A 5-fold CV that quietly runs 4 ways is not noticed until later."""
-        split = make_splits(manifest, k_folds=8, seed=0)
-        assert len(split.assignments) == 4
-        assert split.empty_folds == (4, 5, 6, 7)
+    @pytest.mark.parametrize("k", [5, 10**9])
+    def test_more_folds_than_groups_is_refused(self, manifest, k):
+        """A 5-fold CV that quietly runs 4 ways is not noticed until later ---
+        and listing a billion empty folds took the memory the process had."""
+        with pytest.raises(MEDH5ValidationError, match="at most 4-fold"):
+            make_splits(manifest, k_folds=k, seed=0)
+        assert len(make_splits(manifest, k_folds=4, seed=0).assignments) == 4
 
     def test_enough_groups_fills_every_fold(self, manifest):
         assert make_splits(manifest, k_folds=2, seed=0).empty_folds == ()
 
     def test_a_ratio_split_has_no_folds_to_report(self, manifest):
         assert make_splits(manifest, seed=0).empty_folds == ()
+
+    def test_ratios_do_not_apply_to_folds(self, manifest):
+        """With k_folds the ratios went unused and unchecked into the split."""
+        with pytest.raises(MEDH5ValidationError, match="ratios and k_folds"):
+            make_splits(manifest, k_folds=2, ratios={"train": -1.0, "bogus": 0.5})
+        assert make_splits(manifest, k_folds=2).ratios == {}
+
+    def test_a_group_in_two_folds_is_a_leak(self, manifest):
+        """Every k-fold assignment is `holdout`, so a group or an entry in two
+        folds was in one partition as `leaks()` compared them."""
+        from medh5.dataset.split import Assignment, Split
+
+        split = Split(
+            "cv",
+            manifest.sha256(),
+            [
+                Assignment("g1", "holdout", fold=0, entries=("a.medh5",)),
+                Assignment("g1", "holdout", fold=1, entries=("a.medh5",)),
+                Assignment("g2", "holdout", fold=1, entries=("b.medh5",)),
+            ],
+            k_folds=2,
+        )
+        assert split.leaks() == ("a.medh5", "g1")
+        assert make_splits(manifest, k_folds=2, seed=0).leaks() == ()
 
     def test_k_folds_below_two_is_refused(self, manifest):
         with pytest.raises(MEDH5ValidationError, match="at least 2"):
@@ -466,6 +492,73 @@ class TestSplits:
         split = make_splits(manifest, k_folds=2, seed=0)
         with pytest.raises(MEDH5ValidationError, match="not a fold of this 2-fold"):
             write_claims(split, manifest, fold=fold)
+        assert all(self._claims(entry.path) == [] for entry in manifest)
+
+    def test_S12_3_a_file_amending_would_refuse_stops_the_write_before_it_starts(
+        self, cohort
+    ):
+        """Only the fold and collection membership were checked first: a later
+        minor version, met at the last file, was refused after every file
+        before it had claimed the split."""
+        import h5py
+
+        last = sorted(cohort.glob("*.medh5"))[-1]
+        with h5py.File(last, "r+") as f:
+            f.attrs["medh5_version"] = "1.9"
+        built, failures = scan(cohort)
+        assert not failures
+        with pytest.raises(medh5.errors.MEDH5VersionError, match="1.9"):
+            write_claims(make_splits(built, seed=0), built)
+        assert all(self._claims(entry.path) == [] for entry in built)
+
+    def test_S12_3_a_file_the_validator_rejects_stops_the_write(self, cohort):
+        """A commit refuses to write a file the validator rejects; that was
+        met file by file too."""
+        import h5py
+
+        last = sorted(cohort.glob("*.medh5"))[-1]
+        with h5py.File(last, "r+") as f:
+            doc = json.loads(f["meta"][()])
+            doc["provenance"]["activities"].append(
+                {"id": "ghost-run", "type": "import", "agent": "ghost"}
+            )
+            del f["meta"]
+            f.create_dataset("meta", data=json.dumps(doc))
+        built, failures = scan(cohort)
+        assert not failures
+        with pytest.raises(MEDH5Error, match="fails validation") as exc:
+            write_claims(make_splits(built, seed=0), built)
+        assert exc.value.code == "E605"
+        assert all(self._claims(entry.path) == [] for entry in built)
+
+    def test_a_split_that_leaks_is_not_written(self, manifest):
+        """An entry in two partitions was written as whichever came last."""
+        from medh5.dataset.split import Assignment, Split
+
+        first, second = manifest[0].path, manifest[1].path
+        split = Split(
+            "s",
+            manifest.sha256(),
+            [
+                Assignment("g1", "train", entries=(first, second)),
+                Assignment("g2", "test", entries=(second,)),
+            ],
+        )
+        with pytest.raises(MEDH5ValidationError, match="more than one partition"):
+            write_claims(split, manifest)
+        assert all(self._claims(entry.path) == [] for entry in manifest)
+
+    def test_a_fold_is_not_ignored(self, manifest):
+        """A fold for a ratio split, or one no group is in, was written as if
+        it named the validation set."""
+        from medh5.dataset.split import Split
+
+        with pytest.raises(MEDH5ValidationError, match="has none"):
+            write_claims(make_splits(manifest, seed=0), manifest, fold=0)
+        legacy = make_splits(manifest, k_folds=2, seed=0).to_json()
+        legacy["k_folds"] = 5
+        with pytest.raises(MEDH5ValidationError, match="holds no group"):
+            write_claims(Split.from_json(legacy), manifest, fold=3)
         assert all(self._claims(entry.path) == [] for entry in manifest)
 
     def test_U06_a_refused_write_leaves_every_file_as_it_was(self, cohort):
@@ -865,6 +958,29 @@ class TestCohortCheck:
         finding = next(f for f in report.errors if f.code == "C202")
         assert "family-7" in finding.where
         assert "subj-A" in finding.message and "subj-B" in finding.message
+
+
+class TestCohortWorkflow:
+    """The command sequence the cohort guide documents, end to end."""
+
+    def test_S12_3_the_manifest_records_claims_once_it_is_re_indexed(
+        self, cohort, tmp_path, capsys
+    ):
+        """`--write-claims` writes into the files, not the manifest, so
+        `stats --partition` right after it found no claim --- and told the
+        caller to run the `--write-claims` they had just run."""
+        manifest = str(tmp_path / "cohort.json")
+        index = ["dataset", "index", str(cohort), "-o", manifest]
+        assert main(index) == 0
+        split = ["dataset", "split", manifest, "--k-folds", "2", "--set-id", "cv"]
+        assert main([*split, "--write-claims", "--fold", "0"]) == 0
+        stats = ["dataset", "stats", manifest, "--partition", "train", "--set-id", "cv"]
+        capsys.readouterr()
+        assert main(stats) == 1
+        assert "re-run `medh5 dataset index`" in capsys.readouterr().err
+        assert main(index) == 0
+        assert main(stats) == 0
+        assert main(["dataset", "check", manifest, "--deep"]) == 0
 
 
 class TestF02StatisticsArePhysical:
