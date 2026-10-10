@@ -37,13 +37,19 @@ pub fn check_images(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
             }
         }
         let Some(grid_id) = str_attr(a, "grid")? else { continue };
-        let Some(grids) = grids.as_ref().filter(|g| ops::exists(g, &grid_id)) else {
+        let Some(grids) = grids.as_ref().filter(|g| ops::is_group(g, &grid_id)) else {
             out.push(ctx.err("E101", location, format!("names grid {}, which does not exist", repr_str(&grid_id))));
             continue;
         };
         let gshape = grid_shape(grids, &grid_id)?;
         let dataset = match &image {
-            Node::Group(g) => g.dataset("0")?,
+            Node::Group(g) => match ops::child_dataset(g, "0") {
+                Some(d) => d,
+                None => {
+                    out.push(ctx.err("E105", location, "multiscale image has no level-0 dataset `0` (§4.3)"));
+                    continue;
+                }
+            },
             Node::Dataset(d) => d.clone(),
         };
         let shape: Vec<i64> = dataset.shape().iter().map(|v| *v as i64).collect();
@@ -103,6 +109,7 @@ fn int16_lossless(ds: &hdf5::Dataset) -> Result<bool> {
     Ok(crate::sample::image::lossless_as_int16(&data::read(ds)?))
 }
 
+/// Semantic: every multiscale image against §4.3.
 pub fn check_multiscale(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     let mut out = Vec::new();
     let (Some(node), Some(grids)) = (ops::child_group(&ctx.root, "images"), ops::child_group(&ctx.root, "grids"))
@@ -112,29 +119,114 @@ pub fn check_multiscale(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     for name in ops::members(&node)? {
         let Some(image) = ops::child_group(&node, &name) else { continue };
         let location = format!("/images/{name}");
-        if !attrs::has(&image, "grid_levels") || !attrs::has(&image, "downsample_factors") {
-            out.push(ctx.err("E105", location, "multiscale image needs `grid_levels` and `downsample_factors`"));
-            continue;
+        match check_levels(ctx, &image, &grids, &location) {
+            Ok(found) => out.extend(found),
+            Err(e) => out.push(ctx.failed("E105", location, &e)),
         }
-        let level_ids = strs_attr(&image, "grid_levels")?;
-        if level_ids.iter().any(|g| !ops::exists(&grids, g)) {
-            out.push(ctx.err(
-                "E101",
-                location,
-                format!("grid_levels reference missing grids {}", repr_list(&level_ids)),
-            ));
+    }
+    Ok(out)
+}
+
+/// One multiscale image (§4.3): its declaration, a dataset of its level's
+/// grid's shape for every level, and every level's geometry derived from
+/// level 0's.
+fn check_levels(ctx: &Context, image: &hdf5::Group, grids: &hdf5::Group, location: &str) -> Result<Vec<Diagnostic>> {
+    let mut out = Vec::new();
+    let missing: Vec<&str> =
+        ["levels", "grid_levels", "downsample_factors"].into_iter().filter(|k| !attrs::has(image, k)).collect();
+    if !missing.is_empty() {
+        out.push(ctx.err(
+            "E105",
+            location,
+            format!(
+                "multiscale image needs `levels`, `grid_levels` and `downsample_factors`; missing {}",
+                repr_list(&missing)
+            ),
+        ));
+        return Ok(out);
+    }
+    let level_ids = strs_attr(image, "grid_levels")?;
+    if level_ids.is_empty() {
+        out.push(ctx.err("E105", location, "`grid_levels` names no level, not even level 0"));
+        return Ok(out);
+    }
+    let n = level_ids.len();
+    match attrs::get_i64(image, "levels")? {
+        Some(levels) if levels == n as i64 => {}
+        Some(levels) => out.push(ctx.err(
+            "E105",
+            location,
+            format!("`levels` is {levels}, but `grid_levels` names {n} level grids"),
+        )),
+        None => out.push(ctx.err("E105", location, "`levels` is not an integer")),
+    }
+    let absent: Vec<&String> = level_ids.iter().filter(|g| !ops::is_group(grids, g)).collect();
+    if !absent.is_empty() {
+        out.push(ctx.err("E101", location, format!("grid_levels reference missing grids {}", repr_list(&absent))));
+        return Ok(out);
+    }
+    // Level 0 against the image's own `grid` is the image rule's.
+    let image_grid = str_attr(image, "grid")?;
+    for (i, grid_id) in level_ids.iter().enumerate() {
+        let Some(dataset) = ops::child_dataset(image, &i.to_string()) else {
+            if i > 0 {
+                out.push(ctx.err("E105", location, format!("level {i} has no dataset `{i}`")));
+            }
             continue;
-        }
-        let levels: Vec<crate::geometry::grid::Grid> =
-            level_ids.iter().map(|g| read_grid(&grids.group(g)?, Some(g))).collect::<Result<_>>()?;
-        let refs: Vec<&crate::geometry::grid::Grid> = levels.iter().collect();
-        let factors = match attrs::read(&image, "downsample_factors")?.and_then(|v| v.as_matrix()) {
-            Some((r, c, v)) => Array2::from_shape_vec((r, c), v)?,
-            None => Array2::zeros((0, 0)),
         };
-        for problem in check_pyramid(&levels[0], &refs, &factors, GEOMETRY_RTOL)? {
-            out.push(ctx.err("E105", location.clone(), problem));
+        if i == 0 && image_grid.as_deref() == Some(grid_id.as_str()) {
+            continue;
         }
+        let shape: Vec<i64> = dataset.shape().iter().map(|v| *v as i64).collect();
+        let gshape = grid_shape(grids, grid_id)?;
+        if shape != gshape {
+            out.push(ctx.err(
+                "E202",
+                location,
+                format!(
+                    "level {i} has shape {} != grid {} shape {}",
+                    repr_int_tuple(&shape),
+                    repr_str(grid_id),
+                    repr_int_tuple(&gshape)
+                ),
+            ));
+        }
+    }
+    // A level grid a reader refuses is the grid rule's finding, under its own
+    // code; the pyramid's geometry is checked between readable grids only.
+    let mut levels = Vec::with_capacity(n);
+    for id in &level_ids {
+        match read_grid(&grids.group(id)?, Some(id)) {
+            Ok(grid) => levels.push(grid),
+            Err(_) => return Ok(out),
+        }
+    }
+    let spatial = levels[0].n_spatial();
+    let factors = match attrs::read(image, "downsample_factors")?.and_then(|v| v.as_matrix()) {
+        Some((r, c, v)) if (r, c) == (n, spatial) => Array2::from_shape_vec((r, c), v)?,
+        Some((r, c, _)) => {
+            out.push(ctx.err(
+                "E105",
+                location,
+                format!(
+                    "`downsample_factors` is ({r}, {c}); {n} levels of {spatial} spatial axes need ({n}, {spatial})"
+                ),
+            ));
+            return Ok(out);
+        }
+        None => {
+            out.push(ctx.err("E105", location, "`downsample_factors` must be a 2-D array, one row per level"));
+            return Ok(out);
+        }
+    };
+    if factors.iter().any(|f| !(f.is_finite() && *f > 0.0)) {
+        out.push(ctx.err("E105", location, "downsample factors must be finite and > 0"));
+        return Ok(out);
+    }
+    let refs: Vec<&crate::geometry::grid::Grid> = levels.iter().collect();
+    match check_pyramid(&levels[0], &refs, &factors, GEOMETRY_RTOL) {
+        Ok(problems) => out.extend(problems.into_iter().map(|p| ctx.err("E105", location, p))),
+        Err(e) => out.push(ctx.failed("E105", location, &e)),
     }
     Ok(out)
 }

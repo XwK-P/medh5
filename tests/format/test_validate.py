@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import h5py
 import numpy as np
 import pytest
 
 import medh5
-from medh5.errors import CODES
+from medh5.errors import CODES, MEDH5ValidationError
 from medh5.validate import (
     Diagnostic,
     Report,
@@ -25,6 +27,22 @@ from tests.kits import Numbered
 
 def codes(path, level="semantic"):
     return set(validate_file(path, level=level).codes)
+
+
+def edit_meta(path: Path, edit: Callable[[dict[str, Any]], None]) -> Path:
+    """Rewrite `/meta` through *edit*, as a third-party writer might."""
+    with h5py.File(path, "r+") as handle:
+        raw = handle["meta"][()]
+        document = json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
+        edit(document)
+        del handle["meta"]
+        handle.create_dataset("meta", data=json.dumps(document), dtype=str_dtype())
+    return path
+
+
+def at(report: Report, location: str) -> list[str]:
+    """The codes reported at *location*."""
+    return [d.code for d in report.diagnostics if d.location == location]
 
 
 class TestLevels:
@@ -713,3 +731,152 @@ class TestAtScale:
             assert sample.annotations["seg"].kind == "layers"
             assert sample.root["annotations/seg/data"].shape[0] == 2
         assert "W908" not in validate_file(path).codes
+
+
+def core_sample(path: Path, **grid: Any) -> Path:
+    """One grid and one image on it, nothing else."""
+    with medh5.create(path, codec="portable") as w:
+        w.add_grid("g", shape=(4, 6, 6), spacing=(1.0, 1.0, 1.0), **grid)
+        w.add_image("CT", np.zeros((4, 6, 6), np.int16), grid="g", modality="CT")
+    return path
+
+
+class TestGrids:
+    """§3.1--§3.2: a grid held to every rule a reader holds it to, and to the
+    vocabularies a writer does.  The validator passed grids `open` refused."""
+
+    @pytest.mark.parametrize(
+        ("attribute", "value", "code"),
+        [
+            ("direction", np.eye(2), "E109"),
+            ("spacing", np.array([1.0, 1.0]), "E109"),
+            ("origin", np.array([1.0, 1.0]), "E109"),
+            ("spacing", "abc", "E109"),
+            ("spacing", np.array([np.nan, 1.0, 1.0]), "E104"),
+            ("spacing", np.array([np.inf, 1.0, 1.0]), "E104"),
+            ("origin", np.array([np.nan, 0.0, 0.0]), "E109"),
+            ("shape", np.array([-4, 6, 6]), "E109"),
+            ("units", "cm", "E109"),
+            ("time_units", "h", "E109"),
+            ("patch_hint", np.array([2, 2]), "E109"),
+            ("chunk_hint", np.array([2, 2]), "E109"),
+        ],
+    )
+    def test_S3_2_a_malformed_grid_is_reported(self, tmp_path, attribute, value, code):
+        path = core_sample(tmp_path / "g.medh5")
+        with h5py.File(path, "r+") as handle:
+            handle["grids/g"].attrs[attribute] = value
+        found = at(validate_file(path, level="structural"), "/grids/g")
+        assert found == [code]
+        # Whatever the reader refuses the grid for, the validator reported.
+        try:
+            with medh5.open(path) as sample:
+                sample.grids["g"]
+        except MEDH5ValidationError as refused:
+            assert refused.code in found
+
+    def test_S3_2_a_nan_direction_is_not_orthonormal(self, tmp_path):
+        """`f64::max` drops a NaN, so the residual read 0."""
+        path = core_sample(tmp_path / "g.medh5")
+        with h5py.File(path, "r+") as handle:
+            handle["grids/g"].attrs["direction"] = np.array(
+                [[np.nan, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+            )
+        report = validate_file(path, level="structural")
+        (found,) = [d for d in report.diagnostics if d.location == "/grids/g"]
+        assert found.code == "E102"
+        assert "max residual nan" in found.message
+
+    def test_S3_1_misplaced_spatial_axes_are_E103_alone(self, tmp_path):
+        """Spacing, origin and direction are counted in spatial axes only when
+        `axis_kinds` lays them out validly: which is wrong, the kinds or the
+        extents, is not known."""
+        path = core_sample(tmp_path / "g.medh5")
+        with h5py.File(path, "r+") as handle:
+            handle["grids/g"].attrs["axis_kinds"] = encode_attr(
+                ["spatial", "spatial", "channel"]
+            )
+        assert at(validate_file(path, level="structural"), "/grids/g") == ["E103"]
+
+
+class TestMultiscale:
+    """§4.3: a multiscale image is a dataset and a grid per level, each level's
+    geometry derived from level 0's."""
+
+    @staticmethod
+    def _pyramid(path: Path) -> Path:
+        from medh5.geometry import derive_level_grid
+
+        with medh5.create(path, codec="portable") as w:
+            base = w.add_grid("l0", shape=(8, 12, 12), spacing=(1.0, 1.0, 1.0))
+            level = derive_level_grid(base, (2, 2, 2), "l1")
+            w.add_grid(
+                "l1",
+                shape=level.shape,
+                spacing=level.spacing,
+                origin=level.origin,
+                direction=level.direction,
+            )
+            w.add_pyramid(
+                "CT",
+                [np.zeros((8, 12, 12), np.int16), np.zeros((4, 6, 6), np.int16)],
+                grid_levels=["l0", "l1"],
+                modality="CT",
+            )
+        return path
+
+    def test_S4_3_a_pyramid_is_clean(self, tmp_path):
+        report = validate_file(self._pyramid(tmp_path / "p.medh5"))
+        assert report.ok, report.diagnostics
+        assert "multiscale" in report.profiles
+
+    @pytest.mark.parametrize(
+        ("edit", "code"),
+        [
+            ("no level", "E105"),
+            ("five levels", "E105"),
+            ("no levels attribute", "E105"),
+            ("factors of one dimension", "E105"),
+            ("one factor row", "E105"),
+            ("two factor columns", "E105"),
+            ("no level 1", "E105"),
+            ("no level 0", "E105"),
+            ("a level of another shape", "E202"),
+        ],
+    )
+    def test_S4_3_a_malformed_pyramid_is_reported(self, tmp_path, edit, code):
+        """`grid_levels = []` panicked the validator; the rest validated clean
+        while the reader refused them or read the wrong shape."""
+        path = self._pyramid(tmp_path / "p.medh5")
+        with h5py.File(path, "r+") as handle:
+            image = handle["images/CT"]
+            if edit == "no level":
+                image.attrs["grid_levels"] = np.array([], dtype=str_dtype())
+            elif edit == "five levels":
+                image.attrs["levels"] = 5
+            elif edit == "no levels attribute":
+                del image.attrs["levels"]
+            elif edit == "factors of one dimension":
+                image.attrs["downsample_factors"] = np.array([1.0, 2.0])
+            elif edit == "one factor row":
+                image.attrs["downsample_factors"] = np.array([[1.0, 1.0, 1.0]])
+            elif edit == "two factor columns":
+                image.attrs["downsample_factors"] = np.array([[1.0, 1.0], [2.0, 2.0]])
+            elif edit == "no level 1":
+                del image["1"]
+            elif edit == "no level 0":
+                del image["0"]
+            else:
+                del image["1"]
+                image.create_dataset("1", data=np.zeros((3, 3, 3), np.int16))
+        assert at(validate_file(path), "/images/CT") == [code]
+
+    def test_S4_3_a_level_grid_is_reported_under_its_own_code(self, tmp_path):
+        """A level grid the reader refuses stopped the pyramid rule, reported
+        as E001 at `/`; it is the grid's finding."""
+        path = self._pyramid(tmp_path / "p.medh5")
+        with h5py.File(path, "r+") as handle:
+            handle["grids/l1"].attrs["spacing"] = np.array([2.0, 2.0])
+        report = validate_file(path)
+        assert at(report, "/grids/l1") == ["E109"]
+        assert "E001" not in report.codes

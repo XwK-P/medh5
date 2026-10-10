@@ -37,7 +37,7 @@ use crate::h5::ops::{self, Node, NodeKind};
 use crate::integrity::AttrNameMap;
 use crate::json::py_float;
 use crate::validate::Diagnostic;
-use crate::Result;
+use crate::{Error, Result};
 
 pub use annotations::{
     allowed_dtypes, check_annotations, check_instance_identity, check_references, geometric_dtypes, required_datasets,
@@ -123,6 +123,16 @@ impl Context {
             message: message.into(),
             severity: crate::codes::get(code).map(|c| c.severity.clone()).unwrap_or_else(|| "error".into()),
             level: self.level.clone(),
+        }
+    }
+
+    /// An error met while checking one object, as that object's finding: under
+    /// the error's own code when it has one, `code` otherwise.  A rule that
+    /// reports it and moves on still checks every other object.
+    pub fn failed(&self, code: &str, location: impl Into<String>, error: &Error) -> Diagnostic {
+        match error.code() {
+            Some(own) => self.err(own, location, error.message()),
+            None => self.err(code, location, format!("could not be read: {}", error.python_line())),
         }
     }
 
