@@ -122,7 +122,9 @@ Repository = "https://github.com/XwK-P/medh5"
 Issues = "https://github.com/XwK-P/medh5/issues"
 Changelog = "https://github.com/XwK-P/medh5/blob/main/CHANGELOG.md"
 Documentation = "https://medh5.readthedocs.io/"
-Specification = "https://github.com/XwK-P/medh5/blob/main/docs/spec/medh5-1.0.md"
+# The released documentation's, not main's: PyPI keeps these with the release.
+"Specification 1.0" = "https://medh5.readthedocs.io/en/stable/spec/medh5-1.0/"
+"Specification 1.1" = "https://medh5.readthedocs.io/en/stable/spec/medh5-1.1/"
 
 [project.scripts]
 medh5 = "medh5.cli:main"
