@@ -24,7 +24,7 @@ pub fn dispatch(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
         Some(("split", sub)) => split(sub, ctx),
         Some(("stats", sub)) => stats(sub, ctx),
         Some(("check", sub)) => check_cmd(sub, ctx),
-        _ => return Ok(ctx.fail("usage: medh5 dataset {index|split|stats|check} ... (see --help)")),
+        _ => return Ok(ctx.usage("usage: medh5 dataset {index|split|stats|check} ... (see --help)")),
     };
     match result {
         Err(e) if e.is_medh5() || matches!(e, Error::Io(_) | Error::Value(_)) => Ok(ctx.fail(e.python_str())),

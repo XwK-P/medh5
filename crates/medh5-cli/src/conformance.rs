@@ -32,7 +32,7 @@ pub fn dispatch(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
             Ok(EXIT_OK)
         }
         Some(("score", sub)) => score_cmd(sub, ctx),
-        _ => Ok(ctx.fail("usage: medh5 conformance {list|build|run|publish|score}")),
+        _ => Ok(ctx.usage("usage: medh5 conformance {list|build|run|publish|score}")),
     }
 }
 

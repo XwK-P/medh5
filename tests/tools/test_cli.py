@@ -116,6 +116,31 @@ class TestOutput:
         assert "sample document (§2.4)" in printed
 
 
+class TestUsageErrors:
+    """A usage error exits 2, as documented, whichever rule it breaks; the
+    files named are never opened."""
+
+    @pytest.mark.parametrize("group", ["clinical", "task", "cache"])
+    def test_a_command_of_commands_needs_one(self, capsys, group):
+        code, out = run(capsys, group)
+        assert code == EXIT_USAGE
+        assert f"Usage: medh5 {group}" in out.err
+
+    @pytest.mark.parametrize(
+        "cutoffs", [[], ["--cutoff-us", "0", "--cutoff-hours", "1"]]
+    )
+    def test_a_selection_takes_its_cutoff_once(self, capsys, tmp_path, cutoffs):
+        missing = str(tmp_path / "missing.medh5")
+        assert run(capsys, "clinical", "select", missing, *cutoffs)[0] == EXIT_USAGE
+
+    def test_pseudonymising_ids_needs_apply_and_a_salt(self, capsys, tmp_path):
+        missing = str(tmp_path / "missing.medh5")
+        code, out = run(capsys, "scrub", missing, "--pseudonymise-ids")
+        assert code == EXIT_USAGE and "--apply" in out.err
+        code, out = run(capsys, "scrub", missing, "--pseudonymise-ids", "--apply")
+        assert code == EXIT_USAGE and "needs --salt" in out.err
+
+
 class TestInfo:
     def test_text_output_names_every_section(self, capsys, longitudinal_path):
         code, out = run(capsys, "info", str(longitudinal_path))
@@ -358,9 +383,11 @@ class TestLabels:
         assert code == EXIT_ERROR
         assert "distinct vocabularies" in out.out
 
-    def test_usage_errors(self, capsys, sample_path):
-        assert run(capsys, "labels")[0] == EXIT_ERROR
-        assert run(capsys, "labels", "registry")[0] == EXIT_ERROR
+    def test_usage_errors(self, capsys):
+        for argv in (["labels"], ["labels", "registry"]):
+            code, out = run(capsys, *argv)
+            assert code == EXIT_USAGE, argv
+            assert "Usage: medh5 " + " ".join(argv) in out.err
 
 
 class TestSegAndIndex:
@@ -433,8 +460,8 @@ class TestSegAndIndex:
         assert code == EXIT_ERROR
 
     def test_usage_errors(self, capsys):
-        assert run(capsys, "seg")[0] == EXIT_ERROR
-        assert run(capsys, "index")[0] == EXIT_ERROR
+        assert run(capsys, "seg")[0] == EXIT_USAGE
+        assert run(capsys, "index")[0] == EXIT_USAGE
 
 
 class TestConformanceCommands:
@@ -517,7 +544,7 @@ class TestConformanceCommands:
         assert code == EXIT_ERROR
 
     def test_usage(self, capsys):
-        assert run(capsys, "conformance")[0] == EXIT_ERROR
+        assert run(capsys, "conformance")[0] == EXIT_USAGE
 
 
 class TestFixAndScrub:
@@ -527,8 +554,16 @@ class TestFixAndScrub:
         assert "nothing to fix" in out.out
 
     def test_fix_refuses_to_restamp_without_a_reason(self, capsys, sample_path):
+        before = sample_path.read_bytes()
         code, out = run(capsys, "fix", str(sample_path), "--rewrite-digests")
+        assert code == EXIT_USAGE
+        assert "--reason" in out.err
+        code, out = run(
+            capsys, "fix", str(sample_path), "--rewrite-digests", "--reason", ""
+        )
         assert code == EXIT_ERROR
+        assert "pass a reason" in out.err
+        assert sample_path.read_bytes() == before
 
     def test_fix_restamps_when_told_why(self, capsys, sample_path):
         code, out = run(
@@ -791,7 +826,7 @@ class TestDatasetCommands:
         assert "C402" in {f["code"] for f in json.loads(out.out)["findings"]}
 
     def test_usage(self, capsys):
-        assert run(capsys, "dataset")[0] == EXIT_ERROR
+        assert run(capsys, "dataset")[0] == EXIT_USAGE
 
 
 class TestAnnotationKinds:
@@ -1125,7 +1160,7 @@ class TestRecompressAndBench:
             "-o",
             str(tmp_path / "x.medh5"),
         )
-        assert code == EXIT_ERROR
+        assert code == EXIT_USAGE
         assert "single input" in out.err
 
     def test_recompress_rechunks_only_when_asked(self, capsys, tmp_path, label_set):
@@ -1282,8 +1317,9 @@ class TestConvert:
 
     def test_convert_without_a_subcommand_explains_itself(self, capsys):
         code, printed = run(capsys, "convert")
-        assert code == EXIT_ERROR
-        assert "medh5 convert COMMAND" in printed.err
+        assert code == EXIT_USAGE
+        assert "Usage: medh5 convert" in printed.err
+        assert "from-nifti" in printed.err
 
     def test_from_nnunet_and_to_nnunet(self, capsys, tmp_path):
         nib = pytest.importorskip("nibabel")

@@ -60,7 +60,7 @@ pub fn parsed_args(command: &clap::Command, m: &ArgMatches) -> Value {
 
 pub fn convert(argv: &[String], m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let Some((name, sub)) = m.subcommand() else {
-        return Ok(ctx.fail("usage: medh5 convert COMMAND ... (see --help)"));
+        return Ok(ctx.usage("usage: medh5 convert COMMAND ... (see --help)"));
     };
     let root = app::command();
     let command = root

@@ -20,7 +20,7 @@ fn recompress_cmd(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let paths = get_paths(m, "paths");
     let out = get_str(m, "out");
     if out.is_some() && paths.len() > 1 {
-        return Ok(ctx.fail("--out takes a single input file"));
+        return Ok(ctx.usage("--out takes a single input file"));
     }
     let profile = req_str(m, "profile");
     let mut results = Vec::new();

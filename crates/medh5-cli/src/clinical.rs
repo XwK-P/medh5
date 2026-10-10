@@ -34,9 +34,9 @@ pub fn dispatch(name: &str, m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
         ("task", Some(("preflight", sub))) => task_preflight(sub, ctx),
         ("task", Some(("reconcile", sub))) => task_reconcile(sub, ctx),
         ("cache", Some(("validate", sub))) => cache_validate(sub, ctx),
-        ("clinical", _) => return Ok(ctx.fail("usage: medh5 clinical {show|select|export|augment|strip}")),
-        ("task", _) => return Ok(ctx.fail("usage: medh5 task {validate|preflight|reconcile}")),
-        _ => return Ok(ctx.fail("usage: medh5 cache {validate}")),
+        ("clinical", _) => return Ok(ctx.usage("usage: medh5 clinical {show|select|export|augment|strip}")),
+        ("task", _) => return Ok(ctx.usage("usage: medh5 task {validate|preflight|reconcile}")),
+        _ => return Ok(ctx.usage("usage: medh5 cache {validate}")),
     };
     match result {
         Err(e) if e.is_medh5() || matches!(e, Error::Io(_) | Error::Value(_) | Error::Key(_)) => {
@@ -191,7 +191,7 @@ fn select_cmd(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let cutoff = match (get_i64(m, "cutoff_us"), get_f64(m, "cutoff_hours")) {
         (Some(us), None) => us,
         (None, Some(h)) => (h * HOUR as f64).round() as i64,
-        _ => return Ok(ctx.fail("give the cutoff once: --cutoff-us or --cutoff-hours")),
+        _ => return Ok(ctx.usage("give the cutoff once: --cutoff-us or --cutoff-hours")),
     };
     let policy = policy_of(m)?;
     let links: Vec<(usize, &Link)> = clinical.links.iter().map(|l| (0, l)).collect();

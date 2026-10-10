@@ -22,12 +22,12 @@ pub fn dispatch(name: &str, m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
         return match m.subcommand() {
             Some(("stats", sub)) => stats(sub, ctx),
             Some(("convert", sub)) => convert(sub, ctx),
-            _ => Ok(ctx.fail("usage: medh5 seg {stats|convert}")),
+            _ => Ok(ctx.usage("usage: medh5 seg {stats|convert}")),
         };
     }
     match m.subcommand() {
         Some(("build", sub)) => index_build(sub, ctx),
-        _ => Ok(ctx.fail("usage: medh5 index build PATH...")),
+        _ => Ok(ctx.usage("usage: medh5 index build PATH...")),
     }
 }
 

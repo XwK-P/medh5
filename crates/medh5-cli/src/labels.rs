@@ -16,7 +16,7 @@ pub fn dispatch(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
         Some(("show", sub)) => show(sub, ctx),
         Some(("check", sub)) => check(sub, ctx),
         Some(("registry", sub)) => registry_cmd(sub, ctx),
-        _ => Ok(ctx.fail("usage: medh5 labels {show|check|registry}")),
+        _ => Ok(ctx.usage("usage: medh5 labels {show|check|registry}")),
     }
 }
 
@@ -104,7 +104,7 @@ fn check(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
 
 fn registry_cmd(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let Some(("list", sub)) = m.subcommand() else {
-        return Ok(ctx.fail("usage: medh5 labels registry list"));
+        return Ok(ctx.usage("usage: medh5 labels registry list"));
     };
     let described = registry::describe()?;
     if flag(sub, "json") {

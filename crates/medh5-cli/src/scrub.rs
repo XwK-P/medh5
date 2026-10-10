@@ -11,8 +11,13 @@ use crate::common::*;
 
 pub fn scrub(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let apply_changes = flag(m, "apply_changes");
-    if flag(m, "pseudonymise_ids") && !apply_changes {
-        return Ok(ctx.fail("--pseudonymise-ids changes the file, so it needs --apply"));
+    // The grammar holds `--pseudonymise-ids` to `--apply`; a salt it cannot
+    // require, since `--salt` defaults to none.
+    if flag(m, "pseudonymise_ids") && req_str(m, "salt").is_empty() {
+        return Ok(ctx.usage(
+            "--pseudonymise-ids needs --salt: a sample or subject id is usually a record number, and an unsalted \
+             hash of one is reversed by hashing every record number",
+        ));
     }
     let options = ApplyOptions {
         profile: req_str(m, "profile").to_string(),

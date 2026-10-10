@@ -5,7 +5,7 @@
 //! defaults, the same `--flag` spellings (and, as `argparse` allowed, any
 //! unambiguous prefix of a long flag).
 
-use clap::{Arg, ArgAction, Command};
+use clap::{Arg, ArgAction, ArgGroup, Command};
 
 use medh5::annotations::encode::TRANSCODABLE;
 use medh5::collection::SUFFIX;
@@ -70,8 +70,14 @@ fn out_required(help: impl Into<String>) -> Arg {
     Arg::new("out").short('o').long("out").value_name("OUT").required(true).help(help.into())
 }
 
+/// A command of commands: without one, its help and a usage error.
 fn group(name: &'static str, help: &'static str) -> Command {
-    Command::new(name).about(help).subcommand_value_name("COMMAND").subcommand_help_heading("Commands")
+    Command::new(name)
+        .about(help)
+        .subcommand_value_name("COMMAND")
+        .subcommand_help_heading("Commands")
+        .subcommand_required(true)
+        .arg_required_else_help(true)
 }
 
 fn report_args(cmd: Command) -> Command {
@@ -143,7 +149,10 @@ fn inspect() -> Vec<Command> {
             .about("rebuild derived data; restamp digests")
             .arg(paths("one or more files"))
             .arg(flag("rebuild_index", "rebuild-index", "recompute stale sampling indices (§14.3)"))
-            .arg(flag("rewrite_digests", "rewrite-digests", "restamp digests over the current bytes --- see --reason"))
+            .arg(
+                flag("rewrite_digests", "rewrite-digests", "restamp digests over the current bytes --- see --reason")
+                    .requires("reason"),
+            )
             .arg(opt("reason", "reason", "why the digests are being rewritten; recorded in the file"))
             .arg(opt("performed_by", "by", "who is making the change; recorded in provenance"))
             .arg(json()),
@@ -280,12 +289,15 @@ fn curation() -> Vec<Command> {
             ))
             .arg(opt("salt", "salt", "salt the UID pseudonyms; keep it to reproduce the mapping").default_value(""))
             .arg(opt("performed_by", "by", "who performed the de-identification; recorded in the file"))
-            .arg(flag(
-                "pseudonymise_ids",
-                "pseudonymise-ids",
-                "with --apply and --salt: replace sample_id and subject_id with salted stable pseudonyms (they are \
-                 often the record number)",
-            ))
+            .arg(
+                flag(
+                    "pseudonymise_ids",
+                    "pseudonymise-ids",
+                    "with --apply and --salt: replace sample_id and subject_id with salted stable pseudonyms (they \
+                     are often the record number)",
+                )
+                .requires("apply_changes"),
+            )
             .arg(json()),
         Command::new("splits")
             .about("audit split claims across files (§12.3)")
@@ -616,6 +628,7 @@ fn clinical() -> Command {
             sample(Command::new("select").about("what strict prospective selection admits at a cutoff"))
                 .arg(int("cutoff_us", "cutoff-us", "the cutoff, in microseconds on the subject clock"))
                 .arg(float("cutoff_hours", "cutoff-hours", "the cutoff, in hours on the subject clock"))
+                .group(ArgGroup::new("cutoff").args(["cutoff_us", "cutoff_hours"]).required(true))
                 .arg(
                     opt("policy", "policy", "strict_prospective (default) or latest_provable")
                         .value_parser(medh5::clinical::POLICIES),

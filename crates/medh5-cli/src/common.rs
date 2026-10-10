@@ -98,6 +98,13 @@ impl<'a> Ctx<'a> {
         EXIT_ERROR
     }
 
+    /// `medh5: message` on stderr, and the usage-error exit code: for a
+    /// combination of arguments the grammar cannot refuse by itself.
+    pub fn usage(&mut self, message: impl AsRef<str>) -> i32 {
+        self.eprint(format!("medh5: {}", message.as_ref()));
+        EXIT_USAGE
+    }
+
     pub fn flush(&mut self) {
         if !self.broken_pipe && self.write_error.is_none() {
             let result = self.out.flush();

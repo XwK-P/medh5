@@ -30,7 +30,7 @@ from medh5.cache import (
     open_cache,
     validate_cache,
 )
-from medh5.cli import EXIT_ERROR, EXIT_OK, main
+from medh5.cli import EXIT_ERROR, EXIT_OK, EXIT_USAGE, main
 from medh5.clinical import DAY, HOUR, Clock, Document, Event, Link
 from medh5.collection import pack
 from medh5.errors import MEDH5ValidationError
@@ -1648,7 +1648,7 @@ class TestCommandLine:
             main(["clinical", "select", path, "--cutoff-us", "0", "--json"]) == EXIT_OK
         )
         assert json.loads(capsys.readouterr().out)["status"] == "certified"
-        assert main(["clinical", "select", path]) == EXIT_ERROR
+        assert main(["clinical", "select", path]) == EXIT_USAGE
         capsys.readouterr()
         records = tmp_path / "records.json"
         assert main(["clinical", "export", path, "--out", str(records)]) == EXIT_OK
