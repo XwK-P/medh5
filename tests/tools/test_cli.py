@@ -327,7 +327,33 @@ class TestLongitudinal:
     def test_track_without_instances(self, capsys, longitudinal_path):
         code, out = run(capsys, "track", str(longitudinal_path))
         assert code == EXIT_OK
-        assert "no instance-carrying" in out.out
+        assert "no instance-carrying annotations in this sample" in out.out
+
+    def test_track_says_why_the_instances_it_found_do_not_join(
+        self, capsys, tmp_path, label_set
+    ):
+        """It said there were no instance-carrying annotations, then listed
+        the ones it skipped."""
+        from tests.helpers import SHAPE
+
+        path = tmp_path / "kp.medh5"
+        with medh5.create(path, codec="portable") as w:
+            w.add_timepoint("tp0")
+            w.label_set(label_set)
+            w.add_grid("g", shape=SHAPE, spacing=(1.0, 1.0, 1.0), timepoint="tp0")
+            w.add_image("CT", np.zeros(SHAPE, np.int16), grid="g", modality="CT")
+            w.add_keypoints(
+                "kp",
+                np.zeros((1, 2, 3)),
+                keypoint_classes=["lesion", "lesion"],
+                class_ids=["lesion"],
+                grid="g",
+                instance_ids=[7],
+            )
+        code, out = run(capsys, "track", str(path))
+        assert code == EXIT_OK
+        assert "no instance-carrying annotation in this sample joins" in out.out
+        assert "skipped 'kp'" in out.out
 
     def test_track_reports_persisted_resolved_and_new(
         self, capsys, tmp_path, label_set

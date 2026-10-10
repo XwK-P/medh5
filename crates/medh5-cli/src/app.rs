@@ -368,7 +368,7 @@ fn dataset() -> Command {
                     append("annotations", "annotation", "annotation ids to include; repeatable")
                         .value_name("ANNOTATION"),
                 )
-                .arg(int("workers", "workers", "processes to read with").default_value("1"))
+                .arg(int("workers", "workers", "threads to read with").default_value("1"))
                 .arg(
                     int("stride", "stride", "read every Nth slab along the first axis (approximate, opt-in)")
                         .default_value("1"),
@@ -385,7 +385,7 @@ fn dataset() -> Command {
         )
         .subcommand(
             Command::new("check")
-                .about("cross-file consistency (C1xx codes)")
+                .about("cross-file consistency (C1xx–C5xx codes)")
                 .arg(positional("manifest", "the manifest to check"))
                 .arg(opt("set_id", "set-id", "which split's claims to cross-check"))
                 .arg(flag("deep", "deep", "re-read each content_id instead of trusting size and mtime"))

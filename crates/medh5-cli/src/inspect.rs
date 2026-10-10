@@ -601,7 +601,12 @@ fn track(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
             return Ok(EXIT_OK);
         }
         if tracking.tracks.is_empty() {
-            ctx.print("no instance-carrying annotations in this sample");
+            // The skipped ones carry instance ids, of a kind that does not join.
+            ctx.print(if tracking.skipped.is_empty() {
+                "no instance-carrying annotations in this sample"
+            } else {
+                "no instance-carrying annotation in this sample joins across visits"
+            });
             print_skipped(&tracking, ctx);
             return Ok(EXIT_OK);
         }
