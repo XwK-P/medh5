@@ -20,6 +20,7 @@ import shutil
 import sysconfig
 import tarfile
 from importlib.metadata import distribution
+from pathlib import Path
 from types import ModuleType
 
 import pytest
@@ -82,6 +83,23 @@ def _jobs(workflow: str) -> dict[str, str]:
     body = workflow.split("\njobs:\n", 1)[1]
     parts = re.split(r"^  ([\w-]+):\n", body, flags=re.M)
     return dict(zip(parts[1::2], parts[2::2], strict=True))
+
+
+def _extras() -> dict[str, str]:
+    """`pyproject.toml`'s extras by name, each with the text of its list."""
+    text = PYPROJECT.read_text(encoding="utf-8")
+    section = text.split("[project.optional-dependencies]\n", 1)[1]
+    section = section.split("\n[", 1)[0]
+    return dict(re.findall(r"^([\w-]+) = \[\n(.*?)^\]", section, re.M | re.S))
+
+
+def _package_source() -> str:
+    """The installed package's Python source (the sdist job tests the wheel
+    with the checkout's `medh5/` removed)."""
+    package = Path(medh5.__file__).parent
+    return "\n".join(
+        path.read_text(encoding="utf-8") for path in sorted(package.rglob("*.py"))
+    )
 
 
 def test_the_wheel_version_and_the_stamped_version_agree():
@@ -435,6 +453,31 @@ class TestDistribution:
         sums = {brew.archive("2.0.0", t): "0" * 64 for t in brew.TARGETS.values()}
         formula = brew.formula("2.0.0", sums, "XwK-P/medh5")
         assert f"  license all_of: {json.dumps(declared)}\n" in formula
+
+    def test_every_extra_is_one_the_package_asks_for(self):
+        """An extra promises that something in the package needs it, so the
+        package names each where it does --- `require(..., extra=...)`, or an
+        install hint --- and names no other.  `itk` (SimpleITK) was named
+        nowhere: CI installed it, and nothing imported it."""
+        declared = set(_extras()) - {"dev"}
+        source = _package_source()
+        named = set(re.findall(r'extra="([\w-]+)"', source))
+        for hint in re.findall(r"medh5\[([\w,-]+)\]", source):
+            named.update(hint.split(","))
+        assert declared - named == set(), "extras nothing in the package needs"
+        assert named - declared == set(), "extras the package names but lacks"
+
+    def test_the_dicom_extras_carry_what_the_writers_call(self):
+        """The RTSTRUCT writer asks `save_as` to enforce the DICOM file
+        format, a keyword pydicom 3.0 added; highdicom supports pydicom 3 from
+        0.23.  The floors were pydicom 2.4 and highdicom 0.22, where writing
+        an RTSTRUCT is a `TypeError`."""
+        rtstruct = Path(medh5.__file__).parent / "io" / "rtstruct.py"
+        assert "enforce_file_format=" in rtstruct.read_text(encoding="utf-8")
+        extras = _extras()
+        for extra in ("dicom", "dicomseg"):
+            assert re.findall(r'"pydicom([^"]*)"', extras[extra]) == [">=3.0"]
+        assert re.findall(r'"highdicom([^"]*)"', extras["dicomseg"]) == [">=0.23"]
 
     def test_R05_a_published_crate_is_skipped_only_when_identical(self):
         """A re-run after a partial release skips a crate already on crates.io
