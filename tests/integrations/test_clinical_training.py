@@ -27,6 +27,7 @@ from medh5.cache import (  # noqa: E402
     CacheWriter,
     HashingTextEncoder,
     build_document_cache,
+    validate_cache,
 )
 from medh5.clinical import DAY, HOUR  # noqa: E402
 from medh5.errors import MEDH5ValidationError  # noqa: E402
@@ -165,6 +166,68 @@ class TestWorkedExample:
         with pytest.raises(MEDH5ValidationError) as caught:
             ClinicalTaskDataset(task, partition="train", row_features=path)
         assert caught.value.code == "T406"
+
+    def test_N11_a_cache_replaced_after_validation_is_refused(
+        self, worked: dict[str, Any], tmp_path: Path
+    ):
+        """Construction validated a cache and kept only its path; the first
+        read, a worker and an unpickled copy opened whatever the path named by
+        then, and a replacement --- valid on its own --- served its features
+        with this row's image (N11 of the round-3 audit).  Every handle is held
+        to the validated manifest's checksum; the same manifest rebuilt is the
+        same cache."""
+        import pickle
+
+        task = TaskManifest.load(worked["task"])
+        report = task.preflight()
+
+        def build(path: Path, scale: float) -> None:
+            with CacheWriter(
+                path,
+                level="patient",
+                encoder={"name": "fixture", "revision": "1"},
+                output={"dtype": "float32", "shape": [3]},
+                task=task,
+            ) as w:
+                for row in report.eligible():
+                    w.add(
+                        row.row_id.replace("@", "_"),
+                        np.full(3, scale * row.cutoff_us / DAY, np.float32),
+                        sources=list(row.sources),
+                        row_id=row.row_id,
+                        row_fingerprint=row.fingerprint,
+                        cutoff_us=row.cutoff_us,
+                        event_versions=[e.event_id for e in row.events],
+                    )
+
+        path, staged = tmp_path / "rows.medh5cache", tmp_path / "staged.medh5cache"
+        build(path, 1.0)
+        # A rebuild that writes the same manifest is the cache validated.
+        same = ClinicalTaskDataset(task, partition="train", row_features=path)
+        build(staged, 1.0)
+        os.replace(staged, path)
+        first = same[0]["row_feature"]
+        assert torch.equal(pickle.loads(pickle.dumps(same))[0]["row_feature"], first)
+        del same  # its handle, which Windows would not let a replace pass
+        # A cache valid for this task, but not the one validated.
+        replaced = ClinicalTaskDataset(task, partition="train", row_features=path)
+        shipped = pickle.dumps(replaced)
+        build(staged, 7.0)
+        assert validate_cache(staged, base=task.base, task=task).ok
+        os.replace(staged, path)
+        for ds in (replaced, pickle.loads(shipped)):
+            with pytest.raises(MEDH5ValidationError, match="not the cache") as caught:
+                ds[0]
+            assert caught.value.code == "T404"
+        if os.name != "nt":  # Windows cannot replace a file another handle holds
+            build(staged, 1.0)
+            os.replace(staged, path)
+            reading = ClinicalTaskDataset(task, partition="train", row_features=path)
+            held = reading[0]["row_feature"]
+            build(staged, 7.0)
+            os.replace(staged, path)
+            # The handle that was checked keeps serving what was checked.
+            assert torch.equal(reading[0]["row_feature"], held)
 
     def test_S7_3_vocabularies_are_fitted_on_the_training_partition(
         self, worked: dict[str, Any], tmp_path: Path
@@ -628,7 +691,9 @@ class TestHandles:
         task.add_subject("P-01", [SourceRef.pin(a, uri="a.medh5")])
         path = tmp_path / "c.medh5cache"
         build_document_cache(task, path, HashingTextEncoder(dim=4))
-        lazy = _LazyCache(path)
+        with FeatureCache.open(path) as cache:
+            digest = cache.manifest_digest
+        lazy = _LazyCache(path, digest=digest, level="event")
         assert isinstance(lazy.get(), FeatureCache)
         pid = os.fork()
         if pid == 0:  # pragma: no cover - the child's exit code is the assertion
@@ -640,6 +705,16 @@ class TestHandles:
         _, status = os.waitpid(pid, 0)
         assert os.WEXITSTATUS(status) == 0
         assert lazy.get().path == str(path)  # the parent's handle still works
+
+
+def test_OBS01_ages_do_not_wrap_at_the_ends_of_the_clock():
+    """An age was an int64 difference, which wrapped for timestamps near the
+    ends of the clock (OBS-01 of the round-3 audit)."""
+    from medh5.torch.clinical import _hours_before
+
+    ages = _hours_before(2**62, np.array([-(2**62), 2**62 - HOUR], dtype=np.int64))
+    assert ages[0] == pytest.approx(2.0**63 / HOUR) and ages[0] > 0
+    assert ages[1] == pytest.approx(1.0)
 
 
 class TestExamples:

@@ -71,7 +71,13 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
-from medh5.cache import FeatureCache, fitted_on, fitted_on_mismatches, validate_cache
+from medh5.cache import (
+    CacheReport,
+    FeatureCache,
+    fitted_on,
+    fitted_on_mismatches,
+    validate_cache,
+)
 from medh5.clinical import COMPARATORS, EVENT_KINDS, HOUR, Event
 from medh5.errors import MEDH5ValidationError
 from medh5.sample import Sample
@@ -328,27 +334,51 @@ def _require_preflight_of(task: TaskManifest, report: Preflight) -> None:
         )
 
 
-def _require_level(path: PathLike, level: str, role: str) -> None:
-    """A cache serves the role its level answers (T404): an event-level cache
-    encodes event versions any row may read; a patient-level one, one row's
-    whole history at its cutoff, which no other row may read."""
-    with FeatureCache.open(path) as cache:
-        found = cache.level
-    if found != level:
+def _admitted_cache(
+    path: PathLike, checked: CacheReport, level: str, role: str, what: str
+) -> _LazyCache:
+    """The cache *checked* validated, at the level *role* reads, to be opened
+    where it is read (T404 otherwise).
+
+    An event-level cache encodes event versions any row may read; a
+    patient-level one, one row's whole history at its cutoff, which no other
+    row may read.  The level is the validated cache's own, and so is what is
+    read later: the handle is bound to its manifest checksum (§8).
+    """
+    if checked.level is not None and checked.level != level:
         raise MEDH5ValidationError(
             f"{role}= takes a cache of level {level!r}; {os.fspath(path)!r} is "
-            f"of level {found!r}",
+            f"of level {checked.level!r}",
             "T404",
         )
+    if not checked.ok:
+        raise MEDH5ValidationError(
+            f"the {what} cache does not validate: {checked.findings[0]}",
+            checked.findings[0].code,
+        )
+    assert checked.manifest_digest is not None  # it opened, so it validated
+    return _LazyCache(path, digest=checked.manifest_digest, level=level)
 
 
 class _LazyCache:
-    """A feature cache opened in the process that reads it (§14.4)."""
+    """A feature cache opened in the process that reads it (§14.4) --- the
+    one that was validated, and no other.
 
-    __slots__ = ("_cache", "_pid", "path")
+    A path names a file, not a cache.  Construction validated one cache and
+    closed it; the first read, a worker and an unpickled copy each opened
+    whatever the path named by then, and a cache replaced in between --- valid
+    for another patient's row of the same id --- served its features with
+    this patient's image (N11 of the round-3 audit).  Every handle is checked
+    against the validated manifest's checksum, on the handle that then serves
+    the features; a rebuild that writes the same manifest is the same cache.
+    """
 
-    def __init__(self, path: PathLike) -> None:
+    __slots__ = ("_cache", "_pid", "digest", "level", "path")
+
+    def __init__(self, path: PathLike, *, digest: str, level: str) -> None:
         self.path = os.fspath(path)
+        self.digest = digest
+        self.level = level
         self._cache: FeatureCache | None = None
         self._pid = os.getpid()
 
@@ -359,14 +389,27 @@ class _LazyCache:
             self._cache = None
             self._pid = os.getpid()
         if self._cache is None:
-            self._cache = FeatureCache.open(self.path)
+            cache = FeatureCache.open(self.path)
+            found = cache.manifest_digest
+            if found != self.digest or cache.level != self.level:
+                cache.close()
+                raise MEDH5ValidationError(
+                    f"{self.path!r} is not the cache this dataset validated: its "
+                    f"manifest is {found}, the validated one {self.digest}. It "
+                    "was replaced or rebuilt since --- build the dataset again "
+                    "to validate the new one",
+                    "T404",
+                )
+            self._cache = cache
         return self._cache
 
     def __getstate__(self) -> dict[str, Any]:
-        return {"path": self.path}
+        return {"path": self.path, "digest": self.digest, "level": self.level}
 
     def __setstate__(self, state: Mapping[str, Any]) -> None:
         self.path = state["path"]
+        self.digest = state["digest"]
+        self.level = state["level"]
         self._cache = None
         self._pid = os.getpid()
 
@@ -445,19 +488,15 @@ class ClinicalTaskDataset(_DatasetBase):  # type: ignore[misc,valid-type]
         self._encoder: Any = None
         if documents is not None:
             if isinstance(documents, (str, os.PathLike)):
-                _require_level(documents, "event", "documents")
                 # With the task, so a feature fitted on another split is
                 # refused (T405); an event-level cache has no row entries, so
                 # the rows are not re-checked.
                 checked = validate_cache(
                     documents, base=self.base, task=self.task, check_rows=False
                 )
-                if not checked.ok:
-                    raise MEDH5ValidationError(
-                        f"the document cache does not validate: {checked.findings[0]}",
-                        checked.findings[0].code,
-                    )
-                self._documents = _LazyCache(documents)
+                self._documents = _admitted_cache(
+                    documents, checked, "event", "documents", "document"
+                )
             else:
                 self._encoder = documents
         self._vocabularies: dict[
@@ -471,14 +510,10 @@ class ClinicalTaskDataset(_DatasetBase):  # type: ignore[misc,valid-type]
         ] = {}
         self._rows_cache: _LazyCache | None = None
         if row_features is not None:
-            _require_level(row_features, "patient", "row_features")
             checked = validate_cache(row_features, base=self.base, task=self.task)
-            if not checked.ok:
-                raise MEDH5ValidationError(
-                    f"the row-feature cache does not validate: {checked.findings[0]}",
-                    checked.findings[0].code,
-                )
-            self._rows_cache = _LazyCache(row_features)
+            self._rows_cache = _admitted_cache(
+                row_features, checked, "patient", "row_features", "row-feature"
+            )
 
     def __len__(self) -> int:
         return len(self.rows)
@@ -862,9 +897,26 @@ def _ages(
     ``[:, 0]`` the least, ``[:, 1]`` the most; zeros where unknown."""
     bounds = subject.events.column(name)[k]
     known = np.asarray(subject.events.column(f"{name}_known")[k], dtype=bool)
-    ages = np.stack([cutoff_us - bounds[:, 1], cutoff_us - bounds[:, 0]], axis=1) / HOUR
+    ages = np.stack(
+        [
+            _hours_before(cutoff_us, bounds[:, 1]),
+            _hours_before(cutoff_us, bounds[:, 0]),
+        ],
+        axis=1,
+    )
     ages[~known] = 0.0
     return ages.astype(np.float32).reshape(-1, 2), known
+
+
+def _hours_before(cutoff_us: int, times: npt.ArrayLike) -> npt.NDArray[np.float64]:
+    """Hours from each of *times* to the cutoff, in float64.
+
+    An ``int64`` difference of two timestamps near the ends of the clock
+    wrapped: a span of 584,000 years read as a small negative age (OBS-01 of
+    the round-3 audit).  A double cannot wrap, and loses only digits no
+    float32 age keeps.
+    """
+    return (float(cutoff_us) - np.asarray(times, dtype=np.float64)) / HOUR
 
 
 def _present(column: Packed | None, k: npt.NDArray[np.int64]) -> npt.NDArray[np.bool_]:

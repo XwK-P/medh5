@@ -510,6 +510,14 @@ pub struct CacheReport {
     pub path: String,
     pub entries: usize,
     pub findings: Vec<Finding>,
+    /// The manifest checksum of the cache validated, or `None` when it could
+    /// not be opened: what a reader that opens the file again checks it is
+    /// reading (§8).  A path names a file, not a cache --- one replaced after
+    /// it was validated paired a patient's image with another patient's
+    /// features (N11 of the round-3 audit).
+    pub manifest_digest: Option<String>,
+    /// The level of the cache validated.
+    pub level: Option<String>,
 }
 
 impl CacheReport {
@@ -543,6 +551,8 @@ impl CacheReport {
             "stale": self.stale(),
             "corrupt": self.corrupt(),
             "findings": self.findings.iter().map(Finding::to_json).collect::<Vec<_>>(),
+            "manifest_digest": self.manifest_digest,
+            "level": self.level,
         })
     }
 }
@@ -567,6 +577,8 @@ pub fn validate_cache(
         }
     };
     report.entries = cache.entries.len();
+    report.manifest_digest = Some(cache.manifest_digest.clone());
+    report.level = Some(cache.header.level.clone());
     for entry in &cache.entries {
         if let Err(e) = cache.get(&entry.entry_id) {
             report.findings.push(Finding::new(e.code().unwrap_or("T402"), &entry.entry_id, e.message()));

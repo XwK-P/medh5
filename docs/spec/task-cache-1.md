@@ -360,6 +360,11 @@ Given a task (and its preflight), validation also checks that the cache belongs 
 
 A stale or unverifiable cache is rejected and rebuilt; it never redefines or invalidates the source.
 
+A verdict is about the bytes validated. A reader that admits a cache by validating it reads that
+cache only while its `manifest_digest` is the one validated, compared whenever it opens the file
+again --- a first read, a forked worker, an unpickled dataset --- and refuses another (**T404**):
+a cache rebuilt at the same path for another task is otherwise read under the first one's verdict.
+
 ## 9. Finding codes
 
 <!--@companion-codes-->

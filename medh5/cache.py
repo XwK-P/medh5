@@ -337,6 +337,12 @@ class CacheReport:
     path: str
     entries: int
     findings: tuple[Finding, ...]
+    manifest_digest: str | None = None
+    """The manifest checksum of the cache validated (``None`` when it could
+    not be opened): what a reader that opens the file again checks it reads
+    (§8)."""
+    level: str | None = None
+    """The level of the cache validated."""
 
     @property
     def ok(self) -> bool:
@@ -361,6 +367,8 @@ class CacheReport:
             str(doc["path"]),
             int(doc["entries"]),
             tuple(Finding.from_json(f) for f in doc["findings"]),
+            doc.get("manifest_digest"),
+            doc.get("level"),
         )
 
 
