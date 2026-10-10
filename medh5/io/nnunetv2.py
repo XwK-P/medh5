@@ -171,6 +171,7 @@ def from_nnunetv2(
         {"cases": len(wanted)},
     )
 
+    unitless: list[str] = []
     for case in wanted:
         images: dict[str, npt.NDArray[Any]] = {}
         rescales: dict[str, tuple[float, float] | None] = {}
@@ -181,6 +182,7 @@ def from_nnunetv2(
             if not path.exists():
                 raise MEDH5ValidationError(f"case {case!r} has no channel {index}")
             data, geo = read_nifti(path, coord_system=coord_system)
+            _replay_geometry(log, f"case {case}: {image_ids[index]}", geo, unitless)
             # Every channel is written onto one grid, so a channel that does not
             # share it must be refused rather than filed under it.  nnU-Net
             # requires co-registered channels and most datasets are, but "the
@@ -198,6 +200,7 @@ def from_nnunetv2(
         ignored: npt.NDArray[np.bool_] | None = None
         if label_path.exists():
             volume, label_geo = read_nifti(label_path, coord_system=coord_system)
+            _replay_geometry(log, f"case {case}: labels", label_geo, unitless)
             # The label volume above all: a label resampled onto a different grid
             # by some other tool is the ordinary way this goes wrong, and the
             # result annotates voxels nobody drew on.
@@ -280,6 +283,13 @@ def from_nnunetv2(
                     {"case": case, "kind": kind},
                 )
         log.outputs.append(str(target))
+    if unitless:
+        log.guess(
+            "units",
+            f"{len(unitless)} file(s) state no spatial unit, so their lengths "
+            "were read as millimetres, as NIfTI readers commonly do",
+            {"files": len(unitless), "first": unitless[0]},
+        )
     log.decision(
         "coverage",
         "annotated_class_ids covers the whole label set: an nnU-Net label volume "
@@ -288,6 +298,19 @@ def from_nnunetv2(
         {"classes": len(label_set)},
     )
     return log
+
+
+def _replay_geometry(
+    log: ConversionReport, name: str, geometry: Mapping[str, Any], unitless: list[str]
+) -> None:
+    """What the NIfTI reader had to assume, into the report: each file's
+    geometry guesses as they are, and a file stating no spatial unit
+    counted, for one note over the dataset rather than one per file."""
+    for kind, message, detail in geometry.get("notes", ()):
+        if kind == "units":
+            unitless.append(name)
+        else:
+            log.guess(kind, f"{name}: {message}", detail)
 
 
 def _recorded_ids(document: Mapping[str, Any]) -> dict[int, int]:

@@ -160,6 +160,26 @@ class TestNnunet:
         with medh5.open(tmp_path / "out" / "CASE_001.medh5") as sample:
             assert sample.identity.subject_id == "CASE_001"
 
+    def test_S3_5_files_stating_no_spatial_unit_are_one_guess(self, dataset, tmp_path):
+        """Read as millimetres, as from_nifti reads them, and said once for the
+        dataset rather than once per file; the reader's geometry guesses,
+        which this import dropped, are reported per file."""
+        from medh5.io.nnunetv2 import from_nnunetv2
+
+        report = from_nnunetv2(dataset, tmp_path / "out")
+        (note,) = report.of_kind("units")
+        assert note.severity == "guess" and note.detail["files"] == 6
+        image = nib.load(str(dataset / "imagesTr" / "CASE_001_0000.nii.gz"))
+        image.header.set_xyzt_units(xyz="mm")
+        qform = np.eye(4)
+        qform[0, 3] = 5.0
+        image.set_qform(qform, code=1)
+        nib.save(image, str(dataset / "imagesTr" / "CASE_001_0000.nii.gz"))
+        report = from_nnunetv2(dataset, tmp_path / "again")
+        assert report.of_kind("units")[0].detail["files"] == 5
+        (disagreement,) = report.of_kind("geometry")
+        assert disagreement.message.startswith("case CASE_001: T1: sform and qform")
+
     def test_S4_channels_named_alike_are_images_of_their_own(self, tmp_path):
         """nnU-Net names a channel for its normalisation, so two may share a
         name; keyed by the name, the second channel overwrote the first."""
@@ -316,7 +336,6 @@ class TestNnunet:
             from_nnunetv2(dataset, tmp_path / "out", case_ids=["CASE_001"])
 
     def test_F10_an_nnunet_export_keeps_the_physical_values(self, tmp_path: Path):
-        nib = pytest.importorskip("nibabel")
         from medh5.io.nnunetv2 import to_nnunetv2
 
         path = tmp_path / "ct.medh5"
@@ -338,7 +357,6 @@ class TestNnunet:
         assert image.get_fdata().flat[0] == pytest.approx(-24.0)
 
     def test_F11_a_2D_nnunet_dataset_round_trips(self, tmp_path: Path):
-        nib = pytest.importorskip("nibabel")
         from medh5.io.nnunetv2 import from_nnunetv2, to_nnunetv2
 
         affine = np.diag([0.8, 0.9, 1.0, 1.0])
@@ -372,7 +390,6 @@ class TestNnunet:
         assert report.ok
 
     def test_L18_the_report_lists_only_files_that_were_written(self, tmp_path: Path):
-        pytest.importorskip("nibabel")
         from medh5.io.nnunetv2 import to_nnunetv2
 
         path = tmp_path / "bare.medh5"

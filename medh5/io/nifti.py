@@ -33,6 +33,7 @@ import numpy.typing as npt
 from medh5._optional import require
 from medh5.errors import MEDH5ValidationError
 from medh5.geometry import ORTHONORMAL_TOL, build_affine, decompose_affine
+from medh5.io._common import sanitize_key
 from medh5.io.report import ConversionReport
 
 RAS_TO_LPS = np.diag([-1.0, -1.0, 1.0, 1.0])
@@ -266,7 +267,7 @@ def _volume_statements(sidecar: Path, *, needed: bool) -> dict[str, Any] | None:
     One that is not an object is left alone, and refused when this export has
     fields to put in it --- refused *before* anything is withdrawn: the
     ``.bval`` went first, so a refused export took a diffusion image's
-    b-values with it (N16 of the round-3 audit).
+    b-values with it.
     """
     if not sidecar.exists():
         return None
@@ -292,14 +293,13 @@ def _withdraw_volume_statements(
 
     The regular-timing branch wrote nothing beside its file, and the reader
     prefers a sidecar's ``VolumeTiming`` to the header: an overwrite of an
-    irregular series by a regular one read back the old timeline (N03 of the
-    2.0 re-audit).  The per-volume fields and a ``.bval`` are withdrawn once
+    irregular series by a regular one read back the old timeline.  The
+    per-volume fields and a ``.bval`` are withdrawn once
     the new image is serialised and before it replaces the old one, and the
     new ones written after it, so an interrupted export leaves an image whose
     timing reads as unmeasured, never as another image's.  Withdrawn before
     the image was serialised, they went with an export that then failed to
-    write it, and left the old image unmeasured for nothing (F24 of the
-    round-4 audit).
+    write it, and left the old image unmeasured for nothing.
     """
     _sidecar_path(target, ".bval").unlink(missing_ok=True)
     if fields is None:
@@ -468,8 +468,25 @@ def read_nifti(
     ambiguous headers, for the caller to put in its conversion report.
     """
     nib = require_nibabel()
-    image = nib.load(os.fspath(path))
+    try:
+        image = nib.load(os.fspath(path))
+    except nib.filebasedimages.ImageFileError as exc:
+        # nibabel's error is no `MEDH5Error`: a caller catching every input
+        # problem as one missed it, and the command line printed a traceback.
+        raise MEDH5ValidationError(
+            f"{os.fspath(path)} is not a NIfTI file: {exc}"
+        ) from None
     notes = _geometry_notes(image, path, assume_geometry=assume_geometry)
+    units, unit_stated = _units(image)
+    if unit_stated is not None:
+        notes.append(
+            (
+                "units",
+                f"the file states its spatial unit as {unit_stated!r}, so its "
+                "lengths were read as millimetres, as NIfTI readers commonly do",
+                {"xyz_units": unit_stated},
+            )
+        )
     rescale = _rescale(image)
     data = _stored_data(image, rescale)
     # A trailing axis of extent 1 beyond the spatial block carries nothing:
@@ -504,7 +521,9 @@ def read_nifti(
     channel_field: str | None = None
     channel_values: tuple[float, ...] | None = None
     if data.ndim == 4:
-        frames = int(data.shape[0])
+        # The fourth axis leads once transposed and trails as NIfTI keeps it:
+        # read off the leading axis untransposed, the count was x's extent.
+        frames = int(data.shape[0] if transpose else data.shape[3])
         bids = _bids_axis(path, frames, fourth_axis)
         kind, stated = _fourth_axis(image, path, fourth_axis, bids)
         stated_by = bids[1] if bids is not None and bids[0] == kind else None
@@ -535,7 +554,7 @@ def read_nifti(
         "channel_values": None if channel_values is None else list(channel_values),
         "stated_by": stated_by,
         "squeezed": squeezed,
-        "units": _units(image),
+        "units": units,
         "dtype": str(data.dtype),
         "rescale": rescale,
         "header": {
@@ -890,15 +909,21 @@ def _time_axis(
     return tuple(offset + k * step for k in range(frames)), units, True
 
 
-def _units(image: Any) -> str:
-    """The NIfTI spatial unit, mapped onto the §3.5 vocabulary."""
+def _units(image: Any) -> tuple[str, str | None]:
+    """The NIfTI spatial unit, mapped onto the §3.5 vocabulary, and what the
+    header said where that maps onto nothing (``None`` where it does).
+
+    ``unknown`` --- the header's default, and what an export of a grid in
+    pixels writes --- was read as millimetres without a word; it still is,
+    as NIfTI readers commonly do, and the caller reports it as a guess.
+    """
     try:
         spatial, _ = image.header.get_xyzt_units()
     except Exception:
-        return "mm"
-    return {"meter": "m", "mm": "mm", "micron": "um", "unknown": "mm"}.get(
-        str(spatial), "mm"
-    )
+        spatial = "unreadable"
+    known = {"meter": "m", "mm": "mm", "micron": "um"}
+    unit = known.get(str(spatial))
+    return ("mm", str(spatial)) if unit is None else (unit, None)
 
 
 def _text(value: Any) -> str:
@@ -1067,6 +1092,16 @@ def from_nifti(
 
     target = Path(os.fspath(out))
     stem = sample_id or target.stem
+    if subject_id is None:
+        # Appendix B: a subject identity the converter could not establish is
+        # reported, not passed off as one; a set of NIfTI files states none.
+        log.guess(
+            "identity",
+            f"no subject_id was given and NIfTI states none, so the sample was "
+            f"written as a subject of its own (subject_id = {stem!r}); pass "
+            "subject_id= (--subject-id) to file it under its subject",
+            {"subject_id": stem},
+        )
     label_set = None
     if mask_arrays:
         label_set = _mint_label_set(sorted(mask_arrays), log)
@@ -1153,7 +1188,10 @@ def from_nifti(
                 prov=activity,
             )
         if mask_arrays and label_set is not None:
-            resolved = {label_set[key].id: mask for key, mask in mask_arrays.items()}
+            resolved = {
+                _class_of(label_set, name).id: mask
+                for name, mask in mask_arrays.items()
+            }
             kind, stats = writer.add_segmentation(
                 "seg",
                 grid="ref",
@@ -1279,21 +1317,45 @@ def _same_grid(
     }
 
 
-def _mint_label_set(keys: Sequence[str], log: ConversionReport) -> Any:
-    """Mask filenames become class keys with minted ids (Appendix B)."""
+def _mint_label_set(names: Sequence[str], log: ConversionReport) -> Any:
+    """Mask names become classes with minted ids (Appendix B).
+
+    The key is the name as §5.2's pattern allows it (:func:`sanitize_key`)
+    and the display name the name as given: taken as the key, ``Liver`` or
+    ``GTV-1`` failed the sample document's schema (E005) at commit.  Two
+    names that make one key are refused rather than merged into one class.
+    """
     from medh5.labels import LabelClass, LabelSet
 
+    keys: dict[str, str] = {}
+    for name in names:
+        key = sanitize_key(name)
+        if key in keys:
+            raise MEDH5ValidationError(
+                f"masks {keys[key]!r} and {name!r} would both be class "
+                f"{key!r}; a class key keeps lowercase letters, digits and "
+                "underscores only, so rename one"
+            )
+        keys[key] = name
     classes = [
-        LabelClass(i + 1, key, key.replace("_", " ").title())
-        for i, key in enumerate(keys)
+        LabelClass(i + 1, key, key.replace("_", " ").title() if key == name else name)
+        for i, (key, name) in enumerate(keys.items())
     ]
     log.decision(
         "label_set",
-        "class ids were minted from the mask names in sorted order; review the "
-        "generated label set before applying it cohort-wide",
+        "class ids were minted from the mask names in sorted order, and keys "
+        "from the names as a class key allows them; review the generated "
+        "label set before applying it cohort-wide",
         {"ids": {c.key: c.id for c in classes}},
     )
     return LabelSet("converted", version="1.0.0", classes=classes)
+
+
+def _class_of(label_set: Any, name: str) -> Any:
+    """The class a mask named *name* is: by the key minted from the name,
+    else by the name itself (a key, or an id)."""
+    found = label_set.get(sanitize_key(name))
+    return found if found is not None else label_set.get(name)
 
 
 def to_nifti(
@@ -1473,7 +1535,7 @@ def import_seg_nifti(
     label_set = existing
     if label_set is None:
         label_set = _mint_label_set(sorted(arrays), log)
-    missing = [k for k in arrays if label_set.get(k) is None]
+    missing = [k for k in arrays if _class_of(label_set, k) is None]
     if missing:
         raise MEDH5ValidationError(
             f"the sample's label set has no class(es) {missing}; add them or "
@@ -1490,7 +1552,7 @@ def import_seg_nifti(
         kind, _ = writer.add_segmentation(
             ann_id,
             grid=grid_id,
-            masks={label_set[k].id: v for k, v in arrays.items()},
+            masks={_class_of(label_set, k).id: v for k, v in arrays.items()},
             annotated_classes=annotated_classes,
             prov=activity,
         )

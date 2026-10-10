@@ -63,7 +63,6 @@ class TestF05NiftiRescale:
         array proxy and `scl_slope` reads back NaN --- so the check that the
         file carries the scale asks the proxy, as the converter does.
         """
-        nib = pytest.importorskip("nibabel")
         image = nib.Nifti1Image(stored, np.eye(4))
         image.header.set_slope_inter(slope, inter)
         nib.save(image, str(path))
@@ -74,7 +73,6 @@ class TestF05NiftiRescale:
     def test_S4_2_the_scale_is_recorded_and_the_dtype_kept(
         self, tmp_path: Path
     ) -> None:
-        nib = pytest.importorskip("nibabel")
         from medh5.io.nifti import from_nifti
 
         stored = (
@@ -94,7 +92,6 @@ class TestF05NiftiRescale:
         assert np.allclose(np.transpose(physical, (2, 1, 0)), expected)
 
     def test_S4_2_an_unscaled_file_records_no_rescale(self, tmp_path: Path) -> None:
-        nib = pytest.importorskip("nibabel")
         from medh5.io.nifti import from_nifti
 
         stored = np.arange(24, dtype=np.int16).reshape(2, 3, 4)
@@ -515,7 +512,6 @@ class TestNifti:
         `to_nifti --stored` --- with nothing in `dataset.json` or the report to
         say so.
         """
-        nib = pytest.importorskip("nibabel")
         from medh5.io.nifti import to_nifti
 
         path = tmp_path / "ct.medh5"
@@ -544,7 +540,6 @@ class TestNifti:
         could never be written back out --- the round trip the converters page
         promises was broken for every 2-D sample.
         """
-        nib = pytest.importorskip("nibabel")
         from medh5.io.nifti import from_nifti, to_nifti
 
         affine = np.array(
@@ -1252,3 +1247,98 @@ class TestExportsOwnTheirVolumeStatements:
         fields = json.loads(sidecar.read_text(encoding="utf-8"))
         assert fields == {"Manufacturer": "x", "EchoTime": [0.005, 0.01]}
         assert not (tmp_path / "dwi.bval").exists()
+
+
+class TestNiftiInputs:
+    """What a set of NIfTI files states, and what it leaves to be said."""
+
+    def test_S5_2_mask_names_become_keys_the_schema_allows(self, volumes, tmp_path):
+        """Taken as keys, `Liver` and `GTV-1` failed the sample document's
+        key pattern (E005) at commit; the name as given is the display name."""
+        out = tmp_path / "keys.medh5"
+        masks = {"Liver": volumes["liver"], "GTV-1": volumes["lesion"]}
+        from_nifti({"CT": volumes["ct"]}, out, masks=masks)
+        with medh5.open(out) as sample:
+            named = {c.key: c.name for c in sample.label_set}
+            assert named == {"gtv_1": "GTV-1", "liver": "Liver"}
+            assert sample.annotations["seg"].dense(["gtv_1"])[0].any()
+        assert validate_file(out).ok
+        late = import_seg_nifti(out, {"GTV-1": volumes["lesion"]}, ann_id="late")
+        assert late.outputs, "a mask is found by the key its name makes"
+        with pytest.raises(MEDH5ValidationError, match="rename one"):
+            from_nifti(
+                {"CT": volumes["ct"]},
+                tmp_path / "clash.medh5",
+                masks={"GTV-1": volumes["lesion"], "gtv_1": volumes["liver"]},
+            )
+        assert not (tmp_path / "clash.medh5").exists()
+
+    def test_S3_5_a_file_stating_no_spatial_unit_is_read_as_mm_on_a_guess(
+        self, tmp_path
+    ):
+        """`unknown` --- nibabel's default, and what an export of a pixel grid
+        writes --- was read as millimetres without a word."""
+        stated, unstated = tmp_path / "mm.nii.gz", tmp_path / "unknown.nii.gz"
+        image = nib.Nifti1Image(np.zeros(SHAPE_XYZ, np.int16), AFFINE)
+        image.header.set_xyzt_units(xyz="mm")
+        nib.save(image, str(stated))
+        nib.save(nib.Nifti1Image(np.zeros(SHAPE_XYZ, np.int16), AFFINE), str(unstated))
+        assert read_nifti(unstated)[1]["units"] == "mm"
+        report = from_nifti({"CT": unstated}, tmp_path / "a.medh5", subject_id="s")
+        (guess,) = report.of_kind("units")
+        assert guess.severity == "guess" and guess.message.startswith("CT: ")
+        report = from_nifti({"CT": stated}, tmp_path / "b.medh5", subject_id="s")
+        assert not report.of_kind("units")
+
+    def test_appendix_B_a_subject_no_file_names_is_reported(self, volumes, tmp_path):
+        """Appendix B: the fallback to a subject of its own is reported, not
+        passed off as an established identity."""
+        report = from_nifti({"CT": volumes["ct"]}, tmp_path / "case7.medh5")
+        (guess,) = report.of_kind("identity")
+        assert guess.severity == "guess" and guess.detail == {"subject_id": "case7"}
+        report = from_nifti(
+            {"CT": volumes["ct"]}, tmp_path / "named.medh5", subject_id="P1"
+        )
+        assert not report.of_kind("identity")
+
+    def test_S3_2_an_untransposed_4D_file_counts_its_frames(self, tmp_path):
+        """Read off the leading axis, which untransposed is x, a 4-frame file
+        had 24 frame times."""
+        source = tmp_path / "cine.nii.gz"
+        image = nib.Nifti1Image(np.zeros((*SHAPE_XYZ, 4), np.int16), AFFINE)
+        image.header.set_xyzt_units(xyz="mm", t="sec")
+        image.header["pixdim"][4] = 0.5
+        nib.save(image, str(source))
+        data, geometry = read_nifti(source, transpose=False, fourth_axis="time")
+        assert data.shape == (*SHAPE_XYZ, 4)
+        assert geometry["time_values"] == [0.0, 0.5, 1.0, 1.5]
+
+    def test_an_input_that_is_not_nifti_is_refused_by_name(self, tmp_path, capsys):
+        """nibabel's error was no `MEDH5Error`: the command line printed a
+        traceback."""
+        from medh5.cli import EXIT_ERROR, main
+
+        text = tmp_path / "ct.medh5"
+        text.write_text("not a NIfTI file", encoding="utf-8")
+        with pytest.raises(MEDH5ValidationError, match="is not a NIfTI file"):
+            read_nifti(text)
+        out = tmp_path / "x.medh5"
+        code = main(["convert", "from-nifti", str(out), "--image", f"CT={text}"])
+        err = capsys.readouterr().err
+        assert code == EXIT_ERROR and err.startswith("medh5: ")
+        assert "is not a NIfTI file" in err and not out.exists()
+
+    def test_a_report_path_that_is_a_directory_is_refused_first(
+        self, volumes, tmp_path, capsys
+    ):
+        """It was found after the sample was written, as an
+        `IsADirectoryError` traceback."""
+        from medh5.cli import EXIT_ERROR, main
+
+        folder = tmp_path / "reports"
+        folder.mkdir()
+        out = tmp_path / "x.medh5"
+        argv = ["convert", "from-nifti", str(out), "--image", f"CT={volumes['ct']}"]
+        assert main([*argv, "--report", str(folder)]) == EXIT_ERROR
+        assert "is a directory" in capsys.readouterr().err
+        assert not out.exists()
