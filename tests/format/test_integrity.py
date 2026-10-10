@@ -341,6 +341,52 @@ class TestW10Integrity:
             assert sample.content_id is not None
 
 
+class TestAmendStamping:
+    """An amendment stamps what it wrote and never restamps what it inherited."""
+
+    def _sample(self, path: Path) -> Path:
+        with Organs.writer(path) as w:
+            w.add_segmentation("seg", grid="g", masks=Organs.blocks())
+        return path
+
+    def test_S13_1_an_amendment_refuses_to_restamp_a_digest_its_source_failed(
+        self, tmp_path: Path
+    ):
+        """Every amend recomputed every digest: a no-op amend of a file edited
+        behind the library's back made it verify, and left no record."""
+        from medh5.integrity import diagnose, fix
+
+        path = self._sample(tmp_path / "edited.medh5")
+        with h5py.File(path, "r+") as handle:
+            node = handle["images/CT"]
+            data = node[...]
+            data[0, 0, 0] += 7
+            node[...] = data
+        before = path.read_bytes()
+        with pytest.raises(MEDH5ValidationError, match="fix --rewrite-digests") as err:
+            with medh5.amend(path):
+                pass
+        assert err.value.code == "E701"
+        assert "images/CT" in str(err.value)
+        assert path.read_bytes() == before, "nothing was written"
+        assert diagnose(path).mismatched == ("images/CT",)
+
+        # Stamping only what carries no digest leaves the evidence in place.
+        with medh5.amend(path) as w:
+            w.set_quality("seg", status="approved")
+            w.commit(digests=False)
+        assert diagnose(path).mismatched == ("images/CT",)
+
+        # The deliberate restamp still works, and says it verified nothing.
+        repair = fix(path, rewrite_digests=True, reason="the edit was intended")
+        assert repair.rewrote_digests
+        assert diagnose(path).clean
+        with medh5.amend(path) as w:
+            w.set_quality("seg", status="draft")
+        with medh5.open(path) as sample:
+            assert sample.verify().ok
+
+
 class TestL26Verify:
     """L-26: an undigested dataset inside an attested object fails `verify`."""
 

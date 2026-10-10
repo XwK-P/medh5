@@ -461,7 +461,8 @@ impl SampleWriter {
     }
 
     /// The file being built, for tools that rewrite what the builder does not
-    /// model.  `commit` restamps every digest from what it finds.
+    /// model.  `commit` stamps every dataset that carries no digest, and
+    /// refuses to restamp one the amended file already failed (E701).
     #[getter]
     fn handle(&self) -> R<Group> {
         Ok(Group::wrap(self.inner.root()?))
@@ -1223,7 +1224,10 @@ impl SampleWriter {
 
     /// Validate, write `/meta`, stamp digests and atomically replace.
     ///
-    /// Returns the `content_id`, or `None` when already committed.
+    /// `digests=True` recomputes every digest, and refuses (E701) to restamp
+    /// one whose bytes the amended file already failed; `digests=False`
+    /// stamps only datasets that carry none.  Returns the `content_id`, or
+    /// `None` when already committed.
     #[pyo3(signature = (*, digests=true))]
     fn commit(&mut self, py: Python<'_>, digests: bool) -> R<Option<String>> {
         let writer = &mut self.inner;

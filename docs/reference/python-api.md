@@ -257,7 +257,10 @@ with medh5.create("out.medh5", sample_id="c1", subject_id="s1",
 `create` and `amend` both return a `SampleWriter`. It builds a temporary file
 and `os.replace`s it into position on a clean exit; an exception aborts and
 leaves nothing behind. Without a `with` block, call `w.commit()` to finish or
-`w.abort()` to discard.
+`w.abort()` to discard. An amendment stamps what it writes and never restamps a
+digest its source already failed: a file edited behind the library's back is
+refused (`E701`) until its bytes are restored or `medh5 fix --rewrite-digests`
+restamps them with a recorded reason.
 
 ### Document
 

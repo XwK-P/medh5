@@ -3257,7 +3257,10 @@ class SampleWriter:
     def commit(self, *, digests: bool = True) -> str | None:
         """Validate, write `/meta`, stamp digests and atomically replace.
 
-        Returns the `content_id`, or `None` when already committed.
+        `digests=True` recomputes every digest, and refuses (E701) to restamp
+        one whose bytes the amended file already failed; `digests=False`
+        stamps only datasets that carry none.  Returns the `content_id`, or
+        `None` when already committed.
         """
         ...
     def deidentification(self, **fields: Any) -> Deidentification: ...
@@ -3285,7 +3288,8 @@ class SampleWriter:
     @property
     def handle(self) -> Group:
         """The file being built, for tools that rewrite what the builder does not
-        model.  `commit` restamps every digest from what it finds.
+        model.  `commit` stamps every dataset that carries no digest, and
+        refuses to restamp one the amended file already failed (E701).
         """
         ...
     @property

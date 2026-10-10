@@ -227,6 +227,26 @@ pub fn verify_object(root: &hdf5::Group, path: &str) -> Result<bool> {
     Ok(dataset_digest(&ds, path, &algo)? == stored)
 }
 
+/// The paths among `paths` whose dataset under `root` carries a digest that
+/// is malformed or does not match its bytes --- what [`verify_root`] reports
+/// as malformed or mismatched.  A path naming no dataset, or one carrying no
+/// digest, is not among them.
+pub fn failing_digests(root: &hdf5::Group, paths: &[String]) -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    for path in paths {
+        let Some(ds) = ops::resolve_dataset(root, path) else { continue };
+        let Some(stored) = attrs::get_str(&ds, "digest")? else { continue };
+        let holds = match parse_digest(&stored) {
+            Ok((algo, _)) => dataset_digest(&ds, path, &algo)? == stored,
+            Err(_) => false,
+        };
+        if !holds {
+            out.push(path.clone());
+        }
+    }
+    Ok(out)
+}
+
 /// Index entries whose `source_digest` no longer matches their source (§13.3).
 ///
 /// A stale entry is **not** a file error: readers ignore it and rebuild.

@@ -176,10 +176,13 @@ s.content_id            # "sha256:..." — the identity of the content
 ```
 
 Recompressing a file changes every stored byte and no digest, because the
-digest is over the content and not over its encoding. Editing a voxel through
-`medh5.amend` restamps that one object's digest and so the `content_id`; editing
-it behind the library's back leaves the stored digest describing the old bytes,
-which is exactly what `verify` reports.
+digest is over the content and not over its encoding. An object an amendment
+writes --- an annotation removed and added again, say --- is stamped with a new
+digest, and so the `content_id` changes. Editing an object behind the library's
+back leaves the stored digest describing the old bytes, which is exactly what
+`verify` reports, and an amendment will not restamp it: `medh5.amend` refuses
+such a file (E701) until the bytes are restored or a person restamps them with
+`medh5 fix --rewrite-digests --reason …`, which records why.
 
 ## Clinical context (format 1.1)
 

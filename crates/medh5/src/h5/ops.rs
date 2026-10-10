@@ -116,6 +116,20 @@ pub fn child_dataset(group: &hdf5::Group, name: &str) -> Option<hdf5::Dataset> {
     }
 }
 
+/// The dataset at a `/`-separated path below `group`, if there is one.
+pub fn resolve_dataset(group: &hdf5::Group, path: &str) -> Option<hdf5::Dataset> {
+    let (parent, leaf) = match path.trim_matches('/').rsplit_once('/') {
+        Some((parent, leaf)) => (resolve_group(group, parent)?, leaf),
+        None => (group.clone(), path.trim_matches('/')),
+    };
+    child_dataset(&parent, leaf)
+}
+
+/// The group at a `/`-separated path below `group`, if there is one.
+fn resolve_group(group: &hdf5::Group, path: &str) -> Option<hdf5::Group> {
+    path.split('/').filter(|p| !p.is_empty()).try_fold(group.clone(), |at, name| child_group(&at, name))
+}
+
 /// One object reached by [`visit`].
 pub enum Node {
     Group(hdf5::Group),

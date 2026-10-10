@@ -850,7 +850,9 @@ class TestW19WriterEqualsValidator:
         the conformance corpus: a no-op amend of each of its files either
         refuses the file or writes one the validator passes, and a valid case
         comes back valid.  A valid higher-minor file is the one valid sample
-        that must be refused: 1.1 §2.3 forbids amending a projection.
+        that must be refused: 1.1 §2.3 forbids amending a projection.  So is
+        a case judged below the integrity level whose bytes fail their digest:
+        an amendment never restamps one (§13.1).
         """
         from medh5.conformance import CASES
         from medh5.errors import MEDH5Error
@@ -862,12 +864,18 @@ class TestW19WriterEqualsValidator:
             try:
                 with medh5.amend(path):
                     pass
-            except (MEDH5Error, OSError):
+            except (MEDH5Error, OSError) as refusal:
                 refused += 1
                 projection = "W913" in case.warnings
-                assert not case.valid or case.suffix == ".medh5c" or projection, (
-                    case.name
+                failed = getattr(refusal, "code", None) == "E701" and (
+                    "E701" in validate_file(path, level="integrity").codes
                 )
+                assert (
+                    not case.valid
+                    or case.suffix == ".medh5c"
+                    or projection
+                    or failed
+                ), case.name
                 continue
             written += 1
             errors = [c for c in validate_file(path).codes if c.startswith("E")]

@@ -9,6 +9,6 @@ pub use digest::{
     relative_path, stamp_digests, AttrNameMap,
 };
 pub use verify::{
-    stale_index_entries, subtrees_identical, unattested, unbound, verify_object, verify_root, verify_root_inspecting,
-    Binding, Unbound, VerifyResult,
+    failing_digests, stale_index_entries, subtrees_identical, unattested, unbound, verify_object, verify_root,
+    verify_root_inspecting, Binding, Unbound, VerifyResult,
 };

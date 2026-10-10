@@ -30,7 +30,7 @@ use crate::h5::data;
 use crate::h5::file::{open_read, AtomicFile};
 use crate::h5::ops;
 use crate::ids::validate_id;
-use crate::integrity::{compute_content_id, stamp_digests};
+use crate::integrity::{collect_digests, compute_content_id, failing_digests, stamp_digests};
 use crate::json::{repr_int_tuple, repr_list, repr_str};
 use crate::labels::{ClassKey, LabelSet};
 use crate::storage::chunking::grid_chunks;
@@ -173,6 +173,9 @@ pub struct SampleWriter {
     /// The kind of every event version the amended file already held: those
     /// versions are immutable, so no payload may be attached to one.
     pub(crate) inherited_events: std::collections::HashMap<String, String>,
+    /// The file an amendment started from, which a digest the commit finds
+    /// changed is checked against.
+    source: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for SampleWriter {
@@ -232,10 +235,9 @@ pub fn amend_into(path: &Path, out: &Path, codec: Option<&str>, without: &[&str]
         Some(c) => c.to_string(),
         None => profile_family(&root)?.to_string(),
     };
-    let writer = SampleWriter::new(out, None, None, &chosen, &[], Some((&root, without)));
-    drop(root);
-    drop(source);
-    writer
+    let mut writer = SampleWriter::new(out, None, None, &chosen, &[], Some((&root, without)))?;
+    writer.source = Some(path.to_path_buf());
+    Ok(writer)
 }
 
 impl SampleWriter {
@@ -275,6 +277,7 @@ impl SampleWriter {
             clinical_source: ClinicalSource::Absent,
             clinical_ids: Default::default(),
             inherited_events: Default::default(),
+            source: None,
         };
         let setup = (|| -> Result<()> {
             for name in ["grids", "images", "annotations"] {
@@ -1230,9 +1233,19 @@ impl SampleWriter {
 
     /// Validate, write `/meta`, stamp digests and atomically replace.
     ///
-    /// `digests = false` stamps only the datasets that carry no digest yet;
-    /// `content_id` is always computed.  Returns the `content_id`, or `None`
-    /// when the writer had already committed.
+    /// `digests = true` recomputes every dataset's digest.  An amendment never
+    /// restamps a digest its source already failed: a dataset whose bytes did
+    /// not match its digest in the file being amended is evidence --- of an
+    /// edit made behind the library's back, or of damage --- so the commit is
+    /// refused (E701) and nothing is written.  Restoring the bytes, or
+    /// restamping them deliberately with `medh5 fix --rewrite-digests`, which
+    /// records a reason in the file, are the ways on.  A dataset this
+    /// amendment rewrote is stamped afresh.
+    ///
+    /// `digests = false` stamps only the datasets that carry no digest yet,
+    /// and leaves every other as it was.  `content_id` is always computed.
+    /// Returns the `content_id`, or `None` when the writer had already
+    /// committed.
     pub fn commit(&mut self, digests: bool) -> Result<Option<String>> {
         if self.committed {
             return Ok(None);
@@ -1271,7 +1284,9 @@ impl SampleWriter {
         attrs::write(&root, "created", &AttrValue::Str(utcnow()))?;
         attrs::write(&root, "generator", &AttrValue::Str(format!("medh5 {VERSION}")))?;
         attrs::write(&root, "digest_algo", &AttrValue::Str("sha256".into()))?;
-        stamp_digests(&root, "sha256", &["index"], !digests)?;
+        let stored = collect_digests(&root, &["index"])?;
+        let stamped = stamp_digests(&root, "sha256", &["index"], !digests)?;
+        self.refuse_restamping(&stored, &stamped)?;
         let content_id = compute_content_id(&root, &attr_name_map_of(&root)?, "sha256", None)?;
         attrs::write(&root, "content_id", &AttrValue::Str(content_id.clone()))?;
         self.check_valid()?;
@@ -1287,6 +1302,45 @@ impl SampleWriter {
             }
         }
         Ok(content_id)
+    }
+
+    /// Refuse to restamp a digest the amended file already failed (E701).
+    ///
+    /// A digest the stamp changed belongs to bytes that no longer match it:
+    /// bytes this amendment rewrote (a scrub de-identifying a string dataset),
+    /// or bytes that did not match it in the file being amended either.  The
+    /// source tells the two apart.  A restamp of the second kind erased the
+    /// only record that the bytes had changed.
+    fn refuse_restamping(&self, stored: &IndexMap<String, String>, stamped: &IndexMap<String, String>) -> Result<()> {
+        let changed: Vec<String> = stamped
+            .iter()
+            .filter(|(path, value)| stored.get(*path).is_some_and(|before| before != *value))
+            .map(|(path, _)| path.clone())
+            .collect();
+        let Some(source) = self.source.as_deref().filter(|_| !changed.is_empty()) else {
+            return Ok(());
+        };
+        let file = open_read(source)?;
+        let failed = failing_digests(&file.as_group()?, &changed)?;
+        drop(file);
+        if failed.is_empty() {
+            return Ok(());
+        }
+        let shown: Vec<String> = failed.iter().take(5).cloned().collect();
+        let more = if failed.len() > 5 { format!(" (and {} more)", failed.len() - 5) } else { String::new() };
+        Err(Error::coded(
+            "E701",
+            format!(
+                "refusing to amend {}: {} {} not match {} digest{} ({}{more}), and a commit would restamp {} ---                  re-attesting bytes nobody verified, with no record that they changed. Restore the content, or                  restamp it deliberately with `medh5 fix --rewrite-digests --reason ...`, which records the reason                  in the file's provenance",
+                repr_str(&source.to_string_lossy()),
+                if failed.len() == 1 { "a dataset" } else { "datasets" },
+                if failed.len() == 1 { "does" } else { "do" },
+                if failed.len() == 1 { "its" } else { "their" },
+                if failed.len() == 1 { "" } else { "s" },
+                shown.join(", "),
+                if failed.len() == 1 { "it" } else { "them" },
+            ),
+        ))
     }
 
     /// Refuse to write a file the validator would reject (§15): the
@@ -1320,5 +1374,65 @@ impl Drop for SampleWriter {
         if let Some(f) = self.file.take() {
             f.abort();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::integrity::verify_root;
+
+    /// One image on one grid, and a fixed-length string dataset outside
+    /// every group the specification defines.
+    fn sample(path: &Path) {
+        let mut writer = create(path, Some("s"), None, "portable", &[]).unwrap();
+        writer.add_grid("g", &[4, 6, 8], &[1.0, 1.0, 1.0], GridOptions::default()).unwrap();
+        let ct =
+            NdArray::from_vec(&[4, 6, 8], (0..192).map(f64::from).collect()).unwrap().astype(crate::array::DType::I16);
+        writer.add_image("CT", &ct, "g", "CT", ImageOptions::default()).unwrap();
+        let notes = writer.root().unwrap().create_group("x_site").unwrap();
+        let ds = notes.new_dataset::<hdf5::types::FixedAscii<8>>().shape([2]).create("notes").unwrap();
+        data::write_fixed_strings(&ds, &["Jane Doe".into(), "ok".into()], 8, true).unwrap();
+        writer.commit(true).unwrap();
+    }
+
+    fn mismatched(path: &Path) -> Vec<String> {
+        let file = open_read(path).unwrap();
+        let root = file.as_group().unwrap();
+        verify_root(&root, Some(&attr_name_map_of(&root).unwrap()), None, true).unwrap().mismatched
+    }
+
+    /// An amendment restamps what it rewrote and refuses to restamp what its
+    /// source already failed: every amend recomputed every digest, so a
+    /// no-op amend of an edited file made it verify, with no record of the
+    /// edit.
+    #[test]
+    fn s13_1_an_amendment_never_restamps_a_digest_its_source_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.medh5");
+        sample(&path);
+
+        // Rewritten in the session, as a scrub rewrites a string: stamped.
+        let mut writer = amend(&path, None).unwrap();
+        let notes = writer.root().unwrap().dataset("x_site/notes").unwrap();
+        data::write_fixed_strings(&notes, &["redacted".into(), "ok".into()], 8, true).unwrap();
+        drop(notes);
+        writer.commit(true).unwrap();
+        assert!(mismatched(&path).is_empty());
+
+        // Edited behind the library's back: refused, and nothing written.
+        {
+            let file = hdf5::File::open_rw(&path).unwrap();
+            let ct = file.dataset("images/CT").unwrap();
+            ct.write_slice(&ndarray::arr3(&[[[999i16]]]), (0..1, 0..1, 0..1)).unwrap();
+        }
+        let before = std::fs::read(&path).unwrap();
+        let err = amend(&path, None).unwrap().commit(true).unwrap_err();
+        assert_eq!(err.code(), Some("E701"), "{err}");
+        assert!(err.to_string().contains("images/CT") && err.to_string().contains("--rewrite-digests"), "{err}");
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        // Stamping only what carries no digest restamps nothing it inherited.
+        amend(&path, None).unwrap().commit(false).unwrap();
+        assert_eq!(mismatched(&path), vec!["images/CT".to_string()]);
     }
 }
