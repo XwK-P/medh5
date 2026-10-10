@@ -78,8 +78,6 @@ fn key_text(key: &Bound<'_, PyAny>) -> PyResult<String> {
     Err(PyTypeError::new_err(format!("keys must be str, int, float, bool or None, not {}", key.get_type().name()?)))
 }
 
-/// A Python value as JSON, the way `json.dumps` would see it --- plus NumPy
-/// scalars and arrays, which 1.x callers pass freely.
 /// A float as a JSON number --- which NaN and infinity are not.
 ///
 /// 1.x let `json.dumps` write them as `NaN`/`Infinity`, which made `/meta`
@@ -97,7 +95,67 @@ fn finite(value: f64) -> PyResult<Value> {
     .into())
 }
 
+/// What an integer beyond 64 bits becomes.
+#[derive(Clone, Copy)]
+enum Wide {
+    /// Refused: a JSON integer is written in decimal, as itself (§5.1), and
+    /// the engine holds one in 64 bits; rounding a larger one to a float would
+    /// store another number, of another type, without a word.
+    Refused,
+    /// The float a JSON parser makes of its digits, for a document the engine
+    /// then validates as it would the same JSON read from a file.
+    Parsed,
+}
+
+/// An integer as a JSON number.
+fn integer(obj: &Bound<'_, PyAny>, wide: Wide) -> PyResult<Value> {
+    if let Ok(i) = obj.extract::<i64>() {
+        return Ok(Value::from(i));
+    }
+    if let Ok(u) = obj.extract::<u64>() {
+        return Ok(Value::from(u));
+    }
+    if let Wide::Parsed = wide {
+        return finite(obj.extract::<f64>()?);
+    }
+    Err(crate::errors::BindError::from(medh5::Error::invalid(format!(
+        "{} is outside the 64-bit integers medh5 stores exactly ({} to {}); store it as a string",
+        obj.str()?,
+        i64::MIN,
+        u64::MAX
+    )))
+    .into())
+}
+
+/// `collections.abc.Sequence`: what a JSON array is made from, besides a
+/// list or a tuple --- ordered, and the same on every pass.
+fn is_sequence(obj: &Bound<'_, PyAny>) -> PyResult<bool> {
+    static SEQUENCE: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+    let py = obj.py();
+    let abc = SEQUENCE
+        .get_or_try_init(py, || py.import("collections.abc").and_then(|m| m.getattr("Sequence")).map(Bound::unbind))?;
+    obj.is_instance(abc.bind(py))
+}
+
+/// A Python value as JSON, the way `json.dumps` would see it --- plus NumPy
+/// scalars and arrays, which 1.x callers pass freely, mappings and sequences.
+///
+/// A set is refused, as `json.dumps` refuses it: its order is its hash order,
+/// which varies from one interpreter to the next (`PYTHONHASHSEED`), so the
+/// bytes written --- and the `content_id` --- would too.  So is an iterator,
+/// which a write would consume, and an integer beyond 64 bits ([`Wide`]).
 pub fn py_to_json(obj: &Bound<'_, PyAny>) -> PyResult<Value> {
+    json_of(obj, Wide::Refused)
+}
+
+/// [`py_to_json`] for a document an engine contract validates as it would
+/// the same JSON in a file --- a task manifest --- so that an integer beyond
+/// 64 bits is reported by the contract's own rule (T101), not refused here.
+pub fn py_to_json_as_parsed(obj: &Bound<'_, PyAny>) -> PyResult<Value> {
+    json_of(obj, Wide::Parsed)
+}
+
+fn json_of(obj: &Bound<'_, PyAny>, wide: Wide) -> PyResult<Value> {
     if obj.is_none() {
         return Ok(Value::Null);
     }
@@ -108,13 +166,7 @@ pub fn py_to_json(obj: &Bound<'_, PyAny>) -> PyResult<Value> {
         return Ok(Value::String(s.to_string()));
     }
     if obj.is_instance_of::<PyInt>() {
-        if let Ok(i) = obj.extract::<i64>() {
-            return Ok(Value::from(i));
-        }
-        if let Ok(u) = obj.extract::<u64>() {
-            return Ok(Value::from(u));
-        }
-        return finite(obj.extract::<f64>()?);
+        return integer(obj, wide);
     }
     if let Ok(f) = obj.cast::<PyFloat>() {
         return finite(f.value());
@@ -122,43 +174,48 @@ pub fn py_to_json(obj: &Bound<'_, PyAny>) -> PyResult<Value> {
     if let Ok(dict) = obj.cast::<PyDict>() {
         let mut map = Map::new();
         for (k, v) in dict.iter() {
-            map.insert(key_text(&k)?, py_to_json(&v)?);
+            map.insert(key_text(&k)?, json_of(&v, wide)?);
         }
         return Ok(Value::Object(map));
     }
     if obj.is_instance_of::<PyList>() || obj.is_instance_of::<PyTuple>() {
         let mut items = Vec::new();
         for item in obj.try_iter()? {
-            items.push(py_to_json(&item?)?);
+            items.push(json_of(&item?, wide)?);
         }
         return Ok(Value::Array(items));
     }
     // NumPy scalars and arrays: through their Python equivalents.
     if obj.hasattr("dtype")? && obj.hasattr("tolist")? {
-        return py_to_json(&obj.call_method0("tolist")?);
+        return json_of(&obj.call_method0("tolist")?, wide);
     }
     if obj.hasattr("keys")? && obj.hasattr("__getitem__")? {
         let mut map = Map::new();
         for key in obj.call_method0("keys")?.try_iter()? {
             let key = key?;
             let value = obj.get_item(&key)?;
-            map.insert(key_text(&key)?, py_to_json(&value)?);
+            map.insert(key_text(&key)?, json_of(&value, wide)?);
         }
         return Ok(Value::Object(map));
     }
     if obj.hasattr("to_json")? {
-        return py_to_json(&obj.call_method0("to_json")?);
+        return json_of(&obj.call_method0("to_json")?, wide);
     }
-    if let Ok(i) = obj.extract::<i64>() {
-        return Ok(Value::from(i));
+    // Numbers of other types: an integer through `__index__`, anything else
+    // (`Decimal`, `Fraction`) through `__float__` --- finite, as a float is.
+    if obj.hasattr("__index__")? {
+        return integer(&obj.call_method0("__index__")?, wide);
     }
     if let Ok(f) = obj.extract::<f64>() {
-        return Ok(medh5::json::num(f));
+        return finite(f);
     }
-    if obj.hasattr("__iter__")? && !obj.is_instance_of::<pyo3::types::PyBytes>() {
+    let binary = obj.is_instance_of::<pyo3::types::PyBytes>()
+        || obj.is_instance_of::<pyo3::types::PyByteArray>()
+        || obj.is_instance_of::<pyo3::types::PyMemoryView>();
+    if !binary && is_sequence(obj)? {
         let mut items = Vec::new();
         for item in obj.try_iter()? {
-            items.push(py_to_json(&item?)?);
+            items.push(json_of(&item?, wide)?);
         }
         return Ok(Value::Array(items));
     }

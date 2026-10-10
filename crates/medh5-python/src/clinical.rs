@@ -213,8 +213,15 @@ fn clinical_schema_text() -> &'static str {
 
 // -- the task-and-cache contract -----------------------------------------------------------------
 
+/// A manifest is judged as the same JSON in a file would be: an integer past
+/// 64 bits is the contract's T101, not a conversion error.
 fn manifest(doc: &Bound<'_, PyAny>) -> R<TaskManifest> {
-    Ok(TaskManifest::from_json(&record(doc)?)?)
+    let doc = if doc.hasattr("to_json")? && !doc.is_instance_of::<PyDict>() {
+        doc.call_method0("to_json")?
+    } else {
+        doc.clone()
+    };
+    Ok(TaskManifest::from_json(&crate::convert::py_to_json_as_parsed(&doc)?)?)
 }
 
 fn findings<'py>(py: Python<'py>, found: &[medh5::companion::Finding]) -> PyResult<Bound<'py, PyList>> {

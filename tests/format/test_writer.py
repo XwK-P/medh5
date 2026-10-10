@@ -14,6 +14,7 @@ import os
 import re
 import stat
 import sys
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -1022,3 +1023,45 @@ class TestAnyArrayLayout:
             assert np.array_equal(sample.transforms["shift"].matrix, matrix)
             assert np.array_equal(sample.root.attrs["vector"], vector)
         assert validate_file(path).ok
+
+
+class TestJsonValues:
+    """§5.1: a document value is JSON, hashed as canonical JSON, so what has no
+    single JSON spelling is refused rather than spelled one way of several."""
+
+    @pytest.mark.parametrize(
+        ("value", "error", "match"),
+        [
+            ({"tags": {"a", "b"}}, TypeError, "set is not JSON serializable"),
+            ({"tags": frozenset({1})}, TypeError, "frozenset"),
+            ({"rows": (i for i in range(3))}, TypeError, "generator"),
+            ({"v": Decimal("NaN")}, MEDH5ValidationError, "not a JSON number"),
+            ({"v": Decimal("-Infinity")}, MEDH5ValidationError, "not a JSON number"),
+            ({"v": 10**30}, MEDH5ValidationError, "64-bit integers"),
+            ({"v": -(2**63) - 1}, MEDH5ValidationError, "64-bit integers"),
+        ],
+    )
+    def test_S5_1_a_value_without_one_JSON_spelling_is_refused(
+        self, tmp_path: Path, value: Any, error: type[Exception], match: str
+    ):
+        """A set's order is its hash seed's, so ``content_id`` changed from one
+        run to the next; a NaN ``Decimal`` became ``null`` and a 100-bit
+        integer a rounded float."""
+        with (
+            Flat.open_writer(tmp_path / "x.medh5") as w,
+            pytest.raises(error, match=match),
+        ):
+            w.extra("tool", value)
+        with (
+            Flat.open_writer(tmp_path / "y.medh5") as w,
+            pytest.raises(error, match=match),
+        ):
+            w.document.extra["tool"] = value
+
+    def test_S5_1_every_64_bit_integer_is_kept_exactly(self, tmp_path: Path):
+        path = tmp_path / "ints.medh5"
+        edges = [2**64 - 1, -(2**63), 2**53 + 1]
+        with Flat.open_writer(path) as w:
+            w.extra("tool", {"edges": edges, "decimal": Decimal("1.5")})
+        with medh5.open(path) as sample:
+            assert sample.document.extra["tool"] == {"edges": edges, "decimal": 1.5}
