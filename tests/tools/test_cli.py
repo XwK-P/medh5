@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import errno
+import io
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -70,6 +73,47 @@ class TestEntryPoint:
 
         assert _what(KeyError("PET")) == "no such entry: 'PET'"
         assert _what(KeyError("no image 'PET'; available: []")).startswith("no image")
+
+
+class TestOutput:
+    """What the command line does when its stdout cannot take the output."""
+
+    def test_output_lost_to_a_full_disk_fails_the_command(self, capsys, monkeypatch):
+        class Full(io.StringIO):
+            def write(self, text: str) -> int:
+                raise OSError(errno.ENOSPC, "No space left on device")
+
+        monkeypatch.setattr(sys, "stdout", Full())
+        assert main(["conformance", "list"]) == EXIT_ERROR
+        assert "medh5: cannot write output: " in capsys.readouterr().err
+
+    def test_a_reader_that_left_early_keeps_the_commands_own_code(
+        self, monkeypatch, tmp_path
+    ):
+        """``medh5 validate ... | head`` exited 0 whatever the files held."""
+
+        class Gone(io.StringIO):
+            def write(self, text: str) -> int:
+                raise BrokenPipeError(errno.EPIPE, "Broken pipe")
+
+        monkeypatch.setattr(sys, "stdout", Gone())
+        assert main(["validate", str(tmp_path / "missing.medh5")]) == EXIT_ERROR
+        assert main(["conformance", "list"]) == EXIT_OK
+
+    def test_what_the_stdout_encoding_cannot_spell_is_escaped_not_lost(
+        self, monkeypatch, longitudinal_path
+    ):
+        """Windows writes a redirected stdout in its ANSI code page, which has
+        no box-drawing characters: ``tree`` dropped every line drawn with
+        them, and exited 0."""
+        buffer = io.BytesIO()
+        stream = io.TextIOWrapper(buffer, encoding="cp1252")
+        monkeypatch.setattr(sys, "stdout", stream)
+        assert main(["tree", str(longitudinal_path)]) == EXIT_OK
+        stream.flush()
+        printed = buffer.getvalue().decode("cp1252")
+        assert "\\u251c\\u2500\\u2500 meta" in printed
+        assert "sample document (§2.4)" in printed
 
 
 class TestInfo:

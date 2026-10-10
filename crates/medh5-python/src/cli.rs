@@ -9,8 +9,9 @@
 use std::ffi::OsString;
 use std::io::Write;
 
-use pyo3::exceptions::PyBrokenPipeError;
+use pyo3::exceptions::{PyBrokenPipeError, PyUnicodeEncodeError};
 use pyo3::prelude::*;
+use pyo3::types::PyString;
 use serde_json::Value;
 
 use crate::convert::{json_to_py, py_to_json};
@@ -22,21 +23,42 @@ struct PyStream {
     pending: Vec<u8>,
 }
 
+/// A stream's exception as the I/O error the CLI judges: a reader that went
+/// away is a broken pipe, anything else output that was lost.
+fn io_error(py: Python<'_>, e: PyErr) -> std::io::Error {
+    let kind = if e.is_instance_of::<PyBrokenPipeError>(py) {
+        std::io::ErrorKind::BrokenPipe
+    } else {
+        std::io::ErrorKind::Other
+    };
+    std::io::Error::new(kind, e.value(py).to_string())
+}
+
 impl PyStream {
     fn new(name: &'static str) -> Self {
         PyStream { name, pending: Vec::new() }
     }
 
     fn send(&self, text: &str) -> std::io::Result<()> {
-        Python::attach(|py| -> PyResult<()> {
-            let stream = py.import("sys")?.getattr(self.name)?;
-            stream.call_method1("write", (text,))?;
-            Ok(())
-        })
-        .map_err(|e| {
-            let broken = Python::attach(|py| e.is_instance_of::<PyBrokenPipeError>(py));
-            let kind = if broken { std::io::ErrorKind::BrokenPipe } else { std::io::ErrorKind::Other };
-            std::io::Error::new(kind, e.to_string())
+        Python::attach(|py| {
+            let sent = (|| -> PyResult<()> {
+                let stream = py.import("sys")?.getattr(self.name)?;
+                match stream.call_method1("write", (text,)) {
+                    // A stream whose encoding cannot spell a character --- a
+                    // redirected stdout on Windows writes the ANSI code page,
+                    // which has no `├` --- gets it escaped (`├`) rather
+                    // than losing the line, as `sys.stderr` already does.
+                    Err(e) if e.is_instance_of::<PyUnicodeEncodeError>(py) => {
+                        let encoding: String = stream.getattr("encoding")?.extract()?;
+                        let escaped = PyString::new(py, text)
+                            .call_method1("encode", (encoding.as_str(), "backslashreplace"))?
+                            .call_method1("decode", (encoding.as_str(),))?;
+                        stream.call_method1("write", (escaped,)).map(drop)
+                    }
+                    written => written.map(drop),
+                }
+            })();
+            sent.map_err(|e| io_error(py, e))
         })
     }
 }
@@ -62,11 +84,11 @@ impl Write for PyStream {
             self.pending.clear();
             self.send(&text)?;
         }
-        Python::attach(|py| -> PyResult<()> {
-            py.import("sys")?.getattr(self.name)?.call_method0("flush")?;
-            Ok(())
+        Python::attach(|py| {
+            let flushed =
+                (|| -> PyResult<()> { py.import("sys")?.getattr(self.name)?.call_method0("flush").map(drop) })();
+            flushed.map_err(|e| io_error(py, e))
         })
-        .map_err(|e| std::io::Error::other(e.to_string()))
     }
 }
 

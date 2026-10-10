@@ -44,22 +44,33 @@ pub struct Ctx<'a> {
     pub host: &'a dyn Host,
     /// Set when stdout went away (`medh5 info | head`): not an error.
     pub broken_pipe: bool,
+    /// The first failure to write stdout other than its reader going away
+    /// (a full disk, a closed descriptor): the output is lost, so the command
+    /// has failed whatever it computed.
+    write_error: Option<std::io::Error>,
 }
 
 impl<'a> Ctx<'a> {
     pub fn new(out: &'a mut dyn Write, err: &'a mut dyn Write, host: &'a dyn Host) -> Ctx<'a> {
-        Ctx { out, err, host, broken_pipe: false }
+        Ctx { out, err, host, broken_pipe: false, write_error: None }
     }
 
-    /// `print(text)`.
+    /// `print(text)`.  Once stdout has failed nothing more is written to it.
     pub fn print(&mut self, text: impl AsRef<str>) {
-        if self.broken_pipe {
+        if self.broken_pipe || self.write_error.is_some() {
             return;
         }
         let result = writeln!(self.out, "{}", text.as_ref());
+        self.record(result);
+    }
+
+    /// Note how a write to stdout went.
+    fn record(&mut self, result: std::io::Result<()>) {
         if let Err(e) = result {
             if e.kind() == std::io::ErrorKind::BrokenPipe {
                 self.broken_pipe = true;
+            } else if self.write_error.is_none() {
+                self.write_error = Some(e);
             }
         }
     }
@@ -68,14 +79,6 @@ impl<'a> Ctx<'a> {
     pub fn eprint(&mut self, text: impl AsRef<str>) {
         let _ = writeln!(self.err, "{}", text.as_ref());
         let _ = self.err.flush();
-    }
-
-    pub fn out(&mut self) -> &mut dyn Write {
-        self.out
-    }
-
-    pub fn err(&mut self) -> &mut dyn Write {
-        self.err
     }
 
     pub fn streams(&mut self) -> (&mut dyn Write, &mut dyn Write) {
@@ -96,8 +99,37 @@ impl<'a> Ctx<'a> {
     }
 
     pub fn flush(&mut self) {
-        let _ = self.out.flush();
+        if !self.broken_pipe && self.write_error.is_none() {
+            let result = self.out.flush();
+            self.record(result);
+        }
         let _ = self.err.flush();
+    }
+
+    /// The exit code, once the output is flushed: the command's `code`, unless
+    /// stdout could not take the output --- then the command has failed, and
+    /// says so.  A reader that went away early (`medh5 validate ... | head`)
+    /// is not a failure, and not a success either: the command's own code
+    /// stands.
+    pub fn finish(mut self, code: i32) -> i32 {
+        self.flush();
+        match self.write_error.take() {
+            Some(e) => self.fail(format!("cannot write output: {}", os_reason(&e))),
+            None => code,
+        }
+    }
+}
+
+/// An OS error as Python words one with no file name to it:
+/// `[Errno 28] No space left on device`.
+fn os_reason(e: &std::io::Error) -> String {
+    let full = e.to_string();
+    match e.raw_os_error() {
+        Some(code) => {
+            let reason = full.strip_suffix(&format!(" (os error {code})")).unwrap_or(&full);
+            format!("[Errno {code}] {reason}")
+        }
+        None => full,
     }
 }
 

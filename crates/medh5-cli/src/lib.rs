@@ -154,30 +154,28 @@ pub fn run_with(args: &[String], out: &mut dyn Write, err: &mut dyn Write, host:
     medh5::h5::init();
     let argv = std::iter::once("medh5".to_string()).chain(args.iter().cloned());
     let mut command = app::command();
+    let mut ctx = Ctx::new(out, err, host);
     let matches = match command.try_get_matches_from_mut(argv) {
         Ok(m) => m,
         Err(e) => {
+            let text = e.render().to_string();
             let code = match e.kind() {
                 ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => {
-                    let _ = write!(out, "{}", e.render());
+                    ctx.print(text.trim_end());
                     EXIT_OK
                 }
                 _ => {
-                    let _ = write!(err, "{}", e.render());
+                    ctx.eprint(text.trim_end());
                     EXIT_USAGE
                 }
             };
-            let _ = out.flush();
-            let _ = err.flush();
-            return code;
+            return ctx.finish(code);
         }
     };
-    let mut ctx = Ctx::new(out, err, host);
     let Some((name, sub)) = matches.subcommand() else {
         let help = command.render_help();
         ctx.print(help.to_string().trim_end());
-        ctx.flush();
-        return EXIT_USAGE;
+        return ctx.finish(EXIT_USAGE);
     };
     let result = match name {
         "info" | "tree" | "validate" | "verify" | "fix" | "timeline" | "track" => {
@@ -201,11 +199,7 @@ pub fn run_with(args: &[String], out: &mut dyn Write, err: &mut dyn Write, host:
             ctx.fail(message)
         }
     };
-    ctx.flush();
-    if ctx.broken_pipe {
-        return EXIT_OK;
-    }
-    code
+    ctx.finish(code)
 }
 
 /// The grammar as data: `{"options": [...], "positionals": [...],
@@ -274,6 +268,46 @@ mod tests {
         assert_eq!(unguarded.code(), Some(99));
         let guarded = planted(&mut python_running(&python, "import json; json.dumps([])")).unwrap();
         assert_eq!(guarded.code(), Some(0));
+    }
+
+    /// A stdout every write to which fails with `error()`.
+    struct Failing(fn() -> std::io::Error);
+
+    impl Write for Failing {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err((self.0)())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn run_into(stdout: &mut dyn Write, args: &[&str]) -> (i32, String) {
+        let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+        let mut err = Vec::new();
+        let code = run_with(&args, stdout, &mut err, &NativeHost);
+        (code, String::from_utf8(err).unwrap())
+    }
+
+    #[test]
+    fn output_lost_to_a_full_disk_fails_the_command() {
+        let mut full = Failing(|| std::io::Error::other("No space left on device"));
+        for args in [&["conformance", "list"][..], &["conformance", "list", "--json"], &["--help"]] {
+            let (code, err) = run_into(&mut full, args);
+            assert_eq!(code, EXIT_ERROR, "{args:?}");
+            assert_eq!(err, "medh5: cannot write output: No space left on device\n", "{args:?}");
+        }
+    }
+
+    #[test]
+    fn a_reader_that_left_early_keeps_the_commands_own_exit_code() {
+        let mut gone = Failing(|| std::io::ErrorKind::BrokenPipe.into());
+        assert_eq!(run_into(&mut gone, &["conformance", "list"]), (EXIT_OK, String::new()));
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing.medh5");
+        let (code, err) = run_into(&mut gone, &["validate", missing.to_str().unwrap()]);
+        assert_eq!((code, err.as_str()), (EXIT_ERROR, ""));
     }
 
     #[test]
