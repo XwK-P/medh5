@@ -6,7 +6,7 @@
 //! `node[...]`.  They read through the engine's HDF5 library, so there is one
 //! library instance in the process and no second set of handles to close.
 
-use pyo3::exceptions::{PyIndexError, PyKeyError, PyTypeError};
+use pyo3::exceptions::{PyIndexError, PyKeyError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyEllipsis, PyList, PyString, PyTuple};
 
@@ -281,6 +281,10 @@ impl Dataset {
         let ds = self.ds.clone();
         Ok(nd_to_py(py, py.detach(move || data::read(&ds))?))
     }
+    /// `numpy.asarray(ds)`: the whole dataset, read.  A read always makes a
+    /// new array, so `copy=False` is refused (`ValueError`), as `h5py`
+    /// refuses it; a `dtype` converts the array read, without a second copy
+    /// where it is already of that type.
     #[pyo3(signature = (dtype=None, copy=None))]
     fn __array__<'py>(
         &self,
@@ -288,10 +292,21 @@ impl Dataset {
         dtype: Option<&Bound<'py, PyAny>>,
         copy: Option<&Bound<'py, PyAny>>,
     ) -> R<Bound<'py, PyAny>> {
-        let _ = copy;
+        if let Some(c) = copy.filter(|c| !c.is_none()) {
+            if !c.is_truthy()? {
+                return Err(PyValueError::new_err(
+                    "a Dataset's array is read from the file, so it cannot be had without a copy (copy=False)",
+                )
+                .into());
+            }
+        }
         let array = self.read(py)?;
         match dtype {
-            Some(d) if !d.is_none() => Ok(array.call_method1("astype", (d,))?),
+            Some(d) if !d.is_none() => {
+                let kwargs = PyDict::new(py);
+                kwargs.set_item("copy", false)?;
+                Ok(array.call_method("astype", (d,), Some(&kwargs))?)
+            }
             _ => Ok(array),
         }
     }
