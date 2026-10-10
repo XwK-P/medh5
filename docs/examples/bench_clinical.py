@@ -4,7 +4,7 @@ A synthetic cohort, built here: ``--subjects`` subjects, each with a baseline
 and a follow-up CT (``--shape``, ``int16``), an MR at follow-up for every
 second subject, ``--events`` coded laboratory values spread over two years
 before and after the baseline, a report and its revision (about 2 KiB of text
-each), two responses and a lesion-assessment, all on one subject clock.  The
+each), and two RECIST responses, all on one subject clock.  The
 same images are also written as imaging-only 1.0 files, which is the baseline
 the imaging path is compared with.
 

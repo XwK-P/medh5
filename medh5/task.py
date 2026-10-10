@@ -19,7 +19,8 @@ report is read.  The engine does all of it; this module is the Python face.
 
 .. code-block:: python
 
-    from medh5.task import Slot, SourceRef, Target, TaskManifest
+    from medh5.clinical import DAY
+    from medh5.task import Slot, SourceRef, TaskManifest
 
     task = TaskManifest.new("progression", "1", identity_namespace="site-a",
                             slots=[Slot("ct", "CT", required=True, patch=(32, 32, 16))],
@@ -690,9 +691,8 @@ def concept_token(kind: str, code_system: str | None, code: str | None) -> str:
     A ``\\`` or ``|`` inside the system or the code is escaped with a
     backslash, so two concepts never share a token: unescaped, system
     ``alpha|beta`` with code ``gamma`` and system ``alpha`` with code
-    ``beta|gamma`` were one input (F17 of the round-4 audit).  A token without
-    either character reads as it always did, so a vocabulary fitted before
-    still holds.
+    ``beta|gamma`` would be one input.  A token without either character
+    reads as it always did, so a vocabulary fitted before still holds.
     """
     if code_system is None or code is None:
         return f"{kind}|"

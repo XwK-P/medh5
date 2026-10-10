@@ -21,7 +21,7 @@ API, end to end, and the test suite runs each of them
 | [`bench_preflight.py`](bench_preflight.py) | A task's preflight, dataset and items on a large multi-site cohort --- many events, documents, fragments and cutoffs --- each measured in its own interpreter: time, peak memory, bytes read ([results below](#preflight-at-cohort-scale)) |
 
 ```bash
-pip install "medh5[torch]"
+pip install "medh5[torch,h5py]"   # h5py: clinical_cache.py rots a cache's bytes with it
 python docs/examples/clinical_longitudinal.py out/   # ~5 s
 python docs/examples/clinical_collection.py out2/    # ~5 s
 python docs/examples/clinical_cache.py out3/         # ~5 s

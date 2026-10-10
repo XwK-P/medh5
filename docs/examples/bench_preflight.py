@@ -8,7 +8,8 @@ subject's clock).  Every subject has
   revised by a later version, one in a hundred with unknown availability),
   medication orders and administered courses (intervals), day-precision
   diagnoses, two static demographics held by every fragment (so preflight
-  reconciles them), and an imaging event and a response assessment per visit;
+  reconciles them), an imaging event per visit and site, and a response
+  assessment per follow-up visit at the first site;
 - ``--documents`` notes of about ``--note-bytes`` of text each, a document
   event owning each, every tenth note revised;
 - a small CT per visit (``--visits``) at the first site, a small MR at the

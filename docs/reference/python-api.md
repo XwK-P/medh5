@@ -464,6 +464,13 @@ row.events, row.slots["ct"].image_id, row.target.status
 | `medh5.cache` | `CacheWriter`, `FeatureCache`, `validate_cache` (`CacheReport.stale` / `.corrupt`, and the `.manifest_digest` and `.level` it validated), `fitted_on`, `fitted_on_mismatches`, `build_document_cache`, `HashingTextEncoder` |
 | `medh5.torch` | `ClinicalTaskDataset`, `ConceptVocabulary`, `collate_clinical` ([PyTorch](torch.md#clinical-tasks-format-11)) |
 
+| | |
+|---|---|
+| `TaskManifest.row_fingerprint(row_id)` | One example's identity: the task, the subject, its sources' pinned `content_id`s and the cutoff (contract §3.2) --- what a row feature pins |
+| `medh5.task.concept_token(kind, code_system, code)` | An event's concept as a vocabulary keys it: the kind, the coding system and the code, a separator inside either escaped so two concepts never share a token |
+| `CacheWriter.add(entry_id, values, *, sources, ...)` | One entry, naming every source version it read; at the patient level also its row, fingerprint, cutoff and the versions it encodes |
+| `CacheWriter.add_row(row, values)` | A preflight row's feature, its id, fingerprint, cutoff, admitted versions and sources taken from the `RowView` |
+
 The contract is [Task and cache contract 1](../spec/task-cache-1.md); the
 walk-through is [Train on clinical tasks](../guides/clinical-training.md).
 
