@@ -109,8 +109,8 @@ jobs:
 
   build:
     # Every platform the project ships: the abi3 wheel and the native binary,
-    # built together so HDF5 compiles once.  The release publishes these
-    # artifacts as they are, so each is checked here: the binary runs the
+    # built together from one checkout and one lock.  The release publishes
+    # these artifacts as they are, so each is checked here: the binary runs the
     # conformance corpus, and the wheel imports and runs it too.
     name: build (${{ matrix.target }})
     strategy:

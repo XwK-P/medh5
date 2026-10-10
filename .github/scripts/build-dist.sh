@@ -33,7 +33,9 @@ fi
 
 # (The `+` form: an empty array is "unbound" to the bash 3.2 macOS ships.)
 maturin build --release --locked --out dist --interpreter "$python" ${compatibility[@]+"${compatibility[@]}"}
-# The same engine build the wheel just used, so HDF5 is not compiled twice.
+# The binary, from the same checkout and lock as the wheel.  Cargo reuses what
+# maturin compiled only where the two builds agree on target and flags; where
+# they do not, the graph compiles again, HDF5 included --- CI time, nothing else.
 cargo build --release --locked -p medh5-cli
 
 exe=target/release/medh5
