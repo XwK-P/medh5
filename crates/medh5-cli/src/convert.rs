@@ -97,7 +97,13 @@ pub fn migrate(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
             let mut report = ConversionReport::new("migrate", "");
             let label_set = build_label_set(&sources, Some(&mut report))?;
             let written = write_sidecar(&label_set, Path::new(target))?;
-            ctx.print(format!("{}: {} classes --- review before migrating", written.display(), label_set.len()));
+            let note = format!("{}: {} classes --- review before migrating", written.display(), label_set.len());
+            // With `--json`, stdout is the report alone.
+            if flag(m, "json") {
+                ctx.eprint(note);
+            } else {
+                ctx.print(note);
+            }
             return Ok(Some(report));
         }
         let reviewed = match get_str(m, "label_set") {

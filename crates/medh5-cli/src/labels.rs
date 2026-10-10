@@ -27,14 +27,15 @@ fn show(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
         Err(e) if e.is_medh5() => return Ok(ctx.fail(e.to_string())),
         Err(e) => return Err(e),
     };
+    if flag(m, "json") {
+        // No label set is `null`: `--json` output is always a document.
+        ctx.emit(&label_set.map_or(Value::Null, |ls| ls.to_json(None)), true);
+        return Ok(EXIT_OK);
+    }
     let Some(label_set) = label_set else {
         ctx.print(format!("{path}: no label set"));
         return Ok(EXIT_OK);
     };
-    if flag(m, "json") {
-        ctx.emit(&label_set.to_json(None), true);
-        return Ok(EXIT_OK);
-    }
     let digest = label_set.sha256();
     ctx.print(format!(
         "{} v{}  form={}  sha256={}...  ({} classes)",

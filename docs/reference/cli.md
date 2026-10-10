@@ -595,7 +595,10 @@ medh5 conformance score SUITE RESULTS.json [--json]
 ```
 
 Score any implementation's results against a published suite. See
-[Conformance](../spec/conformance.md).
+[Conformance](../spec/conformance.md). A suite whose files no longer match its
+`SHA256SUMS` fails the score, whatever the cases say --- a score over files
+that are not the published ones is not a score --- and `--json` names those
+files under `changed`.
 
 ## Related
 

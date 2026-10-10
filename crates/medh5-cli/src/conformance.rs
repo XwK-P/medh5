@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use clap::ArgMatches;
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use medh5::conformance::{build_corpus, cases, check_checksums, publish, run_corpus, score, summarize, CaseResult};
 use medh5::pyval::py_path;
@@ -23,7 +23,7 @@ pub fn dispatch(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
         Some(("run", sub)) => {
             let names = get_strs(sub, "names");
             let results = run_corpus(Path::new(req_str(sub, "outdir")), names.as_deref())?;
-            Ok(report(&results, flag(sub, "json"), ctx))
+            Ok(report(&results, None, flag(sub, "json"), ctx))
         }
         Some(("publish", sub)) => {
             let names = get_strs(sub, "names");
@@ -81,21 +81,38 @@ fn score_cmd(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
         Err(e) if e.is_medh5() || matches!(e, Error::Io(_) | Error::Value(_)) => return Ok(ctx.fail(e.python_str())),
         Err(e) => return Err(e),
     };
+    let as_json = flag(m, "json");
     if !stale.is_empty() {
         // The scores mean nothing if the files scored are not the files
-        // published, so say so before reporting any of them.
-        ctx.print(format!("WARNING: {} published file(s) differ from {}", stale.len(), req_str(m, "suite")));
-        for name in &stale {
-            ctx.print(format!("  changed: {name}"));
+        // published, so say so before reporting any of them --- on stderr
+        // when stdout is the document, which names them under `changed`.
+        let mut warning =
+            vec![format!("WARNING: {} published file(s) differ from {}", stale.len(), req_str(m, "suite"))];
+        warning.extend(stale.iter().map(|name| format!("  changed: {name}")));
+        for line in warning {
+            if as_json {
+                ctx.eprint(line);
+            } else {
+                ctx.print(line);
+            }
         }
     }
-    Ok(report(&results, flag(m, "json"), ctx))
+    Ok(report(&results, Some(&stale), as_json, ctx))
 }
 
-fn report(results: &[CaseResult], as_json: bool, ctx: &mut Ctx) -> i32 {
+/// Print the outcome; the exit code.  `changed`, for a score, names the
+/// published files whose bytes are no longer the published ones: a score
+/// over them is not a score, so it fails whatever the cases say.
+fn report(results: &[CaseResult], changed: Option<&[String]>, as_json: bool, ctx: &mut Ctx) -> i32 {
     let failures: Vec<&CaseResult> = results.iter().filter(|r| !r.ok()).collect();
+    let drifted = changed.is_some_and(|c| !c.is_empty());
     if as_json {
-        ctx.emit(&summarize(results), true);
+        let mut summary = summarize(results);
+        if let Some(changed) = changed {
+            summary["changed"] = json!(changed);
+            summary["ok"] = json!(failures.is_empty() && !drifted);
+        }
+        ctx.emit(&summary, true);
     } else {
         for result in &failures {
             ctx.print(format!("FAIL {}", result.case.name));
@@ -111,7 +128,7 @@ fn report(results: &[CaseResult], as_json: bool, ctx: &mut Ctx) -> i32 {
         }
         ctx.print(format!("{}/{} cases pass", results.len() - failures.len(), results.len()));
     }
-    if failures.is_empty() {
+    if failures.is_empty() && !drifted {
         EXIT_OK
     } else {
         EXIT_ERROR

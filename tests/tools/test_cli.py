@@ -334,6 +334,10 @@ class TestLabels:
             w.add_image("CT", np.zeros(SHAPE), grid="g", modality="CT")
         code, out = run(capsys, "labels", "show", str(path))
         assert "no label set" in out.out
+        # `--json` is a document whatever there is to say: here, `null`.
+        code, out = run(capsys, "labels", "show", str(path), "--json")
+        assert code == EXIT_OK
+        assert json.loads(out.out) is None
 
     def test_registry_list(self, capsys):
         code, out = run(capsys, "labels", "registry", "list")
@@ -495,6 +499,16 @@ class TestConformanceCommands:
         )
         code, out = run(capsys, "conformance", "score", str(tmp_path), str(results))
         assert "differ" in out.out and "core-minimal.medh5" in out.out
+        # A score over files that are not the published ones is not a score.
+        assert code == EXIT_ERROR
+        code, out = run(
+            capsys, "conformance", "score", str(tmp_path), str(results), "--json"
+        )
+        assert code == EXIT_ERROR
+        payload = json.loads(out.out)
+        assert payload["changed"] == ["core-minimal.medh5"]
+        assert payload["ok"] is False and payload["passed"] == 1
+        assert "differ" in out.err
 
     def test_score_without_a_suite_fails_cleanly(self, capsys, tmp_path):
         results = tmp_path / "results.json"
@@ -1338,6 +1352,20 @@ class TestConvert:
         assert code == EXIT_OK
         assert "review before migrating" in printed.out
         assert json.loads(labels.read_text(encoding="utf-8"))["classes"]
+        # With `--json` the note goes to stderr and stdout is the report alone.
+        code, printed = run(
+            capsys,
+            "migrate",
+            str(old),
+            "-o",
+            str(tmp_path / "m"),
+            "--write-labels",
+            str(labels),
+            "--json",
+        )
+        assert code == EXIT_OK
+        assert json.loads(printed.out)["converter"] == "migrate"
+        assert "review before migrating" in printed.err
 
         code, printed = run(
             capsys,
