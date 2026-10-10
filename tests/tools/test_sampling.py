@@ -213,6 +213,17 @@ class TestPatchSampler:
             assert len(list(iter_patches(sample, sampler, n=3))) == 3
             assert "uniform" in repr(sampler)
 
+    @pytest.mark.parametrize("seed", [-1, 2**64, 2**200, [1, -2], [1, 2**64]])
+    def test_S14_3_a_seed_is_a_64_bit_word_never_wrapped(self, indexed, seed):
+        """``2**64`` wrapped onto ``0`` and ``-1`` onto ``2**64 - 1``, drawing
+        another seed's patches; NumPy refuses a negative seed too."""
+        with medh5.open(indexed) as sample:
+            sampler = PatchSampler(4, strategy="uniform")
+            with pytest.raises(ValueError, match=r"from 0 to 2\*\*64 - 1"):
+                sampler.draw(sample, "organs_tp0", seed)
+            last = sampler.draw(sample, "organs_tp0", 2**64 - 1)
+            assert sampler.draw(sample, "organs_tp0", 2**64 - 1) == last
+
     def test_the_annotation_defaults_to_the_first_voxel_one(self, indexed):
         with medh5.open(indexed) as sample:
             assert PatchSampler(4).draw(sample) is not None
