@@ -44,6 +44,9 @@ CRATES = ("medh5-sys", "medh5", "medh5-cli")
 # newer toolchain would differ on these alone; everything else is the source.
 GENERATED = frozenset({"Cargo.toml", "Cargo.lock"})
 
+# What PyPI serves: the wheels and the sdist.
+DISTRIBUTIONS = (".whl", ".tar.gz")
+
 AGENT = "medh5-release (https://github.com/XwK-P/medh5)"
 
 
@@ -116,6 +119,20 @@ def digests(directory: Path) -> dict[str, str]:
         p.name: sha256(p.read_bytes())
         for p in sorted(directory.iterdir())
         if p.is_file()
+    }
+
+
+def dist_digests(directory: Path) -> dict[str, str]:
+    """The wheels and the sdist in `directory`, as `digests` lists them.
+
+    Nothing else there is a distribution: under Trusted Publishing the
+    publishing action signs each one and writes the PEP 740 attestation beside
+    it, as `<distribution>.publish.attestation`, in the directory it uploaded.
+    """
+    return {
+        name: digest
+        for name, digest in digests(directory).items()
+        if name.endswith(DISTRIBUTIONS)
     }
 
 
@@ -221,9 +238,10 @@ def publish_crates() -> int:
 
 
 def check_pypi(dist: Path, *, wait: int = 600) -> int:
-    """Every file in `dist` is on PyPI with the same digest.  A fresh upload
-    takes a moment to appear in the JSON API, so missing files are retried."""
-    local = digests(dist)
+    """Every distribution in `dist` is on PyPI with the same digest.  A fresh
+    upload takes a moment to appear in the JSON API, so missing files are
+    retried."""
+    local = dist_digests(dist)
     version = dist_version(list(local))
     deadline = time.monotonic() + wait
     while True:
@@ -308,12 +326,12 @@ def github_release(
 def verify(
     tag: str, dist: Path, cli: Path, *, tap: str | None, token: str | None
 ) -> int:
-    """Every place has this version: PyPI every file of `dist`, crates.io every
-    crate, the release page every file of `dist` and `cli`, and the tap (when
-    named) a formula for it."""
+    """Every place has this version: PyPI every distribution in `dist`,
+    crates.io every crate, the release page those and every file of `cli`, and
+    the tap (when named) a formula for it."""
     version = tag.removeprefix("v")
     problems = []
-    local = digests(dist)
+    local = dist_digests(dist)
     problems += [
         f"PyPI: {p}"
         for p in dist_problems(local, pypi_digests(dist_version(list(local))))

@@ -12,6 +12,7 @@ from __future__ import annotations
 import fnmatch
 import importlib.util
 import io
+import json
 import random
 import re
 import shutil
@@ -417,6 +418,39 @@ class TestDistribution:
         ) == ("2.0.0")
         with pytest.raises(SystemExit, match="2 versions"):
             release.dist_version(["medh5-2.0.0.tar.gz", "medh5-2.0.1.tar.gz"])
+
+    def test_only_the_distributions_are_compared_with_pypi(self, tmp_path, monkeypatch):
+        """Under Trusted Publishing the upload signs every distribution and
+        writes its attestation beside it, as `<file>.publish.attestation`.
+        The check after the upload read those as distributions of a second
+        version and failed with PyPI already holding the release, so neither
+        the release page nor the formula followed --- and a re-run signed, and
+        failed, again."""
+        release = _release_script("release.py")
+        dist, cli = tmp_path / "dist", tmp_path / "cli"
+        dist.mkdir()
+        cli.mkdir()
+        names = ["medh5-2.0.0-cp310-abi3-win_amd64.whl", "medh5-2.0.0.tar.gz"]
+        for name in names:
+            (dist / name).write_bytes(name.encode())
+            (dist / f"{name}.publish.attestation").write_text("{}", encoding="utf-8")
+        with pytest.raises(SystemExit, match="2 versions"):
+            release.dist_version(list(release.digests(dist)))
+        local = release.dist_digests(dist)
+        assert sorted(local) == sorted(names)
+        assert release.dist_version(list(local)) == "2.0.0"
+        published = {name: release.sha256(name.encode()) for name in names}
+        monkeypatch.setattr(release, "pypi_digests", lambda version: published)
+        assert release.check_pypi(dist, wait=0) == 0
+        # And `verify`, which reads the same directory.
+        (cli / "medh5-2.0.0-x.tar.gz").write_bytes(b"x")
+        assets = {"assets": [{"name": n} for n in [*names, "medh5-2.0.0-x.tar.gz"]]}
+        monkeypatch.setattr(release, "on_crates_io", lambda name, version: True)
+        monkeypatch.setattr(
+            release, "fetch", lambda url, **_: json.dumps(assets).encode()
+        )
+        monkeypatch.setenv("GITHUB_REPOSITORY", "XwK-P/medh5")
+        assert release.verify("v2.0.0", dist, cli, tap=None, token=None) == 0
 
     def test_R05_R06_every_publishing_step_can_run_again(self):
         """`cargo publish --workspace` refused a re-run once one crate was up,
