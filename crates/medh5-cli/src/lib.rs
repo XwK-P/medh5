@@ -6,10 +6,13 @@
 //! the Python package's console script.  The format converters are Python
 //! integrations and run in the Python package (see [`Host`]).
 
+use std::ffi::OsString;
 use std::io::Write;
 
 use clap::error::ErrorKind;
 use serde_json::{json, Map, Value};
+
+use medh5::json::repr_str;
 
 pub mod app;
 mod bench;
@@ -71,6 +74,30 @@ pub fn run(args: Vec<String>) -> i32 {
     let mut out = std::io::stdout().lock();
     let mut err = std::io::stderr().lock();
     run_with(&args, &mut out, &mut err, &NativeHost)
+}
+
+/// [`run`] on arguments as the operating system passed them, which need not
+/// be UTF-8: one that is not is a usage error, said on stderr.
+pub fn run_os(args: impl IntoIterator<Item = OsString>) -> i32 {
+    match utf8_args(args) {
+        Ok(args) => run(args),
+        Err(message) => {
+            let _ = writeln!(std::io::stderr(), "medh5: {message}");
+            EXIT_USAGE
+        }
+    }
+}
+
+/// The arguments as text, or what to say about the first that is not UTF-8
+/// --- a Latin-1 file name a shell glob expanded, say.  Every command takes
+/// its paths as text, so such an argument is refused before anything runs
+/// rather than ending the program in a panic.
+pub fn utf8_args(args: impl IntoIterator<Item = OsString>) -> Result<Vec<String>, String> {
+    args.into_iter()
+        .map(|arg| {
+            arg.into_string().map_err(|arg| format!("argument {} is not valid UTF-8", repr_str(&arg.to_string_lossy())))
+        })
+        .collect()
 }
 
 /// Run the command line on `args` (without the program name); the exit code.
@@ -167,4 +194,21 @@ pub fn command_tree() -> Value {
         }
     }
     tree
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn an_argument_that_is_not_utf8_is_a_usage_error_not_a_panic() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let latin1 = || OsString::from_vec(b"caf\xe9.medh5".to_vec());
+        let refused = utf8_args([OsString::from("info"), latin1()]).unwrap_err();
+        assert_eq!(refused, "argument 'caf\u{fffd}.medh5' is not valid UTF-8");
+        assert_eq!(run_os([OsString::from("info"), latin1()]), EXIT_USAGE);
+        assert_eq!(utf8_args([OsString::from("info"), OsString::from("café.medh5")]).unwrap(), ["info", "café.medh5"]);
+    }
 }

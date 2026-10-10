@@ -6,6 +6,7 @@
 //! see it --- and hands the commands only Python can run (the format
 //! converters, the PyTorch dataloader benchmark) to a Python host object.
 
+use std::ffi::OsString;
 use std::io::Write;
 
 use pyo3::exceptions::PyBrokenPipeError;
@@ -121,10 +122,21 @@ impl medh5_cli::Host for PyHost {
 
 /// Run the command line on `argv` (without the program name); the exit code.
 #[pyfunction]
-fn cli_main(py: Python<'_>, argv: Vec<String>, host: Py<PyAny>) -> i32 {
+fn cli_main(py: Python<'_>, argv: Vec<OsString>, host: Py<PyAny>) -> i32 {
     let host = PyHost { host };
     let mut out = PyStream::new("stdout");
     let mut err = PyStream::new("stderr");
+    // `sys.argv` carries an argument that is not UTF-8 as surrogate escapes,
+    // which no conversion to text accepts: taken as the operating system's
+    // bytes, it is refused as the standalone binary refuses it.
+    let argv = match medh5_cli::utf8_args(argv) {
+        Ok(argv) => argv,
+        Err(message) => {
+            let _ = writeln!(err, "medh5: {message}");
+            let _ = err.flush();
+            return medh5_cli::EXIT_USAGE;
+        }
+    };
     py.detach(|| medh5_cli::run_with(&argv, &mut out, &mut err, &host))
 }
 

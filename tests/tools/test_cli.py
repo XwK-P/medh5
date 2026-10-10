@@ -43,6 +43,14 @@ class TestEntryPoint:
         assert "COMMAND" in capsys.readouterr().out
         assert main(["--no-such-flag"]) == EXIT_USAGE
 
+    def test_an_argument_that_is_not_utf8_is_a_usage_error(self, capsys):
+        """A Latin-1 file name a shell glob expanded reaches ``sys.argv`` as
+        surrogate escapes.  It ended the console script in a traceback, and
+        the standalone binary in a panic; it is refused as a usage error."""
+        code, out = run(capsys, "info", "caf\udce9.medh5")
+        assert code == EXIT_USAGE
+        assert out.err == "medh5: argument 'caf�.medh5' is not valid UTF-8\n"
+
     def test_Q12_a_missing_name_is_a_handled_cli_error(self, tmp_path: Path, capsys):
         """`convert to-nifti FILE <unknown image>` ended in a KeyError traceback."""
         pytest.importorskip("nibabel")
