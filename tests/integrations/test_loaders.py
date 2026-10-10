@@ -1133,7 +1133,6 @@ class TestHandleCache:
     ):
         """The spawn start method, asked for explicitly: Windows and macOS
         default to it, Linux to fork."""
-        pytest.importorskip("torch")
         from torch.utils.data import DataLoader
 
         from medh5.sampling import PatchSampler
