@@ -641,18 +641,29 @@ fn check_chains(records: &ClinicalRecords, events: &HashMap<&str, &Event>, base:
             ));
         }
     }
-    // A cycle: walking back from a version returns to it.
+    // A cycle: walking back from a version returns to it.  Each version is
+    // walked once --- a walk stops at one an earlier walk settled --- so a
+    // chain costs its length, where walking to the root from every version
+    // cost its square.
     let mut cyclic: BTreeSet<&str> = BTreeSet::new();
+    let mut settled: HashSet<&str> = HashSet::new();
     for start in predecessors.keys() {
-        let mut seen: BTreeSet<&str> = BTreeSet::new();
+        let mut path: Vec<&str> = Vec::new();
+        let mut on_path: HashMap<&str, usize> = HashMap::new();
         let mut at = *start;
-        while let Some(olds) = predecessors.get(at) {
-            if !seen.insert(at) {
-                cyclic.insert(at);
+        while !settled.contains(at) {
+            if let Some(&from) = on_path.get(at) {
+                cyclic.extend(&path[from..]);
                 break;
             }
-            at = olds[0];
+            on_path.insert(at, path.len());
+            path.push(at);
+            match predecessors.get(at) {
+                Some(olds) => at = olds[0],
+                None => break,
+            }
         }
+        settled.extend(path);
     }
     if let Some(at) = cyclic.iter().next() {
         out.push(finding("E816", &loc, format!("the `supersedes` links through {} form a cycle", repr_str(at))));
@@ -686,6 +697,13 @@ fn check_chains(records: &ClinicalRecords, events: &HashMap<&str, &Event>, base:
 /// §7: a lesion assessment names its timepoint, links its instance and says
 /// one of the assessment values.
 fn check_assessments(records: &ClinicalRecords, base: &str, out: &mut Vec<Finding>) {
+    // Indexed once: scanning every link per assessment was their product.
+    let assessing: HashSet<&str> = records
+        .links
+        .iter()
+        .filter(|l| l.relation == "assesses" && l.source_type == "event" && l.target_type == "instance")
+        .map(|l| l.source_id.as_str())
+        .collect();
     for (i, e) in records.events.iter().enumerate() {
         if !(e.code_system.as_deref() == Some(ASSESSMENT_SYSTEM) && e.code.as_deref() == Some(LESION_PRESENCE)) {
             continue;
@@ -713,13 +731,7 @@ fn check_assessments(records: &ClinicalRecords, base: &str, out: &mut Vec<Findin
         if e.timepoint_id.is_none() {
             out.push(finding("E817", &loc, "a lesion assessment names the imaging timepoint it assessed"));
         }
-        let linked = records.links.iter().any(|l| {
-            l.relation == "assesses"
-                && l.source_type == "event"
-                && l.source_id == e.event_id
-                && l.target_type == "instance"
-        });
-        if !linked {
+        if !assessing.contains(e.event_id.as_str()) {
             out.push(finding(
                 "E817",
                 &loc,
@@ -830,6 +842,30 @@ mod tests {
             ],
         );
         assert_eq!(codes(&check_records(&branching, &ctx, "/clinical")), ["E816"]);
+    }
+
+    #[test]
+    fn s7_a_long_chain_is_walked_once() {
+        // Twenty thousand versions of one record: walking back to the root
+        // from every version took the square of that.
+        let n = 20_000;
+        let versions: Vec<Event> = (0..n).map(|i| event(&format!("v{i}"), "r")).collect();
+        let links: Vec<Link> = (1..n)
+            .map(|i| {
+                Link::new(("event", format!("v{i}").as_str()), "supersedes", ("event", format!("v{}", i - 1).as_str()))
+            })
+            .collect();
+        let ctx = SampleContext::default();
+        let started = std::time::Instant::now();
+        assert!(check_records(&records(versions.clone(), links.clone()), &ctx, "/clinical").is_empty());
+        assert!(started.elapsed() < std::time::Duration::from_secs(20), "{:?}", started.elapsed());
+        // Closed into a cycle, it is reported once, through its smallest id.
+        let mut closed = links;
+        closed.push(Link::new(("event", "v0"), "supersedes", ("event", format!("v{}", n - 1).as_str())));
+        let found = check_records(&records(versions, closed), &ctx, "/clinical");
+        let cycles: Vec<&str> =
+            found.iter().filter(|f| f.message.contains("cycle")).map(|f| f.message.as_str()).collect();
+        assert_eq!(cycles, ["the `supersedes` links through 'v0' form a cycle"]);
     }
 
     #[test]
