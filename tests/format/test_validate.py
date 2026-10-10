@@ -22,7 +22,7 @@ from medh5.validate import (
     validate_root,
 )
 from tests.helpers import encode_attr, str_dtype, write_sample
-from tests.kits import Numbered
+from tests.kits import History, Numbered
 
 
 def codes(path, level="semantic"):
@@ -887,3 +887,20 @@ class TestMultiscale:
         report = validate_file(path)
         assert at(report, "/grids/l1") == ["E109"]
         assert "E001" not in report.codes
+
+
+class TestClinicalWithoutTheDocument:
+    """1.1 §5--§7: the record rules check timepoint, activity and
+    de-identification references against `/meta`.  When it could not be read,
+    every reference was reported dangling (E813) beside the real finding."""
+
+    def test_S7_1_an_unreadable_document_does_not_make_every_reference_dangle(
+        self, tmp_path
+    ):
+        path = tmp_path / "h.medh5"
+        History.write(path)
+        edit_meta(path, lambda d: d["identity"].update(sex="X"))
+        found = codes(path)
+        assert "E005" in found
+        assert "E813" not in found
+

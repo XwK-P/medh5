@@ -327,6 +327,25 @@ fn half_null_spans(ctx: &Context, links: &RawTable, out: &mut Vec<Diagnostic>) {
     }
 }
 
+/// The sample as the record rules see it.
+///
+/// Timepoints, provenance activities and the de-identification a shifted
+/// clock rests on are declared in `/meta`.  When it could not be read (E004 or
+/// E005, reported) there is nothing to check a reference into it against, so
+/// those references are taken as resolving, rather than every one reported as
+/// dangling, and the rules that need no document still run.
+fn sample_context(ctx: &Context, records: &ClinicalRecords) -> Result<SampleContext> {
+    let mut sample = SampleContext::from_root(&ctx.root, ctx.document.as_ref())?;
+    if ctx.document.is_none() {
+        let named = records.links.iter().flat_map(|l| [(&l.source_type, &l.source_id), (&l.target_type, &l.target_id)]);
+        sample.timepoints.extend(named.filter(|(kind, _)| *kind == "timepoint").map(|(_, id)| id.clone()));
+        sample.timepoints.extend(records.events.iter().filter_map(|e| e.timepoint_id.clone()));
+        sample.activities.extend(records.events.iter().filter_map(|e| e.prov.clone()));
+        sample.deidentified = true;
+    }
+    Ok(sample)
+}
+
 /// Semantic: the rows against each other and the sample (E808--E817, W914).
 pub fn check_clinical_records(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     let mut out = Vec::new();
@@ -338,12 +357,6 @@ pub fn check_clinical_records(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     half_null_bounds(ctx, events, &mut out);
     if let Some(links) = &tables.links {
         half_null_spans(ctx, links, &mut out);
-    }
-    let sample = SampleContext::from_root(&ctx.root, ctx.document.as_ref())?;
-    if let Some(descriptor) = &tables.descriptor {
-        for f in check_descriptor(descriptor, &sample, "/clinical/meta") {
-            out.push(ctx.err(f.code, f.location, f.message));
-        }
     }
     let records = ClinicalRecords {
         descriptor: tables.descriptor.clone().unwrap_or_else(|| {
@@ -358,6 +371,12 @@ pub fn check_clinical_records(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
         documents: tables.documents.as_ref().map(documents_of).unwrap_or_default(),
         links: tables.links.as_ref().map(links_of).unwrap_or_default(),
     };
+    let sample = sample_context(ctx, &records)?;
+    if let Some(descriptor) = &tables.descriptor {
+        for f in check_descriptor(descriptor, &sample, "/clinical/meta") {
+            out.push(ctx.err(f.code, f.location, f.message));
+        }
+    }
     for f in check_records_with(&records, &tables.texts, &sample, "/clinical") {
         let d = if f.code == "E810" {
             ctx.unknown(f.code, f.location, f.message)
