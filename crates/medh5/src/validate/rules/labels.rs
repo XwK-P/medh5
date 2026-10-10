@@ -3,47 +3,22 @@
 use std::collections::BTreeSet;
 
 use super::{int_set, loc, Context};
-use crate::json::{repr_int_list, repr_list, repr_str};
-use crate::labels::{BACKGROUND_ID, IGNORE_ID};
+use crate::json::{repr_int_list, repr_list};
 use crate::validate::Diagnostic;
 use crate::Result;
 
+/// Semantic: a label set where a declared profile needs one (E301).
+///
+/// The label set's own rules (§5.1--§5.4: E302--E306) are the document's: a
+/// label set breaking one does not parse, and is reported where `/meta` is.
 pub fn check_label_set(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     let mut out = Vec::new();
     let Some(doc) = &ctx.document else { return Ok(out) };
     let mut needs: Vec<&str> =
         ["seg", "det", "cls"].into_iter().filter(|p| ctx.profiles.iter().any(|x| x == p)).collect();
     needs.sort_unstable();
-    let Some(ls) = &doc.label_set else {
-        if !needs.is_empty() {
-            out.push(ctx.err(
-                "E301",
-                "/meta#label_set",
-                format!("profile(s) {} require a label set", repr_list(&needs)),
-            ));
-        }
-        return Ok(out);
-    };
-    if ls.form == "ref" && ls.uri.as_deref().unwrap_or("").is_empty() {
-        out.push(ctx.err("E305", "/meta#label_set", "`form: ref` requires a `uri`"));
-    }
-    let mut seen_ids = BTreeSet::new();
-    let mut seen_keys = BTreeSet::new();
-    for entry in ls.classes() {
-        let location = format!("/meta#label_set/classes/{}", entry.key);
-        if entry.id == BACKGROUND_ID || entry.id == IGNORE_ID {
-            out.push(ctx.err("E303", location.clone(), format!("id {} is reserved", entry.id)));
-        }
-        if !seen_ids.insert(entry.id) {
-            out.push(ctx.err("E302", location.clone(), format!("duplicate class id {}", entry.id)));
-        }
-        if !seen_keys.insert(entry.key.clone()) {
-            out.push(ctx.err("E302", location, format!("duplicate class key {}", repr_str(&entry.key))));
-        }
-    }
-    if let Err(e) = ls.check() {
-        let code = e.code().unwrap_or("E306").to_string();
-        out.push(ctx.err(&code, "/meta#label_set", e.to_string()));
+    if doc.label_set.is_none() && !needs.is_empty() {
+        out.push(ctx.err("E301", "/meta#label_set", format!("profile(s) {} require a label set", repr_list(&needs))));
     }
     Ok(out)
 }

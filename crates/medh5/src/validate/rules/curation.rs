@@ -3,34 +3,23 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::{loc, str_attr, Context};
-use crate::curation::provenance::{is_timestamp, ACTIVITY_TYPES};
 use crate::document::SampleDocument;
 use crate::h5::attrs;
 use crate::json::repr_str;
 use crate::validate::Diagnostic;
 use crate::Result;
 
+/// Semantic: the provenance graph and quality records against the objects
+/// that name them (E601, E602, E605), de-identification (W903), and
+/// `quality` on every annotation under `curation` (E009).
+///
+/// An unknown agent or activity type (E603) and a malformed timestamp (E604)
+/// are the document's: an agent or activity breaking one does not parse, and
+/// is reported where `/meta` is.
 pub fn check_curation(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     let mut out = Vec::new();
     let Some(doc) = ctx.document.clone() else { return Ok(out) };
     let prov = &doc.provenance;
-    for activity in prov.activities() {
-        let location = format!("/meta#provenance/activities/{}", activity.id);
-        if !ACTIVITY_TYPES.contains(&activity.r#type.as_str()) {
-            out.push(ctx.unknown(
-                "E603",
-                location.clone(),
-                format!("unknown activity type {}", repr_str(&activity.r#type)),
-            ));
-        }
-        for (field, value) in [("started", &activity.started), ("ended", &activity.ended)] {
-            if let Some(v) = value {
-                if !is_timestamp(v) {
-                    out.push(ctx.err("E604", location.clone(), format!("{field} {} is not RFC 3339", repr_str(v))));
-                }
-            }
-        }
-    }
     for (activity_id, agent_id) in prov.dangling_agent_refs() {
         out.push(ctx.err(
             "E605",
