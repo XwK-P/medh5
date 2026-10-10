@@ -8,6 +8,7 @@
 
 use std::ffi::OsString;
 use std::io::Write;
+use std::process::{Command, Stdio};
 
 use clap::error::ErrorKind;
 use serde_json::{json, Map, Value};
@@ -41,6 +42,22 @@ impl NativeHost {
     }
 }
 
+/// What every program the binary hands to Python runs first.  `python -c`
+/// and `python -m` put the current directory at the head of `sys.path`, so
+/// a `json.py` --- or a `medh5/` --- where `medh5 convert` runs would be
+/// imported, and run, in place of the real one; a downloaded study folder is
+/// where converters run.  `-P` does this only from Python 3.11, and `-I`
+/// would also drop the user's site-packages and `PYTHONPATH`.
+const SAFE_PATH: &str = "import sys; sys.path[:1] == [''] and sys.path.pop(0)";
+
+/// `python -c CODE`, the current directory off `sys.path` before anything
+/// is imported; arguments added after it are `sys.argv[1:]`.
+fn python_running(python: &str, code: &str) -> Command {
+    let mut command = Command::new(python);
+    command.arg("-c").arg(format!("{SAFE_PATH}; {code}"));
+    command
+}
+
 impl Host for NativeHost {
     fn convert(
         &self,
@@ -51,15 +68,15 @@ impl Host for NativeHost {
         _err: &mut dyn Write,
     ) -> Option<i32> {
         let python = Self::python();
-        let probe = std::process::Command::new(&python)
-            .args(["-c", "import medh5.io, medh5.cli"])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
+        let probe =
+            python_running(&python, "import medh5.io, medh5.cli").stdout(Stdio::null()).stderr(Stdio::null()).status();
         if !matches!(probe, Ok(s) if s.success()) {
             return None;
         }
-        let status = std::process::Command::new(&python).args(["-m", "medh5.cli"]).args(argv).status().ok()?;
+        let status = python_running(&python, "from medh5.cli import main; raise SystemExit(main(sys.argv[1:]))")
+            .args(argv)
+            .status()
+            .ok()?;
         Some(status.code().unwrap_or(EXIT_ERROR))
     }
 
@@ -210,5 +227,20 @@ mod tests {
         assert_eq!(refused, "argument 'caf\u{fffd}.medh5' is not valid UTF-8");
         assert_eq!(run_os([OsString::from("info"), latin1()]), EXIT_USAGE);
         assert_eq!(utf8_args([OsString::from("info"), OsString::from("café.medh5")]).unwrap(), ["info", "café.medh5"]);
+    }
+
+    #[test]
+    fn python_handed_a_program_imports_nothing_from_the_current_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("json.py"), "raise SystemExit(99)\n").unwrap();
+        let python = NativeHost::python();
+        let planted = |command: &mut Command| command.current_dir(dir.path()).env_remove("PYTHONSAFEPATH").status();
+        // Without the guard the planted module is what runs: the attack is real here.
+        let Ok(unguarded) = planted(Command::new(&python).args(["-c", "import json"])) else {
+            return; // no Python to hand anything to
+        };
+        assert_eq!(unguarded.code(), Some(99));
+        let guarded = planted(&mut python_running(&python, "import json; json.dumps([])")).unwrap();
+        assert_eq!(guarded.code(), Some(0));
     }
 }

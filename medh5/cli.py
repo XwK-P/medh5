@@ -6,7 +6,9 @@ error --- whether it runs as the standalone ``medh5`` binary or as this
 package's console script.  The commands only Python can run are handed back to
 the package: the format converters (NIfTI, DICOM, DICOM SEG, RTSTRUCT, nnU-Net),
 which wrap nibabel, pydicom and highdicom, and the PyTorch dataloader
-benchmark.  The standalone binary reaches them through ``python -m medh5.cli``.
+benchmark.  The standalone binary reaches them by running this module's
+``main`` in a Python interpreter that has the package (``python3``, or the one
+``MEDH5_PYTHON`` names), with the current directory taken off ``sys.path`` first.
 
 Every converter writes a conversion report, because the interesting part of an
 import is not that it succeeded but what it had to decide: which encoding, which
