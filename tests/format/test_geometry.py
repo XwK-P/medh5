@@ -283,6 +283,18 @@ class TestGrid:
         assert len({grid(), grid()}) == 1
         assert grid() != grid(spacing=(1.0, 1.0, 1.0))
 
+    def test_S3_2_a_signed_zero_is_the_same_grid(self):
+        """Equal grids hash alike: ``-0.0 == 0.0``, so an origin or a direction
+        computed with a negated zero names the same grid, and a set or a dict
+        keyed by grids holds it once."""
+        negated = np.eye(3)
+        negated[0, 1] = -0.0
+        a = grid(origin=(0.0, 0.0, 0.0))
+        b = grid(origin=(-0.0, 0.0, -0.0), direction=negated)
+        assert a == b
+        assert hash(a) == hash(b)
+        assert len({a, b}) == 1
+
     def test_is_congruent_tolerates_float_noise(self):
         assert grid().is_congruent(grid(spacing=(1.5 + 1e-12, 0.8, 0.8)))
 

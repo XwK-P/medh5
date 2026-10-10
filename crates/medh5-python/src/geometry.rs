@@ -41,6 +41,9 @@ impl Grid {
         Grid(grid, PyOnceLock::new())
     }
 
+    /// A hash that agrees with [`Grid::same_key`]: floats compare with `==`,
+    /// under which `-0.0` and `0.0` are one value, so they hash as one
+    /// (`-0.0 + 0.0` is `0.0`).
     fn key_hash(&self) -> isize {
         let g = &self.0;
         let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -49,7 +52,7 @@ impl Grid {
         g.axis_names.hash(&mut h);
         g.axis_kinds.hash(&mut h);
         for v in g.spacing.iter().chain(&g.origin).chain(g.direction.iter()) {
-            v.to_bits().hash(&mut h);
+            (v + 0.0).to_bits().hash(&mut h);
         }
         g.coord_system.hash(&mut h);
         g.units.hash(&mut h);
@@ -57,7 +60,7 @@ impl Grid {
         g.frame_uid.hash(&mut h);
         if let Some(t) = &g.time_values {
             for v in t {
-                v.to_bits().hash(&mut h);
+                (v + 0.0).to_bits().hash(&mut h);
             }
         }
         g.time_units.hash(&mut h);
