@@ -889,6 +889,93 @@ class TestMultiscale:
         assert "E001" not in report.codes
 
 
+class TestProfileRequirements:
+    """§1.3: what a declared profile requires is checked (E009), and the writer
+    infers a profile only where the validator would accept it."""
+
+    def test_S1_3_multiscale_lays_out_every_image_as_a_pyramid(self, tmp_path):
+        path = core_sample(tmp_path / "m.medh5")
+        with (
+            pytest.raises(MEDH5ValidationError, match="E009"),
+            medh5.create(tmp_path / "w.medh5", profiles=["multiscale"]) as w,
+        ):
+            w.add_grid("g", shape=(4, 6, 6), spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", np.zeros((4, 6, 6), np.int16), grid="g", modality="CT")
+        with h5py.File(path, "r+") as handle:
+            handle.attrs["medh5_profiles"] = encode_attr(["core", "multiscale"])
+        assert at(validate_file(path), "/images/CT") == ["E009"]
+
+    @staticmethod
+    def _registered(path: Path, to_frame: str) -> Path:
+        """Two grids in frames F0 and F1, and a transform from F0 to *to_frame*."""
+        with medh5.create(path, codec="portable") as w:
+            for grid, frame in (("g0", "F0"), ("g1", "F1")):
+                w.add_grid(
+                    grid, shape=(4, 6, 6), spacing=(1.0, 1.0, 1.0), frame_uid=frame
+                )
+                w.add_image(
+                    f"CT_{grid}",
+                    np.zeros((4, 6, 6), np.int16),
+                    grid=grid,
+                    modality="CT",
+                )
+            w.add_transform("t", kind="identity", from_frame="F0", to_frame=to_frame)
+        return path
+
+    @pytest.mark.parametrize(("to_frame", "declared"), [("ATLAS", False), ("F1", True)])
+    def test_S1_3_the_writer_declares_reg_only_between_the_samples_grids(
+        self, tmp_path, to_frame, declared
+    ):
+        """A transform to a frame no grid of the sample has --- an atlas, say ---
+        commits and reads as ever, but makes no registration sample: the writer
+        declared `reg` for it, and its own commit gate then refused the file."""
+        path = self._registered(tmp_path / "t.medh5", to_frame)
+        report = validate_file(path)
+        assert report.ok, report.diagnostics
+        assert ("reg" in report.profiles) is declared
+        with medh5.open(path) as sample:
+            assert sample.transforms["t"].to_frame == to_frame
+
+    def test_S1_3_reg_needs_a_transform_between_the_samples_grids(self, tmp_path):
+        path = self._registered(tmp_path / "t.medh5", "ATLAS")
+        with h5py.File(path, "r+") as handle:
+            handle.attrs["medh5_profiles"] = encode_attr(["core", "reg"])
+        assert at(validate_file(path), "/transforms") == ["E009"]
+
+    @staticmethod
+    def _curated(path: Path, label_set: Any, masks: Any, *, activity: bool) -> Path:
+        """A rater, `quality` on the one annotation, and an activity or none."""
+        with medh5.create(path, codec="portable") as w:
+            w.add_grid("g", shape=(16, 24, 24), spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", np.zeros((16, 24, 24), np.int16), grid="g", modality="CT")
+            w.label_set(label_set)
+            rater = w.person("pseudo:rater")
+            if activity:
+                w.activity("annotate", agent=rater)
+            w.add_segmentation(
+                "seg", grid="g", masks=masks, quality={"status": "approved"}
+            )
+        return path
+
+    @pytest.mark.parametrize("activity", [False, True])
+    def test_S1_3_the_writer_declares_curation_only_with_an_activity(
+        self, tmp_path, label_set, masks, activity
+    ):
+        path = self._curated(tmp_path / "c.medh5", label_set, masks, activity=activity)
+        report = validate_file(path)
+        assert report.ok, report.diagnostics
+        assert ("curation" in report.profiles) is activity
+
+    def test_S1_3_curation_needs_a_provenance_activity(
+        self, tmp_path, label_set, masks
+    ):
+        path = self._curated(tmp_path / "c.medh5", label_set, masks, activity=False)
+        with h5py.File(path, "r+") as handle:
+            declared = list(handle.attrs["medh5_profiles"])
+            handle.attrs["medh5_profiles"] = encode_attr([*declared, "curation"])
+        assert at(validate_file(path), "/meta#provenance") == ["E009"]
+
+
 class TestRequiredProfiles:
     """`profiles=` and `--profile` hold a file to more than it declares, never
     to less: a requirement replaced the declared profiles, so a clinical file

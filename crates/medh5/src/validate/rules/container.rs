@@ -6,12 +6,12 @@ use std::sync::OnceLock;
 use jsonschema::error::ValidationErrorKind;
 use serde_json::Value;
 
-use super::{child, loc, str_attr, strs_attr, Context};
+use super::{child, children, loc, str_attr, strs_attr, Context};
 use crate::annotations::header::VOXEL_KINDS;
 use crate::document::{validate_document_version, SampleDocument};
 use crate::h5::attrs;
 use crate::h5::data;
-use crate::h5::ops;
+use crate::h5::ops::{self, Node};
 use crate::ids::{is_valid_id, matches_pattern};
 use crate::json::{repr_list, repr_str};
 use crate::sample::reader::PROFILES;
@@ -348,22 +348,74 @@ pub fn check_profiles(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
             Some(node) => ops::members(&node)?.len(),
         })
     };
-    if declared.contains("reg") && count("transforms")? == 0 {
-        out.push(ctx.err("E009", "/", "profile `reg` is declared but no transform is present"));
+    if declared.contains("reg") {
+        if count("transforms")? == 0 {
+            out.push(ctx.err("E009", "/", "profile `reg` is declared but no transform is present"));
+        } else if !relates_grids(&ctx.root)? {
+            out.push(ctx.err(
+                "E009",
+                "/transforms",
+                "profile `reg` is declared but no transform has endpoints in the sample: none has a `from_frame` and \
+                 a `to_frame` that are each the `frame_uid` of one of its grids",
+            ));
+        }
     }
     if declared.contains("training") && count("index")? == 0 {
         out.push(ctx.err("E009", "/", "profile `training` is declared but no sampling index is present"));
     }
-    if declared.contains("longitudinal") {
-        if let Some(doc) = &ctx.document {
-            if doc.timepoints.len() < 2 {
+    if declared.contains("multiscale") {
+        for (name, image) in ctx.children("images")? {
+            if !matches!(image, Node::Group(_)) {
                 out.push(ctx.err(
                     "E009",
-                    "/meta#timepoints",
-                    "profile `longitudinal` requires at least two declared timepoints",
+                    format!("/images/{name}"),
+                    "profile `multiscale` is declared but this image is single-scale: the profile lays out every \
+                     image as a §4.3 pyramid",
                 ));
             }
         }
     }
+    if let Some(doc) = &ctx.document {
+        if declared.contains("curation") && !records_activity(doc) {
+            out.push(ctx.err(
+                "E009",
+                "/meta#provenance",
+                "profile `curation` is declared but the provenance graph (§11.1) records no activity",
+            ));
+        }
+        if declared.contains("longitudinal") && doc.timepoints.len() < 2 {
+            out.push(ctx.err(
+                "E009",
+                "/meta#timepoints",
+                "profile `longitudinal` requires at least two declared timepoints",
+            ));
+        }
+    }
     Ok(out)
+}
+
+/// Whether the provenance graph records an activity: what `curation` needs of
+/// it (§1.3), and what the writer infers the profile from.
+pub(crate) fn records_activity(document: &SampleDocument) -> bool {
+    document.provenance.n_activities() > 0
+}
+
+/// Whether some transform maps between frames of the sample's own grids, its
+/// `from_frame` and `to_frame` each a grid's `frame_uid`: what `reg` needs
+/// (§1.3), and what the writer infers the profile from.
+pub(crate) fn relates_grids(root: &hdf5::Group) -> Result<bool> {
+    let mut frames = BTreeSet::new();
+    if let Some(grids) = ops::child_group(root, "grids") {
+        for (_, grid) in children(&grids)? {
+            frames.extend(str_attr(loc(&grid), "frame_uid")?.filter(|f| !f.is_empty()));
+        }
+    }
+    let Some(transforms) = ops::child_group(root, "transforms") else { return Ok(false) };
+    for (_, t) in children(&transforms)? {
+        let (from, to) = (str_attr(loc(&t), "from_frame")?, str_attr(loc(&t), "to_frame")?);
+        if from.is_some_and(|f| frames.contains(&f)) && to.is_some_and(|f| frames.contains(&f)) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }

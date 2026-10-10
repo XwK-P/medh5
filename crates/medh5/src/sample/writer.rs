@@ -944,10 +944,12 @@ impl SampleWriter {
         if kinds.contains("classification") && has_labels {
             found.insert("cls".into());
         }
-        if !self.transform_frames.is_empty() {
+        // `reg` and `curation` by the predicates the validator holds them to
+        // (E009), so a commit never refuses a profile the writer declared.
+        if crate::validate::rules::relates_grids(&self.root()?)? {
             found.insert("reg".into());
         }
-        if !doc.provenance.is_empty() && !self.annotation_kinds.is_empty() {
+        if crate::validate::rules::records_activity(doc) && !self.annotation_kinds.is_empty() {
             let anns = self.group("annotations")?;
             let mut all = true;
             for name in self.annotation_kinds.keys() {

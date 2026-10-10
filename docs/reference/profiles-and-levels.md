@@ -89,14 +89,20 @@ boxes; contours and meshes default to `segmentation` — so requiring it does no
 guarantee the annotation your code is about to read. Check the kind you need in
 your own code as well.
 
-A declared profile whose requirement is missing is `E009`. Not every
-requirement can be checked that way:
+A declared profile whose requirement is missing is `E009`: no voxel annotation
+other than a `mask` under `seg`, no `detection` task under `det`, no
+classification under `cls`, no transform whose `from_frame` and `to_frame` are
+each a grid's `frame_uid` under `reg`, an image that is not a §4.3 pyramid
+under `multiscale`, no provenance activity or an annotation without `quality`
+under `curation`, no sampling-index entry under `training`, and fewer than two
+timepoints under `longitudinal` (the label set `seg`, `det` and `cls` need is
+`E301`). Not every requirement can be checked that way:
 
-- **`training`** — an absent index is `E009`. A stale one is `W905`: the
-  profile still requires it to be current, but readers ignore a stale entry and
-  fall back to scanning, so the file stays readable and the index needs a
-  rebuild (`medh5 fix --rebuild-index`). Under `strict` it fails like an error,
-  which is why `strict` is the level for a readiness check.
+- **`training`** — an index without an entry is `E009`. A stale entry is
+  `W905`, not a profile violation: readers ignore it and fall back to scanning,
+  so the file stays readable and the index needs a rebuild
+  (`medh5 fix --rebuild-index`). Under `strict` it fails like an error, which
+  is why `strict` is the level for a readiness check.
 - **`longitudinal`** — whether one physical object kept its `instance_id` across
   visits is not something a validator can see; that is the curator's to get
   right. What it can see is a symptom: `W909` fires when one `instance_id`

@@ -48,6 +48,7 @@ pub use clinical::{check_clinical, check_clinical_digests, check_clinical_record
 pub use container::{
     check_bulk_storage, check_collection, check_container, check_document, check_profiles, SUPPORTED_MAJOR,
 };
+pub(crate) use container::{records_activity, relates_grids};
 pub use curation::{check_curation, check_splits};
 pub use geometry::{check_geometry, check_timepoints};
 pub use images::{check_images, check_multiscale};
