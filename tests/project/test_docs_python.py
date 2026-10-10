@@ -242,8 +242,14 @@ def workspace(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
         w.deidentification(method="dicom-psi-profile", date_shift_days=-117)
         w.build_index(max_coords=64)
 
+    # A second case of the same cohort: its image is named as the first's, so
+    # a dataset over `paths` reads `CT` from each.
     other = write_sample(
-        root / "case2.medh5", label_set=label_set, masks=masks, sample_id="case2"
+        root / "case2.medh5",
+        label_set=label_set,
+        masks=masks,
+        sample_id="case2",
+        image_name="CT",
     )
     pack([case, other], root / "shard.medh5c", keys=["case_0001", "case_0002"])
 

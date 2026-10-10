@@ -48,8 +48,12 @@ def write_sample(
     annotated: Any = "all_given",
     codec: str = "portable",
     sample_id: str | None = None,
+    image_name: str = "CT_{tp}",
 ) -> Path:
-    """A complete, valid sample --- the base every reader test starts from."""
+    """A complete, valid sample --- the base every reader test starts from.
+
+    ``image_name`` names each timepoint's image; ``{tp}`` is the timepoint.
+    """
     rng = np.random.default_rng(SEED)
     image = ct if ct is not None else rng.integers(-1000, 1500, SHAPE).astype(np.int16)
     with medh5.create(
@@ -76,7 +80,7 @@ def write_sample(
                 patch_hint=(8, 8, 8),
             )
             w.add_image(
-                f"CT_{tp}",
+                image_name.format(tp=tp),
                 image,
                 grid=f"ct_{tp}",
                 modality="CT",
