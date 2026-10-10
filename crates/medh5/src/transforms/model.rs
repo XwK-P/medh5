@@ -1178,9 +1178,10 @@ pub const CYCLE_SHOWN: usize = 8;
 /// connected components): walking from each in turn took a file of a
 /// thousand chained composites thirty seconds to validate.  Among at most
 /// [`CYCLE_PATHS`] composites that reach one another, each has the path
-/// [`composite_cycle`] reports for it.  Among more, a path is its first
-/// [`CYCLE_SHOWN`] names, `…` and the composite again: every one of them
-/// written out was quadratic in the size of the ring.
+/// [`composite_cycle`] reports for it.  Among more, a path may be shortened
+/// to its start --- at most [`CYCLE_SHOWN`] names --- then `…` and the
+/// composite again: every one of them written out was quadratic in the size
+/// of the ring.
 pub fn composite_cycles(graph: &IndexMap<String, Vec<String>>) -> Result<IndexMap<String, Vec<String>>> {
     let position: HashMap<&str, usize> = graph.keys().enumerate().map(|(i, k)| (k.as_str(), i)).collect();
     let next: Vec<Vec<usize>> = graph
