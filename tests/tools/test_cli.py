@@ -133,6 +133,18 @@ class TestUsageErrors:
         missing = str(tmp_path / "missing.medh5")
         assert run(capsys, "clinical", "select", missing, *cutoffs)[0] == EXIT_USAGE
 
+    @pytest.mark.parametrize("hours", ["nan", "inf", "-inf", "1e300"])
+    def test_a_cutoff_in_hours_is_a_time_on_the_subject_clock(
+        self, capsys, tmp_path, hours
+    ):
+        """NaN selected at 0 us and infinity at the clock's ends, certified."""
+        missing = str(tmp_path / "missing.medh5")
+        code, out = run(
+            capsys, "clinical", "select", missing, f"--cutoff-hours={hours}"
+        )
+        assert code == EXIT_USAGE
+        assert "subject clock" in out.err
+
     def test_pseudonymising_ids_needs_apply_and_a_salt(self, capsys, tmp_path):
         missing = str(tmp_path / "missing.medh5")
         code, out = run(capsys, "scrub", missing, "--pseudonymise-ids")

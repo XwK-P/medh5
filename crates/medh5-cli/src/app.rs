@@ -8,6 +8,7 @@
 use clap::{Arg, ArgAction, ArgGroup, Command};
 
 use medh5::annotations::encode::TRANSCODABLE;
+use medh5::clinical::model::HOUR;
 use medh5::collection::SUFFIX;
 use medh5::storage::index::{DEFAULT_MAX_COORDS, DEFAULT_OCCUPANCY_FACTOR};
 use medh5::validate::LEVELS;
@@ -620,8 +621,18 @@ fn conformance() -> Command {
         )
 }
 
-fn float(name: &'static str, long: &'static str, help: &'static str) -> Arg {
-    opt(name, long, help).value_parser(clap::value_parser!(f64)).allow_negative_numbers(true)
+/// Hours on the subject clock: a number whose microseconds the clock's
+/// `int64` holds.  NaN and infinity would saturate to a cutoff nobody gave.
+fn clock_hours(text: &str) -> Result<f64, String> {
+    let hours: f64 = text.trim().parse().map_err(|_| format!("{text:?} is not a number"))?;
+    let us = (hours * HOUR as f64).round();
+    // Every int64 lies in [-2^63, 2^63), and both ends are exact in an f64.
+    let bound = 2f64.powi(63);
+    if us.is_finite() && (-bound..bound).contains(&us) {
+        Ok(hours)
+    } else {
+        Err(format!("{text} hours is no time on the subject clock: its microseconds must be a finite int64"))
+    }
 }
 
 fn clinical() -> Command {
@@ -634,7 +645,11 @@ fn clinical() -> Command {
         .subcommand(
             sample(Command::new("select").about("what strict prospective selection admits at a cutoff"))
                 .arg(int("cutoff_us", "cutoff-us", "the cutoff, in microseconds on the subject clock"))
-                .arg(float("cutoff_hours", "cutoff-hours", "the cutoff, in hours on the subject clock"))
+                .arg(
+                    opt("cutoff_hours", "cutoff-hours", "the cutoff, in hours on the subject clock")
+                        .value_parser(clock_hours)
+                        .allow_negative_numbers(true),
+                )
                 .group(ArgGroup::new("cutoff").args(["cutoff_us", "cutoff_hours"]).required(true))
                 .arg(
                     opt("policy", "policy", "strict_prospective (default) or latest_provable")
@@ -707,5 +722,18 @@ mod tests {
     #[test]
     fn the_grammar_is_consistent() {
         super::command().debug_assert();
+    }
+
+    #[test]
+    fn a_cutoff_in_hours_is_a_time_on_the_subject_clock() {
+        assert_eq!(super::clock_hours("24"), Ok(24.0));
+        assert_eq!(super::clock_hours("-1.5"), Ok(-1.5));
+        // 2^63 us, 2562047788.02 h, is past the clock; NaN and infinity would
+        // have cast to 0 us and to the clock's ends.
+        for refused in ["nan", "inf", "-inf", "1e300", "2562047789", "-2562047789", "x"] {
+            assert!(super::clock_hours(refused).is_err(), "{refused}");
+        }
+        assert!(super::clock_hours("2562047788").is_ok());
+        assert!(super::clock_hours("-2562047788").is_ok());
     }
 }
