@@ -909,18 +909,57 @@ class TestRemoveTransform:
             assert "transforms" not in handle
         assert not validate_file(path).errors
 
-    @pytest.mark.parametrize(
-        ("options", "removed"),
-        [({"inverse": True}, "tp1_to_tp0"), ({"composite": True}, "refine")],
+    STILL_NAMED = pytest.mark.parametrize(
+        ("options", "removed", "code"),
+        [
+            ({"inverse": True}, "tp1_to_tp0", "E505"),  # another's inverse_id
+            ({"composite": True}, "refine", "E501"),  # a composite's component
+        ],
     )
+
+    @STILL_NAMED
     def test_S10_a_transform_still_named_is_not_removed(
-        self, tmp_path, options, removed
+        self, tmp_path, options, removed, code
     ):
         path = registered(tmp_path / "reg.medh5", **options)
         before = path.read_bytes()
-        with pytest.raises(MEDH5ValidationError), medh5.amend(path) as w:
+        with pytest.raises(MEDH5ValidationError) as exc, medh5.amend(path) as w:
             w.remove_transform(removed)
+        assert exc.value.code == code
         assert path.read_bytes() == before
+
+    @STILL_NAMED
+    def test_S10_one_added_again_under_its_name_keeps_what_names_it(
+        self, tmp_path, options, removed, code
+    ):
+        """What names a transform is checked at commit, so a transform removed
+        and added again in one amendment --- to mend it --- keeps them."""
+        path = registered(tmp_path / "reg.medh5", **options)
+        with medh5.open(path) as sample:
+            old: Any = sample.transforms[removed]
+            spec: dict[str, Any] = {
+                "kind": old.kind,
+                "from_frame": old.from_frame,
+                "to_frame": old.to_frame,
+            }
+            if old.kind == "affine":
+                spec.update(matrix=old.matrix, invertible=True, inverse_id="tp0_to_tp1")
+            else:
+                spec.update(field=old.read_field(), field_grid=old.field_grid_id)
+        with medh5.amend(path) as w:
+            w.remove_transform(removed)
+            w.add_transform(removed, **spec)
+        assert not validate_file(path).errors
+        with medh5.open(path) as sample:
+            assert sample.transforms[removed].kind == spec["kind"]
+            if options.get("inverse"):
+                back = sample.transforms["tp0_to_tp1"].inverse()
+                assert back is not None and back.transform_id == removed
+            else:
+                assert sample.transforms["chain"].component_ids == (
+                    "tp0_to_tp1",
+                    removed,
+                )
 
     def test_removing_a_missing_transform_is_an_error(self, tmp_path):
         path = registered(tmp_path / "reg.medh5")
