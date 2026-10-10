@@ -256,6 +256,13 @@ class TestSamplingIndex:
                 expected[block] = bool(mask[window].any())
             assert np.array_equal(_occupancy(mask, 8), expected), shape
 
+    def test_S14_3_an_occupancy_factor_of_zero_is_refused(self):
+        """A factor of 0 divided by zero: a panic, not an error."""
+        from medh5.storage import occupancy as _occupancy
+
+        with pytest.raises(ValueError, match="at least 1"):
+            _occupancy(np.ones((4, 4, 4), dtype=bool), 0)
+
     def test_P12_S14_3_the_occupancy_map_is_compressed_one_class_per_chunk(
         self, tmp_path: Path
     ):

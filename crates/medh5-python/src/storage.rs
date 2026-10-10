@@ -355,10 +355,11 @@ fn read_indices<'py>(py: Python<'py>, root: &Bound<'py, PyAny>) -> R<Bound<'py, 
     Ok(out)
 }
 
-/// The occupancy map of a mask: one bit per `factor`-cube of voxels.
+/// The occupancy map of a mask: one bit per `factor`-cube of voxels
+/// (`factor` at least 1).
 #[pyfunction]
 fn occupancy<'py>(py: Python<'py>, mask: &Bound<'py, PyAny>, factor: usize) -> R<Bound<'py, PyAny>> {
-    Ok(array_to_py(py, index::occupancy(&bool_array(mask)?, factor)))
+    Ok(array_to_py(py, index::occupancy(&bool_array(mask)?, factor)?))
 }
 
 // -- recompression -------------------------------------------------------------------------

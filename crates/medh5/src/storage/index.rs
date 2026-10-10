@@ -89,8 +89,13 @@ pub fn sample_foreground_coords(mask: &ArrayD<bool>, max_coords: usize, rng: &mu
     Ok(Array2::from_shape_vec((flat.len() / ndim.max(1), ndim), flat)?)
 }
 
-/// Low-resolution "is there anything in this block" map, for rejection sampling.
-pub fn occupancy(mask: &ArrayD<bool>, factor: usize) -> ArrayD<bool> {
+/// Low-resolution "is there anything in this block" map, for rejection
+/// sampling: one bit per `factor`-cube of voxels.  A factor of 0 has no
+/// blocks, and is refused (`ValueError`).
+pub fn occupancy(mask: &ArrayD<bool>, factor: usize) -> Result<ArrayD<bool>> {
+    if factor == 0 {
+        return Err(Error::Value("an occupancy factor must be at least 1".into()));
+    }
     let coarse: Vec<usize> = mask.shape().iter().map(|n| n.div_ceil(factor).max(1)).collect();
     let mut out = ArrayD::from_elem(IxDyn(&coarse), false);
     for (idx, v) in mask.indexed_iter() {
@@ -99,7 +104,7 @@ pub fn occupancy(mask: &ArrayD<bool>, factor: usize) -> ArrayD<bool> {
             out[IxDyn(&block)] = true;
         }
     }
-    out
+    Ok(out)
 }
 
 /// Compute the sampling index for one voxel annotation.
@@ -134,7 +139,7 @@ pub fn build_index(
         }
         coords.insert(*class_id, sample_foreground_coords(&mask, max_coords, &mut rng)?);
         if let Some(factor) = occupancy_factor.filter(|f| *f > 0) {
-            planes.push(occupancy(&mask, factor));
+            planes.push(occupancy(&mask, factor)?);
         }
     }
     let occupancy = if planes.is_empty() {

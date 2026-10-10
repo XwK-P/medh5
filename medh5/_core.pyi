@@ -1479,7 +1479,8 @@ def new_document(
 ) -> SampleDocument: ...
 def normalize_masks(masks: Any, spatial_shape: Any = None) -> tuple[Any, ...]: ...
 def occupancy(mask: Any, factor: int) -> npt.NDArray[np.bool_]:
-    """The occupancy map of a mask: one bit per `factor`-cube of voxels."""
+    """The occupancy map of a mask: one bit per `factor`-cube of voxels
+    (`factor` at least 1)."""
     ...
 
 def open_any(path: str | os.PathLike[str], *, key: str | None = None) -> Any:
