@@ -167,6 +167,32 @@ class TestWorkedExample:
             ClinicalTaskDataset(task, partition="train", row_features=path)
         assert caught.value.code == "T406"
 
+    def test_S7_a_patient_cache_is_checked_where_the_dataset_reads(
+        self, worked: dict[str, Any]
+    ):
+        """A task held without a base reads its sources from the dataset's
+        ``base``; its patient-level cache was checked against a preflight that
+        resolved them from the working directory instead, and refused (T404)."""
+        loaded = TaskManifest.load(worked["task"])
+        report = loaded.preflight()
+        path = worked["out"] / "based.medh5cache"
+        with CacheWriter(
+            path,
+            level="patient",
+            encoder={"name": "fixture", "revision": "1"},
+            output={"dtype": "float32", "shape": [3]},
+            task=loaded,
+        ) as w:
+            for row in report.eligible():
+                values = np.full(3, row.cutoff_us / DAY, np.float32)
+                w.add_row(row, values, entry_id=row.row_id.replace("@", "_"))
+        task = TaskManifest(loaded.to_json())
+        assert task.base is None
+        ds = ClinicalTaskDataset(
+            task, partition="train", base=worked["out"], row_features=path
+        )
+        assert ds[0]["row_feature"] is not None
+
     def test_N11_a_cache_replaced_after_validation_is_refused(
         self, worked: dict[str, Any], tmp_path: Path
     ):

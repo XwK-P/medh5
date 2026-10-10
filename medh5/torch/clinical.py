@@ -500,7 +500,11 @@ class ClinicalTaskDataset(_DatasetBase):  # type: ignore[misc,valid-type]
                 # refused (T405); an event-level cache has no row entries, so
                 # the rows are not re-checked.
                 checked = validate_cache(
-                    documents, base=self.base, task=self.task, check_rows=False
+                    documents,
+                    base=self.base,
+                    task=self.task,
+                    task_base=self.base,
+                    check_rows=False,
                 )
                 self._documents = _admitted_cache(
                     documents, checked, "event", "documents", "document"
@@ -518,7 +522,12 @@ class ClinicalTaskDataset(_DatasetBase):  # type: ignore[misc,valid-type]
         ] = {}
         self._rows_cache: _LazyCache | None = None
         if row_features is not None:
-            checked = validate_cache(row_features, base=self.base, task=self.task)
+            # Its rows are checked against the task's preflight, whose sources
+            # resolve where this dataset's do --- not the manifest's own base,
+            # which a task built in memory does not have.
+            checked = validate_cache(
+                row_features, base=self.base, task=self.task, task_base=self.base
+            )
             self._rows_cache = _admitted_cache(
                 row_features, checked, "patient", "row_features", "row-feature"
             )
