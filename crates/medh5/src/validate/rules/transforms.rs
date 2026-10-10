@@ -257,7 +257,10 @@ fn check_field_transform(
         } else {
             // What the writer refuses (§10.5): a lattice of another rank than
             // its grid's, or one too small for the spline's order.
+            // Saturating: `order` is whatever the file holds, and `order + 1`
+            // overflowed at the largest.
             let order = attrs::get_i64(loc(group), "order")?.unwrap_or(DEFAULT_ORDER);
+            let needed = order.saturating_add(1);
             if lattice.len() != n_spatial {
                 out.push(ctx.err(
                     "E503",
@@ -268,13 +271,12 @@ fn check_field_transform(
                         lattice.len()
                     ),
                 ));
-            } else if lattice.iter().any(|extent| *extent < order + 1) {
+            } else if lattice.iter().any(|extent| *extent < needed) {
                 out.push(ctx.err(
                     "E503",
                     format!("{location}/{dataset}"),
                     format!(
-                        "an order-{order} B-spline needs at least {} control points per axis, got {}",
-                        order + 1,
+                        "an order-{order} B-spline needs at least {needed} control points per axis, got {}",
                         repr_int_tuple(&lattice)
                     ),
                 ));

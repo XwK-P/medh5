@@ -592,6 +592,20 @@ class TestBSpline:
             assert transform.summary()["cp_shape"] == list(shape)
         assert "E503" in validate_file(path).codes
 
+    def test_S10_5_any_order_a_file_holds_is_checked_without_overflow(self, tmp_path):
+        """The validator compared the lattice with ``order + 1``, which
+        overflowed --- a panic --- at the largest order an attribute holds."""
+        path = registered(tmp_path / "reg.medh5", bspline=True)
+        with h5py.File(path, "r+") as handle:
+            handle["transforms/ffd"].attrs["order"] = np.int64(2**63 - 1)
+        assert "E503" in validate_file(path).codes
+        with (
+            medh5.open(path) as sample,
+            pytest.raises(MEDH5ValidationError) as exc,
+        ):
+            sample.transforms["ffd"].transform_points([[6.0, 6.0, 6.0]])
+        assert exc.value.code == "E502"
+
     def test_S10_5_basis_refuses_an_order_before_sizing_by_it(self):
         """``basis(2**31, 0.5)`` allocated 16 GB for its weights before
         looking at the order, and the process aborted.  Run apart, so a
