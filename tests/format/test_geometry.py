@@ -232,6 +232,24 @@ class TestGrid:
             grid(spacing=(1.5, 0.0, 0.8))
         assert exc.value.code == "E104"
 
+    @pytest.mark.parametrize("value", [np.nan, np.inf, -np.inf])
+    def test_S3_2_spacing_and_origin_are_finite(self, value):
+        """An infinite spacing or a NaN origin was accepted, and put every
+        voxel nowhere."""
+        with pytest.raises(MEDH5ValidationError) as exc:
+            grid(spacing=(1.5, abs(value), 0.8))
+        assert exc.value.code == "E104"
+        with pytest.raises(MEDH5ValidationError, match="must be finite") as exc:
+            grid(origin=(-12.0, value, -9.6))
+        assert exc.value.code == "E109"
+
+    def test_S3_2_a_shape_whose_voxels_cannot_be_counted_is_refused(self):
+        """Its voxel count wrapped: ``n_voxels`` of this grid was 0."""
+        with pytest.raises(MEDH5ValidationError, match="64-bit count") as exc:
+            grid(shape=(2**62, 2**62, 2))
+        assert exc.value.code == "E109"
+        assert grid(shape=(2**20, 2**20, 2**20)).n_voxels == 2**60
+
     def test_S3_3_extent_spans_half_voxel_outside(self):
         g = grid()
         assert g.extent[:, 0].tolist() == [-0.5, -0.5, -0.5]

@@ -9,14 +9,16 @@ need for per-image geometry overrides.  Grids are written with
 with :func:`read_grid`.
 
 Continuous index coordinates put voxel centres at integers, so a voxel spans
-``[i - 0.5, i + 0.5]`` and a box ``[a, b]`` covers the slice ``a+0.5 : b+0.5``
-(§3.3).  A pyramid level's spacing is level 0's times its factor and its origin
-carries the half-voxel shift (§4.3): ``derive_level_grid`` applies the rule and
-``check_pyramid`` reports every level that breaks it.
+``[i - 0.5, i + 0.5)`` (§3.3), and a box ``[a, b]`` covers the slice
+``a+0.5 : b+0.5`` (§8.1).  A pyramid level's spacing is level 0's times its
+factor and its origin carries the half-voxel shift (§4.3):
+``derive_level_grid`` applies the rule and ``check_pyramid`` reports every level
+that breaks it.
 
 Everything here is the format engine's (``medh5._core``): :class:`Grid`'s checks
---- orthonormal direction, positive spacing, axis kinds --- and every index/world
-mapping, so every frontend computes the same geometry.
+--- orthonormal direction, finite positive spacing, a finite origin, axis kinds,
+a shape whose voxels a 64-bit integer counts --- and every index/world mapping,
+so every frontend computes the same geometry.
 """
 
 from __future__ import annotations

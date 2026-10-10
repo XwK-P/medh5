@@ -197,6 +197,19 @@ impl Grid {
                 format!("grid {gid}: shape {} must be positive", repr_int_tuple(&self.shape)),
             ));
         }
+        // Every count of the grid's voxels is a product of its extents: past
+        // a 64-bit count it wrapped, and `n_voxels` of a 2**62 x 2**62 x 2
+        // grid was 0.
+        let count = self.shape.iter().try_fold(1i64, |n, s| n.checked_mul(*s));
+        if count.and_then(|n| usize::try_from(n).ok()).is_none() {
+            return Err(Error::coded(
+                "E109",
+                format!(
+                    "grid {gid}: shape {} has more elements than a 64-bit count holds",
+                    repr_int_tuple(&self.shape)
+                ),
+            ));
+        }
         let mut unknown: Vec<&String> = self.axis_kinds.iter().filter(|k| !AXIS_KINDS.contains(&k.as_str())).collect();
         if !unknown.is_empty() {
             unknown.sort();
@@ -229,10 +242,18 @@ impl Grid {
         if self.spacing.len() != n_spatial || self.origin.len() != n_spatial {
             return Err(Error::coded("E109", format!("grid {gid}: spacing/origin must have {n_spatial} entries")));
         }
-        if self.spacing.iter().any(|v| *v <= 0.0 || v.is_nan()) {
+        if self.spacing.iter().any(|v| !v.is_finite() || *v <= 0.0) {
             return Err(Error::coded(
                 "E104",
-                format!("grid {gid}: spacing {} must be > 0", float_tuple(&self.spacing)),
+                format!("grid {gid}: spacing {} must be finite and > 0", float_tuple(&self.spacing)),
+            ));
+        }
+        // A world coordinate is a number: an origin of NaN or infinity puts
+        // every voxel nowhere.
+        if self.origin.iter().any(|v| !v.is_finite()) {
+            return Err(Error::coded(
+                "E109",
+                format!("grid {gid}: origin {} must be finite", float_tuple(&self.origin)),
             ));
         }
         if self.direction.dim() != (n_spatial, n_spatial) {
@@ -678,6 +699,36 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(Grid::from_spec(spec).unwrap_err().code(), Some("E103"));
+    }
+
+    #[test]
+    fn s3_2_spacing_and_origin_are_finite_numbers() {
+        let spec = |spacing: f64, origin: f64| GridSpec {
+            grid_id: "g".into(),
+            shape: vec![4, 4],
+            spacing: vec![1.0, spacing],
+            origin: Some(vec![0.0, origin]),
+            ..Default::default()
+        };
+        for spacing in [f64::NAN, f64::INFINITY, 0.0, -1.0] {
+            assert_eq!(Grid::from_spec(spec(spacing, 0.0)).unwrap_err().code(), Some("E104"), "{spacing}");
+        }
+        for origin in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(Grid::from_spec(spec(1.0, origin)).unwrap_err().code(), Some("E109"), "{origin}");
+        }
+        assert!(Grid::from_spec(spec(0.5, -3.0)).is_ok());
+    }
+
+    #[test]
+    fn s3_2_a_shape_whose_voxels_cannot_be_counted_is_refused() {
+        // Its voxel count wrapped: `n_voxels` of a 2**62 x 2**62 x 2 grid was 0.
+        let spec =
+            |shape: Vec<i64>| GridSpec { grid_id: "g".into(), shape, spacing: vec![1.0; 3], ..Default::default() };
+        let err = Grid::from_spec(spec(vec![1 << 62, 1 << 62, 2])).unwrap_err();
+        assert_eq!(err.code(), Some("E109"));
+        assert!(err.message().contains("more elements than a 64-bit count holds"));
+        let large = Grid::from_spec(spec(vec![1 << 20, 1 << 20, 1 << 20])).unwrap();
+        assert_eq!(large.n_voxels(), 1 << 60);
     }
 
     fn calibrated(id: &str, coord_system: &str, units: &str) -> Grid {

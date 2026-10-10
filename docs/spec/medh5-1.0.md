@@ -226,8 +226,8 @@ the *k*-th spatial axis.
 | `shape` | `int64[N]` | **MUST** | full array shape in stored order |
 | `axis_names` | `str[N]` | **MUST** | §3.1 |
 | `axis_kinds` | `str[N]` | **MUST** | §3.1 |
-| `spacing` | `float64[S]` | **MUST** | positive voxel size per spatial axis, in `units` |
-| `origin` | `float64[S]` | **MUST** | world coordinate of voxel index `0` on every spatial axis |
+| `spacing` | `float64[S]` | **MUST** | positive, finite voxel size per spatial axis, in `units` |
+| `origin` | `float64[S]` | **MUST** | world coordinate of voxel index `0` on every spatial axis; finite |
 | `direction` | `float64[S,S]` | **MUST** | column *k* = unit world direction of spatial axis *k*; **MUST** be orthonormal to 1e-4 |
 | `coord_system` | `str` | **MUST** | `"LPS"`, `"RAS"`, `"RAI"`, … or `"custom"` |
 | `units` | `str` | **MUST** | `"mm"` (default), `"um"`, `"m"`, `"px"` (no physical calibration) |
