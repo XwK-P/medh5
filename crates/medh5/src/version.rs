@@ -1,7 +1,7 @@
 //! Format versions: what this engine reads, validates and writes (1.1 §2).
 //!
 //! `medh5_version` is `MAJOR.MINOR`.  This engine implements **1.0 and 1.1**,
-//! and keeps three capabilities apart (1.1 §2.1):
+//! and keeps three capabilities apart (1.1 §2.2):
 //!
 //! - **reading** --- any 1.x file opens; a minor above 1.1 is read as its
 //!   *supported projection*, the objects this engine knows;

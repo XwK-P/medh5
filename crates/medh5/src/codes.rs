@@ -1,4 +1,4 @@
-//! The normative diagnostic code table (spec §15.2).
+//! The normative diagnostic code table (spec 1.0 §15.2, extended by 1.1 §11.2).
 //!
 //! Codes are **stable API**: a code's meaning never changes, codes are never
 //! reused, and third-party validators are expected to emit the same code for
@@ -24,7 +24,7 @@ const TABLE_JSON: &str = include_str!("../data/codes.json");
 /// One diagnostic code.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Code {
-    /// `E001` ... `W912`.
+    /// `E001` ... `W914`.
     pub code: String,
     /// `error` or `warning`.
     pub severity: String,
@@ -85,8 +85,7 @@ mod tests {
             assert_eq!(c.severity, expected, "{}", c.code);
             assert!(DOMAINS.contains(&c.domain.as_str()), "{}", c.code);
         }
-        let mut names: Vec<_> = codes.iter().map(|c| c.code.as_str()).collect();
-        names.dedup();
-        assert_eq!(names.len(), codes.len());
+        let names: std::collections::BTreeSet<&str> = codes.iter().map(|c| c.code.as_str()).collect();
+        assert_eq!(names.len(), codes.len(), "a code is listed twice");
     }
 }
