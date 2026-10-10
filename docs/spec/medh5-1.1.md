@@ -41,8 +41,10 @@ What 1.1 deliberately does not do, and which version would:
 
 A writer writes the **lowest version its content needs**: `1.0` when a sample holds imaging alone,
 `1.1` when it declares `clinical`. An amendment never lowers the version a file already declares
-(§2.3). Removing the clinical profile is a separately requested projection with its own identity
-(§10), not an amendment.
+(§2.3), except one that removes the clinical profile: that is the §10 imaging projection ---
+separately requested, and a different sample with its own `content_id` --- whether it is written to
+a new file (`medh5 clinical strip`) or in place of its source (`drop_clinical` in an amendment), and
+it is written at the lowest version what remains needs.
 
 ### 2.2 Read, validate and amend are separate capabilities
 
@@ -79,9 +81,9 @@ before anything is written; the source is never modified.
 A writer that implements every declared profile re-derives the **known** profiles from the amended
 content, as in 1.0: an edit that removes the last voxel annotation removes the `seg` claim rather
 than keeping a false one. A no-op amendment therefore preserves every declaration of a valid file.
-A recognised `clinical` group carries its profile through an amendment untouched, byte for byte,
-until the amendment changes it (§8). A `clinical` group that is **not** the profile's --- a 1.0
-file's own extension --- is copied through and never reinterpreted.
+A recognised `clinical` group (§3) carries its profile through an amendment untouched, byte for
+byte, until the amendment changes it (§8). A `clinical` group that is **not** the profile's --- a
+1.0 file's own extension --- is copied through and never reinterpreted.
 
 ### 2.4 Subject grouping
 
@@ -105,8 +107,12 @@ Paths are relative to the sample root, inside a collection too.
 | `clinical/documents/` | Column table of source text | Present when a document exists |
 | `clinical/links/` | Column table of typed relationships | Present when a relationship exists |
 
-The root declares `medh5_version = "1.1"` and includes `clinical` in `medh5_profiles`. A recognised
-`clinical/` group without that declaration is **E803**; the declaration without the group, without
+The root declares `medh5_version = "1.1"` and includes `clinical` in `medh5_profiles`. A `clinical`
+group is **recognised** as the profile's when its `meta` is a scalar string dataset holding a JSON
+object whose `schema` is `medh5.clinical/1`. A recognised group without the declaration is **E803**,
+whatever the file's version. In a file declaring 1.1 or later the name is reserved: any object named
+`clinical` without the declaration is **E803**. In a 1.0 file a `clinical` object that is not
+recognised is the file's own extension (1.0 §2.3). The declaration without the group, without
 events, or in a file declaring `1.0`, is **E009**. A member of `clinical/` the profile does not
 define is **E804**, and a clinical group or dataset carrying an attribute other than a dataset's
 `digest` is **E819**: the profile's semantics live in its columns and its descriptor, never in
@@ -135,9 +141,10 @@ UTF-8 --- so equal descriptors digest equally (**E801** otherwise). Its schema i
   sample that declares no `deidentification` is **E802**.
 
 An origin need not be birth or the first image; negative times are valid, including events before
-baseline imaging. Fragments of a subject that share a clock **MUST** share its origin and unit;
-otherwise a manifest provides a verified conversion or refuses the temporal join
-([task-cache-1](task-cache-1.md) §4). Ingestion time is never a clinical origin by default. Date
+baseline imaging. Fragments of a subject that share a clock **MUST** share its origin and unit. No
+conversion between clocks is defined: a task's preflight joins a subject's fragments only when they
+declare one clock --- the same `clock` object --- and refuses the temporal join otherwise (**T304**,
+[task-cache-1](task-cache-1.md) §3.3). Ingestion time is never a clinical origin by default. Date
 shifts preserve one timeline across images, reports and events.
 
 ## 4. Column encoding
@@ -160,8 +167,12 @@ Required columns have no validity dataset. A nullable column without one is enti
 a null string cell **MUST** be empty (equal adjacent offsets), so stale bytes cannot leak a source
 value (**E807**); a mask with values other than 0 and 1, a mask for a required or absent column, or a
 mask of the wrong length is **E807** too. A zero-length valid string is distinct from a null.
-Identifier columns are non-empty where valid (**E809**). Every valid floating-point value is finite;
-NaN and infinity are forbidden with or without a mask (**E808**).
+**Identifier columns** are never empty where valid (**E809**): `event_id`, `record_id` and
+`document_id`, which also match the 1.0 id syntax (1.0 §2.3); the events' `timepoint_id`,
+`encounter_id`, `code_system`, `code`, `code_version`, `unit`, `missing_reason` and `prov`; the
+documents' `language` and `source_type`; and the links' `source_id`, `target_id`,
+`target_annotation_id` and `asserted_by_event_id`. Every valid floating-point value is finite; NaN
+and infinity are forbidden with or without a mask (**E808**).
 
 The set of columns is **closed** at 1.1: an unknown column is **E804** (W913 in a higher minor's
 projection, §2.2). Large numeric columns and UTF-8 buffers **SHOULD** be chunked and compressed with
@@ -179,7 +190,7 @@ An event row is one **immutable version** of information about the subject.
 | Column | Type | Presence | Meaning |
 |---|---|---|---|
 | `event_id` | UTF-8 | required | Unique immutable event-version id, 1.0 id syntax |
-| `record_id` | UTF-8 | required | Logical record shared by the versions of one record |
+| `record_id` | UTF-8 | required | Logical record shared by the versions of one record, 1.0 id syntax |
 | `kind` | UTF-8 | required | `imaging`, `document`, `observation`, `diagnosis`, `medication_order`, `medication_administration`, `procedure`, `assessment`, `other` |
 | `temporal_type` | UTF-8 | required | `point`, `interval`, `static`, `unknown` |
 | `effective_start_lo_us`, `effective_start_hi_us` | int64 | optional | Inclusive bounds on when the event started or occurred |
@@ -194,7 +205,7 @@ An event row is one **immutable version** of information about the subject.
 | `unit` | UTF-8 | optional | Unit of `value_num`, UCUM preferred; `1` is dimensionless |
 | `value_text` | UTF-8 | optional | Categorical or short textual result, in its source meaning |
 | `missing_reason` | UTF-8 | optional | Source-supported reason an expected result is absent |
-| `prov` | UTF-8 | optional | An activity id of the 1.0 provenance graph (§11.1) |
+| `prov` | UTF-8 | optional | An activity id of the 1.0 provenance graph (1.0 §11.1) |
 
 A value outside a vocabulary above is **E810**; an id that is empty, malformed or repeated is
 **E809**. Event and record ids survive reordering, repacking and no-op amendment, are scoped by
@@ -303,9 +314,10 @@ source), `target_annotation_id` (UTF-8, valid only for an `instance` target) and
   sample therefore holds the local closure of its links, including the predecessors `supersedes`
   names.
 - `instance` ids are the canonical decimal string of a sample-scoped `instance_id`, and the instance
-  **MUST** occur in an instance-bearing annotation of the sample; with `target_annotation_id` it
-  **MUST** be in that annotation (**E814**). A disappearance therefore links the known instance,
-  not an absent follow-up row.
+  **MUST** occur in the `instance_ids` dataset of an annotation of the sample, whatever its kind
+  (**E813** otherwise, as for any endpoint that does not resolve). A `target_annotation_id`
+  **MUST** name an annotation of the sample (**E813**) whose `instance_ids` hold the instance
+  (**E814**). A disappearance therefore links the known instance, not an absent follow-up row.
 - Spans: both columns valid or both null, `0 ≤ start ≤ end ≤` the document's byte length, endpoints on
   code-point boundaries (**E814**).
 
@@ -320,8 +332,11 @@ supersedes itself, two successors of one version (a branch), two predecessors of
 merge), a cycle, a record whose versions the links do not order into one chain, or availability
 bounds that definitely contradict the direction --- the newer version known available before the
 older could have been --- are **E816**. When availability cannot order eligible revisions, the chain
-does. Cross-fragment revision reconciliation belongs to the task manifest and is resolved before
-selection ([task-cache-1](task-cache-1.md) §4).
+does. Versions held by several fragments of a subject are merged by the task contract before
+selection ([task-cache-1](task-cache-1.md) §3.3): a version two fragments hold has one content,
+which the manifest records, and anything else --- a difference, an unrecorded duplicate, chains each
+sound but contradicting once merged --- is **T305**, the subject's rows in error. No order is
+invented to resolve it.
 
 ### 7.3 Attribution
 
@@ -353,12 +368,12 @@ helper's derived states.
 
 Every dataset under `clinical/` --- byte buffers, offsets, validity masks and `clinical/meta` ---
 **MUST** carry its 1.0 §13.1 digest (**E818**). `clinical/meta` is digested as a variable-length
-string dataset; only the root `meta` keeps its special §13.2 treatment.
+string dataset; only the root `meta` keeps its special 1.0 §13.2 treatment.
 
-The §13.2 Merkle construction and its attribute allowlists are **unchanged**: clinical objects define
-no attribute but the dataset `digest`, so clinical semantics are attested through dataset content,
-the descriptor included. Checking the stored root alone is insufficient --- a verifier recomputes the
-relevant datasets (**E701**); the conformance cases `E701-clinical-text-edited` and
+The 1.0 §13.2 Merkle construction and its covered attributes are **unchanged**: clinical objects
+define no attribute but the dataset `digest`, so clinical semantics are attested through dataset
+content, the descriptor included. Checking the stored root alone is insufficient --- a verifier
+recomputes the relevant datasets (**E701**); the conformance cases `E701-clinical-text-edited` and
 `E701-clinical-descriptor-edited` change bytes under an unchanged stored root. Where the profile is
 declared, `clinical/` is attested as the four 1.0 groups are: every path through it is its object's
 own, the one its line names (1.0 §13.2, **E704**).
@@ -539,6 +554,11 @@ showed it was needed.
 | §9.1 | An event-count limit counts **timed** events only, and a limit of 0 keeps none of them; a static event is unordered under every `order_by`. | Found by the 2.0 audit: ordered by availability, a static fact became a timed event a limit could drop, though step 3 calls it unordered and the task contract limits timed events; and 0, which the task schema admits, had no defined boundary. |
 | §11 | Diagnostic codes E011, E801–E819, W913 and W914 are allocated, each with a conformance case. | The draft did not allocate codes for unimplemented rules; they are now implemented. |
 | §11.1 | `semantic` checks E802's rule for a `shifted_utc` clock, which needs `/meta`'s de-identification record; the rest of E802 stays `structural`. `integrity` adds E818 beside every 1.0 digest code, E704 included. | Found by the review of 2.0 before its release: the clause placed all of E802 at `structural`, though that rule compares the descriptor with `/meta`, a cross-reference the reference validator checks at `semantic` with the record rules --- so a validator built from the text reported at `structural` a defect the reference reports only from `semantic` on; and it named 1.0's integrity codes E701–E703, written before 2.0 allocated E704. |
+| §2.1 | An amendment that removes the clinical profile lowers the version: it is the §10 imaging projection, written to a new file or in place of its source. | Found by the review of 2.0 before its release: "an amendment never lowers the version" contradicted the reference writer, whose `drop_clinical` in an amendment rewrites a 1.1 sample in place as 1.0 --- the projection §10 describes, a different sample with its own `content_id`. |
+| §3 | A `clinical` group is *recognised* when its `meta` holds a JSON object whose `schema` is `medh5.clinical/1`. Undeclared, a recognised group is E803 in any version, and from 1.1 on so is any object named `clinical`; in a 1.0 file an unrecognised one is an extension. | E803 and the §2.3 amendment rule turned on "a recognised `clinical/` group", which nothing defined, so a validator could not tell a 1.0 file's own extension from an undeclared profile; the reference validator's rule --- the name reserved from 1.1 on, the descriptor deciding before --- was written nowhere. |
+| §3, §7.2 | No conversion between clocks is defined: a subject's fragments join only on one clock (T304), and the versions they share are merged by the task contract, which refuses what does not agree (T305). | The text deferred to "a verified conversion" the task contract never defined, and called cross-fragment revisions "resolved" before selection, where the contract refuses them; an implementation looked for a conversion and a resolution that do not exist. |
+| §4, §5.1 | The identifier columns are listed, table by table, and `record_id` takes the 1.0 id syntax, as `event_id` and `document_id` do. | "Identifier columns are non-empty" named no column, and only two ids had a syntax, while the reference writer and validator refuse an empty `unit` or `prov` and a `record_id` of `rec 1` (E809): which empty strings and which record ids were errors could not be read from the text. |
+| §7.1 | An `instance` endpoint resolves through the `instance_ids` dataset of an annotation of any kind, and is E813 when none holds it; a `target_annotation_id` that does not hold it is E814. | "An instance-bearing annotation" was undefined, and the clause gave E814 for an instance found nowhere, which the reference validator reports as the unresolved endpoint it is (E813). |
 
 ## Appendix B — Schemas
 
