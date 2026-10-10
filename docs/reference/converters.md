@@ -60,8 +60,10 @@ still describes the same physical volume.
 conversion is a sign flip on the affine, `diag(-1, -1, 1, 1)`, and nothing else
 — no resampling, no reinterpretation. `--coord-system RAS` keeps RAS.
 
-**Round trip.** `from_nifti` → `to_nifti` reproduces the affine and the voxels
-bit-for-bit.
+**Round trip.** `from_nifti` → `to_nifti` reproduces the affine and the voxels.
+A file with a scale (`scl_slope`/`scl_inter`) comes back as its physical values
+by default --- floats, with no scale; `--stored` (`physical=False`) writes the
+stored voxels and the scale, as the file had them.
 
 **An export says what its numbers are in.** Lengths are written in millimetres
 --- a grid in `m` or `um` is scaled to them, and an uncalibrated `px` grid gets
@@ -90,7 +92,20 @@ modality LUT does. The voxels keep the dtype the file stores them in;
 applied.
 
 `--assume-geometry` imports a file that declares no spatial mapping, recording
-the fallback as a guess. Without it, such a file is refused.
+the fallback as a guess. Without it, such a file is refused. A file that states
+no spatial unit (NIfTI's `unknown`, the header's default, and what an export of
+a `px` grid writes) is read as millimetres, as NIfTI readers commonly do, and
+the report records that as a guess too.
+
+**Mask names become class keys** as a label set allows them --- lowercase
+letters, digits and underscores --- and the name as given is the class's
+display name: `--mask GTV-1=gtv.nii.gz` is the class `gtv_1`, named `GTV-1`.
+Two names that make one key are refused. A mask added with `import_seg_nifti`
+is found in the sample's label set by the key its name makes.
+
+**A sample is one subject**, and NIfTI names none: without `--subject-id`
+(`subject_id=`) the sample is a subject of its own, its id the sample's, and
+the report records that as a guess (`identity`).
 
 **A 4-D series' extra axis is decided, not assumed.** Cine, DCE and 4-D CT put
 time there; multi-b-value DWI and multi-echo series put channels there (§3.6),
@@ -113,6 +128,11 @@ from medh5.io.dicom import scan_dicom, read_series, from_dicom, select_series
 report = from_dicom("/studies", "out/", group_by="subject", modalities=["CT"])
 ```
 
+**`out` is a directory** --- each sample named for its subject inside it ---
+when the tree holds more than one sample, when it is a directory already, or
+when it ends in a separator (`out/`); otherwise it is the file the one sample
+is written to.
+
 **Slices are ordered by geometry** — position projected on the slice normal, not
 `InstanceNumber`, which is a display order and is regularly wrong.
 
@@ -124,7 +144,9 @@ become the image's `rescale`, so `read(physical=True)` gives HU and `read()`
 gives what the scanner stored.
 
 **Tags are an explicit allow-list.** Imaging physics goes to `acquisition`;
-everything else stays out (§11.4).
+everything else stays out (§11.4). The importer does not de-identify, and
+writes no de-identification record: the report says so, and the validator
+reports such a file (`W903`).
 
 **Enhanced multi-frame objects are reported, not read.** The importer reads
 classic single-frame series. An Enhanced CT/MR/PET object keeps its geometry
@@ -159,11 +181,14 @@ $ medh5 convert to-dicom-seg case.medh5 organs out.dcm \
 not by frame index. Each frame must lie on one of the grid's slices and start at
 its first voxel, and its row and column directions and pixel spacing must be the
 grid's; a SEG drawn on another reconstruction is refused (`E405`) rather than
-force-fitted. A frame's orientation and pixel spacing are read where the file
-keeps them, in its own functional groups or the shared ones; frames turned or
-spaced against each other are refused, and so is a frame stating no pixel
-spacing. Positions are DICOM's (LPS, millimetres), converted for an RAS grid or
-one in other length units. **Segments match by label, not by number.**
+force-fitted. A frame's orientation, pixel spacing and segment are read where
+the file keeps them, in its own functional groups or the shared ones; frames
+turned or spaced against each other are refused, and so is a frame stating no
+pixel spacing or naming no segment. Positions are DICOM's (LPS, millimetres),
+converted for an RAS grid or one in other length units; a grid in pixels or
+another convention is refused (`E414`). **Segments match by label, not by
+number.** A `BINARY` or `FRACTIONAL` SEG is read; a `LABELMAP` one, whose frames
+hold every segment by pixel value, is refused by name.
 
 **Frames of reference come first.** A SEG is matched to the grid that shares
 its `FrameOfReferenceUID`, and a grid — matched or named with `--grid` — whose
@@ -185,9 +210,11 @@ planes no such stack holds are refused, and `read_dicom_seg_frames` reads them
 frame by frame.
 
 **Export writes an annotation onto its own grid only**: the source images must
-be that grid's slices --- one frame of reference, rows and columns running the
-same way at the same spacing, each image starting at its slice's first voxel ---
-or the export is refused (`E405`); nothing is resampled.
+be that grid's slices --- rows and columns running the same way at the same
+spacing, each image starting at its slice's first voxel --- or the export is
+refused (`E405`); nothing is resampled. They must be in the grid's frame of
+reference where it states one (`E414` otherwise); `frame_salt=` compares a frame
+`medh5 scrub` pseudonymised.
 
 <!-- illustrative -->
 ```python

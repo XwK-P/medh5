@@ -10,7 +10,7 @@ produces a file that is wrong in a way nothing downstream can detect.** A
 crashed import costs an afternoon. A successful import of a fabricated grid
 costs a study.
 
-## These refusals carry no diagnostic code
+## Most of these refusals carry no diagnostic code
 
 §15.2's [code table](../reference/diagnostic-codes.md) describes conditions found
 **in a MEDH5 file**. A DICOM series that disagrees with itself, or two NIfTI
@@ -21,7 +21,20 @@ them, and borrowing one would be worse than having none.
 `E101` is a reference to a grid that does not exist; nothing here is referenced.
 Reporting either would send a reader looking for a defect in a file that was
 never written. The converters raise with a message naming the offending input
-instead.
+instead — and a file that is not the format named at all (a text file passed
+as DICOM or NIfTI) is refused the same way, naming it.
+
+The exceptions are refusals about a **sample** — what an import into one, or an
+export from one, would put in a file — and they carry the code the validator
+would report there:
+
+| Code | Refused because |
+|---|---|
+| `E101` | an import cannot tell which of the sample's grids a SEG or RTSTRUCT belongs to |
+| `E401` | the annotation is of a kind the format cannot hold (`to-rtstruct` on a mask) |
+| `E402` | a class the sample's label set does not have |
+| `E405` | a mask or SEG does not fit its grid: another shape, or frames that are not the grid's slices; a SEG export whose source images are not the annotation grid's slices |
+| `E414` | a space or frame of reference the annotation cannot be in: a grid in another known frame, or one in pixels or another convention where patient coordinates are needed |
 
 ## NIfTI
 
@@ -42,15 +55,29 @@ codes are set and the matrices describe different geometry — the signature of 
 file one tool updated and another did not — the sform is used, as is
 conventional, and the report carries a guess naming the difference. A reader
 that prefers the qform will place that volume somewhere else, and you want to
-know which files those are before you train on them.
+know which files those are before you train on them. **A file that states no
+spatial unit** — NIfTI's `unknown`, the header's default — is read as
+millimetres, as NIfTI readers commonly do, and that too is a guess in the report.
+
+**A mask added to a sample must sit on its grid** (`import_seg_nifti`): the
+same shape (`E405` otherwise), and the same spacing, origin and direction, with
+lengths compared in millimetres. A mask that only matches the shape was drawn on
+another grid, and taking its voxels as this one's puts labels where nobody drew
+them. `assume_aligned=True` takes them anyway, for a header known to be wrong,
+and records the guess.
+
+**Two mask names that make one class key are refused.** A name becomes a key
+as a label set allows one — lowercase letters, digits and underscores, so
+`GTV-1` is the class `gtv_1`, displayed as `GTV-1` — and `GTV-1` beside
+`gtv_1` would merge two masks into one class.
 
 ## DICOM
 
 **The stack must agree with itself.** A series is one volume with one geometry
-and one modality LUT, so `ImageOrientationPatient`, `PixelSpacing` and
-`RescaleSlope`/`RescaleIntercept` are read once — but from *every* slice, and
-checked. A stack whose slices disagree is refused, naming the offending
-`SOPInstanceUID`.
+and one modality LUT, so `ImageOrientationPatient`, `PixelSpacing`, the matrix
+size (`Rows`, `Columns`) and `RescaleSlope`/`RescaleIntercept` are read once —
+but from *every* slice, and checked. A stack whose slices disagree is refused,
+naming the offending `SOPInstanceUID`.
 
 Taking the first slice's answer is not a gentler version of this; it is a
 different, silent one. A per-slice rescale is ordinary in PET, and collapsing it
@@ -122,10 +149,43 @@ positionally. If your label set uses ids 1 and 3, importing by number would
 quietly turn "lesion" into whatever class holds id 2. `from_dicom_seg` matches
 on `SegmentLabel` and records the mapping as a decision.
 
+**Frames go only where they were drawn.** Each frame is placed by its own
+position, and must be one of the grid's slices, starting at its first voxel,
+with the grid's row and column directions and pixel spacing; a SEG drawn on
+another reconstruction is refused (`E405`) rather than force-fitted. Frames
+turned or spaced against each other are not one volume's slices and are
+refused, and so is a frame that states no pixel spacing, rather than read as
+1 mm — both without a code, being about the SEG alone.
+
+**Another frame of reference is refused** (`E414`), whether the grid was
+matched or named with `--grid`: equal geometry in two frames is no
+correspondence, and relating them is a registration the importer does not
+apply. A grid in pixels, or in a convention other than LPS or RAS, has no place
+for a patient position, and is refused the same way.
+
+**Only `BINARY` and `FRACTIONAL` SEGs are read.** Their frames each hold one
+segment and name it. A `LABELMAP` SEG holds every segment in one frame, by
+pixel value, and names none; read as binary, every frame became segment 1. It
+is refused by name, and so is a frame that names no segment.
+
+**Export writes an annotation onto its own grid only.** A SEG's frames take
+their geometry from its source images, so the images must be the annotation
+grid's slices (`E405` otherwise) in its frame of reference (`E414`; a frame
+`medh5 scrub` pseudonymised is compared through `frame_salt=`). The export used
+to compare nothing, and an annotation on a grid turned in plane, or shifted
+10 mm, was written centimetres from where it was drawn.
+
 **Writing requires `highdicom`** rather than assembling the IOD by hand.
 Building per-frame functional groups yourself is how invalid SEGs get published.
 
 ## RTSTRUCT
+
+**Contours are patient coordinates**, millimetres in LPS, both ways. A grid in
+pixels or another convention relates to none and is refused (`E414`), and so is
+a grid in another known frame of reference than the RTSTRUCT's, on import, and
+source images in another frame than the contours', on export (`E414`). Stored
+as read, contours on an RAS grid or one in metres landed centimetres to metres
+from the anatomy.
 
 **Export refuses a mask.** `to-rtstruct` on a voxel annotation is an error, not
 a marching-squares fallback: the contours it would produce are not the contours
@@ -151,6 +211,10 @@ This is the same shared-grid check `from_nifti` applies. Import used to keep
 whichever grid it saw first, which wrote the later volumes' voxels intact and
 their position silently wrong.
 
+**A label value `dataset.json` does not declare is refused**, as nnU-Net
+refuses it, rather than read as background for every class — a verified
+negative nobody observed.
+
 **Export refuses a class the sample does not have** (`E402`). `to-nnunet`
 matches classes by **id**, not by name — which is precisely why import keeps
 nnU-Net's own integers. Matching by name looks equivalent and is not: import
@@ -158,6 +222,15 @@ sanitises `dataset.json` names into label-set keys, so a dataset naming a class
 `"Tumour Core"` or `"GTV"` resolved nothing — and the export, skipping the miss
 silently, came out listing every class, with label files of the right shape in
 which every voxel was 0.
+
+**The export is refused as a whole, before a file is written**, when any case
+cannot be one of the dataset: a case name that is no file name, or that differs
+from another only in case; a case without the annotation (unless
+`--unlabeled test`); channels and labels that are not one lattice in one frame,
+convention and unit; a class some case never examined; labels that do not come
+back from the volume written. These carry no code: the samples are valid, and
+what they fail is nnU-Net's layout. The first refused case used to leave the
+cases before it written and no `dataset.json`.
 
 ## COCO
 

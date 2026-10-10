@@ -13,7 +13,9 @@ medh5 convert to-nifti case.medh5 CT liver.nii.gz --annotation organs --class li
 quantitative image is written after its rescale, so the numbers mean what the
 units say.
 
-The round trip from `from_nifti` is exact — affine and voxels bit-for-bit.
+The round trip from `from_nifti` reproduces the affine and the voxels; a file
+that had a scale comes back as its physical values unless `--stored` writes the
+stored voxels and the scale, as the file had them.
 
 ## DICOM SEG
 
