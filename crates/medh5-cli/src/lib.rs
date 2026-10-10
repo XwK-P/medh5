@@ -15,10 +15,10 @@ use serde_json::{json, Map, Value};
 
 use medh5::json::repr_str;
 
-pub mod app;
+mod app;
 mod bench;
 mod clinical;
-pub mod common;
+mod common;
 mod conformance;
 mod convert;
 mod curation;
@@ -29,8 +29,8 @@ mod perf;
 mod scrub;
 mod seg;
 
-use common::{top_level_message, Ctx};
-pub use common::{Host, EXIT_ERROR, EXIT_OK, EXIT_USAGE};
+use common::Ctx;
+pub use common::{top_level_message, Host, EXIT_ERROR, EXIT_OK, EXIT_USAGE};
 
 /// The host of the standalone binary: hands the converters and the dataloader
 /// benchmark to a Python interpreter that has the `medh5` package, when there

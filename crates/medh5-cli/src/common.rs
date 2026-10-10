@@ -1,7 +1,6 @@
 //! What every command shares: output streams, JSON output, errors, tables.
 
 use std::io::Write;
-use std::path::PathBuf;
 
 use clap::ArgMatches;
 use serde_json::{json, Value};
@@ -224,10 +223,6 @@ pub fn flag(m: &ArgMatches, id: &str) -> bool {
     m.get_flag(id)
 }
 
-pub fn path_of(text: &str) -> PathBuf {
-    PathBuf::from(text)
-}
-
 // -- text output -------------------------------------------------------------
 
 /// `1.5 KiB`: bytes in binary units, as the 1.x CLI printed them.
@@ -247,18 +242,14 @@ pub fn indent(text: &str) -> String {
     text.lines().map(|line| format!("  {line}")).collect::<Vec<_>>().join("\n")
 }
 
-fn ljust(text: &str, width: usize) -> String {
+/// `format(text, "Ns")`: left-justified to `width` characters.
+pub fn pad(text: &str, width: usize) -> String {
     let len = text.chars().count();
     if len >= width {
         text.to_string()
     } else {
         format!("{text}{}", " ".repeat(width - len))
     }
-}
-
-/// `format(text, "Ns")`: left-justified to `width` characters.
-pub fn pad(text: &str, width: usize) -> String {
-    ljust(text, width)
 }
 
 /// A minimal fixed-width table --- no dependency, predictable in a pipe.
@@ -274,10 +265,10 @@ pub fn table<S: AsRef<str>>(rows: &[Vec<String>], headers: &[S]) -> String {
             w
         })
         .collect();
-    let line = headers.iter().zip(&widths).map(|(h, w)| ljust(h.as_ref(), *w)).collect::<Vec<_>>().join("  ");
+    let line = headers.iter().zip(&widths).map(|(h, w)| pad(h.as_ref(), *w)).collect::<Vec<_>>().join("  ");
     let mut out = vec![line, widths.iter().map(|w| "-".repeat(*w)).collect::<Vec<_>>().join("  ")];
     for row in rows {
-        out.push(row.iter().zip(&widths).map(|(c, w)| ljust(c, *w)).collect::<Vec<_>>().join("  "));
+        out.push(row.iter().zip(&widths).map(|(c, w)| pad(c, *w)).collect::<Vec<_>>().join("  "));
     }
     out.join("\n")
 }

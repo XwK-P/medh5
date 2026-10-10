@@ -174,7 +174,7 @@ fn cli_command_tree(py: Python<'_>) -> PyResult<Bound<'_, PyAny>> {
 /// the message when it is a sentence, the key named otherwise.
 #[pyfunction]
 fn cli_lookup_message(text: &str) -> String {
-    medh5_cli::common::top_level_message(&medh5::Error::Key(text.to_string()))
+    medh5_cli::top_level_message(&medh5::Error::Key(text.to_string()))
 }
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
