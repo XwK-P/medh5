@@ -106,8 +106,10 @@ impl Image {
         self.level.unwrap_or(0)
     }
 
-    /// The dataset this view reads: level 0, or the view's level.
+    /// The dataset this view reads: level 0, or the view's level.  Refused
+    /// once the file is closed: a closed dataset reports shape `()`.
     pub fn dataset(&self) -> Result<hdf5::Dataset> {
+        crate::h5::alive(self.location())?;
         match &self.node {
             ImageNode::Single(d) => Ok(d.clone()),
             ImageNode::Multiscale(g) => Ok(g.dataset(&self.level.unwrap_or(0).to_string())?),
@@ -216,6 +218,7 @@ impl Image {
     /// `(centers, widths)` of the display window, when declared.
     pub fn window(&self) -> Result<Option<(Vec<f64>, Vec<f64>)>> {
         let loc = self.location();
+        crate::h5::alive(loc)?;
         if !attrs::has(loc, "window_center") || !attrs::has(loc, "window_width") {
             return Ok(None);
         }

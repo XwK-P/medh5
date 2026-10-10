@@ -219,9 +219,17 @@ impl SamplingIndex {
         SamplingIndex { ann_id: ann_id.into(), group, class_ids: OnceLock::new(), counts: OnceLock::new() }
     }
 
+    /// The entry's group, refused once its file is closed: a closed group
+    /// has no members, which reads as an entry without its tables.
+    fn live(&self) -> Result<&hdf5::Group> {
+        crate::h5::alive(&self.group)?;
+        Ok(&self.group)
+    }
+
     fn table(&self) -> Result<&(Vec<i64>, HashMap<i64, usize>)> {
+        let group = self.live()?;
         match self.class_ids.get_or_init(|| {
-            let ds = self.group.dataset("class_ids")?;
+            let ds = group.dataset("class_ids")?;
             let ids: Vec<i64> = data::read(&ds)?.cast::<i64>().iter().copied().collect();
             let positions = ids.iter().enumerate().map(|(i, c)| (*c, i)).collect();
             Ok((ids, positions))
@@ -253,10 +261,10 @@ impl SamplingIndex {
 
     /// Voxel count per class.
     pub fn voxel_counts(&self) -> Result<IndexMap<i64, i64>> {
+        let group = self.live()?;
         match self.counts.get_or_init(|| {
             let ids = self.class_ids()?;
-            let counts: Vec<i64> =
-                data::read(&self.group.dataset("voxel_counts")?)?.cast::<i64>().iter().copied().collect();
+            let counts: Vec<i64> = data::read(&group.dataset("voxel_counts")?)?.cast::<i64>().iter().copied().collect();
             Ok(ids.into_iter().zip(counts).collect())
         }) {
             Ok(c) => Ok(c.clone()),
@@ -269,7 +277,8 @@ impl SamplingIndex {
         let Some(position) = self.table()?.1.get(&class_id).copied() else {
             return Err(Error::Value(format!("index {} has no class {class_id}", repr_str(&self.ann_id))));
         };
-        let row = data::read_region(&self.group.dataset("class_bboxes")?, &[Index::At(position as i64)])?.cast::<f32>();
+        let row =
+            data::read_region(&self.live()?.dataset("class_bboxes")?, &[Index::At(position as i64)])?.cast::<f32>();
         if row.iter().any(|v| v.is_nan()) {
             return Ok(None);
         }
@@ -278,7 +287,7 @@ impl SamplingIndex {
     }
 
     fn coord_node(&self, class_id: i64) -> Result<hdf5::Dataset> {
-        let group = self.group.group("fg_coords")?;
+        let group = self.live()?.group("fg_coords")?;
         ops::child_dataset(&group, &class_id.to_string()).ok_or_else(|| {
             Error::Key(format!("index {} has no coordinates for class {class_id}", repr_str(&self.ann_id)))
         })
@@ -342,13 +351,13 @@ impl SamplingIndex {
     }
 
     /// Whether an occupancy map is stored.
-    pub fn has_occupancy(&self) -> bool {
-        ops::exists(&self.group, "occupancy")
+    pub fn has_occupancy(&self) -> Result<bool> {
+        Ok(ops::exists(self.live()?, "occupancy"))
     }
 
     /// Read one class's occupancy plane.
     pub fn occupancy_plane(&self, position: usize) -> Result<Option<ArrayD<bool>>> {
-        match ops::child_dataset(&self.group, "occupancy") {
+        match ops::child_dataset(self.live()?, "occupancy") {
             None => Ok(None),
             Some(ds) => Ok(Some(
                 data::read_region(&ds, &[Index::At(position as i64), Index::Slice(Slice::full())])?.nonzero_mask(),
@@ -363,7 +372,7 @@ impl SamplingIndex {
             "classes": self.class_ids()?,
             "voxel_counts": counts,
             "max_coords": self.max_coords()?,
-            "has_occupancy": self.has_occupancy(),
+            "has_occupancy": self.has_occupancy()?,
             "source_digest": self.source_digest()?,
         }))
     }

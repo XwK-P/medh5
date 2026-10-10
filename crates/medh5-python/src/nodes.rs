@@ -208,8 +208,8 @@ fn dataset_key(key: &Bound<'_, PyAny>, ndim: usize) -> PyResult<Vec<Index>> {
 #[pymethods]
 impl Dataset {
     #[getter]
-    fn name(&self) -> String {
-        self.ds.name()
+    fn name(&self) -> R<String> {
+        Ok(self.live()?.name())
     }
     #[getter]
     fn shape<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyTuple>> {
@@ -359,8 +359,9 @@ impl Group {
 #[pymethods]
 impl Group {
     #[getter]
-    fn name(&self) -> String {
-        self.group.name()
+    fn name(&self) -> R<String> {
+        medh5::h5::alive(&self.group)?;
+        Ok(self.group.name())
     }
     #[getter]
     fn attrs(&self) -> Attrs {

@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import dataclasses
+import inspect
 import json
 import os
 import stat
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -698,6 +701,186 @@ class TestAtomicRewrite:
             assert sample.verify().ok
 
 
+# Arguments for the view methods that take some, by method name.
+POINT = np.array([[1.0, 2.0, 3.0]])
+VIEW_ARGS: dict[str, tuple[tuple[Any, ...], dict[str, Any]]] = {
+    "at": (("tp0",), {}),
+    "bbox": ((1,), {}),
+    "class_key": ((1,), {}),
+    "classes_at": (((2, 2, 2),), {}),
+    "contains": ((1, (2, 2, 2)), {}),
+    "coords": ((1,), {}),
+    "crop": ((0,), {}),
+    "displacement_at": ((POINT,), {}),
+    "document_text": (("x",), {}),
+    "get": (("x",), {}),
+    "grid_in": (("F0",), {}),
+    "has_class": ((1,), {}),
+    "ignore_region": (("lm",), {}),
+    "instance": ((7,), {}),
+    "inverse_points": ((POINT,), {}),
+    "is_annotated": ((1,), {}),
+    "is_current": (("x",), {}),
+    "level": ((0,), {}),
+    "occupancy_plane": ((0,), {}),
+    "read_layer": ((0,), {}),
+    "resolve_class": ((1,), {}),
+    "resolve_classes": (([1],), {}),
+    "resolve_frames": (("F0", "F1"), {}),
+    "sample_foreground": ((1,), {"rng": 0}),
+    "sample_indices": ((POINT,), {}),
+    "scheme": (("x",), {}),
+    "state": (("liver",), {}),
+    "to_index": ((POINT,), {}),
+    "to_world": ((POINT,), {}),
+    "transform_between": (("F0", "F1"), {}),
+    "transform_points": ((POINT,), {}),
+    "valid_region": (("CT",), {}),
+    "value": (("liver",), {}),
+}
+
+
+def every_view(path: Path) -> Path:
+    """A sample holding one of each kind of view a reader hands out."""
+    from medh5.geometry import derive_level_grid
+
+    shape = Organs.SHAPE
+    organs = Organs.blocks()
+    spleen = np.zeros(shape, dtype=bool)
+    spleen[4:6, 6:10, 6:10] = True
+    matrix = np.eye(4)
+    matrix[:3, 3] = (1.0, 0.0, 0.0)
+    with medh5.create(path, sample_id="views", codec="portable") as w:
+        w.label_set(Organs.label_set())
+        spacing = (2.0, 0.8, 0.8)
+        g = w.add_grid("g", shape=shape, spacing=spacing, frame_uid="F0")
+        w.add_grid("f", shape=shape, spacing=spacing, frame_uid="F1")
+        half = derive_level_grid(g, (2, 2, 2), "h")
+        w.add_grid(
+            "h",
+            shape=half.shape,
+            spacing=half.spacing,
+            origin=half.origin,
+            direction=half.direction,
+            frame_uid="F0",
+        )
+        ct = np.arange(np.prod(shape), dtype=np.int16).reshape(shape)
+        w.add_image(
+            "CT", ct, grid="g", modality="CT", window_center=[40], window_width=[400]
+        )
+        w.add_pyramid(
+            "P",
+            [ct, np.zeros(half.shape, np.int16)],
+            grid_levels=["g", "h"],
+            modality="CT",
+        )
+        w.add_segmentation(
+            "lm",
+            grid="g",
+            masks={1: organs[1], 2: spleen},
+            encoding="labelmap",
+            ignore=Organs.ignore(),
+        )
+        w.add_segmentation("ly", grid="g", masks=organs, encoding="layers")
+        w.add_segmentation("bm", grid="g", masks=organs, encoding="bitmask")
+        w.add_segmentation(
+            "pm", grid="g", probabilities={1: organs[1].astype(np.float32)}
+        )
+        w.add_segmentation(
+            "in",
+            grid="g",
+            instances=[InstanceInput(class_id=3, instance_id=7, mask=organs[3])],
+        )
+        w.add_mask("fov", np.ones(shape, dtype=bool), grid="g")
+        w.add_boxes("bx", [[[1, 4], [1, 6], [1, 6]]], ["liver"], grid="g")
+        w.add_points("pt", POINT, grid="g", names=["apex"])
+        w.add_classification("cl", {"liver": 1.0, "lesion": 0.0})
+        w.add_transform(
+            "af", kind="affine", from_frame="F0", to_frame="F1", matrix=matrix
+        )
+        w.add_transform(
+            "dp",
+            kind="displacement",
+            from_frame="F1",
+            to_frame="F2",
+            field=np.zeros((3, *shape), dtype=np.float32),
+            field_grid="f",
+        )
+        w.add_transform(
+            "ch",
+            kind="composite",
+            from_frame="F0",
+            to_frame="F2",
+            components=["af", "dp"],
+        )
+        w.build_index(["lm"], occupancy=2)
+    return path
+
+
+def answer(view: Any, name: str) -> tuple[Any, ...]:
+    """What one public attribute of a view gives: its value (a method called
+    with its `VIEW_ARGS`, an iterator run out), or the exception it raised."""
+    static = inspect.getattr_static(view, name)
+    args, kwargs = VIEW_ARGS.get(name, ((), {}))
+    try:
+        value = getattr(view, name)
+        if callable(static):
+            value = value(*args, **kwargs)
+        if isinstance(value, Iterator):
+            value = list(value)
+    except Exception as exc:  # the exception is the answer
+        return ("raised", type(exc), str(exc))
+    return ("value", value)
+
+
+def walk(view: Any) -> dict[str, tuple[Any, ...]]:
+    """Every public method and property of a view, and `len` and `iter`."""
+    found = {}
+    for name in dir(view):
+        if name.startswith("_") and name not in ("__len__", "__iter__"):
+            continue
+        if name in ("close", "is_open"):  # the lifecycle itself
+            continue
+        static = inspect.getattr_static(view, name)
+        if isinstance(static, staticmethod | classmethod):
+            continue
+        found[name] = answer(view, name)
+    return found
+
+
+def same(a: Any, b: Any) -> bool:
+    """Equal values: arrays by content, containers item by item, a view (an
+    object without equality of its own) by its type."""
+    if isinstance(a, np.ndarray) or isinstance(b, np.ndarray):
+        return (
+            isinstance(a, np.ndarray)
+            and isinstance(b, np.ndarray)
+            and a.dtype == b.dtype
+            and np.array_equal(a, b, equal_nan=a.dtype.kind in "fc")
+        )
+    if isinstance(a, dict):
+        return (
+            isinstance(b, dict)
+            and a.keys() == b.keys()
+            and all(same(a[k], b[k]) for k in a)
+        )
+    if isinstance(a, list | tuple):
+        return (
+            type(a) is type(b)
+            and len(a) == len(b)
+            and all(same(x, y) for x, y in zip(a, b, strict=True))
+        )
+    if dataclasses.is_dataclass(a) and not isinstance(a, type):
+        return type(a) is type(b) and all(
+            same(getattr(a, f.name), getattr(b, f.name)) for f in dataclasses.fields(a)
+        )
+    if isinstance(a, float) and isinstance(b, float) and a != a:
+        return b != b
+    if type(a).__eq__ is object.__eq__:
+        return type(a) is type(b)
+    return bool(a == b)
+
+
 class TestClose:
     """§14.4: a closed sample holds nothing open.
 
@@ -720,6 +903,50 @@ class TestClose:
         with pytest.raises(MEDH5FileError, match="closed"):
             stored.shape  # noqa: B018 - the access is the assertion
         assert repr(stored) == "<closed medh5 Dataset>"
+
+    @pytest.mark.filterwarnings("ignore:labelmap\\(\\) flattened")
+    def test_S14_4_every_view_refuses_a_closed_file_or_answers_as_before(
+        self, tmp_path
+    ):
+        """Every public method and property of every view, after ``close()``:
+        ``MEDH5FileError``, or exactly the answer it gave while the file was
+        open.  A closed file read as an empty one answered shape ``()``, name
+        ``''``, no occupancy map, or "requires a data dataset" (E410/E502)."""
+        sample = medh5.open(every_view(tmp_path / "views.medh5"))
+        ct = sample.images["CT"]
+        views = [
+            sample,
+            *sample.images.values(),
+            sample.images["P"].level(1),
+            *sample.annotations.values(),
+            *sample.transforms.values(),
+            *sample.index.values(),
+            sample.root,
+            sample.root.attrs,
+            ct.dataset,
+            ct.dataset.attrs,
+            sample.annotations["lm"].group,
+        ]
+        before = [walk(view) for view in views]
+        sample.close()
+        after = [walk(view) for view in views]
+
+        problems = []
+        for view, was, now in zip(views, before, after, strict=True):
+            for name, (kind, *found) in now.items():
+                where = f"{type(view).__name__}.{name}"
+                assert not (was[name][0] == "raised" and was[name][1] is TypeError), (
+                    f"{where} was not called: {was[name][2]}"
+                )
+                if kind == "raised" and issubclass(found[0], MEDH5FileError):
+                    continue
+                if kind == was[name][0] == "value" and same(was[name][1], found[0]):
+                    continue
+                if kind == was[name][0] == "raised" and found[0] is was[name][1]:
+                    continue
+                problems.append(f"{where}: {was[name][:2]} then {(kind, *found)}")
+        assert problems == [], "\n".join(problems)
+        assert sum(map(len, after)) > 300
 
     def test_S14_4_commit_closes_what_the_writer_handed_out(self, tmp_path):
         path = tmp_path / "w.medh5"

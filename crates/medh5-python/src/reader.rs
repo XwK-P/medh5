@@ -214,6 +214,12 @@ impl AnnotationHandle {
         AnnotationHandle { inner, columns: Mutex::new(std::collections::HashMap::new()) }
     }
 
+    /// Refuse once the annotation's file is closed: a closed group has no
+    /// members, which reads as an annotation without its datasets (E410).
+    fn live(&self) -> R<()> {
+        Ok(medh5::h5::alive(&self.inner.group)?)
+    }
+
     /// A column, made once and frozen: a caller writing into it would
     /// otherwise change what every later read returns.
     fn column<'py>(
@@ -351,6 +357,7 @@ impl AnnotationHandle {
     }
     #[getter]
     fn grid(&self) -> R<Grid> {
+        self.live()?;
         Ok(Grid::wrap(self.inner.grid()?.clone()))
     }
     #[getter]
@@ -358,6 +365,7 @@ impl AnnotationHandle {
         PyTuple::new(py, self.inner.timepoints())
     }
     fn is_annotated(&self, class_key_: &Bound<'_, PyAny>) -> R<bool> {
+        self.live()?;
         Ok(self.inner.is_annotated(&class_key(class_key_)?)?)
     }
     #[getter]
@@ -366,13 +374,16 @@ impl AnnotationHandle {
     }
     #[getter]
     fn has_ignore_region(&self) -> R<bool> {
+        self.live()?;
         Ok(self.inner.has_ignore_region()?)
     }
     fn resolve_class(&self, key: &Bound<'_, PyAny>) -> R<i64> {
+        self.live()?;
         Ok(self.inner.resolve_class(&class_key(key)?)?)
     }
     #[pyo3(signature = (keys=None))]
     fn resolve_classes<'py>(&self, py: Python<'py>, keys: Option<&Bound<'py, PyAny>>) -> R<Bound<'py, PyTuple>> {
+        self.live()?;
         let keys = opt_keys(keys)?;
         Ok(PyTuple::new(py, self.inner.resolve_classes(keys.as_deref())?)?)
     }
@@ -388,6 +399,7 @@ impl AnnotationHandle {
         self.inner.class_key(class_id)
     }
     fn summary<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyAny>> {
+        self.live()?;
         Ok(json_to_py(py, &self.inner.summary()?)?)
     }
     fn __repr__(&self) -> String {
@@ -395,15 +407,18 @@ impl AnnotationHandle {
     }
     /// A stored dataset of the annotation group.
     fn dataset(&self, name: &str) -> R<Dataset> {
+        self.live()?;
         Ok(Dataset { ds: self.inner.dataset(name)? })
     }
-    fn has_dataset(&self, name: &str) -> bool {
-        self.inner.optional_dataset(name).is_some()
+    fn has_dataset(&self, name: &str) -> R<bool> {
+        self.live()?;
+        Ok(self.inner.optional_dataset(name).is_some())
     }
 
     // -- voxel ------------------------------------------------------------------
     #[getter]
     fn spatial_shape<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyTuple>> {
+        self.live()?;
         Ok(PyTuple::new(py, self.inner.spatial_shape()?)?)
     }
     #[pyo3(signature = (classes=None, roi=None))]
@@ -413,6 +428,7 @@ impl AnnotationHandle {
         classes: Option<&Bound<'py, PyAny>>,
         roi: Option<&Bound<'py, PyAny>>,
     ) -> R<Bound<'py, PyAny>> {
+        self.live()?;
         let classes = opt_keys(classes)?;
         let roi = slices(roi)?;
         let ann = self.inner.clone();
@@ -420,6 +436,7 @@ impl AnnotationHandle {
         Ok(array_to_py(py, out))
     }
     fn contains(&self, class_key_: &Bound<'_, PyAny>, voxel: Vec<i64>) -> R<bool> {
+        self.live()?;
         Ok(self.inner.contains(&class_key(class_key_)?, &voxel)?)
     }
     /// `(volume, overwritten, order, warning)`.
@@ -431,6 +448,7 @@ impl AnnotationHandle {
         priority: Option<&Bound<'py, PyAny>>,
         dtype: Option<&Bound<'py, PyAny>>,
     ) -> R<Bound<'py, PyTuple>> {
+        self.live()?;
         let roi = slices(roi)?;
         let priority = opt_keys(priority)?;
         let dtype = match dtype {
@@ -453,6 +471,7 @@ impl AnnotationHandle {
     }
     #[pyo3(signature = (classes=None))]
     fn voxel_counts<'py>(&self, py: Python<'py>, classes: Option<&Bound<'py, PyAny>>) -> R<Bound<'py, PyDict>> {
+        self.live()?;
         let classes = opt_keys(classes)?;
         let ann = self.inner.clone();
         let counts = py.detach(move || ann.voxel_counts(classes.as_deref()))?;
@@ -464,6 +483,7 @@ impl AnnotationHandle {
     }
     #[pyo3(signature = (classes=None))]
     fn class_bboxes<'py>(&self, py: Python<'py>, classes: Option<&Bound<'py, PyAny>>) -> R<Bound<'py, PyDict>> {
+        self.live()?;
         let classes = opt_keys(classes)?;
         let ann = self.inner.clone();
         let boxes = py.detach(move || ann.class_bboxes(classes.as_deref()))?;
@@ -478,26 +498,31 @@ impl AnnotationHandle {
     }
     #[pyo3(signature = (roi=None))]
     fn ignore_mask<'py>(&self, py: Python<'py>, roi: Option<&Bound<'py, PyAny>>) -> R<Bound<'py, PyAny>> {
+        self.live()?;
         let roi = slices(roi)?;
         let ann = self.inner.clone();
         Ok(array_to_py(py, py.detach(move || ann.ignore_mask(roi.as_deref()))?))
     }
     #[pyo3(signature = (roi=None))]
     fn read_mask<'py>(&self, py: Python<'py>, roi: Option<&Bound<'py, PyAny>>) -> R<Bound<'py, PyAny>> {
+        self.live()?;
         let roi = slices(roi)?;
         let ann = self.inner.clone();
         Ok(array_to_py(py, py.detach(move || ann.read_mask(roi.as_deref()))?))
     }
     #[getter]
     fn layer_class_ids<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyAny>> {
+        self.live()?;
         Ok(array_to_py(py, self.inner.layer_class_ids()?.into_dyn()))
     }
     #[getter]
     fn n_layers(&self) -> R<usize> {
+        self.live()?;
         Ok(self.inner.n_layers()?)
     }
     #[getter]
     fn layer_of<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyDict>> {
+        self.live()?;
         let out = PyDict::new(py);
         for (k, v) in self.inner.layer_of()? {
             out.set_item(k, v)?;
@@ -505,26 +530,31 @@ impl AnnotationHandle {
         Ok(out)
     }
     fn layer_classes<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyTuple>> {
+        self.live()?;
         let layers = self.inner.layer_classes()?;
         Ok(PyTuple::new(py, layers.into_iter().map(|l| PyTuple::new(py, l)).collect::<PyResult<Vec<_>>>()?)?)
     }
     #[pyo3(signature = (layer, roi=None))]
     fn read_layer<'py>(&self, py: Python<'py>, layer: usize, roi: Option<&Bound<'py, PyAny>>) -> R<Bound<'py, PyAny>> {
+        self.live()?;
         let roi = slices(roi)?;
         let ann = self.inner.clone();
         Ok(nd_to_py(py, py.detach(move || ann.read_layer(layer, roi.as_deref()))?))
     }
     #[getter]
     fn bit_class_ids<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyAny>> {
+        self.live()?;
         let ids = self.inner.bit_class_ids()?;
         Ok(array_to_py(py, ArrayD::from_shape_vec(IxDyn(&[ids.len()]), ids)?))
     }
     #[getter]
     fn n_planes(&self) -> R<usize> {
+        self.live()?;
         Ok(self.inner.n_planes()?)
     }
     #[getter]
     fn position_of<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyDict>> {
+        self.live()?;
         let out = PyDict::new(py);
         let mut found: Vec<(i64, usize)> = self.inner.position_of()?.into_iter().collect();
         found.sort_by_key(|(_, p)| *p);
@@ -534,14 +564,17 @@ impl AnnotationHandle {
         Ok(out)
     }
     fn classes_at<'py>(&self, py: Python<'py>, voxel: Vec<i64>) -> R<Bound<'py, PyTuple>> {
+        self.live()?;
         Ok(PyTuple::new(py, self.inner.classes_at(&voxel)?)?)
     }
     #[getter]
     fn normalized(&self) -> R<bool> {
+        self.live()?;
         Ok(self.inner.normalized()?)
     }
     #[getter]
     fn threshold(&self) -> R<f64> {
+        self.live()?;
         Ok(self.inner.threshold()?)
     }
     #[pyo3(signature = (classes=None, roi=None))]
@@ -551,21 +584,25 @@ impl AnnotationHandle {
         classes: Option<&Bound<'py, PyAny>>,
         roi: Option<&Bound<'py, PyAny>>,
     ) -> R<Bound<'py, PyAny>> {
+        self.live()?;
         let classes = opt_keys(classes)?;
         let roi = slices(roi)?;
         let ann = self.inner.clone();
         Ok(array_to_py(py, py.detach(move || ann.probabilities(classes.as_deref(), roi.as_deref()))?))
     }
     #[getter]
-    fn has_masks(&self) -> bool {
-        self.inner.has_masks()
+    fn has_masks(&self) -> R<bool> {
+        self.live()?;
+        Ok(self.inner.has_masks())
     }
     #[getter]
     fn boxes<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyAny>> {
+        self.live()?;
         self.column(py, "boxes", || Ok(array_to_py(py, self.inner.boxes()?)))
     }
     #[getter]
     fn object_class_ids<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyAny>> {
+        self.live()?;
         self.column(py, "object_class_ids", || {
             let ids = self.inner.object_class_ids()?;
             Ok(array_to_py(py, ArrayD::from_shape_vec(IxDyn(&[ids.len()]), ids)?))
@@ -573,6 +610,7 @@ impl AnnotationHandle {
     }
     #[getter]
     fn instance_ids<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyAny>> {
+        self.live()?;
         self.column(py, "instance_ids", || {
             Ok(match self.inner.instance_ids()? {
                 Some(ids) => array_to_py(py, ArrayD::from_shape_vec(IxDyn(&[ids.len()]), ids)?),
@@ -582,6 +620,7 @@ impl AnnotationHandle {
     }
     #[getter]
     fn scores<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyAny>> {
+        self.live()?;
         self.column(py, "scores", || {
             Ok(match self.inner.scores()? {
                 Some(s) => array_to_py(py, ArrayD::from_shape_vec(IxDyn(&[s.len()]), s)?),
@@ -591,9 +630,11 @@ impl AnnotationHandle {
     }
     #[getter]
     fn n_objects(&self) -> R<usize> {
+        self.live()?;
         Ok(self.inner.n_objects()?)
     }
     fn crop<'py>(&self, py: Python<'py>, index: usize) -> R<Bound<'py, PyAny>> {
+        self.live()?;
         let ann = self.inner.clone();
         Ok(match py.detach(move || ann.crop(index))? {
             Some(c) => array_to_py(py, c),
@@ -602,14 +643,17 @@ impl AnnotationHandle {
     }
     /// Every instance as `(index, instance_id, class_id, box, mask, score)`.
     fn instances<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyList>> {
+        self.live()?;
         let ann = self.inner.clone();
         let found = py.detach(move || ann.instances())?;
         Ok(PyList::new(py, found.into_iter().map(|i| instance_tuple(py, i)).collect::<PyResult<Vec<_>>>()?)?)
     }
     fn instance<'py>(&self, py: Python<'py>, instance_id: u64) -> R<Bound<'py, PyTuple>> {
+        self.live()?;
         Ok(instance_tuple(py, self.inner.instance(instance_id)?)?)
     }
     fn tracking<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyDict>> {
+        self.live()?;
         let out = PyDict::new(py);
         for (k, v) in self.inner.tracking()? {
             out.set_item(k, v)?;
@@ -620,6 +664,7 @@ impl AnnotationHandle {
     // -- geometric --------------------------------------------------------------------
     #[getter]
     fn space(&self) -> R<String> {
+        self.live()?;
         Ok(self.inner.space()?)
     }
     #[getter]
@@ -628,6 +673,7 @@ impl AnnotationHandle {
     }
     #[getter]
     fn n_spatial(&self) -> R<usize> {
+        self.live()?;
         Ok(self.inner.n_spatial()?)
     }
     #[pyo3(signature = (coords, *, grid=None))]
@@ -637,6 +683,7 @@ impl AnnotationHandle {
         coords: &Bound<'py, PyAny>,
         grid: Option<&Bound<'py, PyAny>>,
     ) -> R<Bound<'py, PyAny>> {
+        self.live()?;
         let grid = grid_ref_owned(grid)?;
         let coords = f64_array(coords)?;
         Ok(array_to_py(py, with_grid(&grid, |g| self.inner.to_world(&coords, g))?))
@@ -648,12 +695,14 @@ impl AnnotationHandle {
         coords: &Bound<'py, PyAny>,
         grid: Option<&Bound<'py, PyAny>>,
     ) -> R<Bound<'py, PyAny>> {
+        self.live()?;
         let grid = grid_ref_owned(grid)?;
         let coords = f64_array(coords)?;
         Ok(array_to_py(py, with_grid(&grid, |g| self.inner.to_index(&coords, g))?))
     }
     #[getter]
     fn attributes<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyAny>> {
+        self.live()?;
         Ok(match self.inner.attributes()? {
             Some(items) => {
                 PyTuple::new(py, items.iter().map(|v| json_to_py(py, v)).collect::<PyResult<Vec<_>>>()?)?.into_any()
@@ -663,14 +712,17 @@ impl AnnotationHandle {
     }
     #[getter]
     fn n_items(&self) -> R<usize> {
+        self.live()?;
         Ok(self.inner.n_items()?)
     }
     #[getter]
     fn box_ndim(&self) -> R<usize> {
+        self.live()?;
         Ok(self.inner.box_ndim()?)
     }
     #[getter]
     fn slice_index<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyAny>> {
+        self.live()?;
         Ok(match self.inner.slice_index()? {
             Some(s) => array_to_py(py, ArrayD::from_shape_vec(IxDyn(&[s.len()]), s)?),
             None => py.None().into_bound(py),
@@ -678,6 +730,7 @@ impl AnnotationHandle {
     }
     #[pyo3(signature = (grid=None))]
     fn as_slices<'py>(&self, py: Python<'py>, grid: Option<&Bound<'py, PyAny>>) -> R<Bound<'py, PyList>> {
+        self.live()?;
         let grid = grid_ref_owned(grid)?;
         let found = with_grid(&grid, |g| self.inner.as_slices(g))?;
         let builtins = py.import("builtins")?;
@@ -691,47 +744,59 @@ impl AnnotationHandle {
     }
     #[pyo3(signature = (grid=None))]
     fn world_corners<'py>(&self, py: Python<'py>, grid: Option<&Bound<'py, PyAny>>) -> R<Bound<'py, PyAny>> {
+        self.live()?;
         let grid = grid_ref_owned(grid)?;
         Ok(array_to_py(py, with_grid(&grid, |g| self.inner.world_corners(g))?.into_dyn()))
     }
     #[pyo3(signature = (grid=None))]
     fn as_world<'py>(&self, py: Python<'py>, grid: Option<&Bound<'py, PyAny>>) -> R<Bound<'py, PyAny>> {
+        self.live()?;
         let grid = grid_ref_owned(grid)?;
         Ok(array_to_py(py, with_grid(&grid, |g| self.inner.as_world(g))?.into_dyn()))
     }
     fn obb_corners<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyAny>> {
+        self.live()?;
         Ok(array_to_py(py, self.inner.obb_corners()?.into_dyn()))
     }
     fn obb_as_aabb<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyAny>> {
+        self.live()?;
         Ok(array_to_py(py, self.inner.obb_as_aabb()?.into_dyn()))
     }
     fn obb_volumes<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyAny>> {
+        self.live()?;
         let v = self.inner.obb_volumes()?;
         Ok(array_to_py(py, ArrayD::from_shape_vec(IxDyn(&[v.len()]), v)?))
     }
     #[getter]
     fn visibility<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyAny>> {
+        self.live()?;
         Ok(array_to_py(py, self.inner.visibility()?))
     }
     #[getter]
     fn skeleton_id(&self) -> R<Option<String>> {
+        self.live()?;
         Ok(self.inner.skeleton_id()?)
     }
     fn skeleton(&self) -> R<Option<crate::labels::Skeleton>> {
+        self.live()?;
         Ok(self.inner.skeleton()?.map(crate::labels::Skeleton))
     }
     fn labelled<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyAny>> {
+        self.live()?;
         Ok(array_to_py(py, self.inner.labelled()?))
     }
     #[getter]
     fn point_names<'py>(&self, py: Python<'py>) -> R<Option<Bound<'py, PyTuple>>> {
+        self.live()?;
         Ok(self.inner.point_names()?.map(|n| PyTuple::new(py, n)).transpose()?)
     }
     #[getter]
     fn correspondence(&self) -> R<Option<String>> {
+        self.live()?;
         Ok(self.inner.correspondence()?)
     }
     fn named_points<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyDict>> {
+        self.live()?;
         let out = PyDict::new(py);
         for (k, v) in self.inner.named_points()? {
             out.set_item(k, array_to_py(py, ArrayD::from_shape_vec(IxDyn(&[v.len()]), v)?))?;
@@ -740,22 +805,27 @@ impl AnnotationHandle {
     }
     #[getter]
     fn contour_offsets<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyAny>> {
+        self.live()?;
         let v = self.inner.contour_offsets()?;
         Ok(array_to_py(py, ArrayD::from_shape_vec(IxDyn(&[v.len()]), v)?))
     }
     #[getter]
     fn contour_planes<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyAny>> {
+        self.live()?;
         Ok(array_to_py(py, self.inner.contour_planes()?.into_dyn()))
     }
     #[getter]
     fn contour_roles<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyTuple>> {
+        self.live()?;
         Ok(PyTuple::new(py, self.inner.contour_roles()?)?)
     }
     fn polygon<'py>(&self, py: Python<'py>, index: usize) -> R<Bound<'py, PyAny>> {
+        self.live()?;
         Ok(array_to_py(py, self.inner.polygon(index)?))
     }
     /// Every polygon as `(vertices, class_id, (axis, index), role)`.
     fn polygons<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyList>> {
+        self.live()?;
         let out = PyList::empty(py);
         for p in self.inner.polygons()? {
             out.append((array_to_py(py, p.vertices), p.class_id, p.plane, p.role))?;
@@ -763,6 +833,7 @@ impl AnnotationHandle {
         Ok(out)
     }
     fn by_plane<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyDict>> {
+        self.live()?;
         let out = PyDict::new(py);
         for ((a, b), v) in self.inner.by_plane()? {
             out.set_item((a, b), PyList::new(py, v)?)?;
@@ -771,33 +842,40 @@ impl AnnotationHandle {
     }
     #[getter]
     fn n_submeshes(&self) -> R<usize> {
+        self.live()?;
         Ok(self.inner.n_submeshes()?)
     }
     fn mesh_bounds<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyAny>> {
+        self.live()?;
         Ok(array_to_py(py, self.inner.mesh_bounds()?.into_dyn()))
     }
 
     // -- classification ------------------------------------------------------------------
     #[getter]
     fn scope(&self) -> R<String> {
+        self.live()?;
         Ok(self.inner.scope()?)
     }
     #[getter]
     fn multilabel(&self) -> R<bool> {
+        self.live()?;
         Ok(self.inner.multilabel()?)
     }
     #[getter]
     fn asserted_class_ids<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyAny>> {
+        self.live()?;
         let v = self.inner.asserted_class_ids()?;
         Ok(array_to_py(py, ArrayD::from_shape_vec(IxDyn(&[v.len()]), v)?))
     }
     #[getter]
     fn assertion_values<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyAny>> {
+        self.live()?;
         let v = self.inner.assertion_values()?;
         Ok(array_to_py(py, ArrayD::from_shape_vec(IxDyn(&[v.len()]), v)?))
     }
     #[getter]
     fn scope_ids<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyAny>> {
+        self.live()?;
         Ok(match self.inner.scope_ids()? {
             Some(v) => array_to_py(py, ArrayD::from_shape_vec(IxDyn(&[v.len()]), v)?),
             None => py.None().into_bound(py),
@@ -805,19 +883,23 @@ impl AnnotationHandle {
     }
     #[getter]
     fn schemes<'py>(&self, py: Python<'py>) -> R<Option<Bound<'py, PyTuple>>> {
+        self.live()?;
         Ok(self.inner.schemes()?.map(|s| PyTuple::new(py, s)).transpose()?)
     }
     #[getter]
     fn scheme_values<'py>(&self, py: Python<'py>) -> R<Option<Bound<'py, PyTuple>>> {
+        self.live()?;
         Ok(self.inner.scheme_values()?.map(|s| PyTuple::new(py, s)).transpose()?)
     }
     /// Every assertion as `(class_id, value, scope_id, scheme, scheme_value)`.
     fn assertions<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyList>> {
+        self.live()?;
         let found = self.inner.assertions()?;
         Ok(PyList::new(py, found.iter().map(|a| assertion_tuple(py, a)).collect::<PyResult<Vec<_>>>()?)?)
     }
     #[getter]
     fn labels<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyDict>> {
+        self.live()?;
         let out = PyDict::new(py);
         for (k, v) in self.inner.labels()? {
             out.set_item(k, v)?;
@@ -826,21 +908,26 @@ impl AnnotationHandle {
     }
     #[getter]
     fn positives<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyTuple>> {
+        self.live()?;
         Ok(PyTuple::new(py, self.inner.positives()?)?)
     }
     #[pyo3(signature = (class_key_, *, scope_id=None))]
     fn value(&self, class_key_: &Bound<'_, PyAny>, scope_id: Option<i64>) -> R<Option<f64>> {
+        self.live()?;
         Ok(self.inner.value(&class_key(class_key_)?, scope_id)?)
     }
     #[pyo3(signature = (class_key_, *, scope_id=None))]
     fn state(&self, class_key_: &Bound<'_, PyAny>, scope_id: Option<i64>) -> R<&'static str> {
+        self.live()?;
         Ok(self.inner.state(&class_key(class_key_)?, scope_id)?)
     }
     fn scheme(&self, name: &str) -> R<Option<String>> {
+        self.live()?;
         Ok(self.inner.scheme(name)?)
     }
     /// `{scope_id: [assertion tuples]}`.
     fn by_scope_id<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyDict>> {
+        self.live()?;
         let out = PyDict::new(py);
         for (k, v) in self.inner.by_scope_id()? {
             out.set_item(k, PyList::new(py, v.iter().map(|a| assertion_tuple(py, a)).collect::<PyResult<Vec<_>>>()?)?)?;
@@ -849,10 +936,12 @@ impl AnnotationHandle {
     }
     #[getter]
     fn is_change_label(&self) -> R<bool> {
+        self.live()?;
         Ok(self.inner.is_change_label()?)
     }
     #[getter]
     fn compared_timepoints<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyTuple>> {
+        self.live()?;
         Ok(PyTuple::new(py, self.inner.compared_timepoints()?)?)
     }
 }
@@ -867,6 +956,12 @@ pub struct TransformHandle {
 impl TransformHandle {
     pub fn wrap(t: EngineTransform) -> Self {
         TransformHandle { inner: Arc::new(t) }
+    }
+
+    /// Refuse once the transform's file is closed: a closed group has no
+    /// members, which reads as a transform without its data (E502).
+    fn live(&self) -> R<()> {
+        Ok(medh5::h5::alive(&self.inner.group)?)
     }
 }
 
@@ -914,8 +1009,9 @@ impl TransformHandle {
         crate::transforms::TransformHeader { inner: self.inner.header.clone() }
     }
     #[getter]
-    fn is_invertible(&self) -> bool {
-        self.inner.is_invertible()
+    fn is_invertible(&self) -> R<bool> {
+        self.live()?;
+        Ok(self.inner.is_invertible())
     }
     #[getter]
     fn timepoints<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
@@ -925,11 +1021,13 @@ impl TransformHandle {
         self.inner.grid_in(frame).cloned().map(Grid::wrap)
     }
     fn transform_points<'py>(&self, py: Python<'py>, points: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
+        self.live()?;
         let points = f64_array(points)?;
         let t = self.inner.clone();
         Ok(array_to_py(py, py.detach(move || t.transform_points(&points))?))
     }
     fn inverse(&self) -> R<Option<TransformHandle>> {
+        self.live()?;
         Ok(self.inner.inverse()?.map(TransformHandle::wrap))
     }
     #[getter]
@@ -938,46 +1036,57 @@ impl TransformHandle {
     }
     #[getter]
     fn matrix<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyAny>> {
+        self.live()?;
         Ok(array_to_py(py, self.inner.matrix()?.into_dyn()))
     }
     #[getter]
     fn n_spatial(&self) -> R<usize> {
+        self.live()?;
         Ok(self.inner.n_spatial()?)
     }
     fn inverse_matrix<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyAny>> {
+        self.live()?;
         Ok(array_to_py(py, self.inner.inverse_matrix()?.into_dyn()))
     }
     fn inverse_points<'py>(&self, py: Python<'py>, points: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
+        self.live()?;
         let points = f64_array(points)?;
         let t = self.inner.clone();
         Ok(array_to_py(py, py.detach(move || t.inverse_points(&points))?))
     }
     #[getter]
     fn jacobian_determinant_value(&self) -> R<f64> {
+        self.live()?;
         Ok(self.inner.jacobian_determinant_value()?)
     }
     #[getter]
     fn field(&self) -> R<Dataset> {
+        self.live()?;
         Ok(Dataset { ds: self.inner.field()? })
     }
     #[getter]
     fn field_grid_id(&self) -> R<String> {
+        self.live()?;
         Ok(self.inner.field_grid_id()?)
     }
     #[getter]
     fn field_grid(&self) -> R<Grid> {
+        self.live()?;
         Ok(Grid::wrap(self.inner.field_grid()?.clone()))
     }
     #[getter]
     fn vector_space(&self) -> R<String> {
+        self.live()?;
         Ok(self.inner.vector_space()?)
     }
     #[getter]
     fn interpolation(&self) -> R<String> {
+        self.live()?;
         Ok(self.inner.interpolation()?)
     }
     #[getter]
     fn extrapolation(&self) -> R<String> {
+        self.live()?;
         Ok(self.inner.extrapolation()?)
     }
     #[pyo3(signature = (roi=None, component=None))]
@@ -987,70 +1096,85 @@ impl TransformHandle {
         roi: Option<&Bound<'py, PyAny>>,
         component: Option<usize>,
     ) -> R<Bound<'py, PyAny>> {
+        self.live()?;
         let roi = slices(roi)?;
         let t = self.inner.clone();
         Ok(nd_to_py(py, py.detach(move || t.read_field(roi.as_deref(), component))?))
     }
     fn displacement_at<'py>(&self, py: Python<'py>, points: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
+        self.live()?;
         let points = f64_array(points)?;
         let t = self.inner.clone();
         Ok(array_to_py(py, py.detach(move || t.displacement_at(&points))?))
     }
     /// The stored field interpolated at continuous field indices, `(N, S)`.
     fn sample_indices<'py>(&self, py: Python<'py>, indices: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
+        self.live()?;
         let found = crate::convert::matrix(indices)?;
         let t = self.inner.clone();
         Ok(array_to_py(py, py.detach(move || t.sample_indices(&found))?.into_dyn()))
     }
     #[pyo3(signature = (roi=None))]
     fn jacobian_determinant<'py>(&self, py: Python<'py>, roi: Option<&Bound<'py, PyAny>>) -> R<Bound<'py, PyAny>> {
+        self.live()?;
         let roi = slices(roi)?;
         let t = self.inner.clone();
         Ok(array_to_py(py, py.detach(move || t.jacobian_determinant(roi.as_deref()))?))
     }
     #[pyo3(signature = (roi=None))]
     fn folding_fraction(&self, py: Python<'_>, roi: Option<&Bound<'_, PyAny>>) -> R<f64> {
+        self.live()?;
         let roi = slices(roi)?;
         let t = self.inner.clone();
         Ok(py.detach(move || t.folding_fraction(roi.as_deref()))?)
     }
     #[getter]
     fn max_magnitude(&self, py: Python<'_>) -> R<f64> {
+        self.live()?;
         let t = self.inner.clone();
         Ok(py.detach(move || t.max_magnitude())?)
     }
     #[getter]
     fn control_points<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyAny>> {
+        self.live()?;
         Ok(array_to_py(py, self.inner.control_points()?))
     }
     #[getter]
     fn cp_grid_id(&self) -> R<String> {
+        self.live()?;
         Ok(self.inner.cp_grid_id()?)
     }
     #[getter]
     fn cp_grid(&self) -> R<Grid> {
+        self.live()?;
         Ok(Grid::wrap(self.inner.cp_grid()?.clone()))
     }
     #[getter]
     fn order(&self) -> R<i64> {
+        self.live()?;
         Ok(self.inner.order()?)
     }
     fn to_displacement_field<'py>(&self, py: Python<'py>, grid: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
+        self.live()?;
         let grid = crate::geometry::grid_arg(grid)?;
         let t = self.inner.clone();
         Ok(array_to_py(py, py.detach(move || t.to_displacement_field(&grid))?))
     }
     #[getter]
     fn component_ids<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyTuple>> {
+        self.live()?;
         Ok(PyTuple::new(py, self.inner.component_ids()?)?)
     }
     fn components(&self) -> R<Vec<TransformHandle>> {
+        self.live()?;
         Ok(self.inner.components()?.into_iter().map(TransformHandle::wrap).collect())
     }
-    fn check_chain(&self) -> Vec<String> {
-        self.inner.check_chain()
+    fn check_chain(&self) -> R<Vec<String>> {
+        self.live()?;
+        Ok(self.inner.check_chain())
     }
     fn summary<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyAny>> {
+        self.live()?;
         Ok(json_to_py(py, &self.inner.summary()?)?)
     }
     fn __repr__(&self) -> String {
@@ -1062,6 +1186,7 @@ impl TransformHandle {
     }
     #[staticmethod]
     fn can_invert(inner: &Bound<'_, TransformHandle>) -> R<bool> {
+        inner.get().live()?;
         Ok(medh5::transforms::model::can_invert(&inner.get().inner)?)
     }
     #[staticmethod]
@@ -1146,8 +1271,8 @@ impl IndexHandle {
         Ok(self.inner.is_current(annotation_digest)?)
     }
     #[getter]
-    fn has_occupancy(&self) -> bool {
-        self.inner.has_occupancy()
+    fn has_occupancy(&self) -> R<bool> {
+        Ok(self.inner.has_occupancy()?)
     }
     fn occupancy_plane<'py>(&self, py: Python<'py>, position: usize) -> R<Bound<'py, PyAny>> {
         Ok(match self.inner.occupancy_plane(position)? {
