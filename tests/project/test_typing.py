@@ -430,3 +430,29 @@ def test_every_former_dataclass_pickles_and_copies(
     payload = pickle.loads(pickle.dumps(values["AnnotationPayload"]))
     assert payload.attrs["custom"] == 1
     assert pickle.loads(pickle.dumps(values["Observation"])).kind == "instances"
+
+
+def test_no_public_class_is_named_after_the_extension() -> None:
+    """``pickle`` and ``help()`` name a class by ``__module__``: a public
+    class says where it is exported, never ``medh5._core``."""
+    import inspect
+    import pkgutil
+
+    import medh5
+    from medh5 import _core
+
+    engine = {id(c) for c in vars(_core).values() if inspect.isclass(c)}
+    for info in pkgutil.walk_packages(medh5.__path__, "medh5."):
+        if "._" in info.name or info.name.startswith(("medh5.torch", "medh5.monai")):
+            continue
+        try:
+            module = importlib.import_module(info.name)
+        except ImportError:  # pragma: no cover - an optional dependency
+            continue
+        for name in getattr(module, "__all__", ()):
+            found = getattr(module, name, None)
+            if inspect.isclass(found) and id(found) in engine:
+                assert found.__module__ != "medh5._core", f"{info.name}.{name}"
+    for cls in (_core.Attrs, _core.Dataset, _core.Group):
+        assert cls.__module__ == "medh5.nodes"
+    assert _core.SamplingIndex.__module__ == "medh5.storage"

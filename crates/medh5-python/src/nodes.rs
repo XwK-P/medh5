@@ -52,7 +52,7 @@ impl Node {
 ///
 /// Writes go straight to the file, so they only succeed on a file open for
 /// writing --- `SampleWriter.handle`, in practice.
-#[pyclass(module = "medh5._core", name = "Attrs", frozen, mapping)]
+#[pyclass(module = "medh5.nodes", name = "Attrs", frozen, mapping)]
 pub struct Attrs {
     node: Node,
 }
@@ -157,7 +157,7 @@ pub fn dataset_arg<'py>(obj: &Bound<'py, PyAny>) -> PyResult<Bound<'py, Dataset>
 }
 
 /// A stored dataset: shape, dtype, chunks, filters, attributes and `ds[...]`.
-#[pyclass(module = "medh5._core", name = "Dataset", frozen)]
+#[pyclass(module = "medh5.nodes", name = "Dataset", frozen)]
 pub struct Dataset {
     pub ds: medh5::hdf5::Dataset,
 }
@@ -307,7 +307,7 @@ impl Dataset {
 // -- Group --------------------------------------------------------------------------------
 
 /// A stored group: members by name (or path), and attributes.
-#[pyclass(module = "medh5._core", name = "Group", frozen, mapping)]
+#[pyclass(module = "medh5.nodes", name = "Group", frozen, mapping)]
 pub struct Group {
     pub group: medh5::hdf5::Group,
 }

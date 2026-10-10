@@ -1073,7 +1073,7 @@ impl TransformHandle {
 
 // -- SamplingIndex -----------------------------------------------------------------------------
 
-#[pyclass(module = "medh5._core", name = "SamplingIndex", frozen)]
+#[pyclass(module = "medh5.storage", name = "SamplingIndex", frozen)]
 pub struct IndexHandle {
     pub inner: Arc<EngineIndex>,
 }
