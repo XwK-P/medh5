@@ -903,7 +903,7 @@ class TestCohortCheck:
         report = check(manifest)
         assert "C402" in {f.code for f in report.errors}
 
-    def test_C501_a_partly_deidentified_cohort_is_flagged(self, cohort, label_set):
+    def test_C501_a_partly_deidentified_cohort_is_flagged(self, cohort):
         path = cohort / "identified.medh5"
         with medh5.create(path, sample_id="identified", subject_id="subj-E") as w:
             w.add_timepoint("tp0")
