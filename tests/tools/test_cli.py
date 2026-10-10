@@ -1189,6 +1189,22 @@ class TestCuration:
         assert payload["samples"] == 1
         assert payload["bytes"] > 0
 
+    def test_S2_2_pack_never_writes_over_a_sample_it_packs(
+        self, capsys, tmp_path, label_set, masks
+    ):
+        """`pack a.medh5 -o a.medh5` replaced the sample with a collection
+        holding it, and exited 0."""
+        first, second = self._members(tmp_path, label_set, masks)
+        before = second.read_bytes()
+        alias = tmp_path / "." / second.name
+        code, out = run(capsys, "pack", str(first), str(second), "-o", str(alias))
+        assert code == EXIT_ERROR
+        assert "is one of the samples being packed" in out.err
+        assert second.read_bytes() == before
+        code, out = run(capsys, "pack", str(first), "-o", str(tmp_path))
+        assert code == EXIT_ERROR
+        assert repr(str(tmp_path)) in out.err
+
     def test_pack_with_explicit_keys(self, capsys, tmp_path, label_set, masks):
         members = self._members(tmp_path, label_set, masks)
         shard = tmp_path / "k.medh5c"

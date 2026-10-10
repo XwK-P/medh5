@@ -13,7 +13,7 @@ use medh5::collection::{open_collection, pack, unpack};
 use medh5::curation::agreement::{compare, Comparison};
 use medh5::curation::splits::audit_splits;
 use medh5::error::os_error;
-use medh5::json::py_str;
+use medh5::json::{py_str, repr_str};
 use medh5::sample::open_sample;
 use medh5::Error;
 
@@ -43,17 +43,45 @@ fn file_size(path: &Path) -> u64 {
     std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
 }
 
+/// Whether two paths name one existing file: the same path, or one reached
+/// through `./`, a symbolic link or, where the system says so, a hard link.
+fn same_file(a: &Path, b: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        matches!((std::fs::metadata(a), std::fs::metadata(b)), (Ok(x), Ok(y)) if (x.dev(), x.ino()) == (y.dev(), y.ino()))
+    }
+    #[cfg(not(unix))]
+    {
+        matches!((std::fs::canonicalize(a), std::fs::canonicalize(b)), (Ok(x), Ok(y)) if x == y)
+    }
+}
+
 fn pack_cmd(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let paths = get_paths(m, "paths");
     let sources: Vec<&Path> = paths.iter().map(Path::new).collect();
     let keys = get_strs(m, "keys");
-    let out = match pack(&sources, Path::new(req_str(m, "out")), keys.as_deref()) {
+    let target = Path::new(req_str(m, "out"));
+    if target.is_dir() {
+        return Ok(ctx.fail(format!(
+            "{} is a directory; -o names the shard file to write",
+            repr_str(&target.to_string_lossy())
+        )));
+    }
+    // The shard would replace that sample with a collection holding it.
+    if let Some(source) = sources.iter().find(|s| same_file(s, target)) {
+        return Ok(ctx.fail(format!(
+            "{} is one of the samples being packed; write the shard to a new path",
+            repr_str(&source.to_string_lossy())
+        )));
+    }
+    let source_bytes: u64 = sources.iter().map(|p| file_size(p)).sum();
+    let out = match pack(&sources, target, keys.as_deref()) {
         Ok(out) => out,
         Err(e) if e.is_medh5() => return Ok(ctx.fail(e.to_string())),
         Err(e) => return Err(e),
     };
     let size = file_size(&out);
-    let source_bytes: u64 = sources.iter().map(|p| file_size(p)).sum();
     let shown = out.to_string_lossy().into_owned();
     if flag(m, "json") {
         let payload = json!({"out": shown, "samples": paths.len(), "bytes": size, "source_bytes": source_bytes});
