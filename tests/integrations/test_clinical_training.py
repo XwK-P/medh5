@@ -623,7 +623,7 @@ class TestHandles:
         History.write(a, subject_id="P-01")
         History.write(b, subject_id="P-02")
         shard = pack([a, b], tmp_path / "s.medh5c", keys=["a", "b"])
-        CACHE.clear()
+        CACHE.close_all()
         first = open_cached(shard, "a")
         assert open_cached(shard, "a") is first
         second = open_cached(shard, "b")
@@ -632,7 +632,7 @@ class TestHandles:
         assert second.identity.subject_id == "P-02"
         with CACHE.lease(shard, "b") as held:
             assert held is second
-        CACHE.clear()
+        CACHE.close_all()
 
     def test_S2_a_lease_reads_the_pinned_version(self, tmp_path: Path):
         from medh5.clinical import Event
@@ -695,7 +695,7 @@ class TestHandles:
 
         path = tmp_path / "a.medh5"
         old = History.write(path)
-        CACHE.clear()
+        CACHE.close_all()
         with CACHE.lease(path, content_id=old) as reading:
             with medh5.amend(path) as w:  # another thread's reader keeps the old inode
                 w.add_event(Event("x", "x", "other", "static", "final", available_us=0))
@@ -712,7 +712,7 @@ class TestHandles:
             assert held.content_id == new
         with CACHE.lease(path, content_id=new) as again:
             assert again is held
-        CACHE.clear()
+        CACHE.close_all()
 
     @pytest.mark.skipif(not hasattr(os, "fork"), reason="fork is POSIX")
     def test_S2_a_forked_worker_abandons_its_parents_cache(self, tmp_path: Path):
