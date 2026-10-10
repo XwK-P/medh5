@@ -124,9 +124,11 @@ honour what it is handed:
 - **`ignore[ann]`** is `True` on the §7.7 ignore region, under whichever
   encoding stores it — in band for `labelmap` and `layers`, a sibling mask for
   the rest — and on any padding added to reach the patch size.
-  `label_format="labelmap"` also writes `65535` there, so
-  `CrossEntropyLoss(ignore_index=65535)` works directly. The one-hot planes are
-  `0` there: mask the loss with `ignore`.
+  `label_format="labelmap"` is an `int64` plane of the requested classes' ids,
+  every other class background, and writes `65535` there, so it is a
+  `CrossEntropyLoss(ignore_index=65535)` target as it stands, given a logit per
+  class id up to the largest requested. The one-hot planes are `0` there: mask
+  the loss with `ignore`.
 - **`valid[image]`** is the image's `valid_mask` (§4.4) where it declares one,
   all `True` otherwise, and never the padding.
 - **`meta["annotated"][ann]`** holds one flag per label channel, in the order you

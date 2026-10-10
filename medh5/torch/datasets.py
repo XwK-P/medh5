@@ -1,9 +1,12 @@
 """PyTorch datasets over MEDH5 samples.
 
-Three datasets, one contract: every item is a ``dict`` with ``images``,
-``valid``, ``label``, ``ignore`` and ``meta``.  Keeping the shape uniform is
-what lets a training script swap whole-volume for patch-based sampling by
-changing one constructor.
+Three datasets, one contract: every item of :class:`VolumeDataset`,
+:class:`PatchDataset` and :class:`GridPatchDataset` is a ``dict`` with
+``images``, ``valid``, ``label``, ``ignore`` and ``meta``.  Keeping the shape
+uniform is what lets a training script swap whole-volume for patch-based
+sampling by changing one constructor.  :class:`PairedPatchDataset` reads two
+visits: its ``images`` and ``valid`` are keyed by timepoint, and its only
+label is a change label (see its docstring).
 
 The file's contracts travel with the arrays, because a loss can only honour
 what it is handed:
@@ -27,9 +30,10 @@ Two things here are load-bearing:
 * **Files stay open per worker, keyed by PID.**  See :mod:`medh5.torch.handles`.
 
 Labels come back in one of three formats.  ``onehot`` is ``(C, *patch)`` float
-planes in the caller's class order; ``labelmap`` is a single ``uint16`` plane
-with ties broken by that same order; ``instances`` returns the objects
-overlapping the patch.  The class order is always the one the caller asked for,
+planes in the caller's class order; ``labelmap`` is a single ``int64`` plane of
+class ids, ties broken by that same order and every class not asked for
+background; ``instances`` returns the objects of the classes asked for that
+overlap the patch.  The class order is always the one the caller asked for,
 never the file's storage order, so channel *i* means the same structure across
 a cohort whose files were written by different tools.
 """
@@ -270,8 +274,9 @@ class _Base(_DatasetBase):  # type: ignore[misc,valid-type]
             ann = sample.annotations[ann_id]
             wanted = list(classes) if classes else None
             examined = set(ann.annotated_class_ids)
+            requested = ann.resolve_classes(wanted)
             annotated[ann_id] = np.asarray(
-                [c in examined for c in ann.resolve_classes(wanted)], dtype=bool
+                [c in examined for c in requested], dtype=bool
             )
             region = (
                 sample.ignore_region(ann_id, roi)
@@ -283,11 +288,20 @@ class _Base(_DatasetBase):  # type: ignore[misc,valid-type]
                     region if patch is None else patch.apply_padding(region, value=True)
                 )
             if self.label_format == "instances":
-                chosen = None if wanted is None else ann.resolve_classes(wanted)
+                chosen = None if wanted is None else requested
                 labels[ann_id] = self._instances_in(ann, patch, chosen)
                 continue
             if self.label_format == "labelmap":
-                array = np.asarray(ann.labelmap(roi=roi, priority=wanted))
+                # `int64`, the target dtype a classification loss takes: the
+                # `uint16` plane was refused by `CrossEntropyLoss`.
+                array = np.asarray(
+                    ann.labelmap(roi=roi, priority=wanted), dtype=np.int64
+                )
+                if wanted is not None:
+                    # `priority` orders the requested classes on top, and the
+                    # rest are painted beneath them: what was not asked for is
+                    # background, as in every other label format.
+                    array[~np.isin(array, [*requested, IGNORE_ID])] = 0
                 if region is not None:
                     array[region] = IGNORE_ID
                 pad: float = IGNORE_ID

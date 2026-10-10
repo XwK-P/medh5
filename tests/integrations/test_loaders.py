@@ -63,6 +63,29 @@ class TestVolumeDataset:
         )
         assert tuple(ds[0]["label"]["organs_tp0"].shape) == SHAPE
 
+    def test_S5_3_a_labelmap_holds_the_requested_classes_only(self, indexed_cohort):
+        """`labelmap()` paints the classes `priority` omits beneath the
+        requested ones: a label asked for the liver held the spleen too."""
+        for classes, values in ((["liver"], {0, 1}), (["lesion", "liver"], {0, 1, 3})):
+            ds = VolumeDataset(
+                indexed_cohort,
+                annotations={"organs_tp0": classes},
+                label_format="labelmap",
+            )
+            label = ds[0]["label"]["organs_tp0"].numpy()
+            assert set(np.unique(label).tolist()) == values, classes
+
+    def test_a_labelmap_batch_is_a_cross_entropy_target(self, indexed_cohort):
+        """The `uint16` plane was refused: a class-index target is `int64`."""
+        ds = VolumeDataset(
+            indexed_cohort, annotations={"organs_tp0": [1, 2]}, label_format="labelmap"
+        )
+        target = collate([ds[0], ds[1]])["label"]["organs_tp0"]
+        assert target.dtype == torch.int64
+        logits = torch.zeros((2, 3, *SHAPE))
+        loss = torch.nn.CrossEntropyLoss(ignore_index=65535)(logits, target)
+        assert torch.isfinite(loss)
+
     def test_label_format_none_returns_images_only(self, indexed_cohort):
         ds = VolumeDataset(
             indexed_cohort, annotations={"organs_tp0": []}, label_format="none"
