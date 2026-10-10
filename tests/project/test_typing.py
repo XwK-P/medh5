@@ -13,6 +13,7 @@ import importlib
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -349,3 +350,83 @@ def test_a_missing_required_field_is_the_dataclass_TypeError() -> None:
         match=r"missing 3 required positional arguments: 'id', 'type', and 'name'$",
     ):
         Agent()
+
+
+def _former_dataclasses(tmp_path: Path, label_set: Any, masks: Any) -> dict[str, Any]:
+    """One of each class 1.x shipped as a dataclass that ``__reduce__``
+    rebuilds from its fields: what the engine builds, and the headers."""
+    import medh5
+    from medh5.annotations.base import AnnotationHeader
+    from medh5.annotations.voxel import analyse, cost_model, encode_labelmap
+    from medh5.geometry import Pyramid
+    from medh5.storage import build_index
+    from medh5.transforms import TransformHeader
+    from tests.helpers import write_sample, write_series
+
+    payload = encode_labelmap({1: masks[1], 2: masks[2]})
+    payload.attrs["custom"] = 1  # an edit, which a copy keeps
+    stats = analyse(masks)
+    indexed = write_sample(tmp_path / "case.medh5", label_set=label_set, masks=masks)
+    with medh5.open(indexed) as sample:
+        index = build_index(sample.annotations["organs_tp0"])
+    with medh5.open(write_series(tmp_path / "series.medh5", label_set)) as sample:
+        tracking = sample.tracks()
+    return {
+        "AnnotationPayload": payload,
+        "AnnotationHeader": AnnotationHeader("labelmap", "segmentation", grid="g"),
+        "OverlapStats": stats,
+        "CostModel": cost_model(stats),
+        "TransformHeader": TransformHeader("affine", "a", "b", units="m"),
+        "IndexPayload": index,
+        "Pyramid": Pyramid(
+            levels=2,
+            downsample_factors=np.array([[1.0, 1.0, 1.0], [2.0, 2.0, 2.0]]),
+            downsample_method="mean",
+            grid_levels=("l0", "l1"),
+        ),
+        "Observation": tracking[7].observations[0],
+        "Track": tracking[7],
+        "Tracking": tracking,
+    }
+
+
+def _same(a: Any, b: Any) -> bool:
+    """Field by field, arrays by value (``==`` on a dataclass of arrays is
+    ambiguous, and ``Tracking`` is a mapping without one)."""
+    if type(a) is not type(b):
+        return False
+    if isinstance(a, np.ndarray):
+        return a.dtype == b.dtype and np.array_equal(a, b)
+    if isinstance(a, dict):
+        return a.keys() == b.keys() and all(_same(a[k], b[k]) for k in a)
+    if isinstance(a, tuple | list):
+        return len(a) == len(b) and all(_same(x, y) for x, y in zip(a, b, strict=True))
+    if dataclasses.is_dataclass(a):
+        names = [f.name for f in dataclasses.fields(a)]
+        return all(_same(getattr(a, n), getattr(b, n)) for n in names)
+    if hasattr(a, "to_json"):
+        return bool(a.to_json() == b.to_json())
+    return bool(a == b)
+
+
+def test_every_former_dataclass_pickles_and_copies(
+    tmp_path: Path, label_set: Any, masks: Any
+) -> None:
+    """1.x's dataclasses pickled and copied, so worker processes and caches
+    could hold them; each rebuilds from its fields."""
+    import copy
+    import pickle
+
+    values = _former_dataclasses(tmp_path, label_set, masks)
+    assert len(values) == 10
+    for name, value in values.items():
+        for copied in (
+            pickle.loads(pickle.dumps(value)),
+            copy.copy(value),
+            copy.deepcopy(value),
+        ):
+            assert _same(copied, value), name
+            assert repr(copied) == repr(value), name
+    payload = pickle.loads(pickle.dumps(values["AnnotationPayload"]))
+    assert payload.attrs["custom"] == 1
+    assert pickle.loads(pickle.dumps(values["Observation"])).kind == "instances"

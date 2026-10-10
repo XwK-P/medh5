@@ -1,13 +1,14 @@
 //! `medh5.curation`: joining `instance_id` across timepoints (§7.4).
 
+use indexmap::IndexMap;
 use ndarray::{ArrayD, IxDyn};
 use pyo3::exceptions::PyKeyError;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyTuple};
+use pyo3::types::{PyDict, PyTuple, PyType};
 
 use medh5::curation::tracking as engine;
 
-use crate::convert::{array_to_py, json_to_py};
+use crate::convert::{array_to_py, json_to_py, typed_array};
 use crate::errors::R;
 use crate::values::{dataclass_repr, opt};
 
@@ -20,6 +21,22 @@ impl Observation {
     const FIELDS: &'static [&'static str] = &[
         "timepoint",
         "annotation",
+        "index",
+        "instance_id",
+        "class_id",
+        "box",
+        "voxel_count",
+        "volume",
+        "units",
+        "score",
+        "grid",
+    ];
+
+    /// What `_rebuild` takes: the fields, and `kind`.
+    const STATE: &'static [&'static str] = &[
+        "timepoint",
+        "annotation",
+        "kind",
         "index",
         "instance_id",
         "class_id",
@@ -119,6 +136,43 @@ impl Observation {
     fn __repr__(&self) -> String {
         self.0.repr()
     }
+    /// Pickling and `copy`: the fields and `kind`, through `_rebuild` (only
+    /// a join observes an object).
+    fn __reduce__<'py>(slf: &Bound<'py, Self>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyTuple>)> {
+        crate::values::reduce_fields(slf.as_any(), Some("_rebuild"), Self::STATE)
+    }
+    #[classmethod]
+    #[allow(clippy::too_many_arguments)]
+    fn _rebuild(
+        _cls: &Bound<'_, PyType>,
+        timepoint: String,
+        annotation: String,
+        kind: String,
+        index: usize,
+        instance_id: u64,
+        class_id: i64,
+        bbox: &Bound<'_, PyAny>,
+        voxel_count: Option<u64>,
+        volume: Option<f64>,
+        units: Option<String>,
+        score: Option<f64>,
+        grid: Option<String>,
+    ) -> R<Self> {
+        Ok(Observation(engine::Observation {
+            timepoint,
+            annotation,
+            kind,
+            index,
+            instance_id,
+            class_id,
+            bbox: typed_array::<f32>(bbox, "float32")?.into_dimensionality()?,
+            voxel_count,
+            volume,
+            units,
+            score,
+            grid,
+        }))
+    }
 }
 
 #[pyclass(module = "medh5.curation", name = "Track", skip_from_py_object, frozen)]
@@ -207,6 +261,22 @@ impl Track {
     }
     fn __repr__(&self) -> String {
         self.0.repr()
+    }
+    /// Pickling and `copy`: the fields, through `_rebuild` (only a join
+    /// builds a track).
+    fn __reduce__<'py>(slf: &Bound<'py, Self>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyTuple>)> {
+        crate::values::reduce_fields(slf.as_any(), Some("_rebuild"), Self::FIELDS)
+    }
+    #[classmethod]
+    fn _rebuild(
+        _cls: &Bound<'_, PyType>,
+        instance_id: u64,
+        class_ids: Vec<i64>,
+        observations: Vec<Bound<'_, Observation>>,
+        class_key: Option<String>,
+    ) -> Self {
+        let observations = observations.iter().map(|o| o.get().0.clone()).collect();
+        Track(engine::Track { instance_id, class_ids, observations, class_key })
     }
 }
 
@@ -336,6 +406,37 @@ impl Tracking {
     }
     fn __repr__(&self) -> String {
         self.0.repr()
+    }
+    /// Pickling and `copy`: the tracks, timepoints, coverage and skipped
+    /// annotations, through `_rebuild` (only a join builds one).
+    fn __reduce__<'py>(slf: &Bound<'py, Self>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyTuple>)> {
+        let py = slf.py();
+        let this = slf.get();
+        let state = PyTuple::new(
+            py,
+            [
+                this.values(py)?.into_any(),
+                this.timepoints(py)?.into_any(),
+                this.coverage(py)?.into_any(),
+                this.skipped(py)?.into_any(),
+            ],
+        )?;
+        Ok((slf.get_type().getattr("_rebuild")?, state))
+    }
+    #[classmethod]
+    fn _rebuild(
+        _cls: &Bound<'_, PyType>,
+        tracks: Vec<Bound<'_, Track>>,
+        timepoints: Vec<String>,
+        coverage: &Bound<'_, PyDict>,
+        skipped: &Bound<'_, PyDict>,
+    ) -> PyResult<Self> {
+        let tracks = tracks.iter().map(|t| (t.get().0.instance_id, t.get().0.clone())).collect();
+        let coverage =
+            coverage.iter().map(|(k, v)| Ok((k.extract()?, v.extract()?))).collect::<PyResult<IndexMap<_, _>>>()?;
+        let skipped =
+            skipped.iter().map(|(k, v)| Ok((k.extract()?, v.extract()?))).collect::<PyResult<IndexMap<_, _>>>()?;
+        Ok(Tracking(engine::Tracking { tracks, timepoints, coverage, skipped }))
     }
 }
 

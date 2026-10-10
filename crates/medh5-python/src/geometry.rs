@@ -463,6 +463,10 @@ impl Pyramid {
         let fields = names.iter().map(|n| Ok((*n, slf.getattr(*n)?))).collect::<PyResult<Vec<_>>>()?;
         crate::values::dataclass_repr("Pyramid", &fields)
     }
+    /// Pickling and `copy`: the fields, as the constructor takes them.
+    fn __reduce__<'py>(slf: &Bound<'py, Self>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyTuple>)> {
+        crate::values::reduce_fields(slf.as_any(), None, Self::FIELDS)
+    }
 }
 
 // -- functions -------------------------------------------------------------------------------

@@ -346,6 +346,11 @@ pub fn untyped_to_nd(array: &Bound<'_, PyUntypedArray>) -> PyResult<NdArray> {
     })
 }
 
+/// `numpy.asarray(obj, dtype=dtype)`, `T` being `dtype`'s element type.
+pub fn typed_array<T: numpy::Element + Clone>(obj: &Bound<'_, PyAny>, dtype: &str) -> PyResult<ArrayD<T>> {
+    typed(&asarray(obj, Some(dtype))?)
+}
+
 /// `numpy.asarray(obj, dtype=bool)`.
 pub fn bool_array(obj: &Bound<'_, PyAny>) -> PyResult<ArrayD<bool>> {
     typed(&asarray(obj, Some("bool"))?)

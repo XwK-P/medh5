@@ -8,7 +8,7 @@ use pyo3::types::{PyDict, PyList, PyTuple};
 
 use medh5::storage::{chunking, codecs, index, recompress as rc};
 
-use crate::convert::{array_to_py, bool_array, class_keys, json_to_py, opt_strings};
+use crate::convert::{array_to_py, bool_array, class_keys, json_to_py, typed_array};
 use crate::errors::R;
 use crate::geometry::grid_arg;
 
@@ -277,6 +277,49 @@ impl IndexPayload {
             if self.inner.occupancy.is_some() { "True" } else { "False" }
         )
     }
+    /// Pickling and `copy`: the fields, through `_rebuild` (the engine alone
+    /// builds an index).
+    fn __reduce__<'py>(slf: &Bound<'py, Self>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyTuple>)> {
+        crate::values::reduce_fields(slf.as_any(), Some("_rebuild"), Self::FIELDS)
+    }
+    #[classmethod]
+    #[allow(clippy::too_many_arguments)]
+    fn _rebuild(
+        _cls: &Bound<'_, pyo3::types::PyType>,
+        ann_id: String,
+        class_ids: &Bound<'_, PyAny>,
+        voxel_counts: &Bound<'_, PyAny>,
+        class_bboxes: &Bound<'_, PyAny>,
+        fg_coords: &Bound<'_, PyDict>,
+        occupancy: Option<&Bound<'_, PyAny>>,
+        source_digest: Option<String>,
+        max_coords: usize,
+        seed: u64,
+        stats: &Bound<'_, PyDict>,
+    ) -> R<Self> {
+        let mut coords = indexmap::IndexMap::new();
+        for (k, v) in fg_coords.iter() {
+            coords.insert(k.extract::<i64>()?, typed_array::<i32>(&v, "int32")?.into_dimensionality()?);
+        }
+        let total_foreground = match stats.get_item("total_foreground")? {
+            Some(v) => v.extract::<i64>()?,
+            None => 0,
+        };
+        Ok(IndexPayload {
+            inner: index::IndexPayload {
+                ann_id,
+                class_ids: typed_array::<u16>(class_ids, "uint16")?.into_iter().collect(),
+                voxel_counts: typed_array::<i64>(voxel_counts, "int64")?.into_iter().collect(),
+                class_bboxes: typed_array::<f32>(class_bboxes, "float32")?.into_dimensionality()?,
+                fg_coords: coords,
+                occupancy: occupancy.filter(|o| !o.is_none()).map(bool_array).transpose()?,
+                source_digest,
+                max_coords,
+                seed,
+                total_foreground,
+            },
+        })
+    }
 }
 
 /// Compute the sampling index of one voxel annotation (not written).
@@ -390,6 +433,5 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("DEFAULT_PATCH", chunking::DEFAULT_PATCH)?;
     m.add("DEFAULT_MAX_COORDS", index::DEFAULT_MAX_COORDS)?;
     m.add("DEFAULT_OCCUPANCY_FACTOR", index::DEFAULT_OCCUPANCY_FACTOR)?;
-    let _ = opt_strings;
     Ok(())
 }

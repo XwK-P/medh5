@@ -385,6 +385,10 @@ impl TransformHeader {
         let fields = names.iter().map(|n| Ok((*n, slf.getattr(*n)?))).collect::<PyResult<Vec<_>>>()?;
         crate::values::dataclass_repr("TransformHeader", &fields)
     }
+    /// Pickling and `copy`: the fields, as the constructor takes them.
+    fn __reduce__<'py>(slf: &Bound<'py, Self>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyTuple>)> {
+        crate::values::reduce_fields(slf.as_any(), None, Self::FIELDS)
+    }
 }
 
 /// `{transform_id: engine transform}` from a mapping of facades or handles.

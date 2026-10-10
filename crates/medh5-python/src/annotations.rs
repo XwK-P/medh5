@@ -595,6 +595,10 @@ impl AnnotationHeader {
         let fields = names.iter().map(|n| Ok((*n, slf.getattr(*n)?))).collect::<PyResult<Vec<_>>>()?;
         crate::values::dataclass_repr("AnnotationHeader", &fields)
     }
+    /// Pickling and `copy`: the fields, as the constructor takes them.
+    fn __reduce__<'py>(slf: &Bound<'py, Self>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyTuple>)> {
+        crate::values::reduce_fields(slf.as_any(), None, Self::FIELDS)
+    }
 }
 
 // -- OverlapStats and CostModel ---------------------------------------------------------------
@@ -722,6 +726,33 @@ impl OverlapStats {
             self.inner.edges.len()
         )
     }
+    /// Pickling and `copy`: the fields, through `_rebuild` (the engine alone
+    /// measures one).
+    fn __reduce__<'py>(slf: &Bound<'py, Self>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyTuple>)> {
+        crate::values::reduce_fields(slf.as_any(), Some("_rebuild"), Self::FIELDS)
+    }
+    #[classmethod]
+    #[allow(clippy::too_many_arguments)]
+    fn _rebuild(
+        _cls: &Bound<'_, pyo3::types::PyType>,
+        class_ids: Vec<i64>,
+        spatial_shape: Vec<usize>,
+        counts: BTreeMap<i64, u64>,
+        edges: BTreeSet<(i64, i64)>,
+        colouring: BTreeMap<i64, usize>,
+        localized: BTreeSet<i64>,
+        n_labelled_voxels: u64,
+    ) -> Self {
+        OverlapStats::wrap(select::OverlapStats {
+            class_ids,
+            spatial_shape,
+            counts,
+            edges,
+            colouring,
+            localized,
+            n_labelled_voxels,
+        })
+    }
 }
 
 /// Raw (pre-compression) bytes per encoding.
@@ -787,6 +818,24 @@ impl CostModel {
             self.inner.instances,
             self.inner.probmap
         )
+    }
+    /// Pickling and `copy`: the fields, through `_rebuild` (the engine alone
+    /// costs an encoding).
+    fn __reduce__<'py>(slf: &Bound<'py, Self>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyTuple>)> {
+        crate::values::reduce_fields(slf.as_any(), Some("_rebuild"), Self::FIELDS)
+    }
+    #[classmethod]
+    fn _rebuild(
+        _cls: &Bound<'_, pyo3::types::PyType>,
+        labelmap: Option<u64>,
+        layers: u64,
+        bitmask: u64,
+        instances: u64,
+        probmap: u64,
+        detail: &Bound<'_, PyAny>,
+    ) -> PyResult<Self> {
+        let detail = py_to_json(detail)?;
+        Ok(CostModel { inner: select::CostModel { labelmap, layers, bitmask, instances, probmap, detail } })
     }
 }
 
