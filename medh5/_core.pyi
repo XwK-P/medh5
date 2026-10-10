@@ -2827,8 +2827,10 @@ class SampleHandle:
     def close(self) -> None:
         """Close the file and everything read from it, as 1.x's sample did: an
         image, annotation or group still held becomes invalid rather than
-        keeping the file open and locked.  A collection member's file is its
-        collection's, and stays open.
+        keeping the file open and locked.  A collection member owns no file:
+        closing one releases the member alone, and the shard --- its other
+        members, and what was read from this one --- stays open until the
+        collection is closed.
         """
         ...
     def compute_content_id(self) -> str: ...
@@ -2856,7 +2858,10 @@ class SampleHandle:
     def index(self, ann_id: str) -> SamplingIndex: ...
     def index_ids(self) -> list[str]: ...
     @property
-    def is_open(self) -> bool: ...
+    def is_open(self) -> bool:
+        """Whether the sample can be read: not once closed, and not, for a
+        collection member, once its collection is closed."""
+        ...
     @property
     def kind(self) -> str: ...
     @property

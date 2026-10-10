@@ -1184,8 +1184,12 @@ impl SampleHandle {
         }
     }
 
+    /// The engine sample, refused once closed --- by `close()`, or, for a
+    /// collection member, by closing its collection.
     pub fn sample(&self) -> R<Arc<EngineSample>> {
-        Ok(self.inner.lock().unwrap().clone().ok_or_else(closed)?)
+        let sample = self.inner.lock().unwrap().clone().ok_or_else(closed)?;
+        medh5::h5::alive(&sample.root)?;
+        Ok(sample)
     }
 }
 
@@ -1211,8 +1215,10 @@ impl SampleHandle {
     }
     /// Close the file and everything read from it, as 1.x's sample did: an
     /// image, annotation or group still held becomes invalid rather than
-    /// keeping the file open and locked.  A collection member's file is its
-    /// collection's, and stays open.
+    /// keeping the file open and locked.  A collection member owns no file:
+    /// closing one releases the member alone, and the shard --- its other
+    /// members, and what was read from this one --- stays open until the
+    /// collection is closed.
     fn close(&self) {
         if let Some(sample) = self.inner.lock().unwrap().take() {
             if !self.abandoned.load(std::sync::atomic::Ordering::Acquire) {
@@ -1241,9 +1247,11 @@ impl SampleHandle {
             Err(_) => false,
         }
     }
+    /// Whether the sample can be read: not once closed, and not, for a
+    /// collection member, once its collection is closed.
     #[getter]
     fn is_open(&self) -> bool {
-        self.inner.lock().unwrap().is_some()
+        self.inner.lock().unwrap().as_ref().is_some_and(|s| s.is_open())
     }
     fn repr(&self) -> R<String> {
         Ok(self.sample()?.repr()?)

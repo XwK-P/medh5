@@ -46,7 +46,12 @@ pub fn missing_key(what: &str, key: &str, available: impl IntoIterator<Item = St
     Error::Key(format!("no {what} {}; available: {}", repr_str(key), repr_list(&names)))
 }
 
-fn cached<T>(cell: &OnceLock<Result<T>>, init: impl FnOnce() -> Result<T>) -> Result<&T> {
+/// What `cell` holds, read by `init` on first use, once `root` is known to
+/// be open: a closed file answers a lookup as an empty one, which read as a
+/// sample without its groups (E008) or its document --- and a value read
+/// before the close is no answer from a file that is gone.
+fn cached<'a, T>(root: &hdf5::Group, cell: &'a OnceLock<Result<T>>, init: impl FnOnce() -> Result<T>) -> Result<&'a T> {
+    crate::h5::alive(root)?;
     match cell.get_or_init(init) {
         Ok(v) => Ok(v),
         Err(e) => Err(e.clone()),
@@ -101,7 +106,14 @@ impl Sample {
         self.handle.as_ref()
     }
 
-    /// Release the file.  Further reads through this view fail.
+    /// Whether the file this view reads is open: a closed sample's, or a
+    /// member's of a closed collection, is not.
+    pub fn is_open(&self) -> bool {
+        self.root.is_valid()
+    }
+
+    /// Release the file, when this view owns it.  Further reads through this
+    /// view fail.
     pub fn close(&mut self) {
         if let Some(file) = self.handle.take() {
             let _ = crate::h5::file::close_everything(file, false);
@@ -109,7 +121,8 @@ impl Sample {
     }
 
     /// Close the file and everything opened through it, when this view owns
-    /// the file --- a collection member does not; its collection does.  An
+    /// the file --- a member of an open collection does not; its collection
+    /// does ([`Collection::get`](crate::collection::Collection::get)).  An
     /// object read from the sample and still held becomes invalid rather than
     /// keeping the file open and locked.
     pub fn close_file(&self) -> Result<()> {
@@ -133,7 +146,7 @@ impl Sample {
     // -- document -------------------------------------------------------------
 
     pub fn document(&self) -> Result<&SampleDocument> {
-        cached(&self.document, || SampleDocument::loads(&read_document_text(&self.root)?))
+        cached(&self.root, &self.document, || SampleDocument::loads(&read_document_text(&self.root)?))
     }
 
     pub fn identity(&self) -> Result<&Identity> {
@@ -187,7 +200,7 @@ impl Sample {
     /// declares the profile; `None` otherwise.  Events and links are read
     /// now, document text when asked for.
     pub fn clinical(&self) -> Result<Option<&Arc<Clinical>>> {
-        let found = cached(&self.clinical, || {
+        let found = cached(&self.root, &self.clinical, || {
             if !self.profiles()?.contains(crate::clinical::PROFILE) {
                 return Ok(None);
             }
@@ -201,7 +214,7 @@ impl Sample {
     /// offsets, not the events or the links --- when the sample declares the
     /// profile: what reading one report needs (1.1 §6).
     pub fn documents(&self) -> Result<Option<&Arc<Documents>>> {
-        let found = cached(&self.documents, || {
+        let found = cached(&self.root, &self.documents, || {
             if !self.profiles()?.contains(crate::clinical::PROFILE) {
                 return Ok(None);
             }
@@ -216,7 +229,7 @@ impl Sample {
     /// The sample's grids, with §3.7's implicit timepoint resolved: with
     /// exactly one declared timepoint, a grid that names none belongs to it.
     pub fn grids(&self) -> Result<&Arc<Grids>> {
-        cached(&self.grids, || {
+        cached(&self.root, &self.grids, || {
             let stored: Grids = read_grids(&self.root)?.into_iter().collect();
             let declared = match self.timepoints() {
                 Ok(t) => t.ids(),
@@ -271,7 +284,7 @@ impl Sample {
 
     /// The sample's images, by id (name order).
     pub fn images(&self) -> Result<&IndexMap<String, Image>> {
-        cached(&self.images, || {
+        cached(&self.root, &self.images, || {
             let grids = self.grids()?.clone();
             let Some(node) = ops::child_group(&self.root, "images") else {
                 return Ok(IndexMap::new());
@@ -291,7 +304,7 @@ impl Sample {
 
     /// The sample's annotations, by id (name order).
     pub fn annotations(&self) -> Result<&IndexMap<String, Arc<Annotation>>> {
-        cached(&self.annotations, || {
+        cached(&self.root, &self.annotations, || {
             let grids = self.grids()?.clone();
             let label_set = self.label_set()?.cloned().map(Arc::new);
             let Some(node) = ops::child_group(&self.root, "annotations") else {
@@ -377,12 +390,12 @@ impl Sample {
 
     /// The sampling index entries, by annotation id.
     pub fn index(&self) -> Result<&IndexMap<String, SamplingIndex>> {
-        cached(&self.index, || read_indices(&self.root))
+        cached(&self.root, &self.index, || read_indices(&self.root))
     }
 
     /// Index entries whose `source_digest` still matches their source.
     pub fn fresh_indices(&self) -> Result<&BTreeSet<String>> {
-        cached(&self.fresh, || {
+        cached(&self.root, &self.fresh, || {
             let stale: BTreeSet<String> = stale_index_entries(&self.root)?.into_iter().collect();
             Ok(self.index()?.keys().filter(|n| !stale.contains(*n)).cloned().collect())
         })
@@ -390,7 +403,7 @@ impl Sample {
 
     /// The file's transforms, read once.
     pub fn transforms(&self) -> Result<&Arc<IndexMap<String, Transform>>> {
-        cached(&self.transforms, || Ok(Arc::new(read_transforms(&self.root, self.grids()?.clone())?)))
+        cached(&self.root, &self.transforms, || Ok(Arc::new(read_transforms(&self.root, self.grids()?.clone())?)))
     }
 
     /// One transform (`KeyError` naming the available ones).
@@ -422,6 +435,7 @@ impl Sample {
 
     /// The transform relating two frame uids, resolved once per handle.
     pub fn resolve_frames(&self, from_frame: &str, to_frame: &str) -> Result<Option<Transform>> {
+        crate::h5::alive(&self.root)?;
         if from_frame == to_frame {
             return Ok(None);
         }
@@ -555,6 +569,7 @@ fn window_slices(window: &[(usize, usize)]) -> Vec<Slice> {
 
 /// Read the raw `/meta` payload as text.
 pub fn read_document_text(root: &hdf5::Group) -> Result<String> {
+    crate::h5::alive(root)?;
     match ops::child_dataset(root, META_DATASET) {
         None => Err(Error::Schema(format!("{}: required dataset `meta` is absent", root.name()))),
         Some(ds) => data::read_scalar_string(&ds),

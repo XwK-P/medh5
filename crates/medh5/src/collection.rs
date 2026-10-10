@@ -69,6 +69,7 @@ impl Collection {
 
     /// The `samples` group.
     pub fn group(&self) -> Result<hdf5::Group> {
+        crate::h5::alive(&self.root)?;
         Ok(self.root.group(SAMPLES_GROUP)?)
     }
 
@@ -90,7 +91,26 @@ impl Collection {
     }
 
     /// One member as a sample (`KeyError` naming the known keys).
+    ///
+    /// The member reads the shard's file and does not own it: closing the
+    /// member releases nothing of the shard, and closing the collection
+    /// closes every member and every object read from one --- each then
+    /// refuses to be read (`MEDH5FileError`).
     pub fn get(&self, key: &str) -> Result<Sample> {
+        let (member, shown) = self.member(key)?;
+        Ok(Sample::from_root(member, None, Some(shown)))
+    }
+
+    /// The member `key` as a sample that owns the shard's file, for a caller
+    /// that keeps nothing else of the collection: closing the member closes
+    /// the file.
+    pub fn into_member(mut self, key: &str) -> Result<Sample> {
+        let (member, shown) = self.member(key)?;
+        Ok(Sample::from_root(member, self.handle.take(), Some(shown)))
+    }
+
+    /// The root of member `key`, and the path a sample read from it shows.
+    fn member(&self, key: &str) -> Result<(hdf5::Group, PathBuf)> {
         let group = self.group()?;
         let Some(member) = ops::child_group(&group, key) else {
             return Err(Error::Key(format!(
@@ -103,7 +123,7 @@ impl Collection {
             "{}::{key}",
             self.path.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| "None".into())
         );
-        Ok(Sample::from_root(member, self.handle.clone(), Some(PathBuf::from(shown))))
+        Ok((member, PathBuf::from(shown)))
     }
 
     pub fn version(&self) -> Result<String> {
@@ -195,7 +215,8 @@ pub fn open_any(path: &Path, key: Option<&str>) -> Result<AnyFile> {
         let collection = Collection::from_root(root, Some(handle), Some(path.to_path_buf()))?;
         return match key {
             None => Ok(AnyFile::Collection(collection)),
-            Some(k) => Ok(AnyFile::Sample(collection.get(k)?)),
+            // Nothing else of the shard is kept: the member owns its file.
+            Some(k) => Ok(AnyFile::Sample(collection.into_member(k)?)),
         };
     }
     if key.is_some() {
@@ -399,4 +420,83 @@ pub fn extract(path: &Path, key: &str, out: &Path) -> Result<PathBuf> {
     }
     write_sample_root(&collection.group()?.group(&wanted)?, out)?;
     Ok(out.to_path_buf())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::array::{DType, NdArray};
+    use crate::sample::writer::{create, GridOptions, ImageOptions};
+
+    fn member(path: &Path, sample_id: &str) {
+        let mut writer = create(path, Some(sample_id), None, "portable", &[]).unwrap();
+        writer.add_grid("g", &[2, 3, 4], &[1.0, 1.0, 1.0], GridOptions::default()).unwrap();
+        let ct = NdArray::from_vec(&[2, 3, 4], (0..24).map(f64::from).collect()).unwrap().astype(DType::I16);
+        writer.add_image("CT", &ct, "g", "CT", ImageOptions::default()).unwrap();
+        writer.commit(true).unwrap();
+    }
+
+    fn shard(dir: &Path) -> PathBuf {
+        let (a, b) = (dir.join("a.medh5"), dir.join("b.medh5"));
+        member(&a, "a");
+        member(&b, "b");
+        pack(&[a.as_path(), b.as_path()], &dir.join("s.medh5c"), None).unwrap()
+    }
+
+    /// A member read from an open collection owns nothing of the shard:
+    /// closing it closed the shard's file, so every later member --- and the
+    /// collection --- failed.  Closing the collection closes every member,
+    /// which then reports a closed file rather than a sample without its
+    /// groups.
+    #[test]
+    fn s2_2_a_member_never_closes_its_shard_and_its_collection_closes_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut collection = open_collection(&shard(dir.path())).unwrap();
+        for key in ["a", "b"] {
+            let mut sample = collection.get(key).unwrap();
+            assert_eq!(sample.identity().unwrap().sample_id, key);
+            sample.close_file().unwrap();
+            sample.close();
+            assert!(sample.is_open(), "the collection keeps the member's file open");
+        }
+        let held = collection.get("a").unwrap();
+        let image = held.images().unwrap()["CT"].clone();
+        assert_eq!(image.read(None, false, None).unwrap().shape(), vec![2, 3, 4]);
+
+        collection.close();
+        assert!(!held.is_open());
+        for failure in [
+            held.images().map(|_| ()).unwrap_err(),
+            held.identity().map(|_| ()).unwrap_err(),
+            image.read(None, false, None).map(|_| ()).unwrap_err(),
+        ] {
+            assert!(matches!(failure, Error::File(_)), "{failure:?}");
+        }
+    }
+
+    /// A collection dropped without `close` leaves the members read from it
+    /// readable: the file stays open while one of them does.
+    #[test]
+    fn s2_2_a_member_outlives_a_dropped_collection() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = shard(dir.path());
+        let kept = open_collection(&path).unwrap().get("b").unwrap();
+        assert!(kept.is_open());
+        assert_eq!(kept.identity().unwrap().sample_id, "b");
+        assert_eq!(kept.images().unwrap()["CT"].read(None, false, None).unwrap().shape(), vec![2, 3, 4]);
+    }
+
+    /// A member opened by key, with nothing else of the shard kept, owns the
+    /// file: closing it closes the shard.
+    #[test]
+    fn s2_2_a_member_opened_alone_owns_the_shard() {
+        let dir = tempfile::tempdir().unwrap();
+        let AnyFile::Sample(mut sample) = open_any(&shard(dir.path()), Some("b")).unwrap() else {
+            panic!("a key names a member");
+        };
+        assert_eq!(sample.identity().unwrap().sample_id, "b");
+        assert!(sample.handle().is_some());
+        sample.close();
+        assert!(!sample.is_open());
+    }
 }

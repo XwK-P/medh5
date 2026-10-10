@@ -266,6 +266,45 @@ class TestOpening:
             assert sorted(collection) == ["one"]
 
 
+class TestMemberLifetime:
+    """§2.2: a member is a sample in the shard's file, and owns none of it."""
+
+    def test_S2_2_closing_a_member_leaves_the_shard_open(self, shard):
+        with open_collection(shard) as collection:
+            for key in collection:
+                with collection[key] as sample:
+                    assert sample.identity.sample_id == key
+                    assert sample.images["CT_tp0"].read().shape == (16, 24, 24)
+                assert not sample.is_open
+            reopened = collection["case_0"]
+            assert reopened is not sample
+            assert reopened.is_open
+            assert reopened.identity.sample_id == "case_0"
+
+    def test_S2_2_closing_the_collection_closes_every_member(self, shard):
+        collection = open_collection(shard)
+        member = collection["case_1"]
+        image = member.images["CT_tp0"]
+        collection.close()
+        assert not member.is_open
+        for read in (
+            lambda: member.identity,
+            lambda: member.annotations,
+            lambda: image.read(),
+            lambda: collection["case_1"],
+        ):
+            with pytest.raises(MEDH5FileError):
+                read()
+
+    def test_S2_2_a_member_opened_alone_closes_its_shard(self, shard):
+        member = open_any(shard, key="case_2")
+        image = member.images["CT_tp0"]
+        member.close()
+        assert not member.is_open
+        with pytest.raises(MEDH5FileError):
+            image.read()
+
+
 class TestValidation:
     def test_a_clean_shard_validates(self, shard):
         report = validate_file(shard, level="integrity")

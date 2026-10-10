@@ -221,11 +221,16 @@ class Sample:
         self.close()
 
     def close(self) -> None:
-        """Release the file.  Safe to call twice."""
+        """Release the file, and everything read from it.  Safe to call twice.
+
+        A collection member owns no file: closing one releases the member
+        alone, and the shard stays open until its collection is closed."""
         self._handle.close()
 
     @property
     def is_open(self) -> bool:
+        """Whether the sample can still be read: ``False`` once it is closed,
+        and, for a collection member, once its collection is closed."""
         return bool(self._handle.is_open)
 
     def __repr__(self) -> str:

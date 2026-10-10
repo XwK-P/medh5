@@ -57,8 +57,10 @@ class Collection(Mapping[str, Sample]):
     """A read-only mapping of ``sample_key -> Sample`` over one shard.
 
     Members are samples in the shard's own file; reading one is reading the
-    shard.  A member stays readable until the last reference to it goes, even
-    after :meth:`close`.
+    shard.  A member owns no file: closing one releases that member alone, and
+    ``collection[key]`` then reads it afresh.  :meth:`close` closes the shard,
+    and with it every member and everything read from one --- each then raises
+    :class:`~medh5.errors.MEDH5FileError`.
     """
 
     __slots__ = ("_handle", "_samples", "path")
@@ -77,8 +79,10 @@ class Collection(Mapping[str, Sample]):
         self.close()
 
     def close(self) -> None:
-        """Release the shard.  Safe to call twice."""
+        """Close the shard, every member and everything read from one.  Safe
+        to call twice."""
         self._handle.close()
+        self._samples.clear()
 
     def __repr__(self) -> str:
         return str(self._handle.repr())
@@ -105,9 +109,10 @@ class Collection(Mapping[str, Sample]):
         return isinstance(key, str) and bool(self._handle.contains(key))
 
     def __getitem__(self, key: str) -> Sample:
-        if key not in self._samples:
-            self._samples[key] = Sample(self._handle.get(key))
-        return self._samples[key]
+        sample = self._samples.get(key)
+        if sample is None or not sample.is_open:
+            sample = self._samples[key] = Sample(self._handle.get(key))
+        return sample
 
     # -- header ------------------------------------------------------------
 
