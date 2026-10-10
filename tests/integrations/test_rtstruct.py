@@ -530,6 +530,114 @@ class TestF09PatientCoordinates:
             self._exported(path, series["paths"], tmp_path / "rt.dcm")
         assert exc.value.code == "E414"
 
+    def _imported(self, path: Path, rt: Path, **kw: Any) -> tuple[Any, Any]:
+        """Import *rt* into *path* as ``back``: its world vertices, its frame
+        and the report."""
+        from medh5.io.rtstruct import from_rtstruct
+
+        report = from_rtstruct(rt, path, ann_id="back", **kw)
+        with medh5.open(path) as sample:
+            back = sample.annotations["back"]
+            vertices = np.asarray(back.polygon(0), dtype=np.float64)
+            return (vertices, back.header.frame_uid), report
+
+    @pytest.mark.parametrize(
+        ("units", "coord_system"), [("mm", "LPS"), ("mm", "RAS"), ("m", "LPS")]
+    )
+    def test_S8_6_imported_contours_are_in_their_grids_world_coordinates(
+        self, tmp_path, series, units, coord_system
+    ):
+        """`ContourData` is LPS millimetres: an import scales it to the grid's
+        units and flips it for an RAS grid, so a round trip lands where it
+        started.  Stored as read, the RAS square came back mirrored off the
+        grid, and the metre one read its millimetres as metres."""
+        path = self._sample(
+            tmp_path,
+            frame_uid=series["frame_uid"],
+            units=units,
+            coord_system=coord_system,
+        )
+        rt = tmp_path / "rt.dcm"
+        self._exported(path, series["paths"], rt)
+        (vertices, frame), report = self._imported(path, rt)
+        assert np.allclose(vertices, self._expected_mm(path), rtol=1e-5, atol=1e-6)
+        with medh5.open(path) as sample:
+            index = sample.grids["g"].world_to_index(vertices)
+        assert np.allclose(index, self.SQUARE, atol=1e-3)
+        assert frame == series["frame_uid"]
+        assert not report.guesses, "the frames were compared"
+
+    @pytest.mark.parametrize(
+        ("units", "coord_system"), [("px", "LPS"), ("mm", "custom")]
+    )
+    def test_S8_6_an_import_onto_a_grid_without_patient_coordinates_is_refused(
+        self, tmp_path, series, units, coord_system
+    ):
+        source = self._sample(tmp_path, frame_uid=series["frame_uid"])
+        rt = tmp_path / "rt.dcm"
+        self._exported(source, series["paths"], rt)
+        (tmp_path / "other").mkdir()
+        path = self._sample(
+            tmp_path / "other",
+            frame_uid=series["frame_uid"],
+            units=units,
+            coord_system=coord_system,
+        )
+        with pytest.raises(MEDH5ValidationError, match="grid 'g' is in") as exc:
+            self._imported(path, rt)
+        assert exc.value.code == "E414"
+        with medh5.open(path) as sample:
+            assert "back" not in sample.annotations
+
+    @pytest.mark.parametrize("named", [False, True])
+    def test_S3_4_an_rtstruct_in_another_frame_is_refused(
+        self, tmp_path, series, named
+    ):
+        """The sample's only grid, or one named with `grid=`, in another known
+        frame took the contours with a guess at most."""
+        source = self._sample(tmp_path, frame_uid=series["frame_uid"])
+        rt = tmp_path / "rt.dcm"
+        self._exported(source, series["paths"], rt)
+        (tmp_path / "other").mkdir()
+        path = self._sample(
+            tmp_path / "other", frame_uid="1.2.826.0.1.3680043.2.1125.9"
+        )
+        with pytest.raises(MEDH5ValidationError, match="registration") as exc:
+            self._imported(path, rt, **({"grid": "g"} if named else {}))
+        assert exc.value.code == "E414"
+        with medh5.open(path) as sample:
+            assert "back" not in sample.annotations
+
+    def test_S3_4_an_import_compares_a_pseudonymised_frame_through_its_salt(
+        self, tmp_path, series
+    ):
+        """The contours take the grid's pseudonym as their frame: the
+        RTSTRUCT's own UID is what the scrub removed."""
+        from medh5.curation.scrub import pseudonymise
+
+        hidden = pseudonymise(series["frame_uid"], "s3cret")
+        path = self._sample(tmp_path, frame_uid=hidden)
+        rt = tmp_path / "rt.dcm"
+        self._exported(path, series["paths"], rt, frame_salt="s3cret")
+        with pytest.raises(MEDH5ValidationError, match="frame_salt") as exc:
+            self._imported(path, rt)
+        assert exc.value.code == "E414"
+        (vertices, frame), report = self._imported(path, rt, frame_salt="s3cret")
+        assert frame == hidden
+        assert np.allclose(vertices, self._expected_mm(path), atol=1e-4)
+        assert not report.guesses
+
+    def test_S3_4_a_frameless_grid_takes_the_contours_on_a_recorded_guess(
+        self, tmp_path, series
+    ):
+        path = self._sample(tmp_path, frame_uid=None)
+        rt = tmp_path / "rt.dcm"
+        self._exported(path, series["paths"], rt)
+        (vertices, frame), report = self._imported(path, rt)
+        assert np.allclose(vertices, self._expected_mm(path), atol=1e-4)
+        assert frame == series["frame_uid"], "the frame the coordinates are in"
+        assert report.of_kind("grid") and report.of_kind("frame")
+
     def test_F09_the_command_line_takes_the_frame_salt(self, tmp_path, series):
         from medh5.cli import EXIT_OK, main
         from medh5.curation.scrub import pseudonymise

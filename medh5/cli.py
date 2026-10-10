@@ -212,6 +212,8 @@ def _from_rtstruct(args: Any) -> int:
         ann_id=args.ann_id,
         grid=args.grid,
         rasterize=args.rasterize,
+        # `--frame-salt`, where the grammar gives this command one.
+        frame_salt=getattr(args, "frame_salt", None),
     )
     return _finish(report, args)
 

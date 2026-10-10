@@ -153,7 +153,7 @@ def place_frames(
     *frame_salt* compares the SEG's frame as ``medh5 scrub`` pseudonymised the
     grid's (see :func:`frames_agree`).
     """
-    _require_same_frame(geometry, grid, frame_salt)
+    _require_same_frame(geometry.get("frame_uid"), grid, frame_salt)
     shape = tuple(grid.spatial_shape)
     if len(shape) != 3:
         raise MEDH5ValidationError(
@@ -240,31 +240,30 @@ def frames_agree(
 
 
 def _require_same_frame(
-    geometry: Mapping[str, Any], grid: Any, salt: str | None
+    frame: str | None, grid: Any, salt: str | None, *, source: str = "the SEG"
 ) -> None:
-    """Refuse a grid whose known frame of reference is not the SEG's (§3.4).
+    """Refuse a grid whose known frame of reference is not *frame* (§3.4).
 
     Equal numbers in two frames are no correspondence: a grid with another
     known frame and the same geometry received every voxel, from an explicit
-    ``grid=`` without a word and from automatic matching on a recorded guess
-    (N15 of the round-3 audit).  Relating two frames is registration, which
-    this importer does not apply.  Where either side states no frame, there is
-    nothing to compare, and placement rests on geometry, as it always has; the
-    import records that as a guess.
+    ``grid=`` without a word and from automatic matching on a recorded guess.
+    Relating two frames is registration, which the importers do not apply.
+    Where either side states no frame, there is nothing to compare, and
+    placement rests on geometry, as it always has; the import records that
+    as a guess.  *source* names what was drawn in *frame*, for the message.
     """
-    seg = geometry.get("frame_uid")
-    if frames_agree(seg, grid.frame_uid, salt) is not False:
+    if frames_agree(frame, grid.frame_uid, salt) is not False:
         return
     from medh5.curation.scrub import PSEUDONYM_PREFIX
 
     hint = (
         " The grid's frame is a `medh5 scrub` pseudonym: pass the scrub's salt "
-        "as frame_salt= to compare the SEG's frame as the scrub wrote it."
+        f"as frame_salt= to compare {source}'s frame as the scrub wrote it."
         if str(grid.frame_uid).startswith(PSEUDONYM_PREFIX) and salt is None
         else ""
     )
     raise MEDH5ValidationError(
-        f"the SEG was drawn in frame of reference {seg!r} and grid "
+        f"{source} was drawn in frame of reference {frame!r} and grid "
         f"{grid.grid_id!r} is in {grid.frame_uid!r}: equal geometry in two "
         "frames is no correspondence, and placing it there needs a "
         f"registration, which this importer does not apply.{hint}",

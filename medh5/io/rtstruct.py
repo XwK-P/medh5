@@ -6,11 +6,14 @@ sub-voxel resolution and a mask is not, so converting one to the other loses
 information in one direction and invents it in the other.
 
 This converter therefore stores contours as contours (§8.6, ``space="world"``),
-which round-trips exactly.  Rasterising into a voxel annotation is available and
-**opt-in**, because the rasterisation rule — winding, holes, whether a boundary
-voxel counts — is a decision that belongs in the provenance record rather than
-in a library's defaults.  When it is used, the rule is written down and the
-contours stay in the file beside the mask.
+in the world coordinates of the grid they belong to: ``ContourData`` is DICOM
+patient coordinates --- millimetres, LPS --- so an import scales them to the
+grid's units and, for an RAS grid, flips x and y, and an export does the
+inverse.  Rasterising into a voxel annotation is available and **opt-in**,
+because the rasterisation rule — winding, holes, whether a boundary voxel
+counts — is a decision that belongs in the provenance record rather than in a
+library's defaults.  When it is used, the rule is written down and the contours
+stay in the file beside the mask.
 
 Holes are read the way planners write them: a contour on a slice that lies
 inside an odd number of others is stored with ``role="hole"``, and the
@@ -95,11 +98,31 @@ def from_rtstruct(
     rasterize: bool = False,
     mask_id: str | None = None,
     annotated_classes: Sequence[str] | str = "all_given",
+    frame_salt: str | None = None,
     report: ConversionReport | None = None,
 ) -> ConversionReport:
-    """Import an RTSTRUCT's ROIs as contours, and optionally rasterise them."""
+    """Import an RTSTRUCT's ROIs as contours, and optionally rasterise them.
+
+    The contours go onto the grid that shares the RTSTRUCT's frame of
+    reference, or the sample's only grid; a grid --- matched or named with
+    *grid* --- whose frame is known and is another is refused (E414) before
+    the sample is touched: equal numbers in two frames are no correspondence
+    (§3.4).  Where the RTSTRUCT or the grid states no frame, the placement
+    rests on the coordinates alone and the report records a guess.
+    *frame_salt* is the salt a ``medh5 scrub`` pseudonymised the sample's
+    frames with (:func:`~medh5.io.dicom_seg.frames_agree`).
+
+    ``ContourData`` is patient coordinates (LPS, millimetres), and the
+    contours are stored in the grid's world coordinates: scaled to its units
+    and, for an RAS grid, flipped in x and y --- the inverse of
+    :func:`to_rtstruct`.  A grid in pixels or another convention has no
+    patient coordinates, and is refused (E414).  Stored as read, a contour on
+    an RAS grid was mirrored through the origin in x and y, and one on a
+    metre grid lay a thousand times as far out.
+    """
     import medh5
     from medh5.annotations.geometric import Polygon
+    from medh5.io.dicom_seg import _require_same_frame, frames_agree
     from medh5.labels import LabelClass, LabelSet
 
     log = report or ConversionReport(converter="from-rtstruct")
@@ -109,9 +132,25 @@ def from_rtstruct(
         raise MEDH5ValidationError(f"{path} contains no usable contours")
 
     with medh5.open(sample) as opened:
-        grid_id = grid or _match_grid(opened, meta, log)
+        grid_id = grid or _match_grid(opened, meta, log, frame_salt)
         target = opened.grids[grid_id]
         existing = opened.label_set
+    _require_same_frame(meta["frame_uid"], target, frame_salt, source="the RTSTRUCT")
+    signs, scale = _to_patient(target)
+    if frames_agree(meta["frame_uid"], target.frame_uid, frame_salt) is None:
+        log.guess(
+            "frame",
+            f"{'the RTSTRUCT' if not meta['frame_uid'] else f'grid {grid_id!r}'} "
+            "states no frame of reference, so the frames could not be compared; "
+            "the contours were placed by their coordinates alone",
+            {"grid": grid_id, "rtstruct_frame": meta["frame_uid"]},
+        )
+    # Patient coordinates into the grid's world: `patient = signs * scale *
+    # world`, and the signs are their own inverse.
+    contours = {
+        number: [signs * points / scale for points in planar]
+        for number, planar in contours.items()
+    }
 
     label_set = existing
     ids: dict[int, int] = {}
@@ -166,9 +205,16 @@ def from_rtstruct(
             )
     log.decision(
         "contours",
-        f"{len(polygons)} contour(s) were stored in world coordinates, exactly "
-        "as the planner drew them; a contour is sub-voxel and a mask is not",
-        {"polygons": len(polygons), "rois": len(contours)},
+        f"{len(polygons)} contour(s) were stored in grid {grid_id!r}'s world "
+        f"coordinates ({target.coord_system}, {target.units}), converted from "
+        "patient coordinates (LPS, mm) but otherwise exactly as the planner drew "
+        "them; a contour is sub-voxel and a mask is not",
+        {
+            "polygons": len(polygons),
+            "rois": len(contours),
+            "coord_system": target.coord_system,
+            "units": target.units,
+        },
     )
 
     masks: dict[int, npt.NDArray[np.bool_]] | None = None
@@ -187,7 +233,10 @@ def from_rtstruct(
             polygons,
             grid=grid_id,
             space="world",
-            frame_uid=meta["frame_uid"],
+            # The grid's frame, which the coordinates are now in: a frame
+            # compared through the scrub's salt is the grid's pseudonym, and
+            # the RTSTRUCT's own UID is what the scrub removed.
+            frame_uid=target.frame_uid or meta["frame_uid"],
             annotated_classes=annotated_classes,
             prov=activity,
         )
@@ -367,15 +416,31 @@ def _key(name: str) -> str:
     return sanitize_key(name, fallback="roi")
 
 
-def _match_grid(sample: Any, meta: Mapping[str, Any], log: ConversionReport) -> str:
+def _match_grid(
+    sample: Any,
+    meta: Mapping[str, Any],
+    log: ConversionReport,
+    salt: str | None = None,
+) -> str:
+    """The grid sharing the RTSTRUCT's frame, else the sample's only grid.
+
+    The only grid is taken whatever its frame; one in another known frame is
+    refused afterwards, as a grid named explicitly is.  Used with a recorded
+    guess, a grid in another frame received every contour.
+    """
+    from medh5.io.dicom_seg import frames_agree
+
     frame = meta.get("frame_uid")
-    if frame:
-        matches = [g for g in sample.grids.values() if g.frame_uid == frame]
-        if len(matches) == 1:
-            return str(matches[0].grid_id)
+    matches = (
+        [g for g in sample.grids.values() if frames_agree(frame, g.frame_uid, salt)]
+        if frame
+        else []
+    )
+    if len(matches) == 1:
+        return str(matches[0].grid_id)
     names: list[str] = sorted(sample.grids)
     if len(names) == 1:
-        if frame:
+        if frame and not sample.grids[names[0]].frame_uid:
             log.guess(
                 "grid",
                 f"the RTSTRUCT names frame {frame!r}, which no grid declares; the "
@@ -385,7 +450,7 @@ def _match_grid(sample: Any, meta: Mapping[str, Any], log: ConversionReport) -> 
         return names[0]
     raise MEDH5ValidationError(
         f"cannot tell which grid the RTSTRUCT belongs to: frame {frame!r} matches "
-        f"no grid and the sample has {len(names)} grids. Pass grid= explicitly.",
+        f"{len(matches)} of the sample's {len(names)} grids. Pass grid= explicitly.",
         code="E101",
     )
 
@@ -417,7 +482,7 @@ def to_rtstruct(
     pseudonymised, as :func:`~medh5.io.dicom_seg.frames_agree` does).
     The contours were written as stored --- a metre grid's 0.003 for 3 mm,
     RAS signs unflipped --- and filed under the first image's frame, whatever
-    the grid's (F09 of the round-4 audit).
+    the grid's.
     """
     import medh5
     from medh5.io.dicom import require_pydicom
@@ -591,8 +656,9 @@ def _one_frame(datasets: Sequence[Any]) -> str:
 
 def _to_patient(grid: Any) -> tuple[npt.NDArray[np.float64], float]:
     """The world-axis signs and the millimetres per grid unit that take
-    *grid*'s world coordinates to DICOM patient coordinates (LPS, mm) --- the
-    inverse of the SEG importer's mapping."""
+    *grid*'s world coordinates to DICOM patient coordinates (LPS, mm):
+    ``patient = signs * scale * world``, and the import divides them out ---
+    the inverse of the SEG importer's mapping."""
     from medh5.io.nifti import MM_PER_UNIT
 
     if grid.coord_system not in ("LPS", "RAS"):
@@ -604,8 +670,8 @@ def _to_patient(grid: Any) -> tuple[npt.NDArray[np.float64], float]:
     scale = MM_PER_UNIT.get(grid.units)
     if scale is None:
         raise MEDH5ValidationError(
-            f"grid {grid.grid_id!r} is in {grid.units!r}, which no patient "
-            "coordinate in millimetres converts from",
+            f"grid {grid.grid_id!r} is in {grid.units!r}, which relates to no "
+            "patient coordinate in millimetres",
             code="E414",
         )
     flip = 1.0 if grid.coord_system == "LPS" else -1.0

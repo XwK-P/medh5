@@ -222,6 +222,16 @@ from_rtstruct("plan.dcm", "case.medh5", rasterize=False)
 **Contours stay contours** (§8.6), in world coordinates. `--rasterize` is opt-in,
 and the rule it used goes into the provenance graph.
 
+**The import reads patient coordinates.** `ContourData` is millimetres in LPS,
+and the contours are stored in their grid's world coordinates --- scaled for a
+grid in other length units, flipped in x and y for an RAS one; a grid in pixels
+or another convention is refused (`E414`). They go onto the grid that shares
+the RTSTRUCT's frame of reference, or the sample's only grid, and a grid ---
+matched or named with `--grid` --- whose frame is known and is another is
+refused (`E414`) before the sample is touched. `frame_salt=` compares a frame
+`medh5 scrub` pseudonymised, and the contours then carry the grid's pseudonym.
+Where the RTSTRUCT or the grid states no frame, the report records a guess.
+
 Each imported polygon records the slice it lies on as `contour_plane`
 `(0, k)`, in the grid's index space, so `by_plane()` on the result groups the
 structure set the way the planner drew it.
