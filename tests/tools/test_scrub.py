@@ -15,7 +15,7 @@ from medh5.curation import scrub as scrubber
 from medh5.errors import MEDH5ValidationError
 from medh5.labels import LabelClass, LabelSet
 from medh5.validate import validate_file
-from tests.helpers import SHAPE, write_dicom_series
+from tests.helpers import SHAPE, encode_attr, write_dicom_series
 from tests.kits import Numbered, Organs
 
 
@@ -1204,6 +1204,22 @@ class TestB08ClinicalIsNotScrubbed:
         with medh5.open(path) as sample:
             assert sample.content_id == before
             assert sample.document.deidentification is None
+
+    def test_S11_4_an_undeclared_clinical_group_is_not_examined_either(
+        self, tmp_path: Path
+    ):
+        """The check read the declaration, not the file: a ``clinical`` group
+        whose profile was not declared (E803) scanned without a word about
+        it, and ``apply`` was refused only by the commit's validation."""
+        path = self._clinical(tmp_path)
+        with h5py.File(path, "r+") as handle:
+            handle.attrs["medh5_profiles"] = encode_attr(["core"])
+        report = scrubber.scan(path)
+        found = [f for f in report.findings if f.rule == "clinical"]
+        assert len(found) == 1 and not found[0].actionable
+        assert "does not declare" in found[0].detail
+        with pytest.raises(MEDH5ValidationError, match="clinical strip"):
+            scrubber.apply(path)
 
     def test_B08_the_imaging_projection_is_scrubbed(self, tmp_path: Path):
         from medh5.clinical import strip

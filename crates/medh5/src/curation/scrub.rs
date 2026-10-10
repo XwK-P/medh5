@@ -1616,17 +1616,20 @@ pub fn scan(path: &Path, profile: &str) -> Result<ScrubReport> {
     Ok(report)
 }
 
-/// How much a sample's clinical profile holds, when it declares one.
+/// How much a sample's clinical profile holds, when it has one.
 ///
 /// The profile is outside what this tool examines.  Its text is packed UTF-8
 /// (`uint8` buffers), which the string sweep never reads, and a date shift
 /// moves `/meta`'s dates, not the clinical clock, so the images and the
 /// history would tell two times.  1.1 §6 says de-identification covers the
 /// body as well as the metadata; until this tool covers it, a clinical sample
-/// is never reported clean and is not scrubbed (see [`apply`]).
+/// is never reported clean and is not scrubbed (see [`apply`]).  A
+/// `clinical` group the sample does not declare (E803) is read no better, so
+/// it counts too.
 fn clinical_extent(sample: &Sample) -> Result<Option<String>> {
     if !sample.profiles()?.contains(crate::clinical::PROFILE) {
-        return Ok(None);
+        let undeclared = ops::exists(&sample.root, crate::clinical::GROUP);
+        return Ok(undeclared.then(|| "a `clinical` group the sample does not declare".to_string()));
     }
     Ok(Some(match sample.clinical() {
         Ok(Some(c)) => format!("{} event version(s), {} document(s)", c.events.len(), c.documents().len()),

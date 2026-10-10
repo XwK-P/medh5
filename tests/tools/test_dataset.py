@@ -156,6 +156,13 @@ class TestManifest:
         with pytest.raises(MEDH5Error):
             scan(cohort, on_error="raise")
 
+    def test_an_unknown_error_mode_is_refused(self, cohort):
+        """Anything but ``"raise"`` read as ``"warn"``, so a misspelt strict
+        scan went on past every broken file."""
+        (cohort / "broken.medh5").write_bytes(b"not hdf5")
+        with pytest.raises(MEDH5ValidationError, match="on_error"):
+            scan(cohort, on_error="raises")
+
     def test_a_collection_fans_out_into_entries(self, cohort, tmp_path):
         shard = tmp_path / "shard.medh5c"
         medh5.pack(sorted(cohort.glob("*.medh5")), shard)

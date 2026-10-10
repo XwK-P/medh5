@@ -44,7 +44,7 @@ class Entry:
     scanner_id: str | None = None
     acquisition_protocol: str | None = None
     timepoints: tuple[str, ...] = ()
-    days_from_baseline: tuple[int | None, ...] = ()
+    days_from_baseline: tuple[float | None, ...] = ()
     images: tuple[str, ...] = ()
     modalities: tuple[str, ...] = ()
     annotations: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -284,7 +284,8 @@ def scan(
 
     Returns the manifest and the paths that failed.  A cohort scan that dies on
     one broken file has told you nothing about the other 9 999;
-    ``on_error="raise"`` re-raises the first failure instead.
+    ``on_error="raise"`` re-raises the first failure instead (the default is
+    ``"warn"``, and any other value is refused).
     """
     doc, failures = _core.dataset_scan(
         os.fspath(root), suffixes=list(suffixes), on_error=on_error

@@ -173,7 +173,12 @@ class TestQuality:
         assert agreement.value == pytest.approx(0.75)
         assert agreement.per_class == {"5": 1.0, "12": 0.5}
         assert Agreement.from_json(agreement.to_json()) == agreement
-        assert dice_agreement({}).value == 0.0
+
+    def test_S11_2_a_dice_agreement_over_no_class_is_refused(self):
+        """A mean over no class was recorded as 0.0: complete disagreement,
+        claimed of two annotations nobody compared."""
+        with pytest.raises(MEDH5ValidationError, match="at least one class"):
+            dice_agreement({})
 
     def test_mapping_helpers(self):
         records = {"organs": QualityRecord(status="approved")}

@@ -70,12 +70,14 @@ impl Observation {
         json!({
             "timepoint": self.timepoint,
             "annotation": self.annotation,
+            "kind": self.kind,
             "index": self.index,
             "class_id": self.class_id,
             "box": rows,
             "voxel_count": self.voxel_count,
             "volume": self.volume.map(num),
             "units": self.units,
+            "volume_mm": self.volume_mm().map(num),
             "score": self.score.map(num),
         })
     }

@@ -470,6 +470,23 @@ class TestF19VolumeUnits:
             assert second.volume_mm == pytest.approx(64 * 2.0)
             assert track.relative_change("tp0", "tp1") == pytest.approx(0.0, abs=1e-9)
 
+    def test_S7_4_an_observation_in_json_says_its_kind_and_its_millimetres(
+        self, tmp_path, label_set
+    ):
+        """`medh5 track --json` gave each observation's volume in its own
+        grid's units and neither its kind nor its volume in millimetres, so
+        a reader of the JSON could not compare two visits the table did."""
+        path = self._visits(tmp_path / "s.medh5", label_set, ("mm", "m"), (2, 2))
+        with medh5.open(path) as sample:
+            observations = sample.tracks().to_json()["tracks"][0]["observations"]
+        assert [o["kind"] for o in observations] == ["instances", "instances"]
+        assert [o["units"] for o in observations] == ["mm", "m"]
+        assert observations[1]["volume"] == pytest.approx(64 * 2.0e-9)
+        assert [o["volume_mm"] for o in observations] == [
+            pytest.approx(64 * 2.0),
+            pytest.approx(64 * 2.0),
+        ]
+
     def test_F19_growth_across_a_change_of_units_is_measured(self, tmp_path, label_set):
         path = self._visits(tmp_path / "s.medh5", label_set, ("mm", "m"), (2, 3))
         with medh5.open(path) as sample:

@@ -210,13 +210,20 @@ pub fn quality_to_json(records: &IndexMap<String, QualityRecord>) -> Value {
 }
 
 /// A mean-Dice [`Agreement`] from per-class values.
-pub fn dice_agreement(per_class: &[(i64, f64)], against: Option<String>) -> Agreement {
-    let mean =
-        if per_class.is_empty() { 0.0 } else { per_class.iter().map(|(_, v)| v).sum::<f64>() / per_class.len() as f64 };
-    Agreement {
+///
+/// Refused without a class: a mean over none is not a measurement, and
+/// recording it as 0 would say the two annotations disagree everywhere.
+pub fn dice_agreement(per_class: &[(i64, f64)], against: Option<String>) -> Result<Agreement> {
+    if per_class.is_empty() {
+        return Err(Error::invalid(
+            "dice_agreement needs the Dice of at least one class: a mean over no class is not 0",
+        ));
+    }
+    let mean = per_class.iter().map(|(_, v)| v).sum::<f64>() / per_class.len() as f64;
+    Ok(Agreement {
         metric: "dice".into(),
         value: mean,
         against,
         per_class: per_class.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
-    }
+    })
 }

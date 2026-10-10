@@ -209,7 +209,17 @@ fn dataset_scan<'py>(
     on_error: &str,
 ) -> R<Bound<'py, PyTuple>> {
     let suffixes = suffix_list(suffixes);
-    let strict = on_error == "raise";
+    let strict = match on_error {
+        "raise" => true,
+        "warn" => false,
+        other => {
+            return Err(medh5::Error::invalid(format!(
+                "on_error must be 'warn' or 'raise', not {}",
+                medh5::json::repr_str(other)
+            ))
+            .into())
+        }
+    };
     let (found, failures) = py.detach(move || {
         let refs: Vec<&str> = suffixes.iter().map(String::as_str).collect();
         manifest::scan_with(&root, &refs, strict)

@@ -137,7 +137,7 @@ absence.
 ### Class conflicts
 
 ```python
-tracking.class_conflicts()      # {instance_id: (class_id_at_tp0, class_id_at_tp1)}
+tracking.class_conflicts()      # {instance_id: (every class id it carries, sorted)}
 ```
 
 One object with two classes across visits is either a reclassification worth

@@ -335,7 +335,7 @@ fn dice_agreement(per_class: &Bound<'_, PyAny>, against: Option<String>) -> R<Ag
         let (k, v): (i64, f64) = item?.extract()?;
         pairs.push((k, v));
     }
-    Ok(Agreement::wrap(q_engine::dice_agreement(&pairs, against)))
+    Ok(Agreement::wrap(q_engine::dice_agreement(&pairs, against)?))
 }
 
 // -- timeline --------------------------------------------------------------------------------
