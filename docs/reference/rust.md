@@ -81,6 +81,9 @@ home; the [API documentation](https://docs.rs/medh5) has every item.
 | `collection` | §2.2 --- `.medh5c` shards |
 | `dataset`, `sampling` | cohort manifests, splits and statistics; patch sampling |
 | `conformance` | the conformance corpus |
+| `version` | [1.1](../spec/medh5-1.1.md) §2 --- which versions are read fully, read as a projection, or refused |
+| `clinical` | [1.1](../spec/medh5-1.1.md) §3–§10 --- the clinical profile: records, columns, checks, selection, augmentation |
+| `companion` | [task-cache-1](../spec/task-cache-1.md) --- task manifests, source pins, preflight row views, feature caches |
 
 Errors are one `medh5::Error`; when a defect has a §15.2 code, the error carries
 the code the validator reports for the same defect.
