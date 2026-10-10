@@ -562,7 +562,6 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("CLINICAL_SCHEMA", medh5::clinical::SCHEMA)?;
     m.add("TASK_SCHEMA", medh5::companion::task::SCHEMA)?;
     m.add("CACHE_SCHEMA", medh5::companion::cache::SCHEMA)?;
-    m.add("FORMAT_VERSIONS", pyo3::types::PyTuple::new(py, medh5::version::FORMAT_VERSIONS)?)?;
     for (name, values) in [
         ("EVENT_KINDS", &medh5::clinical::EVENT_KINDS[..]),
         ("TEMPORAL_TYPES", &medh5::clinical::TEMPORAL_TYPES[..]),

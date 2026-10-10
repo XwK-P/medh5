@@ -19,7 +19,7 @@ use medh5::transforms::resolve;
 use crate::annotations::AnnotationPayload;
 use crate::convert::{array_to_py, attr_to_py, dtype_arg, f64_array, py_to_attr, py_to_nd, strings};
 use crate::errors::R;
-use crate::geometry::{grid_arg, Grid};
+use crate::geometry::grid_arg;
 use crate::reader::TransformHandle;
 
 fn points2(obj: &Bound<'_, PyAny>) -> PyResult<Array2<f64>> {
@@ -472,6 +472,5 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("SUPPORTED_ORDERS", PyTuple::new(py, model::SUPPORTED_ORDERS)?)?;
     m.add("DEFAULT_ORDER", model::DEFAULT_ORDER)?;
     m.add("FLOAT16_SAFE_VOXELS", model::FLOAT16_SAFE_VOXELS)?;
-    let _ = Grid::wrap;
     Ok(())
 }

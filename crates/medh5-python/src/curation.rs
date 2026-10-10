@@ -12,7 +12,7 @@ use medh5::curation::provenance as prov_engine;
 use medh5::curation::quality as q_engine;
 use medh5::curation::timeline as tl_engine;
 
-use crate::convert::{json_to_py, map_to_py, py_to_json};
+use crate::convert::{json_to_py, py_to_json};
 use crate::errors::R;
 use crate::record_class;
 use crate::records::{field, required, Kind};
@@ -551,6 +551,5 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("TIMEPOINT_FIELDS", PyFrozenSet::new(py, tl_engine::TIMEPOINT_FIELDS)?)?;
     m.add("RFC3339_REGEX", prov_engine::RFC3339)?;
     m.add("DATE_REGEX", tl_engine::DATE_PATTERN)?;
-    let _ = map_to_py;
     Ok(())
 }

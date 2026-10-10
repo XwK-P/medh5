@@ -82,7 +82,6 @@ __all__ = [
     "Dataset",
     "Deidentification",
     "ENDPOINT_TYPES",
-    "ENTRY_FIELDS",
     "EVENT_KINDS",
     "EXIT_ERROR",
     "EXIT_OK",
@@ -90,7 +89,6 @@ __all__ = [
     "EXTRAPOLATIONS",
     "FLOAT16_SAFE_VOXELS",
     "FORMAT_VERSION",
-    "FORMAT_VERSIONS",
     "FORMS",
     "FeatureCacheHandle",
     "GEOMETRIC_KINDS",
@@ -143,7 +141,6 @@ __all__ = [
     "QUALITY_STATUS",
     "QualityRecord",
     "RELATIONS",
-    "RESERVED_IDS",
     "RESERVED_KINDS",
     "RESOLVED",
     "RFC3339_REGEX",
@@ -269,7 +266,6 @@ __all__ = [
     "cache_schema_text",
     "cache_validate",
     "canonical_attrs",
-    "canonical_attrs_at",
     "canonical_json",
     "carries_instance_ids",
     "check_class_id",
@@ -315,7 +311,6 @@ __all__ = [
     "dataset_counts",
     "dataset_default_ratios",
     "dataset_digest",
-    "dataset_digest_at",
     "dataset_entries_for",
     "dataset_entry_field",
     "dataset_entry_json",
@@ -394,7 +389,6 @@ __all__ = [
     "greedy_colour",
     "grid_chunks",
     "group_digest",
-    "group_digest_at",
     "imaging_events_from_timepoints",
     "index_to_world",
     "inside_extent",
@@ -417,7 +411,6 @@ __all__ = [
     "is_orthonormal",
     "is_probability",
     "is_proper_rotation",
-    "is_valid_id",
     "jacobian_determinant",
     "label_dtype_size",
     "layers_from_colouring",
@@ -428,7 +421,6 @@ __all__ = [
     "legacy_migrate_paths",
     "legacy_read_meta",
     "legacy_read_sample",
-    "legacy_sample_key",
     "legacy_write_sidecar",
     "linear_part",
     "linear_sample",
@@ -449,7 +441,6 @@ __all__ = [
     "quality_from_json",
     "quality_to_json",
     "raw_chunks",
-    "raw_chunks_at",
     "read_document",
     "read_document_text",
     "read_grid",
@@ -460,7 +451,6 @@ __all__ = [
     "refuse_outside",
     "registry_available",
     "registry_describe",
-    "registry_from_doc",
     "registry_load",
     "registry_load_file",
     "registry_register",
@@ -495,10 +485,8 @@ __all__ = [
     "spatial_chunk_for",
     "splits_from_json",
     "stale_index_entries",
-    "stale_index_entries_at",
     "storage_dtype",
     "subtrees_identical",
-    "subtrees_identical_at",
     "target_registration_error",
     "task_fingerprints",
     "task_normalize",
@@ -512,16 +500,12 @@ __all__ = [
     "transcode",
     "transcode_payload",
     "unpack",
-    "utcnow",
     "validate_against_schema",
     "validate_file",
-    "validate_id",
     "validate_paths",
     "validate_root",
     "validate_sample_key",
-    "verify_file",
     "verify_object",
-    "verify_object_at",
     "verify_root",
     "voxel_volume",
     "world_to_index",
@@ -573,7 +557,6 @@ DEFAULT_THRESHOLD: float
 DIGEST_ALGOS: tuple[str, ...]
 DOWNSAMPLE_METHODS: tuple[str, ...]
 ENDPOINT_TYPES: tuple[str, ...]
-ENTRY_FIELDS: tuple[str, ...]
 EVENT_KINDS: tuple[str, ...]
 EXIT_ERROR: int
 EXIT_OK: int
@@ -581,7 +564,6 @@ EXIT_USAGE: int
 EXTRAPOLATIONS: tuple[str, ...]
 FLOAT16_SAFE_VOXELS: float
 FORMAT_VERSION: str
-FORMAT_VERSIONS: tuple[str, ...]
 FORMS: tuple[str, ...]
 GEOMETRIC_KINDS: tuple[str, ...]
 GEOMETRY_RTOL: float
@@ -618,7 +600,6 @@ PSEUDONYM_SOURCE: str
 QUALITY_FIELDS: frozenset[str]
 QUALITY_STATUS: tuple[str, ...]
 RELATIONS: tuple[str, ...]
-RESERVED_IDS: tuple[str, ...]
 RESERVED_KINDS: tuple[str, ...]
 RESOLVED: str
 RFC3339_REGEX: str
@@ -872,9 +853,6 @@ def canonical_attrs(obj: Any, names: Iterable[str]) -> str:
     """Canonical JSON over an object's named attributes (§13.2)."""
     ...
 
-def canonical_attrs_at(
-    file: str | os.PathLike[str], object: str, names: Sequence[str]
-) -> str: ...
 def canonical_json(doc: Mapping[str, Any]) -> bytes: ...
 def carries_instance_ids(annotation: Any) -> bool:
     """Whether an annotation carries object identity (`instance_ids`) to join on."""
@@ -1030,9 +1008,6 @@ def dataset_digest(dataset: Any, path: str | None = None, algo: str = "sha256") 
     """The digest of a stored dataset over its decompressed content (§13.1)."""
     ...
 
-def dataset_digest_at(
-    file: str | os.PathLike[str], dataset: str, algo: str = "sha256"
-) -> str: ...
 def dataset_entries_for(path: str | os.PathLike[str]) -> list[Any]: ...
 def dataset_entry_field(doc: Any, dotted: str) -> Any:
     """A field by its dotted name (`cohort.site_id`), refused when not a field."""
@@ -1361,9 +1336,6 @@ def group_digest(
     """The digest of an object group: its datasets and canonical attributes."""
     ...
 
-def group_digest_at(
-    file: str | os.PathLike[str], group: str, root: str = "", algo: str = "sha256"
-) -> str: ...
 def imaging_events_from_timepoints(path: str | os.PathLike[str]) -> list[Any]:
     """`(events, links, notes)`: imaging events from `days_from_baseline`."""
     ...
@@ -1439,7 +1411,6 @@ def is_probability(array: Any) -> bool:
     ...
 
 def is_proper_rotation(matrix: npt.ArrayLike, tol: float = ...) -> bool: ...
-def is_valid_id(name: str) -> bool: ...
 def jacobian_determinant(
     field: npt.NDArray[Any], grid: Grid, *, vector_space: str = "world"
 ) -> npt.NDArray[np.float64]: ...
@@ -1482,10 +1453,6 @@ def legacy_read_meta(path: str | os.PathLike[str]) -> dict[Any, Any]:
 
 def legacy_read_sample(path: str | os.PathLike[str]) -> dict[Any, Any]:
     """A whole 0.x file, as `LegacySample` fields (`meta` as `LegacyMeta` fields)."""
-    ...
-
-def legacy_sample_key(subject_id: str) -> str:
-    """A sample id from a subject id: §2.3's identifier rule, lowercased."""
     ...
 
 def legacy_write_sidecar(label_set: Any, path: str | os.PathLike[str]) -> str: ...
@@ -1558,7 +1525,6 @@ def pyramid_factors(base: Grid, levels: Sequence[Grid]) -> npt.NDArray[np.float6
 def quality_from_json(doc: Mapping[str, Any] | None) -> dict[str, QualityRecord]: ...
 def quality_to_json(records: Mapping[str, QualityRecord]) -> dict[str, Any]: ...
 def raw_chunks(dataset: Any) -> list[bytes]: ...
-def raw_chunks_at(file: str | os.PathLike[str], dataset: str) -> list[Any]: ...
 def read_document(root: Group) -> SampleDocument:
     """The sample document under a sample root, parsed."""
     ...
@@ -1594,7 +1560,6 @@ def recompress_paths(
 def refuse_outside(inside: npt.NDArray[np.bool_]) -> None: ...
 def registry_available() -> tuple[Any, ...]: ...
 def registry_describe() -> dict[Any, Any]: ...
-def registry_from_doc(doc: Any) -> LabelSet: ...
 def registry_load(name: str) -> LabelSet: ...
 def registry_load_file(path: str | os.PathLike[str]) -> LabelSet: ...
 def registry_register(name: str, label_set: Any) -> LabelSet: ...
@@ -1746,17 +1711,8 @@ def splits_from_json(
     docs: Sequence[Mapping[str, Any]] | None,
 ) -> tuple[SplitClaim, ...]: ...
 def stale_index_entries(root: Group) -> tuple[str, ...]: ...
-def stale_index_entries_at(
-    file: str | os.PathLike[str], root: str = ""
-) -> tuple[Any, ...]: ...
 def storage_dtype(planes: Any, threshold: float, requested: Any = None) -> Any: ...
 def subtrees_identical(a: Group, b: Group) -> tuple[str, ...]: ...
-def subtrees_identical_at(
-    file_a: str | os.PathLike[str],
-    group_a: str,
-    file_b: str | os.PathLike[str],
-    group_b: str,
-) -> tuple[Any, ...]: ...
 def target_registration_error(
     transform: Any,
     fixed_points: npt.ArrayLike,
@@ -1826,18 +1782,10 @@ def unpack(
     keys: Any = None,
     suffix: str = ...,
 ) -> list[str]: ...
-def utcnow() -> str:
-    """Who-wrote-it, for the activity a tool records."""
-    ...
-
 def validate_against_schema(doc: Any) -> list[str]: ...
 def validate_file(
     path: str | os.PathLike[str], *, level: str = "semantic", profiles: Any = None
 ) -> Any: ...
-def validate_id(name: str, *, what: str = "identifier") -> str:
-    """An identifier matching `[A-Za-z0-9_.-]{1,128}`, or E003."""
-    ...
-
 def validate_paths(
     paths: Sequence[str | os.PathLike[str]],
     *,
@@ -1861,17 +1809,7 @@ def validate_sample_key(name: str) -> str:
     """A collection member key (§2.2), or E003."""
     ...
 
-def verify_file(
-    file: str | os.PathLike[str],
-    *,
-    root: str = "",
-    partial: Sequence[str] | None = None,
-    check_content_id: bool = True,
-) -> Any: ...
 def verify_object(root: Group, path: str) -> bool: ...
-def verify_object_at(
-    file: str | os.PathLike[str], object: str, root: str = ""
-) -> bool: ...
 def verify_root(
     root: Any,
     attr_names: Any = None,

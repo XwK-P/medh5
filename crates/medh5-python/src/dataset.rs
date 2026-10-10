@@ -12,7 +12,6 @@ use std::sync::Mutex;
 use indexmap::IndexMap;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyTuple};
-use serde_json::Value;
 
 use medh5::collection as coll;
 use medh5::dataset::{check, manifest, split, stats};
@@ -712,13 +711,11 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("SAMPLES_GROUP", coll::SAMPLES_GROUP)?;
     m.add("MANIFEST_SUFFIXES", PyTuple::new(py, manifest::SUFFIXES)?)?;
     m.add("GROUPABLE", PyTuple::new(py, manifest::GROUPABLE)?)?;
-    m.add("ENTRY_FIELDS", PyTuple::new(py, manifest::ENTRY_FIELDS)?)?;
     m.add("CHECK_SEVERITIES", PyTuple::new(py, check::SEVERITIES)?)?;
     let codes = PyDict::new(py);
     for (code, summary) in check::CHECK_CODES {
         codes.set_item(code, summary)?;
     }
     m.add("CHECK_CODES", codes)?;
-    let _ = Value::Null;
     Ok(())
 }

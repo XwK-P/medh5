@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use ndarray::{ArrayD, IxDyn};
+use ndarray::ArrayD;
 use numpy::{PyArrayDescrMethods, PyArrayDyn, PyArrayMethods, PyUntypedArray, PyUntypedArrayMethods};
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
@@ -394,10 +394,6 @@ pub fn dtype_to_py(py: Python<'_>, dtype: DType) -> PyResult<Bound<'_, PyAny>> {
     numpy(py)?.call_method1("dtype", (dtype.name(),))
 }
 
-pub fn zeros_like_shape(shape: &[usize]) -> ArrayD<bool> {
-    ArrayD::from_elem(IxDyn(shape), false)
-}
-
 // -- keys, regions, paths ----------------------------------------------------------------
 
 /// A class given by id (`int`, NumPy integer) or by key (`str`).
@@ -524,14 +520,6 @@ pub fn slices(obj: Option<&Bound<'_, PyAny>>) -> PyResult<Option<Vec<Slice>>> {
 
 pub fn path(obj: &Bound<'_, PyAny>) -> PyResult<PathBuf> {
     obj.extract::<PathBuf>()
-}
-
-/// A tuple of Python values.
-pub fn tuple<'py, T: IntoPyObject<'py>>(
-    py: Python<'py>,
-    items: impl IntoIterator<Item = T, IntoIter: ExactSizeIterator>,
-) -> PyResult<Bound<'py, PyTuple>> {
-    PyTuple::new(py, items)
 }
 
 // -- HDF5 attribute values ------------------------------------------------------------------

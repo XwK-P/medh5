@@ -6,7 +6,7 @@ use ndarray::{Array2, ArrayD, IxDyn};
 use pyo3::basic::CompareOp;
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
-use pyo3::types::{PyDict, PyList, PyString, PyTuple, PyType};
+use pyo3::types::{PyDict, PyTuple};
 
 use medh5::geometry::{affine, grid as engine_grid, multiscale, Grid as EngineGrid};
 
@@ -708,6 +708,5 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("DOWNSAMPLE_METHODS", PyTuple::new(py, multiscale::DOWNSAMPLE_METHODS)?)?;
     m.add("LABEL_SAFE_METHODS", PyTuple::new(py, multiscale::LABEL_SAFE_METHODS)?)?;
     m.add("GEOMETRY_RTOL", multiscale::GEOMETRY_RTOL)?;
-    let _ = (PyList::empty(py), PyString::new(py, ""), PyType::new::<Grid>(py));
     Ok(())
 }

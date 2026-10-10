@@ -1,16 +1,14 @@
 //! `medh5.integrity`: digests, `content_id`, verification and repair (§13).
 //!
-//! The file-based functions take a path and the object's path inside the
-//! file: the engine opens the file itself rather than reading through another
-//! library's handle.
+//! `diagnose` and `fix` take a path, and the engine opens the file itself;
+//! the digests and verification take the views a caller already holds
+//! (`Dataset`, `Group`, or a `Sample` for its root).
 
 use std::path::PathBuf;
 
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList, PyTuple};
 
-use medh5::h5::file::open_read;
-use medh5::h5::ops;
 use medh5::integrity::{digest, repair, verify};
 
 use crate::convert::{json_to_py, py_to_nd};
@@ -30,19 +28,6 @@ pub fn verify_result_to_py<'py>(py: Python<'py>, r: &verify::VerifyResult) -> Py
     Ok(out.into_any())
 }
 
-fn root_of(path: &std::path::Path) -> R<medh5::hdf5::Group> {
-    let file = open_read(path)?;
-    Ok(file.as_group()?)
-}
-
-fn group_at(path: &std::path::Path, inner: &str) -> R<medh5::hdf5::Group> {
-    let root = root_of(path)?;
-    if inner.is_empty() || inner == "/" {
-        return Ok(root);
-    }
-    Ok(root.group(inner)?)
-}
-
 #[pyfunction]
 #[pyo3(signature = (path, array, algo="sha256"))]
 fn array_digest(path: &str, array: &Bound<'_, PyAny>, algo: &str) -> R<String> {
@@ -58,86 +43,6 @@ fn digest_bytes(payload: &[u8], algo: &str) -> R<String> {
 #[pyfunction]
 fn parse_digest(value: &str) -> R<(String, String)> {
     Ok(medh5::digest::parse_digest(value)?)
-}
-
-#[pyfunction]
-#[pyo3(signature = (file, dataset, algo="sha256"))]
-fn dataset_digest_at(file: PathBuf, dataset: &str, algo: &str) -> R<String> {
-    let root = root_of(&file)?;
-    let ds = root.dataset(dataset)?;
-    Ok(digest::dataset_digest(&ds, dataset.trim_start_matches('/'), algo)?)
-}
-
-#[pyfunction]
-fn canonical_attrs_at(file: PathBuf, object: &str, names: Vec<String>) -> R<String> {
-    let root = root_of(&file)?;
-    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
-    let text = match ops::node_kind(&root, object) {
-        Some(ops::NodeKind::Dataset) => {
-            let ds = root.dataset(object)?;
-            digest::canonical_attrs(&ds, &refs)?
-        }
-        _ => {
-            let g = if object.is_empty() { root.clone() } else { root.group(object)? };
-            digest::canonical_attrs(&g, &refs)?
-        }
-    };
-    Ok(text)
-}
-
-#[pyfunction]
-#[pyo3(signature = (file, group, root="", algo="sha256"))]
-fn group_digest_at(file: PathBuf, group: &str, root: &str, algo: &str) -> R<String> {
-    let sample_root = group_at(&file, root)?;
-    let g = sample_root.group(group)?;
-    Ok(digest::group_digest(&g, &sample_root, algo)?)
-}
-
-#[pyfunction]
-#[pyo3(signature = (file, object, root=""))]
-fn verify_object_at(file: PathBuf, object: &str, root: &str) -> R<bool> {
-    Ok(verify::verify_object(&group_at(&file, root)?, object)?)
-}
-
-#[pyfunction]
-#[pyo3(signature = (file, root=""))]
-fn stale_index_entries_at<'py>(py: Python<'py>, file: PathBuf, root: &str) -> R<Bound<'py, PyTuple>> {
-    Ok(PyTuple::new(py, verify::stale_index_entries(&group_at(&file, root)?)?)?)
-}
-
-#[pyfunction]
-#[pyo3(signature = (file, *, root="", partial=None, check_content_id=true))]
-fn verify_file<'py>(
-    py: Python<'py>,
-    file: PathBuf,
-    root: &str,
-    partial: Option<Vec<String>>,
-    check_content_id: bool,
-) -> R<Bound<'py, PyAny>> {
-    let group = group_at(&file, root)?;
-    let names = medh5::sample::attr_name_map_of(&group)?;
-    let result = verify::verify_root(&group, Some(&names), partial.as_deref(), check_content_id)?;
-    Ok(verify_result_to_py(py, &result)?)
-}
-
-#[pyfunction]
-fn raw_chunks_at<'py>(py: Python<'py>, file: PathBuf, dataset: &str) -> R<Bound<'py, PyList>> {
-    let root = root_of(&file)?;
-    let chunks = verify::raw_chunks(&root.dataset(dataset)?)?;
-    Ok(PyList::new(py, chunks.iter().map(|c| PyBytes::new(py, c)))?)
-}
-
-#[pyfunction]
-fn subtrees_identical_at<'py>(
-    py: Python<'py>,
-    file_a: PathBuf,
-    group_a: &str,
-    file_b: PathBuf,
-    group_b: &str,
-) -> R<Bound<'py, PyTuple>> {
-    let a = group_at(&file_a, group_a)?;
-    let b = group_at(&file_b, group_b)?;
-    Ok(PyTuple::new(py, verify::subtrees_identical(&a, &b)?)?)
 }
 
 #[pyfunction]
@@ -376,14 +281,6 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         wrap_pyfunction!(array_digest, m)?,
         wrap_pyfunction!(digest_bytes, m)?,
         wrap_pyfunction!(parse_digest, m)?,
-        wrap_pyfunction!(dataset_digest_at, m)?,
-        wrap_pyfunction!(canonical_attrs_at, m)?,
-        wrap_pyfunction!(group_digest_at, m)?,
-        wrap_pyfunction!(verify_object_at, m)?,
-        wrap_pyfunction!(stale_index_entries_at, m)?,
-        wrap_pyfunction!(verify_file, m)?,
-        wrap_pyfunction!(raw_chunks_at, m)?,
-        wrap_pyfunction!(subtrees_identical_at, m)?,
         wrap_pyfunction!(diagnose, m)?,
         wrap_pyfunction!(fix, m)?,
         wrap_pyfunction!(fix_paths, m)?,

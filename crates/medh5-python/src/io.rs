@@ -402,12 +402,6 @@ fn legacy_load_sidecar(path: PathBuf) -> R<LabelSet> {
     Ok(LabelSet::wrap(lg::load_sidecar(&path)?))
 }
 
-/// A sample id from a subject id: §2.3's identifier rule, lowercased.
-#[pyfunction]
-fn legacy_sample_key(subject_id: &str) -> String {
-    lg::sample_key(subject_id)
-}
-
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     for f in [
         wrap_pyfunction!(io_report_ok, m)?,
@@ -430,7 +424,6 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         wrap_pyfunction!(legacy_migrate_paths, m)?,
         wrap_pyfunction!(legacy_write_sidecar, m)?,
         wrap_pyfunction!(legacy_load_sidecar, m)?,
-        wrap_pyfunction!(legacy_sample_key, m)?,
     ] {
         m.add_function(f)?;
     }

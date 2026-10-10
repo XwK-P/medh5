@@ -10,7 +10,6 @@ use medh5::curation::tracking as engine;
 
 use crate::convert::{array_to_py, json_to_py, typed_array};
 use crate::errors::R;
-use crate::values::{dataclass_repr, opt};
 
 #[pyclass(module = "medh5.curation", name = "Observation", skip_from_py_object, frozen)]
 #[derive(Clone)]
@@ -459,6 +458,5 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("RESOLVED", engine::RESOLVED)?;
     m.add("UNEXAMINED", engine::UNEXAMINED)?;
     m.add("STATES", PyTuple::new(m.py(), engine::STATES)?)?;
-    let _ = (dataclass_repr, opt::<i64>);
     Ok(())
 }

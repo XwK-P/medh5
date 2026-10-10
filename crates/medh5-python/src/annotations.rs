@@ -17,11 +17,11 @@ use medh5::annotations::encode as enc;
 use medh5::annotations::encode_geometric as geo;
 use medh5::annotations::payload::{Masks, Payload, PayloadData};
 use medh5::annotations::select;
-use medh5::array::{DType, NdArray};
+use medh5::array::DType;
 
 use crate::convert::{
     array_to_py, attr_to_py, bool_array, dtype_arg, dtype_to_py, f64_array, f64_vec, i64_array, i64_vec, json_to_py,
-    nd_to_py, opt_strings, py_to_attr, py_to_json, py_to_nd, untyped_to_nd,
+    nd_to_py, opt_strings, py_to_attr, py_to_json, py_to_nd,
 };
 use crate::errors::R;
 
@@ -1600,6 +1600,5 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("LOCALIZED_BBOX_FRACTION", select::LOCALIZED_BBOX_FRACTION)?;
     m.add("SPARSE_FILL", select::SPARSE_FILL)?;
     m.add("SLAB_BYTES", medh5::annotations::payload::SLAB_BYTES)?;
-    let _ = (untyped_to_nd, NdArray::Bool);
     Ok(())
 }

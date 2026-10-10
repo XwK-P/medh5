@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use ndarray::{ArrayD, IxDyn};
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList, PySlice, PyString, PyTuple};
+use pyo3::types::{PyDict, PyList, PyString, PyTuple};
 
 use medh5::annotations::{Annotation as EngineAnnotation, GridRef};
 use medh5::array::{Index, Slice};
@@ -1437,6 +1437,5 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("ROOT_DIGEST_ATTRS", PyTuple::new(py, medh5::sample::ROOT_DIGEST_ATTRS)?)?;
     m.add("SPEC_IMAGE_ATTRS", PyTuple::new(py, medh5::sample::SPEC_IMAGE_ATTRS)?)?;
     m.add("VALUE_TYPES", PyTuple::new(py, medh5::sample::VALUE_TYPES)?)?;
-    let _ = PySlice::full(py);
     Ok(())
 }

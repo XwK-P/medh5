@@ -21,7 +21,7 @@ use medh5::sample::writer_annotations::{
 };
 
 use crate::convert::{
-    bool_array, class_key, class_keys, f64_array, f64_vec, i64_array, i64_vec, json_to_py, kwargs_to_map, map_to_py,
+    bool_array, class_key, class_keys, f64_array, f64_vec, i64_array, i64_vec, json_to_py, kwargs_to_map,
     matrix as to_matrix, opt_strings, py_to_json, py_to_nd, strings,
 };
 use crate::curation::{Activity, Agent, Cohort, Deidentification, Identity, QualityRecord, SplitClaim, Timepoint};
@@ -33,13 +33,6 @@ use crate::nodes::{Dataset, Group};
 
 fn is_given<'py>(obj: Option<&Bound<'py, PyAny>>) -> Option<Bound<'py, PyAny>> {
     obj.filter(|o| !o.is_none()).cloned()
-}
-
-fn opt_string(obj: Option<&Bound<'_, PyAny>>) -> PyResult<Option<String>> {
-    match is_given(obj) {
-        Some(o) => Ok(Some(o.extract::<String>()?)),
-        None => Ok(None),
-    }
 }
 
 /// An `Activity` (its id) or an activity id.
@@ -1348,12 +1341,6 @@ fn amend(py: Python<'_>, path: PathBuf, codec: Option<String>) -> R<SampleWriter
     Ok(SampleWriter { inner })
 }
 
-/// Who-wrote-it, for the activity a tool records.
-#[pyfunction]
-fn utcnow() -> String {
-    medh5::sample::writer::utcnow()
-}
-
 /// The `medh5_version` a commit writes for these profiles (1.1 §2.3).
 #[pyfunction]
 #[pyo3(signature = (source, profiles = Vec::new()))]
@@ -1365,11 +1352,9 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<SampleWriter>()?;
     m.add_function(wrap_pyfunction!(create, m)?)?;
     m.add_function(wrap_pyfunction!(amend, m)?)?;
-    m.add_function(wrap_pyfunction!(utcnow, m)?)?;
     m.add_function(wrap_pyfunction!(written_version, m)?)?;
     let py = m.py();
     m.add("MANAGED_ROOT_ATTRS", PyTuple::new(py, medh5::sample::writer::MANAGED_ROOT_ATTRS)?)?;
     m.add("STANDARD_GROUPS", PyTuple::new(py, medh5::sample::writer::STANDARD_GROUPS)?)?;
-    let _ = (map_to_py, opt_string);
     Ok(())
 }

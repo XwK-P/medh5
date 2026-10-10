@@ -7,11 +7,9 @@ use serde_json::{Map, Value};
 
 use medh5::labels::{self as engine, registry, ClassKey};
 
-use crate::convert::{class_key, class_keys, json_to_py, map_to_py, py_to_json};
+use crate::convert::{json_to_py, map_to_py, py_to_json};
 use crate::errors::R;
 use crate::values::{dataclass_repr, json_hash, opt, reduce_via_json};
-
-const MODULE: &str = "medh5.labels";
 
 // -- OntologyCode ----------------------------------------------------------------------
 
@@ -629,11 +627,6 @@ fn keys_arg(keys: &Bound<'_, PyAny>) -> PyResult<Vec<ClassKey>> {
 // -- module functions ------------------------------------------------------------------------
 
 #[pyfunction]
-fn check_class_id(class_id: i64) -> R<i64> {
-    Ok(i64::from(engine::check_class_id(class_id)?))
-}
-
-#[pyfunction]
 fn canonical_json<'py>(py: Python<'py>, doc: &Bound<'py, PyAny>) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
     Ok(pyo3::types::PyBytes::new(py, &engine::canonical_json(&py_to_json(doc)?)))
 }
@@ -674,19 +667,12 @@ fn registry_describe<'py>(py: Python<'py>) -> R<Bound<'py, PyDict>> {
     Ok(map_to_py(py, &registry::describe()?)?)
 }
 
-#[pyfunction]
-fn registry_from_doc(doc: &Bound<'_, PyAny>) -> R<LabelSet> {
-    Ok(LabelSet::wrap(registry::labelset_from_doc(&py_to_json(doc)?)?))
-}
-
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    let _ = MODULE;
     m.add_class::<OntologyCode>()?;
     m.add_class::<Relation>()?;
     m.add_class::<Skeleton>()?;
     m.add_class::<LabelClass>()?;
     m.add_class::<LabelSet>()?;
-    m.add_function(wrap_pyfunction!(check_class_id, m)?)?;
     m.add_function(wrap_pyfunction!(canonical_json, m)?)?;
     m.add_function(wrap_pyfunction!(from_keys, m)?)?;
     m.add_function(wrap_pyfunction!(registry_available, m)?)?;
@@ -695,13 +681,11 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(registry_register, m)?)?;
     m.add_function(wrap_pyfunction!(registry_unregister, m)?)?;
     m.add_function(wrap_pyfunction!(registry_describe, m)?)?;
-    m.add_function(wrap_pyfunction!(registry_from_doc, m)?)?;
     m.add("BACKGROUND_ID", engine::BACKGROUND_ID)?;
     m.add("IGNORE_ID", engine::IGNORE_ID)?;
     m.add("MAX_CLASS_ID", engine::MAX_CLASS_ID)?;
     m.add("CLOSURES", PyTuple::new(m.py(), engine::CLOSURES)?)?;
     m.add("FORMS", PyTuple::new(m.py(), engine::FORMS)?)?;
     m.add("INLINE_REQUIRED_BELOW", engine::INLINE_REQUIRED_BELOW)?;
-    let _ = (class_key, class_keys);
     Ok(())
 }

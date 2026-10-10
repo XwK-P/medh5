@@ -120,34 +120,3 @@ pub fn engine_error(err: medh5::Error) -> PyErr {
         }),
     }
 }
-
-/// A Python exception as an engine error, for code that hands Python
-/// failures back through engine callbacks (`Host`, `Rng`).
-pub fn to_engine(py: Python<'_>, err: PyErr) -> medh5::Error {
-    let value = err.value(py);
-    let text = value.str().map(|s| s.to_string()).unwrap_or_default();
-    let is =
-        |name: &str| medh5_class(py, name).map(|c| value.is_instance(c.bind(py)).unwrap_or(false)).unwrap_or(false);
-    if is("MEDH5ValidationError") {
-        let code: Option<String> = value.getattr("code").ok().and_then(|c| c.extract().ok());
-        let message: String = value.getattr("message").ok().and_then(|m| m.extract().ok()).unwrap_or(text);
-        return medh5::Error::Validation { message, code };
-    }
-    if is("MEDH5FileError") {
-        return medh5::Error::File(text);
-    }
-    if err.is_instance_of::<PyKeyError>(py) {
-        let key = value.getattr("args").ok().and_then(|a| a.get_item(0).ok()).and_then(|k| k.extract().ok());
-        return medh5::Error::Key(key.unwrap_or(text));
-    }
-    if err.is_instance_of::<PyTypeError>(py) {
-        return medh5::Error::Type(text);
-    }
-    if err.is_instance_of::<PyValueError>(py) {
-        return medh5::Error::Value(text);
-    }
-    if err.is_instance_of::<PyOSError>(py) {
-        return medh5::Error::Io(text);
-    }
-    medh5::Error::Runtime(text)
-}

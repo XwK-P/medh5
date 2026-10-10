@@ -4,9 +4,12 @@
 //! encodings, geometry, transforms, validation, integrity, the dataset and
 //! curation tools, the conformance suite and the command line --- is the Rust
 //! engine (`medh5` crate).  This module only translates: Python values in,
-//! engine calls, Python values out.  The `medh5` Python package re-exports
-//! these names from the module each belongs to (`medh5.geometry`,
-//! `medh5.labels`, ...), which is also what every class's `__module__` names.
+//! engine calls, Python values out.  The `medh5` Python package is built on
+//! these names: each module re-exports what it serves as is (`medh5.geometry`,
+//! `medh5.labels`, ...) and wraps the rest --- the `*Handle` classes behind
+//! `Sample`, `Image`, `Annotation` and `Transform`.  A class's `__module__`
+//! names the module that exports it; a handle, which none does, says
+//! `medh5._core`.
 
 use pyo3::prelude::*;
 
