@@ -145,7 +145,8 @@ What each part of a batch means, and the masks that keep it honest:
   diagnosis known to the day keeps its whole day, not a guessed hour. Each has a `*_known` mask, so an
   unknown time is never read as zero hours. `temporal_type` tells a `static` fact from an event of
   unknown time; `tie_group` marks events whose times overlap, whose order in the sequence is not
-  evidence; `plan` marks a plan admitted by the `plans` policy, whose start is ahead of the cutoff.
+  evidence; `plan` marks a plan admitted by the `plans` policy --- `planned`, or its start not
+  definitely at or before the cutoff.
   `has_value`, `comparator` (`< 5` is not 5) and `missing` (a result not done, never a negative) keep
   missingness apart from measurement.
 - **`target`** is read from the full history: `observed = False` for a censored row, whose inputs

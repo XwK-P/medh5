@@ -315,7 +315,7 @@ to one number:
 | `start_age_h`, `end_age_h`, `available_age_h` | `(B, N, 2)` | Effective start, effective end and availability as ages before the cutoff in hours: `[..., 0]` the least, `[..., 1]` the most, equal for an exact instant |
 | `start_known`, `end_known`, `available_known` | `(B, N)` bool | Whether that time is known; an unknown one is zeros, which are not a time |
 | `tie_group` | `(B, N)` int | Versions whose ordering times overlap share a group: their order is the storage tie-break, not evidence |
-| `plan` | `(B, N)` bool | Admitted as a plan (`plans` policy): its start is ahead of the cutoff |
+| `plan` | `(B, N)` bool | Admitted as a plan (`plans` policy): `planned`, or its start not definitely at or before the cutoff |
 
 An age is negative only for what a version available at the cutoff itself recorded about later --- a
 plan's start, a course's recorded end; every `available_age_h` is at least 0. A `static` event has no
