@@ -165,11 +165,15 @@ Record user-visible changes under `## [Unreleased]` in `CHANGELOG.md`
 existing code produces or accepts goes under **Behaviour changes**, stated so a
 reader can decide whether their pipeline is affected.
 
-The version lives in one place, `[workspace.package] version` in `Cargo.toml`:
-every crate inherits it, maturin stamps it on the wheel, and the engine writes
-it into every file's `generator`. To release, set it (and `Cargo.lock` with
-`cargo update -w`), move the unreleased notes under the new version, and push a
-`vX.Y.Z` tag. `.github/workflows/release.yml` then:
+The version lives in `[workspace.package] version` in `Cargo.toml`: every
+crate inherits it, maturin stamps it on the wheel, and the engine writes it into
+every file's `generator`. The crates also name each other at exactly that
+version --- the `=X.Y.Z` pins of `medh5-sys`, `medh5` and `medh5-cli` under
+`[workspace.dependencies]`, which crates.io needs because it publishes each
+crate on its own --- and a test holds the pins to the version. To release, set
+the version and the three pins (and `Cargo.lock` with `cargo update -w`), move
+the unreleased notes under the new version, and push a `vX.Y.Z` tag.
+`.github/workflows/release.yml` then:
 
 1. runs the full CI on the tagged commit, which builds every wheel, the sdist
    and every binary;

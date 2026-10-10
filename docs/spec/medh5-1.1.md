@@ -1,6 +1,6 @@
 # MEDH5 format specification 1.1 — clinical context
 
-**Status: Candidate, implemented.** The reference engine reads, writes, validates and amends the
+**Status: Final.** The reference engine reads, writes, validates and amends the
 `clinical` profile defined here, and the conformance corpus (§11.3) exercises every clause that has a
 diagnostic code. The task and feature-cache contract that training uses is a separately versioned
 companion, [Task and cache contract 1](task-cache-1.md); nothing in it is a `.medh5` payload

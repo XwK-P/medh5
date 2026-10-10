@@ -93,6 +93,26 @@ def test_the_wheel_version_and_the_stamped_version_agree():
     assert medh5.__version__ == _declared()
 
 
+def test_the_crates_pin_each_other_at_the_workspace_version():
+    """The crates name each other at exactly the workspace version.
+
+    crates.io publishes each crate on its own, so `medh5` depends on the
+    `medh5-sys` of its own release through an `=X.Y.Z` pin in
+    `[workspace.dependencies]`, and `medh5-cli` on the `medh5` of its own.
+    The runbook said the version lived in one place; a bump that set it alone
+    would publish an engine depending on the previous release's HDF5 build.
+    """
+    workspace = WORKSPACE.read_text(encoding="utf-8")
+    section = workspace.split("[workspace.dependencies]", 1)[1].split("\n[", 1)[0]
+    pins = dict(
+        re.findall(
+            r'^(medh5[\w-]*)\s*=\s*\{[^}]*version\s*=\s*"=([^"]+)"', section, re.M
+        )
+    )
+    assert set(pins) == {"medh5", "medh5-sys", "medh5-cli"}, pins
+    assert set(pins.values()) == {_declared()}, pins
+
+
 def test_the_format_version_is_not_the_package_version():
     """§1: the *format* is 1.1 (1.0 plus the optional clinical profile). The
     package ships releases against it.

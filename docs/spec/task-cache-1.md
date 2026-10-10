@@ -1,6 +1,6 @@
 # Task and cache contract 1 — `medh5.task/1`, `medh5.cache/1`
 
-**Status: Candidate, implemented** by the engine (`medh5::companion`), the Python package
+**Status: Final**, implemented by the engine (`medh5::companion`), the Python package
 (`medh5.task`, `medh5.cache`, `medh5.torch.clinical`) and the command line (`medh5 task`,
 `medh5 cache`). This contract is **separately versioned from the MEDH5 format**: a `.medh5` file is
 readable without any of it, and nothing here is a payload requirement of

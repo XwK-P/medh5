@@ -114,7 +114,8 @@ and the CLI are layers over it, and all three read and write the same bytes.
 
 The version has one source, `[workspace.package] version` in `Cargo.toml`:
 every crate inherits it, maturin stamps it on the wheel, and the engine writes
-it into every file's `generator`.
+it into every file's `generator`. The crates' `=X.Y.Z` pins on each other in
+`[workspace.dependencies]` must follow it (a test checks); a bump sets both.
 
 ## Invariants that are easy to break
 

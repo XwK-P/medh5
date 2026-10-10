@@ -167,8 +167,28 @@ out `h5py` objects --- and the behaviour changes below.
   `medh5 task validate | preflight | reconcile`, `medh5 cache validate` --- in
   the native binary and the Python console script alike.
 - **Diagnostic codes** `E011`, `E801`–`E819`, `W913`, `W914`, and 36
-  conformance cases (153 in all). The published suite also carries
+  conformance cases. The published suite also carries
   `medh5-clinical-1.schema.json` and the task and cache schemas.
+- **Diagnostic codes `E506` and `E704`**, and the cache code `T407`: a
+  transform whose `units` are not its grids' (§10.1), an object `content_id`
+  covers reached at a path that is not its own (§13.2), and an event-level
+  cache entry whose document its event's version does not own (task-cache-1
+  §7.2). Four conformance cases come with them; the corpus is 157 cases.
+- **Landmarks carry `instance_ids`** (`add_points(instance_ids=…)`, §8.5), as
+  §10.6 asks of points that mark trackable objects, and tracking joins them.
+  `Tracking.skipped` names the annotations with `instance_ids` that no track
+  joined, and `Observation.volume_mm` is a volume in millimetres.
+- **`SampleWriter.remove_transform`**, as `remove_annotation` is for
+  annotations: an amendment had no way to drop a transform, so a file holding
+  one the validator rejects could not be amended at all. What still names a
+  removed transform --- another's `inverse_id`, a composite's `components` ---
+  is checked at commit, and one added again under its name keeps them.
+- **`RecompressResult.kept`** (`KEPT` in `medh5 recompress`): the datasets
+  copied as stored because a fresh write of their dtype would not be their
+  stored type --- an enumeration, a committed datatype.
+- **`to_nnunetv2(unlabeled=…)`** (`--unlabeled refuse|test`),
+  **`to_rtstruct(frame_salt=…)`** (`--frame-salt`) and
+  **`medh5.task.concept_token`**, below.
 - **Runnable examples**: `clinical_longitudinal.py` (the worked example: write,
   reopen, validate, preflight, batch), `clinical_collection.py` (a subject split
   across two members of a shard, reconciled, loaded through workers),
@@ -444,12 +464,14 @@ out `h5py` objects --- and the behaviour changes below.
   where it took the named image's affine; it takes `report=` for the notes.
 - **An export replaces what was said beside its file**: the per-volume fields
   of the sidecar (`VolumeTiming`, and per-volume echo and inversion times and
-  flip angles) and a `.bval` are withdrawn before the image is replaced and the
-  new ones written after it, other fields kept. An even series written over an
-  uneven one left its `VolumeTiming`, which the reader prefers to the header,
-  so the new image read back with the old timeline; an interrupted export now
-  leaves timing unmeasured, never another image's. A sidecar that is not a
-  JSON object is refused before anything is withdrawn: the image's `.bval` was
+  flip angles) and a `.bval` are withdrawn once the new image is serialised,
+  before it replaces the old one, and the new ones written after it, other
+  fields kept. An even series written over an uneven one left its
+  `VolumeTiming`, which the reader prefers to the header, so the new image read
+  back with the old timeline; an interrupted export now leaves timing
+  unmeasured, never another image's, and one that cannot write its image ---
+  a full disk --- changes nothing beside it. A sidecar that is not a JSON
+  object is refused before anything is withdrawn: the image's `.bval` was
   deleted first, and the refusal left the image it described without its
   b-values.
 - **A channel axis is exported as one** (`to_nifti`): with a b-value per
@@ -498,11 +520,25 @@ out `h5py` objects --- and the behaviour changes below.
   an RAS grid unflipped. `Grid.world_into(other, points)` is the conversion.
 - **Tracking answers one observation per visit**, in every accessor
   (`Track.at`, `volume`, `volumes`, `relative_change`, `medh5 track`): the
-  object's mask where an `instances` annotation saw it, else its box, whose
-  volume is only its bounding box's. Two masks of one visit --- two raters ---
-  are refused; `at` and `volume` answered with the first rater and `volumes`
-  with the last. `observations_at()` and `measurements_at()` list them, and
-  `Observation.kind` says which annotation kind each came from.
+  object's mask where an `instances` annotation saw it, else its box ---
+  axis-aligned or oriented --- whose volume is only its bounding box's, else a
+  point, which marks the object and measures nothing. Two masks of one visit
+  --- two raters --- are refused; `at` and `volume` answered with the first
+  rater and `volumes` with the last. `observations_at()` and
+  `measurements_at()` list them, and `Observation.kind` says which annotation
+  kind each came from.
+- **Tracking joins every kind that identifies objects.** An oriented box
+  (`obb`) or a landmark carrying `instance_ids` made the whole join fail, and
+  `medh5 track` with it: an oriented box joins on its enclosing box and
+  measures its own volume, which its rotation leaves alone, and a point is
+  presence. An annotation of another kind that carries `instance_ids` is
+  named in `Tracking.skipped`, and the rest still join.
+- **Volume change is measured in millimetres** (`Track.relative_change`,
+  `medh5 track`): each observation's volume is in its grid's units cubed, so a
+  visit on a grid in metres beside one in millimetres read as a millionfold
+  change. Visits with no measure in common --- an uncalibrated (`px`) grid
+  beside a calibrated one, an area beside a volume --- have no change, `None`.
+  `medh5 track` prints volumes in mm³.
 - **A cubic displacement field takes the outermost sample's value in the
   half-voxel margin**, as a linear one does (§10.4): under `zero` and `error`, a
   point between the outermost sample and the extent's edge was zero --- SciPy's
@@ -521,10 +557,122 @@ out `h5py` objects --- and the behaviour changes below.
   the diagnosis from before it, so an index the restamp made stale was left
   stale by the call asked to rebuild it. Restamping alone names the entries it
   leaves stale.
+- **Each attested path is bound to its bytes** (§13.2, `E704`): every path
+  through `grids/`, `images/`, `annotations/` and `transforms/` (and
+  `clinical/` where the profile is declared), soft links followed, must be its
+  object's own. Coverage was judged by object, so a file crafted with an alias
+  sorting before `images/` --- the image's line digested and sealed there ---
+  passed every check, and `images/CT` relinked after a pin to other covered
+  bytes changed no line: `verify`, a task's source pin, a deep preflight and
+  the validator all held while a reader read other bytes. `verify` and the pin
+  check fail such a file, `SourceRef.pin` refuses to pin it, and the validator
+  reports `E704`. The writer makes no links, so no file it writes changes, and
+  no `content_id` does.
+- **Copies are made of the graph, not its top-level members**: `pack`,
+  `unpack`, extract, repack, `amend` and `recompress` copy a sample with one
+  object map, so a hard link stays one object, a cycle a cycle and a soft link
+  a link (an absolute target is rebased between sample roots, and one that
+  leaves its sample root is refused). Each member was copied on its own: an
+  alias became a second dataset --- a new `content_id` line --- so a packed
+  aliased sample failed `verify` and a no-op amend changed its `content_id`.
+  `pack` and `unpack` refuse a copy that would change a member's
+  `content_id`.
+- **`recompress` keeps a stored type it cannot rewrite exactly**: an
+  enumeration lost its names, and a committed datatype its identity and
+  attributes, while the result said ok. Such a dataset is copied as stored and
+  listed in `RecompressResult.kept`; datasets sharing one committed type share
+  its copy.
+- **Removing clinical data removes its bytes** (`medh5 clinical strip`,
+  `drop_clinical()`, `remove_annotation()`): the profile was unlinked, and HDF5
+  never reclaims an unlinked object, so every record --- report text included
+  --- stayed in the output's bytes. The output is rebuilt from what remains.
+- **An amendment cannot give an event version a payload it did not have**
+  (`E809`): text linked to an inherited, text-less document event available
+  at 1 h was owned by that version and admitted at 24 h, before it existed. A
+  new version superseding it carries the payload (1.1 §7.3).
+- **A cache entry must be owned by the version it is filed under** (`T407`):
+  `validate_cache` checks every event-level entry's event and document against
+  its source, and the training dataset checks the document before every read,
+  also after a reopen or a pickle. A feature filed under a version but
+  encoding a later revision's text was served to every row that admitted the
+  version.
+- **The context window bounds plans too** (1.1 §9.1): a plan's effective time
+  is bounded below by the window like any other event's; only the cutoff is
+  not a plan's edge. A stale order from 100 days before a seven-day window was
+  read beside the week.
+- **A row without documents has the declared feature shape**, and collation
+  pads by the populated rows and refuses rows that disagree. Its features were
+  `(0, dim[0])`, so a batch collated in one order and raised in the other.
+- **Concept tokens escape their separator** (`medh5.task.concept_token`):
+  fields were joined with an unescaped `|`, so two different codes could be one
+  input. `\` and `|` are escaped; a token without them is unchanged, so fitted
+  vocabularies hold.
+- **A task's target reads occurrences** (task-cache-1 §5): a `cancelled`
+  outcome did not happen, and is neither a positive nor a negative; a
+  `planned` one is not known to have happened, so it labels no row positive or
+  prevalent, censors a window it may fall in, and as a negative observes
+  nothing. Both were read as having occurred: a cancelled operation in the
+  window labelled its row positive.
+- **Integers are integers** in task slots (`patch`, `classes`) and dataset
+  manifests: JSON Schema's `integer` admits `3.0`, and a value that did not
+  read as an integer was dropped. It is refused (`T101` in a task, a
+  `ValueError` in a manifest), as is a non-positive patch.
+- **A transform's `units` are its grids'** (§10.1, `E506`). The writer
+  defaulted `units` to `mm` whatever the grids were in and wrote any `units`
+  it was given, and nothing compared them with the grids: a transform in
+  millimetres between two metre grids validated, and the paired loader, which
+  applies a transform to its grids' coordinates as they are, moved every point
+  a thousand times its displacement. A transform written without `units` takes
+  its grids'; one whose `units` are not theirs --- or between frames whose
+  grids are in two units --- is refused by the writer and reported by the
+  validator, and the paired loader refuses to apply it to a grid in other
+  units. **A file 1.x wrote with grids in metres and a transform left at `mm`
+  is now invalid**: it still opens, and an amendment that leaves the transform
+  as it is would write a file the validator rejects, so it is refused. One
+  that removes the transform (`remove_transform`, above) and adds it again in
+  its grids' units commits.
+- **`as_world(grid)` answers in that grid's world**: stored world boxes came
+  back as stored whatever grid was named, so a box at 3 mm asked for on a grid
+  in metres read as 3 m. Another grid's world is computed through it ---
+  converting units, refusing another frame or convention (`E414`).
+- **A foreground draw weighs every candidate class** (`class_weights`), from
+  the index or from a scan alike: the scan that stands in for a missing or
+  stale index picked classes uniformly, and with an index an empty weighted
+  pool fell back to that scan, so a class weighted zero was drawn. An index is
+  used only when it covers every candidate class, and a draw with no candidate
+  that has both foreground and weight is a uniform one. **Seeded draws without
+  a current index differ from earlier 2.0 builds.**
+- **nnU-Net exports are planned before the first file is written**
+  (`to_nnunetv2`, `medh5 convert to-nnunet`): a case's `sample_id` and the
+  dataset name must be file names --- a sample key, not `.` or `..`, no two
+  differing only in case --- where an id like `../../victim` wrote outside the
+  export. A case without the annotation is refused, or with
+  `unlabeled="test"` written to `imagesTs` and left out of `numTraining`.
+  **Label values are written `0..K`**, as nnU-Net requires, and `dataset.json`
+  records the class id of each renumbered value (`medh5_class_ids`), which
+  `from_nnunetv2` reads back; a stashed `dataset.json` that does not name a
+  class some case carries is extended with it (a region-based one is refused),
+  where the class was written as background.
+- **RTSTRUCT contours are patient coordinates** (`to_rtstruct`): millimetres,
+  LPS --- a metre grid's 0.003 was written for 3 mm and an RAS grid's x and y
+  unflipped. A grid in pixels or another convention is refused, and so are
+  contours with no grid to give their units (`E414`). The source images must
+  share one frame of reference, and the contours' must be it; they were filed
+  under the first image's frame whatever the grid's. `frame_salt` compares a
+  frame `medh5 scrub` pseudonymised.
+- **A migrated `extra.nnunetv2` is where the exporter reads it** (Appendix B):
+  `/meta → extra.nnunetv2`, and every other 0.x `extra` key under
+  `extra.legacy.<timepoint>`, one entry per file. The whole `extra` went to
+  `extra.legacy`, so `to_nnunetv2` never found the stash, and a grouped
+  migration kept only the last file's. Grouped files whose stashes differ keep
+  the first, and the report warns.
 
 ### Removed
 
 - The private `medh5._hdf5` and `medh5.document_fields` modules.
+- `medh5::h5::ops::copy_object` and `copy_unknown` (Rust): they copied one
+  member at a time, which is how an alias became a second object;
+  `medh5::h5::graph` copies a sample as a graph.
 - The argparse internals of `medh5.cli` (`build_parser`, `MODULES` and the
   per-command modules); `command_tree()` describes the grammar and `main()` runs
   it.
@@ -559,6 +707,21 @@ out `h5py` objects --- and the behaviour changes below.
 
 ### Fixed
 
+- **A damaged file is an error, not a crash.** The vendored HDF5-Blosc2 filter
+  asserted that its chunk-size value covered the chunk, so a file whose filter
+  values were too small aborted the process; it checks them with
+  overflow-checked arithmetic and returns HDF5's ordinary error
+  (`vendor/hdf5-blosc2/PATCHES.md`). Comparing two trees with a link back to an
+  ancestor recursed until the stack overflowed; it compares graphs. And the
+  geometry functions (`decompose_affine`, `index_to_world`, `world_to_index`,
+  `box_corners`, `box_to_slices`, …) raise `ValueError` on a malformed affine,
+  points or box, where they panicked with a `PanicException` --- a
+  `BaseException` that `except Exception` does not catch.
+- **Strings are read within a budget**: a few kilobytes of compressed one-byte
+  strings decode to hundreds of megabytes, and digesting held every string at
+  once. Digests stream strings a bounded slab at a time, whole reads and
+  attributes are budgeted by what they decode to, and a declared extent no
+  machine holds is refused before anything is read.
 - **C-Blosc2 3.3.5**, vendored byte for byte from upstream (it was 3.3.2):
   BloscLZ added a match length's continuation bytes to a signed counter before
   checking it, so a run of eight million of them in a hostile chunk overflowed
