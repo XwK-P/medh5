@@ -411,6 +411,44 @@ class TestAmendment:
             # Unknown availability: strict selection never uses them.
             assert s.clinical.select(365 * DAY).event_ids == []
 
+    def test_S10_imaging_events_keep_the_day_their_interval_names(self, tmp_path: Path):
+        """`days_from_baseline` counts days after the baseline visit, whose time
+        of day is unknown.  1.75 days is `[1.75, 2.75)` days, where it was
+        floored to `[1, 2)`, which may not hold the visit; an interval the clock
+        cannot hold makes no event, where `2e14` days wrapped; and an image id
+        too long to prefix makes a valid event id, which the helper's own
+        output was not."""
+        path = tmp_path / "visits.medh5"
+        long_id = "CT_" + "x" * 122
+        visits = (("tp0", 0, "CT0"), ("tp1", 1.75, long_id), ("tp2", 2e14, "CT2"))
+        with medh5.create(path, sample_id="visits", subject_id="P-01") as w:
+            for tp, days, image_id in visits:
+                w.add_timepoint(tp, days_from_baseline=days)
+                w.add_grid(
+                    f"g_{tp}", shape=(2, 2, 2), spacing=(1.0, 1.0, 1.0), timepoint=tp
+                )
+                w.add_image(
+                    image_id,
+                    np.zeros((2, 2, 2), np.int16),
+                    grid=f"g_{tp}",
+                    modality="CT",
+                )
+        events, links, notes = clinical.imaging_events_from_timepoints(path)
+        start = {e.timepoint_id: e.effective_start_us for e in events}
+        assert start == {
+            "tp0": (0, DAY - 1),
+            "tp1": (DAY * 7 // 4, DAY * 7 // 4 + DAY - 1),
+        }
+        assert any("tp2" in n and "cannot hold" in n for n in notes)
+        (shortened,) = [e.event_id for e in events if e.timepoint_id == "tp1"]
+        assert len(shortened) == 128 and shortened.startswith("imaging.CT_xxx")
+        assert [link.target_id for link in links] == ["CT0", long_id]
+        records = clinical.records_from(
+            clinical.baseline_day_clock("clock"), events, (), links
+        )
+        report = clinical.augment(path, records)
+        assert report["events"] == 2
+
     def test_S10_a_foreign_clinical_group_is_refused_not_reinterpreted(
         self, sample_path: Path
     ):

@@ -76,7 +76,8 @@ pub fn assumptions(records: &ClinicalRecords) -> Vec<String> {
             show(&unknown_availability)
         ));
     }
-    let coarse = ids(&|e| e.effective_start.is_some_and(|b| b.hi - b.lo >= DAY - 1));
+    // Checked: the records are not yet, and a span past i64 is coarse.
+    let coarse = ids(&|e| e.effective_start.is_some_and(|b| b.hi.checked_sub(b.lo).is_none_or(|w| w >= DAY - 1)));
     if !coarse.is_empty() {
         out.push(format!(
             "{} event(s) are known to a day or coarser ({}): their order within that span is not invented",
@@ -106,11 +107,15 @@ pub fn assumptions(records: &ClinicalRecords) -> Vec<String> {
 /// One `imaging` event per image whose timepoint declares
 /// `days_from_baseline`, linked to its image by `describes`.
 ///
-/// The interval is all §3.7 says, so each event is known to its day ---
-/// `[d·DAY, (d+1)·DAY − 1]` on a relative clock whose zero is the start of the
-/// baseline visit's day --- its availability is unknown, and its status is
-/// `unknown`.  Images whose timepoint declares no interval get no event, and
-/// the returned notes say which.
+/// The interval is all §3.7 says --- `d` days after the baseline visit, whose
+/// time of day is unknown --- so each event is known to a day:
+/// `[d·DAY, d·DAY + DAY − 1]`, to the microsecond, on a relative clock whose
+/// zero is the start of the baseline visit's day.  Its availability is
+/// unknown, and its status is `unknown`.  Images whose timepoint declares no
+/// interval, or one the clock cannot hold, get no event, and the returned
+/// notes say which.  The event id is `imaging.<image id>`; an image id too
+/// long for that keeps its first 103 characters and gains 16 hex digits of
+/// its SHA-256, within the 128 an id may have.
 pub fn imaging_events_from_timepoints(path: &Path) -> Result<(Vec<Event>, Vec<Link>, Vec<String>)> {
     let sample = open_sample(path)?;
     let timeline = sample.timepoints()?.clone();
@@ -130,14 +135,29 @@ pub fn imaging_events_from_timepoints(path: &Path) -> Result<(Vec<Event>, Vec<Li
             ));
             continue;
         };
-        let day = days.floor() as i64;
-        let event_id = format!("imaging.{image_id}");
+        let Some(day) = day_after(days) else {
+            notes.push(format!(
+                "timepoint {} declares days_from_baseline {days}, which the clock cannot hold; image {} got no \
+                 imaging event",
+                repr_str(&tp),
+                repr_str(image_id)
+            ));
+            continue;
+        };
+        let event_id = imaging_event_id(image_id);
+        if !event_id.ends_with(image_id.as_str()) {
+            notes.push(format!(
+                "image {} has an id too long to prefix; its imaging event is {}",
+                repr_str(image_id),
+                repr_str(&event_id)
+            ));
+        }
         events.push(Event {
             event_id: event_id.clone(),
             record_id: event_id.clone(),
             kind: "imaging".into(),
             temporal_type: "point".into(),
-            effective_start: Some(Bounds::new(day * DAY, (day + 1) * DAY - 1)),
+            effective_start: Some(day),
             status: "unknown".into(),
             timepoint_id: Some(tp.clone()),
             ..Default::default()
@@ -152,6 +172,31 @@ pub fn imaging_events_from_timepoints(path: &Path) -> Result<(Vec<Event>, Vec<Li
         ));
     }
     Ok((events, links, notes))
+}
+
+/// The day that starts `days` after the clock's zero, to the microsecond;
+/// `None` when the clock cannot hold it.  A fraction of a day is kept:
+/// flooring it moved a visit 1.75 days after baseline to `[1, 2)` days,
+/// which may not contain it.
+fn day_after(days: f64) -> Option<Bounds> {
+    let lo = (days * DAY as f64).round();
+    if !lo.is_finite() || lo.abs() >= i64::MAX as f64 {
+        return None;
+    }
+    let lo = lo as i64;
+    Some(Bounds::new(lo, lo.checked_add(DAY - 1)?))
+}
+
+/// `imaging.<image id>`, within the 128 characters an id may have.
+fn imaging_event_id(image_id: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let id = format!("imaging.{image_id}");
+    if id.len() <= 128 {
+        return id;
+    }
+    let head: String = image_id.chars().take(103).collect();
+    let digest = hex::encode(Sha256::digest(image_id.as_bytes()));
+    format!("imaging.{head}.{}", &digest[..16])
 }
 
 /// The clock [`imaging_events_from_timepoints`] measures on.
