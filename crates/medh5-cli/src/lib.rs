@@ -74,10 +74,8 @@ impl Host for NativeHost {
         if !matches!(probe, Ok(s) if s.success()) {
             return None;
         }
-        let status = python_running(&python, "from medh5.cli import main; raise SystemExit(main(sys.argv[1:]))")
-            .args(argv)
-            .status()
-            .ok()?;
+        let status =
+            python_running(&python, "from medh5.cli import main; raise SystemExit(main())").args(argv).status().ok()?;
         Some(status.code().unwrap_or(EXIT_ERROR))
     }
 

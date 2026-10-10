@@ -20,6 +20,7 @@ warnings still print.
 from __future__ import annotations
 
 import json
+import signal
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -42,9 +43,25 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     ``--help`` and ``--version`` return 0 and a usage error 2, like every other
     outcome: nothing raises ``SystemExit`` but the console script itself.
+
+    Without *argv* --- as the console script, ``python -m medh5.cli`` and the
+    standalone binary's hand-off run it --- Ctrl-C ends the process at once, as
+    it ends the standalone binary.  The command runs in native code, and
+    Python's handler only marks the interrupt for the interpreter to raise:
+    a long command ran on to the end, then printed a ``KeyboardInterrupt``.
     """
     args = [str(a) for a in (sys.argv[1:] if argv is None else argv)]
-    return int(_core.cli_main(args, _Host()))
+    if argv is not None:
+        return int(_core.cli_main(args, _Host()))
+    try:
+        previous = signal.signal(signal.SIGINT, signal.SIG_DFL)
+    except ValueError:  # pragma: no cover - not the main thread: no handler
+        previous = None
+    try:
+        return int(_core.cli_main(args, _Host()))
+    finally:
+        if previous is not None:
+            signal.signal(signal.SIGINT, previous)
 
 
 def command_tree() -> dict[str, Any]:

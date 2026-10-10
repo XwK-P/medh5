@@ -54,6 +54,58 @@ class TestEntryPoint:
         assert code == EXIT_USAGE
         assert out.err == "medh5: argument 'caf�.medh5' is not valid UTF-8\n"
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="Ctrl-C is no signal there")
+    def test_ctrl_c_ends_the_console_script_at_once(self, tmp_path):
+        """The command runs in native code, where Python's handler only marks
+        the interrupt: ``conformance build`` ran on to the end after Ctrl-C,
+        then printed a ``KeyboardInterrupt`` traceback."""
+        import signal
+        import subprocess
+        import time
+
+        corpus = tmp_path / "corpus"
+        child = subprocess.Popen(
+            [sys.executable, "-m", "medh5.cli", "conformance", "build", str(corpus)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
+        try:
+            # A case on disk: the command is under way, in native code.
+            deadline = time.monotonic() + 120
+            while not (corpus.is_dir() and any(corpus.iterdir())):
+                assert child.poll() is None, child.stderr.read()
+                assert time.monotonic() < deadline
+                time.sleep(0.005)
+            child.send_signal(signal.SIGINT)
+            _, err = child.communicate(timeout=60)
+        finally:
+            child.kill()
+            child.wait()
+        assert child.returncode == -signal.SIGINT
+        assert b"KeyboardInterrupt" not in err
+
+    def test_only_the_console_script_takes_over_ctrl_c(self, monkeypatch):
+        """A caller passing *argv* keeps its own handler; the console script
+        puts back the one it found."""
+        import signal
+
+        from medh5 import cli
+
+        during = []
+        real = cli._core.cli_main
+
+        def spy(args, host):
+            during.append(signal.getsignal(signal.SIGINT))
+            return real(args, host)
+
+        monkeypatch.setattr(cli._core, "cli_main", spy)
+        monkeypatch.setattr(sys, "argv", ["medh5", "--version"])
+        before = signal.getsignal(signal.SIGINT)
+        assert main() == EXIT_OK
+        assert main(["--version"]) == EXIT_OK
+        assert during == [signal.SIG_DFL, before]
+        assert signal.getsignal(signal.SIGINT) is before
+
     def test_Q12_a_missing_name_is_a_handled_cli_error(self, tmp_path: Path, capsys):
         """`convert to-nifti FILE <unknown image>` ended in a KeyError traceback."""
         pytest.importorskip("nibabel")
