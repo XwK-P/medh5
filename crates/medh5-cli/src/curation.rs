@@ -14,7 +14,6 @@ use medh5::curation::agreement::{compare, Comparison};
 use medh5::curation::splits::audit_splits;
 use medh5::error::os_error;
 use medh5::json::{py_str, repr_str};
-use medh5::sample::open_sample;
 use medh5::Error;
 
 use crate::common::*;
@@ -102,9 +101,12 @@ fn unpack_cmd(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let out = req_str(m, "out");
     // Made here rather than by `unpack`, a file in the way is named.
     std::fs::create_dir_all(out).map_err(|e| os_error(&e, out))?;
-    let written = match unpack(Path::new(req_str(m, "path")), Path::new(out), keys.as_deref(), ".medh5") {
+    let path = req_str(m, "path");
+    let written = match unpack(Path::new(path), Path::new(out), keys.as_deref(), ".medh5") {
         Ok(w) => w,
-        Err(e) if e.is_medh5() => return Ok(ctx.fail(e.to_string())),
+        Err(e) if e.is_medh5() => {
+            return Ok(ctx.fail(collection_file_error(path, e, "there is nothing to unpack").to_string()))
+        }
         Err(e) => return Err(e),
     };
     let shown: Vec<String> = written.iter().map(|p| p.to_string_lossy().into_owned()).collect();
@@ -121,7 +123,8 @@ fn unpack_cmd(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
 fn ls(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let path = req_str(m, "path");
     let result = (|| -> CmdResult {
-        let collection = open_collection(Path::new(path))?;
+        let collection = open_collection(Path::new(path))
+            .map_err(|e| collection_file_error(path, e, &format!("`medh5 info {path}` describes it")))?;
         let summary = collection.summary()?;
         if flag(m, "json") {
             ctx.emit(&summary, true);
@@ -159,7 +162,7 @@ fn dash(value: Option<&str>) -> String {
 fn prov(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let path = req_str(m, "path");
     let result = (|| -> CmdResult {
-        let sample = open_sample(Path::new(path))?;
+        let sample = sample_file(path)?;
         let document = sample.document()?;
         let graph = &document.provenance;
         if flag(m, "json") {
@@ -254,7 +257,7 @@ fn agree(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let path = req_str(m, "path");
     let (a, b) = (req_str(m, "a"), req_str(m, "b"));
     let result = (|| -> CmdResult {
-        let sample = open_sample(Path::new(path))?;
+        let sample = sample_file(path)?;
         let first = sample.annotation(a)?;
         let second = sample.annotation(b)?;
         // `compare` picks the comparison the two kinds support.

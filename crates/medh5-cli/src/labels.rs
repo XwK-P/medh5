@@ -1,13 +1,10 @@
 //! `labels show`, `labels registry list`, `labels check`.
 
-use std::path::Path;
-
 use clap::ArgMatches;
 use indexmap::IndexMap;
 use serde_json::{json, Value};
 
 use medh5::labels::registry;
-use medh5::sample::open_sample;
 
 use crate::common::*;
 
@@ -22,7 +19,7 @@ pub fn dispatch(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
 
 fn show(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let path = req_str(m, "path");
-    let label_set = match open_sample(Path::new(path)).and_then(|s| Ok(s.label_set()?.cloned())) {
+    let label_set = match sample_file(path).and_then(|s| Ok(s.label_set()?.cloned())) {
         Ok(ls) => ls,
         Err(e) if e.is_medh5() => return Ok(ctx.fail(e.to_string())),
         Err(e) => return Err(e),
@@ -72,7 +69,7 @@ fn check(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let mut unreadable = serde_json::Map::new();
     let mut rows = Vec::new();
     for path in &paths {
-        let label_set = match open_sample(Path::new(path)).and_then(|s| Ok(s.label_set()?.cloned())) {
+        let label_set = match sample_file(path).and_then(|s| Ok(s.label_set()?.cloned())) {
             Ok(ls) => ls,
             Err(e) => {
                 let failed = ctx.file_failed(path, &e);

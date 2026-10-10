@@ -1368,6 +1368,47 @@ class TestCuration:
         assert code == EXIT_OK
         assert (tmp_path / "back" / "m1.medh5").exists()
 
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["prov", "{}"],
+            ["labels", "show", "{}"],
+            ["labels", "check", "{}"],
+            ["seg", "stats", "{}", "organs_tp0"],
+            ["seg", "convert", "{}", "organs_tp0", "--to", "bitmask"],
+            ["agree", "{}", "organs_tp0", "organs_tp0"],
+            ["fix", "{}"],
+            ["scrub", "{}"],
+        ],
+    )
+    def test_S2_2_a_command_on_one_sample_names_the_way_to_a_member(
+        self, capsys, tmp_path, label_set, masks, argv
+    ):
+        """A collection handed to a command that takes no ``--key`` was refused
+        with the Python API's advice, "open it with open_collection()"."""
+        shard = tmp_path / "s.medh5c"
+        members = self._members(tmp_path, label_set, masks)
+        assert run(capsys, "pack", *map(str, members), "-o", str(shard))[0] == EXIT_OK
+        code, out = run(capsys, *(a.format(shard) for a in argv))
+        assert code == EXIT_ERROR
+        assert out.err.startswith(
+            f"medh5: {shard} is a collection of 2 sample(s); this command works on one "
+            f"sample file --- extract them with `medh5 unpack {shard} -o DIR`\n"
+        )
+
+    def test_S2_2_a_command_on_a_collection_names_a_sample_file(
+        self, capsys, tmp_path, sample_path
+    ):
+        """``ls`` and ``unpack`` on a sample file answered with a wrong
+        ``medh5_kind`` and "open it with `medh5.open`"."""
+        refused = f"medh5: {sample_path} is a sample file, not a collection;"
+        code, out = run(capsys, "ls", str(sample_path))
+        assert code == EXIT_ERROR
+        assert out.err == f"{refused} `medh5 info {sample_path}` describes it\n"
+        code, out = run(capsys, "unpack", str(sample_path), "-o", str(tmp_path / "x"))
+        assert code == EXIT_ERROR
+        assert out.err == f"{refused} there is nothing to unpack\n"
+
     def test_pack_json_reports_sizes(self, capsys, tmp_path, label_set, masks):
         members = self._members(tmp_path, label_set, masks, n=1)
         shard = tmp_path / "one.medh5c"

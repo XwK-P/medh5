@@ -37,7 +37,7 @@ pub fn scrub(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
         let report = match result {
             Ok(r) => r,
             Err(e) => {
-                reports.push(ctx.file_failed(&path, &e));
+                reports.push(ctx.file_failed(&path, &sample_file_error(&path, e)));
                 continue;
             }
         };

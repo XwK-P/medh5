@@ -13,7 +13,7 @@ use medh5::h5::{data, ops};
 use medh5::json::repr_str;
 use medh5::sample::writer::amend;
 use medh5::sample::writer_annotations::{annotation_to_masks, transcode};
-use medh5::sample::{open_sample, Sample};
+use medh5::sample::Sample;
 use medh5::Error;
 
 use crate::common::*;
@@ -33,7 +33,7 @@ pub fn dispatch(name: &str, m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
 }
 
 fn open_voxel(path: &str, ann_id: &str) -> medh5::Result<(Sample, Arc<Annotation>)> {
-    let sample = open_sample(Path::new(path))?;
+    let sample = sample_file(path)?;
     let annotation = sample.annotation(ann_id)?.clone();
     if !annotation.is_voxel() {
         return Err(Error::File(format!(

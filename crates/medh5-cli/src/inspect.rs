@@ -471,7 +471,7 @@ fn fix_cmd(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
         let repair = match fix(Path::new(&path), &options) {
             Ok(r) => r,
             Err(e) => {
-                results.push(ctx.file_failed(&path, &e));
+                results.push(ctx.file_failed(&path, &sample_file_error(&path, e)));
                 failed = true;
                 continue;
             }

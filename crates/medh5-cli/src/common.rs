@@ -1,11 +1,14 @@
 //! What every command shares: output streams, JSON output, errors, tables.
 
 use std::io::Write;
+use std::path::Path;
 
 use clap::ArgMatches;
 use serde_json::{json, Value};
 
+use medh5::collection::open_collection;
 use medh5::json::{format_g, pretty, repr_str};
+use medh5::sample::{open_sample, Sample};
 use medh5::Error;
 
 /// Unix-conventional exit codes: success, a handled error, a usage error.
@@ -191,6 +194,38 @@ pub fn top_level_message(error: &Error) -> String {
         return format!("no such entry: {}", repr_str(text));
     }
     error.to_string()
+}
+
+// -- a sample file, or a collection ------------------------------------------
+
+/// The sample file `path`, for a command that works on one: a collection is
+/// refused as [`sample_file_error`] words it.
+pub fn sample_file(path: &str) -> medh5::Result<Sample> {
+    open_sample(Path::new(path)).map_err(|e| sample_file_error(path, e))
+}
+
+/// `error`, from working on `path` as one sample file, as the command line
+/// words it.  The engine refuses a collection in the Python API's terms
+/// ("open it with open_collection()"); from the command line, the way to a
+/// member is `medh5 unpack`.
+pub fn sample_file_error(path: &str, error: Error) -> Error {
+    match open_collection(Path::new(path)).and_then(|c| c.len()) {
+        Ok(count) => Error::invalid(format!(
+            "{path} is a collection of {count} sample(s); this command works on one sample file --- extract them \
+             with `medh5 unpack {path} -o DIR`"
+        )),
+        Err(_) => error,
+    }
+}
+
+/// `error`, from working on `path` as a collection, as the command line
+/// words it: a sample file is named as one, not as a wrong `medh5_kind` with
+/// the Python API's way to open it.
+pub fn collection_file_error(path: &str, error: Error, instead: &str) -> Error {
+    match open_sample(Path::new(path)) {
+        Ok(_) => Error::invalid(format!("{path} is a sample file, not a collection; {instead}")),
+        Err(_) => error,
+    }
 }
 
 // -- argument access ---------------------------------------------------------
