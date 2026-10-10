@@ -104,17 +104,16 @@ nifti = [
   "nibabel>=5",
 ]
 dicom = [
-  "pydicom>=2.4",
+  # 3.0: writing an RTSTRUCT asks `save_as` to enforce the DICOM file format.
+  "pydicom>=3.0",
 ]
 dicomseg = [
   # Reading DICOM SEG and RTSTRUCT needs only pydicom; *writing* a SEG needs
   # highdicom, the reference implementation of the Segmentation IOD.  Building
   # the per-frame functional groups by hand is how invalid SEGs get published.
-  "highdicom>=0.22",
-  "pydicom>=2.4",
-]
-itk = [
-  "SimpleITK>=2.3",
+  # 0.23 is the first highdicom for pydicom 3.
+  "highdicom>=0.23",
+  "pydicom>=3.0",
 ]
 
 [project.urls]
@@ -203,8 +202,6 @@ module = [
   "nibabel.*",
   "pydicom",
   "pydicom.*",
-  "SimpleITK",
-  "SimpleITK.*",
   "monai",
   "monai.*",
   "highdicom",

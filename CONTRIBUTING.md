@@ -20,7 +20,7 @@ git clone https://github.com/XwK-P/medh5.git
 cd medh5
 # The Python package, with the engine compiled into it by maturin (release
 # profile). Re-run after changing Rust.
-pip install -e ".[dev,torch,nifti,dicom,dicomseg,itk]"
+pip install -e ".[dev,torch,nifti,dicom,dicomseg]"
 pip install -r docs/requirements.txt        # to build the documentation site
 pip install pre-commit && pre-commit install   # optional: ruff on every commit
 ```

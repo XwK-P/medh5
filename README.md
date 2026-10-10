@@ -44,8 +44,8 @@ cargo install medh5-cli                # the `medh5` command line, natively
 ```
 
 The wheels carry the engine, HDF5 included, so reading and writing need only
-NumPy. Extras: `torch`, `monai`, `nifti`, `dicom`, `dicomseg`, `itk`, and
-`h5py` for opening files with `h5py` directly. The `medh5` binary is also attached to every
+NumPy. Extras: `torch`, `monai`, `nifti`, `dicom`, `dicomseg`, and `h5py` for
+opening files with `h5py` directly. The `medh5` binary is also attached to every
 [GitHub Release](https://github.com/XwK-P/medh5/releases), and installs with
 `brew install XwK-P/medh5/medh5`; building it or the crate from source needs a
 C compiler and CMake, for HDF5.

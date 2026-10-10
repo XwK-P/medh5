@@ -18,7 +18,6 @@ Extras, all optional:
 | `nifti` | NIfTI import and export (nibabel) |
 | `dicom` | DICOM, DICOM SEG and RTSTRUCT reading (pydicom) |
 | `dicomseg` | *Writing* DICOM SEG (highdicom) |
-| `itk` | Resampling in the converters (SimpleITK) |
 | `h5py` | Opening a file with `h5py` directly (h5py, hdf5plugin) |
 
 ```bash

@@ -309,7 +309,7 @@ jobs:
         with:
           name: ci-dist-x86_64-unknown-linux-gnu
           path: dist/
-      - run: pip install "$(ls dist/*.whl)[dev,torch,nifti,dicom,dicomseg,itk]"
+      - run: pip install "$(ls dist/*.whl)[dev,torch,nifti,dicom,dicomseg]"
       - run: rm -rf medh5
       # A fresh install resolves numpy 2; say so, so the matrix is known to
       # cover it rather than covering it by accident of resolution.
@@ -334,7 +334,7 @@ jobs:
         with:
           name: ci-dist-aarch64-apple-darwin
           path: dist/
-      - run: pip install "$(ls dist/*.whl)[dev,torch,nifti,dicom,dicomseg,itk]"
+      - run: pip install "$(ls dist/*.whl)[dev,torch,nifti,dicom,dicomseg]"
       - run: rm -rf medh5
       - run: pytest tests/ -v -rs --cov=medh5 --cov-report=term-missing --cov-fail-under=90
 
