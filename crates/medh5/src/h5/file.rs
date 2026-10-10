@@ -137,6 +137,8 @@ pub fn close_everything(file: hdf5::File, flush: bool) -> Result<()> {
     std::mem::forget(file);
     super::locked(|| unsafe {
         let flushed = !flush || h5f::H5Fflush(fid, H5F_scope_t::H5F_SCOPE_LOCAL) >= 0;
+        // Read now: the calls below clear HDF5's record of the failure.
+        let refused = (!flushed).then(super::ops::hdf5_error_text);
         let release = |types: std::os::raw::c_uint| {
             let count = h5f::H5Fget_obj_count(fid, types);
             if count <= 0 {
@@ -160,10 +162,9 @@ pub fn close_everything(file: hdf5::File, flush: bool) -> Result<()> {
         if h5i::H5Iis_valid(fid) > 0 {
             while h5i::H5Idec_ref(fid) > 0 {}
         }
-        if flushed {
-            Ok(())
-        } else {
-            Err(Error::Io(format!("could not flush the file: {}", super::ops::hdf5_error_text())))
+        match refused {
+            None => Ok(()),
+            Some(why) => Err(Error::Io(format!("could not flush the file: {why}"))),
         }
     })
 }

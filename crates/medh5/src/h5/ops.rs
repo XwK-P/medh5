@@ -293,17 +293,20 @@ pub fn unlink(group: &hdf5::Group, name: &str) -> Result<()> {
     Ok(())
 }
 
-/// The text of the most recent HDF5 error on this thread (best effort).
+/// The text of the most recent HDF5 error on this thread: the failed call
+/// and what HDF5 says went wrong, as every other HDF5 error reads.  Taken
+/// right after the call that failed, since the next call clears it.
 pub fn hdf5_error_text() -> String {
-    "HDF5 error".to_string()
+    match hdf5::Error::query() {
+        Ok(error) => error.to_string(),
+        Err(_) => "HDF5 gave no reason".to_string(),
+    }
 }
 
 // -- self-containment ---------------------------------------------------------
 
 struct VisitState {
-    file: h5i::hid_t,
     found: Vec<(String, String)>,
-    failed: Option<String>,
 }
 
 unsafe extern "C" fn visit_link(
@@ -349,7 +352,6 @@ unsafe extern "C" fn visit_link(
             h5p::H5Pclose(plist);
         }
         h5d::H5Dclose(ds);
-        let _ = state.file;
         0
     }
 }
@@ -518,7 +520,7 @@ pub fn refuse_references(root: &hdf5::Group, action: &str) -> Result<()> {
 
 /// Objects that read bytes from outside the file: `(path, what)` pairs.
 pub fn outside_references(handle: &hdf5::File) -> Result<Vec<(String, String)>> {
-    let mut state = VisitState { file: handle.id(), found: Vec::new(), failed: None };
+    let mut state = VisitState { found: Vec::new() };
     let root = cstring("/")?;
     let status = super::locked(|| unsafe {
         h5l::H5Lvisit_by_name2(
@@ -536,9 +538,6 @@ pub fn outside_references(handle: &hdf5::File) -> Result<Vec<(String, String)>> 
             "{} could not be walked to check that it is self-contained",
             repr_str(&handle.filename())
         )));
-    }
-    if let Some(msg) = state.failed {
-        return Err(Error::File(msg));
     }
     Ok(state.found)
 }
@@ -653,6 +652,11 @@ pub fn check_self_contained(handle: &hdf5::File, path: Option<&Path>) -> Result<
 ///
 /// Returns the filter mask and the bytes exactly as stored.  `offset` has one
 /// coordinate per axis: HDF5 reads that many from it, whatever its length.
+///
+/// The chunk's size is the file's to state, up to 0xFFFFFFFF: one larger than
+/// the file holding it is refused before anything is reserved, and the rest
+/// is reserved fallibly --- a buffer sized by the stated size alone aborted
+/// the process on a crafted 140 KB file.
 pub fn read_raw_chunk(ds: &hdf5::Dataset, offset: &[u64]) -> Result<(u32, Vec<u8>)> {
     super::alive(ds)?;
     if offset.len() != ds.ndim() {
@@ -666,6 +670,7 @@ pub fn read_raw_chunk(ds: &hdf5::Dataset, offset: &[u64]) -> Result<(u32, Vec<u8
     if ds.chunk().is_none() {
         return Err(Error::Value(format!("{} is not chunked, so it stores no chunks", ds.name())));
     }
+    let file = ds.file()?;
     super::locked(|| unsafe {
         let mut mask: u32 = 0;
         let mut addr: u64 = 0;
@@ -673,9 +678,22 @@ pub fn read_raw_chunk(ds: &hdf5::Dataset, offset: &[u64]) -> Result<(u32, Vec<u8
         if h5d::H5Dget_chunk_info_by_coord(ds.id(), offset.as_ptr(), &mut mask, &mut addr, &mut nbytes) < 0 {
             return Err(Error::Io(format!("no stored chunk at {offset:?} in {}", ds.name())));
         }
-        let mut buf = vec![0u8; nbytes as usize];
+        // Measured once the chunk is in the file: asking for it writes it
+        // out of HDF5's cache, in a file still being written.
+        let file_bytes = file.size();
+        let mut buf = Vec::new();
+        let reserved = usize::try_from(nbytes)
+            .ok()
+            .filter(|n| nbytes <= file_bytes && super::data::holdable(&[*n], 1) && buf.try_reserve_exact(*n).is_ok());
+        let Some(nbytes) = reserved else {
+            return Err(Error::Io(format!(
+                "the chunk at {offset:?} in {} declares {nbytes} stored bytes, more than the file's {file_bytes}",
+                ds.name()
+            )));
+        };
+        buf.resize(nbytes, 0);
         let mut filter_mask: u32 = 0;
-        let mut size = nbytes as usize;
+        let mut size = nbytes;
         if h5d::H5Dread_chunk(
             ds.id(),
             h5p::H5P_DEFAULT,
@@ -692,32 +710,44 @@ pub fn read_raw_chunk(ds: &hdf5::Dataset, offset: &[u64]) -> Result<(u32, Vec<u8
     })
 }
 
-/// The number of chunks actually stored for a chunked dataset.
+/// What [`stored_chunks`]' walk collects: each chunk's logical offset.
+struct ChunkOffsets {
+    rank: usize,
+    found: Vec<Vec<u64>>,
+}
+
+unsafe extern "C" fn chunk_offset(
+    offset: *const u64,
+    _filter_mask: std::os::raw::c_uint,
+    _addr: u64,
+    _size: u64,
+    data: *mut c_void,
+) -> std::os::raw::c_int {
+    // SAFETY: HDF5 passes the dataset's rank of coordinates, valid for the
+    // duration of the callback, and the state handed to `H5Dchunk_iter`.
+    unsafe {
+        let state = &mut *(data as *mut ChunkOffsets);
+        state.found.push(std::slice::from_raw_parts(offset, state.rank).to_vec());
+    }
+    0
+}
+
+/// The logical offset of every chunk actually stored for a chunked dataset,
+/// in the order the chunk index holds them.
+///
+/// One walk of the index (`H5Dchunk_iter`): asking for the chunks one by one
+/// by ordinal walks the index from its start each time, so 10 000 chunks took
+/// 13 seconds.
 pub fn stored_chunks(ds: &hdf5::Dataset) -> Result<Vec<Vec<u64>>> {
-    let ndim = ds.ndim();
-    super::locked(|| unsafe {
-        let space = h5d::H5Dget_space(ds.id());
-        let mut n: u64 = 0;
-        let status = h5d::H5Dget_num_chunks(ds.id(), space, &mut n);
-        let mut out = Vec::new();
-        if status >= 0 {
-            for i in 0..n {
-                let mut offset = vec![0u64; ndim];
-                let mut mask: u32 = 0;
-                let mut addr: u64 = 0;
-                let mut size: u64 = 0;
-                if h5d::H5Dget_chunk_info(ds.id(), space, i, offset.as_mut_ptr(), &mut mask, &mut addr, &mut size) >= 0
-                {
-                    out.push(offset);
-                }
-            }
-        }
-        crate::h5sys::h5s::H5Sclose(space);
-        if status < 0 {
-            return Err(Error::Io(format!("could not count the chunks of {}", ds.name())));
-        }
-        Ok(out)
-    })
+    super::alive(ds)?;
+    let mut state = ChunkOffsets { rank: ds.ndim(), found: Vec::new() };
+    let status = super::locked(|| unsafe {
+        h5d::H5Dchunk_iter(ds.id(), h5p::H5P_DEFAULT, Some(chunk_offset), (&mut state as *mut ChunkOffsets).cast())
+    });
+    if status < 0 {
+        return Err(Error::Io(format!("could not list the chunks of {}", ds.name())));
+    }
+    Ok(state.found)
 }
 
 #[cfg(test)]
@@ -773,6 +803,43 @@ mod tests {
         assert_eq!(read_raw_chunk(&ds, &[0, 2]).unwrap().1, vec![1u8; 4]);
         let flat = file.new_dataset::<u8>().shape([4]).create("flat").unwrap();
         assert!(read_raw_chunk(&flat, &[0]).is_err(), "a contiguous dataset stores no chunks");
+    }
+
+    /// Every stored chunk is listed, and none never written, in one walk of
+    /// the chunk index: asked for one by one, each ordinal walked the index
+    /// from its start, and 10 000 chunks took 13 seconds.
+    #[test]
+    fn s14_1_the_stored_chunks_are_listed_in_one_walk() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = crate::h5::file::create_truncate(&dir.path().join("c.h5")).unwrap();
+        let ds = file.new_dataset::<u8>().chunk((1, 1)).shape((100, 100)).create("c").unwrap();
+        ds.write(&ndarray::Array2::<u8>::ones((100, 100))).unwrap();
+        let sparse = file.new_dataset::<u8>().chunk((2, 2)).shape((6, 6)).create("sparse").unwrap();
+        sparse.write_slice(&ndarray::Array2::<u8>::ones((2, 2)), (2..4, 4..6)).unwrap();
+        let started = std::time::Instant::now();
+        let all = stored_chunks(&ds).unwrap();
+        let elapsed = started.elapsed();
+        assert_eq!(all.len(), 10_000);
+        let distinct: HashSet<Vec<u64>> = all.into_iter().collect();
+        assert_eq!(distinct.len(), 10_000);
+        assert!(distinct.contains(&vec![99, 0]) && distinct.contains(&vec![0, 99]));
+        assert!(elapsed < std::time::Duration::from_secs(3), "{elapsed:?} to list 10 000 chunks");
+        assert_eq!(stored_chunks(&sparse).unwrap(), vec![vec![2, 4]]);
+    }
+
+    /// A failed call's text names the call and HDF5's reason for refusing it,
+    /// where it used to read "HDF5 error" whatever had happened.
+    #[test]
+    fn the_text_of_an_hdf5_error_names_the_failed_call() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = crate::h5::file::create_truncate(&dir.path().join("e.h5")).unwrap();
+        let name = cstring("absent").unwrap();
+        let text = super::super::locked(|| {
+            let id = unsafe { h5d::H5Dopen2(file.id(), name.as_ptr(), h5p::H5P_DEFAULT) };
+            assert!(id < 0);
+            hdf5_error_text()
+        });
+        assert!(text.contains("H5Dopen2"), "{text}");
     }
 
     /// An unchanged file is checked once; the memo is what keeps re-opens cheap.

@@ -20,14 +20,14 @@ use crate::h5sys::{h5d, h5p};
 use crate::{with_dtype, Result};
 
 /// The chunk shape of a chunked dataset whose one filter is Blosc2, when the
-/// filter's values describe that chunk.
+/// filter's values describe that chunk, and the chunk's size in bytes.
 ///
-/// HDF5's filter refuses a chunk its values do not describe --- a stored
-/// chunk size (`cd_values[3]`) smaller than the chunk aborted the process
-/// until the filter checked it (F07 of the round-4 audit) --- so a window is
-/// read here only when the filter would read the whole chunk, and HDF5
-/// answers the rest with its error.
-fn blosc2_chunk(ds: &hdf5::Dataset, rank: usize, itemsize: usize) -> Option<Vec<usize>> {
+/// HDF5's filter refuses a chunk its values do not describe --- a chunk size
+/// in the filter's values (`cd_values[3]`) smaller than the chunk aborted the
+/// process until the filter checked it --- so a window is read here only when
+/// the filter would read the whole chunk, and HDF5 answers the rest with its
+/// error.
+fn blosc2_chunk(ds: &hdf5::Dataset, rank: usize, itemsize: usize) -> Option<(Vec<usize>, u64)> {
     super::locked(|| unsafe {
         // A contiguous dataset has an address; asking is cheaper than copying
         // the creation properties, and small datasets (index pools) are all
@@ -72,16 +72,29 @@ fn blosc2_chunk(ds: &hdf5::Dataset, rank: usize, itemsize: usize) -> Option<Vec<
             if values[2] as usize != itemsize || u64::from(values[3]) != bytes || !shape_ok {
                 return None;
             }
-            Some(dims.into_iter().map(|d| d as usize).collect())
+            Some((dims.into_iter().map(|d| d as usize).collect(), bytes))
         })();
         h5p::H5Pclose(plist);
         found
     })
 }
 
+/// The largest stored chunk a window reads: twice the chunk's bytes and 64
+/// KiB more --- far more than a Blosc2 frame adds to what it holds, its
+/// header, trailer, B2ND metadata and block offsets, however badly the data
+/// compresses --- and never more than the file holding it.
+fn frame_ceiling(chunk_bytes: u64, file_bytes: u64) -> u64 {
+    chunk_bytes.saturating_mul(2).saturating_add(64 * 1024).min(file_bytes)
+}
+
 /// Read the stored bytes of the chunk at `origin` into `frame`; their length,
-/// or `None` for a chunk never written or stored with a filter skipped.
-fn stored_chunk(ds: &hdf5::Dataset, origin: &[u64], frame: &mut Vec<u8>) -> Option<usize> {
+/// or `None` for a chunk never written, stored with a filter skipped, or
+/// stored at a size no frame of a chunk of `chunk_bytes` can have.
+///
+/// The size is the file's to state, up to 0xFFFFFFFF, so it is checked
+/// before anything is reserved: a buffer sized by it alone took a crafted
+/// 140 KB file to 4 GB of memory, or aborted the process.
+fn stored_chunk(ds: &hdf5::Dataset, origin: &[u64], chunk_bytes: u64, frame: &mut Vec<u8>) -> Option<usize> {
     super::locked(|| unsafe {
         let (mut mask, mut addr, mut size) = (0u32, 0u64, 0u64);
         if h5d::H5Dget_chunk_info_by_coord(ds.id(), origin.as_ptr(), &mut mask, &mut addr, &mut size) < 0
@@ -90,8 +103,15 @@ fn stored_chunk(ds: &hdf5::Dataset, origin: &[u64], frame: &mut Vec<u8>) -> Opti
         {
             return None;
         }
-        if frame.len() < size as usize {
-            frame.resize(size as usize, 0);
+        // The file's size once the chunk is in it: asking for the chunk
+        // writes it out of HDF5's cache, in a file still being written.
+        if size > frame_ceiling(chunk_bytes, ds.file().ok()?.size()) {
+            return None;
+        }
+        let size = usize::try_from(size).ok()?;
+        if frame.len() < size {
+            frame.try_reserve_exact(size - frame.len()).ok()?;
+            frame.resize(size, 0);
         }
         let (mut filters, mut len) = (0u32, frame.len());
         if h5d::H5Dread_chunk(
@@ -124,7 +144,7 @@ pub(crate) fn read_window(
     if dtype == DType::Bool || axes.len() < 2 || axes.iter().any(|(_, count, step, _)| *step != 1 || *count == 0) {
         return Ok(None);
     }
-    let Some(chunk) = blosc2_chunk(ds, axes.len(), dtype.itemsize()) else {
+    let Some((chunk, chunk_bytes)) = blosc2_chunk(ds, axes.len(), dtype.itemsize()) else {
         return Ok(None);
     };
     let start: Vec<usize> = axes.iter().map(|a| a.0).collect();
@@ -142,7 +162,7 @@ pub(crate) fn read_window(
         let bytes = unsafe {
             std::slice::from_raw_parts_mut(values.as_mut_ptr().cast::<u8>(), std::mem::size_of_val(values.as_slice()))
         };
-        if !fill(ds, &chunk, &start, &count, std::mem::size_of::<T>(), bytes) {
+        if !fill(ds, &chunk, chunk_bytes, &start, &count, std::mem::size_of::<T>(), bytes) {
             return Ok(None);
         }
         Some(NdArray::from(ArrayD::from_shape_vec(IxDyn(out_shape), values)?))
@@ -151,9 +171,11 @@ pub(crate) fn read_window(
 
 /// Decompress each touched chunk's part of the window `[start, start +
 /// count)` into `out`, in C order; `false` when a chunk cannot be read so.
+/// Each chunk holds `chunk_bytes` ([`stored_chunk`]).
 fn fill(
     ds: &hdf5::Dataset,
     chunk: &[usize],
+    chunk_bytes: u64,
     start: &[usize],
     count: &[usize],
     itemsize: usize,
@@ -173,7 +195,7 @@ fn fill(
         let shape: Vec<usize> = lo.iter().zip(&hi).map(|(l, h)| (h - l) as usize).collect();
         let n = shape.iter().product::<usize>() * itemsize;
         let offset: Vec<u64> = origin.iter().map(|o| *o as u64).collect();
-        let Some(len) = stored_chunk(ds, &offset, &mut frame) else {
+        let Some(len) = stored_chunk(ds, &offset, chunk_bytes, &mut frame) else {
             return false;
         };
         if part.len() < n {
@@ -314,6 +336,47 @@ mod tests {
                 assert_eq!(data::read_region(&ds, &index).unwrap(), through_hdf5(&ds, &index));
             }
         }
+    }
+
+    /// The file is the one to state a stored chunk's size, up to 0xFFFFFFFF:
+    /// a size no frame of the chunk can have, and the file cannot hold, is
+    /// refused before a byte is reserved --- by the window and by a raw read.
+    ///
+    /// The file is written in HDF5's earliest format, whose chunk index is a
+    /// version-1 B-tree: each key holds a chunk's stored size, and the node
+    /// carries no checksum, so the size can be rewritten in place.
+    #[test]
+    fn s14_2_a_stored_chunk_size_beyond_the_file_is_refused_before_it_is_reserved() {
+        crate::h5::init();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("crafted.h5");
+        let shape = [16usize, 16, 16];
+        {
+            let file = hdf5::File::create(&path).unwrap();
+            let layout = Layout {
+                chunks: Some(shape.to_vec()),
+                filters: resolve_profile(Some("training")).unwrap().codec(Role::Image).filters(),
+            };
+            data::create(&file, "d", &volume(&shape, DType::I16, &mut Rng::new(3)), &layout).unwrap();
+        }
+        let mut bytes = std::fs::read(&path).unwrap();
+        let at = bytes.windows(4).position(|w| w == b"TREE").expect("a version-1 B-tree");
+        assert_eq!(bytes[at + 4], 1, "a node of raw-data chunks");
+        // Signature, type, level, entries used, two sibling addresses: then
+        // the first key, whose first field is the chunk's stored size.
+        bytes[at + 24..at + 28].copy_from_slice(&0xF000_0000u32.to_le_bytes());
+        std::fs::write(&path, &bytes).unwrap();
+
+        let file = hdf5::File::open(&path).unwrap();
+        let ds = file.dataset("d").unwrap();
+        let window =
+            [Index::Slice(Slice::new(2, 10)), Index::Slice(Slice::new(2, 10)), Index::Slice(Slice::new(2, 10))];
+        assert!(window_only(&ds, &window).is_none(), "the window declines the chunk");
+        assert!(data::read_region(&ds, &window).is_err(), "and HDF5 refuses it");
+        let err = crate::h5::ops::read_raw_chunk(&ds, &[0, 0, 0]).unwrap_err();
+        assert!(err.to_string().contains("more than the file's"), "{err}");
+        assert_eq!(frame_ceiling(8192, 1 << 40), 2 * 8192 + 64 * 1024);
+        assert_eq!(frame_ceiling(8192, 4000), 4000, "never past the file");
     }
 
     #[test]
