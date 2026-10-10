@@ -444,13 +444,7 @@ impl<'a> Prepared<'a> {
         let mut attests = Vec::new();
         for (i, (_, l)) in links.iter().enumerate() {
             let source = event(&l.source_type, &l.source_id);
-            let structural = l.relation == "describes"
-                && source.is_some_and(|s| {
-                    matches!(
-                        (events[s].kind.as_str(), l.target_type.as_str()),
-                        ("document", "document") | ("imaging", "image")
-                    )
-                });
+            let structural = source.is_some_and(|s| l.is_structural_from(&events[s].kind));
             if structural {
                 attests.push((i, Attests::Structure { source: source.expect("structural") }));
             } else if l.relation != "supersedes" {
@@ -666,14 +660,7 @@ impl<'a> Prepared<'a> {
             {
                 continue;
             }
-            for (kind, id) in [(&l.source_type, &l.source_id), (&l.target_type, &l.target_id)] {
-                if matches!(kind.as_str(), "image" | "annotation" | "transform" | "grid" | "instance" | "document") {
-                    asserted.push((fragment, kind.clone(), id.clone()));
-                }
-            }
-            if let Some(ann) = &l.target_annotation_id {
-                asserted.push((fragment, "annotation".into(), ann.clone()));
-            }
+            asserted.extend(l.payloads(false).into_iter().map(|(kind, id)| (fragment, kind.into(), id.into())));
             attested.push(*i);
         }
         payloads.extend(asserted);

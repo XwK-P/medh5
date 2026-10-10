@@ -520,7 +520,52 @@ impl Link {
     pub fn describe(&self) -> String {
         format!("{}:{} -{}-> {}:{}", self.source_type, self.source_id, self.relation, self.target_type, self.target_id)
     }
+
+    /// Whether this is the structural link from an event of `kind` to its
+    /// own payload (§7.3): a `document` event `describes` its document, an
+    /// `imaging` event its image.
+    pub fn is_structural_from(&self, kind: &str) -> bool {
+        self.relation == "describes"
+            && self.source_type == "event"
+            && matches!((kind, self.target_type.as_str()), ("document", "document") | ("imaging", "image"))
+    }
+
+    /// The event version that attests this link (§7.3), `kind_of` naming
+    /// each event's kind: its source, when it is the structural link; else
+    /// its `asserted_by_event_id`, but for `supersedes`, which attests
+    /// nothing.  `None` for an unattributed link, which supports navigation
+    /// only.
+    pub fn attester<'k>(&self, kind_of: &dyn Fn(&str) -> Option<&'k str>) -> Option<&str> {
+        if self.source_type == "event" && kind_of(&self.source_id).is_some_and(|k| self.is_structural_from(k)) {
+            return Some(&self.source_id);
+        }
+        if self.relation == "supersedes" {
+            return None;
+        }
+        self.asserted_by_event_id.as_deref().filter(|by| kind_of(by).is_some())
+    }
+
+    /// What admitting this link's attester admits with it (1.1 §9.1 step 5):
+    /// a structural link's target; an asserted link's endpoints that are
+    /// payloads, and the annotation an instance target is observed in.
+    pub fn payloads(&self, structural: bool) -> Vec<(&str, &str)> {
+        if structural {
+            return vec![(&self.target_type, &self.target_id)];
+        }
+        let mut out: Vec<(&str, &str)> = [(&self.source_type, &self.source_id), (&self.target_type, &self.target_id)]
+            .into_iter()
+            .filter(|(kind, _)| PAYLOAD_TYPES.contains(&kind.as_str()))
+            .map(|(kind, id)| (kind.as_str(), id.as_str()))
+            .collect();
+        if let Some(annotation) = &self.target_annotation_id {
+            out.push(("annotation", annotation));
+        }
+        out
+    }
 }
+
+/// The endpoint types an asserted link admits as payloads (1.1 §9.1 step 5).
+pub const PAYLOAD_TYPES: [&str; 6] = ["image", "annotation", "transform", "grid", "instance", "document"];
 
 /// Everything the profile holds about one sample, as logical records.
 #[derive(Debug, Clone, PartialEq)]

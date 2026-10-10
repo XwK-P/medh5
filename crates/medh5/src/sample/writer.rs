@@ -344,15 +344,25 @@ impl SampleWriter {
     /// rewrites the file from its root before it replaces anything: unlinked
     /// alone, every record stayed in the file's bytes (F08 of the round-4
     /// audit).
+    ///
+    /// The event versions the amended file held stay held: one added again
+    /// in this amendment must be what it was, attesting what it did (1.1
+    /// §7.3).  Dropped and added again with a payload it never had, a
+    /// version became an input with that payload from its old availability.
     pub fn drop_clinical(&mut self) -> Result<()> {
         let root = self.root()?;
         if ops::exists(&root, crate::clinical::GROUP) {
             self.compact = true;
         }
+        if self.clinical_source == ClinicalSource::Inherited && self.inherited_events.is_empty() {
+            // Tables that do not read hold no version anything can be held to.
+            if let Ok(Some(held)) = crate::clinical::Clinical::open(&root, false) {
+                self.inherited_events = held.events.iter().map(|e| (e.event_id.clone(), e.kind.clone())).collect();
+            }
+        }
         ops::unlink(&root, crate::clinical::GROUP)?;
         self.clinical = None;
         self.clinical_ids = Default::default();
-        self.inherited_events = Default::default();
         self.clinical_source = ClinicalSource::Absent;
         self.declared_profiles.remove(crate::clinical::PROFILE);
         self.source_version = None;

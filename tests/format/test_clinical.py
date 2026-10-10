@@ -482,20 +482,36 @@ class TestF02ImmutableVersions:
     def test_F02_S7_3_a_grounding_of_an_inherited_version_stays_allowed(
         self, history: Path
     ):
-        """Only ownership is frozen: a link that is not structural ---
-        attributed to a later version, or one no selection reads as a
-        payload --- is still added."""
+        """A link from an inherited version that is not its structural link
+        --- asserted by a new version, available when it was drawn, or one no
+        selection reads as a payload --- is still added."""
         with medh5.amend(history) as w:
-            w.add_link(
-                Link.between(
-                    ("event", "rep_v1"),
-                    "describes",
-                    ("image", "CT_tp0"),
-                    asserted_by="rep_v2",
+            w.add_event(
+                Event(
+                    "ground1",
+                    "ground1",
+                    "procedure",
+                    "point",
+                    "completed",
+                    effective_start_us=72 * HOUR,
+                    available_us=72 * HOUR,
                 )
             )
+            w.add_link(
+                Link.between(
+                    ("event", "ct0"),
+                    "describes",
+                    ("annotation", "lesions_tp0"),
+                    asserted_by="ground1",
+                )
+            )
+            w.add_link(
+                Link.between(("event", "rep_v1"), "compares_with", ("event", "ct0"))
+            )
         with medh5.open(history) as s:
-            assert s.clinical is not None and len(s.clinical.links) == 6
+            assert s.clinical is not None and len(s.clinical.links) == 7
+            assert not s.clinical.select(48 * HOUR).admits("annotation", "lesions_tp0")
+            assert s.clinical.select(72 * HOUR).admits("annotation", "lesions_tp0")
 
     def test_F02_S7_2_a_superseding_version_owns_the_text_from_its_availability(
         self, tmp_path: Path
@@ -530,6 +546,232 @@ class TestF02ImmutableVersions:
         assert "note_v1" in early.event_ids
         assert not early.admits("document", "note_text")
         assert "note_v2" in late.event_ids and late.admits("document", "note_text")
+
+
+class TestHeldVersions:
+    """What an event version the amended file held attests is fixed with it
+    (1.1 §7.3): its structural link, the links it asserts, and the payloads
+    they reach.  Attached later --- a grounding asserted by the original
+    report, a mask replaced under the id a procedure attests, a link added to a
+    dropped and re-added history --- each was an input from the old version's
+    availability, before it existed."""
+
+    SEG = Event(
+        "seg0",
+        "seg0",
+        "procedure",
+        "point",
+        "completed",
+        effective_start_us=92 * DAY,
+        available_us=92 * DAY,
+    )
+    NOTE = Event(
+        "note1",
+        "note1",
+        "document",
+        "point",
+        "final",
+        effective_start_us=DAY,
+        available_us=DAY,
+    )
+
+    def _segmented(self, path: Path) -> Path:
+        History.write(
+            path,
+            events=[self.SEG],
+            links=[
+                Link.between(
+                    ("event", "seg0"),
+                    "describes",
+                    ("annotation", "lesions_tp0"),
+                    asserted_by="seg0",
+                )
+            ],
+        )
+        return path
+
+    def test_S7_3_a_link_asserted_by_a_held_version_is_refused(self, tmp_path: Path):
+        path = self._segmented(tmp_path / "seg.medh5")
+        with medh5.open(path) as s:
+            before = s.content_id
+        with pytest.raises(MEDH5ValidationError) as caught, medh5.amend(path) as w:
+            w.add_link(
+                Link.between(
+                    ("event", "rep_v1"),
+                    "describes",
+                    ("annotation", "lesions_tp0"),
+                    asserted_by="rep_v1",
+                )
+            )
+        assert caught.value.code == "E809"
+        assert "asserted by event 'rep_v1'" in str(caught.value)
+        with medh5.open(path) as s:
+            assert s.content_id == before
+            assert s.clinical is not None
+            assert not s.clinical.select(24 * HOUR).admits("annotation", "lesions_tp0")
+
+    @pytest.mark.parametrize("readd", [True, False], ids=["replaced", "removed"])
+    def test_S7_3_a_payload_a_held_version_attests_is_fixed(
+        self, tmp_path: Path, readd: bool
+    ):
+        from medh5.annotations.voxel import InstanceInput
+        from tests.kits import block
+
+        path = self._segmented(tmp_path / "seg.medh5")
+        with medh5.open(path) as s:
+            before = s.content_id
+        with pytest.raises(MEDH5ValidationError) as caught, medh5.amend(path) as w:
+            w.remove_annotation("lesions_tp0")
+            if readd:
+                w.add_segmentation(
+                    "lesions_tp0",
+                    grid="ct_tp0",
+                    instances=[
+                        InstanceInput(3, 1, mask=block(History.SHAPE, (5, 8, 2), 2))
+                    ],
+                    annotated_classes=[3],
+                )
+        assert caught.value.code == "E809"
+        assert "annotation 'lesions_tp0', which event 'seg0' attests" in str(
+            caught.value
+        )
+        with medh5.open(path) as s:
+            assert s.content_id == before
+
+    def test_S7_3_the_same_payload_written_again_is_unchanged(self, tmp_path: Path):
+        from medh5.annotations.voxel import InstanceInput
+        from tests.kits import block
+
+        path = self._segmented(tmp_path / "seg.medh5")
+        with medh5.open(path) as s:
+            before = s.content_id
+        with medh5.amend(path) as w:
+            w.remove_annotation("lesions_tp0")
+            w.add_segmentation(
+                "lesions_tp0",
+                grid="ct_tp0",
+                instances=[InstanceInput(3, 1, mask=block(History.SHAPE, (2, 1, 6), 3))],
+                annotated_classes=[3],
+            )
+        with medh5.open(path) as s:
+            assert s.content_id == before
+
+    def test_S7_3_a_transform_a_held_version_attests_is_fixed(self, tmp_path: Path):
+        path = tmp_path / "reg.medh5"
+        History.write(path)
+        with medh5.amend(path) as w:
+            w.add_transform(
+                "tp1_to_tp0",
+                kind="affine",
+                from_frame="P-01-tp1",
+                to_frame="P-01-tp0",
+                matrix=np.eye(4),
+            )
+            w.add_event(
+                Event(
+                    "reg0",
+                    "reg0",
+                    "procedure",
+                    "point",
+                    "completed",
+                    effective_start_us=91 * DAY,
+                    available_us=91 * DAY,
+                )
+            )
+            w.add_link(
+                Link.between(
+                    ("event", "reg0"),
+                    "derived_from",
+                    ("transform", "tp1_to_tp0"),
+                    asserted_by="reg0",
+                )
+            )
+        shifted = np.eye(4)
+        shifted[:3, 3] = 2.0
+        with pytest.raises(MEDH5ValidationError) as caught, medh5.amend(path) as w:
+            w.remove_transform("tp1_to_tp0")
+            w.add_transform(
+                "tp1_to_tp0",
+                kind="affine",
+                from_frame="P-01-tp1",
+                to_frame="P-01-tp0",
+                matrix=shifted,
+            )
+        assert caught.value.code == "E809"
+        assert "transform 'tp1_to_tp0'" in str(caught.value)
+
+    def _note(self, path: Path) -> ClinicalRecords:
+        History.write(path, events=[self.NOTE])
+        with medh5.open(path) as s:
+            assert s.clinical is not None
+            return s.clinical.records()
+
+    def test_S7_3_a_dropped_history_added_again_attests_what_it_did(
+        self, tmp_path: Path
+    ):
+        path = tmp_path / "note.medh5"
+        records = self._note(path)
+        with pytest.raises(MEDH5ValidationError) as caught, medh5.amend(path) as w:
+            w.drop_clinical()
+            w.add_records(records)
+            w.add_document(Document("late_text", "Written a week later."))
+            w.add_link(
+                Link.between(("event", "note1"), "describes", ("document", "late_text"))
+            )
+        assert caught.value.code == "E809"
+        with medh5.open(path) as s:
+            assert s.clinical is not None
+            assert not s.clinical.select(2 * DAY).admits("document", "late_text")
+
+    @pytest.mark.parametrize("change", ["row", "document", "clock"])
+    def test_S7_3_a_held_version_added_again_is_what_it_was(
+        self, tmp_path: Path, change: str
+    ):
+        import dataclasses
+
+        path = tmp_path / "note.medh5"
+        records = self._note(path)
+        if change == "row":
+            earlier = dataclasses.replace(records.events[0], available_us=(-HOUR, -HOUR))
+            records = dataclasses.replace(records, events=(earlier, *records.events[1:]))
+        elif change == "document":
+            documents = [
+                dataclasses.replace(d, text=d.text + " Amended.")
+                if d.document_id == "rep_text_v1"
+                else d
+                for d in records.documents
+            ]
+            records = dataclasses.replace(records, documents=tuple(documents))
+        else:
+            records = dataclasses.replace(records, clock=Clock.relative("other", "x"))
+        with pytest.raises(MEDH5ValidationError) as caught, medh5.amend(path) as w:
+            w.drop_clinical()
+            w.add_records(records)
+        assert caught.value.code == ("E802" if change == "clock" else "E809")
+
+    def test_S7_3_a_dropped_history_may_start_anew(self, tmp_path: Path):
+        path = tmp_path / "note.medh5"
+        self._note(path)
+        fresh = Event(
+            "fresh1",
+            "fresh1",
+            "document",
+            "point",
+            "final",
+            effective_start_us=DAY,
+            available_us=DAY,
+        )
+        with medh5.amend(path) as w:
+            w.drop_clinical()
+            w.set_clock(Clock.relative("other", "a new origin"))
+            w.add_event(fresh)
+            w.add_document(Document("late_text", "Written a week later."))
+            w.add_link(
+                Link.between(("event", "fresh1"), "describes", ("document", "late_text"))
+            )
+        with medh5.open(path) as s:
+            assert s.clinical is not None
+            assert [e.event_id for e in s.clinical.events] == ["fresh1"]
 
 
 class TestValidation:

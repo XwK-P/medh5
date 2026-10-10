@@ -118,6 +118,42 @@ fn s5_an_event_version_is_immutable() {
 }
 
 #[test]
+fn s7_3_an_amendment_cannot_change_what_a_held_version_attests() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = worked(dir.path());
+    let before = content_id(&path);
+    // A grounding drawn now, asserted by the report it grounds: refused as it
+    // is added.
+    let mut w = amend(&path, None).unwrap();
+    let mut grounding = Link::new(("event", "report0_v1"), "describes", ("annotation", "lesions_tp0"));
+    grounding.asserted_by_event_id = Some("report0_v1".into());
+    assert_eq!(w.add_link(grounding).unwrap_err().code(), Some("E809"));
+    w.abort();
+    // A mask the procedure `seg0` attests, removed: refused at the commit,
+    // which compares what is attested with the file being amended.
+    let mut w = amend(&path, None).unwrap();
+    w.remove_annotation("lesions_tp1").unwrap();
+    let err = w.commit(true).unwrap_err();
+    assert_eq!(err.code(), Some("E809"), "{err}");
+    assert!(err.to_string().contains("annotation 'lesions_tp1', which event 'seg0' attests"), "{err}");
+    // The history dropped and added again, with a second text for the
+    // preliminary report: held to what it was.
+    let mut w = amend(&path, None).unwrap();
+    w.drop_clinical().unwrap();
+    w.add_records(worked_records()).unwrap();
+    w.add_document(medh5::clinical::model::Document::text("late", "Written a week later.")).unwrap();
+    w.add_link(Link::new(("event", "report0_v1"), "describes", ("document", "late"))).unwrap();
+    let err = w.commit(true).unwrap_err();
+    assert_eq!(err.code(), Some("E809"), "{err}");
+    // Added again as it was, it is what it was: the address comes back.
+    let mut w = amend(&path, None).unwrap();
+    w.drop_clinical().unwrap();
+    w.add_records(worked_records()).unwrap();
+    w.commit(true).unwrap();
+    assert_eq!(content_id(&path), before);
+}
+
+#[test]
 fn s3_the_clock_is_fixed_once_written() {
     let dir = tempfile::tempdir().unwrap();
     let path = worked(dir.path());

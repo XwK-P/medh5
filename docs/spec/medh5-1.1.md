@@ -348,11 +348,17 @@ version. An unattributed link supports navigation, never a claim about what was 
 report-to-lesion grounding drawn later is not available with the original report.
 
 A single file cannot show when a link was written, so the rule is enforced where it can be: at the
-amendment boundary. A writer amending a sample **MUST** refuse a structural link from an event
-version the sample already held --- **E809**, as for a repeated event id: either would change a
-version already written. Attached later, the payload would be an input at every cutoff after the old
-version's availability, before the payload existed. A new version that supersedes the old one owns
-it instead (§7.2), with its own availability.
+amendment boundary, where what an event version the sample already held attests is fixed with it. A
+writer amending a sample **MUST** refuse --- **E809**, as for a repeated event id: each would change a
+version already written --- a structural link from such a version, a link whose
+`asserted_by_event_id` names one, and any change to a payload one attests: an image, document,
+annotation, transform or grid its links admit with it (§9.1 step 5), compared by its datasets'
+digests, and for an instance the annotations carrying it. Attached or replaced later, the payload or
+relationship would be an input at every cutoff after the old version's availability, before it
+existed. Removing the profile (§10) removes its versions; one added again in the same amendment is
+held to what it was, on the clock it was written on (**E802** otherwise). A new version that
+supersedes the old one owns a changed payload instead (§7.2), and a new version, available when it
+was drawn, asserts a relationship drawn later.
 
 ### 7.4 Lesion assessments
 
@@ -559,6 +565,7 @@ showed it was needed.
 | §3, §7.2 | No conversion between clocks is defined: a subject's fragments join only on one clock (T304), and the versions they share are merged by the task contract, which refuses what does not agree (T305). | The text deferred to "a verified conversion" the task contract never defined, and called cross-fragment revisions "resolved" before selection, where the contract refuses them; an implementation looked for a conversion and a resolution that do not exist. |
 | §4, §5.1 | The identifier columns are listed, table by table, and `record_id` takes the 1.0 id syntax, as `event_id` and `document_id` do. | "Identifier columns are non-empty" named no column, and only two ids had a syntax, while the reference writer and validator refuse an empty `unit` or `prov` and a `record_id` of `rec 1` (E809): which empty strings and which record ids were errors could not be read from the text. |
 | §7.1 | An `instance` endpoint resolves through the `instance_ids` dataset of an annotation of any kind, and is E813 when none holds it; a `target_annotation_id` that does not hold it is E814. | "An instance-bearing annotation" was undefined, and the clause gave E814 for an instance found nowhere, which the reference validator reports as the unresolved endpoint it is (E813). |
+| §7.3 | An amendment also refuses a link asserted by an event version the sample held, and any change to a payload such a version attests; a held version dropped with the profile and added again in the same amendment is held to what it was. | Found by the pre-release review of 2.0: refusing only the structural link left three ways to attach later information to an earlier version --- a grounding asserted by the original report, a lesion mask replaced under the id a procedure attests, and the refused link added once the profile was dropped and its records added again --- and selection admitted each at the old version's availability. |
 
 ## Appendix B — Schemas
 

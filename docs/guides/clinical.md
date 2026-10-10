@@ -47,14 +47,17 @@ with medh5.open("history.medh5") as s:
 ```
 
 The writer checks every record as it is added and the whole history at `commit`, as it does for
-images: a `point` without a start, a numeric value with a unit but no code, a link to an image that
+images: a `point` without a start, an observation with a value but no code, a link to an image that
 does not exist --- each is refused with its diagnostic code rather than written.
 
 A few rules carry most of the meaning:
 
 - **A version is immutable.** A revised report is a new event with the same `record_id` and a new
   document, linked to the old version by `supersedes` --- never an edit of the old row. A measurement
-  corrected later, or an interval whose end was learned later, is a new version too.
+  corrected later, or an interval whose end was learned later, is a new version too. So is what a
+  version attests: an amendment refuses to give a version the file already held a payload or a
+  relationship it did not have, or to replace one it did (`E809`) --- a grounding drawn later is
+  asserted by a new event, available when it was drawn, and a corrected mask is a new annotation.
 - **Unknown stays unknown.** Leave `available_us` as `None` when the source does not say; never
   substitute the time the data was ingested. Strict selection will then never use the event, which is
   the honest outcome.
