@@ -782,7 +782,7 @@ impl Transform {
             }
             coords.extend(idx.iter().map(|v| *v as f64));
         }
-        let world = grid.index_to_world(&coords);
+        let world = grid.index_to_world(&coords)?;
         let world = ArrayD::from_shape_vec(IxDyn(&[total, s]), world)?;
         let displacement = self.displacement_at(&world)?;
         let mut shape = vec![s];
@@ -969,7 +969,7 @@ pub fn cropped_grid(grid: &Grid, roi: &[Slice]) -> Result<Grid> {
     let starts: Vec<i64> = roi.iter().map(|s| s.start.unwrap_or(0)).collect();
     let shape: Vec<i64> =
         roi.iter().zip(&spatial).zip(&starts).map(|((s, n), start)| s.stop.unwrap_or(*n as i64) - start).collect();
-    let origin = grid.index_to_world(&starts.iter().map(|v| *v as f64).collect::<Vec<_>>());
+    let origin = grid.index_to_world(&starts.iter().map(|v| *v as f64).collect::<Vec<_>>())?;
     let lead = grid.shape.len() - grid.n_spatial();
     let mut full_shape: Vec<i64> = grid.shape[..lead].to_vec();
     full_shape.extend(shape);

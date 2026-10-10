@@ -13,6 +13,7 @@
 #include <string.h>
 #include <errno.h>
 #include <assert.h>
+#include <stdint.h>  /* medh5: INT32_MAX, INT64_MAX, SIZE_MAX */
 #include "hdf5.h"
 #include "blosc2_filter.h"
 #include "b2nd.h"
@@ -223,14 +224,19 @@ int32_t compute_b2nd_block_shape(size_t block_size,
                                  const int rank,
                                  const int32_t *dims_chunk,
                                  int32_t *dims_block) {
-  assert(block_size >= 0);
-  assert(type_size >= 0);
+  /* medh5: checked, not asserted (vendor/hdf5-blosc2/PATCHES.md): a type size
+   * of 0 divided by zero, and a chunk dimension below 1 broke the doubling. */
+  if (type_size == 0) {
+    return -1;
+  }
   size_t nitems = block_size / type_size;
 
   // Start with the smallest possible block dimensions (1 or 2).
   size_t nitems_new = 1;
   for (int i = 0; i < rank; i++) {
-    assert(dims_chunk[i] != 0);
+    if (dims_chunk[i] < 1) {
+      return -1;
+    }
     dims_block[i] = dims_chunk[i] == 1 ? 1 : 2;
     nitems_new *= dims_block[i];
   }
@@ -259,9 +265,8 @@ int32_t compute_b2nd_block_shape(size_t block_size,
           nitems_new = newitems_ext;
           dims_block[i] = dims_chunk[i];
         }
-      } else {
-        assert(dims_block[i] == dims_chunk[i]);  // nothing to change
       }
+      /* else dims_block[i] == dims_chunk[i]: nothing to change */
     }
     if (nitems_new == nitems_prev) {
       break;  // not progressing anymore
@@ -295,6 +300,13 @@ size_t blosc2_filter_function(unsigned flags, size_t cd_nelmts,
   typesize = cd_values[2];      /* The datatype size */
   outbuf_size = cd_values[3];   /* Precomputed buffer guess */
 
+  /* medh5: a stored pipeline is file content, so its values are checked
+   * rather than trusted (vendor/hdf5-blosc2/PATCHES.md). */
+  if (typesize == 0) {
+    PUSH_ERR("blosc2_filter", H5E_CALLBACK, "Type size (filter value) is 0");
+    goto failed;
+  }
+
   /* Filter params that are only set for B2ND */
   int ndim = -1;
   int32_t chunkshape[B2ND_MAX_DIM];
@@ -321,6 +333,14 @@ size_t blosc2_filter_function(unsigned flags, size_t cd_nelmts,
       goto failed;
     }
     for (int i = 0; i < ndim; i++) {
+      /* medh5: a dimension is positive and fits the int32 B2ND keeps it in,
+       * and the chunk's byte size does not wrap. */
+      if (cd_values[8 + i] < 1 || cd_values[8 + i] > INT32_MAX
+          || chunksize > SIZE_MAX / (size_t) cd_values[8 + i]) {
+        PUSH_ERR("blosc2_filter", H5E_CALLBACK,
+                 "Chunk dimension %d (filter value %u) is out of range", i, cd_values[8 + i]);
+        goto failed;
+      }
       chunkshape[i] = cd_values[8 + i];
       chunksize *= (size_t) cd_values[8 + i];
     }
@@ -395,6 +415,10 @@ size_t blosc2_filter_function(unsigned flags, size_t cd_nelmts,
       cparams.blocksize = compute_b2nd_block_shape(blocksize, typesize,
                                                    ndim, chunkshape,
                                                    blockdims);
+      if (cparams.blocksize < 0) {
+        PUSH_ERR("blosc2_filter", H5E_CALLBACK, "Cannot compute the B2ND block shape");
+        goto failed;
+      }
 
       int64_t chunkshape_l[B2ND_MAX_DIM];
       for (int i = 0; i < ndim; i++) {
@@ -513,10 +537,25 @@ size_t blosc2_filter_function(unsigned flags, size_t cd_nelmts,
                  "B2ND array rank (%hhd) != filter rank (%d)", array->ndim, ndim);
         goto b2nd_decomp_out;
       }
-      int64_t start[B2ND_MAX_DIM], stop[B2ND_MAX_DIM], size = typesize;
+      /* medh5: the array's own type size is the one its bytes are in. */
+      if (array->sc->typesize != (int32_t) typesize) {
+        PUSH_ERR("blosc2_filter", H5E_CALLBACK,
+                 "B2ND array type size (%d) != filter type size (%zu)",
+                 array->sc->typesize, typesize);
+        goto b2nd_decomp_out;
+      }
+      int64_t start[B2ND_MAX_DIM], stop[B2ND_MAX_DIM], size = (int64_t) typesize;
       for (int i = 0; i < array->ndim; i++) {
         start[i] = 0;
         stop[i] = array->shape[i];
+        /* medh5: the shape comes from the stored chunk; its product must not
+         * wrap. */
+        if (array->shape[i] < 0
+            || (array->shape[i] > 0 && size > INT64_MAX / array->shape[i])) {
+          PUSH_ERR("blosc2_filter", H5E_CALLBACK,
+                   "B2ND array shape[%d] (%lld) is out of range", i, (long long) array->shape[i]);
+          goto b2nd_decomp_out;
+        }
         size *= array->shape[i];
         if (ndim >= 0 && array->shape[i] != chunkshape[i]) {
           /* The HDF5 filter pipeline needs the filter to always return full chunks,
@@ -531,7 +570,19 @@ size_t blosc2_filter_function(unsigned flags, size_t cd_nelmts,
           goto b2nd_decomp_out;
         }
       }
-      assert(outbuf_size >= size);
+      /* medh5: upstream asserts outbuf_size >= size here, which aborted the
+       * process on a file whose stored chunk size (cd_values[3]) is smaller
+       * than the chunk it holds, and lets a build with NDEBUG go on with a
+       * buffer of the wrong size.  The buffer must hold the array and, when
+       * the filter values name the chunk shape, be exactly that chunk: HDF5
+       * expects the whole chunk back. */
+      if (size <= 0 || (uint64_t) size > (uint64_t) outbuf_size
+          || (ndim >= 0 && (uint64_t) size != (uint64_t) outbuf_size)) {
+        PUSH_ERR("blosc2_filter", H5E_CALLBACK,
+                 "B2ND array size (%lld bytes) does not match the chunk size "
+                 "in the filter values (%zu bytes)", (long long) size, outbuf_size);
+        goto b2nd_decomp_out;
+      }
 
       outbuf = malloc(outbuf_size);
       if (outbuf == NULL) {

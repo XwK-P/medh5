@@ -411,3 +411,47 @@ class TestL26Verify:
         with medh5.open(path) as s:
             # No `content_id` makes no claim to check (§13.2 is a SHOULD).
             assert s.verify().unattested == ()
+
+
+class TestF13CyclicCompare:
+    """F13 of the round-4 audit: comparing a tree that links back to an
+    ancestor recursed without end, and a self-cycle overflowed the stack ---
+    a segfault, not an exception.  Trees are compared as graphs now."""
+
+    def test_F13_S14_4_a_cycle_compares_once_at_the_default_stack_size(
+        self, tmp_path: Path
+    ):
+        import subprocess
+        import sys
+
+        path = write_sample(tmp_path / "cyclic.medh5")
+        with h5py.File(path, "r+") as handle:
+            handle["x_loop"] = handle["/"]
+            handle["images/x_self"] = handle["images"]
+        code = (
+            "import sys, medh5\n"
+            "from medh5.integrity import subtrees_identical\n"
+            "with medh5.open(sys.argv[1]) as s:\n"
+            "    print(subtrees_identical(s.root, s.root))\n"
+        )
+        run = subprocess.run(
+            [sys.executable, "-c", code, str(path)],
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        assert run.returncode == 0, (run.returncode, run.stderr[-2000:])
+        assert run.stdout.strip() == "()"
+
+    def test_F13_an_alias_differs_from_a_duplicate(self, tmp_path: Path):
+        from medh5.integrity import subtrees_identical
+
+        alias = write_sample(tmp_path / "alias.medh5")
+        copy = write_sample(tmp_path / "copy.medh5")
+        with h5py.File(alias, "r+") as handle:
+            handle["zzz_alias"] = handle["images/CT_tp0"]
+        with h5py.File(copy, "r+") as handle:
+            handle.copy("images/CT_tp0", "zzz_alias")
+        with medh5.open(alias) as a, medh5.open(copy) as b:
+            found = subtrees_identical(a.root, b.root)
+        assert any(line.startswith("/zzz_alias") for line in found), found

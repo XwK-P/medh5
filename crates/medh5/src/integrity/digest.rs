@@ -85,10 +85,16 @@ pub fn dataset_digest_inspected(
     match data::kind(ds)? {
         Kind::Strings => {
             feed_header(&mut hasher, path, "|O", &shape);
-            for value in data::read_strings(ds)? {
-                hasher.update(value.as_bytes());
-                hasher.update(b"\x00");
-            }
+            // A slab at a time: holding every string of the dataset at once
+            // let a few kilobytes of file take hundreds of megabytes (F10 of
+            // the round-4 audit).
+            data::for_each_string_slab(ds, stream_bytes, &mut |values| {
+                for value in values {
+                    hasher.update(value.as_bytes());
+                    hasher.update(b"\x00");
+                }
+                Ok(())
+            })?;
             Ok(hasher.finish())
         }
         Kind::Other(t) => Err(Error::Type(format!("{} has an unsupported datatype {t}", ds.name()))),

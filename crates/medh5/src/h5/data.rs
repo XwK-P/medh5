@@ -314,31 +314,203 @@ pub fn slice_array(array: &NdArray, index: &[Index]) -> Result<NdArray> {
     })
 }
 
+/// What one decoded string costs beyond its text: the `String` itself, and
+/// what the allocator spends on the smallest allocation it makes for the text.
+pub(crate) const STRING_COST: usize = std::mem::size_of::<String>() + 16;
+
+/// The stored width of a fixed-length string type; `None` for a
+/// variable-length one, and an error for anything else.
+fn string_width(ds: &hdf5::Dataset, td: &TD) -> Result<Option<usize>> {
+    match td {
+        TD::VarLenUnicode | TD::VarLenAscii => Ok(None),
+        TD::FixedAscii(width) | TD::FixedUnicode(width) => Ok(Some((*width).max(1))),
+        other => Err(Error::Type(format!("{} holds {other}, not strings", ds.name()))),
+    }
+}
+
+/// Bytes of text reading rows `[start, start + count)` of a
+/// variable-length string dataset allocates, measured before anything is
+/// (`H5Dvlen_get_buf_size`).  Many elements may name one stored string, so
+/// the text a read allocates is not bounded by the file's size.
+///
+/// A scalar holds one string, which the file stores: it is not measured
+/// (HDF5 iterates a scalar selection without coordinates, which the
+/// measurement dereferences).
+fn vlen_text_bytes(ds: &hdf5::Dataset, rows: Option<(usize, usize)>) -> Result<usize> {
+    use crate::h5sys::{h5d, h5s, h5t};
+    let shape = ds.shape();
+    if shape.is_empty() {
+        return Ok(0);
+    }
+    super::locked(|| unsafe {
+        let stored = h5d::H5Dget_type(ds.id());
+        // The measurement reads as a read would, into memory's type.
+        let ftype = h5t::H5Tget_native_type(stored, h5t::H5T_direction_t::H5T_DIR_DEFAULT);
+        h5t::H5Tclose(stored);
+        if ftype < 0 {
+            return Err(Error::Io(format!("could not measure the strings of {}", ds.name())));
+        }
+        let fspace = h5d::H5Dget_space(ds.id());
+        let mut status = 0;
+        if let Some((start, count)) = rows {
+            let mut first = vec![0u64; shape.len()];
+            let mut counts: Vec<u64> = shape.iter().map(|n| *n as u64).collect();
+            first[0] = start as u64;
+            counts[0] = count as u64;
+            status = h5s::H5Sselect_hyperslab(
+                fspace,
+                h5s::H5S_seloper_t::H5S_SELECT_SET,
+                first.as_ptr(),
+                std::ptr::null(),
+                counts.as_ptr(),
+                std::ptr::null(),
+            );
+        }
+        let mut size: u64 = 0;
+        if status >= 0 {
+            status = h5d::H5Dvlen_get_buf_size(ds.id(), ftype, fspace, &mut size);
+        }
+        h5s::H5Sclose(fspace);
+        h5t::H5Tclose(ftype);
+        if status < 0 {
+            return Err(Error::Io(format!("could not measure the strings of {}", ds.name())));
+        }
+        Ok(usize::try_from(size).unwrap_or(usize::MAX))
+    })
+}
+
+/// The memory reading `n` strings costs once decoded: one `String` each and
+/// its text, held twice while it is decoded --- as HDF5 read it and as text.
+/// That is `text` bytes for variable-length strings (and a pointer each), and
+/// the width for fixed-length ones.
+fn decoded_bytes(n: usize, width: Option<usize>, text: usize) -> Option<usize> {
+    let per = STRING_COST.checked_add(width.map_or(std::mem::size_of::<VarLenUnicode>(), |w| w.saturating_mul(2)))?;
+    n.checked_mul(per)?.checked_add(text.checked_mul(2)?)
+}
+
+/// Read rows `[start, start + count)` of a string dataset along its first
+/// axis, every other axis whole, flattened in C order.  The caller has sized
+/// the read.
+fn read_string_rows(ds: &hdf5::Dataset, td: &TD, start: usize, count: usize) -> Result<Vec<String>> {
+    let shape = ds.shape();
+    let selection: Vec<SliceOrIndex> = shape
+        .iter()
+        .enumerate()
+        .map(|(axis, n)| {
+            let (first, many) = if axis == 0 { (start, count) } else { (0, *n) };
+            SliceOrIndex::SliceCount { start: first, step: 1, count: many, block: 1 }
+        })
+        .collect();
+    let hyper = Hyperslab::from(selection);
+    let mut out = Vec::new();
+    let n: usize = count.saturating_mul(shape[1..].iter().product::<usize>());
+    out.try_reserve_exact(n)
+        .map_err(|_| Error::Io(format!("{n} strings of {} are more than this process can hold", ds.name())))?;
+    match td {
+        TD::VarLenUnicode => {
+            out.extend(ds.read_slice::<VarLenUnicode, _, IxDyn>(hyper)?.iter().map(|s| lossy(s.as_bytes())))
+        }
+        TD::VarLenAscii => {
+            out.extend(ds.read_slice::<VarLenAscii, _, IxDyn>(hyper)?.iter().map(|s| lossy(s.as_bytes())))
+        }
+        _ => out.extend(super::attrs::read_fixed_string_rows(ds, &shape, start, count)?),
+    }
+    Ok(out)
+}
+
+/// Read a string dataset slab by slab along its first axis, handing each
+/// slab's strings to `each` in C order, so that about `budget` bytes of
+/// decoded strings are held at a time --- what a digest needs, where it
+/// held every string of the dataset at once.
+///
+/// A string decoded costs a `String` beyond its text, so a few kilobytes of
+/// one-byte strings, compressed, held hundreds of megabytes once read
+/// (F10 of the round-4 audit).  A slab is sized by what it decodes to:
+/// variable-length text is measured before it is read, and a slab that
+/// measures over the budget is halved.  A single row that no buffer can hold
+/// is refused, as any read is ([`ensure_allocatable`]).
+pub fn for_each_string_slab(
+    ds: &hdf5::Dataset,
+    budget: usize,
+    each: &mut dyn FnMut(Vec<String>) -> Result<()>,
+) -> Result<()> {
+    super::alive(ds)?;
+    let td = ds.dtype()?.to_descriptor()?;
+    let width = string_width(ds, &td)?;
+    let shape = ds.shape();
+    if shape.is_empty() {
+        return each(read_strings(ds)?);
+    }
+    if shape.contains(&0) {
+        return Ok(());
+    }
+    let row: usize = shape[1..].iter().try_fold(1usize, |n, e| n.checked_mul(*e)).unwrap_or(usize::MAX);
+    let per_row = decoded_bytes(row, width, 0).unwrap_or(usize::MAX).max(1);
+    let mut step = (budget / per_row).clamp(1, shape[0]);
+    let mut start = 0;
+    while start < shape[0] {
+        let count = step.min(shape[0] - start);
+        let text = match width {
+            None => vlen_text_bytes(ds, Some((start, count)))?,
+            Some(_) => 0,
+        };
+        let need = decoded_bytes(count.saturating_mul(row), width, text);
+        if count > 1 && need.is_none_or(|b| b > budget) {
+            step = count / 2;
+            continue;
+        }
+        if !need.is_some_and(|b| holdable(&[b], 1)) {
+            return Err(Error::Io(format!(
+                "{} cannot be read: row {start} decodes to more than this process can hold",
+                ds.name()
+            )));
+        }
+        each(read_string_rows(ds, &td, start, count)?)?;
+        start += count;
+    }
+    Ok(())
+}
+
 /// Read a string dataset (any shape), flattened in C order.
 ///
-/// Sized as a numeric read is ([`ensure_allocatable`]): a fixed-length
+/// Sized by what it decodes to, before anything is read: a fixed-length
 /// string type declares any width and a dataspace any extent, and an 11 KiB
 /// file of 2**59 16-byte strings panicked the validator on a capacity
 /// overflow, where a 1 GiB scalar string aborted a capped process (N12 of the
-/// 2.0 re-audit).
+/// 2.0 re-audit).  Each string read costs a `String` beyond its stored bytes,
+/// and variable-length text is measured first, since many elements can name
+/// one stored string (F10 of the round-4 audit).
 pub fn read_strings(ds: &hdf5::Dataset) -> Result<Vec<String>> {
     super::alive(ds)?;
     let td = ds.dtype()?.to_descriptor()?;
+    let width = string_width(ds, &td)?;
     let extents = if ds.is_scalar() { vec![1] } else { ds.shape() };
+    let n = extents.iter().try_fold(1usize, |n, e| n.checked_mul(*e));
+    // The element count is checked against the stored width first, as it
+    // always was, so that a declared extent no machine holds is refused
+    // before it is measured.
+    ensure_allocatable(ds, &extents, width.unwrap_or(std::mem::size_of::<VarLenUnicode>()))?;
+    let text = match width {
+        None if n.is_some_and(|n| n > 0) => vlen_text_bytes(ds, None)?,
+        _ => 0,
+    };
+    if !n.and_then(|n| decoded_bytes(n, width, text)).is_some_and(|b| holdable(&[b], 1)) {
+        return Err(Error::Io(format!(
+            "{} cannot be read: {} strings decode to more than this process can hold",
+            ds.name(),
+            extents.iter().map(usize::to_string).collect::<Vec<_>>().join(" x ")
+        )));
+    }
     Ok(match td {
-        TD::VarLenUnicode => {
-            ensure_allocatable(ds, &extents, std::mem::size_of::<VarLenUnicode>())?;
+        TD::VarLenUnicode if ds.is_scalar() => {
             ds.read_raw::<VarLenUnicode>()?.iter().map(|s| lossy(s.as_bytes())).collect()
         }
-        TD::VarLenAscii => {
-            ensure_allocatable(ds, &extents, std::mem::size_of::<VarLenAscii>())?;
+        TD::VarLenAscii if ds.is_scalar() => {
             ds.read_raw::<VarLenAscii>()?.iter().map(|s| lossy(s.as_bytes())).collect()
         }
-        TD::FixedAscii(width) | TD::FixedUnicode(width) => {
-            ensure_allocatable(ds, &extents, width.max(1))?;
-            read_fixed_strings(ds.id(), ds.size().max(usize::from(ds.is_scalar())), &td, false)?
-        }
-        other => return Err(Error::Type(format!("{} holds {other}, not strings", ds.name()))),
+        TD::FixedAscii(_) | TD::FixedUnicode(_) if ds.is_scalar() => read_fixed_strings(ds.id(), 1, &td, false)?,
+        _ if extents.contains(&0) => Vec::new(),
+        _ => read_string_rows(ds, &td, 0, extents[0])?,
     })
 }
 
@@ -717,5 +889,56 @@ mod tests {
         // One string is a scalar: a vector is refused, not cut to its first.
         let err = read_scalar_string(&small).unwrap_err();
         assert!(err.to_string().contains("not one string"), "{err}");
+    }
+
+    /// F10: a string read is held a slab at a time, each slab within its
+    /// budget by what it decodes to, and the slabs are the whole dataset in
+    /// C order.  A dataset of one-byte strings decoded to a `String` each,
+    /// all at once: a 17 KB file took 687 MB to digest.
+    #[test]
+    fn f10_s13_1_strings_are_digested_a_bounded_slab_at_a_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = hdf5::File::create(dir.path().join("s.h5")).unwrap();
+        let n = 20_000usize;
+        let fixed = file.new_dataset::<hdf5::types::FixedAscii<1>>().shape([n / 4, 4]).create("fixed").unwrap();
+        let values: Vec<String> = (0..n).map(|i| ((b'a' + (i % 26) as u8) as char).to_string()).collect();
+        write_fixed_strings(&fixed, &values, 1, true).unwrap();
+        let long: Vec<String> = (0..64).map(|i| format!("{i:04}").repeat(1000)).collect();
+        let vlen = create_strings(&file.as_group().unwrap(), "vlen", &long).unwrap();
+        for (ds, budget, whole) in [(&fixed, 64 * 1024, &values), (&vlen, 20_000, &long)] {
+            let mut slabs = Vec::new();
+            for_each_string_slab(ds, budget, &mut |slab| {
+                slabs.push(slab);
+                Ok(())
+            })
+            .unwrap();
+            assert!(slabs.len() > 1, "{}: one slab of {}", ds.name(), slabs[0].len());
+            for slab in &slabs {
+                let text: usize = slab.iter().map(String::len).sum();
+                let width = if ds.name() == "/fixed" { Some(1) } else { None };
+                let held = decoded_bytes(slab.len(), width, if width.is_some() { 0 } else { text }).unwrap();
+                assert!(held <= budget || slab.len() == ds.shape()[1..].iter().product::<usize>(), "{held} > {budget}");
+            }
+            assert_eq!(&slabs.concat(), whole);
+            assert_eq!(&read_strings(ds).unwrap(), whole);
+            let streamed = crate::integrity::digest::dataset_digest_streamed(ds, "x", "sha256", budget).unwrap();
+            let at_once = crate::integrity::digest::strings_digest("x", whole, &ds.shape(), "sha256").unwrap();
+            assert_eq!(streamed, at_once);
+        }
+        // A scalar string reads whole, unmeasured: it holds one string.
+        let scalar = create_scalar_string(&file.as_group().unwrap(), "scalar", "{\"a\": 1}").unwrap();
+        assert_eq!(read_strings(&scalar).unwrap(), vec!["{\"a\": 1}".to_string()]);
+        assert_eq!(vlen_text_bytes(&scalar, None).unwrap(), 0);
+        assert!(vlen_text_bytes(&vlen, None).unwrap() >= 64 * 4000);
+    }
+
+    /// F10: a whole read is budgeted by what it decodes to, not by its stored
+    /// bytes alone: many elements may name one stored string.
+    #[test]
+    fn f10_a_whole_read_counts_what_it_decodes_to() {
+        assert_eq!(decoded_bytes(10, Some(1), 0), Some(10 * (STRING_COST + 2)));
+        assert_eq!(decoded_bytes(10, None, 100), Some(10 * (STRING_COST + 8) + 200));
+        assert_eq!(decoded_bytes(usize::MAX, Some(1), 0), None);
+        assert_eq!(decoded_bytes(1, None, usize::MAX), None);
     }
 }

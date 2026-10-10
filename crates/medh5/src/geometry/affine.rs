@@ -47,9 +47,36 @@ pub fn build_affine(spacing: &[f64], origin: &[f64], direction: &Array2<f64>) ->
     Ok(affine)
 }
 
+/// The number of spatial axes `S` of an `(S+1, S+1)` affine.
+///
+/// Anything else is refused --- a matrix that is not square, or smaller than
+/// 2x2 --- because every function here indexes the affine by the size of its
+/// rows: a 4x3 one read past its last column, and an empty one underflowed,
+/// each a panic rather than an error (F25 of the round-4 audit).
+pub fn spatial_axes(affine: &Array2<f64>) -> Result<usize> {
+    let (rows, cols) = affine.dim();
+    if rows != cols || rows < 2 {
+        return Err(Error::Value(format!(
+            "an index-to-world affine is (S+1, S+1) with at least one spatial axis; got shape ({rows}, {cols})"
+        )));
+    }
+    Ok(rows - 1)
+}
+
+/// Refuse flat points that are not `s` coordinates each.
+fn check_points(s: usize, flat: &[f64]) -> Result<()> {
+    if flat.len() % s != 0 {
+        return Err(Error::Value(format!(
+            "points must have {s} coordinates each, one per spatial axis of the affine; got {} values",
+            flat.len()
+        )));
+    }
+    Ok(())
+}
+
 /// Split an affine back into `(spacing, origin, direction)`.
 pub fn decompose_affine(affine: &Array2<f64>) -> Result<(Vec<f64>, Vec<f64>, Array2<f64>)> {
-    let s = affine.nrows() - 1;
+    let s = spatial_axes(affine)?;
     let mut spacing = vec![0.0; s];
     for (c, sp) in spacing.iter_mut().enumerate() {
         *sp = (0..s).map(|r| affine[[r, c]].powi(2)).sum::<f64>().sqrt();
@@ -107,8 +134,9 @@ pub fn is_proper_rotation(matrix: &Array2<f64>, tol: f64) -> bool {
 }
 
 /// Map continuous index coordinates (flat, `S` per point) to world.
-pub fn index_to_world(affine: &Array2<f64>, indices: &[f64]) -> Vec<f64> {
-    let s = affine.nrows() - 1;
+pub fn index_to_world(affine: &Array2<f64>, indices: &[f64]) -> Result<Vec<f64>> {
+    let s = spatial_axes(affine)?;
+    check_points(s, indices)?;
     let mut out = Vec::with_capacity(indices.len());
     for p in indices.chunks(s) {
         for r in 0..s {
@@ -121,12 +149,13 @@ pub fn index_to_world(affine: &Array2<f64>, indices: &[f64]) -> Vec<f64> {
             out.push(v + affine[[r, s]]);
         }
     }
-    out
+    Ok(out)
 }
 
 /// Map world coordinates (flat, `S` per point) back to continuous index.
 pub fn world_to_index(affine: &Array2<f64>, points: &[f64]) -> Result<Vec<f64>> {
-    let s = affine.nrows() - 1;
+    let s = spatial_axes(affine)?;
+    check_points(s, points)?;
     let linear = affine.slice(ndarray::s![..s, ..s]).to_owned();
     let inverse = inv(&linear)?;
     let mut out = Vec::with_capacity(points.len());
@@ -149,12 +178,21 @@ pub type SliceBounds = (i64, i64);
 ///
 /// `start = floor(lo + 0.5)`, `stop = floor(hi + 0.5)` (spec §8.1) --- half
 /// **up**, never half-to-even, or a box on integer edge coordinates rounds its
-/// two ends in opposite directions.  With `shape` the result is clipped.
+/// two ends in opposite directions.  With `shape`, one extent per axis of the
+/// box, the result is clipped.
 pub fn box_to_slices(bbox: &[f64], shape: Option<&[usize]>) -> Result<Vec<SliceBounds>> {
     if bbox.len() % 2 != 0 {
         return Err(Error::invalid(format!("box must have shape (S, 2), got ({},)", bbox.len())));
     }
     let s = bbox.len() / 2;
+    if let Some(extent) = shape {
+        if extent.len() != s {
+            return Err(Error::Value(format!(
+                "a box with {s} axes is clipped to a shape of {s} extents; got {}",
+                crate::json::repr_int_tuple(extent)
+            )));
+        }
+    }
     if (0..s).any(|k| bbox[2 * k] > bbox[2 * k + 1]) {
         return Err(Error::coded("E406", "box has lo > hi on at least one axis"));
     }
@@ -182,9 +220,22 @@ pub fn slices_to_box(slices: &[(i64, i64)]) -> Vec<f32> {
     out
 }
 
+/// The most axes a box's corners are enumerated for: `2**S` of them.
+pub const MAX_CORNER_AXES: usize = 16;
+
 /// The `2**S` corners of an axis-aligned box (flat `(S, 2)`), odometer order.
-pub fn box_corners(bbox: &[f64]) -> Vec<Vec<f64>> {
+pub fn box_corners(bbox: &[f64]) -> Result<Vec<Vec<f64>>> {
+    if bbox.len() % 2 != 0 {
+        return Err(Error::invalid(format!("box must have shape (S, 2), got ({},)", bbox.len())));
+    }
     let s = bbox.len() / 2;
+    // `1 << S` overflowed past 63 axes, and long before that the corners
+    // outgrow any memory.
+    if s > MAX_CORNER_AXES {
+        return Err(Error::Value(format!(
+            "a box with {s} axes has 2**{s} corners; at most {MAX_CORNER_AXES} axes are enumerated"
+        )));
+    }
     let mut out = Vec::with_capacity(1 << s);
     for n in 0..(1usize << s) {
         let mut corner = Vec::with_capacity(s);
@@ -195,14 +246,20 @@ pub fn box_corners(bbox: &[f64]) -> Vec<Vec<f64>> {
         }
         out.push(corner);
     }
-    out
+    Ok(out)
 }
 
 /// Axis-aligned bounds `(S, 2)` (flat) of a box after an affine.
-pub fn apply_affine_to_box(affine: &Array2<f64>, bbox: &[f64]) -> Vec<f64> {
-    let s = bbox.len() / 2;
-    let corners: Vec<f64> = box_corners(bbox).into_iter().flatten().collect();
-    let world = index_to_world(affine, &corners);
+pub fn apply_affine_to_box(affine: &Array2<f64>, bbox: &[f64]) -> Result<Vec<f64>> {
+    let s = spatial_axes(affine)?;
+    if bbox.len() != 2 * s {
+        return Err(Error::Value(format!(
+            "a box under an affine with {s} spatial axes has shape ({s}, 2); got {} values",
+            bbox.len()
+        )));
+    }
+    let corners: Vec<f64> = box_corners(bbox)?.into_iter().flatten().collect();
+    let world = index_to_world(affine, &corners)?;
     let mut out = Vec::with_capacity(2 * s);
     for k in 0..s {
         let values = world.iter().skip(k).step_by(s);
@@ -211,7 +268,7 @@ pub fn apply_affine_to_box(affine: &Array2<f64>, bbox: &[f64]) -> Vec<f64> {
         out.push(lo);
         out.push(hi);
     }
-    out
+    Ok(out)
 }
 
 /// Volume of one voxel in the grid's units^S.
@@ -239,7 +296,7 @@ mod tests {
     fn affine_roundtrip() {
         let dir = eye(3);
         let a = build_affine(&[1.5, 0.8, 0.8], &[-12.0, -9.6, -9.6], &dir).unwrap();
-        let w = index_to_world(&a, &[1.0, 2.0, 3.0]);
+        let w = index_to_world(&a, &[1.0, 2.0, 3.0]).unwrap();
         assert_eq!(w, vec![-10.5, -8.0, -7.199999999999999]);
         let back = world_to_index(&a, &w).unwrap();
         assert!(allclose(&back, &[1.0, 2.0, 3.0], 1e-12, 0.0));
@@ -258,7 +315,41 @@ mod tests {
 
     #[test]
     fn corners_in_odometer_order() {
-        let c = box_corners(&[0.0, 1.0, 10.0, 11.0]);
+        let c = box_corners(&[0.0, 1.0, 10.0, 11.0]).unwrap();
         assert_eq!(c, vec![vec![0.0, 10.0], vec![0.0, 11.0], vec![1.0, 10.0], vec![1.0, 11.0]]);
+    }
+
+    /// F25: a matrix that is not `(S+1, S+1)`, points that are not `S`
+    /// coordinates each, and a shape that is not one extent per axis are
+    /// errors.  Each indexed past what it was given and panicked.
+    #[test]
+    fn f25_s3_3_misshapen_arguments_are_errors_not_panics() {
+        let tall = Array2::from_shape_fn((4, 3), |(r, c)| if r == c { 2.0 } else { 0.0 });
+        let empty = Array2::<f64>::zeros((0, 0));
+        let one = Array2::<f64>::ones((1, 1));
+        for bad in [&tall, &empty, &one] {
+            assert!(matches!(spatial_axes(bad), Err(Error::Value(_))), "{:?}", bad.dim());
+            assert!(decompose_affine(bad).is_err());
+            assert!(index_to_world(bad, &[1.0, 2.0, 3.0]).is_err());
+            assert!(world_to_index(bad, &[1.0, 2.0, 3.0]).is_err());
+            assert!(apply_affine_to_box(bad, &[0.0, 1.0, 0.0, 1.0, 0.0, 1.0]).is_err());
+        }
+        let a = build_affine(&[1.0, 1.0, 1.0], &[0.0, 0.0, 0.0], &eye(3)).unwrap();
+        assert!(matches!(index_to_world(&a, &[1.0, 2.0]), Err(Error::Value(_))));
+        assert!(matches!(world_to_index(&a, &[1.0, 2.0, 3.0, 4.0]), Err(Error::Value(_))));
+        assert!(apply_affine_to_box(&a, &[0.0, 1.0, 0.0, 1.0]).is_err());
+        // A 3-D box clipped to a 2-D shape, or a 2-D one to a 3-D shape.
+        assert!(matches!(box_to_slices(&[0.0, 1.0, 0.0, 1.0, 0.0, 1.0], Some(&[4, 4])), Err(Error::Value(_))));
+        assert!(matches!(box_to_slices(&[0.0, 1.0, 0.0, 1.0], Some(&[4, 4, 4])), Err(Error::Value(_))));
+        assert!(box_corners(&[0.0; 3]).is_err());
+        assert!(matches!(box_corners(&[0.0; 2 * 64]), Err(Error::Value(_))));
+        // The controls still answer.
+        assert_eq!(index_to_world(&a, &[1.0, 2.0, 3.0]).unwrap(), vec![1.0, 2.0, 3.0]);
+        assert_eq!(box_to_slices(&[0.0, 1.0, 0.0, 1.0], Some(&[4, 4])).unwrap(), vec![(0, 1), (0, 1)]);
+        assert_eq!(
+            apply_affine_to_box(&a, &[0.0, 1.0, 0.0, 1.0, 0.0, 1.0]).unwrap(),
+            vec![0.0, 1.0, 0.0, 1.0, 0.0, 1.0]
+        );
+        assert_eq!(decompose_affine(&a).unwrap().0, vec![1.0, 1.0, 1.0]);
     }
 }

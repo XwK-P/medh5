@@ -19,8 +19,15 @@ use crate::array::{DType, NdArray};
 use crate::h5sys::{h5d, h5p};
 use crate::{with_dtype, Result};
 
-/// The chunk shape of a chunked dataset whose one filter is Blosc2.
-fn blosc2_chunk(ds: &hdf5::Dataset, rank: usize) -> Option<Vec<usize>> {
+/// The chunk shape of a chunked dataset whose one filter is Blosc2, when the
+/// filter's values describe that chunk.
+///
+/// HDF5's filter refuses a chunk its values do not describe --- a stored
+/// chunk size (`cd_values[3]`) smaller than the chunk aborted the process
+/// until the filter checked it (F07 of the round-4 audit) --- so a window is
+/// read here only when the filter would read the whole chunk, and HDF5
+/// answers the rest with its error.
+fn blosc2_chunk(ds: &hdf5::Dataset, rank: usize, itemsize: usize) -> Option<Vec<usize>> {
     super::locked(|| unsafe {
         // A contiguous dataset has an address; asking is cheaper than copying
         // the creation properties, and small datasets (index pools) are all
@@ -36,22 +43,33 @@ fn blosc2_chunk(ds: &hdf5::Dataset, rank: usize) -> Option<Vec<usize>> {
             if h5p::H5Pget_layout(plist) != h5d::H5D_layout_t::H5D_CHUNKED || h5p::H5Pget_nfilters(plist) != 1 {
                 return None;
             }
-            let (mut flags, mut n_values, mut config) = (0u32, 0usize, 0u32);
+            let mut values = [0u32; 16];
+            let (mut flags, mut n_values, mut config) = (0u32, values.len(), 0u32);
             let id = h5p::H5Pget_filter2(
                 plist,
                 0,
                 &mut flags,
                 &mut n_values,
-                std::ptr::null_mut(),
+                values.as_mut_ptr(),
                 0,
                 std::ptr::null_mut(),
                 &mut config,
             );
-            if id < 0 || id as u32 != medh5_sys::BLOSC2_FILTER_ID {
+            if id < 0 || id as u32 != medh5_sys::BLOSC2_FILTER_ID || !(4..=values.len()).contains(&n_values) {
                 return None;
             }
             let mut dims = vec![0u64; rank];
             if h5p::H5Pget_chunk(plist, rank as i32, dims.as_mut_ptr()) != rank as i32 {
+                return None;
+            }
+            // Type size, chunk bytes and, when present, the chunk's rank and
+            // shape (the layout `blosc2_filter.c` documents).
+            let bytes = dims.iter().try_fold(itemsize as u64, |n, d| n.checked_mul(*d))?;
+            let shape_ok = n_values < 8
+                || (values[7] as usize == rank
+                    && n_values >= 8 + rank
+                    && dims.iter().zip(&values[8..8 + rank]).all(|(d, v)| *d == u64::from(*v)));
+            if values[2] as usize != itemsize || u64::from(values[3]) != bytes || !shape_ok {
                 return None;
             }
             Some(dims.into_iter().map(|d| d as usize).collect())
@@ -106,7 +124,7 @@ pub(crate) fn read_window(
     if dtype == DType::Bool || axes.len() < 2 || axes.iter().any(|(_, count, step, _)| *step != 1 || *count == 0) {
         return Ok(None);
     }
-    let Some(chunk) = blosc2_chunk(ds, axes.len()) else {
+    let Some(chunk) = blosc2_chunk(ds, axes.len(), dtype.itemsize()) else {
         return Ok(None);
     };
     let start: Vec<usize> = axes.iter().map(|a| a.0).collect();

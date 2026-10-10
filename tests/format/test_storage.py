@@ -4,6 +4,8 @@ recompression (spec §14)."""
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import h5py
@@ -340,6 +342,96 @@ def test_N19_blosclz_chunks_read_whole_by_window_and_in_one_dimension(
         np.testing.assert_array_equal(ct[3:30, 7:41, 2:50], volume[3:30, 7:41, 2:50])
         np.testing.assert_array_equal(flat.read(), line)
         np.testing.assert_array_equal(flat[1234:5678], line[1234:5678])
+
+
+class TestF07FilterValues:
+    """A stored filter pipeline is file content: a Blosc2 chunk-size value
+    (``cd_values[3]``) smaller than the chunk it describes failed an assertion
+    in the vendored filter and aborted the process (SIGABRT at
+    ``blosc2_filter.c:534``, F07 of the round-4 audit).  It is the filter's
+    ordinary error now, whichever way the dataset is read."""
+
+    # Planted without `hdf5plugin`: with the filter registered, HDF5 runs its
+    # `set_local`, which rewrites the value and the defect disappears.
+    PLANT = (
+        "import sys, h5py\n"
+        "with h5py.File(sys.argv[1], 'r+') as f:\n"
+        "    src = f['images/CT']\n"
+        "    code, flags, values, name = src.id.get_create_plist().get_filter(0)\n"
+        "    assert code == 32026, code\n"
+        "    values = list(values)\n"
+        "    values[3] = 1\n"
+        "    dst = f.create_dataset('images/planted', shape=src.shape,"
+        " dtype=src.dtype, chunks=src.chunks, compression=code,"
+        " compression_opts=tuple(values), allow_unknown_filter=True)\n"
+        "    for i in range(src.id.get_num_chunks()):\n"
+        "        offset = src.id.get_chunk_info(i).chunk_offset\n"
+        "        mask, raw = src.id.read_direct_chunk(offset)\n"
+        "        dst.id.write_direct_chunk(offset, raw, mask)\n"
+        "    for key in src.attrs:\n"
+        "        dst.attrs[key] = src.attrs[key]\n"
+        "    del f['images/CT']\n"
+        "    f.move('images/planted', 'images/CT')\n"
+        "    planted = f['images/CT'].id.get_create_plist().get_filter(0)[2]\n"
+        "    assert planted[3] == 1, planted\n"
+    )
+    READ = (
+        "import sys, medh5\n"
+        "with medh5.open(sys.argv[1]) as s:\n"
+        "    image = s.images['CT']\n"
+        "    try:\n"
+        "        if sys.argv[2] == 'full':\n"
+        "            image.read()\n"
+        "        else:\n"
+        "            image.read((slice(0, 4), slice(2, 9), slice(1, 5)))\n"
+        "    except OSError as exc:\n"
+        "        print('refused:', exc)\n"
+        "    else:\n"
+        "        print('read')\n"
+    )
+
+    @staticmethod
+    def _run(*argv: str) -> subprocess.CompletedProcess[str]:
+        env = {**os.environ, "HDF5_PLUGIN_PRELOAD": "::"}
+        return subprocess.run(
+            [sys.executable, *argv],
+            capture_output=True,
+            text=True,
+            timeout=300,
+            env=env,
+        )
+
+    @pytest.fixture
+    def planted(self, tmp_path: Path) -> Path:
+        path = tmp_path / "planted.medh5"
+        rng = np.random.default_rng(7)
+        with medh5.create(path, sample_id="p", codec="balanced") as w:
+            w.add_grid("g", shape=(32, 32, 32), spacing=(1.0, 1.0, 1.0))
+            w.add_image(
+                "CT",
+                rng.integers(0, 1000, (32, 32, 32)).astype(np.int16),
+                grid="g",
+                modality="CT",
+            )
+        run = self._run("-c", self.PLANT, str(path))
+        assert run.returncode == 0, run.stderr[-2000:]
+        return path
+
+    @pytest.mark.parametrize("how", ["full", "window"])
+    def test_F07_S14_2_a_chunk_size_the_chunk_exceeds_is_an_error(
+        self, planted: Path, how: str
+    ) -> None:
+        run = self._run("-c", self.READ, str(planted), how)
+        assert run.returncode == 0, (run.returncode, run.stderr[-2000:])
+        assert run.stdout.startswith("refused:"), run.stdout
+        assert "does not match the chunk size" in run.stdout
+
+    def test_F07_S15_the_validator_reports_it(self, planted: Path) -> None:
+        run = self._run(
+            "-m", "medh5.cli", "validate", "--level", "integrity", str(planted)
+        )
+        assert run.returncode == 1, (run.returncode, run.stderr[-2000:])
+        assert "E001" in run.stdout and "chunk size" in run.stdout
 
 
 class TestRecompress:

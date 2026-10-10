@@ -144,6 +144,52 @@ class TestBoxConvention:
         assert np.any(bounds[:, 0] < naive_lo - 1e-9)
 
 
+class TestF25MisshapenArguments:
+    """F25 of the round-4 audit: an affine that is not ``(S+1, S+1)``, or a
+    box clipped to a shape of another rank, indexed past what it was given
+    and raised ``PanicException`` --- a ``BaseException``, which ``except
+    Exception`` does not catch.  Each is a ``ValueError`` now."""
+
+    @pytest.mark.parametrize(
+        "affine",
+        [
+            np.vstack([np.eye(3), np.zeros((1, 3))]),  # 4x3, not degenerate
+            np.zeros((0, 0)),
+            np.ones((1, 1)),
+        ],
+        ids=["4x3", "empty", "1x1"],
+    )
+    def test_F25_S3_3_an_affine_that_is_not_square_is_a_value_error(self, affine):
+        for call in (
+            lambda: decompose_affine(affine),
+            lambda: index_to_world(affine, np.zeros((2, 3))),
+            lambda: world_to_index(affine, np.zeros((2, 3))),
+            lambda: apply_affine_to_box(affine, np.zeros((3, 2))),
+        ):
+            with pytest.raises(ValueError) as info:
+                call()
+            assert type(info.value).__name__ != "PanicException"
+
+    def test_F25_S8_1_a_box_and_a_shape_of_another_rank_are_refused(self):
+        box = np.array([[0.0, 1.0], [0.0, 1.0], [0.0, 1.0]])
+        with pytest.raises(ValueError, match="one extent per axis|extents"):
+            box_to_slices(box, (4, 4))
+        with pytest.raises(ValueError):
+            box_to_slices(box[:2], (4, 4, 4))
+        with pytest.raises(ValueError):
+            apply_affine_to_box(np.eye(4), box[:2])
+        with pytest.raises(ValueError):
+            box_corners(np.zeros((64, 2)))
+        # The controls answer as before.
+        assert box_to_slices(box, (4, 4, 4)) == (slice(0, 1),) * 3
+        affine = build_affine((2.0, 1.0, 1.0), (0.0, 0.0, 0.0), np.eye(3))
+        np.testing.assert_array_equal(
+            index_to_world(affine, np.array([[1.0, 2.0, 3.0]])), [[2.0, 2.0, 3.0]]
+        )
+        spacing, _, _ = decompose_affine(affine)
+        np.testing.assert_array_equal(spacing, [2.0, 1.0, 1.0])
+
+
 class TestGrid:
     def test_S3_1_spatial_axes_must_be_trailing(self):
         with pytest.raises(MEDH5ValidationError) as exc:

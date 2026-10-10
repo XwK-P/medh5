@@ -334,12 +334,19 @@ pub fn read_attribute(attr: &hdf5::Attribute) -> Result<AttrValue> {
 }
 
 fn read_strings_attr(attr: &hdf5::Attribute, td: &TD) -> Result<Vec<String>> {
-    // Sized before it is read, as a dataset is (N12 of the 2.0 re-audit).
+    // Sized before it is read, as a dataset is (N12 of the 2.0 re-audit),
+    // and by what it decodes to: a `String` per element beyond its stored
+    // bytes, since an attribute cannot be read in parts (F10 of the round-4
+    // audit).
     let itemsize = match td {
-        TD::FixedAscii(width) | TD::FixedUnicode(width) => (*width).max(1),
+        TD::FixedAscii(width) | TD::FixedUnicode(width) => (*width).max(1).saturating_mul(2),
         _ => std::mem::size_of::<VarLenUnicode>(),
     };
-    super::data::ensure_holdable(&format!("attribute {}", repr_str(&attr.name())), &[attr.size().max(1)], itemsize)?;
+    super::data::ensure_holdable(
+        &format!("attribute {}", repr_str(&attr.name())),
+        &[attr.size().max(1)],
+        itemsize.saturating_add(super::data::STRING_COST),
+    )?;
     Ok(match td {
         // Bytes, decoded here: the types' `as_str` trusts the file to hold valid
         // UTF-8, and a damaged one does not (`lossy` keeps that a finding, not
@@ -406,6 +413,71 @@ pub(crate) fn read_fixed_strings(
                 String::from_utf8_lossy(&item[..end]).into_owned()
             })
             .collect())
+    })
+}
+
+/// Rows `[start, start + count)` of a fixed-length string dataset of shape
+/// `shape`, along its first axis with every other axis whole, decoded as
+/// [`read_fixed_strings`] decodes them.  The caller has sized the read.
+pub(crate) fn read_fixed_string_rows(
+    ds: &hdf5::Dataset,
+    shape: &[usize],
+    start: usize,
+    count: usize,
+) -> Result<Vec<String>> {
+    use crate::h5sys::{h5d, h5p, h5s, h5t};
+    let mut first = vec![0u64; shape.len()];
+    let mut counts: Vec<u64> = shape.iter().map(|n| *n as u64).collect();
+    first[0] = start as u64;
+    counts[0] = count as u64;
+    let n = counts.iter().try_fold(1usize, |n, c| n.checked_mul(*c as usize));
+    super::locked(|| unsafe {
+        let ftype = h5d::H5Dget_type(ds.id());
+        if ftype < 0 {
+            return Err(Error::Io(format!("could not read the strings of {}", ds.name())));
+        }
+        let size = h5t::H5Tget_size(ftype).max(1);
+        let mut buf = Vec::new();
+        let bytes = n
+            .and_then(|n| n.checked_mul(size))
+            .filter(|bytes| super::data::holdable(&[*bytes], 1))
+            .filter(|bytes| buf.try_reserve_exact(*bytes).is_ok());
+        let (Some(bytes), Some(n)) = (bytes, n) else {
+            h5t::H5Tclose(ftype);
+            return Err(Error::Io(format!(
+                "{} strings of {size} bytes of {} are more than this process can hold",
+                count,
+                ds.name()
+            )));
+        };
+        buf.resize(bytes, 0);
+        let fspace = h5d::H5Dget_space(ds.id());
+        let mut status = h5s::H5Sselect_hyperslab(
+            fspace,
+            h5s::H5S_seloper_t::H5S_SELECT_SET,
+            first.as_ptr(),
+            std::ptr::null(),
+            counts.as_ptr(),
+            std::ptr::null(),
+        );
+        let mspace = h5s::H5Screate_simple(counts.len() as i32, counts.as_ptr(), std::ptr::null());
+        if status >= 0 {
+            status = h5d::H5Dread(ds.id(), ftype, mspace, fspace, h5p::H5P_DEFAULT, buf.as_mut_ptr().cast());
+        }
+        h5s::H5Sclose(mspace);
+        h5s::H5Sclose(fspace);
+        h5t::H5Tclose(ftype);
+        if status < 0 {
+            return Err(Error::Io(format!("could not read the strings of {}", ds.name())));
+        }
+        let mut out = Vec::new();
+        out.try_reserve_exact(n)
+            .map_err(|_| Error::Io(format!("{n} strings of {} are more than this process can hold", ds.name())))?;
+        out.extend(buf.chunks(size).take(n).map(|item| {
+            let end = item.iter().rposition(|b| *b != 0).map(|i| i + 1).unwrap_or(0);
+            String::from_utf8_lossy(&item[..end]).into_owned()
+        }));
+        Ok(out)
     })
 }
 

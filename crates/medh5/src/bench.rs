@@ -243,7 +243,7 @@ fn paired_measurements(sample: &crate::sample::Sample, repeats: usize) -> Result
         .resolve_frames(source.frame_uid.as_deref().unwrap_or(""), target_grid.frame_uid.as_deref().unwrap_or(""))?
         .ok_or_else(|| Error::Runtime("the frames resolved a moment ago".into()))?;
     let centre_index: Vec<f64> = source.spatial_shape().iter().map(|n| (n / 2) as f64).collect();
-    let world = source.index_to_world(&centre_index);
+    let world = source.index_to_world(&centre_index)?;
     let points = ArrayD::from_shape_vec(IxDyn(&[1, world.len()]), world).map_err(Error::from)?;
     let value = timed(|| transform.transform_points(&points).map(|_| ()), repeats, 3)?;
     Ok(vec![Measurement {

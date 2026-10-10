@@ -400,6 +400,63 @@ class TestN12Strings:
         assert "E00" in run.stdout
 
 
+class TestF10DecodedStrings:
+    """A string read is budgeted by what it decodes to (F10 of the round-4
+    audit).  Every element decodes to a `String` beyond its stored bytes, so a
+    few kilobytes of compressed one-byte strings held hundreds of megabytes
+    once read --- and the digest read every string of the dataset at once."""
+
+    @staticmethod
+    def _planted(path: Path, n: int) -> Path:
+        write_sample(path)
+        with h5py.File(path, "r+") as f:
+            ds = f.create_dataset(
+                "images/x_letters",
+                data=np.full(n, b"x", dtype="S1"),
+                chunks=(min(n, 1 << 20),),
+                compression="gzip",
+                compression_opts=9,
+            )
+            ds.attrs["digest"] = "sha256:" + "0" * 64
+        return path
+
+    def test_F10_S13_1_a_digest_reads_strings_a_slab_at_a_time(self, tmp_path):
+        path = self._planted(tmp_path / "small.medh5", 200_000)
+        report = validate_file(path, level="integrity")
+        assert "E701" in {d.code for d in report.diagnostics}
+
+    @pytest.mark.skipif(
+        not Path("/proc/self/status").exists(), reason="the cap is Linux's"
+    )
+    def test_F10_a_capped_process_digests_what_it_could_not_hold_whole(self, tmp_path):
+        """40 million one-byte strings: 40 KB of file, about 2 GB decoded at
+        once.  Under a cap of the process's size plus 512 MiB the digest is
+        computed a slab at a time and the mismatch reported."""
+        import subprocess
+        import sys
+
+        path = self._planted(tmp_path / "big.medh5", 40_000_000)
+        assert path.stat().st_size < 2_000_000
+        code = (
+            "import resource, sys\n"
+            "from medh5.validate import validate_file\n"
+            "vm = next(int(line.split()[1]) * 1024 for line in "
+            "open('/proc/self/status') if line.startswith('VmSize:'))\n"
+            "cap = vm + 512 * 2**20\n"
+            "resource.setrlimit(resource.RLIMIT_AS, (cap, cap))\n"
+            "report = validate_file(sys.argv[1], level='integrity')\n"
+            "print(sorted({d.code for d in report.diagnostics}))\n"
+        )
+        run = subprocess.run(
+            [sys.executable, "-c", code, str(path)],
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        assert run.returncode == 0, run.stderr[-2000:]
+        assert "E701" in run.stdout, run.stdout
+
+
 class TestCorruptFiles:
     """A validator is pointed at files of unknown provenance; it may not crash."""
 

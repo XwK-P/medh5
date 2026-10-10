@@ -164,7 +164,7 @@ impl Annotation {
             coords.clone()
         } else {
             let own = self.grid()?;
-            map_points(coords, |flat| Ok(own.index_to_world(flat)))?
+            map_points(coords, |flat| own.index_to_world(flat))?
         };
         match (target, self.world_grid()) {
             (Some(target), Some(source)) => map_points(&world, |flat| source.world_into(target, flat)),
@@ -188,7 +188,7 @@ impl Annotation {
                 return Ok(values);
             }
             let own = self.grid()?;
-            values = map_points(&values, |flat| Ok(own.index_to_world(flat)))?;
+            values = map_points(&values, |flat| own.index_to_world(flat))?;
         }
         if let Some(source) = self.world_grid() {
             values = map_points(&values, |flat| source.world_into(target, flat))?;
@@ -311,7 +311,7 @@ impl Annotation {
         let boxes = self.boxes_f64()?;
         let mut out = ndarray::Array3::zeros((boxes.len(), s, 2));
         for (i, bbox) in boxes.iter().enumerate() {
-            let corners = corners_array(bbox);
+            let corners = corners_array(bbox)?;
             let index = self.to_index(&corners.into_dyn(), GridRef::Grid(grid))?;
             let b = bounds(&index.into_dimensionality::<ndarray::Ix2>()?);
             out.index_axis_mut(Axis(0), i).assign(&b);
@@ -323,9 +323,12 @@ impl Annotation {
     pub fn world_corners(&self, grid: GridRef) -> Result<ndarray::Array3<f64>> {
         let s = self.box_ndim()?;
         let boxes = self.boxes_f64()?;
+        if s > crate::geometry::affine::MAX_CORNER_AXES {
+            return Err(Error::Value(format!("a box with {s} axes has too many corners to enumerate")));
+        }
         let mut out = ndarray::Array3::zeros((boxes.len(), 1 << s, s));
         for (i, bbox) in boxes.iter().enumerate() {
-            let world = self.to_world(&corners_array(bbox).into_dyn(), grid)?;
+            let world = self.to_world(&corners_array(bbox)?.into_dyn(), grid)?;
             out.index_axis_mut(Axis(0), i).assign(&world.into_dimensionality::<ndarray::Ix2>()?);
         }
         Ok(out)
@@ -786,9 +789,9 @@ impl Annotation {
 }
 
 /// The `(2**S, S)` corners of a flat `(S, 2)` box, odometer order.
-fn corners_array(bbox: &[f64]) -> Array2<f64> {
-    let corners = box_corners(bbox);
+fn corners_array(bbox: &[f64]) -> Result<Array2<f64>> {
+    let corners = box_corners(bbox)?;
     let s = bbox.len() / 2;
     let flat: Vec<f64> = corners.into_iter().flatten().collect();
-    Array2::from_shape_vec((flat.len() / s.max(1), s), flat).expect("(2**S, S)")
+    Ok(Array2::from_shape_vec((flat.len() / s.max(1), s), flat)?)
 }

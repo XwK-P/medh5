@@ -307,7 +307,7 @@ impl Grid {
         array_to_py(py, self.0.affine().into_dyn())
     }
     fn index_to_world<'py>(&self, py: Python<'py>, indices: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
-        points_through(py, indices, self.0.n_spatial(), |flat| Ok(self.0.index_to_world(flat)))
+        points_through(py, indices, self.0.n_spatial(), |flat| self.0.index_to_world(flat))
     }
     fn world_to_index<'py>(&self, py: Python<'py>, points: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
         points_through(py, points, self.0.n_spatial(), |flat| self.0.world_to_index(flat))
@@ -531,8 +531,8 @@ fn index_to_world<'py>(
     indices: &Bound<'py, PyAny>,
 ) -> R<Bound<'py, PyAny>> {
     let a = to_matrix(affine)?;
-    let s = a.nrows() - 1;
-    points_through(py, indices, s, |flat| Ok(affine::index_to_world(&a, flat)))
+    let s = affine::spatial_axes(&a)?;
+    points_through(py, indices, s, |flat| affine::index_to_world(&a, flat))
 }
 
 #[pyfunction]
@@ -542,7 +542,7 @@ fn world_to_index<'py>(
     points: &Bound<'py, PyAny>,
 ) -> R<Bound<'py, PyAny>> {
     let a = to_matrix(affine)?;
-    let s = a.nrows() - 1;
+    let s = affine::spatial_axes(&a)?;
     points_through(py, points, s, |flat| affine::world_to_index(&a, flat))
 }
 
@@ -589,7 +589,7 @@ fn slices_to_box<'py>(py: Python<'py>, slices: &Bound<'py, PyAny>) -> R<Bound<'p
 fn box_corners<'py>(py: Python<'py>, r#box: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
     let flat: Vec<f64> = f64_array(r#box)?.iter().copied().collect();
     let s = flat.len() / 2;
-    let corners: Vec<f64> = affine::box_corners(&flat).into_iter().flatten().collect();
+    let corners: Vec<f64> = affine::box_corners(&flat)?.into_iter().flatten().collect();
     Ok(array_to_py(py, ArrayD::from_shape_vec(IxDyn(&[1 << s, s]), corners)?))
 }
 
@@ -600,7 +600,7 @@ fn apply_affine_to_box<'py>(
     r#box: &Bound<'py, PyAny>,
 ) -> R<Bound<'py, PyAny>> {
     let flat: Vec<f64> = f64_array(r#box)?.iter().copied().collect();
-    let out = affine::apply_affine_to_box(&to_matrix(affine)?, &flat);
+    let out = affine::apply_affine_to_box(&to_matrix(affine)?, &flat)?;
     let s = out.len() / 2;
     Ok(array_to_py(py, ArrayD::from_shape_vec(IxDyn(&[s, 2]), out)?))
 }

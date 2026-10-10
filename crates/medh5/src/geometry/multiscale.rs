@@ -153,6 +153,17 @@ pub fn check_pyramid(base: &Grid, levels: &[&Grid], factors: &Array2<f64>, rtol:
         if level >= factors.nrows() {
             break;
         }
+        // Every per-axis comparison below indexes the level by level 0's
+        // axes: a level with another number of them is a problem to report,
+        // not an index to read past.
+        if grid.n_spatial() != base.n_spatial() {
+            problems.push(format!(
+                "level {level}: {} spatial axes, level 0 has {}",
+                grid.n_spatial(),
+                base.n_spatial()
+            ));
+            continue;
+        }
         let f: Vec<f64> = factors.row(level).to_vec();
         let expected = derive_level_grid(base, &f, &grid.grid_id, Some(&grid.shape))?;
         for axis in 0..base.n_spatial() {

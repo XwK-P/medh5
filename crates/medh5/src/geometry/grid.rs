@@ -314,7 +314,7 @@ impl Grid {
     }
 
     /// Index -> world for flat points, `S` per point.
-    pub fn index_to_world(&self, indices: &[f64]) -> Vec<f64> {
+    pub fn index_to_world(&self, indices: &[f64]) -> Result<Vec<f64>> {
         index_to_world(&self.affine(), indices)
     }
 
