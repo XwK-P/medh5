@@ -376,6 +376,22 @@ class TestErrorPaths:
         ):
             sample.annotations["organs_tp0"].dense([1], roi=[slice(0, 2)])
 
+    @pytest.mark.parametrize("position", [0, -1, 2**63 - 1])
+    def test_S6_a_roi_is_slices_not_positions(self, sample_path, position):
+        """An integer would mean NumPy's indexing --- the axis dropped, a
+        negative counted from the end --- which a crop that keeps every axis
+        cannot honour; it is refused, naming the slice that reads that one
+        position, rather than read as an empty or a wrapped window."""
+        every = (slice(None), slice(None))
+        with medh5.open(sample_path) as sample:
+            ann = sample.annotations["organs_tp0"]
+            with pytest.raises(TypeError, match=r"not the position.*slice\("):
+                ann.dense([1], roi=(position, *every))
+            with pytest.raises(TypeError, match="not the position"):
+                sample.ignore_region("organs_tp0", roi=(position, *every))
+            first = ann.dense([1], roi=(slice(0, 1), *every))
+            assert np.array_equal(first, ann.dense([1])[:, 0:1])
+
     def test_instances_are_the_only_kind_with_object_identity(self, sample_path):
         with (
             medh5.open(sample_path) as sample,

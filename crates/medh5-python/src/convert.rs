@@ -491,14 +491,27 @@ pub fn region(obj: Option<&Bound<'_, PyAny>>) -> PyResult<Option<Vec<Index>>> {
     Ok(Some(out))
 }
 
-/// A region made of slices only (the engine APIs that crop).
+/// A region made of slices only (the engine APIs that crop), every axis kept.
+///
+/// An integer position is refused rather than read as a one-wide slice: NumPy
+/// drops the axis an integer indexes and counts a negative one from the end,
+/// and a position past the end is an `IndexError` there, not an empty read.
 pub fn slices(obj: Option<&Bound<'_, PyAny>>) -> PyResult<Option<Vec<Slice>>> {
     let Some(items) = region(obj)? else { return Ok(None) };
     items
         .into_iter()
         .map(|i| match i {
             Index::Slice(s) => Ok(s),
-            Index::At(v) => Ok(Slice { start: Some(v), stop: Some(v + 1), step: None }),
+            Index::At(v) => {
+                let one = match v.checked_add(1) {
+                    Some(next) if next != 0 => format!("slice({v}, {next})"),
+                    _ => format!("slice({v}, None)"),
+                };
+                Err(PyTypeError::new_err(format!(
+                    "a region of interest here is one slice per spatial axis, not the position {v}; \
+                     {one} reads that one position and keeps its axis"
+                )))
+            }
         })
         .collect::<PyResult<Vec<_>>>()
         .map(Some)
