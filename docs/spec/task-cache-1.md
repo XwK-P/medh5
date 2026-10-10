@@ -230,8 +230,9 @@ attested links and payloads, uncertain records, exclusion counts), the selected 
 the fragment each came from, each slot's fill, and the target label. The rows of a subject share its
 merged history: a view may name its versions by position in that history rather than copy them, which
 is what keeps a preflight of many cutoffs linear in the history, not in rows times history. A source
-that cannot be read --- a damaged chunk in its clinical tables --- is that source's finding (**T302**,
-**T306**), never the whole preflight's failure.
+that cannot be read --- a damaged chunk in its clinical tables, or in the grid or object table a slot
+reads (never a voxel or a mask) --- is that source's finding (**T302**, **T306**), its subject's rows
+in error, never the whole preflight's failure.
 
 ## 5. Targets
 

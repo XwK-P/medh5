@@ -26,17 +26,20 @@ use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
 
+use ndarray::Axis;
 use serde_json::{json, Value};
 
 use super::source::SourceRef;
 use super::task::{Row, Slot, Subject, TaskManifest};
 use super::{fingerprint, Finding};
+use crate::annotations::Annotation;
 use crate::clinical::model::{Bounds, Event, Link};
 use crate::clinical::select::{names, Prepared, Selection};
 use crate::clinical::Clinical;
+use crate::geometry::Grid;
 use crate::json::{pretty_at, repr_str};
 use crate::sample::Sample;
-use crate::Result;
+use crate::{Error, Result};
 
 /// The digest of one event version's logical record: what duplicates across
 /// fragments must agree on.
@@ -633,6 +636,74 @@ struct Candidate {
     instances: Vec<(String, Vec<i64>)>,
 }
 
+/// The candidate `image_id` makes, when the sample has that image: its grid,
+/// its modality and what is annotated on the grid.  Metadata only --- an
+/// object table is read, never a mask.
+fn candidate(
+    sample: &Sample,
+    event: usize,
+    fragment: usize,
+    image_id: &str,
+    instances: bool,
+) -> Result<Option<Candidate>> {
+    let image = match sample.image(image_id) {
+        Ok(image) => image,
+        Err(Error::Key(_)) => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let grid = image.grid()?;
+    let (mut voxel, mut bearing) = (Vec::new(), Vec::new());
+    for (ann_id, annotation) in sample.annotations()? {
+        if annotation.grid_id() != Some(grid.grid_id.as_str()) {
+            continue;
+        }
+        if annotation.is_voxel() && annotation.kind() != "mask" {
+            voxel.push(ann_id.clone());
+        }
+        if instances && matches!(annotation.kind(), "instances" | "boxes") {
+            if let Some(center) = first_instance_center(annotation, grid)? {
+                bearing.push((ann_id.clone(), center));
+            }
+        }
+    }
+    bearing.sort();
+    Ok(Some(Candidate {
+        event,
+        fragment,
+        image_id: image_id.to_string(),
+        modality: image.modality()?,
+        grid_id: grid.grid_id.clone(),
+        center: grid.spatial_shape().iter().map(|n| (*n / 2) as i64).collect(),
+        voxel,
+        instances: bearing,
+    }))
+}
+
+/// The voxel an instance-bearing annotation's first object --- by
+/// `instance_id`; a `boxes` annotation without ids numbers its boxes from
+/// 0 --- centres a crop on: `⌊(lo + hi)/2 + ½⌋` of its box in `grid`'s
+/// index space, a box stored in world space carried there first (1.0 §8.1).
+/// `None` when the annotation has no objects, or its boxes cannot be placed
+/// on the grid: no centre, rather than a guessed one.
+fn first_instance_center(annotation: &Annotation, grid: &Grid) -> Result<Option<Vec<i64>>> {
+    let boxes = match annotation.boxes_in_index(grid) {
+        Ok(boxes) => boxes,
+        Err(Error::Validation { .. } | Error::Value(_)) => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let n = boxes.len_of(Axis(0));
+    let ids = annotation.instance_ids()?.unwrap_or_else(|| (0..n as u64).collect());
+    let Some(first) = (0..n.min(ids.len())).min_by_key(|&i| ids[i]) else { return Ok(None) };
+    Ok(boxes
+        .index_axis(Axis(0), first)
+        .outer_iter()
+        .map(|r| {
+            let center = ((r[0] + r[1]) / 2.0 + 0.5).floor();
+            center.is_finite().then_some(center as i64)
+        })
+        .collect())
+}
+
 /// What every row of one subject shares, computed once.
 struct Rows<'a> {
     manifest: &'a TaskManifest,
@@ -645,7 +716,14 @@ struct Rows<'a> {
 }
 
 impl<'a> Rows<'a> {
-    fn new(manifest: &'a TaskManifest, history: &'a History, links: &[(usize, &'a Link)]) -> Result<Rows<'a>> {
+    /// What the subject's rows share, and the findings of the images and
+    /// annotations that could not be read: a damaged chunk in one is the
+    /// subject's finding, its rows in error, never the cohort's failure.
+    fn new(
+        manifest: &'a TaskManifest,
+        history: &'a History,
+        links: &[(usize, &'a Link)],
+    ) -> Result<(Rows<'a>, Vec<Finding>)> {
         let events = &history.merged.events;
         let prepared = Prepared::new(events, links)?;
         let targets = match &manifest.target {
@@ -663,7 +741,7 @@ impl<'a> Rows<'a> {
         };
         let by_id: HashMap<&str, usize> = events.iter().enumerate().map(|(i, e)| (e.event_id.as_str(), i)).collect();
         let instances = manifest.slots.iter().any(|s| s.roi == "eligible_instances");
-        let mut candidates = Vec::new();
+        let (mut candidates, mut unread) = (Vec::new(), Vec::new());
         for (fragment, l) in links {
             if l.relation != "describes" || l.source_type != "event" || l.target_type != "image" {
                 continue;
@@ -672,44 +750,23 @@ impl<'a> Rows<'a> {
             if events[event].kind != "imaging" {
                 continue; // only an imaging version owns an image (1.1 §7.3)
             }
-            let sample = &history.fragments[*fragment].sample;
-            let Ok(image) = sample.image(&l.target_id) else { continue };
-            let grid = image.grid()?;
-            let (mut voxel, mut bearing) = (Vec::new(), Vec::new());
-            for (ann_id, annotation) in sample.annotations()? {
-                if annotation.grid_id() != Some(grid.grid_id.as_str()) {
-                    continue;
-                }
-                if annotation.is_voxel() && annotation.kind() != "mask" {
-                    voxel.push(ann_id.clone());
-                }
-                if instances && matches!(annotation.kind(), "instances" | "boxes") {
-                    let mut objects = annotation.instances()?;
-                    objects.sort_by_key(|o| o.instance_id);
-                    if let Some(first) = objects.first() {
-                        let center = first
-                            .bbox
-                            .outer_iter()
-                            .map(|r| ((f64::from(r[0]) + f64::from(r[1])) / 2.0 + 0.5).floor() as i64)
-                            .collect();
-                        bearing.push((ann_id.clone(), center));
-                    }
-                }
+            let source = &history.fragments[*fragment].source;
+            match candidate(&history.fragments[*fragment].sample, event, *fragment, &l.target_id, instances) {
+                Ok(Some(c)) => candidates.push(c),
+                Ok(None) => {}
+                Err(e) => unread.push(Finding::new(
+                    "T306",
+                    if source.source_id.is_empty() { source.locator() } else { source.source_id.clone() },
+                    format!(
+                        "{}: image {} or an annotation on its grid cannot be read: {e}",
+                        source.locator(),
+                        repr_str(&l.target_id)
+                    ),
+                )),
             }
-            bearing.sort();
-            candidates.push(Candidate {
-                event,
-                fragment: *fragment,
-                image_id: l.target_id.clone(),
-                modality: image.modality()?,
-                grid_id: grid.grid_id.clone(),
-                center: grid.spatial_shape().iter().map(|n| (*n / 2) as i64).collect(),
-                voxel,
-                instances: bearing,
-            });
         }
         candidates.sort_by(|a, b| (a.fragment, &a.image_id).cmp(&(b.fragment, &b.image_id)));
-        Ok(Rows { manifest, history, prepared, targets, candidates })
+        Ok((Rows { manifest, history, prepared, targets, candidates }, unread))
     }
 
     /// Fill a slot with the newest eligible image of its modality, by its
@@ -1277,10 +1334,22 @@ fn subject_part(
     } else if !wanted.is_empty() {
         let links = history.merged.link_refs();
         match Rows::new(manifest, &history, &links) {
-            Ok(shared) => {
+            Ok((shared, unread)) if unread.is_empty() => {
                 for &r in wanted {
                     rows.push((r, shared.view(&manifest.rows[r], view(r))?));
                 }
+            }
+            // An image or an annotation its slots would read cannot be: its
+            // source's finding, as unreadable clinical tables are.
+            Ok((_, unread)) => {
+                let reasons: Vec<String> = unread.iter().map(Finding::line).collect();
+                for &r in wanted {
+                    let mut v = view(r);
+                    v.status = "error".into();
+                    v.reasons = reasons.clone();
+                    rows.push((r, v));
+                }
+                findings.extend(unread);
             }
             // Each fragment's chains passed its own check (E816 is per file),
             // so a broken chain here is the fragments contradicting each other

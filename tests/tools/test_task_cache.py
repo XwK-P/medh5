@@ -109,6 +109,27 @@ def found(findings: Any) -> list[str]:
     return sorted({f.code for f in findings})
 
 
+def damage(group: Any, name: str) -> None:
+    """Re-store ``group[name]`` chunked and compressed --- the same values, so
+    the same digest and ``content_id`` --- and damage its chunk: its bytes no
+    longer decompress, and nothing stored says so."""
+    values = group[name][...]
+    attrs = dict(group[name].attrs)
+    del group[name]
+    dataset = group.create_dataset(
+        name, data=values, chunks=values.shape, compression="gzip"
+    )
+    dataset.attrs.update(attrs)
+    dataset.id.write_direct_chunk((0,) * values.ndim, b"\x00" * 16)
+
+
+def instance_task(root: Path, paths: dict[str, Path]) -> TaskManifest:
+    """``task_for``, its slot centred on the first eligible instance."""
+    doc = task_for(root, paths).to_json()
+    doc["slots"][0]["roi"] = "eligible_instances"
+    return TaskManifest(doc, base=root)
+
+
 class TestManifest:
     def test_S3_1_build_save_load(self, setup, tmp_path: Path):
         task, _ = setup
@@ -1096,6 +1117,82 @@ class TestPreflight:
             findings = TaskManifest(doc, base=root).preflight().findings
             assert "T305" in found(findings), why
             assert any(why in str(f) for f in findings), (why, findings)
+
+
+class TestInstanceCentres:
+    """§3.5 and §4: an ``eligible_instances`` slot centres on its first eligible
+    instance, in voxels of the image's own grid, from the object table alone."""
+
+    @pytest.mark.parametrize("space", ["index", "world"])
+    def test_S3_5_a_crop_centres_on_its_instance_in_grid_voxels(
+        self, tmp_path: Path, space: str
+    ):
+        """A box stored in world space is carried onto the image's grid before
+        its centre is taken: its millimetres were read as voxel indices, and
+        the crop landed at (4, 2, 3), every voxel of it valid."""
+        root = tmp_path / "w"
+        root.mkdir()
+        path = root / "P-01.medh5"
+        History.write(path, lesion=False)
+        edges = np.array([[1.5, 2.5, 3.5], [2.5, 3.5, 4.5]])  # voxel (2, 3, 4)
+        if space == "world":
+            with medh5.open(path) as sample:
+                world = sample.grids["ct_tp0"].index_to_world(edges)
+            edges = np.stack([world.min(axis=0), world.max(axis=0)])
+        with medh5.amend(path) as w:
+            boxes = np.ascontiguousarray(edges.T[None])  # (1, 3, 2)
+            w.add_boxes(
+                "found", boxes, [3], grid="ct_tp0", space=space, instance_ids=[7]
+            )
+            w.add_event(
+                Event(
+                    "det0",
+                    "det0",
+                    "procedure",
+                    "point",
+                    "completed",
+                    effective_start_us=2 * HOUR,
+                    available_us=2 * HOUR,
+                )
+            )
+            w.add_link(
+                Link.between(
+                    ("event", "ct0"),
+                    "describes",
+                    ("annotation", "found"),
+                    asserted_by="det0",
+                )
+            )
+        report = instance_task(root, {"P-01": path}).preflight()
+        assert report.ok, report.findings
+        fill = report.row("P-01@24h").slots["ct"]
+        assert (fill.roi, fill.center) == ("eligible_instances", (2, 3, 4))
+
+    def test_S4_preflight_reads_no_mask(self, tmp_path: Path):
+        """A crop is centred from the object table: a mask whose chunk no
+        longer decompresses fails no preflight.  Every mask was decoded, and
+        one damaged mask failed the whole cohort's preflight."""
+        paths = cohort(tmp_path / "c")
+        with h5py.File(paths["P-03"], "r+") as f:
+            damage(f["annotations/lesions_tp0"], "mask_data")
+        task = instance_task(tmp_path / "c", paths)
+        report = task.preflight()
+        assert report.ok, report.findings
+        assert report.counts == {"eligible": 5, "excluded": 1}
+        # Its bytes are checked where every dataset's bytes are read.
+        assert found(task.preflight(deep=True).findings) == ["T302"]
+
+    def test_S4_an_unreadable_object_table_is_its_subjects_finding(
+        self, tmp_path: Path
+    ):
+        paths = cohort(tmp_path / "c")
+        with h5py.File(paths["P-03"], "r+") as f:
+            damage(f["annotations/lesions_tp0"], "boxes")
+        report = instance_task(tmp_path / "c", paths).preflight()
+        (finding,) = report.findings
+        assert finding.code == "T306" and "CT_tp0" in finding.message
+        assert {r.status for r in report.rows if r.subject_id == "P-03"} == {"error"}
+        assert report.row("P-02@24h").status == "eligible"
 
 
 class TestPreflightAtScale:
