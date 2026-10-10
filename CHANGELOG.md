@@ -286,13 +286,31 @@ out `h5py` objects --- and the behaviour changes below.
 - **A vocabulary is held to the cache's `fitted_on` comparison**, the split's
   `set_id` included (`T405`): one fitted under another split of the same
   subjects passed. `medh5.cache.fitted_on_mismatches` is that comparison.
+- **A dataset reads the cache it validated** (`ClinicalTaskDataset`,
+  task-cache-1 §8): validation reports the `manifest_digest` and `level` it
+  read (`CacheReport.manifest_digest`, `.level`), and every later open of the
+  cache --- the first lazy read, a forked worker, an unpickled dataset --- is
+  held to them (`T404`). A cache rebuilt at the same path for another patient
+  whose rows share row ids was read under the first one's verdict, pairing one
+  patient's images with the other's features.
+- **A row's ages are computed in floating point** (`ClinicalTaskDataset`): the
+  difference of two `int64` microsecond times wrapped at the type's ends, so a
+  584,000-year span read as a small negative age.
 - **A pin covers a column however it is linked** (task-cache-1 §2): which
   datasets an object holds was decided by the path a walk of the root first
   reached them at, so an undigested clinical column linked first at the root
   --- an alias sorting before `clinical` --- was no clinical dataset, and the
   shallow and deep checks and a preflight passed it while the rows read it.
   Each attested group is walked on its own, and the shallow check re-reads
-  every object reachable through `clinical/`.
+  every object reachable through `clinical/`. Coverage is by object, not by
+  path: a dataset is covered only if it is one the root's digests list, so a
+  column or a transform reached through a soft link, or through a second hard
+  link from under `index/` --- which no digest covers --- fails the pin (T302)
+  and is listed by `verify()` as unattested, where its value changed under a
+  pin that the shallow and deep checks and a preflight all passed. The
+  validator reports such a dataset's own digest, which no root line covers, as
+  `E702` (§13.2, Appendix C.1), and the attestation walks follow soft links,
+  as a reader does.
 - `medh5.errors.Domain` includes `"clinical"`.
 - **`recompress` keeps a file's link graph.** A soft link is copied as a soft
   link and a second hard link to an object as a link to its copy, where 1.x
@@ -337,6 +355,19 @@ out `h5py` objects --- and the behaviour changes below.
   kept per frame read as 1 mm. Frames turned or spaced against each other are
   refused (`E405`), and a frame stating no pixel spacing is refused rather
   than read as 1 mm.
+- **A DICOM SEG is not placed in a frame known to be another**
+  (`from_dicom_seg`): a grid whose frame of reference is known and is not the
+  SEG's is refused (`E414`), matched or named with `--grid`, before the sample
+  is touched --- an unrelated frame with identical geometry received every
+  voxel. Where either side states no frame, the placement rests on geometry and
+  is recorded as a guess. A sample `scrub` pseudonymised is compared through
+  its pseudonyms (`--frame-salt`, `frame_salt=`), and `frames_agree` asks the
+  question on its own.
+- **`read_dicom_seg` puts a sparse SEG's planes where they were drawn**: on the
+  regular stack of the stated `SpacingBetweenSlices`, else the smallest gap,
+  with the planes the file omits empty. The median gap stood for the step, so
+  planes at 10, 12.5 and 17.5 mm read as 3.75 mm apart and the middle one 1.25
+  mm from its position. Planes no regular stack holds are refused.
 - **`to_dicom_seg` writes an annotation only onto its own grid**: the source
   images must be the annotation grid's slices --- one frame of reference, rows
   and columns running the same way at the same spacing, each image a slice
@@ -350,6 +381,20 @@ out `h5py` objects --- and the behaviour changes below.
   integers. **`to_nnunetv2`** writes labels on their own grid and refuses labels
   that are not on the channels' grid; the reference grid's affine was written
   whatever grid they were on.
+- **`to_nnunetv2` settles the dataset before it writes a file.** Every channel
+  and the labels are one lattice in one frame, convention and unit: equal
+  numbers in LPS and RAS, or in metres and millimetres, were exported as one
+  space, 48 mm or a thousandfold apart. The label table is every case's
+  classes, one name per id --- the first case's stood for all, and a later
+  case's lesion became background --- and every case must have examined every
+  class exported, where a class one case never looked for was written as its
+  verified absence; `classes=` (`--class`) exports a subset all of them
+  examined. A region-based dataset is painted in its `regions_class_order`,
+  where only the classes with a value of their own were written and the
+  components named only inside regions became background. A case whose label
+  volume does not give back every exported label --- two classes on one voxel
+  --- is refused before any of its files is written. These refusals carry no
+  §15.2 code: the samples are valid, and what they fail is nnU-Net's layout.
 - **A `probmap` is refused where it cannot mean what it was given** (`E411`):
   a probability that is not a number (the range check skipped NaN), and a map
   in which some value is within `float32` rounding of the threshold on the
@@ -371,7 +416,11 @@ out `h5py` objects --- and the behaviour changes below.
   allocator for, say, 2⁶³ bytes, which panicked, or 9 TB, which aborted the
   process --- a 10 KiB file stopped a validator. Every read sizes its buffer
   with checked arithmetic and reserves a large one fallibly first
-  (`OSError` from Python, `E001` in a report).
+  (`OSError` from Python, `E001` in a report). Strings are sized the same way:
+  a fixed-width string `/meta` declaring 2⁵⁹ elements panicked on capacity
+  overflow, and a scalar one of 2³⁰ bytes aborted under a memory limit. A
+  `/meta` that is not one scalar string is `E004` (§2.4); a vector was read
+  whole and cut to its first element.
 - **A clinical numeric column stored big-endian is `E805`** (1.1 §4 stores them
   little-endian; HDF5 converted on read, so it validated clean), as are a UTF-8
   column's big-endian `offsets` (1.1 Appendix A), and a member a
@@ -382,7 +431,10 @@ out `h5py` objects --- and the behaviour changes below.
   file that holds it, so a copied one pointed wherever its address landed in the
   new file, and a no-op amend nulled those in an extension group, while every
   digest still verified. 1.0 §16 and Appendix C say so. An attribute of a
-  committed (named) datatype counts: the walk read groups and datasets only.
+  committed (named) datatype counts, and so does one of a committed type no
+  link names any more, found through the dataset or attribute whose type it
+  is: the walk read groups and datasets only, and then named types by their
+  links.
 - **NIfTI exports state their units and timing** (`to_nifti`, `to_nnunetv2`):
   lengths in millimetres (a grid in `m` or `um` scaled to them, `px` as
   "unknown"), evenly spaced frames as `pixdim[4]` and `toffset`, and uneven ones
@@ -396,7 +448,10 @@ out `h5py` objects --- and the behaviour changes below.
   new ones written after it, other fields kept. An even series written over an
   uneven one left its `VolumeTiming`, which the reader prefers to the header,
   so the new image read back with the old timeline; an interrupted export now
-  leaves timing unmeasured, never another image's.
+  leaves timing unmeasured, never another image's. A sidecar that is not a
+  JSON object is refused before anything is withdrawn: the image's `.bval` was
+  deleted first, and the refusal left the image it described without its
+  b-values.
 - **A channel axis is exported as one** (`to_nifti`): with a b-value per
   channel as four dimensions and a `.bval`, the layout diffusion tools read;
   otherwise as NIfTI's vector dimension (`dim[5]`, vector intent), with
@@ -433,6 +488,14 @@ out `h5py` objects --- and the behaviour changes below.
   frame and are one lattice (`E101`, §3.3 rule 4): a grid id is its sample's
   own name, and two samples each calling a grid `g` were scored 1.0 though 100
   mm apart, and grids of two shapes with ignore regions panicked the merge.
+- **World coordinates are compared in one unit and one convention**
+  (`compare_instances`, `Annotation.to_index` and `to_world`, the paired
+  loader): one frame's numbers are in each grid's units (§3.5), so they are
+  carried into one --- the same boxes in metres and millimetres scored an F1 of
+  0, and a point at 1 mm went to index 1000 on a grid of 0.001 m voxels ---
+  and grids in two `coord_system`s are refused (`E414`, §3.3 rule 4), where
+  disjoint boxes in LPS and RAS scored an IoU of 1 and an LPS point was read on
+  an RAS grid unflipped. `Grid.world_into(other, points)` is the conversion.
 - **Tracking answers one observation per visit**, in every accessor
   (`Track.at`, `volume`, `volumes`, `relative_change`, `medh5 track`): the
   object's mask where an `instances` annotation saw it, else its box, whose
@@ -496,6 +559,12 @@ out `h5py` objects --- and the behaviour changes below.
 
 ### Fixed
 
+- **C-Blosc2 3.3.5**, vendored byte for byte from upstream (it was 3.3.2):
+  BloscLZ added a match length's continuation bytes to a signed counter before
+  checking it, so a run of eight million of them in a hostile chunk overflowed
+  the counter --- undefined behaviour in the decoder every Blosc2 read goes
+  through. 3.3.5 checks first, with upstream's other bounds fixes since 3.3.2;
+  tests feed the overflowing streams to the decoder.
 - **The specification names bytes, not Python functions.** A second
   implementation found three clauses it could only satisfy by reading 1.x's
   code: booleans and strings (§2.5) were `np.bool_` and `h5py.string_dtype()`,
