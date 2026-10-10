@@ -745,6 +745,56 @@ class TestFixAndScrub:
         assert run(capsys, "scrub", str(sample_path))[0] == EXIT_OK
 
 
+class TestErrorsNameTheFile:
+    """An I/O or parse error names the file it is about, as the rest of the
+    command line words one (`[Errno 2] No such file or directory: 'x'`);
+    these said only "No such file or directory (os error 2)", or "EOF while
+    parsing a value"."""
+
+    def test_a_manifest_that_is_missing_or_not_json(self, capsys, tmp_path):
+        missing = tmp_path / "missing.json"
+        for command in ("split", "stats", "check"):
+            code, out = run(capsys, "dataset", command, str(missing))
+            assert code == EXIT_ERROR, command
+            assert repr(str(missing)) in out.err, command
+        truncated = tmp_path / "m.json"
+        truncated.write_text("", encoding="utf-8")
+        code, out = run(capsys, "dataset", "check", str(truncated))
+        assert code == EXIT_ERROR
+        assert f"{str(truncated)!r} is not JSON" in out.err
+
+    def test_an_output_that_cannot_be_written(self, capsys, tmp_path, sample_path):
+        manifest = tmp_path / "m.json"
+        code, _ = run(
+            capsys, "dataset", "index", str(sample_path.parent), "-o", str(manifest)
+        )
+        assert code == EXIT_OK
+        target = tmp_path / "nodir" / "x.json"
+        for command in ("split", "stats"):
+            code, out = run(capsys, "dataset", command, str(manifest), "-o", str(target))
+            assert code == EXIT_ERROR, command
+            assert repr(str(target)) in out.err, command
+
+    def test_a_report_that_cannot_be_written(self, capsys, tmp_path):
+        old = tmp_path / "old.medh5"
+        write_legacy_sample(old, images={"CT": np.zeros((4, 4, 4), np.int16)})
+        report = tmp_path / "nodir" / "r.json"
+        code, out = run(
+            capsys, "migrate", str(old), "-o", str(tmp_path / "m"), "--report", str(report)
+        )
+        assert code == EXIT_ERROR
+        assert repr(str(report)) in out.err
+
+    def test_a_file_where_a_directory_is_wanted(self, capsys, tmp_path, sample_path):
+        for argv in (
+            ["unpack", str(sample_path), "-o", str(sample_path)],
+            ["conformance", "build", str(sample_path), "--case", "core-minimal"],
+        ):
+            code, out = run(capsys, *argv)
+            assert code == EXIT_ERROR, argv
+            assert repr(str(sample_path)) in out.err, argv
+
+
 class TestBatches:
     """A command over several files reports on every one: a file it cannot
     process is an entry of its own, the files before it keep their reports,

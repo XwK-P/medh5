@@ -12,6 +12,7 @@ use serde_json::{json, Map, Value};
 use medh5::collection::{open_collection, pack, unpack};
 use medh5::curation::agreement::{compare, Comparison};
 use medh5::curation::splits::audit_splits;
+use medh5::error::os_error;
 use medh5::json::py_str;
 use medh5::sample::open_sample;
 use medh5::Error;
@@ -70,7 +71,10 @@ fn pack_cmd(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
 
 fn unpack_cmd(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let keys = get_strs(m, "keys");
-    let written = match unpack(Path::new(req_str(m, "path")), Path::new(req_str(m, "out")), keys.as_deref(), ".medh5") {
+    let out = req_str(m, "out");
+    // Made here rather than by `unpack`, a file in the way is named.
+    std::fs::create_dir_all(out).map_err(|e| os_error(&e, out))?;
+    let written = match unpack(Path::new(req_str(m, "path")), Path::new(out), keys.as_deref(), ".medh5") {
         Ok(w) => w,
         Err(e) if e.is_medh5() => return Ok(ctx.fail(e.to_string())),
         Err(e) => return Err(e),

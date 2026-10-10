@@ -13,6 +13,7 @@ use medh5::dataset::check::check;
 use medh5::dataset::manifest::{scan, Manifest};
 use medh5::dataset::split::{locator, make_splits, write_claims, Split, SplitOptions};
 use medh5::dataset::stats::{compute_stats, StatsOptions};
+use medh5::error::os_error;
 use medh5::json::{py_float, repr_str};
 use medh5::Error;
 
@@ -113,7 +114,7 @@ fn split(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
         Vec::new()
     };
     if let Some(out) = get_str(m, "out") {
-        std::fs::write(out, medh5::json::pretty(&split.to_json()) + "\n")?;
+        std::fs::write(out, medh5::json::pretty(&split.to_json()) + "\n").map_err(|e| os_error(&e, out))?;
     }
     if flag(m, "json") {
         let mut payload = match split.to_json() {
@@ -191,7 +192,7 @@ fn stats(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let workers = get_i64(m, "workers").unwrap_or(1).max(0) as usize;
     let result = compute_stats(&paths, &options, workers)?;
     if let Some(out) = get_str(m, "out") {
-        std::fs::write(out, medh5::json::pretty(&result.to_json()) + "\n")?;
+        std::fs::write(out, medh5::json::pretty(&result.to_json()) + "\n").map_err(|e| os_error(&e, out))?;
     }
     if flag(m, "json") {
         ctx.emit(&result.to_json(), true);

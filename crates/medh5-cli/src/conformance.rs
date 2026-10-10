@@ -25,22 +25,29 @@ pub fn dispatch(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     match m.subcommand() {
         Some(("list", sub)) => list(sub, ctx),
         Some(("build", sub)) => {
-            let manifest = build_corpus(Path::new(req_str(sub, "outdir")), names)?;
+            let manifest = build_corpus(outdir(sub)?, names)?;
             ctx.print(format!("wrote {chosen} cases and {}", py_path(&manifest)));
             Ok(EXIT_OK)
         }
         Some(("run", sub)) => {
-            let results = run_corpus(Path::new(req_str(sub, "outdir")), names)?;
+            let results = run_corpus(outdir(sub)?, names)?;
             Ok(report(&results, None, flag(sub, "json"), ctx))
         }
         Some(("publish", sub)) => {
-            let root = py_path(&publish(Path::new(req_str(sub, "outdir")), names)?);
+            let root = py_path(&publish(outdir(sub)?, names)?);
             ctx.print(format!("wrote the suite to {root}: {chosen} cases, see {root}/README.md"));
             Ok(EXIT_OK)
         }
         Some(("score", sub)) => score_cmd(sub, ctx),
         _ => Ok(ctx.usage("usage: medh5 conformance {list|build|run|publish|score}")),
     }
+}
+
+/// `OUTDIR`, made if it is not there; a file in the way is named.
+fn outdir(m: &ArgMatches) -> medh5::Result<&Path> {
+    let dir = req_str(m, "outdir");
+    std::fs::create_dir_all(dir).map_err(|e| medh5::error::os_error(&e, dir))?;
+    Ok(Path::new(dir))
 }
 
 /// How many cases `--case` selects --- every case when it names none --- or

@@ -79,7 +79,7 @@ pub fn convert(argv: &[String], m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
 /// Write the report where asked, print it, and exit on whether it is ok.
 pub fn finish(report: &ConversionReport, m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     if let Some(path) = get_str(m, "report") {
-        std::fs::write(path, pretty(&report.to_json()) + "\n")?;
+        std::fs::write(path, pretty(&report.to_json()) + "\n").map_err(|e| medh5::error::os_error(&e, path))?;
     }
     if flag(m, "json") {
         ctx.emit(&report.to_json(), true);

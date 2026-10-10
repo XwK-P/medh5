@@ -392,14 +392,17 @@ impl Manifest {
         hex::encode(Sha256::digest(canonical(&json!({"entries": payload})).as_bytes()))
     }
 
+    /// Write the manifest to `path`; an error names the file.
     pub fn save(&self, path: &Path) -> Result<PathBuf> {
-        std::fs::write(path, pretty(&self.to_json()) + "\n")?;
+        std::fs::write(path, pretty(&self.to_json()) + "\n").map_err(|e| crate::error::os_error(&e, path))?;
         Ok(path.to_path_buf())
     }
 
+    /// Read a manifest [`save`](Manifest::save) wrote; an error names the file.
     pub fn load(path: &Path) -> Result<Manifest> {
-        let text = std::fs::read_to_string(path)?;
-        let doc = crate::json::loads(&text).map_err(|e| Error::Value(e.to_string()))?;
+        let text = std::fs::read_to_string(path).map_err(|e| crate::error::os_error(&e, path))?;
+        let doc = crate::json::loads(&text)
+            .map_err(|e| Error::Value(format!("{} is not JSON: {e}", repr_str(&path.to_string_lossy()))))?;
         Manifest::from_json(&doc)
     }
 
