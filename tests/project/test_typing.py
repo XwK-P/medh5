@@ -352,6 +352,20 @@ def test_a_missing_required_field_is_the_dataclass_TypeError() -> None:
         Agent()
 
 
+def test_too_many_arguments_is_the_dataclass_TypeError() -> None:
+    """Counted as a dataclass counts them: ``self`` and the required fields."""
+    from medh5.curation import Agent, Identity
+
+    with pytest.raises(
+        TypeError,
+        match=r"^Identity.__init__\(\) takes from 3 to 7 positional arguments "
+        r"but 8 were given$",
+    ):
+        Identity(*map(str, range(7)))
+    with pytest.raises(TypeError, match=r"takes from 4 to 8 positional arguments"):
+        Agent(*map(str, range(8)))
+
+
 def _former_dataclasses(tmp_path: Path, label_set: Any, masks: Any) -> dict[str, Any]:
     """One of each class 1.x shipped as a dataclass that ``__reduce__``
     rebuilds from its fields: what the engine builds, and the headers."""

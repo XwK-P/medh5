@@ -155,9 +155,16 @@ pub fn build_json(
     kwargs: Option<&Bound<'_, PyDict>>,
 ) -> PyResult<Value> {
     if args.len() > fields.len() {
+        // As a dataclass counts them: `self`, then the required fields.
+        let required = fields.iter().filter(|f| f.required).count() + 1;
+        let most = fields.len() + 1;
+        let takes = match (required == most, most) {
+            (true, 1) => "1 positional argument".to_string(),
+            (true, _) => format!("{most} positional arguments"),
+            (false, _) => format!("from {required} to {most} positional arguments"),
+        };
         return Err(PyTypeError::new_err(format!(
-            "{class}.__init__() takes from 1 to {} positional arguments but {} were given",
-            fields.len() + 1,
+            "{class}.__init__() takes {takes} but {} were given",
             args.len() + 1
         )));
     }
