@@ -852,12 +852,17 @@ class TestPreflight:
             value_text=value,
         )
 
-    def _target(self, tmp_path: Path, response: str, *events: Event) -> Any:
+    def _row(
+        self, tmp_path: Path, response: str, *events: Event, row: str = "P-01@24h"
+    ) -> Any:
         root = tmp_path / "o"
-        root.mkdir()
+        root.mkdir(parents=True)
         path = root / "P-01.medh5"
         History.write(path, response=response, events=list(events))
-        return task_for(root, {"P-01": path}).preflight().row("P-01@24h").target
+        return task_for(root, {"P-01": path}).preflight().row(row)
+
+    def _target(self, tmp_path: Path, response: str, *events: Event) -> Any:
+        return self._row(tmp_path, response, *events).target
 
     def test_S5_a_cancelled_outcome_is_neither_positive_nor_negative(
         self, tmp_path: Path
@@ -879,6 +884,36 @@ class TestPreflight:
             tmp_path, "NE", self._response("sd", "planned", 100, value="SD")
         )
         assert target.status == "censored" and not target.observed
+
+    @pytest.mark.parametrize("status", ["planned", "cancelled"])
+    def test_S5_an_outcome_that_did_not_occur_is_not_prevalent(
+        self, tmp_path: Path, status: str
+    ):
+        """A progression planned or cancelled at day 50 had not occurred by day
+        95: the row is not excluded as prevalent (as a final one is), and with
+        nothing observed in its window it is censored."""
+        row = self._row(
+            tmp_path, "SD", self._response("pd", status, 50), row="P-01@d95"
+        )
+        assert (row.status, row.target.status) == ("eligible", "censored")
+        final = self._row(
+            tmp_path / "final", "SD", self._response("pd", "final", 50), row="P-01@d95"
+        )
+        assert (final.status, final.reasons) == ("excluded", ("prevalent_target",))
+
+    @pytest.mark.parametrize(
+        ("status", "label"), [("final", "negative"), ("cancelled", "censored")]
+    )
+    def test_S5_a_cancelled_negative_observes_nothing(
+        self, tmp_path: Path, status: str, label: str
+    ):
+        """`NE` at day 90 is neither outcome nor absence, so the only negative
+        is the stable disease at day 170 --- unless it was cancelled."""
+        target = self._target(
+            tmp_path, "NE", self._response("sd", status, 170, value="SD")
+        )
+        assert target.status == label
+        assert target.observed is (label == "negative")
 
     def test_S5_censored_rows_can_be_excluded(self, tmp_path: Path):
         paths = cohort(tmp_path / "c")
