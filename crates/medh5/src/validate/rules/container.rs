@@ -1,6 +1,10 @@
 //! §1.3, §2 --- the container, the document, bulk storage and profiles (E0xx).
 
 use std::collections::BTreeSet;
+use std::sync::OnceLock;
+
+use jsonschema::error::ValidationErrorKind;
+use serde_json::Value;
 
 use super::{child, loc, str_attr, strs_attr, Context};
 use crate::annotations::header::VOXEL_KINDS;
@@ -218,25 +222,80 @@ pub fn check_document(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
         let (location, detail) = split(&message);
         out.push(ctx.err("E005", format!("/meta#{location}"), detail));
     }
+    // A projection's document is read as this version reads it: what only a
+    // later minor defines, each reported here as W913, is set aside.  What it
+    // cannot set aside leaves the document unread, and its rules not run.
+    let projection = (!tolerated.is_empty()).then(|| projected(&parsed));
+    let readable = match &projection {
+        Some(set_aside) => set_aside.as_ref(),
+        None => Some(&parsed),
+    };
     for message in tolerated {
         let (location, detail) = split(&message);
         out.push(ctx.unknown("E005", format!("/meta#{location}"), detail));
     }
-    match SampleDocument::from_json(&parsed) {
-        Ok(doc) => ctx.document = Some(doc),
-        Err(e) if ctx.projection => out.push(ctx.unknown(
-            e.code().unwrap_or("E005"),
-            "/meta",
-            format!("{}; the rules that read the document were not run", e.message()),
-        )),
-        Err(e) => {
+    match readable.map(SampleDocument::from_json) {
+        Some(Ok(doc)) => ctx.document = Some(doc),
+        Some(Err(e)) => {
             let code = e.code().unwrap_or("E005").to_string();
             if !(schema_failed && code == "E005") {
-                out.push(ctx.err(&code, "/meta", e.to_string()));
+                out.push(ctx.err(&code, "/meta", e.message()));
             }
         }
+        None => out.push(ctx.err(
+            "W913",
+            "/meta",
+            "a value only a later minor defines is one this version cannot read past, so the rules that read the \
+             document were not run",
+        )),
     }
     Ok(out)
+}
+
+/// The exact sample-document schema, whose errors a projection sets aside.
+fn exact_schema() -> &'static jsonschema::Validator {
+    static VALIDATOR: OnceLock<jsonschema::Validator> = OnceLock::new();
+    VALIDATOR.get_or_init(|| crate::document::compile(crate::document::schema()))
+}
+
+/// A projection's `/meta` as this version reads it (1.1 §2.2, 1.0 §16): an
+/// unknown member dropped, and an unknown value read as its vocabulary's
+/// `other` or, where the vocabulary has none, as absent.  `None` when a
+/// member the schema requires holds such a value: nothing this version knows
+/// can stand in for it.
+fn projected(parsed: &Value) -> Option<Value> {
+    let mut out = parsed.clone();
+    let mut dropped: Vec<(String, String)> = Vec::new();
+    for error in exact_schema().iter_errors(parsed) {
+        let at = error.instance_path().as_str().to_string();
+        match error.kind() {
+            ValidationErrorKind::AdditionalProperties { unexpected }
+            | ValidationErrorKind::UnevaluatedProperties { unexpected } => {
+                dropped.extend(unexpected.iter().map(|member| (at.clone(), member.clone())));
+            }
+            ValidationErrorKind::Enum { options } => {
+                if options.as_array().is_some_and(|o| o.iter().any(|v| v == "other")) {
+                    *out.pointer_mut(&at)? = Value::from("other");
+                    continue;
+                }
+                let (parent, segment) = at.rsplit_once('/')?;
+                let owner = error.schema_path().as_str().strip_suffix(&format!("/properties/{segment}/enum"))?;
+                let member = segment.replace("~1", "/").replace("~0", "~");
+                let required = crate::document::schema().pointer(&format!("{owner}/required"));
+                if required.and_then(Value::as_array).is_some_and(|r| r.iter().any(|v| v == member.as_str())) {
+                    return None;
+                }
+                dropped.push((parent.to_string(), member));
+            }
+            _ => {}
+        }
+    }
+    for (parent, member) in dropped {
+        if let Some(Value::Object(map)) = out.pointer_mut(&parent) {
+            map.remove(&member);
+        }
+    }
+    Some(out)
 }
 
 pub fn check_bulk_storage(ctx: &mut Context) -> Result<Vec<Diagnostic>> {

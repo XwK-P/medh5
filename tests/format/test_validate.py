@@ -904,3 +904,74 @@ class TestClinicalWithoutTheDocument:
         assert "E005" in found
         assert "E813" not in found
 
+
+class TestProjection:
+    """1.1 §2.2: a later minor's item this validator does not know is W913, and
+    everything else is still checked.  One unknown enumerated value made `/meta`
+    unreadable, and every rule that reads it did not run."""
+
+    @staticmethod
+    def _later(path: Path) -> Path:
+        with h5py.File(path, "r+") as handle:
+            handle.attrs["medh5_version"] = "1.2"
+        return path
+
+    def test_S2_2_an_unknown_value_leaves_the_document_rules_running(
+        self, longitudinal_path
+    ):
+        path = edit_meta(
+            self._later(longitudinal_path), lambda d: d["identity"].update(sex="X")
+        )
+        with h5py.File(path, "r+") as handle:
+            handle["grids/ct_tp1"].attrs["timepoint"] = "tp9"
+        report = validate_file(path)
+        assert at(report, "/meta#identity/sex") == ["W913"]
+        assert at(report, "/grids/ct_tp1") == ["E107"]
+
+    def test_S2_2_an_unknown_activity_type_reads_as_other(self, sample_path):
+        def synthesize(document: dict[str, Any]) -> None:
+            document["provenance"]["activities"][0]["type"] = "synthesize"
+
+        path = edit_meta(self._later(sample_path), synthesize)
+        with h5py.File(path, "r+") as handle:
+            handle["images/CT_tp0"].attrs["prov"] = "act_gone"
+        report = validate_file(path)
+        assert at(report, "/meta#provenance/activities/0/type") == ["W913"]
+        assert at(report, "/images/CT_tp0") == ["E601"]
+
+    def test_S2_2_a_value_nothing_known_can_stand_in_for_is_reported(self, sample_path):
+        """An agent's `type` is required and its vocabulary has no `other`, so
+        the document is not read; that is said, and is not an error."""
+
+        def robot(document: dict[str, Any]) -> None:
+            document["provenance"]["agents"][0]["type"] = "robot"
+
+        report = validate_file(edit_meta(self._later(sample_path), robot))
+        assert report.ok, report.diagnostics
+        (unread,) = [d for d in report.diagnostics if d.location == "/meta"]
+        assert unread.code == "W913"
+        assert "were not run" in unread.message
+
+    def test_S2_2_a_defect_of_a_known_rule_is_still_an_error(self, sample_path):
+        def yesterday(document: dict[str, Any]) -> None:
+            document["provenance"]["activities"][0]["ended"] = "yesterday"
+
+        report = validate_file(edit_meta(self._later(sample_path), yesterday))
+        assert at(report, "/meta") == ["E604"]
+        assert not report.ok
+
+    @pytest.mark.parametrize(
+        ("attribute", "value", "code"),
+        [
+            ("axis_kinds", ["depth", "spatial", "spatial"], "E110"),
+            ("units", "cm", "E109"),
+        ],
+    )
+    def test_S2_2_an_unknown_grid_value_is_W913(self, tmp_path, attribute, value, code):
+        path = core_sample(tmp_path / "g.medh5")
+        with h5py.File(path, "r+") as handle:
+            handle["grids/g"].attrs[attribute] = encode_attr(value)
+        assert at(validate_file(path, level="structural"), "/grids/g") == [code]
+        report = validate_file(self._later(path), level="structural")
+        assert at(report, "/grids/g") == ["W913"]
+        assert report.ok
