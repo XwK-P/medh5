@@ -5,11 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import pytest
 
 from medh5.labels import LabelClass, LabelSet
-from tests.helpers import SEED, SHAPE, block, write_sample, write_series
+from tests.helpers import SHAPE, block, write_sample, write_series
 
 
 @pytest.fixture
@@ -34,12 +33,6 @@ def masks() -> dict[int, Any]:
         2: block(SHAPE, (2, 14, 2), 6),
         3: block(SHAPE, (4, 4, 4), 3),
     }
-
-
-@pytest.fixture
-def ct() -> Any:
-    rng = np.random.default_rng(SEED)
-    return rng.integers(-1000, 1500, SHAPE).astype(np.int16)
 
 
 @pytest.fixture
