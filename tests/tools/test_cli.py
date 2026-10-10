@@ -1647,6 +1647,26 @@ class TestRecompressAndBench:
         with h5py.File(path) as handle:
             assert handle["images/CT"].chunks == before
 
+    def test_S14_2_recompress_names_what_it_copied_as_stored(self, capsys, tmp_path):
+        """A dataset whose stored type a rebuild would lose --- an enumeration
+        and its names --- is copied as it is, and the text output says so on a
+        ``KEPT`` line, as ``--json`` lists it under ``kept``."""
+        path = write_sample(tmp_path / "typed.medh5", codec="portable")
+        colours = h5py.enum_dtype({"RED": 0, "GREEN": 1, "BLUE": 2}, basetype="u1")
+        with h5py.File(path, "r+") as f:
+            f.create_dataset(
+                "x_types/colours", data=np.zeros((48, 64, 64), "u1"), dtype=colours
+            )
+        code, out = run(capsys, "recompress", str(path), "--profile", "archive")
+        assert code == EXIT_OK
+        kept = "  KEPT      /x_types/colours (copied as stored: a rebuild would lose"
+        assert f"{kept} its type)" in out.out.splitlines()
+        code, out = run(
+            capsys, "recompress", str(path), "--profile", "portable", "--json"
+        )
+        assert code == EXIT_OK
+        assert json.loads(out.out)[0]["kept"] == ["/x_types/colours"]
+
     def test_bench_runs_against_a_file(self, capsys, longitudinal_path):
         code, out = run(
             capsys,
