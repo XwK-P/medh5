@@ -8,7 +8,7 @@ needs nothing installed:
 - **HDF5**, statically linked through `hdf5-metno-sys` (`static`, `zlib`);
 - **C-Blosc2** (vendored, BSD-3-Clause) with LZ4, Zstandard and zlib codecs;
 - the **HDF5-Blosc2 filter** (filter id 32026, vendored from the `hdf5plugin`
-  distribution, MIT/BSD), byte-compatible with what `h5py` + `hdf5plugin`
+  distribution, MIT), byte-compatible with what `h5py` + `hdf5plugin`
   write and read;
 - the **HDF5 Zstandard filter** (filter id 32015), in `hdf5plugin`'s chunk
   format, so files compressed by that plugin read here too;

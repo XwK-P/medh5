@@ -1,10 +1,12 @@
 # Local changes to the HDF5-Blosc2 filter
 
-`blosc2_filter.c` is upstream's filter (the source `hdf5plugin` ships) with the
-changes below, each marked `medh5:` in the source. They turn assertions on
-values read from a file into the filter's ordinary error return, so a damaged or
-hostile file is an HDF5 read error rather than an aborted process. They are
-offered upstream; until they land there, keep them when the filter is updated.
+`blosc2_filter.h` and `blosc2_filter.c` are upstream's filter as `hdf5plugin`
+7.1.0 ships it in `lib/HDF5-Blosc2/src/` (HDF5-Blosc2 3.0.1): the header byte
+for byte, the source with the changes below, each marked `medh5:`. They turn
+assertions on values read from a file into the filter's ordinary error return,
+so a damaged or hostile file is an HDF5 read error rather than an aborted
+process. They are offered upstream; until they land there, keep them when the
+filter is updated.
 
 Defining `NDEBUG` is not a substitute. It removes the assertion and leaves the
 condition unchecked, so a file whose stored chunk size is smaller than its
