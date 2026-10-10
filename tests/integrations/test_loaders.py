@@ -476,6 +476,49 @@ class TestPairedPatchDataset:
         same = PairedPatchDataset([unregistered], PatchSampler(8), align="none")[0]
         assert set(same["images"]) == {"tp0", "tp1"}
 
+    @staticmethod
+    def _one_frame(path: Path, **second: Any) -> Path:
+        """Two visits whose grids share a frame, the second as *second* says."""
+        with medh5.create(path, codec="portable") as w:
+            for index, tp in enumerate(("tp0", "tp1")):
+                w.add_timepoint(tp, index=index, days_from_baseline=index * 90)
+                options: dict[str, Any] = {"spacing": (1.0, 1.0, 1.0)}
+                if tp == "tp1":
+                    options.update(second)
+                w.add_grid(
+                    f"g_{tp}",
+                    shape=SHAPE,
+                    timepoint=tp,
+                    frame_uid="pseudo:one",
+                    **options,
+                )
+                w.add_image(
+                    f"CT_{tp}", np.zeros(SHAPE, np.int16), grid=f"g_{tp}", modality="CT"
+                )
+        return path
+
+    def test_N10_S3_5_one_frame_in_two_units_pairs_one_place(self, tmp_path):
+        """The second visit's grid in metres: the first's centre, in
+        millimetres, was read on it as it was --- a thousandfold off (N10 of
+        the round-3 audit)."""
+        path = self._one_frame(
+            tmp_path / "units.medh5", spacing=(0.001, 0.001, 0.001), units="m"
+        )
+        for _ in range(4):
+            meta = PairedPatchDataset([path], PatchSampler(8), align="transform")[0][
+                "meta"
+            ]
+            assert meta["patches"]["tp0"]["center"] == meta["patches"]["tp1"]["center"]
+
+    def test_N10_S3_3_rule_4_one_frame_in_two_conventions_is_refused(self, tmp_path):
+        path = self._one_frame(tmp_path / "ras.medh5", coord_system="RAS")
+        ds = PairedPatchDataset([path], PatchSampler(8), align="transform")
+        with pytest.raises(MEDH5ValidationError, match="coord_system") as caught:
+            ds[0]
+        assert caught.value.code == "E414"
+        same = PairedPatchDataset([path], PatchSampler(8), align="none")[0]
+        assert set(same["images"]) == {"tp0", "tp1"}
+
     def test_S10_2_a_registration_of_another_grid_is_not_this_pair_s(self, tmp_path):
         """A transform must relate the grids being read, not merely the visits.
 

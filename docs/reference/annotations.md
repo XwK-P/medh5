@@ -184,7 +184,11 @@ Index coordinates count the voxels of the annotation's **own** grid.
 `as_slices(grid=…)`, `to_index(…, grid=…)` and `to_world(…, grid=…)` with
 another grid convert through world when the two grids share a `frame_uid`,
 and refuse (`E414`) when they do not — a grid without a frame shares nothing
-(§3.3). A box drawn on a 4 mm grid and read on a 1 mm grid of the same frame
+(§3.3). World coordinates are carried into the other grid's units, so a point
+at 1 mm lands on a grid of 0.001 m voxels at index 1, and a grid in another
+`coord_system` is refused (`E414`): §3.3 rule 4 compares world coordinates in
+one convention only. `Grid.world_into(other, points)` is the same step on its
+own. A box drawn on a 4 mm grid and read on a 1 mm grid of the same frame
 comes back at the 1 mm grid's indices; before 1.4.2 it came back unchanged,
 covering a quarter of the anatomy. Boxes carrying `slice_index` are read on
 their own grid only, since the planes they name are that grid's.

@@ -333,6 +333,61 @@ impl Grid {
         self.spatial_shape().iter().zip(&self.spacing).map(|(n, s)| *n as f64 * s).collect()
     }
 
+    /// The factor that carries this grid's world coordinates into `other`'s
+    /// units (§3.5): millimetres per unit of one over the other's.
+    ///
+    /// E414 when no factor relates their numbers: two grids in different
+    /// `coord_system`s, which §3.3 rule 4 does not compare without a transform
+    /// --- a code names a convention, and only some codes name one unambiguously
+    /// --- or an uncalibrated (`px`) grid against a calibrated one.
+    pub fn world_scale_into(&self, other: &Grid) -> Result<f64> {
+        if self.coord_system != other.coord_system {
+            return Err(Error::coded(
+                "E414",
+                format!(
+                    "grid {} states world coordinates in {} and grid {} in {}; two grids' world coordinates are \
+                     compared in one coord_system only (§3.3 rule 4), so write them in one",
+                    repr_str(&self.grid_id),
+                    self.coord_system,
+                    repr_str(&other.grid_id),
+                    other.coord_system
+                ),
+            ));
+        }
+        if self.units == other.units {
+            return Ok(1.0);
+        }
+        match (mm_per_unit(&self.units), mm_per_unit(&other.units)) {
+            (Some(from), Some(to)) => Ok(from / to),
+            _ => Err(Error::coded(
+                "E414",
+                format!(
+                    "grid {} is in {} and grid {} in {}; an uncalibrated grid's world coordinates scale to no \
+                     other unit (§3.5)",
+                    repr_str(&self.grid_id),
+                    repr_str(&self.units),
+                    repr_str(&other.grid_id),
+                    repr_str(&other.units)
+                ),
+            )),
+        }
+    }
+
+    /// Flat world points of this grid, in `other`'s units.
+    ///
+    /// World coordinates are numbers in a grid's units (§3.5), so one frame's
+    /// points in millimetres and in metres are different numbers: read as they
+    /// were, a point at 1 mm on a grid of 0.001 m voxels went to index 1000,
+    /// and two raters' equal boxes scored an F1 of 0 (N10 of the round-3
+    /// audit).  E414 when nothing relates the two (`world_scale_into`).
+    pub fn world_into(&self, other: &Grid, points: &[f64]) -> Result<Vec<f64>> {
+        let scale = self.world_scale_into(other)?;
+        if scale == 1.0 {
+            return Ok(points.to_vec());
+        }
+        Ok(points.iter().map(|v| v * scale).collect())
+    }
+
     /// Whether two grids are physically comparable without a transform (§3.3.4).
     ///
     /// A grid without a `frame_uid` shares a frame with nothing --- including
@@ -573,6 +628,16 @@ pub fn read_grids(root: &hdf5::Group) -> Result<Vec<(String, Grid)>> {
     Ok(out)
 }
 
+/// Millimetres per unit of a calibrated grid (§3.2); `None` for `px`.
+pub fn mm_per_unit(units: &str) -> Option<f64> {
+    match units {
+        "mm" => Some(1.0),
+        "um" => Some(1e-3),
+        "m" => Some(1e3),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -613,5 +678,38 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(Grid::from_spec(spec).unwrap_err().code(), Some("E103"));
+    }
+
+    fn calibrated(id: &str, coord_system: &str, units: &str) -> Grid {
+        Grid::from_spec(GridSpec {
+            grid_id: id.into(),
+            shape: vec![4, 4, 4],
+            spacing: vec![1.0, 1.0, 1.0],
+            coord_system: Some(coord_system.into()),
+            units: Some(units.into()),
+            ..Default::default()
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn n10_world_coordinates_carry_into_another_grids_units() {
+        let (mm, m, um) = (calibrated("a", "LPS", "mm"), calibrated("b", "LPS", "m"), calibrated("c", "LPS", "um"));
+        assert_eq!(mm.world_into(&m, &[1.0, 2.0, 3.0]).unwrap(), vec![1e-3, 2e-3, 3e-3]);
+        assert_eq!(m.world_into(&um, &[1.0, 0.0, -2.0]).unwrap(), vec![1e6, 0.0, -2e6]);
+        assert_eq!(mm.world_into(&mm, &[1.5, 2.5, 3.5]).unwrap(), vec![1.5, 2.5, 3.5]);
+    }
+
+    #[test]
+    fn n10_s3_3_rule_4_two_conventions_or_px_relate_by_no_factor() {
+        let lps = calibrated("a", "LPS", "mm");
+        for other in [calibrated("b", "RAS", "mm"), calibrated("c", "LPS", "px"), calibrated("d", "custom", "mm")] {
+            assert_eq!(lps.world_into(&other, &[1.0, 1.0, 1.0]).unwrap_err().code(), Some("E414"));
+            assert_eq!(other.world_scale_into(&lps).unwrap_err().code(), Some("E414"));
+        }
+        // Spelled alike, an uncalibrated grid or a custom convention is its own.
+        let (px, custom) = (calibrated("p", "LPS", "px"), calibrated("q", "custom", "mm"));
+        assert_eq!(px.world_scale_into(&px).unwrap(), 1.0);
+        assert_eq!(custom.world_scale_into(&custom).unwrap(), 1.0);
     }
 }

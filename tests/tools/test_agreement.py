@@ -535,3 +535,55 @@ class TestN10AcrossSamples:
         with medh5.open(a) as first, medh5.open(a) as second:
             same = compare_voxel(first.annotations["seg"], second.annotations["seg"])
             assert same.value == 1.0
+
+
+class TestN10WorldUnits:
+    """World coordinates are numbers in their grid's units (§3.5) and are
+    compared in one convention only (§3.3 rule 4) --- N10 of the round-3
+    audit: one frame's boxes in metres against millimetres scored an F1 of 0
+    where they were the same boxes, and in LPS against RAS an IoU of 1 where
+    they were disjoint."""
+
+    @staticmethod
+    def _raters(path: Path) -> Path:
+        box = np.array([Framed.box(2, 6)], np.float32)
+        with Framed.writer(path) as w:
+            for grid, options in (
+                ("m", {"spacing": (0.002, 0.001, 0.001), "units": "m"}),
+                ("ras", {"spacing": (2.0, 1.0, 1.0), "coord_system": "RAS"}),
+            ):
+                w.add_grid(grid, shape=Framed.SHAPE, frame_uid="1.2.3.4", **options)
+            w.add_boxes("mm", box, ["c1"], grid="g", space="world")
+            w.add_boxes("metres", box / 1000, ["c1"], grid="m", space="world")
+            # The same numbers in metres: 2 to 6 m, nowhere near 2 to 6 mm.
+            w.add_boxes("far", box, ["c1"], grid="m", space="world")
+            # In RAS the same numbers are elsewhere, and the same place is
+            # other numbers: neither is compared.
+            w.add_boxes("ras", box, ["c1"], grid="ras", space="world")
+            flipped = np.array([[[-6, -2], [-6, -2], [2, 6]]], np.float32)
+            w.add_boxes("ras_same", flipped, ["c1"], grid="ras", space="world")
+        return path
+
+    def test_N10_S3_5_one_frames_boxes_compare_in_one_unit(self, tmp_path: Path):
+        with medh5.open(self._raters(tmp_path / "units.medh5")) as s:
+            mm, metres, far = (s.annotations[k] for k in ("mm", "metres", "far"))
+            assert compare_instances(mm, metres).value == pytest.approx(1.0)
+            assert compare_instances(metres, mm).value == pytest.approx(1.0)
+            assert compare_instances(mm, far).value == 0.0
+            assert compare_instances(far, mm).value == 0.0
+            assert compare(mm, metres).value == pytest.approx(1.0)
+
+    def test_N10_S3_3_rule_4_two_conventions_are_refused(self, tmp_path: Path):
+        with medh5.open(self._raters(tmp_path / "conventions.medh5")) as s:
+            mm = s.annotations["mm"]
+            for other in ("ras", "ras_same"):
+                for pair in ((mm, s.annotations[other]), (s.annotations[other], mm)):
+                    with pytest.raises(
+                        MEDH5ValidationError, match="coord_system"
+                    ) as caught:
+                        compare_instances(*pair)
+                    assert caught.value.code == "E414"
+            # One grid's boxes still compare as they are.
+            assert compare_instances(
+                s.annotations["ras"], s.annotations["ras"]
+            ).value == pytest.approx(1.0)

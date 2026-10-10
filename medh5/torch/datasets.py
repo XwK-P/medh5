@@ -756,7 +756,10 @@ class PairedPatchDataset(_Base):
         transform = None
         if source.frame_uid and target.frame_uid:
             transform = sample.resolve_frames(source.frame_uid, target.frame_uid)
-        if transform is None and not source.comparable_with(target):
+        one_frame = source.frame_uid is not None and (
+            source.frame_uid == target.frame_uid
+        )
+        if transform is None and not one_frame:
             # A `None` here has two possible meanings: the grids already share
             # a frame (nothing to apply), or no path exists between them.  Only
             # the first makes the coordinates comparable, and §3.3 says what
@@ -783,6 +786,13 @@ class PairedPatchDataset(_Base):
             )
         if transform is not None:
             world = transform.transform_points(world)
+        else:
+            # One frame, but each grid's numbers are in its own units (§3.5):
+            # a point in millimetres read on a grid in metres landed a
+            # thousandfold off (N10 of the round-3 audit).  Two conventions
+            # are refused here (E414): §3.3 rule 4 compares world coordinates
+            # in one `coord_system` only.
+            world = source.world_into(target, world)
         index = target.world_to_index(world)[0]
         return tuple(int(round(float(v))) for v in index)
 

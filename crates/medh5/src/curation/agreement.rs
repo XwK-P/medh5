@@ -486,6 +486,7 @@ pub fn compare_instances(
     let pair = classes_to_compare(a, b, classes)?;
     let mut left = a.instances()?;
     let mut right = b.instances()?;
+    in_the_world_of(a, b, &mut right)?;
     if let Some(keys) = classes {
         let asked: Vec<i64> = keys.iter().map(|k| a.resolve_class(k)).collect::<Result<_>>()?;
         left.retain(|o| asked.contains(&o.class_id));
@@ -507,6 +508,33 @@ pub fn compare_instances(
     result.only_in_b.retain(|j| looked_a.contains(&class_b[j]));
     result.skipped = pair.skipped;
     Ok(result)
+}
+
+/// `b`'s world boxes, in `a`'s units.
+///
+/// A shared frame says two annotations' world is one place, not that their
+/// numbers are in one unit: the same boxes in metres and in millimetres scored
+/// an F1 of 0, and boxes in LPS against RAS an IoU of 1 where they were
+/// disjoint (N10 of the round-3 audit) --- which E414 now refuses, since §3.3
+/// rule 4 compares world coordinates in one `coord_system` only.  An
+/// annotation that names no grid states neither, and is taken as it is.
+fn in_the_world_of(a: &Annotation, b: &Annotation, objects: &mut [Instance]) -> Result<()> {
+    if space_of(a) != "world" || on_one_grid(a, b) {
+        return Ok(());
+    }
+    let (Some(to), Some(from)) = (a.world_grid(), b.world_grid()) else { return Ok(()) };
+    let scale = from.world_scale_into(to).map_err(|e| {
+        Error::coded(
+            "E414",
+            format!("annotations {} and {}: {}", repr_str(&a.ann_id), repr_str(&b.ann_id), e.message()),
+        )
+    })?;
+    if scale != 1.0 {
+        for object in objects {
+            object.bbox.mapv_inplace(|v| (f64::from(v) * scale) as f32);
+        }
+    }
+    Ok(())
 }
 
 fn match_by_id(

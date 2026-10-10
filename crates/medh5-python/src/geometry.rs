@@ -312,6 +312,17 @@ impl Grid {
     fn world_to_index<'py>(&self, py: Python<'py>, points: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
         points_through(py, points, self.0.n_spatial(), |flat| self.0.world_to_index(flat))
     }
+    /// `(..., S)` world points of this grid, in `other`'s units (E414 across
+    /// `coord_system`s, or from `px`).
+    fn world_into<'py>(
+        &self,
+        py: Python<'py>,
+        other: &Bound<'py, PyAny>,
+        points: &Bound<'py, PyAny>,
+    ) -> R<Bound<'py, PyAny>> {
+        let other = grid_arg(other)?;
+        points_through(py, points, self.0.n_spatial(), |flat| self.0.world_into(&other, flat))
+    }
     #[getter]
     fn extent<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyAny>> {
         let s = self.0.n_spatial();

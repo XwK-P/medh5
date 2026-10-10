@@ -150,20 +150,35 @@ impl Annotation {
     ///
     /// Index coordinates count the voxels of the annotation's **own** grid,
     /// whichever grid is named: the grid says whose world the caller wants,
-    /// which is the same world only when the frames match.
+    /// which is the same world only when the frames match --- and then in that
+    /// grid's units.
     pub fn to_world(&self, coords: &ArrayD<f64>, grid: GridRef) -> Result<ArrayD<f64>> {
-        if !matches!(grid, GridRef::Own) {
-            self.require_related(self.resolve_grid(grid)?)?;
+        let target = match grid {
+            GridRef::Own => None,
+            other => Some(self.resolve_grid(other)?),
+        };
+        if let Some(target) = target {
+            self.require_related(target)?;
         }
-        if self.space()? == "world" {
-            return Ok(coords.clone());
+        let world = if self.space()? == "world" {
+            coords.clone()
+        } else {
+            let own = self.grid()?;
+            map_points(coords, |flat| Ok(own.index_to_world(flat)))?
+        };
+        match (target, self.world_grid()) {
+            (Some(target), Some(source)) => map_points(&world, |flat| source.world_into(target, flat)),
+            _ => Ok(world),
         }
-        let own = self.grid()?;
-        map_points(coords, |flat| Ok(own.index_to_world(flat)))
     }
 
     /// Map `(..., S)` coordinates from this annotation's space to `grid`'s
     /// continuous index, through world when the grids differ.
+    ///
+    /// World coordinates are carried into the target grid's units first: a
+    /// point at 1 mm on a grid of 0.001 m voxels was index 1000 (N10 of the
+    /// round-3 audit).  A target in another `coord_system` is refused (E414),
+    /// where an LPS point used to be read as RAS unflipped.
     pub fn to_index(&self, coords: &ArrayD<f64>, grid: GridRef) -> Result<ArrayD<f64>> {
         let target = self.resolve_grid(grid)?;
         self.require_related(target)?;
@@ -175,7 +190,17 @@ impl Annotation {
             let own = self.grid()?;
             values = map_points(&values, |flat| Ok(own.index_to_world(flat)))?;
         }
+        if let Some(source) = self.world_grid() {
+            values = map_points(&values, |flat| source.world_into(target, flat))?;
+        }
         map_points(&values, |flat| target.world_to_index(flat))
+    }
+
+    /// The grid whose convention and units this annotation's world
+    /// coordinates are in: its own (§3.5), or `None` for a world annotation
+    /// that names no grid --- whose numbers are taken as they are.
+    pub fn world_grid(&self) -> Option<&Grid> {
+        self.header.grid.as_deref().and_then(|g| self.grids().get(g))
     }
 
     /// Per-object free-form JSON, decoded.

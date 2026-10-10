@@ -955,3 +955,78 @@ class TestL32GeometricGrids:
             assert boxes.as_slices()[0][0] == slice(3, 4)
             with pytest.raises(MEDH5ValidationError, match="slice_index"):
                 boxes.as_slices(grid="hi")
+
+
+class TestN10WorldUnits:
+    """World coordinates are numbers in their grid's units (§3.5, §8.1), and
+    two grids' are compared in one convention only (§3.3 rule 4) --- N10 of
+    the round-3 audit: a point at 1 mm went to index 1000 on a grid of 0.001 m
+    voxels, and an LPS point was read on an RAS grid unflipped."""
+
+    @staticmethod
+    def _sample(path: Path, *, coord_system: str = "LPS", units: str = "m") -> Path:
+        w = medh5.create(path, sample_id="s", subject_id="s", codec="portable")
+        w.add_grid("mm", shape=(8, 8, 8), spacing=(1.0, 1.0, 1.0), frame_uid="F")
+        w.add_grid(
+            "other",
+            shape=(8, 8, 8),
+            spacing=(0.001,) * 3 if units == "m" else (1.0,) * 3,
+            frame_uid="F",
+            coord_system=coord_system,
+            units=units,
+        )
+        w.add_image("CT", np.zeros((8, 8, 8), np.int16), grid="mm", modality="CT")
+        seed = np.array([[1.0, 1.0, 1.0]], np.float32)
+        w.add_points("seed", seed, grid="mm", space="world")
+        w.add_points("voxel", np.array([[1.0, 2.0, 3.0]], np.float32), grid="mm")
+        w.commit()
+        return path
+
+    def test_N10_S3_5_a_world_point_lands_in_another_grids_units(self, tmp_path: Path):
+        with medh5.open(self._sample(tmp_path / "m.medh5")) as s:
+            seed, voxel = s.annotations["seed"], s.annotations["voxel"]
+            np.testing.assert_allclose(
+                seed.to_index([[1.0, 1.0, 1.0]], grid="other"), [[1.0, 1.0, 1.0]]
+            )
+            np.testing.assert_allclose(
+                seed.to_world([[1.0, 1.0, 1.0]], grid="other"), [[0.001] * 3]
+            )
+            np.testing.assert_allclose(
+                voxel.to_index([[1.0, 2.0, 3.0]], grid="other"), [[1.0, 2.0, 3.0]]
+            )
+            np.testing.assert_allclose(
+                voxel.to_world([[1.0, 2.0, 3.0]], grid="other"),
+                [[0.001, 0.002, 0.003]],
+            )
+            # Its own grid's world is still its own numbers.
+            assert seed.to_world([[1.0, 1.0, 1.0]]).tolist() == [[1.0, 1.0, 1.0]]
+            mm, other = s.grids["mm"], s.grids["other"]
+            np.testing.assert_allclose(
+                mm.world_into(other, [[[1.0, 2.0, 3.0]], [[4.0, 5.0, 6.0]]]),
+                [[[0.001, 0.002, 0.003]], [[0.004, 0.005, 0.006]]],
+            )
+            np.testing.assert_allclose(
+                other.world_into(mm, [0.001, 0.0, -0.002]), [1.0, 0.0, -2.0]
+            )
+
+    @pytest.mark.parametrize(
+        ("coord_system", "units"), [("RAS", "mm"), ("custom", "mm"), ("LPS", "px")]
+    )
+    def test_N10_S3_3_rule_4_another_convention_or_px_is_refused(
+        self, tmp_path: Path, coord_system: str, units: str
+    ):
+        path = self._sample(
+            tmp_path / "c.medh5", coord_system=coord_system, units=units
+        )
+        with medh5.open(path) as s:
+            for name in ("seed", "voxel"):
+                ann = s.annotations[name]
+                for call in (ann.to_index, ann.to_world):
+                    with pytest.raises(MEDH5ValidationError) as caught:
+                        call([[1.0, 1.0, 1.0]], grid="other")
+                    assert caught.value.code == "E414"
+                # Its own grid is unaffected.
+                assert ann.to_index([[1.0, 1.0, 1.0]]).tolist() == [[1.0, 1.0, 1.0]]
+            with pytest.raises(MEDH5ValidationError) as caught:
+                s.grids["mm"].world_into(s.grids["other"], [[1.0, 1.0, 1.0]])
+            assert caught.value.code == "E414"
