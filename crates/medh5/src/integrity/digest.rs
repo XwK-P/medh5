@@ -11,6 +11,13 @@
 //! H( object_path || 0x00 || dtype_str || 0x00 || shape_csv
 //!    || 0x00 || C-order little-endian bytes )
 //! ```
+//!
+//! A string dataset hashes as `|O`, each string's stored bytes followed by
+//! `0x00`; a dataset of another fixed-size type --- a compound, an array, an
+//! opaque type --- as `|V<size>` over its elements' stored bytes.  Data of
+//! variable length other than strings, and references, have no canonical
+//! byte stream, so no digest: they are never stamped, and one found on them
+//! cannot be verified.
 
 use indexmap::IndexMap;
 
@@ -53,10 +60,21 @@ pub fn strings_digest(path: &str, values: &[String], shape: &[usize], algo: &str
     Ok(hasher.finish())
 }
 
+/// Whether a dataset's type has a digest (§13.1): numbers, strings, and
+/// every other type of fixed-size elements.  Data of variable length other
+/// than strings, and references, have no bytes of their own to hash.
+pub fn digestible(ds: &hdf5::Dataset) -> Result<bool> {
+    Ok(match data::kind(ds)? {
+        Kind::Numeric(_) | Kind::Strings => true,
+        Kind::Other(_) => data::stored_element_size(ds)?.is_some(),
+    })
+}
+
 /// Digest an HDF5 dataset, streaming so a large volume never lands in RAM.
 ///
-/// String datasets hash their UTF-8 payloads separated by `0x00`, because a
-/// variable-length dataset has no meaningful raw byte stream.
+/// String datasets hash each string's stored bytes followed by `0x00`,
+/// because a variable-length dataset has no meaningful raw byte stream; a
+/// type [`digestible`] refuses is a `TypeError`.
 pub fn dataset_digest(ds: &hdf5::Dataset, path: &str, algo: &str) -> Result<String> {
     dataset_digest_streamed(ds, path, algo, STREAM_BYTES)
 }
@@ -71,8 +89,17 @@ pub fn dataset_digest_streamed(ds: &hdf5::Dataset, path: &str, algo: &str, strea
 pub type Inspect<'a> = &'a mut dyn FnMut(&NdArray) -> Result<()>;
 
 /// [`dataset_digest_streamed`], handing every block of a numeric dataset it
-/// reads to `inspect` --- in order, leading axis first --- so a check of the
-/// stored values costs no second read.
+/// reads to `inspect` --- in order, whole rows of the leading axis --- so a
+/// check of the stored values costs no second read.
+///
+/// Without `inspect`, a block is about `stream_bytes` however the dataset is
+/// shaped: when one row of the leading axis is larger, the leading axes are
+/// read an index at a time and the first axis whose rows fit is sliced.  A
+/// channel-first image, a layered annotation or a displacement field has a
+/// short leading axis, and a row at a time read and copied one 256 MiB row
+/// whole.  With `inspect`, whose checks read a row whole, a block is whole
+/// rows, as many as fit.  A row no buffer can hold is refused either way, as
+/// any read is.
 pub fn dataset_digest_inspected(
     ds: &hdf5::Dataset,
     path: &str,
@@ -86,26 +113,50 @@ pub fn dataset_digest_inspected(
         Kind::Strings => {
             feed_header(&mut hasher, path, "|O", &shape);
             // A slab at a time: holding every string of the dataset at once
-            // let a few kilobytes of file take hundreds of megabytes (F10 of
-            // the round-4 audit).
+            // let a few kilobytes of file take hundreds of megabytes.  Each
+            // string is hashed as stored: decoded as text, different invalid
+            // bytes hashed alike, and an edit to them went unseen.
             data::for_each_string_slab(ds, stream_bytes, &mut |values| {
                 for value in values {
-                    hasher.update(value.as_bytes());
+                    hasher.update(&value);
                     hasher.update(b"\x00");
                 }
                 Ok(())
             })?;
             Ok(hasher.finish())
         }
-        Kind::Other(t) => Err(Error::Type(format!("{} has an unsupported datatype {t}", ds.name()))),
-        Kind::Numeric(dtype) => {
-            feed_header(&mut hasher, path, dtype.numpy_str(), &shape);
-            // Empty by any extent of 0, whatever the others: a product of the
-            // extents can overflow first (N07 of the 2.0 re-audit).
+        Kind::Other(t) => {
+            let Some(size) = data::stored_element_size(ds)? else {
+                return Err(Error::Type(format!(
+                    "{} holds {t}, data of variable length or references, which have no digest (§13.1)",
+                    ds.name()
+                )));
+            };
+            // NumPy's string for a fixed-size type it has no number for, as
+            // 1.x hashed one through h5py.
+            feed_header(&mut hasher, path, &format!("|V{size}"), &shape);
             if shape.contains(&0) {
                 return Ok(hasher.finish());
             }
-            if shape.is_empty() || data::is_enum(ds) {
+            let rows = shape.first().copied().unwrap_or(1);
+            let row_bytes = shape.iter().skip(1).try_fold(size, |n, e| n.checked_mul(*e)).unwrap_or(usize::MAX);
+            let step = (stream_bytes / row_bytes.max(1)).clamp(1, rows);
+            let mut start = 0;
+            while start < rows {
+                let count = step.min(rows - start);
+                hasher.update(&data::read_stored_rows(ds, size, start, count)?);
+                start += count;
+            }
+            Ok(hasher.finish())
+        }
+        Kind::Numeric(dtype) => {
+            feed_header(&mut hasher, path, dtype.numpy_str(), &shape);
+            // Empty by any extent of 0, whatever the others: a product of the
+            // extents can overflow first.
+            if shape.contains(&0) {
+                return Ok(hasher.finish());
+            }
+            if shape.is_empty() {
                 let all = data::read(ds)?;
                 if let Some(f) = inspect.as_mut() {
                     f(&all)?;
@@ -113,20 +164,64 @@ pub fn dataset_digest_inspected(
                 hasher.update(&all.le_bytes());
                 return Ok(hasher.finish());
             }
-            // A row too large to hold is refused by the read, not wrapped.
-            let row_bytes =
-                shape[1..].iter().try_fold(dtype.itemsize(), |n, e| n.checked_mul(*e)).unwrap_or(usize::MAX).max(1);
-            let step = (stream_bytes / row_bytes).max(1);
-            let mut start = 0;
-            while start < shape[0] {
-                let block = data::read_region(ds, &[Index::Slice(Slice::new(start as i64, (start + step) as i64))])?;
+            // A row too large to hold is refused, not read a slice at a time.
+            data::ensure_allocatable(ds, &shape[1..], dtype.itemsize())?;
+            for_each_block(ds, &shape, dtype.itemsize(), stream_bytes, inspect.is_some(), &mut |block| {
                 if let Some(f) = inspect.as_mut() {
                     f(&block)?;
                 }
                 hasher.update(&block.le_bytes());
-                start += step;
-            }
+                Ok(())
+            })?;
             Ok(hasher.finish())
+        }
+    }
+}
+
+/// The bytes of one index along `axis` of an array of `shape`.
+fn row_bytes(shape: &[usize], axis: usize, itemsize: usize) -> usize {
+    shape[axis + 1..].iter().try_fold(itemsize, |n, e| n.checked_mul(*e)).unwrap_or(usize::MAX).max(1)
+}
+
+/// Read a numeric dataset of `shape` in C order, a block at a time, each
+/// about `budget` bytes: whole rows of the leading axis when one fits or
+/// `whole_rows` asks for them, else the leading axes an index at a time and
+/// the first axis whose rows fit sliced.
+fn for_each_block(
+    ds: &hdf5::Dataset,
+    shape: &[usize],
+    itemsize: usize,
+    budget: usize,
+    whole_rows: bool,
+    each: &mut dyn FnMut(NdArray) -> Result<()>,
+) -> Result<()> {
+    let mut axis = 0;
+    while !whole_rows && axis + 1 < shape.len() && row_bytes(shape, axis, itemsize) > budget {
+        axis += 1;
+    }
+    let step = (budget / row_bytes(shape, axis, itemsize)).max(1);
+    let mut outer = vec![0usize; axis];
+    loop {
+        let mut start = 0;
+        while start < shape[axis] {
+            let stop = (start + step).min(shape[axis]);
+            let mut index: Vec<Index> = outer.iter().map(|i| Index::At(*i as i64)).collect();
+            index.push(Index::Slice(Slice::new(start as i64, stop as i64)));
+            each(data::read_region(ds, &index)?)?;
+            start = stop;
+        }
+        // The next index of the axes read one at a time, the last fastest.
+        let mut at = axis;
+        loop {
+            if at == 0 {
+                return Ok(());
+            }
+            at -= 1;
+            outer[at] += 1;
+            if outer[at] < shape[at] {
+                break;
+            }
+            outer[at] = 0;
         }
     }
 }
@@ -178,9 +273,10 @@ fn top_level(path: &str) -> &str {
 
 /// Write a `digest` attribute on every dataset under `root`.
 ///
-/// `index/` is skipped (it carries `source_digest` instead, §13.3).
-/// `only_missing` digests just the datasets that carry none and returns the
-/// stored value for the rest --- what an amend wants.
+/// `index/` is skipped (it carries `source_digest` instead, §13.3), and so is
+/// a dataset whose type has no digest ([`digestible`]).  `only_missing`
+/// digests just the datasets that carry none and returns the stored value
+/// for the rest.
 pub fn stamp_digests(
     root: &hdf5::Group,
     algo: &str,
@@ -197,6 +293,9 @@ pub fn stamp_digests(
                 digests.insert(name, stored);
                 continue;
             }
+        }
+        if !digestible(&ds)? {
+            continue;
         }
         let value = dataset_digest(&ds, &name, algo)?;
         attrs::write(&ds, "digest", &AttrValue::Str(value.clone()))?;
@@ -230,6 +329,8 @@ pub fn group_digest(group: &hdf5::Group, root: &hdf5::Group, algo: &str) -> Resu
         let Some(ds) = ops::child_dataset(group, &name) else { continue };
         let value = match attrs::get_str(&ds, "digest")? {
             Some(v) => v,
+            // Never stamped, so not part of the group's identity either.
+            None if !digestible(&ds)? => continue,
             None => dataset_digest(&ds, &relative_path(&ds.name(), root), algo)?,
         };
         lines.push_str(&format!("{name}\t{value}\n"));
@@ -305,6 +406,136 @@ pub fn walk(root: &hdf5::Group, f: &mut dyn FnMut(&str, &Node) -> Result<bool>) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Without a check reading whole rows, no block is larger than the
+    /// budget however short the leading axis --- a row at a time read one
+    /// channel of a channel-first image whole --- and the blocks are the
+    /// array in C order, so the digest is the same for any budget.
+    #[test]
+    fn s13_1_a_short_leading_axis_is_read_in_bounded_blocks() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = hdf5::File::create(dir.path().join("s.h5")).unwrap();
+        let data = ndarray::Array4::<f32>::from_shape_fn((2, 3, 16, 20), |(c, z, y, x)| {
+            (c * 1000 + z * 100 + y * 20 + x) as f32
+        });
+        let ds = file.new_dataset_builder().with_data(&data).create("d").unwrap();
+        let whole = array_digest("d", &NdArray::from(data.clone().into_dyn()), "sha256").unwrap();
+        let shape = ds.shape();
+        for budget in [4, 100, 1280, 4000, 1 << 20] {
+            let mut blocks: Vec<NdArray> = Vec::new();
+            for_each_block(&ds, &shape, 4, budget, false, &mut |block| {
+                blocks.push(block);
+                Ok(())
+            })
+            .unwrap();
+            assert!(blocks.iter().all(|b| b.len() * 4 <= budget.max(4)), "budget {budget}");
+            let flat: Vec<f32> =
+                blocks.iter().flat_map(|b| b.cast::<f32>().iter().copied().collect::<Vec<_>>()).collect();
+            assert_eq!(flat, data.iter().copied().collect::<Vec<_>>(), "budget {budget}");
+            assert_eq!(dataset_digest_streamed(&ds, "d", "sha256", budget).unwrap(), whole, "budget {budget}");
+        }
+        // A check reading rows whole gets whole rows of the leading axis.
+        let mut rows = Vec::new();
+        let each: Inspect<'_> = &mut |block: &NdArray| {
+            rows.push(block.shape());
+            Ok(())
+        };
+        assert_eq!(dataset_digest_inspected(&ds, "d", "sha256", 100, Some(each)).unwrap(), whole);
+        assert_eq!(rows, vec![vec![1, 3, 16, 20], vec![1, 3, 16, 20]]);
+    }
+
+    /// A string hashes as stored: decoded as text, invalid UTF-8 became U+FFFD
+    /// before hashing, so different stored bytes shared a digest.  A
+    /// fixed-length string hashes without its padding, as the same text
+    /// stored variable-length does.
+    #[test]
+    fn s13_1_a_string_hashes_its_stored_bytes() {
+        use crate::h5sys::{h5d, h5p, h5s, h5t};
+        let dir = tempfile::tempdir().unwrap();
+        let file = hdf5::File::create(dir.path().join("s.h5")).unwrap();
+        // Variable-length strings of any bytes, written through the C API:
+        // the typed writers refuse invalid UTF-8.
+        let vlen = |name: &str, values: &[&[u8]]| {
+            let owned: Vec<std::ffi::CString> = values.iter().map(|v| std::ffi::CString::new(*v).unwrap()).collect();
+            let pointers: Vec<*const std::os::raw::c_char> = owned.iter().map(|c| c.as_ptr()).collect();
+            let cname = std::ffi::CString::new(name).unwrap();
+            crate::h5::locked(|| unsafe {
+                let tid = h5t::H5Tcopy(*h5t::H5T_C_S1);
+                h5t::H5Tset_size(tid, h5t::H5T_VARIABLE);
+                h5t::H5Tset_cset(tid, h5t::H5T_cset_t::H5T_CSET_UTF8);
+                let dims = [values.len() as u64];
+                let space = h5s::H5Screate_simple(1, dims.as_ptr(), std::ptr::null());
+                let ds = h5d::H5Dcreate2(
+                    file.id(),
+                    cname.as_ptr(),
+                    tid,
+                    space,
+                    h5p::H5P_DEFAULT,
+                    h5p::H5P_DEFAULT,
+                    h5p::H5P_DEFAULT,
+                );
+                assert!(ds >= 0);
+                let status =
+                    h5d::H5Dwrite(ds, tid, h5s::H5S_ALL, h5s::H5S_ALL, h5p::H5P_DEFAULT, pointers.as_ptr().cast());
+                assert!(status >= 0);
+                h5d::H5Dclose(ds);
+                h5s::H5Sclose(space);
+                h5t::H5Tclose(tid);
+            });
+            file.dataset(name).unwrap()
+        };
+        let e9 = vlen("e9", &[b"caf\xe9", b"ok"]);
+        let e8 = vlen("e8", &[b"caf\xe8", b"ok"]);
+        assert_ne!(dataset_digest(&e9, "x", "sha256").unwrap(), dataset_digest(&e8, "x", "sha256").unwrap());
+        let mut hasher = Hasher::new("sha256").unwrap();
+        feed_header(&mut hasher, "x", "|O", &[2]);
+        hasher.update(b"caf\xe9\x00ok\x00");
+        assert_eq!(dataset_digest(&e9, "x", "sha256").unwrap(), hasher.finish());
+
+        let fixed = file.new_dataset::<hdf5::types::FixedAscii<6>>().shape([2]).create("fixed").unwrap();
+        crate::h5::data::write_fixed_strings(&fixed, &["caf".into(), "ok".into()], 6, true).unwrap();
+        let text = vlen("text", &[b"caf", b"ok"]);
+        assert_eq!(dataset_digest(&fixed, "x", "sha256").unwrap(), dataset_digest(&text, "x", "sha256").unwrap());
+        assert_eq!(
+            dataset_digest(&fixed, "x", "sha256").unwrap(),
+            strings_digest("x", &["caf".into(), "ok".into()], &[2], "sha256").unwrap()
+        );
+    }
+
+    /// A compound hashes as 1.x hashed it through `h5py` --- NumPy's `|V<n>`
+    /// over its stored elements --- where it was refused, so a file holding
+    /// one could be neither amended nor verified.  Variable-length data other
+    /// than strings has no digest.
+    #[test]
+    fn s13_1_a_compound_hashes_as_void_and_a_sequence_has_no_digest() {
+        #[derive(hdf5::H5Type, Clone, Copy)]
+        #[repr(C)]
+        struct Row {
+            id: i32,
+            value: f32,
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let file = hdf5::File::create(dir.path().join("c.h5")).unwrap();
+        let rows = [Row { id: 1, value: 0.5 }, Row { id: 2, value: -1.0 }];
+        assert_eq!(std::mem::size_of::<Row>(), 8);
+        let table = file.new_dataset_builder().with_data(&rows).create("table").unwrap();
+        assert!(digestible(&table).unwrap());
+        let size = std::mem::size_of::<Row>();
+        let mut hasher = Hasher::new("sha256").unwrap();
+        feed_header(&mut hasher, "x_acme/table", &format!("|V{size}"), &[2]);
+        // SAFETY: two 4-byte fields, no padding: every byte is initialised,
+        // and HDF5 stores the rows in this native layout.
+        hasher.update(unsafe { std::slice::from_raw_parts(rows.as_ptr().cast::<u8>(), size * 2) });
+        let expected = hasher.finish();
+        assert_eq!(dataset_digest(&table, "x_acme/table", "sha256").unwrap(), expected);
+        assert_eq!(dataset_digest_streamed(&table, "x_acme/table", "sha256", 1).unwrap(), expected);
+
+        let sequences = file.new_dataset::<hdf5::types::VarLenArray<u8>>().shape([2]).create("sequences").unwrap();
+        assert!(!digestible(&sequences).unwrap());
+        assert!(matches!(dataset_digest(&sequences, "x", "sha256"), Err(Error::Type(_))));
+        let stamped = stamp_digests(&file.as_group().unwrap(), "sha256", &["index"], false).unwrap();
+        assert!(stamped.contains_key("table") && !stamped.contains_key("sequences"), "{stamped:?}");
+    }
 
     #[test]
     fn s13_1_streaming_matches_the_whole_array() {

@@ -209,6 +209,7 @@ s.verify()                    # VerifyResult
 s.verify(partial=["images/CT_tp0"])
 s.verify().ok
 s.verify().unattested         # paths in covered objects no line binds there
+s.verify().unverifiable       # digests on data that has none (§13.1): not checked
 s.compute_content_id()        # recompute rather than read the stored one
 ```
 

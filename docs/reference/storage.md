@@ -120,7 +120,12 @@ for the stacked encodings and a displacement field's components.
 
 Every object carries a SHA-256 over its **decompressed** content, with the
 object's sample-root-relative path, dtype and shape fed into the hash first, so
-two arrays with the same bytes and different shapes do not collide.
+two arrays with the same bytes and different shapes do not collide. A string
+dataset hashes each string's stored bytes, never text decoded from them, and a
+dataset of another fixed-size type --- a compound in an extension group, say ---
+its stored elements. Variable-length data other than strings has no digest: the
+writer stamps none, and `verify` lists a digest found on such a dataset as
+`unverifiable` rather than checking it (§13.1).
 
 The root carries `content_id`: a Merkle digest over those object digests plus
 the metadata attributes that define the sample.

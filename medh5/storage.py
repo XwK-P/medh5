@@ -237,6 +237,10 @@ class RecompressResult:
     """Datasets copied as stored rather than re-encoded: their type is one a
     rebuild from a plain number type would lose --- an enumeration's names, a
     committed (named) type, another byte order."""
+    unverified: list[str] = field(default_factory=list)
+    """What the check of the output could not read, and why.  The output has
+    replaced the input by then, so a failure there is reported here, with
+    ``verified`` false, rather than raised as if nothing had been written."""
 
     @classmethod
     def from_json(cls, doc: dict[str, Any]) -> RecompressResult:
@@ -253,6 +257,7 @@ class RecompressResult:
             unattested=list(doc.get("unattested") or ()),
             changed=[(str(a), str(b), str(c)) for a, b, c in doc.get("changed") or ()],
             kept=list(doc.get("kept") or ()),
+            unverified=list(doc.get("unverified") or ()),
         )
 
     @property
@@ -279,6 +284,7 @@ class RecompressResult:
             "ok": self.ok,
             "changed": [list(c) for c in self.changed],
             "kept": list(self.kept),
+            "unverified": list(self.unverified),
         }
 
     def __str__(self) -> str:

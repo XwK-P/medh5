@@ -46,6 +46,10 @@ pub struct RecompressResult {
     /// rebuild from a plain number type would lose --- an enumeration's
     /// names, a committed (named) type, another byte order.
     pub kept: Vec<String>,
+    /// What the check of the output could not read, and why.  The output has
+    /// replaced the input by then, so a failure there is reported here, with
+    /// `verified` false, rather than raised as if nothing had been written.
+    pub unverified: Vec<String>,
 }
 
 impl RecompressResult {
@@ -77,6 +81,7 @@ impl RecompressResult {
             "ok": self.ok(),
             "changed": self.changed.iter().map(|(a, b, c)| json!([a, b, c])).collect::<Vec<_>>(),
             "kept": self.kept,
+            "unverified": self.unverified,
         })
     }
 
@@ -127,12 +132,38 @@ pub fn recompress(path: &Path, profile: &str, out: Option<&Path>, rechunk: bool)
         Ok(before)
     })?;
     result.bytes_after = std::fs::metadata(target)?.len();
+    // The output has replaced the input: from here on, what cannot be read is
+    // a finding of the result, never an error that reads as "nothing changed".
+    let (after, all_ok, ids_ok) = match verify_output(target, &mut result) {
+        Ok(found) => found,
+        Err(e) => {
+            result.unverified.push(format!("{}: {e}", target.to_string_lossy()));
+            (None, false, false)
+        }
+    };
+    result.content_id = after.clone();
+    result.verified = all_ok;
+    result.content_id_preserved = before == after && ids_ok;
+    Ok(result)
+}
+
+/// Verify every sample root of the written file: its `content_id`, whether
+/// every root verifies, and whether every root's `content_id` recomputes.  A
+/// root that cannot be read is recorded in `unverified`.
+fn verify_output(target: &Path, result: &mut RecompressResult) -> Result<(Option<String>, bool, bool)> {
     let check = open_read(target)?;
     let after = attrs::get_str(&check, "content_id")?;
-    let mut all_ok = true;
-    let mut ids_ok = true;
+    let (mut all_ok, mut ids_ok) = (true, true);
     for (prefix, root) in sample_roots(&check.as_group()?)? {
-        let verification = verify_root(&root, Some(&attr_name_map_of(&root)?), None, true)?;
+        let verification = match attr_name_map_of(&root).and_then(|names| verify_root(&root, Some(&names), None, true))
+        {
+            Ok(v) => v,
+            Err(e) => {
+                result.unverified.push(format!("{}: {e}", if prefix.is_empty() { "/" } else { prefix.as_str() }));
+                (all_ok, ids_ok) = (false, false);
+                continue;
+            }
+        };
         for name in verification.mismatched.iter().chain(&verification.malformed) {
             result.mismatched.push(format!("{prefix}{name}"));
         }
@@ -142,10 +173,7 @@ pub fn recompress(path: &Path, profile: &str, out: Option<&Path>, rechunk: bool)
         all_ok &= verification.ok();
         ids_ok &= verification.content_id_ok() != Some(false);
     }
-    result.content_id = after.clone();
-    result.verified = all_ok;
-    result.content_id_preserved = before == after && ids_ok;
-    Ok(result)
+    Ok((after, all_ok, ids_ok))
 }
 
 /// Refuse a file holding a version this engine reads only as a projection:
@@ -374,4 +402,67 @@ fn slabs(shape: &[usize], itemsize: usize, budget: usize) -> Vec<(usize, usize)>
 /// Recompress many files.
 pub fn recompress_paths(paths: &[&Path], profile: &str, rechunk: bool) -> Result<Vec<RecompressResult>> {
     paths.iter().map(|p| recompress(p, profile, None, rechunk)).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::array::{DType, NdArray};
+    use crate::sample::{create, GridOptions, ImageOptions};
+
+    /// What the check of a recompressed file cannot read is reported in the
+    /// result: the file has been replaced by then, and an error raised there
+    /// read as a recompression that wrote nothing.
+    #[test]
+    fn s14_4_what_the_output_check_cannot_read_is_reported_not_raised() {
+        use crate::h5sys::{h5d, h5p};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.medh5");
+        let mut writer = create(&path, Some("s"), None, "portable", &[]).unwrap();
+        writer.add_grid("g", &[4, 6, 8], &[1.0, 1.0, 1.0], GridOptions::default()).unwrap();
+        let ct = NdArray::from_vec(&[4, 6, 8], (0..192).map(f64::from).collect()).unwrap().astype(DType::I16);
+        writer.add_image("CT", &ct, "g", "CT", ImageOptions::default()).unwrap();
+        writer.commit(true).unwrap();
+        // An extension dataset of a compound type, which recompression copies
+        // as stored, with a chunk whose deflate stream is damaged.
+        {
+            #[derive(hdf5::H5Type, Clone, Copy)]
+            #[repr(C)]
+            struct Pair {
+                a: i32,
+                b: f32,
+            }
+            let file = hdf5::File::open_rw(&path).unwrap();
+            let ds = file
+                .create_group("x_acme")
+                .unwrap()
+                .new_dataset::<Pair>()
+                .shape([4])
+                .chunk([4])
+                .deflate(4)
+                .create("table")
+                .unwrap();
+            let garbage = [0xA5u8; 16];
+            let offset = [0u64];
+            let status = crate::h5::locked(|| unsafe {
+                h5d::H5Dwrite_chunk(
+                    ds.id(),
+                    h5p::H5P_DEFAULT,
+                    0,
+                    offset.as_ptr(),
+                    garbage.len(),
+                    garbage.as_ptr().cast(),
+                )
+            });
+            assert!(status >= 0);
+            attrs::write(&ds, "digest", &attrs::AttrValue::Str(format!("sha256:{}", "0".repeat(64)))).unwrap();
+        }
+        let result = recompress(&path, "archive", None, false).unwrap();
+        assert!(!result.verified && !result.ok());
+        assert_eq!(result.unverified.len(), 1, "{:?}", result.unverified);
+        assert!(result.to_json()["unverified"].is_array());
+        // The file was replaced, and the rest of it reads.
+        let sample = crate::sample::open_sample(&path).unwrap();
+        assert_eq!(sample.image("CT").unwrap().read(None, false, None).unwrap(), ct);
+    }
 }

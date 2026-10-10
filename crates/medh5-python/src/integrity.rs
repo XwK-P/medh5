@@ -25,6 +25,7 @@ pub fn verify_result_to_py<'py>(py: Python<'py>, r: &verify::VerifyResult) -> Py
     out.set_item("content_id_computed", &r.content_id_computed)?;
     out.set_item("stale_index", PyTuple::new(py, &r.stale_index)?)?;
     out.set_item("unattested", PyTuple::new(py, &r.unattested)?)?;
+    out.set_item("unverifiable", PyTuple::new(py, &r.unverifiable)?)?;
     Ok(out.into_any())
 }
 

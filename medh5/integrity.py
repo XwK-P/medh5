@@ -74,7 +74,11 @@ class VerifyResult:
     (``E704``).  The writer digests every dataset and makes no links, so none
     of its files has either.
     """
-    details: dict[str, Any] = field(default_factory=dict)
+    unverifiable: tuple[str, ...] = ()
+    """Datasets carrying a digest their type cannot have (§13.1): data of
+    variable length other than strings, or references.  They are not compared
+    and not counted as mismatched --- the claim can be neither checked nor
+    refuted --- and the writer never stamps one."""
 
     @property
     def content_id_ok(self) -> bool | None:
@@ -103,6 +107,7 @@ class VerifyResult:
             "malformed": list(self.malformed),
             "content_id_ok": self.content_id_ok,
             "stale_index": list(self.stale_index),
+            "unverifiable": list(self.unverifiable),
         }
 
 

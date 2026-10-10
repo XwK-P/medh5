@@ -349,32 +349,33 @@ fn read_strings_attr(attr: &hdf5::Attribute, td: &TD) -> Result<Vec<String>> {
     )?;
     Ok(match td {
         // Bytes, decoded here: the types' `as_str` trusts the file to hold valid
-        // UTF-8, and a damaged one does not (`lossy` keeps that a finding, not
+        // UTF-8, and a damaged one does not (`text` keeps that a finding, not
         // undefined behaviour).
-        TD::VarLenUnicode => attr.read_raw::<VarLenUnicode>()?.iter().map(|s| lossy(s.as_bytes())).collect(),
-        TD::VarLenAscii => attr.read_raw::<hdf5::types::VarLenAscii>()?.iter().map(|s| lossy(s.as_bytes())).collect(),
-        TD::FixedAscii(_) | TD::FixedUnicode(_) => read_fixed_strings(attr.id(), attr.size(), td, true)?,
+        TD::VarLenUnicode => attr.read_raw::<VarLenUnicode>()?.iter().map(|s| text(s.as_bytes().to_vec())).collect(),
+        TD::VarLenAscii => {
+            attr.read_raw::<hdf5::types::VarLenAscii>()?.iter().map(|s| text(s.as_bytes().to_vec())).collect()
+        }
+        TD::FixedAscii(_) | TD::FixedUnicode(_) => {
+            read_fixed_strings(attr.id(), attr.size(), true)?.into_iter().map(text).collect()
+        }
         _ => Vec::new(),
     })
 }
 
-/// Text from stored bytes, invalid UTF-8 replaced rather than trusted.
-pub(crate) fn lossy(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes).into_owned()
+/// Text from stored bytes: kept as they are when they are UTF-8, and
+/// invalid UTF-8 replaced rather than trusted.
+pub(crate) fn text(bytes: Vec<u8>) -> String {
+    String::from_utf8(bytes).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
 }
 
-/// Read fixed-length strings by asking HDF5 to convert them to variable length.
-pub(crate) fn read_fixed_strings(
-    id: crate::h5sys::h5i::hid_t,
-    n: usize,
-    _td: &TD,
-    is_attr: bool,
-) -> Result<Vec<String>> {
+/// The stored bytes of `n` fixed-length strings, each without its trailing
+/// NUL padding --- what h5py and NumPy read.
+///
+/// Read in the stored type, so no character set is converted (HDF5 refuses
+/// to convert between ASCII and UTF-8) and no byte is decoded: a caller
+/// wanting text decodes them ([`text`]).
+pub(crate) fn read_fixed_strings(id: crate::h5sys::h5i::hid_t, n: usize, is_attr: bool) -> Result<Vec<Vec<u8>>> {
     use crate::h5sys::{h5a, h5d, h5p, h5s, h5t};
-    // Read the stored bytes in the stored type --- no character-set
-    // conversion, which HDF5 refuses between ASCII and UTF-8 --- and decode
-    // them as h5py and NumPy do: trailing NULs dropped, UTF-8 with
-    // replacement.
     super::locked(|| unsafe {
         let ftype = if is_attr { h5a::H5Aget_type(id) } else { h5d::H5Dget_type(id) };
         if ftype < 0 {
@@ -405,26 +406,25 @@ pub(crate) fn read_fixed_strings(
         if status < 0 {
             return Err(Error::Io("could not read a fixed-length string".into()));
         }
-        Ok(buf
-            .chunks(size)
-            .take(n)
-            .map(|item| {
-                let end = item.iter().rposition(|b| *b != 0).map(|i| i + 1).unwrap_or(0);
-                String::from_utf8_lossy(&item[..end]).into_owned()
-            })
-            .collect())
+        Ok(buf.chunks(size).take(n).map(unpadded).collect())
     })
 }
 
+/// A fixed-length string's stored bytes without the NULs padding it.
+fn unpadded(item: &[u8]) -> Vec<u8> {
+    let end = item.iter().rposition(|b| *b != 0).map(|i| i + 1).unwrap_or(0);
+    item[..end].to_vec()
+}
+
 /// Rows `[start, start + count)` of a fixed-length string dataset of shape
-/// `shape`, along its first axis with every other axis whole, decoded as
-/// [`read_fixed_strings`] decodes them.  The caller has sized the read.
+/// `shape`, along its first axis with every other axis whole, read as
+/// [`read_fixed_strings`] reads them.  The caller has sized the read.
 pub(crate) fn read_fixed_string_rows(
     ds: &hdf5::Dataset,
     shape: &[usize],
     start: usize,
     count: usize,
-) -> Result<Vec<String>> {
+) -> Result<Vec<Vec<u8>>> {
     use crate::h5sys::{h5d, h5p, h5s, h5t};
     let mut first = vec![0u64; shape.len()];
     let mut counts: Vec<u64> = shape.iter().map(|n| *n as u64).collect();
@@ -473,10 +473,7 @@ pub(crate) fn read_fixed_string_rows(
         let mut out = Vec::new();
         out.try_reserve_exact(n)
             .map_err(|_| Error::Io(format!("{n} strings of {} are more than this process can hold", ds.name())))?;
-        out.extend(buf.chunks(size).take(n).map(|item| {
-            let end = item.iter().rposition(|b| *b != 0).map(|i| i + 1).unwrap_or(0);
-            String::from_utf8_lossy(&item[..end]).into_owned()
-        }));
+        out.extend(buf.chunks(size).take(n).map(unpadded));
         Ok(out)
     })
 }

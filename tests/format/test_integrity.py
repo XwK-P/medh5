@@ -387,6 +387,90 @@ class TestAmendStamping:
             assert sample.verify().ok
 
 
+class TestDigestedTypes:
+    """What each stored type hashes as (§13.1), as 1.x hashed it through h5py."""
+
+    def _sample(self, path: Path) -> Path:
+        with Organs.writer(path) as w:
+            w.add_segmentation("seg", grid="g", masks=Organs.blocks())
+        return path
+
+    @staticmethod
+    def _digest(path: str, dtype: str, shape: str, payload: bytes) -> str:
+        import hashlib
+
+        head = f"{path}\0{dtype}\0{shape}\0".encode()
+        return "sha256:" + hashlib.sha256(head + payload).hexdigest()
+
+    def test_S13_1_a_compound_is_digested_and_a_sequence_is_left_undigested(
+        self, tmp_path: Path
+    ):
+        """A compound or a variable-length sequence in an extension group is
+        valid, and every amend of such a file failed (TypeError); a 1.x digest
+        on a compound failed `verify`, integrity validation, and `recompress`
+        after it had replaced the file."""
+        from medh5.storage import recompress
+
+        path = self._sample(tmp_path / "ext.medh5")
+        table = np.array([(1, 0.5), (2, -1.0)], dtype=[("id", "<i4"), ("v", "<f8")])
+        with h5py.File(path, "r+") as handle:
+            group = handle.create_group("x_acme")
+            group["table"] = table
+            seq = group.create_dataset(
+                "seq", (2,), dtype=h5py.vlen_dtype(np.dtype("uint8"))
+            )
+            seq[0] = np.array([1, 2, 3], dtype=np.uint8)
+            seq[1] = np.array([4], dtype=np.uint8)
+        with medh5.amend(path):
+            pass
+        with medh5.open(path) as sample:
+            result = sample.verify()
+            assert result.ok, result.summary()
+            assert "x_acme/seq" in result.undigested
+            stored = sample.root["x_acme/table"].attrs["digest"]
+        assert stored == self._digest("x_acme/table", "|V12", "2", table.tobytes())
+
+        # A digest 1.x stamped on a sequence hashed pointers: it cannot be
+        # checked, and is not a mismatch.  1.x covered it in the root too.
+        with h5py.File(path, "r+") as handle:
+            handle["x_acme/seq"].attrs["digest"] = "sha256:" + "0" * 64
+        with medh5.open(path) as sample:
+            root = sample.compute_content_id()
+        with h5py.File(path, "r+") as handle:
+            handle.attrs["content_id"] = root
+        with medh5.open(path) as sample:
+            result = sample.verify()
+            assert result.unverifiable == ("x_acme/seq",)
+            assert result.ok and not result.mismatched
+        codes = validate_file(path, level="integrity").codes
+        assert "E001" not in codes and "E701" not in codes, codes
+        assert recompress(path, "archive").ok
+
+    def test_S13_1_a_string_hashes_its_stored_bytes(self, tmp_path: Path):
+        """Strings were hashed as text decoded with replacement, so different
+        invalid bytes shared a digest and an edit to them passed `verify`."""
+        path = self._sample(tmp_path / "strings.medh5")
+        with h5py.File(path, "r+") as handle:
+            group = handle.create_group("x_site")
+            group.create_dataset("fixed", data=np.array([b"caf\xe9", b"ok"], dtype="S4"))
+            group.create_dataset(
+                "vlen", data=[b"caf\xe9", b"ok"], dtype=h5py.string_dtype("ascii")
+            )
+        with medh5.amend(path):
+            pass
+        with medh5.open(path) as sample:
+            assert sample.verify().ok
+            for name in ("fixed", "vlen"):
+                stored = sample.root[f"x_site/{name}"].attrs["digest"]
+                expected = self._digest(f"x_site/{name}", "|O", "2", b"caf\xe9\0ok\0")
+                assert stored == expected, name
+        with h5py.File(path, "r+") as handle:
+            handle["x_site/fixed"][0] = b"caf\xe8"
+            handle["x_site/vlen"][0] = b"caf\xfe"
+        with medh5.open(path) as sample:
+            assert sample.verify().mismatched == ("x_site/fixed", "x_site/vlen")
+
+
 class TestL26Verify:
     """L-26: an undigested dataset inside an attested object fails `verify`."""
 

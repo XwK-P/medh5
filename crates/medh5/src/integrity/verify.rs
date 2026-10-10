@@ -6,8 +6,8 @@ use indexmap::IndexMap;
 use serde_json::{json, Value};
 
 use super::digest::{
-    collect_digests, compute_content_id, dataset_digest, dataset_digest_inspected, group_digest, root_algo,
-    AttrNameMap, STREAM_BYTES,
+    collect_digests, compute_content_id, dataset_digest, dataset_digest_inspected, digestible, group_digest, root_algo,
+    AttrNameMap, Inspect, STREAM_BYTES,
 };
 use crate::array::NdArray;
 use crate::digest::{parse_digest, DEFAULT_ALGO};
@@ -185,6 +185,11 @@ pub struct VerifyResult {
     /// Paths inside an object a declared `content_id` covers that no line of
     /// it binds there: [`unattested`].
     pub unattested: Vec<String>,
+    /// Datasets carrying a digest their type cannot have (§13.1): data of
+    /// variable length other than strings, or references.  Not compared,
+    /// and not counted as a mismatch: the claim can be neither checked nor
+    /// refuted.
+    pub unverifiable: Vec<String>,
 }
 
 impl VerifyResult {
@@ -213,6 +218,7 @@ impl VerifyResult {
             "malformed": self.malformed,
             "content_id_ok": self.content_id_ok(),
             "stale_index": self.stale_index,
+            "unverifiable": self.unverifiable,
         })
     }
 }
@@ -298,18 +304,33 @@ pub fn verify_root(
     partial: Option<&[String]>,
     check_content_id: bool,
 ) -> Result<VerifyResult> {
-    verify_root_inspecting(root, attr_names, partial, check_content_id, &mut |_, _| Ok(()))
+    verify(root, attr_names, partial, check_content_id, None)
 }
 
 /// [`verify_root`], handing every block of every digested dataset it reads to
 /// `inspect` with the dataset's path (relative to `root`): what a check of
-/// stored values needs, at the cost of no second read.
+/// stored values needs, at the cost of no second read.  The blocks are whole
+/// rows of each dataset's leading axis ([`dataset_digest_inspected`]).
 pub fn verify_root_inspecting(
     root: &hdf5::Group,
     attr_names: Option<&AttrNameMap>,
     partial: Option<&[String]>,
     check_content_id: bool,
     inspect: &mut dyn FnMut(&str, &NdArray) -> Result<()>,
+) -> Result<VerifyResult> {
+    verify(root, attr_names, partial, check_content_id, Some(inspect))
+}
+
+/// What [`verify_root_inspecting`] hands each block it reads to, with the
+/// dataset's path.
+pub type InspectPath<'a> = &'a mut dyn FnMut(&str, &NdArray) -> Result<()>;
+
+fn verify(
+    root: &hdf5::Group,
+    attr_names: Option<&AttrNameMap>,
+    partial: Option<&[String]>,
+    check_content_id: bool,
+    mut inspect: Option<InspectPath<'_>>,
 ) -> Result<VerifyResult> {
     let stored = collect_digests(root, &["index"])?;
     let targets: Vec<String> = match partial {
@@ -330,10 +351,21 @@ pub fn verify_root_inspecting(
             result.malformed.push(path);
             continue;
         };
-        result.checked.push(path.clone());
         let ds = root.dataset(&path)?;
-        let mut each = |block: &NdArray| inspect(&path, block);
-        if &dataset_digest_inspected(&ds, &path, &algo, STREAM_BYTES, Some(&mut each))? != value {
+        if !digestible(&ds)? {
+            result.unverifiable.push(path);
+            continue;
+        }
+        result.checked.push(path.clone());
+        let computed = match inspect.as_mut() {
+            Some(inspect) => {
+                let mut each = |block: &NdArray| inspect(&path, block);
+                let each: Inspect<'_> = &mut each;
+                dataset_digest_inspected(&ds, &path, &algo, STREAM_BYTES, Some(each))?
+            }
+            None => dataset_digest_inspected(&ds, &path, &algo, STREAM_BYTES, None)?,
+        };
+        if &computed != value {
             result.mismatched.push(path);
         }
     }
@@ -554,7 +586,24 @@ fn data_equal(a: &hdf5::Dataset, b: &hdf5::Dataset) -> Result<bool> {
         return Ok(false);
     }
     match crate::h5::data::kind(a)? {
-        crate::h5::data::Kind::Strings => Ok(crate::h5::data::read_strings(a)? == crate::h5::data::read_strings(b)?),
+        // As stored: decoded as text, different invalid bytes compared equal.
+        crate::h5::data::Kind::Strings => {
+            Ok(crate::h5::data::read_stored_strings(a)? == crate::h5::data::read_stored_strings(b)?)
+        }
+        crate::h5::data::Kind::Other(_) => {
+            match (crate::h5::data::stored_element_size(a)?, crate::h5::data::stored_element_size(b)?) {
+                (Some(size), Some(other)) if size == other => {
+                    let rows = a.shape().first().copied().unwrap_or(1);
+                    Ok(crate::h5::data::read_stored_rows(a, size, 0, rows)?
+                        == crate::h5::data::read_stored_rows(b, size, 0, rows)?)
+                }
+                (Some(_), Some(_)) => Ok(false),
+                _ => Err(Error::Type(format!(
+                    "{} holds data of variable length, which has no bytes of its own to compare",
+                    a.name()
+                ))),
+            }
+        }
         _ => Ok(crate::h5::data::read(a)? == crate::h5::data::read(b)?),
     }
 }

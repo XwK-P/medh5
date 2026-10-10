@@ -1295,8 +1295,13 @@ H( object_path ‖ 0x00 ‖ dtype_str ‖ 0x00 ‖ shape_csv ‖ 0x00 ‖ raw C-
 
 `dtype_str` is the NumPy dtype string with explicit byte order normalised to little-endian: `|b1`
 for booleans, `|i1` and `|u1` for 8-bit integers (one byte has no order), `<i2`, `<i4`, `<i8`,
-`<u2`, `<u4`, `<u8`, `<f2`, `<f4`, `<f8` otherwise, and `|O` for variable-length strings, whose
-payloads are hashed in UTF-8, each followed by `0x00`, in place of raw bytes. `shape_csv` is the
+`<u2`, `<u4`, `<u8`, `<f2`, `<f4`, `<f8` otherwise, and `|O` for strings, variable-length or
+fixed-length, whose payload in place of raw bytes is each string's stored bytes followed by `0x00`
+--- a fixed-length string's without the NUL bytes that pad it, and no string decoded or re-encoded
+on the way. A dataset of any other type whose elements have a fixed size (a compound, an array, an
+opaque type) hashes as `|V<n>`, `<n>` the element size in bytes, over its elements' stored bytes.
+Variable-length data other than strings, and references, have no canonical byte stream and so no
+digest: a writer stamps none, and one found on such a dataset cannot be verified. `shape_csv` is the
 dimensions in decimal joined by `,` (`64,96,96`; empty for a scalar). The digest covers
 **decompressed** content, so recompression does not invalidate it.
 
@@ -1696,9 +1701,9 @@ any machine. On one, with a 192×256×256 synthetic CT and eight classes, a mult
 costs 3.4 ms, foreground centre sampling 0.03 ms (O(1) in volume size, via §14.3; 0.05 ms at 63
 classes), a metadata-only read 0.19 ms, and `open()` → first patch 2.3 ms.
 
-Forty-nine clauses have been corrected — ten during implementation, eleven in the 1.x package
+Fifty clauses have been corrected — ten during implementation, eleven in the 1.x package
 releases that followed, four when the engine was written a second time, in Rust, for the 2.0
-package, one when it implemented 1.1, and twenty-three in the audits of 2.0 before its release — each because
+package, one when it implemented 1.1, and twenty-four in the audits of 2.0 before its release — each because
 writing the code showed the text was not implementable, not unambiguous, or not what the
 implementation could honestly promise, as written:
 
@@ -1753,6 +1758,7 @@ implementation could honestly promise, as written:
 | §13.3 | `source_digest` is required of each index entry, `index/<ann_id>`, not of "every object under `index/`": the datasets and the `fg_coords/` group inside an entry never carried one, and §14.3 places the attribute on the entry. |
 | §2.1, §11.1 | A timestamp --- a provenance activity's, and the root's `created` --- is RFC 3339 (E604 otherwise, for provenance) and **SHOULD** be in UTC. "RFC 3339 UTC" read as a requirement nothing enforced: every validator since 1.0 has accepted an offset such as `+01:00`, which names the same instant, and reported E604 only for text that is not RFC 3339 --- so files the implementations passed failed the text. |
 | §3.2, §10.3, §10.5 | The numbers that place a point are bounded as far as placing one needs: a grid's `spacing` and `origin` are finite (**E104**, **E109**), an affine's `matrix` is `(S+1, S+1)` for the *S* spatial axes of the grids in its frames (**E504**), and a B-spline's `control_points` hold *S* components on a lattice of *S* axes with at least `order + 1` points on each (**E503**). "Positive" admitted an infinite spacing, nothing bounded the origin, and *S* was defined for a grid but never for a transform, which has no grid of its own: a 3×3 affine between 3-D grids validated and moved each point with its coordinates regrouped in twos, a matrix that was not square panicked whatever read it, and a lattice too short for its order, which the writer refused, validated. |
+| §13.1 | A string dataset's payload is each string's stored bytes, a fixed-length string's without its NUL padding; a dataset of another fixed-size type hashes as `|V<n>` over its stored elements; and other variable-length data has no digest. "Hashed in UTF-8" said neither which bytes nor what a fixed-length string or a compound hashes as. 1.x hashed what `h5py` reads --- stored bytes, a compound as `|V<n>` --- while the 2.0 engine decoded strings as text, replacing invalid UTF-8, so different stored bytes shared a digest and an edit to them went unseen, and refused a compound outright, so a valid file holding one in an extension group could be neither amended nor verified. No digest of a valid UTF-8 string changes. |
 
 ### C.2 Prototype checks
 

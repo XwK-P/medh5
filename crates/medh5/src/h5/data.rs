@@ -8,7 +8,7 @@ use hdf5::types::{TypeDescriptor as TD, VarLenAscii, VarLenUnicode};
 use hdf5::{Hyperslab, SliceOrIndex};
 use ndarray::{ArrayD, IxDyn};
 
-use super::attrs::{bytes_to_array, lossy, numeric_dtype, read_fixed_strings};
+use super::attrs::{bytes_to_array, numeric_dtype, read_fixed_strings, text};
 use crate::array::{DType, Index, NdArray};
 use crate::{with_array, with_dtype, Error, Result};
 
@@ -81,6 +81,118 @@ pub fn stored_as_written(ds: &hdf5::Dataset, dtype: DType) -> Result<bool> {
     }
     let stored = ds.dtype()?;
     Ok(with_dtype!(dtype, T => stored == hdf5::Datatype::from_type::<T>()?))
+}
+
+/// Whether a type is, or holds, variable-length data or a reference: what has
+/// no bytes of its own in the dataset that stores it.  The caller holds the
+/// HDF5 lock.
+fn holds_variable(tid: crate::h5sys::h5i::hid_t) -> bool {
+    use crate::h5sys::h5t::{self, H5T_class_t as Class};
+    // SAFETY: `tid` is a live type id; each member or base type opened is
+    // closed.
+    unsafe {
+        match h5t::H5Tget_class(tid) {
+            Class::H5T_VLEN | Class::H5T_REFERENCE => true,
+            Class::H5T_STRING => h5t::H5Tis_variable_str(tid) > 0,
+            Class::H5T_COMPOUND => (0..h5t::H5Tget_nmembers(tid).max(0) as u32).any(|i| {
+                let member = h5t::H5Tget_member_type(tid, i);
+                let found = member < 0 || holds_variable(member);
+                if member >= 0 {
+                    h5t::H5Tclose(member);
+                }
+                found
+            }),
+            Class::H5T_ARRAY => {
+                let base = h5t::H5Tget_super(tid);
+                let found = base < 0 || holds_variable(base);
+                if base >= 0 {
+                    h5t::H5Tclose(base);
+                }
+                found
+            }
+            _ => false,
+        }
+    }
+}
+
+/// The element size, in bytes, of a dataset whose stored type has fixed-size
+/// elements holding no variable-length data or reference --- a compound, an
+/// array or an opaque type; `None` for a type that holds either.
+pub fn stored_element_size(ds: &hdf5::Dataset) -> Result<Option<usize>> {
+    use crate::h5sys::{h5d, h5t};
+    super::alive(ds)?;
+    super::locked(|| {
+        // SAFETY: a live dataset; the type id is closed before returning.
+        let tid = unsafe { h5d::H5Dget_type(ds.id()) };
+        if tid < 0 {
+            return Err(Error::Io(format!("could not read the type of {}", ds.name())));
+        }
+        let size = if holds_variable(tid) { None } else { Some(unsafe { h5t::H5Tget_size(tid) }) };
+        unsafe { h5t::H5Tclose(tid) };
+        Ok(size.filter(|n| *n > 0))
+    })
+}
+
+/// Rows `[start, start + count)` of a dataset of fixed-size elements, along
+/// its first axis with every other axis whole (the one element of a scalar),
+/// as their stored bytes: read in the dataset's own type, so nothing is
+/// converted.  `size` is the element size ([`stored_element_size`]).
+pub(crate) fn read_stored_rows(ds: &hdf5::Dataset, size: usize, start: usize, count: usize) -> Result<Vec<u8>> {
+    use crate::h5sys::{h5d, h5p, h5s, h5t};
+    let shape = ds.shape();
+    let mut first = vec![0u64; shape.len()];
+    let mut counts: Vec<u64> = shape.iter().map(|n| *n as u64).collect();
+    if let Some(axis) = counts.first_mut() {
+        first[0] = start as u64;
+        *axis = count as u64;
+    }
+    let elements = counts.iter().try_fold(1usize, |n, c| n.checked_mul(usize::try_from(*c).ok()?));
+    let mut buf = Vec::new();
+    let bytes = elements
+        .and_then(|n| n.checked_mul(size))
+        .filter(|bytes| holdable(&[*bytes], 1) && buf.try_reserve_exact(*bytes).is_ok());
+    let Some(bytes) = bytes else {
+        return Err(Error::Io(format!(
+            "{} cannot be read: rows {start}..{} are more than this process can hold",
+            ds.name(),
+            start + count
+        )));
+    };
+    buf.resize(bytes, 0);
+    super::locked(|| unsafe {
+        let ftype = h5d::H5Dget_type(ds.id());
+        let fspace = h5d::H5Dget_space(ds.id());
+        let mut status = if ftype < 0 || fspace < 0 { -1 } else { 0 };
+        let mspace = if shape.is_empty() {
+            h5s::H5Screate(h5s::H5S_class_t::H5S_SCALAR)
+        } else {
+            if status >= 0 {
+                status = h5s::H5Sselect_hyperslab(
+                    fspace,
+                    h5s::H5S_seloper_t::H5S_SELECT_SET,
+                    first.as_ptr(),
+                    std::ptr::null(),
+                    counts.as_ptr(),
+                    std::ptr::null(),
+                );
+            }
+            h5s::H5Screate_simple(counts.len() as i32, counts.as_ptr(), std::ptr::null())
+        };
+        if status >= 0 && bytes > 0 {
+            status = h5d::H5Dread(ds.id(), ftype, mspace, fspace, h5p::H5P_DEFAULT, buf.as_mut_ptr().cast());
+        }
+        h5s::H5Sclose(mspace);
+        if fspace >= 0 {
+            h5s::H5Sclose(fspace);
+        }
+        if ftype >= 0 {
+            h5t::H5Tclose(ftype);
+        }
+        if status < 0 {
+            return Err(Error::Io(format!("could not read {}", ds.name())));
+        }
+        Ok(buf)
+    })
 }
 
 /// Whether a dataset holds strings.
@@ -409,9 +521,10 @@ fn decoded_bytes(n: usize, width: Option<usize>, text: usize) -> Option<usize> {
 }
 
 /// Read rows `[start, start + count)` of a string dataset along its first
-/// axis, every other axis whole, flattened in C order.  The caller has sized
-/// the read.
-fn read_string_rows(ds: &hdf5::Dataset, td: &TD, start: usize, count: usize) -> Result<Vec<String>> {
+/// axis, every other axis whole, flattened in C order: each string's stored
+/// bytes, a fixed-length one's without its NUL padding.  The caller has
+/// sized the read.
+fn read_string_rows(ds: &hdf5::Dataset, td: &TD, start: usize, count: usize) -> Result<Vec<Vec<u8>>> {
     let shape = ds.shape();
     let selection: Vec<SliceOrIndex> = shape
         .iter()
@@ -428,10 +541,10 @@ fn read_string_rows(ds: &hdf5::Dataset, td: &TD, start: usize, count: usize) -> 
         .map_err(|_| Error::Io(format!("{n} strings of {} are more than this process can hold", ds.name())))?;
     match td {
         TD::VarLenUnicode => {
-            out.extend(ds.read_slice::<VarLenUnicode, _, IxDyn>(hyper)?.iter().map(|s| lossy(s.as_bytes())))
+            out.extend(ds.read_slice::<VarLenUnicode, _, IxDyn>(hyper)?.iter().map(|s| s.as_bytes().to_vec()))
         }
         TD::VarLenAscii => {
-            out.extend(ds.read_slice::<VarLenAscii, _, IxDyn>(hyper)?.iter().map(|s| lossy(s.as_bytes())))
+            out.extend(ds.read_slice::<VarLenAscii, _, IxDyn>(hyper)?.iter().map(|s| s.as_bytes().to_vec()))
         }
         _ => out.extend(super::attrs::read_fixed_string_rows(ds, &shape, start, count)?),
     }
@@ -440,33 +553,35 @@ fn read_string_rows(ds: &hdf5::Dataset, td: &TD, start: usize, count: usize) -> 
 
 /// Read a string dataset slab by slab along its first axis, handing each
 /// slab's strings to `each` in C order, so that about `budget` bytes of
-/// decoded strings are held at a time --- what a digest needs, where it
-/// held every string of the dataset at once.
+/// strings are held at a time --- what a digest needs, where it held every
+/// string of the dataset at once.  Each string is its stored bytes, a
+/// fixed-length one's without its NUL padding: a digest covers what is
+/// stored, not text decoded from it (§13.1).
 ///
-/// A string decoded costs a `String` beyond its text, so a few kilobytes of
-/// one-byte strings, compressed, held hundreds of megabytes once read
-/// (F10 of the round-4 audit).  A slab is sized by what it decodes to:
-/// variable-length text is measured before it is read, and a slab that
-/// measures over the budget is halved.  A single row that no buffer can hold
-/// is refused, as any read is ([`ensure_allocatable`]).
+/// A string read costs an allocation beyond its bytes, so a few kilobytes
+/// of one-byte strings, compressed, held hundreds of megabytes once read.
+/// A slab is sized by what it reads to: variable-length text is measured
+/// before it is read, and a slab that measures over the budget is halved.
+/// A single row that no buffer can hold is refused, as any read is
+/// ([`ensure_allocatable`]).
 pub fn for_each_string_slab(
     ds: &hdf5::Dataset,
     budget: usize,
-    each: &mut dyn FnMut(Vec<String>) -> Result<()>,
+    each: &mut dyn FnMut(Vec<Vec<u8>>) -> Result<()>,
 ) -> Result<()> {
     super::alive(ds)?;
     let td = ds.dtype()?.to_descriptor()?;
     let width = string_width(ds, &td)?;
     let shape = ds.shape();
     if shape.is_empty() {
-        return each(read_strings(ds)?);
+        return each(read_stored_strings(ds)?);
     }
     if shape.contains(&0) {
         return Ok(());
     }
     // A declared extent no machine holds is refused before it is measured,
     // as a whole read refuses it: a slab at a time, an 11 KiB file declaring
-    // 2**58 strings was a read without end (N12 of the 2.0 re-audit).
+    // 2**58 strings was a read without end.
     ensure_allocatable(ds, &shape, width.unwrap_or(std::mem::size_of::<VarLenUnicode>()))?;
     let row: usize = shape[1..].iter().try_fold(1usize, |n, e| n.checked_mul(*e)).unwrap_or(usize::MAX);
     let per_row = decoded_bytes(row, width, 0).unwrap_or(usize::MAX).max(1);
@@ -495,16 +610,22 @@ pub fn for_each_string_slab(
     Ok(())
 }
 
-/// Read a string dataset (any shape), flattened in C order.
-///
-/// Sized by what it decodes to, before anything is read: a fixed-length
-/// string type declares any width and a dataspace any extent, and an 11 KiB
-/// file of 2**59 16-byte strings panicked the validator on a capacity
-/// overflow, where a 1 GiB scalar string aborted a capped process (N12 of the
-/// 2.0 re-audit).  Each string read costs a `String` beyond its stored bytes,
-/// and variable-length text is measured first, since many elements can name
-/// one stored string (F10 of the round-4 audit).
+/// Read a string dataset (any shape) as text, flattened in C order; invalid
+/// UTF-8 is replaced rather than trusted.
 pub fn read_strings(ds: &hdf5::Dataset) -> Result<Vec<String>> {
+    Ok(read_stored_strings(ds)?.into_iter().map(text).collect())
+}
+
+/// Read a string dataset (any shape), flattened in C order: each string's
+/// stored bytes, a fixed-length one's without its NUL padding.
+///
+/// Sized by what it reads to, before anything is read: a fixed-length string
+/// type declares any width and a dataspace any extent, and an 11 KiB file of
+/// 2**59 16-byte strings panicked the validator on a capacity overflow, where
+/// a 1 GiB scalar string aborted a capped process.  Each string read costs an
+/// allocation beyond its stored bytes, and variable-length text is measured
+/// first, since many elements can name one stored string.
+pub fn read_stored_strings(ds: &hdf5::Dataset) -> Result<Vec<Vec<u8>>> {
     super::alive(ds)?;
     let td = ds.dtype()?.to_descriptor()?;
     let width = string_width(ds, &td)?;
@@ -527,12 +648,12 @@ pub fn read_strings(ds: &hdf5::Dataset) -> Result<Vec<String>> {
     }
     Ok(match td {
         TD::VarLenUnicode if ds.is_scalar() => {
-            ds.read_raw::<VarLenUnicode>()?.iter().map(|s| lossy(s.as_bytes())).collect()
+            ds.read_raw::<VarLenUnicode>()?.iter().map(|s| s.as_bytes().to_vec()).collect()
         }
         TD::VarLenAscii if ds.is_scalar() => {
-            ds.read_raw::<VarLenAscii>()?.iter().map(|s| lossy(s.as_bytes())).collect()
+            ds.read_raw::<VarLenAscii>()?.iter().map(|s| s.as_bytes().to_vec()).collect()
         }
-        TD::FixedAscii(_) | TD::FixedUnicode(_) if ds.is_scalar() => read_fixed_strings(ds.id(), 1, &td, false)?,
+        TD::FixedAscii(_) | TD::FixedUnicode(_) if ds.is_scalar() => read_fixed_strings(ds.id(), 1, false)?,
         _ if extents.contains(&0) => Vec::new(),
         _ => read_string_rows(ds, &td, 0, extents[0])?,
     })
@@ -919,12 +1040,12 @@ mod tests {
         assert!(err.to_string().contains("not one string"), "{err}");
     }
 
-    /// F10: a string read is held a slab at a time, each slab within its
-    /// budget by what it decodes to, and the slabs are the whole dataset in
-    /// C order.  A dataset of one-byte strings decoded to a `String` each,
-    /// all at once: a 17 KB file took 687 MB to digest.
+    /// A string read is held a slab at a time, each slab within its budget by
+    /// what it reads to, and the slabs are the whole dataset in C order.  A
+    /// dataset of one-byte strings read to a `String` each, all at once: a
+    /// 17 KB file took 687 MB to digest.
     #[test]
-    fn f10_s13_1_strings_are_digested_a_bounded_slab_at_a_time() {
+    fn s13_1_strings_are_digested_a_bounded_slab_at_a_time() {
         let dir = tempfile::tempdir().unwrap();
         let file = hdf5::File::create(dir.path().join("s.h5")).unwrap();
         let n = 20_000usize;
@@ -942,12 +1063,13 @@ mod tests {
             .unwrap();
             assert!(slabs.len() > 1, "{}: one slab of {}", ds.name(), slabs[0].len());
             for slab in &slabs {
-                let text: usize = slab.iter().map(String::len).sum();
+                let text: usize = slab.iter().map(Vec::len).sum();
                 let width = if ds.name() == "/fixed" { Some(1) } else { None };
                 let held = decoded_bytes(slab.len(), width, if width.is_some() { 0 } else { text }).unwrap();
                 assert!(held <= budget || slab.len() == ds.shape()[1..].iter().product::<usize>(), "{held} > {budget}");
             }
-            assert_eq!(&slabs.concat(), whole);
+            let stored: Vec<Vec<u8>> = whole.iter().map(|s| s.as_bytes().to_vec()).collect();
+            assert_eq!(slabs.concat(), stored);
             assert_eq!(&read_strings(ds).unwrap(), whole);
             let streamed = crate::integrity::digest::dataset_digest_streamed(ds, "x", "sha256", budget).unwrap();
             let at_once = crate::integrity::digest::strings_digest("x", whole, &ds.shape(), "sha256").unwrap();
