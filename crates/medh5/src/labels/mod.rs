@@ -173,14 +173,21 @@ impl LabelClass {
         laterality: Option<String>,
         properties: Map<String, Value>,
     ) -> Result<Self> {
-        if !(BACKGROUND_ID < id && id <= MAX_CLASS_ID) {
+        // A reserved id is E303; any other outside the range is a class entry
+        // out of id range, E306 (§15.2), which E303 used to report too.
+        if id == BACKGROUND_ID || id == IGNORE_ID {
             return Err(Error::coded(
                 "E303",
                 format!(
-                    "class {}: id {id} must be in 1..{MAX_CLASS_ID} ({BACKGROUND_ID} is background, \
-                     {IGNORE_ID} is ignore)",
+                    "class {}: id {id} is reserved ({BACKGROUND_ID} is background, {IGNORE_ID} is ignore)",
                     repr_str(&key)
                 ),
+            ));
+        }
+        if !(BACKGROUND_ID < id && id <= MAX_CLASS_ID) {
+            return Err(Error::coded(
+                "E306",
+                format!("class {}: id {id} is outside the class id range 1..{MAX_CLASS_ID}", repr_str(&key)),
             ));
         }
         if key.is_empty() || name.is_empty() {
@@ -442,32 +449,41 @@ impl LabelSet {
     }
 
     fn check_acyclic(&self) -> Result<()> {
-        // 0 = unvisited, 1 = on the current path, 2 = done.
+        // 0 = unvisited, 1 = on the current path, 2 = done.  The path is an
+        // explicit stack of (class, next parent to follow): a recursive call
+        // per parent link overflowed the thread's stack on a chain of
+        // 65,534 classes, which the id space allows.
         let mut colour: HashMap<i64, u8> = HashMap::new();
-        fn visit(set: &LabelSet, node: i64, path: &mut Vec<i64>, colour: &mut HashMap<i64, u8>) -> Result<()> {
-            match colour.get(&node).copied().unwrap_or(0) {
-                1 => {
-                    let mut names: Vec<&str> = path.iter().map(|n| set.class_by_id(*n).key.as_str()).collect();
-                    names.push(&set.class_by_id(node).key);
-                    return Err(Error::coded(
-                        "E304",
-                        format!("label set {}: hierarchy cycle {}", repr_str(&set.id), names.join(" -> ")),
-                    ));
-                }
-                2 => return Ok(()),
-                _ => {}
-            }
-            colour.insert(node, 1);
-            path.push(node);
-            for parent in set.class_by_id(node).parents.clone() {
-                visit(set, parent, path, colour)?;
-            }
-            path.pop();
-            colour.insert(node, 2);
-            Ok(())
-        }
         for class in &self.classes {
-            visit(self, class.id, &mut Vec::new(), &mut colour)?;
+            if colour.contains_key(&class.id) {
+                continue;
+            }
+            colour.insert(class.id, 1);
+            let mut path: Vec<(i64, usize)> = vec![(class.id, 0)];
+            while let Some(&(node, next)) = path.last() {
+                let Some(&parent) = self.class_by_id(node).parents.get(next) else {
+                    colour.insert(node, 2);
+                    path.pop();
+                    continue;
+                };
+                path.last_mut().expect("just read").1 += 1;
+                match colour.get(&parent).copied().unwrap_or(0) {
+                    1 => {
+                        let mut names: Vec<&str> =
+                            path.iter().map(|(n, _)| self.class_by_id(*n).key.as_str()).collect();
+                        names.push(&self.class_by_id(parent).key);
+                        return Err(Error::coded(
+                            "E304",
+                            format!("label set {}: hierarchy cycle {}", repr_str(&self.id), names.join(" -> ")),
+                        ));
+                    }
+                    2 => {}
+                    _ => {
+                        colour.insert(parent, 1);
+                        path.push((parent, 0));
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -853,5 +869,43 @@ mod tests {
         assert_eq!(LabelClass::new(0, "bg", "Bg").unwrap_err().code(), Some("E303"));
         assert_eq!(check_class_id(65535).unwrap_err().code(), Some("E303"));
         assert_eq!(check_class_id(5).unwrap(), 5);
+    }
+
+    #[test]
+    fn s15_2_an_id_outside_the_range_is_e306_and_a_reserved_one_e303() {
+        for (id, code) in [(0, "E303"), (IGNORE_ID, "E303"), (-5, "E306"), (70_000, "E306")] {
+            assert_eq!(LabelClass::new(id, "vessel", "Vessel").unwrap_err().code(), Some(code), "{id}");
+        }
+        assert!(LabelClass::new(MAX_CLASS_ID, "vessel", "Vessel").is_ok());
+    }
+
+    #[test]
+    fn s5_4_a_hierarchy_as_deep_as_the_id_space_is_checked_without_recursion() {
+        // One recursive call per parent link overflowed the stack at this
+        // depth --- a crash of every command that opened the file.
+        let chain = |cycle: bool| -> Vec<LabelClass> {
+            (1..=MAX_CLASS_ID)
+                .map(|id| {
+                    let mut class = LabelClass::new(id, format!("c{id}"), format!("C{id}")).unwrap();
+                    if id > 1 {
+                        class.parents = vec![id - 1];
+                    } else if cycle {
+                        class.parents = vec![MAX_CLASS_ID];
+                    }
+                    class
+                })
+                .collect()
+        };
+        let deep = std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(move || {
+                let set = LabelSet::inline("deep", chain(false)).unwrap();
+                let cycle = LabelSet::inline("deep", chain(true)).unwrap_err();
+                (set.ancestors(&ClassKey::Id(MAX_CLASS_ID)).unwrap().len(), cycle.code().map(str::to_string))
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(deep, (MAX_CLASS_ID as usize - 1, Some("E304".to_string())));
     }
 }

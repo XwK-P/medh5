@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
+import textwrap
+
 import pytest
 
 from medh5 import labels
@@ -38,6 +42,14 @@ class TestLabelClass:
             with pytest.raises(MEDH5ValidationError) as exc:
                 LabelClass(reserved, "x", "X")
             assert exc.value.code == "E303"
+
+    @pytest.mark.parametrize("out_of_range", [-5, 70000])
+    def test_S15_2_an_id_outside_the_range_is_E306_not_E303(self, out_of_range):
+        """E303 is a reserved id; any other id outside 1..65534 is a class
+        entry out of id range, which §15.2 calls E306."""
+        with pytest.raises(MEDH5ValidationError, match="outside") as exc:
+            LabelClass(out_of_range, "vessel", "Vessel")
+        assert exc.value.code == "E306"
 
     def test_colour_must_be_rgba(self):
         with pytest.raises(MEDH5ValidationError):
@@ -81,6 +93,33 @@ class TestLabelSet:
                 ],
             )
         assert exc.value.code == "E304"
+
+    def test_S5_4_a_hierarchy_as_deep_as_the_id_space_loads(self):
+        """A parent chain through every id overflowed the stack --- a SIGSEGV
+        of whatever opened the file --- because the cycle check recursed once
+        per link.  Run apart, so a regression fails this test alone."""
+        script = textwrap.dedent(
+            """
+            from medh5.labels import MAX_CLASS_ID, LabelSet
+            classes = [{"id": 1, "key": "c1", "name": "C1"}] + [
+                {"id": i, "key": f"c{i}", "name": f"C{i}", "parents": [i - 1]}
+                for i in range(2, MAX_CLASS_ID + 1)
+            ]
+            deep = LabelSet.from_json({"id": "deep", "classes": classes})
+            assert len(deep.ancestors(MAX_CLASS_ID)) == MAX_CLASS_ID - 1
+            classes[0]["parents"] = [MAX_CLASS_ID]
+            try:
+                LabelSet.from_json({"id": "deep", "classes": classes})
+            except Exception as exc:
+                assert exc.code == "E304", exc
+            else:
+                raise AssertionError("the cycle was not found")
+            """
+        )
+        done = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=300
+        )
+        assert done.returncode == 0, done.stderr
 
     def test_duplicate_ids_and_keys_are_rejected(self):
         with pytest.raises(MEDH5ValidationError) as exc:
