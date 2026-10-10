@@ -1,0 +1,28 @@
+[package]
+name = "medh5-cli"
+description = "The medh5 command line: inspect, validate, verify, curate and convert MEDH5 medical imaging files"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["medical-imaging", "hdf5", "cli", "dataset", "validation"]
+categories = ["command-line-utilities", "science"]
+
+[[bin]]
+name = "medh5"
+path = "src/main.rs"
+
+[lib]
+name = "medh5_cli"
+path = "src/lib.rs"
+
+[dependencies]
+medh5.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+indexmap.workspace = true
+tempfile = "3"

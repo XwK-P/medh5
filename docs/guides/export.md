@@ -78,9 +78,18 @@ medh5 convert to-nnunet /out case1.medh5 case2.medh5 --dataset-name Dataset001_L
 ```
 
 Classes are matched by **id**, not by name — which is why import keeps nnU-Net's
-own integers. A class the sample does not have is refused (`E402`) rather than
-skipped; a skipped class produces a `dataset.json` listing it, label files of the
-right shape, and every voxel zero.
+own integers. The label table is every case's classes, and a case is written
+against it only if it examined every one (`annotated_class_ids`): 0 in an
+nnU-Net label volume is a verified negative, which a class nobody looked for is
+not, so such a case is refused --- `--class` exports a subset every case
+examined. A class a case cannot name is refused (`E402`) rather than
+skipped; a skipped class produces a `dataset.json` listing it, label files of
+the right shape, and every voxel zero.
+
+A case without the annotation is refused, since nnU-Net's training cases are
+labeled; `--unlabeled test` writes it to `imagesTs` instead. Label values are
+written `0..K`, as nnU-Net requires, and `dataset.json` keeps the class id of
+any value that is not its own (`medh5_class_ids`), so `from-nnunet` restores it.
 
 ## What has no exporter
 

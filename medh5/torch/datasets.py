@@ -46,12 +46,13 @@ import numpy.typing as npt
 
 from medh5.annotations.base import VoxelAnnotation
 from medh5.errors import MEDH5ValidationError
-from medh5.labels.labelset import IGNORE_ID
+from medh5.labels import IGNORE_ID
 from medh5.sample import Sample, open_sample
 from medh5.sampling import (
     PairReport,
     Patch,
     PatchSampler,
+    Seed,
     TimepointPair,
     TimepointPairSampler,
     grid_patches,
@@ -282,7 +283,8 @@ class _Base(_DatasetBase):  # type: ignore[misc,valid-type]
                     region if patch is None else patch.apply_padding(region, value=True)
                 )
             if self.label_format == "instances":
-                labels[ann_id] = self._instances_in(ann, patch)
+                chosen = None if wanted is None else ann.resolve_classes(wanted)
+                labels[ann_id] = self._instances_in(ann, patch, chosen)
                 continue
             if self.label_format == "labelmap":
                 array = np.asarray(ann.labelmap(roi=roi, priority=wanted))
@@ -298,20 +300,34 @@ class _Base(_DatasetBase):  # type: ignore[misc,valid-type]
         return labels, ignore, annotated
 
     @staticmethod
-    def _instances_in(ann: Any, patch: Patch | None) -> list[dict[str, Any]]:
-        """Objects overlapping the patch, with boxes in patch coordinates."""
+    def _instances_in(
+        ann: Any, patch: Patch | None, classes: Sequence[int] | None = None
+    ) -> list[dict[str, Any]]:
+        """Objects of *classes* (all, when ``None``) overlapping the patch, with
+        boxes in patch coordinates.
+
+        A box ``[a, b]`` sits at voxel edges --- it is the slice
+        ``a+0.5 : b+0.5`` --- so it overlaps the voxels the patch read,
+        ``start .. stop - 1``, when ``b > start - 0.5`` and ``a < stop - 0.5``.
+        Patch coordinates count from the *padded* patch's first voxel, so a
+        patch reaching past the volume shifts every box by the padding before
+        it: subtracting the start alone left boxes ``pad_before`` voxels from
+        the anatomy they bound (L05 of the 2.0 audit).  Only the requested
+        classes are returned, as every other label format does (L09).
+        """
+        wanted = None if classes is None else set(classes)
         objects = []
         for obj in ann.instances():
+            if wanted is not None and obj.class_id not in wanted:
+                continue
             box = np.asarray(obj.box, dtype=np.float64)
             if patch is not None:
-                offset = np.asarray([s.start for s in patch.slices], dtype=np.float64)
-                extent = np.asarray(
-                    [s.stop - s.start for s in patch.slices], dtype=np.float64
-                )
-                local = box - offset[:, None]
-                if np.any(local[:, 1] < 0) or np.any(local[:, 0] > extent):
+                start = np.asarray([s.start for s in patch.slices], dtype=np.float64)
+                stop = np.asarray([s.stop for s in patch.slices], dtype=np.float64)
+                before = np.asarray([b for b, _ in patch.padding], dtype=np.float64)
+                if np.any(box[:, 1] <= start - 0.5) or np.any(box[:, 0] >= stop - 0.5):
                     continue
-                box = local
+                box = box - start[:, None] + before[:, None]
             objects.append(
                 {
                     "instance_id": obj.instance_id,
@@ -438,8 +454,9 @@ class PatchDataset(_Base):
     def __getitem__(self, index: int) -> dict[str, Any]:
         path = self.paths[index // self.samples_per_volume]
         with self._lease(path) as sample:
-            rng = np.random.default_rng((self.seed, self.epoch, index))
-            patch = self.sampler.draw(sample, self.annotation, rng)
+            patch = self.sampler.draw(
+                sample, self.annotation, (self.seed, self.epoch, index)
+            )
             return self._item(sample, patch)
 
 
@@ -566,8 +583,7 @@ class PairedPatchDataset(_Base):
 
     def _paired_item(self, sample: Sample, index: int) -> dict[str, Any]:
         _, pair = self._plan[index // self.samples_per_pair]
-        rng = np.random.default_rng((self.seed, self.epoch, index))
-        first = self._patch_for(sample, pair.first, rng)
+        first = self._patch_for(sample, pair.first, (self.seed, self.epoch, index))
         second = self._corresponding(sample, pair, first)
         images = {
             pair.first: self._read_at(sample, pair.first, first),
@@ -653,9 +669,7 @@ class PairedPatchDataset(_Base):
             sample, {f"image {n!r}": sample.images[n].grid_id for n in names}
         )
 
-    def _patch_for(
-        self, sample: Sample, timepoint: str, rng: np.random.Generator
-    ) -> Patch:
+    def _patch_for(self, sample: Sample, timepoint: str, rng: Seed) -> Patch:
         """A window in *timepoint*'s own grid, annotated or not.
 
         The grid is named rather than left to the sampler.  `_annotation_at`
@@ -742,7 +756,10 @@ class PairedPatchDataset(_Base):
         transform = None
         if source.frame_uid and target.frame_uid:
             transform = sample.resolve_frames(source.frame_uid, target.frame_uid)
-        if transform is None and not source.comparable_with(target):
+        one_frame = source.frame_uid is not None and (
+            source.frame_uid == target.frame_uid
+        )
+        if transform is None and not one_frame:
             # A `None` here has two possible meanings: the grids already share
             # a frame (nothing to apply), or no path exists between them.  Only
             # the first makes the coordinates comparable, and §3.3 says what
@@ -768,7 +785,15 @@ class PairedPatchDataset(_Base):
                 "index window from both"
             )
         if transform is not None:
+            _require_units(transform, source, target)
             world = transform.transform_points(world)
+        else:
+            # One frame, but each grid's numbers are in its own units (§3.5):
+            # a point in millimetres read on a grid in metres landed a
+            # thousandfold off (N10 of the round-3 audit).  Two conventions
+            # are refused here (E414): §3.3 rule 4 compares world coordinates
+            # in one `coord_system` only.
+            world = source.world_into(target, world)
         index = target.world_to_index(world)[0]
         return tuple(int(round(float(v))) for v in index)
 
@@ -788,6 +813,25 @@ class PairedPatchDataset(_Base):
             )
             out[image_id] = patch.apply_padding(array)
         return out
+
+
+def _require_units(transform: Any, source: Any, target: Any) -> None:
+    """Refuse a transform whose coordinates are not both grids' (§10.1, E506).
+
+    A transform maps points in its own ``units``, and 1.0 defines no transform
+    across units.  One in millimetres between two metre grids moved every
+    point a thousand times as far as it was meant to (F06 of the round-4
+    audit); nothing is converted here --- the file is wrong, and says so.
+    """
+    wrong = [grid for grid in (source, target) if grid.units != transform.units]
+    if wrong:
+        raise MEDH5ValidationError(
+            f"transform {transform.transform_id!r} maps coordinates in "
+            f"{transform.units!r}, and "
+            + ", ".join(f"grid {grid.grid_id!r} is in {grid.units!r}" for grid in wrong)
+            + ": a transform applies only to grids in its units (§10.1)",
+            code="E506",
+        )
 
 
 __all__ = [

@@ -1,8 +1,9 @@
 # Design rationale
 
-Why format 1.0 is shaped the way it is: what 0.x could not express, the
+Why the format is shaped the way it is: what 0.x could not express, the
 alternatives that were weighed for each load-bearing decision, the costs that
-were accepted, and what the format deliberately does not try to be.
+were accepted, and what the format deliberately does not try to be --- for 1.0,
+and for what 1.1 added ([below](#clinical-context-and-prediction-tasks-11)).
 
 This page is explanation, not specification. Where it and
 [the specification](../spec/medh5-1.0.md) disagree, the specification is right.
@@ -193,11 +194,64 @@ honestly** — coverage, provenance, geometry and integrity.
 |---|---|
 | **A larger specification** than 0.x | Conformance profiles let a segmentation-only implementation implement `core` and `seg` and ignore the rest — and `core` is smaller than 0.x's implicit schema, because the derived flags are gone. |
 | **Several voxel encodings to implement and test** | Bounded: each is a small `contains` / `dense` / `instances` implementation, and the transcoding matrix is covered by property-based tests over every encoding rather than by twenty hand-written cases. |
-| **A JSON parse on every open** | A metadata-only read measures 0.21 ms — faster than 0.x's attribute-by-attribute reconstruction ([the numbers](../guides/performance.md#the-numbers)). |
+| **A JSON parse on every open** | A metadata-only read measures 0.19 ms — faster than 0.x's attribute-by-attribute reconstruction ([the numbers](../guides/performance.md#the-numbers)). |
 | **Multiple grids complicate every consumer** | Real complexity, but it is the domain's: PET and CT genuinely have different lattices. A consumer that wants one grid reads the reference grid and is no more complex than before. |
 | **Copy-on-write amend rewrites the whole file** | The alternative, in-place deletion, leaks space monotonically and fragments the chunk index, because HDF5 does not reclaim it (§14.4). |
 | **Subject-scoped files are larger** | A file holds every visit, so amend costs scale with the record and a new visit is a rewrite, not an append. Mitigated by the curator's freedom to emit one sample per timepoint for a long series, and by the fact that annotation edits — the frequent operation — touch small objects. |
 | **Longitudinal correctness becomes the format's problem** | Stable instance ids and honest coverage across visits are the writer's to get right. A validator sees only their symptoms — one `instance_id` carrying two classes (`W909`), partial coverage with no ignore region (`W904`) — so the format makes the correct thing expressible and some of the incorrect things detectable. It cannot make it automatic. |
+
+## One engine, three frontends (2.0)
+
+Through 1.x the format was implemented in Python, over `h5py`. That served
+Python users and nobody else: a Rust or C++ pipeline, a viewer, or a cluster
+node without a Python environment had the specification and the conformance
+corpus, but no implementation to call. 2.0 moved the implementation, not the
+format.
+
+| Decision | Why |
+|---|---|
+| **One engine, in Rust** | The canonical implementation is a library every frontend calls, not a Python package other languages re-implement. Rust gives a C-compatible native library with no runtime to ship, and the memory safety a parser of untrusted files should have. |
+| **Three frontends over it** | The Rust crate, the Python package (through PyO3) and the native `medh5` binary run the same code, so there is one behaviour to specify, test and keep conformant --- the corpus runs through both the Python and the native command line. |
+| **Python keeps what is Python's** | NumPy at the API, PyTorch and MONAI datasets, and the converters, whose job is to call nibabel, pydicom and highdicom. Moving those into Rust would re-implement libraries the ecosystem already maintains. |
+| **HDF5 compiled in, statically** | A wheel, a crate and a binary that need nothing installed, and one HDF5 and one Blosc2 everywhere --- so a chunk one frontend writes is the chunk the others read. |
+| **Reads below the filter pipeline** | HDF5 decompresses every chunk a window touches, whole, under its global lock; a Blosc2 chunk is a grid of separately compressed blocks. The engine reads the stored chunk and decompresses only the blocks the window covers, outside the lock --- a random 64³ label patch about three times faster, and threads that decompress at once. The bytes are HDF5's or the read goes through HDF5. |
+| **The format stayed 1.x** | Nothing in the file needed to change: a new major format would have bought nothing and cost every 1.x reader. What 2.0 adds to the format is a minor version, 1.1, for the optional clinical profile alone (below): a sample of imaging alone is still written as 1.0. The package is 2.0 because its Python API changed at the HDF5 boundary --- it no longer hands out `h5py` objects --- and semantic versioning says so. |
+
+Re-implementing the format was also a test of the specification: three
+clauses turned out to name a Python function where they meant bytes, and are
+now defined in HDF5 and JSON terms, and one promised a reproducibility only
+NumPy's generator could give (Appendix C.1). A specification only one
+implementation can satisfy is a description of that implementation.
+
+## Clinical context and prediction tasks (1.1)
+
+Imaging rarely stands alone at training time. A model asked to forecast
+progression wants the laboratory trend, the report and the earlier visit ---
+and the moment it is asked to predict at. The question 1.1 answers is not
+"how do we store clinical data" (EHRs and MEDS do) but "how does a training
+pipeline know what was knowable when". Each choice below follows from that.
+
+| Decision | Why | Alternative weighed |
+|---|---|---|
+| **A minor version, and an optional profile** | Additive: no image, grid, annotation or transform changes meaning, a 1.0 file stays valid, and a sample without clinical records is still written as 1.0 --- so every existing reader keeps working on the data it already reads. | A 2.0 with a subject-first core. Right if image-free subjects become a requirement, which they are not yet; it would have cost every 1.x reader for nothing they need. |
+| **Two times per event, each a pair of bounds** | When something happened and when it became known are different, and a model may only use the second. A date known to the day is the day's bounds, not midnight; an unknown time is null. Precision a source never had is never invented. | One timestamp per event, which is how leakage enters most EHR-derived datasets: the final report, dated by the scan. |
+| **Immutable versions, linked by `supersedes`** | A revision is new information at a new time; editing a row would destroy what was known before it. Selection then picks the newest version available at the cutoff. | Mutable rows with an audit log --- which every reader would have to replay correctly. |
+| **Columns of primitives, text as bytes plus offsets** | Range-readable, chunkable, compressible, and digestible with the 1.0 rules unchanged: no compound types, no pickles, no group per event. Null is a mask, and a null cell is zero, so stale bytes never leak. | HDF5 compound tables (opaque to most tools, awkward to evolve); one group per event (a 100 000-event history is 100 000 groups). |
+| **Semantics in datasets, never attributes** | The 1.0 `content_id` covers dataset digests and a fixed attribute list. Keeping clinical meaning in datasets --- the descriptor included --- means the Merkle construction did not change, and an edit is found by recomputing the bytes. | New attribute lines in `content_id`, which every 1.0 verifier would compute differently. |
+| **Selection is the format's, defined once, in the engine** | What a record says about what was known when is part of its meaning. Two implementations of "strict prospective" that disagree would make "certified" meaningless, so the rules are normative (1.1 §9) and Python, Rust and the command line call one function. | A selection helper per frontend --- the drift the 2.0 engine exists to prevent. |
+| **Uncertifiable, not silently older** | A later revision of unknown availability means the older version may not have been current at the cutoff. Using it anyway turns a dependence on the future into an ordinary missing feature --- leakage that looks like data. Strict selection says so; `latest_provable` is the named alternative. | Using the newest provable version without saying so, which is what most pipelines do. |
+| **Payloads need attestation** | An annotation drawn after the cutoff is future information even when it sits on a baseline image. Inputs --- including crop centres --- come only from what an admitted event attests; supervision, like the target, may come from later. | Eligibility by visit date, under which a lesion mask drawn at follow-up centres the baseline crop. |
+| **Tasks and caches are companions, not payload** | The file is the patient source; a task is one question asked of many files, and a cache one encoder's view of them. Each is versioned on its own and pinned to the source versions it read, so a changed sample makes a cache *stale* --- told apart from a cache that is *corrupt* --- and never the other way round. | Storing training views inside samples, which would make every new task an amendment of every file. |
+| **Splits before windows, by subject** | A partition belongs to a subject, so no cutoff can put one patient on both sides; learned preprocessing records the partition it was fitted on, and a training frontend refuses one fitted on anything else. | Row-level splitting, which leaks through the rows of one patient. |
+| **Text is read when it is asked for** | Offsets alone give every document's length, so opening, selecting, preflight and span checks need no text; a report is decompressed when a row that may read it is built, its UTF-8 checked then, and the validator streams the buffer a slab at a time. Integrity is not traded for it: the pin check still hashes every clinical byte. | Decoding the column on open --- which made selecting at a cutoff decompress every report a subject has, and a damaged chunk of one report fail all of them. |
+| **Rows index their subject's history** | A task has rows times history: 10 000 cutoffs over a 5 000-event history copied per row is 50 million records. A subject's history is merged and prepared once, and each row keeps the positions of what it admits; Python receives columns, so the arrays a forked worker inherits are shared, not copied. | A self-contained view per row, which cost 5 GB and a minute for 720 rows in the first implementation ([numbers](../examples/index.md#preflight-at-cohort-scale)). |
+| **Batches keep time's bounds** | A model given one timestamp per event is given a guess the source never made: the day-precision diagnosis becomes midnight, an unknown time becomes zero hours. Each time is passed as its bounds with a known-mask, and static, unknown, tied and planned stay distinguishable (task-cache-1 §6). | A single "age" per event, simpler to embed and wrong exactly where clinical data is coarse. |
+| **One subject at a time, one thread** | Preflight is mostly HDF5 metadata work, and every HDF5 call holds the library's one lock: threads measured slower (3.6 s on one, 6.9 s on four). Subjects run in sequence with their files closed before the next opens, which bounds descriptors and memory; parallelism belongs to processes. | A thread pool per cohort, which added lock contention and nothing else. |
+
+The draft this implements was reviewed before a line of it was written, and
+implementing it still corrected sixteen of its clauses --- an unallocated code,
+an ambiguous dtype, a rule a validator could not check. Each correction, and
+why, is in [1.1 Appendix A](../spec/medh5-1.1.md#appendix-a--changes-from-the-reviewed-draft-and-why).
 
 ## Non-goals
 
@@ -213,6 +267,10 @@ honestly** — coverage, provenance, geometry and integrity.
   producing it is somebody else's job.
 - **Not multi-writer.** HDF5 cannot do it, and pretending otherwise would be a
   correctness lie (§14.4).
+- **Not an EHR, and not a live timeline.** The clinical profile holds the
+  source-backed history a training set needs beside its images, de-identified
+  and copied in; it is not an authoritative patient record, and appending to a
+  timeline is an amendment, not a stream.
 
 ## Where the numbers come from
 
@@ -227,5 +285,6 @@ in [Tune performance](../guides/performance.md).
 
 - **[The data model](data-model.md)** — the model these decisions produced.
 - **[What the converters refuse, and why](refusals.md)** — principle 3 applied to import and export.
-- **[Specification](../spec/medh5-1.0.md)** — the normative statement.
+- **[Specification](../spec/medh5-1.0.md)** — the normative statement, with
+  [1.1](../spec/medh5-1.1.md) and the [task and cache contract](../spec/task-cache-1.md).
 - **[Changelog](../changelog.md)** — what changed in each release since 1.0.

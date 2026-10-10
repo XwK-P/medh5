@@ -3,6 +3,10 @@
 The core of the package is reachable from the top-level `medh5` namespace;
 where a name lives in a sub-package, the example imports it from there.
 
+The package is a layer over the format engine, which is written in Rust
+([Rust crate](rust.md)); the classes here are its Python face, typed for
+`mypy --strict`, and the arrays they hand back are NumPy arrays.
+
 ## Opening
 
 ```python
@@ -77,6 +81,7 @@ g.coord_system             # "LPS"
 g.timepoint                # "tp0"
 g.frame_uid                # frame of reference
 g.physical_size            # extent in mm
+g.world_into(s.reference_grid, [[0.0, 0.0, 0.0]])   # in that grid's units
 ```
 
 ### Images
@@ -93,7 +98,7 @@ img.levels                 # multiscale pyramid levels
 img.read()                                # whole array, stored values
 img.read(physical=True)                   # rescale applied
 img.read((slice(0, 16), slice(0, 64), slice(0, 64)))   # one block
-img.dataset                               # the underlying h5py dataset
+img.dataset                               # the stored dataset (a view, below)
 ```
 
 `physical=True` applies `slope` and `intercept`. When an image declares
@@ -160,7 +165,7 @@ t.is_invertible                    # the mapping is invertible
 t.inverse()                        # the *stored* inverse, when the file has one
 t.transform_points(points)         # world -> world, in mm
 
-from medh5.transforms.apply import jacobian_determinant, target_registration_error
+from medh5.transforms import jacobian_determinant, target_registration_error
 target_registration_error(t, fixed_points, moving_points)   # {"mean", "max", ...}
 jacobian_determinant(field, grid)                           # for a displacement field
 ```
@@ -203,13 +208,14 @@ See [Longitudinal](../guides/longitudinal.md).
 s.verify()                    # VerifyResult
 s.verify(partial=["images/CT_tp0"])
 s.verify().ok
-s.verify().unattested         # undigested datasets inside objects content_id covers
+s.verify().unattested         # paths in covered objects no line binds there
 s.compute_content_id()        # recompute rather than read the stored one
 ```
 
 `ok` is `False` when a digest mismatches, when the root does, or — in a file
 that declares a `content_id` — when a dataset inside a grid, image, annotation
-or transform carries no digest at all (`unattested`).
+or transform carries no digest at all, or is reached at a path that is not its
+own, the one its digest line names (`unattested`).
 
 ### Sampling index
 
@@ -220,6 +226,24 @@ s.fresh_indices               # the ids whose source_digest still matches (§13.
 
 A stale entry is ignored by the samplers and the statistics, never trusted; see
 [Storage](storage.md#the-sampling-index).
+
+### Stored objects
+
+`s.root` is the sample's HDF5 root, and `img.dataset`, `ann.group`, `t.group`,
+`s.index[...].group` and the writer's `w.handle` are objects under it. They are
+the package's own views (`medh5.nodes`), not `h5py` objects:
+
+```python
+ds = s.root["images/CT"]          # Dataset: shape, dtype, chunks, filters, attrs
+ds.shape, ds.dtype, ds.chunks
+block = ds[0:4, :, :]             # one read, NumPy out; numpy.asarray(ds) reads all
+ds.attrs["modality"]              # attributes, decoded as spec §2.5 fixes
+"images" in s.root, s.root["annotations"].keys()
+```
+
+A view lives as long as the sample it came from: after `s.close()` using one
+raises `MEDH5FileError`. For HDF5 features the views do not cover, open the
+file with `h5py` (`pip install "medh5[h5py]"`); it is plain HDF5.
 
 ## Writing
 
@@ -273,7 +297,7 @@ Activity types: `import`, `annotate`, `review`, `predict`, `resample`,
 w.add_grid("ct_tp0", shape=(192, 256, 256), spacing=(1.5, 0.8, 0.8),
            origin=(-144.0, -102.4, -102.4), direction=np.eye(3),
            coord_system="LPS", timepoint="tp0",
-           frame_uid="pseudo:frame-a", patch_hint=(96, 96, 96))
+           frame_uid="pseudo:frame-tp0", patch_hint=(96, 96, 96))
 
 w.add_image("CT_tp0", array, grid="ct_tp0", modality="CT",
             value_type="quantitative", value_units="HU",
@@ -310,11 +334,11 @@ kind, stats = w.add_segmentation(
 w.add_boxes("lesions", boxes, class_ids=["lesion"], grid="ct_tp0",
             space="index", scores=[0.91], instance_ids=[7])
 w.add_obb("nodules", centers, sizes, rotations, class_ids=["nodule"], grid="ct")
-w.add_keypoints("landmarks", points, keypoint_classes, class_ids, grid="ct")
+w.add_keypoints("landmarks", keypoints, keypoint_classes, class_ids, grid="ct")
 w.add_points("fiducials_tp0", points, grid="ct",
              correspondence="fiducials_tp1")   # the paired point set (§10.6)
 w.add_contours("rtstruct", polygons, grid="ct", space="world")
-w.add_mesh("surface", vertices, faces, space="world")
+w.add_mesh("surface", vertices, faces, space="world", frame_uid="pseudo:frame-tp0")
 w.add_classification("response", {"progressive": 1.0}, scope="sample",
                      timepoints=["tp0", "tp1"])   # the interval, not one visit
 ```
@@ -341,13 +365,18 @@ be one of `mm`, `um`, `m`, `px` (§3.2).
 
 ```python
 w.add_transform("tp0_to_tp1", kind="affine",
-                from_frame="pseudo:frame-a", to_frame="pseudo:frame-b",
+                from_frame="pseudo:frame-tp0", to_frame="pseudo:frame-tp1",
                 matrix=matrix4x4, invertible=True)
 
 w.add_transform("warp", kind="displacement",
-                from_frame="a", to_frame="b",
+                from_frame="pseudo:frame-tp0", to_frame="pseudo:frame-tp1",
                 field=field, field_grid="ct_tp0", vector_space="world")
 ```
+
+`units` default to those of the grids in the two frames, and a `units` they are
+not in is refused (`E506`). `w.remove_transform(name)` drops a transform; what
+still names it — another's `inverse_id`, a composite's `components` — is
+checked at commit, so one removed and added again under its name keeps them.
 
 ### Derived data
 
@@ -370,10 +399,73 @@ with medh5.amend("case.medh5") as w:
 ```
 
 Copy-on-write: a new file is built from the old and replaced atomically.
-Objects this reader does not understand — including ones written by a future
-minor version — are copied through untouched, so amending never silently drops
-what it cannot read. Anything holding the file open across an `amend` keeps
-reading the old version.
+Objects this reader does not understand — a `x_` group, an unknown attribute —
+are copied through untouched, so amending never silently drops what it cannot
+read. A file it cannot preserve is refused before anything is written: a later
+minor version (read as a projection, `MEDH5VersionError`), a profile this
+package does not implement (`E007`), or one holding HDF5 references --- addresses
+in the old file, which no copy preserves (`MEDH5FileError`). Anything holding the file open across an
+`amend` keeps reading the old version.
+
+## Clinical history (format 1.1)
+
+```python
+from medh5.clinical import HOUR
+
+with medh5.open("cohort/P-03.medh5") as s:
+    s.version                          # "1.1"; imaging-only samples stay "1.0"
+    s.support                          # "full", or "projection" for a later minor
+    c = s.clinical                     # -> Clinical, or None without the profile
+    c.clock                            # Clock(id, reference, origin_description, unit)
+    c.events                           # (Event, ...) in stored order
+    c.event("lab0").available_us       # inclusive (lo, hi) bounds, or None
+    c.documents                        # (DocumentInfo, ...): no text read yet
+    c.text("report0_text_v1")          # one document's text, read now
+    c.links                            # (Link, ...)
+    chosen = c.select(24 * HOUR)       # -> Selection, strict prospective
+    chosen.certified, chosen.event_ids
+    chosen.admits("image", "CT_tp0")   # may an input read this payload?
+    c.records()                        # -> ClinicalRecords: everything, as one bundle
+```
+
+| | |
+|---|---|
+| `Clock.relative(id, origin)` | The subject clock every time is measured on |
+| `Event(event_id, record_id, kind, temporal_type, status, ...)` | One immutable version; times as `(lo, hi)` microseconds (an `int` is an exact instant) |
+| `Document(document_id, text, ...)` | Source text, owned by one `document` event |
+| `Link.between(source, relation, target, asserted_by=None, span=None)` | A typed relationship between sample-relative objects |
+| `SelectionPolicy(...)` | Context window, kinds, plans, limits, ties (contract §3.4) |
+| `select(events, links, cutoff_us, policy)` | Selection over records not read from a file |
+| `augment(path, records, out=None)` | Add a history to a 1.0 or 1.1 sample; returns the report |
+| `strip(path, out)` | The imaging projection, as a new 1.0 file |
+| `imaging_events_from_timepoints(path)` | Day-precision imaging events from `days_from_baseline` |
+
+The writer takes the records one at a time --- `w.set_clock(...)`,
+`w.add_event(...)`, `w.add_document(...)`, `w.add_link(...)` --- or as a
+bundle, `w.add_records(records)`; each accepts the dataclass, a dict, or
+keywords. See [Clinical history beside the images](../guides/clinical.md).
+
+## Tasks and caches
+
+```python
+from medh5.task import TaskManifest
+
+task = TaskManifest.load("cohort/progression.task.json")
+task.task_fingerprint                  # the definition; not the rows
+report = task.preflight()              # -> Preflight: every row, eligible or why not
+report.counts, report.findings
+row = report.row("P-01@24h")           # -> RowView
+row.events, row.slots["ct"].image_id, row.target.status
+```
+
+| Module | |
+|---|---|
+| `medh5.task` | `TaskManifest`, `SourceRef` (`pin`, `check`), `Slot`, `Target`, `preflight`, `Preflight`, `RowView`, `Finding` |
+| `medh5.cache` | `CacheWriter`, `FeatureCache`, `validate_cache` (`CacheReport.stale` / `.corrupt`, and the `.manifest_digest` and `.level` it validated), `fitted_on`, `fitted_on_mismatches`, `build_document_cache`, `HashingTextEncoder` |
+| `medh5.torch` | `ClinicalTaskDataset`, `ConceptVocabulary`, `collate_clinical` ([PyTorch](torch.md#clinical-tasks-format-11)) |
+
+The contract is [Task and cache contract 1](../spec/task-cache-1.md); the
+walk-through is [Train on clinical tasks](../guides/clinical-training.md).
 
 ## Collections
 
@@ -427,6 +519,8 @@ so a caller can branch on the defect rather than on the message text.
 | `medh5.dataset` | [Cohort manifests, splits, statistics](../guides/cohorts.md) |
 | `medh5.curation` | [Provenance, agreement, tracking, de-identification](curation.md) |
 | `medh5.conformance` | [The conformance suite](../spec/conformance.md) |
+| `medh5.clinical` | [The clinical profile](../guides/clinical.md) (format 1.1) |
+| `medh5.task`, `medh5.cache` | [Tasks and feature caches](../guides/clinical-training.md) |
 | `medh5.storage` | [Codecs, chunking, recompression](storage.md) |
 
 ## Related
@@ -434,4 +528,5 @@ so a caller can branch on the defect rather than on the message text.
 - **[Write and read your first sample](../tutorials/first-sample.md)** — this API end to end.
 - **[How-to guides](../guides/index.md)** — the same calls, arranged by task.
 - **[Sample document schema](schema.md)** — the fields the writer writes.
-- **[Specification](../spec/medh5-1.0.md)** — the normative model behind it.
+- **[Specification](../spec/medh5-1.0.md)** — the normative model behind it, and
+  [1.1](../spec/medh5-1.1.md) for the clinical profile.

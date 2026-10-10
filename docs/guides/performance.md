@@ -9,10 +9,10 @@ The short version, in payoff order:
 
 | Lever | Worth | Do it when |
 |---|---|---|
-| **Build a sampling index** | foreground sampling goes from O(volume) to O(1) — 30 ms → 0.03 ms on a 12 Mvox volume, 312 ms → 0.03 ms at 512³ | always, unless you only sample uniformly |
+| **Build a sampling index** | foreground sampling goes from O(volume) to O(1) — 63 ms → 0.03 ms on a 12 Mvox volume, 650 ms → 0.03 ms at 512³ | always, unless you only sample uniformly |
 | **Set `patch_hint` on the grid** | sizes chunks to what you will actually read | at write time, if you know your patch size |
 | **`--profile training`** | decompresses fastest | the cohort is read far more often than written |
-| **`num_workers > 0`** | ~330 → 600–850 patches/s | always, with `worker_init_fn` |
+| **`num_workers > 0`** | ~400 → 600–760 patches/s (64³) with four workers on four cores | always, with `worker_init_fn` |
 | **`FileGroupedSampler`** | one open per file per epoch instead of one per item | shuffled training over more files than the handle cache holds |
 
 ## Build the index first
@@ -60,11 +60,15 @@ format says so rather than making the file invalid.
 
 ## Size the chunks to the patch
 
-The chunk is the real unit of I/O: reading one voxel reads a whole chunk. Two
-forces pull against each other — sizing to the L3 cache keeps a patch in cache
-after decompression, sizing to the training patch keeps read amplification low
-— and the optimiser resolves them by starting at the patch, growing toward the
-cache budget, and stopping before the chunk is much larger than the patch.
+The chunk is the unit a read fetches: reading one voxel reads a whole stored
+chunk. Blosc2 compresses a chunk as a grid of blocks, and under the Blosc2
+profiles medh5 decompresses only the blocks a window covers, so a chunk larger
+than the patch costs I/O rather than decompression; under `portable` it costs
+both. Two forces pull against each other — sizing to the L3 cache keeps a patch
+in cache after decompression, sizing to the training patch keeps read
+amplification low — and the optimiser resolves them by starting at the patch,
+growing toward the cache budget, and stopping before the chunk is much larger
+than the patch.
 
 <!-- illustrative -->
 ```python
@@ -155,16 +159,19 @@ cluster, not about the file.
 
 ## The numbers
 
-Measured on a 192×256×256 synthetic CT with eight classes.
+Measured with 2.0 on one four-core machine, on a 192×256×256 synthetic CT with
+eight classes, reading a new window for every patch; 1.4.4 on the same machine
+was as fast or slower on every row ([changelog](../changelog.md)). The 0.x column is the layout 1.0 replaced, as
+measured then.
 
 | Metric | Target | 0.x | Measured |
 |---|---|---|---|
-| 64³ patch, multi-class labels only | ≤ 10 ms | 117 ms | **4.0 ms** |
+| 64³ patch, multi-class labels only | ≤ 10 ms | 117 ms | **3.4 ms** |
 | Foreground centre sampling *(indexed)* | ≤ 1 ms, O(1) memory | 9.2 ms, O(volume) | **0.03 ms** |
-| … at 63 classes | ≤ 1 ms | — | **0.10 ms** |
-| Metadata-only read | ≤ 2 ms | ~1.5 ms | **0.21 ms** |
-| Full `open()` → first patch | ≤ 15 ms | ~120 ms | **2.4 ms** |
-| Sustained 96³ throughput | ≥ 400 patches/s | ~60 | **600–850** (4 workers) |
+| … at 63 classes | ≤ 1 ms | — | **0.05 ms** |
+| Metadata-only read | ≤ 2 ms | ~1.5 ms | **0.19 ms** |
+| Full `open()` → first patch | ≤ 15 ms | ~120 ms | **2.3 ms** |
+| Sustained 64³ throughput | ≥ 400 patches/s | ~60 | **600–760** (4 workers, 4 cores) |
 
 ```
 $ medh5 bench                       # builds a synthetic sample and measures
@@ -176,7 +183,7 @@ Two things to know before quoting these.
 **The sampling rows need an index.** `bench` calls `build_index()` on the
 samples it builds, so 0.03 ms is the indexed path — the one you get after
 `medh5 index build`, not the one you get by default. Unindexed, the same draw
-scans the labels: 30 ms on this volume, 312 ms at 512³, growing with the volume
+scans the labels: 63 ms on this volume, 650 ms at 512³, growing with the volume
 while the indexed draw stays flat. `used_index` in the batch metadata says which
 you measured. The 63-class row exists because the class count is the other
 axis: before 1.4.2 each draw re-read the index's class table once per class,
@@ -184,15 +191,18 @@ axis: before 1.4.2 each draw re-read the index's class table once per class,
 
 **`bench` does not check the throughput target.** The rows with a target are
 verified and reported against; throughput depends on worker count, so it is
-measured and printed without one. `medh5 bench` with no `--workers` runs
-single-process and reports around 330 patches/s — below the 400 in the table,
-and still followed by *all targets met*, which is a statement about the
-checked rows. Pass `--workers 4` to reproduce the number above.
+measured and printed without one, and *all targets met* is a statement about
+the checked rows. `medh5 bench` with no `--workers` runs single-process, around
+400 patches/s here; pass `--workers 4` to reproduce the number above. It is the
+row that depends most on the machine and the patch: here the four workers share
+four cores with the main process, and at 96³ the same loader moves about 335
+patches/s.
 
-Two decisions are behind the label-read number: each stacked plane is chunked
-separately, so one layer reads without the others; and a multi-class `dense()`
-reads **by plane rather than by class**, so a 200-class annotation packed into
-four layers is four reads and not two hundred.
+Three decisions are behind the label-read number: each stacked plane is
+chunked separately, so one layer reads without the others; a multi-class
+`dense()` reads **by plane rather than by class**, so a 200-class annotation
+packed into four layers is four reads and not two hundred; and a window
+decompresses only the Blosc2 blocks it covers, not every chunk it touches.
 
 ## Related
 

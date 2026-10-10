@@ -17,6 +17,10 @@ install it when it is absent.
     loader = DataLoader(ds, batch_size=2, num_workers=8,
                         worker_init_fn=worker_init_fn, collate_fn=collate)
 
+For format 1.1 tasks, :class:`ClinicalTaskDataset` and
+:func:`collate_clinical` turn the rows of a ``medh5.task/1`` manifest into
+cutoff-aware multimodal batches (see :mod:`medh5.torch.clinical`).
+
 ``worker_init_fn`` is recommended rather than required: the handle cache is
 PID-keyed and re-checks ownership on every access, so a forked worker abandons
 the parent's HDF5 handles on first use rather than reading through or closing
@@ -34,6 +38,11 @@ from medh5.sampling import (
     grid_patches,
 )
 from medh5.torch._compat import AVAILABLE, require_torch
+from medh5.torch.clinical import (
+    ClinicalTaskDataset,
+    ConceptVocabulary,
+    collate_clinical,
+)
 from medh5.torch.collate import collate, stack_images
 from medh5.torch.datasets import (
     ALIGNMENTS,
@@ -57,6 +66,8 @@ __all__ = [
     "AVAILABLE",
     "CACHE",
     "LABEL_FORMATS",
+    "ClinicalTaskDataset",
+    "ConceptVocabulary",
     "FileGroupedSampler",
     "GridPatchDataset",
     "HandleCache",
@@ -69,6 +80,7 @@ __all__ = [
     "TimepointPairSampler",
     "VolumeDataset",
     "collate",
+    "collate_clinical",
     "grid_patches",
     "open_cached",
     "require_torch",

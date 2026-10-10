@@ -1,0 +1,781 @@
+//! Feature caches (`medh5.cache/1`, task-and-cache contract §7--§8).
+//!
+//! One HDF5 file:
+//!
+//! ```text
+//! /                    medh5_companion = "medh5.cache/1", manifest_digest
+//! ├── manifest         scalar UTF-8, canonical JSON (the dependency manifest)
+//! └── entries/<id>     one feature array per entry, with its §13.1 digest
+//! ```
+//!
+//! Two different failures, told apart (§8): a **stale** entry is one whose
+//! source no longer has the content it pins --- the cache is right about a
+//! sample that changed; a **corrupt** entry is one whose own bytes no longer
+//! match their checksum --- the cache is wrong about itself.  Either is
+//! rejected and rebuilt; neither says anything about the source, which a
+//! derived cache never redefines.
+
+use std::collections::{BTreeSet, HashMap};
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+use serde_json::{json, Value};
+
+use super::source::SourceRef;
+use super::task::TaskManifest;
+use super::view::Admitted;
+use super::{sha256, Finding};
+use crate::array::{DType, NdArray};
+use crate::h5::attrs::{self, AttrValue};
+use crate::h5::data::{self, Layout};
+use crate::h5::file::{open_read, AtomicFile};
+use crate::h5::ops;
+use crate::integrity::array_digest;
+use crate::json::repr_str;
+use crate::{Error, Result};
+
+/// The cache manifest's own version.
+pub const SCHEMA: &str = "medh5.cache/1";
+/// The root attribute naming the companion format.
+pub const COMPANION_ATTR: &str = "medh5_companion";
+/// The root attribute holding the manifest's checksum.
+pub const DIGEST_ATTR: &str = "manifest_digest";
+/// Conventional file suffix.
+pub const SUFFIX: &str = ".medh5cache";
+/// Its JSON Schema's file name.
+pub const SCHEMA_FILE: &str = "medh5-cache-1.schema.json";
+const SCHEMA_TEXT: &str = include_str!("../../data/medh5-cache-1.schema.json");
+/// Feature levels.
+pub const LEVELS: [&str; 2] = ["event", "patient"];
+
+/// The bundled cache schema, as text.
+pub fn schema_text() -> &'static str {
+    SCHEMA_TEXT
+}
+
+fn validator() -> &'static jsonschema::Validator {
+    static V: OnceLock<jsonschema::Validator> = OnceLock::new();
+    V.get_or_init(|| {
+        crate::document::compile(&serde_json::from_str(SCHEMA_TEXT).expect("bundled cache schema is valid JSON"))
+    })
+}
+
+/// One cached feature and everything it depends on.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CacheEntry {
+    pub entry_id: String,
+    /// Every source version the feature read.
+    pub sources: Vec<SourceRef>,
+    /// Event level: the event version (and document) the feature encodes.
+    pub event_id: Option<String>,
+    pub document_id: Option<String>,
+    /// Patient level: the row, its cutoff and the versions it selected.
+    pub row_id: Option<String>,
+    pub cutoff_us: Option<i64>,
+    pub event_versions: Option<Vec<String>>,
+    /// Patient level: the row's fingerprint (task-cache-1 §3.2) --- the task,
+    /// the subject, every pinned source version and the cutoff it was built
+    /// from.
+    pub row_fingerprint: Option<String>,
+    /// The payload's §13.1 digest.
+    pub digest: String,
+}
+
+impl CacheEntry {
+    pub fn to_json(&self) -> Value {
+        json!({
+            "entry_id": self.entry_id,
+            "sources": self.sources.iter().map(SourceRef::to_pin_json).collect::<Vec<_>>(),
+            "event_id": self.event_id,
+            "document_id": self.document_id,
+            "row_id": self.row_id,
+            "cutoff_us": self.cutoff_us,
+            "event_versions": self.event_versions,
+            "row_fingerprint": self.row_fingerprint,
+            "digest": self.digest,
+        })
+    }
+
+    fn from_json(v: &Value) -> Result<CacheEntry> {
+        let text = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_string);
+        // A cutoff present but not an int64 is refused, never read as absent.
+        let cutoff_us = match v.get("cutoff_us") {
+            None | Some(Value::Null) => None,
+            Some(c) => Some(c.as_i64().ok_or_else(|| {
+                Error::coded("T401", format!("cutoff_us {c} is not a 64-bit integer number of microseconds"))
+            })?),
+        };
+        Ok(CacheEntry {
+            entry_id: text("entry_id").unwrap_or_default(),
+            sources: v["sources"].as_array().into_iter().flatten().map(SourceRef::from_json).collect::<Result<_>>()?,
+            event_id: text("event_id"),
+            document_id: text("document_id"),
+            row_id: text("row_id"),
+            cutoff_us,
+            event_versions: v
+                .get("event_versions")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()),
+            row_fingerprint: text("row_fingerprint"),
+            digest: text("digest").unwrap_or_default(),
+        })
+    }
+
+    /// Whether the entry names anything of a row: what an event-level
+    /// feature, free of any cutoff, never does (§7.2).
+    fn names_a_row(&self) -> bool {
+        self.row_id.is_some()
+            || self.cutoff_us.is_some()
+            || self.event_versions.is_some()
+            || self.row_fingerprint.is_some()
+    }
+}
+
+/// What determines every output of a cache.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CacheHeader {
+    /// `event` or `patient`.
+    pub level: String,
+    /// `{"name", "revision", "tokenizer"}`: an immutable encoder revision.
+    pub encoder: Value,
+    pub preprocessing: Value,
+    /// `{"dtype", "shape", "pooling", "chunking"}`.
+    pub output: Value,
+    pub task_fingerprint: Option<String>,
+    pub selection: Option<String>,
+    /// `{"task_fingerprint", "set_id", "partition", "subjects_digest"}` for
+    /// learned preprocessing.
+    pub fitted_on: Option<Value>,
+}
+
+impl CacheHeader {
+    fn manifest(&self, entries: &[CacheEntry]) -> Value {
+        json!({
+            "schema": SCHEMA,
+            "level": self.level,
+            "encoder": self.encoder,
+            "preprocessing": self.preprocessing,
+            "output": self.output,
+            "task_fingerprint": self.task_fingerprint,
+            "selection": self.selection,
+            "fitted_on": self.fitted_on,
+            "entries": entries.iter().map(CacheEntry::to_json).collect::<Vec<_>>(),
+        })
+    }
+
+    fn from_manifest(doc: &Value) -> CacheHeader {
+        let opt = |k: &str| doc.get(k).and_then(Value::as_str).map(str::to_string);
+        CacheHeader {
+            level: opt("level").unwrap_or_default(),
+            encoder: doc.get("encoder").cloned().unwrap_or(Value::Null),
+            preprocessing: doc.get("preprocessing").cloned().unwrap_or(Value::Null),
+            output: doc.get("output").cloned().unwrap_or(Value::Null),
+            task_fingerprint: opt("task_fingerprint"),
+            selection: opt("selection"),
+            fitted_on: doc.get("fitted_on").filter(|v| !v.is_null()).cloned(),
+        }
+    }
+
+    /// The declared output dtype and shape.
+    pub fn output_layout(&self) -> Result<(DType, Vec<usize>)> {
+        let dtype = DType::parse(self.output["dtype"].as_str().unwrap_or_default())?;
+        let shape = self.output["shape"]
+            .as_array()
+            .ok_or_else(|| Error::invalid("a cache's output declares its `shape`"))?
+            .iter()
+            .map(|v| v.as_u64().map(|n| n as usize).ok_or_else(|| Error::invalid("output shape lists sizes")))
+            .collect::<Result<_>>()?;
+        Ok((dtype, shape))
+    }
+
+    /// The fitted-on record for learned preprocessing over `partition` of a
+    /// task.
+    pub fn fitted_on(task: &TaskManifest, partition: &str) -> Value {
+        json!({
+            "task_fingerprint": task.task_fingerprint(),
+            "set_id": task.split.as_ref().map(|s| s.0.clone()),
+            "partition": partition,
+            "subjects_digest": task.subjects_digest(partition),
+        })
+    }
+
+    /// Why preprocessing recorded as `fitted` on a partition was not fitted on
+    /// this task's training partition (§7.3, T405): another task, another
+    /// split (`set_id`), another membership, or another partition.  Empty
+    /// when it was.
+    ///
+    /// One comparison for whatever records `fitted_on`: a vocabulary checked
+    /// its own, without `set_id`, and accepted one fitted under another split
+    /// of the same subjects (N05 of the 2.0 re-audit).
+    pub fn fitted_on_mismatches(task: &TaskManifest, fitted: &Value) -> Vec<String> {
+        let mut out = Vec::new();
+        let partition = fitted["partition"].as_str().unwrap_or_default();
+        let wanted = CacheHeader::fitted_on(task, partition);
+        for key in ["task_fingerprint", "set_id", "subjects_digest"] {
+            let (found, expected) = (fitted.get(key).unwrap_or(&Value::Null), &wanted[key]);
+            if found != expected {
+                out.push(format!(
+                    "fitted on {key} {found}, but this task's {} partition is {expected}",
+                    repr_str(partition)
+                ));
+            }
+        }
+        // The split lists its training partition first (contract §3.3).
+        let trains = task.split.as_ref().and_then(|(_, p)| p.first().cloned());
+        if trains.as_deref().is_some_and(|t| t != partition) {
+            out.push(format!("fitted on partition {}, not the task's training partition", repr_str(partition)));
+        }
+        out
+    }
+}
+
+/// An entry id: the task id syntax (1.0 id characters, `@` and `:`), so a
+/// patient-level entry may be named by its row.
+pub fn is_entry_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-' | '@' | ':'))
+}
+
+/// The entry id a feature of `(content_id, event_id)` gets by default.
+pub fn event_entry_id(content_id: &str, event_id: &str) -> String {
+    let digest = sha256(format!("{content_id}\n{event_id}").as_bytes());
+    format!("e{}", &digest["sha256:".len().."sha256:".len() + 24])
+}
+
+/// Writes a cache file atomically.
+pub struct CacheWriter {
+    pub path: PathBuf,
+    header: CacheHeader,
+    layout: (DType, Vec<usize>),
+    entries: Vec<CacheEntry>,
+    ids: BTreeSet<String>,
+    file: Option<AtomicFile>,
+}
+
+impl std::fmt::Debug for CacheWriter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CacheWriter").field("path", &self.path).field("entries", &self.entries.len()).finish()
+    }
+}
+
+impl CacheWriter {
+    pub fn create(path: &Path, header: CacheHeader) -> Result<CacheWriter> {
+        // Before the schema, which requires it too: this is the refusal that
+        // says what is missing.
+        if header.level == "patient" && header.task_fingerprint.is_none() {
+            return Err(Error::coded(
+                "T404",
+                "a patient-level cache names the task (`task_fingerprint`) it was built for",
+            ));
+        }
+        let messages = crate::document::schema_messages(validator(), &header.manifest(&[]));
+        if let Some(first) = messages.first() {
+            return Err(Error::coded("T401", format!("the cache header fails its schema: {first}")));
+        }
+        let layout = header.output_layout()?;
+        let file = AtomicFile::create(path)?;
+        file.handle().create_group("entries")?;
+        Ok(CacheWriter {
+            path: path.to_path_buf(),
+            header,
+            layout,
+            entries: Vec::new(),
+            ids: BTreeSet::new(),
+            file: Some(file),
+        })
+    }
+
+    fn handle(&self) -> Result<&hdf5::File> {
+        self.file.as_ref().map(AtomicFile::handle).ok_or_else(|| Error::invalid("this cache writer has finished"))
+    }
+
+    /// Add one feature; its dtype and shape must be the header's.
+    pub fn add(&mut self, mut entry: CacheEntry, values: &NdArray) -> Result<CacheEntry> {
+        let (dtype, shape) = &self.layout;
+        if values.dtype() != *dtype || &values.shape() != shape {
+            return Err(Error::coded(
+                "T402",
+                format!(
+                    "entry {} is {} {:?}; the cache declares {} {:?}",
+                    repr_str(&entry.entry_id),
+                    values.dtype().name(),
+                    values.shape(),
+                    dtype.name(),
+                    shape
+                ),
+            ));
+        }
+        if self.header.level == "patient"
+            && (entry.row_id.is_none()
+                || entry.cutoff_us.is_none()
+                || entry.event_versions.is_none()
+                || entry.row_fingerprint.is_none())
+        {
+            return Err(Error::coded(
+                "T404",
+                "a patient-level feature pins its row (by id and fingerprint), cutoff and selected event versions",
+            ));
+        }
+        if self.header.level == "event" && entry.names_a_row() {
+            return Err(Error::coded(
+                "T404",
+                "an event-level feature is free of any row: it names no row, cutoff or selected versions (§7.2)",
+            ));
+        }
+        if entry.sources.is_empty() {
+            return Err(Error::coded("T403", "a feature names every source version it read"));
+        }
+        if self.header.level == "event" && entry.event_id.as_deref().is_none_or(str::is_empty) {
+            return Err(Error::coded("T404", "an event-level feature names the event version it encodes"));
+        }
+        if !is_entry_id(&entry.entry_id) || !self.ids.insert(entry.entry_id.clone()) {
+            return Err(Error::invalid(format!("entry id {} is malformed or not unique", repr_str(&entry.entry_id))));
+        }
+        let path = format!("entries/{}", entry.entry_id);
+        let ds = data::create(&self.handle()?.group("entries")?, &entry.entry_id, values, &Layout::contiguous())?;
+        entry.digest = array_digest(&path, values, "sha256")?;
+        attrs::write(&ds, "digest", &AttrValue::Str(entry.digest.clone()))?;
+        self.entries.push(entry.clone());
+        Ok(entry)
+    }
+
+    /// Write the manifest and its checksum, and move the file into place.
+    pub fn commit(mut self) -> Result<String> {
+        let text = crate::json::canonical(&self.header.manifest(&self.entries));
+        let digest = sha256(text.as_bytes());
+        let file = self.file.take().ok_or_else(|| Error::invalid("this cache writer has finished"))?;
+        let result = (|| -> Result<()> {
+            let handle = file.handle();
+            data::create_scalar_string(handle, "manifest", &text)?;
+            attrs::write(handle, COMPANION_ATTR, &AttrValue::Str(SCHEMA.into()))?;
+            attrs::write(handle, DIGEST_ATTR, &AttrValue::Str(digest.clone()))?;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                file.commit()?;
+                Ok(digest)
+            }
+            Err(e) => {
+                file.abort();
+                Err(e)
+            }
+        }
+    }
+}
+
+impl Drop for CacheWriter {
+    fn drop(&mut self) {
+        if let Some(f) = self.file.take() {
+            f.abort();
+        }
+    }
+}
+
+/// An open cache.  Opening checks the manifest's checksum; reading an entry
+/// checks the entry's.
+#[derive(Debug)]
+pub struct FeatureCache {
+    pub path: PathBuf,
+    pub header: CacheHeader,
+    pub entries: Vec<CacheEntry>,
+    pub manifest_digest: String,
+    file: hdf5::File,
+    by_id: HashMap<String, usize>,
+    by_event: HashMap<(String, String), usize>,
+    by_row: HashMap<String, usize>,
+}
+
+impl FeatureCache {
+    pub fn open(path: &Path) -> Result<FeatureCache> {
+        let file = open_read(path)?;
+        let companion = attrs::get_str(&file, COMPANION_ATTR)?;
+        if companion.as_deref() != Some(SCHEMA) {
+            return Err(Error::coded(
+                "T401",
+                format!("{} is not a {SCHEMA} cache (it declares {:?})", repr_str(&path.to_string_lossy()), companion),
+            ));
+        }
+        let text = match ops::child_dataset(&file, "manifest") {
+            Some(ds) => data::read_scalar_string(&ds)?,
+            None => return Err(Error::coded("T401", "the cache has no `manifest`")),
+        };
+        let declared = attrs::get_str(&file, DIGEST_ATTR)?.unwrap_or_default();
+        let digest = sha256(text.as_bytes());
+        if declared != digest {
+            return Err(Error::coded(
+                "T401",
+                format!("the cache manifest's bytes do not match its checksum ({declared} declared, {digest} found)"),
+            ));
+        }
+        let doc = crate::json::loads(&text)
+            .map_err(|e| Error::coded("T401", format!("the cache manifest is not JSON: {e}")))?;
+        let messages = crate::document::schema_messages(validator(), &doc);
+        if let Some(first) = messages.first() {
+            return Err(Error::coded("T401", format!("the cache manifest fails its schema: {first}")));
+        }
+        let entries: Vec<CacheEntry> =
+            doc["entries"].as_array().into_iter().flatten().map(CacheEntry::from_json).collect::<Result<_>>()?;
+        let header = CacheHeader::from_manifest(&doc);
+        let mut by_id = HashMap::new();
+        let mut by_event = HashMap::new();
+        let mut by_row = HashMap::new();
+        // Each level answers its own question only: a patient-level entry
+        // that also names an event encodes its *row's* history, which a
+        // lookup by event version must never hand out as that event's.
+        for (i, e) in entries.iter().enumerate() {
+            by_id.insert(e.entry_id.clone(), i);
+            match header.level.as_str() {
+                "event" => {
+                    if let (Some(event), Some(source)) = (&e.event_id, e.sources.first()) {
+                        by_event.insert((source.content_id.clone(), event.clone()), i);
+                    }
+                }
+                "patient" => {
+                    if let Some(row) = &e.row_id {
+                        by_row.insert(row.clone(), i);
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(FeatureCache {
+            path: path.to_path_buf(),
+            header,
+            entries,
+            manifest_digest: digest,
+            file,
+            by_id,
+            by_event,
+            by_row,
+        })
+    }
+
+    pub fn entry(&self, entry_id: &str) -> Option<&CacheEntry> {
+        self.by_id.get(entry_id).map(|i| &self.entries[*i])
+    }
+
+    /// The event-level entry for an event version of a pinned source.
+    pub fn event_entry(&self, content_id: &str, event_id: &str) -> Option<&CacheEntry> {
+        self.by_event.get(&(content_id.to_string(), event_id.to_string())).map(|i| &self.entries[*i])
+    }
+
+    /// The patient-level entry of a row.
+    pub fn row_entry(&self, row_id: &str) -> Option<&CacheEntry> {
+        self.by_row.get(row_id).map(|i| &self.entries[*i])
+    }
+
+    /// An entry's payload, its checksum verified (T402 when it fails).
+    pub fn get(&self, entry_id: &str) -> Result<NdArray> {
+        let entry =
+            self.entry(entry_id).ok_or_else(|| Error::Key(format!("the cache has no entry {}", repr_str(entry_id))))?;
+        let path = format!("entries/{entry_id}");
+        let ds = self
+            .file
+            .dataset(&path)
+            .map_err(|_| Error::coded("T402", format!("entry {} has no payload", repr_str(entry_id))))?;
+        let values = data::read(&ds)?;
+        let digest = array_digest(&path, &values, "sha256")?;
+        if digest != entry.digest || attrs::get_str(&ds, "digest")?.as_deref() != Some(entry.digest.as_str()) {
+            return Err(Error::coded(
+                "T402",
+                format!("entry {}'s bytes do not match its checksum", repr_str(entry_id)),
+            ));
+        }
+        // The checksum vouches for the bytes, not for the declaration a model
+        // is built against: the layout is the header's or the entry is wrong.
+        let (dtype, shape) =
+            self.header.output_layout().map_err(|e| Error::coded("T401", format!("the cache's output: {e}")))?;
+        if values.dtype() != dtype || values.shape() != shape {
+            return Err(Error::coded(
+                "T402",
+                format!(
+                    "entry {} is {} {:?}; the cache declares {} {:?}",
+                    repr_str(entry_id),
+                    values.dtype().name(),
+                    values.shape(),
+                    dtype.name(),
+                    shape
+                ),
+            ));
+        }
+        Ok(values)
+    }
+}
+
+/// What validating a cache found.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct CacheReport {
+    pub path: String,
+    pub entries: usize,
+    pub findings: Vec<Finding>,
+    /// The manifest checksum of the cache validated, or `None` when it could
+    /// not be opened: what a reader that opens the file again checks it is
+    /// reading (§8).  A path names a file, not a cache --- one replaced after
+    /// it was validated paired a patient's image with another patient's
+    /// features (N11 of the round-3 audit).
+    pub manifest_digest: Option<String>,
+    /// The level of the cache validated.
+    pub level: Option<String>,
+}
+
+impl CacheReport {
+    pub fn ok(&self) -> bool {
+        self.findings.is_empty()
+    }
+
+    fn with(&self, codes: &[&str]) -> Vec<String> {
+        let mut out: Vec<String> =
+            self.findings.iter().filter(|f| codes.contains(&f.code.as_str())).map(|f| f.location.clone()).collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// Entries whose sources changed or vanished.
+    pub fn stale(&self) -> Vec<String> {
+        self.with(&["T403"])
+    }
+
+    /// Entries (or the manifest) whose own bytes are wrong.
+    pub fn corrupt(&self) -> Vec<String> {
+        self.with(&["T401", "T402"])
+    }
+
+    pub fn to_json(&self) -> Value {
+        json!({
+            "path": self.path,
+            "ok": self.ok(),
+            "entries": self.entries,
+            "stale": self.stale(),
+            "corrupt": self.corrupt(),
+            "findings": self.findings.iter().map(Finding::to_json).collect::<Vec<_>>(),
+            "manifest_digest": self.manifest_digest,
+            "level": self.level,
+        })
+    }
+}
+
+/// The event versions of one source and the documents each owns through
+/// its structural `describes` link (1.1 §7.3).
+struct Ownership(HashMap<String, BTreeSet<String>>);
+
+/// What a source's event versions own, or `None` when it cannot be read ---
+/// which its pin check reports.
+fn ownership(source: &SourceRef, base: Option<&Path>) -> Option<Ownership> {
+    let sample = source.open(base).ok()?;
+    let mut owned: HashMap<String, BTreeSet<String>> = HashMap::new();
+    if let Some(clinical) = sample.clinical().ok()? {
+        for event in &clinical.events {
+            owned.entry(event.event_id.clone()).or_default();
+        }
+        for link in &clinical.links {
+            let structural = link.relation == "describes"
+                && link.source_type == "event"
+                && link.target_type == "document"
+                && clinical.event(&link.source_id).is_some_and(|e| e.kind == "document");
+            if structural {
+                owned.entry(link.source_id.clone()).or_default().insert(link.target_id.clone());
+            }
+        }
+    }
+    Some(Ownership(owned))
+}
+
+impl Ownership {
+    /// Why an entry naming `event_id` (and `document_id`) is not one of this
+    /// source's versions and what it owns; `None` when it is.
+    fn mismatch(&self, source: &SourceRef, event_id: &str, document_id: Option<&str>) -> Option<String> {
+        let Some(documents) = self.0.get(event_id) else {
+            return Some(format!(
+                "names event {}, which {} at {} does not hold: an event-level feature encodes a version of its source",
+                repr_str(event_id),
+                source.locator(),
+                source.content_id
+            ));
+        };
+        let document = document_id?;
+        if documents.contains(document) {
+            return None;
+        }
+        Some(format!(
+            "names document {}, but event {} of {} owns {}: an event-level feature encodes the document its version \
+             owns, and no other",
+            repr_str(document),
+            repr_str(event_id),
+            source.locator(),
+            if documents.is_empty() {
+                "none".to_string()
+            } else {
+                documents.iter().map(|d| repr_str(d)).collect::<Vec<_>>().join(", ")
+            }
+        ))
+    }
+}
+
+/// Validate a cache: its manifest's and every payload's checksum, every
+/// source pin, and --- given the task and what its preflight admits
+/// ([`Admitted`]) --- that it was built for this task, at these cutoffs, from
+/// these selections, and fitted on this task's training partition.  `base`
+/// resolves relative source URIs (by default, the cache's directory).
+pub fn validate_cache(
+    path: &Path,
+    base: Option<&Path>,
+    task: Option<&TaskManifest>,
+    admitted: Option<&Admitted>,
+) -> Result<CacheReport> {
+    let mut report = CacheReport { path: path.to_string_lossy().into_owned(), ..Default::default() };
+    let cache = match FeatureCache::open(path) {
+        Ok(c) => c,
+        Err(e) => {
+            report.findings.push(Finding::new(e.code().unwrap_or("T401"), "manifest", e.message()));
+            return Ok(report);
+        }
+    };
+    report.entries = cache.entries.len();
+    report.manifest_digest = Some(cache.manifest_digest.clone());
+    report.level = Some(cache.header.level.clone());
+    for entry in &cache.entries {
+        if let Err(e) = cache.get(&entry.entry_id) {
+            report.findings.push(Finding::new(e.code().unwrap_or("T402"), &entry.entry_id, e.message()));
+        }
+    }
+    let base = base.map(Path::to_path_buf).or_else(|| path.parent().map(Path::to_path_buf));
+    let mut checked: HashMap<(String, Option<String>, String), Option<String>> = HashMap::new();
+    for entry in &cache.entries {
+        for source in &entry.sources {
+            let key = (source.uri.clone(), source.sample_key.clone(), source.content_id.clone());
+            let problem = checked
+                .entry(key)
+                .or_insert_with(|| match source.open(base.as_deref()) {
+                    Err(e) => Some(format!("{} cannot be reached: {e}", source.locator())),
+                    Ok(sample) => match source.check(&sample, false) {
+                        Ok(f) if f.is_empty() => None,
+                        Ok(f) => Some(f[0].message.clone()),
+                        Err(e) => Some(e.to_string()),
+                    },
+                })
+                .clone();
+            if let Some(why) = problem {
+                report.findings.push(Finding::new("T403", &entry.entry_id, why));
+            }
+        }
+    }
+    // An event-level entry encodes one event version of its source, and the
+    // document that version owns.  An entry joined to another version's text
+    // --- a newer revision's, say --- was served to every row admitting the
+    // version it names, before that text existed (F03 of the round-4 audit).
+    // Checked against the source, so with or without a task.
+    if cache.header.level == "event" {
+        let mut owners: HashMap<(String, Option<String>, String), Option<Ownership>> = HashMap::new();
+        for entry in &cache.entries {
+            let (Some(event_id), Some(source)) = (&entry.event_id, entry.sources.first()) else { continue };
+            let key = (source.uri.clone(), source.sample_key.clone(), source.content_id.clone());
+            if checked.get(&key).is_some_and(Option::is_some) {
+                continue; // its pin failed: stale (T403), not judged here
+            }
+            let owned = owners.entry(key).or_insert_with(|| ownership(source, base.as_deref()));
+            if let Some(why) = owned.as_ref().and_then(|o| o.mismatch(source, event_id, entry.document_id.as_deref())) {
+                report.findings.push(Finding::new("T407", &entry.entry_id, why));
+            }
+        }
+    }
+    if let Some(task) = task {
+        let expected = task.task_fingerprint();
+        if let Some(found) = &cache.header.task_fingerprint {
+            if found != &expected {
+                report.findings.push(Finding::new(
+                    "T404",
+                    "manifest",
+                    format!("built for task {found}; this task is {expected}"),
+                ));
+            }
+        }
+        if let Some(fitted) = &cache.header.fitted_on {
+            for why in CacheHeader::fitted_on_mismatches(task, fitted) {
+                report.findings.push(Finding::new("T405", "manifest", why));
+            }
+        }
+        if let Some(admitted) = admitted {
+            for entry in cache.entries.iter().filter(|e| e.row_id.is_some()) {
+                let row_id = entry.row_id.as_deref().unwrap_or_default();
+                let Some((cutoff_us, selected)) = admitted.row(row_id) else {
+                    report.findings.push(Finding::new(
+                        "T404",
+                        &entry.entry_id,
+                        format!("row {} is not a row of this task", repr_str(row_id)),
+                    ));
+                    continue;
+                };
+                if entry.cutoff_us != Some(cutoff_us) {
+                    report.findings.push(Finding::new(
+                        "T404",
+                        &entry.entry_id,
+                        format!("built at cutoff {:?}; the row's cutoff is {}", entry.cutoff_us, cutoff_us),
+                    ));
+                }
+                // The row as it was built from: a source added to its subject
+                // changes what its slots read without changing a cutoff or an
+                // admitted version, so only the fingerprint, which pins every
+                // source version, binds the feature to its inputs (B04 of the
+                // 2.0 re-audit).
+                let current = admitted.row_fingerprint(row_id).unwrap_or_default();
+                if entry.row_fingerprint.as_deref() != Some(current) {
+                    report.findings.push(Finding::new(
+                        "T404",
+                        &entry.entry_id,
+                        format!(
+                            "built for row {} as {}; the row is now {current} --- its task, subject, sources or cutoff \
+                             changed, and a row's feature holds for the row it was built from",
+                            repr_str(row_id),
+                            entry.row_fingerprint.as_deref().unwrap_or("unpinned")
+                        ),
+                    ));
+                }
+                // The versions an entry read are its row's subject's: event
+                // ids are local to a sample, so two patients' rows can admit
+                // the same ids, and only the pins tell whose history a feature
+                // encodes.  By `content_id`, not URI: a relocated copy is the
+                // same version.
+                let pins = admitted.row_pins(row_id).cloned().unwrap_or_default();
+                let foreign: Vec<String> = entry
+                    .sources
+                    .iter()
+                    .filter(|s| !pins.contains(&s.content_id))
+                    .map(|s| format!("{} at {}", s.locator(), s.content_id))
+                    .collect();
+                if !foreign.is_empty() {
+                    report.findings.push(Finding::new(
+                        "T404",
+                        &entry.entry_id,
+                        format!(
+                            "reads {}, which row {}'s subject does not pin: a feature of a row reads only its \
+                             subject's sources",
+                            foreign.join(", "),
+                            repr_str(row_id)
+                        ),
+                    ));
+                }
+                let pinned: Vec<&str> = entry.event_versions.iter().flatten().map(String::as_str).collect();
+                if pinned != selected {
+                    let extra: Vec<&str> = pinned.iter().copied().filter(|v| !selected.contains(v)).collect();
+                    report.findings.push(Finding::new(
+                        "T406",
+                        &entry.entry_id,
+                        format!(
+                            "encodes event versions {pinned:?}, but row {} admits {selected:?}{}",
+                            repr_str(row_id),
+                            if extra.is_empty() {
+                                String::new()
+                            } else {
+                                format!("; {extra:?} are not admissible at its cutoff")
+                            }
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+    Ok(report)
+}

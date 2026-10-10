@@ -11,9 +11,9 @@ per-file validator can see either problem, so no per-file code exists for them.
 
 The codes are tooling-level rather than normative: the specification does not
 require an implementation to emit them, and a minor version may add to them
-freely. The table is generated from
-[`medh5/dataset/check.py`](https://github.com/XwK-P/medh5/blob/main/medh5/dataset/check.py)
-at build time.
+freely. The table is generated at build time from the `CHECK_CODES` table in
+[`crates/medh5/src/dataset/check.rs`](https://github.com/XwK-P/medh5/blob/main/crates/medh5/src/dataset/check.rs),
+the cohort check every frontend runs.
 
 ```bash
 medh5 dataset check cohort.json --deep

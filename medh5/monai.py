@@ -28,8 +28,8 @@ import numpy.typing as npt
 from medh5._optional import require
 from medh5.annotations.base import VoxelAnnotation
 from medh5.errors import MEDH5ValidationError
-from medh5.geometry.grid import Grid
-from medh5.labels.labelset import IGNORE_ID
+from medh5.geometry import Grid
+from medh5.labels import IGNORE_ID
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from medh5.sample import Sample
@@ -174,12 +174,18 @@ def to_metatensor(
     # downsampled affine puts every resampled batch and saved prediction in the
     # wrong place, and nothing about the MetaTensor says so.
     source = image.level(level) if level else image
-    array = np.ascontiguousarray(source.read(roi, physical=physical, dtype=dtype))
     meta = meta_dict(sample, image_id, space=space, level=level)
     if roi is not None:
+        roi = _normalised_roi(roi, tuple(source.shape), len(meta["affine"]) - 1)
+    array = np.ascontiguousarray(source.read(roi, physical=physical, dtype=dtype))
+    if roi is not None:
+        # The crop's own affine; `original_affine` and `spatial_shape` stay the
+        # image's, as after a MONAI crop, so a resampling writer puts the
+        # crop back where it came from.  `spatial_shape` was the crop's whole
+        # shape, channel axis included, and SaveImage(resample=True) wrote a
+        # two-channel crop as one (L08 of the 2.0 re-audit).
         meta["affine"] = _shift_origin(meta["affine"], roi)
-        meta["spatial_shape"] = np.asarray(array.shape, dtype=np.int64)
-        meta["medh5"]["roi"] = [[s.start, s.stop] for s in roi]
+        meta["medh5"]["roi"] = [[s.start, s.stop, s.step] for s in roi]
 
     return _metatensor(array, meta)
 
@@ -198,16 +204,47 @@ def _metatensor(array: npt.NDArray[Any], meta: dict[str, Any]) -> Any:
     return MetaTensor(torch.from_numpy(np.ascontiguousarray(array)), meta=meta)
 
 
+def _normalised_roi(
+    roi: Sequence[slice | int], shape: tuple[int, ...], spatial: int
+) -> list[slice]:
+    """*roi* as explicit ``slice(start, stop, step)``s against *shape*, the way
+    the read resolves it: covering every axis, or only the trailing spatial
+    ones.
+
+    The affine was shifted by ``sl.start or 0``: a negative start counted from
+    the volume's first voxel rather than its last, and a step was ignored, so
+    ``slice(-8, None)`` placed the crop at the wrong end of the volume and a
+    strided read kept the full spacing (L08 of the 2.0 audit).  An integer
+    index drops an axis the affine still has, so it is refused.
+    """
+    if not spatial <= len(roi) <= len(shape):
+        raise MEDH5ValidationError(
+            f"an ROI covers every axis ({len(shape)}) or the spatial ones "
+            f"({spatial}); this one has {len(roi)}"
+        )
+    out = []
+    for sl, extent in zip(roi, shape[len(shape) - len(roi) :], strict=True):
+        if not isinstance(sl, slice):
+            raise MEDH5ValidationError(
+                f"an ROI for a MetaTensor is slices: the index {sl!r} drops an "
+                "axis its affine keeps --- use slice(k, k + 1)"
+            )
+        out.append(slice(*sl.indices(extent)))
+    return out
+
+
 def _shift_origin(
     affine: npt.NDArray[np.float64], roi: Sequence[slice]
 ) -> npt.NDArray[np.float64]:
-    """Move the affine's origin to the ROI's first voxel."""
+    """The affine of a read of *roi* (normalised): the origin at its first
+    voxel, and each spatial axis's column scaled by its step."""
     out = np.array(affine, dtype=np.float64, copy=True)
     n = out.shape[0] - 1
-    start = np.zeros(n, dtype=np.float64)
-    for axis, sl in enumerate(roi[-n:] if len(roi) > n else roi):
-        start[axis] = float(sl.start or 0)
+    spatial = roi[len(roi) - n :]
+    start = np.asarray([float(sl.start) for sl in spatial], dtype=np.float64)
+    step = np.asarray([float(sl.step) for sl in spatial], dtype=np.float64)
     out[:n, n] = out[:n, n] + out[:n, :n] @ start
+    out[:n, :n] = out[:n, :n] * step[None, :]
     return out
 
 
@@ -218,7 +255,7 @@ def from_metatensor(tensor: Any) -> tuple[npt.NDArray[Any], dict[str, Any]]:
     tensor's own declared space, so a caller can hand it straight to
     ``SampleWriter.add_grid`` without re-deriving anything.
     """
-    from medh5.geometry.affine import decompose_affine
+    from medh5.geometry import decompose_affine
 
     array = np.asarray(
         tensor.detach().cpu().numpy() if hasattr(tensor, "detach") else tensor

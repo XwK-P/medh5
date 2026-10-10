@@ -6,7 +6,9 @@ on:
   pull_request:
     branches: [main]
   # `release.yml` runs this workflow on the tagged commit before publishing,
-  # so what reaches PyPI is what passed, not what passed on the pull request.
+  # and publishes the wheels and binaries it built: what reaches PyPI, the
+  # release page and Homebrew is what passed, not what passed on the pull
+  # request.
   workflow_call:
 
 # A new push to a pull request supersedes the run in progress.  Runs on `main`
@@ -19,7 +21,73 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
+  rust:
+    # The engine and the native command line: formatting, lints, and every
+    # Rust test --- unit tests, the conformance corpus, the README doctest.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # PyO3 links an interpreter into the extension crate's test binary.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - run: rustup toolchain install stable --profile minimal --component rustfmt,clippy && rustup default stable
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
+      # The three crates as crates.io receives them, each built from its own
+      # package (the unpublished ones resolved from these): the release's
+      # `cargo publish` must not be the first build of a published crate.
+      - run: cargo package --locked -p medh5-sys -p medh5 -p medh5-cli
+      # The wheel and the binary compile in every crate Cargo.lock names, and
+      # HDF5 and C-Blosc2 besides; their licences ship as THIRD_PARTY_NOTICES,
+      # which is generated from the lock and must be regenerated with it.
+      - run: python .github/scripts/third_party_notices.py --check
+
+  rust-platforms:
+    # The engine's own tests off Linux, where the code that differs by platform
+    # --- the file identity a check is remembered by, the writable descriptor a
+    # Windows fsync needs, the rename over a file --- is compiled and run at
+    # all.  The Python suite reaches the engine on these platforms only through
+    # the wheel.
+    name: rust (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-latest, macos-14]
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup toolchain install stable --profile minimal && rustup default stable
+      - run: cargo test -p medh5 --lib --locked
+
+  msrv:
+    # `rust-version` in Cargo.toml is a promise to everyone who depends on the
+    # crates; this is where it is kept.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      # A full version: cargo reads `1.85` as 1.85.0, while rustup installs the
+      # newest 1.85.x for it, so a dependency that needs 1.85.1 passed here.
+      - run: |
+          msrv=$(python -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["rust-version"])')
+          if [[ ! "$msrv" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::rust-version is $msrv: name a full version, X.Y.Z"
+            exit 1
+          fi
+          rustup toolchain install "$msrv" --profile minimal
+          cargo +"$msrv" check --workspace --all-targets --locked
+
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -27,11 +95,24 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      # From the dev extra, so CI and a developer's checkout run the same
-      # version by construction rather than by coincidence.
-      - run: pip install -e ".[dev]"
+      # The pin in the `dev` extra, read from pyproject.toml: CI and a
+      # developer's checkout run one version by construction.  Installing the
+      # extra itself would compile the engine to run a linter.
+      - run: pip install "$(python -c 'import tomllib; print(next(r for r in tomllib.load(open("pyproject.toml", "rb"))["project"]["optional-dependencies"]["dev"] if r.startswith("ruff")))')"
       - run: ruff check .
       - run: ruff format --check .
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      # mypy reads the engine's types from `medh5/_core.pyi`, so it needs no
+      # build; `stubtest`, in the test suite, holds the stub to the built module.
+      - run: pip install numpy "$(python -c 'import tomllib; print(next(r for r in tomllib.load(open("pyproject.toml", "rb"))["project"]["optional-dependencies"]["dev"] if r.startswith("mypy")))')"
+      - run: mypy medh5
 
   docs:
     runs-on: ubuntu-latest
@@ -50,17 +131,217 @@ jobs:
       # after publication.
       - run: mkdocs build --strict
 
-  typecheck:
+  build:
+    # Every platform the project ships: the abi3 wheel and the native binary,
+    # built together from one checkout and one lock.  The release publishes
+    # these artifacts as they are, so each is checked here: the binary runs the
+    # conformance corpus and hands a converter to the wheel's Python, and the
+    # wheel imports and runs the corpus too.
+    name: build (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            container: quay.io/pypa/manylinux_2_28_x86_64
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            container: quay.io/pypa/manylinux_2_28_aarch64
+          - target: aarch64-apple-darwin
+            runner: macos-14
+          - target: x86_64-apple-darwin
+            runner: macos-15-intel
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+    runs-on: ${{ matrix.runner }}
+    env:
+      # The oldest macOS the wheel and the binary support; ignored elsewhere.
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Build in a manylinux container
+        if: matrix.container
+        run: docker run --rm -v "$PWD:/io" -w /io "${{ matrix.container }}" bash .github/scripts/build-dist.sh "${{ matrix.target }}"
+      - name: Build
+        if: ${{ !matrix.container }}
+        shell: bash
+        run: bash .github/scripts/build-dist.sh "${{ matrix.target }}"
+      - name: The binary runs the conformance corpus
+        shell: bash
+        run: |
+          exe=target/release/medh5
+          if [[ -f "$exe.exe" ]]; then exe="$exe.exe"; fi
+          "$exe" --version
+          "$exe" conformance build "$RUNNER_TEMP/corpus-native"
+          "$exe" conformance run "$RUNNER_TEMP/corpus-native"
+          # Damage is a report, never an abort: what an HDF5 built without
+          # NDEBUG does on a damaged file.
+          python .github/scripts/damaged.py "$exe" "$RUNNER_TEMP/corpus-native"
+      - name: The wheel installs and runs the conformance corpus
+        shell: bash
+        run: |
+          pip install dist/*.whl
+          cd "$RUNNER_TEMP"
+          python -c "import medh5; print(medh5.__version__, medh5.__file__)"
+          medh5 --version
+          medh5 conformance build corpus
+          medh5 conformance run corpus
+      # The converters are the Python package's: the standalone binary runs them
+      # through a Python that has it (`MEDH5_PYTHON`, or `python3`/`python`),
+      # and says what to install when there is none.  Out of the checkout, whose
+      # `medh5/` has no compiled engine and would shadow the installed one.
+      - name: The binary hands the converters to the wheel's Python
+        shell: bash
+        run: |
+          exe="$PWD/target/release/medh5"
+          if [[ -f "$exe.exe" ]]; then exe="$exe.exe"; fi
+          cd "$RUNNER_TEMP"
+          # Only the Python package says this, and it needs none of the extras.
+          status=0
+          MEDH5_PYTHON=python "$exe" convert from-nifti x.medh5 --image CT 2> bridged.log || status=$?
+          cat bridged.log
+          [[ $status == 1 ]]
+          grep -F -e "--image expects NAME=VALUE" bridged.log
+          status=0
+          MEDH5_PYTHON=/nonexistent "$exe" convert from-nifti x.medh5 --image CT 2> missing.log || status=$?
+          cat missing.log
+          [[ $status == 1 ]]
+          grep -F "MEDH5_PYTHON" missing.log
+      # Not `dist`: when `release.yml` calls this workflow, the release's own
+      # job uploads that name in the same run, and artifact names are unique.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-dist-${{ matrix.target }}
+          path: dist/*.whl
+          if-no-files-found: error
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-cli-${{ matrix.target }}
+          path: cli/*
+          if-no-files-found: error
+
+  sdist:
+    # A platform without a wheel builds from the sdist, so CI does too: the
+    # whole engine from the source distribution alone, in a clean directory ---
+    # with the oldest maturin `pyproject.toml` accepts, so the floor it states
+    # is one that builds, and writes the licence as PEP 639 says.  `build`
+    # runs the newest.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - run: pip install -e ".[dev]"
-      - run: mypy medh5
+      - name: Install the oldest maturin pyproject.toml accepts
+        run: |
+          floor=$(python -c 'import re, tomllib; print(re.search(r">=([0-9.]+)", tomllib.load(open("pyproject.toml", "rb"))["build-system"]["requires"][0]).group(1))')
+          pip install "maturin==$floor" twine
+      - run: maturin sdist --out dist
+      - run: twine check dist/*
+      - name: The sdist states the licence, and carries the notices
+        run: |
+          python - <<'PY'
+          import glob, tarfile, tomllib
+          expression = tomllib.load(open("pyproject.toml", "rb"))["project"]["license"]
+          (sdist,) = glob.glob("dist/*.tar.gz")
+          with tarfile.open(sdist) as tar:
+              top = tar.getnames()[0].split("/")[0]
+              names = set(tar.getnames())
+              fields = tar.extractfile(f"{top}/PKG-INFO").read().decode().splitlines()
+          for field in (f"License-Expression: {expression}", "License-File: LICENSE",
+                        "License-File: THIRD_PARTY_NOTICES"):
+              assert field in fields, f"PKG-INFO lacks {field!r}"
+          assert f"{top}/THIRD_PARTY_NOTICES" in names, "the sdist lacks the notices"
+          PY
+      - name: Build from the sdist alone, with that maturin, in a clean directory
+        run: |
+          mkdir "$RUNNER_TEMP/sdist"
+          tar -xzf dist/*.tar.gz -C "$RUNNER_TEMP/sdist" --strip-components 1
+          cd "$RUNNER_TEMP/sdist"
+          # No build isolation: an isolated build would fetch the newest maturin.
+          pip install --no-build-isolation ".[dev]"
+          python -c "import tomllib; from importlib.metadata import metadata; assert metadata('medh5')['License-Expression'] == tomllib.load(open('pyproject.toml', 'rb'))['project']['license']"
+      - name: The build runs the conformance corpus
+        run: |
+          cd "$RUNNER_TEMP"
+          python -c "import medh5; print(medh5.__version__, medh5.__file__)"
+          medh5 conformance build corpus
+          medh5 conformance run corpus
+      # The tests that check the project itself --- the workflows, the release
+      # scripts, the documentation --- run from what the sdist carries.  The
+      # unpacked `medh5/` has no compiled engine; the installed one is tested.
+      - name: The shipped project tests pass from the sdist
+        run: |
+          cd "$RUNNER_TEMP/sdist"
+          rm -rf medh5
+          pytest tests/project -v -rs --no-cov -p no:cacheprovider
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-dist-sdist
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  msvc-from-crates-io:
+    # `cargo install medh5-cli` builds from crates.io, where this repository's
+    # .cargo/config.toml --- which gives HDF5 NDEBUG on MSVC --- is never read.
+    # A copy of the workspace without the file is that build.  medh5-sys must
+    # stop it, naming the variable to set, and the binary built with that
+    # variable must report damaged files rather than abort on them.
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - run: rustup toolchain install stable --profile minimal && rustup default stable
+      - name: The workspace, without its cargo configuration
+        run: |
+          cd "$RUNNER_TEMP"
+          mkdir ws
+          git -C "$GITHUB_WORKSPACE" archive HEAD | tar -xf - -C ws
+          rm -r ws/.cargo
+      - name: Without NDEBUG, medh5-sys stops the build
+        run: |
+          cd "$RUNNER_TEMP/ws"
+          if cargo build --release --locked -p medh5-cli 2> build.log; then
+            echo "::error::medh5-sys linked an HDF5 compiled without NDEBUG"
+            exit 1
+          fi
+          grep -F "compiled without NDEBUG" build.log
+          grep -F "CFLAGS_x86_64_pc_windows_msvc=-DNDEBUG" build.log
+      - name: With the variable it names, the binary reports damage, never aborts
+        # `-D`, not `/D`: this bash rewrites `/DNDEBUG` in the environment of
+        # a native program into a path, `C:/Program Files/Git/DNDEBUG`, which
+        # broke CMake's compiler check --- as it would in any user's Git Bash.
+        env:
+          CFLAGS_x86_64_pc_windows_msvc: -DNDEBUG
+        run: |
+          cd "$RUNNER_TEMP/ws"
+          # Setting the variable rebuilds HDF5 (through the zlib it links,
+          # which cc rebuilds with the new flags).  Should that build fail or
+          # leave HDF5 without the flag, a clean HDF5 build is the remedy the
+          # refusal names; the log of the first attempt stays in this one.
+          if ! cargo build --release --locked -p medh5-cli 2> stale.log; then
+            tail -n 80 stale.log
+            cargo clean --release -p hdf5-metno-src
+            cargo build --release --locked -p medh5-cli
+          fi
+          target/release/medh5.exe conformance build corpus
+          python .github/scripts/damaged.py target/release/medh5.exe corpus
 
   test:
+    # The suite against the Linux wheel the release ships, on every supported
+    # interpreter.  The checkout's `medh5/` is removed first: it has no
+    # compiled engine, and on the path ahead of the wheel it would be what the
+    # tests --- and `--cov=medh5` --- found.
+    needs: build
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -70,58 +351,113 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
-      - run: pip install -e ".[dev,schema,torch,nifti,dicom,dicomseg,itk,interp]"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ci-dist-x86_64-unknown-linux-gnu
+          path: dist/
+      - run: pip install "$(ls dist/*.whl)[dev,torch,nifti,dicom,dicomseg]"
+      - run: rm -rf medh5
       # A fresh install resolves numpy 2; say so, so the matrix is known to
       # cover it rather than covering it by accident of resolution.
       - run: python -c "import numpy; assert int(numpy.__version__.split('.')[0]) >= 2, numpy.__version__"
+      - run: python -c "import medh5; assert 'site-packages' in medh5.__file__, medh5.__file__"
       # `-rs` prints the skips. A skipped test is not a passing test, and the
-      # two the suite has by design should be visible in every log.
+      # ones the suite has by design should be visible in every log.
       - run: pytest tests/ -v -rs --cov=medh5 --cov-report=term-missing --cov-fail-under=90
 
-  test-windows:
-    # `atomic_rewrite` exists for a Windows failure --- `os.replace` onto a
-    # source that is still open --- and until now nothing ran there. Core
-    # extras only: the optional-dependency paths are the Linux matrix's job,
-    # this one is about the platform.
-    runs-on: windows-latest
+  test-macos:
+    # macOS defaults to the `spawn` multiprocessing start method, which is
+    # where DataLoader workers and process pools re-import the package.  One
+    # interpreter: this job is about the start method, not the matrix.
+    needs: build
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - run: pip install -e ".[dev,schema,nifti,dicom,dicomseg,interp]"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ci-dist-aarch64-apple-darwin
+          path: dist/
+      - run: pip install "$(ls dist/*.whl)[dev,torch,nifti,dicom,dicomseg]"
+      - run: rm -rf medh5
+      - run: pytest tests/ -v -rs --cov=medh5 --cov-report=term-missing --cov-fail-under=90
+
+  test-windows:
+    # Windows refuses to replace a file that is still open, which is what the
+    # atomic-rewrite paths exist for --- and what `medh5.torch`'s handle cache,
+    # which keeps files open, runs into when a sample it holds is amended.
+    # DataLoader workers start by `spawn` here, as on macOS.
+    needs: build
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ci-dist-x86_64-pc-windows-msvc
+          path: dist/
+      - run: pip install "$(ls dist/*.whl)[dev,torch,nifti,dicom,dicomseg]"
+      - run: rm -rf medh5
+      - run: pytest tests/ -v -rs --no-cov -p no:cacheprovider
+
+  test-platforms:
+    # The two wheels no job above tests, as published: Linux on aarch64 and
+    # macOS on x86_64 (their binaries run the corpus in `build`).  PyTorch has
+    # published no macOS x86_64 wheel since 2.2, which predates NumPy 2, so
+    # that one goes without `torch`.
+    name: test-platforms (${{ matrix.target }})
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            extras: dev,torch,nifti,dicom,dicomseg
+          - target: x86_64-apple-darwin
+            runner: macos-15-intel
+            extras: dev,nifti,dicom,dicomseg
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ci-dist-${{ matrix.target }}
+          path: dist/
+      - run: pip install "$(ls dist/*.whl)[${{ matrix.extras }}]"
+      - run: rm -rf medh5
       - run: pytest tests/ -v -rs --no-cov -p no:cacheprovider
 
   test-min-deps:
-    # The floors `pyproject.toml` declares, on the oldest interpreter it
-    # supports. A floor nothing installs is a floor nobody has checked.
+    # The NumPy floor `pyproject.toml` declares, on the oldest interpreter it
+    # supports, with the floors of the test suite's own HDF5 tools. A floor
+    # nothing installs is a floor nobody has checked.
+    needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.10"
-      - run: pip install -e ".[dev,schema]"
-      - run: pip install "numpy==1.24.*" "h5py==3.13.*" "hdf5plugin==4.1.*" "jsonschema==4.18.*"
-      - run: python -c "from importlib.metadata import version; print(*(f'{p} {version(p)}' for p in ('numpy', 'h5py', 'hdf5plugin', 'jsonschema')))"
-      - run: pytest tests/ -v -rs --no-cov -p no:cacheprovider
-
-  test-macos:
-    # macOS defaults to the `spawn` multiprocessing start method,
-    # which is where the h5py DataLoader and ProcessPoolExecutor
-    # regressions bite. Keep this job on a single Python version —
-    # its job is to exercise the spawn path, not re-verify the matrix.
-    runs-on: macos-latest
-    strategy:
-      matrix:
-        python-version: ["3.12"]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          python-version: ${{ matrix.python-version }}
-      - run: pip install -e ".[dev,schema,torch,nifti,dicom,dicomseg,itk,interp]"
-      - run: pytest tests/ -v -rs --cov=medh5 --cov-report=term-missing --cov-fail-under=90
+          name: ci-dist-x86_64-unknown-linux-gnu
+          path: dist/
+      - run: pip install "$(ls dist/*.whl)[dev]"
+      - run: pip install "numpy==1.24.*" "h5py==3.13.*" "hdf5plugin==4.1.*"
+      - run: python -c "from importlib.metadata import version; print(*(f'{p} {version(p)}' for p in ('numpy', 'h5py', 'hdf5plugin')))"
+      - run: rm -rf medh5
+      - run: pytest tests/ -v -rs --no-cov -p no:cacheprovider
 
   test-monai:
     # MONAI is a heavy dependency for a handful of tests, so it stays out of
@@ -129,53 +465,100 @@ jobs:
     # has to run *somewhere*.  `pytest.importorskip("monai")` skips silently
     # when it is absent, so `medh5.monai`'s level handling shipped covered by
     # a test that had never once executed.
+    needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - run: pip install -e ".[dev,nifti,monai]"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ci-dist-x86_64-unknown-linux-gnu
+          path: dist/
+      - run: pip install "$(ls dist/*.whl)[dev,nifti,monai]"
       # The point of the job. Without this the run stays green when the import
       # fails and every test skips, which is the state it exists to prevent.
       - run: python -c "import monai, torch"
+      - run: rm -rf medh5
       # Exit 5 if `-k` selects nothing, so a renamed class fails here too.
-      - run: pytest tests/ -v -k "Monai or monai" --no-cov
+      - run: pytest tests/ -v -rs -k "Monai or monai" --no-cov
 
   prototype:
     # Appendix C.2 publishes a table of results from the executable prototype
-    # next to the spec.  Nothing referenced it, so that table was an ungated
-    # claim -- unlike the corpus beside it, which CI runs on every push.  It is
-    # deliberately dependency-light, so this job is cheap.
+    # next to the spec.  It follows the specification with h5py alone, not
+    # with this package, and each of its checks raises.  But a check is the
+    # prototype's own reading of the text: its `content_id` and
+    # `source_digest` once disagreed with the spec and with every
+    # implementation while it printed "[ok]" (U07 of the 2.0 audit).  So the
+    # file it writes is validated, at integrity level, by the wheel and by the
+    # native binary this run built.
+    needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - run: pip install -e ".[dev,schema]"
+      - run: pip install numpy h5py hdf5plugin jsonschema
+      # Before the wheel is installed: the prototype must not need it.
       - run: |
           mkdir -p "$RUNNER_TEMP/prototype"
           cd "$RUNNER_TEMP/prototype"
           python "$GITHUB_WORKSPACE/docs/examples/reference_writer.py"
-      # The prototype prints "[ok] ..." per check and raises otherwise, so a
-      # non-zero exit above is the gate. Confirm it wrote where it was told,
-      # rather than into the checkout.
+      # Confirm it wrote where it was told, rather than into the checkout.
       - run: test -f "$RUNNER_TEMP/prototype/case_0001.medh5"
       - run: git diff --exit-code
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ci-dist-x86_64-unknown-linux-gnu
+          path: dist/
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ci-cli-x86_64-unknown-linux-gnu
+          path: cli/
+      - name: The wheel and the native binary find nothing the prototype missed
+        run: |
+          pip install dist/*.whl
+          tar -xzf cli/medh5-*.tar.gz -C cli
+          python - "$RUNNER_TEMP/prototype/case_0001.medh5" medh5 cli/medh5-*/medh5 <<'PY'
+          import json, subprocess, sys
+          path, *executables = sys.argv[1:]
+          # W912: the prototype binds one class to an ontology code, not all of
+          # them, as the corpus's segmentation sample does (Appendix C.2).
+          tolerated = {"W912"}
+          for exe in executables:
+              # No `check=True`: validate exits non-zero on errors, and the
+              # report says which.
+              run = subprocess.run([exe, "validate", path, "--level", "integrity", "--json"],
+                                   capture_output=True, text=True)
+              [report] = json.loads(run.stdout)
+              found = [d for d in report["diagnostics"] if d["code"] not in tolerated]
+              print(f"{exe}: {report['errors']} errors, {report['warnings']} warnings")
+              for d in found:
+                  print(f"  {d['code']} {d['location']}: {d['message']}")
+              if report["errors"] or found:
+                  sys.exit(f"{exe} finds what the prototype's own checks passed")
+          PY
 
   conformance:
     # The corpus is a shipped artifact, not a test fixture: a third-party
-    # implementation runs the same 117 cases, and is scored the same way.
+    # implementation runs the same 157 cases, and is scored the same way.
     # Running it here through `publish` + `score` exercises the public path
     # rather than the in-process one.
+    needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - run: pip install -e ".[dev,schema]"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ci-dist-x86_64-unknown-linux-gnu
+          path: dist/
+      - run: pip install dist/*.whl
+      - run: rm -rf medh5
       - run: medh5 conformance run corpus/
       - run: medh5 conformance publish suite/
       - run: |
@@ -185,7 +568,7 @@ jobs:
           results = []
           for case in manifest["cases"]:
               # No `check=True`: `validate` exits non-zero for a file with
-              # errors, and 76 of the 117 cases are deliberately invalid. The
+              # errors, and 106 of the 157 cases are deliberately invalid. The
               # exit code is the answer, not a failure.
               out = subprocess.run(
                   ["medh5", "validate", f"suite/{case['file']}",
@@ -202,32 +585,46 @@ jobs:
           name: conformance-suite
           path: suite/
 
-  build:
+  ci-ok:
+    # The one check the branch ruleset requires.  A ruleset names checks as
+    # they report, and a matrix job reports once per entry --- `build
+    # (x86_64-pc-windows-msvc)`, never `build` --- so a ruleset that names
+    # jobs one by one can wait on a name nothing reports, and misses every job
+    # added after it was written.  This needs every other job and passes only
+    # when each of them passed: `if: always()` makes it run, and fail, when
+    # one failed or was skipped, where a skipped required check counts as
+    # passing.
+    if: always()
+    needs:
+      - rust
+      - rust-platforms
+      - msrv
+      - lint
+      - typecheck
+      - docs
+      - build
+      - sdist
+      - msvc-from-crates-io
+      - test
+      - test-macos
+      - test-windows
+      - test-platforms
+      - test-min-deps
+      - test-monai
+      - prototype
+      - conformance
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-      - run: pip install --upgrade build twine packaging
-      - run: python -m build
-      - run: twine check dist/*
-      - run: |
-          python - <<'PY'
-          import zipfile, glob, sys
-          wheels = glob.glob("dist/*.whl")
-          assert wheels, "no wheel produced"
-          with zipfile.ZipFile(wheels[0]) as z:
-              names = z.namelist()
-          missing = [n for n in ("medh5/py.typed",) if n not in names]
-          license_present = any(n.endswith("LICENSE") for n in names)
-          if missing or not license_present:
-              print("names:", names, file=sys.stderr)
-              sys.exit(f"missing {missing or 'LICENSE'} in wheel")
+      - name: Every job passed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          results = {job: needed["result"] for job, needed in json.loads(os.environ["NEEDS"]).items()}
+          for job, result in sorted(results.items()):
+              print(f"{job}: {result}")
+          failed = sorted(job for job, result in results.items() if result != "success")
+          if failed:
+              sys.exit(f"not every job passed: {', '.join(failed)}")
           PY
-      # Not `dist`: when `release.yml` calls this workflow, the release's own
-      # build uploads that name in the same run, and artifact names are unique.
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: ci-dist
-          path: dist/

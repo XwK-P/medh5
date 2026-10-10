@@ -46,12 +46,12 @@ the declared profiles. Profiles compose; `core` is always required.
 |---|---|
 | `core` | §2 container, §3 geometry and timepoints, §4 images, §13 integrity |
 | `seg` | `core` + §5 label set + at least one voxel annotation (§7) |
-| `det` | `core` + §5 label set + at least one geometric annotation (§8) whose `task` is `detection`. Contours and meshes are geometry in service of segmentation (§6.3) and do not, alone, make a file a detection dataset. |
+| `det` | `core` + §5 label set + at least one annotation whose `task` is `detection` (§6.2). The declared `task` decides, whatever the kind: §6.3 says which tasks each kind serves, and contours and meshes written for segmentation do not make a file a detection dataset. |
 | `cls` | `core` + §5 label set + at least one classification annotation (§9) |
-| `reg` | `core` + at least one transform (§10) with resolvable endpoints |
-| `curation` | `core` + §11 provenance graph + `quality` on every annotation |
+| `reg` | `core` + at least one transform (§10) whose `from_frame` and `to_frame` are each the `frame_uid` of a grid of the sample |
+| `curation` | `core` + a §11.1 provenance graph holding at least one activity + `quality` on every annotation |
 | `multiscale` | `core` + §4.3 pyramid layout on every image |
-| `training` | `core` + §14.3 sampling index present and current |
+| `training` | `core` + a §14.3 sampling index with at least one entry. An entry whose `source_digest` is stale is W905, ignored by readers (§13.3), not a profile violation. |
 | `longitudinal` | `core` + ≥ 2 declared timepoints (§3.7), `timepoint` on every grid, and stable instance ids for objects observed at more than one timepoint (§7.4) |
 
 ### 1.4 Terminology
@@ -74,7 +74,8 @@ the declared profiles. Profiles compose; `core` is always required.
 
 ### 2.1 File identity
 
-Root attributes on the file (`/`):
+Root attributes of a sample: on the file (`/`) of a `sample`, and on each sample root of a
+`collection` (§2.2), whose own `/` requires only `medh5_kind` and `medh5_version`:
 
 | Attribute | Type | Req. | Value |
 |---|---|---|---|
@@ -83,7 +84,7 @@ Root attributes on the file (`/`):
 | `medh5_profiles` | `str[]` | **MUST** | Declared profiles (§1.3). |
 | `content_id` | `str` | SHOULD | `"<algo>:<hex>"` Merkle root (§13.2). |
 | `digest_algo` | `str` | SHOULD | `"sha256"` (default), `"sha512"` or `"blake2b"`. A validator **MUST** report any other value as E703. |
-| `created` | `str` | SHOULD | RFC 3339 UTC timestamp. |
+| `created` | `str` | SHOULD | RFC 3339 timestamp, in UTC (`Z`) as §11.1 recommends. |
 | `generator` | `str` | SHOULD | `"<name> <version>"` of the writing software. |
 
 `medh5_version` is the *format* version and is independent of the `medh5` Python package version.
@@ -94,10 +95,11 @@ All object paths in this specification are relative to a **sample root group**:
 
 * in a `sample` file the sample root is `/`;
 * in a `collection` file each sample root is `/samples/<sample_key>`, where `<sample_key>` matches
-  `[A-Za-z0-9_.-]{1,255}` and is unique in the file.
+  `[A-Za-z0-9_.-]{1,255}` (E003) and is unique in the file.
 
-A collection file **MUST** carry `medh5_kind = "collection"` at `/` and **MUST** repeat
-`medh5_version` on `/`. Each sample root in a collection **MUST** be structurally identical to a
+A collection file **MUST** carry `medh5_kind = "collection"` at `/`, **MUST** repeat
+`medh5_version` on `/`, and **MUST** hold the `samples` group with at least one sample root
+(E008). Each sample root in a collection **MUST** be structurally identical to a
 standalone sample and **MUST** carry its own `medh5_profiles` and `content_id` (E007, E010). This
 makes `sample ⊂ collection` a strict containment: extracting a sample root into a new file is a pure
 copy. Packing and unpacking **MUST NOT** re-encode bulk data — chunks move as stored bytes — so a
@@ -145,10 +147,15 @@ performing an amend **MUST** preserve them (§14.4).
 
 `meta` is a **scalar dataset of HDF5 variable-length UTF-8 string** holding a single JSON object: the
 *sample document*. It **MUST** be valid UTF-8 JSON and **MUST** validate against
-`schemas/medh5-sample-1.0.schema.json`. It **MUST NOT** be compressed: HDF5 filters do not apply to
-variable-length data, which lives in the file's global heap, so a compression request on `meta` is
-either silently ignored or an error depending on the library. A vocabulary large enough for the size
-to matter uses `form = "ref"` (§5.1) instead of an inline copy.
+`crates/medh5/data/medh5-sample-1.0.schema.json`. It **MUST NOT** be compressed: HDF5 filters do
+not apply to variable-length data, which lives in the file's global heap, so a compression request
+on `meta` is either silently ignored or an error depending on the library. A vocabulary large
+enough for the size to matter uses `form = "ref"` (§5.1) instead of an inline copy.
+
+> **Note.** JSON has no NaN or infinity. The 1.x package wrote Python's `NaN` and `Infinity` tokens
+> into `meta` when handed such a value, so a file it wrote can fail this clause (E004); the reference
+> reader takes those tokens as `null`, so that the rest of the sample stays readable, and its writer
+> refuses them.
 
 The sample document carries everything that is a *document*: identity, cohort, label set, provenance,
 quality, splits, acquisition and free-form extras. It **MUST NOT** duplicate any value that this
@@ -178,16 +185,17 @@ Top-level members of the sample document:
 
 | Logical type | HDF5 encoding |
 |---|---|
-| string | variable-length UTF-8 (`h5py.string_dtype()`) |
+| string | variable-length string, UTF-8 character set (`H5T_VARIABLE`, `H5T_CSET_UTF8`; `h5py.string_dtype()`) |
 | string list | 1-D array of variable-length UTF-8, **never** a JSON string |
-| boolean | `np.bool_` scalar |
+| boolean | 8-bit signed integer enumeration with members `FALSE = 0` and `TRUE = 1` --- what `h5py` writes for `np.bool_` |
 | integer / integer list | `int64` scalar / 1-D `int64` |
 | float / float list | `float64` scalar / 1-D `float64` |
 | matrix | 2-D array, **stored 2-D** (0.x flattened `direction`; 1.0 **MUST NOT**) |
 | enum | lowercase `snake_case` string from the values listed in this spec |
 
-Readers **MUST** accept both `bytes` and `str` for string attributes (h5py version drift) and
-**SHOULD** normalise to `str`.
+Readers **MUST** accept fixed-length as well as variable-length strings, in the ASCII as well as the
+UTF-8 character set (to `h5py`, `bytes` as well as `str` --- the version drift this clause was
+written for), and **SHOULD** normalise them to text.
 
 ---
 
@@ -430,8 +438,9 @@ Voxel annotations MAY be pyramided identically, with `downsample_method = "neare
 ### 4.4 Validity masks
 
 Real acquisitions have invalid regions: outside the reconstruction circle, zero-padded after
-resampling, truncated FOV. `valid_mask` names a `mask`-kind annotation whose `true` voxels are
-acquired data. Loss functions and intensity statistics **SHOULD** honour it. This is distinct from
+resampling, truncated FOV. `valid_mask` names a `mask`-kind annotation on the image's grid whose
+`true` voxels are acquired data (E413 otherwise). Loss functions and intensity statistics
+**SHOULD** honour it. This is distinct from
 the *annotation* coverage of §11.3, which is about what was labelled, not what was imaged.
 
 ### 4.5 Acquisition parameters
@@ -476,8 +485,8 @@ Annotations reference classes by `uint16` id. The mapping id → meaning is the 
   resolved. Permitted only for very large vocabularies; readers that cannot resolve `uri` **MUST**
   treat class names as unknown but **MUST** still read the annotation data. A collection **MAY**
   carry the resolved label set once at `/` and let sample roots use `form = "ref"` with
-  `uri = "medh5:/label_set"`; the reference implementation neither writes nor resolves that form in
-  1.x (Appendix C).
+  `uri = "medh5:/label_set"`; the reference implementation neither writes nor resolves that form
+  (Appendix C).
 
 **Canonical serialization (normative).** `label_set.sha256` is the digest of the label set's *content*,
 computed so that two implementations in two languages agree. The digested document is
@@ -487,10 +496,29 @@ computed so that two implementations in two languages agree. The digested docume
 ```
 
 with `classes` sorted by `id`, `relations` sorted by `(subject, predicate, object)`, `skeletons` sorted
-by `id`, and `relations`/`skeletons` omitted when empty. It is serialized as JSON with **sorted keys,
-no insignificant whitespace, and non-ASCII characters kept as UTF-8** (not `\u` escapes), then hashed.
+by `id`, and `relations`/`skeletons` omitted when empty. It is serialized as **canonical JSON** (below)
+and hashed.
 `form`, `uri` and `sha256` are **excluded**: they describe how the vocabulary is *carried*, not what it
 says, so an inline copy and a referenced copy of one vocabulary digest identically.
+
+**Canonical JSON (normative).** The one serialization behind `label_set.sha256` and `content_id`'s
+`canonical_attrs` (§13.2), defined to the byte so that implementations in different languages agree:
+
+* object keys **sorted** by code point; separators `,` and `:` with **no whitespace** anywhere;
+* strings in UTF-8 with non-ASCII characters written **as themselves**, not as `\u` escapes; the
+  only escapes are `\"`, `\\`, `\b`, `\f`, `\n`, `\r`, `\t`, and `\u00xx` (lowercase hex) for any
+  other character below U+0020;
+* `true`, `false`, `null`;
+* a number keeps its type: an **integer** is written in decimal with no exponent or fraction; a
+  **float** is written in its *shortest round-trip form* --- the fewest significant digits that read
+  back to the same IEEE-754 binary64 value --- in fixed notation with at least one fractional digit
+  when `1e-4 ≤ |x| < 1e16` (`1.0`, `0.0001`, `2.5`), and otherwise as `d[.ddd]e±XX` with a sign and
+  at least two exponent digits (`1e-05`, `1.5e+16`); `-0.0` keeps its sign. A JSON document has no
+  non-finite values; an attribute can hold one, and `canonical_attrs` writes it `NaN`, `Infinity` or
+  `-Infinity`.
+
+This is what Python's `json.dumps(doc, sort_keys=True, separators=(",", ":"), ensure_ascii=False)`
+produces, and what `medh5` has always written.
 
 Two files are **vocabulary-compatible** iff their `label_set.id`, `version` and `sha256` match. A
 dataset-level validator **MUST** report divergent vocabularies across a cohort.
@@ -616,6 +644,10 @@ absent from the file.
 | `mesh` | seg | §8.7 | triangle surface mesh |
 | `classification` | cls | §9 | labels at sample/timepoint/grid/roi/slice scope, incl. change across timepoints |
 
+The Task column says which tasks a kind serves. Which one an annotation serves is its own `task`
+attribute (§6.2), and that is what the `det` profile reads (§1.3): an `instances` annotation written
+for detection makes a detection dataset, and one written for segmentation does not.
+
 ---
 
 ## 7. Voxel annotations
@@ -670,7 +702,7 @@ Constraints:
 
 * Every id in `class_ids` **MUST** appear in exactly one layer.
 * `data` **MUST** be chunked as `(1, *spatial_chunk)` so one layer is readable without decompressing
-  the others (§14.1).
+  the others (§14.1, which lets a dataset below 64 KiB stay contiguous).
 * Writers **MUST** produce a minimal or near-minimal *L* by colouring the class overlap graph
   (§7.6).
 
@@ -686,7 +718,8 @@ One bit per class per voxel, packed into `uint64` planes.
 | `data` | `(P, *grid.shape_spatial)` | `uint64` | `P = ceil(len(class_ids)/64)` |
 | `bit_class_ids` | `(len(class_ids),)` | `uint16` | position *p* ↔ plane `p//64`, bit `p%64` (LSB-first) |
 
-`data` **MUST** be chunked `(1, *spatial_chunk)`. Bit ordering is LSB-first within each `uint64`, and
+`data` **MUST** be chunked `(1, *spatial_chunk)`, or below 64 KiB may be contiguous (§14.1). Bit
+ordering is LSB-first within each `uint64`, and
 the value is interpreted in **native machine integer semantics**, not byte order — readers **MUST** use
 integer shifts, never byte offsets.
 
@@ -737,12 +770,13 @@ a 45× reduction, because storage is proportional to object volume, not image vo
 
 | Dataset | Shape | dtype | Notes |
 |---|---|---|---|
-| `data` | `(len(class_ids), *shape_spatial)` | `float16`/`float32` | values in [0,1] |
+| `data` | `(len(class_ids), *shape_spatial)` | `float16`/`float32` | values in [0,1] (E411) |
 | `normalized` | attr `bool` | | `true` ⟹ channels sum to 1 across classes at each voxel |
 | `threshold` | attr `float64` | | OPTIONAL, default `0.5`: the probability at or above which a voxel *contains* the class (§7.6); in [0, 1] |
 
 For soft ground truth, inter-rater probability maps, distillation targets and predicted logits after
-sigmoid/softmax. **MUST** be chunked `(1, *spatial_chunk)`. `threshold` is a spec-defined attribute
+sigmoid/softmax. **MUST** be chunked `(1, *spatial_chunk)`, or below 64 KiB may be contiguous
+(§14.1). `threshold` is a spec-defined attribute
 and so is covered by `content_id` (§13.2): two readers of one file answer `contains` identically.
 
 `contains` is decided **at the stored precision**: a voxel contains the class where its stored value
@@ -751,6 +785,13 @@ that comparison gives, at every voxel, the answer the values it was given gave �
 to `float32` where it would not. `float16` represents few fractions exactly (a vote of 1 in 3 is
 stored as 0.33325), so a rater-vote map written without this check loses every voxel that sits
 exactly on its threshold, at write time, beyond any reader's reach.
+
+`normalized` holds **at the stored precision** too: at every voxel the stored values, summed in
+`float64`, lie within `10⁻⁶ + u·σ + n·t/2` of 1 --- `σ` the sum, `n` the number of classes, `u` the
+stored dtype's unit roundoff (2⁻¹¹ for `float16`, 2⁻²⁴ for `float32`) and `t` its smallest subnormal ---
+allowing as well for the error of the `float64` sums, `3·n·ε·max(1, σ)` with `ε = 2⁻⁵²`. That is the
+rounding of the values stored and no more, so a map that lost its mass is refused at any class count
+(**E404**). A writer holds the values it is given to `10⁻⁶`, so every map it stores meets the bound.
 
 ### 7.6 Encoding equivalence and selection
 
@@ -789,7 +830,8 @@ runs on the way out. No `.medh5` file stores runs.
 
 * In `labelmap` / `layers`, the value `ignore_id` marks ignore voxels.
 * In `bitmask`, `instances` and `probmap`, ignore regions **MUST** be expressed as a separate
-  `mask`-kind annotation named by the `ignore_mask` attribute. So **MUST** a region that overlaps
+  `mask`-kind annotation on the same grid, named by the `ignore_mask` attribute (E413 otherwise).
+  So **MUST** a region that overlaps
   any class's voxels, under every encoding: one in-band value per voxel cannot say both "this class"
   and "ignored", so an in-band region would lose one or the other where they meet.
 * `0` means **background — verified absent for `annotated_class_ids`**. It does not mean "unknown".
@@ -878,6 +920,7 @@ Euler-angle forms are **not** stored; readers convert. The corner set is
 |---|---|---|---|
 | `points` | `(N, S)` | `float32` | |
 | `class_ids` | `(N,)` | `uint16` | OPTIONAL |
+| `instance_ids` | `(N,)` | `uint32`/`uint64` | OPTIONAL — the trackable objects the points mark (§7.4, §10.6) |
 | `names` | `(N,)` | vlen UTF-8 | OPTIONAL — anatomical landmark names |
 | `weights` | `(N,)` | `float32` | OPTIONAL — evaluation weights |
 | `correspondence` | attr `str` | | OPTIONAL — id of the paired `points` annotation (§10.6) |
@@ -889,7 +932,7 @@ Planar polygons, for DICOM RTSTRUCT round-trips and slice-wise manual annotation
 | Dataset | Shape | dtype | Meaning |
 |---|---|---|---|
 | `vertices` | `(V, S)` | `float32` | concatenated polygon vertices |
-| `contour_offsets` | `(M+1,)` | `int64` | polygon *m* spans `[o[m], o[m+1])` |
+| `contour_offsets` | `(M+1,)` | `int64` | polygon *m* spans `[o[m], o[m+1])`; non-decreasing, the last equal to `V` (E408) |
 | `contour_class_ids` | `(M,)` | `uint16` | |
 | `contour_plane` | `(M, 2)` | `int32` | `(axis, index)` of the plane each polygon lies in; `axis = −1` for out-of-plane |
 | `contour_role` | `(M,)` | `uint8` | `0` = outer boundary, `1` = hole |
@@ -904,7 +947,7 @@ Rasterisation to a voxel annotation is an explicit, provenance-tracked activity 
 | `faces` | `(F, 3)` | `int32` | triangles, counter-clockwise seen from outside |
 | `normals` | `(V, 3)` | `float32` | OPTIONAL |
 | `vertex_class_ids` | `(V,)` | `uint16` | OPTIONAL, for multi-structure meshes |
-| `mesh_offsets` | `(M+1,)` | `int64` | OPTIONAL, several meshes in one annotation |
+| `mesh_offsets` | `(M+1,)` | `int64` | OPTIONAL, several meshes in one annotation: mesh *m* is faces `[o[m], o[m+1])`; non-decreasing, the last equal to `F` (E408) |
 | `mesh_class_ids` | `(M,)` | `uint16` | OPTIONAL |
 
 Meshes are **surfaces**, not fallbacks for voxel data: a `mesh` annotation does not satisfy the `seg`
@@ -987,12 +1030,17 @@ its own.
 | `from_frame` | `str` | **MUST** | source `frame_uid` |
 | `to_frame` | `str` | **MUST** | target `frame_uid` |
 | `from_grid` / `to_grid` | `str` | SHOULD | representative grids in each frame |
-| `units` | `str` | **MUST** | coordinate units, matching the frames' grids |
+| `units` | `str` | **MUST** | coordinate units: those of the grids in both frames (E506) |
 | `invertible` | `bool` | SHOULD | |
 | `inverse_id` | `str` | MAY | id of the transform representing T⁻¹ |
 | `prov` | `str` | SHOULD | activity that produced it (§11.1) |
 | `metrics` | `str` | MAY | key into `/meta → quality` holding TRE, Dice-after-warp, folding fraction |
 | `digest` | `str` | SHOULD | §13.1 |
+
+A transform maps coordinates in its `units`, which **MUST** be the `units` of every grid in
+`from_frame` and in `to_frame` (E506). No transform maps between units: a reader **MUST NOT** apply
+one to a grid in other units, and converts nothing. A writer not given `units` takes them from
+those grids.
 
 A transform and the stored transform its `inverse_id` names are **one relation between two frames,
 traversable in both directions — not two**. A reader resolving a path between frames **MUST NOT**
@@ -1035,6 +1083,12 @@ The transform is `T(x) = x + u(x)`, with `u` obtained by interpolating `field` a
 field grid. Component order matches the field grid's spatial axes. Storing components on the leading
 axis (`(S, Z, Y, X)`, chunked `(1, …)`) lets a reader fetch one component or one ROI without touching
 the rest — the reason for that axis order rather than a trailing `(Z, Y, X, S)`.
+
+The field covers its grid's voxel extent, `[-0.5, n - 0.5]` along an axis of `n` samples (§3.3), and
+`extrapolation` decides what `u` is beyond it: `zero` is no displacement, `nearest` interpolates the
+field extended by repeating its edge samples, and `error` refuses the point. Under `zero` and `error`, a
+point inside the extent but beyond the outermost sample --- in its half-voxel margin --- takes the
+outermost sample's value, for `linear` and `cubic` alike.
 
 `float16` is permitted and **RECOMMENDED** for displacement magnitudes below ~64 voxels; the loss of
 precision (≈ 5e-4 relative) is far below registration accuracy and halves field size.
@@ -1109,7 +1163,8 @@ landmark correspondence and lesion tracking agree by construction.
 
 `type` ∈ {`import`, `annotate`, `review`, `predict`, `resample`, `register`, `derive`, `deidentify`,
 `transcode`, `other`}. Objects link to activities through their `prov` attribute. Timestamps are
-RFC 3339 UTC. A validator at level `semantic` **MUST** report dangling `prov` references (E601).
+RFC 3339 (E604 otherwise) and **SHOULD** be in UTC (`Z`); one with another offset names the same
+instant. A validator at level `semantic` **MUST** report dangling `prov` references (E601).
 
 > Rationale: 0.x kept review state in a nested `extra["review"]` dict with an ad-hoc history list.
 > That records *that* something was reviewed but not *what produced the data being reviewed*, and it
@@ -1213,9 +1268,12 @@ visits, per-visit acquisition detail belongs in `/meta → acquisition` (§4.5),
 ```
 
 Each entry is a **membership claim**, not an authority. The dataset-level manifest is authoritative;
-`manifest_sha256` lets a reader detect a file whose in-file claim predates the current split. A
-validator **MUST** warn (W906) when two files claim the same `set_id` with different
-`manifest_sha256`.
+`manifest_sha256` lets a reader detect a file whose in-file claim predates the current split. Two
+claims of one `set_id` with different `manifest_sha256` conflict (W906). A validator **MUST** warn of
+a conflict among the claims of one sample; it validates each sample on its own, a collection's members
+included. A split audit, which reads the samples of a cohort together (`medh5 splits` in the
+reference implementation), **MUST** warn of a conflict between samples. Validating one file cannot
+see the rest of its cohort, so the cross-file check is the audit's.
 
 > **Rationale.** Splits are a property of a *cohort*, not of a sample, but training code overwhelmingly
 > works file-by-file. Recording the claim in-file makes single-file debugging possible; hashing the
@@ -1233,9 +1291,12 @@ Every dataset **SHOULD** carry a `digest` attribute `"<algo>:<hex>"` over its ca
 H( object_path ‖ 0x00 ‖ dtype_str ‖ 0x00 ‖ shape_csv ‖ 0x00 ‖ raw C-order little-endian bytes )
 ```
 
-`dtype_str` is the NumPy dtype string with explicit byte order normalised to little-endian
-(`"<i2"`, `"<u8"`, `"|b1"`). Variable-length string datasets hash the UTF-8 payloads separated by
-`0x00`. The digest covers **decompressed** content, so recompression does not invalidate it.
+`dtype_str` is the NumPy dtype string with explicit byte order normalised to little-endian: `|b1`
+for booleans, `|i1` and `|u1` for 8-bit integers (one byte has no order), `<i2`, `<i4`, `<i8`,
+`<u2`, `<u4`, `<u8`, `<f2`, `<f4`, `<f8` otherwise, and `|O` for variable-length strings, whose
+payloads are hashed in UTF-8, each followed by `0x00`, in place of raw bytes. `shape_csv` is the
+dimensions in decimal joined by `,` (`64,96,96`; empty for a scalar). The digest covers
+**decompressed** content, so recompression does not invalidate it.
 
 Datasets under `index/` (§14.3) are **excluded**: they carry no `digest`, and writers **MUST NOT**
 stamp one. An index is derived, regenerable, and already bound to its source by `source_digest`
@@ -1248,15 +1309,42 @@ The sample root **SHOULD** carry `content_id`, the Merkle root over the sorted d
 
 ```
 lines = sorted( f"{path}\t{digest}\n" for every dataset with a digest )
-       + [ f"meta\t{H(meta_json_utf8)}\n" ]
-       + [ f"@{obj}\t{H(canonical_attrs(obj))}\n" for every object with spec-defined attributes ]
+       + [ "meta\t" + hex( H(meta_json_utf8) ) + "\n" ]
+       + sorted( f"@{obj}\t" + "<algo>:" + hex( H(canonical_attrs(obj)) ) + "\n"
+                 for every object with an attribute line )
 content_id = "<algo>:" + hex( H( "".join(lines) ) )
 ```
 
-`canonical_attrs` serialises the object's spec-defined attributes as sorted-key JSON with arrays as
-nested lists and floats in `repr` shortest round-trip form. Each of the three groups of lines is
+`hex` is lowercase hexadecimal. The three kinds of line spell a digest differently, and an
+implementation reproduces each to the byte: a dataset line carries the dataset's `digest` attribute as
+stored (`<algo>:<hex>`, §13.1), an attribute line carries `<algo>:` before the hex digest, and the
+`meta` line carries the bare hex digest. The objects with an attribute line are the sample root and
+every member of `grids/`, `images/`, `annotations/` and `transforms/`; each has its line whichever of
+its covered attributes (below) it carries, `{}` when it carries none.
+
+`canonical_attrs` serialises the covered attributes the object carries as one JSON object in the
+canonical JSON of §5.1, keyed by attribute name: a string as a string, a boolean as `true`/`false`,
+an integer or float scalar as a number of that type, and an array as nested lists of the same. Each of the three groups of lines is
 sorted independently and they are concatenated in the order shown. Paths are relative to the **sample
 root**, so a sample extracted from a collection keeps its `content_id` (§2.2).
+
+**The covered attributes** are exactly these, by object; any other attribute an object carries ---
+its own `digest`, an extension's, one a later minor version defines --- has no part in its line:
+
+| Object | Covered attributes |
+|---|---|
+| the sample root | `medh5_version`, `medh5_kind`, `medh5_profiles` |
+| `grids/<id>` | `shape`, `axis_names`, `axis_kinds`, `spacing`, `origin`, `direction`, `coord_system`, `units`, `timepoint`, `frame_uid`, `time_values`, `time_units`, `chunk_hint`, `patch_hint` |
+| `images/<id>` | `grid`, `modality`, `value_type`, `channel_names`, `rescale_slope`, `rescale_intercept`, `value_units`, `window_center`, `window_width`, `valid_mask`, `prov`, `levels`, `downsample_factors`, `downsample_method`, `grid_levels` |
+| `annotations/<id>` | `kind`, `task`, `grid`, `timepoints`, `space`, `frame_uid`, `class_ids`, `annotated_class_ids`, `closure`, `ignore_id`, `ignore_mask`, `prov`, `quality`, `derived_from`, `scope`, `scope_ids`, `multilabel`, `normalized`, `threshold`, `skeleton` |
+| `transforms/<id>` | `kind`, `from_frame`, `to_frame`, `from_grid`, `to_grid`, `units`, `invertible`, `inverse_id`, `prov`, `metrics`, `field_grid`, `vector_space`, `interpolation`, `extrapolation`, `cp_grid`, `order`, `components` |
+
+These are the lists every implementation has covered since 1.0, and they are not quite the
+attributes this specification defines. §8.5's `correspondence` is **not** covered: a validator
+checks that it resolves (E413), but `content_id` does not attest it, and an edit to it changes no
+line. `scope_ids`, which §9 stores as a dataset --- covered, as every dataset is, by its digest --- is
+listed among the annotation attributes as well, so an attribute of that name enters its annotation's
+line.
 
 **`index/` is outside `content_id` entirely** — neither its datasets (they carry no digest, §13.1)
 nor its attributes contribute a line. This is normative, not incidental: `content_id` is advertised
@@ -1267,8 +1355,24 @@ the address of the sample it was built from, which is the property that makes th
 regenerate. A corrupted index is therefore **not** detectable through `content_id`; it is guarded by
 `source_digest` (§13.3) against staleness, and is regenerable by definition.
 
-At the root, the covered attributes are exactly `medh5_version`, `medh5_kind` and `medh5_profiles`.
-`created` and `generator` are **excluded**, and `content_id` obviously cannot cover itself: two
+**A dataset has one line however many paths reach it.** The walk visits each object once, at its
+first path --- depth first, a group's members in byte order of their names --- through hard links
+only. A dataset reached first through `index/`, or only through a soft link, therefore has no line,
+and `content_id` does not speak for its bytes: a validator **MUST** report a `digest` such a dataset
+carries as **E702**, and nothing that relies on `content_id` may count the dataset as covered.
+
+**A line binds bytes to a path.** Every object the root speaks for --- what a reader reaches by name
+through `grids/`, `images/`, `annotations/` and `transforms/`, soft links followed as a reader
+follows them --- **MUST** be reached there at its own path: its first, the one its line names. Any
+other path to it is covered nowhere --- an alias sorting before its own path, a second link inside
+those groups, a soft link, a group reached a second time, an external link --- because the lines do
+not record it: relinked to other covered bytes, such a path changes no line, so the root still
+recomputes while a reader of that name reads other bytes. A validator **MUST** report such a path as
+**E704** (a dataset that no line lists and that carries a `digest` is E702, above), and nothing that
+relies on `content_id` may count it as covered. A later path outside those groups is an extension's
+and no error. No `content_id` changes.
+
+At the root, `created` and `generator` are **excluded**, and `content_id` obviously cannot cover itself: two
 byte-identical samples written an hour apart by different tools **MUST** share a `content_id`, or it
 is not a content address and cannot serve as a cache or dedup key. An object's own `digest` attribute
 is likewise excluded from its `canonical_attrs`, because the dataset lines already carry it.
@@ -1282,8 +1386,8 @@ Properties this buys, all absent from 0.x's single monolithic hash:
 
 ### 13.3 Derived index invalidation
 
-Every object under `index/` (§14.3) **MUST** carry `source_digest`, the digest of the annotation it
-derives from. An annotation is a *group*, and only datasets carry a `digest`, so the quantity is
+Each index entry `index/<ann_id>` (§14.3) --- the entry, not the objects inside it --- **MUST** carry
+`source_digest`, the digest of the annotation it derives from. An annotation is a *group*, and only datasets carry a `digest`, so the quantity is
 defined here: `source_digest` is
 
 ```
@@ -1306,6 +1410,10 @@ Normative requirements:
 * Image and voxel-annotation datasets **MUST** be chunked.
 * `layers`, `bitmask`, `probmap` and `displacement` **MUST** use chunk shape `(1, *spatial_chunk)`, so
   one layer / plane / channel / component is readable without decompressing the others.
+* A dataset whose raw size is below 64 KiB, or which is empty, **MAY** instead be stored contiguous
+  and unfiltered --- the requirements above, and those of §7.2, §7.3 and §7.5, apply from 64 KiB.
+  At that size chunking and a filter pipeline cost more than they save, and a reader reads it
+  whole.
 * Voxel annotations on a grid **SHOULD** use the same `spatial_chunk` as the images on that grid, so an
   image patch and its labels touch congruent chunk sets.
 
@@ -1329,18 +1437,21 @@ actually used is discoverable from the HDF5 filter pipeline.
 | `archive` | Blosc2 zstd L9 + bitshuffle | Blosc2 zstd L9 + bitshuffle | cold storage, distribution |
 | `portable` | gzip L4 + shuffle | gzip L4 + shuffle | readers without `hdf5plugin` |
 
-Measured on a 192×256×256 synthetic CT (12.6 M voxels, `int16` HU, 32×64×64 chunks):
+Measured on a 192×256×256 synthetic CT (12.6 M voxels, `int16` HU, 32×64×64 chunks), with h5py and
+a new 64³ window for every read ([`bench_io.py`](../examples/bench_io.py)):
 
 | Profile | Write | Size | Ratio | 64³ patch read | Full-volume read |
 |---|---|---|---|---|---|
-| `training` (lz4 L1) | 0.03 s | 12.80 MiB | 1.9× | 0.08 ms | 0.01 s |
-| `balanced`-ish (lz4hc L8) | 0.34 s | 12.33 MiB | 1.9× | 0.08 ms | 0.01 s |
-| `archive` (zstd L9 + bitshuffle) | 2.39 s | 9.53 MiB | 2.5× | 0.08 ms | 0.03 s |
-| `portable` (gzip L4) | 0.37 s | 9.72 MiB | 2.5× | 0.08 ms | 0.09 s |
+| `training` (lz4 L1) | 0.07 s | 12.80 MiB | 1.9× | 1.3 ms | 0.02 s |
+| lz4hc L8 (the 0.x default) | 0.54 s | 12.33 MiB | 1.9× | 1.0 ms | 0.02 s |
+| `archive` (zstd L9 + bitshuffle) | 5.37 s | 9.53 MiB | 2.5× | 2.3 ms | 0.03 s |
+| `portable` (gzip L4) | 0.48 s | 9.72 MiB | 2.5× | 8.9 ms | 0.08 s |
 
-`portable` reaches archive-class ratios but decompresses ~3× slower in bulk; `training` writes ~80×
-faster than `archive` for a ~34 % size penalty. Patch reads are codec-insensitive at this chunk size
-because a 64³ patch touches few chunks — which is exactly what §14.1 is for.
+`portable` reaches archive-class ratios but decompresses ~3× slower in bulk and ~4× slower per patch;
+`training` writes ~75× faster than `archive` for a ~34 % size penalty. A patch read decompresses
+every chunk the window touches --- twelve here --- so the codec shows in it. (An earlier version of
+this table timed one window thirty times, which HDF5's chunk cache answers after the first read,
+and reported 0.08 ms for every codec.)
 
 `portable` exists because Blosc2 requires `hdf5plugin` on the reader. A file written with `portable`
 is readable by stock `h5py`, MATLAB, R `rhdf5` and `h5dump` with no plugins.
@@ -1357,7 +1468,7 @@ is readable by stock `h5py`, MATLAB, R `rhdf5` and `h5dump` with no plugins.
 | `fg_coords/<class_id>` | `(n_c, S)` `int32` | uniform subsample of foreground voxel coordinates, `n_c ≤ max_coords` |
 | `occupancy` | `(C, *coarse_shape)` `bool` | OPTIONAL low-res occupancy (default 1/8 per axis) for block-level rejection sampling |
 | attr `source_digest` | `str` | §13.3 |
-| attr `max_coords`, `seed` | | reproducibility of the subsample |
+| attr `max_coords`, `seed` | | the subsample's parameters: the implementation that drew it reproduces it from them; the generator is not specified, so another implementation's subsample differs and conforms equally |
 
 Measured effect on foreground patch sampling (160³ volume, one class, 33 533 foreground voxels):
 
@@ -1386,9 +1497,10 @@ tens of GiB and cannot exist.
   is permitted only for attribute-only edits and **MUST** be opt-in.
 * **Amend preserves unknown objects.** A 1.0 writer amending a file containing objects from a future
   minor version **MUST** copy them through untouched.
-* **Readers** open `mode="r"`. Concurrent readers across processes are safe. A single `h5py.File`
-  **MUST NOT** be shared across threads without external locking, nor inherited across `fork` — a
-  handle cache **MUST** be keyed by PID and dropped in the child.
+* **Readers** open `mode="r"`. Concurrent readers across processes are safe. A single open HDF5
+  file (an `h5py.File`, a Rust `hdf5::File`) **MUST NOT** be shared across threads without external
+  locking, nor inherited across `fork` — a handle cache **MUST** be keyed by PID and dropped in the
+  child.
 * **SWMR** (`libver="latest"`, `swmr_mode=True`) **MAY** be used to read a file while it is being
   appended; readers **MUST** re-verify `content_id` before trusting a SWMR snapshot.
 * **Network filesystems**: HDF5 file locking is unreliable on NFS/Lustre/GPFS. Tooling **SHOULD**
@@ -1418,7 +1530,7 @@ tens of GiB and cannot exist.
 |---|---|
 | `structural` | layout, required attributes, dtypes, shapes, identifier syntax, JSON schema of `/meta` |
 | `semantic` | cross-references resolve; geometry consistency; class ids ⊆ label set; encoding invariants; transform frame chaining; profile requirements |
-| `integrity` | `digest` per object, `content_id`, index `source_digest` currency |
+| `integrity` | `digest` per object, `content_id`, index `source_digest` currency; and the value checks that need every stored value, made in the same full read of a bulk dataset: `probmap` values in [0, 1] (E411) and `normalized` sums (E404) |
 | `strict` | all of the above with warnings promoted to errors |
 
 ### 15.2 Error codes
@@ -1430,14 +1542,14 @@ one.
 
 | Range | Domain | Examples |
 |---|---|---|
-| `E0xx` | container | `E001` missing `medh5_version`; `E002` unsupported major version; `E003` bad identifier; `E004` `/meta` absent or not valid JSON; `E005` `/meta` fails schema; `E006` missing or unknown `medh5_kind`; `E007` missing `medh5_profiles` or unknown profile; `E008` a group required by §2.3 is absent; `E009` a declared profile's requirements are not met; `E010` a sample root in a `collection` lacks its own `content_id` |
-| `E1xx` | geometry | `E101` referenced grid does not exist; `E102` `direction` not orthonormal; `E103` spatial axes not trailing/contiguous; `E104` `spacing ≤ 0`; `E105` multiscale geometry inconsistent; `E106` grid without `timepoint` in a multi-timepoint sample; `E107` grid `timepoint` not declared; `E108` `timepoints` empty, or `index` not dense and increasing; `E109` required grid attribute missing or of the wrong rank; `E110` `axis_kinds` invalid for the declared dimensionality; `E111` `grids` contains no grid |
+| `E0xx` | container | `E001` missing or empty `medh5_version`, or the file or an object a check must read cannot be read; `E002` unsupported major version; `E003` an identifier that does not match its syntax (§2.2, §2.3); `E004` `/meta` absent or not valid JSON; `E005` `/meta` fails schema; `E006` missing or unknown `medh5_kind`; `E007` missing `medh5_profiles` or unknown profile; `E008` a group required by the layout is absent --- a §2.3 group, or a collection's `samples` --- or a collection holds no sample root (§2.2); `E009` a declared profile's requirements are not met; `E010` a sample root in a `collection` lacks its own `content_id` |
+| `E1xx` | geometry | `E101` referenced grid does not exist; `E102` `direction` not orthonormal; `E103` spatial axes not trailing/contiguous; `E104` `spacing ≤ 0`; `E105` multiscale geometry inconsistent; `E106` grid without `timepoint` in a multi-timepoint sample; `E107` grid `timepoint` not declared; `E108` `timepoints` empty, a timepoint `id` repeated, or `index` not dense and increasing; `E109` required grid attribute missing or of the wrong rank; `E110` `axis_kinds` invalid for the declared dimensionality; `E111` `grids` contains no grid |
 | `E2xx` | images | `E201` `images` empty; `E202` image shape ≠ grid shape; `E203` unknown `value_type`; `E204` `channel_names` length ≠ channel extent; `E205` required image attribute missing |
 | `E3xx` | label set | `E301` missing label set for a declared profile; `E302` duplicate class id or key; `E303` reserved id used; `E304` hierarchy cycle; `E305` `ref` label set lacking `uri`/`sha256`, or unresolvable; `E306` class entry missing a required field, out of id range, or naming an unknown parent |
-| `E4xx` | annotations | `E401` unknown `kind`; `E402` class id not in label set; `E403` `annotated_class_ids ⊄ class_ids`; `E404` encoding invariant violated (e.g. a class in two layers); `E405` shape mismatch with grid; `E406` box `lo > hi`; `E407` `rotations` not a proper rotation; `E408` offsets not monotonic; `E409` `timepoints` references an undeclared timepoint; `E410` a dataset required by the `kind` is absent; `E411` dataset dtype not permitted for the `kind`; `E412` required annotation attribute missing; `E413` reference to a skeleton, correspondence, ignore mask or source annotation that does not exist; `E414` `space` invalid for the annotation's grid or frame |
-| `E5xx` | transforms | `E501` composite frame chain broken; `E502` unknown transform kind; `E503` field grid not in `from_frame`; `E504` affine last row ≠ `[0…0 1]`; `E505` `inverse_id` not mutually consistent |
+| `E4xx` | annotations | `E401` unknown `kind`; `E402` class id not in label set; `E403` `annotated_class_ids ⊄ class_ids`; `E404` encoding invariant violated (e.g. a class in two layers); `E405` shape mismatch with the grid, or between an annotation's own datasets, mesh `faces` indexing outside its `vertices` among them; `E406` box `lo > hi`; `E407` `rotations` not a proper rotation; `E408` offsets that decrease, or `contour_offsets`/`mesh_offsets` whose last value is not the number of vertices/faces they index (§8.6, §8.7); `E409` `timepoints` references an undeclared timepoint; `E410` a dataset required by the `kind` is absent; `E411` dataset dtype not permitted for the `kind`, or a stored value it does not permit: a `probmap` value outside [0, 1] (§7.5), a keypoint `visibility` other than 0, 1 or 2 (§8.4); `E412` required annotation attribute missing, or an unknown `task`, `closure`, `space` or `scope`; `E413` a `skeleton`, `correspondence`, `derived_from`, `ignore_mask` or `valid_mask` reference that does not resolve, or an `ignore_mask`/`valid_mask` naming an annotation that is not a `mask` on the same grid (§4.4, §7.7); `E414` `space` invalid for the annotation's grid or frame |
+| `E5xx` | transforms | `E501` composite frame chain broken; `E502` missing or unknown transform `kind`, or a transform lacking the frames or parameters its kind requires, mapping a frame to itself, or naming an unknown `vector_space`; `E503` field grid not in `from_frame`; `E504` affine last row ≠ `[0…0 1]`; `E505` `inverse_id` not mutually consistent; `E506` `units` missing or not the units of the grids in its frames |
 | `E6xx` | curation | `E601` dangling `prov` reference; `E602` unknown `quality` key; `E603` unknown agent or activity type; `E604` non-RFC3339 timestamp; `E605` activity names an undeclared agent |
-| `E7xx` | integrity | `E701` object digest mismatch; `E702` `content_id` mismatch; `E703` malformed digest string |
+| `E7xx` | integrity | `E701` object digest mismatch; `E702` `content_id` mismatch; `E703` malformed digest string; `E704` an object `content_id` covers reached at a path that is not its own |
 | `W9xx` | warnings | `W901` no digests; `W902` uncompressed or unchunked bulk dataset; `W903` no `deidentification`; `W904` partial coverage without an ignore region; `W905` stale `index/` entry; `W906` conflicting split claims; `W907` `float32` storage where `int16 + rescale` is lossless; `W908` `layers` count far from the greedy-colouring optimum; `W909` one `instance_id` carrying two class ids; `W910` grids in different timepoints sharing a `frame_uid`; `W911` multi-timepoint sample with no transform relating any two timepoints; `W912` a class used by an annotation carries no ontology binding |
 
 ---
@@ -1448,9 +1560,18 @@ one.
   activity types and error codes. It **MUST NOT** change the meaning of existing ones, remove a
   requirement, or alter a coordinate or direction convention.
 * Readers **MUST** reject an unknown MAJOR, **MUST** accept a higher MINOR, and **MUST** ignore
-  objects, attributes and enum values they do not recognise.
+  objects, attributes and enum values they do not recognise. Accepting a higher minor is reading
+  its **supported projection**: validating that projection is not conformance to the newer version,
+  and a writer **MUST NOT** amend, recompress or pack such a file, since it cannot preserve what it
+  does not know ([1.1](medh5-1.1.md) §2.2).
 * Third-party extensions live under `/meta → extra.<reverse-dns-namespace>` and under HDF5 groups
-  named `x_<namespace>_<name>`. Neither is touched by validators, and both survive amend.
+  named `x_<namespace>_<name>`. Validators give them no meaning: `extra` is checked only as part of
+  `/meta` (§2.4), and an extension dataset only as every dataset is --- its `digest` (E701), which
+  like any dataset's has its line in `content_id` (§13.1, §13.2), and its storage (W902). Both
+  survive amend --- unless they hold an HDF5 reference (an object or region reference, alone or
+  inside a compound, array or variable-length type). A reference is an address in the file that
+  holds it, which no copy into a new file preserves, so a writer **MUST NOT** amend, recompress or
+  pack a file holding one.
 * Registering a new annotation `kind` or transform `kind` requires a MINOR bump and an entry in
   §6.3 / §10.1.
 
@@ -1525,7 +1646,8 @@ follow-up is a new frame. Lesion 3 appears at baseline and not at follow-up, and
 | `label`, `label_name` | `annotations/<id>` kind `classification`, `scope="sample"` |
 | (no notion of time) | a single declared timepoint `tp0` with `index = 0`; every grid gets `timepoint = "tp0"` |
 | `extra.review` | `/meta → provenance.activities` (type `review`) + `/meta → quality` |
-| `extra.nnunetv2` | `/meta → extra.nnunetv2` (preserved verbatim) + a generated label set |
+| `extra.nnunetv2` | `/meta → extra.nnunetv2` (preserved verbatim) + a generated label set; files grouped into one sample keep the first file's, and a different one stays in its file's `extra.legacy` entry |
+| every other `extra` key | `/meta → extra.legacy.<timepoint>` (preserved verbatim), one entry per file, under the timepoint it became |
 | `checksum_sha256` (whole file) | per-object `digest` + root `content_id` |
 | `has_seg`, `has_bbox`, `seg_names`, `image_names` | removed — derived by enumerating groups; a flag that can disagree with the data is a bug generator |
 
@@ -1546,28 +1668,36 @@ grouping, since a 0.x file carries no reliable subject key of its own.
 
 ### C.1 Reference implementation
 
-Sections §2–§15 are **implemented** in the `medh5` package and exercised by a conformance corpus
-(§15) of 117 files: valid samples covering every encoding, annotation kind, transform kind,
-dimensionality, profile and container kind, plus one deliberately-invalid file per diagnostic code.
+Sections §2–§15 are **implemented** by the `medh5` format engine --- the Rust crate `medh5`, which the
+Python package and the `medh5` command line wrap --- and exercised by a conformance corpus (§15) of
+157 files: valid samples covering every encoding, annotation kind, transform kind,
+dimensionality, profile and container kind, plus at least one case per diagnostic code: a
+deliberately invalid file for each error, and a file drawing each warning.
+The corpus includes the cases of the [1.1](medh5-1.1.md) `clinical` profile, which the same engine
+implements.
 Running the corpus against a validator is how a third-party implementation demonstrates conformance:
 
 ```
 $ medh5 conformance run ./corpus
-117/117 cases pass
+157/157 cases pass
 ```
 
-**Every code in §15.2 has a corpus case.** The implementation gates on `ruff`,
-`mypy --strict` and ≥ 90 % test coverage, and a test asserts that the §15.2 table and the
-implementation's code registry are identical, so the two cannot drift.
+**Every code in §15.2 has a corpus case.** The implementation gates on `cargo clippy` and `rustfmt`
+for the engine, `ruff`, `mypy --strict` and ≥ 90 % test coverage for the Python package, and the
+corpus through both the Python and the native command line; a test asserts that the §15.2 table,
+with the codes 1.1 §11.2 adds, and the implementation's code registry list the same codes, so
+neither can gain a code the other lacks.
 
 The §14 performance claims are reproducible rather than asserted: `medh5 bench` re-measures them on
-any machine. On a 192×256×256 synthetic CT with eight classes, a multi-class 64³ label read costs
-4.0 ms, foreground centre sampling 0.03 ms (O(1) in volume size, via §14.3; 0.10 ms at 63 classes),
-a metadata-only read 0.21 ms, and `open()` → first patch 2.4 ms.
+any machine. On one, with a 192×256×256 synthetic CT and eight classes, a multi-class 64³ label read
+costs 3.4 ms, foreground centre sampling 0.03 ms (O(1) in volume size, via §14.3; 0.05 ms at 63
+classes), a metadata-only read 0.19 ms, and `open()` → first patch 2.3 ms.
 
-Twenty-one clauses have been corrected — ten during implementation and eleven in the 1.x package
-releases that followed — each because writing the code showed the text was not implementable, not
-unambiguous, or not what the implementation could honestly promise, as written:
+Forty-eight clauses have been corrected — ten during implementation, eleven in the 1.x package
+releases that followed, four when the engine was written a second time, in Rust, for the 2.0
+package, one when it implemented 1.1, and twenty-two in the audits of 2.0 before its release — each because
+writing the code showed the text was not implementable, not unambiguous, or not what the
+implementation could honestly promise, as written:
 
 | Clause | Correction |
 |---|---|
@@ -1592,6 +1722,33 @@ unambiguous, or not what the implementation could honestly promise, as written:
 | §7.5 | `contains` is decided at the stored precision, and a writer must store `data` in a dtype under which that decision matches the input. The clause set a `float16` default and a `float64` threshold and said nothing about comparing them: a threshold of 1/3 compared against a float16 1/3 excluded exactly the voxels the threshold was chosen to include. |
 | §7.7 | An ignore region that overlaps a class is stored as the sibling `mask` under every encoding. In band it cannot survive the overlap — `labelmap` kept the class and lost the region there, while `bitmask` kept both — so one call to a writer meant different things to a loss depending on which encoding the size measurement picked. |
 | §10.1 | A transform and the stored inverse its `inverse_id` names are one route, not two. E505 requires the pair to be mutually consistent, and a resolver that counted the stored transform and the delegated inverse of its partner as two equally short routes refused every such pair as ambiguous, in both directions — so the declaration E505 checks made the pair unusable, and the registration guide told users not to make it. |
+| §2.5 | Booleans and strings are defined as HDF5 types --- an 8-bit enumeration `FALSE = 0`, `TRUE = 1`; a variable-length UTF-8 string --- and so is what a reader must accept. The table said `np.bool_` and `h5py.string_dtype()`, which are one library's names for them; an implementation without that library had to read `h5py`'s source to write a boolean every 1.x reader would accept. |
+| §5.1, §13.2 | Canonical JSON is defined to the byte, once, for both digests that use it. §13.2 asked for "sorted-key JSON" with floats "in `repr` shortest round-trip form" --- one language's function --- and said nothing of separators or non-ASCII text, while §5.1 named those and said nothing of numbers; Python's default separators carry spaces, so a literal reading of §13.2 gave a different `content_id` for the same file. The definition is what the 1.x implementation always wrote: no digest changes. |
+| §13.1 | `dtype_str` is spelled out for every stored type, including `|O` for variable-length strings, and `shape_csv` is defined. "The NumPy dtype string" left a string dataset's header to whatever a reader's string type is called, and a second implementation would have digested every point `names` and classification `schemes` column differently. |
+| §14.3 | An index's `seed` reproduces a subsample only within the implementation that drew it. The table said `max_coords` and `seed` gave "reproducibility of the subsample", but nothing specifies the generator: 1.x drew from NumPy's, and matching it meant carrying a copy of NumPy's seeding and bounded-integer algorithms in every implementation. An index is derived and outside every digest (§13.1), so a different subsample is a different cache of the same sample. |
+| §16 | "**MUST** accept a higher MINOR" is acceptance for *reading* the supported projection, not validation of the newer version or permission to amend it. Read literally beside "amend preserves", it promised what no implementation can: a writer that rewrites a file of a later minor drops or misattests whatever that minor defines, and a validator passing such a file claims conformance to rules it has never seen. 1.1 §2.2 defines the projection, W913 and the refusal. |
+| §16 | Extensions survive amend *except* HDF5 references, which a writer refuses to copy. "Both survive amend" could not hold for a reference: it is an address in the file that holds it, and amend, recompress and pack write a new file, where a copied reference pointed wherever its address happened to land --- and a no-op amend nulled those in an extension group --- while every digest still verified. |
+| §13.2 | Each kind of line's spelling is stated: a dataset line carries the stored `<algo>:<hex>` digest, an attribute line `<algo>:` and the hex digest, and the `meta` line the bare hex digest; and the objects that have an attribute line are named --- the root and every member of `grids/`, `images/`, `annotations/` and `transforms/`, with `{}` when one carries none of its attributes. The pseudo-code wrote `H(...)` for the `meta` and the attribute lines alike, which reads as one spelling, and named no objects. The executable prototype (§C.2), which follows this text with no implementation between it and the bytes, computed a `content_id` that matched no implementation, and reported it checked. The text now says what every implementation has written since 1.0: no digest changes. |
+| §14.1 | A dataset below 64 KiB, or an empty one, **MAY** be stored contiguous and unfiltered: "Image and voxel-annotation datasets **MUST** be chunked" had no exception, and every implementation since 1.0 has stored such datasets contiguous, because at that size chunking and a filter pipeline cost more than they save --- so the text forbade what both implementations write for every small sample, and no validator checked it. The exception covers the `(1, *spatial_chunk)` clauses of §7.2, §7.3 and §7.5 too. |
+| §10.4 | A displacement field covers its grid's voxel extent, `[-0.5, n - 0.5]` per axis, and under `zero` and `error` a point in the half-voxel margin beyond the outermost sample takes that sample's value, for `linear` and `cubic` alike. The clause named the extrapolation modes and not the extent they start at: linear interpolation clamped the margin to the edge value, while cubic --- SciPy's constant mode, since 1.x --- was zero beyond the outermost samples, so a point `error` admitted came out with no displacement, and `zero` meant a different region for each interpolation. Values between the outermost samples are unchanged. |
+| §7.5 | `normalized` holds at the stored precision: at each voxel the stored values sum to 1 within `10⁻⁶ + u·σ + n·t/2`, and the error of summing them in `float64`, where `σ` is that sum, `n` the number of classes, `u` the stored dtype's unit roundoff (2⁻¹¹ for `float16`, 2⁻²⁴ for `float32`) and `t` its smallest subnormal: the rounding of the values stored, and no more. "Sum to 1" named no tolerance, and no stored map meets it exactly; the one implemented, `n` times the dtype's epsilon, grew with the class count until at 1,024 `float16` classes a map whose every value had been zeroed validated as normalized. A writer holds the values it is given to `10⁻⁶`, so every map it stores meets the bound. |
+| §13.2 | A dataset has one line however many paths reach it --- its first, through hard links, in byte order --- and a dataset reached first through `index/`, or only through a soft link, has none: `content_id` does not cover it, and a `digest` it carries is **E702**. "Every dataset with a digest" said nothing of a dataset with two paths, or one reached through a soft link. Every implementation has visited each object once, at its first path, without saying what that left out: a clinical column linked first from `index/`, or a transform's parameters, changed under an unchanged `content_id`, and a task's source pin, a deep preflight and the validator passed it. No `content_id` changes. |
+| §13.2 | A line binds a dataset's bytes to the path it names: a path through `grids/`, `images/`, `annotations/` or `transforms/` that is not its object's own --- an alias sorting before it, a second link, a soft link, a group reached twice, an external link --- is covered nowhere, and is **E704**. Coverage had been judged by object: an attested name held by such a path could be relinked after a pin to other covered bytes, which changed no line, so the root recomputed and a task's source pin, `verify` and the validator all passed while a reader read other bytes. The reference writer makes no links, so no file it writes changes, and no `content_id` changes. |
+| §10.1 | A transform's `units` are those of the grids in its frames, checked: one whose `units` are missing or are not those of a grid in either frame is **E506**, and a reader refuses to apply it to a grid in other units. "Matching the frames' grids" had no code to report a mismatch, and the reference writer defaulted `units` to `mm` whatever the grids were in: a transform in millimetres between two metre grids validated, and the paired loader, applying it to the grids' coordinates as they were, moved every point a thousand times its displacement. A writer given no `units` now takes the grids'. |
+| §8.5 | `points` may carry `instance_ids`. §10.6 asks points that mark trackable objects to carry equal `instance_ids` across visits, and §8.5 listed no such dataset, so a writer held to the table could not follow the clause. A track joins such points as presence: a point marks an object and measures nothing. |
+| §8.6, §8.7, §15.2 | `contour_offsets` and `mesh_offsets` end at the length of what they index --- `vertices` for contours, `faces` for meshes --- and offsets that end anywhere else are **E408**, as offsets that decrease are. The table defined E408 as offsets "not monotonic", §8.7 did not say what `mesh_offsets` counts, and the corpus case `E408-contour-offsets`, whose offsets increase and stop two vertices short, expects E408: a validator written from the text failed the case, and had nothing to hold a mesh's offsets to. |
+| §4.4, §7.7, §15.2 | An `ignore_mask` or a `valid_mask` names a `mask` annotation on the grid of the object naming it; one naming another kind of annotation, or a mask on another grid, is **E413**, as one naming nothing is. §15.2 gave E413 only to a reference "that does not exist" and left `valid_mask` off its list, and no clause put the mask on the same grid --- while the corpus scores an `ignore_mask` naming an annotation that is not a `mask`, and the reference writer and validator refuse a mask on another grid, whose voxels are not the ones it would delimit. |
+| §2.2, §15.2 | A collection holds its `samples` group with at least one sample root, and a `samples` group missing or empty is **E008**. §15.2 gave E008 to "a group required by §2.3", which lays out a sample root, and §2.2 required no group --- while the corpus scores a collection without `samples` as E008, and the reference reports an empty one too: a collection holding no sample has nothing a reader can open. |
+| §15.2 | Six codes are described by everything the reference validator reports under them: **E001** also a file, or an object a check must read, that cannot be read; **E108** a timepoint `id` repeated; **E405** a dataset whose shape disagrees with the annotation's own datasets, mesh `faces` indexing outside its `vertices` among them; **E411** a stored value the kind does not permit, a `probmap` value outside [0, 1] or a keypoint `visibility` other than 0, 1 or 2; **E412** an unknown `task`, `closure`, `space` or `scope`; **E502** a transform without the frames or parameters its kind requires, mapping a frame to itself, or naming an unknown `vector_space`. The table named one condition for each, so a validator implementing it as written gave another code, or none, for defects the reference reported under these --- each as 1.x did, but for the `probmap` checks 2.0 added. The registry's summaries of E003 and E306 likewise name what §2.2 and this table already said: a collection's sample key is `{1,255}`, and an unknown parent is E306. |
+| §15.1 | `integrity` also makes the value checks that need every stored value of a bulk dataset --- `probmap` values in [0, 1] (E411) and `normalized` sums (E404) --- in the same full read that recomputes its digest. The table placed every encoding invariant at `semantic`, which reads no probability map whole: a validator following it read every map at the default level, and reported there what the reference reports only at `integrity`. |
+| §13.2 | The covered attributes are listed, object by object, and §8.5's `correspondence` is named as not covered. The clause hashed "spec-defined attributes", which `correspondence` is, while the 1.x package, the prototype (§C.2) and the engine have all covered one fixed list per object that leaves it out --- and that names `scope_ids`, a §9 dataset, among the annotation attributes. An implementation following the text computed another `content_id` for every file with landmark pairs, and an edit to `correspondence` was invisible to integrity validation. Covering it now would change the address of every such file; no `content_id` changes. |
+| §1.3 | `training` requires a sampling index with at least one entry, and an entry gone stale is W905, not a profile violation. "Present and current" made a stale entry an E009, while §13.3 has a reader ignore it and **MUST NOT** treat it as a file error --- and the corpus case `W905-stale-index`, which declares `training`, is valid. |
+| §1.3, §6.3 | Each of `det`, `reg` and `curation` requires what a validator reports E009 without: an annotation whose `task` is `detection`, whatever its kind; a transform whose `from_frame` and `to_frame` are each a grid's `frame_uid`; a provenance activity. `det` named a §8 annotation, while §6.3 gives `instances`, a §7 kind, to detection too, and the reference writer and validator read the declared task. "Resolvable endpoints" and a "§11 provenance graph" said nothing a validator could check: a `reg` claim whose transform related frames no grid has, and a `curation` claim with no activity recorded, validated. |
+| §12.3 | W906 is a validator's within one sample and a split audit's across samples. The clause asked a validator to compare two files, which validating a file cannot do: the reference validator compares one sample's claims --- as the corpus case `W906-conflicting-splits`, one file holding two, expects --- and `medh5 splits` compares a cohort's, so a validator written from the text failed that case and could not do what the text asked. |
+| §16 | A validator checks an extension dataset as it checks every dataset --- its `digest`, which enters `content_id`, and its storage --- and gives it no other meaning. "Neither is touched by validators" contradicted §13.2, which gives every digested dataset a line in `content_id`: a validator that skipped `x_` groups computed another `content_id` for the same file, and the reference validator reported W902 on an unchunked extension dataset and E701 on an edited one. |
+| §2.1 | The root attribute table is a sample root's: a collection's own `/` requires only `medh5_kind` and `medh5_version` (§2.2). Read as "on the file (`/`)", it required `medh5_profiles` at the root of a collection, whose members each declare their own, so every valid collection of the corpus failed the text. |
+| §13.3 | `source_digest` is required of each index entry, `index/<ann_id>`, not of "every object under `index/`": the datasets and the `fg_coords/` group inside an entry never carried one, and §14.3 places the attribute on the entry. |
+| §2.1, §11.1 | A timestamp --- a provenance activity's, and the root's `created` --- is RFC 3339 (E604 otherwise, for provenance) and **SHOULD** be in UTC. "RFC 3339 UTC" read as a requirement nothing enforced: every validator since 1.0 has accepted an offset such as `+01:00`, which names the same instant, and reported E604 only for text that is not RFC 3339 --- so files the implementations passed failed the text. |
 
 ### C.2 Prototype checks
 
@@ -1605,14 +1762,16 @@ registration relating them. It confirms:
 
 | Check | Result |
 |---|---|
-| `/meta` against `schemas/medh5-sample-1.0.schema.json` | passes |
+| `/meta` against `crates/medh5/data/medh5-sample-1.0.schema.json` | passes |
 | Cross-reference checks (grids, label set, `prov`, `quality` — E101/E402/E403/E601/E602) | clean |
 | `direction` orthonormality and 2-D storage (E102) | clean |
 | `layers` invariant: every class in exactly one layer (E404) | clean |
 | Box `lo ≤ hi` (E406) | clean |
-| Per-object digests and `content_id` (§13) | all match |
+| Per-object digests (§13.1), and no digest under `index/` | all match; none |
+| `content_id` (§13.2) | matches |
 | `index/` `source_digest` currency (§13.3, W905) | current |
-| index→world→index round-trip (§3.3) | exact (0.0 error) |
+| The file, validated at integrity level by the Python package and by the native binary | clean but for W912 |
+| index→world→index round-trip at every grid corner (§3.3) | exact (0.0 error) |
 | box ↔ slice round-trip (§8.1): `[11.5, 39.5] ↔ slice(12, 40)`, extent 28 | exact |
 | `instances` decode: box extents match stored mask shapes (§7.4) | exact |
 | Lossless transcoding `layers ↔ bitmask` for every class (§7.6) | exact |
@@ -1624,6 +1783,15 @@ registration relating them. It confirms:
 | Change label `scope = "sample"` with `timepoints = ["tp0","tp1"]` (§9, E409) | clean |
 | One `instance_id` never carrying two class ids (W909) | clean |
 | A transform relating two timepoints exists (W911) | clean |
+
+Every check raises when it fails, and CI runs the prototype on every push, then validates the file it
+wrote with the built wheel and the built binary. Until 2.0 its checks printed `[ok]` whatever they
+found, and two of its integrity computations were its own: it wrote `source_digest` as the `data`
+dataset's digest, where §13.3 defines the group's, and checked that same quantity; and it wrote a
+`content_id` over lines §13.2 does not define --- `index/` included, every attribute hashed, one sort
+--- and never recomputed it. The implementation reported E702 and W905 for the file it passed, which
+is how the §13.2 entry above was found. W912 remains because the prototype binds one class, the
+liver, to an ontology code; inventing codes for the rest would be worse than the warning.
 
 The prototype predates the reference implementation and is kept because it is short enough to read
 end to end: it demonstrates the format with no library between the reader and the bytes. The

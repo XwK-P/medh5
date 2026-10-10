@@ -29,12 +29,34 @@ Without `frame_uid` on the grids, a timepoint resolves to no frames at all and
 `transform_between("tp0", "tp1")` returns `None` however carefully the transform
 was written — the transform names endpoints nothing else refers to.
 
+A transform maps coordinates in its `units`, which are those of the grids in
+its frames: written without `units`, it takes theirs, and a `units` they are
+not in is refused (`E506`), as are frames whose grids are in two units. Nothing
+converts between units; the paired loader refuses to apply a transform to a
+grid in other units rather than move every point by the wrong factor.
+
+A file whose transform is in other units than its grids — the 1.x writer
+stamped `mm` whatever the grids were in — fails validation with `E506`, and
+so would any amendment that left the transform as it is, so that amendment is
+refused. The one that mends it removes the transform and adds it again, its
+numbers in its grids' units:
+
+```python
+with medh5.open("case.medh5") as s:
+    t = s.transforms["tp0_to_tp1"]
+    frames, matrix = (t.from_frame, t.to_frame), t.matrix
+with medh5.amend("case.medh5") as w:
+    w.remove_transform("tp0_to_tp1")
+    w.add_transform("tp0_to_tp1", kind="affine", from_frame=frames[0],
+                    to_frame=frames[1], matrix=matrix)   # units: the grids'
+```
+
 Kinds: `identity`, `affine`, `displacement`, `bspline`, `composite`.
 
 ```python
 t = s.transform_between("tp0", "tp1")
 t.kind, t.from_frame, t.to_frame, t.is_invertible
-t.transform_points(points)         # world -> world, in mm
+t.transform_points(points)         # world -> world, in t.units
 t.inverse()                        # the *stored* inverse, when the file has one
 ```
 
@@ -49,7 +71,7 @@ inverse where one can be **evaluated** — not merely where a transform declares
 when no path exists. It never fabricates a transform to make a call succeed.
 
 ```python
-from medh5.transforms.apply import target_registration_error
+from medh5.transforms import target_registration_error
 target_registration_error(t, fixed_points, moving_points)   # {"mean", "max", ...}
 ```
 
@@ -116,9 +138,11 @@ both directions resolve:
 
 ```python
 w.add_transform("tp0_to_tp1", kind="displacement", field=fwd,
-                from_frame="frame-tp0", to_frame="frame-tp1", field_grid="ct_tp0")
+                from_frame="pseudo:frame-tp0", to_frame="pseudo:frame-tp1",
+                field_grid="ct_tp0")
 w.add_transform("tp1_to_tp0", kind="displacement", field=back,
-                from_frame="frame-tp1", to_frame="frame-tp0", field_grid="ct_tp1")
+                from_frame="pseudo:frame-tp1", to_frame="pseudo:frame-tp0",
+                field_grid="ct_tp1")
 ```
 
 **Linking them with `inverse_id` is fine, and says more.** Declare each as the
@@ -131,11 +155,11 @@ be mutual where both sides make one).
 
 ```python
 w.add_transform("tp0_to_tp1", kind="displacement", field=fwd,
-                from_frame="frame-tp0", to_frame="frame-tp1", field_grid="ct_tp0",
-                inverse_id="tp1_to_tp0")
+                from_frame="pseudo:frame-tp0", to_frame="pseudo:frame-tp1",
+                field_grid="ct_tp0", inverse_id="tp1_to_tp0")
 w.add_transform("tp1_to_tp0", kind="displacement", field=back,
-                from_frame="frame-tp1", to_frame="frame-tp0", field_grid="ct_tp1",
-                inverse_id="tp0_to_tp1")
+                from_frame="pseudo:frame-tp1", to_frame="pseudo:frame-tp0",
+                field_grid="ct_tp1", inverse_id="tp0_to_tp1")
 ```
 
 | what you write | forward | reverse |

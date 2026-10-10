@@ -10,9 +10,7 @@ time.  One function, held to the schema, cannot disagree with itself.
 
 from __future__ import annotations
 
-import re
-
-_KEY_CHARS = re.compile(r"[^a-z0-9_]")
+from medh5 import _core
 
 
 def sanitize_key(name: str, *, fallback: str = "class") -> str:
@@ -23,19 +21,12 @@ def sanitize_key(name: str, *, fallback: str = "class") -> str:
     stands in for a name with nothing left --- or prefixes one that would
     otherwise start with an underscore, which the schema refuses.
     """
-    lowered = str(name).strip().lower()
-    cleaned = _KEY_CHARS.sub("_", lowered.encode("ascii", "replace").decode())
-    cleaned = cleaned.strip("_")
-    if not cleaned:
-        cleaned = fallback
-    if not cleaned[0].isalnum():  # pragma: no cover - strip("_") leaves alnum first
-        cleaned = f"{fallback}_{cleaned}"
-    return cleaned[:128]
+    return str(_core.io_sanitize_key(name, fallback=fallback))
 
 
 def sanitize_stem(text: str, *, limit: int = 200) -> str:
     """A filename stem from free text: identifier characters only, truncated."""
-    return "".join(c if (c.isalnum() or c in "._-") else "_" for c in str(text))[:limit]
+    return str(_core.io_sanitize_stem(text, limit=limit))
 
 
 __all__ = ["sanitize_key", "sanitize_stem"]

@@ -88,6 +88,26 @@ for instance_id, track in tracking.items():
 $ medh5 track case.medh5 --class lesion
 ```
 
+Each visit answers with one observation: the object's mask, where an
+`instances` annotation saw it, or else its box --- axis-aligned or oriented
+(`obb`, whose volume its rotation leaves alone). A detection beside a
+segmentation of the same lesion is the common case, and a box's volume is its
+bounding box's, so the mask is the measurement. A landmark (`points`, with the
+`instance_ids` §10.6 asks of trackable points) marks the object without
+measuring it, and answers only where nothing else saw it. Two masks of one
+visit --- two raters --- are not one answer: `at`, `volume`, `volumes` and
+`relative_change` refuse rather than pick a rater, and `observations_at()`
+lists every observation of the visit (each with its annotation's `kind`) for
+the caller to choose from. An annotation of another kind that carries
+`instance_ids` is left out and named in `tracking.skipped`.
+
+Volumes are in their grid's units cubed (`Observation.units`), and
+`relative_change` compares two visits in millimetres (`volume_mm`), so a
+follow-up on a grid in metres reads as the change it is. Visits with no
+physical measure in common --- an uncalibrated (`px`) grid beside a calibrated
+one, an area beside a volume --- have no change, and it is `None`. `medh5
+track` prints volumes in mm³.
+
 ### Three states, not two
 
 The reason this is not a dictionary lookup:

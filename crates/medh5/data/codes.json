@@ -1,0 +1,575 @@
+{
+  "$comment": "The normative diagnostic code table (spec 1.0 §15.2, extended by 1.1 §11.2). The single source: the engine embeds it, the validator, conformance corpus and documentation all read it. Codes are stable API: a meaning never changes and a retired code is never reused.",
+  "codes": [
+    {
+      "code": "E001",
+      "severity": "error",
+      "domain": "container",
+      "summary": "missing or empty `medh5_version`, or the file or an object a check must read cannot be read"
+    },
+    {
+      "code": "E002",
+      "severity": "error",
+      "domain": "container",
+      "summary": "unsupported major version"
+    },
+    {
+      "code": "E003",
+      "severity": "error",
+      "domain": "container",
+      "summary": "identifier does not match its syntax: [A-Za-z0-9_.-]{1,128} and not `meta`, or [A-Za-z0-9_.-]{1,255} for a collection's sample key"
+    },
+    {
+      "code": "E004",
+      "severity": "error",
+      "domain": "container",
+      "summary": "`meta` is absent or is not valid UTF-8 JSON"
+    },
+    {
+      "code": "E005",
+      "severity": "error",
+      "domain": "container",
+      "summary": "`meta` fails the sample-document JSON Schema"
+    },
+    {
+      "code": "E006",
+      "severity": "error",
+      "domain": "container",
+      "summary": "missing or unknown `medh5_kind`"
+    },
+    {
+      "code": "E007",
+      "severity": "error",
+      "domain": "container",
+      "summary": "missing `medh5_profiles`, or an unknown profile"
+    },
+    {
+      "code": "E008",
+      "severity": "error",
+      "domain": "container",
+      "summary": "a group required by the layout is absent (`grids`, `images`, a collection's `samples`), or a collection holds no sample root"
+    },
+    {
+      "code": "E009",
+      "severity": "error",
+      "domain": "container",
+      "summary": "declared profile's requirements are not met"
+    },
+    {
+      "code": "E010",
+      "severity": "error",
+      "domain": "container",
+      "summary": "sample root in a `collection` lacks its own `content_id`"
+    },
+    {
+      "code": "E011",
+      "severity": "error",
+      "domain": "container",
+      "summary": "a collection's `medh5_version` is lower than a member's"
+    },
+    {
+      "code": "E101",
+      "severity": "error",
+      "domain": "geometry",
+      "summary": "referenced grid does not exist"
+    },
+    {
+      "code": "E102",
+      "severity": "error",
+      "domain": "geometry",
+      "summary": "`direction` is not orthonormal to 1e-4"
+    },
+    {
+      "code": "E103",
+      "severity": "error",
+      "domain": "geometry",
+      "summary": "spatial axes are not contiguous and trailing"
+    },
+    {
+      "code": "E104",
+      "severity": "error",
+      "domain": "geometry",
+      "summary": "`spacing` is not strictly positive"
+    },
+    {
+      "code": "E105",
+      "severity": "error",
+      "domain": "geometry",
+      "summary": "multiscale level geometry is inconsistent with level 0"
+    },
+    {
+      "code": "E106",
+      "severity": "error",
+      "domain": "geometry",
+      "summary": "grid has no `timepoint` in a multi-timepoint sample"
+    },
+    {
+      "code": "E107",
+      "severity": "error",
+      "domain": "geometry",
+      "summary": "grid `timepoint` names an undeclared timepoint"
+    },
+    {
+      "code": "E108",
+      "severity": "error",
+      "domain": "geometry",
+      "summary": "`timepoints` is empty, an `id` repeats, or `index` is not dense/increasing"
+    },
+    {
+      "code": "E109",
+      "severity": "error",
+      "domain": "geometry",
+      "summary": "required grid attribute is missing or has the wrong rank"
+    },
+    {
+      "code": "E110",
+      "severity": "error",
+      "domain": "geometry",
+      "summary": "`axis_kinds` is invalid for the declared dimensionality"
+    },
+    {
+      "code": "E111",
+      "severity": "error",
+      "domain": "geometry",
+      "summary": "`grids` contains no grid"
+    },
+    {
+      "code": "E201",
+      "severity": "error",
+      "domain": "images",
+      "summary": "`images` contains no image"
+    },
+    {
+      "code": "E202",
+      "severity": "error",
+      "domain": "images",
+      "summary": "image shape does not equal its grid's `shape`"
+    },
+    {
+      "code": "E203",
+      "severity": "error",
+      "domain": "images",
+      "summary": "unknown `value_type`"
+    },
+    {
+      "code": "E204",
+      "severity": "error",
+      "domain": "images",
+      "summary": "`channel_names` length does not match the channel extent"
+    },
+    {
+      "code": "E205",
+      "severity": "error",
+      "domain": "images",
+      "summary": "required image attribute is missing"
+    },
+    {
+      "code": "E301",
+      "severity": "error",
+      "domain": "labels",
+      "summary": "a declared profile requires a label set and none is present"
+    },
+    {
+      "code": "E302",
+      "severity": "error",
+      "domain": "labels",
+      "summary": "duplicate class id or key in the label set"
+    },
+    {
+      "code": "E303",
+      "severity": "error",
+      "domain": "labels",
+      "summary": "a reserved class id (0 or 65535) was assigned to a class"
+    },
+    {
+      "code": "E304",
+      "severity": "error",
+      "domain": "labels",
+      "summary": "the class hierarchy contains a cycle"
+    },
+    {
+      "code": "E305",
+      "severity": "error",
+      "domain": "labels",
+      "summary": "`form: ref` label set lacks `uri`/`sha256`, or is unresolvable"
+    },
+    {
+      "code": "E306",
+      "severity": "error",
+      "domain": "labels",
+      "summary": "class entry is missing a required field, has an id out of range, or names an unknown parent"
+    },
+    {
+      "code": "E401",
+      "severity": "error",
+      "domain": "annotations",
+      "summary": "unknown annotation `kind`"
+    },
+    {
+      "code": "E402",
+      "severity": "error",
+      "domain": "annotations",
+      "summary": "class id is not present in the label set"
+    },
+    {
+      "code": "E403",
+      "severity": "error",
+      "domain": "annotations",
+      "summary": "`annotated_class_ids` is not a subset of `class_ids`"
+    },
+    {
+      "code": "E404",
+      "severity": "error",
+      "domain": "annotations",
+      "summary": "encoding invariant violated"
+    },
+    {
+      "code": "E405",
+      "severity": "error",
+      "domain": "annotations",
+      "summary": "dataset shape is inconsistent with the grid or with the annotation's other datasets, or mesh `faces` index outside its `vertices`"
+    },
+    {
+      "code": "E406",
+      "severity": "error",
+      "domain": "annotations",
+      "summary": "box `lo` exceeds `hi`"
+    },
+    {
+      "code": "E407",
+      "severity": "error",
+      "domain": "annotations",
+      "summary": "`rotations` is not a proper rotation matrix"
+    },
+    {
+      "code": "E408",
+      "severity": "error",
+      "domain": "annotations",
+      "summary": "offsets decrease, or contour or mesh offsets do not end at the number of vertices or faces they index"
+    },
+    {
+      "code": "E409",
+      "severity": "error",
+      "domain": "annotations",
+      "summary": "`timepoints` references an undeclared timepoint"
+    },
+    {
+      "code": "E410",
+      "severity": "error",
+      "domain": "annotations",
+      "summary": "a dataset required by the annotation `kind` is absent"
+    },
+    {
+      "code": "E411",
+      "severity": "error",
+      "domain": "annotations",
+      "summary": "dataset dtype is not permitted for the annotation `kind`, or a stored value is not one it permits (a `probmap` value outside [0, 1], a keypoint `visibility` other than 0, 1 or 2)"
+    },
+    {
+      "code": "E412",
+      "severity": "error",
+      "domain": "annotations",
+      "summary": "required annotation attribute is missing, or `task`, `closure`, `space` or `scope` holds an unknown value"
+    },
+    {
+      "code": "E413",
+      "severity": "error",
+      "domain": "annotations",
+      "summary": "a reference does not resolve, or an ignore or validity mask is not a `mask` on the same grid"
+    },
+    {
+      "code": "E414",
+      "severity": "error",
+      "domain": "annotations",
+      "summary": "`space` is invalid for the annotation's grid or frame"
+    },
+    {
+      "code": "E501",
+      "severity": "error",
+      "domain": "transforms",
+      "summary": "composite frame chain is broken"
+    },
+    {
+      "code": "E502",
+      "severity": "error",
+      "domain": "transforms",
+      "summary": "transform `kind` is missing or unknown, or a transform lacks the frames or parameters its kind requires, maps a frame to itself, or names an unknown `vector_space`"
+    },
+    {
+      "code": "E503",
+      "severity": "error",
+      "domain": "transforms",
+      "summary": "displacement field grid is not in `from_frame`"
+    },
+    {
+      "code": "E504",
+      "severity": "error",
+      "domain": "transforms",
+      "summary": "affine last row is not [0 … 0 1]"
+    },
+    {
+      "code": "E505",
+      "severity": "error",
+      "domain": "transforms",
+      "summary": "`inverse_id` is not mutually consistent"
+    },
+    {
+      "code": "E506",
+      "severity": "error",
+      "domain": "transforms",
+      "summary": "`units` missing, or not the units of the grids in its frames"
+    },
+    {
+      "code": "E601",
+      "severity": "error",
+      "domain": "curation",
+      "summary": "`prov` names an activity that does not exist"
+    },
+    {
+      "code": "E602",
+      "severity": "error",
+      "domain": "curation",
+      "summary": "`quality` names a record that does not exist"
+    },
+    {
+      "code": "E603",
+      "severity": "error",
+      "domain": "curation",
+      "summary": "unknown agent or activity type"
+    },
+    {
+      "code": "E604",
+      "severity": "error",
+      "domain": "curation",
+      "summary": "timestamp is not RFC 3339"
+    },
+    {
+      "code": "E605",
+      "severity": "error",
+      "domain": "curation",
+      "summary": "activity names an agent that does not exist"
+    },
+    {
+      "code": "E701",
+      "severity": "error",
+      "domain": "integrity",
+      "summary": "object digest does not match its content"
+    },
+    {
+      "code": "E702",
+      "severity": "error",
+      "domain": "integrity",
+      "summary": "`content_id` does not match the file"
+    },
+    {
+      "code": "E703",
+      "severity": "error",
+      "domain": "integrity",
+      "summary": "malformed digest string"
+    },
+    {
+      "code": "E704",
+      "severity": "error",
+      "domain": "integrity",
+      "summary": "an object `content_id` covers is reached at a path that is not its own"
+    },
+    {
+      "code": "E801",
+      "severity": "error",
+      "domain": "clinical",
+      "summary": "`clinical/meta` is absent, not a scalar UTF-8 string, not JSON, or not canonical JSON"
+    },
+    {
+      "code": "E802",
+      "severity": "error",
+      "domain": "clinical",
+      "summary": "`clinical/meta` fails the clinical descriptor schema or its clock rules"
+    },
+    {
+      "code": "E803",
+      "severity": "error",
+      "domain": "clinical",
+      "summary": "clinical content is present but the `clinical` profile is not declared"
+    },
+    {
+      "code": "E804",
+      "severity": "error",
+      "domain": "clinical",
+      "summary": "a required clinical table or column is absent, or a member is not one the profile defines"
+    },
+    {
+      "code": "E805",
+      "severity": "error",
+      "domain": "clinical",
+      "summary": "a clinical column has the wrong dtype, rank or row count"
+    },
+    {
+      "code": "E806",
+      "severity": "error",
+      "domain": "clinical",
+      "summary": "a packed UTF-8 column's offsets are malformed or a cell is not valid UTF-8"
+    },
+    {
+      "code": "E807",
+      "severity": "error",
+      "domain": "clinical",
+      "summary": "a validity mask is malformed or misplaced, or a null cell holds a value"
+    },
+    {
+      "code": "E808",
+      "severity": "error",
+      "domain": "clinical",
+      "summary": "a valid floating-point clinical value is NaN or infinite"
+    },
+    {
+      "code": "E809",
+      "severity": "error",
+      "domain": "clinical",
+      "summary": "a clinical identifier is empty, malformed or not unique"
+    },
+    {
+      "code": "E810",
+      "severity": "error",
+      "domain": "clinical",
+      "summary": "an enumerated clinical value is outside its vocabulary"
+    },
+    {
+      "code": "E811",
+      "severity": "error",
+      "domain": "clinical",
+      "summary": "event time bounds are incomplete, inverted or inconsistent with `temporal_type`"
+    },
+    {
+      "code": "E812",
+      "severity": "error",
+      "domain": "clinical",
+      "summary": "event value, code, comparator, unit or missing-reason fields are inconsistent"
+    },
+    {
+      "code": "E813",
+      "severity": "error",
+      "domain": "clinical",
+      "summary": "a clinical reference does not resolve within the sample"
+    },
+    {
+      "code": "E814",
+      "severity": "error",
+      "domain": "clinical",
+      "summary": "a link's text span, instance annotation or imaging timepoint constraint is violated"
+    },
+    {
+      "code": "E815",
+      "severity": "error",
+      "domain": "clinical",
+      "summary": "a document is not owned by exactly one `document` event, or a `document` event owns more than one"
+    },
+    {
+      "code": "E816",
+      "severity": "error",
+      "domain": "clinical",
+      "summary": "a revision chain is broken, branching, cyclic or contradicted by availability"
+    },
+    {
+      "code": "E817",
+      "severity": "error",
+      "domain": "clinical",
+      "summary": "a lesion assessment lacks its timepoint, its instance link or a permitted value"
+    },
+    {
+      "code": "E818",
+      "severity": "error",
+      "domain": "clinical",
+      "summary": "a dataset under `clinical/` carries no `digest`"
+    },
+    {
+      "code": "E819",
+      "severity": "error",
+      "domain": "clinical",
+      "summary": "a clinical object carries an attribute the profile does not define"
+    },
+    {
+      "code": "W901",
+      "severity": "warning",
+      "domain": "integrity",
+      "summary": "no object digests are present"
+    },
+    {
+      "code": "W902",
+      "severity": "warning",
+      "domain": "container",
+      "summary": "bulk dataset is unchunked or uncompressed"
+    },
+    {
+      "code": "W903",
+      "severity": "warning",
+      "domain": "curation",
+      "summary": "no `deidentification` record"
+    },
+    {
+      "code": "W904",
+      "severity": "warning",
+      "domain": "annotations",
+      "summary": "partial coverage without an ignore region"
+    },
+    {
+      "code": "W905",
+      "severity": "warning",
+      "domain": "integrity",
+      "summary": "`index/` entry is stale for its source annotation"
+    },
+    {
+      "code": "W906",
+      "severity": "warning",
+      "domain": "curation",
+      "summary": "conflicting split claims for one `set_id`"
+    },
+    {
+      "code": "W907",
+      "severity": "warning",
+      "domain": "images",
+      "summary": "float storage where int16 + rescale would be lossless"
+    },
+    {
+      "code": "W908",
+      "severity": "warning",
+      "domain": "annotations",
+      "summary": "`layers` count is far from the greedy-colouring optimum"
+    },
+    {
+      "code": "W909",
+      "severity": "warning",
+      "domain": "annotations",
+      "summary": "one `instance_id` carries two different class ids"
+    },
+    {
+      "code": "W910",
+      "severity": "warning",
+      "domain": "geometry",
+      "summary": "grids in different timepoints share a `frame_uid`"
+    },
+    {
+      "code": "W911",
+      "severity": "warning",
+      "domain": "geometry",
+      "summary": "multi-timepoint sample has no transform relating timepoints"
+    },
+    {
+      "code": "W912",
+      "severity": "warning",
+      "domain": "labels",
+      "summary": "class id used by an annotation has no ontology binding"
+    },
+    {
+      "code": "W913",
+      "severity": "warning",
+      "domain": "container",
+      "summary": "a higher minor version: only the supported projection was validated, or an unsupported item was ignored"
+    },
+    {
+      "code": "W914",
+      "severity": "warning",
+      "domain": "clinical",
+      "summary": "a numeric clinical value carries no unit"
+    }
+  ]
+}

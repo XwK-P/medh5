@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/XwK-P/medh5/schemas/medh5-cache-1.schema.json",
+  "title": "MEDH5 feature cache manifest, version 1 (medh5.cache/1)",
+  "description": "The dependency manifest of a derived feature cache, stored as canonical JSON in the `manifest` dataset of a cache file whose root carries `medh5_companion = \"medh5.cache/1\"` and `manifest_digest`. Each entry's payload is the dataset `entries/<entry_id>`, carrying its MEDH5 §13.1 digest. A cache is derived: it never redefines or invalidates a source. See docs/spec/task-cache-1.md.",
+  "type": "object",
+  "required": ["schema", "level", "encoder", "preprocessing", "output", "entries"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": { "const": "medh5.cache/1" },
+    "level": { "enum": ["event", "patient"],
+      "description": "event: one feature per source event version (or its document). patient: one per task row, pinned to its cutoff and selected versions." },
+    "encoder": {
+      "type": "object",
+      "required": ["name", "revision"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "revision": { "type": "string", "minLength": 1,
+          "description": "An immutable revision: a content hash or a commit, never a moving tag." },
+        "tokenizer": {
+          "anyOf": [
+            { "type": "null" },
+            { "type": "object", "required": ["name", "revision"], "additionalProperties": false,
+              "properties": { "name": { "type": "string", "minLength": 1 }, "revision": { "type": "string", "minLength": 1 } } }
+          ]
+        }
+      }
+    },
+    "preprocessing": { "type": "object", "description": "The configuration that, with the encoder, determines every output." },
+    "output": {
+      "type": "object",
+      "required": ["dtype", "shape"],
+      "additionalProperties": false,
+      "properties": {
+        "dtype": { "enum": ["float16", "float32", "float64", "int32", "int64", "uint8"] },
+        "shape": { "type": "array", "items": { "type": "integer", "minimum": 0 } },
+        "pooling": { "type": ["string", "null"] },
+        "chunking": { "type": ["string", "null"] }
+      }
+    },
+    "task_fingerprint": { "anyOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }] },
+    "selection": { "enum": ["strict_prospective", "latest_provable", null] },
+    "fitted_on": {
+      "description": "For learned preprocessing (normalisation, code bins, vocabularies): the training split it was fitted on.",
+      "anyOf": [
+        { "type": "null" },
+        { "type": "object", "required": ["task_fingerprint", "partition", "subjects_digest"], "additionalProperties": false,
+          "properties": {
+            "task_fingerprint": { "$ref": "#/$defs/digest" },
+            "set_id": { "type": ["string", "null"] },
+            "partition": { "type": "string", "minLength": 1 },
+            "subjects_digest": { "$ref": "#/$defs/digest" }
+          } }
+      ]
+    },
+    "entries": { "type": "array", "items": { "$ref": "#/$defs/entry" } }
+  },
+  "allOf": [
+    {
+      "description": "A patient-level cache names the task it was built for, and every entry pins its row (by id and fingerprint), the row's cutoff and the versions it selected.",
+      "if": { "properties": { "level": { "const": "patient" } }, "required": ["level"] },
+      "then": {
+        "required": ["task_fingerprint"],
+        "properties": {
+          "task_fingerprint": { "$ref": "#/$defs/digest" },
+          "entries": { "items": { "$ref": "#/$defs/patient_entry" } }
+        }
+      }
+    },
+    {
+      "description": "An event-level entry names the event version it encodes, and no row: it is free of any cutoff.",
+      "if": { "properties": { "level": { "const": "event" } }, "required": ["level"] },
+      "then": { "properties": { "entries": { "items": { "$ref": "#/$defs/event_entry" } } } }
+    }
+  ],
+
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^(sha256|sha512|blake2b):[0-9a-f]+$" },
+    "int64": { "type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807 },
+    "patient_entry": {
+      "required": ["row_id", "row_fingerprint", "cutoff_us", "event_versions"],
+      "properties": {
+        "row_id": { "type": "string", "minLength": 1 },
+        "row_fingerprint": { "$ref": "#/$defs/digest" },
+        "cutoff_us": { "$ref": "#/$defs/int64" },
+        "event_versions": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "event_entry": {
+      "required": ["event_id"],
+      "properties": {
+        "event_id": { "type": "string", "minLength": 1 },
+        "row_id": { "type": "null" },
+        "row_fingerprint": { "type": "null" },
+        "cutoff_us": { "type": "null" },
+        "event_versions": { "type": "null" }
+      }
+    },
+    "source": {
+      "type": "object",
+      "required": ["uri", "content_id"],
+      "additionalProperties": false,
+      "properties": {
+        "uri": { "type": "string", "minLength": 1 },
+        "sample_key": { "type": ["string", "null"] },
+        "content_id": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "entry": {
+      "type": "object",
+      "required": ["entry_id", "sources", "digest"],
+      "additionalProperties": false,
+      "properties": {
+        "entry_id": { "type": "string", "pattern": "^[A-Za-z0-9_.@:-]{1,128}$",
+          "description": "The task id syntax, so a patient-level entry may be named by its row id." },
+        "sources": { "type": "array", "items": { "$ref": "#/$defs/source" }, "minItems": 1 },
+        "event_id": { "type": ["string", "null"] },
+        "document_id": { "type": ["string", "null"] },
+        "row_id": { "type": ["string", "null"] },
+        "cutoff_us": { "anyOf": [{ "$ref": "#/$defs/int64" }, { "type": "null" }] },
+        "event_versions": { "type": ["array", "null"], "items": { "type": "string" } },
+        "row_fingerprint": { "anyOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }],
+          "description": "Patient level: the fingerprint of the row the feature was built for (task-cache-1 §3.2)." },
+        "digest": { "$ref": "#/$defs/digest" }
+      }
+    }
+  }
+}

@@ -22,12 +22,14 @@ def bench_write_read(path, data, chunks, **kw):
         f.create_dataset("d", data=data, chunks=chunks, **kw)
     wt = time.perf_counter() - t
     size = os.path.getsize(path) / 1024**2
-    sl = (slice(64, 128), slice(96, 160), slice(96, 160))
+    # A new window each read, as a dataloader reads: the same window thirty
+    # times would time HDF5's chunk cache, not a decompression.
+    at = np.random.default_rng(2).integers(0, np.array(data.shape) - 64, size=(30, 3))
     ts = []
     with h5py.File(path, "r") as f:
         d = f["d"]
-        for _ in range(30):
-            t = time.perf_counter(); _ = d[sl]; ts.append(time.perf_counter() - t)
+        for z, y, x in at:
+            t = time.perf_counter(); _ = d[z:z + 64, y:y + 64, x:x + 64]; ts.append(time.perf_counter() - t)
         t = time.perf_counter(); _ = d[...]; full = time.perf_counter() - t
     return wt, size, float(np.median(ts)) * 1000, full
 
@@ -39,7 +41,8 @@ print(f"volume {SHAPE} = {np.prod(SHAPE)/1e6:.1f}M voxels; raw float32 = {raw_f3
 
 profiles = {
     "training  lz4  L1 +shuffle":  (raw_i16, dict(hdf5plugin.Blosc2(cname="lz4", clevel=1, filters=hdf5plugin.Blosc2.SHUFFLE))),
-    "balanced  lz4hc L8 +shuffle": (raw_i16, dict(hdf5plugin.Blosc2(cname="lz4hc", clevel=8, filters=hdf5plugin.Blosc2.SHUFFLE))),
+    # The 0.x default codec, not a profile: `balanced` is Blosc2 zstd L3.
+    "0.x       lz4hc L8 +shuffle": (raw_i16, dict(hdf5plugin.Blosc2(cname="lz4hc", clevel=8, filters=hdf5plugin.Blosc2.SHUFFLE))),
     "archive   zstd L9 +bitshuf":  (raw_i16, dict(hdf5plugin.Blosc2(cname="zstd", clevel=9, filters=hdf5plugin.Blosc2.BITSHUFFLE))),
     "portable  gzip L4 +shuffle":  (raw_i16, dict(compression="gzip", compression_opts=4, shuffle=True)),
     "f32       lz4hc L8 +shuffle": (raw_f32, dict(hdf5plugin.Blosc2(cname="lz4hc", clevel=8, filters=hdf5plugin.Blosc2.SHUFFLE))),

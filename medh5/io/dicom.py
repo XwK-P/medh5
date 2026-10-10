@@ -36,7 +36,7 @@ import numpy as np
 import numpy.typing as npt
 
 from medh5._optional import require
-from medh5.curation.identity import ID_SOURCE
+from medh5.curation import ID_SOURCE
 from medh5.errors import MEDH5ValidationError
 from medh5.io._common import sanitize_stem
 from medh5.io.grouping import (

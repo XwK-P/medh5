@@ -25,56 +25,125 @@ record.
 
 The migration is one-way, and that is deliberate.  A 0.x reader opening a 1.0
 file raises on the missing ``schema_version``, which is the correct loud failure.
+
+1.0 ships no 0.x implementation.  It ships a *reader*, because ``medh5
+migrate`` has to open files somebody wrote last year, and because a curator
+migrating a cohort should not be able to keep writing the format they are
+migrating away from --- which is exactly what shipping the old package inside
+the new one would allow.  The 0.x layout is small enough to state in full,
+and stating it here is the point: this module is the format's obituary,
+written down, rather than a dependency on code that still runs.
+
+    /images/<name>          one dataset per modality, all the same shape
+    /seg/<name>             one boolean dataset per mask name
+    /bboxes                 (n, ndim, 2) integers, slice-like [min, max)
+    /bbox_scores            (n,) floats            (optional)
+    /bbox_labels            (n,) strings           (optional)
+
+    root attrs              schema_version, image_names, label, label_name,
+                            has_seg, seg_names, has_bbox, extra (JSON)
+    /images attrs           shape, spacing, origin, direction (flattened
+                            row-major), axis_labels, coord_system, patch_size
+
+Only reading is implemented, and the denormalised flags (``has_seg``,
+``seg_names``, ``image_names``) are *ignored* in favour of what the file
+actually contains --- 0.x could and did drift between the two, and a migration
+that trusts the flag silently drops the data.
 """
 
 from __future__ import annotations
 
-import json
 import os
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+import numpy.typing as npt
 
-from medh5.errors import MEDH5Error
-from medh5.io._common import sanitize_key, sanitize_stem
-from medh5.io._legacy_reader import LegacyMeta, LegacySample, is_legacy
-from medh5.io._legacy_reader import read_meta as _read_meta
-from medh5.io._legacy_reader import read_sample as _read_sample
-from medh5.io.grouping import (
-    Occasion,
-    SubjectGroup,
-    group_by_subject,
-    note_instance_ids,
-    output_name,
-)
+from medh5 import _core
 from medh5.io.report import ConversionReport
 
-BOX_SHIFT = -0.5
+SUFFIX = ".medh5"
+SCHEMA_VERSION: str = _core.LEGACY_SCHEMA_VERSION
+"""The only 0.x schema version that ever shipped."""
+
+BOX_SHIFT: float = _core.LEGACY_BOX_SHIFT
 """0.x ``[min, max)`` integer boxes sit at voxel edges once shifted (§8.1)."""
 
 
-def read_legacy(path: str | os.PathLike[str]) -> LegacySample:
-    """Read a whole 0.x file (:mod:`medh5.io._legacy_reader`)."""
-    return _read_sample(path)
+# -- reading the 0.x layout ------------------------------------------------------
+
+
+@dataclass
+class LegacySpatial:
+    """0.x geometry: one grid, shared by every image in the file."""
+
+    spacing: list[float] | None = None
+    origin: list[float] | None = None
+    direction: list[list[float]] | None = None
+    axis_labels: list[str] | None = None
+    coord_system: str | None = None
+
+
+@dataclass
+class LegacyMeta:
+    """0.x metadata, as far as a migration needs it."""
+
+    spatial: LegacySpatial = field(default_factory=LegacySpatial)
+    shape: list[int] | None = None
+    image_names: list[str] = field(default_factory=list)
+    seg_names: list[str] = field(default_factory=list)
+    label: int | str | None = None
+    label_name: str | None = None
+    patch_size: list[int] | None = None
+    extra: dict[str, Any] = field(default_factory=dict)
+    schema_version: str = SCHEMA_VERSION
+
+    @classmethod
+    def _from_fields(cls, fields: Mapping[str, Any]) -> LegacyMeta:
+        values = dict(fields)
+        values["spatial"] = LegacySpatial(**values["spatial"])
+        return cls(**values)
+
+
+@dataclass
+class LegacySample:
+    """A whole 0.x file in memory."""
+
+    images: dict[str, npt.NDArray[Any]]
+    seg: dict[str, npt.NDArray[np.bool_]]
+    bboxes: npt.NDArray[Any] | None
+    bbox_scores: npt.NDArray[Any] | None
+    bbox_labels: list[str] | None
+    meta: LegacyMeta
+
+
+def is_legacy(path: str | os.PathLike[str]) -> bool:
+    """True when *path* is a readable 0.x file."""
+    return bool(_core.legacy_is(os.fspath(path)))
 
 
 def legacy_meta(path: str | os.PathLike[str]) -> LegacyMeta:
-    """Read a 0.x file's metadata without its arrays."""
-    return _read_meta(path)
+    """A 0.x file's metadata, without its arrays.
+
+    A 1.0 file, a file without 0.x ``/images``, an unknown schema version, a
+    malformed ``direction`` or ``extra`` --- each is refused by name rather
+    than read as nonsense.
+    """
+    return LegacyMeta._from_fields(_core.legacy_read_meta(os.fspath(path)))
 
 
-def _subject_key(meta: LegacyMeta, key: str | None) -> str | None:
-    """Pull a subject key out of 0.x ``extra`` by dotted path."""
-    if not key:
-        return None
-    node: Any = {"extra": dict(meta.extra)}
-    for part in key.split("."):
-        if not isinstance(node, Mapping) or part not in node:
-            return None
-        node = node[part]
-    return str(node) if node not in (None, "") else None
+def read_legacy(path: str | os.PathLike[str]) -> LegacySample:
+    """A whole 0.x file.  The file beats its own denormalised flags: masks
+    are what ``/seg`` holds, whatever ``has_seg`` and ``seg_names`` say."""
+    fields = dict(_core.legacy_read_sample(os.fspath(path)))
+    fields["meta"] = LegacyMeta._from_fields(fields["meta"])
+    return LegacySample(**fields)
+
+
+# -- migrating -------------------------------------------------------------------------
 
 
 def build_label_set(
@@ -86,75 +155,13 @@ def build_label_set(
 
     Cohort-wide rather than per file: ids minted independently per file would
     make ``liver`` id 1 in one sample and id 2 in the next, which is exactly the
-    inconsistency a label set exists to prevent.
+    inconsistency a label set exists to prevent.  Ids an
+    ``extra.nnunetv2.labels`` mapping already fixed are reused.
     """
-    from medh5.labels.labelset import LabelClass, LabelSet
-
-    log = report
-    names: list[str] = []
-    reused: dict[str, int] = {}
-    for path in paths:
-        try:
-            meta = legacy_meta(path)
-        except MEDH5Error:
-            continue  # reported by the pass that migrates it
-        for name in meta.seg_names:
-            if name not in names:
-                names.append(name)
-        extra = dict(meta.extra)
-        nnunet = extra.get("nnunetv2") or {}
-        for label, value in (nnunet.get("labels") or {}).items():
-            if isinstance(value, int) and value > 0:
-                reused[_key(label)] = int(value)
-        sample = None
-        try:
-            sample = read_legacy(path)
-        except MEDH5Error:
-            sample = None  # likewise
-        if sample is not None and sample.bbox_labels:
-            for label in sample.bbox_labels:
-                if label not in names:
-                    names.append(label)
-
-    classes: list[LabelClass] = []
-    used: set[int] = set(reused.values())
-    next_id = 1
-    for name in names:
-        key = _key(name)
-        if key in reused:
-            class_id = reused[key]
-        else:
-            while next_id in used:
-                next_id += 1
-            class_id = next_id
-            used.add(class_id)
-        classes.append(LabelClass(class_id, key, name))
-    if log is not None:
-        log.decision(
-            "label_set",
-            f"{len(classes)} class(es) were minted across {len(list(paths))} file(s); "
-            + (
-                f"{len(reused)} id(s) came from an existing extra.nnunetv2.labels "
-                "mapping"
-                if reused
-                else "no existing id mapping was found, so ids are sequential"
-            ),
-            {"ids": {c.key: c.id for c in classes}, "reused": sorted(reused)},
-        )
-    return LabelSet("migrated", version="1.0.0", classes=classes)
-
-
-def _key(name: str) -> str:
-    return sanitize_key(name)
-
-
-def _sample_key(subject_id: str) -> str:
-    """A sample id from a subject id: §2.3's identifier rule, not a label key.
-
-    ``pat-a`` stays ``pat-a`` --- the hyphen is legal in an identifier and in a
-    filename, and a migrated cohort keeps the names its manifest already uses.
-    """
-    return (sanitize_stem(str(subject_id).strip(), limit=128) or "sample").lower()
+    label_set, notes = _core.legacy_build_label_set([os.fspath(p) for p in paths])
+    if report is not None:
+        report._extend(notes)
+    return label_set
 
 
 def migrate(
@@ -165,17 +172,19 @@ def migrate(
     codec: str = "balanced",
     report: ConversionReport | None = None,
 ) -> ConversionReport:
-    """Migrate one 0.x file into one 1.0 sample (Appendix B)."""
-    log = report or ConversionReport(converter="migrate")
-    log.source = os.fspath(path)
-    labels = label_set or build_label_set([path], report=log)
-    group = SubjectGroup(
-        subject_id=Path(os.fspath(path)).stem,
-        occasions=[Occasion(key=os.fspath(path), payload=os.fspath(path))],
-        ordered_by="given",
+    """Migrate one 0.x file into one 1.0 sample (Appendix B).
+
+    *report*, when given, is the one written to and returned.
+    """
+    log = report if report is not None else ConversionReport(converter="migrate")
+    fields = _core.legacy_migrate(
+        os.fspath(path),
+        os.fspath(out),
+        label_set=label_set,
+        codec=codec,
+        report=log,
     )
-    _write(group, Path(os.fspath(out)), labels, codec=codec, log=log)
-    return log
+    return log._update(fields)
 
 
 def migrate_paths(
@@ -187,285 +196,42 @@ def migrate_paths(
     label_set: Any = None,
     codec: str = "balanced",
 ) -> ConversionReport:
-    """Migrate a cohort, minting one label set for all of it."""
-    directory = Path(os.fspath(outdir))
-    directory.mkdir(parents=True, exist_ok=True)
-    log = ConversionReport(converter="migrate", source=f"{len(paths)} file(s)")
-    labels = label_set or build_label_set(paths, report=log)
+    """Migrate a cohort, minting one label set for all of it.
 
-    occasions = []
-    for path in paths:
-        text = os.fspath(path)
-        try:
-            meta = legacy_meta(text)
-        except MEDH5Error as exc:
-            # Not a 0.x file, or a broken one.  A cohort migration reports it
-            # and carries on rather than abandoning the other files.
-            log.warn("unreadable", f"{text}: {exc}", {"path": text})
-            continue
-        occasions.append(
-            Occasion(
-                key=text,
-                subject_id=_subject_key(meta, subject_key),
-                date=_date_of(meta),
-                order_hint=Path(text).stat().st_mtime,
-                payload=text,
-            )
+    A file that is not 0.x, or is broken, is reported (``unreadable``) and the
+    rest of the cohort is migrated.
+    """
+    return ConversionReport._from_fields(
+        _core.legacy_migrate_paths(
+            [os.fspath(p) for p in paths],
+            os.fspath(outdir),
+            group_by=group_by,
+            subject_key=subject_key,
+            label_set=label_set,
+            codec=codec,
         )
-    if group_by == "subject" and subject_key is None:
-        log.warn(
-            "grouping",
-            "--group-by subject needs --subject-key: a 0.x file has no subject "
-            "field of its own, and identity is never inferred from filenames",
-            {},
-        )
-    groups = group_by_subject(occasions, mode=group_by, report=log)
-    used: set[str] = set()
-    for group in groups:
-        target = directory / f"{output_name(group, used, safe=_sample_key)}.medh5"
-        _write(group, target, labels, codec=codec, log=log)
-    return log
-
-
-def _date_of(meta: LegacyMeta) -> str | None:
-    extra = dict(meta.extra)
-    for key in ("study_date", "date", "acquisition_date"):
-        value = extra.get(key)
-        if value:
-            return str(value)
-    return None
-
-
-def _write(
-    group: SubjectGroup,
-    target: Path,
-    label_set: Any,
-    *,
-    codec: str,
-    log: ConversionReport,
-) -> None:
-    import medh5
-
-    note_instance_ids(group, log)
-    if group.ordered_by == "order_hint":
-        log.guess(
-            "timepoint_order",
-            f"{target.name}: timepoints were ordered by file mtime, which is a "
-            "heuristic; supply dates in extra to make the order evidence",
-            {"order": [o.key for o in group.occasions]},
-        )
-    days = group.days_from_baseline()
-    with medh5.create(
-        target,
-        sample_id=_sample_key(group.subject_id),
-        subject_id=group.subject_id,
-        codec=codec,
-    ) as writer:
-        writer.label_set(label_set)
-        tool = writer.software("medh5", medh5.__version__)
-        for index in range(len(group.occasions)):
-            writer.add_timepoint(
-                f"tp{index}", index=index, days_from_baseline=days[index]
-            )
-        for index, occasion in enumerate(group.occasions):
-            _migrate_one(
-                writer,
-                read_legacy(occasion.payload),
-                str(occasion.payload),
-                f"tp{index}",
-                label_set,
-                tool,
-                log,
-                single=len(group.occasions) == 1,
-            )
-    log.outputs.append(str(target))
-
-
-def _migrate_one(
-    writer: Any,
-    sample: LegacySample,
-    source: str,
-    timepoint: str,
-    label_set: Any,
-    tool: Any,
-    log: ConversionReport,
-    *,
-    single: bool,
-) -> None:
-    """One 0.x file into one timepoint of a 1.0 sample."""
-    meta = sample.meta
-    suffix = "" if single else f"_{timepoint}"
-    activity = writer.activity(
-        "import",
-        agent=tool,
-        tool="medh5 migrate",
-        inputs=[f"medh5-0.x:{source}"],
     )
-    grid_id = f"ref{suffix}"
-    spatial = meta.spatial
-    first = sample.images[sorted(sample.images)[0]]
-    writer.add_grid(
-        grid_id,
-        shape=first.shape,
-        spacing=spatial.spacing or [1.0] * first.ndim,
-        origin=spatial.origin,
-        direction=spatial.direction,
-        coord_system=spatial.coord_system or "LPS",
-        axis_names=spatial.axis_labels,
-        timepoint=timepoint,
-        patch_hint=meta.patch_size,
-    )
-    for name, array in sorted(sample.images.items()):
-        writer.add_image(
-            f"{name}{suffix}", array, grid=grid_id, modality="OT", prov=activity
-        )
-
-    if sample.seg:
-        masks = {
-            label_set[_key(name)].id: np.asarray(v, dtype=bool)
-            for name, v in sorted(sample.seg.items())
-        }
-        kind, stats = writer.add_segmentation(
-            f"seg{suffix}",
-            grid=grid_id,
-            masks=masks,
-            annotated_classes=[label_set[_key(n)].id for n in sorted(sample.seg)],
-            prov=activity,
-        )
-        log.decision(
-            "encoding",
-            f"{source}: {len(masks)} mask(s) were measured and stored as {kind!r}",
-            {
-                "source": source,
-                "kind": kind,
-                "overlapping_pairs": 0 if stats is None else len(stats.edges),
-            },
-        )
-        log.guess(
-            "coverage",
-            f"{source}: annotated_class_ids was set to the migrated mask names --- "
-            "the only defensible inference. Widen or narrow it if the curator "
-            "knows which classes were actually searched for (§11.3)",
-            {"source": source, "classes": sorted(sample.seg)},
-        )
-
-    if sample.bboxes is not None and len(sample.bboxes):
-        boxes = np.asarray(sample.bboxes, dtype=np.float64) + BOX_SHIFT
-        labels = sample.bbox_labels or ["object"] * boxes.shape[0]
-        class_ids = [label_set[_key(name)].id for name in labels]
-        writer.add_boxes(
-            f"boxes{suffix}",
-            boxes=boxes.astype(np.float32),
-            class_ids=class_ids,
-            scores=sample.bbox_scores,
-            grid=grid_id,
-            space="index",
-            task="detection",
-            prov=activity,
-        )
-        log.decision(
-            "box_convention",
-            f"{source}: {boxes.shape[0]} box(es) were shifted by -0.5 on every "
-            "axis --- 0.x stored slice-like [min, max) integers, 1.0 stores voxel "
-            "edges, and the numbers differ by half a voxel (§8.1)",
-            {"source": source, "boxes": int(boxes.shape[0]), "shift": BOX_SHIFT},
-        )
-
-    if meta.label is not None:
-        name = meta.label_name or str(meta.label)
-        entry = label_set.get(_key(name))
-        if entry is not None:
-            writer.add_classification(
-                f"label{suffix}",
-                labels={entry.id: 1.0},
-                scope="sample",
-                timepoints=[timepoint],
-                prov=activity,
-            )
-        else:
-            log.warn(
-                "label",
-                f"{source}: sample label {name!r} is not in the label set and was "
-                "not migrated",
-                {"source": source, "label": name},
-            )
-
-    extra = dict(meta.extra)
-    if extra:
-        writer.extra("legacy", extra)
-    review = extra.get("review")
-    if isinstance(review, Mapping):
-        _migrate_review(writer, review, suffix, log, source)
-
-
-def _migrate_review(
-    writer: Any,
-    review: Mapping[str, Any],
-    suffix: str,
-    log: ConversionReport,
-    source: str,
-) -> None:
-    """0.x ``extra.review`` into the provenance graph and a quality record."""
-    reviewer = review.get("reviewer") or review.get("by")
-    agent = writer.person(str(reviewer)) if reviewer else None
-    writer.activity(
-        "review",
-        agent=agent,
-        ended=_timestamp(review.get("date") or review.get("reviewed_at")),
-        params={"verdict": str(review.get("status", "reviewed"))},
-        outputs=[f"annotations/seg{suffix}"],
-    )
-    status = str(review.get("status", "reviewed")).lower()
-    writer.set_quality(
-        f"seg{suffix}",
-        status=status
-        if status
-        in ("draft", "submitted", "reviewed", "approved", "rejected", "deprecated")
-        else "reviewed",
-        reviewed_by=[agent.id] if agent else [],
-    )
-    log.decision(
-        "review",
-        f"{source}: extra.review became a `review` activity plus a quality record; "
-        "0.x kept review state in an ad-hoc dict that could not say what produced "
-        "the data being reviewed (§11.1)",
-        {"source": source, "status": status},
-    )
-
-
-def _timestamp(value: Any) -> str | None:
-    """A 0.x date as RFC 3339, or ``None`` when it is not one."""
-    if not value:
-        return None
-    text = str(value)
-    if text.endswith("Z") and "T" in text:
-        return text
-    if len(text) == 10 and text[4] == "-":
-        return f"{text}T00:00:00Z"
-    return None
 
 
 def write_sidecar(label_set: Any, path: str | os.PathLike[str]) -> Path:
     """Write the minted label set for review before a cohort-wide migration."""
-    target = Path(os.fspath(path))
-    target.write_text(
-        json.dumps(label_set.to_json(), indent=2) + "\n", encoding="utf-8"
-    )
-    return target
+    return Path(_core.legacy_write_sidecar(label_set, os.fspath(path)))
 
 
 def load_sidecar(path: str | os.PathLike[str]) -> Any:
-    from medh5.labels.labelset import LabelSet
-
-    return LabelSet.from_json(
-        json.loads(Path(os.fspath(path)).read_text(encoding="utf-8"))
-    )
+    """Read a reviewed label-set sidecar back."""
+    return _core.legacy_load_sidecar(os.fspath(path))
 
 
 __all__ = [
     "BOX_SHIFT",
-    "is_legacy",
+    "SCHEMA_VERSION",
+    "SUFFIX",
+    "LegacyMeta",
+    "LegacySample",
+    "LegacySpatial",
     "build_label_set",
+    "is_legacy",
     "legacy_meta",
     "load_sidecar",
     "migrate",

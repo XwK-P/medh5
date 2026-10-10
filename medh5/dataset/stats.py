@@ -32,16 +32,14 @@ from __future__ import annotations
 
 import math
 import os
-import warnings
-from collections.abc import Iterable, Sequence
-from concurrent.futures import ProcessPoolExecutor
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
 import numpy.typing as npt
 
-from medh5.errors import MEDH5Error
+from medh5 import _core
 
 
 @dataclass(slots=True)
@@ -54,60 +52,34 @@ class Moments:
     minimum: float = math.inf
     maximum: float = -math.inf
 
+    def _set(self, raw: tuple[int, float, float, float, float]) -> None:
+        self.count, self.mean, self.m2, self.minimum, self.maximum = raw
+
     def update(self, values: npt.NDArray[Any]) -> None:
-        block = np.asarray(values, dtype=np.float64).ravel()
-        if block.size == 0:
-            return
-        self.merge(
-            Moments(
-                count=int(block.size),
-                mean=float(block.mean()),
-                m2=float(((block - block.mean()) ** 2).sum()),
-                minimum=float(block.min()),
-                maximum=float(block.max()),
+        """Fold in one block of values (any shape)."""
+        self._set(
+            _core.dataset_moments_update(
+                self, np.asarray(values, dtype=np.float64).ravel()
             )
         )
 
     def merge(self, other: Moments) -> None:
         """Chan-Golub-LeVeque parallel merge --- exact, not an approximation."""
-        if other.count == 0:
-            return
-        if self.count == 0:
-            self.count, self.mean, self.m2 = other.count, other.mean, other.m2
-            self.minimum, self.maximum = other.minimum, other.maximum
-            return
-        total = self.count + other.count
-        delta = other.mean - self.mean
-        self.mean += delta * other.count / total
-        self.m2 += other.m2 + delta * delta * self.count * other.count / total
-        self.count = total
-        self.minimum = min(self.minimum, other.minimum)
-        self.maximum = max(self.maximum, other.maximum)
+        self._set(_core.dataset_moments_merge(self, other))
 
     @property
     def std(self) -> float:
-        return math.sqrt(self.m2 / self.count) if self.count > 1 else 0.0
+        return float(_core.dataset_moments_std(self))
 
     def to_json(self) -> dict[str, Any]:
-        return {
-            "count": self.count,
-            "mean": self.mean,
-            "std": self.std,
-            "min": None if self.count == 0 else self.minimum,
-            "max": None if self.count == 0 else self.maximum,
-        }
+        found: dict[str, Any] = _core.dataset_moments_json(self)
+        return found
 
     @classmethod
     def from_json(cls, doc: dict[str, Any]) -> Moments:
-        count = int(doc["count"])
-        std = float(doc.get("std", 0.0))
-        return cls(
-            count=count,
-            mean=float(doc.get("mean", 0.0)),
-            m2=std * std * count,
-            minimum=float(doc["min"]) if doc.get("min") is not None else math.inf,
-            maximum=float(doc["max"]) if doc.get("max") is not None else -math.inf,
-        )
+        out = cls()
+        out._set(_core.dataset_moments_from_json(doc))
+        return out
 
 
 @dataclass(slots=True)
@@ -150,33 +122,43 @@ class DatasetStats:
     physical: bool = True
     """Whether the image moments are over physical values (rescale applied)."""
 
+    @classmethod
+    def _from_raw(cls, raw: dict[str, Any]) -> DatasetStats:
+        out = cls()
+        out._set(raw)
+        return out
+
+    def _set(self, raw: dict[str, Any]) -> None:
+        self.samples = int(raw["samples"])
+        self.physical = bool(raw["physical"])
+        self.total_voxels = int(raw["total_voxels"])
+        self.failures = tuple(raw["failures"])
+        images: dict[str, Moments] = {}
+        for key, state in raw["images"].items():
+            moments = self.images.get(key) or Moments()
+            moments._set(state)
+            images[key] = moments
+        self.images = images
+        classes: dict[int, ClassStats] = {}
+        for class_id, (voxels, present_in, examined_in) in raw["classes"].items():
+            stats = self.classes.get(class_id) or ClassStats(class_id)
+            stats.voxels, stats.present_in, stats.examined_in = (
+                voxels,
+                present_in,
+                examined_in,
+            )
+            classes[class_id] = stats
+        self.classes = classes
+
     def merge(self, other: DatasetStats) -> None:
-        if other.samples:
-            # One pass, one convention.  A mean over physical values merged with
-            # a mean over stored ones describes no image anybody can load.
-            if self.samples and other.physical != self.physical:
-                raise MEDH5Error(
-                    "cannot merge statistics over physical values with statistics "
-                    "over stored values; compute both passes the same way"
-                )
-            self.physical = other.physical
-        self.samples += other.samples
-        self.total_voxels += other.total_voxels
-        self.failures = (*self.failures, *other.failures)
-        for key, moments in other.images.items():
-            self.images.setdefault(key, Moments()).merge(moments)
-        for class_id, stats in other.classes.items():
-            mine = self.classes.setdefault(class_id, ClassStats(class_id))
-            mine.voxels += stats.voxels
-            mine.present_in += stats.present_in
-            mine.examined_in += stats.examined_in
+        """Fold another pass in.  Statistics over physical values do not merge
+        with statistics over stored ones."""
+        self._set(_core.dataset_stats_merge(self, other))
 
     def normalization(self, image_key: str) -> tuple[float, float]:
         """``(mean, std)`` for a z-score transform, or ``(0, 1)`` if unseen."""
-        moments = self.images.get(image_key)
-        if moments is None or moments.count == 0:
-            return 0.0, 1.0
-        return moments.mean, moments.std or 1.0
+        mean, std = _core.dataset_stats_normalization(self, image_key)
+        return float(mean), float(std)
 
     def class_weights(self, *, scheme: str = "inverse_frequency") -> dict[int, float]:
         """Loss weights from measured voxel frequencies.
@@ -185,67 +167,19 @@ class DatasetStats:
         so switching schemes does not silently rescale the learning rate.
 
         A class with no voxels in the cohort gets **no** weight, and a warning
-        names it.  Flooring its count at 1 gave it a weight about *N* times
-        that of a class with *N* voxels, and after normalisation left every
-        real class near zero: a class examined and absent everywhere --- or one
-        only a classification ever named --- became the whole loss.
+        names it: the inverse of zero is not a weight, and flooring it made an
+        unseen class the whole loss.
         """
-        empty = sorted(c for c, s in self.classes.items() if s.voxels == 0)
-        if empty:
-            warnings.warn(
-                f"class_weights: class(es) {empty} have no voxels in these "
-                "statistics, so they get no weight; a weight for an unseen class "
-                "is a guess, and the inverse of zero is not one",
-                stacklevel=2,
-            )
-        counts = {c: s.voxels for c, s in self.classes.items() if s.voxels > 0}
-        if not counts:
-            return {}
-        if scheme == "inverse_frequency":
-            raw = {c: 1.0 / v for c, v in counts.items()}
-        elif scheme == "inverse_sqrt":
-            raw = {c: 1.0 / math.sqrt(v) for c, v in counts.items()}
-        elif scheme == "uniform":
-            raw = dict.fromkeys(counts, 1.0)
-        else:
-            raise MEDH5Error(
-                f"unknown weighting scheme {scheme!r}; expected "
-                "inverse_frequency, inverse_sqrt or uniform"
-            )
-        scale = len(raw) / sum(raw.values())
-        return {c: v * scale for c, v in sorted(raw.items())}
+        found: dict[int, float] = _core.dataset_stats_class_weights(self, scheme=scheme)
+        return found
 
     def to_json(self) -> dict[str, Any]:
-        return {
-            "samples": self.samples,
-            "physical": self.physical,
-            "total_voxels": self.total_voxels,
-            "images": {k: v.to_json() for k, v in sorted(self.images.items())},
-            "classes": [
-                s.to_json()
-                for s in sorted(self.classes.values(), key=lambda s: s.class_id)
-            ],
-            "failures": list(self.failures),
-        }
+        found: dict[str, Any] = _core.dataset_stats_json(self)
+        return found
 
     @classmethod
     def from_json(cls, doc: dict[str, Any]) -> DatasetStats:
-        return cls(
-            samples=int(doc.get("samples", 0)),
-            physical=bool(doc.get("physical", True)),
-            total_voxels=int(doc.get("total_voxels", 0)),
-            images={k: Moments.from_json(v) for k, v in doc.get("images", {}).items()},
-            classes={
-                int(c["class_id"]): ClassStats(
-                    class_id=int(c["class_id"]),
-                    voxels=int(c.get("voxels", 0)),
-                    present_in=int(c.get("present_in", 0)),
-                    examined_in=int(c.get("examined_in", 0)),
-                )
-                for c in doc.get("classes", ())
-            },
-            failures=tuple(doc.get("failures", ())),
-        )
+        return cls._from_raw(_core.dataset_stats_from_json(doc))
 
 
 def stats_for(
@@ -267,95 +201,15 @@ def stats_for(
     the default because it is what the loaders do; ``False`` measures the
     stored values.
     """
-    import medh5
-    from medh5.annotations.base import VoxelAnnotation
-
-    out = DatasetStats(samples=1, physical=physical)
-    with medh5.open(path) as sample:
-        measured: set[str] = set()
-        for key, image in sample.images.items():
-            if images is not None and key not in images:
-                continue
-            moments = out.images.setdefault(key, Moments())
-            for block in _blocks(sample, key, image, sample_stride, physical):
-                moments.update(block)
-            measured.add(image.grid_id)
-        fresh = sample.fresh_indices
-        examined: set[int] = set()
-        present: set[int] = set()
-        for key, annotation in sample.annotations.items():
-            if annotations is not None and key not in annotations:
-                continue
-            # Voxel classes only: a `mask` has none (§4.4), and a
-            # classification or a geometric annotation names classes it holds
-            # no voxels of.
-            if not isinstance(annotation, VoxelAnnotation) or annotation.kind == "mask":
-                continue
-            counts = _counts(sample, key, annotation, fresh)
-            looked_for = {int(c) for c in annotation.annotated_class_ids}
-            examined |= looked_for
-            for class_id in {int(c) for c in annotation.class_ids} | looked_for:
-                stats = out.classes.setdefault(class_id, ClassStats(class_id))
-                voxels = int(counts.get(class_id, 0))
-                stats.voxels += voxels
-                if voxels:
-                    present.add(class_id)
-        # Once per sample, not once per annotation: a follow-up visit examining
-        # the same class again is the same cohort member.
-        for class_id in examined:
-            out.classes.setdefault(class_id, ClassStats(class_id)).examined_in += 1
-        for class_id in present:
-            out.classes.setdefault(class_id, ClassStats(class_id)).present_in += 1
-        # Each measured image's own grid, once.  Summing every grid counted a
-        # pyramid's levels and every mask's grid on top of the voxels measured.
-        for grid_id in measured:
-            out.total_voxels += int(np.prod(sample.grids[grid_id].spatial_shape))
-    return out
-
-
-def _counts(
-    sample: Any, key: str, annotation: Any, fresh: frozenset[str]
-) -> dict[int, int]:
-    """Per-class voxel counts --- from the index when it can be trusted.
-
-    The sampling index already stores exact counts (§14.3), so a cohort pass
-    over indexed files reads a few hundred bytes per annotation instead of
-    decompressing every mask.  A *stale* index is not used: counts for the
-    annotation as it was before somebody edited it would be worse than slow.
-    """
-    if key in fresh:
-        return {int(c): int(n) for c, n in sample.index[key].voxel_counts.items()}
-    counter = getattr(annotation, "voxel_counts", None)
-    return {} if counter is None else {int(c): int(n) for c, n in counter().items()}
-
-
-def _blocks(
-    sample: Any, key: str, image: Any, stride: int, physical: bool
-) -> Iterable[npt.NDArray[Any]]:
-    """Slabs of an image along its first spatial axis, valid voxels only.
-
-    Read through :meth:`~medh5.image.Image.read` rather than the raw dataset so
-    the rescale is applied by the one place that knows how; reading the dataset
-    directly is exactly what handed back stored counts as if they were HU.
-
-    Where the image declares a ``valid_mask`` (§4.4), only the voxels it marks
-    are measured.  A CT padded with −3024 outside its reconstruction circle
-    otherwise reports a mean of about −1180 where the tissue averages 40, and
-    ``normalization()`` hands the model that.
-    """
-    spatial = image.grid.spatial_shape
-    if not spatial:
-        return
-    step = max(1, stride)
-    trailing = (slice(None),) * (len(spatial) - 1)
-    masked = image.valid_mask is not None
-    for start in range(0, spatial[0], step):
-        roi = (slice(start, start + 1), *trailing)
-        block = image.read(roi, physical=physical)
-        if masked:
-            valid = sample.valid_region(key, roi)
-            block = block[np.broadcast_to(valid, block.shape)]
-        yield block
+    return DatasetStats._from_raw(
+        _core.dataset_stats_for(
+            os.fspath(path),
+            images=None if images is None else list(images),
+            annotations=None if annotations is None else list(annotations),
+            sample_stride=sample_stride,
+            physical=physical,
+        )
+    )
 
 
 def compute_stats(
@@ -367,50 +221,22 @@ def compute_stats(
     sample_stride: int = 1,
     physical: bool = True,
 ) -> DatasetStats:
-    """Stream a whole cohort, optionally across processes.
+    """Stream a whole cohort, optionally across *workers* threads.
 
-    Workers return accumulators, not arrays: the merge is over a few hundred
-    bytes per file however large the volumes were.
+    Workers return accumulators, not arrays, and the results are merged in
+    path order, so the statistics do not depend on the worker count.  A file
+    that cannot be read is listed in ``failures``, not fatal.
     """
-    total = DatasetStats(physical=physical)
-    if workers <= 1:
-        for path in paths:
-            total.merge(_guarded(path, images, annotations, sample_stride, physical))
-        return total
-    with ProcessPoolExecutor(max_workers=workers) as pool:
-        futures = [
-            pool.submit(
-                _guarded, os.fspath(p), images, annotations, sample_stride, physical
-            )
-            for p in paths
-        ]
-        for future in futures:
-            total.merge(future.result())
-    return total
-
-
-def _guarded(
-    path: str | os.PathLike[str],
-    images: Sequence[str] | None,
-    annotations: Sequence[str] | None,
-    sample_stride: int,
-    physical: bool = True,
-) -> DatasetStats:
-    """One file, with failure recorded rather than raised.
-
-    A cohort pass that aborts on file 3 000 has computed nothing usable; the
-    failures come back in the result and the caller decides.
-    """
-    try:
-        return stats_for(
-            path,
-            images=images,
-            annotations=annotations,
+    return DatasetStats._from_raw(
+        _core.dataset_compute_stats(
+            [os.fspath(p) for p in paths],
+            images=None if images is None else list(images),
+            annotations=None if annotations is None else list(annotations),
+            workers=workers,
             sample_stride=sample_stride,
             physical=physical,
         )
-    except (MEDH5Error, OSError) as exc:
-        return DatasetStats(failures=(f"{os.fspath(path)}: {exc}",), physical=physical)
+    )
 
 
 __all__ = [

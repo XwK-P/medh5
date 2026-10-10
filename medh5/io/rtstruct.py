@@ -100,7 +100,7 @@ def from_rtstruct(
     """Import an RTSTRUCT's ROIs as contours, and optionally rasterise them."""
     import medh5
     from medh5.annotations.geometric import Polygon
-    from medh5.labels.labelset import LabelClass, LabelSet
+    from medh5.labels import LabelClass, LabelSet
 
     log = report or ConversionReport(converter="from-rtstruct")
     log.source = os.fspath(path)
@@ -397,6 +397,7 @@ def to_rtstruct(
     out: str | os.PathLike[str],
     *,
     label: str = "medh5 export",
+    frame_salt: str | None = None,
     report: ConversionReport | None = None,
 ) -> Path:
     """Export a ``contours`` annotation as an RT Structure Set.
@@ -405,9 +406,22 @@ def to_rtstruct(
     into polygons requires a marching-squares rule that would be invented here
     rather than recorded.  Rasterise deliberately in the other direction if you
     need both.
+
+    ``ContourData`` is DICOM patient coordinates --- millimetres, LPS --- so
+    the grid's world coordinates are scaled from its units and, from RAS,
+    flipped in x and y; a grid in pixels or another convention is refused, and
+    so are world-space contours with no grid to say their units.  The source
+    images must share one frame of reference, which the contours' --- the
+    annotation's ``frame_uid`` in world space, the grid's in index space ---
+    must be where one is stated (*frame_salt* compares a frame ``medh5 scrub``
+    pseudonymised, as :func:`~medh5.io.dicom_seg.frames_agree` does).
+    The contours were written as stored --- a metre grid's 0.003 for 3 mm,
+    RAS signs unflipped --- and filed under the first image's frame, whatever
+    the grid's (F09 of the round-4 audit).
     """
     import medh5
     from medh5.io.dicom import require_pydicom
+    from medh5.io.dicom_seg import frames_agree
 
     pydicom = require_pydicom()
     from pydicom.dataset import Dataset, FileMetaDataset
@@ -419,6 +433,7 @@ def to_rtstruct(
     if not datasets:
         raise MEDH5ValidationError("to_rtstruct needs the source DICOM images")
     reference = datasets[0]
+    frame_uid = _one_frame(datasets)
 
     with medh5.open(sample) as opened:
         annotation = opened.annotations[ann_id]
@@ -428,22 +443,57 @@ def to_rtstruct(
                 "polygons, so export a `contours` annotation (or derive one)",
                 code="E401",
             )
-        if annotation.space != "world" and annotation.grid_id is None:
+        if annotation.grid_id is None:
             raise MEDH5ValidationError(
-                f"annotation {ann_id!r} stores index coordinates but names no "
-                "grid, so they cannot be mapped to patient coordinates",
+                f"annotation {ann_id!r} names no grid, so its coordinates have no "
+                "units or convention to map to patient coordinates (mm, LPS)",
                 code="E414",
             )
-        grid = opened.grids[annotation.grid_id] if annotation.grid_id else None
+        grid = opened.grids[annotation.grid_id]
+        if len(grid.spatial_shape) != 3:
+            raise MEDH5ValidationError(
+                f"grid {grid.grid_id!r} has {len(grid.spatial_shape)} spatial axes; "
+                "RTSTRUCT contours are points of the 3-D patient space",
+                code="E414",
+            )
+        signs, scale = _to_patient(grid)
+        # World coordinates live in the annotation's own frame, index
+        # coordinates in the grid's (§6.2, §8).
+        stated = (
+            annotation.header.frame_uid
+            if annotation.space == "world"
+            else grid.frame_uid
+        )
+        agree = frames_agree(frame_uid, stated, frame_salt)
+        if agree is False:
+            raise MEDH5ValidationError(
+                f"annotation {ann_id!r} is in frame of reference {stated!r} and "
+                f"the source images in {frame_uid!r}: contours drawn in one frame "
+                "are not filed under another without a registration, which this "
+                "exporter does not apply",
+                code="E414",
+            )
+        if agree is None:
+            log.guess(
+                "frame_of_reference",
+                f"annotation {ann_id!r} and grid {grid.grid_id!r} state no frame "
+                "of reference for the contours, so they were assumed to be in the "
+                f"source images' frame {frame_uid!r}",
+                {"grid": grid.grid_id, "frame": frame_uid},
+            )
         polygons = list(annotation.polygons())
         class_ids = sorted({int(p.class_id) for p in polygons})
         names = {c: annotation.class_key(c) for c in class_ids}
         world = [
             (
                 int(p.class_id),
-                p.vertices
-                if annotation.space == "world" or grid is None
-                else grid.index_to_world(np.asarray(p.vertices, dtype=np.float64)),
+                signs
+                * scale
+                * (
+                    np.asarray(p.vertices, dtype=np.float64)
+                    if annotation.space == "world"
+                    else grid.index_to_world(np.asarray(p.vertices, dtype=np.float64))
+                ),
             )
             for p in polygons
         ]
@@ -475,7 +525,6 @@ def to_rtstruct(
     structure.SeriesNumber = 1
     structure.Manufacturer = "medh5"
 
-    frame_uid = str(getattr(reference, "FrameOfReferenceUID", generate_uid()))
     frame = Dataset()
     frame.FrameOfReferenceUID = frame_uid
     structure.ReferencedFrameOfReferenceSequence = [frame]
@@ -524,6 +573,43 @@ def to_rtstruct(
     )
     log.outputs.append(str(target))
     return target
+
+
+def _one_frame(datasets: Sequence[Any]) -> str:
+    """The frame of reference every source image shares: an RTSTRUCT's
+    contours are in one, and only the first image's was read."""
+    frames = {str(getattr(d, "FrameOfReferenceUID", "") or "") for d in datasets}
+    if "" in frames or len(frames) != 1:
+        stated = sorted(f or "none" for f in frames)
+        raise MEDH5ValidationError(
+            f"the source images state the frames of reference {stated}; an "
+            "RTSTRUCT's contours are in one, which every source image must state",
+            code="E414",
+        )
+    return frames.pop()
+
+
+def _to_patient(grid: Any) -> tuple[npt.NDArray[np.float64], float]:
+    """The world-axis signs and the millimetres per grid unit that take
+    *grid*'s world coordinates to DICOM patient coordinates (LPS, mm) --- the
+    inverse of the SEG importer's mapping."""
+    from medh5.io.nifti import MM_PER_UNIT
+
+    if grid.coord_system not in ("LPS", "RAS"):
+        raise MEDH5ValidationError(
+            f"grid {grid.grid_id!r} is in {grid.coord_system!r}; RTSTRUCT contours "
+            "are patient coordinates (LPS), which only an LPS or RAS grid relates to",
+            code="E414",
+        )
+    scale = MM_PER_UNIT.get(grid.units)
+    if scale is None:
+        raise MEDH5ValidationError(
+            f"grid {grid.grid_id!r} is in {grid.units!r}, which no patient "
+            "coordinate in millimetres converts from",
+            code="E414",
+        )
+    flip = 1.0 if grid.coord_system == "LPS" else -1.0
+    return np.array([flip, flip, 1.0]), scale
 
 
 __all__ = [

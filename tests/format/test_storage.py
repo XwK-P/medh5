@@ -1,0 +1,797 @@
+"""The storage layer: chunking, codecs, windowed reads, sampling indices and
+recompression (spec §14)."""
+
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import h5py
+import numpy as np
+import pytest
+
+import medh5
+from medh5.errors import MEDH5FileError, MEDH5ValidationError
+from medh5.storage import (
+    COMPRESS_MIN_BYTES,
+    MAX_CHUNK_BYTES,
+    PROFILES,
+    build_index,
+    chunk_report,
+    dataset_kwargs,
+    is_bulk,
+    optimize_chunks,
+    read_indices,
+    resolve_profile,
+    spatial_chunk_for,
+)
+from medh5.validate import validate_file
+from tests.helpers import write_sample
+from tests.kits import Framed
+
+
+class TestChunking:
+    def test_S14_1_chunk_starts_from_the_patch_hint(self):
+        chunk = spatial_chunk_for((256, 256, 256), (96, 96, 96), itemsize=2)
+        assert all(c >= 96 for c in chunk)
+
+    def test_S14_1_chunk_never_exceeds_the_extent(self):
+        assert spatial_chunk_for((10, 12, 14), (96, 96, 96)) == (10, 12, 14)
+
+    def test_S14_1_chunk_stays_within_the_cache_budget(self):
+        chunk = spatial_chunk_for((512, 512, 512), (64, 64, 64), itemsize=4)
+        assert int(np.prod(chunk)) * 4 <= MAX_CHUNK_BYTES
+
+    def test_S14_1_non_spatial_axes_get_extent_one(self):
+        chunk = optimize_chunks(
+            (4, 32, 64, 64), ("time", "spatial", "spatial", "spatial"), (16, 16, 16)
+        )
+        assert chunk[0] == 1
+
+    def test_S14_1_stacked_encodings_read_one_plane(self):
+        """§14.1: layers/bitmask/probmap MUST chunk as (1, *spatial_chunk)."""
+        chunk = optimize_chunks(
+            (5, 32, 64, 64), ("spatial", "spatial", "spatial"), (16, 16, 16), leading=1
+        )
+        assert chunk[0] == 1
+        assert len(chunk) == 4
+
+    def test_S14_1_l3_detection_spawns_nothing_where_sysfs_answers(self, monkeypatch):
+        """The probe used to fork `/bin/sh` on every platform, before the read.
+
+        On Linux that is a wasted fork+exec for a sysctl key that does not
+        exist, in a package whose handle cache exists because HDF5 state must
+        not cross a fork.  The probe is the engine's now: it reads sysfs, and
+        its one process (`sysctl`, for macOS) is compiled in only on macOS.
+        What stays observable here: no Python process-spawning entry point is
+        reached, and the answer is positive and stable.
+        """
+        import subprocess
+
+        from medh5.storage import detect_l3_bytes
+
+        def refuse(*args, **kwargs):
+            raise AssertionError("L3 detection must not spawn a process here")
+
+        monkeypatch.setattr(os, "popen", refuse)
+        monkeypatch.setattr(subprocess, "run", refuse)
+        monkeypatch.setattr(subprocess, "Popen", refuse)
+        found = detect_l3_bytes()
+        assert found > 0
+        assert detect_l3_bytes() == found
+
+    def test_axis_kinds_must_describe_the_shape(self):
+        with pytest.raises(MEDH5ValidationError):
+            optimize_chunks((4, 4), ("spatial",), (2,))
+
+    def test_patch_length_must_match(self):
+        with pytest.raises(MEDH5ValidationError):
+            spatial_chunk_for((8, 8, 8), (4, 4))
+
+    def test_degenerate_shape_is_refused(self):
+        with pytest.raises(MEDH5ValidationError):
+            spatial_chunk_for((0, 8, 8))
+
+    def test_chunk_report(self):
+        report = chunk_report((64, 64, 64), (32, 32, 32), 2)
+        assert report["n_chunks"] == 8
+        assert report["chunk_bytes"] == 32 * 32 * 32 * 2
+
+
+class TestCodecs:
+    def test_every_profile_builds_kwargs(self):
+        for name in PROFILES:
+            kwargs = dataset_kwargs(
+                (256, 256, 8), np.dtype(np.int16), profile=name, role="image"
+            )
+            assert "chunks" in kwargs
+
+    def test_small_datasets_stay_contiguous(self):
+        assert dataset_kwargs((4,), np.dtype(np.uint16)) == {}
+        big = (COMPRESS_MIN_BYTES // 2 + 16,)
+        assert dataset_kwargs(big, np.dtype(np.uint16)) != {}
+
+    def test_empty_datasets_stay_contiguous(self):
+        assert dataset_kwargs((0, 3), np.dtype(np.float32)) == {}
+
+    def test_unknown_profile_is_refused(self):
+        with pytest.raises(MEDH5ValidationError):
+            resolve_profile("turbo")
+
+    def test_profile_objects_pass_through(self):
+        assert resolve_profile(PROFILES["archive"]) is PROFILES["archive"]
+        assert resolve_profile(None).name == "balanced"
+
+    def test_S14_2_portable_needs_no_plugin(self, tmp_path):
+        """A `portable` file must open with stock h5py filters only."""
+        import h5py
+
+        import medh5
+
+        shape = (64, 64, 64)
+        path = tmp_path / "p.medh5"
+        with medh5.create(path, codec="portable") as w:
+            w.add_grid("g", shape=shape, spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", np.zeros(shape, dtype=np.int16), grid="g", modality="CT")
+        with h5py.File(path) as handle:
+            assert handle["images/CT"].compression == "gzip"
+            assert np.asarray(handle["images/CT"][0, 0, :4]).size == 4
+
+    def test_is_bulk(self, sample_path):
+        with medh5.open(sample_path) as sample:
+            stored = sample.root["annotations/organs_tp0/layer_class_ids"]
+            assert not is_bulk(stored)
+
+
+class TestSamplingIndex:
+    def test_S14_3_index_answers_foreground_sampling(self, longitudinal_path, masks):
+        with medh5.open(longitudinal_path) as sample:
+            index = sample.index["organs_tp0"]
+            assert index.voxel_counts[1] == int(masks[1].sum())
+            centres = index.sample_foreground(1, n=8, rng=np.random.default_rng(0))
+            assert centres.shape == (8, 3)
+            for centre in centres:
+                assert masks[1][tuple(centre)]
+
+    def test_S14_3_coordinates_are_capped(self, tmp_path, label_set):
+        big = {1: np.ones((16, 24, 24), dtype=bool)}
+
+        path = write_sample(
+            tmp_path / "cap.medh5", label_set=label_set, masks=big, index=True
+        )
+        with medh5.open(path) as sample:
+            index = sample.index["organs_tp0"]
+            assert index.coords(1).shape[0] == 64
+            assert index.voxel_counts[1] == 16 * 24 * 24
+
+    def test_S14_3_bboxes_are_tight(self, longitudinal_path, masks):
+        with medh5.open(longitudinal_path) as sample:
+            box = sample.index["organs_tp0"].bbox(1)
+            assert box is not None
+            from medh5.geometry import box_to_slices
+
+            assert np.array_equal(
+                masks[1][box_to_slices(box)],
+                masks[1][masks[1].any(axis=(1, 2))][:, masks[1].any(axis=(0, 2))][
+                    :, :, masks[1].any(axis=(0, 1))
+                ],
+            )
+
+    def test_empty_class_has_no_bbox_and_no_samples(self, tmp_path, label_set):
+
+        masks = {1: np.zeros((16, 24, 24), dtype=bool)}
+        masks[1][0, 0, 0] = True
+        path = write_sample(
+            tmp_path / "e.medh5", label_set=label_set, masks=masks, index=True
+        )
+        with medh5.open(path) as sample:
+            index = sample.index["organs_tp0"]
+            assert index.voxel_counts[1] == 1
+            with pytest.raises(KeyError):
+                index.coords(99)
+
+    def test_class_weights(self, longitudinal_path):
+        with medh5.open(longitudinal_path) as sample:
+            index = sample.index["organs_tp0"]
+            weights = index.class_weights()
+            assert abs(sum(weights.values()) - 1.0) < 1e-9
+            assert set(index.class_weights("uniform").values()) == {1.0}
+            with pytest.raises(MEDH5ValidationError):
+                index.class_weights("magic")
+
+    def test_occupancy_is_optional(self, sample_path, masks):
+        with medh5.open(sample_path) as sample:
+            annotation = sample.annotations["organs_tp0"]
+            payload = build_index(annotation, occupancy=None, max_coords=16)
+            assert payload.occupancy is None
+            payload = build_index(annotation, occupancy=8, max_coords=16)
+            assert payload.occupancy is not None
+            assert payload.occupancy.shape[0] == len(annotation.class_ids)
+
+    def test_summary_and_reading(self, longitudinal_path):
+        with medh5.open(longitudinal_path) as sample:
+            indices = read_indices(sample.root)
+            summary = indices["organs_tp0"].summary()
+            assert summary["max_coords"] == 64
+            assert summary["source_digest"].startswith("sha256:")
+
+    def test_sampling_an_empty_class_is_an_error(self, tmp_path, label_set):
+
+        masks = {1: np.zeros((16, 24, 24), dtype=bool), 2: np.zeros((16, 24, 24), bool)}
+        masks[1][0, 0, 0] = True
+        path = write_sample(
+            tmp_path / "z.medh5", label_set=label_set, masks=masks, index=True
+        )
+        with medh5.open(path) as sample, pytest.raises(MEDH5ValidationError):
+            sample.index["organs_tp0"].sample_foreground(2, 1)
+
+    def test_S11_3_a_class_found_empty_stays_in_the_contract(self, tmp_path, label_set):
+        """A class searched for and not found is `verified absent`, not `unknown`."""
+
+        masks = {1: np.zeros((16, 24, 24), dtype=bool), 2: np.zeros((16, 24, 24), bool)}
+        masks[1][0, 0, 0] = True
+        path = write_sample(tmp_path / "c.medh5", label_set=label_set, masks=masks)
+        with medh5.open(path) as sample:
+            seg = sample.annotations["organs_tp0"]
+            assert seg.kind == "instances"
+            assert set(seg.class_ids) == {1, 2}
+            assert seg.is_annotated(2)
+            assert not seg.dense([2])[0].any()
+
+    def test_P06_the_occupancy_map_equals_the_loop_it_replaced(self):
+        from medh5.storage import occupancy as _occupancy
+
+        rng = np.random.default_rng(0)
+        for shape in [(9, 7, 5), (16, 16, 16), (33, 17, 8)]:
+            mask = rng.random(shape) > 0.9
+            coarse = tuple(max(1, -(-n // 8)) for n in shape)
+            expected = np.zeros(coarse, dtype=bool)
+            for block in np.ndindex(*coarse):
+                window = tuple(
+                    slice(i * 8, min((i + 1) * 8, n))
+                    for i, n in zip(block, shape, strict=True)
+                )
+                expected[block] = bool(mask[window].any())
+            assert np.array_equal(_occupancy(mask, 8), expected), shape
+
+    def test_P12_S14_3_the_occupancy_map_is_compressed_one_class_per_chunk(
+        self, tmp_path: Path
+    ):
+        """52 MB of mostly `False` at 200 classes and 512³, stored contiguous."""
+        # 40 classes x (64/8, 128/8, 128/8): 80 KiB, over the compression floor.
+        path = Framed.many_classes(
+            tmp_path / "occ.medh5", classes=40, shape=(64, 128, 128)
+        )
+        with h5py.File(path, "r") as handle:
+            occupancy = handle["index/organs/occupancy"]
+            assert occupancy.chunks == (1, *occupancy.shape[1:])
+            assert occupancy.compression == "gzip"
+            assert occupancy.id.get_storage_size() < occupancy.nbytes / 10
+        with medh5.open(path) as s:
+            assert s.verify().ok and "organs" in s.fresh_indices
+
+
+@pytest.mark.parametrize("byteorder", ["<", ">"])
+def test_S14_2_a_window_reads_what_hdf5plugin_wrote(
+    byteorder: str, tmp_path: Path
+) -> None:
+    """A window decompresses only the Blosc2 blocks it covers, from the stored
+    chunk.  What another tool wrote must read the same as HDF5 reads it:
+    `hdf5plugin`'s B2ND chunks through that path, a big-endian dataset --- whose
+    bytes HDF5 converts on the way out --- through HDF5's."""
+    hdf5plugin = pytest.importorskip("hdf5plugin")
+    path = tmp_path / "other.medh5"
+    w = medh5.create(path, sample_id="o", subject_id="s")
+    w.add_grid("g", shape=(8, 8, 8), spacing=(1.0, 1.0, 1.0))
+    w.add_image("CT", np.zeros((8, 8, 8), np.int16), grid="g", modality="CT")
+    w.commit()
+    rng = np.random.default_rng(7)
+    values = rng.integers(-1000, 1500, (37, 45, 53)).astype(f"{byteorder}i2")
+    values[:, :20] = 3  # runs, so blocks compress unevenly
+    with h5py.File(path, "r+") as f:
+        f.create_dataset(
+            "x_other/ct",
+            data=values,
+            chunks=(16, 16, 32),
+            **hdf5plugin.Blosc2(
+                cname="zstd", clevel=3, filters=hdf5plugin.Blosc2.SHUFFLE
+            ),
+        )
+    with medh5.open(path) as s:
+        ds = s.root["x_other/ct"]
+        for _ in range(40):
+            lo = [int(rng.integers(0, n)) for n in values.shape]
+            hi = [
+                int(rng.integers(a + 1, n + 1))
+                for a, n in zip(lo, values.shape, strict=True)
+            ]
+            window = tuple(slice(a, b) for a, b in zip(lo, hi, strict=True))
+            np.testing.assert_array_equal(ds[window], values[window])
+        np.testing.assert_array_equal(ds[5, 3:40, 7], values[5, 3:40, 7])
+
+
+def test_N19_blosclz_chunks_read_whole_by_window_and_in_one_dimension(
+    tmp_path: Path,
+) -> None:
+    """The vendored C-Blosc2 is 3.3.5, whose BloscLZ refuses a match length
+    that would wrap (N19 of the 2.0 re-audit; the refusal is held by
+    `medh5-sys`'s tests).  The controls: what `hdf5plugin` wrote with BloscLZ
+    reads whole through HDF5's filter, by window through the block reader, and
+    as a plain one-dimensional dataset."""
+    hdf5plugin = pytest.importorskip("hdf5plugin")
+    path = tmp_path / "blosclz.medh5"
+    w = medh5.create(path, sample_id="o", subject_id="s")
+    w.add_grid("g", shape=(8, 8, 8), spacing=(1.0, 1.0, 1.0))
+    w.add_image("CT", np.zeros((8, 8, 8), np.int16), grid="g", modality="CT")
+    w.commit()
+    rng = np.random.default_rng(19)
+    volume = rng.integers(-1000, 1500, (37, 45, 53)).astype("<i2")
+    volume[:, :20] = 3
+    line = np.repeat(np.arange(4000, dtype="<i4"), 3)
+    options = hdf5plugin.Blosc2(
+        cname="blosclz", clevel=5, filters=hdf5plugin.Blosc2.SHUFFLE
+    )
+    with h5py.File(path, "r+") as f:
+        f.create_dataset("x_other/ct", data=volume, chunks=(16, 16, 32), **options)
+        f.create_dataset("x_other/line", data=line, chunks=(1000,), **options)
+    with medh5.open(path) as s:
+        ct, flat = s.root["x_other/ct"], s.root["x_other/line"]
+        np.testing.assert_array_equal(ct.read(), volume)
+        np.testing.assert_array_equal(ct[3:30, 7:41, 2:50], volume[3:30, 7:41, 2:50])
+        np.testing.assert_array_equal(flat.read(), line)
+        np.testing.assert_array_equal(flat[1234:5678], line[1234:5678])
+
+
+class TestF07FilterValues:
+    """A stored filter pipeline is file content: a Blosc2 chunk-size value
+    (``cd_values[3]``) smaller than the chunk it describes failed an assertion
+    in the vendored filter and aborted the process (SIGABRT at
+    ``blosc2_filter.c:534``, F07 of the round-4 audit).  It is the filter's
+    ordinary error now, whichever way the dataset is read."""
+
+    # Planted without `hdf5plugin`: with the filter registered, HDF5 runs its
+    # `set_local`, which rewrites the value and the defect disappears.
+    PLANT = (
+        "import sys, h5py\n"
+        "with h5py.File(sys.argv[1], 'r+') as f:\n"
+        "    src = f['images/CT']\n"
+        "    code, flags, values, name = src.id.get_create_plist().get_filter(0)\n"
+        "    assert code == 32026, code\n"
+        "    values = list(values)\n"
+        "    values[3] = 1\n"
+        "    dst = f.create_dataset('images/planted', shape=src.shape,"
+        " dtype=src.dtype, chunks=src.chunks, compression=code,"
+        " compression_opts=tuple(values), allow_unknown_filter=True)\n"
+        "    for i in range(src.id.get_num_chunks()):\n"
+        "        offset = src.id.get_chunk_info(i).chunk_offset\n"
+        "        mask, raw = src.id.read_direct_chunk(offset)\n"
+        "        dst.id.write_direct_chunk(offset, raw, mask)\n"
+        "    for key in src.attrs:\n"
+        "        dst.attrs[key] = src.attrs[key]\n"
+        "    del f['images/CT']\n"
+        "    f.move('images/planted', 'images/CT')\n"
+        "    planted = f['images/CT'].id.get_create_plist().get_filter(0)[2]\n"
+        "    assert planted[3] == 1, planted\n"
+    )
+    READ = (
+        "import sys, medh5\n"
+        "with medh5.open(sys.argv[1]) as s:\n"
+        "    image = s.images['CT']\n"
+        "    try:\n"
+        "        if sys.argv[2] == 'full':\n"
+        "            image.read()\n"
+        "        else:\n"
+        "            image.read((slice(0, 4), slice(2, 9), slice(1, 5)))\n"
+        "    except OSError as exc:\n"
+        "        print('refused:', exc)\n"
+        "    else:\n"
+        "        print('read')\n"
+    )
+
+    @staticmethod
+    def _run(*argv: str) -> subprocess.CompletedProcess[str]:
+        env = {**os.environ, "HDF5_PLUGIN_PRELOAD": "::"}
+        return subprocess.run(
+            [sys.executable, *argv],
+            capture_output=True,
+            text=True,
+            timeout=300,
+            env=env,
+        )
+
+    @pytest.fixture
+    def planted(self, tmp_path: Path) -> Path:
+        path = tmp_path / "planted.medh5"
+        rng = np.random.default_rng(7)
+        with medh5.create(path, sample_id="p", codec="balanced") as w:
+            w.add_grid("g", shape=(32, 32, 32), spacing=(1.0, 1.0, 1.0))
+            w.add_image(
+                "CT",
+                rng.integers(0, 1000, (32, 32, 32)).astype(np.int16),
+                grid="g",
+                modality="CT",
+            )
+        run = self._run("-c", self.PLANT, str(path))
+        assert run.returncode == 0, run.stderr[-2000:]
+        return path
+
+    @pytest.mark.parametrize("how", ["full", "window"])
+    def test_F07_S14_2_a_chunk_size_the_chunk_exceeds_is_an_error(
+        self, planted: Path, how: str
+    ) -> None:
+        run = self._run("-c", self.READ, str(planted), how)
+        assert run.returncode == 0, (run.returncode, run.stderr[-2000:])
+        assert run.stdout.startswith("refused:"), run.stdout
+        assert "does not match the chunk size" in run.stdout
+
+    def test_F07_S15_the_validator_reports_it(self, planted: Path) -> None:
+        run = self._run(
+            "-m", "medh5.cli", "validate", "--level", "integrity", str(planted)
+        )
+        assert run.returncode == 1, (run.returncode, run.stderr[-2000:])
+        assert "E001" in run.stdout and "chunk size" in run.stdout
+
+
+class TestRecompress:
+    def test_F12_S14_2_a_type_a_rebuild_would_lose_is_copied_as_stored(
+        self, tmp_path: Path
+    ) -> None:
+        """Recompress rebuilt every bulk dataset from a plain number type:
+        an enumeration lost its names and a committed type its identity and
+        attributes, while the result reported ``ok`` (F12 of the round-4
+        audit).  Such a dataset is copied as stored and reported as kept."""
+        from medh5.storage import recompress
+
+        path = write_sample(tmp_path / "typed.medh5", codec="portable")
+        rng = np.random.default_rng(12)
+        big = rng.integers(0, 3, (48, 64, 64))
+        colours = h5py.enum_dtype({"RED": 0, "GREEN": 1, "BLUE": 2}, basetype="u1")
+        with h5py.File(path, "r+") as f:
+            f["x_types/level"] = np.dtype("<i2")
+            f["x_types/level"].attrs["unit"] = "HU"
+            level = f["x_types/level"]
+            f.create_dataset("x_types/big", data=big.astype("<i2"), dtype=level)
+            f.create_dataset(
+                "x_types/small", data=np.arange(4, dtype="<i2"), dtype=level
+            )
+            f.create_dataset("x_types/colours", data=big.astype("u1"), dtype=colours)
+            f.create_dataset("x_types/few", data=np.zeros(4, "u1"), dtype=colours)
+        with medh5.open(path) as s:
+            before = s.content_id
+        result = recompress(path, "archive")
+        assert result.ok and result.content_id == before
+        assert {"/x_types/big", "/x_types/colours"} <= set(result.kept)
+        assert result.to_json()["kept"] == result.kept
+        with h5py.File(path, "r") as f:
+            named = f["x_types/level"]
+            assert named.attrs["unit"] == "HU"
+            for name in ("big", "small"):
+                stored = f[f"x_types/{name}"].id.get_type()
+                assert stored.committed(), name
+                assert stored == named.id
+            for name in ("colours", "few"):
+                mapping = h5py.check_enum_dtype(f[f"x_types/{name}"].dtype)
+                assert mapping == {"RED": 0, "GREEN": 1, "BLUE": 2}, name
+            np.testing.assert_array_equal(f["x_types/big"][...], big)
+            np.testing.assert_array_equal(f["x_types/colours"][...], big)
+        with medh5.open(path) as s:
+            assert s.verify().ok and s.content_id == before
+
+    def test_S13_1_recompression_preserves_the_content_id(self, tmp_path, label_set):
+        from medh5.storage import recompress
+
+        path = tmp_path / "big.medh5"
+        shape = (48, 64, 64)
+        rng = np.random.default_rng(5)
+        mask = np.zeros(shape, dtype=bool)
+        mask[4:20, 8:40, 8:40] = True
+        with medh5.create(path, codec="training") as w:
+            w.label_set(label_set)
+            w.add_grid("g", shape=shape, spacing=(1.0, 1.0, 1.0))
+            w.add_image(
+                "CT",
+                rng.integers(-1000, 1500, shape).astype(np.int16),
+                grid="g",
+                modality="CT",
+            )
+            w.add_segmentation("organs", grid="g", masks={1: mask})
+        with medh5.open(path) as sample:
+            before = sample.content_id
+            values = sample.images["CT"].read()
+
+        result = recompress(path, "archive")
+        assert result.content_id_preserved
+        assert result.content_id == before
+        assert result.datasets >= 1
+        assert any("zstd" in after for _, _, after in result.changed)
+
+        with medh5.open(path) as sample:
+            assert sample.content_id == before
+            assert np.array_equal(sample.images["CT"].read(), values)
+            assert np.array_equal(sample.annotations["organs"].dense([1])[0], mask)
+            assert sample.verify().ok
+
+    def test_out_writes_beside_the_source(self, tmp_path, indexed_cohort):
+        from medh5.storage import recompress
+
+        target = tmp_path / "copy.medh5"
+        result = recompress(indexed_cohort[0], "portable", out=target)
+        assert target.exists()
+        assert Path(indexed_cohort[0]).exists()
+        assert result.path == str(target)
+        assert "portable" in str(result)
+
+    def test_an_unknown_profile_is_refused(self, indexed_cohort):
+        from medh5.storage import recompress
+
+        with pytest.raises(MEDH5ValidationError, match="unknown codec profile"):
+            recompress(indexed_cohort[0], "maximum-effort")
+
+    def test_recompress_paths_and_json(self, indexed_cohort):
+        from medh5.storage import recompress_paths
+
+        results = recompress_paths(indexed_cohort[:2], "portable")
+        assert len(results) == 2
+        assert set(results[0].to_json()) >= {"path", "profile", "ratio", "content_id"}
+
+    def test_L28_S14_1_rechunk_chunks_the_way_the_writer_does(self, tmp_path: Path):
+        """A `layers` dataset went to h5py's (2, 16, 24, 48), and drew W902."""
+        from medh5.storage import fit_chunks, grid_chunks, recompress
+
+        shape = (32, 48, 48)
+        rng = np.random.default_rng(0)
+        masks = {}
+        for c in range(1, 5):
+            mask = np.zeros(shape, bool)
+            mask[int(rng.integers(0, 16)) :, int(rng.integers(0, 24)) :, :] = True
+            masks[c] = mask
+        path = tmp_path / "rc.medh5"
+        w = medh5.create(path, sample_id="s", subject_id="s", codec="portable")
+        w.add_grid("g", shape=shape, spacing=(1, 1, 1), patch_hint=(16, 16, 16))
+        w.add_image(
+            "CT", rng.integers(0, 1000, shape).astype(np.int16), grid="g", modality="CT"
+        )
+        w.label_set(Framed.label_set(4))
+        w.add_segmentation("organs", grid="g", masks=masks, encoding="layers")
+        w.commit()
+        # Re-chunk it the way some other tool might have, then ask for the rule.
+        with h5py.File(path, "r+") as handle:
+            data = handle["annotations/organs/data"][...]
+            attrs = dict(handle["annotations/organs/data"].attrs)
+            del handle["annotations/organs/data"]
+            node = handle["annotations/organs"].create_dataset(
+                "data", data=data, chunks=(2, 8, 12, 24), compression="gzip"
+            )
+            node.attrs.update(attrs)
+        result = recompress(path, "portable", rechunk=True)
+        assert result.ok
+        with medh5.open(path) as s:
+            grid = s.grids["g"]
+        with h5py.File(path, "r") as handle:
+            data = handle["annotations/organs/data"]
+            assert data.chunks == fit_chunks(
+                grid_chunks(grid, data.dtype.itemsize, leading=1), data.shape
+            )
+            assert data.chunks[0] == 1
+            image = handle["images/CT"]
+            assert image.chunks == grid_chunks(grid, image.dtype.itemsize)
+        assert "W902" not in validate_file(path, level="strict").codes
+
+    def test_L28_rechunk_finds_each_sample_root_in_a_collection(self, tmp_path: Path):
+        from medh5.storage import recompress
+
+        shape = (32, 64, 64)  # 256 KiB of layers: chunked
+        paths = []
+        for i in range(2):
+            path = tmp_path / f"m{i}.medh5"
+            first = np.zeros(shape, bool)
+            first[2:20] = True
+            second = np.zeros(shape, bool)
+            second[10:28] = True
+            w = medh5.create(
+                path, sample_id=f"m{i}", subject_id=f"p{i}", codec="portable"
+            )
+            w.add_grid("g", shape=shape, spacing=(1, 1, 1), patch_hint=(8, 8, 8))
+            w.add_image("CT", np.ones(shape, np.int16), grid="g", modality="CT")
+            w.label_set(Framed.label_set(2))
+            w.add_segmentation(
+                "seg", grid="g", masks={1: first, 2: second}, encoding="layers"
+            )
+            w.commit()
+            paths.append(path)
+        shard = tmp_path / "shard.medh5c"
+        medh5.pack(paths, shard)
+        # Verifying the output read the collection root as a sample, and raised
+        # a KeyError for its `/meta` after the file had been replaced.
+        result = recompress(shard, "balanced", rechunk=True)
+        assert result.ok and result.verified and result.content_id_preserved
+        with h5py.File(shard, "r") as handle:
+            for key in ("m0", "m1"):
+                data = handle[f"samples/{key}/annotations/seg/data"]
+                assert data.chunks is not None and data.chunks[0] == 1
+        with medh5.open_collection(shard) as collection:
+            assert all(collection[key].verify().ok for key in collection)
+
+
+class TestC10References:
+    """A file holding HDF5 references is not rewritten (C10 of the 2.0 audit).
+
+    A reference is an address in its own file.  Amend, recompress, pack and
+    repack write a new file, where a copied object reference pointed wherever
+    its address landed --- and a no-op amend nulled the ones in an extension
+    group --- with every digest still verifying."""
+
+    @staticmethod
+    def _with_reference(path: Path, where: str) -> Path:
+        write_sample(path)
+        with h5py.File(path, "r+") as f:
+            target = f["images"].ref
+            if where == "attribute":
+                f["images"].attrs["x_ref"] = target
+            elif where == "dataset":
+                group = f.require_group("x_ext")
+                group.create_dataset("refs", data=[target], dtype=h5py.ref_dtype)
+            elif where == "compound":
+                compound = np.dtype([("id", "<i4"), ("ref", h5py.ref_dtype)])
+                group = f.require_group("x_ext")
+                group.create_dataset(
+                    "rows", data=np.array([(1, target)], dtype=compound)
+                )
+            elif where == "named_type":
+                # A committed datatype carries attributes too (C10 of the 2.0
+                # re-audit): the walk of groups and datasets passed it by.
+                group = f.require_group("x_ext")
+                group["t"] = np.dtype("<f4")
+                group["t"].attrs["x_ref"] = target
+            elif where in ("unlinked_type", "unlinked_attribute_type"):
+                # A committed datatype whose name was removed lives on as the
+                # type of what uses it, attributes and all: the walk of named
+                # types passed it by, and a rewrite nulled the reference
+                # (C10 of the round-3 audit).
+                group = f.require_group("x_ext")
+                group["t"] = np.dtype("<u4")
+                group["t"].attrs["x_ref"] = target
+                if where == "unlinked_type":
+                    group.create_dataset("d", data=[1, 2, 3], dtype=group["t"])
+                else:
+                    group.attrs.create("a", data=[7], dtype=group["t"])
+                del group["t"]
+            else:
+                compound = np.dtype([("id", "<i4"), ("ref", h5py.ref_dtype)])
+                f["x_type"] = np.dtype("<i2")
+                f["x_type"].attrs.create(
+                    "rows", data=np.array([(1, target)], dtype=compound)
+                )
+        return path
+
+    @pytest.mark.parametrize(
+        "where",
+        [
+            "attribute",
+            "dataset",
+            "compound",
+            "named_type",
+            "root_named_type",
+            "unlinked_type",
+            "unlinked_attribute_type",
+        ],
+    )
+    def test_C10_a_file_holding_references_is_not_rewritten(self, tmp_path, where):
+        from medh5.collection import pack
+        from medh5.storage import recompress
+
+        path = self._with_reference(tmp_path / "ref.medh5", where)
+        before = path.read_bytes()
+        attempts = [
+            lambda: medh5.amend(path).__enter__(),
+            lambda: recompress(path, profile="portable"),
+            lambda: pack([path], tmp_path / "shard.medh5c"),
+        ]
+        for attempt in attempts:
+            with pytest.raises(MEDH5FileError, match="holds HDF5 references"):
+                attempt()
+        assert path.read_bytes() == before, "the source was not touched"
+        assert not (tmp_path / "shard.medh5c").exists()
+        # Reading it is unaffected: the file is still a valid sample.
+        with medh5.open(path) as sample:
+            assert sample.images
+
+    def test_C10_an_unlinked_type_without_references_is_rewritten(self, tmp_path):
+        """The control: a committed type with no reference anywhere in it is
+        another tool's content like any other, and every rewrite carries it."""
+        from medh5.collection import pack
+        from medh5.storage import recompress
+
+        path = write_sample(tmp_path / "plain.medh5")
+        with h5py.File(path, "r+") as f:
+            group = f.require_group("x_ext")
+            group["t"] = np.dtype("<u4")
+            group["t"].attrs["note"] = "kept"
+            group.create_dataset("d", data=[1, 2, 3], dtype=group["t"])
+            del group["t"]
+        with medh5.amend(path):
+            pass
+        assert recompress(path, profile="portable").verified
+        pack([path], tmp_path / "shard.medh5c")
+        with h5py.File(path, "r") as f:
+            assert f["x_ext/d"][()].tolist() == [1, 2, 3]
+            kept = h5py.Datatype(f["x_ext/d"].id.get_type())
+            assert kept.attrs["note"] == "kept"
+
+
+class TestB02LinkGraphs:
+    """A file's links form a graph, which every tool walks once per object and
+    `recompress` copies as a graph.
+
+    The 2.0 walkers followed paths: a hard link back to an ancestor made
+    validation and `verify` run without end, and `recompress` --- which also
+    followed soft links --- recursed until the stack ran out (SIGSEGV) on a
+    13 KiB file.  1.x walked each object once (`H5Ovisit`), so these are also
+    the 1.x answers.  Each tool runs in a child process with a time limit: a
+    regression hangs or crashes rather than failing.
+    """
+
+    @staticmethod
+    def _linked(tmp_path: Path, kind: str) -> Path:
+        from tests.kits import Numbered
+
+        path = Numbered.plain(tmp_path / f"{kind}.medh5")
+        with h5py.File(path, "r+") as handle:
+            ext = handle.create_group("x_ext")
+            ext.create_dataset("d", data=np.arange(4))
+            if kind == "hard":
+                ext["loop"] = ext  # to itself
+                ext["root"] = handle  # to an ancestor
+            elif kind == "soft":
+                ext["loop"] = h5py.SoftLink("/x_ext")
+            else:
+                ext["alias"] = ext["d"]
+        return path
+
+    @pytest.mark.parametrize("kind", ["hard", "soft", "alias"])
+    def test_B02_every_tool_finishes_on_a_linked_graph(self, tmp_path: Path, kind):
+        import subprocess
+        import sys
+
+        path = self._linked(tmp_path, kind)
+        out = tmp_path / "out.medh5"
+        code = (
+            "import medh5\n"
+            "from medh5.curation import scrub\n"
+            "from medh5.storage import recompress\n"
+            "from medh5.validate import validate_file\n"
+            f"path = {str(path)!r}\n"
+            "assert not validate_file(path, level='integrity').errors\n"
+            "with medh5.open(path) as sample:\n"
+            "    assert sample.verify().ok\n"
+            f"assert recompress(path, 'portable', out={str(out)!r}).verified\n"
+            "scrub.scan(path)\n"
+            "print('finished')\n"
+        )
+        done = subprocess.run(
+            [sys.executable, "-c", code], capture_output=True, text=True, timeout=120
+        )
+        assert done.returncode == 0, done.stderr[-2000:]
+        assert done.stdout.strip().endswith("finished")
+
+    def test_B02_recompress_keeps_soft_links_aliases_and_cycles(self, tmp_path: Path):
+        from medh5.storage import recompress
+
+        path = self._linked(tmp_path, "alias")
+        with h5py.File(path, "r+") as handle:
+            ext = handle["x_ext"]
+            ext["soft"] = h5py.SoftLink("/x_ext/d")
+            ext["loop"] = ext
+        with medh5.open(path) as sample:
+            before = sample.content_id
+        out = tmp_path / "out.medh5"
+        result = recompress(path, "portable", out=out)
+        assert result.verified and result.content_id == before
+        with h5py.File(out, "r") as handle:
+            ext = handle["x_ext"]
+            link = ext.get("soft", getlink=True)
+            assert isinstance(link, h5py.SoftLink) and link.path == "/x_ext/d"
+            assert ext["alias"] == ext["d"]  # one object, two names
+            assert ext["loop"] == ext  # the cycle, as stored

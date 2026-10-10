@@ -4,6 +4,15 @@
 medh5 COMMAND [args] [--json]
 ```
 
+The command line is a native program over the format engine. `pip install
+medh5` puts it on the path; so do `cargo install --locked medh5-cli`, the binaries
+attached to every GitHub Release, and `brew install XwK-P/medh5/medh5`. Each is
+the same code, with the same output and exit codes. The converters
+(`medh5 convert …`, `medh5 migrate`) are Python integrations: the standalone
+binary runs them through a Python that has the package installed (`python3`,
+or the interpreter `MEDH5_PYTHON` names), and says what to install when there
+is none.
+
 Exit codes are Unix-conventional: **0** success, **1** a handled error or a
 failed check, **2** a usage error. Every inspection command takes `--json` and
 writes a machine-readable document to stdout.
@@ -63,8 +72,11 @@ In a file that declares a `content_id`, a dataset inside a grid, image,
 annotation or transform that carries no digest fails the check (`UNSIGNED`):
 the root covers the digests present, so an undigested dataset added to an
 object — `instance_ids` on a boxes annotation, say — changes what it means
-without changing the root. The writer digests every dataset, so none of its
-files has one.
+without changing the root. So does a path there that is not its object's own
+— an alias sorting before it, a soft link — because a line binds bytes to the
+path it names, and such a name could be relinked to other covered bytes under
+the same root (`E704`). The writer digests every dataset and makes no links,
+so none of its files has either.
 
 ### `medh5 fix`
 
@@ -98,8 +110,11 @@ Timepoints, their intervals, and what belongs to each visit.
 medh5 track PATH [--class KEY] [--key K] [--json]
 ```
 
-Join instance ids across visits: per object, its volume at each timepoint, the
-relative change, and whether it is `present`, `resolved` or `unexamined`.
+Join instance ids across visits: per object, its volume at each timepoint in
+mm³ (in px on an uncalibrated grid), the relative change, and whether it is
+`present`, `resolved` or `unexamined`. Masks, boxes, oriented boxes and points
+join; an annotation of another kind that carries `instance_ids` is named as
+skipped, and the rest still join.
 
 ## Annotations
 
@@ -323,14 +338,16 @@ medh5 convert to-nifti PATH IMAGE OUT [--annotation A --class K] [--stored]
 medh5 convert from-dicom ROOT OUT [--group-by subject|study]
                                   [--modality M ...] [--series UID ...]
 
-medh5 convert from-dicom-seg SEG SAMPLE [--id ANN] [--grid G]
+medh5 convert from-dicom-seg SEG SAMPLE [--id ANN] [--grid G] [--frame-salt S]
 medh5 convert to-dicom-seg PATH ANNOTATION OUT --source DICOM [--source DICOM ...]
 
 medh5 convert from-rtstruct RTSTRUCT SAMPLE [--id ANN] [--grid G] [--rasterize]
 medh5 convert to-rtstruct PATH ANNOTATION OUT --source DICOM [--source DICOM ...]
+                                               [--frame-salt S]
 
 medh5 convert from-nnunet ROOT OUT [--case ID ...]
 medh5 convert to-nnunet OUT PATH... [--dataset-name NAME] [--annotation A]
+                                    [--class K ...] [--unlabeled refuse|test]
 ```
 
 All but `to-nifti` also take `[--report FILE] [--json]`. Options marked `...`
@@ -350,7 +367,9 @@ sample per study, warns, and records the fallback.
 `from-dicom-seg` writes annotation `seg` and `from-rtstruct` writes `contours`
 unless `--id` names another; `to-nnunet` exports annotation `seg` unless
 `--annotation` names another, as dataset `Dataset001_medh5` unless
-`--dataset-name` does.
+`--dataset-name` does, with every class the cases carry unless `--class` names
+the ones to export --- each of them examined by every case. A case without the
+annotation is refused unless `--unlabeled test` writes it to `imagesTs`.
 
 See [Converters](converters.md).
 
@@ -406,6 +425,126 @@ to its target where the class count is large. A longitudinal sample given as
 `PATH` gets the paired row when a transform relates its first two visits.
 Progress goes to stderr, so `--json` output is only the document.
 
+## Clinical history (format 1.1)
+
+### `medh5 clinical show`
+
+```
+medh5 clinical show PATH [--key K] [--json]
+```
+
+The subject clock, every event version with its effective and available times,
+the documents (metadata, not text) and the links. See
+[Clinical history beside the images](../guides/clinical.md).
+
+### `medh5 clinical select`
+
+```
+medh5 clinical select PATH --cutoff-hours H [--policy POLICY] [--context-us W] [--key K] [--json]
+medh5 clinical select PATH --cutoff-us T [--policy-file POLICY.json] [--json]
+```
+
+What strict prospective selection (1.1 §9) admits at the cutoff: the event
+versions, the payloads they attest, the records a later revision of unknown
+availability makes uncertifiable, and how many events each rule excluded.
+`--policy latest_provable` names the one alternative; `--policy-file` takes a
+whole policy (contract §3.4).
+
+### `medh5 clinical export`
+
+```
+medh5 clinical export PATH [--key K] [--out RECORDS.json]
+```
+
+The logical-record bundle --- clock, events, documents with their text, links ---
+as JSON, checked against `medh5-clinical-1.schema.json`.
+
+### `medh5 clinical augment`
+
+```
+medh5 clinical augment PATH RECORDS.json [--out OUT] [--json]
+```
+
+Add a record bundle to a sample, in place or into `--out`: images and
+annotations are copied as stored (their digests do not change), the sample
+becomes 1.1 with a new `content_id`, and what the records leave unknown is
+reported. A `clinical` group the profile did not write is refused, never
+reinterpreted.
+
+### `medh5 clinical strip`
+
+```
+medh5 clinical strip PATH --out OUT [--json]
+```
+
+The imaging projection: a new file without the clinical profile, written as
+1.0, with the loss reported. Never in place.
+
+## Tasks and caches
+
+The [task and cache contract](../spec/task-cache-1.md): task manifests
+(`medh5.task/1`) and feature caches (`medh5.cache/1`). See
+[Train on clinical tasks](../guides/clinical-training.md).
+
+### `medh5 task validate`
+
+```
+medh5 task validate MANIFEST [--json]
+```
+
+Everything wrong with a manifest that opening no file can find: its schema,
+its policy, slots and target, its fingerprint, and its subjects, partitions,
+rows and source ids (T1xx, T2xx). Prints the task and manifest fingerprints.
+
+### `medh5 task preflight`
+
+```
+medh5 task preflight MANIFEST [--base DIR] [--deep] [--json]
+```
+
+Open and check every source --- pins, identities, clocks, duplicated events
+--- and report every row: `eligible`, `uncertifiable`, `excluded` or `error`,
+with the reason, the event count, the image filling each slot and the target
+label. Exits 1 when anything was found. `--deep` re-verifies every dataset of
+every source, not only the clinical ones.
+
+With `--json`, each subject's merged history is listed once, under
+`subjects` (its sources, event versions, links and owned documents), and each
+row names what it admits in `selection`: the admitted versions in input order
+(`events`, with their order bounds, tie groups and plan flags), the attested
+links by position in its subject's `links`, and the payloads.
+
+Both forms take the subjects one at a time and hold neither the cohort's
+histories nor its document: `--json` writes each subject's history as soon as
+it is merged, with the members in the order they become known --- the two
+fingerprints, `subjects`, `rows`, then `ok`, `counts` and `findings` --- and
+the table keeps one line per row. Memory follows the largest subject and the
+rows, not the cohort.
+
+### `medh5 task reconcile`
+
+```
+medh5 task reconcile MANIFEST [--base DIR] [--out OUT]
+```
+
+Record, per subject, the event versions several of its fragments hold and the
+digest they share --- what preflight checks duplicates against.
+
+### `medh5 cache validate`
+
+```
+medh5 cache validate CACHE [--task MANIFEST] [--base DIR] [--json]
+```
+
+Check a feature cache's checksums and every source pin it records: *stale*
+entries (T403) are told apart from *corrupt* ones (T401, T402), and an
+event-level entry must name a version its source holds and the document that
+version owns (T407). With `--task`,
+also that it was built for this task and its cutoffs (T404), fitted on its
+training partition (T405), and encodes only versions its rows admit (T406) ---
+the task is preflighted a subject at a time, keeping only each row's cutoff
+and admitted versions.
+
 ## Conformance
 
 ### `medh5 conformance list`
@@ -441,7 +580,8 @@ medh5 conformance publish OUTDIR [--case NAME]
 ```
 
 Write the distributable suite: cases, `expected.json`, the code table, the JSON
-Schema, `SHA256SUMS` and a README.
+Schemas (`/meta`, the clinical profile, and the task and cache contract's),
+`SHA256SUMS` and a README.
 
 ### `medh5 conformance score`
 
@@ -457,4 +597,5 @@ Score any implementation's results against a published suite. See
 - **[Check a file before training on it](../guides/validate.md)** — `validate` versus `verify`.
 - **[Diagnostic codes](diagnostic-codes.md)** — every code these commands report.
 - **[Cohort check codes](cohort-checks.md)** — what `medh5 dataset check` reports.
+- **[Task and cache contract](../spec/task-cache-1.md#9-finding-codes)** — the T-codes `medh5 task` and `medh5 cache` report.
 - **[How-to guides](../guides/index.md)** — these commands in the tasks they belong to.

@@ -23,14 +23,15 @@ medh5 validate case.medh5 --level strict
 
 | Level | Reads | Use for |
 |---|---|---|
-| `structural` | metadata + bounded payload scans | a fast "is this even a medh5 file" |
+| `structural` | metadata + payload scans in bounded slabs | a fast "is this even a medh5 file" |
 | `semantic` *(default)* | the same, plus layer data | day-to-day |
 | `integrity` | every byte | after a file has moved between machines |
 | `strict` | every byte | CI, where a warning should stop a build |
 
-**None of them is free.** Even `structural` decompresses voxels — it reads an
-image to test int16-losslessness and scans annotation payloads for an ignore
-region, both capped, but neither is metadata. On a 12.6 Mvox sample: 62 ms for
+**None of them is free.** Even `structural` decompresses voxels — it reads a
+float image of up to 4 M values to test int16-losslessness, and may scan a
+labelmap or layers payload for an ignore region: the whole payload, in bounded
+slabs, so memory is bounded and the work is not. On a 12.6 Mvox sample: 62 ms for
 `structural` and `semantic`, 143 ms for `integrity`, against 0.5 ms for a
 metadata-only `open()`. Do not put one in a hot path.
 
@@ -42,7 +43,7 @@ measurements in
 
 ```
 case.medh5: FAILED [strict] profiles=core,seg (1 errors, 0 warnings)
-  ERROR   E102 grids/ct: `direction` is not orthonormal to 1e-4
+  ERROR   E102 /grids/ct: `direction` is not orthonormal (max residual 0.4)
 ```
 
 Every diagnostic carries a stable code. Look it up in
@@ -86,6 +87,6 @@ medh5 dataset check cohort.json --deep
 
 ## Related
 
-- **[Diagnostic codes](../reference/diagnostic-codes.md)** — all 71.
+- **[Diagnostic codes](../reference/diagnostic-codes.md)** — all 95 codes.
 - **[Profiles and validation levels](../reference/profiles-and-levels.md)** — the two dials.
 - **[Cohort check codes](../reference/cohort-checks.md)** — the `C1xx`–`C5xx` space.

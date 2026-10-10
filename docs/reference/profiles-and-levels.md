@@ -13,17 +13,19 @@ Each level includes the ones before it, so `strict` runs everything.
 
 | Level | Checks | Reads |
 |---|---|---|
-| `structural` | layout, required attributes, dtypes, shapes, identifier syntax, the [JSON Schema](schema.md) | metadata, plus bounded payload scans |
+| `structural` | layout, required attributes, dtypes, shapes, identifier syntax, the [JSON Schema](schema.md) | metadata, plus payload scans in bounded slabs |
 | `semantic` *(default)* | cross-references resolve, geometry consistency, class ids in the label set, encoding invariants, profile requirements | the same, plus layer data |
-| `integrity` | per-object digests, `content_id`, sampling-index `source_digest` currency | every byte |
+| `integrity` | per-object digests, `content_id`, sampling-index `source_digest` currency, and the `probmap` value checks (values in [0, 1], `normalized` sums) made in the same full read | every byte |
 | `strict` | the same rules as `integrity`, with warnings promoted to errors | every byte |
 
 **None of the levels is free.** Even `structural` decompresses voxels: it reads
-an image to decide whether a float array would be lossless as `int16` (capped at
-4 M values), and scans a labelmap or layers payload to find an in-band ignore
-region (capped at 64 M). `semantic` additionally reads layer data to judge
-encoding optimality, under the same 64 M cap. The caps bound the work on a large
-volume; they do not make it metadata.
+an image to decide whether a float array would be lossless as `int16` (only an
+image of at most 4 M values), and scans a labelmap or layers payload to find an
+in-band ignore region where the answer decides a finding --- partial coverage
+(W904), or a `uint16` labelmap whose ids would fit `uint8` (E411). `semantic`
+additionally reads layer data to judge encoding optimality. Both scans read the
+whole payload, in slabs of at most 8 MiB: the slabs bound the memory a large
+volume takes, not the work, which grows with its size.
 
 Measured on a 12.6 Mvox, 18.7 MB sample — against a metadata-only `open()` of
 0.5 ms:
@@ -69,11 +71,12 @@ s.profiles   # {"core", "seg", "det", "curation", "longitudinal"}
 | `seg` | a label set and at least one voxel annotation (a bare `mask` does not count) |
 | `det` | a label set and at least one annotation whose `task` is `detection` |
 | `cls` | a label set and at least one classification annotation |
-| `reg` | at least one transform |
-| `curation` | a provenance graph, and `quality` on every annotation |
+| `reg` | at least one transform whose `from_frame` and `to_frame` are each the `frame_uid` of one of the sample's grids |
+| `curation` | a provenance graph recording at least one activity, and `quality` on every annotation |
 | `multiscale` | the §4.3 pyramid layout on every image |
-| `training` | a sampling index, present and current |
+| `training` | a sampling index with at least one entry; a stale entry is `W905`, not a missing profile |
 | `longitudinal` | at least two declared timepoints, each grid bound to one, and stable instance ids for objects seen at more than one visit (§7.4) |
+| `clinical` | **format 1.1**: the `clinical/` group --- a canonical descriptor with the subject clock, at least one event, and the documents and links the events use ([1.1](../spec/medh5-1.1.md) §3–§7) |
 
 `--profile` **overrides** what the file claims, which is the useful direction: a
 tool can require `det` and get a diagnostic whether or not the file thought to
@@ -100,8 +103,17 @@ requirement can be checked that way:
   different visits sharing a `frame_uid`, and `W911` a multi-timepoint sample
   with no transform relating any two visits.
 
-`w.infer_profiles()` sets them from what was actually written, so a writer
-rarely declares them by hand.
+- **`clinical`** — declaring it in a 1.0 file, or declaring it without the
+  group or without events, is `E009`; the group without the declaration is
+  `E803`. The profile's own rules are the `E8xx` codes, and a numeric value
+  without a unit is `W914`. A file of a later minor than this package
+  implements is validated as a *projection*: what is known is checked, what is
+  not is `W913`.
+
+`w.infer_profiles()` returns the profiles the content written so far
+satisfies, together with any declared; commit writes that set, so a writer
+rarely declares them by hand. Commit writes the version from it too: a new
+sample is 1.0 unless it carries `clinical`.
 
 ## Related
 

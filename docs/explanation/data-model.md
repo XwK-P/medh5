@@ -181,6 +181,33 @@ digest is over the content and not over its encoding. Editing a voxel through
 it behind the library's back leaves the stored digest describing the old bytes,
 which is exactly what `verify` reports.
 
+## Clinical context (format 1.1)
+
+A 1.1 sample may also carry what happened to the subject between and around
+the scans, under `clinical/`:
+
+```
+case_0001.medh5
+└── clinical/
+    ├── meta         the subject clock: one origin, microseconds
+    ├── events/      one row per immutable version: what, when it happened, when it became known
+    ├── documents/   source text, owned by document events
+    └── links/       typed relationships to images, annotations, timepoints, instances
+```
+
+Two times describe every event: when it **happened** (`effective`) and when it
+became **available** --- and each is a pair of bounds, because a source that
+knows a date to the day does not know the hour. A revised report is a new
+version of the same record, never an edit. This is what lets a model trained
+on the file be asked only what was known at a moment: the preliminary report,
+not the amendment two days later; the baseline scan, not the follow-up; the
+lesion annotation only after someone drew it.
+
+The images are untouched. A clinical event needs no imaging timepoint ---
+years of laboratory values beside one CT is `core, clinical` --- and a sample
+without clinical records is still written as 1.0. See
+[Clinical history beside the images](../guides/clinical.md).
+
 ## Profiles
 
 A file declares which conformance profiles it satisfies, and a validator can
@@ -190,12 +217,13 @@ be asked to hold it to them.
 s.profiles   # {"core", "seg", "det", "curation", "longitudinal"}
 ```
 
-The nine profiles, and the four validation levels that go with them, are in
+The ten profiles, and the four validation levels that go with them, are in
 [Profiles and validation levels](../reference/profiles-and-levels.md).
 
 ## Related
 
 - **[Partial labels and coverage](../guides/partial-labels.md)** — the coverage contract as a task.
 - **[Longitudinal studies](../guides/longitudinal.md)** — what one-file-per-subject buys.
+- **[Train on clinical tasks](../guides/clinical-training.md)** — what the two times buy.
 - **[What the converters refuse, and why](refusals.md)** — geometry never being guessed.
 - **[Specification](../spec/medh5-1.0.md)** — the normative statement of all of it.

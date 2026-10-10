@@ -5,11 +5,21 @@ makes "conforming MEDH5 file" a claim somebody else can test.
 
 ## The corpus
 
-117 cases, each a file plus the **exact set of diagnostic codes** a conforming
-validator must emit for it. 41 are valid files an implementation must accept,
-30 of them with specific warnings; 76 are invalid ones it must reject with
-specific errors. Between them they exercise every code in the specification's
-§15.2 table, and every cross-reference clause behind a code.
+157 cases, each a file plus the **exact set of diagnostic codes** a conforming
+validator must emit for it. 51 are valid files an implementation must accept,
+32 of them with specific warnings; 106 are invalid ones it must reject with
+specific errors. Between them they hold at least one case for every code in
+the specification's tables: 1.0 §15.2, and the codes [1.1](medh5-1.1.md) §11.2
+adds.
+
+36 of the cases are the `clinical` profile's (format 1.1): the worked example of
+1.1 §9.3 --- two imaging visits, an intervening lab, a delayed report and its
+revision, a follow-up assessment --- a one-visit history, time uncertainty,
+UTF-8 text, a vocabulary wider than the voxel class space, a collection mixing
+1.0 and 1.1 members, a higher minor read as a projection, and one invalid file
+at least per clinical code. The cases of 1.0 are unchanged, and a 1.0 file stays a
+1.0 file: nothing in the suite asks an implementation of 1.0 to read clinical
+content.
 
 Invalid cases are built by mutating a valid one, because the writer refuses to
 produce them. That is the point: the writer and the validator are checked
@@ -18,30 +28,52 @@ against each other.
 ```
 $ medh5 conformance list
 $ medh5 conformance run /tmp/corpus
-117/117 cases pass
+157/157 cases pass
 ```
 
-A test in this repository asserts the §15.2 table and the code registry are
-identical, so the spec and the implementation cannot drift apart silently.
+A test in this repository asserts that the specification's tables (1.0 §15.2
+and 1.1 §11.2) and the code registry list the same codes, so neither can gain a
+code the other lacks.
 
 ## Publishing it
 
 ```
 $ medh5 conformance publish suite/
-wrote the suite to suite/: 117 cases, see suite/README.md
+wrote the suite to suite/: 157 cases, see suite/README.md
 ```
 
 | File | |
 |---|---|
-| `*.medh5`, `*.medh5c` | the cases: 113 samples and four collections |
+| `*.medh5`, `*.medh5c` | the cases: 151 samples and six collections |
 | `expected.json` | per case: the clause, the level, and the expected codes |
-| `codes.json` | the §15.2 diagnostic code table as data |
+| `codes.json` | the diagnostic code table as data (1.0 §15.2 and 1.1 §11.2) |
 | `medh5-sample-1.0.schema.json` | the JSON Schema for `/meta` |
+| `medh5-clinical-1.schema.json` | the JSON Schema for `clinical/meta` and clinical records (1.1) |
+| `medh5-task-1.schema.json`, `medh5-cache-1.schema.json` | the [task and cache contract](task-cache-1.md)'s schemas --- published here for convenience, not scored by the corpus |
+| `companion/` | the task-and-cache fixtures: task manifests over the suite's clinical samples, and `expected.json` (below) |
 | `SHA256SUMS` | over every file above |
 | `README.md` | the contract, generated with the suite |
 
 Everything an implementer needs is in that directory. Being measured against
 the spec does not require installing this package.
+
+## The task-and-cache fixtures
+
+The corpus scores a format validator. `companion/` scores an implementation of
+the separately versioned [task and cache contract](task-cache-1.md): fourteen
+task manifests over the suite's own clinical samples, each pinned to the
+content those samples have in the suite. `companion/expected.json` gives, for
+each, the level it is checked at --- `validate`, the manifest alone with no
+file opened, or `preflight`, its sources opened too --- and the exact set of
+`T` codes checking it must find: one invalid manifest per code from `T101` to
+`T306`. For the valid one it also gives each row's status, the event versions
+strict selection admits at its cutoff, the image filling its slot and its
+target label --- so two implementations of prospective selection can be
+compared on more than their error codes.
+
+```
+$ medh5 task preflight suite/companion/valid-two-subjects.task.json --json
+```
 
 ## Running it against your implementation
 
@@ -51,16 +83,18 @@ one JSON array:
 ```json
 [
   {"file": "core-minimal.medh5", "errors": [], "warnings": []},
-  {"file": "E102-not-orthonormal.medh5", "errors": ["E102"], "warnings": []}
+  {"file": "E102-non-orthonormal.medh5", "errors": ["E102"], "warnings": []}
 ]
 ```
 
 ```
 $ medh5 conformance score suite/ results.json
-117/117 cases pass
+157/157 cases pass
 ```
 
-`medh5 validate --json` emits a superset of that shape, so the reference
+The scorer also takes the shape `medh5 validate --json` reports a file in: a
+`diagnostics` list, each entry with its `code` and `severity`, in place of
+`errors` and `warnings` (and `path` in place of `file`). So the reference
 implementation is scored through exactly the same door as everybody else:
 
 <!-- illustrative -->
@@ -103,7 +137,7 @@ stored digests cover the pre-edit bytes and an integrity pass adds a
 `"mutated": true`.
 
 *(That correction came from running it. The README first said deeper was safe;
-it is not, and 82 of the cases prove it.)*
+it is not, and 111 of the cases prove it.)*
 
 **A `.medh5c` case is a collection** (§2.1) — it contains samples rather than
 being one. `"file_suffix"` says which.
@@ -123,7 +157,7 @@ publish("suite/")
 check_checksums("suite/")           # names of files whose bytes changed
 
 results = score("suite/", submitted)
-summarize(results)                  # {"cases": 117, "passed": 117, "ok": True, ...}
+summarize(results)                  # {"cases": 157, "passed": 157, "ok": True, ...}
 ```
 
 ## Profiles
@@ -135,18 +169,26 @@ them:
 $ medh5 validate case.medh5 --profile det --profile seg
 ```
 
-The nine profiles and the four validation levels are in
+The ten profiles and the four validation levels are in
 [Profiles and validation levels](../reference/profiles-and-levels.md).
 
 ## Diagnostic codes
 
-Stable API, and part of the specification (§15.2): a code's meaning never
-changes and codes are never reused, so the corpus can assert exact code sets.
-All 71 are listed in [Diagnostic codes](../reference/diagnostic-codes.md).
+Stable API, and part of the specification (1.0 §15.2, 1.1 §11.2): a code's
+meaning never changes and codes are never reused, so the corpus can assert
+exact code sets. All 95 codes are listed in
+[Diagnostic codes](../reference/diagnostic-codes.md).
 
 ```python
 from medh5 import CODES
 CODES["E102"].summary     # "`direction` is not orthonormal to 1e-4"
 ```
 
-A minor version may add codes. It may not change what an existing one means.
+A minor version may add codes. It may not change what an existing one means:
+1.1 added `E011`, `E801`–`E819`, `W913` and `W914`, and redefined none.
+
+An implementation of 1.0 that reads a 1.1 file is reading a higher minor
+version: the clinical cases are not addressed to it. The higher-minor case
+(`W913-higher-minor-projection`) is what such an implementation should do with
+a newer file than it implements --- read the supported projection, report what
+it does not know as `W913`, and never amend it.

@@ -1,0 +1,69 @@
+//! HDF5 plumbing: attribute codecs, dynamic-dtype datasets, atomic create,
+//! copy-on-write and the low-level operations the high-level API lacks.
+//!
+//! Everything here is about *how* values reach HDF5, never about what they
+//! mean.  Spec §2.5 fixes the attribute encoding; spec §14.4 fixes the write
+//! model (atomic create, copy-on-write amend, unknown-object preservation).
+
+pub mod attrs;
+pub mod data;
+pub mod file;
+pub mod graph;
+pub mod ops;
+mod window;
+
+pub use attrs::AttrValue;
+pub use hdf5::{Dataset, File, Group, Location};
+
+/// Prepare the HDF5 library for MEDH5: register the Blosc2 and Zstandard
+/// filters.
+///
+/// Idempotent and cheap after the first call; every entry point that opens or
+/// creates a file calls it, so a caller never has to.
+pub fn init() {
+    hdf5::sync::sync(|| {
+        // SAFETY: the HDF5 global lock is held for the duration.  A refused
+        // registration is not fatal: reading a dataset that needs the filter
+        // then fails with HDF5's own error, which names the missing filter.
+        unsafe {
+            medh5_sys::register_blosc2_filter();
+            medh5_sys::register_zstd_filter();
+        }
+    });
+}
+
+/// What an object of a closed file reports.
+pub const CLOSED: &str = "the file this object was read from has been closed";
+
+/// Refuse an object whose file has been closed.
+///
+/// HDF5 answers questions about a closed object as if it were empty --- no
+/// attribute, no member, shape `()` --- which reads as a malformed file rather
+/// than a closed one, so the readers ask this first.
+pub fn alive(obj: &hdf5::Location) -> crate::Result<()> {
+    if obj.is_valid() {
+        Ok(())
+    } else {
+        Err(crate::Error::File(CLOSED.into()))
+    }
+}
+
+/// Run raw HDF5 C calls under the library's global lock.
+pub(crate) fn locked<T>(f: impl FnOnce() -> T) -> T {
+    hdf5::sync::sync(f)
+}
+
+/// An object's path relative to a sample root (`/samples/x/images/CT` with
+/// root `/samples/x` gives `images/CT`).
+pub fn relative_name(name: &str, root: &str) -> String {
+    let base = if root == "/" { "/".to_string() } else { format!("{}/", root.trim_end_matches('/')) };
+    match name.strip_prefix(&base) {
+        Some(rest) => rest.to_string(),
+        None => name.trim_start_matches('/').to_string(),
+    }
+}
+
+/// The last component of an HDF5 path.
+pub fn basename(name: &str) -> &str {
+    name.rsplit('/').next().unwrap_or(name)
+}
