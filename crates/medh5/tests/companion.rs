@@ -123,6 +123,16 @@ fn s3_2_fingerprints_identify_the_task_not_its_spelling() {
     assert_eq!(codes, ["T103"]);
 }
 
+#[test]
+fn s3_4_a_value_outside_a_vocabulary_fails_the_schema_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut task, _) = worked_task(dir.path());
+    task.slots[0].roi = "middle".into();
+    task.target.as_mut().unwrap().censoring = "drop".into();
+    let codes: std::collections::BTreeSet<String> = task.validate().into_iter().map(|f| f.code).collect();
+    assert_eq!(codes, ["T101".to_string()].into(), "T101, not T101 and T102 for one value");
+}
+
 fn add_event(path: &Path, event: Event, links: Vec<Link>) {
     let mut w = amend(path, None).unwrap();
     w.add_event(event).unwrap();

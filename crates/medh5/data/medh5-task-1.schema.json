@@ -78,7 +78,7 @@
 
     "target": {
       "type": "object",
-      "required": ["id", "version", "event", "positive", "negative", "horizon_us"],
+      "required": ["id", "version", "event", "positive", "horizon_us"],
       "additionalProperties": false,
       "properties": {
         "id": { "$ref": "#/$defs/id" },

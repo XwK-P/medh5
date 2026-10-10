@@ -163,8 +163,9 @@ and implemented once, by the engine.
 | `keep` | `latest` | `latest`, `earliest`: which end of the history a limit keeps |
 | `ties` | `keep_group` | `keep_group`, `drop_group`: a tie group straddling the limit is kept or dropped whole |
 
-An inconsistent policy, slot or target --- a slot declared twice, an unknown `roi`, a value both
-positive and negative, a follow-up longer than the horizon --- is **T102**.
+An inconsistent policy, slot or target --- a slot declared twice, a value both positive and negative,
+a follow-up longer than the horizon --- is **T102**; a value outside a member's vocabulary, such as an
+unknown `roi`, fails the schema (**T101**).
 
 ### 3.5 Modality slots
 

@@ -486,6 +486,10 @@ impl TaskManifest {
     }
 
     /// Everything wrong with the manifest that opening no file can find.
+    ///
+    /// A value outside a member's vocabulary --- an unknown `roi` or
+    /// `censoring` --- fails the schema (T101); T102 is what the schema
+    /// cannot see.
     pub fn validate(&self) -> Vec<Finding> {
         let mut out = Vec::new();
         let doc = self.to_json();
@@ -504,13 +508,6 @@ impl TaskManifest {
                     format!("slot {} is declared twice", repr_str(&slot.name)),
                 ));
             }
-            if !ROI.contains(&slot.roi.as_str()) {
-                out.push(Finding::new(
-                    "T102",
-                    format!("/slots/{i}"),
-                    format!("roi {} is not one of {ROI:?}", repr_str(&slot.roi)),
-                ));
-            }
         }
         if let Some(t) = &self.target {
             let overlap: Vec<&String> = t.positive.iter().filter(|p| t.negative.contains(p)).collect();
@@ -522,13 +519,6 @@ impl TaskManifest {
                     "T102",
                     "/target",
                     "min_follow_up_us exceeds horizon_us: no observation inside the window could ever be a negative",
-                ));
-            }
-            if !CENSORING.contains(&t.censoring.as_str()) {
-                out.push(Finding::new(
-                    "T102",
-                    "/target",
-                    format!("censoring {} is not one of {CENSORING:?}", repr_str(&t.censoring)),
                 ));
             }
         }

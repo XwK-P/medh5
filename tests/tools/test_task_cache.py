@@ -208,6 +208,20 @@ class TestManifest:
             )
         assert caught.value.code in {"T101", "T102"}
 
+    def test_S5_a_target_without_negatives_is_the_default(self, setup):
+        """`negative` defaults to none: a target that leaves it out is the task
+        that writes `[]`.  The schema required it, so the manifest failed
+        (T101)."""
+        task, _ = setup
+        doc = task.to_json()
+        doc["target"]["negative"] = []
+        explicit = TaskManifest(doc)
+        del doc["target"]["negative"]
+        implicit = TaskManifest(doc)
+        assert implicit.validate() == []
+        assert implicit.target is not None and implicit.target.negative == ()
+        assert implicit.task_fingerprint == explicit.task_fingerprint
+
     def test_S3_1_not_json_is_T101(self, tmp_path: Path):
         path = tmp_path / "broken.json"
         path.write_text("{", encoding="utf-8")
