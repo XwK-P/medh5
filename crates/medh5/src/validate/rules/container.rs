@@ -23,6 +23,7 @@ pub fn check_container(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     let root = ctx.root.clone();
     match str_attr(&root, "medh5_version")? {
         None => out.push(ctx.err("E001", "/", "root has no `medh5_version` attribute")),
+        Some(version) if version.trim().is_empty() => out.push(ctx.err("E001", "/", "`medh5_version` is empty")),
         Some(version) => {
             let major = version.split('.').next().unwrap_or("");
             if major != SUPPORTED_MAJOR {
@@ -93,6 +94,7 @@ pub fn check_collection(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     let outer = str_attr(&root, "medh5_version")?;
     match &outer {
         None => out.push(ctx.err("E001", "/", "collection root has no `medh5_version` attribute")),
+        Some(v) if v.trim().is_empty() => out.push(ctx.err("E001", "/", "the collection's `medh5_version` is empty")),
         Some(v) if v.split('.').next().unwrap_or("") != SUPPORTED_MAJOR => {
             out.push(ctx.err("E002", "/", format!("declares MEDH5 {v}; this validator implements {SUPPORTED_MAJOR}.x")))
         }

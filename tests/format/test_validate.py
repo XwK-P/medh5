@@ -122,6 +122,13 @@ class TestRules:
             for code in (*case.errors, *case.warnings):
                 assert code in CODES, code
 
+    def test_S2_1_an_empty_version_is_E001(self, sample_path):
+        """E001 is a missing or empty `medh5_version`; an empty one was
+        reported as E002, an unsupported major version."""
+        with h5py.File(sample_path, "r+") as handle:
+            handle.attrs["medh5_version"] = ""
+        assert at(validate_file(sample_path, level="structural"), "/") == ["E001"]
+
     def test_missing_meta_is_reported(self, sample_path):
         with h5py.File(sample_path, "r+") as handle:
             del handle["meta"]
