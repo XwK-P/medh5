@@ -30,8 +30,9 @@ meaningful against one.
 
 **Repeat the flag once per file.** `--source` takes exactly one value per
 occurrence, so a glob like `--source ct/*.dcm` expands to several arguments and
-the command exits with `unrecognized arguments` before it does anything. In a
-shell, build the repetition:
+the command stops with `error: unexpected argument 'ct/2.dcm' found` (a usage
+error, exit status 2) before it does anything. In a shell, build the
+repetition:
 
 ```bash
 args=(); for f in ct/*.dcm; do args+=(--source "$f"); done
