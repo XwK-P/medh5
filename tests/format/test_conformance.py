@@ -440,6 +440,31 @@ class TestPublication:
         readme = (publish(tmp_path / "suite") / "README.md").read_text("utf-8")
         assert f"{len(CASES) - shards} samples and {shards} collections" in readme
 
+    def test_the_example_submissions_name_cases_the_suite_holds(self, suite):
+        """The README and the conformance page named `E102-not-orthonormal`,
+        a file no suite has held: the case is `E102-non-orthonormal`."""
+        files = {case["file"] for case in load_manifest(suite)["cases"]}
+        for text in (
+            (suite / "README.md").read_text(encoding="utf-8"),
+            (ROOT / "docs/spec/conformance.md").read_text(encoding="utf-8"),
+        ):
+            named = set(re.findall(r'"file": "([^"]+)"', text))
+            assert named and named <= files, named - files
+
+    def test_what_validate_json_reports_is_a_submission(self, tmp_path, capsys):
+        """`path` and a `diagnostics` list, as `medh5 validate --json` writes
+        them, score without being reshaped --- the shape the README offers."""
+        names = ["core-minimal", "E102-non-orthonormal", "W903-no-deidentification"]
+        suite = publish(tmp_path / "suite", names=names)
+        submitted = []
+        for case in load_manifest(suite)["cases"]:
+            path = str(suite / case["file"])
+            main(["validate", path, "--level", case["level"], "--json"])
+            submitted += json.loads(capsys.readouterr().out)
+        assert len(submitted) == len(names)
+        assert not [entry for entry in submitted if "file" in entry]
+        assert summarize(score(suite, submitted))["ok"]
+
 
 class TestCorpusSmoke:
     """Every public read path, over every corpus case.

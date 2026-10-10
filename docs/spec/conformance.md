@@ -83,7 +83,7 @@ one JSON array:
 ```json
 [
   {"file": "core-minimal.medh5", "errors": [], "warnings": []},
-  {"file": "E102-not-orthonormal.medh5", "errors": ["E102"], "warnings": []}
+  {"file": "E102-non-orthonormal.medh5", "errors": ["E102"], "warnings": []}
 ]
 ```
 
@@ -92,7 +92,9 @@ $ medh5 conformance score suite/ results.json
 157/157 cases pass
 ```
 
-`medh5 validate --json` emits a superset of that shape, so the reference
+The scorer also takes the shape `medh5 validate --json` reports a file in: a
+`diagnostics` list, each entry with its `code` and `severity`, in place of
+`errors` and `warnings` (and `path` in place of `file`). So the reference
 implementation is scored through exactly the same door as everybody else:
 
 <!-- illustrative -->

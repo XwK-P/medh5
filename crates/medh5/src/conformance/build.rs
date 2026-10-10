@@ -1865,7 +1865,7 @@ fn third_batch(cases: &mut Vec<Case>) {
         invalid_core("E205-missing-image-attribute", "An image without `modality`.", "§4.1", &["E205"], |f| {
             del_attr(f, "images/CT", "modality")
         }),
-        invalid("E304-hierarchy-cycle", "A class hierarchy with a cycle.", "§5.3", &["E304"], seg, |f| {
+        invalid("E304-hierarchy-cycle", "A class hierarchy with a cycle.", "§5.4", &["E304"], seg, |f| {
             set_meta(f, |d| {
                 for class in label_classes(d).iter_mut() {
                     let Some(entry) = class.as_object_mut() else { continue };
@@ -2240,7 +2240,6 @@ fn fourth_batch(cases: &mut Vec<Case>) {
     ]);
 }
 
-/// 1.4.0: §7.7's separate-mask form of an ignore region, as the writer emits it.
 /// The cases the fourth audit of 2.0 added.
 fn audit_round_four(cases: &mut Vec<Case>) {
     cases.extend([
@@ -2329,6 +2328,7 @@ fn alias_before_images(path: &Path) -> Result<()> {
     restamp(path)
 }
 
+/// 1.4.0: §7.7's separate-mask form of an ignore region, as the writer emits it.
 fn fifth_batch(cases: &mut Vec<Case>) {
     cases.push(
         case(
