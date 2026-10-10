@@ -56,7 +56,11 @@ pub const CODES: [(&str, &str); 20] = [
     ("T404", "a cache or preflight is of another task, manifest, row or row version, or a validated cache changed"),
     ("T405", "learned preprocessing was fitted on a split other than the task's training partition"),
     ("T406", "a cache entry is not admissible as input at the row's cutoff"),
-    ("T407", "an event-level cache entry names an event its source lacks, or a document that event does not own"),
+    (
+        "T407",
+        "an event-level cache entry names an event its source lacks, or a document that event does not own, or its \
+         source's clinical tables cannot be read to say",
+    ),
 ];
 
 /// The one-line meaning of a companion code, or `""`.

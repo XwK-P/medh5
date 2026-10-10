@@ -561,12 +561,16 @@ impl CacheReport {
 /// its structural `describes` link (1.1 §7.3).
 struct Ownership(HashMap<String, BTreeSet<String>>);
 
-/// What a source's event versions own, or `None` when it cannot be read ---
-/// which its pin check reports.
-fn ownership(source: &SourceRef, base: Option<&Path>) -> Option<Ownership> {
-    let sample = source.open(base).ok()?;
+/// What a source's event versions own, or why it cannot be read.  A pin
+/// checks digests only, so a source whose clinical tables are malformed but
+/// sealed passes it: what its entries name cannot then be verified.
+fn ownership(source: &SourceRef, base: Option<&Path>) -> std::result::Result<Ownership, String> {
+    let sample = source.open(base).map_err(|e| format!("{} cannot be opened: {e}", source.locator()))?;
     let mut owned: HashMap<String, BTreeSet<String>> = HashMap::new();
-    if let Some(clinical) = sample.clinical().ok()? {
+    let tables = sample.clinical();
+    if let Some(clinical) =
+        tables.map_err(|e| format!("the clinical tables of {} cannot be read: {e}", source.locator()))?
+    {
         for event in &clinical.events {
             owned.entry(event.event_id.clone()).or_default();
         }
@@ -580,7 +584,7 @@ fn ownership(source: &SourceRef, base: Option<&Path>) -> Option<Ownership> {
             }
         }
     }
-    Some(Ownership(owned))
+    Ok(Ownership(owned))
 }
 
 impl Ownership {
@@ -668,15 +672,22 @@ pub fn validate_cache(
     // version it names, before that text existed (F03 of the round-4 audit).
     // Checked against the source, so with or without a task.
     if cache.header.level == "event" {
-        let mut owners: HashMap<(String, Option<String>, String), Option<Ownership>> = HashMap::new();
+        let mut owners: HashMap<(String, Option<String>, String), std::result::Result<Ownership, String>> =
+            HashMap::new();
         for entry in &cache.entries {
             let (Some(event_id), Some(source)) = (&entry.event_id, entry.sources.first()) else { continue };
             let key = (source.uri.clone(), source.sample_key.clone(), source.content_id.clone());
             if checked.get(&key).is_some_and(Option::is_some) {
                 continue; // its pin failed: stale (T403), not judged here
             }
-            let owned = owners.entry(key).or_insert_with(|| ownership(source, base.as_deref()));
-            if let Some(why) = owned.as_ref().and_then(|o| o.mismatch(source, event_id, entry.document_id.as_deref())) {
+            let why = match owners.entry(key).or_insert_with(|| ownership(source, base.as_deref())) {
+                Ok(owned) => owned.mismatch(source, event_id, entry.document_id.as_deref()),
+                // Unverifiable: rejected, never skipped.
+                Err(e) => {
+                    Some(format!("names event {}, which cannot be checked against its source: {e}", repr_str(event_id)))
+                }
+            };
+            if let Some(why) = why {
                 report.findings.push(Finding::new("T407", &entry.entry_id, why));
             }
         }
@@ -757,8 +768,13 @@ pub fn validate_cache(
                         ),
                     ));
                 }
+                // As sets: the contract fixes no order for `event_versions`,
+                // so only a version missing or extra is inadmissible.
                 let pinned: Vec<&str> = entry.event_versions.iter().flatten().map(String::as_str).collect();
-                if pinned != selected {
+                let (mut encoded, mut admits) = (pinned.clone(), selected.clone());
+                encoded.sort_unstable();
+                admits.sort_unstable();
+                if encoded != admits {
                     let extra: Vec<&str> = pinned.iter().copied().filter(|v| !selected.contains(v)).collect();
                     report.findings.push(Finding::new(
                         "T406",

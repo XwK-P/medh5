@@ -1446,6 +1446,73 @@ class TestCaches:
         stale = validate_cache(path)
         assert stale.stale and "T403" in found(stale.findings)
 
+    def test_S8_a_row_entrys_versions_are_compared_as_a_set(
+        self, setup, tmp_path: Path
+    ):
+        """The contract fixes no order for an entry's `event_versions`: the
+        versions its row admits, listed in any order, are admissible, and only
+        one missing or extra is T406.  Any order but the engine's was T406."""
+        task, _ = setup
+        row = task.preflight().row("P-02@24h")
+        admitted = [e.event_id for e in row.events]
+        assert admitted == ["lab0", "ct0", "rep_v1"]
+
+        def findings(name: str, versions: list[str]) -> list[str]:
+            path = tmp_path / "cohort" / f"{name}.medh5cache"
+            with CacheWriter(
+                path,
+                level="patient",
+                encoder={"name": "fixture", "revision": "1"},
+                output={"dtype": "float32", "shape": [2]},
+                task=task,
+            ) as w:
+                w.add(
+                    row.row_id,
+                    np.zeros(2, np.float32),
+                    sources=list(row.sources),
+                    row_id=row.row_id,
+                    row_fingerprint=row.fingerprint,
+                    cutoff_us=row.cutoff_us,
+                    event_versions=versions,
+                )
+            return found(validate_cache(path, task=task).findings)
+
+        assert findings("sorted", sorted(admitted)) == []
+        assert findings("reversed", admitted[::-1]) == []
+        assert findings("missing", admitted[:2]) == ["T406"]
+        assert findings("extra", [*admitted, "rep_v2"]) == ["T406"]
+
+    def test_S8_an_entry_its_source_cannot_verify_is_T407(
+        self, setup, tmp_path: Path
+    ):
+        """An event-level entry is checked against its source.  A source whose
+        clinical tables are malformed but sealed passes its pin, which compares
+        digests only; its entries were accepted unchecked --- one naming an
+        event the source does not have among them."""
+        _, paths = setup
+        path = paths["P-01"]
+        column = "clinical/events/value_num"
+        with h5py.File(path, "r+") as f:
+            values = f[column][...]
+            attrs = dict(f[column].attrs)
+            del f[column]
+            f.create_dataset(column, data=values.astype(np.float32))
+            f[column].attrs.update(attrs)
+        TestSources._seal(path, column)
+        source = SourceRef.pin(path, uri=path.name)
+        cache = tmp_path / "cohort" / "ghost.medh5cache"
+        with CacheWriter(
+            cache,
+            level="event",
+            encoder={"name": "fixture", "revision": "1"},
+            output={"dtype": "float32", "shape": [2]},
+        ) as w:
+            w.add_event(source, "ghost", np.zeros(2, np.float32), document_id="nothing")
+        report = validate_cache(cache)
+        (finding,) = report.findings
+        assert finding.code == "T407" and "cannot be read" in finding.message
+        assert not report.ok
+
     def test_S8_a_manifest_that_fails_its_checksum_is_T401(self, setup, tmp_path: Path):
         task, _ = setup
         path = tmp_path / "cohort" / "docs.medh5cache"

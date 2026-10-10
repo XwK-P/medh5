@@ -394,13 +394,16 @@ Given a task (and its preflight), validation also checks that the cache belongs 
 - **T405** --- learned preprocessing fitted on another task, another split (`set_id`), another
   membership, or a partition other than the task's training partition;
 - **T406** --- a patient-level entry encodes event versions other than those its row admits at its
-  cutoff: a whole-history embedding, or one built under another policy, is inadmissible.
+  cutoff, compared as a set (the order an entry lists them in is no part of it): a whole-history
+  embedding, or one built under another policy, is inadmissible.
 
 With or without a task, an event-level entry is checked against its source:
 
 - **T407** --- the entry names an event version its source does not hold, or a document that
-  version does not own (§7.2). Joined to another version's text --- a later revision's --- the
-  feature would be read by every row that admits the version it names, before that text existed.
+  version does not own (§7.2), or its source's clinical tables cannot be read to say: a pin compares
+  digests only, and an entry that cannot be verified is not accepted. Joined to another version's
+  text --- a later revision's --- the feature would be read by every row that admits the version it
+  names, before that text existed.
 
 A stale or unverifiable cache is rejected and rebuilt; it never redefines or invalidates the source.
 
