@@ -464,6 +464,10 @@ pub fn for_each_string_slab(
     if shape.contains(&0) {
         return Ok(());
     }
+    // A declared extent no machine holds is refused before it is measured,
+    // as a whole read refuses it: a slab at a time, an 11 KiB file declaring
+    // 2**58 strings was a read without end (N12 of the 2.0 re-audit).
+    ensure_allocatable(ds, &shape, width.unwrap_or(std::mem::size_of::<VarLenUnicode>()))?;
     let row: usize = shape[1..].iter().try_fold(1usize, |n, e| n.checked_mul(*e)).unwrap_or(usize::MAX);
     let per_row = decoded_bytes(row, width, 0).unwrap_or(usize::MAX).max(1);
     let mut step = (budget / per_row).clamp(1, shape[0]);
@@ -900,6 +904,10 @@ mod tests {
             .unwrap();
         for ds in [&fixed, &vlen] {
             let err = read_strings(ds).unwrap_err();
+            assert!(err.to_string().contains("more than this process can hold"), "{err}");
+            // A slab at a time too: refused before the first, not read
+            // without end.
+            let err = for_each_string_slab(ds, 1 << 20, &mut |_| Ok(())).unwrap_err();
             assert!(err.to_string().contains("more than this process can hold"), "{err}");
         }
         let small = file.new_dataset::<hdf5::types::FixedAscii<8>>().shape([2]).create("small").unwrap();
