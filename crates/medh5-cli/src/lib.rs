@@ -105,7 +105,7 @@ fn measure_throughput(
         .output()
         .map_err(|e| format!("{needs}: {e}"))?;
     let last_line = |bytes: &[u8]| {
-        String::from_utf8_lossy(bytes).lines().map(str::trim).filter(|l| !l.is_empty()).last().map(str::to_string)
+        String::from_utf8_lossy(bytes).lines().map(str::trim).rfind(|l| !l.is_empty()).map(str::to_string)
     };
     if !ran.status.success() {
         // The last line of a traceback is the exception: `No module named 'torch'`.
