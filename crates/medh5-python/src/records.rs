@@ -57,6 +57,34 @@ pub const fn required(name: &'static str, kind: Kind) -> Field {
     Field { name, key: name, kind, required: true }
 }
 
+/// The constructor's `inspect.Signature`: each field a parameter, positional
+/// or keyword, an optional one defaulting to what it reads as when absent.
+/// The constructor itself takes `*args, **kwargs` and matches them to the
+/// fields, so without it `help()` and `inspect` would name no parameter.
+pub fn signature(py: Python<'_>, fields: &[Field]) -> PyResult<Py<PyAny>> {
+    let inspect = py.import("inspect")?;
+    let parameter = inspect.getattr("Parameter")?;
+    let kind = parameter.getattr("POSITIONAL_OR_KEYWORD")?;
+    let parameters = fields
+        .iter()
+        .map(|f| {
+            let kwargs = PyDict::new(py);
+            if !f.required {
+                let default = match f.kind {
+                    Kind::Tuple | Kind::Pairs | Kind::Records(_) => PyTuple::empty(py).into_any(),
+                    Kind::Dict | Kind::Extra => PyDict::new(py).into_any(),
+                    Kind::Default(text) => text.into_pyobject(py)?.into_any(),
+                    Kind::FalseDefault => false.into_pyobject(py)?.to_owned().into_any(),
+                    Kind::Plain | Kind::Float | Kind::Record(_) => py.None().into_bound(py),
+                };
+                kwargs.set_item("default", default)?;
+            }
+            parameter.call((f.name, &kind), Some(&kwargs))
+        })
+        .collect::<PyResult<Vec<_>>>()?;
+    Ok(inspect.getattr("Signature")?.call1((parameters,))?.unbind())
+}
+
 /// `missing 2 required positional arguments: 'a' and 'b'`, as a dataclass says it.
 fn missing_arguments(class: &str, missing: &[&str]) -> PyErr {
     let quoted: Vec<String> = missing.iter().map(|n| medh5::json::repr_str(n)).collect();
@@ -300,6 +328,11 @@ macro_rules! record_class {
             #[classattr]
             fn __match_args__(py: Python<'_>) -> PyResult<Py<pyo3::types::PyTuple>> {
                 Ok(pyo3::types::PyTuple::new(py, Self::FIELDS.iter().map(|f| f.name))?.unbind())
+            }
+
+            #[classattr]
+            fn __signature__(py: Python<'_>) -> PyResult<Py<PyAny>> {
+                $crate::records::signature(py, Self::FIELDS)
             }
 
             fn __getattr__<'py>(&self, py: Python<'py>, name: &str) -> PyResult<Bound<'py, PyAny>> {

@@ -78,11 +78,11 @@ pub struct PatchSamplerHandle {
 #[pymethods]
 impl PatchSamplerHandle {
     #[new]
-    #[pyo3(signature = (patch_size, *, strategy="balanced".to_string(), foreground_prob=0.5, foreground_classes=None,
+    #[pyo3(signature = (patch_size, *, strategy="balanced", foreground_prob=0.5, foreground_classes=None,
         class_weights=None))]
     fn new(
         patch_size: &Bound<'_, PyAny>,
-        strategy: String,
+        strategy: &str,
         foreground_prob: f64,
         foreground_classes: Option<&Bound<'_, PyAny>>,
         class_weights: Option<&Bound<'_, PyAny>>,
@@ -90,7 +90,7 @@ impl PatchSamplerHandle {
         let classes = foreground_classes.filter(|c| !c.is_none()).map(class_keys).transpose()?;
         let inner = engine::PatchSampler::new(
             patch_size_arg(patch_size)?,
-            &strategy,
+            strategy,
             foreground_prob,
             classes,
             class_weights_arg(class_weights)?,

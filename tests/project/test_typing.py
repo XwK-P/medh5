@@ -366,6 +366,38 @@ def test_too_many_arguments_is_the_dataclass_TypeError() -> None:
         Agent(*map(str, range(8)))
 
 
+def test_a_record_signature_names_its_fields() -> None:
+    """``help()`` and ``inspect`` see the fields, not ``(*args, **kwargs)``."""
+    import inspect
+
+    from medh5.curation import Identity, Issue
+
+    records = (
+        "Activity",
+        "Agent",
+        "Agreement",
+        "Cohort",
+        "Deidentification",
+        "Identity",
+        "Issue",
+        "QualityRecord",
+        "SplitClaim",
+        "Timepoint",
+    )
+    for name in records:
+        dotted = f"medh5.curation.{name}"
+        parameters = inspect.signature(_public(dotted)).parameters
+        assert tuple(parameters) == DATACLASSES[dotted], dotted
+    identity = inspect.signature(Identity).parameters
+    empty = inspect.Parameter.empty
+    assert [n for n, p in identity.items() if p.default is empty] == [
+        "sample_id",
+        "subject_id",
+    ]
+    assert identity["sex"].default is None
+    assert inspect.signature(Issue).parameters["severity"].default == "info"
+
+
 def _former_dataclasses(tmp_path: Path, label_set: Any, masks: Any) -> dict[str, Any]:
     """One of each class 1.x shipped as a dataclass that ``__reduce__``
     rebuilds from its fields: what the engine builds, and the headers."""

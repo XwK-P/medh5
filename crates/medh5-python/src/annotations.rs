@@ -403,6 +403,8 @@ impl AnnotationPayload {
 
 // -- AnnotationHeader -------------------------------------------------------------------------
 
+const _: () = assert!(medh5::labels::IGNORE_ID == 65535, "AnnotationHeader's signature states the default ignore id");
+
 /// The fixed attribute header every annotation carries (spec §6.2).
 #[pyclass(module = "medh5.annotations.base", name = "AnnotationHeader", skip_from_py_object, frozen)]
 #[derive(Clone)]
@@ -456,9 +458,11 @@ impl AnnotationHeader {
         crate::values::dataclass_replace(slf.as_any(), changes)
     }
 
+    // `ignore_id`'s default is written out so that `inspect.signature`
+    // shows it; the assertion before the class holds it to the engine's.
     #[new]
     #[pyo3(signature = (kind, task, grid=None, timepoints=None, space=None, frame_uid=None, class_ids=None,
-        annotated_class_ids=None, closure="explicit", ignore_id=medh5::labels::IGNORE_ID, ignore_mask=None,
+        annotated_class_ids=None, closure="explicit", ignore_id=65535, ignore_mask=None,
         prov=None, quality=None, derived_from=None, extra=None))]
     #[allow(clippy::too_many_arguments)]
     fn new(

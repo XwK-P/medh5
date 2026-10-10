@@ -177,7 +177,7 @@ impl Skeleton {
     }
 
     #[new]
-    #[pyo3(signature = (id, keypoints, edges=Vec::new()))]
+    #[pyo3(signature = (id, keypoints, edges=Vec::new()), text_signature = "(id, keypoints, edges=())")]
     fn new(id: String, keypoints: Vec<i64>, edges: Vec<(i64, i64)>) -> Self {
         Skeleton(engine::Skeleton { id, keypoints, edges })
     }
@@ -438,25 +438,25 @@ pub fn label_set_arg(obj: &Bound<'_, PyAny>) -> R<engine::LabelSet> {
 #[pymethods]
 impl LabelSet {
     #[new]
-    #[pyo3(signature = (id, classes=None, *, version="1.0.0".to_string(), relations=None, skeletons=None, form="inline".to_string(), uri=None, sha256=None))]
+    #[pyo3(signature = (id, classes=None, *, version="1.0.0", relations=None, skeletons=None, form="inline", uri=None, sha256=None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         id: String,
         classes: Option<&Bound<'_, PyAny>>,
-        version: String,
+        version: &str,
         relations: Option<&Bound<'_, PyAny>>,
         skeletons: Option<&Bound<'_, PyAny>>,
-        form: String,
+        form: &str,
         uri: Option<String>,
         sha256: Option<String>,
     ) -> R<Self> {
         Ok(LabelSet::wrap(engine::LabelSet::new(
             id,
             label_classes(classes)?,
-            version,
+            version.to_string(),
             self::relations(relations)?,
             self::skeletons(skeletons)?,
-            form,
+            form.to_string(),
             uri,
             sha256,
         )?))

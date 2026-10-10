@@ -121,7 +121,7 @@ const GRID_FIELDS: [&str; 16] = [
 #[pymethods]
 impl Grid {
     #[new]
-    #[pyo3(signature = (grid_id, shape, axis_names, axis_kinds, spacing, origin, direction, coord_system="LPS".to_string(), units="mm".to_string(), timepoint=None, frame_uid=None, time_values=None, time_units=None, chunk_hint=None, patch_hint=None, extra=None))]
+    #[pyo3(signature = (grid_id, shape, axis_names, axis_kinds, spacing, origin, direction, coord_system="LPS", units="mm", timepoint=None, frame_uid=None, time_values=None, time_units=None, chunk_hint=None, patch_hint=None, extra=None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         grid_id: String,
@@ -131,8 +131,8 @@ impl Grid {
         spacing: &Bound<'_, PyAny>,
         origin: &Bound<'_, PyAny>,
         direction: &Bound<'_, PyAny>,
-        coord_system: String,
-        units: String,
+        coord_system: &str,
+        units: &str,
         timepoint: Option<String>,
         frame_uid: Option<String>,
         time_values: Option<&Bound<'_, PyAny>>,
@@ -168,8 +168,8 @@ impl Grid {
             spacing: f64_vec(spacing)?,
             origin: f64_vec(origin)?,
             direction,
-            coord_system,
-            units,
+            coord_system: coord_system.to_string(),
+            units: units.to_string(),
             timepoint,
             frame_uid,
             time_values,
