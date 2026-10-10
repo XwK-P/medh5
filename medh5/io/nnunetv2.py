@@ -382,6 +382,7 @@ def to_nnunetv2(
     dataset_name: str = "Dataset001_medh5",
     file_ending: str = ".nii.gz",
     annotation: str = "seg",
+    classes: Sequence[int | str] | None = None,
     report: ConversionReport | None = None,
 ) -> ConversionReport:
     """Export samples as an nnU-Net v2 dataset.
@@ -389,36 +390,50 @@ def to_nnunetv2(
     When the samples were imported from nnU-Net the stashed ``dataset.json`` is
     reused verbatim, so the export reproduces the original dataset rather than a
     reconstruction of it.
+
+    Everything is checked before anything is written:
+
+    * every channel and the labels are **one lattice in one physical space** ---
+      shape, spacing, origin and direction, coordinate system, units, and no two
+      known frames of reference --- because nnU-Net pairs their voxels by index;
+    * the labels are the **dataset's**, every case's classes, and every case was
+      **searched for every one** (``annotated_class_ids``): a label volume is
+      exhaustive, so 0 says "examined, absent" for every class, which a case
+      not searched for one cannot say.  *classes* exports the subset every case
+      examined;
+    * every label volume **gives back every class it exports** --- a region
+      painted in ``regions_class_order``, overlapping classes refused rather than
+      written over each other.
     """
     import medh5
     from medh5.io.nifti import require_nibabel
 
     nib = require_nibabel()
     log = report or ConversionReport(converter="to-nnunet")
+    plan = _plan(paths, annotation, classes, log)
     root = Path(os.fspath(out)) / dataset_name
     (root / "imagesTr").mkdir(parents=True, exist_ok=True)
     (root / "labelsTr").mkdir(parents=True, exist_ok=True)
 
-    stashed: dict[str, Any] | None = None
-    channel_order: list[str] = []
-    labels: dict[str, Any] = {}
+    labels = dict(plan.labels)
     ignore_value: int | None = None
     for path in paths:
         with medh5.open(path) as sample:
             case = sample.identity.sample_id
-            stashed = stashed or sample.document.extra.get("nnunetv2")
-            if not channel_order:
-                channel_order = (
-                    [str(v) for _, v in sorted(_stashed_channels(stashed).items())]
-                    if stashed
-                    else sorted(sample.images)
-                )
-            for index, image_id in enumerate(channel_order):
-                if image_id not in sample.images:
+            ann = sample.annotations.get(annotation)
+            if ann is not None:
+                # Checked before any of the case's files is written.
+                volume = _labelmap_for(ann, labels, plan.order)
+                ignored = np.asarray(sample.ignore_region(annotation), dtype=bool)
+                lost = _not_given_back(ann, volume, labels, ignored)
+                if lost:
                     raise MEDH5ValidationError(
-                        f"{path}: no image {image_id!r}; the export needs the same "
-                        f"channels in every case ({channel_order})"
+                        f"{path}: the label volume does not give back {lost}: "
+                        "nnU-Net holds one value per voxel, so classes that "
+                        "overlap must be stated as regions over disjoint "
+                        "components; nothing was written for this case"
                     )
+            for index, image_id in enumerate(plan.channels):
                 _save(
                     nib,
                     sample.images[image_id].grid,
@@ -429,22 +444,7 @@ def to_nnunetv2(
                 log.outputs.append(
                     str(root / "imagesTr" / f"{case}_{index:04d}{file_ending}")
                 )
-            if annotation in sample.annotations:
-                ann = sample.annotations[annotation]
-                labels = labels or _labels_for(ann, stashed)
-                # On the annotation's own grid, which nnU-Net needs to be the
-                # channels': the reference grid's affine was written whatever
-                # grid the labels were on.
-                channels = sample.images[channel_order[0]].grid
-                if not ann.grid.is_congruent(channels):
-                    raise MEDH5ValidationError(
-                        f"{path}: annotation {annotation!r} is on grid "
-                        f"{ann.grid.grid_id!r} and channel {channel_order[0]!r} on "
-                        f"{channels.grid_id!r}; nnU-Net needs labels on the "
-                        "channels' grid, and resampling is not a converter's to do"
-                    )
-                volume = _labelmap_for(ann, labels)
-                ignored = np.asarray(sample.ignore_region(annotation), dtype=bool)
+            if ann is not None:
                 if ignored.any():
                     # nnU-Net's ignore label is the highest value (§7.7): ignored
                     # voxels written as 0 were verified negatives for every class.
@@ -472,15 +472,18 @@ def to_nnunetv2(
                 # path that did not exist.
                 log.outputs.append(str(root / "labelsTr" / f"{case}{file_ending}"))
 
+    stashed = plan.stashed
     document = dict(stashed) if stashed else {}
     document.update(
         {
-            "channel_names": {str(i): n for i, n in enumerate(channel_order)},
+            "channel_names": {str(i): n for i, n in enumerate(plan.channels)},
             "labels": labels or document.get("labels") or {},
             "numTraining": len(list(paths)),
             "file_ending": file_ending,
         }
     )
+    if plan.order is None:
+        document.pop("regions_class_order", None)
     (root / "dataset.json").write_text(
         json.dumps(document, indent=2) + "\n", encoding="utf-8"
     )
@@ -488,11 +491,193 @@ def to_nnunetv2(
     log.decision(
         "dataset_json",
         "the stashed dataset.json was reused verbatim"
-        if stashed
+        if plan.reused
         else "a dataset.json was generated from the label set",
-        {"reused": bool(stashed)},
+        {"reused": plan.reused},
     )
     return log
+
+
+class _Plan:
+    """What an export writes, settled before it writes anything."""
+
+    __slots__ = ("channels", "labels", "order", "reused", "stashed")
+
+    def __init__(
+        self,
+        channels: list[str],
+        labels: dict[str, Any],
+        order: list[int] | None,
+        stashed: dict[str, Any] | None,
+        reused: bool,
+    ) -> None:
+        self.channels = channels
+        self.labels = labels
+        self.order = order
+        self.stashed = stashed
+        self.reused = reused
+
+
+def _plan(
+    paths: Sequence[str | os.PathLike[str]],
+    annotation: str,
+    classes: Sequence[int | str] | None,
+    log: ConversionReport,
+) -> _Plan:
+    """Every case read once, and every refusal made, before a file is written.
+
+    The labels were the first annotation's and every later case was written
+    against them: a class only a later case carried became background there,
+    and a case never searched for a class was written as its verified absence
+    (N14 of the round-3 audit).  The vocabulary is every case's; a case is held
+    to it, or to *classes*; and every channel and the labels are held to the
+    first channel's physical space (N17).
+    """
+    import medh5
+
+    stashed: dict[str, Any] | None = None
+    channels: list[str] = []
+    names: dict[int, str] = {}
+    searched: list[tuple[str, frozenset[int]]] = []
+    for path in paths:
+        with medh5.open(path) as sample:
+            stashed = stashed or sample.document.extra.get("nnunetv2")
+            if not channels:
+                channels = (
+                    [str(v) for _, v in sorted(_stashed_channels(stashed).items())]
+                    if stashed
+                    else sorted(sample.images)
+                )
+            for image_id in channels:
+                if image_id not in sample.images:
+                    raise MEDH5ValidationError(
+                        f"{path}: no image {image_id!r}; the export needs the same "
+                        f"channels in every case ({channels})"
+                    )
+            reference = sample.images[channels[0]].grid
+            for image_id in channels[1:]:
+                _require_one_space(
+                    reference,
+                    sample.images[image_id].grid,
+                    f"{path}: channel {image_id!r}",
+                    channels[0],
+                )
+            if annotation not in sample.annotations:
+                continue
+            ann = sample.annotations[annotation]
+            # On the annotation's own grid, which nnU-Net needs to be the
+            # channels': the reference grid's affine was written whatever grid
+            # the labels were on.
+            _require_one_space(
+                reference, ann.grid, f"{path}: annotation {annotation!r}", channels[0]
+            )
+            for class_id in ann.class_ids:
+                key = ann.class_key(int(class_id))
+                if names.setdefault(int(class_id), key) != key:
+                    raise MEDH5ValidationError(
+                        f"{path}: class {int(class_id)} is {key!r} here and "
+                        f"{names[int(class_id)]!r} in an earlier case; one label "
+                        "volume value means one class across the dataset"
+                    )
+            searched.append(
+                (os.fspath(path), frozenset(int(c) for c in ann.annotated_class_ids))
+            )
+
+    wanted = set(names)
+    if classes is not None:
+        wanted = {_class_id(c, names) for c in classes}
+        dropped = sorted(set(names) - wanted)
+        if dropped:
+            log.decision(
+                "classes",
+                f"classes= exports {sorted(wanted)}; {[names[c] for c in dropped]} "
+                "were left out on request",
+                {"exported": sorted(wanted), "left_out": dropped},
+            )
+    for path, looked in searched:
+        unsearched = sorted(wanted - looked)
+        if unsearched:
+            raise MEDH5ValidationError(
+                f"{path}: annotation {annotation!r} was not searched for "
+                f"{[names[c] for c in unsearched]}, which the dataset labels. An "
+                "nnU-Net label volume is exhaustive --- 0 is a verified negative "
+                "for every class --- so this case cannot be written; pass "
+                "classes= (--class) naming the classes every case examined"
+            )
+    if searched:
+        log.decision(
+            "coverage",
+            "every case was searched for every exported class, so 0 in each label "
+            "volume is the verified absence it means to nnU-Net (§11.3)",
+            {"classes": sorted(wanted), "cases": len(searched)},
+        )
+
+    reused = bool(stashed and stashed.get("labels")) and classes is None
+    if reused:
+        assert stashed is not None
+        labels = dict(stashed["labels"])
+        order = stashed.get("regions_class_order")
+        order = [int(v) for v in order] if isinstance(order, list) else None
+    else:
+        labels = {"background": 0}
+        labels.update({names[c]: c for c in sorted(wanted)})
+        order = None
+        if stashed and classes is not None:
+            log.decision(
+                "labels",
+                "classes= restricts the labels, so the stashed dataset.json's were "
+                "not reused; its other fields were",
+                {"classes": sorted(wanted)},
+            )
+    return _Plan(channels, labels, order, stashed, reused)
+
+
+def _class_id(key: int | str, names: Mapping[int, str]) -> int:
+    """A class named by id or key, among the dataset's."""
+    if isinstance(key, int) or (isinstance(key, str) and key.isdigit()):
+        if int(key) in names:
+            return int(key)
+    else:
+        for class_id, name in names.items():
+            if name == key:
+                return class_id
+    raise MEDH5ValidationError(
+        f"classes= names {key!r}, which no case's annotation carries; the "
+        f"dataset's are {dict(sorted(names.items()))}",
+        code="E402",
+    )
+
+
+def _require_one_space(reference: Any, grid: Any, what: str, channel: str) -> None:
+    """Refuse a grid that is not *reference*'s physical support (N17 of the
+    round-3 audit).
+
+    nnU-Net pairs channel and label voxels by index, and each NIfTI states its
+    own affine: a congruent lattice in LPS against one in RAS, or in metres
+    against millimetres, wrote a pair 48 mm --- or a thousandfold --- apart,
+    and equal numbers in two known frames of reference are no correspondence.
+    Converting between them is resampling, which is not a converter's to do.
+    """
+    if grid.grid_id == reference.grid_id:
+        return
+    problems = []
+    if not grid.is_congruent(reference):
+        problems.append("another lattice")
+    if grid.coord_system != reference.coord_system:
+        problems.append(f"{grid.coord_system} against {reference.coord_system}")
+    if grid.units != reference.units:
+        problems.append(f"{grid.units!r} against {reference.units!r}")
+    if grid.frame_uid and reference.frame_uid and grid.frame_uid != reference.frame_uid:
+        problems.append(
+            f"frame of reference {grid.frame_uid!r} against {reference.frame_uid!r}"
+        )
+    if problems:
+        raise MEDH5ValidationError(
+            f"{what} is on grid {grid.grid_id!r} and channel {channel!r} on "
+            f"{reference.grid_id!r} ({'; '.join(problems)}); nnU-Net needs every "
+            "channel and the labels on the channels' grid, and resampling is not "
+            "a converter's to do"
+        )
 
 
 def _ignore_value(labels: Mapping[str, Any]) -> int:
@@ -517,20 +702,18 @@ def _stashed_channels(stashed: Mapping[str, Any] | None) -> dict[int, str]:
     return {int(k): str(v) for k, v in stashed.get("channel_names", {}).items()}
 
 
-def _labels_for(ann: Any, stashed: Mapping[str, Any] | None) -> dict[str, Any]:
-    if stashed and stashed.get("labels"):
-        return dict(stashed["labels"])
-    out: dict[str, Any] = {"background": 0}
-    for class_id in ann.class_ids:
-        out[ann.class_key(int(class_id))] = int(class_id)
-    return out
-
-
-def _labelmap_for(ann: Any, labels: Mapping[str, Any]) -> npt.NDArray[np.uint16]:
+def _labelmap_for(
+    ann: Any, labels: Mapping[str, Any], order: Sequence[int] | None = None
+) -> npt.NDArray[np.uint16]:
     """A single-value label volume, which is what nnU-Net reads.
 
-    Region labels are *not* written as their own value: nnU-Net derives them
-    from their components, and writing both would double-count every voxel.
+    Without ``regions_class_order`` a region is *not* written as its own value:
+    nnU-Net derives it from its components, and writing both would
+    double-count every voxel.  With it (*order*), the dataset is region-based:
+    each label, in ``labels`` order, is painted with its value in *order*, a
+    later one over an earlier --- nnU-Net's own conversion back --- so the
+    components a region-based dataset names only inside its regions are written
+    too.  They were left as background (N13 of the round-3 audit).
 
     Classes are matched by **id, not by name**.  The import keeps nnU-Net's own
     integers as class ids precisely so no translation table is needed, and the
@@ -541,22 +724,36 @@ def _labelmap_for(ann: Any, labels: Mapping[str, Any]) -> npt.NDArray[np.uint16]
     whose labels are not already lowercase identifiers was dropped and the
     export wrote an all-background volume with no indication anything was lost.
     """
-    scalar = {
-        name: int(value)
-        for name, value in labels.items()
-        if not isinstance(value, list) and name != IGNORE
-    }
     known = set(ann.class_ids)
     out = np.zeros(ann.spatial_shape, dtype=np.uint16)
     missing: list[str] = []
-    for name, value in sorted(scalar.items(), key=lambda kv: kv[1]):
-        if value == BACKGROUND:
-            continue
-        class_id = value if value in known else _resolve_or_none(ann, name)
-        if class_id is None:
-            missing.append(name)
-            continue
-        out[ann.dense([class_id])[0]] = value
+    if order is not None:
+        entries = _foreground(labels)
+        if len(order) != len(entries):
+            raise MEDH5ValidationError(
+                f"regions_class_order has {len(order)} value(s) for {len(entries)} "
+                "label(s); it gives each label, in order, the value it is written as"
+            )
+        for (name, value), paint in zip(entries, order, strict=True):
+            class_id = _class_of(ann, name, value, known)
+            if class_id is None:
+                missing.append(name)
+                continue
+            out[ann.dense([class_id])[0]] = int(paint)
+    else:
+        scalar = {
+            name: int(value)
+            for name, value in labels.items()
+            if not isinstance(value, list) and name != IGNORE
+        }
+        for name, value in sorted(scalar.items(), key=lambda kv: kv[1]):
+            if value == BACKGROUND:
+                continue
+            class_id = value if value in known else _resolve_or_none(ann, name)
+            if class_id is None:
+                missing.append(name)
+                continue
+            out[ann.dense([class_id])[0]] = value
     if missing:
         raise MEDH5ValidationError(
             f"annotation {ann.ann_id!r} carries no class for {missing}, which "
@@ -564,6 +761,52 @@ def _labelmap_for(ann: Any, labels: Mapping[str, Any]) -> npt.NDArray[np.uint16]
             f"those structures without saying so",
             code="E402",
         )
+    return out
+
+
+def _foreground(labels: Mapping[str, Any]) -> list[tuple[str, Any]]:
+    """The labels a volume value or region states, in ``labels`` order."""
+    return [
+        (name, value)
+        for name, value in labels.items()
+        if name != IGNORE and (isinstance(value, list) or int(value) != BACKGROUND)
+    ]
+
+
+def _class_of(ann: Any, name: str, value: Any, known: set[int]) -> int | None:
+    """The annotation's class a label names: a value by id, a region by name."""
+    if not isinstance(value, list) and int(value) in known:
+        return int(value)
+    return _resolve_or_none(ann, name)
+
+
+def _not_given_back(
+    ann: Any,
+    volume: npt.NDArray[Any],
+    labels: Mapping[str, Any],
+    ignored: npt.NDArray[np.bool_],
+) -> list[str]:
+    """The labels whose stored voxels *volume* does not give back, outside the
+    ignore region --- what an export would lose without saying so.
+
+    Each label is read back as nnU-Net reads it: a value as the voxels of that
+    value, a region as the voxels of any of its components.
+    """
+    known = set(ann.class_ids)
+    out: list[str] = []
+    for name, value in _foreground(labels):
+        class_id = _class_of(ann, name, value, known)
+        if class_id is None:
+            continue
+        components = (
+            [int(v) for v in value] if isinstance(value, list) else [int(value)]
+        )
+        stored = np.asarray(ann.dense([class_id])[0], dtype=bool) & ~ignored
+        written = np.isin(volume, components) & ~ignored
+        if not np.array_equal(stored, written):
+            lost = int(np.count_nonzero(stored & ~written))
+            gained = int(np.count_nonzero(written & ~stored))
+            out.append(f"{name!r} ({lost} voxel(s) lost, {gained} gained)")
     return out
 
 

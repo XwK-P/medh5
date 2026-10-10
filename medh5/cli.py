@@ -184,7 +184,13 @@ def _from_dicom(args: Any) -> int:
 def _from_dicom_seg(args: Any) -> int:
     from medh5.io.dicom_seg import from_dicom_seg
 
-    report = from_dicom_seg(args.seg, args.sample, ann_id=args.ann_id, grid=args.grid)
+    report = from_dicom_seg(
+        args.seg,
+        args.sample,
+        ann_id=args.ann_id,
+        grid=args.grid,
+        frame_salt=args.frame_salt,
+    )
     return _finish(report, args)
 
 
@@ -234,6 +240,7 @@ def _to_nnunet(args: Any) -> int:
         args.out,
         dataset_name=args.dataset_name,
         annotation=args.annotation,
+        classes=args.classes,
     )
     return _finish(report, args)
 

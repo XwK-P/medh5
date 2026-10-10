@@ -268,21 +268,24 @@ def _withdraw_volume_statements(
     the image is replaced and the new ones written after it, so an
     interrupted export leaves an image whose timing reads as unmeasured,
     never as another image's.  A sidecar that is not a JSON object is left
-    alone, and refused when this export has fields to put in it.
+    alone, and refused when this export has fields to put in it --- refused
+    *before* anything is withdrawn: the ``.bval`` went first, so a refused
+    export took a diffusion image's b-values with it (N16 of the round-3
+    audit).
     """
-    _sidecar_path(target, ".bval").unlink(missing_ok=True)
-    if not sidecar.exists():
-        return {}
-    try:
-        fields = json.loads(sidecar.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        fields = None
-    if not isinstance(fields, dict):
-        if needed:
+    fields: Any = None
+    if sidecar.exists():
+        try:
+            fields = json.loads(sidecar.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            fields = None
+        if not isinstance(fields, dict) and needed:
             raise MEDH5ValidationError(
                 f"{sidecar} is not a JSON object, and this export writes its "
                 "per-volume fields there; move it aside first"
             )
+    _sidecar_path(target, ".bval").unlink(missing_ok=True)
+    if not isinstance(fields, dict):
         return {}
     # A list is a statement about each volume; a scalar `EchoTime` is the
     # scanner's, about all of them, and stays.

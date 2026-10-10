@@ -453,3 +453,254 @@ class TestNnunetIgnore:
         assert _ignore_value({"background": 0, "a": 3, "ignore": 9}) == 9
         with pytest.raises(MEDH5ValidationError, match="does not fit"):
             _ignore_value({"background": 0, "top": 65535})
+
+
+class TestNnunetDatasetLabels:
+    """The labels are the dataset's, each case is held to them, and every label
+    volume gives back what it exports (N13 and N14 of the round-3 audit); every
+    channel and the labels are one physical space (N17)."""
+
+    SHAPE = (6, 8, 8)
+
+    @classmethod
+    def _case(
+        cls,
+        path: Path,
+        masks: dict[int, np.ndarray],
+        *,
+        searched: list[int],
+        label_grid: dict | None = None,
+    ) -> Path:
+        from medh5.labels import LabelClass, LabelSet
+
+        with medh5.create(path, sample_id=path.stem, codec="portable") as w:
+            w.add_grid("g", shape=cls.SHAPE, spacing=(2.0, 1.0, 1.0), frame_uid="F")
+            w.add_image("CT", np.zeros(cls.SHAPE, np.int16), grid="g", modality="CT")
+            w.label_set(
+                LabelSet(
+                    "organs",
+                    version="1.0.0",
+                    classes=[
+                        LabelClass(1, "organ", "Organ"),
+                        LabelClass(2, "lesion", "Lesion"),
+                    ],
+                )
+            )
+            grid = "g"
+            if label_grid is not None:
+                options = {"spacing": (2.0, 1.0, 1.0), **label_grid}
+                w.add_grid("h", shape=cls.SHAPE, **options)
+                grid = "h"
+            w.add_segmentation(
+                "seg", grid=grid, masks=masks, annotated_classes=searched
+            )
+        return path
+
+    @classmethod
+    def _blocks(cls) -> tuple[np.ndarray, np.ndarray]:
+        organ = np.zeros(cls.SHAPE, bool)
+        organ[1:3, 1:4, 1:4] = True
+        lesion = np.zeros(cls.SHAPE, bool)
+        lesion[3:5, 5:7, 5:7] = True
+        return organ, lesion
+
+    def test_N14_a_case_not_searched_for_a_class_is_refused(self, tmp_path: Path):
+        """The labels were the first case's: a lesion only the second case
+        carried became background, and the first case's unsearched lesion
+        was written as its verified absence."""
+        from medh5.io.nnunetv2 import to_nnunetv2
+
+        organ, lesion = self._blocks()
+        a = self._case(tmp_path / "A.medh5", {1: organ}, searched=[1])
+        b = self._case(tmp_path / "B.medh5", {1: organ, 2: lesion}, searched=[1, 2])
+        for order in ([a, b], [b, a]):
+            with pytest.raises(MEDH5ValidationError, match="not searched") as caught:
+                to_nnunetv2(order, tmp_path / "nn", dataset_name="D1")
+            # The sample is valid; what fails is nnU-Net's exhaustive volume,
+            # which no §15.2 code describes.
+            assert caught.value.code is None and "lesion" in str(caught.value)
+            assert not (tmp_path / "nn").exists(), "refused before anything is written"
+        # The subset every case examined, on request.
+        report = to_nnunetv2(
+            [a, b], tmp_path / "nn", dataset_name="D1", classes=["organ"]
+        )
+        assert report.of_kind("classes")
+        labels = json.loads((tmp_path / "nn/D1/dataset.json").read_text())["labels"]
+        assert labels == {"background": 0, "organ": 1}
+        written = np.asarray(
+            nib.load(str(tmp_path / "nn/D1/labelsTr/B.nii.gz")).dataobj
+        )
+        assert int((written == 1).sum()) == int(organ.sum()) and written.max() == 1
+
+    def test_N14_the_command_line_names_the_classes_to_export(self, tmp_path, capsys):
+        """The refusal says to name the classes every case examined; the
+        command line had no way to."""
+        from medh5.cli import EXIT_OK, main
+
+        organ, lesion = self._blocks()
+        a = self._case(tmp_path / "A.medh5", {1: organ}, searched=[1])
+        b = self._case(tmp_path / "B.medh5", {1: organ, 2: lesion}, searched=[1, 2])
+        argv = ["convert", "to-nnunet", str(tmp_path / "nn"), str(a), str(b)]
+        assert main([*argv, "--dataset-name", "D1"]) != EXIT_OK
+        assert "not searched" in capsys.readouterr().err
+        assert main([*argv, "--dataset-name", "D2", "--class", "organ"]) == EXIT_OK
+        labels = json.loads((tmp_path / "nn/D2/dataset.json").read_text())["labels"]
+        assert labels == {"background": 0, "organ": 1}
+        assert (
+            main([*argv, "--dataset-name", "D3", "--class", "1", "--class", "2"])
+            != EXIT_OK
+        )
+
+    def test_N14_complete_coverage_exports_in_either_order(self, tmp_path: Path):
+        from medh5.io.nnunetv2 import to_nnunetv2
+
+        organ, lesion = self._blocks()
+        a = self._case(tmp_path / "A.medh5", {1: organ}, searched=[1, 2])
+        b = self._case(tmp_path / "B.medh5", {1: organ, 2: lesion}, searched=[1, 2])
+        for name, order in (("D1", [a, b]), ("D2", [b, a])):
+            to_nnunetv2(order, tmp_path / "nn", dataset_name=name)
+            labels = json.loads((tmp_path / f"nn/{name}/dataset.json").read_text())
+            assert labels["labels"] == {"background": 0, "organ": 1, "lesion": 2}
+            written = np.asarray(
+                nib.load(str(tmp_path / f"nn/{name}/labelsTr/B.nii.gz")).dataobj
+            )
+            assert int((written == 2).sum()) == int(lesion.sum())
+
+    def test_N14_overlapping_classes_are_refused_not_overwritten(self, tmp_path):
+        """One value per voxel: an organ under a lesion lost those voxels."""
+        from medh5.io.nnunetv2 import to_nnunetv2
+
+        organ, _ = self._blocks()
+        lesion = np.zeros_like(organ)
+        lesion[1:2, 1:3, 1:3] = True  # inside the organ
+        path = self._case(tmp_path / "A.medh5", {1: organ, 2: lesion}, searched=[1, 2])
+        with pytest.raises(MEDH5ValidationError, match="does not give back") as caught:
+            to_nnunetv2([path], tmp_path / "nn", dataset_name="D1")
+        assert caught.value.code is None and "'organ'" in str(caught.value)
+        # "Nothing was written for this case": its channels included.
+        assert not [p for p in (tmp_path / "nn").rglob("*") if p.is_file()]
+
+    @pytest.mark.parametrize(
+        "label_grid",
+        [
+            {"coord_system": "RAS", "frame_uid": "F"},
+            {"units": "m", "frame_uid": "F"},
+            {"frame_uid": "G"},
+        ],
+        ids=["convention", "units", "frame"],
+    )
+    def test_N17_labels_in_another_space_are_refused(self, tmp_path, label_grid):
+        """`is_congruent` compares numbers: a label grid with the channels'
+        numbers in RAS, in metres, or in another known frame exported a pair
+        48 mm, or a thousandfold, apart."""
+        from medh5.io.nnunetv2 import to_nnunetv2
+
+        organ, _ = self._blocks()
+        path = self._case(
+            tmp_path / "A.medh5", {1: organ}, searched=[1], label_grid=label_grid
+        )
+        with pytest.raises(MEDH5ValidationError, match="channels' grid"):
+            to_nnunetv2([path], tmp_path / "nn", dataset_name="D1")
+        assert not (tmp_path / "nn").exists()
+
+    def test_N17_labels_on_another_lattice_of_the_space_are_refused(self, tmp_path):
+        from medh5.io.nnunetv2 import to_nnunetv2
+
+        organ, _ = self._blocks()
+        path = self._case(
+            tmp_path / "A.medh5",
+            {1: organ},
+            searched=[1],
+            label_grid={"spacing": (1.0, 1.0, 1.0), "frame_uid": "F"},
+        )
+        with pytest.raises(MEDH5ValidationError, match="another lattice"):
+            to_nnunetv2([path], tmp_path / "nn", dataset_name="D1")
+
+    def test_N17_a_channel_in_another_space_is_refused(self, tmp_path):
+        from medh5.io.nnunetv2 import to_nnunetv2
+
+        organ, _ = self._blocks()
+        path = self._case(tmp_path / "A.medh5", {1: organ}, searched=[1])
+        with medh5.amend(path) as w:
+            w.add_grid(
+                "r", shape=self.SHAPE, spacing=(2.0, 1.0, 1.0), coord_system="RAS"
+            )
+            w.add_image("MR", np.zeros(self.SHAPE, np.int16), grid="r", modality="MR")
+        with pytest.raises(MEDH5ValidationError, match="channel 'MR'"):
+            to_nnunetv2([path], tmp_path / "nn", dataset_name="D1")
+
+    def test_N17_one_space_on_two_grids_exports(self, tmp_path):
+        """The control: a second grid with the channels' lattice, convention,
+        units and frame is their space; both files state one affine."""
+        from medh5.io.nnunetv2 import to_nnunetv2
+
+        organ, _ = self._blocks()
+        path = self._case(
+            tmp_path / "A.medh5",
+            {1: organ},
+            searched=[1],
+            label_grid={"frame_uid": "F"},
+        )
+        to_nnunetv2([path], tmp_path / "nn", dataset_name="D1")
+        image = nib.load(str(tmp_path / "nn/D1/imagesTr/A_0000.nii.gz"))
+        labels = nib.load(str(tmp_path / "nn/D1/labelsTr/A.nii.gz"))
+        assert np.allclose(image.affine, labels.affine)
+
+    @staticmethod
+    def _regions(root: Path, *, order: bool) -> np.ndarray:
+        """BraTS's shape: three nested regions over components 1-3, an ignore
+        label 4, `regions_class_order` [1, 2, 3]."""
+        (root / "imagesTr").mkdir(parents=True)
+        (root / "labelsTr").mkdir()
+        shape = (10, 10, 8)
+        nib.save(
+            nib.Nifti1Image(np.zeros(shape, np.int16), np.eye(4)),
+            str(root / "imagesTr/CASE_0000.nii.gz"),
+        )
+        volume = np.zeros(shape, np.uint8)
+        volume[0, 0, :8] = 1
+        volume[1, 0, :8] = 2
+        volume[2, 0, :8] = 3
+        volume.reshape(-1)[200:242] = 4
+        nib.save(nib.Nifti1Image(volume, np.eye(4)), str(root / "labelsTr/CASE.nii.gz"))
+        document: dict = {
+            "channel_names": {"0": "FLAIR"},
+            "labels": {
+                "background": 0,
+                "whole_tumor": [1, 2, 3],
+                "tumor_core": [2, 3],
+                "enhancing_tumor": 3,
+                "ignore": 4,
+            },
+            "numTraining": 1,
+            "file_ending": ".nii.gz",
+        }
+        if order:
+            document["regions_class_order"] = [1, 2, 3]
+        (root / "dataset.json").write_text(json.dumps(document), encoding="utf-8")
+        return volume
+
+    def test_N13_a_region_dataset_round_trips_every_voxel(self, tmp_path: Path):
+        """Components 1 and 2 exist only inside regions: the export wrote the
+        scalar labels and left 16 tumour voxels as background.  Painted in
+        `regions_class_order`, as nnU-Net converts regions back."""
+        from medh5.io.nnunetv2 import from_nnunetv2, read_dataset_json, to_nnunetv2
+
+        volume = self._regions(tmp_path / "D", order=True)
+        from_nnunetv2(tmp_path / "D", tmp_path / "out")
+        to_nnunetv2([tmp_path / "out/CASE.medh5"], tmp_path / "back")
+        back = tmp_path / "back/Dataset001_medh5"
+        written = np.asarray(nib.load(str(back / "labelsTr/CASE.nii.gz")).dataobj)
+        assert np.array_equal(written, volume)
+        assert read_dataset_json(back) == read_dataset_json(tmp_path / "D")
+
+    def test_N13_regions_no_order_reconstructs_are_refused(self, tmp_path: Path):
+        """Without `regions_class_order` the components cannot be painted, and
+        the regions are refused rather than written as background."""
+        from medh5.io.nnunetv2 import from_nnunetv2, to_nnunetv2
+
+        self._regions(tmp_path / "D", order=False)
+        from_nnunetv2(tmp_path / "D", tmp_path / "out")
+        with pytest.raises(MEDH5ValidationError, match="does not give back") as caught:
+            to_nnunetv2([tmp_path / "out/CASE.medh5"], tmp_path / "back")
+        assert "whole_tumor" in str(caught.value)

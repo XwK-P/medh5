@@ -127,6 +127,7 @@ class TestConverterDiagnosticCodes:
         ("dicom_seg.py", "E101"),  # SEG names no grid the sample has
         ("dicom_seg.py", "E402"),  # segment absent from the sample's label set
         ("dicom_seg.py", "E405"),  # SEG shape vs. the target grid's
+        ("dicom_seg.py", "E414"),  # SEG frame of reference vs. the target grid's
         ("nifti.py", "E402"),  # mask name absent from the sample's label set
         ("nifti.py", "E405"),  # mask shape vs. the target grid's
         ("nnunetv2.py", "E402"),  # class absent from the annotation

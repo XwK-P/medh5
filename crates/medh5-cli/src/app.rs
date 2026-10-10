@@ -443,7 +443,13 @@ fn convert() -> Vec<Command> {
                 .arg(positional("seg", "the DICOM SEG file to import"))
                 .arg(positional("sample", "the sample to add the annotation to"))
                 .arg(opt("ann_id", "id", "id for the new annotation").default_value("seg"))
-                .arg(opt("grid", "grid", "grid to place the frames on; inferred when omitted")),
+                .arg(opt("grid", "grid", "grid to place the frames on; inferred when omitted"))
+                .arg(opt(
+                    "frame_salt",
+                    "frame-salt",
+                    "the salt `medh5 scrub` pseudonymised the sample's frames with: the SEG's frame is compared as the \
+                     scrub wrote it",
+                )),
         ))
         .subcommand(report_args(
             Command::new("to-dicom-seg")
@@ -490,7 +496,15 @@ fn convert() -> Vec<Command> {
                     opt("dataset_name", "dataset-name", "nnU-Net dataset name, e.g. Dataset001_Liver")
                         .default_value("Dataset001_medh5"),
                 )
-                .arg(opt("annotation", "annotation", "the annotation to export as labels").default_value("seg")),
+                .arg(opt("annotation", "annotation", "the annotation to export as labels").default_value("seg"))
+                .arg(
+                    append(
+                        "classes",
+                        "class",
+                        "export only this class (id or key), which every case examined; repeatable",
+                    )
+                    .value_name("K"),
+                ),
         ));
     let migrate = report_args(
         Command::new("migrate")

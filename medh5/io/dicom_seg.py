@@ -54,6 +54,12 @@ lying *between* two slices is refused rather than assigned to one.
 """
 
 
+LATTICE_TOLERANCE = 1e-3
+"""How far, in millimetres, a plane may sit from the regular stack
+:func:`read_dicom_seg` returns: the plane positions it compares are rounded to
+1e-4 mm, and an affine that misplaces a plane by more is no description of it."""
+
+
 def read_dicom_seg_frames(
     path: str | os.PathLike[str],
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -106,7 +112,7 @@ def read_dicom_seg_frames(
         for index in range(pixels.shape[0])
     ]
     geometry: dict[str, Any] = {
-        "shape": (len(placement["planes"]), rows, columns),
+        "shape": (max(placement["indices"]) + 1, rows, columns),
         "rows": rows,
         "columns": columns,
         "spacing": placement["spacing"],
@@ -119,6 +125,7 @@ def read_dicom_seg_frames(
         "fractional": fractional,
         "source_series": placement["source_series"],
         "planes": placement["planes"],
+        "regular": placement["regular"],
         "frames": len(frames),
         "scale": scale,
     }
@@ -129,6 +136,8 @@ def place_frames(
     frames: Sequence[Mapping[str, Any]],
     geometry: Mapping[str, Any],
     grid: Any,
+    *,
+    frame_salt: str | None = None,
 ) -> dict[int, npt.NDArray[Any]]:
     """Put each frame on the slice of *grid* that its position names (§3.3).
 
@@ -138,7 +147,13 @@ def place_frames(
     this grid is refused **by name** rather than force-fitted: it is either a
     different reconstruction or a different series, and both are answers the
     caller has to act on.
+
+    Before any of that, the frames of reference: a SEG drawn in one is not
+    placed on a grid in another, whatever their numbers (§3.4).
+    *frame_salt* compares the SEG's frame as ``medh5 scrub`` pseudonymised the
+    grid's (see :func:`frames_agree`).
     """
+    _require_same_frame(geometry, grid, frame_salt)
     shape = tuple(grid.spatial_shape)
     if len(shape) != 3:
         raise MEDH5ValidationError(
@@ -200,6 +215,61 @@ def place_frames(
             )
         volumes[segment][nearest] = frame["data"]
     return volumes
+
+
+def frames_agree(
+    seg_frame: str | None, grid_frame: str | None, salt: str | None = None
+) -> bool | None:
+    """Whether a SEG's frame of reference is a grid's; ``None`` when either
+    states none, so there is nothing to compare.
+
+    A grid of a sample ``medh5 scrub`` pseudonymised holds its frame's
+    pseudonym, which the SEG's own UID never equals; with the scrub's *salt*
+    the SEG's is compared as the scrub would have written it --- an exact
+    correspondence, not an assumption.
+    """
+    if not seg_frame or not grid_frame:
+        return None
+    if seg_frame == grid_frame:
+        return True
+    if salt is not None:
+        from medh5.curation.scrub import pseudonymise
+
+        return pseudonymise(seg_frame, salt) == grid_frame
+    return False
+
+
+def _require_same_frame(
+    geometry: Mapping[str, Any], grid: Any, salt: str | None
+) -> None:
+    """Refuse a grid whose known frame of reference is not the SEG's (§3.4).
+
+    Equal numbers in two frames are no correspondence: a grid with another
+    known frame and the same geometry received every voxel, from an explicit
+    ``grid=`` without a word and from automatic matching on a recorded guess
+    (N15 of the round-3 audit).  Relating two frames is registration, which
+    this importer does not apply.  Where either side states no frame, there is
+    nothing to compare, and placement rests on geometry, as it always has; the
+    import records that as a guess.
+    """
+    seg = geometry.get("frame_uid")
+    if frames_agree(seg, grid.frame_uid, salt) is not False:
+        return
+    from medh5.curation.scrub import PSEUDONYM_PREFIX
+
+    hint = (
+        " The grid's frame is a `medh5 scrub` pseudonym: pass the scrub's salt "
+        "as frame_salt= to compare the SEG's frame as the scrub wrote it."
+        if str(grid.frame_uid).startswith(PSEUDONYM_PREFIX) and salt is None
+        else ""
+    )
+    raise MEDH5ValidationError(
+        f"the SEG was drawn in frame of reference {seg!r} and grid "
+        f"{grid.grid_id!r} is in {grid.frame_uid!r}: equal geometry in two "
+        "frames is no correspondence, and placing it there needs a "
+        f"registration, which this importer does not apply.{hint}",
+        code="E414",
+    )
 
 
 def _from_patient(grid: Any) -> tuple[npt.NDArray[np.float64], float]:
@@ -267,12 +337,23 @@ def read_dicom_seg(
     """A SEG file as ``{segment number: volume}`` plus its geometry and segments.
 
     The volume spans the planes the file carries, which is what a reader with
-    no other information can honestly build.  An import into an existing
-    sample goes through :func:`read_dicom_seg_frames` and :func:`place_frames`
-    instead, because the grid it is going onto is what knows how many slices
-    the study has.
+    no other information can honestly build --- on the regular stack they sit
+    on, so a plane the file omits between two it carries is an empty plane
+    and every plane is where ``geometry`` says (see :func:`_lattice`).  A file
+    whose planes no regular stack holds is refused (E405).  An import into an
+    existing sample goes through :func:`read_dicom_seg_frames` and
+    :func:`place_frames` instead, because the grid it is going onto is what
+    knows how many slices the study has.
     """
     frames, geometry = read_dicom_seg_frames(path)
+    if not geometry["regular"]:
+        planes = [float(p) for p in geometry["planes"]]
+        raise MEDH5ValidationError(
+            f"the SEG's planes lie at {planes} mm along their normal, and no "
+            "regular stack places them all; read its frames with "
+            "read_dicom_seg_frames and place them on the grid they were drawn "
+            "on with place_frames"
+        )
     segments = geometry["segments"]
     depth, rows, columns = geometry["shape"]
     volumes: dict[int, npt.NDArray[Any]] = {
@@ -353,12 +434,18 @@ def _frame_placement(dataset: Any, n_frames: int) -> dict[str, Any]:
     normal = np.cross(orientation[:3], orientation[3:])
     projected = [float(np.dot(p, normal)) for p in positions]
     planes = sorted(set(np.round(projected, 4)))
-    indices = [planes.index(round(v, 4)) for v in projected]
     first = per_frame[0] if per_frame else None
-    spacing = _spacing(pixels[0], planes, _between(first, shared))
+    regular = _lattice(planes, _between(first, shared))
+    # An import places every frame by its own position (`place_frames`), so a
+    # stack no regular lattice holds is still placeable; only a volume of the
+    # file's own (`read_dicom_seg`) needs one.
+    step, lattice = regular or (float("nan"), list(range(len(planes))))
+    indices = [lattice[planes.index(round(v, 4))] for v in projected]
+    spacing = [step, float(pixels[0][0]), float(pixels[0][1])]
     origin_index = indices.index(0) if 0 in indices else 0
     return {
         "planes": planes,
+        "regular": regular is not None,
         "indices": indices,
         "segments": segments,
         # Each frame's own `ImagePositionPatient`, kept rather than collapsed
@@ -459,15 +546,30 @@ def _segment_number(group: Any) -> int:
     return int(getattr(identification, "ReferencedSegmentNumber", 1))
 
 
-def _spacing(
-    in_plane: npt.NDArray[np.float64], planes: Sequence[float], between: float | None
-) -> list[float]:
-    if len(planes) > 1:
-        gaps = np.diff(np.asarray(planes, dtype=np.float64))
-        through = float(np.median(np.abs(gaps)))
-    else:
-        through = between or 1.0
-    return [through, float(in_plane[0]), float(in_plane[1])]
+def _lattice(
+    planes: Sequence[float], between: float | None
+) -> tuple[float, list[int]] | None:
+    """The regular stack the planes a SEG carries sit on: its step, and each
+    plane's index in it; ``None`` when no regular stack holds them.
+
+    A SEG may omit its empty frames, so the planes it carries need not be
+    adjacent.  The stack is the one whose step --- the stated
+    ``SpacingBetweenSlices``, else the smallest gap --- divides every gap a
+    whole number of times, the omitted planes empty.  The median gap stood
+    for the step: planes at 10, 12.5 and 17.5 mm read as a stack 3.75 mm
+    apart, the middle one 1.25 mm from where it was drawn (N18 of the round-3
+    audit).
+    """
+    if len(planes) < 2:
+        return (abs(between) if between else 1.0), [0] * len(planes)
+    gaps = np.diff(np.asarray(planes, dtype=np.float64))
+    step = abs(float(between)) if between else float(gaps.min())
+    whole = np.round(gaps / step)
+    # Exactly, to the positions' own precision: a gap a quarter step off would
+    # put its plane a quarter step from where the stack says it is.
+    if np.any(whole < 1) or np.any(np.abs(gaps - whole * step) > LATTICE_TOLERANCE):
+        return None
+    return step, [0, *np.cumsum(whole).astype(int).tolist()]
 
 
 def _first_item(holder: Any, name: str) -> Any:
@@ -495,13 +597,20 @@ def from_dicom_seg(
     ann_id: str = "seg",
     grid: str | None = None,
     annotated_classes: Sequence[str] | str = "all_given",
+    frame_salt: str | None = None,
     report: ConversionReport | None = None,
 ) -> ConversionReport:
     """Add a DICOM SEG's segments to an existing sample (§7).
 
     The SEG is matched to a grid by frame of reference where it declares one,
     and its shape is checked against that grid: a SEG drawn on a different
-    reconstruction is refused rather than force-fitted.
+    reconstruction is refused rather than force-fitted.  A grid --- matched or
+    named with *grid* --- whose frame of reference is known and is not the
+    SEG's is refused before the sample is touched: equal geometry in two
+    frames is no correspondence (§3.4).  Where the SEG or the grid states no
+    frame, the placement rests on geometry and the report records a guess.
+    *frame_salt* is the salt a ``medh5 scrub`` pseudonymised the sample's
+    frames with (:func:`frames_agree`).
     """
     import medh5
     from medh5.labels import LabelClass, LabelSet, OntologyCode
@@ -511,13 +620,21 @@ def from_dicom_seg(
     frames, geometry = read_dicom_seg_frames(path)
 
     with medh5.open(sample) as opened:
-        grid_id = grid or _match_grid(opened, geometry, log)
+        grid_id = grid or _match_grid(opened, geometry, log, frame_salt)
         target = opened.grids[grid_id]
         existing = opened.label_set
     # Placed by position, not reshaped by count: a SEG that omits its empty
     # frames covers only the slices it labels, and the grid is what says how
     # many slices the study has (§3.3).
-    volumes = place_frames(frames, geometry, target)
+    volumes = place_frames(frames, geometry, target, frame_salt=frame_salt)
+    if frames_agree(geometry.get("frame_uid"), target.frame_uid, frame_salt) is None:
+        log.guess(
+            "frame",
+            f"{'the SEG' if not geometry.get('frame_uid') else f'grid {grid_id!r}'} "
+            "states no frame of reference, so the frames could not be compared; "
+            "the SEG was placed by its geometry alone",
+            {"grid": grid_id, "seg_frame": geometry.get("frame_uid")},
+        )
     log.decision(
         "frames",
         f"{len(frames)} frame(s) were placed on grid {grid_id!r} by "
@@ -676,30 +793,60 @@ def _in_plane_match(grid: Any, geometry: Mapping[str, Any]) -> bool:
     )
 
 
-def _match_grid(sample: Any, geometry: Mapping[str, Any], log: ConversionReport) -> str:
-    """Pick the grid the SEG was drawn on, by frame of reference then by shape."""
+def _match_grid(
+    sample: Any,
+    geometry: Mapping[str, Any],
+    log: ConversionReport,
+    salt: str | None = None,
+) -> str:
+    """Pick the grid the SEG was drawn on, by frame of reference then by shape.
+
+    The shape is a fallback only among grids whose frame cannot be compared
+    with the SEG's: one in another known frame was matched on its rows and
+    columns alone (N15 of the round-3 audit).
+    """
     frame = geometry.get("frame_uid")
+    grids = list(sample.grids.values())
     if frame:
-        matches = [g for g in sample.grids.values() if g.frame_uid == frame]
+        matches = [g for g in grids if frames_agree(frame, g.frame_uid, salt)]
         if len(matches) == 1:
             return str(matches[0].grid_id)
         if len(matches) > 1:
             same = [g for g in matches if _in_plane_match(g, geometry)]
             if len(same) == 1:
                 return str(same[0].grid_id)
-    candidates = [g for g in sample.grids.values() if _in_plane_match(g, geometry)]
+    candidates = [
+        g
+        for g in grids
+        if _in_plane_match(g, geometry)
+        and frames_agree(frame, g.frame_uid, salt) is None
+    ]
     if len(candidates) == 1:
         log.guess(
             "grid",
             f"the SEG names frame {frame!r}, which no grid declares; it was "
-            f"matched to grid {candidates[0].grid_id!r} on shape alone",
+            f"matched to grid {candidates[0].grid_id!r}, which states no frame, "
+            "on shape alone",
             {"grid": candidates[0].grid_id},
         )
         return str(candidates[0].grid_id)
+    elsewhere = [
+        str(g.grid_id)
+        for g in grids
+        if _in_plane_match(g, geometry)
+        and frames_agree(frame, g.frame_uid, salt) is False
+    ]
     raise MEDH5ValidationError(
         f"cannot tell which grid the SEG belongs to: frame {frame!r} matches no "
-        f"grid and {len(candidates)} grid(s) share its rows and columns. Pass "
-        "grid= explicitly rather than letting the converter guess.",
+        f"grid and {len(candidates)} grid(s) without a frame share its rows and "
+        "columns"
+        + (
+            f"; {elsewhere} share them in another frame of reference, which is "
+            "no correspondence"
+            if elsewhere
+            else ""
+        )
+        + ". Pass grid= explicitly rather than letting the converter guess.",
         code="E101",
     )
 
@@ -891,6 +1038,7 @@ __all__ = [
     "BINARY",
     "FRACTIONAL",
     "SLICE_TOLERANCE",
+    "frames_agree",
     "from_dicom_seg",
     "place_frames",
     "read_dicom_seg",

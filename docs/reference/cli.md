@@ -332,7 +332,7 @@ medh5 convert to-nifti PATH IMAGE OUT [--annotation A --class K] [--stored]
 medh5 convert from-dicom ROOT OUT [--group-by subject|study]
                                   [--modality M ...] [--series UID ...]
 
-medh5 convert from-dicom-seg SEG SAMPLE [--id ANN] [--grid G]
+medh5 convert from-dicom-seg SEG SAMPLE [--id ANN] [--grid G] [--frame-salt S]
 medh5 convert to-dicom-seg PATH ANNOTATION OUT --source DICOM [--source DICOM ...]
 
 medh5 convert from-rtstruct RTSTRUCT SAMPLE [--id ANN] [--grid G] [--rasterize]
@@ -340,6 +340,7 @@ medh5 convert to-rtstruct PATH ANNOTATION OUT --source DICOM [--source DICOM ...
 
 medh5 convert from-nnunet ROOT OUT [--case ID ...]
 medh5 convert to-nnunet OUT PATH... [--dataset-name NAME] [--annotation A]
+                                    [--class K ...]
 ```
 
 All but `to-nifti` also take `[--report FILE] [--json]`. Options marked `...`
@@ -359,7 +360,8 @@ sample per study, warns, and records the fallback.
 `from-dicom-seg` writes annotation `seg` and `from-rtstruct` writes `contours`
 unless `--id` names another; `to-nnunet` exports annotation `seg` unless
 `--annotation` names another, as dataset `Dataset001_medh5` unless
-`--dataset-name` does.
+`--dataset-name` does, with every class the cases carry unless `--class` names
+the ones to export --- each of them examined by every case.
 
 See [Converters](converters.md).
 

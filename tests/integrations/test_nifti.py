@@ -1178,3 +1178,40 @@ class TestExportsOwnTheirVolumeStatements:
         )
         assert not (tmp_path / "dwi.bval").exists()
         assert read_nifti(tmp_path / "dwi.nii.gz")[1]["leading_kind"] == "time"
+
+    @pytest.mark.parametrize("sidecar_text", ["{not json", "[]"])
+    def test_N16_a_refused_overwrite_leaves_the_old_files(self, tmp_path, sidecar_text):
+        """The `.bval` was withdrawn before the sidecar the new statements go
+        to was read, so an export refused for that sidecar had already taken
+        the old image's b-values: it reread as an unmeasured time axis (N16 of
+        the round-3 audit).  Everything is checked before anything goes."""
+        out = tmp_path / "dwi.nii.gz"
+        dwi = self._channels(tmp_path / "dwi.medh5", b_values=[0.0, 1200.0])
+        to_nifti(dwi, "MR", out)
+        sidecar, bval = tmp_path / "dwi.json", tmp_path / "dwi.bval"
+        sidecar.write_text(sidecar_text, encoding="utf-8")
+        before = {p.name: p.read_bytes() for p in (out, sidecar, bval)}
+        echo = self._channels(tmp_path / "echo.medh5", EchoTime=[0.005, 0.01])
+        with pytest.raises(MEDH5ValidationError, match="not a JSON object"):
+            to_nifti(echo, "MR", out)
+        assert {p.name: p.read_bytes() for p in (out, sidecar, bval)} == before
+        assert read_nifti(out)[1]["leading_kind"] == "channel"
+        from_nifti({"DWI": out}, tmp_path / "back.medh5")
+        with medh5.open(tmp_path / "back.medh5") as sample:
+            assert sample.document.acquisition["DWI"]["b_values"] == [0.0, 1200.0]
+        assert not [p for p in tmp_path.iterdir() if p.name.startswith(".")]
+
+    def test_N16_an_object_sidecar_takes_the_new_statements(self, tmp_path):
+        """The control: a sidecar that is a JSON object keeps its other
+        fields and takes the export's."""
+        out = tmp_path / "dwi.nii.gz"
+        to_nifti(
+            self._channels(tmp_path / "dwi.medh5", b_values=[0.0, 1200.0]), "MR", out
+        )
+        sidecar = tmp_path / "dwi.json"
+        sidecar.write_text(json.dumps({"Manufacturer": "x"}), encoding="utf-8")
+        echo = self._channels(tmp_path / "echo.medh5", EchoTime=[0.005, 0.01])
+        to_nifti(echo, "MR", out)
+        fields = json.loads(sidecar.read_text(encoding="utf-8"))
+        assert fields == {"Manufacturer": "x", "EchoTime": [0.005, 0.01]}
+        assert not (tmp_path / "dwi.bval").exists()

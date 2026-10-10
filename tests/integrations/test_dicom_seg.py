@@ -629,3 +629,186 @@ class TestSegExportGeometry:
                 for v in voxels
             }
         assert exported == drawn
+
+
+def _highdicom_seg(paths: list[Any], mask: Any, out: Path) -> Path:
+    """A BINARY SEG of *mask* (slices in the series' geometric order, one
+    segment) over the DICOM files *paths*, empty frames omitted."""
+    hd = pytest.importorskip("highdicom")
+    datasets = [pydicom.dcmread(p) for p in paths]
+    normal = np.cross([0, 0, 1], [0, 1, 0])
+    datasets.sort(
+        key=lambda d: float(np.dot([float(v) for v in d.ImagePositionPatient], normal))
+    )
+    description = hd.seg.SegmentDescription(
+        segment_number=1,
+        segment_label="liver",
+        segmented_property_category=hd.sr.CodedConcept(
+            "91723000", "SCT", "Anatomical Structure"
+        ),
+        segmented_property_type=hd.sr.CodedConcept("10200004", "SCT", "Liver"),
+        algorithm_type=hd.seg.SegmentAlgorithmTypeValues.MANUAL,
+    )
+    segmentation = hd.seg.Segmentation(
+        source_images=datasets,
+        pixel_array=np.asarray(mask, np.uint8)[..., None],
+        segmentation_type=hd.seg.SegmentationTypeValues.BINARY,
+        segment_descriptions=[description],
+        series_instance_uid=hd.UID(),
+        series_number=1,
+        sop_instance_uid=hd.UID(),
+        instance_number=1,
+        manufacturer="t",
+        manufacturer_model_name="t",
+        software_versions="1",
+        device_serial_number="0",
+        omit_empty_frames=True,
+    )
+    segmentation.save_as(str(out))
+    return out
+
+
+class TestSegFrameIdentity:
+    """A SEG lands only in its own frame of reference (N15 of the round-3
+    audit): a grid in another known frame, with the same numbers, received
+    every voxel --- from an explicit ``grid=`` without a word, from automatic
+    matching on a recorded guess."""
+
+    def test_N15_placement_compares_frames_first(self, tmp_path: Path):
+        from medh5.curation.scrub import pseudonymise
+        from medh5.io.dicom_seg import place_frames
+
+        def grid(name: str, frame: str | None) -> Any:
+            folder = tmp_path / name
+            folder.mkdir()
+            options = {} if frame is None else {"frame_uid": frame}
+            path = TestSegFramesSitOnTheGrid._grid(folder, **options)
+            with medh5.open(path) as sample:
+                return sample.grids["g"]
+
+        own, other = grid("own", "1.2.3"), grid("other", "9.9.9")
+        frameless = grid("none", None)
+        scrubbed = grid("scrubbed", pseudonymise("1.2.3", "salt"))
+        geometry = {**TestSegFramesSitOnTheGrid._geometry(own), "frame_uid": "1.2.3"}
+        frames = [TestSegFramesSitOnTheGrid._frame(own.index_to_world([2, 0, 0]))]
+        for target in (own, frameless):
+            assert place_frames(frames, geometry, target)[1][2].all()
+        with pytest.raises(MEDH5ValidationError, match="no correspondence") as caught:
+            place_frames(frames, geometry, other)
+        assert caught.value.code == "E414"
+        with pytest.raises(MEDH5ValidationError, match="frame_salt="):
+            place_frames(frames, geometry, scrubbed)
+        with pytest.raises(MEDH5ValidationError, match="no correspondence"):
+            place_frames(frames, geometry, scrubbed, frame_salt="another")
+        placed = place_frames(frames, geometry, scrubbed, frame_salt="salt")
+        assert placed[1][2].all()
+
+    def test_N15_an_import_into_another_frame_leaves_the_sample(self, tmp_path: Path):
+        from pydicom.uid import generate_uid
+
+        from medh5.io.dicom import from_dicom
+        from medh5.io.dicom_seg import from_dicom_seg
+
+        series = write_dicom_series(
+            tmp_path / "dcm", patient_id="p", study_uid=generate_uid(),
+            study_date="20260101", shape=(6, 16, 20),
+        )  # fmt: skip
+        source = tmp_path / "source.medh5"
+        from_dicom(tmp_path / "dcm", source, group_by="study")
+        with medh5.open(source) as sample:
+            g = sample.grids[sorted(sample.grids)[0]]
+            lattice = {
+                "shape": g.spatial_shape,
+                "spacing": g.spacing,
+                "origin": g.origin,
+                "direction": np.array(g.direction),
+                "coord_system": g.coord_system,
+            }
+        mask = np.zeros(lattice["shape"], bool)
+        mask[2, 4:8, 5:9] = True
+        seg = _highdicom_seg(series["paths"], mask, tmp_path / "seg.dcm")
+
+        def target(name: str, frame: str | None) -> Path:
+            path = tmp_path / f"{name}.medh5"
+            with medh5.create(path, sample_id=name) as w:
+                options = {} if frame is None else {"frame_uid": frame}
+                w.add_grid("g", timepoint="tp0", **lattice, **options)
+                w.add_image(
+                    "CT", np.zeros(lattice["shape"], np.int16), grid="g", modality="CT"
+                )
+            return path
+
+        other = target("other", "9.9.9")
+        before = other.read_bytes()
+        with pytest.raises(MEDH5ValidationError, match="no correspondence") as caught:
+            from_dicom_seg(seg, other, grid="g")
+        assert caught.value.code == "E414"
+        with pytest.raises(MEDH5ValidationError, match="another frame") as caught:
+            from_dicom_seg(seg, other)
+        assert caught.value.code == "E101"
+        assert other.read_bytes() == before
+        report = from_dicom_seg(seg, target("frameless", None))
+        assert report.of_kind("frame"), "a placement on geometry alone is a guess"
+        report = from_dicom_seg(seg, source)
+        assert not report.of_kind("frame")
+        with medh5.open(source) as sample:
+            assert np.array_equal(sample.annotations["seg"].dense(["liver"])[0], mask)
+
+
+class TestSparseSegReader:
+    """A SEG that omits its empty frames reads back on the regular stack its
+    planes sit on (N18 of the round-3 audit): the median gap stood for the
+    step, so planes at 10, 12.5 and 17.5 mm read as a stack 3.75 mm apart."""
+
+    def test_N18_lattice(self):
+        from medh5.io.dicom_seg import _lattice
+
+        assert _lattice([10.0, 12.5, 17.5], None) == (2.5, [0, 1, 3])
+        assert _lattice([0.0, 5.0], 2.5) == (2.5, [0, 2])
+        assert _lattice([7.0], 3.0) == (3.0, [0])
+        assert _lattice([10.0, 12.5, 16.25], None) is None
+        assert _lattice([0.0, 2.5], 2.0) is None
+
+    def test_N18_omitted_planes_come_back_empty_where_they_were(self, tmp_path):
+        from pydicom.uid import generate_uid
+
+        from medh5.io.dicom_seg import read_dicom_seg, read_dicom_seg_frames
+
+        series = write_dicom_series(
+            tmp_path / "dcm", patient_id="p", study_uid=generate_uid(),
+            study_date="20260101", shape=(8, 16, 20), spacing=(2.5, 0.8, 0.9),
+        )  # fmt: skip
+        mask = np.zeros((8, 16, 20), bool)
+        mask[[0, 1, 3], 4:8, 5:9] = True
+        seg = _highdicom_seg(series["paths"], mask, tmp_path / "sparse.dcm")
+        volumes, geometry = read_dicom_seg(seg)
+        assert geometry["shape"][0] == 4 and geometry["spacing"][0] == pytest.approx(
+            2.5
+        )
+        counts = [int(volumes[1][k].sum()) for k in range(4)]
+        assert sorted(counts) == [0, 16, 16, 16] and counts[0] and counts[3]
+        # Every plane is where the returned geometry says it is.
+        origin = np.asarray(geometry["origin"])
+        step = np.asarray(geometry["direction"])[:, 0] * geometry["spacing"][0]
+        frames, _ = read_dicom_seg_frames(seg)
+        for frame in frames:
+            assert np.allclose(frame["position"], origin + frame["plane"] * step)
+
+        # Planes no regular stack holds are refused, not spaced by a median.
+        dataset = pydicom.dcmread(str(seg))
+        last = max(
+            range(len(dataset.PerFrameFunctionalGroupsSequence)),
+            key=lambda i: frames[i]["plane"],
+        )
+        group = dataset.PerFrameFunctionalGroupsSequence[last]
+        position = [
+            float(v) for v in group.PlanePositionSequence[0].ImagePositionPatient
+        ]
+        group.PlanePositionSequence[0].ImagePositionPatient = list(
+            np.asarray(position) + 1.0 * step / np.linalg.norm(step)
+        )
+        dataset.save_as(str(seg), enforce_file_format=True)
+        with pytest.raises(MEDH5ValidationError, match="no regular stack") as caught:
+            read_dicom_seg(seg)
+        # About the SEG alone, so no §15.2 code (there is no sample yet).
+        assert caught.value.code is None

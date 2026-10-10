@@ -165,6 +165,25 @@ spaced against each other are refused, and so is a frame stating no pixel
 spacing. Positions are DICOM's (LPS, millimetres), converted for an RAS grid or
 one in other length units. **Segments match by label, not by number.**
 
+**Frames of reference come first.** A SEG is matched to the grid that shares
+its `FrameOfReferenceUID`, and a grid — matched or named with `--grid` — whose
+frame is known and is another is refused (`E414`) before the sample is touched:
+equal geometry in two frames is no correspondence, and relating them is
+registration, which the importer does not apply. Where the SEG or the grid
+states no frame there is nothing to compare; the placement rests on geometry
+and the report records a guess. A sample `medh5 scrub` pseudonymised holds its
+frames' pseudonyms: `--frame-salt` (`frame_salt=`) gives the scrub's salt, and
+the SEG's frame is compared as the scrub wrote it. `frames_agree` asks the same
+question on its own: equal, not, or `None` when either frame is unknown.
+
+**A SEG may omit its empty frames.** An import places each frame on the grid by
+its own position. `read_dicom_seg`, which has no grid and builds the SEG's own
+volume, puts the planes the file carries on the regular stack they sit on ---
+its step the stated `SpacingBetweenSlices`, else the smallest gap, and every
+gap a whole number of steps, to 10⁻³ mm --- with the planes it omits empty;
+planes no such stack holds are refused, and `read_dicom_seg_frames` reads them
+frame by frame.
+
 **Export writes an annotation onto its own grid only**: the source images must
 be that grid's slices --- one frame of reference, rows and columns running the
 same way at the same spacing, each image starting at its slice's first voxel ---
@@ -227,15 +246,31 @@ Each case's channels and per-class masks are bundled into one sample.
 **nnU-Net's class ids are kept**, so a model trained against the original
 dataset still means the same thing. A file's `scl_slope`/`scl_inter` mean what
 they mean to nnU-Net: an image keeps them as its rescale, and label ids are read
-after them (a scaling that makes non-integer labels is refused). The export
-needs the labels on the channels' grid. **Region labels become §5.1 DAG parents**: a
-region that is the union of two components is a class whose components name it
-as a parent, which is exactly what the hierarchy is for. **nnU-Net's `ignore`
-label is the annotation's ignore region** (§7.7), both ways: never a class, and
-never background.
+after them (a scaling that makes non-integer labels is refused). **Region
+labels become §5.1 DAG parents**: a region that is the union of two components
+is a class whose components name it as a parent, which is exactly what the
+hierarchy is for. **nnU-Net's `ignore` label is the annotation's ignore
+region** (§7.7), both ways: never a class, and never background.
 
 The parsed `dataset.json` is stashed in `extra["nnunetv2"]`, so `to-nnunet`
 reproduces the original dataset definition rather than inventing one.
+
+**The export checks the dataset before it writes a file.** nnU-Net reads one
+physical space per case and one label table for the dataset, so every channel
+and the labels must be one lattice in one frame, convention and unit ---
+nothing is resampled --- and the label table is the union of the cases'
+classes, one name per id. **Every case must have examined every class
+exported** (`annotated_class_ids`): a class one case never looked for would be
+written as its background, a negative nobody observed; `classes=` exports a
+subset all of them examined.
+
+**A case is written only if its labels come back.** Region labels are painted
+in `regions_class_order`, as nnU-Net converts them back; without one, each
+class is written as its own value. Each exported label is then read back from
+the volume outside the ignore region, and a case whose volume does not give one
+back --- a region its components do not cover, a voxel two classes share --- is
+refused before any of its files is written. These refusals carry no §15.2 code:
+the samples are valid, and what they fail is nnU-Net's layout.
 
 ### 0.x files
 
