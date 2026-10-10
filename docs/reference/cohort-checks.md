@@ -1,7 +1,8 @@
 # Cohort check codes
 
-What `medh5 dataset check` reports. These describe a **cohort** — a set of files
-considered together — not a file.
+What `medh5 dataset check` reports — and `C204`, which `medh5 dataset split`
+raises while it makes a split, before anything is written. These describe a
+**cohort** — a set of files considered together — not a file.
 
 That is why they are a separate code space from the
 [diagnostic codes](diagnostic-codes.md), and deliberately so: every file in a

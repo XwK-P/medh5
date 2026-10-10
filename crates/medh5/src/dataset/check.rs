@@ -4,9 +4,10 @@
 //! for training is about the cohort --- do these files mean the same thing by
 //! class 3, was this split computed before the cohort last changed, is one
 //! subject in train and test.  Findings have the validator's shape, but the
-//! codes are cohort codes (`C1xx`) and belong to this tool, not to the format.
+//! codes are cohort codes (`C1xx`--`C5xx`) and belong to this tool, not to the
+//! format.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
 use indexmap::IndexMap;
@@ -15,7 +16,8 @@ use serde_json::{json, Map, Value};
 use crate::collection::{open_any, AnyFile};
 use crate::curation::splits::anatomy_units;
 use crate::dataset::manifest::{Entry, Manifest};
-use crate::json::repr_int_list;
+use crate::dataset::split::locator;
+use crate::json::{repr_int_list, repr_str};
 
 pub const SEVERITIES: [&str; 3] = ["error", "warning", "info"];
 
@@ -27,9 +29,9 @@ pub const CHECK_CODES: [(&str, &str); 12] = [
     ("C201", "a split claim's manifest digest is not this manifest's"),
     ("C202", "one subject's or grouping key's samples claim different partitions of one split"),
     ("C203", "a sample carries no split claim"),
-    ("C204", "a group holds part of a subject, so the split is not subject-safe"),
+    ("C204", "a group holds part of a subject, so the split is not subject-safe (raised by dataset split)"),
     ("C301", "a class is examined in only part of the cohort"),
-    ("C302", "a class appears in no sample"),
+    ("C302", "a class is named but examined in no sample"),
     ("C401", "a file changed after the manifest was written"),
     ("C402", "a file in the manifest no longer exists"),
     ("C501", "the cohort mixes de-identified and non-de-identified samples"),
@@ -88,11 +90,16 @@ impl std::fmt::Display for Finding {
     }
 }
 
-/// Coverage of one class across the cohort.
+/// Coverage of one class across the cohort, as the manifest knows it.
+///
+/// A manifest is metadata, so it says which samples *name* a class (an
+/// annotation can express it) and which *examined* it (§11.3), never which
+/// hold any of it: that is a voxel question, which `dataset stats` answers
+/// (`present_in`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Coverage {
     pub examined_in: usize,
-    pub present_in: usize,
+    pub named_in: usize,
     pub of: usize,
 }
 
@@ -127,9 +134,7 @@ impl CohortReport {
         let coverage: Map<String, Value> = self
             .coverage
             .iter()
-            .map(|(k, v)| {
-                (k.to_string(), json!({"examined_in": v.examined_in, "present_in": v.present_in, "of": v.of}))
-            })
+            .map(|(k, v)| (k.to_string(), json!({"examined_in": v.examined_in, "named_in": v.named_in, "of": v.of})))
             .collect();
         json!({
             "manifest_sha256": self.manifest_sha256,
@@ -157,7 +162,7 @@ impl CohortReport {
                             id,
                             Coverage {
                                 examined_in: count(v, "examined_in"),
-                                present_in: count(v, "present_in"),
+                                named_in: count(v, "named_in"),
                                 of: count(v, "of"),
                             },
                         ))
@@ -215,7 +220,7 @@ fn vocabulary(manifest: &Manifest, report: &mut CohortReport) {
     let mut missing = Vec::new();
     for entry in &manifest.entries {
         match &entry.label_set_digest {
-            None => missing.push(entry.path.clone()),
+            None => missing.push(locator(entry)),
             Some(d) => by_digest.entry(d.as_str()).or_default().push(entry),
         }
     }
@@ -236,6 +241,7 @@ fn vocabulary(manifest: &Manifest, report: &mut CohortReport) {
             .flatten()
             .map(|e| e.label_set_id.clone().filter(|s| !s.is_empty()).unwrap_or_else(|| "?".into()))
             .collect();
+        let first: Vec<String> = by_digest.values().map(|es| locator(es[0])).collect();
         report.add(
             "C101",
             "warning",
@@ -244,35 +250,81 @@ fn vocabulary(manifest: &Manifest, report: &mut CohortReport) {
                 by_digest.len(),
                 names.into_iter().collect::<Vec<_>>().join(", ")
             ),
-            by_digest.values().map(|es| es[0].path.clone()).collect(),
+            first.clone(),
         );
-        // Same id, different key, silently mislabels a whole training run.
-        let mut meanings: BTreeMap<i64, BTreeSet<String>> = BTreeMap::new();
-        for entries in by_digest.values() {
-            for entry in entries {
-                for class_id in &entry.class_ids {
-                    meanings.entry(*class_id).or_default().insert(format!(
-                        "{}@{}",
-                        entry.label_set_id.as_deref().unwrap_or("None"),
-                        entry.label_set_version.as_deref().unwrap_or("None")
-                    ));
+        meanings(&by_digest, first, report);
+    }
+}
+
+/// Same id, different meaning, silently mislabels a whole training run.
+///
+/// A class id's meaning is its key in the label set, so two versions of one
+/// vocabulary that agree on a class do not clash, and one id and version
+/// carrying two vocabularies does --- where keying on `id@version` reported
+/// the first and missed the second.  A label set whose classes the manifest
+/// does not record (a vocabulary by reference, or a manifest indexed before
+/// 2.0) is its own meaning, so an id it shares with another is reported, as
+/// nothing can confirm it means the same.
+fn meanings(by_digest: &IndexMap<&str, Vec<&Entry>>, first: Vec<String>, report: &mut CohortReport) {
+    let mut keys_of: HashMap<&str, BTreeMap<i64, &str>> = HashMap::new();
+    for (digest, entries) in by_digest {
+        for entry in entries {
+            let known = keys_of.entry(digest).or_default();
+            known.extend(entry.class_keys.iter().map(|(id, key)| (*id, key.as_str())));
+        }
+    }
+    let mut meant: BTreeMap<i64, BTreeSet<Option<&str>>> = BTreeMap::new();
+    let mut unknown: BTreeMap<i64, BTreeSet<&str>> = BTreeMap::new();
+    for (digest, entries) in by_digest {
+        for entry in entries {
+            for class_id in &entry.class_ids {
+                match keys_of.get(digest).and_then(|keys| keys.get(class_id)) {
+                    Some(key) => {
+                        meant.entry(*class_id).or_default().insert(Some(*key));
+                    }
+                    None => {
+                        meant.entry(*class_id).or_default().insert(None);
+                        unknown.entry(*class_id).or_default().insert(digest);
+                    }
                 }
             }
         }
-        let clashing: Vec<i64> = meanings.iter().filter(|(_, sets)| sets.len() > 1).map(|(c, _)| *c).collect();
-        if !clashing.is_empty() {
-            report.add(
-                "C102",
-                "error",
-                format!(
-                    "class id(s) {} appear in more than one label set; check they mean the same thing before training \
-                     on the union",
-                    repr_int_list(&clashing)
-                ),
-                by_digest.values().map(|es| es[0].path.clone()).collect(),
-            );
-        }
     }
+    let clashing: Vec<i64> = meant
+        .iter()
+        .filter(|(id, keys)| keys.len() > 1 || unknown.get(*id).is_some_and(|digests| digests.len() > 1))
+        .map(|(id, _)| *id)
+        .collect();
+    if clashing.is_empty() {
+        return;
+    }
+    let what: Vec<String> = clashing
+        .iter()
+        .take(5)
+        .map(|id| {
+            let keys: Vec<String> =
+                meant[id].iter().map(|key| key.map(repr_str).unwrap_or_else(|| "unrecorded".into())).collect();
+            format!("{id} is {}", keys.join(" or "))
+        })
+        .collect();
+    let more = if clashing.len() > 5 { format!("; and {} more", clashing.len() - 5) } else { String::new() };
+    let unrecorded = if clashing.iter().any(|id| meant[id].contains(&None)) {
+        ". An unrecorded meaning is a label set whose classes this manifest does not hold (one by reference, or \
+         a manifest indexed before 2.0 --- re-index it): check it means the same"
+    } else {
+        ""
+    };
+    report.add(
+        "C102",
+        "error",
+        format!(
+            "class id(s) {} mean different things in different label sets ({}{more}); training on the union \
+             labels one class with another's examples{unrecorded}",
+            repr_int_list(&clashing),
+            what.join("; ")
+        ),
+        first,
+    );
 }
 
 /// A claim is only worth something if it is about this cohort (§12.3).
@@ -294,14 +346,14 @@ fn splits(manifest: &Manifest, report: &mut CohortReport, set_id: Option<&str>) 
             .filter(|c| set_id.is_none_or(|s| c.get("set_id").and_then(Value::as_str) == Some(s)))
             .collect();
         if claims.is_empty() {
-            unclaimed.push(entry.path.clone());
+            unclaimed.push(locator(entry));
             continue;
         }
         let unit = units.get(&entry.group_id).cloned().unwrap_or_else(|| vec![entry.group_id.clone()]);
         for claim in claims {
             if let Some(recorded) = claim.get("manifest_sha256").filter(|v| !v.is_null()) {
                 if recorded.as_str() != Some(digest.as_str()) {
-                    stale.push(entry.path.clone());
+                    stale.push(locator(entry));
                 }
             }
             let text = |k: &str| claim.get(k).map(crate::json::py_str).unwrap_or_else(|| "None".into());
@@ -359,14 +411,20 @@ fn splits(manifest: &Manifest, report: &mut CohortReport, set_id: Option<&str>) 
 }
 
 /// Which classes were examined where (§11.3), and where they were not.
+///
+/// What a manifest can say about a class: where it is named and where it
+/// was looked for.  Counting the samples that name a class as the ones it
+/// occurs in made C302 unreachable --- every sample that examines a class
+/// names it (`annotated_class_ids ⊆ class_ids`) --- so occurrence is left to
+/// `dataset stats`, which reads the voxels.
 fn coverage(manifest: &Manifest, report: &mut CohortReport) {
     let every: BTreeSet<i64> =
         manifest.entries.iter().flat_map(|e| e.class_ids.iter().chain(&e.annotated_class_ids)).copied().collect();
     let n = manifest.len();
     for class_id in every {
         let examined = manifest.entries.iter().filter(|e| e.examined(class_id)).count();
-        let present = manifest.entries.iter().filter(|e| e.has_class(class_id)).count();
-        report.coverage.insert(class_id, Coverage { examined_in: examined, present_in: present, of: n });
+        let named = manifest.entries.iter().filter(|e| e.has_class(class_id)).count();
+        report.coverage.insert(class_id, Coverage { examined_in: examined, named_in: named, of: n });
     }
     let partial: Vec<i64> =
         report.coverage.iter().filter(|(_, v)| v.examined_in > 0 && v.examined_in < n).map(|(c, _)| *c).collect();
@@ -382,20 +440,31 @@ fn coverage(manifest: &Manifest, report: &mut CohortReport) {
             Vec::new(),
         );
     }
-    let absent: Vec<i64> = report.coverage.iter().filter(|(_, v)| v.present_in == 0).map(|(c, _)| *c).collect();
-    if !absent.is_empty() {
+    let unexamined: Vec<i64> = report.coverage.iter().filter(|(_, v)| v.examined_in == 0).map(|(c, _)| *c).collect();
+    if !unexamined.is_empty() {
         report.add(
             "C302",
             "info",
-            format!("class(es) {} are named but occur in no sample", repr_int_list(&absent)),
+            format!(
+                "class(es) {} are named but examined in no sample, so no sample is a negative example of them \
+                 (§11.3); `medh5 dataset stats` counts where they occur",
+                repr_int_list(&unexamined)
+            ),
             Vec::new(),
         );
     }
 }
 
 fn freshness(manifest: &Manifest, report: &mut CohortReport, deep: bool) {
-    let missing: Vec<String> =
-        manifest.entries.iter().filter(|e| !Path::new(&e.path).exists()).map(|e| e.path.clone()).collect();
+    // A collection's members are an entry each and one file: counted once.
+    let mut seen = HashSet::new();
+    let missing: Vec<String> = manifest
+        .entries
+        .iter()
+        .map(|e| e.path.as_str())
+        .filter(|p| seen.insert(*p) && !Path::new(p).exists())
+        .map(str::to_string)
+        .collect();
     if !missing.is_empty() {
         report.add("C402", "error", format!("{} manifest file(s) no longer exist", missing.len()), missing.clone());
     }
@@ -441,7 +510,7 @@ fn changed_content(manifest: &Manifest) -> Vec<String> {
 
 /// A cohort that is only partly de-identified is not de-identified (§11.4).
 fn deidentification(manifest: &Manifest, report: &mut CohortReport) {
-    let identified: Vec<String> = manifest.entries.iter().filter(|e| !e.deidentified).map(|e| e.path.clone()).collect();
+    let identified: Vec<String> = manifest.entries.iter().filter(|e| !e.deidentified).map(locator).collect();
     if !identified.is_empty() && identified.len() != manifest.len() {
         report.add(
             "C501",

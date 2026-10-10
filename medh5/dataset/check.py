@@ -8,9 +8,9 @@ files and absent from the rest.  None of those is visible from inside a single
 sample, and each of them silently corrupts a result.
 
 Findings carry the same shape as the validator's --- a code, a severity, a
-location and a message --- but the codes are cohort codes (``C1xx``) and belong
-to this tool, not to the format.  A file is not non-conforming because the
-cohort around it is inconsistent.
+location and a message --- but the codes are cohort codes (``C1xx``--``C5xx``)
+and belong to this tool, not to the format.  A file is not non-conforming
+because the cohort around it is inconsistent.
 """
 
 from __future__ import annotations
@@ -57,6 +57,11 @@ class CohortReport:
     samples: int
     findings: list[Finding] = field(default_factory=list)
     coverage: dict[int, dict[str, int]] = field(default_factory=dict)
+    """``{class_id: {"examined_in": n, "named_in": m, "of": total}}`` --- what
+    a manifest knows of a class: the samples that looked for it (§11.3) and
+    the samples an annotation of which can express it.  Whether a sample holds
+    any of it is a voxel question, which :func:`~medh5.dataset.compute_stats`
+    answers (``present_in``)."""
 
     @classmethod
     def from_json(cls, doc: dict[str, Any]) -> CohortReport:

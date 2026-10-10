@@ -251,7 +251,7 @@ class TestSplits:
         assert split.underfilled == ("test",)
         assert set(split.counts) == {"train", "val"}
 
-    def test_a_cohort_large_enough_fills_everything(self, manifest, cohort, label_set):
+    def test_a_cohort_large_enough_fills_everything(self, cohort, label_set):
         for extra in range(6):
             write_sample(
                 cohort / f"more-{extra}.medh5",
@@ -270,7 +270,7 @@ class TestSplits:
         sites = {
             partition: set(counts) for partition, counts in split.balance().items()
         }
-        assert any(len(v) > 1 for v in sites.values()) or len(sites) > 1
+        assert any(len(v) > 1 for v in sites.values()), sites
 
     def test_stratifying_does_not_starve_the_small_partitions(self, manifest):
         """Per-stratum tallies round every small stratum toward train.
@@ -285,9 +285,7 @@ class TestSplits:
         assert stratified.underfilled == plain.underfilled
         assert stratified.counts["train"] < sum(stratified.counts.values())
 
-    def test_each_stratum_is_spread_across_the_partitions(
-        self, manifest, cohort, label_set
-    ):
+    def test_each_stratum_is_spread_across_the_partitions(self, cohort, label_set):
         """...and the strata still have to be spread, not merely counted."""
         for extra in range(6):
             path = cohort / f"more-{extra}.medh5"
@@ -300,7 +298,7 @@ class TestSplits:
         balance = split.balance()
         assert len(balance["train"]) > 1, balance
 
-    def test_a_groups_stratum_is_its_majority(self, manifest, cohort):
+    def test_a_groups_stratum_is_its_majority(self, cohort):
         """A group is indivisible, so a disagreeing group needs one answer."""
         paths = sorted(cohort.glob("*.medh5"))
         with medh5.amend(paths[1]) as writer:
@@ -414,7 +412,7 @@ class TestSplits:
             assert claim.fold in (0, 1)
 
     def test_a_sample_inside_a_collection_is_refused_not_skipped(
-        self, manifest, cohort, tmp_path
+        self, cohort, tmp_path
     ):
         shard = tmp_path / "shard.medh5c"
         medh5.pack(sorted(cohort.glob("*.medh5")), shard)
@@ -553,6 +551,47 @@ class TestStats:
         assert result.classes[2].present_in == 0
         assert result.classes[1].prevalence == 1.0
 
+    def test_S11_3_prevalence_is_over_the_samples_that_looked(
+        self, tmp_path, label_set
+    ):
+        """A class drawn where nobody looked for it counted as found, over
+        only the samples that looked: three drawings and one examination
+        that found nothing made its prevalence 3.0."""
+        paths = []
+        for i in range(3):
+            path = tmp_path / f"drawn-{i}.medh5"
+            masks = {1: block(SHAPE, (2, 2, 2), 4), 2: block(SHAPE, (2, 14, 2), 4)}
+            write_sample(path, label_set=label_set, masks=masks, annotated=["liver"])
+            paths.append(path)
+        looked = tmp_path / "looked.medh5"
+        write_sample(
+            looked,
+            label_set=label_set,
+            masks={1: block(SHAPE, (2, 2, 2), 4)},
+            annotated=["liver", "spleen"],
+        )
+        result = compute_stats([*paths, looked])
+        spleen = result.classes[2]
+        assert (spleen.present_in, spleen.examined_in) == (0, 1)
+        assert spleen.prevalence == 0.0
+        assert spleen.voxels == 3 * 4**3
+
+    def test_a_collection_member_is_measured_by_its_locator(
+        self, cohort, tmp_path, capsys
+    ):
+        """A split names a collection's members `path::key`, and `dataset
+        stats` opened every entry's path as a sample, which a shard is not."""
+        shard = tmp_path / "shard.medh5c"
+        medh5.pack(sorted(cohort.glob("case-[01].medh5")), shard)
+        built, _ = scan(shard)
+        located = [f"{e.path}::{e.key}" for e in built]
+        result = compute_stats(located)
+        assert (result.samples, result.failures) == (2, ())
+        manifest_path = tmp_path / "shard.json"
+        built.save(manifest_path)
+        assert main(["dataset", "stats", str(manifest_path)]) == 0
+        assert "unreadable" not in capsys.readouterr().out
+
     def test_workers_agree_with_one_process(self, cohort):
         paths = sorted(str(p) for p in cohort.glob("*.medh5"))
         serial = compute_stats(paths)
@@ -620,6 +659,57 @@ class TestCohortCheck:
         assert "C101" in codes and "C102" in codes
         assert not report.ok
 
+    def _with_vocabulary(self, cohort: Path, name: str, label_set: LabelSet) -> None:
+        write_sample(
+            cohort / f"{name}.medh5",
+            label_set=label_set,
+            masks={1: block(SHAPE, (2, 2, 2), 4)},
+            sample_id=name,
+        )
+
+    @staticmethod
+    def _bumped(label_set: LabelSet) -> LabelSet:
+        """The same classes under the next version."""
+        return LabelSet(label_set.id, version="2.0.0", classes=list(label_set.classes))
+
+    def test_C102_two_versions_that_agree_on_a_class_do_not_clash(
+        self, cohort, label_set
+    ):
+        """Keyed on `id@version`, a version bump that kept every class was a
+        C102 error on each id the two versions share."""
+        self._with_vocabulary(cohort, "v2", self._bumped(label_set))
+        built, _ = scan(cohort)
+        report = check(built)
+        assert "C101" in {f.code for f in report.warnings}
+        assert "C102" not in {f.code for f in report.findings}
+        assert report.ok
+
+    def test_C102_one_id_and_version_with_two_meanings_clashes(self, cohort):
+        """Keyed on `id@version`, two vocabularies under one name and version
+        were one label set, and class 1 meaning two organs passed."""
+        relabelled = LabelSet(
+            "test-v1",
+            version="1.0.0",
+            classes=[LabelClass(1, "tumour", "Tumour"), LabelClass(3, "lesion", "L")],
+        )
+        self._with_vocabulary(cohort, "relabelled", relabelled)
+        built, _ = scan(cohort)
+        report = check(built)
+        clash = next(f for f in report.errors if f.code == "C102")
+        assert "[1]" in clash.message
+        assert "'liver'" in clash.message and "'tumour'" in clash.message
+        assert entries_for(cohort / "relabelled.medh5")[0].class_keys == {1: "tumour"}
+
+    def test_C102_a_manifest_without_class_keys_compares_label_sets(
+        self, cohort, label_set
+    ):
+        """A manifest indexed before 2.0 records no class keys: nothing can
+        confirm two vocabularies agree, so a shared id is still reported."""
+        self._with_vocabulary(cohort, "v2", self._bumped(label_set))
+        built, _ = scan(cohort)
+        legacy = Manifest(entries=[replace(e, class_keys={}) for e in built])
+        assert "C102" in {f.code for f in check(legacy).errors}
+
     def test_C103_a_sample_without_a_label_set_is_flagged(self, cohort):
         write_sample(cohort / "bare.medh5", sample_id="bare")
         built, _ = scan(cohort)
@@ -674,6 +764,24 @@ class TestCohortCheck:
         assert report.coverage[2]["examined_in"] == 1
         assert report.coverage[1]["of"] == 7
 
+    def test_C302_a_class_named_and_examined_nowhere(self, manifest, cohort, label_set):
+        """`present_in` counted the samples that *named* a class, which every
+        sample examining it does, so C302 could never fire.  A manifest knows
+        naming and examination; occurrence is `compute_stats`'s."""
+        assert "C302" not in {f.code for f in check(manifest).findings}
+        write_sample(
+            cohort / "drawn.medh5",
+            label_set=label_set,
+            masks={1: block(SHAPE, (2, 2, 2), 4), 2: block(SHAPE, (2, 14, 2), 4)},
+            annotated=["liver"],
+            sample_id="drawn",
+        )
+        built, _ = scan(cohort)
+        report = check(built)
+        assert report.coverage[2] == {"examined_in": 0, "named_in": 1, "of": 7}
+        finding = next(f for f in report.findings if f.code == "C302")
+        assert finding.severity == "info" and "[2]" in finding.message
+
     def test_C401_a_changed_file_is_noticed(self, manifest, cohort):
         victim = sorted(cohort.glob("*.medh5"))[0]
         with medh5.amend(victim) as writer:
@@ -709,6 +817,25 @@ class TestCohortCheck:
         payload = json.loads(json.dumps(report.to_json()))
         assert payload["samples"] == 6
         assert "OK" in report.format()
+
+    def test_a_collection_is_one_file_of_named_members(self, cohort, tmp_path):
+        """Findings named the shard once per member, never the member, and
+        counted the members of one missing shard as missing files."""
+        bare = [
+            write_sample(tmp_path / f"bare-{n}.medh5", sample_id=f"bare-{n}")
+            for n in "ab"
+        ]
+        shard = tmp_path / "shard.medh5c"
+        medh5.pack(bare, shard)
+        built = Manifest(entries=scan(cohort)[0].entries + scan(shard)[0].entries)
+        members = sorted(f"{e.path}::{e.key}" for e in built if e.key)
+        assert len(members) == 2
+        unlabelled = next(f for f in check(built).findings if f.code == "C103")
+        assert sorted(unlabelled.where) == members
+        shard.unlink()
+        missing = next(f for f in check(built).errors if f.code == "C402")
+        assert missing.where == (str(shard),)
+        assert missing.message.startswith("1 manifest file(s)")
 
     def test_L16_C202_groups_by_the_grouping_key(self, tmp_path: Path):
         """`dataset check` grouped by subject; `medh5 splits` by the §12.2 key.

@@ -5,6 +5,7 @@
 //! The manifest is also the **authority for splits** (§12.3): its `sha256` is
 //! what lets a reader notice that a file's claim predates the current split.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use indexmap::IndexMap;
@@ -32,7 +33,7 @@ pub const GROUPABLE: [&str; 10] = [
 ];
 
 /// Every field of an [`Entry`], as `--group-by` and `--stratify-by` name them.
-pub const ENTRY_FIELDS: [&str; 29] = [
+pub const ENTRY_FIELDS: [&str; 30] = [
     "path",
     "sample_id",
     "subject_id",
@@ -53,6 +54,7 @@ pub const ENTRY_FIELDS: [&str; 29] = [
     "annotations",
     "class_ids",
     "annotated_class_ids",
+    "class_keys",
     "label_set_id",
     "label_set_version",
     "label_set_digest",
@@ -88,6 +90,11 @@ pub struct Entry {
     pub annotations: Map<String, Value>,
     pub class_ids: Vec<i64>,
     pub annotated_class_ids: Vec<i64>,
+    /// The label set's key for each class id an annotation names: what the
+    /// id *means*, which `dataset check` compares between label sets (C102).
+    /// Empty where the sample declares no label set, or one by reference,
+    /// whose classes the file does not carry.
+    pub class_keys: BTreeMap<i64, String>,
     pub label_set_id: Option<String>,
     pub label_set_version: Option<String>,
     pub label_set_digest: Option<String>,
@@ -111,6 +118,22 @@ fn py_tuple(items: &[Value]) -> String {
 
 fn opt(value: &Option<String>) -> Value {
     value.as_ref().map(|v| Value::String(v.clone())).unwrap_or(Value::Null)
+}
+
+/// `class_keys` as a manifest stores it, `{"3": "liver"}`; a manifest
+/// written before 2.0 has none, and an id that is not one is refused.
+fn class_keys(doc: &Value) -> Result<BTreeMap<i64, String>> {
+    let Some(Value::Object(map)) = doc.get("class_keys") else { return Ok(BTreeMap::new()) };
+    map.iter()
+        .map(|(id, key)| match id.parse::<i64>() {
+            Ok(id) => Ok((id, crate::json::py_str(key))),
+            Err(_) => Err(Error::Value(format!(
+                "manifest entry {}: `class_keys` names {}, which is not a class id",
+                repr(&doc.get("path").cloned().unwrap_or(Value::Null)),
+                repr_str(id)
+            ))),
+        })
+        .collect()
 }
 
 impl Entry {
@@ -144,6 +167,10 @@ impl Entry {
         out.insert("annotations".into(), Value::Object(self.annotations.clone()));
         out.insert("class_ids".into(), json!(self.class_ids));
         out.insert("annotated_class_ids".into(), json!(self.annotated_class_ids));
+        out.insert(
+            "class_keys".into(),
+            Value::Object(self.class_keys.iter().map(|(id, key)| (id.to_string(), json!(key))).collect()),
+        );
         out.insert("quality".into(), json!(self.quality));
         out.insert("splits".into(), Value::Array(self.splits.iter().cloned().map(Value::Object).collect()));
         out.insert("deidentified".into(), json!(self.deidentified));
@@ -213,6 +240,7 @@ impl Entry {
             annotations: get("annotations").as_object().cloned().unwrap_or_default(),
             class_ids: list_int("class_ids")?,
             annotated_class_ids: list_int("annotated_class_ids")?,
+            class_keys: class_keys(doc)?,
             label_set_id: opt_str("label_set_id"),
             label_set_version: opt_str("label_set_version"),
             label_set_digest: opt_str("label_set_digest"),
@@ -386,13 +414,18 @@ impl Manifest {
         })
     }
 
-    /// Paths whose file no longer matches what the manifest recorded.
+    /// Paths whose file no longer matches what the manifest recorded, each
+    /// once: a collection's members are an entry each, and one file.
     ///
     /// Size and mtime are the cheap check; `content_id` is the proof, and
     /// `dataset check --deep` uses it.
     pub fn stale(&self) -> Vec<String> {
         let mut out = Vec::new();
+        let mut seen = std::collections::HashSet::new();
         for entry in &self.entries {
+            if !seen.insert(entry.path.as_str()) {
+                continue;
+            }
             match std::fs::metadata(&entry.path) {
                 Err(_) => out.push(entry.path.clone()),
                 Ok(meta) => {
@@ -519,6 +552,7 @@ fn entry(sample: &Sample, path: &str, meta: &std::fs::Metadata, key: Option<Stri
         classes.extend(annotation.class_ids().iter().copied());
         annotated.extend(annotation.annotated_class_ids().iter().copied());
     }
+    let class_keys = classes.iter().filter_map(|id| Some((*id, label_set?.by_id(*id)?.key.clone()))).collect();
     let images = sample.images()?;
     let mut modalities: Vec<String> = Vec::new();
     for image in images.values() {
@@ -555,6 +589,7 @@ fn entry(sample: &Sample, path: &str, meta: &std::fs::Metadata, key: Option<Stri
         annotations,
         class_ids: classes.into_iter().collect(),
         annotated_class_ids: annotated.into_iter().collect(),
+        class_keys,
         label_set_id: label_set.map(|l| l.id.clone()),
         label_set_version: label_set.map(|l| l.version.clone()),
         label_set_digest: label_set.map(|l| l.sha256()),

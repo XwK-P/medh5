@@ -11,7 +11,7 @@ use serde_json::{json, Map, Value};
 
 use medh5::dataset::check::check;
 use medh5::dataset::manifest::{scan, Manifest};
-use medh5::dataset::split::{make_splits, write_claims, Split, SplitOptions};
+use medh5::dataset::split::{locator, make_splits, write_claims, Split, SplitOptions};
 use medh5::dataset::stats::{compute_stats, StatsOptions};
 use medh5::json::{py_float, repr_str};
 use medh5::Error;
@@ -184,7 +184,8 @@ fn stats(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
             )));
         }
     }
-    let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+    // A collection's member by `path::key`, as a split names it.
+    let paths: Vec<String> = entries.iter().map(|e| locator(e)).collect();
     let options = StatsOptions {
         images: get_strs(m, "images"),
         annotations: get_strs(m, "annotations"),
@@ -249,10 +250,10 @@ fn check_cmd(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
                 .coverage
                 .iter()
                 .map(|(class_id, v)| {
-                    vec![class_id.to_string(), v.examined_in.to_string(), v.present_in.to_string(), v.of.to_string()]
+                    vec![class_id.to_string(), v.examined_in.to_string(), v.named_in.to_string(), v.of.to_string()]
                 })
                 .collect();
-            ctx.print(table(&rows, &["class", "examined in", "present in", "of"]));
+            ctx.print(table(&rows, &["class", "examined in", "named in", "of"]));
         }
     }
     Ok(if report.ok() { EXIT_OK } else { EXIT_ERROR })

@@ -50,6 +50,10 @@ class Entry:
     annotations: dict[str, dict[str, Any]] = field(default_factory=dict)
     class_ids: tuple[int, ...] = ()
     annotated_class_ids: tuple[int, ...] = ()
+    class_keys: dict[int, str] = field(default_factory=dict)
+    """The label set's key for each class id an annotation names --- what the
+    id *means*, which ``dataset check`` compares between label sets (C102).
+    Empty where the sample declares no label set, or one by reference."""
     label_set_id: str | None = None
     label_set_version: str | None = None
     label_set_digest: str | None = None
@@ -107,6 +111,9 @@ class Entry:
             annotations=dict(doc.get("annotations", {})),
             class_ids=_integers(doc, "class_ids"),
             annotated_class_ids=_integers(doc, "annotated_class_ids"),
+            class_keys={
+                int(k): str(v) for k, v in (doc.get("class_keys") or {}).items()
+            },
             label_set_id=doc.get("label_set_id"),
             label_set_version=doc.get("label_set_version"),
             label_set_digest=doc.get("label_set_digest"),
@@ -288,7 +295,7 @@ def entries_for(path: str | os.PathLike[str]) -> list[Entry]:
 
 
 def load(path: str | os.PathLike[str]) -> Manifest:
-    """Read a manifest written by ``Manifest.save`` or ``medh5 dataset scan``."""
+    """Read a manifest written by ``Manifest.save`` or ``medh5 dataset index``."""
     return Manifest.load(path)
 
 

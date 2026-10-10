@@ -19,6 +19,7 @@ use ndarray::{ArrayD, IxDyn};
 use serde_json::{json, Map, Value};
 
 use crate::array::Slice;
+use crate::collection::{open_any, AnyFile};
 use crate::json::{num, repr_int_list, repr_str};
 use crate::numeric::pairwise_sum;
 use crate::sample::{open_sample, Sample};
@@ -130,7 +131,10 @@ impl Moments {
 pub struct ClassStats {
     pub class_id: i64,
     pub voxels: u64,
-    /// Samples in which the class was found (a longitudinal sample counts once).
+    /// Samples that examined the class and found it (a longitudinal sample
+    /// counts once).  A class found where nobody looked for it says nothing
+    /// about how often it occurs (§11.3): counted, it made the prevalence of
+    /// a class examined in one sample and drawn in three 3.0.
     pub present_in: u64,
     /// Samples that looked for the class.
     pub examined_in: u64,
@@ -339,10 +343,32 @@ impl Default for StatsOptions {
     }
 }
 
+/// A sample by its path, or by `path::key` for a member of a collection ---
+/// the locator a split names it by (`Split::paths`), so a partition's list
+/// can be measured as it is.  A file whose own name holds `::` is still
+/// opened by that name.
+fn open_located(path: &Path) -> Result<Sample> {
+    if !path.exists() {
+        if let Some((file, key)) = path.to_string_lossy().rsplit_once("::") {
+            if !key.is_empty() && Path::new(file).is_file() {
+                return match open_any(Path::new(file), Some(key))? {
+                    AnyFile::Sample(sample) => Ok(sample),
+                    AnyFile::Collection(_) => {
+                        Err(Error::File(format!("{} names a collection, not a sample in it", repr_str(file))))
+                    }
+                };
+            }
+        }
+    }
+    open_sample(path)
+}
+
 /// One file's contribution, read slab by slab rather than whole.
+///
+/// `path` is a file or, for a member of a collection, `path::key`.
 pub fn stats_for(path: &Path, options: &StatsOptions) -> Result<DatasetStats> {
     let mut out = DatasetStats { samples: 1, physical: options.physical, ..Default::default() };
-    let sample = open_sample(path)?;
+    let sample = open_located(path)?;
     let mut measured: BTreeSet<String> = BTreeSet::new();
     for (key, image) in sample.images()? {
         if options.images.as_ref().is_some_and(|wanted| !wanted.contains(key)) {
@@ -386,11 +412,11 @@ pub fn stats_for(path: &Path, options: &StatsOptions) -> Result<DatasetStats> {
         }
     }
     // Once per sample, not once per annotation.
+    for class_id in present.intersection(&examined) {
+        out.classes.entry(*class_id).or_insert_with(|| ClassStats::new(*class_id)).present_in += 1;
+    }
     for class_id in examined {
         out.classes.entry(class_id).or_insert_with(|| ClassStats::new(class_id)).examined_in += 1;
-    }
-    for class_id in present {
-        out.classes.entry(class_id).or_insert_with(|| ClassStats::new(class_id)).present_in += 1;
     }
     // Each measured image's own grid, once.
     for grid_id in measured {

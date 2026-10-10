@@ -200,7 +200,10 @@ as a 900-slice one. The merge weights by voxel count.
 
 **It does not treat an unexamined class as a zero.** `prevalence` is over the
 samples that actually examined the class, so a class annotated in a tenth of
-the cohort does not look ten times rarer than it is.
+the cohort does not look ten times rarer than it is. `present_in` counts the
+same samples — those that examined the class and found it — so a class drawn
+where nobody looked for it adds to `voxels` but not to its prevalence, which
+stays at most 1.
 
 Class counts come from the §14.3 sampling index when it is current — a few
 hundred bytes per annotation instead of decompressing every mask. A stale index
@@ -248,17 +251,29 @@ scores better than it deserves to.
 ```
 $ medh5 dataset check cohort.json --deep
 412 samples: FAILED (1 errors, 2 warnings)
-  ERROR   C102 class id(s) [3] appear in more than one label set; check they
-          mean the same thing before training on the union
+  ERROR   C102 class id(s) [3] mean different things in different label sets
+          (3 is 'cyst' or 'lesion'); training on the union labels one class
+          with another's examples
 ```
+
+A class id means its key in the label set, which the manifest records for every
+id a sample's annotations name (`entry.class_keys`). So two versions of one
+vocabulary that agree on a class do not clash (`C101` still says the cohort
+uses two), and two vocabularies published under one name and version do.
 
 ```python
 from medh5.dataset import check
 
 report = check(manifest, set_id="cv5", deep=True)
 report.ok, report.errors, report.warnings
-report.coverage      # {class_id: {"examined_in": n, "present_in": m, "of": total}}
+report.coverage      # {class_id: {"examined_in": n, "named_in": m, "of": total}}
 ```
+
+A manifest is metadata, so coverage says which samples looked for a class
+(`examined_in`, §11.3) and which have an annotation that can express it
+(`named_in`) — never which hold any of it. That is a voxel question:
+`compute_stats` answers it (`present_in`, `prevalence`). `C302` reports a class
+named somewhere and examined nowhere, which no sample is a negative example of.
 
 Findings carry `C1xx`–`C5xx` codes; the full table is in
 [Cohort check codes](../reference/cohort-checks.md), which also says why they

@@ -88,6 +88,10 @@ class ClassStats:
 
     ``present_in`` and ``examined_in`` count *samples*: a longitudinal sample
     that examined a class at two visits examined it once, as a cohort member.
+    ``present_in`` counts the samples that examined the class *and* found it,
+    so ``prevalence`` is at most 1: a class drawn where nobody looked for it
+    says nothing about how often it occurs (§11.3).  ``voxels`` counts every
+    voxel of it, examined or not.
     """
 
     class_id: int
