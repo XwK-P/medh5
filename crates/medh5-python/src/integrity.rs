@@ -227,11 +227,10 @@ fn attr_names_arg(
 /// The digest of a stored dataset over its decompressed content (§13.1).
 #[pyfunction]
 #[pyo3(signature = (dataset, path=None, algo="sha256"))]
-fn dataset_digest(dataset: &Bound<'_, PyAny>, path: Option<String>, algo: &str) -> R<String> {
-    let dataset = crate::nodes::dataset_arg(dataset)?;
-    let ds = &dataset.get().ds;
+fn dataset_digest(py: Python<'_>, dataset: &Bound<'_, PyAny>, path: Option<String>, algo: &str) -> R<String> {
+    let ds = crate::nodes::dataset_arg(dataset)?.get().ds.clone();
     let path = path.unwrap_or_else(|| ds.name().trim_start_matches('/').to_string());
-    Ok(digest::dataset_digest(ds, &path, algo)?)
+    Ok(py.detach(move || digest::dataset_digest(&ds, &path, algo))?)
 }
 
 /// Canonical JSON over an object's named attributes (§13.2).
@@ -272,19 +271,20 @@ fn relative_path(node: &Bound<'_, PyAny>, root: Option<&Bound<'_, PyAny>>) -> R<
 /// The digest of an object group: its datasets and canonical attributes.
 #[pyfunction]
 #[pyo3(signature = (group, algo="sha256", *, root=None))]
-fn group_digest(group: &Bound<'_, PyAny>, algo: &str, root: Option<&Bound<'_, PyAny>>) -> R<String> {
+fn group_digest(py: Python<'_>, group: &Bound<'_, PyAny>, algo: &str, root: Option<&Bound<'_, PyAny>>) -> R<String> {
     let g = group_of(group)?;
     let root = match root.filter(|r| !r.is_none()) {
         Some(r) => group_of(r)?,
         None => file_root(&g)?,
     };
-    Ok(digest::group_digest(&g, &root, algo)?)
+    Ok(py.detach(move || digest::group_digest(&g, &root, algo))?)
 }
 
 /// The Merkle root over stored digests, `meta` and canonical attributes.
 #[pyfunction]
 #[pyo3(signature = (root, attr_names=None, *, algo=None))]
 fn compute_content_id(
+    py: Python<'_>,
     root: &Bound<'_, PyAny>,
     attr_names: Option<&Bound<'_, PyAny>>,
     algo: Option<String>,
@@ -295,12 +295,13 @@ fn compute_content_id(
         Some(a) => a,
         None => digest::root_algo(&g)?,
     };
-    Ok(digest::compute_content_id(&g, &names, &algo, None)?)
+    Ok(py.detach(move || digest::compute_content_id(&g, &names, &algo, None))?)
 }
 
 #[pyfunction]
-fn verify_object(root: &Bound<'_, PyAny>, path: &str) -> R<bool> {
-    Ok(verify::verify_object(&group_of(root)?, path)?)
+fn verify_object(py: Python<'_>, root: &Bound<'_, PyAny>, path: &str) -> R<bool> {
+    let g = group_of(root)?;
+    Ok(py.detach(move || verify::verify_object(&g, path))?)
 }
 
 #[pyfunction]
@@ -319,7 +320,7 @@ fn verify_root<'py>(
 ) -> R<Bound<'py, PyAny>> {
     let g = group_of(root)?;
     let names = attr_names_arg(&g, attr_names)?;
-    let result = verify::verify_root(&g, Some(&names), partial.as_deref(), check_content_id)?;
+    let result = py.detach(move || verify::verify_root(&g, Some(&names), partial.as_deref(), check_content_id))?;
     Ok(verify_result_to_py(py, &result)?)
 }
 

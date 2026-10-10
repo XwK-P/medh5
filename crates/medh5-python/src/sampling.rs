@@ -114,7 +114,7 @@ impl PatchSamplerHandle {
     ) -> R<Bound<'py, PyDict>> {
         let sample = sample_arg(sample)?;
         let mut rng = rng_arg(rng.as_ref())?;
-        let patch = self.inner.draw(&sample, annotation.as_deref(), &mut rng, grid.as_deref())?;
+        let patch = py.detach(|| self.inner.draw(&sample, annotation.as_deref(), &mut rng, grid.as_deref()))?;
         Ok(patch_fields(py, &patch)?)
     }
 

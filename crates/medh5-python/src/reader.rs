@@ -479,12 +479,14 @@ impl AnnotationHandle {
     #[pyo3(signature = (roi=None))]
     fn ignore_mask<'py>(&self, py: Python<'py>, roi: Option<&Bound<'py, PyAny>>) -> R<Bound<'py, PyAny>> {
         let roi = slices(roi)?;
-        Ok(array_to_py(py, self.inner.ignore_mask(roi.as_deref())?))
+        let ann = self.inner.clone();
+        Ok(array_to_py(py, py.detach(move || ann.ignore_mask(roi.as_deref()))?))
     }
     #[pyo3(signature = (roi=None))]
     fn read_mask<'py>(&self, py: Python<'py>, roi: Option<&Bound<'py, PyAny>>) -> R<Bound<'py, PyAny>> {
         let roi = slices(roi)?;
-        Ok(array_to_py(py, self.inner.read_mask(roi.as_deref())?))
+        let ann = self.inner.clone();
+        Ok(array_to_py(py, py.detach(move || ann.read_mask(roi.as_deref()))?))
     }
     #[getter]
     fn layer_class_ids<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyAny>> {
@@ -509,7 +511,8 @@ impl AnnotationHandle {
     #[pyo3(signature = (layer, roi=None))]
     fn read_layer<'py>(&self, py: Python<'py>, layer: usize, roi: Option<&Bound<'py, PyAny>>) -> R<Bound<'py, PyAny>> {
         let roi = slices(roi)?;
-        Ok(nd_to_py(py, self.inner.read_layer(layer, roi.as_deref())?))
+        let ann = self.inner.clone();
+        Ok(nd_to_py(py, py.detach(move || ann.read_layer(layer, roi.as_deref()))?))
     }
     #[getter]
     fn bit_class_ids<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyAny>> {
@@ -550,7 +553,8 @@ impl AnnotationHandle {
     ) -> R<Bound<'py, PyAny>> {
         let classes = opt_keys(classes)?;
         let roi = slices(roi)?;
-        Ok(array_to_py(py, self.inner.probabilities(classes.as_deref(), roi.as_deref())?))
+        let ann = self.inner.clone();
+        Ok(array_to_py(py, py.detach(move || ann.probabilities(classes.as_deref(), roi.as_deref()))?))
     }
     #[getter]
     fn has_masks(&self) -> bool {
@@ -590,7 +594,8 @@ impl AnnotationHandle {
         Ok(self.inner.n_objects()?)
     }
     fn crop<'py>(&self, py: Python<'py>, index: usize) -> R<Bound<'py, PyAny>> {
-        Ok(match self.inner.crop(index)? {
+        let ann = self.inner.clone();
+        Ok(match py.detach(move || ann.crop(index))? {
             Some(c) => array_to_py(py, c),
             None => py.None().into_bound(py),
         })
@@ -943,7 +948,9 @@ impl TransformHandle {
         Ok(array_to_py(py, self.inner.inverse_matrix()?.into_dyn()))
     }
     fn inverse_points<'py>(&self, py: Python<'py>, points: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
-        Ok(array_to_py(py, self.inner.inverse_points(&f64_array(points)?)?))
+        let points = f64_array(points)?;
+        let t = self.inner.clone();
+        Ok(array_to_py(py, py.detach(move || t.inverse_points(&points))?))
     }
     #[getter]
     fn jacobian_determinant_value(&self) -> R<f64> {
@@ -981,29 +988,36 @@ impl TransformHandle {
         component: Option<usize>,
     ) -> R<Bound<'py, PyAny>> {
         let roi = slices(roi)?;
-        Ok(nd_to_py(py, self.inner.read_field(roi.as_deref(), component)?))
+        let t = self.inner.clone();
+        Ok(nd_to_py(py, py.detach(move || t.read_field(roi.as_deref(), component))?))
     }
     fn displacement_at<'py>(&self, py: Python<'py>, points: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
-        Ok(array_to_py(py, self.inner.displacement_at(&f64_array(points)?)?))
+        let points = f64_array(points)?;
+        let t = self.inner.clone();
+        Ok(array_to_py(py, py.detach(move || t.displacement_at(&points))?))
     }
     /// The stored field interpolated at continuous field indices, `(N, S)`.
     fn sample_indices<'py>(&self, py: Python<'py>, indices: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
         let found = crate::convert::matrix(indices)?;
-        Ok(array_to_py(py, self.inner.sample_indices(&found)?.into_dyn()))
+        let t = self.inner.clone();
+        Ok(array_to_py(py, py.detach(move || t.sample_indices(&found))?.into_dyn()))
     }
     #[pyo3(signature = (roi=None))]
     fn jacobian_determinant<'py>(&self, py: Python<'py>, roi: Option<&Bound<'py, PyAny>>) -> R<Bound<'py, PyAny>> {
         let roi = slices(roi)?;
-        Ok(array_to_py(py, self.inner.jacobian_determinant(roi.as_deref())?))
+        let t = self.inner.clone();
+        Ok(array_to_py(py, py.detach(move || t.jacobian_determinant(roi.as_deref()))?))
     }
     #[pyo3(signature = (roi=None))]
-    fn folding_fraction(&self, roi: Option<&Bound<'_, PyAny>>) -> R<f64> {
+    fn folding_fraction(&self, py: Python<'_>, roi: Option<&Bound<'_, PyAny>>) -> R<f64> {
         let roi = slices(roi)?;
-        Ok(self.inner.folding_fraction(roi.as_deref())?)
+        let t = self.inner.clone();
+        Ok(py.detach(move || t.folding_fraction(roi.as_deref()))?)
     }
     #[getter]
-    fn max_magnitude(&self) -> R<f64> {
-        Ok(self.inner.max_magnitude()?)
+    fn max_magnitude(&self, py: Python<'_>) -> R<f64> {
+        let t = self.inner.clone();
+        Ok(py.detach(move || t.max_magnitude())?)
     }
     #[getter]
     fn control_points<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyAny>> {
@@ -1023,7 +1037,8 @@ impl TransformHandle {
     }
     fn to_displacement_field<'py>(&self, py: Python<'py>, grid: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
         let grid = crate::geometry::grid_arg(grid)?;
-        Ok(array_to_py(py, self.inner.to_displacement_field(&grid)?))
+        let t = self.inner.clone();
+        Ok(array_to_py(py, py.detach(move || t.to_displacement_field(&grid))?))
     }
     #[getter]
     fn component_ids<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyTuple>> {
@@ -1316,7 +1331,8 @@ impl SampleHandle {
         roi: Option<&Bound<'py, PyAny>>,
     ) -> R<Bound<'py, PyAny>> {
         let roi = slices(roi)?;
-        Ok(array_to_py(py, self.sample()?.ignore_region(ann_id, roi.as_deref())?))
+        let sample = self.sample()?;
+        Ok(array_to_py(py, py.detach(move || sample.ignore_region(ann_id, roi.as_deref()))?))
     }
     #[pyo3(signature = (image_id, roi=None))]
     fn valid_region<'py>(
@@ -1326,7 +1342,8 @@ impl SampleHandle {
         roi: Option<&Bound<'py, PyAny>>,
     ) -> R<Bound<'py, PyAny>> {
         let roi = slices(roi)?;
-        Ok(array_to_py(py, self.sample()?.valid_region(image_id, roi.as_deref())?))
+        let sample = self.sample()?;
+        Ok(array_to_py(py, py.detach(move || sample.valid_region(image_id, roi.as_deref()))?))
     }
     fn index_ids(&self) -> R<Vec<String>> {
         Ok(self.sample()?.index()?.keys().cloned().collect())
