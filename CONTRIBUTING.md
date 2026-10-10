@@ -110,8 +110,8 @@ so a clause has one obvious home in the code.
   `crates/medh5/data/codes.json`, which the validator, every frontend and the
   documentation read; a test asserts that it and the §15.2 table list the same
   codes. A code's meaning never changes, and a retired code is never reused. A
-  new code needs a conformance case in `crates/medh5/src/conformance/build.rs`;
-  a test fails until it has one.
+  new code needs a conformance case, in `crates/medh5/src/conformance/build.rs`
+  --- or `clinical.rs` beside it, for a 1.1 code; a test fails until it has one.
 - **Versioning follows §16**: a minor format version may add objects, kinds,
   profiles and codes; it may not change what an existing one means.
 - The JSON Schema lives in one place, `crates/medh5/data/`, beside the code
@@ -145,10 +145,11 @@ Documentation here is checked against the code, not proofread:
   stated run on a stated machine; re-measure rather than carry one forward, and
   read a new window for every patch — the same window twice is HDF5's chunk
   cache, not a read.
-- **Some tables are generated.** The diagnostic codes, the cohort check codes
-  and the sample-document schema are rendered at build time from
-  `crates/medh5/data/codes.json`, the `CHECK_CODES` table in
-  `crates/medh5/src/dataset/check.rs` and the JSON Schema by
+- **Some tables are generated.** The diagnostic codes, the cohort check codes,
+  the task-and-cache finding codes and the sample-document schema are rendered
+  at build time from `crates/medh5/data/codes.json`, the `CHECK_CODES` table in
+  `crates/medh5/src/dataset/check.rs`, the `CODES` table in
+  `crates/medh5/src/companion/mod.rs` and the JSON Schema by
   `hooks/mkdocs_hooks.py`. Edit the source, not the page; the page carries only
   a marker comment.
 - **The Rust example is tested twice.** The engine crate's README is its crate
@@ -176,7 +177,8 @@ version --- the `=X.Y.Z` pins of `medh5-sys`, `medh5` and `medh5-cli` under
 `[workspace.dependencies]`, which crates.io needs because it publishes each
 crate on its own --- and a test holds the pins to the version. To release, set
 the version and the three pins (and `Cargo.lock` with `cargo update -w`), move
-the unreleased notes under the new version, and push a `vX.Y.Z` tag.
+the unreleased notes under the new version, dated the day of the release, and
+push a `vX.Y.Z` tag on a commit whose CI passed.
 `.github/workflows/release.yml` then:
 
 1. runs the full CI on the tagged commit, which builds every wheel, the sdist
@@ -211,6 +213,28 @@ A library under a licence the others do not already name goes into
 `pyproject.toml`'s `license` expression too, and the Homebrew formula's
 (`.github/scripts/homebrew_formula.py`); neither can be corrected for a
 version once it is published.
+
+### Before the first release to a registry
+
+What a release needs from a registry is set up once, outside the repository,
+and a gap in it shows only when the tag runs --- by which time PyPI may have the
+version. Before the first tag that publishes there:
+
+- **crates.io**: the account the token belongs to has a verified email
+  address, and `CARGO_REGISTRY_TOKEN` has the `publish-new` scope as well as
+  `publish-update`, since the first version of a crate is a new crate. The
+  secret is in place before the tag: on the repository, or on the `crates-io`
+  environment, which the first run would otherwise create without it.
+- **PyPI**: the project's Trusted Publisher names this repository,
+  `release.yml` and the `pypi` environment, as it has since 1.x; renaming
+  either here means renaming it there.
+- **Homebrew**: the tap (`XwK-P/homebrew-medh5`) exists, and
+  `HOMEBREW_TAP_TOKEN` can push to it --- a fine-grained token with read and
+  write access to that repository's contents.
+
+After it, add a second owner to each crate (`cargo owner --add`), so that
+publishing does not hang on one account, and consider crates.io's Trusted
+Publishing, which retires the token.
 
 ### If a release fails partway
 

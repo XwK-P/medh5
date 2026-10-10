@@ -17,11 +17,14 @@ docs_dir: docs
 # requirements file is not documentation and is excluded; it only lives here
 # because that is where Read the Docs looks for it. So are the scratch files and
 # JSON results the benchmark scripts write beside themselves when run from a
-# checkout: a local build would otherwise publish megabytes of HDF5.
+# checkout: a local build would otherwise publish megabytes of HDF5. And so is
+# the bytecode Python leaves beside the examples once the test suite has
+# imported them.
 exclude_docs: |
   requirements.txt
   examples/*.h5
   examples/*.json
+  __pycache__/
 
 # A broken cross-reference in a normative specification is a defect, not a
 # cosmetic problem: the pages link into it clause by clause.  `strict` turns
