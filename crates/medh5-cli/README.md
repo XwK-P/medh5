@@ -1,7 +1,9 @@
 # medh5-cli
 
 The native `medh5` command line: inspect, validate, verify, curate, pack and
-benchmark MEDH5 samples.  It is a frontend over the
+benchmark MEDH5 samples; select from a subject's clinical history as of a
+cutoff; and check task manifests and feature caches against the samples they
+name.  It is a frontend over the
 [`medh5`](https://crates.io/crates/medh5) format engine --- the same code the
 Python package's `medh5` command runs --- so both produce the same output and
 the same exit codes: `0` success, `1` a handled error, `2` a usage error.
@@ -31,16 +33,18 @@ and says so when the flag is missing. The release binaries are built with it.
 
 ## Converters
 
-`medh5 convert …` (NIfTI, DICOM, DICOM SEG, RTSTRUCT, nnU-Net) and `medh5
-migrate` are integrations with Python libraries --- nibabel, pydicom,
-highdicom --- and live in the Python package.  The binary hands them to a
-Python interpreter that has it installed (`python3`, or `MEDH5_PYTHON`), and
-says what to install when there is none:
+`medh5 convert …` (NIfTI, DICOM, DICOM SEG, RTSTRUCT, nnU-Net) is an
+integration with Python libraries --- nibabel, pydicom, highdicom --- and lives
+in the Python package, as does the dataloader row of `medh5 bench` (PyTorch).
+The binary hands them to a Python interpreter that has the package installed
+(`python3`, or `MEDH5_PYTHON`), and says what to install when there is none:
 
 ```bash
 pip install "medh5[nifti,dicom]"
 medh5 convert from-nifti case.medh5 --image CT=ct.nii.gz
 ```
+
+`medh5 migrate`, which reads 0.x files, is native.
 
 The full command reference is at
 [medh5.readthedocs.io](https://medh5.readthedocs.io/en/latest/reference/cli/).
