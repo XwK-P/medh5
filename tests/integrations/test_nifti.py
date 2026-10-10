@@ -1342,3 +1342,16 @@ class TestNiftiInputs:
         assert main([*argv, "--report", str(folder)]) == EXIT_ERROR
         assert "is a directory" in capsys.readouterr().err
         assert not out.exists()
+
+    def test_a_file_that_cannot_be_read_or_written_is_named(self, tmp_path, capsys):
+        """Any `OSError` is a handled failure, named as the shell names it."""
+        from medh5.cli import EXIT_ERROR, _os_error, main
+
+        absent = tmp_path / "absent.nii.gz"
+        out = tmp_path / "x.medh5"
+        code = main(["convert", "from-nifti", str(out), "--image", f"CT={absent}"])
+        err = capsys.readouterr().err
+        assert code == EXIT_ERROR and err.startswith("medh5: ") and str(absent) in err
+        assert _os_error(IsADirectoryError(21, "Is a directory", "out")) == (
+            "out: Is a directory"
+        )
