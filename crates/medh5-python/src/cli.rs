@@ -70,8 +70,10 @@ impl Write for PyStream {
     }
 }
 
-/// The Python package as the CLI's host: `host.convert(argv, command, args)`
-/// and `host.throughput(path, patch, workers, annotation)`.
+/// The Python package as the CLI's host: `host.convert(command, args)` and
+/// `host.throughput(path, patch, workers, annotation)`.  The converters run
+/// in this process, on the arguments the CLI parsed; the command line itself
+/// is for a host that starts another one.
 struct PyHost {
     host: Py<PyAny>,
 }
@@ -79,7 +81,7 @@ struct PyHost {
 impl medh5_cli::Host for PyHost {
     fn convert(
         &self,
-        argv: &[String],
+        _argv: &[String],
         command: &str,
         args: &Value,
         out: &mut dyn Write,
@@ -91,7 +93,7 @@ impl medh5_cli::Host for PyHost {
         let _ = err.flush();
         let result = Python::attach(|py| -> PyResult<Option<i32>> {
             let args = json_to_py(py, args)?;
-            let found = self.host.bind(py).call_method1("convert", (argv.to_vec(), command, args))?;
+            let found = self.host.bind(py).call_method1("convert", (command, args))?;
             if found.is_none() {
                 return Ok(None);
             }

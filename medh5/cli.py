@@ -57,7 +57,8 @@ def command_tree() -> dict[str, Any]:
 class _Host:
     """What only the Python package can run, on behalf of the native CLI."""
 
-    def convert(self, argv: list[str], command: str, args: dict[str, Any]) -> int:
+    def convert(self, command: str, args: dict[str, Any]) -> int:
+        """Run converter *command* on the arguments the command line parsed."""
         return _convert(command, args)
 
     def throughput(
