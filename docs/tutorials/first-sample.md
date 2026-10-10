@@ -112,12 +112,26 @@ slicing an image reads only the chunks that slice touches.
 ```
 $ medh5 info case_0001.medh5
 $ medh5 tree case_0001.medh5
-$ medh5 validate case_0001.medh5 --level strict
+$ medh5 validate case_0001.medh5
 $ medh5 verify case_0001.medh5
 ```
 
 `validate` checks the file against the specification and reports stable
 diagnostic codes; `verify` checks that every object still matches its digest.
+This file is valid, with two warnings:
+
+```
+case_0001.medh5: OK [semantic] profiles=core,seg (0 errors, 2 warnings)
+  WARNING W903 /meta#deidentification: no de-identification record; tooling must treat this file as potentially identifying
+  WARNING W912 /meta#label_set: 3 class(es) used by annotations have no ontology binding: [1, 2, 3]
+```
+
+A warning is legal and worth knowing: nothing records how the data was
+de-identified (`w.deidentification(...)` records it), and the label set's
+classes carry no ontology code (`codes=` on each `LabelClass`).
+`--level strict` promotes warnings to errors, so it fails this file until both
+are addressed --- it is the gate for a dataset you publish, not for a first
+sample.
 
 ## Build a sampling index
 
