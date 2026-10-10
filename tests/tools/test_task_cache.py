@@ -1346,6 +1346,15 @@ class TestPreflightAtScale:
         assert {f.code for f in report.findings} == {"T302", "T306"}
         assert report.row("r").status == "error"
 
+    def test_S4_packed_columns_carry_64_bit_offsets(self, tmp_path: Path):
+        """A packed column's offsets are ``int64``, as documented.  They were
+        ``int32``, and a subject whose text passed 2 GiB panicked rather than
+        crossing."""
+        report = self.many_cutoffs(tmp_path, 2).preflight()
+        (subject,) = report.subjects
+        assert subject.events.column("event_id").offsets.dtype == np.int64
+        assert report.row("r0").slots["ct"].annotations == ()
+
     def test_S4_the_manifest_findings_leave_no_history_read(self, tmp_path: Path):
         task = self.many_cutoffs(tmp_path, 2)
         task.add_row("ghost", "P-99", DAY)

@@ -3,7 +3,7 @@
 //!
 //! Rows do not carry their inputs; they index their subject's merged history,
 //! which crosses once.  Strings cross *packed* --- one `bytes` buffer, its
-//! `int32` offsets and a validity mask, the clinical tables' own encoding
+//! `int64` offsets and a validity mask, the clinical tables' own encoding
 //! (1.1 §4); a column that is entirely null crosses as `None` --- and numbers
 //! as NumPy arrays, so a preflight of millions of selected events is a few
 //! arrays rather than millions of Python objects.  `medh5/task.py` reads the
@@ -42,10 +42,11 @@ pub const TARGET_STATUSES: [&str; 5] = ["positive", "negative", "censored", "pre
 /// How a slot's region was centred.
 pub const ROIS: [&str; 3] = ["center", "eligible_instances", "center_fallback"];
 
-/// A packed UTF-8 column being built.
+/// A packed UTF-8 column being built.  Its offsets are 64-bit: text has no
+/// length limit, and one subject's may pass 2 GiB.
 struct Packed {
     data: Vec<u8>,
-    offsets: Vec<i32>,
+    offsets: Vec<i64>,
     valid: Vec<bool>,
 }
 
@@ -58,7 +59,7 @@ impl Packed {
         if let Some(v) = value {
             self.data.extend_from_slice(v.as_bytes());
         }
-        self.offsets.push(i32::try_from(self.data.len()).expect("a packed column under 2 GiB"));
+        self.offsets.push(self.data.len() as i64);
         self.valid.push(value.is_some());
     }
 
@@ -409,7 +410,7 @@ fn strings_csr<'py, 'a>(py: Python<'py>, rows: impl Iterator<Item = &'a [String]
     out.set_item("offsets", PyArray1::from_vec(py, offsets))?;
     // An empty column is no ids, not an all-null one.
     let ids = if ids.valid.is_empty() {
-        (PyBytes::new(py, b""), PyArray1::from_vec(py, vec![0i32]), py.None()).into_pyobject(py)?.into_any()
+        (PyBytes::new(py, b""), PyArray1::from_vec(py, vec![0i64]), py.None()).into_pyobject(py)?.into_any()
     } else {
         ids.into_py(py)?
     };
