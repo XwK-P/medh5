@@ -178,6 +178,28 @@ class TestInfo:
         assert "sample document (§2.4)" in out.out
         assert "kind=" in out.out
 
+    @pytest.mark.parametrize(
+        ("case", "member", "role"),
+        [
+            ("clinical-one-visit-history", "clinical", "clinical history (1.1 §3)"),
+            ("collection-two-samples", "samples", "collection members (§2.2)"),
+        ],
+    )
+    def test_tree_names_the_clinical_group_and_a_shards_members(
+        self, capsys, tmp_path, case, member, role
+    ):
+        """Both were listed as extension objects (§16)."""
+        from medh5.conformance import build_corpus
+
+        build_corpus(tmp_path, names=[case])
+        path = str(next(tmp_path.glob(f"{case}.*")))
+        code, out = run(capsys, "tree", path)
+        assert code == EXIT_OK
+        assert f"├── {member}/" in out.out and f"# {role}" in out.out
+        code, out = run(capsys, "tree", path, "--json")
+        roles = {o["name"]: o["role"] for o in json.loads(out.out)["objects"]}
+        assert roles[member] == role
+
     def test_L15_the_inspection_commands_take_a_shard_with_a_key(
         self, tmp_path: Path, capsys
     ):

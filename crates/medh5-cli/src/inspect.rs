@@ -232,8 +232,34 @@ const ROLES: [(&str, &str); 6] = [
     ("index", "derived sampling caches (§14.3)"),
 ];
 
-fn role(name: &str) -> &'static str {
-    ROLES.iter().find(|(n, _)| *n == name).map(|(_, r)| *r).unwrap_or("extension object (§16)")
+const EXTENSION: &str = "extension object (§16)";
+
+/// What the members of the root `tree` lists are, by the spec.
+struct Roles {
+    /// A collection's root, whose members are its samples (§2.2).
+    collection: bool,
+    /// A sample declaring the clinical profile (1.1 §3); in one that does
+    /// not, a group named `clinical` is somebody's extension.
+    clinical: bool,
+}
+
+impl Roles {
+    fn of(opened: &AnyFile, root: &hdf5::Group) -> medh5::Result<Roles> {
+        let declared = attrs::get_strs(root, "medh5_profiles")?.unwrap_or_default();
+        Ok(Roles {
+            collection: matches!(opened, AnyFile::Collection(_)),
+            clinical: declared.iter().any(|p| p == medh5::clinical::PROFILE),
+        })
+    }
+
+    fn role(&self, name: &str) -> &'static str {
+        match name {
+            "samples" if self.collection => "collection members (§2.2)",
+            _ if self.collection => EXTENSION,
+            "clinical" if self.clinical => "clinical history (1.1 §3)",
+            _ => ROLES.iter().find(|(n, _)| *n == name).map(|(_, r)| *r).unwrap_or(EXTENSION),
+        }
+    }
 }
 
 /// Members of a group, `meta` first and the rest by name.
@@ -297,13 +323,14 @@ fn tree(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let result = (|| -> CmdResult {
         let opened = open(m, path)?;
         let root = root_of(&opened);
+        let roles = Roles::of(&opened, &root)?;
         if flag(m, "json") {
-            ctx.emit(&json!({"path": path, "objects": tree_json(&root, "")?}), true);
+            ctx.emit(&json!({"path": path, "objects": tree_json(&root, "", &roles)?}), true);
             return Ok(EXIT_OK);
         }
         ctx.print(path);
         for name in sorted_members(&root)? {
-            let role = role(&name);
+            let role = roles.role(&name);
             if ops::is_dataset(&root, &name) {
                 ctx.print(format!("├── {} {}   # {role}", pad(&name, 22), describe(&root, &name)?));
                 continue;
@@ -333,7 +360,7 @@ fn tree(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
 }
 
 /// The same listing `tree` prints, as data.
-fn tree_json(node: &hdf5::Group, prefix: &str) -> medh5::Result<Vec<Value>> {
+fn tree_json(node: &hdf5::Group, prefix: &str, roles: &Roles) -> medh5::Result<Vec<Value>> {
     let mut out = Vec::new();
     for name in sorted_members(node)? {
         let path = format!("{prefix}{name}");
@@ -344,13 +371,13 @@ fn tree_json(node: &hdf5::Group, prefix: &str) -> medh5::Result<Vec<Value>> {
         entry.insert("kind".into(), json!(if is_dataset { "dataset" } else { "group" }));
         entry.insert("describe".into(), json!(describe(node, &name)?));
         if prefix.is_empty() {
-            entry.insert("role".into(), json!(role(&name)));
+            entry.insert("role".into(), json!(roles.role(&name)));
         }
         if let Some(ds) = ops::child_dataset(node, &name) {
             entry.insert("shape".into(), json!(ds.shape()));
             entry.insert("dtype".into(), json!(dtype_name(&ds)));
         } else if let Some(child) = ops::child_group(node, &name) {
-            entry.insert("children".into(), json!(tree_json(&child, &format!("{path}/"))?));
+            entry.insert("children".into(), json!(tree_json(&child, &format!("{path}/"), roles)?));
         }
         out.push(Value::Object(entry));
     }
