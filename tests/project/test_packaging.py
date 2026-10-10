@@ -243,6 +243,17 @@ class TestRepositoryGates:
         dependabot = (ROOT / ".github/dependabot.yml").read_text(encoding="utf-8")
         assert "package-ecosystem: github-actions" in dependabot
 
+    def test_the_minimum_rust_is_a_full_version(self):
+        """`rust-version` is published with every crate and cannot be
+        corrected there.  It said `1.85` --- 1.85.0 to cargo --- while the HDF5
+        crates need 1.85.1, and the job that keeps the promise installed the
+        newest 1.85.x for `1.85` and passed."""
+        workspace = WORKSPACE.read_text(encoding="utf-8")
+        section = workspace.split("[workspace.package]", 1)[1].split("\n[", 1)[0]
+        assert re.search(r'^rust-version = "\d+\.\d+\.\d+"$', section, re.M)
+        msrv = _jobs(CI.read_text(encoding="utf-8"))["msrv"]
+        assert "^[0-9]+\\.[0-9]+\\.[0-9]+$" in msrv
+
     def test_K03_the_release_runs_ci_on_the_tagged_commit(self):
         ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         release = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")

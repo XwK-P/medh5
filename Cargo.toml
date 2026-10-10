@@ -18,7 +18,7 @@ default-members = [
 # stamped into every file's `generator` attribute and every manifest.
 version = "2.0.0"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.85.1"
 license = "MIT"
 authors = ["Puyang Wang <pauliwang411@gmail.com>"]
 repository = "https://github.com/XwK-P/medh5"

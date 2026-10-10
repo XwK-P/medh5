@@ -53,8 +53,14 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
+      # A full version: cargo reads `1.85` as 1.85.0, while rustup installs the
+      # newest 1.85.x for it, so a dependency that needs 1.85.1 passed here.
       - run: |
           msrv=$(python -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["rust-version"])')
+          if [[ ! "$msrv" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::rust-version is $msrv: name a full version, X.Y.Z"
+            exit 1
+          fi
           rustup toolchain install "$msrv" --profile minimal
           cargo +"$msrv" check --workspace --all-targets --locked
 
