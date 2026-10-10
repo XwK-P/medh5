@@ -750,6 +750,174 @@ class TestResolution:
             assert back is sample.resolve_frames("f1", "f0")
 
 
+class TestF06Units:
+    """§10.1: a transform maps coordinates in its ``units``, which are the
+    units of the grids in both its frames.  ``units`` defaulted to ``mm``
+    whatever the grids were in, an explicit one the grids disagreed with was
+    written as given, and nothing checked either (F06 of the round-4 audit)."""
+
+    SPACING = {"mm": (1.5, 0.8, 0.8), "m": (0.0015, 0.0008, 0.0008)}
+
+    def _pair(
+        self,
+        path: Path,
+        *,
+        units: tuple[str, str] = ("mm", "mm"),
+        declared: str | None = None,
+        first: bool = False,
+    ) -> Path:
+        """Two visits on grids in *units*, related by an affine declaring
+        *declared* (or nothing), written before the grids when *first*."""
+        matrix = np.eye(4)
+        matrix[:3, 3] = SHIFT
+        with medh5.create(path, codec="portable") as w:
+            w.add_timepoint("tp0", days_from_baseline=0)
+            w.add_timepoint("tp1", days_from_baseline=92)
+
+            def transform() -> None:
+                stated = {} if declared is None else {"units": declared}
+                w.add_transform(
+                    "t",
+                    kind="affine",
+                    from_frame="F0",
+                    to_frame="F1",
+                    matrix=matrix,
+                    invertible=True,
+                    **stated,
+                )
+
+            if first:
+                transform()
+            for (tp, frame), unit in zip(
+                (("tp0", "F0"), ("tp1", "F1")), units, strict=True
+            ):
+                w.add_grid(
+                    f"ct_{tp}",
+                    shape=SHAPE,
+                    spacing=self.SPACING[unit],
+                    units=unit,
+                    timepoint=tp,
+                    frame_uid=frame,
+                )
+                w.add_image(
+                    f"CT_{tp}",
+                    np.zeros(SHAPE, np.int16),
+                    grid=f"ct_{tp}",
+                    modality="CT",
+                )
+            if not first:
+                transform()
+        return path
+
+    @pytest.mark.parametrize("unit", ["mm", "m"])
+    def test_F06_S10_1_the_default_is_the_grids_units(self, tmp_path, unit):
+        path = self._pair(tmp_path / "pair.medh5", units=(unit, unit))
+        with medh5.open(path) as sample:
+            assert sample.transforms["t"].units == unit
+            # Resolved either way, the relation keeps its units.
+            assert sample.resolve_frames("F1", "F0").units == unit
+        assert "E506" not in {d.code for d in validate_file(path).diagnostics}
+
+    def test_F06_S10_1_a_unit_the_grids_are_not_in_is_refused(self, tmp_path):
+        with pytest.raises(MEDH5ValidationError, match="'ct_tp0' is in 'm'") as exc:
+            self._pair(tmp_path / "a.medh5", units=("m", "m"), declared="mm")
+        assert exc.value.code == "E506"
+        # The matching declaration, as the control.
+        self._pair(tmp_path / "b.medh5", units=("m", "m"), declared="m")
+
+    def test_F06_S10_1_frames_in_two_units_have_no_one_transform(self, tmp_path):
+        with pytest.raises(MEDH5ValidationError) as exc:
+            self._pair(tmp_path / "a.medh5", units=("mm", "m"))
+        assert exc.value.code == "E506"
+
+    def test_F06_a_transform_written_before_its_grids_is_checked_at_commit(
+        self, tmp_path
+    ):
+        """No grid said `m` when the transform was declared, so it took `mm`:
+        the commit, which sees every grid, refuses it."""
+        with pytest.raises(MEDH5ValidationError) as exc:
+            self._pair(tmp_path / "a.medh5", units=("m", "m"), first=True)
+        assert exc.value.code == "E506"
+        self._pair(tmp_path / "b.medh5", units=("m", "m"), declared="m", first=True)
+
+    def test_F06_an_amendment_mends_such_a_transform(self, tmp_path):
+        """1.x wrote `mm` whatever the grids were in.  An amendment that leaves
+        such a transform as it is would write a file the validator rejects,
+        and is refused; one that removes it and adds it again in its grids'
+        units commits, and the file validates."""
+        path = self._pair(tmp_path / "old.medh5")
+        with h5py.File(path, "r+") as handle:
+            handle["transforms/t"].attrs["units"] = encode_attr("m")
+        with pytest.raises(MEDH5ValidationError) as exc, medh5.amend(path) as w:
+            w.extra("note", {"amended": True})
+        assert exc.value.code == "E506"
+        with medh5.open(path) as sample:
+            matrix = sample.transforms["t"].matrix
+            assert "note" not in sample.document.extra
+        with medh5.amend(path) as w:
+            w.remove_transform("t")
+            w.add_transform(
+                "t",
+                kind="affine",
+                from_frame="F0",
+                to_frame="F1",
+                matrix=matrix,
+                invertible=True,
+            )
+            w.extra("note", {"amended": True})
+        with medh5.open(path) as sample:
+            assert sample.transforms["t"].units == "mm"
+            assert np.array_equal(sample.transforms["t"].matrix, matrix)
+            assert sample.document.extra["note"] == {"amended": True}
+        assert not validate_file(path).errors
+
+    @pytest.mark.parametrize("planted", ["m", None])
+    def test_F06_S10_1_the_validator_holds_units_to_the_grids(self, tmp_path, planted):
+        path = self._pair(tmp_path / "pair.medh5")
+        with h5py.File(path, "r+") as handle:
+            attrs = handle["transforms/t"].attrs
+            if planted is None:
+                del attrs["units"]
+            else:
+                attrs["units"] = encode_attr(planted)
+        found = [d for d in validate_file(path).errors if d.code == "E506"]
+        assert len(found) == 1 and found[0].location == "/transforms/t"
+
+
+class TestRemoveTransform:
+    """An amendment drops a transform as it drops an annotation, and what
+    still names it is the commit's to check."""
+
+    def test_S10_removing_the_last_transform_leaves_none(self, tmp_path):
+        path = registered(tmp_path / "reg.medh5")
+        with medh5.amend(path) as w:
+            w.remove_transform("tp0_to_tp1")
+        with medh5.open(path) as sample:
+            assert not sample.transforms
+            assert "reg" not in sample.profiles
+        with h5py.File(path, "r") as handle:
+            assert "transforms" not in handle
+        assert not validate_file(path).errors
+
+    @pytest.mark.parametrize(
+        ("options", "removed"),
+        [({"inverse": True}, "tp1_to_tp0"), ({"composite": True}, "refine")],
+    )
+    def test_S10_a_transform_still_named_is_not_removed(
+        self, tmp_path, options, removed
+    ):
+        path = registered(tmp_path / "reg.medh5", **options)
+        before = path.read_bytes()
+        with pytest.raises(MEDH5ValidationError), medh5.amend(path) as w:
+            w.remove_transform(removed)
+        assert path.read_bytes() == before
+
+    def test_removing_a_missing_transform_is_an_error(self, tmp_path):
+        path = registered(tmp_path / "reg.medh5")
+        with pytest.raises(MEDH5ValidationError), medh5.amend(path) as w:
+            w.remove_transform("nope")
+
+
 class TestLandmarksAndMetrics:
     def test_S10_6_tre_is_zero_for_a_perfect_transform(self, tmp_path):
         path = registered(tmp_path / "reg.medh5")

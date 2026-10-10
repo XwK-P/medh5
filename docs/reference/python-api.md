@@ -373,6 +373,11 @@ w.add_transform("warp", kind="displacement",
                 field=field, field_grid="ct_tp0", vector_space="world")
 ```
 
+`units` default to those of the grids in the two frames, and a `units` they are
+not in is refused (`E506`). `w.remove_transform(name)` drops a transform; what
+still names it — another's `inverse_id`, a composite's `components` — is
+checked at commit, so one removed and added again under its name keeps them.
+
 ### Derived data
 
 <!-- illustrative -->

@@ -1181,20 +1181,23 @@ fn encode_keypoints(
 }
 
 #[pyfunction]
-#[pyo3(signature = (points, *, class_ids=None, names=None, weights=None, correspondence=None))]
+#[pyo3(signature = (points, *, class_ids=None, instance_ids=None, names=None, weights=None, correspondence=None))]
 fn encode_points(
     points: &Bound<'_, PyAny>,
     class_ids: Option<&Bound<'_, PyAny>>,
+    instance_ids: Option<&Bound<'_, PyAny>>,
     names: Option<&Bound<'_, PyAny>>,
     weights: Option<&Bound<'_, PyAny>>,
     correspondence: Option<&str>,
 ) -> R<AnnotationPayload> {
     let ids = given(class_ids).map(|c| ints_of(&c)).transpose()?;
+    let instance_ids = given(instance_ids).map(|i| u64s(&i)).transpose()?;
     let names = opt_strings(names)?;
     let weights = given(weights).map(|w| f64_vec(&w)).transpose()?;
     Ok(AnnotationPayload::wrap(geo::encode_points(
         &f64_array(points)?,
         ids.as_deref(),
+        instance_ids.as_deref(),
         names.as_deref(),
         weights.as_deref(),
         correspondence,

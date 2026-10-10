@@ -1030,3 +1030,48 @@ class TestN10WorldUnits:
             with pytest.raises(MEDH5ValidationError) as caught:
                 s.grids["mm"].world_into(s.grids["other"], [[1.0, 1.0, 1.0]])
             assert caught.value.code == "E414"
+
+
+class TestF18AsWorld:
+    """``as_world(grid)`` answers in *grid*'s world.  Stored world boxes came
+    back as stored whatever grid was named: a box at 3 mm asked for on a grid
+    in metres read as 3 m, and one asked for in another frame or convention
+    came back unrefused (F18 of the round-4 audit)."""
+
+    BOX = np.array([[[2.0, 4.0], [3.0, 6.0], [1.0, 5.0]]], np.float32)
+
+    def _sample(self, path: Path, *, frame: str = "F", **other: Any) -> Path:
+        from medh5.labels import LabelClass
+
+        with medh5.create(path, sample_id="s", subject_id="s", codec="portable") as w:
+            w.label_set(LabelSet("l", [LabelClass(1, "lesion", "Lesion")]))
+            w.add_grid("mm", shape=(8, 8, 8), spacing=(1.0, 1.0, 1.0), frame_uid="F")
+            w.add_grid("other", shape=(8, 8, 8), frame_uid=frame, **other)
+            w.add_image("CT", np.zeros((8, 8, 8), np.int16), grid="mm", modality="CT")
+            w.add_boxes("world", self.BOX, [1], grid="mm", space="world")
+        return path
+
+    def test_F18_S3_5_another_grid_gets_its_own_units(self, tmp_path: Path):
+        path = self._sample(tmp_path / "m.medh5", spacing=(0.001,) * 3, units="m")
+        with medh5.open(path) as s:
+            boxes = s.annotations["world"]
+            np.testing.assert_allclose(boxes.as_world("other"), self.BOX / 1000.0)
+            # The annotation's own grid, by default or by name, is the control.
+            assert np.array_equal(boxes.as_world(), self.BOX.astype(np.float64))
+            assert np.array_equal(boxes.as_world("mm"), self.BOX.astype(np.float64))
+
+    @pytest.mark.parametrize(
+        ("frame", "other"),
+        [
+            ("G", {"spacing": (1.0, 1.0, 1.0)}),
+            ("F", {"spacing": (1.0, 1.0, 1.0), "coord_system": "RAS"}),
+        ],
+    )
+    def test_F18_S3_3_another_frame_or_convention_is_refused(
+        self, tmp_path: Path, frame: str, other: dict[str, Any]
+    ):
+        path = self._sample(tmp_path / "x.medh5", frame=frame, **other)
+        with medh5.open(path) as s:
+            with pytest.raises(MEDH5ValidationError) as caught:
+                s.annotations["world"].as_world("other")
+            assert caught.value.code == "E414"

@@ -110,8 +110,11 @@ Timepoints, their intervals, and what belongs to each visit.
 medh5 track PATH [--class KEY] [--key K] [--json]
 ```
 
-Join instance ids across visits: per object, its volume at each timepoint, the
-relative change, and whether it is `present`, `resolved` or `unexamined`.
+Join instance ids across visits: per object, its volume at each timepoint in
+mm³ (in px on an uncalibrated grid), the relative change, and whether it is
+`present`, `resolved` or `unexamined`. Masks, boxes, oriented boxes and points
+join; an annotation of another kind that carries `instance_ids` is named as
+skipped, and the rest still join.
 
 ## Annotations
 

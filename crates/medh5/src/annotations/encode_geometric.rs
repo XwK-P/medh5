@@ -336,6 +336,7 @@ fn per_element_len(name: &str, len: usize, n: usize, unit: &str) -> Result<()> {
 pub fn encode_points(
     points: &ArrayD<f64>,
     class_ids: Option<&[i64]>,
+    instance_ids: Option<&[u64]>,
     names: Option<&[String]>,
     weights: Option<&[f64]>,
     correspondence: Option<&str>,
@@ -353,6 +354,12 @@ pub fn encode_points(
         let column = u16_column(ids)?;
         per_element_len("class_ids", ids.len(), n, "points")?;
         p.datasets.insert("class_ids".into(), column.into());
+    }
+    // The objects the points mark, as §10.6 asks of landmarks a track
+    // follows: equal ids across visits make the landmark and the lesion one.
+    if let Some(ids) = instance_ids {
+        per_element_len("instance_ids", ids.len(), n, "points")?;
+        p.datasets.insert("instance_ids".into(), PayloadData::Array(instance_id_array(ids)));
     }
     if let Some(names) = names {
         per_element_len("names", names.len(), n, "points")?;

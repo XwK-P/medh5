@@ -447,3 +447,63 @@ class TestUniformIsUniform:
             )
         assert all(s == slice(0, 24) for s in patch.slices)
         assert all(pad == (20, 20) for pad in patch.pad)
+
+
+class TestF20WeightedPicks:
+    """Every foreground draw picks its class by ``class_weights`` from every
+    candidate's voxel count, with an index or without.  The scan that stands
+    in for a missing or stale index drew classes uniformly, so
+    ``inverse_frequency`` meant nothing there and a class weighted zero was
+    drawn; and with an index, an empty weighted pool fell back to that scan
+    (F20 of the round-4 audit)."""
+
+    DRAWS = 300
+    # `masks`: 512, 216 and 27 voxels.
+    COUNTS = {1: 512, 2: 216, 3: 27}
+
+    @staticmethod
+    def _variant(path: Path, which: str) -> Path:
+        """The indexed sample as written, without its index, or with it stale."""
+        if which != "fresh":
+            with h5py.File(path, "r+") as handle:
+                if which == "absent":
+                    del handle["index"]
+                else:
+                    handle["index/organs_tp0"].attrs["source_digest"] = encode_attr(
+                        "sha256:" + "0" * 64
+                    )
+        return path
+
+    def _draws(self, path: Path, weights: Any) -> list[Patch]:
+        sampler = PatchSampler(4, strategy="foreground", class_weights=weights)
+        rng = np.random.default_rng(11)
+        with medh5.open(path) as sample:
+            return [sampler.draw(sample, "organs_tp0", rng) for _ in range(self.DRAWS)]
+
+    @pytest.mark.parametrize("which", ["absent", "fresh", "stale"])
+    def test_F20_a_class_weighted_zero_is_never_drawn(self, indexed, which):
+        draws = self._draws(self._variant(indexed, which), {1: 0.0, 2: 1.0, 3: 1.0})
+        assert {d.class_id for d in draws} == {2, 3}
+        assert {d.used_index for d in draws} == {which == "fresh"}
+
+    @pytest.mark.parametrize("which", ["absent", "fresh", "stale"])
+    @pytest.mark.parametrize("policy", ["frequency", "inverse_frequency"])
+    def test_F20_the_policies_hold_with_or_without_an_index(
+        self, indexed, which, policy
+    ):
+        draws = self._draws(self._variant(indexed, which), policy)
+        weights = {
+            c: float(n) if policy == "frequency" else 1.0 / n
+            for c, n in self.COUNTS.items()
+        }
+        total = sum(weights.values())
+        for class_id, weight in weights.items():
+            seen = sum(d.class_id == class_id for d in draws) / self.DRAWS
+            assert seen == pytest.approx(weight / total, abs=0.08), class_id
+
+    @pytest.mark.parametrize("which", ["absent", "fresh", "stale"])
+    def test_F20_an_empty_weighted_pool_draws_no_foreground(self, indexed, which):
+        """No candidate with foreground and weight: a uniform window, not a
+        foreground one picked without the weights."""
+        draws = self._draws(self._variant(indexed, which), {1: 0.0, 2: 0.0})
+        assert {(d.strategy, d.class_id) for d in draws} == {("uniform", None)}

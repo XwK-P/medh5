@@ -555,6 +555,7 @@ fn track(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
         }
         if tracking.tracks.is_empty() {
             ctx.print("no instance-carrying annotations in this sample");
+            print_skipped(&tracking, ctx);
             return Ok(EXIT_OK);
         }
         let timepoints: Vec<String> =
@@ -572,8 +573,13 @@ fn track(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
                     state.to_string()
                 } else {
                     // Two raters measured it there: no one volume is the visit's.
-                    match track.volume(tp) {
-                        Ok(Some(v)) => gp(v, 4),
+                    // Millimetres where the grid is calibrated, so visits on
+                    // grids in different units read alike (F19).
+                    match track.at(tp) {
+                        Ok(Some(o)) => match (o.volume_mm(), o.volume) {
+                            (Some(v), _) | (None, Some(v)) => gp(v, 4),
+                            (None, None) => "present".into(),
+                        },
                         Ok(None) => "present".into(),
                         Err(_) => format!("{} raters", track.measurements_at(tp).len()),
                     }
@@ -592,15 +598,24 @@ fn track(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
                 medh5::json::repr_int_list(&class_ids)
             ));
         }
+        print_skipped(&tracking, ctx);
         ctx.print(
-            "\nvolume in the grid's units; `resolved` means the class was in `annotated_class_ids` at that timepoint \
-             and the object was not found, `unexamined` that nobody looked (spec §7.4, §11.3).",
+            "\nvolume in mm³ (mm² on a 2-D grid), or in px on an uncalibrated grid; `resolved` means the class was \
+             in `annotated_class_ids` at that timepoint and the object was not found, `unexamined` that nobody looked \
+             (spec §7.4, §11.3).",
         );
         Ok(EXIT_OK)
     })();
     match result {
         Err(e) if e.is_medh5() => Ok(ctx.fail(e.to_string())),
         other => other,
+    }
+}
+
+/// The annotations that carry `instance_ids` and that no track joined.
+fn print_skipped(tracking: &Tracking, ctx: &mut Ctx) {
+    for (annotation, why) in &tracking.skipped {
+        ctx.print(format!("\nskipped {}: {why}", medh5::json::repr_str(annotation)));
     }
 }
 

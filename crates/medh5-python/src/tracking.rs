@@ -99,6 +99,12 @@ impl Observation {
         let c = self.0.centroid();
         Ok(array_to_py(py, ArrayD::from_shape_vec(IxDyn(&[c.len()]), c).expect("1-D")))
     }
+    /// `volume` in millimetres to the power of the box's axes, or `None`
+    /// where it is unmeasured or its grid is uncalibrated.
+    #[getter]
+    fn volume_mm(&self) -> Option<f64> {
+        self.0.volume_mm()
+    }
     #[getter]
     fn extent<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let e = self.0.extent();
@@ -265,6 +271,16 @@ impl Tracking {
     #[getter]
     fn timepoints<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
         PyTuple::new(py, &self.0.timepoints)
+    }
+    /// `{annotation: why}` for the annotations that carry `instance_ids`
+    /// and that no track joined.
+    #[getter]
+    fn skipped<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let out = PyDict::new(py);
+        for (k, v) in &self.0.skipped {
+            out.set_item(k, v)?;
+        }
+        Ok(out)
     }
     #[getter]
     fn coverage<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {

@@ -319,7 +319,14 @@ impl PatchSampler {
     /// A foreground voxel, from the index when there is a current one.
     ///
     /// A stale index is worse than none: its coordinates point at foreground
-    /// the annotation no longer has, so it is never consulted.
+    /// the annotation no longer has, so it is never consulted.  Nor is one
+    /// built over some of the candidate classes, which would never pick the
+    /// others.  Either way the class is picked by `class_weights` from every
+    /// candidate's voxel count, and `None` --- no candidate with foreground
+    /// and weight --- is the answer, not a cue to pick unweighted: the
+    /// index path fell back to a scan that drew classes uniformly, so a class
+    /// weighted zero was drawn, and the no-index path ignored the weights
+    /// altogether (F20 of the round-4 audit).
     fn foreground_center(
         &self,
         sample: &Sample,
@@ -333,14 +340,15 @@ impl PatchSampler {
         }
         let index = if sample.fresh_indices()?.contains(annotation) { sample.index()?.get(annotation) } else { None };
         if let Some(index) = index {
-            let counts = index.voxel_counts()?;
-            let mut counted: IndexMap<i64, i64> = IndexMap::new();
+            let mut covered = true;
             for c in &classes {
-                if index.has_class(*c)? {
-                    counted.insert(*c, counts.get(c).copied().unwrap_or(0));
-                }
+                covered &= index.has_class(*c)?;
             }
-            if let Some(picked) = self.pick_class(&counted, rng)? {
+            if covered {
+                let counts = index.voxel_counts()?;
+                let counted: IndexMap<i64, i64> =
+                    classes.iter().map(|c| (*c, counts.get(c).copied().unwrap_or(0))).collect();
+                let Some(picked) = self.pick_class(&counted, rng)? else { return Ok(None) };
                 let coords = index.sample_foreground(picked, 1, rng)?;
                 let center: Vec<i64> = coords.row(0).iter().map(|v| i64::from(*v)).collect();
                 return Ok(Some((center, picked, true)));
@@ -385,28 +393,31 @@ impl PatchSampler {
         Ok(Some(rng.choice_weighted(&ids, &probabilities)?))
     }
 
-    /// The O(volume) fallback for a file with no current sampling index.
+    /// The O(volume) fallback for a file with no current sampling index:
+    /// every candidate class counted, one dense mask at a time, a class
+    /// picked by `class_weights` as the index path picks it, and a voxel of
+    /// that class.
     fn scan_center(&self, ann: &Annotation, classes: &[i64], rng: &mut Rng) -> Result<Option<(Vec<i64>, i64, bool)>> {
-        let mut order = classes.to_vec();
-        rng.shuffle(&mut order);
-        for class_id in order {
-            let mask = ann.dense(Some(&[ClassKey::Id(class_id)]), None)?.index_axis_move(Axis(0), 0);
-            let total = mask.iter().filter(|v| **v).count();
-            if total == 0 {
-                continue;
+        let mut counted: IndexMap<i64, i64> = IndexMap::new();
+        for class_id in classes {
+            if !counted.contains_key(class_id) {
+                let mask = ann.dense(Some(&[ClassKey::Id(*class_id)]), None)?;
+                counted.insert(*class_id, mask.iter().filter(|v| **v).count() as i64);
             }
-            let pick = rng.integer(0, total as i64)? as usize;
-            // `np.argwhere` order: C order over the voxels.
-            let (flat, _) = mask.iter().enumerate().filter(|(_, v)| **v).nth(pick).expect("pick < total");
-            let mut rest = flat;
-            let mut coords = vec![0i64; mask.ndim()];
-            for (axis, extent) in mask.shape().iter().enumerate().rev() {
-                coords[axis] = (rest % extent) as i64;
-                rest /= extent;
-            }
-            return Ok(Some((coords, class_id, false)));
         }
-        Ok(None)
+        let Some(class_id) = self.pick_class(&counted, rng)? else { return Ok(None) };
+        let mask = ann.dense(Some(&[ClassKey::Id(class_id)]), None)?.index_axis_move(Axis(0), 0);
+        let total = mask.iter().filter(|v| **v).count();
+        let pick = rng.integer(0, total as i64)? as usize;
+        // `np.argwhere` order: C order over the voxels.
+        let (flat, _) = mask.iter().enumerate().filter(|(_, v)| **v).nth(pick).expect("pick < total");
+        let mut rest = flat;
+        let mut coords = vec![0i64; mask.ndim()];
+        for (axis, extent) in mask.shape().iter().enumerate().rev() {
+            coords[axis] = (rest % extent) as i64;
+            rest /= extent;
+        }
+        Ok(Some((coords, class_id, false)))
     }
 }
 

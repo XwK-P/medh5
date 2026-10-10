@@ -54,6 +54,16 @@ pub const DEFAULT_ORDER: i64 = 3;
 /// Displacement magnitude below which `float16` costs ~5e-4 relative precision.
 pub const FLOAT16_SAFE_VOXELS: f64 = 64.0;
 
+/// `grid 'g' is in 'm'` for each of `grids` not in `units`: what E506
+/// names, for a transform in `units` relating their frames (§10.1).
+pub fn units_disagreeing<'a>(grids: impl IntoIterator<Item = &'a Grid>, units: &str) -> Vec<String> {
+    grids
+        .into_iter()
+        .filter(|g| g.units != units)
+        .map(|g| format!("grid {} is in {}", repr_str(&g.grid_id), repr_str(&g.units)))
+        .collect()
+}
+
 /// The attribute header every transform carries (spec §10.1).
 #[derive(Debug, Clone, PartialEq)]
 pub struct TransformHeader {

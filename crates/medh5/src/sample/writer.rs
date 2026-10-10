@@ -1141,6 +1141,33 @@ impl SampleWriter {
                         ));
                     }
                 }
+                // A transform declared before the grids of its frames was
+                // checked against none of them, and one the file already held
+                // against none at all (§10.1, E506).  An amendment mends the
+                // latter with `remove_transform` and `add_transform`.
+                let (from_frame, to_frame) = &self.transform_frames[name];
+                let units = attrs::get_str(&g, "units")?.unwrap_or_else(|| "mm".into());
+                let mut named: Vec<String> = Vec::new();
+                for key in ["from_grid", "to_grid"] {
+                    named.extend(attrs::get_str(&g, key)?);
+                }
+                let grids = self.grids.values().filter(|grid| {
+                    grid.frame_uid.as_deref().is_some_and(|f| f == from_frame || f == to_frame)
+                        || named.contains(&grid.grid_id)
+                });
+                let wrong = crate::transforms::model::units_disagreeing(grids, &units);
+                if !wrong.is_empty() {
+                    return Err(Error::coded(
+                        "E506",
+                        format!(
+                            "transform {} is in {}, and {}: a transform maps coordinates in one unit, and none maps \
+                             between two (§10.1)",
+                            repr_str(name),
+                            repr_str(&units),
+                            wrong.join(", ")
+                        ),
+                    ));
+                }
             }
         }
         let dangling = doc.provenance.dangling_agent_refs();

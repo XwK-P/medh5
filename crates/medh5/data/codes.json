@@ -314,6 +314,12 @@
       "summary": "`inverse_id` is not mutually consistent"
     },
     {
+      "code": "E506",
+      "severity": "error",
+      "domain": "transforms",
+      "summary": "`units` missing, or not the units of the grids in its frames"
+    },
+    {
       "code": "E601",
       "severity": "error",
       "domain": "curation",

@@ -227,6 +227,9 @@ two writers. See [Tune performance](../guides/performance.md#on-a-network-filesy
 
 `class_weights` picks which class a foreground draw targets: `uniform`,
 `inverse_frequency`, `frequency`, or an explicit `{class_id: weight}` mapping.
+It is applied to every candidate class's voxel count, from the index or from a
+scan alike; a class weighted zero is never drawn, and a draw with no candidate
+that has both foreground and weight is a uniform one.
 
 Foreground sampling is O(1) in the volume **if the file carries a sampling
 index**:

@@ -411,3 +411,267 @@ class TestU04OneAnswerPerVisit:
             line for line in capsys.readouterr().out.splitlines() if "2 raters" in line
         )
         assert row.split()[0] == "7"
+
+
+class TestF19VolumeUnits:
+    """An observation's volume is in its grid's units cubed, and two visits
+    are compared in millimetres: a visit in metres beside one in millimetres
+    read as a millionfold change, and an uncalibrated one beside either as a
+    change at all (F19 of the round-4 audit)."""
+
+    SPACING = {
+        "mm": (2.0, 1.0, 1.0),
+        "m": (0.002, 0.001, 0.001),
+        "um": (2000.0, 1000.0, 1000.0),
+        "px": (1.0, 1.0, 1.0),
+    }
+
+    def _visits(
+        self, path: Path, label_set, units: tuple[str, str], radii: tuple[int, int]
+    ) -> Path:
+        with medh5.create(path, sample_id=path.stem, codec="portable") as w:
+            w.add_timepoint("tp0", days_from_baseline=0)
+            w.add_timepoint("tp1", days_from_baseline=90)
+            w.label_set(label_set)
+            for tp, unit, radius in zip(("tp0", "tp1"), units, radii, strict=True):
+                w.add_grid(
+                    f"g_{tp}",
+                    shape=SHAPE,
+                    spacing=self.SPACING[unit],
+                    units=unit,
+                    timepoint=tp,
+                    frame_uid=f"pseudo:{tp}",
+                )
+                w.add_image(
+                    f"CT_{tp}", np.zeros(SHAPE, np.int16), grid=f"g_{tp}", modality="CT"
+                )
+                w.add_segmentation(
+                    f"les_{tp}",
+                    grid=f"g_{tp}",
+                    instances=[
+                        InstanceInput(
+                            class_id=3, instance_id=7, mask=lesion(8, 8, 8, radius)
+                        )
+                    ],
+                    annotated_classes=[3],
+                )
+        return path
+
+    @pytest.mark.parametrize("unit", ["m", "um"])
+    def test_F19_the_same_lesion_in_other_units_has_not_changed(
+        self, tmp_path, label_set, unit
+    ):
+        path = self._visits(tmp_path / "s.medh5", label_set, ("mm", unit), (2, 2))
+        with medh5.open(path) as sample:
+            track = sample.tracks()[7]
+            first, second = track.at("tp0"), track.at("tp1")
+            assert (first.units, second.units) == ("mm", unit)
+            assert first.volume == pytest.approx(64 * 2.0), "its own units"
+            assert second.volume_mm == pytest.approx(64 * 2.0)
+            assert track.relative_change("tp0", "tp1") == pytest.approx(0.0, abs=1e-9)
+
+    def test_F19_growth_across_a_change_of_units_is_measured(self, tmp_path, label_set):
+        path = self._visits(tmp_path / "s.medh5", label_set, ("mm", "m"), (2, 3))
+        with medh5.open(path) as sample:
+            change = sample.tracks()[7].relative_change("tp0", "tp1")
+            assert change == pytest.approx((216 - 64) / 64)
+
+    def test_F19_an_uncalibrated_visit_beside_a_calibrated_one_has_no_change(
+        self, tmp_path, label_set
+    ):
+        path = self._visits(tmp_path / "a.medh5", label_set, ("mm", "px"), (2, 3))
+        with medh5.open(path) as sample:
+            track = sample.tracks()[7]
+            assert track.at("tp1").volume_mm is None
+            assert track.relative_change("tp0", "tp1") is None
+        # Two visits in pixels share a measure, and are compared in it.
+        path = self._visits(tmp_path / "b.medh5", label_set, ("px", "px"), (2, 3))
+        with medh5.open(path) as sample:
+            change = sample.tracks()[7].relative_change("tp0", "tp1")
+            assert change == pytest.approx((216 - 64) / 64)
+
+    def test_F19_an_area_beside_a_volume_has_no_change(self, tmp_path, label_set):
+        path = tmp_path / "dims.medh5"
+        plane = SHAPE[1:]
+        with medh5.create(path, sample_id="dims", codec="portable") as w:
+            w.add_timepoint("tp0", days_from_baseline=0)
+            w.add_timepoint("tp1", days_from_baseline=90)
+            w.label_set(label_set)
+            w.add_grid("g_tp0", shape=SHAPE, spacing=(1.0, 1.0, 1.0), timepoint="tp0")
+            w.add_grid("g_tp1", shape=plane, spacing=(1.0, 1.0), timepoint="tp1")
+            w.add_image(
+                "CT_tp0", np.zeros(SHAPE, np.int16), grid="g_tp0", modality="CT"
+            )
+            w.add_image(
+                "CT_tp1", np.zeros(plane, np.int16), grid="g_tp1", modality="CT"
+            )
+            w.add_boxes(
+                "det_tp0",
+                np.array([[[1.5, 5.5], [1.5, 5.5], [1.5, 5.5]]], np.float32),
+                ["lesion"],
+                grid="g_tp0",
+                instance_ids=[7],
+            )
+            w.add_boxes(
+                "det_tp1",
+                np.array([[[1.5, 5.5], [1.5, 5.5]]], np.float32),
+                ["lesion"],
+                grid="g_tp1",
+                instance_ids=[7],
+            )
+        with medh5.open(path) as sample:
+            track = sample.tracks()[7]
+            assert track.volume("tp0") == pytest.approx(64.0)
+            assert track.volume("tp1") == pytest.approx(16.0), "an area, in mm²"
+            assert track.relative_change("tp0", "tp1") is None
+
+    def test_F19_the_command_line_shows_millimetres(self, tmp_path, label_set, capsys):
+        from medh5.cli import main
+
+        path = self._visits(tmp_path / "s.medh5", label_set, ("mm", "m"), (2, 2))
+        assert main(["track", str(path)]) == 0
+        out = capsys.readouterr().out
+        row = next(line for line in out.splitlines() if line.split()[:1] == ["7"])
+        assert row.split()[2:] == ["128", "128", "+0.0%"]
+        assert "mm³" in out
+
+
+class TestF21TrackedKinds:
+    """Every annotation that carries ``instance_ids`` was joined, and only
+    masks and axis-aligned boxes could be read as objects: an oriented box or
+    a landmark carrying the ids §10.6 asks for aborted the join, and ``medh5
+    track`` with it (F21 of the round-4 audit)."""
+
+    @staticmethod
+    def _rotation(degrees: float) -> np.ndarray:
+        """A proper rotation about the first axis."""
+        c, s = np.cos(np.radians(degrees)), np.sin(np.radians(degrees))
+        return np.array([[1.0, 0.0, 0.0], [0.0, c, -s], [0.0, s, c]])
+
+    def _visits(self, path: Path, label_set, *, mask_first: bool = False) -> Path:
+        with medh5.create(path, sample_id=path.stem, codec="portable") as w:
+            w.add_timepoint("tp0", days_from_baseline=0)
+            w.add_timepoint("tp1", days_from_baseline=90)
+            w.label_set(label_set)
+            for tp in ("tp0", "tp1"):
+                w.add_grid(
+                    f"g_{tp}",
+                    shape=SHAPE,
+                    spacing=(2.0, 1.0, 1.0),
+                    timepoint=tp,
+                    frame_uid=f"pseudo:{tp}",
+                )
+                w.add_image(
+                    f"CT_{tp}", np.zeros(SHAPE, np.int16), grid=f"g_{tp}", modality="CT"
+                )
+            if mask_first:
+                w.add_segmentation(
+                    "les_tp0",
+                    grid="g_tp0",
+                    instances=[
+                        InstanceInput(
+                            class_id=3, instance_id=7, mask=lesion(8, 8, 8, 2)
+                        )
+                    ],
+                    annotated_classes=[3],
+                )
+            else:
+                w.add_obb(
+                    "obb_tp0",
+                    centers=np.array([[8.0, 8.0, 8.0]]),
+                    sizes=np.array([[4.0, 4.0, 4.0]]),
+                    rotations=self._rotation(30.0)[None],
+                    class_ids=["lesion"],
+                    grid="g_tp0",
+                    instance_ids=[7],
+                )
+            w.add_obb(
+                "obb_tp1",
+                centers=np.array([[8.0, 9.0, 9.0], [4.0, 4.0, 4.0]]),
+                sizes=np.array([[6.0, 6.0, 6.0], [2.0, 2.0, 2.0]]),
+                rotations=np.stack([self._rotation(45.0), np.eye(3)]),
+                class_ids=["lesion", "lesion"],
+                grid="g_tp1",
+                instance_ids=[7, 9],
+            )
+        return path
+
+    def test_F21_S7_4_oriented_boxes_join_and_measure(self, tmp_path, label_set):
+        path = self._visits(tmp_path / "obb.medh5", label_set)
+        with medh5.open(path) as sample:
+            tracking = sample.tracks()
+            assert sorted(tracking) == [7, 9]
+            track = tracking[7]
+            assert track.timepoints == ("tp0", "tp1")
+            assert {o.kind for o in track} == {"obb"}
+            # Edge lengths times the voxel volume: a rotation moves a box and
+            # leaves its volume alone.
+            assert track.volume("tp0") == pytest.approx(4 * 4 * 4 * 2.0)
+            assert track.volume("tp1") == pytest.approx(6 * 6 * 6 * 2.0)
+            assert track.relative_change("tp0", "tp1") == pytest.approx((216 - 64) / 64)
+            # The join compares the enclosing axis-aligned box.
+            box = track.at("tp1").box
+            assert box.shape == (3, 2) and np.all(box[:, 0] < box[:, 1])
+            assert tracking.is_new(9) and tracking.skipped == {}
+
+    def test_F21_masks_and_oriented_boxes_join_one_track(self, tmp_path, label_set):
+        path = self._visits(tmp_path / "mixed.medh5", label_set, mask_first=True)
+        with medh5.open(path) as sample:
+            track = sample.tracks()[7]
+            assert [o.kind for o in track] == ["instances", "obb"]
+            assert track.relative_change("tp0", "tp1") == pytest.approx((216 - 64) / 64)
+
+    def test_F21_S10_6_points_mark_presence_and_measure_nothing(
+        self, tmp_path, label_set
+    ):
+        path = self._visits(tmp_path / "obb.medh5", label_set)
+        with medh5.amend(path) as w:
+            w.add_points(
+                "landmark_tp0",
+                np.array([[8.0, 8.0, 8.0], [3.0, 3.0, 3.0]]),
+                grid="g_tp0",
+                class_ids=["lesion", "lesion"],
+                instance_ids=[7, 11],
+            )
+        with medh5.open(path) as sample:
+            tracking = sample.tracks()
+            seen = [o.kind for o in tracking[7].observations_at("tp0")]
+            assert sorted(seen) == ["obb", "points"]
+            # The box answers for the visit; the point only says it was there.
+            assert tracking[7].at("tp0").kind == "obb"
+            point = tracking[11].at("tp0")
+            assert point.kind == "points" and point.volume is None
+            assert np.array_equal(point.box, [[3.0, 3.0], [3.0, 3.0], [3.0, 3.0]])
+            assert tracking.state_at(11, "tp0") == PRESENT
+
+    def test_F21_a_kind_no_track_reads_is_reported_not_fatal(
+        self, tmp_path, label_set, capsys
+    ):
+        from medh5.cli import main
+
+        path = self._visits(tmp_path / "obb.medh5", label_set)
+        with medh5.amend(path) as w:
+            w.add_keypoints(
+                "kp_tp0",
+                np.zeros((1, 2, 3)),
+                keypoint_classes=["lesion", "lesion"],
+                class_ids=["lesion"],
+                grid="g_tp0",
+                instance_ids=[7],
+            )
+            w.add_points(
+                "unclassed_tp1",
+                np.array([[8.0, 9.0, 9.0]]),
+                grid="g_tp1",
+                instance_ids=[7],
+            )
+        with medh5.open(path) as sample:
+            tracking = sample.tracks()
+            assert sorted(tracking) == [7, 9], "the joinable annotations still join"
+            assert set(tracking.skipped) == {"kp_tp0", "unclassed_tp1"}
+            assert "'keypoints'" in tracking.skipped["kp_tp0"]
+            assert "class_ids" in tracking.skipped["unclassed_tp1"]
+            assert set(tracking.to_json()["skipped"]) == {"kp_tp0", "unclassed_tp1"}
+        assert main(["track", str(path)]) == 0
+        out = capsys.readouterr().out
+        assert "skipped 'kp_tp0'" in out and "skipped 'unclassed_tp1'" in out

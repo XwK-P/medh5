@@ -588,7 +588,9 @@ class TestStatedCounts:
         r"(\d+) cases",
         r"(\d+)/\d+ cases pass",
         r"\d+/(\d+) cases pass",
-        r"\(§15\) of (\d+) files",
+        # Across a line break too: the specification said 153 here for two
+        # corpus revisions, wrapped where the pattern did not look.
+        r"\(§15\) of\s+(\d+) files",
         r'"cases": (\d+)',
         r'"passed": (\d+)',
         r"\d+ of the (\d+) cases",

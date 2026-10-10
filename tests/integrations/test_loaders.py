@@ -429,6 +429,24 @@ class TestPairedPatchDataset:
         assert [b - a for a, b in zip(first, second, strict=True)] == [0, 0, 4]
         assert meta["interval_days"] == 90
 
+    def test_F06_S10_1_a_transform_in_other_units_is_not_applied(self, registered):
+        """A transform maps coordinates in its own units, and none maps
+        between two: one declaring metres between two millimetre grids moved
+        every point a thousandth of its displacement (F06 of the round-4
+        audit).  The writer refuses to write it, so it is planted."""
+        import h5py
+
+        from tests.helpers import encode_attr
+
+        with h5py.File(registered, "r+") as handle:
+            handle["transforms/tp0_to_tp1"].attrs["units"] = encode_attr("m")
+        ds = PairedPatchDataset(
+            [registered], PatchSampler(8, strategy="foreground"), align="transform"
+        )
+        with pytest.raises(MEDH5ValidationError, match="'g_tp0' is in 'mm'") as exc:
+            ds[0]
+        assert exc.value.code == "E506"
+
     def test_align_none_reads_the_same_index_window(self, registered):
         ds = PairedPatchDataset(
             [registered], PatchSampler(8, strategy="foreground"), align="none"

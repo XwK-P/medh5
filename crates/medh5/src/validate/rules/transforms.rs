@@ -47,6 +47,7 @@ pub fn check_transforms(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
                 format!("maps frame {} to itself; grids sharing a frame need no transform (§3.4)", repr_str(&source)),
             ));
         }
+        out.extend(check_units(ctx, &name, &t, grids.as_ref(), &source, &target)?);
         match kind.as_str() {
             "affine" => out.extend(check_affine(ctx, &name, &t)?),
             "displacement" | "bspline" => {
@@ -58,6 +59,52 @@ pub fn check_transforms(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     }
     out.extend(check_inverses(ctx, &node, &declared)?);
     Ok(out)
+}
+
+/// `units` is present, and the units of every grid in either frame and of
+/// `from_grid` and `to_grid` (§10.1, E506): a transform maps coordinates in
+/// one unit, and none maps between two.
+fn check_units(
+    ctx: &Context,
+    name: &str,
+    group: &Node,
+    grids: Option<&hdf5::Group>,
+    source: &str,
+    target: &str,
+) -> Result<Vec<Diagnostic>> {
+    let location = format!("/transforms/{name}");
+    let a = loc(group);
+    let Some(units) = str_attr(a, "units")? else {
+        return Ok(vec![ctx.err("E506", location, "transform has no `units`; §10.1 requires the units it maps")]);
+    };
+    let Some(grids) = grids else { return Ok(Vec::new()) };
+    let mut named = Vec::new();
+    for key in ["from_grid", "to_grid"] {
+        named.extend(str_attr(a, key)?);
+    }
+    let mut wrong = Vec::new();
+    for (grid_id, g) in children(grids)? {
+        let frame = str_attr(loc(&g), "frame_uid")?;
+        if !(frame.as_deref().is_some_and(|f| f == source || f == target) || named.contains(&grid_id)) {
+            continue;
+        }
+        let found = str_attr(loc(&g), "units")?.unwrap_or_else(|| "mm".into());
+        if found != units {
+            wrong.push(format!("grid {} is in {}", repr_str(&grid_id), repr_str(&found)));
+        }
+    }
+    if wrong.is_empty() {
+        return Ok(Vec::new());
+    }
+    Ok(vec![ctx.err(
+        "E506",
+        location,
+        format!(
+            "is in {}, and {}: a transform maps coordinates in one unit, and none maps between two (§10.1)",
+            repr_str(&units),
+            wrong.join(", ")
+        ),
+    )])
 }
 
 fn check_affine(ctx: &Context, name: &str, group: &Node) -> Result<Vec<Diagnostic>> {

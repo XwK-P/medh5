@@ -1,6 +1,6 @@
 //! The annotation, transform and index half of [`SampleWriter`].
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use ndarray::ArrayD;
 use serde_json::{Map, Value};
@@ -704,6 +704,7 @@ impl SampleWriter {
         ann_id: &str,
         points: &ArrayD<f64>,
         class_ids: Option<&[ClassKey]>,
+        instance_ids: Option<&[u64]>,
         names: Option<&[String]>,
         weights: Option<&[f64]>,
         correspondence: Option<&str>,
@@ -714,7 +715,7 @@ impl SampleWriter {
             Some(keys) => Some(self.class_ids_of(keys)?),
             None => None,
         };
-        let payload = encode_points(points, ids.as_deref(), names, weights, correspondence)?;
+        let payload = encode_points(points, ids.as_deref(), instance_ids, names, weights, correspondence)?;
         let space = placement.space.clone().unwrap_or_else(|| "index".into());
         self.add_object_annotation(ann_id, payload, &placement, Some(&space), &options, "detection", Vec::new())
     }
@@ -822,7 +823,7 @@ impl SampleWriter {
         }
         let payload = self.encode_transform(transform_id, kind, &spec, from_frame)?;
         let mut header = TransformHeader::new(kind, from_frame, to_frame)?;
-        header.units = spec.units.clone().unwrap_or_else(|| "mm".into());
+        header.units = self.transform_units(transform_id, from_frame, to_frame, &spec)?;
         header.from_grid = spec.from_grid.clone();
         header.to_grid = spec.to_grid.clone();
         header.invertible = spec.invertible;
@@ -856,6 +857,77 @@ impl SampleWriter {
         }
         self.transform_frames.insert(transform_id.to_string(), (from_frame.to_string(), to_frame.to_string()));
         Ok(group)
+    }
+
+    /// Drop a transform.  What still names it --- another's `inverse_id`, a
+    /// composite's `components` --- is checked at commit, so a transform
+    /// removed and added again under its name keeps them.
+    pub fn remove_transform(&mut self, transform_id: &str) -> Result<()> {
+        let root = self.root()?;
+        let node = ops::child_group(&root, "transforms");
+        let Some(node) = node.filter(|n| ops::exists(n, transform_id)) else {
+            return Err(Error::invalid(format!("no transform {} to remove", repr_str(transform_id))));
+        };
+        ops::unlink(&node, transform_id)?;
+        // Its bytes stay in the file being built until commit rewrites it.
+        self.compact = true;
+        self.transform_frames.shift_remove(transform_id);
+        if ops::members(&node)?.is_empty() {
+            ops::unlink(&root, "transforms")?;
+        }
+        Ok(())
+    }
+
+    /// The units a transform between two frames is in: those of the grids
+    /// in its frames, and of `from_grid` and `to_grid` (§10.1).
+    ///
+    /// `units` defaulted to `mm` whatever the grids were in, so a
+    /// registration between two metre grids written without it declared
+    /// millimetres, and an explicit `units` the grids disagreed with was
+    /// written as given; either way a reader applied it to coordinates in
+    /// other units than it maps (F06 of the round-4 audit).  The default is
+    /// the grids' units, `mm` with none to say, and a `units` that is not
+    /// theirs --- or grids that disagree --- is refused (E506).
+    fn transform_units(
+        &self,
+        transform_id: &str,
+        from_frame: &str,
+        to_frame: &str,
+        spec: &TransformSpec,
+    ) -> Result<String> {
+        let mut grids: Vec<&Grid> = self
+            .grids
+            .values()
+            .filter(|g| g.frame_uid.as_deref().is_some_and(|f| f == from_frame || f == to_frame))
+            .collect();
+        for named in [&spec.from_grid, &spec.to_grid].into_iter().flatten() {
+            if let Some(g) = self.grids.get(named) {
+                if !grids.iter().any(|h| h.grid_id == g.grid_id) {
+                    grids.push(g);
+                }
+            }
+        }
+        let found: BTreeSet<&str> = grids.iter().map(|g| g.units.as_str()).collect();
+        let units = match (&spec.units, found.len()) {
+            (Some(u), _) => u.clone(),
+            (None, 0) => return Ok("mm".into()),
+            (None, _) => found.iter().next().map(|u| u.to_string()).unwrap_or_default(),
+        };
+        let wrong = crate::transforms::model::units_disagreeing(grids.iter().copied(), &units);
+        if wrong.is_empty() {
+            return Ok(units);
+        }
+        Err(Error::coded(
+            "E506",
+            format!(
+                "transform {} {} {}, and {}: a transform maps coordinates in one unit, and none maps between two \
+                 (§10.1)",
+                repr_str(transform_id),
+                if spec.units.is_some() { "declares units" } else { "would take units" },
+                repr_str(&units),
+                wrong.join(", ")
+            ),
+        ))
     }
 
     fn encode_transform(

@@ -912,6 +912,7 @@ Euler-angle forms are **not** stored; readers convert. The corner set is
 |---|---|---|---|
 | `points` | `(N, S)` | `float32` | |
 | `class_ids` | `(N,)` | `uint16` | OPTIONAL |
+| `instance_ids` | `(N,)` | `uint32`/`uint64` | OPTIONAL — the trackable objects the points mark (§7.4, §10.6) |
 | `names` | `(N,)` | vlen UTF-8 | OPTIONAL — anatomical landmark names |
 | `weights` | `(N,)` | `float32` | OPTIONAL — evaluation weights |
 | `correspondence` | attr `str` | | OPTIONAL — id of the paired `points` annotation (§10.6) |
@@ -1021,12 +1022,17 @@ its own.
 | `from_frame` | `str` | **MUST** | source `frame_uid` |
 | `to_frame` | `str` | **MUST** | target `frame_uid` |
 | `from_grid` / `to_grid` | `str` | SHOULD | representative grids in each frame |
-| `units` | `str` | **MUST** | coordinate units, matching the frames' grids |
+| `units` | `str` | **MUST** | coordinate units: those of the grids in both frames (E506) |
 | `invertible` | `bool` | SHOULD | |
 | `inverse_id` | `str` | MAY | id of the transform representing T⁻¹ |
 | `prov` | `str` | SHOULD | activity that produced it (§11.1) |
 | `metrics` | `str` | MAY | key into `/meta → quality` holding TRE, Dice-after-warp, folding fraction |
 | `digest` | `str` | SHOULD | §13.1 |
+
+A transform maps coordinates in its `units`, which **MUST** be the `units` of every grid in
+`from_frame` and in `to_frame` (E506). No transform maps between units: a reader **MUST NOT** apply
+one to a grid in other units, and converts nothing. A writer not given `units` takes them from
+those grids.
 
 A transform and the stored transform its `inverse_id` names are **one relation between two frames,
 traversable in both directions — not two**. A reader resolving a path between frames **MUST NOT**
@@ -1512,7 +1518,7 @@ one.
 | `E2xx` | images | `E201` `images` empty; `E202` image shape ≠ grid shape; `E203` unknown `value_type`; `E204` `channel_names` length ≠ channel extent; `E205` required image attribute missing |
 | `E3xx` | label set | `E301` missing label set for a declared profile; `E302` duplicate class id or key; `E303` reserved id used; `E304` hierarchy cycle; `E305` `ref` label set lacking `uri`/`sha256`, or unresolvable; `E306` class entry missing a required field, out of id range, or naming an unknown parent |
 | `E4xx` | annotations | `E401` unknown `kind`; `E402` class id not in label set; `E403` `annotated_class_ids ⊄ class_ids`; `E404` encoding invariant violated (e.g. a class in two layers); `E405` shape mismatch with grid; `E406` box `lo > hi`; `E407` `rotations` not a proper rotation; `E408` offsets not monotonic; `E409` `timepoints` references an undeclared timepoint; `E410` a dataset required by the `kind` is absent; `E411` dataset dtype not permitted for the `kind`; `E412` required annotation attribute missing; `E413` reference to a skeleton, correspondence, ignore mask or source annotation that does not exist; `E414` `space` invalid for the annotation's grid or frame |
-| `E5xx` | transforms | `E501` composite frame chain broken; `E502` unknown transform kind; `E503` field grid not in `from_frame`; `E504` affine last row ≠ `[0…0 1]`; `E505` `inverse_id` not mutually consistent |
+| `E5xx` | transforms | `E501` composite frame chain broken; `E502` unknown transform kind; `E503` field grid not in `from_frame`; `E504` affine last row ≠ `[0…0 1]`; `E505` `inverse_id` not mutually consistent; `E506` `units` missing or not the units of the grids in its frames |
 | `E6xx` | curation | `E601` dangling `prov` reference; `E602` unknown `quality` key; `E603` unknown agent or activity type; `E604` non-RFC3339 timestamp; `E605` activity names an undeclared agent |
 | `E7xx` | integrity | `E701` object digest mismatch; `E702` `content_id` mismatch; `E703` malformed digest string; `E704` an object `content_id` covers reached at a path that is not its own |
 | `W9xx` | warnings | `W901` no digests; `W902` uncompressed or unchunked bulk dataset; `W903` no `deidentification`; `W904` partial coverage without an ignore region; `W905` stale `index/` entry; `W906` conflicting split claims; `W907` `float32` storage where `int16 + rescale` is lossless; `W908` `layers` count far from the greedy-colouring optimum; `W909` one `instance_id` carrying two class ids; `W910` grids in different timepoints sharing a `frame_uid`; `W911` multi-timepoint sample with no transform relating any two timepoints; `W912` a class used by an annotation carries no ontology binding |
@@ -1632,7 +1638,7 @@ grouping, since a 0.x file carries no reliable subject key of its own.
 
 Sections §2–§15 are **implemented** by the `medh5` format engine --- the Rust crate `medh5`, which the
 Python package and the `medh5` command line wrap --- and exercised by a conformance corpus (§15) of
-153 files: valid samples covering every encoding, annotation kind, transform kind,
+157 files: valid samples covering every encoding, annotation kind, transform kind,
 dimensionality, profile and container kind, plus one deliberately-invalid file per diagnostic code.
 The corpus includes the cases of the [1.1](medh5-1.1.md) `clinical` profile, which the same engine
 implements.
@@ -1640,7 +1646,7 @@ Running the corpus against a validator is how a third-party implementation demon
 
 ```
 $ medh5 conformance run ./corpus
-155/155 cases pass
+157/157 cases pass
 ```
 
 **Every code in §15.2 has a corpus case.** The implementation gates on `cargo clippy` and `rustfmt`
@@ -1653,9 +1659,9 @@ any machine. On one, with a 192×256×256 synthetic CT and eight classes, a mult
 costs 3.4 ms, foreground centre sampling 0.03 ms (O(1) in volume size, via §14.3; 0.05 ms at 63
 classes), a metadata-only read 0.19 ms, and `open()` → first patch 2.3 ms.
 
-Thirty-three clauses have been corrected — ten during implementation, eleven in the 1.x package
+Thirty-five clauses have been corrected — ten during implementation, eleven in the 1.x package
 releases that followed, four when the engine was written a second time, in Rust, for the 2.0
-package, one when it implemented 1.1, and seven in the audits of 2.0 before its release — each because
+package, one when it implemented 1.1, and nine in the audits of 2.0 before its release — each because
 writing the code showed the text was not implementable, not unambiguous, or not what the
 implementation could honestly promise, as written:
 
@@ -1694,6 +1700,8 @@ implementation could honestly promise, as written:
 | §7.5 | `normalized` holds at the stored precision: at each voxel the stored values sum to 1 within `10⁻⁶ + u·σ + n·t/2`, and the error of summing them in `float64`, where `σ` is that sum, `n` the number of classes, `u` the stored dtype's unit roundoff (2⁻¹¹ for `float16`, 2⁻²⁴ for `float32`) and `t` its smallest subnormal: the rounding of the values stored, and no more. "Sum to 1" named no tolerance, and no stored map meets it exactly; the one implemented, `n` times the dtype's epsilon, grew with the class count until at 1,024 `float16` classes a map whose every value had been zeroed validated as normalized. A writer holds the values it is given to `10⁻⁶`, so every map it stores meets the bound. |
 | §13.2 | A dataset has one line however many paths reach it --- its first, through hard links, in byte order --- and a dataset reached first through `index/`, or only through a soft link, has none: `content_id` does not cover it, and a `digest` it carries is **E702**. "Every dataset with a digest" said nothing of a dataset with two paths, or one reached through a soft link. Every implementation has visited each object once, at its first path, without saying what that left out: a clinical column linked first from `index/`, or a transform's parameters, changed under an unchanged `content_id`, and a task's source pin, a deep preflight and the validator passed it. No `content_id` changes. |
 | §13.2 | A line binds a dataset's bytes to the path it names: a path through `grids/`, `images/`, `annotations/` or `transforms/` that is not its object's own --- an alias sorting before it, a second link, a soft link, a group reached twice, an external link --- is covered nowhere, and is **E704**. Coverage had been judged by object: an attested name held by such a path could be relinked after a pin to other covered bytes, which changed no line, so the root recomputed and a task's source pin, `verify` and the validator all passed while a reader read other bytes. The reference writer makes no links, so no file it writes changes, and no `content_id` changes. |
+| §10.1 | A transform's `units` are those of the grids in its frames, checked: one whose `units` are missing or are not those of a grid in either frame is **E506**, and a reader refuses to apply it to a grid in other units. "Matching the frames' grids" had no code to report a mismatch, and the reference writer defaulted `units` to `mm` whatever the grids were in: a transform in millimetres between two metre grids validated, and the paired loader, applying it to the grids' coordinates as they were, moved every point a thousand times its displacement. A writer given no `units` now takes the grids'. |
+| §8.5 | `points` may carry `instance_ids`. §10.6 asks points that mark trackable objects to carry equal `instance_ids` across visits, and §8.5 listed no such dataset, so a writer held to the table could not follow the clause. A track joins such points as presence: a point marks an object and measures nothing. |
 
 ### C.2 Prototype checks
 

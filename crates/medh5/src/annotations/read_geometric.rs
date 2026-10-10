@@ -334,9 +334,19 @@ impl Annotation {
         Ok(out)
     }
 
-    /// `(N, S, 2)` **enclosing** world bounds.
+    /// `(N, S, 2)` **enclosing** world bounds, in `grid`'s world.
+    ///
+    /// Stored world boxes are returned as stored only on their own grid.
+    /// They were for any grid, so a box at 3 mm asked for on a grid in
+    /// metres came back as 3 m, and one in another frame or convention came
+    /// back unrefused (F18 of the round-4 audit): another grid goes through
+    /// [`Self::world_corners`], which converts units and refuses (E414).
     pub fn as_world(&self, grid: GridRef) -> Result<ndarray::Array3<f64>> {
-        if self.space()? == "world" {
+        let own = match grid {
+            GridRef::Own => true,
+            other => self.is_own(self.resolve_grid(other)?),
+        };
+        if own && self.space()? == "world" {
             let boxes = self.boxes()?;
             let n = boxes.shape().first().copied().unwrap_or(0);
             let s = self.box_ndim()?;

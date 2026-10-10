@@ -764,7 +764,8 @@ fn longitudinal(path: &Path) -> Result<()> {
         };
         let group = transforms.create_group("tp0_to_tp1")?;
         data::create(&group, "matrix", &NdArray::from(eye4()), &Layout::contiguous())?;
-        for (key, value) in [("kind", "affine"), ("from_frame", FRAME0), ("to_frame", FRAME1)] {
+        // `units` is a MUST (§10.1); this file lacked it until E506 said so.
+        for (key, value) in [("kind", "affine"), ("from_frame", FRAME0), ("to_frame", FRAME1), ("units", "mm")] {
             attrs::write(&group, key, &AttrValue::Str(value.into()))?;
         }
         Ok(())
@@ -1015,6 +1016,7 @@ fn shape_base(path: &Path) -> Result<()> {
             "landmarks",
             &matrix(&[&[1.0, 2.0, 3.0], &[4.0, 5.0, 6.0]])?,
             None,
+            None,
             Some(&strings(&["apex", "carina"])),
             Some(&[1.0, 0.5]),
             None,
@@ -1157,6 +1159,7 @@ fn reg_base(path: &Path, opts: Registration) -> Result<()> {
             w.add_points(
                 ann,
                 &ArrayD::from_shape_vec(IxDyn(&[2, 3]), points.clone())?,
+                None,
                 None,
                 Some(&names),
                 weights.as_ref().map(|w| w.as_slice()),
@@ -1429,7 +1432,7 @@ fn break_affine_last_row(root: &hdf5::Group) -> Result<()> {
 
 /// Every case, in corpus order.
 pub(super) fn registry() -> Vec<Case> {
-    let mut cases = Vec::with_capacity(155);
+    let mut cases = Vec::with_capacity(157);
     valid_cases(&mut cases);
     first_invalid_batch(&mut cases);
     second_batch(&mut cases);
@@ -2262,7 +2265,60 @@ fn audit_round_four(cases: &mut Vec<Case>) {
             },
         )
         .level("integrity"),
+        invalid(
+            "E506-transform-units-not-the-grids",
+            "An affine declaring metres between two grids in millimetres: a transform maps coordinates in one \
+             unit, and none maps between two.",
+            "§10.1",
+            &["E506"],
+            |p| reg_base(p, Registration::default()),
+            |f| set_str(f, "transforms/tp0_to_tp1", "units", "m"),
+        ),
+        case(
+            "reg-transform-in-metres",
+            "Two visits on grids in metres, related by an affine written without `units`, which are the grids'.",
+            "§10.1",
+            reg_in_metres,
+        ),
     ]);
+}
+
+/// F06: a transform between grids in metres is in metres --- the writer's
+/// default, taken from the grids, where it used to be `mm` whatever they were.
+fn reg_in_metres(path: &Path) -> Result<()> {
+    let mut rng = Rng::new(SEED);
+    let shape = [12, 16, 16];
+    write(path, None, |w| {
+        w.add_timepoint("tp0", fields(json!({"label": "baseline", "days_from_baseline": 0})))?;
+        w.add_timepoint("tp1", fields(json!({"label": "follow_up", "days_from_baseline": 92})))?;
+        for (tp, frame) in [("tp0", FRAME0), ("tp1", FRAME1)] {
+            let gid = format!("ct_{tp}");
+            w.add_grid(
+                &gid,
+                &dims(&shape),
+                &[0.002, 0.0008, 0.0008],
+                GridOptions {
+                    origin: Some(vec![0.0, 0.0, 0.0]),
+                    units: Some("m".into()),
+                    timepoint: Some(tp.into()),
+                    frame_uid: Some(frame.into()),
+                    ..Default::default()
+                },
+            )?;
+            w.add_image(&format!("CT_{tp}"), &ct_volume(&mut rng, &shape)?, &gid, "CT", quantitative(None))?;
+        }
+        let mut matrix = eye4();
+        matrix[IxDyn(&[0, 3])] = 0.002;
+        w.add_transform(
+            "tp0_to_tp1",
+            "affine",
+            FRAME0,
+            FRAME1,
+            TransformSpec { matrix: Some(matrix), invertible: Some(true), ..Default::default() },
+        )?;
+        w.deidentification(psi())?;
+        Ok(())
+    })
 }
 
 /// F01: the walk reaches `images/CT` first at `aaa_alias`, so its line is
@@ -2292,11 +2348,11 @@ mod tests {
     #[test]
     fn the_registry_holds_every_case_once() {
         let cases = registry();
-        assert_eq!(cases.len(), 155);
+        assert_eq!(cases.len(), 157);
         let mut names: Vec<&str> = cases.iter().map(|c| c.name.as_str()).collect();
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), 155);
+        assert_eq!(names.len(), 157);
     }
 
     #[test]

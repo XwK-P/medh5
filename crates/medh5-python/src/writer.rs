@@ -829,6 +829,11 @@ impl SampleWriter {
         Ok(self.writer()?.remove_annotation(ann_id)?)
     }
 
+    /// Drop a transform; what still names it is checked at commit.
+    fn remove_transform(&mut self, transform_id: &str) -> R<()> {
+        Ok(self.writer()?.remove_transform(transform_id)?)
+    }
+
     /// Re-encode a voxel annotation in place, preserving its header (§7.6).
     #[pyo3(signature = (ann_id, to_kind, *, codec=None, drop_identity=false))]
     fn transcode_annotation(
@@ -983,9 +988,9 @@ impl SampleWriter {
     }
 
     /// A point set: landmarks, seeds, or half a correspondence (§8.5).
-    #[pyo3(signature = (ann_id, points, *, grid=None, space="index", frame_uid=None, class_ids=None, names=None,
-        weights=None, correspondence=None, annotated_classes=None, closure="explicit", timepoints=None, prov=None,
-        quality=None, derived_from=None, task="detection", codec=None))]
+    #[pyo3(signature = (ann_id, points, *, grid=None, space="index", frame_uid=None, class_ids=None,
+        instance_ids=None, names=None, weights=None, correspondence=None, annotated_classes=None, closure="explicit",
+        timepoints=None, prov=None, quality=None, derived_from=None, task="detection", codec=None))]
     #[allow(clippy::too_many_arguments)]
     fn add_points(
         &mut self,
@@ -995,6 +1000,7 @@ impl SampleWriter {
         space: &str,
         frame_uid: Option<&str>,
         class_ids: Option<&Bound<'_, PyAny>>,
+        instance_ids: Option<&Bound<'_, PyAny>>,
         names: Option<&Bound<'_, PyAny>>,
         weights: Option<&Bound<'_, PyAny>>,
         correspondence: Option<&str>,
@@ -1009,6 +1015,7 @@ impl SampleWriter {
     ) -> R<Group> {
         let points = f64_array(points)?;
         let keys = opt_keys(class_ids)?;
+        let instance_ids = is_given(instance_ids).map(|i| u64s(&i)).transpose()?;
         let names = opt_strings(names)?;
         let weights = is_given(weights).map(|w| f64_vec(&w)).transpose()?;
         let options = common(annotated_classes, closure, timepoints, prov, quality, derived_from, Some(task), codec)?;
@@ -1016,6 +1023,7 @@ impl SampleWriter {
             ann_id,
             &points,
             keys.as_deref(),
+            instance_ids.as_deref(),
             names.as_deref(),
             weights.as_deref(),
             correspondence,
@@ -1135,10 +1143,11 @@ impl SampleWriter {
     // -- transforms (§10) --------------------------------------------------------------
 
     /// A transform mapping points from `from_frame` to `to_frame`:
-    /// `x_M = T(x_F)`, the ITK convention.
+    /// `x_M = T(x_F)`, the ITK convention.  `units` defaults to those of the
+    /// grids in the two frames (§10.1).
     #[pyo3(signature = (transform_id, *, kind, from_frame, to_frame, matrix=None, field=None, control_points=None,
         components=None, field_grid=None, cp_grid=None, vector_space="world", interpolation="linear",
-        extrapolation="zero", order=3, units="mm", from_grid=None, to_grid=None, invertible=None, inverse_id=None,
+        extrapolation="zero", order=3, units=None, from_grid=None, to_grid=None, invertible=None, inverse_id=None,
         metrics=None, prov=None, codec=None))]
     #[allow(clippy::too_many_arguments)]
     fn add_transform(
@@ -1158,7 +1167,7 @@ impl SampleWriter {
         interpolation: &str,
         extrapolation: &str,
         order: i64,
-        units: &str,
+        units: Option<String>,
         from_grid: Option<String>,
         to_grid: Option<String>,
         invertible: Option<bool>,
@@ -1178,7 +1187,7 @@ impl SampleWriter {
             interpolation: Some(interpolation.to_string()),
             extrapolation: Some(extrapolation.to_string()),
             order: Some(order),
-            units: Some(units.to_string()),
+            units,
             from_grid,
             to_grid,
             invertible,

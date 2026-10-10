@@ -1267,6 +1267,7 @@ def encode_points(
     points: npt.ArrayLike,
     *,
     class_ids: Sequence[int] | None = None,
+    instance_ids: Sequence[int] | None = None,
     names: Sequence[str] | None = None,
     weights: Sequence[float] | None = None,
     correspondence: str | None = None,
@@ -2624,6 +2625,12 @@ class Observation:
     @property
     def kind(self) -> str: ...
     def to_json(self) -> dict[str, Any]: ...
+    @property
+    def volume_mm(self) -> float | None:
+        """`volume` in millimetres to the power of the box's axes, or `None`
+        where it is unmeasured or its grid is uncalibrated.
+        """
+        ...
 
 @final
 @dataclass(frozen=True)
@@ -3144,6 +3151,7 @@ class SampleWriter:
         space: str = "index",
         frame_uid: str | None = None,
         class_ids: Sequence[int | str] | None = None,
+        instance_ids: Sequence[int] | None = None,
         names: Sequence[str] | None = None,
         weights: Sequence[float] | None = None,
         correspondence: str | None = None,
@@ -3224,7 +3232,7 @@ class SampleWriter:
         interpolation: str = "linear",
         extrapolation: str = "zero",
         order: int = 3,
-        units: str = "mm",
+        units: str | None = None,
         from_grid: str | None = None,
         to_grid: str | None = None,
         invertible: bool | None = None,
@@ -3234,7 +3242,8 @@ class SampleWriter:
         codec: str | None = None,
     ) -> Group:
         """A transform mapping points from `from_frame` to `to_frame`:
-        `x_M = T(x_F)`, the ITK convention.
+        `x_M = T(x_F)`, the ITK convention.  `units` defaults to those of the
+        grids in the two frames (§10.1).
         """
         ...
     def build_index(
@@ -3317,6 +3326,9 @@ class SampleWriter:
         ...
     def remove_annotation(self, ann_id: str) -> None:
         """Drop an annotation, and any index entry derived from it."""
+        ...
+    def remove_transform(self, transform_id: str) -> None:
+        """Drop a transform; what still names it is checked at commit."""
         ...
     def set_clock(self, clock: Any = None, **fields: Any) -> dict[str, Any]:
         """Declare the subject clock, starting the `clinical` profile (1.1 §3)."""
@@ -3503,6 +3515,12 @@ class Tracking:
     def is_resolved(self, instance_id: int) -> bool: ...
     def items(self) -> tuple[tuple[int, Track], ...]: ...
     def keys(self) -> tuple[int, ...]: ...
+    @property
+    def skipped(self) -> dict[str, str]:
+        """`{annotation: why}` for the annotations that carry `instance_ids`
+        and that no track joined.
+        """
+        ...
     def state_at(self, instance_id: int, timepoint: str) -> str: ...
     def states(self, instance_id: int) -> dict[str, str]: ...
     def summary(self) -> dict[str, Any]: ...

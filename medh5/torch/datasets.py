@@ -785,6 +785,7 @@ class PairedPatchDataset(_Base):
                 "index window from both"
             )
         if transform is not None:
+            _require_units(transform, source, target)
             world = transform.transform_points(world)
         else:
             # One frame, but each grid's numbers are in its own units (§3.5):
@@ -812,6 +813,25 @@ class PairedPatchDataset(_Base):
             )
             out[image_id] = patch.apply_padding(array)
         return out
+
+
+def _require_units(transform: Any, source: Any, target: Any) -> None:
+    """Refuse a transform whose coordinates are not both grids' (§10.1, E506).
+
+    A transform maps points in its own ``units``, and 1.0 defines no transform
+    across units.  One in millimetres between two metre grids moved every
+    point a thousand times as far as it was meant to (F06 of the round-4
+    audit); nothing is converted here --- the file is wrong, and says so.
+    """
+    wrong = [grid for grid in (source, target) if grid.units != transform.units]
+    if wrong:
+        raise MEDH5ValidationError(
+            f"transform {transform.transform_id!r} maps coordinates in "
+            f"{transform.units!r}, and "
+            + ", ".join(f"grid {grid.grid_id!r} is in {grid.units!r}" for grid in wrong)
+            + ": a transform applies only to grids in its units (§10.1)",
+            code="E506",
+        )
 
 
 __all__ = [

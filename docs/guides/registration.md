@@ -29,12 +29,34 @@ Without `frame_uid` on the grids, a timepoint resolves to no frames at all and
 `transform_between("tp0", "tp1")` returns `None` however carefully the transform
 was written — the transform names endpoints nothing else refers to.
 
+A transform maps coordinates in its `units`, which are those of the grids in
+its frames: written without `units`, it takes theirs, and a `units` they are
+not in is refused (`E506`), as are frames whose grids are in two units. Nothing
+converts between units; the paired loader refuses to apply a transform to a
+grid in other units rather than move every point by the wrong factor.
+
+A file whose transform is in other units than its grids — the 1.x writer
+stamped `mm` whatever the grids were in — fails validation with `E506`, and
+so would any amendment that left the transform as it is, so that amendment is
+refused. The one that mends it removes the transform and adds it again, its
+numbers in its grids' units:
+
+```python
+with medh5.open("case.medh5") as s:
+    t = s.transforms["tp0_to_tp1"]
+    frames, matrix = (t.from_frame, t.to_frame), t.matrix
+with medh5.amend("case.medh5") as w:
+    w.remove_transform("tp0_to_tp1")
+    w.add_transform("tp0_to_tp1", kind="affine", from_frame=frames[0],
+                    to_frame=frames[1], matrix=matrix)   # units: the grids'
+```
+
 Kinds: `identity`, `affine`, `displacement`, `bspline`, `composite`.
 
 ```python
 t = s.transform_between("tp0", "tp1")
 t.kind, t.from_frame, t.to_frame, t.is_invertible
-t.transform_points(points)         # world -> world, in mm
+t.transform_points(points)         # world -> world, in t.units
 t.inverse()                        # the *stored* inverse, when the file has one
 ```
 

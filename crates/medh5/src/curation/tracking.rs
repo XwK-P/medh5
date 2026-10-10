@@ -30,15 +30,18 @@ pub const STATES: [&str; 3] = [PRESENT, RESOLVED, UNEXAMINED];
 pub struct Observation {
     pub timepoint: String,
     pub annotation: String,
-    /// The annotation's kind: `instances` (a mask) or `boxes`.
+    /// The annotation's kind: `instances` (a mask), `boxes`, `obb`, or
+    /// `points` (presence only).
     pub kind: String,
     pub index: usize,
     pub instance_id: u64,
     pub class_id: i64,
     pub bbox: Array2<f32>,
     pub voxel_count: Option<u64>,
-    /// Physical volume in the grid's `units**S`.
+    /// Physical volume in `units**S`, `S` the box's axes; `None` for a
+    /// point, which marks an object without measuring it.
     pub volume: Option<f64>,
+    /// The grid's `units`, which `volume` is in.
     pub units: Option<String>,
     pub score: Option<f64>,
     pub grid: Option<String>,
@@ -52,6 +55,13 @@ impl Observation {
 
     pub fn extent(&self) -> Vec<f64> {
         self.bbox.outer_iter().map(|r| f64::from(r[1]) - f64::from(r[0])).collect()
+    }
+
+    /// `volume` in millimetres to the power of the box's axes, or `None`
+    /// where it is unmeasured or its grid is not calibrated in a length.
+    pub fn volume_mm(&self) -> Option<f64> {
+        let scale = mm_per_unit(self.units.as_deref()?)?;
+        Some(self.volume? * scale.powi(i32::try_from(self.bbox.nrows()).ok()?))
     }
 
     pub fn to_json(&self) -> Value {
@@ -118,17 +128,19 @@ impl Track {
     }
 
     /// The observations that measure the object at `timepoint`: its masks
-    /// (`instances`), or --- where no mask saw it --- its boxes.  A box beside
-    /// a mask of the same object is a detection of it, and its volume is its
-    /// bounding box's.
+    /// (`instances`), or --- where no mask saw it --- its boxes, axis-aligned
+    /// or oriented.  A box beside a mask of the same object is a detection of
+    /// it, and its volume is its bounding box's.  A point marks the object
+    /// and measures nothing, so it answers only where nothing else saw it.
     pub fn measurements_at(&self, timepoint: &str) -> Vec<&Observation> {
         let seen = self.observations_at(timepoint);
-        let masks: Vec<&Observation> = seen.iter().copied().filter(|o| o.kind == "instances").collect();
-        if masks.is_empty() {
-            seen
-        } else {
-            masks
+        for kinds in [&["instances"][..], &["boxes", "obb"]] {
+            let found: Vec<&Observation> = seen.iter().copied().filter(|o| kinds.contains(&o.kind.as_str())).collect();
+            if !found.is_empty() {
+                return found;
+            }
         }
+        seen
     }
 
     /// The observation that answers for `timepoint` --- the one
@@ -164,10 +176,18 @@ impl Track {
     }
 
     /// `(v2 - v1) / v1` between two timepoints, or `None` if unmeasured.
+    ///
+    /// The two volumes are compared in millimetres: each observation's are
+    /// its grid's `units` cubed, and a visit on a grid in metres beside one
+    /// in millimetres read as a millionfold change (F19 of the round-4
+    /// audit).  Two volumes that share no physical measure --- an
+    /// uncalibrated (`px`) grid beside a calibrated one, an area beside a
+    /// volume --- have no change between them, and are `None`.
     pub fn relative_change(&self, first: &str, second: &str) -> Result<Option<f64>> {
-        let (Some(before), Some(after)) = (self.volume(first)?, self.volume(second)?) else {
+        let (Some(before), Some(after)) = (self.at(first)?, self.at(second)?) else {
             return Ok(None);
         };
+        let Some((before, after)) = comparable(before, after) else { return Ok(None) };
         if before <= 0.0 {
             return Ok(None);
         }
@@ -191,6 +211,31 @@ impl Track {
     }
 }
 
+/// Millimetres per unit of a calibrated length (§3.2).
+fn mm_per_unit(units: &str) -> Option<f64> {
+    match units {
+        "mm" => Some(1.0),
+        "m" => Some(1000.0),
+        "um" => Some(1e-3),
+        _ => None,
+    }
+}
+
+/// Two observations' volumes in one measure: millimetres where both grids
+/// are calibrated, their own units where both are the same uncalibrated
+/// one, and `None` where no measure is shared or the boxes have different
+/// numbers of axes.
+fn comparable(before: &Observation, after: &Observation) -> Option<(f64, f64)> {
+    if before.bbox.nrows() != after.bbox.nrows() {
+        return None;
+    }
+    match (before.volume_mm(), after.volume_mm()) {
+        (Some(b), Some(a)) => Some((b, a)),
+        (None, None) if before.units == after.units => Some((before.volume?, after.volume?)),
+        _ => None,
+    }
+}
+
 /// The result of joining objects on `instance_id` across a sample.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Tracking {
@@ -198,6 +243,9 @@ pub struct Tracking {
     pub timepoints: Vec<String>,
     /// `timepoint -> class ids the annotators committed to finding` (§11.3).
     pub coverage: IndexMap<String, BTreeSet<i64>>,
+    /// `annotation -> why` for each annotation that carries `instance_ids`
+    /// and that no track could join.
+    pub skipped: IndexMap<String, String>,
 }
 
 impl Tracking {
@@ -280,7 +328,13 @@ impl Tracking {
             .collect();
         let conflicts: Map<String, Value> =
             self.class_conflicts().into_iter().map(|(k, v)| (k.to_string(), json!(v))).collect();
-        json!({"timepoints": self.timepoints, "coverage": coverage, "tracks": tracks, "class_conflicts": conflicts})
+        json!({
+            "timepoints": self.timepoints,
+            "coverage": coverage,
+            "tracks": tracks,
+            "class_conflicts": conflicts,
+            "skipped": self.skipped,
+        })
     }
 
     pub fn summary(&self) -> Value {
@@ -292,9 +346,14 @@ impl Tracking {
             "resolved": pick(&|i| self.is_resolved(i)),
             "persistent": pick(&|i| self.is_persistent(i)),
             "class_conflicts": self.class_conflicts().keys().copied().collect::<Vec<_>>(),
+            "skipped": self.skipped.keys().collect::<Vec<_>>(),
         })
     }
 }
+
+/// The kinds a track joins.  A mask or a box measures the object it
+/// follows; a point marks it (§10.6), and says only that it was there.
+pub const TRACKED_KINDS: [&str; 4] = ["instances", "boxes", "obb", "points"];
 
 /// Whether an annotation declares object identity a join can trust: a
 /// `boxes` annotation without `instance_ids` numbers its rows positionally.
@@ -302,8 +361,92 @@ pub fn carries_instance_ids(ann: &Annotation) -> bool {
     ann.kind() == "instances" || ann.optional_dataset("instance_ids").is_some()
 }
 
-fn measure(obj: &Instance, grid: Option<&Grid>, ann: &Annotation) -> Result<(Option<f64>, Option<u64>)> {
+/// Why no track can join an annotation that carries `instance_ids`, or
+/// `None` when one can.
+///
+/// Every annotation [`carries_instance_ids`] admits was joined, and only
+/// masks and axis-aligned boxes could be read as objects: an oriented box
+/// or a landmark carrying the ids §10.6 asks for aborted the whole join,
+/// and `medh5 track` with it (F21 of the round-4 audit).  A kind no track
+/// reads is reported, never fatal.
+fn unjoinable(ann: &Annotation) -> Option<String> {
+    let kind = ann.kind();
+    if !TRACKED_KINDS.contains(&kind) {
+        return Some(format!(
+            "a {} annotation is neither measured nor marked by a track (they join {})",
+            repr_str(kind),
+            crate::json::repr_list(&TRACKED_KINDS)
+        ));
+    }
+    if kind == "points" && ann.optional_dataset("class_ids").is_none() {
+        return Some("its points carry no `class_ids`, so no track could say what they follow".into());
+    }
+    None
+}
+
+/// The rows of a joinable annotation, each with the axis-aligned box a join
+/// compares: a mask's or a box's own, an oriented box's enclosing box, and a
+/// point's degenerate `[p, p]`.
+fn objects(ann: &Annotation) -> Result<Vec<Instance>> {
+    let bboxes: Vec<Array2<f32>> = match ann.kind() {
+        "obb" => ann.obb_as_aabb()?.outer_iter().map(|b| b.mapv(|v| v as f32)).collect(),
+        "points" => {
+            let points = ann.read_as::<f32>("points")?.into_dimensionality::<ndarray::Ix2>()?;
+            points.outer_iter().map(|p| Array2::from_shape_fn((p.len(), 2), |(k, _)| p[k])).collect()
+        }
+        _ => return ann.instances(),
+    };
+    let n = bboxes.len();
+    let classes = ann.object_class_ids()?;
+    let ids = ann.instance_ids()?.unwrap_or_default();
+    let scores = ann.scores()?;
+    if classes.len() != n || ids.len() != n || scores.as_ref().is_some_and(|s| s.len() != n) {
+        return Err(Error::coded(
+            "E405",
+            format!(
+                "annotation {}: {n} object(s), but {} class id(s), {} instance id(s) and {} score(s)",
+                repr_str(&ann.ann_id),
+                classes.len(),
+                ids.len(),
+                scores.as_ref().map_or(n, Vec::len)
+            ),
+        ));
+    }
+    Ok(bboxes
+        .into_iter()
+        .enumerate()
+        .map(|(i, bbox)| Instance {
+            index: i,
+            instance_id: ids[i],
+            class_id: i64::from(classes[i]),
+            bbox,
+            mask: None,
+            score: scores.as_ref().map(|s| f64::from(s[i])).filter(|v| v.is_finite()),
+        })
+        .collect())
+}
+
+/// An object's volume, and its voxel count where it has a mask.
+///
+/// `oriented` is an oriented box's product of edge lengths, along its own
+/// axes: a rotation moves the box, not its volume.  In index space each
+/// length is in voxels.  A point measures nothing.
+fn measure(
+    obj: &Instance,
+    grid: Option<&Grid>,
+    ann: &Annotation,
+    oriented: Option<f64>,
+) -> Result<(Option<f64>, Option<u64>)> {
     let space = ann.header.space.clone().unwrap_or_else(|| "index".into());
+    if ann.kind() == "points" {
+        return Ok((None, None));
+    }
+    if let Some(product) = oriented {
+        if space == "world" {
+            return Ok((Some(product), None));
+        }
+        return Ok((grid.map(|g| product * voxel_volume(&g.spacing)), None));
+    }
     if let Some(mask) = &obj.mask {
         let count = mask.iter().filter(|v| **v).count() as u64;
         return Ok(match grid {
@@ -333,8 +476,13 @@ pub fn build_tracks(sample: &Sample, class_key: Option<&ClassKey>, do_measure: b
     let mut coverage: IndexMap<String, BTreeSet<i64>> = declared.iter().map(|t| (t.clone(), BTreeSet::new())).collect();
     let mut tracks: BTreeMap<u64, Vec<Observation>> = BTreeMap::new();
     let implicit: Vec<String> = if declared.len() == 1 { declared.clone() } else { vec![String::new()] };
+    let mut skipped = IndexMap::new();
     for ann in sample.annotations()?.values() {
         if !carries_instance_ids(ann) {
+            continue;
+        }
+        if let Some(why) = unjoinable(ann) {
+            skipped.insert(ann.ann_id.clone(), why);
             continue;
         }
         let wanted = match class_key {
@@ -347,11 +495,16 @@ pub fn build_tracks(sample: &Sample, class_key: Option<&ClassKey>, do_measure: b
             coverage.entry(tp.clone()).or_default().extend(ann.annotated_class_ids().iter().copied());
         }
         let grid = ann.grid_id().and_then(|g| sample.grids().ok().and_then(|gs| gs.get(g).cloned()));
-        for obj in ann.instances()? {
+        let oriented = if do_measure && ann.kind() == "obb" { Some(ann.obb_volumes()?) } else { None };
+        for obj in objects(ann)? {
             if wanted.is_some_and(|w| obj.class_id != w) {
                 continue;
             }
-            let (volume, count) = if do_measure { measure(&obj, grid.as_ref(), ann)? } else { (None, None) };
+            let (volume, count) = if do_measure {
+                measure(&obj, grid.as_ref(), ann, oriented.as_ref().and_then(|v| v.get(obj.index).copied()))?
+            } else {
+                (None, None)
+            };
             for tp in &timepoints {
                 tracks.entry(obj.instance_id).or_default().push(Observation {
                     timepoint: tp.clone(),
@@ -384,5 +537,5 @@ pub fn build_tracks(sample: &Sample, class_key: Option<&ClassKey>, do_measure: b
         let class_key = label_set.and_then(|ls| ls.by_id(class_ids[0])).map(|c| c.key.clone());
         built.insert(instance_id, Track { instance_id, class_ids, observations, class_key });
     }
-    Ok(Tracking { tracks: built, timepoints: declared, coverage })
+    Ok(Tracking { tracks: built, timepoints: declared, coverage, skipped })
 }
