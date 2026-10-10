@@ -259,7 +259,13 @@ from_nnunetv2("/Dataset001_Liver", "out/")
 to_nnunetv2(["case1.medh5", "case2.medh5"], "/out", dataset_name="Dataset001_Liver")
 ```
 
-Each case's channels and per-class masks are bundled into one sample.
+Each case's channels and per-class masks are bundled into one sample, and each
+case is a subject of its own: a dataset of cases names no patients, so the
+report records that as a guess (`identity`) --- two cases of one patient are
+two subjects, and a split by file is subject-safe only if no patient has two.
+An image is named for its channel; nnU-Net reads `channel_names` as
+normalisation schemes, so two channels may share a name (`zscore`), and those
+images are named for their channel index as well (`zscore_0000`).
 
 **nnU-Net's class ids are kept**, so a model trained against the original
 dataset still means the same thing. A file's `scl_slope`/`scl_inter` mean what
@@ -268,12 +274,20 @@ after them (a scaling that makes non-integer labels is refused). **Region
 labels become §5.1 DAG parents**: a region that is the union of two components
 is a class whose components name it as a parent, which is exactly what the
 hierarchy is for. **nnU-Net's `ignore` label is the annotation's ignore
-region** (§7.7), both ways: never a class, and never background.
+region** (§7.7), both ways: never a class, and never background. **A label
+volume holds only what `labels` declares**: a value it does not is refused, as
+nnU-Net refuses it, rather than read as background for every class.
 
 The parsed `dataset.json` is stashed in `extra["nnunetv2"]`, so `to-nnunet`
-reproduces the original dataset definition rather than inventing one.
+reproduces the original dataset definition rather than inventing one: its
+channel names and other fields as stashed, its labels unless a case needs them
+extended or renumbered (below), and `numTraining` and `file_ending` those of
+the files written. Without a stash a channel is named for its image, and a CT
+image `CT`: nnU-Net reads the name as the channel's normalisation, and any name
+but `CT` --- `CT_tp0`, say --- z-scores it.
 
-**The export checks the dataset before it writes a file.** nnU-Net reads one
+**The export checks the dataset before it writes a file**, and a refusal of any
+case refuses the export with nothing written. nnU-Net reads one
 physical space per case and one label table for the dataset, so every channel
 and the labels must be one lattice in one frame, convention and unit ---
 nothing is resampled --- and the label table is the union of the cases'
@@ -301,8 +315,8 @@ in `regions_class_order`, as nnU-Net converts them back; without one, each
 class is written as its own value. Each exported label is then read back from
 the volume outside the ignore region, and a case whose volume does not give one
 back --- a region its components do not cover, a voxel two classes share --- is
-refused before any of its files is written. These refusals carry no §15.2 code:
-the samples are valid, and what they fail is nnU-Net's layout.
+refused before any file is written. These refusals carry no §15.2 code: the
+samples are valid, and what they fail is nnU-Net's layout.
 
 ### 0.x files
 

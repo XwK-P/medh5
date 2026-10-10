@@ -77,7 +77,13 @@ medh5 convert from-nnunet /Dataset001_Liver out/
 Each case's channels and per-class masks become one sample. nnU-Net's class ids
 are **kept**, so a model trained against the original dataset still means the
 same thing, and region labels become label-set DAG parents — a region that is
-the union of two components is a class those components name as a parent.
+the union of two components is a class those components name as a parent. A
+label value `labels` does not declare is refused, as nnU-Net refuses it.
+
+Each case becomes a subject of its own: an nnU-Net dataset names cases, not
+patients, and the report records that as a guess. Two cases of one patient are
+then two subjects, so a split by file is subject-safe only if no patient has
+two cases.
 
 The parsed `dataset.json` is stashed in `extra["nnunetv2"]`, so an export later
 reproduces the original dataset definition instead of inventing one.

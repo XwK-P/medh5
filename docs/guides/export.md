@@ -90,6 +90,12 @@ A case without the annotation is refused, since nnU-Net's training cases are
 labeled; `--unlabeled test` writes it to `imagesTs` instead. Label values are
 written `0..K`, as nnU-Net requires, and `dataset.json` keeps the class id of
 any value that is not its own (`medh5_class_ids`), so `from-nnunet` restores it.
+Every case is checked before any file is written, so a refused case leaves no
+half-written dataset behind.
+
+nnU-Net normalises a channel by its name in `dataset.json`: `CT` selects its CT
+scheme, and any other name z-scoring. A stashed `dataset.json` keeps its own
+names; without one a channel is named for its image, and a CT image `CT`.
 
 ## What has no exporter
 

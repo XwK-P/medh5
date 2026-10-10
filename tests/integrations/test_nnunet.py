@@ -143,6 +143,82 @@ class TestNnunet:
             read_dataset_json(tmp_path)
         with pytest.raises(MEDH5ValidationError, match="not found"):
             read_dataset_json(tmp_path / "nope")
+        (tmp_path / "dataset.json").write_text("{not json", encoding="utf-8")
+        with pytest.raises(MEDH5ValidationError, match="is not JSON"):
+            read_dataset_json(tmp_path)
+
+    def test_appendix_B_each_case_is_reported_as_a_subject_of_its_own(
+        self, dataset, tmp_path
+    ):
+        """A dataset of cases establishes no patient identity, and its samples
+        must not pass for subject-scoped ones without a word."""
+        from medh5.io.nnunetv2 import from_nnunetv2
+
+        report = from_nnunetv2(dataset, tmp_path / "out")
+        (note,) = report.of_kind("identity")
+        assert note.severity == "guess" and report.ok
+        with medh5.open(tmp_path / "out" / "CASE_001.medh5") as sample:
+            assert sample.identity.subject_id == "CASE_001"
+
+    def test_S4_channels_named_alike_are_images_of_their_own(self, tmp_path):
+        """nnU-Net names a channel for its normalisation, so two may share a
+        name; keyed by the name, the second channel overwrote the first."""
+        from medh5.io.nnunetv2 import from_nnunetv2, read_dataset_json, to_nnunetv2
+
+        root = tmp_path / "Dataset003_Alike"
+        (root / "imagesTr").mkdir(parents=True)
+        (root / "labelsTr").mkdir()
+        shape = (4, 4, 3)
+        for channel, value in ((0, 10), (1, 20)):
+            nib.save(
+                nib.Nifti1Image(np.full(shape, value, np.int16), np.eye(4)),
+                str(root / "imagesTr" / f"X_{channel:04d}.nii.gz"),
+            )
+        labels = np.zeros(shape, np.uint8)
+        labels[1:3, 1:3, 1] = 1
+        nib.save(nib.Nifti1Image(labels, np.eye(4)), str(root / "labelsTr/X.nii.gz"))
+        (root / "dataset.json").write_text(
+            json.dumps(
+                {
+                    "channel_names": {"0": "zscore", "1": "zscore"},
+                    "labels": {"background": 0, "organ": 1},
+                    "numTraining": 1,
+                    "file_ending": ".nii.gz",
+                }
+            ),
+            encoding="utf-8",
+        )
+        report = from_nnunetv2(root, tmp_path / "out")
+        assert report.of_kind("image_ids")
+        with medh5.open(tmp_path / "out" / "X.medh5") as sample:
+            assert sorted(sample.images) == ["zscore_0000", "zscore_0001"]
+            assert int(sample.images["zscore_0000"].read().max()) == 10
+            assert int(sample.images["zscore_0001"].read().max()) == 20
+
+        to_nnunetv2([tmp_path / "out" / "X.medh5"], tmp_path / "back")
+        back = tmp_path / "back" / "Dataset001_medh5"
+        assert read_dataset_json(back)["channel_names"] == {
+            "0": "zscore",
+            "1": "zscore",
+        }
+        for channel, value in ((0, 10), (1, 20)):
+            written = nib.load(str(back / "imagesTr" / f"X_{channel:04d}.nii.gz"))
+            assert int(np.asarray(written.dataobj).max()) == value
+
+    def test_S11_3_a_label_value_dataset_json_does_not_declare_is_refused(
+        self, dataset, tmp_path
+    ):
+        """nnU-Net refuses such a case; read anyway, the value matched no class
+        and its voxels became verified negatives for every one."""
+        from medh5.io.nnunetv2 import from_nnunetv2
+
+        name = str(dataset / "labelsTr" / "CASE_002.nii.gz")
+        volume = np.asarray(nib.load(name).dataobj).copy()
+        volume[0, 0, 0] = 5
+        nib.save(nib.Nifti1Image(volume, np.eye(4)), name)
+        with pytest.raises(MEDH5ValidationError, match="do not declare") as caught:
+            from_nnunetv2(dataset, tmp_path / "out")
+        assert "[5]" in str(caught.value) and caught.value.code is None
 
     def test_S3_2_a_channel_on_another_grid_is_refused(self, dataset, tmp_path):
         """A second channel is written onto the first one's grid, so it has to
@@ -330,7 +406,8 @@ class TestNnunetScaling:
         shape = (6, 5, 4)
         stored = np.arange(np.prod(shape), dtype=np.int16).reshape(shape)
         labels = np.zeros(shape, np.uint8)
-        labels[1:3, 1:3, 1:3] = 1
+        # The declared value: stored as it is, or as 1 under a scale.
+        labels[1:3, 1:3, 1:3] = 1 if label_scale is not None else 32
         for array, scale, name in (
             (stored, image_scale, "imagesTr/CASE_0000.nii.gz"),
             (labels, label_scale, "labelsTr/CASE.nii.gz"),
@@ -435,6 +512,46 @@ class TestNnunetIgnore:
             seg = sample.annotations["seg"]
             for class_id, mask in ((1, liver), (2, spleen)):
                 assert np.array_equal(seg.dense([class_id])[0], mask & ~region)
+
+    def test_S7_7_ignored_voxels_stay_ignored_when_values_are_renumbered(
+        self, tmp_path
+    ):
+        """Classes 1 and 3 are written 1 and 2, and the ignore label 3 --- a
+        class id once the values are restored, so the ignored voxels came
+        back as class 3."""
+        from medh5.io.nnunetv2 import from_nnunetv2, to_nnunetv2
+        from medh5.labels import LabelClass, LabelSet
+
+        liver, spleen, region = Numbered.two_classes()
+        path = tmp_path / "s1.medh5"
+        with medh5.create(path, sample_id="s1", codec="portable") as w:
+            w.add_grid("g", shape=Numbered.SHAPE, spacing=(2.0, 1.0, 1.0))
+            w.add_image(
+                "CT", np.zeros(Numbered.SHAPE, np.int16), grid="g", modality="CT"
+            )
+            w.label_set(
+                LabelSet(
+                    "gapped", [LabelClass(1, "c1", "C1"), LabelClass(3, "c3", "C3")]
+                )
+            )
+            w.add_segmentation(
+                "seg",
+                grid="g",
+                masks={1: liver, 3: spleen},
+                annotated_classes="all",
+                ignore=region,
+            )
+        to_nnunetv2([path], tmp_path / "nn", dataset_name="D9")
+        document = json.loads((tmp_path / "nn/D9/dataset.json").read_text())
+        assert document["labels"]["ignore"] == 3
+        assert document["medh5_class_ids"] == {"2": 3}
+
+        from_nnunetv2(tmp_path / "nn/D9", tmp_path / "back")
+        with medh5.open(tmp_path / "back/s1.medh5") as sample:
+            seg = sample.annotations["seg"]
+            assert np.array_equal(sample.ignore_region("seg"), region)
+            assert np.array_equal(seg.dense([1])[0], liver)
+            assert np.array_equal(seg.dense([3])[0], spleen)
 
     def test_N02_without_an_ignore_region_no_label_is_declared(self, tmp_path):
         from medh5.io.nnunetv2 import to_nnunetv2
@@ -582,6 +699,47 @@ class TestNnunetDatasetLabels:
         assert caught.value.code is None and "'organ'" in str(caught.value)
         # "Nothing was written for this case": its channels included.
         assert not [p for p in (tmp_path / "nn").rglob("*") if p.is_file()]
+
+    def test_a_refused_case_refuses_the_export_before_any_case_is_written(
+        self, tmp_path
+    ):
+        """Checked as each case was written, a refusal of the second case left
+        the first case's files on disk and no `dataset.json`."""
+        from medh5.io.nnunetv2 import to_nnunetv2
+
+        organ, lesion = self._blocks()
+        first = self._case(tmp_path / "A.medh5", {1: organ, 2: lesion}, searched=[1, 2])
+        inside = np.zeros_like(organ)
+        inside[1:2, 1:3, 1:3] = True  # inside the organ
+        second = self._case(
+            tmp_path / "B.medh5", {1: organ, 2: inside}, searched=[1, 2]
+        )
+        with pytest.raises(MEDH5ValidationError, match="B.medh5: the label volume"):
+            to_nnunetv2([first, second], tmp_path / "nn", dataset_name="D1")
+        assert not (tmp_path / "nn").exists()
+
+    def test_a_CT_channel_is_named_for_nnunets_CT_normalisation(self, tmp_path):
+        """nnU-Net reads a channel's name as its normalisation, and z-scores
+        any name but `CT`: a CT imported from DICOM is `CT_tp0`."""
+        from medh5.io.nnunetv2 import read_dataset_json, to_nnunetv2
+
+        organ, _ = self._blocks()
+        path = tmp_path / "A.medh5"
+        with medh5.create(path, sample_id="A", codec="portable") as w:
+            w.add_grid("g", shape=self.SHAPE, spacing=(2.0, 1.0, 1.0))
+            for image_id, modality in (("CT_tp0", "CT"), ("PT_tp0", "PT")):
+                w.add_image(
+                    image_id,
+                    np.zeros(self.SHAPE, np.int16),
+                    grid="g",
+                    modality=modality,
+                )
+            w.add_segmentation("seg", grid="g", masks={1: organ})
+        report = to_nnunetv2([path], tmp_path / "nn", dataset_name="D1")
+        document = read_dataset_json(tmp_path / "nn" / "D1")
+        assert document["channel_names"] == {"0": "CT", "1": "PT_tp0"}
+        (decision,) = report.of_kind("channel_names")
+        assert "CT_tp0" in decision.message
 
     @pytest.mark.parametrize(
         "label_grid",
