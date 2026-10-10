@@ -4,7 +4,7 @@
 //!
 //! * **HDF5**, built from source by `hdf5-metno-sys` (re-exported as
 //!   [`hdf5_sys`]);
-//! * **C-Blosc2** 3.3.2, vendored, with LZ4, Zstd and zlib from their -sys
+//! * **C-Blosc2** 3.3.5, vendored, with LZ4, Zstd and zlib from their -sys
 //!   crates;
 //! * the **HDF5-Blosc2 filter** (HDF Group filter id 32026), upstream's own C
 //!   source, so chunks are written and read exactly as `hdf5plugin` writes and
@@ -41,8 +41,14 @@ use zstd_sys as _;
 /// The HDF Group's registered id for the Blosc2 filter.
 pub const BLOSC2_FILTER_ID: u32 = 32026;
 
-/// The vendored C-Blosc2 version.
-pub const BLOSC2_VERSION: &str = "3.3.2";
+/// The vendored C-Blosc2 version: upstream's release, byte for byte.
+///
+/// 3.3.5 carries upstream's fixes to BloscLZ's bounds checks: in 3.3.2 a
+/// match length accumulated past `i32::MAX` before it was checked, so a chunk
+/// of a few megabytes could wrap it and write past the block (N19 of the 2.0
+/// re-audit; c-blosc2 3.3.3 and 3.3.5).  Any Blosc2 chunk a file carries
+/// reaches that decoder, whatever codec this crate writes with.
+pub const BLOSC2_VERSION: &str = "3.3.5";
 
 unsafe extern "C" {
     /// Registers the Blosc2 filter with the HDF5 library (upstream's
@@ -125,4 +131,111 @@ pub unsafe fn register_zstd_filter() -> bool {
     let ok = unsafe { zstd_filter::register() } && unsafe { hdf5_sys::h5z::H5Zfilter_avail(ZSTD_FILTER_ID as _) } > 0;
     STATE.store(if ok { 1 } else { 2 }, Ordering::Release);
     ok
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::CStr;
+
+    unsafe extern "C" {
+        fn blosc2_get_version_string() -> *const c_char;
+        fn blosc1_set_compressor(compname: *const c_char) -> c_int;
+        fn blosc2_compress(
+            clevel: c_int,
+            doshuffle: c_int,
+            typesize: i32,
+            src: *const c_void,
+            srcsize: i32,
+            dest: *mut c_void,
+            destsize: i32,
+        ) -> c_int;
+        fn blosc2_decompress(src: *const c_void, srcsize: i32, dest: *mut c_void, destsize: i32) -> c_int;
+        fn blosclz_decompress(input: *const c_void, length: c_int, output: *mut c_void, maxout: c_int) -> c_int;
+    }
+
+    #[test]
+    fn the_stated_version_is_the_vendored_one() {
+        // SAFETY: a static string the library owns.
+        let found = unsafe { CStr::from_ptr(blosc2_get_version_string()) };
+        assert_eq!(found.to_str().unwrap(), BLOSC2_VERSION);
+    }
+
+    /// Two literal bytes, then a long match whose length continues in
+    /// `0xFF` bytes, `continued` of them --- enough to carry a 32-bit
+    /// accumulator past `i32::MAX` --- then its last length byte and its
+    /// distance.
+    fn overlong_match(continued: usize) -> Vec<u8> {
+        let mut stream = vec![1, b'A', b'B', 0xE0];
+        stream.resize(stream.len() + continued, 0xFF);
+        stream.extend([0x00, 0x01]);
+        stream
+    }
+
+    #[test]
+    fn n19_a_blosclz_match_length_past_i32_max_is_refused() {
+        // 255 x 8,421,506 > i32::MAX: 3.3.2 added each byte before checking
+        // and wrapped (undefined behaviour; in practice a negative length,
+        // which then passed the bounds checks).  Refused before the addition.
+        let stream = overlong_match(8_421_506);
+        let mut out = [0u8; 64];
+        // SAFETY: both buffers are valid for the lengths given.
+        let n =
+            unsafe { blosclz_decompress(stream.as_ptr().cast(), stream.len() as c_int, out.as_mut_ptr().cast(), 64) };
+        assert_eq!(n, 0, "the decoder must refuse the stream");
+    }
+
+    #[test]
+    fn n19_a_blosc2_chunk_with_an_overlong_match_is_refused() {
+        // Upstream's own reproduction (tests/test_blosclz_bounds.c): a Blosc2
+        // chunk claiming one 64 KiB BloscLZ block whose stream is a match
+        // longer than the block.
+        let (blocksize, cbytes) = (65_536_i32, 100_000_usize);
+        let mut chunk = vec![0u8; cbytes];
+        chunk[0] = 2; // format version
+        chunk[1] = 4; // Blosc2 format version
+        chunk[3] = 1; // typesize
+        chunk[4..8].copy_from_slice(&blocksize.to_le_bytes()); // nbytes
+        chunk[8..12].copy_from_slice(&blocksize.to_le_bytes()); // blocksize
+        chunk[12..16].copy_from_slice(&(cbytes as i32).to_le_bytes()); // cbytes
+        let header = 32; // BLOSC_EXTENDED_HEADER_LENGTH; codec 0 is BloscLZ
+        chunk[header..header + 3].copy_from_slice(&[0, b'A', 0xE0]);
+        chunk[header + 3..cbytes - 2].fill(0xFF);
+        chunk[cbytes - 2..].copy_from_slice(&[0x01, 0x00]);
+        let mut out = vec![0u8; blocksize as usize];
+        // SAFETY: both buffers are valid for the lengths given.
+        let n = unsafe {
+            blosc2_init();
+            blosc2_decompress(chunk.as_ptr().cast(), cbytes as i32, out.as_mut_ptr().cast(), blocksize)
+        };
+        assert!(n < 0, "the chunk must be refused, not decompressed to {n} bytes");
+    }
+
+    #[test]
+    fn n19_valid_blosclz_chunks_still_round_trip() {
+        let values: Vec<u8> = (0..1_048_576_u32).map(|i| ((i / 7) % 251) as u8).collect();
+        let mut chunk = vec![0u8; values.len() + 32];
+        let mut back = vec![0u8; values.len()];
+        // SAFETY: every buffer is valid for the length given; the global
+        // compressor is set to the one this test is about.
+        let (written, read) = unsafe {
+            blosc2_init();
+            assert!(blosc1_set_compressor(c"blosclz".as_ptr()) >= 0);
+            let written = blosc2_compress(
+                5,
+                1,
+                1,
+                values.as_ptr().cast(),
+                values.len() as i32,
+                chunk.as_mut_ptr().cast(),
+                chunk.len() as i32,
+            );
+            assert!(written > 0, "compression failed: {written}");
+            let read = blosc2_decompress(chunk.as_ptr().cast(), written, back.as_mut_ptr().cast(), back.len() as i32);
+            (written, read)
+        };
+        assert!((written as usize) < values.len(), "BloscLZ compressed nothing");
+        assert_eq!(read as usize, values.len());
+        assert_eq!(back, values);
+    }
 }

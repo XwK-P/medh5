@@ -1319,6 +1319,12 @@ the address of the sample it was built from, which is the property that makes th
 regenerate. A corrupted index is therefore **not** detectable through `content_id`; it is guarded by
 `source_digest` (§13.3) against staleness, and is regenerable by definition.
 
+**A dataset has one line however many paths reach it.** The walk visits each object once, at its
+first path --- depth first, a group's members in byte order of their names --- through hard links
+only. A dataset reached first through `index/`, or only through a soft link, therefore has no line,
+and `content_id` does not speak for its bytes: a validator **MUST** report a `digest` such a dataset
+carries as **E702**, and nothing that relies on `content_id` may count the dataset as covered.
+
 At the root, the covered attributes are exactly `medh5_version`, `medh5_kind` and `medh5_profiles`.
 `created` and `generator` are **excluded**, and `content_id` obviously cannot cover itself: two
 byte-identical samples written an hour apart by different tools **MUST** share a `content_id`, or it
@@ -1635,9 +1641,9 @@ any machine. On one, with a 192×256×256 synthetic CT and eight classes, a mult
 costs 3.4 ms, foreground centre sampling 0.03 ms (O(1) in volume size, via §14.3; 0.05 ms at 63
 classes), a metadata-only read 0.19 ms, and `open()` → first patch 2.3 ms.
 
-Thirty-one clauses have been corrected — ten during implementation, eleven in the 1.x package
+Thirty-two clauses have been corrected — ten during implementation, eleven in the 1.x package
 releases that followed, four when the engine was written a second time, in Rust, for the 2.0
-package, one when it implemented 1.1, and five in the audits of 2.0 before its release — each because
+package, one when it implemented 1.1, and six in the audits of 2.0 before its release — each because
 writing the code showed the text was not implementable, not unambiguous, or not what the
 implementation could honestly promise, as written:
 
@@ -1674,6 +1680,7 @@ implementation could honestly promise, as written:
 | §14.1 | A dataset below 64 KiB, or an empty one, **MAY** be stored contiguous and unfiltered: "Image and voxel-annotation datasets **MUST** be chunked" had no exception, and every implementation since 1.0 has stored such datasets contiguous, because at that size chunking and a filter pipeline cost more than they save --- so the text forbade what both implementations write for every small sample, and no validator checked it. The exception covers the `(1, *spatial_chunk)` clauses of §7.2, §7.3 and §7.5 too. |
 | §10.4 | A displacement field covers its grid's voxel extent, `[-0.5, n - 0.5]` per axis, and under `zero` and `error` a point in the half-voxel margin beyond the outermost sample takes that sample's value, for `linear` and `cubic` alike. The clause named the extrapolation modes and not the extent they start at: linear interpolation clamped the margin to the edge value, while cubic --- SciPy's constant mode, since 1.x --- was zero beyond the outermost samples, so a point `error` admitted came out with no displacement, and `zero` meant a different region for each interpolation. Values between the outermost samples are unchanged. |
 | §7.5 | `normalized` holds at the stored precision: at each voxel the stored values sum to 1 within `10⁻⁶ + u·σ + n·t/2`, and the error of summing them in `float64`, where `σ` is that sum, `n` the number of classes, `u` the stored dtype's unit roundoff (2⁻¹¹ for `float16`, 2⁻²⁴ for `float32`) and `t` its smallest subnormal: the rounding of the values stored, and no more. "Sum to 1" named no tolerance, and no stored map meets it exactly; the one implemented, `n` times the dtype's epsilon, grew with the class count until at 1,024 `float16` classes a map whose every value had been zeroed validated as normalized. A writer holds the values it is given to `10⁻⁶`, so every map it stores meets the bound. |
+| §13.2 | A dataset has one line however many paths reach it --- its first, through hard links, in byte order --- and a dataset reached first through `index/`, or only through a soft link, has none: `content_id` does not cover it, and a `digest` it carries is **E702**. "Every dataset with a digest" said nothing of a dataset with two paths, or one reached through a soft link. Every implementation has visited each object once, at its first path, without saying what that left out: a clinical column linked first from `index/`, or a transform's parameters, changed under an unchanged `content_id`, and a task's source pin, a deep preflight and the validator passed it. No `content_id` changes. |
 
 ### C.2 Prototype checks
 

@@ -101,18 +101,23 @@ fn physical_memory() -> Option<usize> {
 /// a large one is reserved fallibly, so such a read is an error the caller
 /// reports.
 pub(crate) fn ensure_allocatable(ds: &hdf5::Dataset, extents: &[usize], itemsize: usize) -> Result<()> {
+    ensure_holdable(&ds.name(), extents, itemsize)
+}
+
+/// [`ensure_allocatable`] for anything HDF5 reads into a buffer, named
+/// `what` --- an attribute, say.
+pub(crate) fn ensure_holdable(what: &str, extents: &[usize], itemsize: usize) -> Result<()> {
     if holdable(extents, itemsize) {
         return Ok(());
     }
     Err(Error::Io(format!(
-        "{} cannot be read: {} elements of {itemsize} bytes are more than this process can hold",
-        ds.name(),
+        "{what} cannot be read: {} elements of {itemsize} bytes are more than this process can hold",
         extents.iter().map(usize::to_string).collect::<Vec<_>>().join(" x ")
     )))
 }
 
 /// Whether a buffer of `extents` elements of `itemsize` bytes can be held.
-fn holdable(extents: &[usize], itemsize: usize) -> bool {
+pub(crate) fn holdable(extents: &[usize], itemsize: usize) -> bool {
     if extents.contains(&0) {
         return true;
     }
@@ -310,21 +315,46 @@ pub fn slice_array(array: &NdArray, index: &[Index]) -> Result<NdArray> {
 }
 
 /// Read a string dataset (any shape), flattened in C order.
+///
+/// Sized as a numeric read is ([`ensure_allocatable`]): a fixed-length
+/// string type declares any width and a dataspace any extent, and an 11 KiB
+/// file of 2**59 16-byte strings panicked the validator on a capacity
+/// overflow, where a 1 GiB scalar string aborted a capped process (N12 of the
+/// 2.0 re-audit).
 pub fn read_strings(ds: &hdf5::Dataset) -> Result<Vec<String>> {
     super::alive(ds)?;
     let td = ds.dtype()?.to_descriptor()?;
+    let extents = if ds.is_scalar() { vec![1] } else { ds.shape() };
     Ok(match td {
-        TD::VarLenUnicode => ds.read_raw::<VarLenUnicode>()?.iter().map(|s| lossy(s.as_bytes())).collect(),
-        TD::VarLenAscii => ds.read_raw::<VarLenAscii>()?.iter().map(|s| lossy(s.as_bytes())).collect(),
-        TD::FixedAscii(_) | TD::FixedUnicode(_) => {
+        TD::VarLenUnicode => {
+            ensure_allocatable(ds, &extents, std::mem::size_of::<VarLenUnicode>())?;
+            ds.read_raw::<VarLenUnicode>()?.iter().map(|s| lossy(s.as_bytes())).collect()
+        }
+        TD::VarLenAscii => {
+            ensure_allocatable(ds, &extents, std::mem::size_of::<VarLenAscii>())?;
+            ds.read_raw::<VarLenAscii>()?.iter().map(|s| lossy(s.as_bytes())).collect()
+        }
+        TD::FixedAscii(width) | TD::FixedUnicode(width) => {
+            ensure_allocatable(ds, &extents, width.max(1))?;
             read_fixed_strings(ds.id(), ds.size().max(usize::from(ds.is_scalar())), &td, false)?
         }
         other => return Err(Error::Type(format!("{} holds {other}, not strings", ds.name()))),
     })
 }
 
-/// Read a scalar string dataset (`/meta`).
+/// Read a scalar string dataset (`/meta`, a table's descriptor, a cache's
+/// manifest).
+///
+/// One string, so a dataset of any other shape is refused rather than read
+/// whole and cut to its first element (N12 of the 2.0 re-audit).
 pub fn read_scalar_string(ds: &hdf5::Dataset) -> Result<String> {
+    if !ds.is_scalar() {
+        return Err(Error::Value(format!(
+            "{} is a dataset of shape {}, not one string",
+            ds.name(),
+            crate::json::repr_int_tuple(&ds.shape())
+        )));
+    }
     let mut values = read_strings(ds)?;
     if values.is_empty() {
         return Err(Error::Value(format!("{} holds no string", ds.name())));
@@ -655,5 +685,37 @@ mod tests {
         if let Some(memory) = physical_memory() {
             assert!(!holdable(&[memory, 2], 1), "twice the machine's memory");
         }
+    }
+
+    /// N12: a string read is sized as a numeric one.  Its buffer was
+    /// `vec![0; width * n]`, unchecked: 2**59 strings of 16 bytes, declared
+    /// and never stored, panicked on a capacity overflow.
+    #[test]
+    fn n12_a_string_read_no_machine_can_hold_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = hdf5::File::create(dir.path().join("big.h5")).unwrap();
+        let fixed = file
+            .new_dataset::<hdf5::types::FixedAscii<16>>()
+            .shape([1usize << 59])
+            .chunk([1024])
+            .create("fixed")
+            .unwrap();
+        let vlen = file
+            .new_dataset::<hdf5::types::VarLenUnicode>()
+            .shape([1usize << 61])
+            .chunk([1024])
+            .create("vlen")
+            .unwrap();
+        for ds in [&fixed, &vlen] {
+            let err = read_strings(ds).unwrap_err();
+            assert!(err.to_string().contains("more than this process can hold"), "{err}");
+        }
+        let small = file.new_dataset::<hdf5::types::FixedAscii<8>>().shape([2]).create("small").unwrap();
+        let values = ["a".to_string(), "bc".to_string()];
+        write_fixed_strings(&small, &values, 8, true).unwrap();
+        assert_eq!(read_strings(&small).unwrap(), values);
+        // One string is a scalar: a vector is refused, not cut to its first.
+        let err = read_scalar_string(&small).unwrap_err();
+        assert!(err.to_string().contains("not one string"), "{err}");
     }
 }

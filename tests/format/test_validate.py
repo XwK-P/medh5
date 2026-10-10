@@ -327,6 +327,79 @@ class TestStoredProbabilities:
         assert "more than this process can hold" in found.message
 
 
+class TestN12Strings:
+    """A string read is sized as a numeric one (N12 of the round-3 audit): its
+    buffer was `vec![0; width * n]`, unchecked, so a file of a few kilobytes
+    declaring strings it does not store panicked the validator or aborted a
+    capped process."""
+
+    @staticmethod
+    def _meta(path: Path, **dataset: object) -> Path:
+        write_sample(path)
+        with h5py.File(path, "r+") as f:
+            del f["meta"]
+            f.create_dataset("meta", **dataset)
+        return path
+
+    @pytest.mark.parametrize(
+        "dataset",
+        [
+            {"shape": (2**59,), "dtype": "S16", "chunks": (1024,)},
+            {"data": np.array([b"{}", b"{}"])},
+        ],
+        ids=["declared", "vector"],
+    )
+    def test_N12_a_meta_that_is_not_one_string_is_E004(self, tmp_path, dataset):
+        path = self._meta(tmp_path / "meta.medh5", **dataset)
+        report = validate_file(path, level="structural")
+        (found,) = [d for d in report.diagnostics if d.code == "E004"]
+        assert "scalar" in found.message
+
+    def test_N12_strings_too_large_to_hold_are_reported(self, tmp_path):
+        path = write_sample(tmp_path / "s.medh5")
+        with h5py.File(path, "r+") as f:
+            ds = f.create_dataset(
+                "images/x_names", shape=(2**58,), dtype="S32", chunks=(1024,)
+            )
+            ds.attrs["digest"] = "sha256:" + "0" * 64
+        report = validate_file(path, level="integrity")
+        assert any(
+            "more than this process can hold" in d.message
+            for d in report.diagnostics
+            if d.code == "E001"
+        ), report.diagnostics
+
+    @pytest.mark.skipif(
+        not Path("/proc/self/status").exists(), reason="the cap is Linux's"
+    )
+    def test_N12_a_capped_process_reports_a_huge_scalar_string(self, tmp_path):
+        """A 1 GiB scalar string, declared and never stored, was allocated
+        outright: under a cap the process aborted.  Reserved fallibly, it is an
+        error the validator reports."""
+        import subprocess
+        import sys
+
+        path = self._meta(tmp_path / "big.medh5", shape=(), dtype=f"S{2**30}")
+        code = (
+            "import resource, sys\n"
+            "from medh5.validate import validate_file\n"
+            "vm = next(int(line.split()[1]) * 1024 for line in "
+            "open('/proc/self/status') if line.startswith('VmSize:'))\n"
+            "cap = vm + 512 * 2**20\n"
+            "resource.setrlimit(resource.RLIMIT_AS, (cap, cap))\n"
+            "report = validate_file(sys.argv[1], level='structural')\n"
+            "print(sorted({d.code for d in report.diagnostics}))\n"
+        )
+        run = subprocess.run(
+            [sys.executable, "-c", code, str(path)],
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        assert run.returncode == 0, run.stderr[-2000:]
+        assert "E00" in run.stdout
+
+
 class TestCorruptFiles:
     """A validator is pointed at files of unknown provenance; it may not crash."""
 

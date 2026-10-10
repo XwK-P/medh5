@@ -3,8 +3,8 @@
 use serde_json::{json, Value};
 
 use super::digest::{
-    collect_digests, compute_content_id, dataset_digest, dataset_digest_inspected, group_digest, root_algo,
-    AttrNameMap, STREAM_BYTES,
+    collect_digests, compute_content_id, dataset_digest, dataset_digest_inspected, digested_objects, group_digest,
+    root_algo, AttrNameMap, STREAM_BYTES,
 };
 use crate::array::NdArray;
 use crate::digest::{parse_digest, DEFAULT_ALGO};
@@ -25,27 +25,38 @@ pub const ATTESTED_GROUPS: [&str; 4] = ["grids", "images", "annotations", "trans
 /// --- a root alias sorting before `clinical` --- reached an undigested column
 /// first and took it out of its group: a pin, `verify` and a deep preflight
 /// passed over it while the clinical reader read it (B03 of the 2.0
-/// re-audit).
+/// re-audit).  Soft links are followed, because readers follow them: a column
+/// linked softly to storage under `index/` was read by every selection and
+/// walked by nothing (B03 of the round-3 audit).
 pub fn attested_datasets(root: &hdf5::Group) -> Result<Vec<(String, hdf5::Dataset)>> {
     let clinical =
         attrs::get_strs(root, "medh5_profiles")?.unwrap_or_default().iter().any(|p| p == crate::clinical::PROFILE);
     let mut out = Vec::new();
     for name in ATTESTED_GROUPS.into_iter().chain(clinical.then_some(crate::clinical::GROUP)) {
         let Some(group) = ops::child_group(root, name) else { continue };
-        for (path, ds) in ops::datasets(&group)? {
+        for (path, ds) in ops::datasets_resolving(&group)? {
             out.push((format!("{name}/{path}"), ds));
         }
     }
     Ok(out)
 }
 
-/// Of [`attested_datasets`], those that carry no digest.  The root is a
-/// Merkle root over *stored* digests (§13.2), so such a dataset is content no
-/// address covers: a pin, a cache entry and `verify` would all pass over it.
+/// Of [`attested_datasets`], those whose object no dataset line of the root
+/// covers.  The root is a Merkle root over *stored* digests (§13.2), so such a
+/// dataset is content no address covers: a pin, a cache entry and `verify`
+/// would all pass over it.
+///
+/// Covered is by identity.  A dataset without a digest is not covered; nor is
+/// one whose object is listed under no path --- reached first through
+/// `index/`, which the root excludes, say, or only through a soft link to
+/// storage the root does not list.  A transform aliased under `index/` before
+/// its sample was pinned changed by 100 mm under an unchanged pin (B03 of the
+/// round-3 audit).
 pub fn unattested(root: &hdf5::Group) -> Result<Vec<String>> {
+    let covered = digested_objects(root, &["index"])?;
     let mut out: Vec<String> = attested_datasets(root)?
         .into_iter()
-        .filter(|(_, ds)| !attrs::has(ds, "digest"))
+        .filter(|(_, ds)| ops::object_id_of(ds).is_none_or(|id| !covered.contains(&id)))
         .map(|(path, _)| path)
         .collect();
     out.sort();

@@ -335,6 +335,100 @@ class TestSources:
             (finding,) = repinned.check(task.base, deep=deep)
             assert finding.code == "T302" and "aaa_value" in str(finding)
 
+    def test_B03_a_column_soft_linked_elsewhere_is_outside_the_pin(self, setup):
+        """Readers follow a soft link as HDF5 does; the walk that decides what
+        a pin covers followed hard links only.  Optional columns linked softly
+        to storage under `index/`, which the root excludes, were read by every
+        selection while the pin, the deep check and a preflight passed (B03 of
+        the round-3 audit).  Attestation walks what readers read."""
+        task, paths = setup
+        with h5py.File(paths["P-02"], "r+") as f:
+            events = f["clinical/events"]
+            n = events["available_lo_us"].shape[0]
+            store = f.require_group("index").create_group("x")
+            for name in ("effective_end_lo_us", "effective_end_hi_us"):
+                store.create_dataset(name, data=np.full(n, 518, dtype="<i8"))
+                store.create_dataset(f"valid_{name}", data=np.ones(n, dtype="u1"))
+                events[name] = h5py.SoftLink(f"/index/x/{name}")
+                events["valid"][name] = h5py.SoftLink(f"/index/x/valid_{name}")
+        source = task.subjects[1].sources[0]
+        for deep in (False, True):
+            (finding,) = source.check(task.base, deep=deep)
+            assert finding.code == "T302"
+            assert "clinical/events/effective_end_lo_us" in str(finding)
+        # 518 us ends some events before they start: the tables are invalid
+        # too (T306), and that is the second finding, not the first.
+        assert "T302" in found(task.preflight().findings)
+        assert "E818" in validate_file(paths["P-02"], level="integrity").codes
+
+    @staticmethod
+    def _registered(path: Path) -> Path:
+        shape = (6, 8, 8)
+        matrix = np.eye(4)
+        matrix[0, 3] = 2.0
+        with medh5.create(path, codec="portable") as w:
+            for tp, frame in (("tp0", "F0"), ("tp1", "F1")):
+                w.add_timepoint(tp, days_from_baseline=0 if tp == "tp0" else 92)
+                w.add_grid(
+                    f"ct_{tp}", shape=shape, spacing=(1.5, 0.8, 0.8), timepoint=tp,
+                    frame_uid=frame,
+                )  # fmt: skip
+                w.add_image(
+                    f"CT_{tp}",
+                    np.zeros(shape, np.int16),
+                    grid=f"ct_{tp}",
+                    modality="CT",
+                )
+            w.add_transform(
+                "t", kind="affine", from_frame="F0", to_frame="F1", matrix=matrix,
+                from_grid="ct_tp0", to_grid="ct_tp1", invertible=True,
+            )  # fmt: skip
+        return path
+
+    @staticmethod
+    def _translate(path: Path, by: float) -> None:
+        with h5py.File(path, "r+") as f:
+            matrix = f["transforms/t/matrix"]
+            values = matrix[...]
+            values[0, 3] = by
+            matrix[...] = values
+
+    def test_B03_a_transform_aliased_under_index_is_outside_the_pin(
+        self, tmp_path: Path
+    ):
+        """An object is listed once, under the first path that reaches it, and
+        `index/` is outside the root: a transform also linked under `index/`
+        before its sample was restamped and pinned was in no dataset line, and
+        its translation moved from 2 to 102 mm under a matching root and an
+        unchanged pin (B03 of the round-3 audit).  Covered is by identity."""
+        path = self._registered(tmp_path / "reg.medh5")
+        with h5py.File(path, "r+") as f:
+            f.require_group("index")["alias"] = f["transforms/t/matrix"]
+        with medh5.open(path) as sample:
+            content_id = sample.compute_content_id()
+        with h5py.File(path, "r+") as f:
+            f.attrs["content_id"] = content_id
+        pin = SourceRef.pin(path, uri=path.name)
+        for deep in (False, True):
+            (finding,) = pin.check(tmp_path, deep=deep)
+            assert finding.code == "T302" and "transforms/t/matrix" in str(finding)
+        self._translate(path, 102.0)
+        assert found(pin.check(tmp_path, deep=True)) == ["T302"]
+        report = validate_file(path, level="integrity")
+        assert "/transforms/t/matrix" in {
+            d.location for d in report.diagnostics if d.code == "E702"
+        }
+
+    def test_B03_an_unaliased_transform_is_held_by_its_digest(self, tmp_path: Path):
+        """The control: without the alias the pin holds, and an edit fails the
+        deep check and the validator."""
+        path = self._registered(tmp_path / "reg.medh5")
+        pin = SourceRef.pin(path, uri=path.name)
+        assert pin.check(tmp_path) == [] and pin.check(tmp_path, deep=True) == []
+        self._translate(path, 102.0)
+        assert found(pin.check(tmp_path, deep=True)) == ["T302"]
+        assert "E701" in validate_file(path, level="integrity").codes
+
     def test_S2_a_missing_source_is_T301(self, setup, tmp_path: Path):
         task, paths = setup
         paths["P-03"].unlink()

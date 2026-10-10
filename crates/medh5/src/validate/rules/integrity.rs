@@ -9,7 +9,7 @@ use crate::digest::{parse_digest, DEFAULT_ALGO};
 use crate::h5::data::{self, Kind};
 use crate::h5::{attrs, ops};
 use crate::integrity::digest::{dataset_digest_inspected, STREAM_BYTES};
-use crate::integrity::{stale_index_entries, verify_root_inspecting};
+use crate::integrity::{attested_datasets, digested_objects, stale_index_entries, verify_root_inspecting};
 use crate::json::{py_float, repr_int_tuple, repr_str};
 use crate::validate::Diagnostic;
 use crate::Result;
@@ -87,6 +87,24 @@ pub fn check_integrity(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
                 result.content_id_computed.clone().unwrap_or_default()
             ),
         ));
+    }
+    if result.content_id_declared.is_some() {
+        // A dataset of an attested object that carries a digest no line of the
+        // root lists claims an attestation it does not have: its object is
+        // reached first through `index/`, which the root excludes, or only
+        // through a soft link.  Its bytes changed under a matching root and an
+        // unchanged pin (B03 of the round-3 audit).
+        let covered = digested_objects(&root, &["index"])?;
+        for (path, ds) in attested_datasets(&root)? {
+            if attrs::has(&ds, "digest") && ops::object_id_of(&ds).is_none_or(|id| !covered.contains(&id)) {
+                out.push(ctx.err(
+                    "E702",
+                    format!("/{path}"),
+                    "carries a digest no line of `content_id` covers: its object is reached first through `index/`, \
+                     which the root excludes, or only through a soft link, so the root does not speak for its bytes",
+                ));
+            }
+        }
     }
     for name in stale_index_entries(&root)? {
         out.push(ctx.err(

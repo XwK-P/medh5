@@ -17,6 +17,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 
 
 /* If C11 is supported, use it's built-in aligned allocation. */
@@ -141,15 +142,74 @@ void* sframe_create_chunk(blosc2_frame_s* frame, uint8_t* chunk, int64_t nchunk,
   return frame;
 }
 
-/* Append an existing chunk into a sparse frame. */
-int sframe_delete_chunk(const char *urlpath, int64_t nchunk) {
+/* Delete or evict a chunk from a sparse frame. */
+int sframe_delete_chunk(const char *urlpath, int64_t nchunk, const blosc2_io *io) {
   char* chunk_path = sframe_make_chunk_path(urlpath, nchunk);
-  if (chunk_path) {
-    int rc = remove(chunk_path);
-    free(chunk_path);
-    return rc;
+  if (chunk_path == NULL) {
+    return BLOSC2_ERROR_FILE_REMOVE;
   }
-  return BLOSC2_ERROR_FILE_REMOVE;
+
+  uint8_t io_id = (io != NULL) ? io->id : BLOSC2_IO_FILESYSTEM;
+
+  if (io_id == BLOSC2_IO_FILESYSTEM || io_id == BLOSC2_IO_FILESYSTEM_MMAP) {
+    int rc = remove(chunk_path);
+    if (rc != 0) {
+      if (errno == ENOENT) {
+        /* Chunk file does not exist on disk; already evicted or absent */
+        free(chunk_path);
+        return BLOSC2_ERROR_SUCCESS;
+      }
+      BLOSC_TRACE_ERROR("Cannot remove chunk file %s (error: %s)", chunk_path, strerror(errno));
+      free(chunk_path);
+      return BLOSC2_ERROR_FILE_REMOVE;
+    }
+    free(chunk_path);
+    return BLOSC2_ERROR_SUCCESS;
+  }
+
+  /* Non-standard / custom I/O backend: use its callbacks exclusively. */
+  blosc2_io_cb *io_cb = blosc2_get_io_cb(io_id);
+  if (io_cb == NULL) {
+    BLOSC_TRACE_ERROR("Error getting the input/output API");
+    free(chunk_path);
+    return BLOSC2_ERROR_FILE_REMOVE;
+  }
+
+  void *params = (io != NULL) ? io->params : NULL;
+  void *fp = io_cb->open(chunk_path, "wb", params);
+  if (fp == NULL) {
+    /* If open failed because chunk file does not exist, consider it already evicted. */
+    if (errno == ENOENT) {
+      free(chunk_path);
+      return BLOSC2_ERROR_SUCCESS;
+    }
+    BLOSC_TRACE_ERROR("Cannot open chunk %" PRId64 " for eviction via custom I/O backend (id %d)",
+                      nchunk, (int)io_id);
+    free(chunk_path);
+    return BLOSC2_ERROR_FILE_OPEN;
+  }
+
+  if (io_cb->truncate != NULL) {
+    int rc_trunc = io_cb->truncate(fp, 0);
+    if (rc_trunc != 0) {
+      BLOSC_TRACE_ERROR("Cannot truncate chunk %" PRId64 " in custom I/O backend (id %d, error %d)",
+                        nchunk, (int)io_id, rc_trunc);
+      io_cb->close(fp);
+      free(chunk_path);
+      return BLOSC2_ERROR_FILE_TRUNCATE;
+    }
+  }
+
+  int rc_close = io_cb->close(fp);
+  if (rc_close != 0) {
+    BLOSC_TRACE_ERROR("Cannot close chunk %" PRId64 " after eviction in custom I/O backend (id %d, error %d)",
+                      nchunk, (int)io_id, rc_close);
+    free(chunk_path);
+    return BLOSC2_ERROR_FILE_REMOVE;
+  }
+
+  free(chunk_path);
+  return BLOSC2_ERROR_SUCCESS;
 }
 
 /* Get chunk from sparse frame. */

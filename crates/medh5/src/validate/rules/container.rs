@@ -168,6 +168,19 @@ pub fn check_document(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     let Some(meta) = ops::child_dataset(&ctx.root, "meta") else {
         return Ok(out);
     };
+    // One string (§2.4), checked before anything is read: a vector `meta` was
+    // read whole and cut to its first element (N12 of the 2.0 re-audit).
+    if !meta.is_scalar() {
+        out.push(ctx.err(
+            "E004",
+            "/meta",
+            format!(
+                "`meta` is a dataset of shape {}; §2.4 makes it one scalar UTF-8 JSON string",
+                crate::json::repr_int_tuple(&meta.shape())
+            ),
+        ));
+        return Ok(out);
+    }
     let text = data::read_scalar_string(&meta)?;
     let parsed: serde_json::Value = match crate::json::loads_lenient(&text) {
         Ok((v, None)) => v,

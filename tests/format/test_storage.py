@@ -310,6 +310,38 @@ def test_S14_2_a_window_reads_what_hdf5plugin_wrote(
         np.testing.assert_array_equal(ds[5, 3:40, 7], values[5, 3:40, 7])
 
 
+def test_N19_blosclz_chunks_read_whole_by_window_and_in_one_dimension(
+    tmp_path: Path,
+) -> None:
+    """The vendored C-Blosc2 is 3.3.5, whose BloscLZ refuses a match length
+    that would wrap (N19 of the 2.0 re-audit; the refusal is held by
+    `medh5-sys`'s tests).  The controls: what `hdf5plugin` wrote with BloscLZ
+    reads whole through HDF5's filter, by window through the block reader, and
+    as a plain one-dimensional dataset."""
+    hdf5plugin = pytest.importorskip("hdf5plugin")
+    path = tmp_path / "blosclz.medh5"
+    w = medh5.create(path, sample_id="o", subject_id="s")
+    w.add_grid("g", shape=(8, 8, 8), spacing=(1.0, 1.0, 1.0))
+    w.add_image("CT", np.zeros((8, 8, 8), np.int16), grid="g", modality="CT")
+    w.commit()
+    rng = np.random.default_rng(19)
+    volume = rng.integers(-1000, 1500, (37, 45, 53)).astype("<i2")
+    volume[:, :20] = 3
+    line = np.repeat(np.arange(4000, dtype="<i4"), 3)
+    options = hdf5plugin.Blosc2(
+        cname="blosclz", clevel=5, filters=hdf5plugin.Blosc2.SHUFFLE
+    )
+    with h5py.File(path, "r+") as f:
+        f.create_dataset("x_other/ct", data=volume, chunks=(16, 16, 32), **options)
+        f.create_dataset("x_other/line", data=line, chunks=(1000,), **options)
+    with medh5.open(path) as s:
+        ct, flat = s.root["x_other/ct"], s.root["x_other/line"]
+        np.testing.assert_array_equal(ct.read(), volume)
+        np.testing.assert_array_equal(ct[3:30, 7:41, 2:50], volume[3:30, 7:41, 2:50])
+        np.testing.assert_array_equal(flat.read(), line)
+        np.testing.assert_array_equal(flat[1234:5678], line[1234:5678])
+
+
 class TestRecompress:
     def test_S13_1_recompression_preserves_the_content_id(self, tmp_path, label_set):
         from medh5.storage import recompress
@@ -477,6 +509,19 @@ class TestC10References:
                 group = f.require_group("x_ext")
                 group["t"] = np.dtype("<f4")
                 group["t"].attrs["x_ref"] = target
+            elif where in ("unlinked_type", "unlinked_attribute_type"):
+                # A committed datatype whose name was removed lives on as the
+                # type of what uses it, attributes and all: the walk of named
+                # types passed it by, and a rewrite nulled the reference
+                # (C10 of the round-3 audit).
+                group = f.require_group("x_ext")
+                group["t"] = np.dtype("<u4")
+                group["t"].attrs["x_ref"] = target
+                if where == "unlinked_type":
+                    group.create_dataset("d", data=[1, 2, 3], dtype=group["t"])
+                else:
+                    group.attrs.create("a", data=[7], dtype=group["t"])
+                del group["t"]
             else:
                 compound = np.dtype([("id", "<i4"), ("ref", h5py.ref_dtype)])
                 f["x_type"] = np.dtype("<i2")
@@ -486,7 +531,16 @@ class TestC10References:
         return path
 
     @pytest.mark.parametrize(
-        "where", ["attribute", "dataset", "compound", "named_type", "root_named_type"]
+        "where",
+        [
+            "attribute",
+            "dataset",
+            "compound",
+            "named_type",
+            "root_named_type",
+            "unlinked_type",
+            "unlinked_attribute_type",
+        ],
     )
     def test_C10_a_file_holding_references_is_not_rewritten(self, tmp_path, where):
         from medh5.collection import pack
@@ -507,6 +561,28 @@ class TestC10References:
         # Reading it is unaffected: the file is still a valid sample.
         with medh5.open(path) as sample:
             assert sample.images
+
+    def test_C10_an_unlinked_type_without_references_is_rewritten(self, tmp_path):
+        """The control: a committed type with no reference anywhere in it is
+        another tool's content like any other, and every rewrite carries it."""
+        from medh5.collection import pack
+        from medh5.storage import recompress
+
+        path = write_sample(tmp_path / "plain.medh5")
+        with h5py.File(path, "r+") as f:
+            group = f.require_group("x_ext")
+            group["t"] = np.dtype("<u4")
+            group["t"].attrs["note"] = "kept"
+            group.create_dataset("d", data=[1, 2, 3], dtype=group["t"])
+            del group["t"]
+        with medh5.amend(path):
+            pass
+        assert recompress(path, profile="portable").verified
+        pack([path], tmp_path / "shard.medh5c")
+        with h5py.File(path, "r") as f:
+            assert f["x_ext/d"][()].tolist() == [1, 2, 3]
+            kept = h5py.Datatype(f["x_ext/d"].id.get_type())
+            assert kept.attrs["note"] == "kept"
 
 
 class TestB02LinkGraphs:

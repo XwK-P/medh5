@@ -110,14 +110,18 @@ impl SourceRef {
         // The root covers stored digests only, so a dataset that carries none
         // --- a column added later, say --- is bytes no pin speaks for: refused
         // before anything is recomputed (1.0 §13.2, 1.1 §8, E818).  Found
-        // through the groups that hold it, whatever other path reaches it.
+        // through the groups that hold it, whatever other path reaches it,
+        // soft links followed as readers follow them, and judged by identity:
+        // an object listed under no dataset line --- reached first through
+        // `index/`, or only through a soft link --- is no more covered than
+        // one without a digest (B03).
         let uncovered = crate::integrity::unattested(&sample.root)?;
         if !uncovered.is_empty() {
             out.push(Finding::new(
                 "T302",
                 &at,
                 format!(
-                    "{}: {} carr{} no digest, so the pinned content_id does not cover {}",
+                    "{}: {} carr{} no digest the root covers, so the pinned content_id does not cover {}",
                     self.locator(),
                     uncovered.join(", "),
                     if uncovered.len() == 1 { "ies" } else { "y" },

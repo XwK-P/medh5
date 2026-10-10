@@ -334,6 +334,12 @@ pub fn read_attribute(attr: &hdf5::Attribute) -> Result<AttrValue> {
 }
 
 fn read_strings_attr(attr: &hdf5::Attribute, td: &TD) -> Result<Vec<String>> {
+    // Sized before it is read, as a dataset is (N12 of the 2.0 re-audit).
+    let itemsize = match td {
+        TD::FixedAscii(width) | TD::FixedUnicode(width) => (*width).max(1),
+        _ => std::mem::size_of::<VarLenUnicode>(),
+    };
+    super::data::ensure_holdable(&format!("attribute {}", repr_str(&attr.name())), &[attr.size().max(1)], itemsize)?;
     Ok(match td {
         // Bytes, decoded here: the types' `as_str` trusts the file to hold valid
         // UTF-8, and a damaged one does not (`lossy` keeps that a finding, not
@@ -368,7 +374,21 @@ pub(crate) fn read_fixed_strings(
             return Err(Error::Io("could not read a fixed-length string".into()));
         }
         let size = h5t::H5Tget_size(ftype).max(1);
-        let mut buf = vec![0u8; size * n.max(1)];
+        // The callers size the read first; the product is checked here too,
+        // and the buffer reserved fallibly, so no declared size can panic.
+        let mut buf = Vec::new();
+        let bytes = size
+            .checked_mul(n.max(1))
+            .filter(|bytes| super::data::holdable(&[*bytes], 1))
+            .filter(|bytes| buf.try_reserve_exact(*bytes).is_ok());
+        let Some(bytes) = bytes else {
+            h5t::H5Tclose(ftype);
+            return Err(Error::Io(format!(
+                "{} fixed-length strings of {size} bytes are more than this process can hold",
+                n.max(1)
+            )));
+        };
+        buf.resize(bytes, 0);
         let status = if is_attr {
             h5a::H5Aread(id, ftype, buf.as_mut_ptr().cast())
         } else {

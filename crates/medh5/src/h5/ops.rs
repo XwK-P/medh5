@@ -14,7 +14,7 @@ use std::os::raw::{c_char, c_void};
 use std::path::Path;
 use std::sync::Mutex;
 
-use crate::h5sys::{h5, h5d, h5i, h5l, h5o, h5p, h5t};
+use crate::h5sys::{h5, h5a, h5d, h5i, h5l, h5o, h5p, h5t};
 use crate::json::repr_str;
 use crate::{Error, Result};
 
@@ -171,10 +171,27 @@ pub const MAX_DEPTH: usize = 64;
 /// infinite tree, and a second link to an object is an alias of it, not a
 /// second object (1.x digested an alias once, under its first path).
 pub fn visit(group: &hdf5::Group, f: &mut dyn FnMut(&str, &Node) -> Result<bool>) -> Result<()> {
+    visit_links(group, false, f)
+}
+
+/// [`visit`], following soft links as well: what a reader reaches by name
+/// under `group`, each object once, at the first path that reaches it.  A
+/// soft link that resolves to nothing is passed by.
+///
+/// Readers follow a soft link as HDF5 does, so a column of `clinical/` linked
+/// softly to storage under `index/` was read by every selection while the
+/// walk of hard links that decides what a pin covers never saw it (B03 of the
+/// round-3 audit).  Attestation walks what readers read.
+pub fn visit_resolving(group: &hdf5::Group, f: &mut dyn FnMut(&str, &Node) -> Result<bool>) -> Result<()> {
+    visit_links(group, true, f)
+}
+
+fn visit_links(group: &hdf5::Group, soft: bool, f: &mut dyn FnMut(&str, &Node) -> Result<bool>) -> Result<()> {
     fn walk(
         group: &hdf5::Group,
         prefix: &str,
         depth: usize,
+        soft: bool,
         seen: &mut HashSet<ObjectId>,
         f: &mut dyn FnMut(&str, &Node) -> Result<bool>,
     ) -> Result<bool> {
@@ -185,13 +202,15 @@ pub fn visit(group: &hdf5::Group, f: &mut dyn FnMut(&str, &Node) -> Result<bool>
             )));
         }
         for name in members(group)? {
-            if link_kind(group, &name) != Some(LinkKind::Hard) {
+            let kind = link_kind(group, &name);
+            if kind != Some(LinkKind::Hard) && !(soft && kind == Some(LinkKind::Soft)) {
                 continue;
             }
-            if let Some(id) = object_id_by_name(group, &name) {
-                if !seen.insert(id) {
-                    continue;
-                }
+            match object_id_by_name(group, &name) {
+                Some(id) if !seen.insert(id) => continue,
+                // A soft link to nothing names no object.
+                None if kind == Some(LinkKind::Soft) => continue,
+                _ => {}
             }
             let path = if prefix.is_empty() { name.clone() } else { format!("{prefix}/{name}") };
             match node_kind(group, &name) {
@@ -200,7 +219,7 @@ pub fn visit(group: &hdf5::Group, f: &mut dyn FnMut(&str, &Node) -> Result<bool>
                     if !f(&path, &Node::Group(child.clone()))? {
                         return Ok(false);
                     }
-                    if !walk(&child, &path, depth + 1, seen, f)? {
+                    if !walk(&child, &path, depth + 1, soft, seen, f)? {
                         return Ok(false);
                     }
                 }
@@ -217,7 +236,7 @@ pub fn visit(group: &hdf5::Group, f: &mut dyn FnMut(&str, &Node) -> Result<bool>
     }
     // The starting group itself: a link back to it is a cycle too.
     let mut seen: HashSet<ObjectId> = object_id_of(group).into_iter().collect();
-    walk(group, "", 0, &mut seen, f)?;
+    walk(group, "", 0, soft, &mut seen, f)?;
     Ok(())
 }
 
@@ -225,6 +244,19 @@ pub fn visit(group: &hdf5::Group, f: &mut dyn FnMut(&str, &Node) -> Result<bool>
 pub fn datasets(group: &hdf5::Group) -> Result<Vec<(String, hdf5::Dataset)>> {
     let mut out = Vec::new();
     visit(group, &mut |path, node| {
+        if let Node::Dataset(ds) = node {
+            out.push((path.to_string(), ds.clone()));
+        }
+        Ok(true)
+    })?;
+    Ok(out)
+}
+
+/// Every dataset a reader reaches by name under `group`, soft links
+/// followed ([`visit_resolving`]), with its path relative to `group`.
+pub fn datasets_resolving(group: &hdf5::Group) -> Result<Vec<(String, hdf5::Dataset)>> {
+    let mut out = Vec::new();
+    visit_resolving(group, &mut |path, node| {
         if let Node::Dataset(ds) = node {
             out.push((path.to_string(), ds.clone()));
         }
@@ -402,14 +434,51 @@ fn holds_reference(tid: h5i::hid_t) -> bool {
 /// datasets and committed (named) datatypes.  [`visit`] walks groups and
 /// datasets, so a reference in an attribute of a committed datatype was
 /// missed, and a rewrite that copies the type nulled it (C10 of the 2.0
-/// re-audit).
+/// re-audit).  A committed datatype need not keep a name: one whose link was
+/// removed lives on as the type of the datasets and attributes that use it,
+/// so each dataset's and attribute's type is opened too when it is a
+/// committed one --- `/path (type)@name` --- each type once, by identity
+/// (C10 of the round-3 audit).
 pub fn reference_carriers(root: &hdf5::Group) -> Result<Vec<String>> {
-    fn attributes(obj: &hdf5::Location, path: &str, found: &mut Vec<String>) -> Result<()> {
+    /// The committed datatype `tid` is, opened as an object; `None` when it is
+    /// transient.  Takes ownership of `tid`.
+    fn committed(tid: h5i::hid_t) -> Option<hdf5::CommittedDatatype> {
+        if tid < 0 {
+            return None;
+        }
+        // SAFETY: `tid` is a type id HDF5 just handed out, owned here: it is
+        // either wrapped (and closed when the wrapper drops) or closed.
+        let is_committed = super::locked(|| unsafe { h5t::H5Tcommitted(tid) }) > 0;
+        if !is_committed {
+            super::locked(|| unsafe { h5t::H5Tclose(tid) });
+            return None;
+        }
+        unsafe { hdf5::from_id::<hdf5::CommittedDatatype>(tid) }.ok()
+    }
+    /// The attributes of the committed datatype `tid` is, when it is one not
+    /// inspected yet.
+    fn type_of(tid: h5i::hid_t, path: &str, types: &mut HashSet<ObjectId>, found: &mut Vec<String>) -> Result<()> {
+        let Some(named) = committed(tid) else { return Ok(()) };
+        if object_id_of(&named).is_some_and(|id| !types.insert(id)) {
+            return Ok(());
+        }
+        attributes(&named, &format!("{path} (type)"), types, found)
+    }
+    fn attributes(
+        obj: &hdf5::Location,
+        path: &str,
+        types: &mut HashSet<ObjectId>,
+        found: &mut Vec<String>,
+    ) -> Result<()> {
         for name in obj.attr_names()? {
-            let dtype = obj.attr(&name)?.dtype()?;
+            let attr = obj.attr(&name)?;
+            let dtype = attr.dtype()?;
             if super::locked(|| holds_reference(dtype.id())) {
                 found.push(format!("{path}@{name}"));
             }
+            // SAFETY: a live attribute; the type id returned is owned by `type_of`.
+            let tid = super::locked(|| unsafe { h5a::H5Aget_type(attr.id()) });
+            type_of(tid, &format!("{path}@{name}"), types, found)?;
         }
         Ok(())
     }
@@ -417,7 +486,7 @@ pub fn reference_carriers(root: &hdf5::Group) -> Result<Vec<String>> {
     fn named_types(
         group: &hdf5::Group,
         prefix: &str,
-        seen: &mut HashSet<ObjectId>,
+        types: &mut HashSet<ObjectId>,
         found: &mut Vec<String>,
     ) -> Result<()> {
         for name in members(group)? {
@@ -426,18 +495,18 @@ pub fn reference_carriers(root: &hdf5::Group) -> Result<Vec<String>> {
             {
                 continue;
             }
-            if object_id_by_name(group, &name).is_some_and(|id| !seen.insert(id)) {
+            if object_id_by_name(group, &name).is_some_and(|id| !types.insert(id)) {
                 continue;
             }
             let path = if prefix.is_empty() { format!("/{name}") } else { format!("/{prefix}/{name}") };
             let named = group.committed_datatype(&name)?;
-            attributes(&named, &path, found)?;
+            attributes(&named, &path, types, found)?;
         }
         Ok(())
     }
     let mut found = Vec::new();
     let mut types = HashSet::new();
-    attributes(root, "/", &mut found)?;
+    attributes(root, "/", &mut types, &mut found)?;
     named_types(root, "", &mut types, &mut found)?;
     visit(root, &mut |name, node| {
         let path = format!("/{name}");
@@ -447,10 +516,13 @@ pub fn reference_carriers(root: &hdf5::Group) -> Result<Vec<String>> {
                 if super::locked(|| holds_reference(dtype.id())) {
                     found.push(path.clone());
                 }
-                attributes(ds, &path, &mut found)?;
+                attributes(ds, &path, &mut types, &mut found)?;
+                // SAFETY: a live dataset; the type id returned is owned by `type_of`.
+                let tid = super::locked(|| unsafe { h5d::H5Dget_type(ds.id()) });
+                type_of(tid, &path, &mut types, &mut found)?;
             }
             Node::Group(g) => {
-                attributes(g, &path, &mut found)?;
+                attributes(g, &path, &mut types, &mut found)?;
                 named_types(g, name, &mut types, &mut found)?;
             }
         }
