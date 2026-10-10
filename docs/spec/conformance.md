@@ -8,11 +8,11 @@ makes "conforming MEDH5 file" a claim somebody else can test.
 157 cases, each a file plus the **exact set of diagnostic codes** a conforming
 validator must emit for it. 51 are valid files an implementation must accept,
 32 of them with specific warnings; 106 are invalid ones it must reject with
-specific errors. Between them they exercise every code in the specification's
-tables --- 1.0 §15.2 and the codes [1.1](medh5-1.1.md) §11.2 adds --- and every
-cross-reference clause behind a code.
+specific errors. Between them they hold at least one case for every code in
+the specification's tables: 1.0 §15.2, and the codes [1.1](medh5-1.1.md) §11.2
+adds.
 
-35 of the cases are the `clinical` profile's (format 1.1): the worked example of
+36 of the cases are the `clinical` profile's (format 1.1): the worked example of
 1.1 §9.3 --- two imaging visits, an intervening lab, a delayed report and its
 revision, a follow-up assessment --- a one-visit history, time uncertainty,
 UTF-8 text, a vocabulary wider than the voxel class space, a collection mixing
@@ -31,8 +31,9 @@ $ medh5 conformance run /tmp/corpus
 157/157 cases pass
 ```
 
-A test in this repository asserts the §15.2 table and the code registry are
-identical, so the spec and the implementation cannot drift apart silently.
+A test in this repository asserts that the specification's tables (1.0 §15.2
+and 1.1 §11.2) and the code registry list the same codes, so neither can gain a
+code the other lacks.
 
 ## Publishing it
 
@@ -171,9 +172,10 @@ The ten profiles and the four validation levels are in
 
 ## Diagnostic codes
 
-Stable API, and part of the specification (§15.2): a code's meaning never
-changes and codes are never reused, so the corpus can assert exact code sets.
-All 93 are listed in [Diagnostic codes](../reference/diagnostic-codes.md).
+Stable API, and part of the specification (1.0 §15.2, 1.1 §11.2): a code's
+meaning never changes and codes are never reused, so the corpus can assert
+exact code sets. All 95 codes are listed in
+[Diagnostic codes](../reference/diagnostic-codes.md).
 
 ```python
 from medh5 import CODES

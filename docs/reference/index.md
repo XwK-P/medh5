@@ -26,7 +26,7 @@ What everything is, rather than how to do anything. For task-shaped answers, see
 | | |
 |---|---|
 | **[Sample document schema](schema.md)** | Every field of `/meta`. |
-| **[Diagnostic codes](diagnostic-codes.md)** | All 93 codes `medh5 validate` can report. |
+| **[Diagnostic codes](diagnostic-codes.md)** | All 95 codes `medh5 validate` can report. |
 | **[Cohort check codes](cohort-checks.md)** | The `C1xx`–`C5xx` codes `medh5 dataset check` reports. |
 | **[Task and cache codes](../spec/task-cache-1.md#9-finding-codes)** | The `T1xx`–`T4xx` codes `medh5 task` and `medh5 cache` report. |
 | **[Profiles and validation levels](profiles-and-levels.md)** | What to check, and how much. |

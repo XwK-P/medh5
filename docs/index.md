@@ -67,7 +67,7 @@ signal from a class nobody examined. See
 **Every claim is checkable.** Per-object SHA-256 over decompressed content and a
 Merkle `content_id` that survives recompression; a validator with a
 [stable diagnostic-code table](reference/diagnostic-codes.md); and a 157-case
-conformance corpus, one case per code, that any implementation can run.
+conformance corpus, at least one case per code, that any implementation can run.
 
 **What was known, when.** From format 1.1 a sample may carry the subject's
 clinical history beside the images --- labs, reports and their revisions,

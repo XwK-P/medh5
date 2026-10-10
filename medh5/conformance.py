@@ -2,15 +2,15 @@
 
 Every case is a file plus the exact set of diagnostic codes a conforming
 validator must emit for it.  Valid cases prove the format is writable; invalid
-cases --- one per error code, built by mutating a valid file --- prove the
-validator actually catches what the spec says it must.
+cases --- at least one per error code, built by mutating a valid file --- prove
+the validator actually catches what the spec says it must.
 
 The corpus is the contract a third-party implementation is measured against.
 ``build_corpus`` writes the files and an ``expected.json`` beside them;
 ``run_corpus`` checks *this* validator against it; ``publish`` writes the whole
-distributable suite (cases, codes, schema, checksums, instructions) and ``score``
-measures an implementation that is not this one --- in any language --- from the
-codes it reports back.
+distributable suite (cases, codes, schemas, the task-and-cache fixtures,
+checksums, instructions) and ``score`` measures an implementation that is not
+this one --- in any language --- from the codes it reports back.
 
 The cases and their builders are the format engine's
 (``crates/medh5/src/conformance/build.rs``): valid cases are written by the
@@ -181,8 +181,11 @@ def publish(
     outdir: str | os.PathLike[str], *, names: Sequence[str] | None = None
 ) -> Path:
     """Write the whole suite into *outdir* --- the cases, ``expected.json``, the
-    code table, the sample-document schema, a checksum file and instructions,
-    everything a third-party implementation needs; returns *outdir*."""
+    code table, the JSON Schemas (the sample document, the clinical profile,
+    the task and cache contract), the task-and-cache fixtures under
+    ``companion/`` when the clinical cases they read are among the cases, a
+    checksum file and instructions, everything a third-party implementation
+    needs; returns *outdir*."""
     return Path(
         _core.conformance_publish(
             os.fspath(outdir), names=None if names is None else list(names)

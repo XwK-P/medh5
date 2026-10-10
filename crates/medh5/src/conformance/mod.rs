@@ -2,9 +2,9 @@
 //!
 //! Every case is a file plus the exact set of diagnostic codes a conforming
 //! validator must emit for it.  Valid cases prove the format is writable;
-//! invalid cases --- one per error code, built by mutating a valid file ---
-//! prove the validator catches what the spec says it must.  The corpus is a
-//! **shipped artifact**: [`build_corpus`] writes the files and an
+//! invalid cases --- at least one per error code, built by mutating a valid
+//! file --- prove the validator catches what the spec says it must.  The corpus
+//! is a **shipped artifact**: [`build_corpus`] writes the files and an
 //! `expected.json`, [`run_corpus`] checks this validator against it,
 //! [`publish`] writes the distributable suite and [`score`] measures an
 //! implementation that is not this one, in any language, from the codes it

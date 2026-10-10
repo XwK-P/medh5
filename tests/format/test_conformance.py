@@ -475,10 +475,10 @@ class TestCorpusSmoke:
     What this is **not**: a guard against the `medh5 info` regression that
     prompted it.  That bug needed a class carrying two assertions, which is
     valid and so raises no diagnostic code and has no corpus case --- the corpus
-    is organised one case per code.  Checked by re-introducing the regression:
-    these pass with it in place.  It is guarded directly, in
-    `TestMultiAssertionScopes`; the value here is breadth over 103 adversarial
-    files, not that particular bug.
+    is organised by code, at least one case each.  Checked by re-introducing the
+    regression: these pass with it in place.  It is guarded directly, in
+    `TestMultiAssertionScopes`; the value here is breadth over every adversarial
+    file of the corpus, not that particular bug.
     """
 
     @pytest.fixture(scope="class")
@@ -560,6 +560,51 @@ class TestCorpusSmoke:
         assert not failed, f"`medh5 info` exited non-zero on: {failed}"
 
 
+_UNITS = (
+    "zero",
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
+    "eleven",
+    "twelve",
+    "thirteen",
+    "fourteen",
+    "fifteen",
+    "sixteen",
+    "seventeen",
+    "eighteen",
+    "nineteen",
+)
+_TENS = (
+    "",
+    "",
+    "twenty",
+    "thirty",
+    "forty",
+    "fifty",
+    "sixty",
+    "seventy",
+    "eighty",
+    "ninety",
+)
+
+
+def _spelled(n: int) -> str:
+    """`n` (below 100) in words, as the specifications write a count:
+    `twenty-eight`."""
+    if n < len(_UNITS):
+        return _UNITS[n]
+    tens, units = divmod(n, 10)
+    return _TENS[tens] + (f"-{_UNITS[units]}" if units else "")
+
+
 class TestStatedCounts:
     """Every place the corpus size is written down agrees with the corpus (D-09).
 
@@ -567,7 +612,9 @@ class TestStatedCounts:
     site's front page, the conformance page, Appendix C and the CI comments ---
     and each release that added a case had to find them all.  A documentation
     hook could render the site's copies, but not the README, the CI comments or
-    the specification as GitHub shows it, so the check is a test instead.
+    the specification as GitHub shows it, so the check is a test instead.  The
+    number of codes, and the clinical profile's share of the corpus, are
+    written down the same way and checked the same way.
     """
 
     SOURCES = (
@@ -643,3 +690,47 @@ class TestStatedCounts:
         collections = sum(1 for case in CASES if case.suffix == ".medh5c")
         stated_words = re.findall(r"\d+ samples and (\w+) collections", page)
         assert stated_words == [words[collections]], (collections, stated_words)
+
+    def test_S11_3_the_stated_clinical_breakdown_is_the_corpus_breakdown(self):
+        """1.1 §11.3 and the conformance page count the profile's own cases.
+
+        Both said 35, and 1.1 twenty-seven invalid, for the release that added
+        a thirty-sixth: neither sentence matched a pattern the checks above
+        look for.
+        """
+        clinical = [case for case in CASES if case.clause.endswith("(1.1)")]
+        valid = sum(1 for case in clinical if not case.errors)
+        spec = (ROOT / "docs/spec/medh5-1.1.md").read_text(encoding="utf-8")
+        page = (ROOT / "docs/spec/conformance.md").read_text(encoding="utf-8")
+        stated = {
+            "1.1 §11.3": re.findall(r"(\d+) cases for\s+this\s+profile", spec),
+            "conformance.md": re.findall(r"(\d+) of the cases are the `clinical", page),
+        }
+        assert stated == {where: [str(len(clinical))] for where in stated}, stated
+        assert re.findall(r"profile:\s+(\w+) valid", spec) == [_spelled(valid)]
+        invalid = re.findall(r"---\s+and\s+([\w-]+)\s+invalid", spec)
+        assert invalid == [_spelled(len(clinical) - valid)], invalid
+
+    def test_S15_2_every_stated_code_count_is_the_registry_size(self):
+        """The pages that link the code table said "All 93" and "all 71" while
+        it held 95 --- a count no test read."""
+        pages = ["README.md"] + sorted(
+            p.relative_to(ROOT).as_posix()
+            for pattern in ("docs/**/*.md", "crates/*/README.md")
+            for p in ROOT.glob(pattern)
+        )
+        stated = [
+            (name, int(n))
+            for name in pages
+            for n in re.findall(
+                r"\b[Aa]ll (\d+) codes\b", (ROOT / name).read_text(encoding="utf-8")
+            )
+        ]
+        where = {name for name, _ in stated}
+        assert {
+            "docs/spec/conformance.md",
+            "docs/reference/index.md",
+            "docs/guides/validate.md",
+        } <= where, stated
+        wrong = [(name, n) for name, n in stated if n != len(CODES)]
+        assert not wrong, f"the registry has {len(CODES)} codes; stated: {wrong}"

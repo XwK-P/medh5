@@ -1,10 +1,10 @@
 # MEDH5 format specification 1.1 — clinical context
 
 **Status: Final.** The reference engine reads, writes, validates and amends the
-`clinical` profile defined here, and the conformance corpus (§11.3) exercises every clause that has a
-diagnostic code. The task and feature-cache contract that training uses is a separately versioned
-companion, [Task and cache contract 1](task-cache-1.md); nothing in it is a `.medh5` payload
-requirement.
+`clinical` profile defined here, and the conformance corpus (§11.3) holds at least one case per
+diagnostic code the profile adds. The task and feature-cache contract that training uses is a
+separately versioned companion, [Task and cache contract 1](task-cache-1.md); nothing in it is a
+`.medh5` payload requirement.
 
 This document is a **delta to [MEDH5 1.0](medh5-1.0.md)**. Every 1.0 clause continues to apply
 unless a section below names it. Keywords are those of 1.0 §1.2.
@@ -498,10 +498,10 @@ complete table, generated from the engine's registry, is
 
 ### 11.3 Conformance
 
-The corpus ([Conformance suite](conformance.md)) holds the 1.0 cases unchanged and 35 cases for this
+The corpus ([Conformance suite](conformance.md)) holds the 1.0 cases unchanged and 36 cases for this
 profile: eight valid --- the §9.3 worked example, a one-visit history with years of laboratory values,
 time uncertainty, UTF-8 text, a vocabulary wider than the class space, a mixed-version collection, a
-higher-minor projection, and a value without a unit --- and twenty-seven invalid, at least one per new
+higher-minor projection, and a value without a unit --- and twenty-eight invalid, at least one per new
 error code. The task-and-cache contract is not part of the format corpus; the published suite carries
 its own fixtures beside it ([task-cache-1](task-cache-1.md) §10), whose valid task states the selection
 §9.3 describes for every row.
