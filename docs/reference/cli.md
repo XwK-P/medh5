@@ -55,7 +55,7 @@ medh5 validate PATH... [--level L] [--profile P] [-v] [--json]
 
 Check against the specification. `--level` is `structural`, `semantic`
 (default), `integrity` or `strict`; each includes the ones before it.
-`--profile` overrides the profiles the file declares, so you can hold a file to
+`--profile` adds to the profiles the file declares, so you can hold a file to
 `det` even if it does not claim it. Diagnostics carry stable codes (spec §15.2).
 Every diagnostic is printed; `-v` adds, under each, what its code means.
 

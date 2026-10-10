@@ -889,6 +889,38 @@ class TestMultiscale:
         assert "E001" not in report.codes
 
 
+class TestRequiredProfiles:
+    """`profiles=` and `--profile` hold a file to more than it declares, never
+    to less: a requirement replaced the declared profiles, so a clinical file
+    held to `seg` failed E803 and its clinical rules did not run."""
+
+    def test_S1_3_a_required_profile_adds_to_the_declared_ones(self, sample_path):
+        report = validate_file(sample_path, profiles=["reg"])
+        assert set(report.profiles) == {"core", "curation", "seg", "reg"}
+        assert at(report, "/") == ["E009"]
+
+    def test_S1_3_a_requirement_never_waives_a_declared_profile(self, tmp_path):
+        path = tmp_path / "h.medh5"
+        History.write(path)
+        report = validate_file(path, profiles=["seg"])
+        assert report.ok, report.diagnostics
+        assert {"clinical", "seg"} <= set(report.profiles)
+        with h5py.File(path, "r+") as handle:
+            del handle["clinical/meta"]
+        found = validate_file(path, profiles=["seg"]).codes
+        assert "E801" in found and "E803" not in found
+
+    def test_an_unknown_required_profile_is_refused(self, sample_path, capsys):
+        from medh5.cli import EXIT_USAGE, main
+
+        with pytest.raises(ValueError, match="unknown profile"):
+            validate_file(sample_path, profiles=["sge"])
+        with pytest.raises(ValueError, match="unknown profile"):
+            validate_paths([sample_path], profiles=["sge"])
+        assert main(["validate", str(sample_path), "--profile", "sge"]) == EXIT_USAGE
+        assert "sge" in capsys.readouterr().err
+
+
 class TestClinicalWithoutTheDocument:
     """1.1 §5--§7: the record rules check timepoint, activity and
     de-identification references against `/meta`.  When it could not be read,

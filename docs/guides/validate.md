@@ -61,8 +61,9 @@ into ten.
 medh5 validate case.medh5 --profile seg --profile det
 ```
 
-`--profile` overrides what the file claims, which is the useful direction: hold
-a file to `det` whether or not it thought to declare it.
+`--profile` adds to what the file claims, which is the useful direction: hold
+a file to `det` whether or not it thought to declare it, and to everything it
+does declare.
 
 ## Fix what is fixable
 

@@ -78,9 +78,10 @@ s.profiles   # {"core", "seg", "det", "curation", "longitudinal"}
 | `longitudinal` | at least two declared timepoints, each grid bound to one, and stable instance ids for objects seen at more than one visit (§7.4) |
 | `clinical` | **format 1.1**: the `clinical/` group --- a canonical descriptor with the subject clock, at least one event, and the documents and links the events use ([1.1](../spec/medh5-1.1.md) §3–§7) |
 
-`--profile` **overrides** what the file claims, which is the useful direction: a
-tool can require `det` and get a diagnostic whether or not the file thought to
-claim it.
+`--profile` holds the file to a profile **besides** those it claims, which is the
+useful direction: a tool can require `det` and get a diagnostic whether or not
+the file thought to claim it. A requirement never waives a profile the file
+declares, and a name that is not a profile is refused.
 
 A profile is coarser than a kind, though. `det` is satisfied by any annotation
 whose task is `detection` — oriented boxes, keypoints and points as well as

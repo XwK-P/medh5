@@ -111,7 +111,9 @@ impl ClinicalTables {
 /// The members `clinical/` defines.
 const MEMBERS: [&str; 4] = [DESCRIPTOR, EVENTS, DOCUMENTS, LINKS];
 
-fn declared(ctx: &Context) -> bool {
+/// Whether the sample is held to the clinical profile: declared, or required
+/// by the caller.
+fn held(ctx: &Context) -> bool {
     ctx.profiles.iter().any(|p| p == PROFILE)
 }
 
@@ -123,23 +125,25 @@ pub fn check_clinical(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     let version = ctx.version.clone().unwrap_or_default();
     let modern = crate::version::at_least(&version, MIN_VERSION);
     let Some(group) = group else {
-        if declared(ctx) {
+        if held(ctx) {
             out.push(ctx.err("E009", "/", "profile `clinical` is declared but `clinical/` is absent"));
         } else if ops::exists(&ctx.root, GROUP) && modern {
             out.push(ctx.err("E803", "/clinical", "`clinical` is reserved by MEDH5 1.1 for the clinical profile"));
         }
         return Ok(out);
     };
-    if !declared(ctx) {
-        // A 1.0 file may hold an extension of that name; a 1.1 file reserves
-        // it, and a recognised descriptor is the profile whatever the version.
-        if modern || crate::clinical::recognised(&ctx.root) {
-            out.push(ctx.err(
-                "E803",
-                "/clinical",
-                "the sample holds clinical content but does not declare the `clinical` profile in `medh5_profiles`",
-            ));
-        }
+    // E803 is about what the file declares, whatever a caller holds it to.  A
+    // 1.0 file may hold an extension of that name; a 1.1 file reserves it, and
+    // a recognised descriptor is the profile whatever the version.
+    let claimed = attrs::get_strs(&ctx.root, "medh5_profiles")?.unwrap_or_default().iter().any(|p| p == PROFILE);
+    if !claimed && (modern || crate::clinical::recognised(&ctx.root)) {
+        out.push(ctx.err(
+            "E803",
+            "/clinical",
+            "the sample holds clinical content but does not declare the `clinical` profile in `medh5_profiles`",
+        ));
+    }
+    if !held(ctx) {
         return Ok(out);
     }
     if !modern {
@@ -391,7 +395,7 @@ pub fn check_clinical_records(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
 /// Integrity: every dataset under `clinical/` carries its §13.1 digest (E818).
 pub fn check_clinical_digests(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     let mut out = Vec::new();
-    if !declared(ctx) {
+    if !held(ctx) {
         return Ok(out);
     }
     let Some(group) = ops::child_group(&ctx.root, GROUP) else { return Ok(out) };

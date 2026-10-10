@@ -221,8 +221,10 @@ def validate_file(
 ) -> Report:
     """Validate one ``.medh5`` sample or ``.medh5c`` collection file.
 
-    A file that cannot be opened is reported (E001), not raised; an unknown
-    *level* raises ``ValueError``.
+    The file is held to the profiles it declares and to *profiles* besides: a
+    requirement adds to what a file claims and never waives a claim.  A file
+    that cannot be opened is reported (E001), not raised; an unknown *level*
+    or profile raises ``ValueError``.
     """
     return Report.from_json(
         _core.validate_file(os.fspath(path), level=level, profiles=profiles)
@@ -235,7 +237,7 @@ def validate_paths(
     level: Level = "semantic",
     profiles: Sequence[str] | None = None,
 ) -> list[Report]:
-    """Validate many files, one report each."""
+    """Validate many files, one report each, as :func:`validate_file` does."""
     return [
         Report.from_json(doc)
         for doc in _core.validate_paths(
@@ -253,7 +255,8 @@ def validate_root(
     errors_only: bool = False,
 ) -> Report:
     """Validate an open :class:`~medh5.sample.Sample` --- a file, or a member
-    of a collection.
+    of a collection --- held to the profiles it declares and to *profiles*
+    besides.
 
     ``errors_only`` skips the warning-only checks that read bulk data, which
     is what the writer's commit gate asks for.

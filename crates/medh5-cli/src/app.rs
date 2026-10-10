@@ -10,6 +10,7 @@ use clap::{Arg, ArgAction, ArgGroup, Command};
 use medh5::annotations::encode::TRANSCODABLE;
 use medh5::clinical::model::HOUR;
 use medh5::collection::SUFFIX;
+use medh5::sample::reader::PROFILES;
 use medh5::storage::index::{DEFAULT_MAX_COORDS, DEFAULT_OCCUPANCY_FACTOR};
 use medh5::validate::LEVELS;
 
@@ -143,7 +144,15 @@ fn inspect() -> Vec<Command> {
                     .value_parser(LEVELS)
                     .default_value("semantic"),
             )
-            .arg(append("profiles", "profile", "override the declared profiles; repeatable").value_name("PROFILE"))
+            .arg(
+                append(
+                    "profiles",
+                    "profile",
+                    "hold the file to this profile too, beside those it declares; repeatable",
+                )
+                .value_name("PROFILE")
+                .value_parser(PROFILES),
+            )
             .arg(flag("verbose", "verbose", "also print what each diagnostic's code means").short('v'))
             .arg(json()),
         Command::new("verify")

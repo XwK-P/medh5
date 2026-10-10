@@ -21,7 +21,8 @@ use serde_json::{json, Value};
 use crate::h5::attrs;
 use crate::h5::ops;
 use crate::integrity::AttrNameMap;
-use crate::json::repr_str;
+use crate::json::{repr_list, repr_str};
+use crate::sample::reader::PROFILES;
 use crate::{Error, Result};
 
 /// The validation levels, in order.
@@ -196,6 +197,23 @@ fn check_level(level: &str) -> Result<()> {
     Ok(())
 }
 
+/// Refuse a requirement naming a profile this validator does not know: a
+/// misspelt one would hold the file to nothing and pass it.
+fn check_required(profiles: Option<&[String]>) -> Result<()> {
+    let mut unknown: Vec<&String> =
+        profiles.unwrap_or_default().iter().filter(|p| !PROFILES.contains(&p.as_str())).collect();
+    if !unknown.is_empty() {
+        unknown.sort();
+        unknown.dedup();
+        return Err(Error::Value(format!(
+            "unknown profile(s) {}; expected any of {}",
+            repr_list(&unknown),
+            repr_list(&PROFILES)
+        )));
+    }
+    Ok(())
+}
+
 /// Run `rules` in order, collecting what each finds.
 ///
 /// A rule that stops on an error reports it as one finding --- under the
@@ -218,6 +236,11 @@ fn run_rules(ctx: &mut rules::Context, rules: &[(&'static str, rules::Rule)]) ->
 
 /// Validate an open sample root.
 ///
+/// The root is held to the profiles it declares and to `profiles` besides: a
+/// caller's requirement adds to the file's claims and never waives one.  A
+/// profile this validator does not know is refused (`Error::Value`), as an
+/// unknown level is.
+///
 /// `errors_only` skips the warning-only checks that read bulk data --- what
 /// `SampleWriter::commit` asks for.
 pub fn validate_root_with(
@@ -229,10 +252,13 @@ pub fn validate_root_with(
     errors_only: bool,
 ) -> Result<Report> {
     check_level(level)?;
-    let declared: Vec<String> = match profiles {
-        Some(p) => p.to_vec(),
-        None => attrs::get_strs(root, "medh5_profiles").ok().flatten().unwrap_or_default(),
-    };
+    check_required(profiles)?;
+    let mut declared: Vec<String> = attrs::get_strs(root, "medh5_profiles").ok().flatten().unwrap_or_default();
+    for profile in profiles.unwrap_or_default() {
+        if !declared.contains(profile) {
+            declared.push(profile.clone());
+        }
+    }
     let mut ctx = rules::Context::new(root.clone(), path, level, declared.clone(), errors_only);
     ctx.attr_names = attr_names.cloned();
     let mut report = Report::new(path, level);
@@ -262,9 +288,11 @@ fn attr_names_for(root: &hdf5::Group, level: &str) -> Option<AttrNameMap> {
     crate::sample::attr_name_map_of(root).ok()
 }
 
-/// Validate a `collection` root and every sample in it (§2.2).
+/// Validate a `collection` root and every sample in it (§2.2), each sample
+/// held to its own profiles and to `profiles` besides.
 pub fn validate_collection(root: &hdf5::Group, path: &str, level: &str, profiles: Option<&[String]>) -> Result<Report> {
     check_level(level)?;
+    check_required(profiles)?;
     let mut ctx = rules::Context::new(root.clone(), path, level, Vec::new(), false);
     let header = rules::check_collection(&mut ctx)?;
     let mut members = Vec::new();
@@ -305,9 +333,14 @@ fn read_failure(path: &str, level: &str, message: String) -> Report {
     report
 }
 
-/// Validate one `.medh5` sample or `.medh5c` collection file.
+/// Validate one `.medh5` sample or `.medh5c` collection file, held to the
+/// profiles it declares and to `profiles` besides.
+///
+/// A file that cannot be read is reported (E001), not returned as an error;
+/// an unknown level or profile is an error.
 pub fn validate_file(path: &Path, level: &str, profiles: Option<&[String]>) -> Result<Report> {
     check_level(level)?;
+    check_required(profiles)?;
     let text = path.to_string_lossy().into_owned();
     let handle = match crate::h5::file::open_read(path) {
         Ok(h) => h,
