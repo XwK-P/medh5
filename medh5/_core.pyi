@@ -2140,9 +2140,16 @@ class AnnotationHeader:
         ...
 
 @final
-@dataclass(frozen=True)
+@dataclass
 class AnnotationPayload:
-    """Datasets and kind-specific attributes for one encoded annotation."""
+    """Datasets and kind-specific attributes for one encoded annotation.
+
+    A mutable record, as 1.x's dataclass was: `datasets` and `attrs` are the
+    payload's own dicts, so an array edited in place, or a dataset or an
+    attribute added, is what the writer and the transcoder then read.  They
+    are handed out on first access --- the arrays move to NumPy uncopied ---
+    and read back when the payload is used.
+    """
 
     kind: str
     datasets: dict[str, npt.NDArray[Any]] = ...
@@ -2153,9 +2160,13 @@ class AnnotationPayload:
     def data(self) -> npt.NDArray[Any]:
         """The `data` dataset."""
         ...
-    def describe(self) -> dict[str, Any]: ...
+    def describe(self) -> dict[str, Any]:
+        """The kind, and each dataset's shape and dtype, for reports."""
+        ...
     @property
-    def nbytes(self) -> int: ...
+    def nbytes(self) -> int:
+        """Total bytes of every dataset."""
+        ...
 
 @final
 class Attrs:

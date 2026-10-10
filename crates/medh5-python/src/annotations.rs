@@ -126,26 +126,103 @@ fn encode_options(kwargs: Option<&Bound<'_, PyDict>>) -> R<enc::EncodeOptions> {
 // -- AnnotationPayload ------------------------------------------------------------------------
 
 /// Datasets and kind-specific attributes for one encoded annotation.
+///
+/// A mutable record, as 1.x's dataclass was: `datasets` and `attrs` are the
+/// payload's own dicts, so an array edited in place, or a dataset or an
+/// attribute added, is what the writer and the transcoder then read.  They
+/// are handed out on first access --- the arrays move to NumPy uncopied ---
+/// and read back when the payload is used.
 #[pyclass(module = "medh5.annotations.base", name = "AnnotationPayload", skip_from_py_object)]
-#[derive(Clone)]
 pub struct AnnotationPayload {
-    pub inner: Payload,
+    /// The kind, stacked axes and class ids; the datasets and attributes too,
+    /// until they are handed out.
+    inner: Payload,
+    /// Once handed out, the payload's datasets (`inner`'s are then empty).
+    datasets: Option<Py<PyDict>>,
+    /// Once handed out, the payload's attributes (`inner`'s are then empty).
+    attrs: Option<Py<PyDict>>,
 }
 
 impl AnnotationPayload {
     pub fn wrap(inner: Payload) -> Self {
-        AnnotationPayload { inner }
+        AnnotationPayload { inner, datasets: None, attrs: None }
+    }
+
+    /// The payload as it stands, for the engine.
+    pub fn current(&self, py: Python<'_>) -> R<Payload> {
+        let mut p = Payload::new(&self.inner.kind);
+        p.stacked_axes = self.inner.stacked_axes;
+        p.class_ids = self.inner.class_ids.clone();
+        match &self.datasets {
+            Some(found) => {
+                for (k, v) in found.bind(py).iter() {
+                    p.datasets.insert(k.extract()?, data_arg(&v)?);
+                }
+            }
+            None => p.datasets = self.inner.datasets.clone(),
+        }
+        match &self.attrs {
+            Some(found) => {
+                for (k, v) in found.bind(py).iter() {
+                    p.attrs.push((k.extract()?, py_to_attr(&v)?));
+                }
+            }
+            None => p.attrs = self.inner.attrs.clone(),
+        }
+        Ok(p)
+    }
+
+    /// The datasets dict, handed out (and from then on the payload's).
+    fn datasets_dict<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        if let Some(found) = &self.datasets {
+            return Ok(found.bind(py).clone());
+        }
+        // Strings first, while nothing has moved: making them can fail.
+        let mut strings = Vec::new();
+        for (k, v) in &self.inner.datasets {
+            if let PayloadData::Strings(values) = v {
+                let list = PyList::new(py, values)?;
+                strings.push((k.clone(), crate::convert::numpy(py)?.call_method1("array", (list, "O"))?));
+            }
+        }
+        let out = PyDict::new(py);
+        for (k, v) in std::mem::take(&mut self.inner.datasets) {
+            match v {
+                PayloadData::Array(a) => out.set_item(&k, nd_to_py(py, a))?,
+                PayloadData::Strings(_) => {
+                    let made = strings.iter().find(|(name, _)| *name == k).map(|(_, value)| value);
+                    out.set_item(&k, made)?
+                }
+            }
+        }
+        self.datasets = Some(out.clone().unbind());
+        Ok(out)
+    }
+
+    /// The attributes dict, handed out (and from then on the payload's).
+    fn attrs_dict<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        if let Some(found) = &self.attrs {
+            return Ok(found.bind(py).clone());
+        }
+        let out = PyDict::new(py);
+        for (k, v) in &self.inner.attrs {
+            out.set_item(k, attr_to_py(py, v)?)?;
+        }
+        self.inner.attrs.clear();
+        self.attrs = Some(out.clone().unbind());
+        Ok(out)
     }
 }
 
-fn data_to_py<'py>(py: Python<'py>, data: &PayloadData) -> PyResult<Bound<'py, PyAny>> {
-    Ok(match data {
-        PayloadData::Array(a) => nd_to_py(py, a.clone()),
-        PayloadData::Strings(values) => {
-            let list = PyList::new(py, values)?;
-            crate::convert::numpy(py)?.call_method1("array", (list, "O"))?
-        }
-    })
+/// A `datasets` or `attrs` value: the dict itself (as a dataclass field
+/// holds what it is given), or any other mapping as a dict.
+fn dict_arg<'py>(value: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyDict>> {
+    if let Ok(d) = value.cast::<PyDict>() {
+        return Ok(d.clone());
+    }
+    let out = PyDict::new(value.py());
+    out.update(value.cast::<pyo3::types::PyMapping>()?)?;
+    Ok(out)
 }
 
 fn data_arg(obj: &Bound<'_, PyAny>) -> PyResult<PayloadData> {
@@ -171,7 +248,7 @@ fn data_arg(obj: &Bound<'_, PyAny>) -> PyResult<PayloadData> {
 /// A payload argument: this class, or anything with its attributes.
 pub fn payload_arg(obj: &Bound<'_, PyAny>) -> R<Payload> {
     if let Ok(p) = obj.cast::<AnnotationPayload>() {
-        return Ok(p.borrow().inner.clone());
+        return p.try_borrow()?.current(obj.py());
     }
     let mut p = Payload::new(&obj.getattr("kind")?.extract::<String>()?);
     if let Ok(datasets) = obj.getattr("datasets") {
@@ -240,56 +317,87 @@ impl AnnotationPayload {
         if let Some(c) = given(class_ids) {
             p.class_ids = ints_of(&c)?;
         }
-        Ok(AnnotationPayload { inner: p })
+        Ok(AnnotationPayload::wrap(p))
     }
     #[getter]
     fn kind(&self) -> &str {
         &self.inner.kind
     }
-    #[getter]
-    fn datasets<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let out = PyDict::new(py);
-        for (k, v) in &self.inner.datasets {
-            out.set_item(k, data_to_py(py, v)?)?;
-        }
-        Ok(out)
+    #[setter]
+    fn set_kind(&mut self, kind: String) {
+        self.inner.kind = kind;
     }
     #[getter]
-    fn attrs<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let out = PyDict::new(py);
-        for (k, v) in &self.inner.attrs {
-            out.set_item(k, attr_to_py(py, v)?)?;
-        }
-        Ok(out)
+    fn datasets<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        self.datasets_dict(py)
+    }
+    #[setter]
+    fn set_datasets(&mut self, datasets: &Bound<'_, PyAny>) -> PyResult<()> {
+        self.datasets = Some(dict_arg(datasets)?.unbind());
+        self.inner.datasets.clear();
+        Ok(())
+    }
+    #[getter]
+    fn attrs<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        self.attrs_dict(py)
+    }
+    #[setter]
+    fn set_attrs(&mut self, attrs: &Bound<'_, PyAny>) -> PyResult<()> {
+        self.attrs = Some(dict_arg(attrs)?.unbind());
+        self.inner.attrs.clear();
+        Ok(())
     }
     #[getter]
     fn stacked_axes(&self) -> usize {
         self.inner.stacked_axes
     }
+    #[setter]
+    fn set_stacked_axes(&mut self, stacked_axes: usize) {
+        self.inner.stacked_axes = stacked_axes;
+    }
     #[getter]
     fn class_ids<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
         PyTuple::new(py, &self.inner.class_ids)
     }
+    #[setter]
+    fn set_class_ids(&mut self, class_ids: &Bound<'_, PyAny>) -> PyResult<()> {
+        self.inner.class_ids = ints_of(class_ids)?;
+        Ok(())
+    }
     /// The `data` dataset.
     #[getter]
-    fn data<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyAny>> {
-        Ok(nd_to_py(py, self.inner.data()?.clone()))
+    fn data<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        self.datasets_dict(py)?.as_any().get_item("data")
     }
+    /// Total bytes of every dataset.
     #[getter]
-    fn nbytes(&self) -> usize {
-        self.inner.nbytes()
+    fn nbytes(&self, py: Python<'_>) -> PyResult<usize> {
+        match &self.datasets {
+            Some(found) => found.bind(py).values().iter().map(|v| v.getattr("nbytes")?.extract::<usize>()).sum(),
+            None => Ok(self.inner.nbytes()),
+        }
     }
-    fn describe<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        json_to_py(py, &self.inner.describe())
+    /// The kind, and each dataset's shape and dtype, for reports.
+    fn describe<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyAny>> {
+        Ok(json_to_py(py, &self.current(py)?.describe())?)
     }
-    fn __repr__(&self) -> String {
-        let names: Vec<&str> = self.inner.datasets.keys().map(String::as_str).collect();
-        format!(
+    fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
+        let names: Vec<String> = match &self.datasets {
+            Some(found) => {
+                found.bind(py).keys().iter().map(|k| k.str().map(|s| s.to_string())).collect::<PyResult<_>>()?
+            }
+            None => self.inner.datasets.keys().cloned().collect(),
+        };
+        Ok(format!(
             "AnnotationPayload(kind={}, datasets={}, class_ids={})",
             medh5::json::repr_str(&self.inner.kind),
             medh5::json::repr_list(&names),
             medh5::json::repr_int_tuple(&self.inner.class_ids)
-        )
+        ))
+    }
+    /// Pickling and `copy`: the fields, as the constructor takes them.
+    fn __reduce__<'py>(slf: &Bound<'py, Self>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyTuple>)> {
+        crate::values::reduce_fields(slf.as_any(), None, Self::FIELDS)
     }
 }
 

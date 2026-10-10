@@ -1,5 +1,7 @@
 //! What every value class shares: dataclass-style `repr`, hashing over the
-//! canonical JSON, and pickling through `from_json(to_json())`.
+//! canonical JSON, and pickling --- through `from_json(to_json())`, through
+//! the constructor, or, for a class only the engine builds, through a private
+//! `_rebuild`.
 
 use std::hash::{Hash, Hasher};
 
@@ -30,6 +32,22 @@ pub fn reduce_via_json<'py>(slf: &Bound<'py, PyAny>) -> PyResult<(Bound<'py, PyA
     let constructor = slf.get_type().getattr("from_json")?;
     let state = slf.call_method0("to_json")?;
     Ok((constructor, PyTuple::new(slf.py(), [state])?))
+}
+
+/// `(type(obj), (obj.<field>, ...))`, or with `type(obj).<rebuild>` in place
+/// of the constructor: pickle and `copy` support over a class's fields.
+pub fn reduce_fields<'py>(
+    slf: &Bound<'py, PyAny>,
+    rebuild: Option<&str>,
+    fields: &[&str],
+) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyTuple>)> {
+    let class = slf.get_type().into_any();
+    let constructor = match rebuild {
+        Some(name) => class.getattr(name)?,
+        None => class,
+    };
+    let values = fields.iter().map(|n| slf.getattr(*n)).collect::<PyResult<Vec<_>>>()?;
+    Ok((constructor, PyTuple::new(slf.py(), values)?))
 }
 
 /// An optional string as a Python value.

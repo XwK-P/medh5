@@ -853,3 +853,32 @@ class TestPayloadEncoderGuards:
         assert not validate_file(path).errors
         with medh5.open(path) as sample:
             assert not sample.annotations["seg"].has_ignore_region
+
+
+class TestAPayloadIsEditedInPlace:
+    """A payload is the record 1.x's encoders returned: its ``datasets`` and
+    ``attrs`` are its own dicts, so an array edited in place, or a dataset or
+    an attribute added, is what decoding and writing then read."""
+
+    SHAPE = (4, 6, 6)
+
+    def test_S7_6_an_edit_to_a_payload_is_what_decoding_reads(self):
+        mask = np.zeros(self.SHAPE, bool)
+        mask[1:3] = True
+        payload = encode_labelmap({1: mask}, self.SHAPE)
+        payload.datasets["data"][1] = 0  # one plane erased, in place
+        payload.attrs["note"] = "edited"
+        assert payload.attrs == {**payload.attrs, "note": "edited"}
+        decoded = payload_to_masks(payload, spatial_shape=self.SHAPE)
+        expected = mask.copy()
+        expected[1] = False
+        assert np.array_equal(decoded[1], expected)
+
+    def test_S7_6_a_field_can_be_reassigned(self):
+        mask = np.zeros(self.SHAPE, bool)
+        mask[1] = True
+        payload = encode_labelmap({1: mask}, self.SHAPE)
+        payload.datasets = {"data": np.zeros(self.SHAPE, np.uint8)}
+        payload.class_ids = (1,)
+        assert not payload_to_masks(payload, spatial_shape=self.SHAPE)[1].any()
+        assert payload.nbytes == int(np.prod(self.SHAPE))
