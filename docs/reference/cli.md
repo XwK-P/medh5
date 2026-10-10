@@ -5,7 +5,7 @@ medh5 COMMAND [args] [--json]
 ```
 
 The command line is a native program over the format engine. `pip install
-medh5` puts it on the path; so do `cargo install medh5-cli`, the binaries
+medh5` puts it on the path; so do `cargo install --locked medh5-cli`, the binaries
 attached to every GitHub Release, and `brew install XwK-P/medh5/medh5`. Each is
 the same code, with the same output and exit codes. The converters
 (`medh5 convert …`, `medh5 migrate`) are Python integrations: the standalone

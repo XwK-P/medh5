@@ -18,7 +18,7 @@ with medh5.open("case_0001.medh5") as s:
 ```bash
 pip install medh5            # Python
 cargo add medh5              # Rust
-cargo install medh5-cli      # the medh5 command line, natively
+cargo install --locked medh5-cli  # the medh5 command line, natively
 ```
 
 One format engine, written in Rust, with three frontends that read and write

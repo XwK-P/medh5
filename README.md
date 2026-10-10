@@ -40,15 +40,23 @@ the same bytes:
 pip install medh5                      # the Python package
 pip install "medh5[torch,nifti,dicom]"
 cargo add medh5                        # the Rust crate
-cargo install medh5-cli                # the `medh5` command line, natively
+cargo install --locked medh5-cli       # the `medh5` command line, natively
 ```
 
 The wheels carry the engine, HDF5 included, so reading and writing need only
 NumPy. Extras: `torch`, `monai`, `nifti`, `dicom`, `dicomseg`, and `h5py` for
 opening files with `h5py` directly. The `medh5` binary is also attached to every
 [GitHub Release](https://github.com/XwK-P/medh5/releases), and installs with
-`brew install XwK-P/medh5/medh5`; building it or the crate from source needs a
-C compiler and CMake, for HDF5.
+`brew install XwK-P/medh5/medh5`; building it or the crate from source needs
+Rust 1.85.1 or later, a C compiler and CMake, for HDF5.
+
+There is a wheel for CPython 3.10 and later on Linux x86_64 and aarch64 (glibc
+2.28 or later), macOS 11 or later (x86_64 and arm64) and Windows x64. Anywhere
+else --- musl, an older glibc, Windows on ARM, PyPy, a free-threaded CPython
+--- `pip` falls back to the sdist, and building the engine from it needs the
+same Rust, C compiler and CMake, and network access to crates.io. Where neither
+will do, the 1.x line remains --- pure Python over h5py, writing format 1.0:
+`pip install "medh5<2"`.
 
 ## Documentation
 

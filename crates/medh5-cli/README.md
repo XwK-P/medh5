@@ -7,7 +7,7 @@ Python package's `medh5` command runs --- so both produce the same output and
 the same exit codes: `0` success, `1` a handled error, `2` a usage error.
 
 ```bash
-cargo install medh5-cli          # or a binary from the GitHub Release, or Homebrew
+cargo install --locked medh5-cli # or a binary from the GitHub Release, or Homebrew
 medh5 info case.medh5            # grids, images, annotations, coverage
 medh5 validate case.medh5 --level strict
 medh5 verify case.medh5          # digests and content_id
@@ -21,7 +21,7 @@ HDF5 is linked statically: the binary needs nothing installed. Building it
 
 ```powershell
 $env:CFLAGS_x86_64_pc_windows_msvc = "-DNDEBUG"
-cargo install medh5-cli
+cargo install --locked medh5-cli
 ```
 
 cmake-rs, which builds HDF5, drops CMake's release flags under the Visual
