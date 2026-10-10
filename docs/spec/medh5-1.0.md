@@ -1325,6 +1325,17 @@ only. A dataset reached first through `index/`, or only through a soft link, the
 and `content_id` does not speak for its bytes: a validator **MUST** report a `digest` such a dataset
 carries as **E702**, and nothing that relies on `content_id` may count the dataset as covered.
 
+**A line binds bytes to a path.** Every object the root speaks for --- what a reader reaches by name
+through `grids/`, `images/`, `annotations/` and `transforms/`, soft links followed as a reader
+follows them --- **MUST** be reached there at its own path: its first, the one its line names. Any
+other path to it is covered nowhere --- an alias sorting before its own path, a second link inside
+those groups, a soft link, a group reached a second time, an external link --- because the lines do
+not record it: relinked to other covered bytes, such a path changes no line, so the root still
+recomputes while a reader of that name reads other bytes. A validator **MUST** report such a path as
+**E704** (a dataset that no line lists and that carries a `digest` is E702, above), and nothing that
+relies on `content_id` may count it as covered. A later path outside those groups is an extension's
+and no error. No `content_id` changes.
+
 At the root, the covered attributes are exactly `medh5_version`, `medh5_kind` and `medh5_profiles`.
 `created` and `generator` are **excluded**, and `content_id` obviously cannot cover itself: two
 byte-identical samples written an hour apart by different tools **MUST** share a `content_id`, or it
@@ -1503,7 +1514,7 @@ one.
 | `E4xx` | annotations | `E401` unknown `kind`; `E402` class id not in label set; `E403` `annotated_class_ids ⊄ class_ids`; `E404` encoding invariant violated (e.g. a class in two layers); `E405` shape mismatch with grid; `E406` box `lo > hi`; `E407` `rotations` not a proper rotation; `E408` offsets not monotonic; `E409` `timepoints` references an undeclared timepoint; `E410` a dataset required by the `kind` is absent; `E411` dataset dtype not permitted for the `kind`; `E412` required annotation attribute missing; `E413` reference to a skeleton, correspondence, ignore mask or source annotation that does not exist; `E414` `space` invalid for the annotation's grid or frame |
 | `E5xx` | transforms | `E501` composite frame chain broken; `E502` unknown transform kind; `E503` field grid not in `from_frame`; `E504` affine last row ≠ `[0…0 1]`; `E505` `inverse_id` not mutually consistent |
 | `E6xx` | curation | `E601` dangling `prov` reference; `E602` unknown `quality` key; `E603` unknown agent or activity type; `E604` non-RFC3339 timestamp; `E605` activity names an undeclared agent |
-| `E7xx` | integrity | `E701` object digest mismatch; `E702` `content_id` mismatch; `E703` malformed digest string |
+| `E7xx` | integrity | `E701` object digest mismatch; `E702` `content_id` mismatch; `E703` malformed digest string; `E704` an object `content_id` covers reached at a path that is not its own |
 | `W9xx` | warnings | `W901` no digests; `W902` uncompressed or unchunked bulk dataset; `W903` no `deidentification`; `W904` partial coverage without an ignore region; `W905` stale `index/` entry; `W906` conflicting split claims; `W907` `float32` storage where `int16 + rescale` is lossless; `W908` `layers` count far from the greedy-colouring optimum; `W909` one `instance_id` carrying two class ids; `W910` grids in different timepoints sharing a `frame_uid`; `W911` multi-timepoint sample with no transform relating any two timepoints; `W912` a class used by an annotation carries no ontology binding |
 
 ---
@@ -1628,7 +1639,7 @@ Running the corpus against a validator is how a third-party implementation demon
 
 ```
 $ medh5 conformance run ./corpus
-153/153 cases pass
+155/155 cases pass
 ```
 
 **Every code in §15.2 has a corpus case.** The implementation gates on `cargo clippy` and `rustfmt`
@@ -1641,9 +1652,9 @@ any machine. On one, with a 192×256×256 synthetic CT and eight classes, a mult
 costs 3.4 ms, foreground centre sampling 0.03 ms (O(1) in volume size, via §14.3; 0.05 ms at 63
 classes), a metadata-only read 0.19 ms, and `open()` → first patch 2.3 ms.
 
-Thirty-two clauses have been corrected — ten during implementation, eleven in the 1.x package
+Thirty-three clauses have been corrected — ten during implementation, eleven in the 1.x package
 releases that followed, four when the engine was written a second time, in Rust, for the 2.0
-package, one when it implemented 1.1, and six in the audits of 2.0 before its release — each because
+package, one when it implemented 1.1, and seven in the audits of 2.0 before its release — each because
 writing the code showed the text was not implementable, not unambiguous, or not what the
 implementation could honestly promise, as written:
 
@@ -1681,6 +1692,7 @@ implementation could honestly promise, as written:
 | §10.4 | A displacement field covers its grid's voxel extent, `[-0.5, n - 0.5]` per axis, and under `zero` and `error` a point in the half-voxel margin beyond the outermost sample takes that sample's value, for `linear` and `cubic` alike. The clause named the extrapolation modes and not the extent they start at: linear interpolation clamped the margin to the edge value, while cubic --- SciPy's constant mode, since 1.x --- was zero beyond the outermost samples, so a point `error` admitted came out with no displacement, and `zero` meant a different region for each interpolation. Values between the outermost samples are unchanged. |
 | §7.5 | `normalized` holds at the stored precision: at each voxel the stored values sum to 1 within `10⁻⁶ + u·σ + n·t/2`, and the error of summing them in `float64`, where `σ` is that sum, `n` the number of classes, `u` the stored dtype's unit roundoff (2⁻¹¹ for `float16`, 2⁻²⁴ for `float32`) and `t` its smallest subnormal: the rounding of the values stored, and no more. "Sum to 1" named no tolerance, and no stored map meets it exactly; the one implemented, `n` times the dtype's epsilon, grew with the class count until at 1,024 `float16` classes a map whose every value had been zeroed validated as normalized. A writer holds the values it is given to `10⁻⁶`, so every map it stores meets the bound. |
 | §13.2 | A dataset has one line however many paths reach it --- its first, through hard links, in byte order --- and a dataset reached first through `index/`, or only through a soft link, has none: `content_id` does not cover it, and a `digest` it carries is **E702**. "Every dataset with a digest" said nothing of a dataset with two paths, or one reached through a soft link. Every implementation has visited each object once, at its first path, without saying what that left out: a clinical column linked first from `index/`, or a transform's parameters, changed under an unchanged `content_id`, and a task's source pin, a deep preflight and the validator passed it. No `content_id` changes. |
+| §13.2 | A line binds a dataset's bytes to the path it names: a path through `grids/`, `images/`, `annotations/` or `transforms/` that is not its object's own --- an alias sorting before it, a second link, a soft link, a group reached twice, an external link --- is covered nowhere, and is **E704**. Coverage had been judged by object: an attested name held by such a path could be relinked after a pin to other covered bytes, which changed no line, so the root recomputed and a task's source pin, `verify` and the validator all passed while a reader read other bytes. The reference writer makes no links, so no file it writes changes, and no `content_id` changes. |
 
 ### C.2 Prototype checks
 

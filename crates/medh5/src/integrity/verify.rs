@@ -1,10 +1,13 @@
 //! Verification of digests, `content_id` and derived-index currency (§13).
 
+use std::collections::HashMap;
+
+use indexmap::IndexMap;
 use serde_json::{json, Value};
 
 use super::digest::{
-    collect_digests, compute_content_id, dataset_digest, dataset_digest_inspected, digested_objects, group_digest,
-    root_algo, AttrNameMap, STREAM_BYTES,
+    collect_digests, compute_content_id, dataset_digest, dataset_digest_inspected, group_digest, root_algo,
+    AttrNameMap, STREAM_BYTES,
 };
 use crate::array::NdArray;
 use crate::digest::{parse_digest, DEFAULT_ALGO};
@@ -16,52 +19,157 @@ use crate::{Error, Result};
 /// Where every dataset is part of an object a `content_id` speaks for.
 pub const ATTESTED_GROUPS: [&str; 4] = ["grids", "images", "annotations", "transforms"];
 
-/// Every dataset of an object a `content_id` speaks for, at its path through
-/// the attested group that holds it.  `clinical/` is attested where the
-/// profile is declared (1.1 §8, E818); in a 1.0 file a group of that name is
-/// somebody's extension.
-///
-/// Each group is walked on its own.  A walk of the whole root visits an
-/// object once, at the first path that reaches it, so a hard link elsewhere
-/// --- a root alias sorting before `clinical` --- reached an undigested column
-/// first and took it out of its group: a pin, `verify` and a deep preflight
-/// passed over it while the clinical reader read it (B03 of the 2.0
-/// re-audit).  Soft links are followed, because readers follow them: a column
-/// linked softly to storage under `index/` was read by every selection and
-/// walked by nothing (B03 of the round-3 audit).
-pub fn attested_datasets(root: &hdf5::Group) -> Result<Vec<(String, hdf5::Dataset)>> {
+/// How a path through an attested group fails to be the path the root's
+/// lines bind (§13.2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Binding {
+    /// A dataset at its own path that carries no digest: no line lists it.
+    Undigested,
+    /// A dataset carrying a digest that no line lists: its object is reached
+    /// first through `index/`, which the root excludes, or only through a soft
+    /// link (E702).
+    Unlisted,
+    /// A path that is not its object's own (E704): an alias sorting before
+    /// it, a second link, a soft link, a group reached a second time, or an
+    /// external link.  `first` is the object's own path --- for a digested
+    /// dataset, the path its line names --- when the root reaches it by hard
+    /// links at all.
+    Elsewhere { first: Option<String> },
+}
+
+/// A path through an attested group whose bytes no line of the root binds to
+/// it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unbound {
+    /// Relative to the sample root.
+    pub path: String,
+    pub binding: Binding,
+}
+
+/// The groups whose every path a `content_id` speaks for: the four of 1.0,
+/// and `clinical/` where the profile is declared (1.1 §8, E818); in a 1.0
+/// file a group of that name is somebody's extension.
+fn attested_groups(root: &hdf5::Group) -> Result<Vec<&'static str>> {
     let clinical =
         attrs::get_strs(root, "medh5_profiles")?.unwrap_or_default().iter().any(|p| p == crate::clinical::PROFILE);
-    let mut out = Vec::new();
-    for name in ATTESTED_GROUPS.into_iter().chain(clinical.then_some(crate::clinical::GROUP)) {
-        let Some(group) = ops::child_group(root, name) else { continue };
-        for (path, ds) in ops::datasets_resolving(&group)? {
-            out.push((format!("{name}/{path}"), ds));
+    Ok(ATTESTED_GROUPS.into_iter().chain(clinical.then_some(crate::clinical::GROUP)).collect())
+}
+
+/// Every path through an attested group that is not the path the root's
+/// lines bind to its bytes (§13.2), sorted.
+///
+/// A dataset has one line, at its first path: the walk of the root visits
+/// each object once, through hard links, in byte order.  Covered is therefore
+/// a property of a *path*: an attested path is covered only when it is the
+/// path its object's line names.  Judging by identity alone passed a file in
+/// which a second path to a covered object --- an alias sorting earlier, a
+/// soft link --- held the attested name: relinking that name to another
+/// covered object changed no line, so the root recomputed, the pin and
+/// `verify` held, and a reader read other bytes (F01 of the round-4 audit).
+///
+/// Every link under an attested group is judged, soft links followed as
+/// readers follow them.  A group is entered only at its own first path, so
+/// a cycle or an alias of a group is one finding, not a walk without end.
+pub fn unbound(root: &hdf5::Group) -> Result<Vec<Unbound>> {
+    let mut first: HashMap<ops::ObjectId, String> = HashMap::new();
+    ops::visit(root, &mut |path, node| {
+        let id = match node {
+            Node::Group(g) => ops::object_id_of(g),
+            Node::Dataset(d) => ops::object_id_of(d),
+        };
+        if let Some(id) = id {
+            first.insert(id, path.to_string());
         }
+        Ok(true)
+    })?;
+    let lines = collect_digests(root, &["index"])?;
+    let mut out = Vec::new();
+    for name in attested_groups(root)? {
+        if ops::link_kind(root, name).is_none() {
+            continue;
+        }
+        judge(root, name, name, 0, &first, &lines, &mut out)?;
     }
+    out.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(out)
 }
 
-/// Of [`attested_datasets`], those whose object no dataset line of the root
-/// covers.  The root is a Merkle root over *stored* digests (§13.2), so such a
-/// dataset is content no address covers: a pin, a cache entry and `verify`
-/// would all pass over it.
+/// Judge the link `name` in `group`, reached at `path`, and what it leads to.
+fn judge(
+    group: &hdf5::Group,
+    name: &str,
+    path: &str,
+    depth: usize,
+    first: &HashMap<ops::ObjectId, String>,
+    lines: &IndexMap<String, String>,
+    out: &mut Vec<Unbound>,
+) -> Result<()> {
+    if depth > ops::MAX_DEPTH {
+        return Err(Error::File(format!(
+            "{} is nested more than {} groups deep; it is refused rather than followed",
+            repr_str(path),
+            ops::MAX_DEPTH
+        )));
+    }
+    let elsewhere = |first: Option<&String>| Unbound {
+        path: path.to_string(),
+        binding: Binding::Elsewhere { first: first.cloned() },
+    };
+    match ops::link_kind(group, name) {
+        Some(LinkKind::Hard | LinkKind::Soft) => {}
+        // Bytes in another file, or behind a link HDF5 does not resolve
+        // itself: nothing of this root.
+        Some(_) => {
+            out.push(elsewhere(None));
+            return Ok(());
+        }
+        None => return Ok(()),
+    }
+    // A soft link to nothing names no object.
+    let Some(id) = ops::object_id_by_name(group, name) else { return Ok(()) };
+    let own = first.get(&id);
+    match ops::node_kind(group, name) {
+        Some(NodeKind::Group) => {
+            if own.map(String::as_str) != Some(path) {
+                out.push(elsewhere(own));
+                return Ok(());
+            }
+            let child = group.group(name)?;
+            for member in ops::members(&child)? {
+                judge(&child, &member, &format!("{path}/{member}"), depth + 1, first, lines, out)?;
+            }
+        }
+        Some(NodeKind::Dataset) => {
+            if lines.contains_key(path) {
+                return Ok(());
+            }
+            let binding = if own.map(String::as_str) == Some(path) {
+                Binding::Undigested
+            } else if own.is_some_and(|p| lines.contains_key(p)) {
+                Binding::Elsewhere { first: own.cloned() }
+            } else if attrs::has(&*group.dataset(name)?, "digest") {
+                Binding::Unlisted
+            } else {
+                Binding::Elsewhere { first: own.cloned() }
+            };
+            out.push(Unbound { path: path.to_string(), binding });
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// The paths of [`unbound`]: what a declared `content_id` does not cover.
+/// The root is a Merkle root over *stored* digests at the paths their lines
+/// name (§13.2), so such a path is content no address covers there: a pin, a
+/// cache entry and `verify` would all pass over it.
 ///
-/// Covered is by identity.  A dataset without a digest is not covered; nor is
-/// one whose object is listed under no path --- reached first through
-/// `index/`, which the root excludes, say, or only through a soft link to
-/// storage the root does not list.  A transform aliased under `index/` before
-/// its sample was pinned changed by 100 mm under an unchanged pin (B03 of the
-/// round-3 audit).
+/// A dataset without a digest is not covered; nor is one whose object is
+/// listed under no line --- reached first through `index/`, which the root
+/// excludes, or only through a soft link (B03 of the round-3 audit) --- nor
+/// one listed under another path (F01 of the round-4 audit).
 pub fn unattested(root: &hdf5::Group) -> Result<Vec<String>> {
-    let covered = digested_objects(root, &["index"])?;
-    let mut out: Vec<String> = attested_datasets(root)?
-        .into_iter()
-        .filter(|(_, ds)| ops::object_id_of(ds).is_none_or(|id| !covered.contains(&id)))
-        .map(|(path, _)| path)
-        .collect();
-    out.sort();
-    Ok(out)
+    Ok(unbound(root)?.into_iter().map(|u| u.path).collect())
 }
 
 /// Outcome of a verification pass.
@@ -74,7 +182,8 @@ pub struct VerifyResult {
     pub content_id_declared: Option<String>,
     pub content_id_computed: Option<String>,
     pub stale_index: Vec<String>,
-    /// Undigested datasets inside an object a declared `content_id` covers.
+    /// Paths inside an object a declared `content_id` covers that no line of
+    /// it binds there: [`unattested`].
     pub unattested: Vec<String>,
 }
 
@@ -508,5 +617,93 @@ mod tests {
         assert_eq!(relative_target("/samples/k", "/samples/k"), "/");
         assert_eq!(relative_target("/samples/k", "/samples/kk/x"), "/samples/kk/x");
         assert_eq!(relative_target("/", "/images/CT"), "/images/CT");
+    }
+
+    /// [`tree`] with a second image, every dataset digested where the walk
+    /// first reaches it, after `extra` has linked what it links.
+    fn stamped(path: &std::path::Path, extra: impl FnOnce(&hdf5::File)) -> hdf5::File {
+        let file = tree(path, |file| {
+            let images = file.group("images").unwrap();
+            images.new_dataset::<u8>().shape([4]).create("MR").unwrap().write(&[5u8, 6, 7, 8]).unwrap();
+            extra(file);
+        });
+        super::super::digest::stamp_digests(&file.as_group().unwrap(), "sha256", &["index"], false).unwrap();
+        file
+    }
+
+    fn bindings(file: &hdf5::File) -> Vec<(String, Binding)> {
+        unbound(&file.as_group().unwrap()).unwrap().into_iter().map(|u| (u.path, u.binding)).collect()
+    }
+
+    /// F01: a line binds bytes to the path it names.  An alias sorting before
+    /// `images/` holds the image's line, so `images/CT` is a name no line
+    /// binds --- it could be relinked to other covered bytes, changing no line.
+    #[test]
+    fn f01_s13_2_an_earlier_alias_leaves_the_name_unbound() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = stamped(&dir.path().join("a.h5"), |file| file.link_hard("/images/CT", "aaa").unwrap());
+        assert_eq!(bindings(&file), vec![("images/CT".into(), Binding::Elsewhere { first: Some("aaa".into()) })]);
+        // A later alias, outside the attested groups, leaves every name bound.
+        let file = stamped(&dir.path().join("z.h5"), |file| file.link_hard("/images/CT", "zzz").unwrap());
+        assert_eq!(bindings(&file), vec![]);
+    }
+
+    /// F01: inside an attested group every link is judged --- a second hard
+    /// link, a soft link, an external link --- and an undigested dataset at
+    /// its own path is told apart from all of them.
+    #[test]
+    fn f01_s13_2_every_link_through_an_attested_group_is_judged() {
+        let dir = tempfile::tempdir().unwrap();
+        let other = dir.path().join("other.h5");
+        tree(&other, |_| {});
+        let file = stamped(&dir.path().join("links.h5"), |file| {
+            let images = file.group("images").unwrap();
+            images.link_hard("/images/CT", "CT_second").unwrap();
+            images.link_soft("/images/MR", "MR_soft").unwrap();
+            images.link_soft("/nowhere", "dangling").unwrap();
+            images.link_external(&other.to_string_lossy(), "/images/CT", "far").unwrap();
+        });
+        file.group("images").unwrap().new_dataset::<u8>().shape([1]).create("unstamped").unwrap();
+        assert_eq!(
+            bindings(&file),
+            vec![
+                ("images/CT_second".into(), Binding::Elsewhere { first: Some("images/CT".into()) }),
+                ("images/MR_soft".into(), Binding::Elsewhere { first: Some("images/MR".into()) }),
+                ("images/far".into(), Binding::Elsewhere { first: None }),
+                ("images/unstamped".into(), Binding::Undigested),
+            ]
+        );
+    }
+
+    /// F01: a group reached a second time --- a cycle, or an alias of a group
+    /// --- is one finding, and is not walked again.
+    #[test]
+    fn f01_s13_2_a_group_reached_twice_is_one_finding() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = stamped(&dir.path().join("cycle.h5"), |file| {
+            file.group("images").unwrap().link_hard("/images", "self").unwrap();
+            file.create_group("grids").unwrap().link_soft("/images", "soft").unwrap();
+        });
+        assert_eq!(
+            bindings(&file),
+            vec![
+                ("grids/soft".into(), Binding::Elsewhere { first: Some("images".into()) }),
+                ("images/self".into(), Binding::Elsewhere { first: Some("images".into()) }),
+            ]
+        );
+    }
+
+    /// B03 stays E702: a digest on an object no line lists --- reached first
+    /// through `index/`, which sorts before `transforms/` --- is a claim the
+    /// root does not make.
+    #[test]
+    fn b03_s13_2_a_digest_no_line_lists_is_unlisted() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = stamped(&dir.path().join("index.h5"), |file| {
+            let t = file.create_group("transforms").unwrap().create_group("t").unwrap();
+            t.new_dataset::<f64>().shape([2]).create("matrix").unwrap().write(&[1.0, 2.0]).unwrap();
+        });
+        file.create_group("index").unwrap().link_hard("/transforms/t/matrix", "alias").unwrap();
+        assert_eq!(bindings(&file), vec![("transforms/t/matrix".into(), Binding::Unlisted)]);
     }
 }

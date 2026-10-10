@@ -72,8 +72,11 @@ In a file that declares a `content_id`, a dataset inside a grid, image,
 annotation or transform that carries no digest fails the check (`UNSIGNED`):
 the root covers the digests present, so an undigested dataset added to an
 object — `instance_ids` on a boxes annotation, say — changes what it means
-without changing the root. The writer digests every dataset, so none of its
-files has one.
+without changing the root. So does a path there that is not its object's own
+— an alias sorting before it, a soft link — because a line binds bytes to the
+path it names, and such a name could be relinked to other covered bytes under
+the same root (`E704`). The writer digests every dataset and makes no links,
+so none of its files has either.
 
 ### `medh5 fix`
 

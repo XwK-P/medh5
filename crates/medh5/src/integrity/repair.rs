@@ -143,7 +143,7 @@ pub fn fix(path: &Path, options: &FixOptions) -> Result<Repair> {
         );
         if !diagnosis.unattested.is_empty() {
             message.push_str(&format!(
-                " and {} dataset(s) inside attested objects that carry none",
+                " and {} path(s) inside attested objects that no line of content_id covers",
                 diagnosis.unattested.len()
             ));
         }

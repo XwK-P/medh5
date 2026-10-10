@@ -5,9 +5,9 @@ makes "conforming MEDH5 file" a claim somebody else can test.
 
 ## The corpus
 
-153 cases, each a file plus the **exact set of diagnostic codes** a conforming
-validator must emit for it. 49 are valid files an implementation must accept,
-32 of them with specific warnings; 104 are invalid ones it must reject with
+155 cases, each a file plus the **exact set of diagnostic codes** a conforming
+validator must emit for it. 50 are valid files an implementation must accept,
+32 of them with specific warnings; 105 are invalid ones it must reject with
 specific errors. Between them they exercise every code in the specification's
 tables --- 1.0 §15.2 and the codes [1.1](medh5-1.1.md) §11.2 adds --- and every
 cross-reference clause behind a code.
@@ -28,7 +28,7 @@ against each other.
 ```
 $ medh5 conformance list
 $ medh5 conformance run /tmp/corpus
-153/153 cases pass
+155/155 cases pass
 ```
 
 A test in this repository asserts the §15.2 table and the code registry are
@@ -38,12 +38,12 @@ identical, so the spec and the implementation cannot drift apart silently.
 
 ```
 $ medh5 conformance publish suite/
-wrote the suite to suite/: 153 cases, see suite/README.md
+wrote the suite to suite/: 155 cases, see suite/README.md
 ```
 
 | File | |
 |---|---|
-| `*.medh5`, `*.medh5c` | the cases: 147 samples and six collections |
+| `*.medh5`, `*.medh5c` | the cases: 149 samples and six collections |
 | `expected.json` | per case: the clause, the level, and the expected codes |
 | `codes.json` | the diagnostic code table as data (1.0 §15.2 and 1.1 §11.2) |
 | `medh5-sample-1.0.schema.json` | the JSON Schema for `/meta` |
@@ -88,7 +88,7 @@ one JSON array:
 
 ```
 $ medh5 conformance score suite/ results.json
-153/153 cases pass
+155/155 cases pass
 ```
 
 `medh5 validate --json` emits a superset of that shape, so the reference
@@ -154,7 +154,7 @@ publish("suite/")
 check_checksums("suite/")           # names of files whose bytes changed
 
 results = score("suite/", submitted)
-summarize(results)                  # {"cases": 153, "passed": 153, "ok": True, ...}
+summarize(results)                  # {"cases": 155, "passed": 155, "ok": True, ...}
 ```
 
 ## Profiles

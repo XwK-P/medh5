@@ -291,6 +291,10 @@ class TestSpecSync:
             30: "Thirty",
             31: "Thirty-one",
             32: "Thirty-two",
+            33: "Thirty-three",
+            34: "Thirty-four",
+            35: "Thirty-five",
+            36: "Thirty-six",
         }
         assert f"{words[len(rows)]} clauses have been corrected" in section
         # The 1.4.2 correction is recorded; 2.0's three follow it.

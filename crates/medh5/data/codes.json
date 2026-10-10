@@ -362,6 +362,12 @@
       "summary": "malformed digest string"
     },
     {
+      "code": "E704",
+      "severity": "error",
+      "domain": "integrity",
+      "summary": "an object `content_id` covers is reached at a path that is not its own"
+    },
+    {
       "code": "E801",
       "severity": "error",
       "domain": "clinical",

@@ -63,12 +63,16 @@ class VerifyResult:
     content_id_computed: str | None = None
     stale_index: tuple[str, ...] = ()
     unattested: tuple[str, ...] = ()
-    """Undigested datasets inside an object a declared ``content_id`` covers.
+    """Paths inside an object a declared ``content_id`` covers that no line
+    of it binds there.
 
     ``content_id`` is a root over the digests that are *present*, so a dataset
     added to an annotation without one changes what the object means while
-    the root still matches.  The writer digests every dataset, so none of its
-    files carries one.
+    the root still matches.  A line binds bytes to the path it names, so a
+    path that is not its object's own --- an alias sorting before it, a soft
+    link --- could be relinked to other covered bytes under the same root
+    (``E704``).  The writer digests every dataset and makes no links, so none
+    of its files has either.
     """
     details: dict[str, Any] = field(default_factory=dict)
 

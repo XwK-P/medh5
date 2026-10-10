@@ -57,7 +57,7 @@ fn recompress_cmd(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
             ctx.print(format!("  MISMATCH  {name}"));
         }
         for name in &result.unattested {
-            ctx.print(format!("  UNSIGNED  {name} (no digest, inside an attested object)"));
+            ctx.print(format!("  UNSIGNED  {name} (no line of content_id covers it at this path)"));
         }
         for name in &result.kept {
             ctx.print(format!("  KEPT      {name} (copied as stored: a rebuild would lose its type)"));

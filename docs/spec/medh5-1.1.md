@@ -352,7 +352,9 @@ The §13.2 Merkle construction and its attribute allowlists are **unchanged**: c
 no attribute but the dataset `digest`, so clinical semantics are attested through dataset content,
 the descriptor included. Checking the stored root alone is insufficient --- a verifier recomputes the
 relevant datasets (**E701**); the conformance cases `E701-clinical-text-edited` and
-`E701-clinical-descriptor-edited` change bytes under an unchanged stored root.
+`E701-clinical-descriptor-edited` change bytes under an unchanged stored root. Where the profile is
+declared, `clinical/` is attested as the four 1.0 groups are: every path through it is its object's
+own, the one its line names (1.0 §13.2, **E704**).
 
 Declaring `1.1` and `clinical` changes `content_id`, so augmenting a 1.0 sample gives it a new
 address, while its image and annotation payload digests are unchanged: their paths and decompressed

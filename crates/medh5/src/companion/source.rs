@@ -7,14 +7,12 @@
 //! re-verifies the clinical datasets' actual bytes --- a stored root alone
 //! would miss an edit under unchanged digests (1.1 §8).
 
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 
 use super::Finding;
 use crate::collection::{open_any, AnyFile};
-use crate::h5::ops::{self, ObjectId};
 use crate::json::repr_str;
 use crate::sample::Sample;
 use crate::{Error, Result};
@@ -42,11 +40,27 @@ impl SourceRef {
     }
 
     /// A reference pinned to what `sample` is now.
+    ///
+    /// Refused when the root does not bind every attested path to its bytes
+    /// (1.0 §13.2): such a pin could never check clean, and a file crafted
+    /// with an alias holding an attested name --- relinkable afterwards to
+    /// other covered bytes under the same root --- pinned without complaint
+    /// (F01 of the round-4 audit).
     pub fn pin(uri: impl Into<String>, sample_key: Option<String>, sample: &Sample) -> Result<SourceRef> {
         let content_id = sample
             .content_id()?
             .ok_or_else(|| Error::invalid("a sample without a content_id cannot be pinned; commit it first"))?;
         let mut out = SourceRef::new(uri, sample_key, content_id);
+        let uncovered = crate::integrity::unattested(&sample.root)?;
+        if !uncovered.is_empty() {
+            return Err(Error::Integrity(format!(
+                "{} cannot be pinned: no line of its content_id binds {} to {} bytes (1.0 §13.2); `medh5 validate \
+                 --level integrity` says why",
+                out.locator(),
+                uncovered.join(", "),
+                if uncovered.len() == 1 { "its" } else { "their" },
+            )));
+        }
         out.local_subject_id = Some(sample.identity()?.subject_id.clone());
         Ok(out)
     }
@@ -107,24 +121,26 @@ impl SourceRef {
             return Ok(out);
         }
         let digests = crate::integrity::collect_digests(&sample.root, &["index"])?;
-        // The root covers stored digests only, so a dataset that carries none
-        // --- a column added later, say --- is bytes no pin speaks for: refused
-        // before anything is recomputed (1.0 §13.2, 1.1 §8, E818).  Found
-        // through the groups that hold it, whatever other path reaches it,
-        // soft links followed as readers follow them, and judged by identity:
-        // an object listed under no dataset line --- reached first through
-        // `index/`, or only through a soft link --- is no more covered than
-        // one without a digest (B03).
+        // The root covers stored digests at the paths their lines name, so a
+        // dataset that carries none --- a column added later, say --- is bytes
+        // no pin speaks for, and so is one reached at a path that is not its
+        // own: refused before anything is recomputed (1.0 §13.2, 1.1 §8,
+        // E818).  Every path through the attested groups is judged, soft links
+        // followed as readers follow them: an object listed under no line ---
+        // reached first through `index/`, or only through a soft link --- is
+        // no more covered than one without a digest (B03), and a name held by
+        // an alias could be relinked to other covered bytes under the same
+        // root (F01 of the round-4 audit).
         let uncovered = crate::integrity::unattested(&sample.root)?;
         if !uncovered.is_empty() {
             out.push(Finding::new(
                 "T302",
                 &at,
                 format!(
-                    "{}: {} carr{} no digest the root covers, so the pinned content_id does not cover {}",
+                    "{}: no line of the root binds {} to {} bytes, so the pinned content_id does not cover {}",
                     self.locator(),
                     uncovered.join(", "),
-                    if uncovered.len() == 1 { "ies" } else { "y" },
+                    if uncovered.len() == 1 { "its" } else { "their" },
                     if uncovered.len() == 1 { "it" } else { "them" }
                 ),
             ));
@@ -141,25 +157,11 @@ impl SourceRef {
             ));
             return Ok(out);
         }
-        // A digest is keyed by an object's first path, which for a column
-        // aliased at the root is not under `clinical/`: the clinical datasets
-        // are the objects reachable through it, by identity (B03).
-        let clinical: HashSet<ObjectId> = if deep {
-            HashSet::new()
-        } else {
-            crate::integrity::attested_datasets(&sample.root)?
-                .iter()
-                .filter(|(path, _)| path.starts_with("clinical/"))
-                .filter_map(|(_, ds)| ops::object_id_of(ds))
-                .collect()
-        };
-        let in_clinical = |path: &str| {
-            path.starts_with("clinical/")
-                || ops::object_id_by_name(&sample.root, path).is_some_and(|id| clinical.contains(&id))
-        };
+        // Every path through `clinical/` is its object's own, checked above,
+        // so the clinical datasets are the lines under it.
         let mut failed = Vec::new();
         for (path, digest) in &digests {
-            if !deep && !in_clinical(path) {
+            if !deep && !path.starts_with("clinical/") {
                 continue;
             }
             let matches = crate::digest::parse_digest(digest).and_then(|(algo, _)| {

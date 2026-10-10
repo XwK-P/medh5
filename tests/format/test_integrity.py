@@ -455,3 +455,126 @@ class TestF13CyclicCompare:
         with medh5.open(alias) as a, medh5.open(copy) as b:
             found = subtrees_identical(a.root, b.root)
         assert any(line.startswith("/zzz_alias") for line in found), found
+
+
+class TestF01BoundPaths:
+    """F01 of the round-4 audit: a line binds bytes to the path it names
+    (§13.2, E704).  Coverage was judged by object, so a file crafted with an
+    alias sorting before `images/` --- holding the image's line, digested and
+    sealed there --- passed every check, and relinking `images/CT_tp0` to
+    another covered image after a pin changed no line: the root recomputed,
+    `verify`, the pin and the validator all held, and the reader read the
+    other image."""
+
+    @staticmethod
+    def _crafted(path: Path) -> str:
+        """The audit's file: an alias sorting before `images/` holding the
+        image's line, and a decoy --- the image's attributes over other voxels
+        --- with a line of its own, both digested and the root sealed."""
+        write_sample(path)
+        with h5py.File(path, "r+") as handle:
+            handle["aaa_ct"] = handle["images/CT_tp0"]
+            handle.copy("images/CT_tp0", "aaa_decoy")
+            handle["aaa_decoy"][0, 0, 0] = handle["aaa_decoy"][0, 0, 0] + 1
+        with medh5.open(path) as s:
+            digests = {
+                name: dataset_digest(s.root[name], name)
+                for name in ("aaa_ct", "aaa_decoy")
+            }
+        with h5py.File(path, "r+") as handle:
+            for name, digest in digests.items():
+                handle[name].attrs["digest"] = digest
+        with medh5.open(path) as s:
+            content_id = s.compute_content_id()
+        with h5py.File(path, "r+") as handle:
+            handle.attrs["content_id"] = content_id
+        return content_id
+
+    def test_F01_S13_2_a_name_an_earlier_alias_holds_is_unbound(self, tmp_path: Path):
+        from medh5.errors import MEDH5IntegrityError
+        from medh5.task import SourceRef
+
+        path = tmp_path / "crafted.medh5"
+        self._crafted(path)
+        with medh5.open(path) as s:
+            result = s.verify()
+            assert result.content_id_ok is True and result.mismatched == ()
+            assert not result.ok
+            assert result.unattested == ("images/CT_tp0",)
+        report = validate_file(path, level="integrity")
+        errors = [d for d in report.diagnostics if d.severity == "error"]
+        assert [(d.code, d.location) for d in errors] == [("E704", "/images/CT_tp0")]
+        assert "'/aaa_ct'" in errors[0].message
+        with pytest.raises(MEDH5IntegrityError, match="cannot be pinned"):
+            SourceRef.pin(path)
+
+    @pytest.mark.parametrize("link", ["hard", "soft"])
+    def test_F01_S13_2_a_relink_under_an_unchanged_root_is_refused(
+        self, tmp_path: Path, link: str
+    ):
+        from medh5.task import SourceRef
+
+        path = tmp_path / "crafted.medh5"
+        sealed = self._crafted(path)
+        earlier = SourceRef(path.name, sealed)  # as an earlier release pinned it
+        with h5py.File(path, "r+") as handle:
+            del handle["images/CT_tp0"]
+            if link == "hard":
+                handle["images/CT_tp0"] = handle["aaa_decoy"]
+            else:
+                handle["images/CT_tp0"] = h5py.SoftLink("/aaa_decoy")
+        with medh5.open(path) as s:
+            # The premise: no line changed, so the root still recomputes.
+            assert s.compute_content_id() == sealed
+            assert s.verify().unattested == ("images/CT_tp0",)
+            assert not s.verify().ok
+        for deep in (False, True):
+            (finding,) = earlier.check(tmp_path, deep=deep)
+            assert finding.code == "T302" and "images/CT_tp0" in str(finding)
+        diagnostics = validate_file(path, level="integrity").diagnostics
+        assert ("E704", "/images/CT_tp0") in {(d.code, d.location) for d in diagnostics}
+
+    def test_F01_S13_2_a_later_alias_changes_nothing(self, tmp_path: Path):
+        """The control: a second path after every attested group is an
+        extension's, and the image keeps its own path and its line."""
+        from medh5.task import SourceRef
+
+        path = write_sample(tmp_path / "later.medh5", timepoints=("tp0", "tp1"))
+        with medh5.open(path) as s:
+            before = s.content_id
+        with h5py.File(path, "r+") as handle:
+            handle["zzz_alias"] = handle["images/CT_tp0"]
+            handle["x_ext/soft"] = h5py.SoftLink("/images/CT_tp1")
+        with medh5.open(path) as s:
+            assert s.content_id == before == s.compute_content_id()
+            assert s.verify().ok and s.verify().unattested == ()
+        assert validate_file(path, level="integrity").ok
+        pin = SourceRef.pin(path, uri=path.name)
+        assert pin.check(tmp_path) == [] and pin.check(tmp_path, deep=True) == []
+
+    def test_F01_S13_2_a_second_path_inside_an_attested_group_is_unbound(
+        self, tmp_path: Path
+    ):
+        """Inside the groups every path is judged: a second link, a soft link,
+        a group reached again --- each one finding, and none walked twice."""
+        path = write_sample(tmp_path / "inside.medh5")
+        with h5py.File(path, "r+") as handle:
+            handle["images/x_second"] = handle["images/CT_tp0"]
+            handle["grids/x_soft"] = h5py.SoftLink("/grids/ct_tp0")
+            handle["annotations/x_self"] = handle["annotations"]
+        with medh5.open(path) as s:
+            assert s.verify().unattested == (
+                "annotations/x_self",
+                "grids/x_soft",
+                "images/x_second",
+            )
+        codes = {
+            (d.code, d.location)
+            for d in validate_file(path, level="integrity").diagnostics
+            if d.code == "E704"
+        }
+        assert codes == {
+            ("E704", "/annotations/x_self"),
+            ("E704", "/grids/x_soft"),
+            ("E704", "/images/x_second"),
+        }

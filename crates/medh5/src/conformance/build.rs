@@ -1429,7 +1429,7 @@ fn break_affine_last_row(root: &hdf5::Group) -> Result<()> {
 
 /// Every case, in corpus order.
 pub(super) fn registry() -> Vec<Case> {
-    let mut cases = Vec::with_capacity(153);
+    let mut cases = Vec::with_capacity(155);
     valid_cases(&mut cases);
     first_invalid_batch(&mut cases);
     second_batch(&mut cases);
@@ -1439,8 +1439,9 @@ pub(super) fn registry() -> Vec<Case> {
     tracking_and_collection_cases(&mut cases);
     fourth_batch(&mut cases);
     fifth_batch(&mut cases);
-    // 2.1 / format 1.1: the clinical profile.
+    // 2.0 / format 1.1: the clinical profile.
     cases.extend(super::clinical::cases());
+    audit_round_four(&mut cases);
     cases
 }
 
@@ -2237,6 +2238,41 @@ fn fourth_batch(cases: &mut Vec<Case>) {
 }
 
 /// 1.4.0: §7.7's separate-mask form of an ignore region, as the writer emits it.
+/// The cases the fourth audit of 2.0 added.
+fn audit_round_four(cases: &mut Vec<Case>) {
+    cases.extend([
+        case(
+            "E704-aliased-attested-path",
+            "An alias sorting before `images/` holds the image's line, digested and resealed there as a crafted \
+             file would be: `images/CT` is a name no line binds, so it could be relinked to other covered bytes \
+             under the same root.",
+            "§13.2",
+            alias_before_images,
+        )
+        .errors(&["E704"])
+        .level("integrity"),
+        case(
+            "integrity-later-alias",
+            "A second hard link to an image, outside the attested groups and after them: the image keeps its own \
+             path and its line, and no `content_id` changes.",
+            "§13.2",
+            |p| {
+                base(p, &SHAPE)?;
+                mutate(p, |root| Ok(root.link_hard("images/CT", "zzz_alias")?))
+            },
+        )
+        .level("integrity"),
+    ]);
+}
+
+/// F01: the walk reaches `images/CT` first at `aaa_alias`, so its line is
+/// there --- restamped and resealed, as a crafted file's would be.
+fn alias_before_images(path: &Path) -> Result<()> {
+    base(path, &SHAPE)?;
+    mutate(path, |root| Ok(root.link_hard("images/CT", "aaa_alias")?))?;
+    restamp(path)
+}
+
 fn fifth_batch(cases: &mut Vec<Case>) {
     cases.push(
         case(
@@ -2256,11 +2292,11 @@ mod tests {
     #[test]
     fn the_registry_holds_every_case_once() {
         let cases = registry();
-        assert_eq!(cases.len(), 153);
+        assert_eq!(cases.len(), 155);
         let mut names: Vec<&str> = cases.iter().map(|c| c.name.as_str()).collect();
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), 153);
+        assert_eq!(names.len(), 155);
     }
 
     #[test]

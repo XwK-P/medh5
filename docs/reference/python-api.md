@@ -208,13 +208,14 @@ See [Longitudinal](../guides/longitudinal.md).
 s.verify()                    # VerifyResult
 s.verify(partial=["images/CT_tp0"])
 s.verify().ok
-s.verify().unattested         # undigested datasets inside objects content_id covers
+s.verify().unattested         # paths in covered objects no line binds there
 s.compute_content_id()        # recompute rather than read the stored one
 ```
 
 `ok` is `False` when a digest mismatches, when the root does, or — in a file
 that declares a `content_id` — when a dataset inside a grid, image, annotation
-or transform carries no digest at all (`unattested`).
+or transform carries no digest at all, or is reached at a path that is not its
+own, the one its digest line names (`unattested`).
 
 ### Sampling index
 

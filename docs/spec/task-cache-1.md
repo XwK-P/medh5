@@ -47,8 +47,8 @@ A URI is a locator, not identity. A reference resolves to a sample, and the samp
 
 1. its stored `content_id` is the pin;
 2. every dataset of an object the root speaks for --- `grids/`, `images/`, `annotations/`,
-   `transforms/`, and `clinical/` where the profile is declared --- carries its digest (1.0 §13.1,
-   1.1 §8);
+   `transforms/`, and `clinical/` where the profile is declared --- carries its digest, and is
+   reached there only at its own path, the one its line names (1.0 §13.1, §13.2; 1.1 §8);
 3. its `content_id` **recomputes** to the pin from its stored digests;
 4. the actual bytes of its clinical datasets match their digests --- every dataset's, with `--deep`.
 
@@ -57,7 +57,7 @@ digests, so a dataset added without one --- a column the file did not have --- c
 neither does an edit that leaves the stored digests alone. A dataset whose bytes cannot be read ---
 a damaged chunk --- does not match. A failure of any step is **T302**; a source that does not open,
 or names a member that does not exist, **T301**. Re-pinning is explicit: a changed source is never
-silently accepted (`SourceRef.pin`).
+silently accepted (`SourceRef.pin`), and a sample that fails step 2 cannot be pinned at all.
 
 ## 3. The task manifest
 

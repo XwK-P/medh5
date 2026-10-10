@@ -205,22 +205,6 @@ pub fn stamp_digests(
     Ok(digests)
 }
 
-/// The objects the root's dataset lines speak for: every dataset
-/// [`collect_digests`] lists, by identity rather than by the path it was
-/// listed under.
-pub fn digested_objects(root: &hdf5::Group, skip: &[&str]) -> Result<std::collections::HashSet<ops::ObjectId>> {
-    let mut out = std::collections::HashSet::new();
-    for (name, ds) in ops::datasets(root)? {
-        if skip.contains(&top_level(&name)) || !attrs::has(&ds, "digest") {
-            continue;
-        }
-        if let Some(id) = ops::object_id_of(&ds) {
-            out.insert(id);
-        }
-    }
-    Ok(out)
-}
-
 /// The `digest` attribute of every dataset that carries one.
 pub fn collect_digests(root: &hdf5::Group, skip: &[&str]) -> Result<IndexMap<String, String>> {
     let mut out = IndexMap::new();

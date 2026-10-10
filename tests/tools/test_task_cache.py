@@ -68,7 +68,15 @@ def cohort(root: Path, responses: dict[str, str] | None = None) -> dict[str, Pat
     return paths
 
 
-def task_for(root: Path, paths: dict[str, Path], **options: Any) -> TaskManifest:
+def task_for(
+    root: Path,
+    paths: dict[str, Path],
+    refs: dict[str, SourceRef] | None = None,
+    **options: Any,
+) -> TaskManifest:
+    """A task over ``paths``, each pinned now --- or, for a subject in
+    ``refs``, referenced as given (a pin some earlier tool took)."""
+    refs = refs or {}
     task = TaskManifest.new(
         "progression",
         "1",
@@ -82,7 +90,7 @@ def task_for(root: Path, paths: dict[str, Path], **options: Any) -> TaskManifest
     for i, (subject, path) in enumerate(sorted(paths.items())):
         task.add_subject(
             subject,
-            [SourceRef.pin(path, uri=path.name)],
+            [refs.get(subject) or SourceRef.pin(path, uri=path.name)],
             partition="val" if i == len(paths) - 1 else "train",
         )
         task.add_row(f"{subject}@24h", subject, 24 * HOUR)
@@ -267,7 +275,9 @@ class TestSources:
             source = task.subjects[i].sources[0]
             assert found(source.check(task.base)) == ["T302"]
             assert found(source.check(task.base, deep=True)) == ["T302"]
-        assert "carry no digest" in str(task.subjects[1].sources[0].check(task.base)[0])
+        assert "no line of the root binds" in str(
+            task.subjects[1].sources[0].check(task.base)[0]
+        )
         report = task.preflight()
         assert found(report.findings) == ["T302"]
         assert {r.status for r in report.rows if r.subject_id != "P-01"} == {"error"}
@@ -299,41 +309,85 @@ class TestSources:
         assert found(report.findings) == ["T302"]
         assert {r.status for r in report.rows if r.subject_id == "P-02"} == {"error"}
 
-    def test_B03_an_aliased_clinical_column_is_judged_by_its_bytes(self, setup):
-        """The controls.  A later alias of a digested column changes no root and
-        breaks no pin.  An earlier one is the column's first path, so its digest
-        and the root are stamped there --- and the shallow check, which read
-        only digests keyed under `clinical/`, passed its edited bytes.  It reads
-        every object reachable through `clinical/`, by identity."""
-        from medh5.integrity import dataset_digest
-
+    def test_B03_a_later_alias_of_a_clinical_column_breaks_no_pin(self, setup):
+        """The control.  A later alias of a digested column changes no line,
+        so it changes no root and breaks no pin."""
         task, paths = setup
-        path = paths["P-02"]
         source = task.subjects[1].sources[0]
-        with h5py.File(path, "r+") as f:
+        with h5py.File(paths["P-02"], "r+") as f:
             f["zzz_value"] = f["clinical/events/value_num"]
         assert source.check(task.base) == []
         assert source.check(task.base, deep=True) == []
-        with h5py.File(path, "r+") as f:
-            del f["zzz_value"]
-            f["aaa_value"] = f["clinical/events/value_num"]
+        assert "E704" not in validate_file(paths["P-02"], level="integrity").codes
+
+    @staticmethod
+    def _seal(path: Path, *names: str) -> str:
+        """Digest the datasets at ``names`` where the walk now first reaches
+        them, and the root over them: what a crafted file carries."""
+        from medh5.integrity import dataset_digest
+
+        digests = {}
         with medh5.open(path) as sample:
-            digest = dataset_digest(sample.root["aaa_value"], "aaa_value")
+            for name in names:
+                digests[name] = dataset_digest(sample.root[name], name)
         with h5py.File(path, "r+") as f:
-            f["aaa_value"].attrs["digest"] = digest
+            for name, digest in digests.items():
+                f[name].attrs["digest"] = digest
         with medh5.open(path) as sample:
             content_id = sample.compute_content_id()
         with h5py.File(path, "r+") as f:
             f.attrs["content_id"] = content_id
-        repinned = SourceRef.pin(path, uri=source.uri)
-        assert repinned.check(task.base) == []
-        assert repinned.check(task.base, deep=True) == []
+        return content_id
+
+    @pytest.mark.parametrize("link", ["hard", "soft"])
+    def test_F01_S2_a_clinical_column_relinked_after_its_pin_is_refused(
+        self, tmp_path: Path, link: str
+    ):
+        """F01 of the round-4 audit.  A file crafted before its pin --- an
+        alias sorting before `clinical` holding the column's line, and a decoy
+        with a line of its own, both digested and sealed --- passed every check
+        by object: relinking the column to the decoy changed no line, so the
+        root recomputed and the pin, preflight and the validator held while
+        the rows read the decoy.  A line binds bytes to the path it names: the
+        file cannot be pinned, and a pin an earlier release took of it is
+        refused (T302), by preflight too, and the validator reports E704."""
+        from medh5.errors import MEDH5IntegrityError
+
+        paths = cohort(tmp_path / "cohort")
+        path = paths["P-02"]
         with h5py.File(path, "r+") as f:
-            values = f["clinical/events/value_num"]
-            values[0] = values[0] + 1.0
+            f["aaa_value"] = f["clinical/events/value_num"]
+            values = f["clinical/events/value_num"][...]
+            valid = f["clinical/events/valid/value_num"][...].astype(bool)
+            f.create_dataset("aaa_decoy", data=np.where(valid, values + 1000.0, values))
+        sealed = self._seal(path, "aaa_value", "aaa_decoy")
+        with pytest.raises(MEDH5IntegrityError, match="cannot be pinned"):
+            SourceRef.pin(path, uri=path.name)
+        earlier = SourceRef(path.name, sealed, source_id="P-02")
+        with h5py.File(path, "r+") as f:
+            del f["clinical/events/value_num"]
+            if link == "hard":
+                f["clinical/events/value_num"] = f["aaa_decoy"]
+            else:
+                f["clinical/events/value_num"] = h5py.SoftLink("/aaa_decoy")
+        with medh5.open(path) as sample:
+            # The premise: no line changed, so the root still recomputes.
+            assert sample.compute_content_id() == sealed
+            assert not sample.verify().ok
+            assert "clinical/events/value_num" in sample.verify().unattested
+        base = tmp_path / "cohort"
         for deep in (False, True):
-            (finding,) = repinned.check(task.base, deep=deep)
-            assert finding.code == "T302" and "aaa_value" in str(finding)
+            (finding,) = earlier.check(base, deep=deep)
+            assert finding.code == "T302"
+            assert "clinical/events/value_num" in str(finding)
+        task = task_for(base, paths, refs={"P-02": earlier})
+        report = task.preflight()
+        assert found(report.findings) == ["T302"]
+        assert {r.status for r in report.rows if r.subject_id == "P-02"} == {"error"}
+        diagnostics = validate_file(path, level="integrity").diagnostics
+        assert ("E704", "/clinical/events/value_num") in {
+            (d.code, d.location) for d in diagnostics
+        }
 
     def test_B03_a_column_soft_linked_elsewhere_is_outside_the_pin(self, setup):
         """Readers follow a soft link as HDF5 does; the walk that decides what
@@ -401,6 +455,8 @@ class TestSources:
         before its sample was restamped and pinned was in no dataset line, and
         its translation moved from 2 to 102 mm under a matching root and an
         unchanged pin (B03 of the round-3 audit).  Covered is by identity."""
+        from medh5.errors import MEDH5IntegrityError
+
         path = self._registered(tmp_path / "reg.medh5")
         with h5py.File(path, "r+") as f:
             f.require_group("index")["alias"] = f["transforms/t/matrix"]
@@ -408,7 +464,9 @@ class TestSources:
             content_id = sample.compute_content_id()
         with h5py.File(path, "r+") as f:
             f.attrs["content_id"] = content_id
-        pin = SourceRef.pin(path, uri=path.name)
+        with pytest.raises(MEDH5IntegrityError, match="transforms/t/matrix"):
+            SourceRef.pin(path, uri=path.name)
+        pin = SourceRef(path.name, content_id)  # as an earlier release pinned it
         for deep in (False, True):
             (finding,) = pin.check(tmp_path, deep=deep)
             assert finding.code == "T302" and "transforms/t/matrix" in str(finding)
