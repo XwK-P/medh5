@@ -103,7 +103,7 @@ pub struct History {
 }
 
 /// Open, check and reconcile one subject's sources.
-pub fn load_subject(manifest: &TaskManifest, subject: &Subject, base: Option<&Path>, deep: bool) -> Result<History> {
+pub fn load_subject(subject: &Subject, base: Option<&Path>, deep: bool) -> Result<History> {
     let mut history = History::default();
     history.merged.subject_id = subject.subject_id.clone();
     history.merged.partition = subject.partition.clone();
@@ -121,21 +121,26 @@ pub fn load_subject(manifest: &TaskManifest, subject: &Subject, base: Option<&Pa
             }
         };
         history.findings.extend(source.check(&sample, deep)?);
-        if let Some(local) = &source.local_subject_id {
-            let found = sample.identity()?.subject_id.clone();
-            if &found != local {
-                history.findings.push(Finding::new(
-                    "T303",
-                    at(source),
-                    format!(
-                        "{} is subject {} in its own identity, not {} as the manifest maps it to {}",
-                        source.locator(),
-                        repr_str(&found),
-                        repr_str(local),
-                        repr_str(&subject.subject_id)
-                    ),
-                ));
-            }
+        // The sample is who the manifest maps it to: its `local_subject_id`
+        // (a site's own id for the subject) when recorded, else the subject's.
+        let found = sample.identity()?.subject_id.clone();
+        let local = source.local_subject_id.as_deref().unwrap_or(&subject.subject_id);
+        if found != local {
+            let mapped = match &source.local_subject_id {
+                Some(_) => format!(" as the manifest maps it to {}", repr_str(&subject.subject_id)),
+                None => ", the subject it is listed under (a source of another id records it as local_subject_id)"
+                    .to_string(),
+            };
+            history.findings.push(Finding::new(
+                "T303",
+                at(source),
+                format!(
+                    "{} is subject {} in its own identity, not {}{mapped}",
+                    source.locator(),
+                    repr_str(&found),
+                    repr_str(local)
+                ),
+            ));
         }
         if sample.support()? != crate::version::Support::Full {
             history.findings.push(Finding::new(
@@ -216,7 +221,6 @@ pub fn load_subject(manifest: &TaskManifest, subject: &Subject, base: Option<&Pa
     }
     let findings = merge(&mut history, subject)?;
     history.findings.extend(findings);
-    let _ = manifest;
     Ok(history)
 }
 
@@ -1310,7 +1314,7 @@ fn subject_part(
     base: Option<&Path>,
     deep: bool,
 ) -> Result<SubjectPart> {
-    let history = load_subject(manifest, subject, base, deep)?;
+    let history = load_subject(subject, base, deep)?;
     let view = |r: usize| blank(manifest, task_fingerprint, &manifest.rows[r], Some(subject), Some(index));
     let mut rows = Vec::with_capacity(wanted.len());
     let mut findings = history.findings.clone();

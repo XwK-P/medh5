@@ -960,6 +960,23 @@ class TestPreflight:
         other.add_subject("P-01", [wrong])
         assert "T303" in found(other.preflight().findings)
 
+    def test_S3_3_a_source_without_a_mapping_is_its_subjects(self, tmp_path: Path):
+        """A source that records no ``local_subject_id`` is checked against the
+        subject it is listed under: another patient's file was accepted."""
+        paths = cohort(tmp_path / "c", {"P-01": "PD", "P-05": "SD"})
+
+        def listed(subject: str, path: Path) -> TaskManifest:
+            pinned = SourceRef.pin(path, uri=path.name)
+            unmapped = SourceRef(pinned.uri, pinned.content_id, source_id="s")
+            task = TaskManifest.new("t", "1", identity_namespace="n", base=path.parent)
+            task.add_subject(subject, [unmapped])
+            return task
+
+        report = listed("P-01", paths["P-05"]).preflight()
+        (finding,) = report.findings
+        assert finding.code == "T303" and "'P-05'" in finding.message
+        assert listed("P-01", paths["P-01"]).preflight().ok
+
     @staticmethod
     def _observation(event_id: str, record_id: str, available_us: int) -> Event:
         return Event(

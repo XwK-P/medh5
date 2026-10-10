@@ -107,7 +107,10 @@ class SourceRef:
 
     ``uri`` is a path (absolute, or relative to the manifest's directory;
     ``file://`` is accepted).  ``content_id`` is the pin: the reference counts
-    only while the sample's content address is this one.
+    only while the sample's content address is this one.  ``local_subject_id``
+    is the sample's own ``identity.subject_id`` (:meth:`pin` records it);
+    preflight holds the sample to it, or, when it is ``None``, to the id of
+    the subject the source is listed under (T303).
     """
 
     uri: str

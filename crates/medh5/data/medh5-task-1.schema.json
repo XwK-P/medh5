@@ -114,7 +114,7 @@
           "description": "The member of a .medh5c collection; null for a standalone sample." },
         "content_id": { "$ref": "#/$defs/digest", "description": "The pinned sample version." },
         "local_subject_id": { "type": ["string", "null"], "minLength": 1,
-          "description": "The sample's own identity.subject_id, mapped to the namespace's subject here." }
+          "description": "The sample's own identity.subject_id, mapped to the namespace's subject here; when absent, the subject's own subject_id." }
       }
     },
 

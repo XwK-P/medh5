@@ -41,7 +41,7 @@ A **source reference** names one sample --- a standalone file or a member of a `
 | `uri` | Where the bytes are: a path, absolute or relative to the manifest's directory; `file://` accepted |
 | `sample_key` | The member of a collection, or null for a standalone file |
 | `content_id` | **The pin**: the 1.0 §13.2 address of the sample version the reference names |
-| `local_subject_id` | The sample's own `identity.subject_id`, as the manifest maps it to a subject |
+| `local_subject_id` | The sample's own `identity.subject_id`, as the manifest maps it to a subject; when absent, the subject's own `subject_id` |
 
 A URI is a locator, not identity. A reference resolves to a sample, and the sample counts only while:
 
