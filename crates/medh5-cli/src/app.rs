@@ -143,7 +143,14 @@ fn inspect() -> Vec<Command> {
             .about("check digests and content_id (spec §13)")
             .arg(paths("one or more files"))
             .arg(key())
-            .arg(append("partial", "partial", "verify only these objects; repeatable").value_name("OBJ"))
+            .arg(
+                append(
+                    "partial",
+                    "partial",
+                    "verify only these datasets, named by path (images/CT, annotations/seg/data); repeatable",
+                )
+                .value_name("OBJ"),
+            )
             .arg(json()),
         Command::new("fix")
             .about("rebuild derived data; restamp digests")

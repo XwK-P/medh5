@@ -71,8 +71,10 @@ medh5 verify PATH... [--key K] [--partial OBJ] [--json]
 ```
 
 Recompute every object's digest and the root `content_id`. `--partial` limits
-it to named objects — useful when you only want to know whether one image
-changed.
+it to datasets named by path (`images/CT`, `annotations/seg/data`) — useful
+when you only want to know whether one image changed. A digest that is not
+`ALGO:HEX`, or a `--partial` name with no digest at that path (a group, a
+typo), is reported as `MALFORMED` and fails the check.
 
 In a file that declares a `content_id`, a dataset inside a grid, image,
 annotation or transform that carries no digest fails the check (`UNSIGNED`):

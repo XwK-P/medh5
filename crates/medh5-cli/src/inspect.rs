@@ -411,6 +411,12 @@ fn verify(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
             for name in &result.mismatched {
                 ctx.print(format!("  MISMATCH  {name}"));
             }
+            // A digest that is not `ALGO:HEX`, or a `--partial` name with no
+            // digest at all --- a group's path, a typo --- is a failure too,
+            // and says which.
+            for name in &result.malformed {
+                ctx.print(format!("  MALFORMED {name} (no digest of the form ALGO:HEX at this path)"));
+            }
             for name in &result.unattested {
                 ctx.print(format!("  UNSIGNED  {name} (no line of content_id covers it at this path)"));
             }
@@ -471,6 +477,12 @@ fn fix_cmd(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
                 ctx.print(format!(
                     "  digest mismatch: {} (--rewrite-digests, and read what it means first)",
                     diagnosis.mismatched.join(", ")
+                ));
+            }
+            if !diagnosis.unattested.is_empty() {
+                ctx.print(format!(
+                    "  unsigned: {} (no line of content_id covers it at this path)",
+                    diagnosis.unattested.join(", ")
                 ));
             }
             if diagnosis.content_id_ok == Some(false) {

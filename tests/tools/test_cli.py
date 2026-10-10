@@ -264,6 +264,20 @@ class TestVerify:
         assert main(["verify", str(path), "--partial", "images/CT"]) == 0
         assert "content_id not verified" in capsys.readouterr().out
 
+    def test_S13_1_a_digest_that_cannot_be_checked_is_named(self, capsys, sample_path):
+        """`verify` said FAILED and nothing else for a digest that is not
+        ALGO:HEX, and for a `--partial` name with no digest (a group, a typo)."""
+        code, out = run(
+            capsys, "verify", str(sample_path), "--partial", "annotations/organs_tp0"
+        )
+        assert code == EXIT_ERROR
+        assert "MALFORMED annotations/organs_tp0" in out.out
+        with h5py.File(sample_path, "r+") as handle:
+            handle["images/CT_tp0"].attrs["digest"] = encode_attr("sha256:nothex")
+        code, out = run(capsys, "verify", str(sample_path))
+        assert code == EXIT_ERROR
+        assert "MALFORMED images/CT_tp0" in out.out
+
 
 class TestLongitudinal:
     def test_timeline(self, capsys, longitudinal_path):
@@ -577,6 +591,19 @@ class TestFixAndScrub:
         assert code == EXIT_OK
         assert "rewrote digests" in out.out
         assert "asserts nothing" in out.out
+
+    def test_S13_2_fix_names_what_no_line_of_the_content_id_covers(
+        self, capsys, sample_path
+    ):
+        """An undigested dataset in an attested object needs attention, and
+        `fix` said only that, without naming it."""
+        with h5py.File(sample_path, "r+") as handle:
+            handle["annotations/organs_tp0"].create_dataset(
+                "instance_ids", data=np.arange(3, dtype=np.int64)
+            )
+        code, out = run(capsys, "fix", str(sample_path))
+        assert code == EXIT_ERROR
+        assert "unsigned: annotations/organs_tp0/instance_ids" in out.out
 
     def test_fix_rebuilds_a_stale_index(self, capsys, longitudinal_path):
         import h5py
