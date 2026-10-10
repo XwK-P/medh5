@@ -19,8 +19,9 @@ things to a loss:
     where the slot's window holds data: inside the image and its
     ``valid_mask`` (*field of view*); never the padding;
 ``annotated[slot]``
-    per class, whether an eligible annotation *examined* it (*coverage*); a 0
-    in an unexamined class is not a negative;
+    per class, whether a voxel annotation on the slot image's grid *examined*
+    it (*coverage*) --- supervision, like the label it qualifies, which may
+    come from after the cutoff; a 0 in an unexamined class is not a negative;
 ``ignore[slot]``
     voxels a loss must not score (§7.7 ignore regions, and padding);
 ``target["observed"]``

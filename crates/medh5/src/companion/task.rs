@@ -62,7 +62,9 @@ pub struct Slot {
     pub patch: Option<Vec<usize>>,
     /// `center` or `eligible_instances`.
     pub roi: String,
-    /// Classes to read labels for, from eligible annotations on the grid.
+    /// Classes read as labels from the voxel annotations on the image's
+    /// grid, eligible or not: supervision, which may come from after the
+    /// cutoff and never enters an input.
     pub classes: Vec<i64>,
 }
 

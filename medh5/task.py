@@ -214,8 +214,10 @@ class Slot:
     ``patch`` is the window read around the slot's centre, in voxels of the
     image's own grid (``None`` reads the whole volume); ``roi`` centres it on
     the grid (``center``) or on the first eligible instance
-    (``eligible_instances``).  ``classes`` are read as labels from eligible
-    voxel annotations on the same grid.
+    (``eligible_instances``).  ``classes`` are read as labels from the voxel
+    annotations on the image's grid, eligible or not: supervision, which ---
+    like the target --- may come from after the cutoff and never enters an
+    input.
     """
 
     name: str
