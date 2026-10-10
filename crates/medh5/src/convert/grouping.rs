@@ -359,13 +359,10 @@ pub fn sanitize_key(name: &str, fallback: &str) -> String {
         .chars()
         .map(|c| if c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' { c } else { '_' })
         .collect();
-    let mut cleaned = cleaned.trim_matches('_').to_string();
-    if cleaned.is_empty() {
-        cleaned = fallback.to_string();
-    }
-    if !cleaned.chars().next().is_some_and(|c| c.is_alphanumeric()) {
-        cleaned = format!("{fallback}_{cleaned}");
-    }
+    // What is left of a name starts with a letter or digit, so only a name
+    // with nothing left needs the fallback.
+    let cleaned = cleaned.trim_matches('_');
+    let cleaned = if cleaned.is_empty() { fallback } else { cleaned };
     cleaned.chars().take(128).collect()
 }
 

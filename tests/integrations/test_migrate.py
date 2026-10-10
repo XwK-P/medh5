@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -151,6 +152,204 @@ class TestMigrate:
         report = migrate_paths([*legacy, broken], tmp_path / "out")
         assert report.warnings
         assert len(list((tmp_path / "out").glob("*.medh5"))) == 3
+
+    def test_a_file_that_cannot_be_migrated_is_reported_and_the_rest_are(
+        self, legacy, tmp_path
+    ):
+        """The first file whose content the writer refused ended the cohort,
+        with every file after it unwritten, where the docstring promised a
+        report and the rest."""
+        from medh5.io.legacy import migrate_paths
+
+        with h5py.File(legacy[1], "r+") as handle:
+            del handle["seg/liver"]
+            handle["seg"].create_dataset("liver", data=np.zeros((2, 2, 2), bool))
+        report = migrate_paths(legacy, tmp_path / "out")
+        written = sorted(p.stem for p in (tmp_path / "out").glob("*.medh5"))
+        assert written == ["old_0", "old_2"]
+        failed = report.of_kind("failed")
+        assert len(failed) == 1 and failed[0].severity == "warning"
+        assert failed[0].detail["inputs"] == [str(legacy[1])]
+        assert "E405" in failed[0].message
+
+    def test_review_is_the_quality_of_each_migrated_annotation(self, legacy, tmp_path):
+        """The review became a quality record keyed ``seg`` that no annotation
+        named, and an activity whose output was ``seg`` whatever the file
+        held.  Each annotation migrated from the file carries it now, and the
+        activity names them; the dict stays verbatim in ``extra.legacy``."""
+        from medh5.io.legacy import migrate
+
+        migrate(legacy[0], tmp_path / "new.medh5")
+        with medh5.open(tmp_path / "new.medh5") as sample:
+            for name in ("seg", "boxes", "label"):
+                annotation = sample.annotations[name]
+                assert annotation.quality_key == name
+                assert sample.document.quality[name].status == "approved"
+            (review,) = sample.document.provenance.activities_by_type("review")
+            assert sorted(review.outputs) == [
+                "annotations/boxes",
+                "annotations/label",
+                "annotations/seg",
+            ]
+            legacy_review = sample.document.extra["legacy"]["tp0"]["review"]
+            assert legacy_review == {
+                "reviewer": "RAD-07",
+                "status": "approved",
+                "date": "2026-03-01",
+            }
+
+    def test_a_review_of_boxes_alone_names_no_segmentation(self, tmp_path):
+        from medh5.io.legacy import migrate
+
+        old = write_legacy_sample(
+            tmp_path / "boxes.medh5",
+            images={"CT": np.zeros((4, 6, 6), np.int16)},
+            bboxes=np.array([[[1, 3], [1, 4], [2, 5]]], dtype=np.int32),
+            spacing=[1.0, 1.0, 1.0],
+            coord_system="LPS",
+            extra={"review": {"reviewer": "RAD-07", "status": "approved"}},
+        )
+        migrate(old, tmp_path / "new.medh5")
+        with medh5.open(tmp_path / "new.medh5") as sample:
+            assert sorted(sample.document.quality) == ["boxes"]
+            (review,) = sample.document.provenance.activities_by_type("review")
+            assert review.outputs == ("annotations/boxes",)
+        assert not validate_file(tmp_path / "new.medh5").errors
+
+    def test_an_mtime_order_is_reported_once_per_subject(self, legacy, tmp_path):
+        from medh5.io.legacy import migrate_paths
+
+        for path in legacy:
+            with h5py.File(path, "r+") as handle:
+                extra = json.loads(handle.attrs["extra"])
+                del extra["study_date"]
+                handle.attrs["extra"] = json.dumps(extra)
+        report = migrate_paths(
+            legacy, tmp_path / "out", group_by="subject", subject_key="extra.patient_id"
+        )
+        orders = report.of_kind("timepoint_order")
+        assert [n.detail["subject"] for n in orders] == ["PAT-A"]
+
+
+class TestUncalibrated:
+    """A 0.x file need not state its geometry (Appendix B)."""
+
+    def test_S3_5_a_file_without_spacing_becomes_a_px_grid(self, tmp_path: Path):
+        """It became a millimetre grid of unit voxels, a size nobody measured,
+        and the report said nothing of it."""
+        from medh5.io.legacy import migrate
+
+        old = write_legacy_sample(
+            tmp_path / "old.medh5",
+            images={"XR": np.zeros((6, 8), np.uint16)},
+            bboxes=np.array([[[1, 3], [2, 5]]], dtype=np.int32),
+        )
+        report = migrate(old, tmp_path / "new.medh5")
+        with medh5.open(tmp_path / "new.medh5") as sample:
+            grid = sample.grids["ref"]
+            assert grid.units == "px"
+            assert grid.spacing == (1.0, 1.0)
+            assert grid.coord_system == "LPS"
+        notes = {n.severity: n for n in report.of_kind("geometry")}
+        assert notes["decision"].detail["units"] == "px"
+        assert notes["guess"].detail["coord_system"] == "LPS"
+        assert not validate_file(tmp_path / "new.medh5").errors
+
+    def test_a_stated_geometry_is_kept_without_a_note(self, tmp_path: Path):
+        from medh5.io.legacy import migrate
+
+        old = write_legacy_sample(
+            tmp_path / "old.medh5",
+            images={"CT": np.zeros((2, 3, 4), np.int16)},
+            spacing=[2.0, 0.8, 0.9],
+            coord_system="RAS",
+        )
+        report = migrate(old, tmp_path / "new.medh5")
+        with medh5.open(tmp_path / "new.medh5") as sample:
+            assert sample.grids["ref"].units == "mm"
+            assert sample.grids["ref"].coord_system == "RAS"
+        assert not report.of_kind("geometry")
+
+
+class TestLabelKeys:
+    """A class is its key: names that sanitize alike are one class."""
+
+    @staticmethod
+    def _old(path: Path, masks: dict[str, Any], **extra: Any) -> Path:
+        return write_legacy_sample(
+            path,
+            images={"CT": np.zeros((4, 6, 6), np.int16)},
+            seg=masks,
+            spacing=[1.0, 1.0, 1.0],
+            coord_system="LPS",
+            extra=extra or None,
+        )
+
+    @staticmethod
+    def _mask(*index: slice) -> Any:
+        mask = np.zeros((4, 6, 6), bool)
+        mask[index] = True
+        return mask
+
+    def test_appendix_B_names_of_one_key_are_one_class(self, tmp_path: Path):
+        """The guide's own example: ``liver`` and ``Liver`` both keyed
+        ``liver``, the label set held the key twice, and step 1 failed (E302)
+        without writing the file it tells the curator to review."""
+        from medh5.io.legacy import build_label_set, load_sidecar, write_sidecar
+
+        paths = [
+            self._old(tmp_path / f"old_{i}.medh5", {name: self._mask(slice(0, 2))})
+            for i, name in enumerate(("liver", "Liver", "liver_1"))
+        ]
+        report = ConversionReport()
+        label_set = build_label_set(paths, report=report)
+        assert {c.key for c in label_set} == {"liver", "liver_1"}
+        assert label_set["liver"].name == "liver"
+        merged = [n for n in report.guesses if n.kind == "label_set"]
+        assert [n.detail["names"] for n in merged] == [["liver", "Liver"]]
+        sidecar = write_sidecar(label_set, tmp_path / "labels.json")
+        assert {c.key for c in load_sidecar(sidecar)} == {"liver", "liver_1"}
+
+    def test_two_masks_of_one_class_are_stored_as_their_union(self, tmp_path: Path):
+        """One file's ``liver`` and ``Liver``: the second replaced the first."""
+        from medh5.io.legacy import migrate
+
+        upper, lower = self._mask(slice(0, 2)), self._mask(slice(2, 4))
+        old = self._old(tmp_path / "old.medh5", {"liver": upper, "Liver": lower})
+        report = migrate(old, tmp_path / "new.medh5")
+        with medh5.open(tmp_path / "new.medh5") as sample:
+            seg = sample.annotations["seg"]
+            assert len(seg.class_ids) == 1
+            assert np.array_equal(seg.dense(["liver"])[0], upper | lower)
+        assert any(n.detail.get("classes") == 1 for n in report.of_kind("label_set"))
+
+    def test_conflicting_nnunet_ids_keep_the_first_and_warn(self, tmp_path: Path):
+        """``liver`` was id 1 in one file's dataset.json and 2 in another's:
+        the last silently won.  And two keys asking for one id made a label
+        set with a duplicate id."""
+        from medh5.io.legacy import build_label_set
+
+        mask = self._mask(slice(0, 2))
+        paths = [
+            self._old(
+                tmp_path / "a.medh5",
+                {"liver": mask},
+                nnunetv2={"labels": {"background": 0, "liver": 1}},
+            ),
+            self._old(
+                tmp_path / "b.medh5",
+                {"liver": mask, "spleen": mask},
+                nnunetv2={"labels": {"background": 0, "liver": 2, "spleen": 1}},
+            ),
+        ]
+        report = ConversionReport()
+        label_set = build_label_set(paths, report=report)
+        assert label_set["liver"].id == 1
+        assert label_set["spleen"].id not in (0, 1)
+        warnings = [w for w in report.warnings if w.kind == "label_set"]
+        assert len(warnings) == 2
+        assert warnings[0].detail["kept"] == 1 and warnings[0].detail["ignored"] == 2
+        assert warnings[1].detail["kept_by"] == "liver"
 
 
 class TestF26LegacyExtra:

@@ -1639,22 +1639,23 @@ follow-up is a new frame. Lesion 3 appears at baseline and not at follow-up, and
 | 0.x | 1.0 |
 |---|---|
 | `images/<name>` (all same shape) | `images/<name>` + one `grids/ref` shared by all |
-| `images.attrs.spacing/origin/direction/coord_system/axis_labels` | `grids/ref` attributes; `direction` stored 2-D |
+| `images.attrs.spacing/origin/direction/coord_system/axis_labels` | `grids/ref` attributes; `direction` stored 2-D. Without `spacing` the grid is uncalibrated (`units = "px"`, §3.5) rather than given a voxel size nobody measured; without `coord_system` it is written `"LPS"`, reported as a guess |
 | `images.attrs.shape` | `grids/ref.shape` |
 | `images.attrs.patch_size` | `grids/ref.patch_hint` |
-| `seg/<name>` boolean volumes | one `annotations/<id>` of kind `layers` (or `instances` / `bitmask` per §7.6); mask names become label-set `key`s |
+| `seg/<name>` boolean volumes | one `annotations/<id>` of the kind §7.6 selects (`labelmap`, `layers`, `instances` or `bitmask`); mask names become label-set `key`s, and names that become one key (`liver`, `Liver`) are one class, whose voxels are their masks' union |
 | `bboxes` `(n, ndim, 2)` int | `annotations/<id>` kind `boxes`, `float32`, `space="index"`, `lo = min − 0.5`, `hi = max − 0.5` |
 | `bbox_scores`, `bbox_labels` | `scores`, `class_ids` (+ new label-set entries) |
 | `label`, `label_name` | `annotations/<id>` kind `classification`, `scope="sample"` |
 | (no notion of time) | a single declared timepoint `tp0` with `index = 0`; every grid gets `timepoint = "tp0"` |
-| `extra.review` | `/meta → provenance.activities` (type `review`) + `/meta → quality` |
+| `extra.review` | `/meta → provenance.activities` (type `review`), whose `outputs` are the annotations migrated from the file, + a `/meta → quality` record for each of them; the dict also stays verbatim in the file's `extra.legacy` entry, which keeps whatever else it held |
 | `extra.nnunetv2` | `/meta → extra.nnunetv2` (preserved verbatim) + a generated label set; files grouped into one sample keep the first file's, and a different one stays in its file's `extra.legacy` entry |
 | every other `extra` key | `/meta → extra.legacy.<timepoint>` (preserved verbatim), one entry per file, under the timepoint it became |
 | `checksum_sha256` (whole file) | per-object `digest` + root `content_id` |
 | `has_seg`, `has_bbox`, `seg_names`, `image_names` | removed — derived by enumerating groups; a flag that can disagree with the data is a bug generator |
 
 `medh5 migrate` performs this mapping and emits a report of every non-mechanical decision
-(chosen encoding, minted class ids, half-voxel box conversion, timepoint grouping). Class ids are
+(chosen encoding, minted class ids and the names merged into one, half-voxel box conversion,
+timepoint grouping, a spacing or coordinate system a file does not state). Class ids are
 minted once for a whole cohort and written to a reviewable sidecar, so `liver` cannot be id 1 in one
 sample and id 2 in the next.
 

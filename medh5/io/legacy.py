@@ -11,12 +11,18 @@ file so a curator can audit a cohort rather than trust it:
    is a real half-voxel shift in the numbers, and it is reported as one.
 3. **Label set.**  0.x had names, not classes.  Mask names and ``bbox_labels``
    become keys with minted ids, written to a sidecar so a curator can review,
-   edit and reapply them cohort-wide before converting the rest.
+   edit and reapply them cohort-wide before converting the rest.  Names that
+   become one key (``liver``, ``Liver``) are one class, and the report says
+   which.
 4. **Grouping.**  A 0.x file is study-scoped and carries no subject key, so the
    default is one sample per file with a single declared ``tp0``.  Nothing about
    time is invented.  ``--group-by subject`` merges files that share a key the
    curator names, and orders them by date when there is one, by mtime otherwise
    — and says which.
+
+Geometry is never invented: a file that states no spacing becomes an
+uncalibrated grid (``units="px"``, §3.5), and a ``coord_system`` it does not
+state is reported as the assumption it is.
 
 Instance correspondence is **never** inferred across merged files: each file's
 objects keep independent ids, because asserting that lesion 2 at baseline is
@@ -157,6 +163,12 @@ def build_label_set(
     make ``liver`` id 1 in one sample and id 2 in the next, which is exactly the
     inconsistency a label set exists to prevent.  Ids an
     ``extra.nnunetv2.labels`` mapping already fixed are reused.
+
+    A class is a key, so names that sanitize to one key (``liver``,
+    ``Liver``) are one class, named by the first, and *report* lists them
+    (a ``label_set`` guess).  Two mappings that give a key different ids keep
+    the first, and an id two keys ask for goes to the first of them, the
+    other being minted a new one; each is a ``label_set`` warning.
     """
     label_set, notes = _core.legacy_build_label_set([os.fspath(p) for p in paths])
     if report is not None:
@@ -198,8 +210,9 @@ def migrate_paths(
 ) -> ConversionReport:
     """Migrate a cohort, minting one label set for all of it.
 
-    A file that is not 0.x, or is broken, is reported (``unreadable``) and the
-    rest of the cohort is migrated.
+    A file that is not 0.x, or is broken, is reported (``unreadable``), and so
+    is one whose content cannot be written (``failed``: nothing is written for
+    the sample it belongs to); the rest of the cohort is migrated.
     """
     return ConversionReport._from_fields(
         _core.legacy_migrate_paths(
