@@ -201,9 +201,9 @@ for path in paths:
         for pair in TimepointPairSampler("consecutive").pairs(s):
             first = frame_of(s, pair.first, f"CT_{pair.first}")
             second = frame_of(s, pair.second, f"CT_{pair.second}")
-            if first == second:
+            if first is not None and first == second:
                 continue                      # same frame, none needed
-            if s.transform_between(first, second) is not None:
+            if first and second and s.transform_between(first, second) is not None:
                 continue                      # a transform relates those frames
             print(f"{path}: {first} -> {second} has no transform")
 ```

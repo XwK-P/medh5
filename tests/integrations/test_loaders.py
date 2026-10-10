@@ -82,8 +82,15 @@ class TestVolumeDataset:
         )
         target = collate([ds[0], ds[1]])["label"]["organs_tp0"]
         assert target.dtype == torch.int64
-        logits = torch.zeros((2, 3, *SHAPE))
-        loss = torch.nn.CrossEntropyLoss(ignore_index=65535)(logits, target)
+        # On one thread: an intra-op pool started here would be inherited by
+        # the loader tests that fork.
+        threads = torch.get_num_threads()
+        torch.set_num_threads(1)
+        try:
+            logits = torch.zeros((2, 3, *SHAPE))
+            loss = torch.nn.CrossEntropyLoss(ignore_index=65535)(logits, target)
+        finally:
+            torch.set_num_threads(threads)
         assert torch.isfinite(loss)
 
     def test_label_format_none_returns_images_only(self, indexed_cohort):
@@ -311,8 +318,9 @@ class TestPatchGrids:
         A window drawn on the annotation's grid and applied to an image on a
         different one looks like one grid to a check that only compares the
         objects being read --- and comes back silently misregistered, truncated
-        wherever the target grid is the smaller of the two.  The window is a
-        member of the comparison now, so it carries the grid it was measured in.
+        wherever the target grid is the smaller of the two.  The window is
+        drawn in the images' grid now, and an annotation on another cannot
+        place it there.
         """
         path = tmp_path / "two.medh5"
         big, small = (16, 16, 16), (10, 10, 10)
@@ -342,7 +350,7 @@ class TestPatchGrids:
         crossed = PatchDataset(
             [path], sampler, annotation="ann_A", images=["CT_tp1"], label_format="none"
         )
-        with pytest.raises(MEDH5ValidationError, match="the patch window"):
+        with pytest.raises(MEDH5ValidationError, match="cannot be measured in grid"):
             crossed[0]
 
         aligned = PatchDataset(
@@ -350,10 +358,11 @@ class TestPatchGrids:
         )
         assert tuple(aligned[0]["images"]["CT_tp0"].shape) == (8, 8, 8)
 
-    def test_S14_3_a_grid_cover_refuses_an_image_off_the_reference_grid(
+    def test_S14_3_a_grid_cover_is_planned_on_its_images_grid(
         self, tmp_path, label_set
     ):
-        """`grid_patches` measures its windows in the reference grid."""
+        """The cover was planned on the reference grid, so a dataset reading a
+        later visit refused every item."""
         path = tmp_path / "cover.medh5"
         with medh5.create(path, codec="portable") as w:
             w.add_timepoint("tp0")
@@ -371,8 +380,33 @@ class TestPatchGrids:
                 )
         reference = GridPatchDataset([path], 8, images=["CT_tp0"])
         assert tuple(reference[0]["images"]["CT_tp0"].shape) == (8, 8, 8)
-        with pytest.raises(MEDH5ValidationError, match="the patch window"):
-            GridPatchDataset([path], 8, images=["CT_tp1"])[0]
+        assert len(reference) == 8
+        for scoped in (
+            GridPatchDataset([path], 8, images=["CT_tp1"]),
+            GridPatchDataset([path], 8, timepoint="tp1"),
+        ):
+            assert len(scoped) == 8  # 2 windows a side cover 10
+            assert {p.grid_id for _, p in scoped._plan} == {"g_tp1"}
+            assert tuple(scoped[7]["images"]["CT_tp1"].shape) == (8, 8, 8)
+        with pytest.raises(MEDH5ValidationError, match="one grid"):
+            GridPatchDataset([path], 8)
+
+    def test_S14_3_a_patch_is_drawn_on_its_images_grid(
+        self, tmp_path, label_set, masks
+    ):
+        """The window was drawn wherever the sampler found an annotation: a
+        dataset scoped to the follow-up drew it at baseline, and refused every
+        item while telling the caller to scope it with `timepoint=`."""
+        path = write_sample(
+            tmp_path / "two.medh5",
+            label_set=label_set,
+            masks=masks,
+            timepoints=("tp0", "tp1"),
+        )
+        for scope in ({"timepoint": "tp1"}, {"images": ["CT_tp1"]}):
+            item = PatchDataset([path], PatchSampler(8), **scope)[0]
+            assert item["meta"]["patch"]["grid_id"] == "ct_tp1", scope
+            assert set(item["images"]) == {"CT_tp1"}
 
     def test_a_whole_volume_read_still_spans_every_grid(
         self, tmp_path, label_set, masks
@@ -834,6 +868,24 @@ class TestPairedPatchDataset:
         with pytest.raises(MEDH5ValidationError):
             PairedPatchDataset([registered], PatchSampler(8), align="telepathy")
 
+    @pytest.mark.parametrize(
+        "unread",
+        [
+            {"annotations": {"organs_tp0": [1]}},
+            {"label_format": "labelmap"},
+            {"timepoint": "tp1"},
+        ],
+    )
+    def test_reading_arguments_it_does_not_read_are_refused(self, registered, unread):
+        """They were taken and ignored: no label, no ignore, both visits."""
+        with pytest.raises(MEDH5ValidationError, match="does not read"):
+            PairedPatchDataset([registered], PatchSampler(8), **unread)
+
+    def test_samples_per_pair_must_be_positive(self, registered):
+        """0 made an empty dataset, which trains on nothing without a word."""
+        with pytest.raises(MEDH5ValidationError, match="at least 1"):
+            PairedPatchDataset([registered], PatchSampler(8), samples_per_pair=0)
+
     def test_pair_modes_change_the_plan(self, registered):
         ds = PairedPatchDataset(
             [registered],
@@ -864,6 +916,34 @@ class TestCollate:
         with pytest.raises(MEDH5ValidationError):
             collate([])
 
+    def test_a_key_some_items_lack_is_named_in_either_order(self, indexed_cohort):
+        """The keys were the first item's: led by an item without a label the
+        batch dropped the others', and led by one with a label it raised a
+        bare `KeyError`."""
+        bare = PatchDataset(indexed_cohort, PatchSampler(8))[0]
+        labeled = PatchDataset(
+            indexed_cohort, PatchSampler(8), annotations={"organs_tp0": [1]}
+        )[0]
+        for batch in ([bare, labeled], [labeled, bare]):
+            with pytest.raises(MEDH5ValidationError, match="'label'"):
+                collate(batch)
+
+    def test_pairs_of_different_visits_are_refused_by_name(self, tmp_path):
+        """A pair's images are keyed by its visits' timepoints, so consecutive
+        pairs of three visits raised `KeyError: 'tp0'`."""
+        path = write_sample(tmp_path / "three.medh5", timepoints=("tp0", "tp1", "tp2"))
+        ds = PairedPatchDataset(
+            [path],
+            PatchSampler(8),
+            pair_sampler=TimepointPairSampler("consecutive"),
+            align="none",
+        )
+        first, second = ds[0], ds[1]
+        assert first["meta"]["pair"] != second["meta"]["pair"]
+        with pytest.raises(MEDH5ValidationError, match="'images'.* no 'tp"):
+            collate([first, second])
+        assert collate([first, first])["meta"]["pair"] == [first["meta"]["pair"]] * 2
+
     def test_stack_images_builds_a_channel_axis(self, indexed_cohort):
         ds = PatchDataset(indexed_cohort, PatchSampler(8))
         stacked = stack_images([ds[0], ds[1]], ["CT_tp0"])
@@ -893,7 +973,7 @@ class TestDataLoader:
 
     def test_S14_4_a_soak_does_not_grow_the_handle_cache(self, indexed_cohort):
         """10 epochs must not leak handles or file descriptors."""
-        CACHE.clear()
+        CACHE.close_all()
         ds = PatchDataset(indexed_cohort, PatchSampler(8), samples_per_volume=4)
         loader = DataLoader(ds, batch_size=2, num_workers=0, collate_fn=collate)
         counts = []
@@ -963,7 +1043,7 @@ class TestHandleCache:
         cohort --- chosen by plan order, not by what is being read.  The
         metadata pass itself is unavoidable: `__len__` needs one read per file.
         """
-        CACHE.clear()
+        CACHE.close_all()
         warm = open_cached(indexed_cohort[0])
         opens = CACHE.opens
 
@@ -990,7 +1070,6 @@ class TestHandleCache:
 
     def test_P11_one_open_per_file_per_epoch(self, tmp_path: Path):
         """`shuffle=True` re-opened 76 % of items' files at 100 files."""
-        pytest.importorskip("torch")
         from medh5.sampling import PatchSampler
         from medh5.torch import FileGroupedSampler, PatchDataset
         from medh5.torch.handles import CACHE
@@ -1021,7 +1100,6 @@ class TestHandleCache:
         assert len(sampler) == len(dataset)
 
     def test_P11_every_dataset_says_which_items_read_which_file(self, tmp_path: Path):
-        pytest.importorskip("torch")
         from medh5.sampling import PatchSampler
         from medh5.torch import (
             FileGroupedSampler,
@@ -1182,10 +1260,6 @@ class TestHandleCache:
 
 class TestW16Loaders:
     """F-16, F-17, F-18, F-24, L-34: the file's contracts reach the model."""
-
-    @pytest.fixture(autouse=True)
-    def _torch(self) -> None:
-        pytest.importorskip("torch")
 
     @pytest.mark.parametrize("encoding", Numbered.ENCODINGS)
     def test_F16_S7_7_the_ignore_region_reaches_the_item(

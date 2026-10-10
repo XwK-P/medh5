@@ -10,9 +10,12 @@ pip install "medh5[torch]"
 
 ## Datasets
 
-All four take the same reading arguments: `images`, `annotations`,
-`label_format` (`onehot`, `labelmap`, `instances` or `none`), `physical`,
-`dtype`, `timepoint`.
+`VolumeDataset`, `PatchDataset` and `GridPatchDataset` take the same reading
+arguments: `images`, `annotations`, `label_format` (`onehot`, `labelmap`,
+`instances` or `none`), `physical`, `dtype`, `timepoint`. A patch is drawn, and
+a cover planned, on the grid the images they read share, so `timepoint="tp1"`
+reads the follow-up's grid. `PairedPatchDataset` takes `images`, `physical` and
+`dtype`, and refuses the other three: a pair chooses its own visits.
 
 ```python
 from medh5.torch import (
@@ -89,7 +92,10 @@ ds.report      # files, pairs, and cross-sectional files that contributed none
 `all_pairs`. Each item carries both visits' patches, `meta["pair"]` and
 `meta["interval_days"]`, and — where a change label spans exactly that pair —
 `item["label"][ann_id]`, that classification's `{class_key: value}`. `label=`
-names the change-label annotation explicitly instead.
+names the change-label annotation explicitly instead. An item's `images` and
+`valid` are keyed by timepoint first (`item["images"]["tp0"]["CT_tp0"]`), so
+`collate` batches pairs of the same two visits, and names the key when a batch
+mixes others.
 
 `report` does **not** resolve transforms. With `align="transform"`, a pair whose
 frames have no registration is still counted as a pair, and the failure surfaces
@@ -143,7 +149,8 @@ loss = loss * keep[:, None] * batch["meta"]["annotated"]["organs"][..., None, No
 
 `collate` stacks tensors and leaves everything else as lists. When two samples
 disagree on a tensor's shape it names the key that disagreed rather than
-raising from inside `torch.stack`.
+raising from inside `torch.stack`, and it refuses by name a key some items of
+the batch carry and others do not.
 
 `used_index` is worth logging. `False` means the sampler fell back to scanning
 the volume because there was no current sampling index — the difference between
@@ -196,13 +203,23 @@ loader = DataLoader(ds, batch_size=4, sampler=FileGroupedSampler(ds, seed=0),
 
 The order is a function of `(seed, epoch)`, and the epoch is the dataset's:
 `ds.set_epoch(epoch)` redraws the patches and reorders the files. Pass it
-instead of `shuffle=True`, not with it. It works with every dataset here, and
-with workers `samples_per_volume` should be a multiple of `batch_size`, since a
-file whose items straddle two batches is opened by both workers.
+instead of `shuffle=True`, not with it. It works with the four datasets above,
+which say which items read which file (`file_groups()`) --- `ClinicalTaskDataset`
+does not, and is refused --- and with workers `samples_per_volume` should be a
+multiple of `batch_size`, since a file whose items straddle two batches is
+opened by both workers.
 
 The cache is shared by the threads of a process and locked. A handle is held
 for the length of an item, so a thread-based loader never has one closed under
 it by another thread's eviction.
+
+The cache is `medh5.torch.CACHE`, a `HandleCache`, and `open_cached(path,
+sample_key=None)` opens a sample --- or a member of a `.medh5c` collection ---
+through it. The datasets read through `CACHE.lease(path, sample_key,
+content_id=...)`, which holds the handle until the block ends. Given the
+`content_id` a task's row pins, a lease reopens a handle whose file `amend`
+replaced after it was opened, and refuses a sample that is another version
+all the same (`T302`): what the row pins is what it reads.
 
 A 10-epoch soak over the cache leaves the handle count and the descriptor count
 flat; there is a test that asserts it.
@@ -265,7 +282,9 @@ batch = next(iter(DataLoader(train, batch_size=8, collate_fn=collate_clinical)))
 | `concepts` | A `ConceptVocabulary` --- fitted on the training partition when omitted, refused when fitted on anything else (T405). It holds each concept's statistics in the one unit its training values were in (a concept whose training values are in two units is refused at fit time) and the text values each concept took |
 | `documents` | An event-level feature cache's path, or an encoder with `encode(text)` and `dim` |
 | `row_features` | A patient-level cache, validated against the task before any row reads it |
+| `base` | The directory relative source URIs resolve against --- the manifest's own directory when omitted |
 | `strict` | Refuse a task whose preflight has findings (default), or keep only the unaffected rows |
+| `preflight` | This manifest's `Preflight`, when it has been run already; one of another task, or another instance of this one, is refused (T404). Run here when omitted |
 
 A batch, for `B` rows:
 

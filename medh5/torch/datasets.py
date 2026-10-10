@@ -62,7 +62,7 @@ from medh5.sampling import (
     grid_patches,
 )
 from medh5.torch._compat import dataset_base, require_torch, to_tensor
-from medh5.torch.handles import CACHE, open_cached
+from medh5.torch.handles import CACHE
 
 LABEL_FORMATS = ("onehot", "labelmap", "instances", "none")
 ALIGNMENTS = ("none", "transform")
@@ -137,9 +137,6 @@ class _Base(_DatasetBase):  # type: ignore[misc,valid-type]
 
     # -- reading -----------------------------------------------------------
 
-    def _sample(self, path: str) -> Sample:
-        return open_cached(path)
-
     def _lease(self, path: str) -> AbstractContextManager[Sample]:
         """The cached handle, held against eviction while an item is read."""
         return CACHE.lease(path)
@@ -175,6 +172,21 @@ class _Base(_DatasetBase):  # type: ignore[misc,valid-type]
         if self.timepoint is not None:
             return tuple(sorted(sample.at(self.timepoint).images))
         return tuple(sorted(sample.images))
+
+    def _images_grid(self, sample: Sample) -> str | None:
+        """The one grid the images this dataset reads share --- what a window
+        is drawn, and a cover planned, in --- or ``None`` when it reads none.
+
+        Not the reference grid: a dataset scoped to a later visit, by
+        ``timepoint=`` or ``images=``, drew every window on the first visit's
+        grid and refused every item it read.
+        """
+        names = self._image_ids(sample)
+        if not names:
+            return None
+        return self._single_grid(
+            sample, {f"image {n!r}": sample.images[n].grid_id for n in names}
+        )
 
     @staticmethod
     def _single_grid(sample: Sample, members: Mapping[str, str]) -> str:
@@ -469,13 +481,21 @@ class PatchDataset(_Base):
         path = self.paths[index // self.samples_per_volume]
         with self._lease(path) as sample:
             patch = self.sampler.draw(
-                sample, self.annotation, (self.seed, self.epoch, index)
+                sample,
+                self.annotation,
+                (self.seed, self.epoch, index),
+                grid=self._images_grid(sample),
             )
             return self._item(sample, patch)
 
 
 class GridPatchDataset(_Base):
-    """Deterministic sliding-window cover of every file --- the inference path."""
+    """Deterministic sliding-window cover of every file --- the inference path.
+
+    The cover is planned on the grid the images read share (the reference
+    grid when none is read), so images on more than one grid are refused
+    here rather than at the first item.
+    """
 
     def __init__(
         self,
@@ -491,8 +511,10 @@ class GridPatchDataset(_Base):
         self._plan: list[tuple[str, Patch]] = []
         for path in self.paths:
             with self._scan(path) as sample:
-                reference = sample.reference_grid
-                shape, grid_id = reference.spatial_shape, reference.grid_id
+                planned = sample.grids[
+                    self._images_grid(sample) or sample.reference_grid.grid_id
+                ]
+                shape, grid_id = planned.spatial_shape, planned.grid_id
             self._plan.extend(
                 (path, patch)
                 for patch in grid_patches(
@@ -527,6 +549,14 @@ class PairedPatchDataset(_Base):
     A cross-sectional file contributes no pairs.  The count is reported through
     :attr:`report` rather than absorbed: a dataset that silently drops most of
     its files looks exactly like one that is training normally.
+
+    An item's ``images`` and ``valid`` are keyed by timepoint, then image; its
+    ``label``, where there is one, is the change label spanning the pair
+    (*label* names it).  Of the reading arguments it takes ``images``,
+    ``physical`` and ``dtype``: the pair chooses the visits, and *annotation*
+    the foreground windows are drawn from, so ``timepoint=``,
+    ``annotations=`` and ``label_format=`` are refused rather than taken and
+    ignored.
     """
 
     def __init__(
@@ -542,6 +572,13 @@ class PairedPatchDataset(_Base):
         seed: int = 0,
         **kwargs: Any,
     ) -> None:
+        unread = sorted(set(kwargs) & {"annotations", "label_format", "timepoint"})
+        if unread:
+            raise MEDH5ValidationError(
+                f"PairedPatchDataset does not read {unread}: a pair's visits are "
+                "its own, `annotation=` names what its windows are drawn from, "
+                "and `label=` the change label an item carries"
+            )
         super().__init__(paths, **kwargs)
         if align not in ALIGNMENTS:
             raise MEDH5ValidationError(
@@ -551,6 +588,8 @@ class PairedPatchDataset(_Base):
         self.pair_sampler = pair_sampler or TimepointPairSampler()
         self.align = align
         self.samples_per_pair = int(samples_per_pair)
+        if self.samples_per_pair < 1:
+            raise MEDH5ValidationError("samples_per_pair must be at least 1")
         self.annotation = annotation
         self.label = label
         self.seed = int(seed)
