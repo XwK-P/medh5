@@ -397,6 +397,23 @@ pub fn object() -> Map<String, Value> {
     Map::new()
 }
 
+/// Every element of a JSON array as an integer, or why one is not: a
+/// number written with a fraction or an exponent --- `3.0` included --- or
+/// outside `i64`, or not a number at all.  Never dropped: a list that loses
+/// an element it could not read says something else than was written (F14
+/// of the round-4 audit).
+pub fn integers(items: &[Value]) -> std::result::Result<Vec<i64>, String> {
+    items
+        .iter()
+        .map(|item| {
+            item.as_i64().ok_or_else(|| match item {
+                Value::Number(_) => format!("{item}, which is not an integer"),
+                _ => format!("{}, which is not a number", repr(item)),
+            })
+        })
+        .collect()
+}
+
 /// A JSON number from an `f64`, or `null` when it is not finite.
 pub fn num(value: f64) -> Value {
     serde_json::Number::from_f64(value).map(Value::Number).unwrap_or(Value::Null)

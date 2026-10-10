@@ -308,6 +308,12 @@ class FeatureCache:
         found: npt.NDArray[Any] = self._handle.get(entry_id)
         return found
 
+    def event_entry(self, content_id: str, event_id: str) -> CacheEntry | None:
+        """The entry of one event version of a pinned source, or ``None`` ---
+        what it says it encodes (``document_id``) beside its payload."""
+        entry = self._handle.event_entry(content_id, event_id)
+        return None if entry is None else CacheEntry.from_json(entry)
+
     def event_feature(self, content_id: str, event_id: str) -> npt.NDArray[Any] | None:
         """The feature of one event version of a pinned source, or ``None``."""
         entry = self._handle.event_entry(content_id, event_id)

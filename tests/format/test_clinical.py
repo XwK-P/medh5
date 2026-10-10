@@ -427,6 +427,111 @@ class TestAmendment:
             clinical.augment(sample_path, records)
 
 
+class TestF02ImmutableVersions:
+    """F02 of the round-4 audit: an amendment could attach a payload to an
+    event version the file already held.  Text linked to an inherited
+    text-less document event available at 1 h was owned by that version, and
+    selection at 24 h admitted it, though it was written later; an image could
+    be added to an inherited imaging event the same way.  An event version is
+    immutable, and so is what it owns (1.1 §7.3)."""
+
+    NOTE = Event(
+        "note_v1",
+        "note",
+        "document",
+        "point",
+        "final",
+        effective_start_us=0,
+        available_us=HOUR,
+    )
+
+    def test_F02_S7_3_text_attached_to_an_inherited_version_is_refused(
+        self, tmp_path: Path
+    ):
+        path = tmp_path / "note.medh5"
+        History.write(path, events=[self.NOTE])
+        with medh5.open(path) as s:
+            before = s.content_id
+        with pytest.raises(MEDH5ValidationError) as caught, medh5.amend(path) as w:
+            w.add_document(Document("note_text", "Written a week later."))
+            w.add_link(
+                Link.between(
+                    ("event", "note_v1"), "describes", ("document", "note_text")
+                )
+            )
+        assert caught.value.code == "E809"
+        assert "supersedes" in str(caught.value)
+        with medh5.open(path) as s:
+            assert s.content_id == before
+
+    def test_F02_S7_3_an_image_attached_to_an_inherited_version_is_refused(
+        self, history: Path
+    ):
+        with pytest.raises(MEDH5ValidationError) as caught, medh5.amend(history) as w:
+            w.add_image(
+                "CT2_tp0",
+                np.zeros(History.SHAPE, np.int16),
+                grid="ct_tp0",
+                modality="CT",
+            )
+            w.add_link(
+                Link.between(("event", "ct0"), "describes", ("image", "CT2_tp0"))
+            )
+        assert caught.value.code == "E809"
+
+    def test_F02_S7_3_a_grounding_of_an_inherited_version_stays_allowed(
+        self, history: Path
+    ):
+        """Only ownership is frozen: a link that is not structural ---
+        attributed to a later version, or one no selection reads as a
+        payload --- is still added."""
+        with medh5.amend(history) as w:
+            w.add_link(
+                Link.between(
+                    ("event", "rep_v1"),
+                    "describes",
+                    ("image", "CT_tp0"),
+                    asserted_by="rep_v2",
+                )
+            )
+        with medh5.open(history) as s:
+            assert s.clinical is not None and len(s.clinical.links) == 6
+
+    def test_F02_S7_2_a_superseding_version_owns_the_text_from_its_availability(
+        self, tmp_path: Path
+    ):
+        path = tmp_path / "note.medh5"
+        History.write(path, events=[self.NOTE])
+        with medh5.amend(path) as w:
+            w.add_event(
+                Event(
+                    "note_v2",
+                    "note",
+                    "document",
+                    "point",
+                    "amended",
+                    effective_start_us=0,
+                    available_us=48 * HOUR,
+                )
+            )
+            w.add_document(Document("note_text", "Written two days later."))
+            w.add_link(
+                Link.between(
+                    ("event", "note_v2"), "describes", ("document", "note_text")
+                )
+            )
+            w.add_link(
+                Link.between(("event", "note_v2"), "supersedes", ("event", "note_v1"))
+            )
+        with medh5.open(path) as s:
+            assert s.clinical is not None
+            early = s.clinical.select(24 * HOUR)
+            late = s.clinical.select(72 * HOUR)
+        assert "note_v1" in early.event_ids
+        assert not early.admits("document", "note_text")
+        assert "note_v2" in late.event_ids and late.admits("document", "note_text")
+
+
 class TestValidation:
     def test_S4_columns_are_checked(self, history: Path):
         with h5py.File(history, "r+") as f:
@@ -635,6 +740,34 @@ class TestSelection:
         assert kinds.event_ids == ["rep_v1"]
         assert limited.event_ids == ["ct1", "recist1"]
         assert SelectionPolicy.from_json(SelectionPolicy(kinds=("imaging",)).to_json())
+
+    def test_F15_S9_1_a_window_bounds_plans_from_below(self):
+        """F15 of the round-4 audit: a seven-day window at day +1 excluded a
+        completed event of day -100 and admitted the same event planned.  The
+        window's lower edge holds for plans; only the cutoff is not theirs."""
+
+        def event(event_id: str, status: str, t: int, available: int) -> Event:
+            return Event(
+                event_id,
+                event_id,
+                "procedure",
+                "point",
+                status,
+                effective_start_us=t,
+                available_us=available,
+            )
+
+        events = [
+            event("done", "completed", -100 * DAY, -100 * DAY),
+            event("stale", "planned", -100 * DAY, -100 * DAY),
+            event("soon", "planned", -3 * DAY, -3 * DAY),
+            event("future", "planned", 30 * DAY, 0),
+        ]
+        policy = SelectionPolicy(context_us=7 * DAY, plans=True)
+        chosen = clinical.select(events, [], DAY, policy)
+        assert chosen.event_ids == ["soon", "future"]
+        assert chosen.excluded == {"outside_context": 2}
+        assert all(e.plan for e in chosen.events)
 
     def test_S5_2_an_interval_is_read_with_the_fields_of_its_eligible_version(self):
         """A course whose end was learned later is a new version (1.1 §5.2)."""

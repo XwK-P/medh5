@@ -182,8 +182,15 @@ impl Entry {
         let list_str = |k: &str| -> Vec<String> {
             get(k).as_array().map(|a| a.iter().map(crate::json::py_str).collect()).unwrap_or_default()
         };
-        let list_int = |k: &str| -> Vec<i64> {
-            get(k).as_array().map(|a| a.iter().filter_map(Value::as_i64).collect()).unwrap_or_default()
+        // Refused, never dropped: a class id that did not read as an integer
+        // --- `3.0` --- left the entry without the class (F14 of the round-4
+        // audit).
+        let list_int = |k: &str| -> Result<Vec<i64>> {
+            match get(k).as_array() {
+                None => Ok(Vec::new()),
+                Some(items) => crate::json::integers(items)
+                    .map_err(|why| Error::Value(format!("manifest entry {}: `{k}` holds {why}", repr(&get("path"))))),
+            }
         };
         Ok(Entry {
             path: string("path")?,
@@ -204,8 +211,8 @@ impl Entry {
             images: list_str("images"),
             modalities: list_str("modalities"),
             annotations: get("annotations").as_object().cloned().unwrap_or_default(),
-            class_ids: list_int("class_ids"),
-            annotated_class_ids: list_int("annotated_class_ids"),
+            class_ids: list_int("class_ids")?,
+            annotated_class_ids: list_int("annotated_class_ids")?,
             label_set_id: opt_str("label_set_id"),
             label_set_version: opt_str("label_set_version"),
             label_set_digest: opt_str("label_set_digest"),

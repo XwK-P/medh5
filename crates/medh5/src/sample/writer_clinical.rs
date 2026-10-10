@@ -49,6 +49,8 @@ impl SampleWriter {
                         records.events.iter().map(|e| e.event_id.clone()).collect(),
                         records.documents.iter().map(|d| d.document_id.clone()).collect(),
                     );
+                    self.inherited_events =
+                        records.events.iter().map(|e| (e.event_id.clone(), e.kind.clone())).collect();
                     self.clinical = Some(records);
                 }
                 ClinicalSource::Absent => {
@@ -129,8 +131,33 @@ impl SampleWriter {
     }
 
     /// Add one typed link (§7).
+    ///
+    /// An event version the amended file already held is immutable, and so
+    /// is what it owns: a structural `describes` link from it --- a document
+    /// event's text, an imaging event's image --- is refused.  The version was
+    /// available when it was, so a payload attached later became an input at
+    /// every cutoff after that time, before it existed (F02 of the round-4
+    /// audit).  A new version superseding it carries the payload instead.
     pub fn add_link(&mut self, link: Link) -> Result<Link> {
         refuse(check_link(&link, ""), &format!("link {}", link.describe()))?;
+        self.clinical_records()?;
+        if link.relation == "describes" && link.source_type == "event" {
+            let owned = self.inherited_events.get(&link.source_id).is_some_and(|kind| {
+                matches!((kind.as_str(), link.target_type.as_str()), ("document", "document") | ("imaging", "image"))
+            });
+            if owned {
+                return Err(Error::coded(
+                    "E809",
+                    format!(
+                        "link {}: event {} is a version this sample already held, and an event version is immutable \
+                         --- adding or replacing a payload it owns needs a new event version that supersedes it \
+                         (1.1 §7.3)",
+                        link.describe(),
+                        repr_str(&link.source_id)
+                    ),
+                ));
+            }
+        }
         self.clinical_records()?.links.push(link.clone());
         Ok(link)
     }

@@ -78,21 +78,33 @@ impl Slot {
         })
     }
 
+    /// A slot as its manifest writes it.  Its voxel counts and class ids are
+    /// integers or refused (T101): JSON Schema's `integer` admits `3.0`, and
+    /// an element that did not read as an integer was dropped, so `classes:
+    /// [3.0]` read no class and `patch: [4.0, 8, 8]` a 2-D patch, without a
+    /// word (F14 of the round-4 audit).
     fn from_json(v: &Value) -> Result<Slot> {
+        let name = v["name"].as_str().unwrap_or_default().to_string();
+        let integers = |field: &str| -> Result<Option<Vec<i64>>> {
+            let Some(items) = v.get(field).and_then(Value::as_array) else { return Ok(None) };
+            crate::json::integers(items)
+                .map(Some)
+                .map_err(|why| Error::coded("T101", format!("slot {}: `{field}` holds {why}", repr_str(&name))))
+        };
+        let patch = integers("patch")?;
+        if let Some(n) = patch.iter().flatten().find(|n| **n < 1) {
+            return Err(Error::coded(
+                "T101",
+                format!("slot {}: `patch` holds {n}; a patch is at least one voxel on every axis", repr_str(&name)),
+            ));
+        }
         Ok(Slot {
-            name: v["name"].as_str().unwrap_or_default().to_string(),
             modality: v["modality"].as_str().unwrap_or_default().to_string(),
             required: v.get("required").and_then(Value::as_bool).unwrap_or(false),
-            patch: v
-                .get("patch")
-                .and_then(Value::as_array)
-                .map(|a| a.iter().filter_map(Value::as_u64).map(|n| n as usize).collect()),
+            patch: patch.map(|p| p.into_iter().map(|n| n as usize).collect()),
             roi: v.get("roi").and_then(Value::as_str).unwrap_or("center").to_string(),
-            classes: v
-                .get("classes")
-                .and_then(Value::as_array)
-                .map(|a| a.iter().filter_map(Value::as_i64).collect())
-                .unwrap_or_default(),
+            classes: integers("classes")?.unwrap_or_default(),
+            name,
         })
     }
 }

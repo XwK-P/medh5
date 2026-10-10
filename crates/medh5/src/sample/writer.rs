@@ -170,6 +170,9 @@ pub struct SampleWriter {
     /// Event and document ids already in `clinical`, so a duplicate is
     /// refused without scanning every row.
     pub(crate) clinical_ids: (std::collections::HashSet<String>, std::collections::HashSet<String>),
+    /// The kind of every event version the amended file already held: those
+    /// versions are immutable, so no payload may be attached to one.
+    pub(crate) inherited_events: std::collections::HashMap<String, String>,
 }
 
 impl std::fmt::Debug for SampleWriter {
@@ -271,6 +274,7 @@ impl SampleWriter {
             compact: false,
             clinical_source: ClinicalSource::Absent,
             clinical_ids: Default::default(),
+            inherited_events: Default::default(),
         };
         let setup = (|| -> Result<()> {
             for name in ["grids", "images", "annotations"] {
@@ -348,6 +352,7 @@ impl SampleWriter {
         ops::unlink(&root, crate::clinical::GROUP)?;
         self.clinical = None;
         self.clinical_ids = Default::default();
+        self.inherited_events = Default::default();
         self.clinical_source = ClinicalSource::Absent;
         self.declared_profiles.remove(crate::clinical::PROFILE);
         self.source_version = None;

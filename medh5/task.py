@@ -674,6 +674,26 @@ def _packed(value: Any) -> Packed | None:
     return None if value is None else Packed.from_core(value)
 
 
+def concept_token(kind: str, code_system: str | None, code: str | None) -> str:
+    """An event's concept token: ``kind|code_system|code``, or ``kind|`` when
+    it is uncoded.
+
+    A ``\\`` or ``|`` inside the system or the code is escaped with a
+    backslash, so two concepts never share a token: unescaped, system
+    ``alpha|beta`` with code ``gamma`` and system ``alpha`` with code
+    ``beta|gamma`` were one input (F17 of the round-4 audit).  A token without
+    either character reads as it always did, so a vocabulary fitted before
+    still holds.
+    """
+    if code_system is None or code is None:
+        return f"{kind}|"
+    return f"{kind}|{_escaped(code_system)}|{_escaped(code)}"
+
+
+def _escaped(text: str) -> str:
+    return text.replace("\\", "\\\\").replace("|", "\\|")
+
+
 def _cell(column: Packed | None, i: int) -> str | None:
     """Cell ``i`` of a packed column that may be all null."""
     return None if column is None else column[i]
@@ -779,12 +799,7 @@ class EventTable:
             tokens: dict[str, int] = {}
             index = np.empty(len(self), dtype=np.int32)
             for i in range(len(self)):
-                system, code = _cell(systems, i), _cell(codes, i)
-                token = (
-                    f"{kinds[i]}|"
-                    if system is None or code is None
-                    else f"{kinds[i]}|{system}|{code}"
-                )
+                token = concept_token(str(kinds[i]), _cell(systems, i), _cell(codes, i))
                 index[i] = tokens.setdefault(token, len(tokens))
             self._concepts = (tuple(tokens), index)
         return self._concepts
@@ -1352,6 +1367,7 @@ __all__ = [
     "Target",
     "TargetLabel",
     "TaskManifest",
+    "concept_token",
     "preflight",
     "schema_text",
 ]

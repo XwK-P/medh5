@@ -512,6 +512,19 @@ impl<'a> Prepared<'a> {
         // 3: kinds, plans, static, context.
         let mut admitted: Vec<(Option<Bounds>, bool, usize)> = Vec::new();
         let window_lo = policy.context_us.map(|w| cutoff.saturating_sub(w));
+        // Why an order time falls outside the window, from below.  The window
+        // bounds every admitted event, plans included; only its upper edge,
+        // the cutoff, is not a plan's --- a plan may lie after it.  Plans were
+        // admitted with no window at all, so a stale order from a hundred days
+        // before a seven-day window was read beside the week (F15 of the
+        // round-4 audit).
+        let outside = |order: Bounds| -> Option<&'static str> {
+            let lo_edge = window_lo?;
+            let inside = |t: i64| if policy.context_boundary == "closed" { t >= lo_edge } else { t > lo_edge };
+            let (fully, partly) = (inside(order.lo), inside(order.hi));
+            let ok = if policy.uncertainty == "contained" { fully } else { partly };
+            (!ok).then_some(if partly { "uncertain_context" } else { "outside_context" })
+        };
         for i in current {
             let e = &events[i];
             if let Some(kinds) = &policy.kinds {
@@ -541,24 +554,15 @@ impl<'a> Prepared<'a> {
             };
             let started = e.effective_start.is_some_and(|s| s.at_or_before(cutoff));
             let plan = e.status == "planned" || (e.temporal_type != "unknown" && !started);
-            if plan {
-                if !policy.plans {
-                    count(&mut excluded, "plan");
-                    continue;
-                }
-                admitted.push((Some(order), true, i));
+            if plan && !policy.plans {
+                count(&mut excluded, "plan");
                 continue;
             }
-            if let Some(lo_edge) = window_lo {
-                let inside = |t: i64| if policy.context_boundary == "closed" { t >= lo_edge } else { t > lo_edge };
-                let (fully, partly) = (inside(order.lo), inside(order.hi));
-                let ok = if policy.uncertainty == "contained" { fully } else { partly };
-                if !ok {
-                    count(&mut excluded, if partly { "uncertain_context" } else { "outside_context" });
-                    continue;
-                }
+            if let Some(reason) = outside(order) {
+                count(&mut excluded, reason);
+                continue;
             }
-            admitted.push((Some(order), false, i));
+            admitted.push((Some(order), plan, i));
         }
 
         // 4: order, tie groups, and the limit.  Ids break ties for storage
@@ -751,6 +755,53 @@ mod tests {
             assert_eq!(s.status, "provable");
             assert_eq!(ids(&s, &events), ["v1"]);
         }
+    }
+
+    /// F15: the window bounds every admitted event from below, plans
+    /// included, at its boundary and under either uncertainty; only the
+    /// cutoff is not a plan's edge.  Plans were admitted with no window, so a
+    /// stale order from day -100 was read beside a seven-day window.
+    #[test]
+    fn f15_s9_1_the_window_bounds_plans_from_below() {
+        const DAY: i64 = 24 * HOUR;
+        let cutoff = DAY;
+        let planned = |id: &str, effective: Bounds, available: i64| {
+            let mut e = version(id, id, 0, Some((available, available)));
+            e.effective_start = Some(effective);
+            e.status = "planned".into();
+            e
+        };
+        let events = vec![
+            planned("stale", Bounds::exact(-100 * DAY), 0),
+            planned("recent", Bounds::exact(-3 * DAY), 0),
+            planned("future", Bounds::exact(30 * DAY), 0),
+            planned("edge", Bounds::exact(cutoff - 7 * DAY), 0),
+            planned("straddle", Bounds::new(cutoff - 8 * DAY, cutoff - 5 * DAY), 0),
+            planned("known_long_ago", Bounds::exact(20 * DAY), -100 * DAY),
+        ];
+        let window = SelectionPolicy { plans: true, context_us: Some(7 * DAY), ..SelectionPolicy::strict() };
+        let s = select(&events, &[], cutoff, &window).unwrap();
+        assert_eq!(ids(&s, &events), ["edge", "recent", "known_long_ago", "future"]);
+        assert!(s.events.iter().all(|e| e.plan));
+        assert_eq!(s.excluded.get("outside_context"), Some(&1));
+        assert_eq!(s.excluded.get("uncertain_context"), Some(&1));
+        // An open window excludes its edge; `overlaps` admits a straddle.
+        let open = SelectionPolicy { context_boundary: "open".into(), ..window.clone() };
+        let s = select(&events, &[], cutoff, &open).unwrap();
+        assert_eq!(ids(&s, &events), ["recent", "known_long_ago", "future"]);
+        let overlaps = SelectionPolicy { uncertainty: "overlaps".into(), ..window.clone() };
+        let s = select(&events, &[], cutoff, &overlaps).unwrap();
+        assert_eq!(ids(&s, &events), ["straddle", "edge", "recent", "known_long_ago", "future"]);
+        // Ordered by availability, the window bounds availability.
+        let by_availability = SelectionPolicy { order_by: "available".into(), ..window.clone() };
+        let s = select(&events, &[], cutoff, &by_availability).unwrap();
+        assert!(!ids(&s, &events).contains(&"known_long_ago".to_string()));
+        assert_eq!(ids(&s, &events).len(), 5);
+        // A completed event is held to the same edge.
+        let mut done = planned("done", Bounds::exact(-100 * DAY), 0);
+        done.status = "final".into();
+        let s = select(&[done], &[], cutoff, &window).unwrap();
+        assert!(s.events.is_empty() && s.excluded.get("outside_context") == Some(&1));
     }
 
     #[test]

@@ -105,10 +105,8 @@ class Entry:
             images=tuple(doc.get("images", ())),
             modalities=tuple(doc.get("modalities", ())),
             annotations=dict(doc.get("annotations", {})),
-            class_ids=tuple(int(v) for v in doc.get("class_ids", ())),
-            annotated_class_ids=tuple(
-                int(v) for v in doc.get("annotated_class_ids", ())
-            ),
+            class_ids=_integers(doc, "class_ids"),
+            annotated_class_ids=_integers(doc, "annotated_class_ids"),
             label_set_id=doc.get("label_set_id"),
             label_set_version=doc.get("label_set_version"),
             label_set_digest=doc.get("label_set_digest"),
@@ -134,6 +132,21 @@ class Entry:
 
 GROUPABLE: tuple[str, ...] = _core.GROUPABLE
 """Fields worth grouping or stratifying on --- all single-valued and scannable."""
+
+
+def _integers(doc: Mapping[str, Any], name: str) -> tuple[int, ...]:
+    """A list of class ids, each an integer or refused --- as the engine
+    refuses it: `int(3.5)` is 3, and `3.0` read as no class at all (F14 of the
+    round-4 audit)."""
+    out = []
+    for value in doc.get(name, ()):
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(
+                f"manifest entry {doc.get('path')!r}: `{name}` holds {value!r}, "
+                "which is not an integer"
+            )
+        out.append(value)
+    return tuple(out)
 
 
 @dataclass(slots=True)

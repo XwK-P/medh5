@@ -203,6 +203,83 @@ class TestManifest:
         assert back.base == task.base
 
 
+class TestF17ConceptToken:
+    def test_F17_tokens_escape_their_delimiter_and_keep_the_plain_ones(self):
+        from medh5.task import concept_token
+
+        assert concept_token("observation", "http://loinc.org", "2160-0") == (
+            "observation|http://loinc.org|2160-0"
+        )
+        assert concept_token("note", None, "x") == concept_token("note", "s", None)
+        assert concept_token("note", None, None) == "note|"
+        pairs = [
+            (("alpha|beta", "gamma"), ("alpha", "beta|gamma")),
+            (("a\\", "|b"), ("a\\|", "b")),
+            (("a\\|", "b"), ("a", "\\|b")),
+        ]
+        for one, other in pairs:
+            assert concept_token("k", *one) != concept_token("k", *other)
+        assert concept_token("k", "é|", "ü") == "k|é\\||ü"
+
+
+class TestF14Integers:
+    """F14 of the round-4 audit: JSON Schema's `integer` admits `3.0`, and an
+    element that did not read as an integer was dropped --- `classes: [3.0]`
+    read no class and `patch: [4.0, 8, 8]` a 2-D patch.  Refused instead."""
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("classes", [3.0]),
+            ("classes", [3, 2.5]),
+            ("patch", [4.0, 8, 8]),
+            ("patch", [4, 8, 1e30]),
+        ],
+    )
+    def test_F14_a_number_that_is_not_an_integer_is_refused(
+        self, setup, field: str, value: list[Any]
+    ):
+        task, _ = setup
+        doc = task.to_json()
+        doc["slots"][0][field] = value
+        with pytest.raises(MEDH5ValidationError) as caught:
+            TaskManifest(doc, base=task.base)
+        assert caught.value.code == "T101"
+        # The schema refuses a fraction; the parser, what the schema admits.
+        assert "integer" in str(caught.value) and field in str(caught.value)
+
+    def test_F14_integers_and_a_non_positive_patch(self, setup):
+        task, _ = setup
+        doc = task.to_json()
+        doc["slots"][0].update(classes=[3, 7], patch=[4, 8, 8])
+        (slot,) = TaskManifest(doc, base=task.base).slots
+        assert slot.classes == (3, 7) and slot.patch == (4, 8, 8)
+        doc["slots"][0]["patch"] = [0, 8, 8]
+        with pytest.raises(MEDH5ValidationError) as caught:
+            TaskManifest(doc, base=task.base)
+        assert caught.value.code == "T101"
+
+    @pytest.mark.parametrize("value", [3.0, 3.5, "3"])
+    def test_F14_a_manifest_entry_refuses_a_class_id_that_is_not_an_integer(
+        self, tmp_path: Path, value: Any
+    ):
+        """Through Python and through the engine alike."""
+        from medh5.dataset import Manifest, scan
+
+        cohort(tmp_path / "cohort")
+        manifest, failures = scan(tmp_path / "cohort")
+        assert not failures
+        doc = manifest.to_json()
+        assert doc["entries"][0]["class_ids"] == [3]
+        doc["entries"][0]["class_ids"] = [value]
+        with pytest.raises(ValueError, match="not an integer"):
+            Manifest.from_json(doc)
+        saved = tmp_path / "manifest.json"
+        saved.write_text(json.dumps(doc), encoding="utf-8")
+        with pytest.raises(ValueError, match="which is not"):
+            Manifest.load(saved)
+
+
 class TestSources:
     def test_S2_a_pin_holds_until_the_sample_changes(self, setup):
         task, paths = setup

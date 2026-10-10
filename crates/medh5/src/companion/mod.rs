@@ -36,7 +36,7 @@ pub use view::{
 };
 
 /// The companion contract's finding codes, and what each means.
-pub const CODES: [(&str, &str); 19] = [
+pub const CODES: [(&str, &str); 20] = [
     ("T101", "the manifest is not JSON, or fails its JSON Schema"),
     ("T102", "the manifest's policy, slot or target definition is inconsistent"),
     ("T103", "a declared fingerprint does not match the manifest"),
@@ -56,6 +56,7 @@ pub const CODES: [(&str, &str); 19] = [
     ("T404", "a cache was built for another task, cutoff or selection"),
     ("T405", "learned preprocessing was fitted on a split other than the task's training partition"),
     ("T406", "a cache entry is not admissible as input at the row's cutoff"),
+    ("T407", "an event-level cache entry names an event its source lacks, or a document that event does not own"),
 ];
 
 /// The one-line meaning of a companion code, or `""`.

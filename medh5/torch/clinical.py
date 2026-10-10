@@ -82,7 +82,15 @@ from medh5.clinical import COMPARATORS, EVENT_KINDS, HOUR, Event
 from medh5.errors import MEDH5ValidationError
 from medh5.sample import Sample
 from medh5.sampling import window_around
-from medh5.task import Packed, Preflight, RowView, Slot, SubjectHistory, TaskManifest
+from medh5.task import (
+    Packed,
+    Preflight,
+    RowView,
+    Slot,
+    SubjectHistory,
+    TaskManifest,
+    concept_token,
+)
 from medh5.torch._compat import dataset_base, require_torch, to_tensor
 from medh5.torch.handles import CACHE
 
@@ -95,10 +103,10 @@ UNKNOWN = 1
 
 
 def concept_of(event: Event) -> str:
-    """An event's concept token: ``kind|code_system|code`` (``kind|`` uncoded)."""
-    if event.code_system is None or event.code is None:
-        return f"{event.kind}|"
-    return f"{event.kind}|{event.code_system}|{event.code}"
+    """An event's concept token: ``kind|code_system|code`` (``kind|`` uncoded),
+    a ``\\`` or ``|`` in the system or code escaped
+    (:func:`~medh5.task.concept_token`)."""
+    return concept_token(event.kind, event.code_system, event.code)
 
 
 @dataclass(frozen=True)
@@ -727,26 +735,43 @@ class ClinicalTaskDataset(_DatasetBase):  # type: ignore[misc,valid-type]
             if self._documents is not None:
                 content_id = row.sources[fragment].content_id
                 event_id = str(subject.events.column("event_id")[event])
-                feature = self._documents.get().event_feature(content_id, event_id)
-                if feature is None:
+                cache = self._documents.get()
+                entry = cache.event_entry(content_id, event_id)
+                if entry is None:
                     raise MEDH5ValidationError(
                         f"the document cache has no feature for event "
                         f"{event_id!r} of {row.sources[fragment].locator} "
                         f"at {content_id}: rebuild it for these sources",
                         "T403",
                     )
+                # The feature of the text this version owns, and no other: an
+                # entry joined to a later revision's text was served to rows
+                # that admit only this version (F03 of the round-4 audit).
+                if entry.document_id != document_id:
+                    raise MEDH5ValidationError(
+                        f"the document cache's feature for event {event_id!r} "
+                        f"of {row.sources[fragment].locator} encodes document "
+                        f"{entry.document_id!r}; the event owns {document_id!r}"
+                        " --- rebuild the entry",
+                        "T407",
+                    )
+                feature = cache.get(entry.entry_id)
             else:
                 # The document's own bytes: no other text, and not the events.
                 feature = self._encoder.encode(
                     samples[fragment].document_text(document_id)
                 )
             features.append(np.asarray(feature, dtype=np.float32))
-        dim = self._feature_dim() if not features else int(features[0].shape[0])
+        # A row without documents has the declared shape whole, so it pads
+        # beside a row with them in either order: it was `(0, shape[0])`, and
+        # a batch led by it could not take a rank-2 feature (F16 of the
+        # round-4 audit).
+        shape = self._feature_shape() if not features else features[0].shape
         k = np.asarray([e for _, e, _, _ in owned], dtype=np.int64)
         out: dict[str, npt.NDArray[Any]] = {
             "features": np.stack(features)
             if features
-            else np.zeros((0, dim), dtype=np.float32),
+            else np.zeros((0, *shape), dtype=np.float32),
             "event": np.asarray([p for p, _, _, _ in owned], dtype=np.int64),
         }
         for name, key in (("effective_start", "start"), ("available", "available")):
@@ -761,14 +786,18 @@ class ClinicalTaskDataset(_DatasetBase):  # type: ignore[misc,valid-type]
             out[f"{key}_known"] = known
         return out
 
-    def _feature_dim(self) -> int:
+    def _feature_shape(self) -> tuple[int, ...]:
+        """One document feature's shape: the cache's declared output, or the
+        encoder's ``dim`` --- an int is a vector of that length."""
         if self._documents is not None:
             shape = self._documents.get().header["output"]["shape"]
-            return int(shape[0]) if shape else 1
+            return tuple(int(n) for n in shape)
         dim = getattr(self._encoder, "dim", None)
         if dim is None:
             raise MEDH5ValidationError("the document encoder declares no `dim`")
-        return int(dim)
+        if isinstance(dim, (int, np.integer)):
+            return (int(dim),)
+        return tuple(int(n) for n in dim)
 
     def __getitem__(self, index: int) -> dict[str, Any]:
         import torch
@@ -988,9 +1017,19 @@ def _pad_sequences(values: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     longest = max(lengths) if lengths else 0
     out: dict[str, Any] = {}
     for key in values[0]:
-        first = values[0][key]
-        shape = (len(values), longest, *first.shape[1:])
-        padded = torch.zeros(shape, dtype=first.dtype)
+        # The trailing shape of the rows that have entries: an empty row
+        # pads whatever its own, and rows that disagree are refused rather
+        # than collated in one order and not the other (F16).
+        filled = [v[key] for v, n in zip(values, lengths, strict=True) if n]
+        first = filled[0] if filled else values[0][key]
+        trailing = tuple(first.shape[1:])
+        for row in filled:
+            if tuple(row.shape[1:]) != trailing:
+                raise ValueError(
+                    f"cannot collate {key!r}: one row's entries have shape "
+                    f"{tuple(row.shape[1:])}, another's {trailing}"
+                )
+        padded = torch.zeros((len(values), longest, *trailing), dtype=first.dtype)
         for i, v in enumerate(values):
             n = lengths[i]
             if n:

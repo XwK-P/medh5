@@ -224,6 +224,9 @@ medh5 cache validate cohort/reports.medh5cache --task cohort/progression.task.js
 - **Not this task's** (T404--T406): built for another task or cutoff, fitted on another split, or ---
   for a patient-level feature --- encoding event versions its row does not admit, such as a
   whole-history embedding.
+- **Mis-joined** (T407): an event-level entry names an event its source does not hold, or a
+  document that event does not own --- a report's feature filed under its earlier version, say.
+  Rebuild the entry; the training dataset refuses it too, before reading it.
 
 A cache never redefines its sources: a failed validation rejects the cache, and the samples are
 untouched.

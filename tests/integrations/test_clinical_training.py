@@ -918,8 +918,13 @@ class TestAdmissibility:
             ) as w:
                 for subject in task.subjects:
                     for source in subject.sources:
-                        for event in ("rep_v1", "rep_v2"):
-                            w.add_event(source, event, np.ones(1, np.float32))
+                        for version in ("v1", "v2"):
+                            w.add_event(
+                                source,
+                                f"rep_{version}",
+                                np.ones(1, np.float32),
+                                document_id=f"rep_text_{version}",
+                            )
             return path
 
         val_fitted = documents(tmp_path / "val.medh5cache", "val")
@@ -1087,3 +1092,169 @@ class TestValuesKeepTheirMeaning:
         )
         assert batch["events"]["unit"].dtype == torch.int64
         assert batch["events"]["value_index"].shape == batch["events"]["concept"].shape
+
+
+class TestF03DocumentOwnership:
+    """F03 of the round-4 audit: an event-level entry was looked up by its
+    event alone, so a feature filed under ``report0_v1`` that encoded the
+    amended report --- written two days later --- validated clean and was
+    served to every row admitting ``report0_v1``.  An entry encodes a version
+    of its source and the document that version owns (task-cache-1 §7.2,
+    T407); the dataset checks it before every read."""
+
+    @staticmethod
+    def _cache(path: Path, entries: list[tuple[Any, str, str | None]]) -> Path:
+        with CacheWriter(
+            path,
+            level="event",
+            encoder={"name": "fixture", "revision": "1"},
+            output={"dtype": "float32", "shape": [8]},
+        ) as w:
+            for source, event_id, document_id in entries:
+                w.add_event(
+                    source, event_id, np.ones(8, np.float32), document_id=document_id
+                )
+        return path
+
+    def test_F03_a_feature_joined_to_another_version_is_refused(
+        self, worked: dict[str, Any]
+    ):
+        task = TaskManifest.load(worked["task"])
+        source = task.subjects[0].sources[0]
+        out = worked["out"]
+        wrong = self._cache(
+            out / "wrong.medh5cache", [(source, "report0_v1", "report0_text_v2")]
+        )
+        report = validate_cache(wrong, base=task.base)
+        assert [f.code for f in report.findings] == ["T407"]
+        assert "report0_text_v1" in str(report.findings[0])
+        foreign = self._cache(out / "foreign.medh5cache", [(source, "nobody_v9", None)])
+        (finding,) = validate_cache(foreign, base=task.base).findings
+        assert finding.code == "T407" and "does not hold" in str(finding)
+        for path in (wrong, foreign):
+            with pytest.raises(MEDH5ValidationError) as caught:
+                ClinicalTaskDataset(task, partition="train", documents=path)
+            assert caught.value.code == "T407"
+        right = self._cache(
+            out / "right.medh5cache", [(source, "report0_v1", "report0_text_v1")]
+        )
+        assert validate_cache(right, base=task.base).ok
+
+    def test_F03_the_dataset_checks_the_document_before_it_reads(
+        self, worked: dict[str, Any]
+    ):
+        """An entry naming no document validates --- it may be an event's own
+        feature --- but is not a document's: the dataset refuses it as one,
+        on the handle it reopens lazily and after a pickle round trip."""
+        import pickle
+
+        task = TaskManifest.load(worked["task"])
+        entries = []
+        for subject in task.subjects:
+            for source in subject.sources:
+                for event_id in ("report0_v1", "report0_v2"):
+                    entries.append((source, event_id, None))
+        path = self._cache(worked["out"] / "unnamed.medh5cache", entries)
+        assert validate_cache(path, base=task.base).ok
+        dataset = ClinicalTaskDataset(task, partition="train", documents=path)
+        index = next(
+            i for i, row in enumerate(dataset.rows) if row.cutoff_us >= 24 * HOUR
+        )
+        for ds in (dataset, pickle.loads(pickle.dumps(dataset))):
+            with pytest.raises(MEDH5ValidationError) as caught:
+                ds[index]
+            assert caught.value.code == "T407"
+
+
+class TestF16FeatureShapes:
+    """F16 of the round-4 audit: a row without documents took a feature of
+    shape ``(0, dim[0])`` while a row with them took the encoder's whole
+    shape, so a batch collated in one order and raised in the other."""
+
+    class Matrix:
+        """An encoder whose feature is a matrix."""
+
+        dim = (2, 3)
+
+        def encode(self, text: str) -> Any:
+            return np.full((2, 3), len(text), np.float32)
+
+    def test_F16_rows_with_and_without_documents_collate_in_either_order(
+        self, tmp_path: Path
+    ):
+        task = timeline_task(tmp_path)
+        task.add_row("h1", "P-01", HOUR)  # before the first report
+        dataset = ClinicalTaskDataset(task, documents=self.Matrix())
+        ids = [r.row_id for r in dataset.rows]
+        empty, full = dataset[ids.index("h1")], dataset[ids.index("d20")]
+        assert tuple(empty["documents"]["features"].shape) == (0, 2, 3)
+        assert tuple(full["documents"]["features"].shape) == (1, 2, 3)
+        for batch in ([empty, full], [full, empty], [empty, empty], [full, full]):
+            docs = collate_clinical(batch)["documents"]
+            assert tuple(docs["features"].shape[2:]) == (2, 3)
+            lengths = [len(item["documents"]["features"]) for item in batch]
+            assert docs["length"].tolist() == lengths
+            assert docs["mask"].sum(dim=1).tolist() == lengths
+        # An int `dim` is a vector.
+        vectors = ClinicalTaskDataset(task, documents=HashingTextEncoder(dim=4))
+        assert tuple(vectors[ids.index("h1")]["documents"]["features"].shape) == (0, 4)
+
+    def test_F16_rows_that_disagree_are_refused(self, tmp_path: Path):
+        task = timeline_task(tmp_path)
+        dataset = ClinicalTaskDataset(task, documents=self.Matrix())
+        full = dataset[0]
+        other = dict(full, documents=dict(full["documents"]))
+        other["documents"]["features"] = torch.ones((1, 4))
+        with pytest.raises(ValueError, match="cannot collate 'features'"):
+            collate_clinical([full, other])
+
+
+class TestF17ConceptTokens:
+    """F17 of the round-4 audit: a concept token joined its fields with `|`
+    unescaped, so system ``alpha|beta`` with code ``gamma`` and system
+    ``alpha`` with code ``beta|gamma`` were one input."""
+
+    def test_F17_delimiters_in_codes_keep_concepts_apart(self, tmp_path: Path):
+        from medh5.clinical import Event
+        from medh5.task import SourceRef
+        from tests.kits import History
+
+        def coded(event_id: str, system: str, code: str) -> Event:
+            return Event(
+                event_id,
+                event_id,
+                "observation",
+                "point",
+                "final",
+                effective_start_us=-HOUR,
+                available_us=-HOUR,
+                code_system=system,
+                code=code,
+                value_text="seen",
+            )
+
+        path = tmp_path / "codes.medh5"
+        History.write(
+            path,
+            events=[
+                coded("a", "alpha|beta", "gamma"),
+                coded("b", "alpha", "beta|gamma"),
+                coded("c", "système\\", "|código"),
+            ],
+        )
+        task = TaskManifest.new("codes", "1", identity_namespace="site", base=tmp_path)
+        task.add_subject("P-01", [SourceRef.pin(path, uri=path.name)])
+        task.add_row("d1", "P-01", DAY)
+        dataset = ClinicalTaskDataset(task)
+        item = dataset[0]
+        at = item["meta"]["event_ids"].index
+        concept = item["events"]["concept"]
+        assert len({int(concept[at(e)]) for e in ("a", "b", "c")}) == 3
+        tokens = {concept_of(e) for e in dataset.rows[0].events}
+        assert {
+            "observation|alpha\\|beta|gamma",
+            "observation|alpha|beta\\|gamma",
+            "observation|système\\\\|\\|código",
+        } <= tokens
+        saved = dataset.concepts.save(tmp_path / "vocab.json")
+        assert ConceptVocabulary.load(saved) == dataset.concepts

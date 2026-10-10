@@ -557,6 +557,63 @@ impl CacheReport {
     }
 }
 
+/// The event versions of one source and the documents each owns through
+/// its structural `describes` link (1.1 §7.3).
+struct Ownership(HashMap<String, BTreeSet<String>>);
+
+/// What a source's event versions own, or `None` when it cannot be read ---
+/// which its pin check reports.
+fn ownership(source: &SourceRef, base: Option<&Path>) -> Option<Ownership> {
+    let sample = source.open(base).ok()?;
+    let mut owned: HashMap<String, BTreeSet<String>> = HashMap::new();
+    if let Some(clinical) = sample.clinical().ok()? {
+        for event in &clinical.events {
+            owned.entry(event.event_id.clone()).or_default();
+        }
+        for link in &clinical.links {
+            let structural = link.relation == "describes"
+                && link.source_type == "event"
+                && link.target_type == "document"
+                && clinical.event(&link.source_id).is_some_and(|e| e.kind == "document");
+            if structural {
+                owned.entry(link.source_id.clone()).or_default().insert(link.target_id.clone());
+            }
+        }
+    }
+    Some(Ownership(owned))
+}
+
+impl Ownership {
+    /// Why an entry naming `event_id` (and `document_id`) is not one of this
+    /// source's versions and what it owns; `None` when it is.
+    fn mismatch(&self, source: &SourceRef, event_id: &str, document_id: Option<&str>) -> Option<String> {
+        let Some(documents) = self.0.get(event_id) else {
+            return Some(format!(
+                "names event {}, which {} at {} does not hold: an event-level feature encodes a version of its source",
+                repr_str(event_id),
+                source.locator(),
+                source.content_id
+            ));
+        };
+        let document = document_id?;
+        if documents.contains(document) {
+            return None;
+        }
+        Some(format!(
+            "names document {}, but event {} of {} owns {}: an event-level feature encodes the document its version \
+             owns, and no other",
+            repr_str(document),
+            repr_str(event_id),
+            source.locator(),
+            if documents.is_empty() {
+                "none".to_string()
+            } else {
+                documents.iter().map(|d| repr_str(d)).collect::<Vec<_>>().join(", ")
+            }
+        ))
+    }
+}
+
 /// Validate a cache: its manifest's and every payload's checksum, every
 /// source pin, and --- given the task and what its preflight admits
 /// ([`Admitted`]) --- that it was built for this task, at these cutoffs, from
@@ -602,6 +659,25 @@ pub fn validate_cache(
                 .clone();
             if let Some(why) = problem {
                 report.findings.push(Finding::new("T403", &entry.entry_id, why));
+            }
+        }
+    }
+    // An event-level entry encodes one event version of its source, and the
+    // document that version owns.  An entry joined to another version's text
+    // --- a newer revision's, say --- was served to every row admitting the
+    // version it names, before that text existed (F03 of the round-4 audit).
+    // Checked against the source, so with or without a task.
+    if cache.header.level == "event" {
+        let mut owners: HashMap<(String, Option<String>, String), Option<Ownership>> = HashMap::new();
+        for entry in &cache.entries {
+            let (Some(event_id), Some(source)) = (&entry.event_id, entry.sources.first()) else { continue };
+            let key = (source.uri.clone(), source.sample_key.clone(), source.content_id.clone());
+            if checked.get(&key).is_some_and(Option::is_some) {
+                continue; // its pin failed: stale (T403), not judged here
+            }
+            let owned = owners.entry(key).or_insert_with(|| ownership(source, base.as_deref()));
+            if let Some(why) = owned.as_ref().and_then(|o| o.mismatch(source, event_id, entry.document_id.as_deref())) {
+                report.findings.push(Finding::new("T407", &entry.entry_id, why));
             }
         }
     }

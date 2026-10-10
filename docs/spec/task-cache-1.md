@@ -315,7 +315,11 @@ makes its entries stale. A finer dependency key would need its own specification
   its `event_id`, and **no row**: no `row_id`, `row_fingerprint`, `cutoff_us` or `event_versions`.
   An event version is immutable, so its feature is free of any cutoff and shared by every row ---
   each row's selection decides which of them it may read; an entry declaring a row's history would
-  say otherwise, and a reader looking it up by event would serve it to every row.
+  say otherwise, and a reader looking it up by event would serve it to every row. The `event_id`
+  **MUST** be an event version of the entry's source, and a `document_id` the document that version
+  owns through its structural `describes` link ([1.1](medh5-1.1.md) §7.3) (**T407**): a row admits a
+  version, so the feature it reads is that version's, and a reader of a document feature checks the
+  entry's `document_id` against the document the selected version owns before using it.
 - **Patient level**: one feature per row, pinning the row --- its id and its fingerprint
   (`row_fingerprint`, §3.2) --- its cutoff and the exact event versions it encodes
   (`event_versions`), under the task it was built for (`task_fingerprint`). Every entry names all of
@@ -357,6 +361,12 @@ Given a task (and its preflight), validation also checks that the cache belongs 
   membership, or a partition other than the task's training partition;
 - **T406** --- a patient-level entry encodes event versions other than those its row admits at its
   cutoff: a whole-history embedding, or one built under another policy, is inadmissible.
+
+With or without a task, an event-level entry is checked against its source:
+
+- **T407** --- the entry names an event version its source does not hold, or a document that
+  version does not own (§7.2). Joined to another version's text --- a later revision's --- the
+  feature would be read by every row that admits the version it names, before that text existed.
 
 A stale or unverifiable cache is rejected and rebuilt; it never redefines or invalidates the source.
 

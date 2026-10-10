@@ -532,7 +532,9 @@ medh5 cache validate CACHE [--task MANIFEST] [--base DIR] [--json]
 ```
 
 Check a feature cache's checksums and every source pin it records: *stale*
-entries (T403) are told apart from *corrupt* ones (T401, T402). With `--task`,
+entries (T403) are told apart from *corrupt* ones (T401, T402), and an
+event-level entry must name a version its source holds and the document that
+version owns (T407). With `--task`,
 also that it was built for this task and its cutoffs (T404), fitted on its
 training partition (T405), and encodes only versions its rows admit (T406) ---
 the task is preflighted a subject at a time, keeping only each row's cutoff
