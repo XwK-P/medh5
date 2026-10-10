@@ -182,21 +182,28 @@ class TestF26LegacyExtra:
             extra=extra,
         )
 
-    def test_F26_appendix_B_the_stash_is_where_the_exporter_reads_it(
-        self, tmp_path: Path
-    ):
-        import json
-
+    def _migrated(self, tmp_path: Path) -> Path:
         from medh5.io.legacy import migrate
-        from medh5.io.nnunetv2 import to_nnunetv2
 
         old = self._old(tmp_path / "old.medh5", patient_id="PAT-A", nnunetv2=self.STASH)
         migrate(old, tmp_path / "case_a.medh5")
-        with medh5.open(tmp_path / "case_a.medh5") as sample:
+        return tmp_path / "case_a.medh5"
+
+    def test_F26_appendix_B_the_stash_is_at_meta_extra(self, tmp_path: Path):
+        with medh5.open(self._migrated(tmp_path)) as sample:
             extra = sample.document.extra
             assert extra["nnunetv2"] == self.STASH
             assert extra["legacy"] == {"tp0": {"patient_id": "PAT-A"}}
-        report = to_nnunetv2([tmp_path / "case_a.medh5"], tmp_path / "nnunet")
+
+    def test_F26_appendix_B_the_stash_is_where_the_exporter_reads_it(
+        self, tmp_path: Path
+    ):
+        pytest.importorskip("nibabel")
+        import json
+
+        from medh5.io.nnunetv2 import to_nnunetv2
+
+        report = to_nnunetv2([self._migrated(tmp_path)], tmp_path / "nnunet")
         written = json.loads(
             (tmp_path / "nnunet" / "Dataset001_medh5" / "dataset.json").read_text()
         )
