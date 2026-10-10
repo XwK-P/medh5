@@ -423,6 +423,37 @@ class TestSegAndIndex:
         code, out = run(capsys, "seg", "stats", str(sample_path), "nope")
         assert code == EXIT_ERROR
 
+    @pytest.mark.parametrize(
+        ("case", "annotation", "kept"),
+        [("seg-instances", "lesions", "instances"), ("seg-probmap", "soft", "probmap")],
+    )
+    def test_S7_6_stats_recommends_only_what_keeps_the_annotation(
+        self, capsys, tmp_path, case, annotation, kept
+    ):
+        """`seg stats` recommended a dense encoding for `instances` and called
+        the re-encode lossless; the command it printed refuses (E404), as
+        dropping every instance_id.  A probability map was recommended
+        binary layers, which threshold it."""
+        from medh5.conformance import build_corpus
+
+        build_corpus(tmp_path, names=[case])
+        path = str(tmp_path / f"{case}.medh5")
+        code, out = run(capsys, "seg", "stats", path, annotation, "--json")
+        assert code == EXIT_OK
+        assert json.loads(out.out)["recommended"] == kept
+        code, out = run(capsys, "seg", "stats", path, annotation)
+        assert "seg convert" not in out.out and "losslessly" not in out.out
+
+    def test_stats_names_a_lossless_re_encoding(self, capsys, tmp_path):
+        from medh5.conformance import build_corpus
+
+        build_corpus(tmp_path, names=["seg-bitmask"])
+        path = str(tmp_path / "seg-bitmask.medh5")
+        code, out = run(capsys, "seg", "stats", path, "organs")
+        hint = f"`medh5 seg convert {path} organs --to layers` would re-encode it"
+        assert hint in out.out
+        assert run(capsys, "seg", "convert", path, "organs", "--to", "layers")[0] == 0
+
     def test_convert_dry_run_writes_nothing(self, capsys, sample_path):
         before = sample_path.read_bytes()
         code, out = run(

@@ -6,6 +6,7 @@ use std::sync::Arc;
 use clap::ArgMatches;
 use serde_json::{json, Map, Value};
 
+use medh5::annotations::encode::IN_BAND_IGNORE_KINDS;
 use medh5::annotations::select::{analyse, cost_model, select_encoding};
 use medh5::annotations::Annotation;
 use medh5::h5::{data, ops};
@@ -63,8 +64,15 @@ fn stats(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let masks = annotation_to_masks(&annotation, None)?;
     let shape = annotation.spatial_shape()?;
     let measured = analyse(&masks, Some(&shape))?;
-    let costs = cost_model(&measured, false);
-    let chosen = select_encoding(&measured, false, None, false);
+    let stored = annotation.kind();
+    // What the auto-selector would write these masks as (§7.6), given what
+    // the annotation must keep: a probability map stays soft, an in-band
+    // ignore region is costed, and `instances` keeps the object identity a
+    // dense encoding would drop (§7.4).
+    let ignore = annotation.encodes_ignore()?;
+    let costs = cost_model(&measured, ignore);
+    let keep = (stored == "instances").then_some("instances");
+    let chosen = select_encoding(&measured, stored == "probmap", keep, ignore);
     let cost_bytes: Vec<(&str, Option<u64>)> = vec![
         ("labelmap", costs.labelmap),
         ("layers", Some(costs.layers)),
@@ -127,7 +135,15 @@ fn stats(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
         })
         .collect();
     ctx.print(table(&rows, &["encoding", "bytes", ""]));
-    if chosen != annotation.kind() {
+    if chosen == stored {
+        return Ok(EXIT_OK);
+    }
+    if chosen == "instances" {
+        ctx.print(
+            "\n`instances` would cost least, but re-encoding cannot mint object identity (§7.4): write the objects \
+             from their source to use it.",
+        );
+    } else if !ignore || IN_BAND_IGNORE_KINDS.contains(&chosen.as_str()) {
         ctx.print(format!("\n`medh5 seg convert {path} {ann_id} --to {chosen}` would re-encode it losslessly."));
     }
     Ok(EXIT_OK)
