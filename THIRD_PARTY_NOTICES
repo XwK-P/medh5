@@ -28,6 +28,12 @@ C libraries
   pthreads for Windows, in C-Blosc2    vendored                       [11]
 
 
+The Rust standard library
+-------------------------
+
+  std, core and alloc                          MIT OR Apache-2.0                [50]
+
+
 Rust crates (125)
 -----------------
 
@@ -3227,7 +3233,8 @@ DEALINGS IN THE SOFTWARE.
     jsonschema-regex 0.58.6: no licence file; the manifest declares MIT;
     jsonschema-value 0.58.6: no licence file; the manifest declares MIT;
     uuid-simd 0.8.0: no licence file; the manifest declares MIT; vsimd 0.8.0:
-    no licence file; the manifest declares MIT
+    no licence file; the manifest declares MIT; the Rust standard library (std,
+    core and alloc): MIT OR Apache-2.0
 -------------------------------------------------------------------------------
 
 Permission is hereby granted, free of charge, to any person obtaining a copy

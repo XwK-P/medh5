@@ -293,6 +293,10 @@ class TestDistribution:
         assert len(listed) > 100 and listed <= locked, sorted(listed - locked)
         for library in ("HDF5", "C-Blosc2", "HDF5-Blosc2 filter", "zlib", "LZ4"):
             assert re.search(rf"^  {re.escape(library)} ", notices, re.M), library
+        # Compiled into every Rust program, and in no lockfile.
+        assert re.search(
+            r"^  std, core and alloc +MIT OR Apache-2.0 +\[\d+\]$", notices, re.M
+        )
         assert "--check" in _jobs(CI.read_text(encoding="utf-8"))["rust"]
 
     def test_R02_every_artifact_carries_the_licences(self):

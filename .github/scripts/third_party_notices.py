@@ -4,10 +4,11 @@
     python .github/scripts/third_party_notices.py --check   # is it current?
 
 The wheel and the `medh5` binary link everything statically: HDF5, C-Blosc2
-and the codecs it calls, the HDF5-Blosc2 filter, and every Rust crate the two
-depend on.  Most of those licences require their notice to travel with the
-binary, so it does --- in the wheel's `.dist-info/licenses/`, beside the binary
-in every release archive, and in the sdist.
+and the codecs it calls, the HDF5-Blosc2 filter, the Rust standard library and
+every Rust crate the two depend on.  Most of those licences require their
+notice to travel with the binary, so it does --- in the wheel's
+`.dist-info/licenses/`, beside the binary in every release archive, and in the
+sdist.
 
 The crates are Cargo.lock's, read through `cargo metadata` for the five targets
 the project ships, so the file is regenerated rather than maintained: CI runs
@@ -70,6 +71,10 @@ EXCERPTS = (
         "THE SOFTWARE.",
     ),
 )
+
+# Compiled into every Rust program, and in no Cargo.lock: the standard library,
+# at the version of the toolchain that builds the release.
+STD = ("std, core and alloc", "MIT OR Apache-2.0")
 
 LICENCE_FILE = re.compile(r"^(licen[cs]e|copying|notice|copyright|unlicense)", re.I)
 
@@ -256,8 +261,14 @@ def notices(metadata: dict, root: Path = ROOT) -> str:
         refs = ", ".join(str(n) for n in sorted(set(cited)))
         licence = package.get("license") or "see the text"
         crates.append(f"  {crate:<44} {licence:<32} [{refs}]")
+    # Cited after the crates, whose texts keep their numbers.
+    library, licence = STD
+    number = texts.cite(MIT, f"the Rust standard library ({library}): {licence}")
+    std = f"  {library:<44} {licence:<32} [{number}]"
 
     lines = [HEADER, "", "C libraries", "-----------", "", *native, "", ""]
+    title = "The Rust standard library"
+    lines += [title, "-" * len(title), "", std, "", ""]
     lines += [
         f"Rust crates ({len(packages)})",
         "-" * len(f"Rust crates ({len(packages)})"),
