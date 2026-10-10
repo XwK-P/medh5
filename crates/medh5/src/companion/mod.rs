@@ -53,7 +53,7 @@ pub const CODES: [(&str, &str); 20] = [
     ("T401", "a cache's manifest is corrupt, or fails its schema"),
     ("T402", "a cache entry's payload is corrupt, or has the wrong dtype or shape"),
     ("T403", "a cache entry's source changed or cannot be reached: the entry is stale"),
-    ("T404", "a cache was built for another task, cutoff or selection"),
+    ("T404", "a cache or preflight is of another task, manifest, row or row version, or a validated cache changed"),
     ("T405", "learned preprocessing was fitted on a split other than the task's training partition"),
     ("T406", "a cache entry is not admissible as input at the row's cutoff"),
     ("T407", "an event-level cache entry names an event its source lacks, or a document that event does not own"),

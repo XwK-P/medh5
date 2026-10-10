@@ -1588,6 +1588,15 @@ class TestCaches:
         assert str(finding) == "T302 P-01: changed"
         assert "pinned" in finding.summary
 
+    def test_S9_T404_says_what_it_is_found_for(self):
+        """§6 and §8 find T404 for another task's cache, another manifest's
+        preflight, another row or row version, and a cache that changed after
+        it was validated; a cache read under another selection is T406."""
+        summary = Finding("T404", "cache", "x").summary
+        for use in ("task", "manifest", "preflight", "row version", "validated"):
+            assert use in summary
+        assert "selection" not in summary
+
 
 class TestCommandLine:
     def test_task_and_cache_commands(self, setup, tmp_path: Path, capsys):
