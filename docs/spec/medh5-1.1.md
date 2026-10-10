@@ -481,8 +481,10 @@ annotations only. An absent follow-up is censoring under the task's policy, neve
 
 The 1.0 levels apply. `structural` adds the declaration, layout, descriptor and column rules (§3–§4:
 E009 and E803 for declarations, E011, E801, E802, E804–E808, E819); `semantic` adds the record rules
-(§5–§7: E809–E817, W914); `integrity` adds E818 beside 1.0's E701–E703. A profile violation in a file
-of a version the validator implements is an error; the same item in a higher minor is W913 (§2.2).
+(§5–§7: E809–E817, W914) and the one descriptor rule that reads `/meta`, a `shifted_utc` clock
+without a declared de-identification (E802, §3); `integrity` adds E818 beside 1.0's digest codes,
+E701–E704. A profile violation in a file of a version the validator implements is an error; the same
+item in a higher minor is W913 (§2.2).
 
 ### 11.2 Diagnostic codes
 
@@ -536,6 +538,7 @@ showed it was needed.
 | §9.1 | The context window bounds every admitted event's order time from below, plans included; a plan may lie after the cutoff. | Found by the fourth audit of 2.0: read literally, `[c − w, c]` excluded every future plan under `order_by = effective`, while the implementation applied no window to plans at all --- so a stale order from 100 days before a 7-day window was admitted beside the week. The lower edge is what a window is for; the upper is the cutoff, which plans exist to lie beyond. |
 | §9.1 | An event-count limit counts **timed** events only, and a limit of 0 keeps none of them; a static event is unordered under every `order_by`. | Found by the 2.0 audit: ordered by availability, a static fact became a timed event a limit could drop, though step 3 calls it unordered and the task contract limits timed events; and 0, which the task schema admits, had no defined boundary. |
 | §11 | Diagnostic codes E011, E801–E819, W913 and W914 are allocated, each with a conformance case. | The draft did not allocate codes for unimplemented rules; they are now implemented. |
+| §11.1 | `semantic` checks E802's rule for a `shifted_utc` clock, which needs `/meta`'s de-identification record; the rest of E802 stays `structural`. `integrity` adds E818 beside every 1.0 digest code, E704 included. | Found by the review of 2.0 before its release: the clause placed all of E802 at `structural`, though that rule compares the descriptor with `/meta`, a cross-reference the reference validator checks at `semantic` with the record rules --- so a validator built from the text reported at `structural` a defect the reference reports only from `semantic` on; and it named 1.0's integrity codes E701–E703, written before 2.0 allocated E704. |
 
 ## Appendix B — Schemas
 
