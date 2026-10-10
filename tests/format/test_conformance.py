@@ -260,6 +260,52 @@ class TestSpecSync:
             expected = "warning" if code.code.startswith("W") else "error"
             assert code.severity == expected
 
+    def test_S8_7_mesh_offsets_count_faces_and_end_at_their_number(self, tmp_path):
+        """What §8.7 and the table say of E408: mesh *m* is faces
+        `[o[m], o[m+1])`, and the offsets end at the number of faces."""
+        from tests.kits import Flat
+
+        def mesh(path, offsets):
+            with Flat.open_writer(path) as w:
+                w.add_mesh(
+                    "m",
+                    grid="g",
+                    space="index",
+                    vertices=[[0.0, 0, 0], [1.0, 0, 0], [0.0, 1, 0], [1.0, 1, 0]],
+                    faces=[[0, 1, 2], [1, 2, 3]],
+                    mesh_offsets=offsets,
+                )
+
+        mesh(tmp_path / "two-meshes.medh5", [0, 1, 2])
+        for offsets in ([0, 1], [0, 1, 3]):
+            with pytest.raises(MEDH5ValidationError) as exc:
+                mesh(tmp_path / f"ends-at-{offsets[-1]}.medh5", offsets)
+            assert exc.value.code == "E408", offsets
+
+    def test_S4_4_a_validity_mask_is_a_mask_on_the_image_grid(self, tmp_path):
+        """What §4.4 and the table say of E413: a `valid_mask` naming an
+        annotation that is not a `mask`, or one on another grid, is refused."""
+        import numpy as np
+
+        from tests.kits import Flat
+
+        def on_another_grid(w):
+            w.add_grid("h", shape=Flat.SHAPE, spacing=(1.0, 1.0, 1.0), timepoint="tp0")
+            w.add_mask("fov", np.ones(Flat.SHAPE, dtype=bool), grid="h")
+            w.add_image("PT", Flat.image(), grid="g", modality="PT", valid_mask="fov")
+
+        def not_a_mask(w):
+            w.add_segmentation("seg", grid="g", masks={1: Flat.mask()})
+            w.add_image("PT", Flat.image(), grid="g", modality="PT", valid_mask="seg")
+
+        for build in (on_another_grid, not_a_mask):
+            with (
+                pytest.raises(MEDH5ValidationError) as exc,
+                Flat.open_writer(tmp_path / f"{build.__name__}.medh5") as w,
+            ):
+                build(w)
+            assert exc.value.code == "E413", build.__name__
+
     def test_appendix_C_records_the_four_corrections_of_the_rewrite(self) -> None:
         spec = (ROOT / "docs/spec/medh5-1.0.md").read_text(encoding="utf-8")
         section = spec[spec.index("### C.1") : spec.index("### C.2")]
