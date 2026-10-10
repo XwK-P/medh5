@@ -53,8 +53,9 @@ attribute names (`PatientName` stored as an HDF5 attribute is caught like one in
 `extra`), DICOM person names in any script (`Müller^Hans`, `山田^太郎`), real
 DICOM UIDs where a pseudonym belongs — including inside provenance references
 such as `dicom:<SeriesInstanceUID>` — filesystem paths in provenance, unshifted
-dates, ages over 89, the names of person and organization agents, and free text
-no rule can judge. That last category is why the read-only pass exists:
+dates and date-times (ISO 8601 or DICOM, alone or inside a longer string such as
+`CT_2020-01-31.nii`), ages over 90, the names of person and organization agents,
+and free text no rule can judge. That last category is why the read-only pass exists:
 `needs_review` is the part no tool should decide for you.
 
 Some findings are reported and never acted on, at any profile, because
@@ -116,8 +117,9 @@ answer as the exit code.
 `--apply` acts on everything the scan calls actionable, which under
 `--profile strict` includes a person or organization agent's name (replaced by
 a stable pseudonym, so the graph still says two activities were the same
-person), an age over 90 (recorded as 90, the Safe Harbor "90 or older"
-category), and flagged free text (removed). Provenance paths keep only their
+person), an age over 90 (recorded as 90: Safe Harbor aggregates every age over
+89 into one "90 or older" category, so 90 itself is the category and stays),
+and flagged free text (removed). Provenance paths keep only their
 file name, and under `strict` lose that too.
 
 **The sample's own ids are reported with where they came from.** The DICOM
@@ -161,8 +163,14 @@ maps every original value the run replaced — UIDs, and the ids under
 `--pseudonymise-ids` — to its pseudonym, so it is identifying.
 
 **Dates shift rather than vanish**, so intervals — and therefore
-`days_from_baseline`, and therefore any longitudinal model — survive. Running
-scrub twice does not shift them twice.
+`days_from_baseline`, and therefore any longitudinal model — survive. A
+date-time keeps its time, and a value holding two dates moves both. What is
+shifted is every date `--apply` acts on: a timepoint's `date` and a date
+attribute (`StudyDate`, `AcquisitionDateTime`, …). A date inside free text is
+reported for review and left as written, since no rule can tell what a sentence
+means by it. A date `--apply` cannot shift — written in another script's digits,
+or moved off the calendar — is removed. Running scrub twice does not shift them
+twice.
 
 ## 3. Record what was done
 

@@ -549,6 +549,8 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("QUALITY_STATUS", PyTuple::new(py, q_engine::QUALITY_STATUS)?)?;
     m.add("ISSUE_SEVERITY", PyTuple::new(py, q_engine::ISSUE_SEVERITY)?)?;
     m.add("TIMEPOINT_FIELDS", PyFrozenSet::new(py, tl_engine::TIMEPOINT_FIELDS)?)?;
+    m.add("RFC3339_REGEX", prov_engine::RFC3339)?;
+    m.add("DATE_REGEX", tl_engine::DATE_PATTERN)?;
     let _ = map_to_py;
     Ok(())
 }

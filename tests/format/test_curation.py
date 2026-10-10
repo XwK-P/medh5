@@ -10,6 +10,8 @@ import pytest
 
 import medh5
 from medh5.curation import (
+    DATE_PATTERN,
+    RFC3339,
     Activity,
     Agent,
     Agreement,
@@ -31,6 +33,10 @@ from medh5.curation import (
 from medh5.document import SampleDocument, new_document, validate_against_schema
 from medh5.errors import MEDH5SchemaError, MEDH5ValidationError
 from tests.kits import Framed
+
+DEVANAGARI_DATE = "२०२०-०१-३१"
+"""2020-01-31 in Devanagari digits, which Unicode-aware `\\d` matches."""
+DEVANAGARI_TIMESTAMP = "२०२०-०२-०३T०९:११:०२Z"
 
 
 class TestProvenance:
@@ -88,6 +94,14 @@ class TestProvenance:
         assert exc.value.code == "E604"
         with pytest.raises(MEDH5ValidationError):
             check_timestamp("2026-02-03", where="test")
+
+    def test_S11_1_a_timestamp_is_written_in_ascii_digits(self):
+        """`\\d` is Unicode-aware: a timestamp in Devanagari digits passed."""
+        with pytest.raises(MEDH5ValidationError) as exc:
+            check_timestamp(DEVANAGARI_TIMESTAMP, where="x")
+        assert exc.value.code == "E604"
+        assert not RFC3339.match(DEVANAGARI_TIMESTAMP)
+        assert RFC3339.match("2026-02-03T09:11:02Z")
 
     def test_json_round_trip_keeps_every_schema_field(self):
         graph = Provenance(
@@ -243,6 +257,12 @@ class TestTimeline:
         with pytest.raises(MEDH5ValidationError) as exc:
             Timepoint("tp0", 0, date="last tuesday")
         assert exc.value.code == "E604"
+        # ISO 8601 digits are ASCII; a Devanagari date broke the date shift.
+        with pytest.raises(MEDH5ValidationError) as exc:
+            Timepoint("tp0", 0, date=DEVANAGARI_DATE)
+        assert exc.value.code == "E604"
+        assert not DATE_PATTERN.match(DEVANAGARI_DATE)
+        assert Timepoint("tp0", 0, date="2020-01-31T10:00:00").date
         with pytest.raises(MEDH5ValidationError):
             Timepoint("tp0", -1)
 

@@ -29,9 +29,16 @@ pub const TIMEPOINT_FIELDS: [&str; 9] = [
     "description",
 ];
 
+/// The ISO 8601 calendar-date prefix a timepoint's `date` starts with (E604).
+///
+/// ASCII digits, as ISO 8601 writes them: `\d` is Unicode-aware, so a date
+/// in Devanagari digits was accepted --- and then broke every tool that read
+/// the digits as ASCII, the de-identification date shift among them.
+pub const DATE_PATTERN: &str = r"^[0-9]{4}-[0-9]{2}-[0-9]{2}";
+
 fn date_pattern() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^\d{4}-\d{2}-\d{2}").unwrap())
+    RE.get_or_init(|| Regex::new(DATE_PATTERN).unwrap())
 }
 
 /// One observation occasion --- in DICOM terms, usually one study.

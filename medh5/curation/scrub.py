@@ -18,7 +18,7 @@ acted on without guessing.
 **Where it looks: everywhere a string can be.**  Every string in ``/meta``,
 every object name, every attribute and every string dataset in the file ---
 including the unknown ones ``amend`` carries through.  Fields are exempted by
-name, in :class:`_Sweep`, with the reason, rather than examined by being
+name, in the engine's sweep, with the reason, rather than examined by being
 remembered: each earlier version kept a list of places to look, and each audit
 found string-bearing places the list had missed.  The scan and ``--apply`` are
 one traversal, so a finding the scan calls actionable is, by construction, one
@@ -288,10 +288,12 @@ def apply(
 ) -> ScrubReport:
     """Act on the actionable findings and write the §11.4 attestation.
 
-    ``date_shift_days`` shifts every date the rules found rather than deleting
-    it, which preserves the intervals a longitudinal study is about.  Without
-    it, dates are removed --- an interval that cannot be trusted is worse than
-    no interval.
+    ``date_shift_days`` shifts every date this acts on --- a timepoint's
+    ``date`` and every date attribute, date-times keeping their time --- rather
+    than deleting it, which preserves the intervals a longitudinal study is
+    about.  Without it, dates are removed --- an interval that cannot be trusted
+    is worse than no interval.  A date inside free text is reported for review
+    and left as written.
 
     ``pseudonymise_ids`` replaces ``sample_id`` and ``subject_id`` --- and a
     ``cohort.group_id`` equal to either --- with salted stable pseudonyms, so
@@ -317,6 +319,11 @@ def scrub_paths(
     apply_changes: bool = False,
     **options: Any,
 ) -> list[ScrubReport]:
+    """:func:`scan` each of *paths*, or :func:`apply` with *options* to each.
+
+    One report per path, in order; the first file refused raises, and the
+    files before it have been scrubbed.
+    """
     return [
         apply(path, **options)
         if apply_changes

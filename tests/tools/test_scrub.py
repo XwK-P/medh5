@@ -981,13 +981,29 @@ class TestScrubApplies:
             assert sample.document.extra["source"]["series"].startswith("pseudo:")
         assert report.uid_map["1.2.840.10008.3.1.2.9"] == frame
 
-    def test_the_same_uid_maps_the_same_way_everywhere(self, dirty, tmp_path):
+    def test_S11_4_a_cohort_scrubbed_file_by_file_still_joins(self, tmp_path):
         """A cohort has to stay joinable after being scrubbed file by file."""
-        assert scrubber.pseudonymise("1.2.3") == scrubber.pseudonymise("1.2.3")
-        assert scrubber.pseudonymise("1.2.3") != scrubber.pseudonymise("1.2.3", "salt")
-        assert scrubber.pseudonymise("1.2.3", "s") == scrubber.pseudonymise(
-            "1.2.3", "s"
-        )
+
+        def visit(name: str) -> Path:
+            path = tmp_path / f"{name}.medh5"
+            with medh5.create(path, sample_id=name, subject_id="subj-A") as w:
+                w.add_timepoint("tp0", study_uid="1.2.840.113619.2.55.3")
+                w.add_grid("g", shape=SHAPE, spacing=(1.0, 1.0, 1.0))
+                w.add_image("CT", np.zeros(SHAPE, np.int16), grid="g", modality="CT")
+            return path
+
+        def study(path: Path) -> str:
+            with medh5.open(path) as sample:
+                uid: str = sample.document.timepoints["tp0"].study_uid
+            return uid
+
+        first, second, other = visit("a"), visit("b"), visit("c")
+        scrubber.apply(first, salt="pepper")
+        scrubber.apply(second, salt="pepper")
+        scrubber.apply(other, salt="salt")
+        assert study(first).startswith(scrubber.PSEUDONYM_PREFIX)
+        assert study(first) == study(second)
+        assert study(other) != study(first)
 
     def test_dates_are_dropped_when_no_shift_is_given(self, dirty):
         scrubber.apply(dirty)
@@ -1033,6 +1049,104 @@ class TestScrubApplies:
         assert first["timepoints"] == second["timepoints"]
         assert first["acquisition"] == second["acquisition"]
         assert not [f for f in second_run.findings if f.rule == "identifier"]
+
+
+class TestScrubDates:
+    """A date is found, and shifted, in every form a converter writes one."""
+
+    def _with(self, path: Path, *, date: str | None = None, **extra: Any) -> Path:
+        with Numbered.writer(path) as w:
+            w.add_timepoint("tp0", **({} if date is None else {"date": date}))
+            w.extra("src", extra)
+        return path
+
+    def test_S11_4_a_date_time_is_found_and_shifted_with_its_time(self, tmp_path):
+        """A word boundary after the day missed every ISO date-time.
+
+        `1` and `T` are both word characters, so `2020-01-31T10:22:00` had
+        none: in free text it was not reported, under a date key it was
+        dropped, and a timepoint's date-time was deleted rather than shifted
+        --- while the attestation recorded the shift and the run reported
+        nothing left.
+        """
+        path = self._with(
+            tmp_path / "dt.medh5",
+            date="2020-01-31T10:00:00",
+            note="scanned 2020-01-31T10:22:00 at the north wing",
+            AcquisitionDateTime="2020-01-31T10:22:00Z",
+            StudyDate="2020-01-31 and 2020-02-03",
+            ContentDate="20200131102200.5+0100",
+        )
+        found = {f.where: f for f in scrubber.scan(path).findings if f.rule == "date"}
+        assert set(found) == {
+            "timepoints[0].date",
+            "extra.src.note",
+            "extra.src.AcquisitionDateTime",
+            "extra.src.StudyDate",
+            "extra.src.ContentDate",
+        }
+        assert not found["extra.src.note"].actionable, "free text is a person's call"
+        report = scrubber.apply(path, date_shift_days=10)
+        assert report.ok
+        with medh5.open(path) as sample:
+            assert sample.document.timepoints["tp0"].date == "2020-02-10T10:00:00"
+            src = sample.document.extra["src"]
+        assert src["AcquisitionDateTime"] == "2020-02-10T10:22:00Z"
+        assert src["StudyDate"] == "2020-02-10 and 2020-02-13"
+        assert src["ContentDate"] == "20200210102200.5+0100"
+        # Reported for review, never rewritten: no rule can tell what a
+        # sentence means by a date.
+        assert not report.remaining_actionable
+        assert "extra.src.note" in {f.where for f in report.remaining}
+        assert src["note"] == "scanned 2020-01-31T10:22:00 at the north wing"
+
+    def test_S11_4_a_date_in_a_file_name_is_found(self, tmp_path):
+        path = tmp_path / "name.medh5"
+        with Numbered.writer(path) as w:
+            tool = w.software("converter")
+            w.activity("import", agent=tool, inputs=["nifti:CT_2020-01-31.nii.gz"])
+        assert "date" in {f.rule for f in scrubber.scan(path).findings}
+
+    def test_S11_4_digits_of_another_script_do_not_crash_the_shift(self, tmp_path):
+        """`\\d` matched Devanagari digits, and the shift sliced one in two.
+
+        The panic escaped as `PanicException`, which is not an `Exception`.
+        Such a value is not a date this tool can move, so it is dropped.
+        """
+        path = self._with(tmp_path / "deva.medh5", StudyDate="२०२००१३१")
+        report = scrubber.apply(path, date_shift_days=5)
+        assert report.ok
+        with medh5.open(path) as sample:
+            assert "StudyDate" not in sample.document.extra["src"]
+        with pytest.raises(MEDH5ValidationError) as exc:
+            self._with(tmp_path / "tp.medh5", date="२०२०-०१-३१")
+        assert exc.value.code == "E604"
+
+    def test_S11_4_an_ontology_code_is_not_a_date(self, tmp_path):
+        """Eight digits that name no day are a code, not a date.
+
+        `52988006` (SNOMED CT) was reported as a date in the label set, a
+        finding no `--apply` can clear, so the scrub gate stayed red.
+        """
+        from medh5.labels import OntologyCode
+
+        path = tmp_path / "codes.medh5"
+        with Numbered.writer(path) as w:
+            w.label_set(
+                LabelSet(
+                    "codes",
+                    version="1.0.0",
+                    classes=[
+                        LabelClass(
+                            1,
+                            "lesion",
+                            "Lesion",
+                            codes=(OntologyCode("SNOMED-CT", "52988006"),),
+                        )
+                    ],
+                )
+            )
+        assert scrubber.scan(path).clean
 
 
 class TestB08ClinicalIsNotScrubbed:

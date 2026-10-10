@@ -68,6 +68,7 @@ __all__ = [
     "Cohort",
     "CollectionHandle",
     "CostModel",
+    "DATE_REGEX",
     "DEFAULT_ALGO",
     "DEFAULT_L3_BYTES",
     "DEFAULT_MAX_COORDS",
@@ -145,6 +146,7 @@ __all__ = [
     "RESERVED_IDS",
     "RESERVED_KINDS",
     "RESOLVED",
+    "RFC3339_REGEX",
     "ROIS",
     "ROOT_DIGEST_ATTRS",
     "ROTATION_TOL",
@@ -559,6 +561,7 @@ CONFORMANCE_CHECKSUMS: str
 CONFORMANCE_SCHEMA: str
 CONFORMANCE_SEED: int
 CONTOUR_ROLES: tuple[str, ...]
+DATE_REGEX: str
 DEFAULT_ALGO: str
 DEFAULT_L3_BYTES: int
 DEFAULT_MAX_COORDS: int
@@ -618,6 +621,7 @@ RELATIONS: tuple[str, ...]
 RESERVED_IDS: tuple[str, ...]
 RESERVED_KINDS: tuple[str, ...]
 RESOLVED: str
+RFC3339_REGEX: str
 ROIS: tuple[str, ...]
 ROOT_DIGEST_ATTRS: tuple[str, ...]
 ROTATION_TOL: float

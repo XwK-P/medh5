@@ -26,9 +26,16 @@ pub const ACTIVITY_FIELDS: [&str; 9] =
 pub const ACTIVITY_TYPES: [&str; 10] =
     ["import", "annotate", "review", "predict", "resample", "register", "derive", "deidentify", "transcode", "other"];
 
+/// The RFC 3339 timestamp form the format requires (E604).
+///
+/// RFC 3339 is written in ASCII digits; `\d` is Unicode-aware and accepted a
+/// timestamp in Devanagari digits.
+pub const RFC3339: &str =
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}[Tt][0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?([Zz]|[+-][0-9]{2}:[0-9]{2})$";
+
 fn rfc3339() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d+)?([Zz]|[+-]\d{2}:\d{2})$").unwrap())
+    RE.get_or_init(|| Regex::new(RFC3339).unwrap())
 }
 
 /// Whether `value` is an RFC 3339 timestamp, as the format checks it.

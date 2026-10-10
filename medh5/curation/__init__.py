@@ -94,13 +94,15 @@ from medh5.curation.agreement import (
 )
 from medh5.curation.splits import SplitAudit, audit_splits
 
-RFC3339 = re.compile(
-    r"^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d+)?([Zz]|[+-]\d{2}:\d{2})$"
-)
-"""The timestamp form §11.1 requires; ``check_timestamp`` is the rule."""
+RFC3339 = re.compile(_core.RFC3339_REGEX)
+"""The timestamp form §11.1 requires; ``check_timestamp`` is the rule.
 
-DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}")
-"""An ISO-8601 calendar date prefix, as ``date`` must start."""
+The engine's own pattern, so the two cannot drift.  Its digits are ASCII:
+``\\d`` matches the digits of every script, and a timestamp in Devanagari
+digits passed."""
+
+DATE_PATTERN = re.compile(_core.DATE_REGEX)
+"""An ISO-8601 calendar date prefix, as ``date`` must start (the engine's)."""
 
 PRESENT: str = _core.PRESENT
 RESOLVED: str = _core.RESOLVED

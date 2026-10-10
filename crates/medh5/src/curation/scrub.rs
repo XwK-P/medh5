@@ -227,9 +227,44 @@ fn regex(cell: &'static OnceLock<Regex>, pattern: &str) -> &'static Regex {
     cell.get_or_init(|| Regex::new(pattern).expect("a valid pattern"))
 }
 
-fn iso_date() -> &'static Regex {
+/// One calendar date found in a string: where it is, and the day it names.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Dated {
+    start: usize,
+    end: usize,
+    year: i64,
+    month: u32,
+    day: u32,
+}
+
+/// The three numbers of a date the patterns matched in ASCII digits.
+fn ymd(year: &str, month: &str, day: &str) -> Option<(i64, u32, u32)> {
+    Some((year.parse().ok()?, month.parse().ok()?, day.parse().ok()?))
+}
+
+/// Every ISO 8601 calendar date (`YYYY-MM-DD`) in `text`, alone or opening a
+/// date-time (`2020-01-31T10:22:00`).
+///
+/// Digits are ASCII, as ISO 8601 writes them; a match must not continue a
+/// longer run of digits and must name a real day.  A word boundary was not
+/// enough: a date-time has none after its day (`1` and `T` are both word
+/// characters), nor does a date in `CT_2020-01-31.nii`, so neither was found
+/// or shifted --- while the attestation recorded the shift.
+fn iso_dates(text: &str) -> Vec<Dated> {
     static CELL: OnceLock<Regex> = OnceLock::new();
-    regex(&CELL, r"\b\d{4}-\d{2}-\d{2}\b")
+    let digit_before = |at: usize| text[..at].chars().next_back().is_some_and(|c| c.is_ascii_digit());
+    let digit_after = |at: usize| text[at..].chars().next().is_some_and(|c| c.is_ascii_digit());
+    regex(&CELL, r"([0-9]{4})-([0-9]{2})-([0-9]{2})")
+        .captures_iter(text)
+        .filter_map(|c| {
+            let whole = c.get(0)?;
+            if digit_before(whole.start()) || digit_after(whole.end()) {
+                return None;
+            }
+            let (year, month, day) = ymd(&c[1], &c[2], &c[3])?;
+            valid_date(year, month, day).then_some(Dated { start: whole.start(), end: whole.end(), year, month, day })
+        })
+        .collect()
 }
 
 /// Python's `re.match` of a `^...$` pattern: `$` also matches before one
@@ -238,19 +273,35 @@ fn anchored(re: &Regex, text: &str) -> bool {
     re.is_match(text) || text.strip_suffix('\n').is_some_and(|t| re.is_match(t))
 }
 
-fn is_dicom_date(text: &str) -> bool {
+/// A whole value that is a DICOM date (DA, `YYYYMMDD`) or date-time (DT,
+/// `YYYYMMDDHHMMSS.FFFFFF&ZZXX`, every part after the day optional), or
+/// ISO 8601's basic form of one (`20200131T102200`): the date, and the byte
+/// where what follows it starts.  ASCII digits only, and a real day --- an
+/// eight-digit ontology code (SNOMED CT `52988006`) is not a date.
+fn dicom_date(text: &str) -> Option<Dated> {
     static CELL: OnceLock<Regex> = OnceLock::new();
-    anchored(regex(&CELL, r"^\d{8}$"), text)
+    let pattern = regex(
+        &CELL,
+        r"^([0-9]{4})([0-9]{2})([0-9]{2})(?:[Tt]?[0-9]{2}(?:[0-9]{2}(?:[0-9]{2}(?:\.[0-9]{1,6})?)?)?)?(?:[+-][0-9]{4})?$",
+    );
+    // `$` as Python's `re.match` reads it: before one trailing newline too.
+    let c = pattern.captures(text.strip_suffix('\n').unwrap_or(text))?;
+    let (year, month, day) = ymd(&c[1], &c[2], &c[3])?;
+    valid_date(year, month, day).then_some(Dated { start: 0, end: c.get(3)?.end(), year, month, day })
+}
+
+fn is_dicom_date(text: &str) -> bool {
+    dicom_date(text).is_some()
 }
 
 /// A dotted-numeric OID.  `pseudo:...` and UUIDs do not match, by design.
 fn is_dicom_uid(text: &str) -> bool {
     static CELL: OnceLock<Regex> = OnceLock::new();
-    anchored(regex(&CELL, r"^\d+(\.\d+){3,}$"), text)
+    anchored(regex(&CELL, r"^[0-9]+(\.[0-9]+){3,}$"), text)
 }
 
 fn has_date(text: &str) -> bool {
-    iso_date().is_match(text) || is_dicom_date(text)
+    !iso_dates(text).is_empty() || is_dicom_date(text)
 }
 
 /// DICOM PN form `Family^Given`, in any script.
@@ -259,15 +310,15 @@ fn is_person_name(text: &str) -> bool {
     regex(&CELL, r"^[\p{L}\p{Nl}\p{No}][^\^=\p{Nd}]*\^[\p{L}\p{Nl}\p{No}]").is_match(text)
 }
 
-/// Dotted-numeric UIDs *inside* a longer string: `(?<![\d.])\d+(?:\.\d+){3,}(?![\d.])`.
+/// Dotted-numeric UIDs *inside* a longer string: `(?<![0-9.])[0-9]+(?:\.[0-9]+){3,}(?![0-9.])`.
 ///
 /// The look-arounds pin a match to a whole run of digits and dots, so a run
 /// matches exactly when all of it is UID-shaped.
 fn uid_tokens(text: &str) -> Vec<(usize, usize)> {
     static RUN: OnceLock<Regex> = OnceLock::new();
     static WHOLE: OnceLock<Regex> = OnceLock::new();
-    let whole = regex(&WHOLE, r"^\d+(?:\.\d+){3,}$");
-    regex(&RUN, r"[\d.]+")
+    let whole = regex(&WHOLE, r"^[0-9]+(?:\.[0-9]+){3,}$");
+    regex(&RUN, r"[0-9.]+")
         .find_iter(text)
         .filter(|m| whole.is_match(m.as_str()))
         .map(|m| (m.start(), m.end()))
@@ -1832,23 +1883,32 @@ fn moved(y: i64, m: u32, d: u32, days: i64) -> Option<(i64, u32, u32)> {
     valid_date(ny, nm, nd).then_some((ny, nm, nd))
 }
 
-/// Shift a date by `days`, or `None` meaning "drop it".
+/// Shift every date in a value by `days`, or `None` meaning "drop it".
+///
+/// What surrounds a date --- the time and zone of a date-time, the words
+/// around one in a sentence --- is kept, and every date in the value moves:
+/// a value naming two days lost only the first's to a shift that moved one.
 fn shift(value: &str, days: Option<i64>) -> Option<String> {
     let days = days?;
     let text = value.trim();
-    let digits = |s: &str| -> Option<i64> { s.parse::<i64>().ok() };
-    if is_dicom_date(text) {
-        let (y, m, d) = (digits(&text[..4])?, digits(&text[4..6])? as u32, digits(&text[6..8])? as u32);
-        let (ny, nm, nd) = moved(y, m, d, days)?;
-        return Some(format!("{ny:04}{nm:02}{nd:02}"));
+    if let Some(date) = dicom_date(text) {
+        let (y, m, d) = moved(date.year, date.month, date.day, days)?;
+        return Some(format!("{y:04}{m:02}{d:02}{}", &text[date.end..]));
     }
-    if let Some(found) = iso_date().find(text) {
-        let s = found.as_str();
-        let (y, m, d) = (digits(&s[..4])?, digits(&s[5..7])? as u32, digits(&s[8..10])? as u32);
-        let (ny, nm, nd) = moved(y, m, d, days)?;
-        return Some(text.replace(s, &format!("{ny:04}-{nm:02}-{nd:02}")));
+    let dates = iso_dates(text);
+    if dates.is_empty() {
+        return None;
     }
-    None
+    let mut out = String::with_capacity(text.len());
+    let mut last = 0;
+    for date in dates {
+        let (y, m, d) = moved(date.year, date.month, date.day, days)?;
+        out.push_str(&text[last..date.start]);
+        out.push_str(&format!("{y:04}-{m:02}-{d:02}"));
+        last = date.end;
+    }
+    out.push_str(&text[last..]);
+    Some(out)
 }
 
 /// Scan or apply over several files.
@@ -1879,6 +1939,37 @@ mod tests {
         assert!(uid_tokens("v1.2.3.4.").is_empty());
         assert!(has_date("taken 2020-01-31 at noon"));
         assert!(is_dicom_date("20200131"));
+        assert!(is_dicom_date("20200131\n"));
+    }
+
+    #[test]
+    fn s11_4_a_date_time_is_a_date() {
+        assert!(has_date("2020-01-31T10:22:00"));
+        assert!(has_date("scanned 2020-01-31T10:22:00Z at the north wing"));
+        assert!(has_date("CT_2020-01-31.nii.gz"));
+        assert!(has_date("20200131102200.123456+0100"));
+        assert!(has_date("20200131T102200"));
+        assert!(!has_date("12020-01-311"));
+        assert!(!has_date("2020-13-31"));
+    }
+
+    #[test]
+    fn s11_4_an_ontology_code_is_not_a_date() {
+        assert!(!has_date("52988006"));
+        assert!(!is_dicom_date("20201301"));
+    }
+
+    #[test]
+    fn s11_4_digits_are_ascii_and_never_panic() {
+        // Devanagari digits: `\d` matched them, and the shift then sliced a
+        // multi-byte character in two.
+        for text in ["२०२००१३१", "२०२०-०१-३१", "१.२.८४०.१०००८"] {
+            assert!(!has_date(text), "{text}");
+            assert!(!is_dicom_uid(text), "{text}");
+            assert!(uid_tokens(text).is_empty(), "{text}");
+            assert_eq!(shift(text, Some(5)), None, "{text}");
+        }
+        assert!(!has_date("२०२०-01-31"));
     }
 
     #[test]
@@ -1887,6 +1978,14 @@ mod tests {
         assert_eq!(shift(" on 2020-02-28 ", Some(1)).as_deref(), Some("on 2020-02-29"));
         assert_eq!(shift("20201301", Some(1)), None);
         assert_eq!(shift("20200131", None), None);
+    }
+
+    #[test]
+    fn s11_4_a_shift_keeps_the_time_and_moves_every_date() {
+        assert_eq!(shift("2020-01-31T10:22:00Z", Some(10)).as_deref(), Some("2020-02-10T10:22:00Z"));
+        assert_eq!(shift("20200131102200.5+0100", Some(1)).as_deref(), Some("20200201102200.5+0100"));
+        assert_eq!(shift("2020-01-31 and 2020-02-03", Some(-31)).as_deref(), Some("2019-12-31 and 2020-01-03"));
+        assert_eq!(shift("9999-12-31", Some(1)), None);
     }
 
     #[test]
