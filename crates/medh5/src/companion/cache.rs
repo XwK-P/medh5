@@ -206,7 +206,7 @@ impl CacheHeader {
     ///
     /// One comparison for whatever records `fitted_on`: a vocabulary checked
     /// its own, without `set_id`, and accepted one fitted under another split
-    /// of the same subjects (N05 of the 2.0 re-audit).
+    /// of the same subjects.
     pub fn fitted_on_mismatches(task: &TaskManifest, fitted: &Value) -> Vec<String> {
         let mut out = Vec::new();
         let partition = fitted["partition"].as_str().unwrap_or_default();
@@ -513,8 +513,8 @@ pub struct CacheReport {
     /// The manifest checksum of the cache validated, or `None` when it could
     /// not be opened: what a reader that opens the file again checks it is
     /// reading (§8).  A path names a file, not a cache --- one replaced after
-    /// it was validated paired a patient's image with another patient's
-    /// features (N11 of the round-3 audit).
+    /// it was validated would pair a patient's image with another patient's
+    /// features.
     pub manifest_digest: Option<String>,
     /// The level of the cache validated.
     pub level: Option<String>,

@@ -44,8 +44,8 @@ impl SourceRef {
     /// Refused when the root does not bind every attested path to its bytes
     /// (1.0 §13.2): such a pin could never check clean, and a file crafted
     /// with an alias holding an attested name --- relinkable afterwards to
-    /// other covered bytes under the same root --- pinned without complaint
-    /// (F01 of the round-4 audit).
+    /// other covered bytes under the same root --- would pin without
+    /// complaint.
     pub fn pin(uri: impl Into<String>, sample_key: Option<String>, sample: &Sample) -> Result<SourceRef> {
         let content_id = sample
             .content_id()?

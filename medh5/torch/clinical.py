@@ -123,7 +123,7 @@ class ConceptVocabulary:
     one unit its training values were in (``units``): values in two units are
     refused at fit time, and a value in another unit is never normalised with
     them.  Without both, ``female`` and ``male`` --- and 5 mg/dL and 5 mmol/L
-    --- were the same input (B07 of the 2.0 audit).
+    --- would be the same input.
     """
 
     concepts: tuple[str, ...]
