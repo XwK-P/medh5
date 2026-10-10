@@ -144,7 +144,7 @@ fn inspect() -> Vec<Command> {
                     .default_value("semantic"),
             )
             .arg(append("profiles", "profile", "override the declared profiles; repeatable").value_name("PROFILE"))
-            .arg(flag("verbose", "verbose", "print every diagnostic, not only the summary").short('v'))
+            .arg(flag("verbose", "verbose", "also print what each diagnostic's code means").short('v'))
             .arg(json()),
         Command::new("verify")
             .about("check digests and content_id (spec §13)")

@@ -270,9 +270,20 @@ class TestValidate:
         assert code == EXIT_ERROR
         assert "E009" in out.out
 
-    def test_verbose_prints_the_code_summary(self, capsys, longitudinal_path):
-        code, out = run(capsys, "validate", str(longitudinal_path), "-v")
-        assert "->" in out.out
+    def test_S15_2_verbose_adds_what_each_code_means(self, capsys, longitudinal_path):
+        """Every diagnostic is printed either way; ``-v``, which the help
+        said printed every diagnostic rather than only the summary, adds
+        under each the meaning of its code."""
+        _, plain = run(capsys, "validate", str(longitudinal_path))
+        _, verbose = run(capsys, "validate", str(longitudinal_path), "-v")
+        lines = verbose.out.splitlines()
+        meanings = [line for line in lines if line.lstrip().startswith("-> ")]
+        assert meanings
+        assert [
+            line for line in lines if line not in meanings
+        ] == plain.out.splitlines()
+        assert main(["validate", "--help"]) == EXIT_OK
+        assert "also print what each diagnostic's code means" in capsys.readouterr().out
 
 
 class TestVerify:

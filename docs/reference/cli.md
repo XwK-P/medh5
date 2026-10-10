@@ -57,11 +57,13 @@ Check against the specification. `--level` is `structural`, `semantic`
 (default), `integrity` or `strict`; each includes the ones before it.
 `--profile` overrides the profiles the file declares, so you can hold a file to
 `det` even if it does not claim it. Diagnostics carry stable codes (spec §15.2).
+Every diagnostic is printed; `-v` adds, under each, what its code means.
 
 ```
-$ medh5 validate case.medh5 --level strict
-case.medh5: FAILED [strict] profiles=core,seg (1 errors, 0 warnings)
-  ERROR   E102 grids/ct: `direction` is not orthonormal to 1e-4
+$ medh5 validate case.medh5 -v
+case.medh5: FAILED [semantic] profiles=core (1 errors, 0 warnings)
+  ERROR   E102 /grids/ct: `direction` is not orthonormal (max residual 0.4)
+          -> `direction` is not orthonormal to 1e-4
 ```
 
 ### `medh5 verify`
