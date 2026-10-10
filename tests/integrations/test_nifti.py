@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -1109,21 +1110,57 @@ class TestExportsOwnTheirVolumeStatements:
         """The old timing is withdrawn before the image is replaced: an export
         that fails between them leaves the old image with its timing
         unmeasured, not the new one with the old image's."""
-        import nibabel
-
         out = tmp_path / "dce.nii.gz"
         to_nifti(self._series(tmp_path / "a.medh5", [0.0, 1.0, 3.0]), "DCE", out)
+        replace = os.replace
 
-        def interrupted(*args: Any, **kwargs: Any) -> None:
-            raise OSError("disk full")
+        def interrupted(source: Any, target: Any) -> None:
+            if Path(target) == out:
+                raise OSError("interrupted")
+            replace(source, target)
 
-        monkeypatch.setattr(nibabel, "save", interrupted)
-        with pytest.raises(OSError, match="disk full"):
+        monkeypatch.setattr(os, "replace", interrupted)
+        with pytest.raises(OSError, match="interrupted"):
             to_nifti(self._series(tmp_path / "b.medh5", [0.0, 5.0, 6.0]), "DCE", out)
         monkeypatch.undo()
         _, geometry = read_nifti(out)
         assert not geometry["time_measured"]
         assert not (tmp_path / "dce.json").exists()
+        assert not [p for p in tmp_path.iterdir() if p.name.startswith(".")]
+
+    @pytest.mark.parametrize("old", ["series", "dwi"])
+    def test_F24_an_export_that_cannot_write_its_image_changes_nothing(
+        self, tmp_path, monkeypatch, old
+    ):
+        """The old statements were withdrawn before the new image was
+        serialised, so an export that failed to write it --- a full disk, a
+        type NIfTI cannot hold --- left the old image with its timing or its
+        b-values gone (F24 of the round-4 audit).  The image is written first;
+        until it is whole, nothing beside the file is touched."""
+        import nibabel
+
+        out = tmp_path / "old.nii.gz"
+        if old == "series":
+            source = self._series(tmp_path / "a.medh5", [0.0, 1.0, 3.0])
+            to_nifti(source, "DCE", out)
+        else:
+            source = self._channels(tmp_path / "a.medh5", b_values=[0.0, 900.0])
+            to_nifti(source, "MR", out)
+        beside = sorted(p for p in tmp_path.iterdir() if p.name.startswith("old."))
+        assert len(beside) == 2, "the image and its timing or b-values"
+        before = {p.name: p.read_bytes() for p in beside}
+        stated = ("leading_kind", "time_values", "time_measured")
+        expected = {k: read_nifti(out)[1][k] for k in stated}
+
+        def full(*args: Any, **kwargs: Any) -> None:
+            raise OSError("disk full")
+
+        monkeypatch.setattr(nibabel, "save", full)
+        with pytest.raises(OSError, match="disk full"):
+            to_nifti(self._series(tmp_path / "b.medh5", [0.0, 5.0, 6.0]), "DCE", out)
+        monkeypatch.undo()
+        assert {p.name: p.read_bytes() for p in beside} == before
+        assert {k: read_nifti(out)[1][k] for k in stated} == expected
         assert not [p for p in tmp_path.iterdir() if p.name.startswith(".")]
 
     def test_N04_a_channel_axis_exports_as_one(self, tmp_path):

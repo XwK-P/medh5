@@ -120,6 +120,7 @@ def from_nnunetv2(
     source = Path(os.fspath(root))
     document = read_dataset_json(source)
     channels = _channels(document)
+    restore = _recorded_ids(document)
     label_set, regions, ignore_value = _label_set(document, log)
     ending = str(document["file_ending"])
     wanted = list(case_ids) if case_ids is not None else cases(source, document)
@@ -155,9 +156,10 @@ def from_nnunetv2(
             # result annotates voxels nobody drew on.
             _same_grid(geometry, label_geo, f"{case} labels", log)
             ids = _label_ids(volume, label_geo["rescale"], case)
-            masks = _masks_from(ids, label_set, regions)
             if ignore_value is not None and np.any(ids == ignore_value):
                 ignored = np.asarray(ids == ignore_value)
+            ids = _restored(ids, restore)
+            masks = _masks_from(ids, label_set, regions)
 
         target = directory / f"{case}.medh5"
         with medh5.create(
@@ -236,6 +238,32 @@ def from_nnunetv2(
     return log
 
 
+def _recorded_ids(document: Mapping[str, Any]) -> dict[int, int]:
+    """The class id each renumbered label value stands for, as an export
+    records it (``medh5_class_ids``; F23 of the round-4 audit)."""
+    recorded = document.get("medh5_class_ids") or {}
+    if not isinstance(recorded, Mapping):
+        raise MEDH5ValidationError(
+            "dataset.json `medh5_class_ids` must map label values to class ids"
+        )
+    out = {int(value): int(class_id) for value, class_id in recorded.items()}
+    if len(set(out.values())) != len(out):
+        raise MEDH5ValidationError(
+            "dataset.json `medh5_class_ids` gives two label values one class id"
+        )
+    return out
+
+
+def _restored(ids: npt.NDArray[Any], restore: Mapping[int, int]) -> npt.NDArray[Any]:
+    """*ids* with each renumbered value back at its class id."""
+    if not restore:
+        return ids
+    out = np.array(ids, dtype=np.int64, copy=True)
+    for value, class_id in restore.items():
+        out[ids == value] = class_id
+    return out
+
+
 def _modality(name: str) -> str:
     """nnU-Net channel names are free text; map the common ones, else ``OT``."""
     known = {
@@ -260,15 +288,23 @@ def _label_set(
     region_values: dict[str, list[int]] = {}
     dropped: list[str] = []
     ignore_value: int | None = None
+    restore = _recorded_ids(document)
     for name, value in _labels(document).items():
         if name == IGNORE and not isinstance(value, list):
             ignore_value = int(value)
         elif isinstance(value, list):
-            region_values[name] = [int(v) for v in value]
+            region_values[name] = [restore.get(int(v), int(v)) for v in value]
         elif int(value) == BACKGROUND:
             dropped.append(name)
         else:
-            scalars[name] = int(value)
+            scalars[name] = restore.get(int(value), int(value))
+    if restore:
+        log.decision(
+            "label_ids",
+            "dataset.json records the class id each renumbered label value stands "
+            "for (medh5_class_ids); the class ids were restored",
+            {"restored": {str(v): c for v, c in sorted(restore.items())}},
+        )
 
     next_id = max([*scalars.values(), 0]) + 1
     regions: dict[int, list[int]] = {}
@@ -383,6 +419,7 @@ def to_nnunetv2(
     file_ending: str = ".nii.gz",
     annotation: str = "seg",
     classes: Sequence[int | str] | None = None,
+    unlabeled: str = "refuse",
     report: ConversionReport | None = None,
 ) -> ConversionReport:
     """Export samples as an nnU-Net v2 dataset.
@@ -393,6 +430,13 @@ def to_nnunetv2(
 
     Everything is checked before anything is written:
 
+    * every case's name is a **file name under the dataset**: its
+      ``sample_id`` is a sample key (``[A-Za-z0-9_.-]``), not ``.`` or ``..``,
+      and no two differ only in case --- an id was a path, and
+      ``../../victim`` or an absolute one wrote outside the export;
+    * every case is **labeled**: a case without the annotation is refused, or
+      with ``unlabeled="test"`` written to ``imagesTs`` and not counted in
+      ``numTraining``;
     * every channel and the labels are **one lattice in one physical space** ---
       shape, spacing, origin and direction, coordinate system, units, and no two
       known frames of reference --- because nnU-Net pairs their voxels by index;
@@ -400,7 +444,12 @@ def to_nnunetv2(
       **searched for every one** (``annotated_class_ids``): a label volume is
       exhaustive, so 0 says "examined, absent" for every class, which a case
       not searched for one cannot say.  *classes* exports the subset every case
-      examined;
+      examined.  A reused ``dataset.json`` that does not name a class some case
+      carries is extended with it, or --- region-based --- refused;
+    * label values are **consecutive** (``0..K``), as nnU-Net requires: class
+      ids with a gap are written as ``1..K`` in ascending order, and
+      ``dataset.json`` records the mapping (``medh5_class_ids``), which
+      :func:`from_nnunetv2` reads back;
     * every label volume **gives back every class it exports** --- a region
       painted in ``regions_class_order``, overlapping classes refused rather than
       written over each other.
@@ -409,41 +458,49 @@ def to_nnunetv2(
     from medh5.io.nifti import require_nibabel
 
     nib = require_nibabel()
+    if unlabeled not in UNLABELED:
+        raise MEDH5ValidationError(
+            f"unlabeled= is one of {list(UNLABELED)}, not {unlabeled!r}"
+        )
     log = report or ConversionReport(converter="to-nnunet")
-    plan = _plan(paths, annotation, classes, log)
-    root = Path(os.fspath(out)) / dataset_name
+    root = _dataset_root(out, dataset_name)
+    plan = _plan(paths, annotation, classes, log, unlabeled)
+    _require_under(root, plan, file_ending)
     (root / "imagesTr").mkdir(parents=True, exist_ok=True)
     (root / "labelsTr").mkdir(parents=True, exist_ok=True)
+    if any(not case.labeled for case in plan.cases):
+        (root / "imagesTs").mkdir(parents=True, exist_ok=True)
 
     labels = dict(plan.labels)
     ignore_value: int | None = None
-    for path in paths:
-        with medh5.open(path) as sample:
-            case = sample.identity.sample_id
-            ann = sample.annotations.get(annotation)
+    for case in plan.cases:
+        with medh5.open(case.path) as sample:
+            ann = sample.annotations.get(annotation) if case.labeled else None
             if ann is not None:
                 # Checked before any of the case's files is written.
-                volume = _labelmap_for(ann, labels, plan.order)
+                volume = _labelmap_for(ann, labels, plan.order, plan.by_label)
                 ignored = np.asarray(sample.ignore_region(annotation), dtype=bool)
-                lost = _not_given_back(ann, volume, labels, ignored)
+                lost = _not_given_back(
+                    ann, volume, labels, ignored, plan.by_label, plan.exported
+                )
                 if lost:
                     raise MEDH5ValidationError(
-                        f"{path}: the label volume does not give back {lost}: "
+                        f"{case.path}: the label volume does not give back {lost}: "
                         "nnU-Net holds one value per voxel, so classes that "
                         "overlap must be stated as regions over disjoint "
                         "components; nothing was written for this case"
                     )
+            images = "imagesTr" if case.labeled else "imagesTs"
             for index, image_id in enumerate(plan.channels):
+                target = root / images / f"{case.name}_{index:04d}{file_ending}"
                 _save(
                     nib,
                     sample.images[image_id].grid,
                     sample.images[image_id].read(),
-                    root / "imagesTr" / f"{case}_{index:04d}{file_ending}",
+                    target,
                     rescale=sample.images[image_id].rescale,
                 )
-                log.outputs.append(
-                    str(root / "imagesTr" / f"{case}_{index:04d}{file_ending}")
-                )
+                log.outputs.append(str(target))
             if ann is not None:
                 if ignored.any():
                     # nnU-Net's ignore label is the highest value (§7.7): ignored
@@ -455,22 +512,27 @@ def to_nnunetv2(
                     volume[ignored] = ignore_value
                     log.decision(
                         "ignore",
-                        f"{path}: {int(ignored.sum())} ignored voxel(s) were written "
-                        f"as nnU-Net's ignore label {ignore_value}"
+                        f"{case.path}: {int(ignored.sum())} ignored voxel(s) were "
+                        f"written as nnU-Net's ignore label {ignore_value}"
                         + (
                             f", {covered} of them over a class, which nnU-Net "
                             "neither trains nor scores there"
                             if covered
                             else ""
                         ),
-                        {"case": case, "voxels": int(ignored.sum()), "over": covered},
+                        {
+                            "case": case.name,
+                            "voxels": int(ignored.sum()),
+                            "over": covered,
+                        },
                     )
-                _save(nib, ann.grid, volume, root / "labelsTr" / f"{case}{file_ending}")
+                target = root / "labelsTr" / f"{case.name}{file_ending}"
+                _save(nib, ann.grid, volume, target)
                 # Listed only when written.  A sample without the annotation
                 # produced no label file and the report named one anyway, so a
                 # caller checking `outputs` for what to ship was told about a
                 # path that did not exist.
-                log.outputs.append(str(root / "labelsTr" / f"{case}{file_ending}"))
+                log.outputs.append(str(target))
 
     stashed = plan.stashed
     document = dict(stashed) if stashed else {}
@@ -478,12 +540,19 @@ def to_nnunetv2(
         {
             "channel_names": {str(i): n for i, n in enumerate(plan.channels)},
             "labels": labels or document.get("labels") or {},
-            "numTraining": len(list(paths)),
+            # The training cases only: a case written to imagesTs is not one.
+            "numTraining": sum(1 for case in plan.cases if case.labeled),
             "file_ending": file_ending,
         }
     )
     if plan.order is None:
         document.pop("regions_class_order", None)
+    if plan.class_ids:
+        document["medh5_class_ids"] = {
+            str(value): class_id for value, class_id in sorted(plan.class_ids.items())
+        }
+    else:
+        document.pop("medh5_class_ids", None)
     (root / "dataset.json").write_text(
         json.dumps(document, indent=2) + "\n", encoding="utf-8"
     )
@@ -498,24 +567,104 @@ def to_nnunetv2(
     return log
 
 
+UNLABELED = ("refuse", "test")
+"""What :func:`to_nnunetv2` does with a case that lacks the annotation."""
+
+
+def _dataset_root(out: str | os.PathLike[str], dataset_name: str) -> Path:
+    """The dataset's directory: a name, never a path (F05 of the round-4
+    audit)."""
+    _require_name(dataset_name, "dataset_name")
+    return Path(os.fspath(out)) / dataset_name
+
+
+def _require_name(name: str, what: str) -> None:
+    """*name* as one file name: a sample key, and not ``.`` or ``..``.
+
+    Uncoded: ``sample_id`` is free text in a valid sample, so a refusal here
+    is the export's, not a defect of the file (§15.2).
+    """
+    from medh5 import _core
+
+    try:
+        _core.validate_sample_key(name)
+    except MEDH5ValidationError as e:
+        raise MEDH5ValidationError(
+            f"{what} {name!r} cannot name a file of the export: {e.message}"
+        ) from None
+    if name in (".", ".."):
+        raise MEDH5ValidationError(f"{what} {name!r} cannot name a file of the export")
+
+
+def _require_under(root: Path, plan: _Plan, file_ending: str) -> None:
+    """Every file the plan writes resolves under *root* --- what the case
+    names already ensure, checked where the files are named."""
+    top = root.resolve()
+    for case in plan.cases:
+        folder = "imagesTr" if case.labeled else "imagesTs"
+        for target in (
+            root / folder / f"{case.name}_0000{file_ending}",
+            root / "labelsTr" / f"{case.name}{file_ending}",
+        ):
+            if not target.resolve().is_relative_to(top):
+                raise MEDH5ValidationError(
+                    f"{case.path}: case {case.name!r} would write {target}, "
+                    f"outside the dataset {root}"
+                )
+
+
+class _Case:
+    """One sample of the export: its file, the name its files take, and
+    whether it carries the annotation."""
+
+    __slots__ = ("labeled", "name", "path")
+
+    def __init__(self, path: str, name: str, labeled: bool) -> None:
+        self.path = path
+        self.name = name
+        self.labeled = labeled
+
+
 class _Plan:
     """What an export writes, settled before it writes anything."""
 
-    __slots__ = ("channels", "labels", "order", "reused", "stashed")
+    __slots__ = (
+        "by_label",
+        "cases",
+        "channels",
+        "class_ids",
+        "exported",
+        "labels",
+        "order",
+        "reused",
+        "stashed",
+    )
 
     def __init__(
         self,
+        cases: list[_Case],
         channels: list[str],
         labels: dict[str, Any],
         order: list[int] | None,
         stashed: dict[str, Any] | None,
         reused: bool,
+        by_label: dict[str, int],
+        class_ids: dict[int, int],
+        exported: frozenset[int],
     ) -> None:
+        self.cases = cases
         self.channels = channels
         self.labels = labels
         self.order = order
         self.stashed = stashed
         self.reused = reused
+        # A scalar label's class, where the plan knows it: what its value
+        # cannot say once the values are renumbered (F23).
+        self.by_label = by_label
+        # Written value -> class id, when the values are not the ids.
+        self.class_ids = class_ids
+        # The classes every label volume must give back (F04).
+        self.exported = exported
 
 
 def _plan(
@@ -523,6 +672,7 @@ def _plan(
     annotation: str,
     classes: Sequence[int | str] | None,
     log: ConversionReport,
+    unlabeled: str = "refuse",
 ) -> _Plan:
     """Every case read once, and every refusal made, before a file is written.
 
@@ -531,7 +681,10 @@ def _plan(
     and a case never searched for a class was written as its verified absence
     (N14 of the round-3 audit).  The vocabulary is every case's; a case is held
     to it, or to *classes*; and every channel and the labels are held to the
-    first channel's physical space (N17).
+    first channel's physical space (N17).  Case names are file names (F05 of
+    the round-4 audit), a case without labels is no training case (F22), a
+    reused ``dataset.json`` names every class (F04), and the label values are
+    consecutive (F23).
     """
     import medh5
 
@@ -539,8 +692,22 @@ def _plan(
     channels: list[str] = []
     names: dict[int, str] = {}
     searched: list[tuple[str, frozenset[int]]] = []
+    cases: list[_Case] = []
+    taken: dict[str, str] = {}
     for path in paths:
         with medh5.open(path) as sample:
+            name = sample.identity.sample_id
+            _require_name(name, f"{os.fspath(path)}: sample_id")
+            # Case-insensitive file systems hold one of two names that differ
+            # only in case, and the second case overwrote the first.
+            folded = name.casefold()
+            if folded in taken:
+                raise MEDH5ValidationError(
+                    f"{os.fspath(path)}: sample_id {name!r} names the same files "
+                    f"as {taken[folded]!r} (on a case-insensitive file system); "
+                    "each case of a dataset needs a name of its own"
+                )
+            taken[folded] = name
             stashed = stashed or sample.document.extra.get("nnunetv2")
             if not channels:
                 channels = (
@@ -562,7 +729,9 @@ def _plan(
                     f"{path}: channel {image_id!r}",
                     channels[0],
                 )
-            if annotation not in sample.annotations:
+            labeled = annotation in sample.annotations
+            cases.append(_Case(os.fspath(path), name, labeled))
+            if not labeled:
                 continue
             ann = sample.annotations[annotation]
             # On the annotation's own grid, which nnU-Net needs to be the
@@ -582,6 +751,22 @@ def _plan(
             searched.append(
                 (os.fspath(path), frozenset(int(c) for c in ann.annotated_class_ids))
             )
+
+    bare = [case.path for case in cases if not case.labeled]
+    if bare and unlabeled == "refuse":
+        raise MEDH5ValidationError(
+            f"{bare} carry no annotation {annotation!r}: an nnU-Net training case "
+            "is an image with its label volume, so these cannot be written as "
+            "ones; pass unlabeled='test' (--unlabeled test) to write them to "
+            "imagesTs, outside numTraining"
+        )
+    if bare:
+        log.decision(
+            "unlabeled",
+            f"{len(bare)} case(s) without annotation {annotation!r} were written "
+            "to imagesTs, and are not counted in numTraining",
+            {"cases": bare},
+        )
 
     wanted = set(names)
     if classes is not None:
@@ -613,14 +798,18 @@ def _plan(
         )
 
     reused = bool(stashed and stashed.get("labels")) and classes is None
+    by_label: dict[str, int] = {}
     if reused:
         assert stashed is not None
         labels = dict(stashed["labels"])
         order = stashed.get("regions_class_order")
         order = [int(v) for v in order] if isinstance(order, list) else None
+        by_label = _stashed_classes(labels, stashed, names)
+        _extend_stash(labels, by_label, order, names, wanted, log)
     else:
         labels = {"background": 0}
         labels.update({names[c]: c for c in sorted(wanted)})
+        by_label = {names[c]: c for c in sorted(wanted)}
         order = None
         if stashed and classes is not None:
             log.decision(
@@ -629,7 +818,137 @@ def _plan(
                 "not reused; its other fields were",
                 {"classes": sorted(wanted)},
             )
-    return _Plan(channels, labels, order, stashed, reused)
+    if order is None:
+        labels = _consecutive(labels, log)
+    # Each written value whose class is another id, which the import reads
+    # back: what a renumbered export, or a reused one, needs recorded.
+    class_ids = {
+        int(labels[name]): class_id
+        for name, class_id in by_label.items()
+        if not isinstance(labels.get(name, []), list) and int(labels[name]) != class_id
+    }
+    return _Plan(
+        cases,
+        channels,
+        labels,
+        order,
+        stashed,
+        reused,
+        by_label,
+        class_ids,
+        frozenset(wanted),
+    )
+
+
+def _stashed_classes(
+    labels: Mapping[str, Any], stashed: Mapping[str, Any], names: Mapping[int, str]
+) -> dict[str, int]:
+    """The class each scalar label of a reused ``dataset.json`` writes.
+
+    An export that renumbered recorded the ids (``medh5_class_ids``); an
+    imported dataset's values are its class ids; a label naming neither is
+    matched by its key.  A label matched by nothing is left to the case,
+    which refuses it (E402).
+    """
+    recorded = {
+        int(v): int(c) for v, c in (stashed.get("medh5_class_ids") or {}).items()
+    }
+    keys = {key: class_id for class_id, key in names.items()}
+    out: dict[str, int] = {}
+    for name, value in labels.items():
+        if name == IGNORE or isinstance(value, list) or int(value) == BACKGROUND:
+            continue
+        if int(value) in recorded:
+            out[name] = recorded[int(value)]
+        elif int(value) in names:
+            out[name] = int(value)
+        elif _key(name) in keys:
+            out[name] = keys[_key(name)]
+    return out
+
+
+def _extend_stash(
+    labels: dict[str, Any],
+    by_label: dict[str, int],
+    order: list[int] | None,
+    names: Mapping[int, str],
+    wanted: set[int],
+    log: ConversionReport,
+) -> None:
+    """Name in a reused ``dataset.json`` every class some case carries.
+
+    A class the stash did not name was written as background: a dataset
+    imported with one class and given another later exported the second as 0
+    in every case, and ``dataset.json`` without it (F04 of the round-4 audit).
+    A scalar stash is extended; a region-based one cannot be without changing
+    what ``regions_class_order`` paints, so it is refused.
+    """
+    keys = {_key(str(name)) for name in labels}
+    named = set(by_label.values()) | {c for c in wanted if names[c] in keys}
+    missing = sorted(wanted - named)
+    if not missing:
+        return
+    if order is not None or any(isinstance(v, list) for v in labels.values()):
+        raise MEDH5ValidationError(
+            f"the stashed dataset.json does not name {[names[c] for c in missing]}, "
+            "which the cases carry, and it is region-based: a class cannot be "
+            "added to its regions without changing what regions_class_order "
+            "paints. Pass classes= (--class) to export a new dataset.json"
+        )
+    used: set[int] = set()
+    for value in labels.values():
+        used.update(int(v) for v in (value if isinstance(value, list) else [value]))
+    for class_id in missing:
+        if class_id in used:
+            raise MEDH5ValidationError(
+                f"the stashed dataset.json writes {class_id} for another label, so "
+                f"class {names[class_id]!r} cannot take it; pass classes= "
+                "(--class) to export a new dataset.json"
+            )
+        labels[names[class_id]] = class_id
+        by_label[names[class_id]] = class_id
+    log.decision(
+        "labels",
+        f"the stashed dataset.json did not name {[names[c] for c in missing]}, "
+        "which the cases carry; they were added to its labels, so no class is "
+        "written as background",
+        {"added": {names[c]: c for c in missing}},
+    )
+
+
+def _consecutive(labels: dict[str, Any], log: ConversionReport) -> dict[str, Any]:
+    """*labels* with values ``0..K``, as nnU-Net requires.
+
+    nnU-Net refuses label values with a gap, and class ids have them --- a
+    subset of a dataset's classes, or ids an import kept: ``{1, 3}`` was
+    written as given, and nnU-Net's dataset check failed (F23 of the round-4
+    audit).  The values are renumbered ``1..K`` in ascending order; labels
+    already consecutive are left as they are.
+    """
+    scalar = sorted(
+        int(v)
+        for name, v in labels.items()
+        if name != IGNORE and not isinstance(v, list) and int(v) != BACKGROUND
+    )
+    if scalar == list(range(1, len(scalar) + 1)):
+        return labels
+    value = {old: new for new, old in enumerate(scalar, start=1)}
+    out: dict[str, Any] = {}
+    for name, v in labels.items():
+        if name == IGNORE:
+            continue
+        if isinstance(v, list):
+            out[name] = [value.get(int(x), int(x)) for x in v]
+        else:
+            out[name] = value.get(int(v), int(v))
+    log.decision(
+        "label_values",
+        f"nnU-Net needs consecutive label values; the values {scalar} were written "
+        f"as 1..{len(scalar)}, and dataset.json records each one's class id "
+        "(medh5_class_ids), which the import reads back",
+        {"values": {str(new): old for old, new in value.items()}},
+    )
+    return out
 
 
 def _class_id(key: int | str, names: Mapping[int, str]) -> int:
@@ -703,7 +1022,10 @@ def _stashed_channels(stashed: Mapping[str, Any] | None) -> dict[int, str]:
 
 
 def _labelmap_for(
-    ann: Any, labels: Mapping[str, Any], order: Sequence[int] | None = None
+    ann: Any,
+    labels: Mapping[str, Any],
+    order: Sequence[int] | None = None,
+    by_label: Mapping[str, int] | None = None,
 ) -> npt.NDArray[np.uint16]:
     """A single-value label volume, which is what nnU-Net reads.
 
@@ -723,6 +1045,8 @@ def _labelmap_for(
     lookup used to fail into a bare ``continue``, so every class of any dataset
     whose labels are not already lowercase identifiers was dropped and the
     export wrote an all-background volume with no indication anything was lost.
+    A label whose class the plan knows (*by_label*) writes that class, whatever
+    its value: renumbered values are no ids (F23).
     """
     known = set(ann.class_ids)
     out = np.zeros(ann.spatial_shape, dtype=np.uint16)
@@ -749,7 +1073,9 @@ def _labelmap_for(
         for name, value in sorted(scalar.items(), key=lambda kv: kv[1]):
             if value == BACKGROUND:
                 continue
-            class_id = value if value in known else _resolve_or_none(ann, name)
+            class_id = (by_label or {}).get(name)
+            if class_id is None:
+                class_id = value if value in known else _resolve_or_none(ann, name)
             if class_id is None:
                 missing.append(name)
                 continue
@@ -785,19 +1111,28 @@ def _not_given_back(
     volume: npt.NDArray[Any],
     labels: Mapping[str, Any],
     ignored: npt.NDArray[np.bool_],
+    by_label: Mapping[str, int] | None = None,
+    exported: frozenset[int] | None = None,
 ) -> list[str]:
     """The labels whose stored voxels *volume* does not give back, outside the
     ignore region --- what an export would lose without saying so.
 
     Each label is read back as nnU-Net reads it: a value as the voxels of that
-    value, a region as the voxels of any of its components.
+    value, a region as the voxels of any of its components.  And every
+    *exported* class the annotation stores voxels of must be some label's: a
+    class the vocabulary did not name was written as background, and checking
+    the vocabulary alone could not see it (F04 of the round-4 audit).
     """
     known = set(ann.class_ids)
     out: list[str] = []
+    read: set[int] = set()
     for name, value in _foreground(labels):
-        class_id = _class_of(ann, name, value, known)
+        class_id = None if isinstance(value, list) else (by_label or {}).get(name)
+        if class_id is None:
+            class_id = _class_of(ann, name, value, known)
         if class_id is None:
             continue
+        read.add(class_id)
         components = (
             [int(v) for v in value] if isinstance(value, list) else [int(value)]
         )
@@ -807,6 +1142,12 @@ def _not_given_back(
             lost = int(np.count_nonzero(stored & ~written))
             gained = int(np.count_nonzero(written & ~stored))
             out.append(f"{name!r} ({lost} voxel(s) lost, {gained} gained)")
+    for class_id in sorted((exported or frozenset()) & known - read):
+        stored = np.asarray(ann.dense([class_id])[0], dtype=bool) & ~ignored
+        if stored.any():
+            out.append(
+                f"class {class_id} ({int(stored.sum())} voxel(s) no label names)"
+            )
     return out
 
 

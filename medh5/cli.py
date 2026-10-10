@@ -221,7 +221,14 @@ def _to_rtstruct(args: Any) -> int:
     from medh5.io.rtstruct import to_rtstruct
 
     report = ConversionReport(converter="to-rtstruct")
-    to_rtstruct(args.path, args.annotation, args.source, args.out, report=report)
+    to_rtstruct(
+        args.path,
+        args.annotation,
+        args.source,
+        args.out,
+        frame_salt=args.frame_salt,
+        report=report,
+    )
     return _finish(report, args)
 
 
@@ -241,6 +248,7 @@ def _to_nnunet(args: Any) -> int:
         dataset_name=args.dataset_name,
         annotation=args.annotation,
         classes=args.classes,
+        unlabeled=args.unlabeled,
     )
     return _finish(report, args)
 

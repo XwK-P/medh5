@@ -86,6 +86,11 @@ examined. A class a case cannot name is refused (`E402`) rather than
 skipped; a skipped class produces a `dataset.json` listing it, label files of
 the right shape, and every voxel zero.
 
+A case without the annotation is refused, since nnU-Net's training cases are
+labeled; `--unlabeled test` writes it to `imagesTs` instead. Label values are
+written `0..K`, as nnU-Net requires, and `dataset.json` keeps the class id of
+any value that is not its own (`medh5_class_ids`), so `from-nnunet` restores it.
+
 ## What has no exporter
 
 **COCO**, deliberately. It has no world geometry, spacing or frame of reference,

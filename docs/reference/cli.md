@@ -340,10 +340,11 @@ medh5 convert to-dicom-seg PATH ANNOTATION OUT --source DICOM [--source DICOM ..
 
 medh5 convert from-rtstruct RTSTRUCT SAMPLE [--id ANN] [--grid G] [--rasterize]
 medh5 convert to-rtstruct PATH ANNOTATION OUT --source DICOM [--source DICOM ...]
+                                               [--frame-salt S]
 
 medh5 convert from-nnunet ROOT OUT [--case ID ...]
 medh5 convert to-nnunet OUT PATH... [--dataset-name NAME] [--annotation A]
-                                    [--class K ...]
+                                    [--class K ...] [--unlabeled refuse|test]
 ```
 
 All but `to-nifti` also take `[--report FILE] [--json]`. Options marked `...`
@@ -364,7 +365,8 @@ sample per study, warns, and records the fallback.
 unless `--id` names another; `to-nnunet` exports annotation `seg` unless
 `--annotation` names another, as dataset `Dataset001_medh5` unless
 `--dataset-name` does, with every class the cases carry unless `--class` names
-the ones to export --- each of them examined by every case.
+the ones to export --- each of them examined by every case. A case without the
+annotation is refused unless `--unlabeled test` writes it to `imagesTs`.
 
 See [Converters](converters.md).
 

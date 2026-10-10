@@ -59,6 +59,13 @@ that lesion 2 at baseline is lesion 2 at follow-up would fabricate exactly the
 tracking ground truth §7.4 exists to record. If you know the correspondence,
 write it yourself with `instance_id`.
 
+**Whatever else `extra` held** is kept verbatim: each file's under `/meta →
+extra.legacy`, keyed by the timepoint it became (`extra.legacy.tp0`, …), and an
+nnU-Net `dataset.json` (`extra.nnunetv2`) at `/meta → extra.nnunetv2`, where
+`medh5 convert to-nnunet` reuses it. Merged files whose `dataset.json`s differ
+keep the first; the report warns, and the other stays in its file's
+`extra.legacy` entry.
+
 ## 4. Check what you got
 
 ```bash

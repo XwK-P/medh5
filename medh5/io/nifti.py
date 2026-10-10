@@ -141,9 +141,11 @@ def write_nifti(
 
     The file owns the statements about its volumes beside it --- the
     sidecar's per-volume fields and a ``.bval`` --- and an overwrite replaces
-    them: the old ones are withdrawn before the image is replaced, and the new
-    ones written after, so no reader ever pairs the image with another
-    export's timeline (see :func:`_withdraw_volume_statements`).
+    them: the new image is serialised first, the old statements are withdrawn
+    before it replaces the old image, and the new ones written after, so no
+    reader ever pairs the image with another export's timeline, and an export
+    that fails before its image is whole changes nothing (see
+    :func:`_withdraw_volume_statements`).
     """
     nib = require_nibabel()
     target = Path(os.fspath(path))
@@ -180,10 +182,11 @@ def write_nifti(
             statements["VolumeTiming"] = timing
     header.set_xyzt_units(xyz="mm" if scale is not None else "unknown", t=temporal)
     sidecar = _sidecar_for(target)
-    kept = _withdraw_volume_statements(target, sidecar, needed=bool(statements))
+    fields = _volume_statements(sidecar, needed=bool(statements))
     temporary = target.with_name(f".{os.getpid()}-{target.name}")
     try:
         nib.save(image, str(temporary))
+        kept = _withdraw_volume_statements(target, sidecar, fields)
         os.replace(temporary, target)
     finally:
         temporary.unlink(missing_ok=True)
@@ -255,37 +258,51 @@ def _channel_layout(
     return data, intent, statements, b_values
 
 
-def _withdraw_volume_statements(
-    target: Path, sidecar: Path, *, needed: bool
-) -> dict[str, Any]:
-    """Withdraw what was said beside *target* about the volumes it is about
-    to replace; returns the sidecar's other fields, kept.
+def _volume_statements(sidecar: Path, *, needed: bool) -> dict[str, Any] | None:
+    """The fields of the sidecar beside the file, read before anything is
+    written; ``None`` when there is no sidecar, or one that is not a JSON
+    object.
 
-    The regular-timing branch wrote nothing beside its file, and the reader
-    prefers a sidecar's ``VolumeTiming`` to the header: an overwrite of an
-    irregular series by a regular one read back the old timeline (N03 of the
-    2.0 re-audit).  The per-volume fields and a ``.bval`` are withdrawn before
-    the image is replaced and the new ones written after it, so an
-    interrupted export leaves an image whose timing reads as unmeasured,
-    never as another image's.  A sidecar that is not a JSON object is left
-    alone, and refused when this export has fields to put in it --- refused
-    *before* anything is withdrawn: the ``.bval`` went first, so a refused
-    export took a diffusion image's b-values with it (N16 of the round-3
-    audit).
+    One that is not an object is left alone, and refused when this export has
+    fields to put in it --- refused *before* anything is withdrawn: the
+    ``.bval`` went first, so a refused export took a diffusion image's
+    b-values with it (N16 of the round-3 audit).
     """
-    fields: Any = None
-    if sidecar.exists():
-        try:
-            fields = json.loads(sidecar.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            fields = None
-        if not isinstance(fields, dict) and needed:
+    if not sidecar.exists():
+        return None
+    try:
+        fields = json.loads(sidecar.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        fields = None
+    if not isinstance(fields, dict):
+        if needed:
             raise MEDH5ValidationError(
                 f"{sidecar} is not a JSON object, and this export writes its "
                 "per-volume fields there; move it aside first"
             )
+        return None
+    return fields
+
+
+def _withdraw_volume_statements(
+    target: Path, sidecar: Path, fields: Mapping[str, Any] | None
+) -> dict[str, Any]:
+    """Withdraw what was said beside *target* about the volumes it is about
+    to replace; returns the sidecar's other *fields*, kept.
+
+    The regular-timing branch wrote nothing beside its file, and the reader
+    prefers a sidecar's ``VolumeTiming`` to the header: an overwrite of an
+    irregular series by a regular one read back the old timeline (N03 of the
+    2.0 re-audit).  The per-volume fields and a ``.bval`` are withdrawn once
+    the new image is serialised and before it replaces the old one, and the
+    new ones written after it, so an interrupted export leaves an image whose
+    timing reads as unmeasured, never as another image's.  Withdrawn before
+    the image was serialised, they went with an export that then failed to
+    write it, and left the old image unmeasured for nothing (F24 of the
+    round-4 audit).
+    """
     _sidecar_path(target, ".bval").unlink(missing_ok=True)
-    if not isinstance(fields, dict):
+    if fields is None:
         return {}
     # A list is a statement about each volume; a scalar `EchoTime` is the
     # scanner's, about all of them, and stays.

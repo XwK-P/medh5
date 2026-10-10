@@ -461,20 +461,15 @@ fn write_group(
             writer.add_timepoint(&format!("tp{index}"), fields)?;
         }
         let single = group.occasions.len() == 1;
+        let mut extra = LegacyExtra::default();
         for (index, occasion) in group.occasions.iter().enumerate() {
             let source = &sources[occasion.payload];
             let sample = read_sample(source)?;
-            migrate_one(
-                &mut writer,
-                &sample,
-                &source.to_string_lossy(),
-                &format!("tp{index}"),
-                label_set,
-                &tool.id,
-                log,
-                single,
-            )?;
+            let timepoint = format!("tp{index}");
+            migrate_one(&mut writer, &sample, &source.to_string_lossy(), &timepoint, label_set, &tool.id, log, single)?;
+            extra.add(&sample.meta.extra, &timepoint, &source.to_string_lossy(), log);
         }
+        extra.write(&mut writer);
         writer.commit(true)?;
         Ok(())
     })();
@@ -484,6 +479,57 @@ fn write_group(
     }
     log.outputs.push(target.to_string_lossy().into_owned());
     Ok(())
+}
+
+/// The 0.x `extra` of a subject's files, as `/meta` keeps it (Appendix B).
+///
+/// `extra.nnunetv2` is preserved verbatim at `/meta → extra.nnunetv2`, where
+/// the nnU-Net exporter reads a stashed `dataset.json`; the other keys are
+/// kept under `extra.legacy`, one entry per timepoint.  Every file's whole
+/// `extra` went to `extra.legacy`, so the stash was never where it is read,
+/// and in a grouped migration each file's replaced the one before (F26 of the
+/// round-4 audit).  A later file whose `nnunetv2` differs from the first's
+/// keeps it in its own entry, and the report says so: one sample has one
+/// `dataset.json`.
+#[derive(Default)]
+struct LegacyExtra {
+    nnunetv2: Option<(Value, String)>,
+    legacy: Map<String, Value>,
+}
+
+impl LegacyExtra {
+    fn add(&mut self, extra: &Map<String, Value>, timepoint: &str, source: &str, log: &mut ConversionReport) {
+        let mut rest = extra.clone();
+        if let Some(stash) = rest.remove("nnunetv2") {
+            match &self.nnunetv2 {
+                None => self.nnunetv2 = Some((stash, source.to_string())),
+                Some((kept, _)) if *kept == stash => {}
+                Some((_, first)) => {
+                    log.warn(
+                        "nnunetv2",
+                        format!(
+                            "{source}: extra.nnunetv2 differs from {first}'s, which the sample keeps as its \
+                             extra.nnunetv2; this one stays in extra.legacy.{timepoint}.nnunetv2"
+                        ),
+                        json!({"source": source, "kept": first, "timepoint": timepoint}),
+                    );
+                    rest.insert("nnunetv2".into(), stash);
+                }
+            }
+        }
+        if !rest.is_empty() {
+            self.legacy.insert(timepoint.to_string(), Value::Object(rest));
+        }
+    }
+
+    fn write(self, writer: &mut crate::sample::SampleWriter) {
+        if let Some((stash, _)) = self.nnunetv2 {
+            writer.extra("nnunetv2", stash);
+        }
+        if !self.legacy.is_empty() {
+            writer.extra("legacy", Value::Object(self.legacy));
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -627,9 +673,6 @@ fn migrate_one(
                 );
             }
         }
-    }
-    if !meta.extra.is_empty() {
-        writer.extra("legacy", Value::Object(meta.extra.clone()));
     }
     if let Some(Value::Object(review)) = meta.extra.get("review") {
         migrate_review(writer, review, &suffix, log, source)?;

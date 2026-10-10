@@ -478,7 +478,13 @@ fn convert() -> Vec<Command> {
                 .arg(positional("path", "the sample to read"))
                 .arg(positional("annotation", "the contour annotation to export"))
                 .arg(positional("out", "the RTSTRUCT file to write"))
-                .arg(append("source", "source", "a source DICOM file; repeat once per slice").required(true)),
+                .arg(append("source", "source", "a source DICOM file; repeat once per slice").required(true))
+                .arg(opt(
+                    "frame_salt",
+                    "frame-salt",
+                    "the salt `medh5 scrub` pseudonymised the sample's frames with: the source images' frame is \
+                     compared as the scrub wrote it",
+                )),
         ))
         .subcommand(report_args(
             Command::new("from-nnunet")
@@ -504,6 +510,15 @@ fn convert() -> Vec<Command> {
                         "export only this class (id or key), which every case examined; repeatable",
                     )
                     .value_name("K"),
+                )
+                .arg(
+                    opt(
+                        "unlabeled",
+                        "unlabeled",
+                        "a case without the annotation: refuse it, or write it to imagesTs as a test case",
+                    )
+                    .value_parser(["refuse", "test"])
+                    .default_value("refuse"),
                 ),
         ));
     let migrate = report_args(

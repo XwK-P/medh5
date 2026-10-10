@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import h5py
 import numpy as np
@@ -99,7 +100,7 @@ class TestMigrate:
             assert sample.document.quality["seg"].status == "approved"
             types = [a.type for a in sample.document.provenance.activities]
             assert "review" in types
-            assert sample.document.extra["legacy"]["patient_id"] == "PAT-A"
+            assert sample.document.extra["legacy"]["tp0"]["patient_id"] == "PAT-A"
         assert report.of_kind("review")
 
     def test_S3_7_subject_grouping_merges_a_patients_files(self, legacy, tmp_path):
@@ -150,6 +151,91 @@ class TestMigrate:
         report = migrate_paths([*legacy, broken], tmp_path / "out")
         assert report.warnings
         assert len(list((tmp_path / "out").glob("*.medh5"))) == 3
+
+
+class TestF26LegacyExtra:
+    """Appendix B puts a 0.x ``extra.nnunetv2`` at ``/meta → extra.nnunetv2``,
+    where the nnU-Net exporter reads a stashed ``dataset.json``.  The whole
+    ``extra`` went to ``extra.legacy`` instead, and a grouped migration kept
+    only the last file's (F26 of the round-4 audit)."""
+
+    STASH = {
+        "channel_names": {"0": "CT"},
+        "labels": {"background": 0, "liver": 1, "lesion": 2},
+        "file_ending": ".nii.gz",
+        "description": "a 0.x dataset",
+    }
+
+    @staticmethod
+    def _old(path: Path, **extra: Any) -> Path:
+        shape = (6, 8, 10)
+        liver = np.zeros(shape, bool)
+        liver[1:5, 2:6, 2:8] = True
+        lesion = np.zeros(shape, bool)
+        lesion[2:3, 6:8, 8:10] = True  # beside the liver: nnU-Net holds one class
+        return write_legacy_sample(
+            path,
+            images={"CT": np.zeros(shape, np.int16)},
+            seg={"liver": liver, "lesion": lesion},
+            spacing=[2.0, 1.0, 1.0],
+            coord_system="LPS",
+            extra=extra,
+        )
+
+    def test_F26_appendix_B_the_stash_is_where_the_exporter_reads_it(
+        self, tmp_path: Path
+    ):
+        import json
+
+        from medh5.io.legacy import migrate
+        from medh5.io.nnunetv2 import to_nnunetv2
+
+        old = self._old(tmp_path / "old.medh5", patient_id="PAT-A", nnunetv2=self.STASH)
+        migrate(old, tmp_path / "case_a.medh5")
+        with medh5.open(tmp_path / "case_a.medh5") as sample:
+            extra = sample.document.extra
+            assert extra["nnunetv2"] == self.STASH
+            assert extra["legacy"] == {"tp0": {"patient_id": "PAT-A"}}
+        report = to_nnunetv2([tmp_path / "case_a.medh5"], tmp_path / "nnunet")
+        written = json.loads(
+            (tmp_path / "nnunet" / "Dataset001_medh5" / "dataset.json").read_text()
+        )
+        assert written["description"] == "a 0.x dataset"
+        assert written["labels"] == self.STASH["labels"]
+        assert report.of_kind("dataset_json")[0].detail["reused"]
+
+    @pytest.mark.parametrize("same", [True, False])
+    def test_F26_grouped_files_keep_every_files_extra(self, tmp_path: Path, same: bool):
+        from medh5.io.legacy import migrate_paths
+
+        other = {**self.STASH, "description": "re-exported"}
+        paths = [
+            self._old(
+                tmp_path / f"old_{index}.medh5",
+                patient_id="PAT-A",
+                study_date=f"2026-0{index + 1}-15",
+                site=site,
+                nnunetv2=self.STASH if same or index == 0 else other,
+            )
+            for index, site in enumerate(("north", "south"))
+        ]
+        report = migrate_paths(
+            paths, tmp_path / "out", group_by="subject", subject_key="extra.patient_id"
+        )
+        with medh5.open(tmp_path / "out" / "pat-a.medh5") as sample:
+            extra = sample.document.extra
+            assert extra["nnunetv2"] == self.STASH, "the first file's"
+            legacy = extra["legacy"]
+            assert sorted(legacy) == ["tp0", "tp1"]
+            assert legacy["tp0"]["site"] == "north"
+            assert legacy["tp1"]["site"] == "south", "the second did not replace it"
+            assert "nnunetv2" not in legacy["tp0"]
+            if same:
+                assert "nnunetv2" not in legacy["tp1"]
+            else:
+                assert legacy["tp1"]["nnunetv2"] == other, "kept, not dropped"
+        conflicts = [w for w in report.warnings if w.kind == "nnunetv2"]
+        assert len(conflicts) == (0 if same else 1)
 
 
 class TestLegacyReader:

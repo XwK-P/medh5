@@ -256,8 +256,8 @@ class TestNnunet:
                 rescale_slope=1.0,
                 rescale_intercept=-1024.0,
             )
-        to_nnunetv2([path], tmp_path / "nn", dataset_name="D1")
-        image = nib.load(str(tmp_path / "nn/D1/imagesTr/ct_0000.nii.gz"))
+        to_nnunetv2([path], tmp_path / "nn", dataset_name="D1", unlabeled="test")
+        image = nib.load(str(tmp_path / "nn/D1/imagesTs/ct_0000.nii.gz"))
         assert image.get_data_dtype() == np.int16
         assert image.get_fdata().flat[0] == pytest.approx(-24.0)
 
@@ -303,10 +303,13 @@ class TestNnunet:
         with medh5.create(path, sample_id="bare", codec="portable") as w:
             w.add_grid("g", shape=Organs.SHAPE, spacing=(1.0, 1.0, 1.0))
             w.add_image("CT", np.zeros(Organs.SHAPE, np.int16), grid="g", modality="CT")
-        report = to_nnunetv2([path], tmp_path / "nn", dataset_name="D3")
+        report = to_nnunetv2(
+            [path], tmp_path / "nn", dataset_name="D3", unlabeled="test"
+        )
         for output in report.outputs:
             assert Path(output).exists(), output
         assert not any("labelsTr" in o for o in report.outputs)
+        assert any("imagesTs" in o for o in report.outputs)
 
 
 class TestNnunetScaling:
@@ -704,3 +707,285 @@ class TestNnunetDatasetLabels:
         with pytest.raises(MEDH5ValidationError, match="does not give back") as caught:
             to_nnunetv2([tmp_path / "out/CASE.medh5"], tmp_path / "back")
         assert "whole_tumor" in str(caught.value)
+
+
+def nnunet_checks(root: Path) -> dict:
+    """What nnU-Net's dataset check holds an export to: ``numTraining`` is the
+    number of training cases, each with every channel and a label file, the
+    label values are consecutive (the ignore label, if any, the highest), and
+    every label file holds only declared values."""
+    document = json.loads((root / "dataset.json").read_text(encoding="utf-8"))
+    ending = document["file_ending"]
+    channels = len(document["channel_names"])
+    labels = document["labels"]
+    scalar = sorted(
+        int(v) for k, v in labels.items() if not isinstance(v, list) and k != "ignore"
+    )
+    assert scalar == list(range(len(scalar))), labels
+    if "ignore" in labels:
+        assert int(labels["ignore"]) == max(scalar) + 1, labels
+    allowed = {*scalar, *([int(labels["ignore"])] if "ignore" in labels else [])}
+    cases = sorted(
+        p.name[: -len(ending)] for p in (root / "labelsTr").glob(f"*{ending}")
+    )
+    assert document["numTraining"] == len(cases), (document["numTraining"], cases)
+    images = sorted((root / "imagesTr").glob(f"*{ending}"))
+    assert len(images) == channels * len(cases)
+    for case in cases:
+        for channel in range(channels):
+            assert (root / "imagesTr" / f"{case}_{channel:04d}{ending}").exists()
+        values = np.unique(
+            np.asarray(nib.load(str(root / "labelsTr" / f"{case}{ending}")).dataobj)
+        )
+        assert set(int(v) for v in values) <= allowed, (case, values, allowed)
+    return document
+
+
+class TestF05CaseNames:
+    """F05 of the round-4 audit: a case's ``sample_id`` was joined onto the
+    export as a path, so ``../../victim`` --- or an absolute id --- wrote
+    outside it, and two ids differing only in case overwrote each other on
+    macOS and Windows while ``numTraining`` counted both."""
+
+    @staticmethod
+    def _case(path: Path, sample_id: str) -> Path:
+        with medh5.create(path, sample_id=sample_id, codec="portable") as w:
+            w.add_grid("g", shape=Organs.SHAPE, spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", np.zeros(Organs.SHAPE, np.int16), grid="g", modality="CT")
+            mask = np.zeros(Organs.SHAPE, bool)
+            mask[1:3, 1:3, 1:3] = True
+            w.add_segmentation("seg", grid="g", masks={1: mask})
+        return path
+
+    @pytest.mark.parametrize("sample_id", ["../../victim", "/tmp/victim", "..", "a b"])
+    def test_F05_a_case_name_that_is_no_file_name_is_refused(
+        self, tmp_path: Path, sample_id: str
+    ):
+        from medh5.io.nnunetv2 import to_nnunetv2
+
+        path = self._case(tmp_path / "bad.medh5", sample_id)
+        with pytest.raises(MEDH5ValidationError) as caught:
+            to_nnunetv2([path], tmp_path / "nn", dataset_name="D1")
+        # A sample_id is free text in a valid sample: the refusal is the
+        # export's, so it borrows no §15.2 code.
+        assert caught.value.code is None and "sample_id" in str(caught.value)
+        assert not (tmp_path / "nn").exists(), "refused before anything is written"
+        assert not list(tmp_path.rglob("victim*"))
+
+    def test_F05_names_that_differ_only_in_case_are_refused(self, tmp_path: Path):
+        from medh5.io.nnunetv2 import to_nnunetv2
+
+        a = self._case(tmp_path / "a.medh5", "Case1")
+        b = self._case(tmp_path / "b.medh5", "case1")
+        with pytest.raises(MEDH5ValidationError, match="'Case1'"):
+            to_nnunetv2([a, b], tmp_path / "nn", dataset_name="D1")
+        assert not (tmp_path / "nn").exists()
+
+    @pytest.mark.parametrize("name", ["../D1", "/abs", ".."])
+    def test_F05_the_dataset_name_is_a_name(self, tmp_path: Path, name: str):
+        from medh5.io.nnunetv2 import to_nnunetv2
+
+        path = self._case(tmp_path / "a.medh5", "case1")
+        with pytest.raises(MEDH5ValidationError, match="dataset_name"):
+            to_nnunetv2([path], tmp_path / "nn", dataset_name=name)
+        assert not (tmp_path / "nn").exists()
+
+    def test_F05_valid_names_export(self, tmp_path: Path):
+        from medh5.io.nnunetv2 import to_nnunetv2
+
+        paths = [self._case(tmp_path / f"{n}.medh5", n) for n in ("c-1", "c.2", "C_3")]
+        to_nnunetv2(paths, tmp_path / "nn", dataset_name="D1")
+        nnunet_checks(tmp_path / "nn" / "D1")
+
+
+class TestF22Unlabeled:
+    """F22 of the round-4 audit: a case without the annotation was written to
+    ``imagesTr`` with no label file, and counted in ``numTraining``."""
+
+    def test_F22_an_unlabeled_case_is_refused_or_a_test_case(
+        self, tmp_path: Path, capsys
+    ):
+        from medh5.cli import EXIT_OK, main
+        from medh5.io.nnunetv2 import to_nnunetv2
+
+        labeled = TestF05CaseNames._case(tmp_path / "a.medh5", "labeled")
+        bare = tmp_path / "bare.medh5"
+        with medh5.create(bare, sample_id="bare", codec="portable") as w:
+            w.add_grid("g", shape=Organs.SHAPE, spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", np.zeros(Organs.SHAPE, np.int16), grid="g", modality="CT")
+        with pytest.raises(MEDH5ValidationError, match="bare.medh5") as caught:
+            to_nnunetv2([labeled, bare], tmp_path / "nn", dataset_name="D1")
+        assert "imagesTs" in str(caught.value)
+        assert not (tmp_path / "nn").exists()
+        report = to_nnunetv2(
+            [labeled, bare], tmp_path / "nn", dataset_name="D1", unlabeled="test"
+        )
+        root = tmp_path / "nn" / "D1"
+        document = nnunet_checks(root)
+        assert document["numTraining"] == 1
+        assert (root / "imagesTs" / "bare_0000.nii.gz").exists()
+        assert not (root / "imagesTr" / "bare_0000.nii.gz").exists()
+        assert report.of_kind("unlabeled")
+        argv = ["convert", "to-nnunet", str(tmp_path / "cli"), str(labeled), str(bare)]
+        assert main([*argv, "--dataset-name", "D2"]) != EXIT_OK
+        assert "unlabeled" in capsys.readouterr().err
+        assert main([*argv, "--dataset-name", "D2", "--unlabeled", "test"]) == EXIT_OK
+        assert nnunet_checks(tmp_path / "cli" / "D2")["numTraining"] == 1
+
+
+class TestF23ConsecutiveLabels:
+    """F23 of the round-4 audit: class ids with a gap were written as label
+    values with one, and nnU-Net's dataset check refuses them.  They are
+    written ``1..K``, and the ids come back on import."""
+
+    SHAPE = (6, 8, 8)
+
+    @classmethod
+    def _case(cls, path: Path, classes: dict[int, str]) -> Path:
+        from medh5.labels import LabelClass, LabelSet
+
+        with medh5.create(path, sample_id=path.stem, codec="portable") as w:
+            w.add_grid("g", shape=cls.SHAPE, spacing=(2.0, 1.0, 1.0))
+            w.add_image("CT", np.zeros(cls.SHAPE, np.int16), grid="g", modality="CT")
+            w.label_set(
+                LabelSet(
+                    "gapped",
+                    version="1.0.0",
+                    classes=[LabelClass(c, k, k.title()) for c, k in classes.items()],
+                )
+            )
+            masks = {}
+            for i, class_id in enumerate(sorted(classes)):
+                mask = np.zeros(cls.SHAPE, bool)
+                mask[i, 1:3, 1:3] = True
+                masks[class_id] = mask
+            w.add_segmentation("seg", grid="g", masks=masks)
+        return path
+
+    def test_F23_gapped_ids_are_written_consecutive_and_come_back(self, tmp_path: Path):
+        from medh5.io.nnunetv2 import from_nnunetv2, to_nnunetv2
+
+        path = self._case(tmp_path / "case1.medh5", {1: "organ", 3: "lesion"})
+        report = to_nnunetv2([path], tmp_path / "nn", dataset_name="D1")
+        root = tmp_path / "nn" / "D1"
+        document = nnunet_checks(root)
+        assert document["labels"] == {"background": 0, "organ": 1, "lesion": 2}
+        assert document["medh5_class_ids"] == {"2": 3}
+        assert report.of_kind("label_values")
+        volume = np.asarray(nib.load(str(root / "labelsTr/case1.nii.gz")).dataobj)
+        assert int((volume == 2).sum()) == 4 and not (volume == 3).any()
+        back = from_nnunetv2(root, tmp_path / "back")
+        assert back.ok
+        with medh5.open(tmp_path / "back" / "case1.medh5") as s, medh5.open(path) as o:
+            ann, original = s.annotations["seg"], o.annotations["seg"]
+            assert sorted(c.id for c in s.label_set) == [1, 3]
+            for class_id in (1, 3):
+                assert np.array_equal(ann.dense([class_id]), original.dense([class_id]))
+        # Exported again, from the stash: the same dataset.
+        to_nnunetv2(
+            [tmp_path / "back" / "case1.medh5"], tmp_path / "again", dataset_name="D1"
+        )
+        assert nnunet_checks(tmp_path / "again" / "D1") == document
+
+    def test_F23_a_subset_is_renumbered_too(self, tmp_path: Path):
+        from medh5.io.nnunetv2 import to_nnunetv2
+
+        path = self._case(tmp_path / "case1.medh5", {1: "organ", 3: "lesion"})
+        to_nnunetv2([path], tmp_path / "nn", dataset_name="D1", classes=["lesion"])
+        document = nnunet_checks(tmp_path / "nn" / "D1")
+        assert document["labels"] == {"background": 0, "lesion": 1}
+        assert document["medh5_class_ids"] == {"1": 3}
+
+    def test_F23_consecutive_ids_record_nothing(self, tmp_path: Path):
+        from medh5.io.nnunetv2 import to_nnunetv2
+
+        path = self._case(tmp_path / "case1.medh5", {1: "organ", 2: "lesion"})
+        report = to_nnunetv2([path], tmp_path / "nn", dataset_name="D1")
+        document = nnunet_checks(tmp_path / "nn" / "D1")
+        assert "medh5_class_ids" not in document and not report.of_kind("label_values")
+
+
+class TestF04StashedLabels:
+    """F04 of the round-4 audit: a reused ``dataset.json`` that did not name a
+    class the cases carried wrote it as background in every case, and left it
+    out of the labels.  A scalar stash is extended; a region-based one is
+    refused; and every exported class is read back."""
+
+    SHAPE = (6, 8, 8)
+
+    @classmethod
+    def _case(cls, path: Path, stash: dict) -> Path:
+        from medh5.labels import LabelClass, LabelSet
+
+        with medh5.create(path, sample_id=path.stem, codec="portable") as w:
+            w.add_grid("g", shape=cls.SHAPE, spacing=(2.0, 1.0, 1.0))
+            w.add_image("c1", np.zeros(cls.SHAPE, np.int16), grid="g", modality="CT")
+            w.label_set(
+                LabelSet(
+                    "stashed",
+                    version="1.0.0",
+                    classes=[LabelClass(1, "c1", "C1"), LabelClass(2, "c2", "C2")],
+                )
+            )
+            first = np.zeros(cls.SHAPE, bool)
+            first[1:3, 1:3, 1:3] = True
+            second = np.zeros(cls.SHAPE, bool)
+            second[4:5, 5:7, 5:7] = True
+            w.add_segmentation("seg", grid="g", masks={1: first, 2: second})
+            w.extra("nnunetv2", stash)
+        return path
+
+    def test_F04_a_scalar_stash_is_extended(self, tmp_path: Path):
+        from medh5.io.nnunetv2 import to_nnunetv2
+
+        stash = {
+            "channel_names": {"0": "c1"},
+            "labels": {"background": 0, "c1": 1},
+            "numTraining": 1,
+            "file_ending": ".nii.gz",
+            "description": "kept",
+        }
+        path = self._case(tmp_path / "case1.medh5", stash)
+        report = to_nnunetv2([path], tmp_path / "nn", dataset_name="D1")
+        root = tmp_path / "nn" / "D1"
+        document = nnunet_checks(root)
+        assert document["labels"] == {"background": 0, "c1": 1, "c2": 2}
+        assert document["description"] == "kept"
+        assert report.of_kind("labels")
+        volume = np.asarray(nib.load(str(root / "labelsTr/case1.nii.gz")).dataobj)
+        assert int((volume == 2).sum()) == 4
+
+    def test_F04_a_region_stash_is_refused(self, tmp_path: Path):
+        from medh5.io.nnunetv2 import to_nnunetv2
+
+        stash = {
+            "channel_names": {"0": "c1"},
+            "labels": {"background": 0, "c1": 1, "whole": [1]},
+            "regions_class_order": [1, 1],
+            "numTraining": 1,
+            "file_ending": ".nii.gz",
+        }
+        path = self._case(tmp_path / "case1.medh5", stash)
+        with pytest.raises(MEDH5ValidationError, match="region-based"):
+            to_nnunetv2([path], tmp_path / "nn", dataset_name="D1")
+        assert not (tmp_path / "nn").exists()
+
+    def test_F04_a_class_no_label_reads_back_is_lost_and_refused(self):
+        """The backstop, on its own: the read-back covers every exported
+        class, not only the labels'."""
+        from medh5.io.nnunetv2 import _not_given_back
+
+        class Ann:
+            class_ids = (1, 2)
+
+            def dense(self, ids):
+                out = np.zeros((1, 4), bool)
+                out[0, ids[0] - 1] = True
+                return out
+
+        volume = np.array([1, 0, 0, 0])
+        ignored = np.zeros(4, bool)
+        lost = _not_given_back(
+            Ann(), volume, {"c1": 1}, ignored, {"c1": 1}, frozenset({1, 2})
+        )
+        assert lost == ["class 2 (1 voxel(s) no label names)"]

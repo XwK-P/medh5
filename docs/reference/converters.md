@@ -226,6 +226,14 @@ Each imported polygon records the slice it lies on as `contour_plane`
 `(0, k)`, in the grid's index space, so `by_plane()` on the result groups the
 structure set the way the planner drew it.
 
+**The export writes patient coordinates**, as DICOM defines them: millimetres,
+LPS. A grid in metres is scaled and an RAS one flipped in x and y; a grid in
+pixels or another convention is refused, and so are contours with no grid to
+give their units. The source images must share one frame of reference, and the
+contours must be in it --- the annotation's `frame_uid` in world space, its
+grid's in index space; `--frame-salt` compares a frame `medh5 scrub`
+pseudonymised. Contours that state no frame are recorded as a guess.
+
 ### nnU-Net v2
 
 ```
@@ -263,6 +271,20 @@ classes, one name per id. **Every case must have examined every class
 exported** (`annotated_class_ids`): a class one case never looked for would be
 written as its background, a negative nobody observed; `classes=` exports a
 subset all of them examined.
+
+**Every file is a name under the dataset.** A case's files are named by its
+`sample_id`, which must be a sample key (`[A-Za-z0-9_.-]`, not `.` or `..`),
+and no two cases may differ only in case --- one would overwrite the other on a
+case-insensitive file system; `--dataset-name` is held to the same rule. **Every
+case is a training case**: one without the annotation is refused, or with
+`unlabeled="test"` (`--unlabeled test`) written to `imagesTs` and left out of
+`numTraining`. **Label values are consecutive**, as nnU-Net requires: class ids
+with a gap --- `{1, 3}`, or a subset `--class` exports --- are written as
+`1..K` in ascending order, and `dataset.json` records each value's class id as
+`medh5_class_ids`, which `from-nnunet` reads back, so the ids survive the round
+trip. A stashed `dataset.json` that does not name a class some case carries is
+extended with it (a region-based one is refused instead): the class was written
+as background.
 
 **A case is written only if its labels come back.** Region labels are painted
 in `regions_class_order`, as nnU-Net converts them back; without one, each

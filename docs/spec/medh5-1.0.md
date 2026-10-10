@@ -1608,7 +1608,8 @@ follow-up is a new frame. Lesion 3 appears at baseline and not at follow-up, and
 | `label`, `label_name` | `annotations/<id>` kind `classification`, `scope="sample"` |
 | (no notion of time) | a single declared timepoint `tp0` with `index = 0`; every grid gets `timepoint = "tp0"` |
 | `extra.review` | `/meta → provenance.activities` (type `review`) + `/meta → quality` |
-| `extra.nnunetv2` | `/meta → extra.nnunetv2` (preserved verbatim) + a generated label set |
+| `extra.nnunetv2` | `/meta → extra.nnunetv2` (preserved verbatim) + a generated label set; files grouped into one sample keep the first file's, and a different one stays in its file's `extra.legacy` entry |
+| every other `extra` key | `/meta → extra.legacy.<timepoint>` (preserved verbatim), one entry per file, under the timepoint it became |
 | `checksum_sha256` (whole file) | per-object `digest` + root `content_id` |
 | `has_seg`, `has_bbox`, `seg_names`, `image_names` | removed — derived by enumerating groups; a flag that can disagree with the data is a bug generator |
 

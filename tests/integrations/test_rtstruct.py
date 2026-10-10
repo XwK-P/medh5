@@ -317,3 +317,230 @@ class TestRtstruct:
         ]
         mask = _rasterize(polygons, grid, ConversionReport())[1][0]
         assert mask[5, 10]  # in both: one region, not a hole
+
+
+class TestF09PatientCoordinates:
+    """``ContourData`` is DICOM patient coordinates: millimetres, LPS, and the
+    one frame of reference the source images share.
+
+    The exporter wrote each contour as stored --- a metre grid's 0.003 for
+    3 mm, an RAS grid's x and y unflipped --- and filed it under the first
+    source image's frame whatever the grid's (F09 of the round-4 audit).
+    """
+
+    # A square on slice 2, in the grid's index space.
+    SQUARE = np.array(
+        [[2.0, 4.0, 4.0], [2.0, 4.0, 10.0], [2.0, 10.0, 10.0], [2.0, 10.0, 4.0]]
+    )
+
+    @pytest.fixture
+    def series(self, tmp_path: Path) -> dict[str, Any]:
+        from pydicom.uid import generate_uid
+
+        return write_dicom_series(
+            tmp_path / "dcm",
+            patient_id="PSEUDO-009",
+            study_uid=generate_uid(),
+            study_date="20260101",
+        )
+
+    def _sample(
+        self,
+        tmp_path: Path,
+        *,
+        frame_uid: str | None,
+        units: str = "mm",
+        coord_system: str = "LPS",
+        space: str = "index",
+        grid: bool = True,
+    ) -> Path:
+        from medh5.annotations.geometric import Polygon
+        from medh5.labels import LabelClass, LabelSet
+
+        spacing = (2.5, 0.8, 0.9) if units == "mm" else (0.0025, 0.0008, 0.0009)
+        origin = (-10.0, -20.0, 30.0) if units == "mm" else (-0.01, -0.02, 0.03)
+        path = tmp_path / "contours.medh5"
+        with medh5.create(path, sample_id="s", subject_id="s", codec="portable") as w:
+            w.label_set(LabelSet("rt", [LabelClass(1, "liver", "Liver")]))
+            declared = w.add_grid(
+                "g",
+                shape=(6, 16, 20),
+                spacing=spacing,
+                origin=origin,
+                coord_system=coord_system,
+                units=units,
+                frame_uid=frame_uid,
+            )
+            w.add_image("CT", np.zeros((6, 16, 20), np.int16), grid="g", modality="CT")
+            vertices = (
+                self.SQUARE
+                if space == "index"
+                else declared.index_to_world(self.SQUARE)
+            )
+            w.add_contours(
+                "rois",
+                [Polygon(vertices.astype(np.float32), 1, plane=(0, 2))],
+                grid="g" if grid else None,
+                space=space,
+                frame_uid=None if grid else frame_uid,
+            )
+        return path
+
+    def _exported(self, path: Path, sources: list[str], out: Path, **kw: Any):
+        from medh5.io.rtstruct import read_rtstruct, to_rtstruct
+
+        report = ConversionReport(converter="to-rtstruct")
+        to_rtstruct(path, "rois", sources, out, report=report, **kw)
+        contours, meta = read_rtstruct(out)
+        return contours[1][0], meta, report
+
+    def _expected_mm(self, path: Path) -> np.ndarray:
+        """The square in the grid's world coordinates, as stored."""
+        with medh5.open(path) as sample:
+            stored = sample.annotations["rois"]
+            grid = sample.grids["g"]
+            vertices = np.asarray(stored.polygon(0), dtype=np.float64)
+            return (
+                vertices if stored.space == "world" else grid.index_to_world(vertices)
+            )
+
+    def test_S8_6_an_lps_millimetre_grid_is_written_as_stored(self, tmp_path, series):
+        path = self._sample(tmp_path, frame_uid=series["frame_uid"])
+        points, meta, report = self._exported(
+            path, series["paths"], tmp_path / "rt.dcm"
+        )
+        assert np.allclose(points, self._expected_mm(path), atol=1e-4)
+        assert meta["frame_uid"] == series["frame_uid"]
+        assert not report.of_kind("frame_of_reference"), "the frames were compared"
+
+    @pytest.mark.parametrize("space", ["index", "world"])
+    def test_F09_a_metre_grid_is_written_in_millimetres(self, tmp_path, series, space):
+        path = self._sample(
+            tmp_path, frame_uid=series["frame_uid"], units="m", space=space
+        )
+        points, _, _ = self._exported(path, series["paths"], tmp_path / "rt.dcm")
+        stored = self._expected_mm(path)
+        assert np.allclose(points, 1000.0 * stored, atol=1e-3)
+        # Slice 2 at 2.5 mm spacing from -10 mm: the slice axis is world x.
+        assert np.allclose(points[:, 0], -5.0, atol=1e-3)
+
+    @pytest.mark.parametrize("space", ["index", "world"])
+    def test_F09_an_ras_grid_is_flipped_into_lps(self, tmp_path, series, space):
+        path = self._sample(
+            tmp_path, frame_uid=series["frame_uid"], coord_system="RAS", space=space
+        )
+        points, _, _ = self._exported(path, series["paths"], tmp_path / "rt.dcm")
+        stored = self._expected_mm(path)
+        assert np.allclose(points, stored * np.array([-1.0, -1.0, 1.0]), atol=1e-4)
+
+    def test_F09_S3_4_contours_in_another_frame_are_refused(self, tmp_path, series):
+        path = self._sample(tmp_path, frame_uid="1.2.826.0.1.3680043.2.1125.9")
+        out = tmp_path / "rt.dcm"
+        with pytest.raises(MEDH5ValidationError, match="registration") as exc:
+            self._exported(path, series["paths"], out)
+        assert exc.value.code == "E414"
+        assert not out.exists(), "nothing is filed under the wrong frame"
+
+    def test_F09_S3_4_world_contours_are_judged_by_their_own_frame(
+        self, tmp_path, series
+    ):
+        """World coordinates live in the annotation's frame: a gridless
+        annotation in another frame is refused like a grid's would be."""
+        path = self._sample(
+            tmp_path, frame_uid="1.2.826.0.1.3680043.2.1125.9", space="world"
+        )
+        with medh5.open(path) as sample:
+            assert sample.annotations["rois"].header.frame_uid.endswith(".9")
+        with pytest.raises(MEDH5ValidationError, match="registration") as exc:
+            self._exported(path, series["paths"], tmp_path / "rt.dcm")
+        assert exc.value.code == "E414"
+
+    def test_F09_a_pseudonymised_frame_is_compared_through_its_salt(
+        self, tmp_path, series
+    ):
+        from medh5.curation.scrub import pseudonymise
+
+        hidden = pseudonymise(series["frame_uid"], "s3cret")
+        path = self._sample(tmp_path, frame_uid=hidden)
+        with pytest.raises(MEDH5ValidationError) as exc:
+            self._exported(path, series["paths"], tmp_path / "a.dcm")
+        assert exc.value.code == "E414"
+        points, meta, _ = self._exported(
+            path, series["paths"], tmp_path / "b.dcm", frame_salt="s3cret"
+        )
+        assert meta["frame_uid"] == series["frame_uid"], "filed under the real frame"
+        assert np.allclose(points, self._expected_mm(path), atol=1e-4)
+
+    def test_F09_a_frameless_grid_is_a_recorded_guess(self, tmp_path, series):
+        path = self._sample(tmp_path, frame_uid=None)
+        _, meta, report = self._exported(path, series["paths"], tmp_path / "rt.dcm")
+        assert meta["frame_uid"] == series["frame_uid"]
+        assert report.of_kind("frame_of_reference")
+
+    def test_F09_sources_in_two_frames_are_refused(self, tmp_path, series):
+        from pydicom.uid import generate_uid
+
+        other = write_dicom_series(
+            tmp_path / "other",
+            patient_id="PSEUDO-009",
+            study_uid=generate_uid(),
+            study_date="20260101",
+        )
+        path = self._sample(tmp_path, frame_uid=series["frame_uid"])
+        sources = [*series["paths"], other["paths"][0]]
+        with pytest.raises(MEDH5ValidationError, match="frames of reference") as exc:
+            self._exported(path, sources, tmp_path / "rt.dcm")
+        assert exc.value.code == "E414"
+
+    def test_F09_a_source_without_a_frame_is_refused(self, tmp_path, series):
+        import pydicom
+
+        bare = tmp_path / "bare.dcm"
+        image = pydicom.dcmread(series["paths"][0])
+        del image.FrameOfReferenceUID
+        image.save_as(str(bare), enforce_file_format=True)
+        path = self._sample(tmp_path, frame_uid=series["frame_uid"])
+        with pytest.raises(MEDH5ValidationError, match="none") as exc:
+            self._exported(path, [*series["paths"], str(bare)], tmp_path / "rt.dcm")
+        assert exc.value.code == "E414"
+
+    @pytest.mark.parametrize(
+        ("units", "coord_system"), [("px", "LPS"), ("mm", "custom")]
+    )
+    def test_F09_a_grid_without_patient_coordinates_is_refused(
+        self, tmp_path, series, units, coord_system
+    ):
+        path = self._sample(
+            tmp_path,
+            frame_uid=series["frame_uid"],
+            units=units,
+            coord_system=coord_system,
+        )
+        with pytest.raises(MEDH5ValidationError, match="grid 'g' is in") as exc:
+            self._exported(path, series["paths"], tmp_path / "rt.dcm")
+        assert exc.value.code == "E414"
+
+    def test_F09_gridless_contours_are_refused(self, tmp_path, series):
+        """World coordinates are in their grid's units (§8); with no grid there
+        is nothing to scale them by."""
+        path = self._sample(
+            tmp_path, frame_uid=series["frame_uid"], space="world", grid=False
+        )
+        with pytest.raises(MEDH5ValidationError, match="names no grid") as exc:
+            self._exported(path, series["paths"], tmp_path / "rt.dcm")
+        assert exc.value.code == "E414"
+
+    def test_F09_the_command_line_takes_the_frame_salt(self, tmp_path, series):
+        from medh5.cli import EXIT_OK, main
+        from medh5.curation.scrub import pseudonymise
+
+        path = self._sample(
+            tmp_path, frame_uid=pseudonymise(series["frame_uid"], "s3cret")
+        )
+        argv = ["convert", "to-rtstruct", str(path), "rois"]
+        sources = [arg for p in series["paths"] for arg in ("--source", p)]
+        assert main([*argv, str(tmp_path / "a.dcm"), *sources]) != EXIT_OK
+        out = tmp_path / "b.dcm"
+        salted = [*argv, str(out), *sources, "--frame-salt", "s3cret"]
+        assert main(salted) == EXIT_OK
+        assert out.exists()
