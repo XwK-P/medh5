@@ -688,7 +688,9 @@ class TestHeldVersions:
             w.add_segmentation(
                 "lesions_tp0",
                 grid="ct_tp0",
-                instances=[InstanceInput(3, 1, mask=block(History.SHAPE, (2, 1, 6), 3))],
+                instances=[
+                    InstanceInput(3, 1, mask=block(History.SHAPE, (2, 1, 6), 3))
+                ],
                 annotated_classes=[3],
             )
         with medh5.open(path) as s:
@@ -770,8 +772,12 @@ class TestHeldVersions:
         path = tmp_path / "note.medh5"
         records = self._note(path)
         if change == "row":
-            earlier = dataclasses.replace(records.events[0], available_us=(-HOUR, -HOUR))
-            records = dataclasses.replace(records, events=(earlier, *records.events[1:]))
+            earlier = dataclasses.replace(
+                records.events[0], available_us=(-HOUR, -HOUR)
+            )
+            records = dataclasses.replace(
+                records, events=(earlier, *records.events[1:])
+            )
         elif change == "document":
             documents = [
                 dataclasses.replace(d, text=d.text + " Amended.")
@@ -805,7 +811,9 @@ class TestHeldVersions:
             w.add_event(fresh)
             w.add_document(Document("late_text", "Written a week later."))
             w.add_link(
-                Link.between(("event", "fresh1"), "describes", ("document", "late_text"))
+                Link.between(
+                    ("event", "fresh1"), "describes", ("document", "late_text")
+                )
             )
         with medh5.open(path) as s:
             assert s.clinical is not None
