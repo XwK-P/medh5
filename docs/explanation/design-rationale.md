@@ -215,7 +215,7 @@ format.
 | **Python keeps what is Python's** | NumPy at the API, PyTorch and MONAI datasets, and the converters, whose job is to call nibabel, pydicom and highdicom. Moving those into Rust would re-implement libraries the ecosystem already maintains. |
 | **HDF5 compiled in, statically** | A wheel, a crate and a binary that need nothing installed, and one HDF5 and one Blosc2 everywhere --- so a chunk one frontend writes is the chunk the others read. |
 | **Reads below the filter pipeline** | HDF5 decompresses every chunk a window touches, whole, under its global lock; a Blosc2 chunk is a grid of separately compressed blocks. The engine reads the stored chunk and decompresses only the blocks the window covers, outside the lock --- a random 64³ label patch about three times faster, and threads that decompress at once. The bytes are HDF5's or the read goes through HDF5. |
-| **The format stayed 1.0** | Nothing in the file needed to change: a new major format would have bought nothing and cost every 1.x reader. The package is 2.0 because its Python API changed at the HDF5 boundary --- it no longer hands out `h5py` objects --- and semantic versioning says so. |
+| **The format stayed 1.x** | Nothing in the file needed to change: a new major format would have bought nothing and cost every 1.x reader. What 2.0 adds to the format is a minor version, 1.1, for the optional clinical profile alone (below): a sample of imaging alone is still written as 1.0. The package is 2.0 because its Python API changed at the HDF5 boundary --- it no longer hands out `h5py` objects --- and semantic versioning says so. |
 
 Re-implementing the format was also a test of the specification: three
 clauses turned out to name a Python function where they meant bytes, and are
