@@ -28,10 +28,10 @@ medh5 validate case.medh5 --level strict
 | `integrity` | every byte | after a file has moved between machines |
 | `strict` | every byte | CI, where a warning should stop a build |
 
-**None of them is free.** Even `structural` decompresses voxels — it reads any
-image of up to 4 M values to test int16-losslessness, and scans every labelmap
-or layers payload for an ignore region: the whole payload, in bounded slabs, so
-memory is bounded and the work is not. On a 12.6 Mvox sample: 62 ms for
+**None of them is free.** Even `structural` decompresses voxels — it reads a
+float image of up to 4 M values to test int16-losslessness, and may scan a
+labelmap or layers payload for an ignore region: the whole payload, in bounded
+slabs, so memory is bounded and the work is not. On a 12.6 Mvox sample: 62 ms for
 `structural` and `semantic`, 143 ms for `integrity`, against 0.5 ms for a
 metadata-only `open()`. Do not put one in a hot path.
 

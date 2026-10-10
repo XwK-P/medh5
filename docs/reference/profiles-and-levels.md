@@ -21,10 +21,11 @@ Each level includes the ones before it, so `strict` runs everything.
 **None of the levels is free.** Even `structural` decompresses voxels: it reads
 an image to decide whether a float array would be lossless as `int16` (only an
 image of at most 4 M values), and scans a labelmap or layers payload to find an
-in-band ignore region. `semantic` additionally reads layer data to judge
-encoding optimality. Both scans read the whole payload, in slabs of at most
-8 MiB: the slabs bound the memory a large volume takes, not the work, which
-grows with its size.
+in-band ignore region where the answer decides a finding --- partial coverage
+(W904), or a `uint16` labelmap whose ids would fit `uint8` (E411). `semantic`
+additionally reads layer data to judge encoding optimality. Both scans read the
+whole payload, in slabs of at most 8 MiB: the slabs bound the memory a large
+volume takes, not the work, which grows with its size.
 
 Measured on a 12.6 Mvox, 18.7 MB sample — against a metadata-only `open()` of
 0.5 ms:
