@@ -871,10 +871,7 @@ class TestW19WriterEqualsValidator:
                     "E701" in validate_file(path, level="integrity").codes
                 )
                 assert (
-                    not case.valid
-                    or case.suffix == ".medh5c"
-                    or projection
-                    or failed
+                    not case.valid or case.suffix == ".medh5c" or projection or failed
                 ), case.name
                 continue
             written += 1

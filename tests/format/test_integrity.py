@@ -363,9 +363,11 @@ class TestAmendStamping:
             data[0, 0, 0] += 7
             node[...] = data
         before = path.read_bytes()
-        with pytest.raises(MEDH5ValidationError, match="fix --rewrite-digests") as err:
-            with medh5.amend(path):
-                pass
+        with (
+            pytest.raises(MEDH5ValidationError, match="fix --rewrite-digests") as err,
+            medh5.amend(path),
+        ):
+            pass
         assert err.value.code == "E701"
         assert "images/CT" in str(err.value)
         assert path.read_bytes() == before, "nothing was written"
@@ -452,7 +454,8 @@ class TestDigestedTypes:
         path = self._sample(tmp_path / "strings.medh5")
         with h5py.File(path, "r+") as handle:
             group = handle.create_group("x_site")
-            group.create_dataset("fixed", data=np.array([b"caf\xe9", b"ok"], dtype="S4"))
+            fixed = np.array([b"caf\xe9", b"ok"], dtype="S4")
+            group.create_dataset("fixed", data=fixed)
             group.create_dataset(
                 "vlen", data=[b"caf\xe9", b"ok"], dtype=h5py.string_dtype("ascii")
             )
