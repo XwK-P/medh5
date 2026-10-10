@@ -454,7 +454,11 @@ fn convert() -> Vec<Command> {
             Command::new("from-dicom")
                 .about("a DICOM tree -> samples")
                 .arg(positional("root", "directory tree of DICOM files"))
-                .arg(positional("out", "output file, or a directory when several samples result"))
+                .arg(positional(
+                    "out",
+                    "output file; a directory when several samples result, when it is an existing directory, or \
+                     when it ends in a separator",
+                ))
                 .arg(
                     opt("group_by", "group-by", "one sample per subject (default) or per study")
                         .value_parser(GROUPING)
@@ -488,7 +492,13 @@ fn convert() -> Vec<Command> {
                 .arg(positional("path", "the sample to read"))
                 .arg(positional("annotation", "the annotation to export"))
                 .arg(positional("out", "the DICOM SEG file to write"))
-                .arg(append("source", "source", "a source DICOM file").required(true)),
+                .arg(append("source", "source", "a source DICOM file").required(true))
+                .arg(opt(
+                    "frame_salt",
+                    "frame-salt",
+                    "the salt `medh5 scrub` pseudonymised the sample's frames with: the source images' frame is \
+                     compared as the scrub wrote it",
+                )),
         ))
         .subcommand(report_args(
             Command::new("from-rtstruct")
@@ -501,6 +511,12 @@ fn convert() -> Vec<Command> {
                     "rasterize",
                     "rasterize",
                     "also derive a voxel annotation; the rule is recorded in provenance",
+                ))
+                .arg(opt(
+                    "frame_salt",
+                    "frame-salt",
+                    "the salt `medh5 scrub` pseudonymised the sample's frames with: the RTSTRUCT's frame is compared \
+                     as the scrub wrote it",
                 )),
         ))
         .subcommand(report_args(

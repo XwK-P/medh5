@@ -354,10 +354,12 @@ medh5 convert from-dicom ROOT OUT [--group-by subject|study]
 
 medh5 convert from-dicom-seg SEG SAMPLE [--id ANN] [--grid G] [--frame-salt S]
 medh5 convert to-dicom-seg PATH ANNOTATION OUT --source DICOM [--source DICOM ...]
+                                               [--frame-salt S]
 
 medh5 convert from-rtstruct RTSTRUCT SAMPLE [--id ANN] [--grid G] [--rasterize]
+                                            [--frame-salt S]
 medh5 convert to-rtstruct PATH ANNOTATION OUT --source DICOM [--source DICOM ...]
-                                               [--frame-salt S]
+                                              [--frame-salt S]
 
 medh5 convert from-nnunet ROOT OUT [--case ID ...]
 medh5 convert to-nnunet OUT PATH... [--dataset-name NAME] [--annotation A]
@@ -376,7 +378,15 @@ recorded as a guess; without it such a file is refused.
 `from-dicom --group-by subject` (the default) merges a patient's studies into
 one multi-timepoint sample. Identity is never inferred from filenames, dates or
 accession numbers; when it cannot be established the command falls back to one
-sample per study, warns, and records the fallback.
+sample per study, warns, and records the fallback. `OUT` is the file the one
+sample is written to, or a directory of samples named for their subjects: when
+several samples result, when it is an existing directory, or when it ends in a
+path separator (`out/`).
+
+`--frame-salt` is for a sample `medh5 scrub` pseudonymised: given the salt the
+scrub used, the DICOM side's frame of reference (the SEG's or the RTSTRUCT's on
+import, the source images' on export) is compared with the sample's as the
+scrub wrote it, rather than refused as another frame.
 
 `from-dicom-seg` writes annotation `seg` and `from-rtstruct` writes `contours`
 unless `--id` names another; `to-nnunet` exports annotation `seg` unless

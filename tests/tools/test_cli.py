@@ -1691,6 +1691,30 @@ class TestRecompressAndBench:
 class TestConvert:
     """``convert`` and ``migrate``."""
 
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["from-dicom-seg", "seg.dcm", "case.medh5"],
+            ["to-dicom-seg", "case.medh5", "seg", "seg.dcm", "--source", "1.dcm"],
+            ["from-rtstruct", "rt.dcm", "case.medh5"],
+            ["to-rtstruct", "case.medh5", "contours", "rt.dcm", "--source", "1.dcm"],
+        ],
+    )
+    def test_S3_4_every_dicom_frame_check_takes_the_scrub_salt(
+        self, capsys, monkeypatch, argv
+    ):
+        """``from-rtstruct`` and ``to-dicom-seg`` compare frames of reference
+        as their converters do, but had no ``--frame-salt`` to compare one a
+        scrub pseudonymised."""
+        from medh5 import cli
+
+        handed: dict[str, Any] = {}
+        monkeypatch.setitem(
+            cli._HANDLERS, argv[0], lambda a: handed.update(vars(a)) or EXIT_OK
+        )
+        assert main(["convert", *argv, "--frame-salt", "s3cret"]) == EXIT_OK
+        assert handed["frame_salt"] == "s3cret"
+
     @pytest.fixture
     def nifti(self, tmp_path):
         nib = pytest.importorskip("nibabel")
