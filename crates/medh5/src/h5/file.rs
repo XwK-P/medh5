@@ -257,6 +257,38 @@ impl AtomicFile {
         result
     }
 
+    /// Rewrite the file being built into a fresh temporary file, `copy`
+    /// taking the old root to the new one, and carry on with that: what the
+    /// copy does not reach is gone from the bytes.  HDF5 never reclaims an
+    /// unlinked object's space, so a group removed from a file stays in it
+    /// until the file is rewritten (F08 of the round-4 audit).
+    pub fn rebuild(mut self, copy: impl FnOnce(&hdf5::Group, &hdf5::Group) -> Result<()>) -> Result<AtomicFile> {
+        if let Some(handle) = self.handle.take() {
+            close_everything(handle, true)?;
+        }
+        let fresh = temporary_name(&self.target);
+        precreate(&fresh, self.mode)?;
+        let built = (|| -> Result<hdf5::File> {
+            let src = open_read(&self.tmp)?;
+            let dst = create_truncate(&fresh)?;
+            copy(&src.as_group()?, &dst.as_group()?)?;
+            close_everything(src, false)?;
+            Ok(dst)
+        })();
+        match built {
+            Ok(handle) => {
+                let _ = fs::remove_file(&self.tmp);
+                self.tmp = fresh;
+                self.handle = Some(handle);
+                Ok(self)
+            }
+            Err(err) => {
+                let _ = fs::remove_file(&fresh);
+                Err(err)
+            }
+        }
+    }
+
     /// Discard the in-progress file, leaving any existing one untouched.
     pub fn abort(mut self) {
         self.discard();

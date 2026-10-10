@@ -59,6 +59,9 @@ fn recompress_cmd(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
         for name in &result.unattested {
             ctx.print(format!("  UNSIGNED  {name} (no digest, inside an attested object)"));
         }
+        for name in &result.kept {
+            ctx.print(format!("  KEPT      {name} (copied as stored: a rebuild would lose its type)"));
+        }
     }
     ctx.print(
         "\ndigests cover decompressed content (§13.1), so `content_id` is unchanged by re-encoding; a cache keyed on \

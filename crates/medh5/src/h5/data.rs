@@ -63,6 +63,26 @@ pub fn dtype(ds: &hdf5::Dataset) -> Result<DType> {
     }
 }
 
+/// Whether `ds` is stored in exactly the type a fresh write of `dtype`
+/// creates: that type, not committed.  An enumeration's names, a committed
+/// type and another byte order are what a rebuild from `dtype` would lose.
+pub fn stored_as_written(ds: &hdf5::Dataset, dtype: DType) -> Result<bool> {
+    use crate::h5sys::{h5d, h5t};
+    let committed = super::locked(|| unsafe {
+        let tid = h5d::H5Dget_type(ds.id());
+        let committed = tid >= 0 && h5t::H5Tcommitted(tid) > 0;
+        if tid >= 0 {
+            h5t::H5Tclose(tid);
+        }
+        committed
+    });
+    if committed {
+        return Ok(false);
+    }
+    let stored = ds.dtype()?;
+    Ok(with_dtype!(dtype, T => stored == hdf5::Datatype::from_type::<T>()?))
+}
+
 /// Whether a dataset holds strings.
 pub fn is_strings(ds: &hdf5::Dataset) -> bool {
     matches!(kind(ds), Ok(Kind::Strings))

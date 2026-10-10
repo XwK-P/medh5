@@ -533,6 +533,21 @@ class TestAmend:
             assert "organs_tp1" not in sample.annotations
             assert "organs_tp1" not in sample.index
 
+    def test_F08_S14_4_a_removed_annotation_leaves_no_bytes(self, sample_path):
+        """HDF5 never reclaims an unlinked group's space: a removed annotation
+        stayed in the amended file's bytes (F08 of the round-4 audit).  The
+        commit rewrites the file from its root when something was removed."""
+        marker = "SYNTHETIC-RATER-NOTE-41d9"
+        with h5py.File(sample_path, "r+") as f:
+            f["annotations/organs_tp0"].attrs["x_note"] = marker
+        assert marker.encode() in sample_path.read_bytes(), "the control"
+        with medh5.amend(sample_path) as w:
+            w.remove_annotation("organs_tp0")
+        assert marker.encode() not in sample_path.read_bytes()
+        with medh5.open(sample_path) as sample:
+            assert "organs_tp0" not in sample.annotations
+            assert sample.verify().ok
+
     def test_removing_a_missing_annotation_is_an_error(self, sample_path):
         with pytest.raises(MEDH5ValidationError), medh5.amend(sample_path) as w:
             w.remove_annotation("nope")

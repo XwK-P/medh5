@@ -163,6 +163,9 @@ pub struct SampleWriter {
     pub(crate) document: SampleDocument,
     /// The clinical records, once written to or changed in this writer.
     pub(crate) clinical: Option<ClinicalRecords>,
+    /// Something was removed from the file being built, so its bytes are
+    /// still in it: commit rewrites the file before it replaces anything.
+    pub(crate) compact: bool,
     pub(crate) clinical_source: ClinicalSource,
     /// Event and document ids already in `clinical`, so a duplicate is
     /// refused without scanning every row.
@@ -186,6 +189,10 @@ pub fn create(
     SampleWriter::new(path, sample_id, subject_id, codec, profiles, None)
 }
 
+/// What an amend copies from: the source's root, and the top-level members
+/// it leaves behind.
+pub type Source<'a> = (&'a hdf5::Group, &'a [&'a str]);
+
 /// Copy-on-write amend: build a new file from the old and replace it (§14.4).
 ///
 /// Unknown objects are copied through untouched; known profiles are re-derived
@@ -195,6 +202,15 @@ pub fn create(
 /// anything is written (1.1 §2.3).  `codec` defaults to the family the file was
 /// written in.
 pub fn amend(path: &Path, codec: Option<&str>) -> Result<SampleWriter> {
+    amend_into(path, path, codec, &[])
+}
+
+/// [`amend`], writing the result to `out` and leaving the source's top-level
+/// members named in `without` behind.  What is left behind is never copied,
+/// so no byte of it reaches `out` --- where copying the file and deleting
+/// the group left every deleted byte in it (F08 of the round-4 audit).  The
+/// source is only read.
+pub fn amend_into(path: &Path, out: &Path, codec: Option<&str>, without: &[&str]) -> Result<SampleWriter> {
     let source = open_read(path)?;
     let version = require_major(&source, path)?;
     let declared = attrs::get_strs(&source, "medh5_profiles")?.unwrap_or_default();
@@ -213,21 +229,22 @@ pub fn amend(path: &Path, codec: Option<&str>) -> Result<SampleWriter> {
         Some(c) => c.to_string(),
         None => profile_family(&root)?.to_string(),
     };
-    let writer = SampleWriter::new(path, None, None, &chosen, &[], Some(&root));
+    let writer = SampleWriter::new(out, None, None, &chosen, &[], Some((&root, without)));
     drop(root);
     drop(source);
     writer
 }
 
 impl SampleWriter {
-    /// A writer for `path`; `source` copies an existing sample in (amend).
+    /// A writer for `path`; `source` copies an existing sample in (amend),
+    /// but for the top-level members it names.
     pub fn new(
         path: &Path,
         sample_id: Option<&str>,
         subject_id: Option<&str>,
         codec: &str,
         profiles: &[String],
-        source: Option<&hdf5::Group>,
+        source: Option<Source<'_>>,
     ) -> Result<SampleWriter> {
         let codec = resolve_profile(Some(codec))?.name.to_string();
         let file = AtomicFile::create(path)?;
@@ -251,6 +268,7 @@ impl SampleWriter {
             source_version: None,
             document: SampleDocument::new(identity?, Timeline::single("tp0")?),
             clinical: None,
+            compact: false,
             clinical_source: ClinicalSource::Absent,
             clinical_ids: Default::default(),
         };
@@ -258,8 +276,8 @@ impl SampleWriter {
             for name in ["grids", "images", "annotations"] {
                 writer.root()?.create_group(name)?;
             }
-            if let Some(src) = source {
-                writer.inherit(src)?;
+            if let Some((src, without)) = source {
+                writer.inherit(src, without)?;
             }
             Ok(())
         })();
@@ -317,8 +335,16 @@ impl SampleWriter {
     /// declaration --- for the imaging projection (1.1 §10).  The sample is
     /// then written in the lowest version its remaining profiles need, and is
     /// a different sample with a different `content_id`.
+    ///
+    /// HDF5 does not reclaim an unlinked group's space, so the commit
+    /// rewrites the file from its root before it replaces anything: unlinked
+    /// alone, every record stayed in the file's bytes (F08 of the round-4
+    /// audit).
     pub fn drop_clinical(&mut self) -> Result<()> {
         let root = self.root()?;
+        if ops::exists(&root, crate::clinical::GROUP) {
+            self.compact = true;
+        }
         ops::unlink(&root, crate::clinical::GROUP)?;
         self.clinical = None;
         self.clinical_ids = Default::default();
@@ -328,8 +354,11 @@ impl SampleWriter {
         Ok(())
     }
 
-    fn inherit(&mut self, source: &hdf5::Group) -> Result<()> {
-        self.source_version = attrs::get_str(source, "medh5_version")?;
+    fn inherit(&mut self, source: &hdf5::Group, without: &[&str]) -> Result<()> {
+        let leaves_clinical = without.contains(&crate::clinical::GROUP);
+        // Without its clinical group the sample is written in the lowest
+        // version what is left needs, as `drop_clinical` writes it.
+        self.source_version = if leaves_clinical { None } else { attrs::get_str(source, "medh5_version")? };
         self.document = super::reader::read_document(source)?;
         self.default_timeline = false;
         // Known profiles are re-derived from the amended content, so a claim
@@ -337,7 +366,7 @@ impl SampleWriter {
         // unknown one was refused before the amend began (1.1 §2.3), and a
         // recognised `clinical` group carries its profile with it.
         let declared = attrs::get_strs(source, "medh5_profiles")?.unwrap_or_default();
-        if ops::exists(source, crate::clinical::GROUP) {
+        if ops::exists(source, crate::clinical::GROUP) && !leaves_clinical {
             self.clinical_source =
                 if declared.iter().any(|p| p == crate::clinical::PROFILE) && crate::clinical::recognised(source) {
                     ClinicalSource::Inherited
@@ -346,12 +375,22 @@ impl SampleWriter {
                 };
         }
         let root = self.root()?;
-        for name in ["grids", "images", "annotations", "transforms", "index"] {
-            if !ops::exists(source, name) {
-                continue;
-            }
+        // The source's graph comes across whole, as one copy: a hard link
+        // between two of its groups stays one object, where copying group by
+        // group made it two --- a new dataset line, so a no-op amend changed
+        // the `content_id` (F11 of the round-4 audit).  `meta` is written at
+        // commit; the groups a new sample starts with give way to the
+        // source's.
+        for name in ["grids", "images", "annotations"] {
             ops::unlink(&root, name)?;
-            ops::copy_object(source, name, &root, name)?;
+        }
+        let mut skip: Vec<&str> = vec![META_DATASET];
+        skip.extend(without);
+        crate::h5::graph::GraphCopy::new(source, &root).members(source, &root, &skip, &mut crate::h5::graph::Raw)?;
+        for name in ["grids", "images", "annotations"] {
+            if !ops::exists(&root, name) {
+                root.create_group(name)?;
+            }
         }
         self.grids = read_grids(&root)?.into_iter().collect();
         if let Some(images) = ops::child_group(&root, "images") {
@@ -386,7 +425,6 @@ impl SampleWriter {
                 }
             }
         }
-        ops::copy_unknown(source, &root, &STANDARD_GROUPS)?;
         for name in attrs::names(source)? {
             if MANAGED_ROOT_ATTRS.contains(&name.as_str()) {
                 continue;
@@ -1194,7 +1232,13 @@ impl SampleWriter {
         drop(root);
         self.committed = true;
         if let Some(file) = self.file.take() {
-            file.commit()?;
+            if self.compact {
+                // Only what the root reaches comes across; the copy keeps the
+                // graph, so every digest and the `content_id` are unchanged.
+                file.rebuild(crate::collection::copy_root)?.commit()?;
+            } else {
+                file.commit()?;
+            }
         }
         Ok(content_id)
     }

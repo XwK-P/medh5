@@ -435,6 +435,50 @@ class TestF07FilterValues:
 
 
 class TestRecompress:
+    def test_F12_S14_2_a_type_a_rebuild_would_lose_is_copied_as_stored(
+        self, tmp_path: Path
+    ) -> None:
+        """Recompress rebuilt every bulk dataset from a plain number type:
+        an enumeration lost its names and a committed type its identity and
+        attributes, while the result reported ``ok`` (F12 of the round-4
+        audit).  Such a dataset is copied as stored and reported as kept."""
+        from medh5.storage import recompress
+
+        path = write_sample(tmp_path / "typed.medh5", codec="portable")
+        rng = np.random.default_rng(12)
+        big = rng.integers(0, 3, (48, 64, 64))
+        colours = h5py.enum_dtype({"RED": 0, "GREEN": 1, "BLUE": 2}, basetype="u1")
+        with h5py.File(path, "r+") as f:
+            f["x_types/level"] = np.dtype("<i2")
+            f["x_types/level"].attrs["unit"] = "HU"
+            level = f["x_types/level"]
+            f.create_dataset("x_types/big", data=big.astype("<i2"), dtype=level)
+            f.create_dataset(
+                "x_types/small", data=np.arange(4, dtype="<i2"), dtype=level
+            )
+            f.create_dataset("x_types/colours", data=big.astype("u1"), dtype=colours)
+            f.create_dataset("x_types/few", data=np.zeros(4, "u1"), dtype=colours)
+        with medh5.open(path) as s:
+            before = s.content_id
+        result = recompress(path, "archive")
+        assert result.ok and result.content_id == before
+        assert {"/x_types/big", "/x_types/colours"} <= set(result.kept)
+        assert result.to_json()["kept"] == result.kept
+        with h5py.File(path, "r") as f:
+            named = f["x_types/level"]
+            assert named.attrs["unit"] == "HU"
+            for name in ("big", "small"):
+                stored = f[f"x_types/{name}"].id.get_type()
+                assert stored.committed(), name
+                assert stored == named.id
+            for name in ("colours", "few"):
+                mapping = h5py.check_enum_dtype(f[f"x_types/{name}"].dtype)
+                assert mapping == {"RED": 0, "GREEN": 1, "BLUE": 2}, name
+            np.testing.assert_array_equal(f["x_types/big"][...], big)
+            np.testing.assert_array_equal(f["x_types/colours"][...], big)
+        with medh5.open(path) as s:
+            assert s.verify().ok and s.content_id == before
+
     def test_S13_1_recompression_preserves_the_content_id(self, tmp_path, label_set):
         from medh5.storage import recompress
 

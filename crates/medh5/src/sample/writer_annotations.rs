@@ -441,6 +441,8 @@ impl SampleWriter {
             return Err(Error::invalid(format!("no annotation {} to remove", repr_str(ann_id))));
         }
         ops::unlink(&node, ann_id)?;
+        // Its bytes stay in the file being built until commit rewrites it.
+        self.compact = true;
         self.annotation_kinds.shift_remove(ann_id);
         if let Some(index) = ops::child_group(&root, "index") {
             ops::unlink(&index, ann_id)?;

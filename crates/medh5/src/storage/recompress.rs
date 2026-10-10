@@ -18,7 +18,8 @@ use crate::geometry::grid::{read_grids, Grid};
 use crate::h5::attrs;
 use crate::h5::data::{self, Kind};
 use crate::h5::file::{atomic_rewrite, open_read};
-use crate::h5::ops::{self, NodeKind};
+use crate::h5::graph::{copy_stored, CopyHooks, GraphCopy};
+use crate::h5::ops;
 use crate::integrity::verify_root;
 use crate::json::repr_str;
 use crate::sample::reader::{attr_name_map_of, require_major};
@@ -41,6 +42,10 @@ pub struct RecompressResult {
     pub unattested: Vec<String>,
     /// `(path, codec before, codec after)` for each dataset re-encoded.
     pub changed: Vec<(String, String, String)>,
+    /// Datasets copied as stored rather than re-encoded: their type is one a
+    /// rebuild from a plain number type would lose --- an enumeration's
+    /// names, a committed (named) type, another byte order.
+    pub kept: Vec<String>,
 }
 
 impl RecompressResult {
@@ -71,6 +76,7 @@ impl RecompressResult {
             "unattested": self.unattested,
             "ok": self.ok(),
             "changed": self.changed.iter().map(|(a, b, c)| json!([a, b, c])).collect::<Vec<_>>(),
+            "kept": self.kept,
         })
     }
 
@@ -113,9 +119,11 @@ pub fn recompress(path: &Path, profile: &str, out: Option<&Path>, rechunk: bool)
         let src_root = src.as_group()?;
         ops::refuse_references(&src_root, "recompression")?;
         let dst_root = dst.as_group()?;
-        let mut copied = Copied::default();
-        copied.note(&src_root, &dst_root);
-        copy_group(&src_root, &dst_root, &codec, rechunk, &mut result, None, &mut copied, 0)?;
+        let mut hooks = Recode { codec: &codec, rechunk, result: &mut result, layouts: Vec::new() };
+        GraphCopy::new(&src_root, &dst_root).members(&src_root, &dst_root, &[], &mut hooks)?;
+        for key in attrs::names(&src_root)? {
+            attrs::copy_raw(&src_root, &dst_root, &key)?;
+        }
         Ok(before)
     })?;
     result.bytes_after = std::fs::metadata(target)?.len();
@@ -248,86 +256,35 @@ impl Layout {
     }
 }
 
-/// Where each source object went in the copy, by its identity: the copy keeps
-/// the source's graph, so a second link to one object stays a link to one.
-#[derive(Default)]
-struct Copied(std::collections::HashMap<ops::ObjectId, String>);
-
-impl Copied {
-    fn note(&mut self, src: &hdf5::Group, dst: &hdf5::Group) {
-        if let Some(id) = ops::object_id_of(src) {
-            self.0.insert(id, dst.name());
-        }
-    }
+/// The datasets of a recompression: each re-encoded under the profile, the
+/// graph around them kept by [`GraphCopy`] --- an alias stays an alias, a
+/// soft link a link, a cycle a cycle.  A sample root's grids decide its
+/// chunks when `rechunk` asks for the writer's derivation.
+struct Recode<'a> {
+    codec: &'a CodecProfile,
+    rechunk: bool,
+    result: &'a mut RecompressResult,
+    /// One entry per group entered: the layout of the sample root it is,
+    /// when it is one.
+    layouts: Vec<Option<Layout>>,
 }
 
-#[allow(clippy::too_many_arguments)]
-fn copy_group(
-    src: &hdf5::Group,
-    dst: &hdf5::Group,
-    codec: &CodecProfile,
-    rechunk: bool,
-    result: &mut RecompressResult,
-    layout: Option<&mut Layout>,
-    copied: &mut Copied,
-    depth: usize,
-) -> Result<()> {
-    if depth > ops::MAX_DEPTH {
-        return Err(Error::File(format!(
-            "{} is nested more than {} groups deep; it is refused rather than followed",
-            repr_str(&src.name()),
-            ops::MAX_DEPTH
-        )));
+impl CopyHooks for Recode<'_> {
+    fn enter(&mut self, src: &hdf5::Group) -> Result<()> {
+        let own = self.rechunk && ops::child_group(src, "grids").is_some();
+        self.layouts.push(own.then(|| Layout::new(src)));
+        Ok(())
     }
-    for key in attrs::names(src)? {
-        attrs::copy_raw(src, dst, &key)?;
+
+    fn leave(&mut self, _src: &hdf5::Group) {
+        self.layouts.pop();
     }
-    let mut own = if rechunk && ops::child_group(src, "grids").is_some() { Some(Layout::new(src)) } else { None };
-    let mut layout = match own.as_mut() {
-        Some(l) => Some(l),
-        None => layout,
-    };
-    for name in ops::members(src)? {
-        match ops::link_kind(src, &name) {
-            // A soft link stays a soft link: it holds a path, and the copy has
-            // the same paths.  Following it copied its target a second time
-            // under another name --- and one pointing at an ancestor never
-            // stopped.
-            Some(ops::LinkKind::Soft) => {
-                dst.link_soft(&ops::soft_link_target(src, &name)?, &name)?;
-                continue;
-            }
-            // A second hard link to an object already copied is a link to the
-            // copy, not a second copy; a link back to an ancestor is how a
-            // cycle is stored, and stays one.
-            Some(ops::LinkKind::Hard) => {
-                if let Some(id) = ops::object_id_by_name(src, &name) {
-                    if let Some(first) = copied.0.get(&id) {
-                        dst.link_hard(first, &name)?;
-                        continue;
-                    }
-                }
-            }
-            _ => {}
-        }
-        match ops::node_kind(src, &name) {
-            Some(NodeKind::Group) => {
-                let child = dst.create_group(&name)?;
-                let source = src.group(&name)?;
-                copied.note(&source, &child);
-                copy_group(&source, &child, codec, rechunk, result, layout.as_deref_mut(), copied, depth + 1)?;
-            }
-            Some(NodeKind::Dataset) => {
-                let id = ops::object_id_by_name(src, &name);
-                copy_dataset(src, &name, dst, codec, rechunk, result, layout.as_deref_mut())?;
-                if let Some(id) = id {
-                    copied.0.insert(id, format!("{}/{name}", dst.name().trim_end_matches('/')));
-                }
-            }
-            _ => ops::copy_object(src, &name, dst, &name)?,
-        }
+
+    fn dataset(&mut self, src: &hdf5::Group, name: &str, dst: &hdf5::Group) -> Result<()> {
+        // The innermost sample root's layout, as the walk nests them.
+        let layout = self.layouts.iter_mut().rev().find_map(Option::as_mut);
+        copy_dataset(src, name, dst, self.codec, self.rechunk, self.result, layout)
     }
-    Ok(())
 }
 
 fn role(ds: &hdf5::Dataset) -> Role {
@@ -351,8 +308,17 @@ fn copy_dataset(
     let ds = parent.dataset(name)?;
     let dtype = match data::kind(&ds)? {
         Kind::Numeric(d) => d,
-        _ => return ops::copy_object(parent, name, dst, name),
+        _ => return copy_stored(parent, name, dst),
     };
+    // A rebuild writes `dtype`'s own type.  A stored type that is not that
+    // one --- an enumeration with its names, a committed type with its
+    // attributes, another byte order --- is copied as it is, not rebuilt
+    // into a plain number type and the rest silently lost (F12 of the
+    // round-4 audit).
+    if !data::stored_as_written(&ds, dtype)? {
+        result.kept.push(ds.name());
+        return copy_stored(parent, name, dst);
+    }
     let chunks = if rechunk {
         match layout {
             Some(l) => l.chunks_for(&ds, parent)?,
@@ -366,7 +332,7 @@ fn copy_dataset(
     if new_layout.chunks.is_none() {
         // Below the compression threshold: copied through as stored, exactly
         // what a fresh write would leave contiguous.
-        return ops::copy_object(parent, name, dst, name);
+        return copy_stored(parent, name, dst);
     }
     let before = describe_filters(&ds)?;
     let out = data::create_empty(dst, name, dtype, &shape, &new_layout)?;

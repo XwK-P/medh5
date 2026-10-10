@@ -233,6 +233,10 @@ class RecompressResult:
     """Undigested datasets inside objects a declared ``content_id`` covers."""
     changed: list[tuple[str, str, str]] = field(default_factory=list)
     """``(path, codec before, codec after)`` for each dataset re-encoded."""
+    kept: list[str] = field(default_factory=list)
+    """Datasets copied as stored rather than re-encoded: their type is one a
+    rebuild from a plain number type would lose --- an enumeration's names, a
+    committed (named) type, another byte order."""
 
     @classmethod
     def from_json(cls, doc: dict[str, Any]) -> RecompressResult:
@@ -248,6 +252,7 @@ class RecompressResult:
             mismatched=list(doc.get("mismatched") or ()),
             unattested=list(doc.get("unattested") or ()),
             changed=[(str(a), str(b), str(c)) for a, b, c in doc.get("changed") or ()],
+            kept=list(doc.get("kept") or ()),
         )
 
     @property
@@ -273,6 +278,7 @@ class RecompressResult:
             "unattested": list(self.unattested),
             "ok": self.ok,
             "changed": [list(c) for c in self.changed],
+            "kept": list(self.kept),
         }
 
     def __str__(self) -> str:

@@ -318,3 +318,79 @@ class TestValidation:
         with h5py.File(shard, "r+") as handle:
             handle.attrs["medh5_version"] = encode_attr("2.0")
         assert "E002" in validate_file(shard).codes
+
+
+class TestF11GraphCopy:
+    """Pack, unpack and amend copy a sample as a graph (F11 of the round-4
+    audit).  Copied member by member, a hard link between two members became a
+    second dataset --- a new line under ``content_id`` --- and a soft link was
+    expanded into one: packed and unpacked, the sample failed ``verify``, and
+    a no-op amend changed its address."""
+
+    @staticmethod
+    def _linked(path: Path) -> Path:
+        write_sample(path, codec="balanced")
+        with h5py.File(path, "r+") as f:
+            f["zzz_alias"] = f["images/CT_tp0"]  # a later path to one dataset
+            f.create_group("x_ext")
+            f["x_ext/loop"] = f["/"]  # a cycle through the root
+            f["x_soft"] = h5py.SoftLink("/images/CT_tp0")
+            f["x_ext/relative"] = h5py.SoftLink("loop")
+        return path
+
+    @staticmethod
+    def _check(group: h5py.Group, root: str) -> None:
+        """The graph `_linked` made, under a sample root at `root`."""
+        assert group["zzz_alias"].id == group["images/CT_tp0"].id
+        assert group["x_ext/loop"].id == group.id
+        assert group.get("x_soft", getlink=True).path == f"{root}/images/CT_tp0"
+        assert group["x_ext"].get("relative", getlink=True).path == "loop"
+
+    def test_F11_S2_2_pack_and_unpack_keep_aliases_cycles_and_soft_links(
+        self, tmp_path: Path
+    ):
+        source = self._linked(tmp_path / "linked.medh5")
+        with medh5.open(source) as s:
+            before = s.content_id
+            assert before == s.compute_content_id()
+        shard = pack([source], tmp_path / f"one{SUFFIX}")
+        with h5py.File(shard, "r") as f:
+            self._check(f["samples/linked"], "/samples/linked")
+        with open_collection(shard) as collection:
+            sample = collection["linked"]
+            assert sample.content_id == before
+            assert sample.verify().ok
+        (unpacked,) = unpack(shard, tmp_path / "out")
+        with h5py.File(unpacked, "r") as f:
+            self._check(f, "")
+        with medh5.open(unpacked) as s:
+            assert s.content_id == before == s.compute_content_id()
+            assert s.verify().ok
+        with medh5.open(source) as a, medh5.open(unpacked) as b:
+            assert subtrees_identical(a.root, b.root) == ()
+
+    def test_F11_S14_4_a_no_op_amend_keeps_the_graph_and_the_address(
+        self, tmp_path: Path
+    ):
+        path = self._linked(tmp_path / "amended.medh5")
+        with medh5.open(path) as s:
+            before = s.content_id
+        with medh5.amend(path) as w:
+            w.commit()
+        with h5py.File(path, "r") as f:
+            self._check(f, "")
+        with medh5.open(path) as s:
+            assert s.content_id == before
+            assert s.verify().ok
+
+    def test_F11_a_soft_link_out_of_its_member_is_not_unpacked(self, tmp_path: Path):
+        """A member's soft link to another member's object has no meaning in
+        a file of its own; the unpack is refused rather than repointed."""
+        a = write_sample(tmp_path / "a.medh5")
+        b = write_sample(tmp_path / "b.medh5")
+        shard = pack([a, b], tmp_path / f"two{SUFFIX}")
+        with h5py.File(shard, "r+") as f:
+            f["samples/b/x_elsewhere"] = h5py.SoftLink("/samples/a/images/CT_tp0")
+        with pytest.raises(MEDH5FileError, match="outside its sample root"):
+            extract(shard, "b", tmp_path / "b_out.medh5")
+        assert not (tmp_path / "b_out.medh5").exists()

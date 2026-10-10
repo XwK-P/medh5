@@ -14,7 +14,7 @@ use std::path::Path;
 
 use serde_json::{json, Value};
 
-use super::model::{Bounds, ClinicalRecords, Clock, Event, Link, DAY, PROFILE};
+use super::model::{Bounds, ClinicalRecords, Clock, Event, Link, DAY, GROUP, PROFILE};
 use crate::json::repr_str;
 use crate::sample::{amend, open_sample};
 use crate::{Error, Result};
@@ -265,10 +265,11 @@ pub fn strip(path: &Path, out: &Path) -> Result<StripReport> {
         };
         (s.content_id()?, removed)
     };
-    std::fs::copy(path, out)?;
+    // The projection is built from the source without its clinical group,
+    // which is never copied: copying the file and deleting the group left
+    // every record in the output's bytes (F08 of the round-4 audit).
     let result = (|| -> Result<StripReport> {
-        let mut writer = amend(out, None)?;
-        writer.drop_clinical()?;
+        let mut writer = crate::sample::writer::amend_into(path, out, None, &[GROUP])?;
         let content_id_after = writer.commit(true)?;
         Ok(StripReport {
             path: out.to_string_lossy().into_owned(),

@@ -1,5 +1,5 @@
-//! Low-level operations: object copy, traversal, and the self-containment
-//! check.
+//! Low-level operations: traversal, links, and the self-containment check.
+//! Copying lives in [`super::graph`], which keeps the links a copy crosses.
 //!
 //! A MEDH5 file holds its own bytes (§2).  Three HDF5 features read bytes from
 //! elsewhere --- a dataset whose raw data lives in *external storage*, a
@@ -263,45 +263,6 @@ pub fn datasets_resolving(group: &hdf5::Group) -> Result<Vec<(String, hdf5::Data
         Ok(true)
     })?;
     Ok(out)
-}
-
-/// Copy one object (group or dataset), attributes included, into `dst`.
-///
-/// Soft links are expanded and external links are **not**: expanding one
-/// copies another file's contents into this one.  Chunks move as stored bytes.
-pub fn copy_object(src: &hdf5::Group, name: &str, dst: &hdf5::Group, dst_name: &str) -> Result<()> {
-    let cname = cstring(name)?;
-    let cdst = cstring(dst_name)?;
-    super::locked(|| unsafe {
-        let ocpypl = h5p::H5Pcreate(*crate::h5sys::h5p::H5P_CLS_OBJECT_COPY);
-        h5p::H5Pset_copy_object(ocpypl, h5o::H5O_COPY_EXPAND_SOFT_LINK_FLAG);
-        let lcpl = h5p::H5Pcreate(*crate::h5sys::h5p::H5P_CLS_LINK_CREATE);
-        h5p::H5Pset_create_intermediate_group(lcpl, 1);
-        let status = h5o::H5Ocopy(src.id(), cname.as_ptr(), dst.id(), cdst.as_ptr(), ocpypl, lcpl);
-        h5p::H5Pclose(lcpl);
-        h5p::H5Pclose(ocpypl);
-        if status < 0 {
-            return Err(Error::Io(format!(
-                "could not copy {} into {}: {}",
-                repr_str(name),
-                dst.name(),
-                hdf5_error_text()
-            )));
-        }
-        Ok(())
-    })
-}
-
-/// Copy every child of `src` not in `known` into `dst` (spec §14.4).
-pub fn copy_unknown(src: &hdf5::Group, dst: &hdf5::Group, known: &[&str]) -> Result<Vec<String>> {
-    let mut kept = Vec::new();
-    for name in members(src)? {
-        if !known.contains(&name.as_str()) {
-            copy_object(src, &name, dst, &name)?;
-            kept.push(name);
-        }
-    }
-    Ok(kept)
 }
 
 /// The path a soft link holds, as stored --- not what it resolves to.

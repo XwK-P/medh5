@@ -661,21 +661,15 @@ pub fn open_sample(path: &Path) -> Result<Sample> {
 /// rewrites one of its attributes leaves the superseded value physically in
 /// the file, where `strings` still finds it.  For de-identification that is
 /// the difference between a pseudonymised file and one still carrying the
-/// original UID.  Every top-level object is copied into a fresh file;
-/// filters, chunking and attributes come across untouched, so every digest
-/// and the `content_id` survive.
+/// original UID.  The live graph is copied into a fresh file
+/// ([`crate::h5::graph`]); filters, chunking, attributes and every link come
+/// across untouched, so every digest and the `content_id` survive.
 pub fn repack(path: &Path) -> Result<()> {
     crate::h5::file::atomic_rewrite(path, None, |src, dst| {
         require_major(src, path)?;
         let (src_root, dst_root) = (src.as_group()?, dst.as_group()?);
         ops::refuse_references(&src_root, "a repack")?;
-        for name in ops::members(&src_root)? {
-            ops::copy_object(&src_root, &name, &dst_root, &name)?;
-        }
-        for key in attrs::names(src)? {
-            attrs::copy_raw(src, dst, &key)?;
-        }
-        Ok(())
+        crate::h5::graph::copy_root_raw(&src_root, &dst_root, &[])
     })
 }
 

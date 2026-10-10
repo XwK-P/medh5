@@ -800,3 +800,105 @@ def test_write_sample_helper_stays_1_0(tmp_path: Path, label_set, masks):
     path = write_sample(tmp_path / "plain.medh5", label_set=label_set, masks=masks)
     with medh5.open(path) as s:
         assert s.version == "1.0"
+
+
+class TestF08Projection:
+    """An imaging projection holds no byte of the history it drops (F08 of
+    the round-4 audit).  ``clinical strip`` copied the file, then amended the
+    copy to unlink ``clinical/``; HDF5 does not reclaim an unlinked group's
+    space, so the output verified as 1.0 while every record --- a report's
+    text included --- was still in its bytes."""
+
+    MARKER = "SYNTHETIC-MARKER-7f3c9a1e"
+
+    def _history(self, path: Path, codec: str) -> Path:
+        History.write(
+            path,
+            events=[
+                Event(
+                    "note1",
+                    "note1",
+                    "document",
+                    "point",
+                    "final",
+                    effective_start_us=DAY,
+                    available_us=DAY,
+                )
+            ],
+            documents=[Document("note_text", f"{self.MARKER} in a note.")],
+            links=[
+                Link.between(("event", "note1"), "describes", ("document", "note_text"))
+            ],
+        )
+        if codec != "portable":
+            recompress(path, codec)
+        return path
+
+    def _bytes(self, path: Path) -> bytes:
+        return path.read_bytes()
+
+    @pytest.mark.parametrize("codec", ["portable", "balanced"])
+    def test_F08_S10_strip_leaves_no_record_in_the_bytes(
+        self, tmp_path: Path, codec: str
+    ):
+        import hashlib
+
+        source = self._history(tmp_path / "history.medh5", codec)
+        assert self.MARKER.encode() in self._bytes(source), "the control"
+        digest = hashlib.sha256(self._bytes(source)).hexdigest()
+        out = tmp_path / "imaging.medh5"
+        report = clinical.strip(source, out)
+        assert report["version_after"] == "1.0"
+        assert self.MARKER.encode() not in self._bytes(out)
+        assert b"note_text" not in self._bytes(out)
+        assert hashlib.sha256(self._bytes(source)).hexdigest() == digest
+        with medh5.open(out) as s:
+            assert s.clinical is None and s.verify().ok
+        # A read-only scan of the projection treats it as any imaging sample.
+        from medh5.curation import scrub as scrubber
+
+        scrubber.scan(out)
+
+    def test_F08_the_command_line_strip_leaves_no_record_either(self, tmp_path: Path):
+        from medh5.cli import main
+
+        source = self._history(tmp_path / "history.medh5", "portable")
+        out = tmp_path / "cli.medh5"
+        assert main(["clinical", "strip", str(source), "--out", str(out)]) == 0
+        assert self.MARKER.encode() not in self._bytes(out)
+
+    @pytest.mark.parametrize("readd", [False, True], ids=["dropped", "re-added"])
+    def test_F08_S10_drop_clinical_leaves_no_record_in_the_bytes(
+        self, tmp_path: Path, readd: bool
+    ):
+        path = self._history(tmp_path / "history.medh5", "portable")
+        with medh5.amend(path) as w:
+            w.drop_clinical()
+            if readd:
+                w.set_clock(Clock.relative("clock", "baseline CT acquisition"))
+                w.add_event(History.events()[1])
+                w.add_link(History.links()[0])
+            w.commit()
+        data = self._bytes(path)
+        assert self.MARKER.encode() not in data
+        assert b"rep_text_v1" not in data
+        with medh5.open(path) as s:
+            assert s.verify().ok
+            if readd:
+                assert s.clinical is not None
+                assert [e.event_id for e in s.clinical.records().events] == ["ct0"]
+            else:
+                assert s.clinical is None and s.version == "1.0"
+
+    def test_F08_a_refused_strip_writes_nothing(self, tmp_path: Path, sample_path):
+        out = tmp_path / "nothing.medh5"
+        with pytest.raises(MEDH5ValidationError):
+            clinical.strip(sample_path, out)  # no clinical profile to strip
+        assert not out.exists()
+        existing = tmp_path / "existing.medh5"
+        existing.write_bytes(b"keep me")
+        source = self._history(tmp_path / "history.medh5", "portable")
+        with pytest.raises(MEDH5ValidationError):
+            clinical.strip(source, existing)
+        assert existing.read_bytes() == b"keep me"
+        assert not [p for p in tmp_path.iterdir() if p.name.startswith(".")]

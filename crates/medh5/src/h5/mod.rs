@@ -8,6 +8,7 @@
 pub mod attrs;
 pub mod data;
 pub mod file;
+pub mod graph;
 pub mod ops;
 mod window;
 

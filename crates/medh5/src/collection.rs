@@ -213,13 +213,32 @@ pub fn default_key(path: &Path) -> Result<String> {
     Ok(validate_sample_key(name.split('.').next().unwrap_or(""))?.to_string())
 }
 
-fn copy_root(src: &hdf5::Group, dst: &hdf5::Group) -> Result<()> {
+/// The `content_id` a sample root's stored digests compute to, when it has
+/// the pieces to compute one.
+fn computed_content_id(root: &hdf5::Group) -> Option<String> {
+    let names = crate::sample::reader::attr_name_map_of(root).ok()?;
+    let algo = crate::integrity::digest::root_algo(root).ok()?;
+    crate::integrity::digest::compute_content_id(root, &names, &algo, None).ok()
+}
+
+/// Copy a sample root into `dst` as a graph: chunks as stored bytes, every
+/// alias, cycle and soft link kept (F11 of the round-4 audit), and the copy
+/// checked before anything is committed --- a sample's `content_id` is
+/// unchanged by packing and unpacking (§2.2), so a copy that computes another
+/// is refused, never restamped.
+pub(crate) fn copy_root(src: &hdf5::Group, dst: &hdf5::Group) -> Result<()> {
     ops::refuse_references(src, "packing or unpacking")?;
-    for name in ops::members(src)? {
-        ops::copy_object(src, &name, dst, &name)?;
-    }
-    for key in attrs::names(src)? {
-        attrs::copy_raw(src, dst, &key)?;
+    crate::h5::graph::copy_root_raw(src, dst, &[])?;
+    if let Some(before) = computed_content_id(src) {
+        let after = computed_content_id(dst);
+        if after.as_deref() != Some(before.as_str()) {
+            return Err(Error::Integrity(format!(
+                "copying {} into {} would change its content_id from {before} to {}; nothing was written (§2.2)",
+                repr_str(&src.name()),
+                repr_str(&dst.name()),
+                after.as_deref().unwrap_or("none")
+            )));
+        }
     }
     Ok(())
 }
