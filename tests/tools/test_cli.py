@@ -949,7 +949,7 @@ class TestErrorsNameTheFile:
         assert code == EXIT_ERROR
         assert repr(str(report)) in out.err
 
-    def test_a_file_where_a_directory_is_wanted(self, capsys, tmp_path, sample_path):
+    def test_a_file_where_a_directory_is_wanted(self, capsys, sample_path):
         for argv in (
             ["unpack", str(sample_path), "-o", str(sample_path)],
             ["conformance", "build", str(sample_path), "--case", "core-minimal"],
@@ -1627,7 +1627,7 @@ class TestRecompressAndBench:
         assert code == EXIT_USAGE
         assert "single input" in out.err
 
-    def test_recompress_rechunks_only_when_asked(self, capsys, tmp_path, label_set):
+    def test_recompress_rechunks_only_when_asked(self, capsys, tmp_path):
         import h5py
 
         import medh5
@@ -1700,9 +1700,7 @@ class TestConvert:
             ["to-rtstruct", "case.medh5", "contours", "rt.dcm", "--source", "1.dcm"],
         ],
     )
-    def test_S3_4_every_dicom_frame_check_takes_the_scrub_salt(
-        self, capsys, monkeypatch, argv
-    ):
+    def test_S3_4_every_dicom_frame_check_takes_the_scrub_salt(self, monkeypatch, argv):
         """``from-rtstruct`` and ``to-dicom-seg`` compare frames of reference
         as their converters do, but had no ``--frame-salt`` to compare one a
         scrub pseudonymised."""
@@ -1796,7 +1794,7 @@ class TestConvert:
         assert payload["converter"] == "from-nifti"
         assert json.loads(report.read_text(encoding="utf-8"))["ok"] is True
 
-    def test_a_malformed_pair_is_reported(self, capsys, tmp_path, nifti):
+    def test_a_malformed_pair_is_reported(self, capsys, tmp_path):
         code, printed = run(
             capsys, "convert", "from-nifti", str(tmp_path / "x.medh5"), "--image", "CT"
         )
