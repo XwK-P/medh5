@@ -75,8 +75,10 @@ from medh5.transforms import target_registration_error
 target_registration_error(t, fixed_points, moving_points)   # {"mean", "max", ...}
 ```
 
-A registration with no landmark pair has no TRE, and the file says so rather
-than reporting zero.
+A registration with no landmark pair has no TRE: `mean`, `median` and `max`
+are NaN and `n` is 0, rather than a zero that reads as a perfect registration.
+`weights` are one per landmark, finite and non-negative, and not all zero;
+anything else is refused rather than averaged.
 
 ## When there is no path
 

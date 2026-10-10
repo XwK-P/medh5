@@ -959,6 +959,33 @@ class TestLandmarksAndMetrics:
             )["mean"]
             assert weighted < unweighted
 
+    def test_S10_6_no_landmarks_is_no_tre_not_zero(self, tmp_path):
+        """Zero landmark pairs reported a mean and a maximum error of 0.0 ---
+        a perfect registration --- where the guide promised otherwise."""
+        path = registered(tmp_path / "reg.medh5")
+        with medh5.open(path) as sample:
+            none = np.zeros((0, 3))
+            result = target_registration_error(
+                sample.transforms["tp0_to_tp1"], none, none
+            )
+        assert result["n"] == 0
+        assert all(np.isnan(result[k]) for k in ("mean", "median", "max"))
+
+    @pytest.mark.parametrize("weights", [[0.0, 0.0], [1.0, -0.5], [1.0, np.nan]])
+    def test_S10_6_weights_are_a_weighting(self, tmp_path, weights):
+        """Errors of 0 and 10 mm: zero weights reported a mean of 0.0, and a
+        negative one a mean below every error (-10.0)."""
+        path = registered(tmp_path / "reg.medh5")
+        fixed = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+        moving = fixed + SHIFT + np.array([[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]])
+        with (
+            medh5.open(path) as sample,
+            pytest.raises(MEDH5ValidationError, match="not a weighting"),
+        ):
+            target_registration_error(
+                sample.transforms["tp0_to_tp1"], fixed, moving, weights=weights
+            )
+
     @pytest.mark.parametrize("weights", [[1.0], [1.0, 1.0, 1.0]])
     def test_S10_6_tre_takes_one_weight_per_landmark(self, tmp_path, weights):
         """Errors of 0 and 10 mm: one weight reported a mean of 0.0 --- the

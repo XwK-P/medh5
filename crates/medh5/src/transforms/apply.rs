@@ -500,6 +500,12 @@ pub fn median(values: &[f64]) -> f64 {
 }
 
 /// TRE `‖T(p_F) − p_M‖` from already-warped fixed points.
+///
+/// With no landmark pairs there is no error to summarise: `mean`, `median`
+/// and `max` are NaN rather than a 0.0 that reads as a perfect registration.
+/// Weights are finite, non-negative and not all zero --- a weighted mean is
+/// meaningless otherwise, and zero weights reported a mean of 0.0 for any
+/// error.
 pub fn tre_from_warped(warped: &Array2<f64>, moving: &Array2<f64>, weights: Option<&[f64]>) -> Result<Tre> {
     if warped.dim() != moving.dim() {
         return Err(Error::invalid(format!(
@@ -528,15 +534,20 @@ pub fn tre_from_warped(warped: &Array2<f64>, moving: &Array2<f64>, weights: Opti
         None => vec![1.0; errors.len()],
     };
     let total: f64 = w.iter().sum();
+    if !errors.is_empty() && (w.iter().any(|v| !v.is_finite() || *v < 0.0) || total <= 0.0) {
+        return Err(Error::invalid(format!(
+            "weights [{}] are not a weighting: each must be finite and non-negative, and their total positive (§10.6)",
+            w.iter().map(|v| crate::json::py_float(*v)).collect::<Vec<_>>().join(", ")
+        )));
+    }
+    if errors.is_empty() {
+        return Ok(Tre { mean: f64::NAN, median: f64::NAN, max: f64::NAN, n: 0 });
+    }
     let weighted: f64 = errors.iter().zip(&w).map(|(e, w)| e * w).sum();
     Ok(Tre {
-        mean: if total != 0.0 { weighted / total } else { 0.0 },
+        mean: weighted / total,
         median: median(&errors),
-        max: errors.iter().copied().fold(f64::NEG_INFINITY, f64::max).max(if errors.is_empty() {
-            0.0
-        } else {
-            f64::NEG_INFINITY
-        }),
+        max: errors.iter().copied().fold(f64::NEG_INFINITY, f64::max),
         n: errors.len(),
     })
 }
@@ -640,6 +651,23 @@ mod tests {
         let tre = tre_from_warped(&warped, &moving, Some(&[3.0, 1.0])).unwrap();
         assert!((tre.mean - 2.5).abs() < 1e-12);
         assert!((tre_from_warped(&warped, &moving, None).unwrap().mean - 5.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn s10_6_no_landmarks_is_no_tre_and_a_weighting_is_one() {
+        let none = Array2::<f64>::zeros((0, 3));
+        let tre = tre_from_warped(&none, &none, None).unwrap();
+        assert!(tre.mean.is_nan() && tre.median.is_nan() && tre.max.is_nan());
+        assert_eq!(tre.n, 0);
+        // Errors of 0 and 10: zero weights scored 0.0, and a negative one
+        // took the mean below every error.
+        let moving = Array2::from_shape_vec((2, 3), vec![0.0, 0.0, 0.0, 10.0, 0.0, 0.0]).unwrap();
+        let warped = Array2::zeros((2, 3));
+        for weights in [[0.0, 0.0], [1.0, -0.5], [1.0, f64::NAN], [f64::INFINITY, 1.0]] {
+            let message = tre_from_warped(&warped, &moving, Some(&weights)).unwrap_err().to_string();
+            assert!(message.contains("not a weighting"), "{message}");
+        }
+        assert_eq!(tre_from_warped(&warped, &moving, Some(&[0.0, 1.0])).unwrap().mean, 10.0);
     }
 
     #[test]
