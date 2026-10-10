@@ -39,10 +39,34 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
+      # The three crates as crates.io receives them, each built from its own
+      # package (the unpublished ones resolved from these): the release's
+      # `cargo publish` must not be the first build of a published crate.
+      - run: cargo package --locked -p medh5-sys -p medh5 -p medh5-cli
       # The wheel and the binary compile in every crate Cargo.lock names, and
       # HDF5 and C-Blosc2 besides; their licences ship as THIRD_PARTY_NOTICES,
       # which is generated from the lock and must be regenerated with it.
       - run: python .github/scripts/third_party_notices.py --check
+
+  rust-platforms:
+    # The engine's own tests off Linux, where the code that differs by platform
+    # --- the file identity a check is remembered by, the writable descriptor a
+    # Windows fsync needs, the rename over a file --- is compiled and run at
+    # all.  The Python suite reaches the engine on these platforms only through
+    # the wheel.
+    name: rust (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-latest, macos-14]
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup toolchain install stable --profile minimal && rustup default stable
+      - run: cargo test -p medh5 --lib --locked
 
   msrv:
     # `rust-version` in Cargo.toml is a promise to everyone who depends on the
@@ -111,7 +135,8 @@ jobs:
     # Every platform the project ships: the abi3 wheel and the native binary,
     # built together from one checkout and one lock.  The release publishes
     # these artifacts as they are, so each is checked here: the binary runs the
-    # conformance corpus, and the wheel imports and runs it too.
+    # conformance corpus and hands a converter to the wheel's Python, and the
+    # wheel imports and runs the corpus too.
     name: build (${{ matrix.target }})
     strategy:
       fail-fast: false
@@ -165,6 +190,27 @@ jobs:
           medh5 --version
           medh5 conformance build corpus
           medh5 conformance run corpus
+      # The converters are the Python package's: the standalone binary runs them
+      # through a Python that has it (`MEDH5_PYTHON`, or `python3`/`python`),
+      # and says what to install when there is none.  Out of the checkout, whose
+      # `medh5/` has no compiled engine and would shadow the installed one.
+      - name: The binary hands the converters to the wheel's Python
+        shell: bash
+        run: |
+          exe="$PWD/target/release/medh5"
+          if [[ -f "$exe.exe" ]]; then exe="$exe.exe"; fi
+          cd "$RUNNER_TEMP"
+          # Only the Python package says this, and it needs none of the extras.
+          status=0
+          MEDH5_PYTHON=python "$exe" convert from-nifti x.medh5 --image CT 2> bridged.log || status=$?
+          cat bridged.log
+          [[ $status == 1 ]]
+          grep -F -e "--image expects NAME=VALUE" bridged.log
+          status=0
+          MEDH5_PYTHON=/nonexistent "$exe" convert from-nifti x.medh5 --image CT 2> missing.log || status=$?
+          cat missing.log
+          [[ $status == 1 ]]
+          grep -F "MEDH5_PYTHON" missing.log
       # Not `dist`: when `release.yml` calls this workflow, the release's own
       # job uploads that name in the same run, and artifact names are unique.
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -361,6 +407,37 @@ jobs:
       - run: rm -rf medh5
       - run: pytest tests/ -v -rs --no-cov -p no:cacheprovider
 
+  test-platforms:
+    # The two wheels no job above tests, as published: Linux on aarch64 and
+    # macOS on x86_64 (their binaries run the corpus in `build`).  PyTorch has
+    # published no macOS x86_64 wheel since 2.2, which predates NumPy 2, so
+    # that one goes without `torch`.
+    name: test-platforms (${{ matrix.target }})
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            extras: dev,torch,nifti,dicom,dicomseg
+          - target: x86_64-apple-darwin
+            runner: macos-15-intel
+            extras: dev,nifti,dicom,dicomseg
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ci-dist-${{ matrix.target }}
+          path: dist/
+      - run: pip install "$(ls dist/*.whl)[${{ matrix.extras }}]"
+      - run: rm -rf medh5
+      - run: pytest tests/ -v -rs --no-cov -p no:cacheprovider
+
   test-min-deps:
     # The NumPy floor `pyproject.toml` declares, on the oldest interpreter it
     # supports, with the floors of the test suite's own HDF5 tools. A floor
@@ -405,7 +482,7 @@ jobs:
       - run: python -c "import monai, torch"
       - run: rm -rf medh5
       # Exit 5 if `-k` selects nothing, so a renamed class fails here too.
-      - run: pytest tests/ -v -k "Monai or monai" --no-cov
+      - run: pytest tests/ -v -rs -k "Monai or monai" --no-cov
 
   prototype:
     # Appendix C.2 publishes a table of results from the executable prototype
@@ -520,6 +597,7 @@ jobs:
     if: always()
     needs:
       - rust
+      - rust-platforms
       - msrv
       - lint
       - typecheck
@@ -530,6 +608,7 @@ jobs:
       - test
       - test-macos
       - test-windows
+      - test-platforms
       - test-min-deps
       - test-monai
       - prototype

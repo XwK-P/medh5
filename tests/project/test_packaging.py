@@ -254,6 +254,26 @@ class TestRepositoryGates:
         msrv = _jobs(CI.read_text(encoding="utf-8"))["msrv"]
         assert "^[0-9]+\\.[0-9]+\\.[0-9]+$" in msrv
 
+    def test_ci_runs_what_ships_where_it_ships(self):
+        """The engine's Rust tests ran on Linux alone, `medh5.torch` never on
+        Windows, the standalone binary's hand-over to Python nowhere, two of
+        the five wheels only through the corpus, and no crate was built from
+        its package before the release published it."""
+        jobs = _jobs(CI.read_text(encoding="utf-8"))
+        assert (
+            "cargo package --locked -p medh5-sys -p medh5 -p medh5-cli" in jobs["rust"]
+        )
+        platforms = jobs["rust-platforms"]
+        assert "cargo test -p medh5 --lib --locked" in platforms
+        assert "[windows-latest, macos-14]" in platforms
+        extras = re.search(r"\[(dev,[\w,]+)\]", jobs["test-windows"])
+        assert extras and "torch" in extras.group(1).split(",")
+        for bridged in ("MEDH5_PYTHON=python ", "MEDH5_PYTHON=/nonexistent "):
+            assert bridged in jobs["build"]
+        tested = set(re.findall(r"- target: (\S+)", jobs["test-platforms"]))
+        assert tested == {"aarch64-unknown-linux-gnu", "x86_64-apple-darwin"}
+        assert "-rs" in jobs["test-monai"]
+
     def test_K03_the_release_runs_ci_on_the_tagged_commit(self):
         ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         release = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")

@@ -65,12 +65,16 @@ cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warni
 
 CI also builds the wheel and the native binary for every platform the project
 ships — Linux x86_64 and aarch64 (manylinux_2_28), macOS arm64 and x86_64,
-Windows x64 — and runs the conformance corpus through each. It runs the suite
-against the built wheel on Python 3.10–3.14, on macOS (for the `spawn` start
-method), on Windows (for the atomic-replace paths) and at the NumPy floor;
-checks the minimum Rust version; builds the sdist from source; and runs the
-reference writer in `docs/examples/`, then validates what it writes with the
-built wheel and binary, to keep the specification's Appendix C.2 honest.
+Windows x64 — and runs the conformance corpus through each, and each binary's
+hand-over of the converters to Python. It runs the suite against every wheel:
+on Python 3.10–3.14 on Linux x86_64, on macOS arm64 (for the `spawn` start
+method), on Windows (for the atomic-replace paths, `medh5.torch`'s handle cache
+among them), on Linux aarch64 and macOS x86_64, and at the NumPy floor. It runs
+the engine's Rust tests on Windows and macOS as well as Linux; checks the
+minimum Rust version; packages the crates as crates.io will receive them;
+builds the sdist from source; and runs the reference writer in
+`docs/examples/`, then validates what it writes with the built wheel and
+binary, to keep the specification's Appendix C.2 honest.
 
 ## Writing tests
 
