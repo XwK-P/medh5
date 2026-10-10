@@ -13,6 +13,7 @@ import fnmatch
 import importlib.util
 import io
 import json
+import os
 import random
 import re
 import shutil
@@ -451,6 +452,56 @@ class TestDistribution:
         )
         monkeypatch.setenv("GITHUB_REPOSITORY", "XwK-P/medh5")
         assert release.verify("v2.0.0", dist, cli, tap=None, token=None) == 0
+
+    def test_a_crate_is_verified_without_the_token_and_indexed_before_the_next(
+        self, monkeypatch
+    ):
+        """`cargo publish` verified each crate with the token in the
+        environment of every dependency's build script, and waited for the
+        index only so long before warning and succeeding --- after which the
+        next crate, which resolves the one before through the index, failed."""
+        release = _release_script("release.py")
+        steps: list[tuple[str, ...]] = []
+
+        def run(*command: str, capture: bool = False, env=None) -> str:
+            token = "CARGO_REGISTRY_TOKEN" in (os.environ if env is None else env)
+            steps.append((*command, "token" if token else "no token"))
+            return ""
+
+        monkeypatch.setenv("CARGO_REGISTRY_TOKEN", "secret")
+        monkeypatch.setattr(release, "run", run)
+        monkeypatch.setattr(release, "on_crates_io", lambda name, version: False)
+        monkeypatch.setattr(
+            release,
+            "wait_for_index",
+            lambda name, version: steps.append(("index", name)),
+        )
+        assert release.publish_crates() == 0
+        assert steps == [
+            step
+            for name in ("medh5-sys", "medh5", "medh5-cli")
+            for step in (
+                ("cargo", "package", "-p", name, "--locked", "no token"),
+                ("cargo", "publish", "-p", name, "--locked", "--no-verify", "token"),
+                ("index", name),
+            )
+        ]
+        # Where cargo looks a crate up, and what it finds there.
+        names = ("medh5-sys", "Serde", "abc", "ab", "a")
+        assert [release.index_path(n) for n in names] == [
+            "me/dh/medh5-sys", "se/rd/serde", "3/a/abc", "2/ab", "1/a"
+        ]  # fmt: skip
+        listing = b"".join(
+            b'{"name":"medh5-sys","vers":"%s"}\n' % v for v in (b"1.9.0", b"2.0.0")
+        )
+        monkeypatch.setattr(
+            release,
+            "fetch",
+            lambda url, **_: listing if url.endswith("/me/dh/medh5-sys") else None,
+        )
+        assert release.in_index("medh5-sys", "2.0.0")
+        assert not release.in_index("medh5-sys", "2.0.1")
+        assert not release.in_index("medh5", "2.0.0")
 
     def test_R05_R06_every_publishing_step_can_run_again(self):
         """`cargo publish --workspace` refused a re-run once one crate was up,

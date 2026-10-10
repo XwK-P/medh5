@@ -184,7 +184,9 @@ the unreleased notes under the new version, and push a `vX.Y.Z` tag.
    before anything is published;
 3. publishes the wheels and the sdist to PyPI through Trusted Publishing, and
    the crates to crates.io (`medh5-sys`, `medh5`, `medh5-cli`, in that order,
-   with the `CARGO_REGISTRY_TOKEN` secret);
+   with the `CARGO_REGISTRY_TOKEN` secret --- each crate built from its package
+   without the token in the environment, then uploaded, and in the index before
+   the next one, which resolves against it);
 4. creates the GitHub Release, with the changelog section as its notes and the
    distributions, the binaries and their `SHA256SUMS` attached;
 5. pushes the Homebrew formula for the binaries to the tap

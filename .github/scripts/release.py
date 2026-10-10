@@ -47,6 +47,9 @@ GENERATED = frozenset({"Cargo.toml", "Cargo.lock"})
 # What PyPI serves: the wheels and the sdist.
 DISTRIBUTIONS = (".whl", ".tar.gz")
 
+# Where cargo finds a crates.io token.
+TOKENS = frozenset({"CARGO_REGISTRY_TOKEN", "CARGO_REGISTRIES_CRATES_IO_TOKEN"})
+
 AGENT = "medh5-release (https://github.com/XwK-P/medh5)"
 
 
@@ -170,10 +173,10 @@ def fetch(url: str, *, token: str | None = None, attempts: int = 4) -> bytes | N
     raise AssertionError("unreachable")
 
 
-def run(*command: str, capture: bool = False) -> str:
+def run(*command: str, capture: bool = False, env: dict[str, str] | None = None) -> str:
     print("+", " ".join(command), flush=True)
     result = subprocess.run(
-        command, cwd=ROOT, check=True, text=True, capture_output=capture
+        command, cwd=ROOT, check=True, text=True, capture_output=capture, env=env
     )
     return result.stdout if capture else ""
 
@@ -190,6 +193,43 @@ def workspace_version() -> str:
 def on_crates_io(name: str, version: str) -> bool:
     body = fetch(f"https://crates.io/api/v1/crates/{name}/{version}")
     return body is not None and not json.loads(body)["version"]["yanked"]
+
+
+def index_path(name: str) -> str:
+    """Where crates.io's sparse index keeps a crate's versions (cargo's
+    layout: by the length of the name, then its first letters)."""
+    name = name.lower()
+    if len(name) <= 2:
+        return f"{len(name)}/{name}"
+    if len(name) == 3:
+        return f"3/{name[0]}/{name}"
+    return f"{name[:2]}/{name[2:4]}/{name}"
+
+
+def in_index(name: str, version: str) -> bool:
+    """Whether the index cargo resolves against lists `name` at `version`.
+    The API has a version as soon as it is uploaded; the index, a moment
+    later."""
+    body = fetch(f"https://index.crates.io/{index_path(name)}")
+    if body is None:
+        return False
+    return any(
+        json.loads(line).get("vers") == version
+        for line in body.decode("utf-8").splitlines()
+        if line.strip()
+    )
+
+
+def wait_for_index(name: str, version: str, *, wait: int = 600) -> None:
+    deadline = time.monotonic() + wait
+    while not in_index(name, version):
+        if time.monotonic() > deadline:
+            raise SystemExit(
+                f"{name} {version} is published but not yet in the crates.io index, "
+                "which the next crate resolves against: re-run the job"
+            )
+        time.sleep(10)
+    print(f"{name} {version} is in the crates.io index")
 
 
 def published_crate(name: str, version: str) -> bytes:
@@ -216,11 +256,16 @@ def pypi_digests(version: str) -> dict[str, str]:
 
 def publish_crates() -> int:
     version = workspace_version()
+    # Verifying a crate builds it from its package, running the build script
+    # of every dependency --- which need not see the token that publishes.
+    untokened = {k: v for k, v in os.environ.items() if k not in TOKENS}
     for name in CRATES:
         if not on_crates_io(name, version):
-            # Packages, verifies, uploads, and waits until the index has it,
-            # which the next crate's resolution needs.
-            run("cargo", "publish", "-p", name, "--locked")
+            run("cargo", "package", "-p", name, "--locked", env=untokened)
+            run("cargo", "publish", "-p", name, "--locked", "--no-verify")
+            # `cargo publish` waits for the index only so long, then warns and
+            # succeeds; the next crate resolves this one through the index.
+            wait_for_index(name, version)
             continue
         run("cargo", "package", "-p", name, "--locked", "--no-verify")
         local = (ROOT / "target" / "package" / f"{name}-{version}.crate").read_bytes()

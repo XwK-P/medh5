@@ -219,9 +219,11 @@ jobs:
 
   crates:
     name: Publish to crates.io
-    # medh5-sys, then medh5, then medh5-cli, one at a time: `cargo publish`
-    # waits for each to reach the index, which the next one resolves against.
-    # medh5-python is `publish = false`.
+    # medh5-sys, then medh5, then medh5-cli, one at a time, each in the index
+    # before the next, which resolves against it.  Each is verified --- built
+    # from its package, running every dependency's build script --- without
+    # the token in the environment, then uploaded with it.  medh5-python is
+    # `publish = false`.
     needs: build
     runs-on: ubuntu-latest
     environment:
