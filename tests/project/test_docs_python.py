@@ -11,13 +11,14 @@ have caught it years earlier.
 So every fenced ``python`` block on every page runs here, against a real sample
 built by the suite's own fixture writer, with a namespace holding the names the
 pages use by convention (``s``, ``w``, ``ann``, ``liver``, ``paths`` ...).  A
-block whose only failure is a name it never binds is a **fragment**: the page
-shows the call and leaves the setup to the prose around it, and that is the one
-failure tolerated here.  Everything else --- a method that no longer exists, a
-signature that changed, a key that is wrong --- is a claim the code has stopped
-honouring, and fails.  A block that genuinely cannot be executed says so with an
-``<!-- illustrative -->`` comment above its fence, on the page, where a reader
-sees it too.
+page shows the call and leaves the setup to the prose around it, so the runner
+supplies the setup, under the page's names.  A name that neither the block nor
+the runner binds **fails**, as everything else does --- a method that no longer
+exists, a signature that changed, a key that is wrong.  Tolerating it once let
+a block pass that never ran a line: ten blocks failed on their first statement
+and were counted as passing.  A block that genuinely cannot be executed says so
+with an ``<!-- illustrative -->`` comment above its fence, on the page, where a
+reader sees it too.
 """
 
 from __future__ import annotations
@@ -37,7 +38,7 @@ import medh5
 from medh5.annotations.voxel import InstanceInput
 from medh5.collection import pack
 from medh5.dataset.manifest import scan
-from medh5.labels import LabelClass, LabelSet
+from medh5.labels import LabelClass, LabelSet, Skeleton
 from tests.helpers import ROOT, SHAPE, block, write_sample
 
 DOCS = ROOT / "docs"
@@ -126,7 +127,12 @@ def workspace(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
             LabelClass(7, "progressive_disease", "Progressive", category="response"),
             LabelClass(8, "non_diagnostic", "Non-diagnostic", category="quality"),
             LabelClass(9, "birads_4", "BI-RADS 4", category="birads"),
+            LabelClass(10, "nodule", "Nodule", category="lesion"),
+            LabelClass(11, "l1", "L1 vertebra", category="vertebra"),
+            LabelClass(12, "l2", "L2 vertebra", category="vertebra"),
+            LabelClass(13, "spine", "Spine", category="skeleton"),
         ],
+        skeletons=[Skeleton("spine-17", keypoints=(11, 12), edges=((11, 12),))],
     )
     masks = {
         1: block(SHAPE, (2, 2, 2), 8),
@@ -298,40 +304,140 @@ def _clinical_example() -> Any:
     return module
 
 
+TORCH_NAMES = frozenset(
+    {
+        "torch",
+        "DataLoader",
+        "PatchDataset",
+        "PairedPatchDataset",
+        "VolumeDataset",
+        "GridPatchDataset",
+        "collate",
+        "worker_init_fn",
+        "dataset",
+        "ds",
+        "item",
+        "patches",
+        "loader",
+        "batch",
+        "criterion",
+        "logits",
+        "target",
+    }
+)
+
+
+"""The names :func:`_torch_names` binds --- unbound in a job without torch."""
+
+
 def _torch_names(workspace: dict[str, Any]) -> dict[str, Any]:
     """The loader names, or nothing where torch is not installed."""
     try:
         import torch
         from torch.utils.data import DataLoader
 
-        from medh5.torch import PairedPatchDataset, PatchDataset, VolumeDataset
+        from medh5.torch import (
+            GridPatchDataset,
+            PairedPatchDataset,
+            PatchDataset,
+            VolumeDataset,
+            collate,
+            worker_init_fn,
+        )
     except ImportError:
         return {}
     from medh5.sampling import PatchSampler
 
     case = str(workspace["case"])
-    volumes = VolumeDataset([case], images=["CT"])
+    # The tutorial's dataset: patches with the two channels it asks for, so a
+    # page's `batch["label"]["organs"]` is there to read.
     patches = PatchDataset(
         [case],
         PatchSampler((8, 8, 8), strategy="foreground"),
         images=["CT"],
         annotations={"organs": ["liver", "lesion"]},
         annotation="organs",
+        samples_per_volume=4,
     )
-    return {
+    loader = DataLoader(patches, batch_size=2, collate_fn=collate)
+    batch = next(iter(loader))
+    target = batch["label"]["organs"]
+    names = {
         "torch": torch,
         "DataLoader": DataLoader,
         "PatchDataset": PatchDataset,
         "PairedPatchDataset": PairedPatchDataset,
         "VolumeDataset": VolumeDataset,
-        "dataset": volumes,
-        "ds": volumes,
+        "GridPatchDataset": GridPatchDataset,
+        "collate": collate,
+        "worker_init_fn": worker_init_fn,
+        "dataset": patches,
+        "ds": patches,
         # `annotations=` is what puts `item["label"]` there; a tutorial reads it.
         "item": patches[0],
         # `patches` on the performance page is a list of patch *meta* dicts, and
         # `p["used_index"]` is the line that says so.
         "patches": [patches[i]["meta"]["patch"] for i in range(len(patches))],
-        "batch": next(iter(DataLoader(patches, batch_size=2))),
+        "loader": loader,
+        "batch": batch,
+        # The masked-loss example: an unreduced loss over the one-hot target.
+        "criterion": torch.nn.BCEWithLogitsLoss(reduction="none"),
+        "logits": torch.zeros_like(target),
+        "target": target,
+    }
+    assert set(names) == TORCH_NAMES
+    return names
+
+
+def _geometry_names() -> dict[str, Any]:
+    """Arrays for the geometric annotations and transforms the pages write.
+
+    In the units and spaces the calls they feed take: index space unless the
+    call says ``space="world"``, millimetres for a transform's points, and a
+    displacement field as ``(3, *grid.shape)``.
+    """
+    rng = np.random.default_rng(5)
+    fixed = rng.uniform(-8.0, 8.0, (6, 3))
+    square = np.array([[0, 0], [0, 6], [6, 6], [6, 0]], dtype=np.float64)
+    # Square outlines flat along the first world axis, one inside the other.
+    xyz = np.column_stack([np.full(4, -6.0), square - 6.0])
+    hole = np.column_stack([np.full(4, -6.0), square / 3.0 - 4.0])
+    tetrahedron = np.array(
+        [[0, 0, 0], [6, 0, 0], [0, 6, 0], [0, 0, 6]], dtype=np.float32
+    )
+    outward = tetrahedron - tetrahedron.mean(axis=0)
+    field = np.zeros((3, *SHAPE), dtype=np.float32)
+    field[0] = 0.5
+    from medh5.annotations.geometric import Polygon
+
+    return {
+        # Points in millimetres, for transforms and TRE.
+        "points": fixed,
+        "fixed_points": fixed,
+        "moving_points": fixed + [1.0, 0.5, -0.5],
+        "matrix4x4": np.array(
+            [[1, 0, 0, 1.0], [0, 1, 0, 0.5], [0, 0, 1, -0.5], [0, 0, 0, 1]]
+        ),
+        # Displacement fields on the 16x24x24 grids, and their reverse.
+        "field": field,
+        "fwd": field,
+        "back": -field,
+        # Oriented boxes: centres, full edge lengths, rotation matrices.
+        "centers": np.array([[6.0, 10.0, 10.0]]),
+        "sizes": np.array([[4.0, 6.0, 5.0]]),
+        "rotations": np.eye(3)[None],
+        # Keypoints: one spine of two vertebrae, the label set's skeleton.
+        "keypoints": np.array([[[4.0, 6.0, 6.0], [8.0, 12.0, 12.0]]]),
+        "keypoint_classes": ["l1", "l2"],
+        "class_ids": ["spine"],
+        "vis": np.array([[2, 1]], dtype=np.uint8),
+        # Contours in world millimetres, and a surface mesh.
+        "xyz": xyz,
+        "hole": hole,
+        "polygons": [Polygon(vertices=xyz, class_id=1)],
+        "vertices": tetrahedron,
+        "faces": np.array([[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]]),
+        "normals": outward / np.linalg.norm(outward, axis=1, keepdims=True),
     }
 
 
@@ -344,14 +450,15 @@ def _namespace(workspace: dict[str, Any], tmp_path: Path) -> dict[str, Any]:
     the pages already use.
     """
 
-    from medh5.dataset import Manifest, compute_stats
+    from medh5.conformance import CASES
+    from medh5.curation import scrub
+    from medh5.dataset import Manifest, compute_stats, make_splits
     from medh5.sampling import PatchSampler, TimepointPairSampler
 
     sample = medh5.open(workspace["case"])
     # A live writer, because half the pages show one call of one.  It carries
-    # the two visits and the label set the examples assume and *no* grids: the
-    # blocks declare their own, and pre-declaring them made every such block
-    # fail with "already declared".
+    # the two visits, the label set, the grids and the annotator the examples
+    # assume; the blocks that declare a grid of their own name another.
     writer = medh5.create(tmp_path / "scratch.medh5", sample_id="scratch")
     writer.add_timepoint("tp0", label="baseline", days_from_baseline=0)
     writer.add_timepoint("tp1", label="fu1", days_from_baseline=92)
@@ -364,12 +471,15 @@ def _namespace(workspace: dict[str, Any], tmp_path: Path) -> dict[str, Any]:
             timepoint=tp,
             frame_uid=f"pseudo:frame-{tp}",
         )
+    rad = writer.person("RAD-07", role="annotator")
+    act = writer.activity("annotate", agent=rad, tool="docs")
 
     annotation = sample.annotations["organs"]
     grid = sample.grids["ct"]
     image = sample.images["CT"]
     uncertain = np.zeros(SHAPE, dtype=bool)
     uncertain[14:, :, :] = True
+    lesion = workspace["masks"][3]
     return {
         "medh5": medh5,
         "np": np,
@@ -379,11 +489,15 @@ def _namespace(workspace: dict[str, Any], tmp_path: Path) -> dict[str, Any]:
         "compute_stats": compute_stats,
         "PatchSampler": PatchSampler,
         "TimepointPairSampler": TimepointPairSampler,
+        "sampler": PatchSampler((8, 8, 8), strategy="foreground"),
+        "epochs": 2,
         # The loader names, where the job installs torch.  Without them a block
-        # that needs one raises NameError (a fragment) or ImportError (skipped),
-        # which is what the minimum-dependency and Windows jobs should see ---
-        # importing torch to *build* the namespace failed every block instead.
+        # that needs one raises NameError or ImportError, and either is skipped
+        # as the missing optional dependency, which is what the
+        # minimum-dependency and Windows jobs should see --- importing torch to
+        # *build* the namespace failed every block instead.
         **_torch_names(workspace),
+        **_geometry_names(),
         # The sample, under every name the pages give it.
         "s": sample,
         "sample": sample,
@@ -414,13 +528,40 @@ def _namespace(workspace: dict[str, Any], tmp_path: Path) -> dict[str, Any]:
         "tracking": sample.tracks(),
         "manifest": workspace["manifest"],
         "e": next(iter(workspace["manifest"])),
+        # The cohort pages' split, as the page makes it.
+        "split": make_splits(
+            workspace["manifest"],
+            set_id="cv5",
+            group_by="group_id",
+            stratify_by="site_id",
+            ratios={"train": 0.7, "val": 0.15, "test": 0.15},
+            seed=0,
+        ),
+        "scrub": scrub,
+        # Which subject each file is, "from your own records".
+        "known_identities": {"case.medh5": "subj-A"},
+        # What a third-party validator hands `score`: here, one that agrees
+        # with every expectation.
+        "submitted": [
+            {
+                "file": c.name + c.suffix,
+                "errors": [*c.errors],
+                "warnings": [*c.warnings],
+            }
+            for c in CASES
+        ],
         "label_set": workspace["label_set"],
         "labels": workspace["label_set"],
         "masks": workspace["masks"],
         "liver": workspace["masks"][1],
         "spleen": workspace["masks"][2],
-        "lesion": workspace["masks"][3],
+        "lesion": lesion,
+        # One lesion at two visits, grown by a voxel at the second.
+        "m0": lesion,
+        "m1": np.pad(lesion, 1)[:-2, :-2, :-2] | lesion,
         "uncertain_mask": uncertain,
+        "rad": rad,
+        "act": act,
         "array": image.read(),
         "roi": (slice(0, 8),) * 3,
         "class_id": 1,
@@ -474,6 +615,16 @@ def test_documented_python_runs(
     here = Path.cwd()
     os.chdir(scratch)
     try:
+        _execute(page, line, code, namespace)
+    finally:
+        os.chdir(here)
+        namespace["s"].close()
+        namespace["_writer"].abort()
+
+
+def _execute(page: Path, line: int, code: str, namespace: dict[str, Any]) -> None:
+    """Run one block in *namespace*, and say which page and line did not run."""
+    try:
         with warnings.catch_warnings():
             # `labelmap()` warns when it flattens overlap, which several pages
             # demonstrate on purpose.
@@ -498,14 +649,19 @@ def test_documented_python_runs(
         # gate; running it is the point, exiting the test run is not.
         pass
     except NameError as exc:
-        # A fragment: the page shows the call and leaves its setup to the prose
-        # around it, so a name it never binds is missing.  That is the one
-        # failure tolerated here, and it is bounded --- a name the *package*
-        # used to export raises ImportError or AttributeError instead, so a
-        # renamed or deleted API still fails.
-        missing = re.search(r"name '([^']+)'", str(exc))
-        if missing and hasattr(medh5, missing.group(1)):
-            pytest.fail(f"{page.relative_to(ROOT)}:{line}: {exc}\n---\n{code}")
+        # A name the page leaves to its prose is one the runner binds; one
+        # nobody binds is a block that did not run.  Only the loader names are
+        # missing for a reason outside the page: this job has no torch.
+        found = re.search(r"name '([^']+)'", str(exc))
+        missing = found.group(1) if found else ""
+        if missing in TORCH_NAMES and "torch" not in namespace:
+            pytest.skip(f"{page.relative_to(ROOT)}:{line}: `{missing}` needs torch")
+        raise AssertionError(
+            f"{page.relative_to(ROOT)}:{line} does not run: {exc}\n"
+            "Bind it in `_namespace` under the name the page uses, define it in "
+            f"the block, or mark the block `{MARKER}` if it cannot be executed "
+            "here.\n---\n" + code
+        ) from exc
     except Exception as exc:  # pragma: no cover - the message is the point
         raise AssertionError(
             f"{page.relative_to(ROOT)}:{line} does not run: "
@@ -513,10 +669,22 @@ def test_documented_python_runs(
             f"Fix the example, or mark it `{MARKER}` on the line above its fence "
             "if it cannot be executed here.\n---\n" + code
         ) from exc
-    finally:
-        os.chdir(here)
-        namespace["s"].close()
-        namespace["_writer"].abort()
+
+
+def test_a_block_using_a_name_nobody_binds_fails() -> None:
+    """A block that stops at its first line has not run, so it cannot pass.
+
+    The runner once passed such a block as a fragment, and ten blocks on four
+    pages were passing without executing a statement.
+    """
+    page = DOCS / "guides" / "example.md"
+    with pytest.raises(AssertionError, match="name 'setup_from_the_prose'"):
+        _execute(page, 3, "setup_from_the_prose.apply()\n", {})
+    # A loader name is the one exception, and only where torch is missing.
+    with pytest.raises(pytest.skip.Exception, match="needs torch"):
+        _execute(page, 3, "DataLoader(ds)\n", {})
+    with pytest.raises(AssertionError, match="name 'DataLoader'"):
+        _execute(page, 3, "DataLoader(ds)\n", {"torch": object()})
 
 
 def test_the_ignore_example_round_trips(workspace: dict[str, Any], tmp_path: Path):
