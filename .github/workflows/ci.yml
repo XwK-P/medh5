@@ -199,13 +199,14 @@ jobs:
       - name: The sdist states the licence, and carries the notices
         run: |
           python - <<'PY'
-          import glob, tarfile
+          import glob, tarfile, tomllib
+          expression = tomllib.load(open("pyproject.toml", "rb"))["project"]["license"]
           (sdist,) = glob.glob("dist/*.tar.gz")
           with tarfile.open(sdist) as tar:
               top = tar.getnames()[0].split("/")[0]
               names = set(tar.getnames())
               fields = tar.extractfile(f"{top}/PKG-INFO").read().decode().splitlines()
-          for field in ("License-Expression: MIT", "License-File: LICENSE",
+          for field in (f"License-Expression: {expression}", "License-File: LICENSE",
                         "License-File: THIRD_PARTY_NOTICES"):
               assert field in fields, f"PKG-INFO lacks {field!r}"
           assert f"{top}/THIRD_PARTY_NOTICES" in names, "the sdist lacks the notices"
@@ -217,7 +218,7 @@ jobs:
           cd "$RUNNER_TEMP/sdist"
           # No build isolation: an isolated build would fetch the newest maturin.
           pip install --no-build-isolation ".[dev]"
-          python -c "from importlib.metadata import metadata; assert metadata('medh5')['License-Expression'] == 'MIT'"
+          python -c "import tomllib; from importlib.metadata import metadata; assert metadata('medh5')['License-Expression'] == tomllib.load(open('pyproject.toml', 'rb'))['project']['license']"
       - name: The build runs the conformance corpus
         run: |
           cd "$RUNNER_TEMP"

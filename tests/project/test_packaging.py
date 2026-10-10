@@ -384,7 +384,33 @@ class TestDistribution:
         assert re.findall(r'"maturin>=([\d.]+),<2"', text) == ["1.9.3", "1.9.3"]
         sdist = _jobs(CI.read_text(encoding="utf-8"))["sdist"]
         assert '["build-system"]["requires"]' in sdist
-        assert "--no-build-isolation" in sdist and "License-Expression: MIT" in sdist
+        assert "--no-build-isolation" in sdist
+        assert 'f"License-Expression: {expression}"' in sdist
+        assert "['License-Expression'] ==" in sdist and "['license']" in sdist
+
+    def test_the_declared_licence_covers_what_is_compiled_in(self):
+        """The wheels declared `License-Expression: MIT` while compiling in
+        HDF5, C-Blosc2, Zstandard and `subtle` (BSD-3-Clause), LZ4 and
+        rust-numpy (BSD-2-Clause), zlib and `foldhash` (Zlib),
+        `unicode-general-category` (Apache-2.0) and `borrow-or-share` (MIT-0)
+        --- and PyPI cannot correct a release's metadata.  The binary links the
+        same libraries, so the Homebrew formula states the same set."""
+        (expression,) = re.findall(
+            r'^license = "([^"]+)"$', PYPROJECT.read_text(encoding="utf-8"), re.M
+        )
+        declared = expression.split(" AND ")
+        assert declared[0] == "MIT", "the package's own licence leads"
+        assert set(declared) == {
+            "MIT", "BSD-3-Clause", "BSD-2-Clause", "Zlib", "Apache-2.0", "MIT-0"
+        }  # fmt: skip
+        notices = (ROOT / "THIRD_PARTY_NOTICES").read_text(encoding="utf-8")
+        for licence in ("BSD-3-Clause", "BSD-2-Clause", "Zlib", "MIT-0"):
+            assert re.search(rf"  {re.escape(licence)} +\[", notices), licence
+        brew = _release_script("homebrew_formula.py")
+        assert list(brew.LICENSES) == declared
+        sums = {brew.archive("2.0.0", t): "0" * 64 for t in brew.TARGETS.values()}
+        formula = brew.formula("2.0.0", sums, "XwK-P/medh5")
+        assert f"  license all_of: {json.dumps(declared)}\n" in formula
 
     def test_R05_a_published_crate_is_skipped_only_when_identical(self):
         """A re-run after a partial release skips a crate already on crates.io

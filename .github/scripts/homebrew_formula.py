@@ -13,6 +13,11 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+# What the binary is licensed under: the package's own MIT, and the licences of
+# the libraries it links statically --- pyproject.toml's `license`, as Homebrew
+# spells an SPDX conjunction (THIRD_PARTY_NOTICES lists each library).
+LICENSES = ("MIT", "BSD-3-Clause", "BSD-2-Clause", "Zlib", "Apache-2.0", "MIT-0")
+
 # Homebrew's (OS, architecture) blocks and the Rust target built for each.
 TARGETS = {
     ("macos", "arm"): "aarch64-apple-darwin",
@@ -55,11 +60,12 @@ def formula(version: str, sums: dict[str, str], repository: str) -> str:
             )
         blocks.append(f"  on_{os_name} do\n" + "\n".join(arches) + "\n  end")
     sections = "\n\n".join(blocks)
+    licenses = ", ".join(f'"{name}"' for name in LICENSES)
     return f'''class Medh5 < Formula
   desc "Inspect, validate, verify and curate MEDH5 medical imaging files"
   homepage "https://github.com/{repository}"
   version "{version}"
-  license "MIT"
+  license all_of: [{licenses}]
 
 {sections}
 

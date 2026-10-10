@@ -2,7 +2,7 @@
 # The package is the Rust engine (crates/medh5) compiled as `medh5._core`, plus
 # the Python sources under medh5/.  maturin builds both into one wheel.
 # 1.9.3 is the first maturin that writes PEP 639's `License-Expression` for
-# `license = "MIT"` (1.9.0 still wrote the legacy `License` field, and 1.8
+# an SPDX `license` (1.9.0 still wrote the legacy `License` field, and 1.8
 # cannot read `license-files` as a list): the floor is the version CI's
 # `sdist` job builds with.
 requires = ["maturin>=1.9.3,<2"]
@@ -17,10 +17,14 @@ dynamic = ["version"]
 description = "Self-describing HDF5 container for one medical imaging sample and all of its ground truth: multi-timepoint, multi-modal images with segmentation, detection, classification and registration annotations, provenance and integrity."
 readme = "README.md"
 requires-python = ">=3.10"
-license = "MIT"
-# THIRD_PARTY_NOTICES: the licences of what the engine compiles in --- HDF5,
-# C-Blosc2 and its codecs, and every Rust crate --- generated from Cargo.lock
-# by .github/scripts/third_party_notices.py.
+# The package is MIT.  Its wheels also compile in HDF5, C-Blosc2, Zstandard
+# and `subtle` (BSD-3-Clause), LZ4 and rust-numpy (BSD-2-Clause), zlib and
+# `foldhash` (Zlib), `unicode-general-category` (Apache-2.0) and
+# `borrow-or-share` (MIT-0).  THIRD_PARTY_NOTICES reproduces the licence of
+# everything they compile in, generated from Cargo.lock by
+# .github/scripts/third_party_notices.py; the Homebrew formula states the same
+# expression.
+license = "MIT AND BSD-3-Clause AND BSD-2-Clause AND Zlib AND Apache-2.0 AND MIT-0"
 license-files = ["LICENSE", "THIRD_PARTY_NOTICES"]
 authors = [
   { name = "Puyang Wang", email = "pauliwang411@gmail.com" },

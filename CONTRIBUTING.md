@@ -203,6 +203,10 @@ separate and changes only with the specification.
 `THIRD_PARTY_NOTICES` holds the licences of everything the wheel and the binary
 compile in, generated from `Cargo.lock`. After changing `Cargo.lock`, run
 `python .github/scripts/third_party_notices.py`; CI fails while it is stale.
+A library under a licence the others do not already name goes into
+`pyproject.toml`'s `license` expression too, and the Homebrew formula's
+(`.github/scripts/homebrew_formula.py`); neither can be corrected for a
+version once it is published.
 
 ### If a release fails partway
 
