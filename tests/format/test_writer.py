@@ -961,3 +961,64 @@ class TestL30DuplicateIds:
             assert all(len(g["instance_ids"]) == 1 for g in groups)
         report = validate_file(path, level=case.level)
         assert set(report.codes) == {*case.errors, *case.warnings}
+
+
+def _laid_out(values: np.ndarray, layout: str) -> np.ndarray:
+    """*values* in another memory layout: NumPy hands out each of these."""
+    if layout == "fortran":  # nibabel's get_fdata()
+        return np.asfortranarray(values)
+    if layout == "transposed":
+        return np.ascontiguousarray(values.T).T
+    if layout == "reversed":  # np.flip: negative strides
+        return np.flip(np.flip(values, 0).copy(), 0)
+    wider = np.repeat(values, 2, axis=-1)  # every other element: a strided view
+    return wider[..., ::2]
+
+
+class TestAnyArrayLayout:
+    """§14.4: what the writer stores is an array's values, whatever the layout
+    NumPy keeps them in --- the writer reads them in C order."""
+
+    @pytest.mark.parametrize("layout", ["fortran", "transposed", "reversed", "strided"])
+    def test_S14_4_every_layout_is_written_as_its_values(
+        self, tmp_path: Path, layout: str
+    ):
+        image = Flat.image()
+        mask = Flat.mask()
+        boxes = np.array(
+            [[[0, 2], [1, 3], [2, 4]], [[1, 4], [2, 5], [0, 9]]], np.float32
+        )
+        matrix = np.eye(4)
+        matrix[0, 3] = 5.0
+        vector = np.arange(6.0).reshape(2, 3)
+        laid = {
+            name: _laid_out(a, layout)
+            for name, a in [
+                ("image", image),
+                ("mask", mask),
+                ("boxes", boxes),
+                ("matrix", matrix),
+                ("vector", vector),
+            ]
+        }
+        assert not laid["image"].flags.c_contiguous
+        path = tmp_path / f"{layout}.medh5"
+        with Flat.open_writer(path, frames=True) as w:
+            w.add_image("CT2", laid["image"], grid="g", modality="CT")
+            w.add_segmentation("seg", grid="g", masks={1: laid["mask"]})
+            w.add_boxes("det", laid["boxes"], [1, 1], grid="g")
+            w.add_transform(
+                "shift",
+                kind="affine",
+                from_frame="f0",
+                to_frame="f1",
+                matrix=laid["matrix"],
+            )
+            w.handle.attrs["vector"] = laid["vector"]
+        with medh5.open(path) as sample:
+            assert np.array_equal(sample.images["CT2"].read(), image)
+            assert np.array_equal(sample.annotations["seg"].dense([1])[0], mask)
+            assert np.array_equal(sample.annotations["det"].boxes, boxes)
+            assert np.array_equal(sample.transforms["shift"].matrix, matrix)
+            assert np.array_equal(sample.root.attrs["vector"], vector)
+        assert validate_file(path).ok

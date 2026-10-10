@@ -248,9 +248,13 @@ pub fn asarray<'py>(obj: &Bound<'py, PyAny>, dtype: Option<&str>) -> PyResult<Bo
     Ok(array.cast_into::<PyUntypedArray>()?)
 }
 
+/// An owned copy in standard (C) layout, whatever the input's: HDF5 reads and
+/// writes row-major buffers, and a Fortran-ordered, transposed or flipped
+/// array --- nibabel's `get_fdata()`, `x.T`, `np.flip(x, 0)` --- is as valid
+/// an input as any.
 fn typed<T: numpy::Element + Clone>(array: &Bound<'_, PyUntypedArray>) -> PyResult<ArrayD<T>> {
     let typed = array.cast::<PyArrayDyn<T>>()?;
-    Ok(typed.readonly().as_array().to_owned())
+    Ok(typed.readonly().as_array().as_standard_layout().into_owned())
 }
 
 /// A NumPy array (or anything `numpy.asarray` accepts) as an engine array.
