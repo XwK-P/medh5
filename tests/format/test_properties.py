@@ -14,10 +14,15 @@ applied where these defects actually live:
   ``IndexError``, ``TypeError`` or ``ValueError`` that a caller cannot catch by
   the documented type, and never a silent success that drops data;
 * when it succeeds, every per-element column really is as long as the elements
-  it labels, so nothing was quietly truncated on the way in.
+  it labels, so nothing was quietly truncated on the way in;
+* when every column agrees with the elements it **succeeds**: a refusal is a
+  correct outcome only for an input that is wrong, and a sweep that accepted
+  any refusal would pass an encoder that refused everything.
 """
 
 from __future__ import annotations
+
+import itertools
 
 import numpy as np
 import pytest
@@ -67,17 +72,36 @@ def _consistent(payload, n: int, columns: tuple[str, ...]) -> None:
             )
 
 
-def _guard(call, n: int, columns: tuple[str, ...]) -> None:
-    """Succeed consistently, or refuse as `MEDH5Error`. Nothing else."""
+def _guard(call, n: int, columns: tuple[str, ...], *, agree: bool) -> None:
+    """Succeed consistently, or refuse as `MEDH5Error`. Nothing else.
+
+    *agree* says every column matches the elements; such an input must be
+    accepted, so refusing it fails the test rather than passing it.
+    """
     try:
         payload = call()
-    except MEDH5Error:
+    except MEDH5Error as exc:
+        if agree:
+            raise AssertionError(f"refused a consistent input: {exc}") from exc
         return
     except Exception as exc:
         raise AssertionError(
             f"raised {type(exc).__name__} rather than MEDH5Error: {exc}"
         ) from exc
     _consistent(payload, n, columns)
+
+
+def _overlap(masks) -> bool:
+    """Whether two of the masks claim one voxel --- what a labelmap cannot hold."""
+    return any(
+        bool(np.logical_and(a, b).any())
+        for a, b in itertools.combinations(masks.values(), 2)
+    )
+
+
+def _labelmap_refused_an_overlap(exc: MEDH5Error, involved: bool, masks) -> bool:
+    """The one refusal a voxel round trip may meet: §7.1's E404 on an overlap."""
+    return involved and _overlap(masks) and getattr(exc, "code", None) == "E404"
 
 
 class TestEncoderColumns:
@@ -91,6 +115,7 @@ class TestEncoderColumns:
             lambda: encode_boxes(boxes, **kwargs),
             n,
             tuple(PER_ELEMENT),
+            agree=k == n,
         )
 
     @given(n=COUNT, dim=DIM, k=COUNT)
@@ -101,6 +126,7 @@ class TestEncoderColumns:
             lambda: encode_boxes(boxes, [1] * n, slice_index=[0] * k),
             n,
             ("class_ids", "slice_index"),
+            agree=k == n,
         )
 
     @given(n=COUNT, dim=DIM, k=COUNT, column=st.sampled_from(sorted(PER_ELEMENT)))
@@ -117,6 +143,7 @@ class TestEncoderColumns:
             ),
             n,
             tuple(PER_ELEMENT),
+            agree=k == n,
         )
 
     @given(n=COUNT, dim=DIM, k=COUNT, column=st.sampled_from(["class_ids", "weights"]))
@@ -128,6 +155,7 @@ class TestEncoderColumns:
             lambda: encode_points(np.zeros((n, dim), np.float32), **kwargs),
             n,
             ("class_ids", "names", "weights"),
+            agree=k == n,
         )
 
     @given(n=COUNT, dim=DIM, k=COUNT, slots=st.integers(min_value=1, max_value=3))
@@ -143,6 +171,7 @@ class TestEncoderColumns:
             ),
             n,
             ("class_ids", "scores"),
+            agree=k == n,
         )
 
     @given(v=st.integers(min_value=3, max_value=6), k=COUNT, m=COUNT)
@@ -160,6 +189,9 @@ class TestEncoderColumns:
             ),
             v,
             ("vertex_class_ids",),
+            # One mesh (`mesh_offsets=[0, 1]`): one class per vertex and one
+            # per mesh is the consistent input.
+            agree=k == v and m == 1,
         )
 
 
@@ -246,10 +278,13 @@ class TestVoxelRoundTrip:
                 )
                 writer.label_set(label_set)
                 writer.add_segmentation("seg", grid="g", masks=masks, encoding=encoding)
-        except MEDH5Error:
+        except MEDH5Error as exc:
             # `labelmap` cannot hold an overlap and says so (E404); refusing is
             # a correct outcome, silently dropping the overlap would not be.
-            return
+            # Any other refusal of a well-formed sample is a defect.
+            if _labelmap_refused_an_overlap(exc, encoding == "labelmap", masks):
+                return
+            raise
 
         with medh5.open(path) as sample:
             annotation = sample.annotations["seg"]
@@ -325,13 +360,19 @@ class TestTranscodeRoundTrip:
         masks = TestVoxelRoundTrip._masks(rng, shape, n_classes, overlap)
         try:
             payload, _ = encode_voxels(masks, shape, encoding=source)
-        except MEDH5Error:
-            return  # labelmap refusing an overlap is correct
+        except MEDH5Error as exc:
+            if _labelmap_refused_an_overlap(exc, source == "labelmap", masks):
+                return  # labelmap refusing an overlap is correct
+            raise
 
         try:
             converted = transcode_payload(payload, target, spatial_shape=shape)
-        except MEDH5Error:
-            return  # a target that cannot hold the content must refuse
+        except MEDH5Error as exc:
+            # A target that cannot hold the content must refuse, and among
+            # these only a labelmap cannot: every other one holds an overlap.
+            if _labelmap_refused_an_overlap(exc, target == "labelmap", masks):
+                return
+            raise
         except Exception as exc:
             raise AssertionError(
                 f"{source}->{target} raised {type(exc).__name__}: {exc}"
