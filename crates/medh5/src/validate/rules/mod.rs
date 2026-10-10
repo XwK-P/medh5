@@ -1,8 +1,9 @@
 //! The validation rules, one section of the spec at a time (§15).
 //!
-//! Each rule returns every diagnostic it finds; a rule that cannot read what
-//! it is checking returns an error, which the driver turns into E001 so the
-//! remaining rules still run.
+//! Each rule returns every diagnostic it finds.  An error met on one object
+//! is that object's finding, and the rule goes on to the next; a rule that
+//! stops on an error has it reported by the driver --- under the error's own
+//! code, or E001 when it has none --- and the remaining rules still run.
 //!
 //! One module per domain of the §15.2 code table, so a rule has one obvious home:
 //! - `container` --- §1.3, §2

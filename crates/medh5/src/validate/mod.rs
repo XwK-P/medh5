@@ -196,6 +196,26 @@ fn check_level(level: &str) -> Result<()> {
     Ok(())
 }
 
+/// Run `rules` in order, collecting what each finds.
+///
+/// A rule that stops on an error reports it as one finding --- under the
+/// error's own code when it has one, the defect the rule met, and as E001
+/// ("could not read the file") when it has none --- and the rules after it
+/// still run.
+fn run_rules(ctx: &mut rules::Context, rules: &[(&'static str, rules::Rule)]) -> Vec<Diagnostic> {
+    let mut out = Vec::new();
+    for (name, rule) in rules {
+        match rule(ctx) {
+            Ok(found) => out.extend(found),
+            Err(e) => out.push(match e.code() {
+                Some(code) => ctx.err(code, "/", format!("{name} stopped: {}", e.message())),
+                None => ctx.err("E001", "/", format!("{name} could not read the file: {}", e.python_line())),
+            }),
+        }
+    }
+    out
+}
+
 /// Validate an open sample root.
 ///
 /// `errors_only` skips the warning-only checks that read bulk data --- what
@@ -218,18 +238,7 @@ pub fn validate_root_with(
     let mut report = Report::new(path, level);
     report.profiles = declared;
     let rules = rules::rules_for(level);
-    for (name, rule) in &rules {
-        match rule(&mut ctx) {
-            Ok(found) => report.diagnostics.extend(found),
-            Err(e) => report.diagnostics.push(Diagnostic {
-                code: "E001".into(),
-                location: "/".into(),
-                message: format!("{name} could not read the file: {}", e.python_line()),
-                severity: "error".into(),
-                level: level.into(),
-            }),
-        }
-    }
+    report.diagnostics = run_rules(&mut ctx, &rules);
     report.checked = json!({
         "rules": rules.iter().map(|(n, _)| *n).collect::<Vec<_>>(),
         "schema_checked": ctx.schema_checked,
@@ -344,4 +353,37 @@ pub fn clinical_checked(root: &hdf5::Group, path: &str) -> Result<(Vec<Diagnosti
 /// Validate many files, one report each.
 pub fn validate_paths(paths: &[&Path], level: &str, profiles: Option<&[String]>) -> Result<Vec<Report>> {
     paths.iter().map(|p| validate_file(p, level, profiles)).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stops_on_a_defect(_: &mut rules::Context) -> Result<Vec<Diagnostic>> {
+        Err(Error::coded("E405", "6 instance ids for 3 class ids"))
+    }
+
+    fn cannot_read(_: &mut rules::Context) -> Result<Vec<Diagnostic>> {
+        Err(Error::Io("H5Dread failed".into()))
+    }
+
+    fn finds_one(ctx: &mut rules::Context) -> Result<Vec<Diagnostic>> {
+        Ok(vec![ctx.err("W903", "/meta#deidentification", "no de-identification record")])
+    }
+
+    #[test]
+    fn s15_2_a_rule_that_stops_reports_its_own_code_and_the_rest_still_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = hdf5::File::create(dir.path().join("x.medh5")).unwrap();
+        let mut ctx = rules::Context::new(file.as_group().unwrap(), "x.medh5", "semantic", Vec::new(), false);
+        let rules: [(&'static str, rules::Rule); 3] =
+            [("check_a", stops_on_a_defect), ("check_b", cannot_read), ("check_c", finds_one)];
+        let found = run_rules(&mut ctx, &rules);
+        let codes: Vec<&str> = found.iter().map(|d| d.code.as_str()).collect();
+        assert_eq!(codes, ["E405", "E001", "W903"]);
+        assert_eq!(found[0].message, "check_a stopped: 6 instance ids for 3 class ids");
+        assert_eq!((found[0].severity.as_str(), found[0].level.as_str()), ("error", "semantic"));
+        assert!(found[1].message.starts_with("check_b could not read the file: "), "{}", found[1].message);
+        assert_eq!(found[2].severity, "warning");
+    }
 }
