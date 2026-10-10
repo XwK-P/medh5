@@ -515,6 +515,7 @@ class TestTimeInBatches:
         encoder = HashingTextEncoder(dim=8)
         before = self.item(task, "d20", documents=encoder)
         path = tmp_path / "timeline.medh5"
+        CACHE.close_all()  # the item's handle: Windows cannot replace an open file
         with medh5.amend(path) as w:
             # A later lab, a correction learnt after the cutoff, and a report
             # written after it: all definitely after day 20.
@@ -616,25 +617,34 @@ class TestHandles:
         CACHE.clear()
         with CACHE.lease(path, content_id=old) as held:
             assert held.content_id == old
+        event = Event(
+            "x",
+            "x",
+            "other",
+            "static",
+            "final",
+            available_us=0,
+            code_system="org.example",
+            code="x",
+            value_text="y",
+        )
+        if sys.platform == "win32":
+            # The cache keeps the file open, and Windows cannot replace an
+            # open file: the amendment is refused and the file left as it was,
+            # until the cache lets go of it.
+            with pytest.raises(OSError), medh5.amend(path) as w:
+                w.add_event(event)
+            with medh5.open(path) as s:
+                assert s.content_id == old
+            CACHE.close_all()
         with medh5.amend(path) as w:  # writes a new file over the old
-            w.add_event(
-                Event(
-                    "x",
-                    "x",
-                    "other",
-                    "static",
-                    "final",
-                    available_us=0,
-                    code_system="org.example",
-                    code="x",
-                    value_text="y",
-                )
-            )
+            w.add_event(event)
         with medh5.open(path) as s:
             new = s.content_id
         assert new != old
         opens = CACHE.opens
         # The cached handle still reads the replaced inode: it is reopened.
+        # (On Windows nothing was cached by then: the one open is the lease's.)
         with CACHE.lease(path, content_id=new) as held:
             assert held.content_id == new
             assert held.clinical is not None

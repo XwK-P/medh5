@@ -339,9 +339,10 @@ jobs:
       - run: pytest tests/ -v -rs --cov=medh5 --cov-report=term-missing --cov-fail-under=90
 
   test-windows:
-    # `os.replace` onto a file that is still open fails on Windows, which is
-    # what the atomic-rewrite paths exist for.  Core extras only: the
-    # optional-dependency paths are the Linux matrix's job.
+    # Windows refuses to replace a file that is still open, which is what the
+    # atomic-rewrite paths exist for --- and what `medh5.torch`'s handle cache,
+    # which keeps files open, runs into when a sample it holds is amended.
+    # DataLoader workers start by `spawn` here, as on macOS.
     needs: build
     runs-on: windows-latest
     defaults:
@@ -356,7 +357,7 @@ jobs:
         with:
           name: ci-dist-x86_64-pc-windows-msvc
           path: dist/
-      - run: pip install "$(ls dist/*.whl)[dev,nifti,dicom,dicomseg]"
+      - run: pip install "$(ls dist/*.whl)[dev,torch,nifti,dicom,dicomseg]"
       - run: rm -rf medh5
       - run: pytest tests/ -v -rs --no-cov -p no:cacheprovider
 

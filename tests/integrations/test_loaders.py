@@ -1030,7 +1030,8 @@ class TestHandleCache:
     def test_P11_T10_spawned_persistent_workers_follow_the_grouped_order(
         self, tmp_path: Path
     ):
-        """The spawn start method, explicitly, on every platform CI runs."""
+        """The spawn start method, asked for explicitly: Windows and macOS
+        default to it, Linux to fork."""
         pytest.importorskip("torch")
         from torch.utils.data import DataLoader
 

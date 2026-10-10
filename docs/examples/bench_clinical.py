@@ -173,7 +173,7 @@ def task_over(out: Path, subjects: int, shape: tuple[int, ...]) -> TaskManifest:
 def measure(args: argparse.Namespace) -> dict[str, Any]:
     from torch.utils.data import DataLoader
 
-    from medh5.torch import ClinicalTaskDataset, collate_clinical, worker_init_fn
+    from medh5.torch import CACHE, ClinicalTaskDataset, collate_clinical, worker_init_fn
 
     out = Path(args.out or tempfile.mkdtemp(prefix="bench-clinical-"))
     shape = tuple(args.shape)
@@ -240,6 +240,9 @@ def measure(args: argparse.Namespace) -> dict[str, Any]:
             w.add_event(Event(f"extra{n}", f"extra{n}", "other", "point", "final",
                               effective_start_us=800 * DAY, available_us=800 * DAY))
 
+    # The batches' handles, cached in this process: Windows cannot replace a
+    # file that is still open.
+    CACHE.close_all()
     results["amend_one_event_ms"] = median_ms(amend_one, max(3, args.repeats // 4))
     if resource is not None:
         # Linux reports KiB; this is the whole process, workers excluded.
