@@ -46,12 +46,12 @@ the declared profiles. Profiles compose; `core` is always required.
 |---|---|
 | `core` | §2 container, §3 geometry and timepoints, §4 images, §13 integrity |
 | `seg` | `core` + §5 label set + at least one voxel annotation (§7) |
-| `det` | `core` + §5 label set + at least one geometric annotation (§8) whose `task` is `detection`. Contours and meshes are geometry in service of segmentation (§6.3) and do not, alone, make a file a detection dataset. |
+| `det` | `core` + §5 label set + at least one annotation whose `task` is `detection` (§6.2). The declared `task` decides, whatever the kind: §6.3 says which tasks each kind serves, and contours and meshes written for segmentation do not make a file a detection dataset. |
 | `cls` | `core` + §5 label set + at least one classification annotation (§9) |
-| `reg` | `core` + at least one transform (§10) with resolvable endpoints |
-| `curation` | `core` + §11 provenance graph + `quality` on every annotation |
+| `reg` | `core` + at least one transform (§10) whose `from_frame` and `to_frame` are each the `frame_uid` of a grid of the sample |
+| `curation` | `core` + a §11.1 provenance graph holding at least one activity + `quality` on every annotation |
 | `multiscale` | `core` + §4.3 pyramid layout on every image |
-| `training` | `core` + §14.3 sampling index present and current |
+| `training` | `core` + a §14.3 sampling index with at least one entry. An entry whose `source_digest` is stale is W905, ignored by readers (§13.3), not a profile violation. |
 | `longitudinal` | `core` + ≥ 2 declared timepoints (§3.7), `timepoint` on every grid, and stable instance ids for objects observed at more than one timepoint (§7.4) |
 
 ### 1.4 Terminology
@@ -74,7 +74,8 @@ the declared profiles. Profiles compose; `core` is always required.
 
 ### 2.1 File identity
 
-Root attributes on the file (`/`):
+Root attributes of a sample: on the file (`/`) of a `sample`, and on each sample root of a
+`collection` (§2.2), whose own `/` requires only `medh5_kind` and `medh5_version`:
 
 | Attribute | Type | Req. | Value |
 |---|---|---|---|
@@ -83,7 +84,7 @@ Root attributes on the file (`/`):
 | `medh5_profiles` | `str[]` | **MUST** | Declared profiles (§1.3). |
 | `content_id` | `str` | SHOULD | `"<algo>:<hex>"` Merkle root (§13.2). |
 | `digest_algo` | `str` | SHOULD | `"sha256"` (default), `"sha512"` or `"blake2b"`. A validator **MUST** report any other value as E703. |
-| `created` | `str` | SHOULD | RFC 3339 UTC timestamp. |
+| `created` | `str` | SHOULD | RFC 3339 timestamp, in UTC (`Z`) as §11.1 recommends. |
 | `generator` | `str` | SHOULD | `"<name> <version>"` of the writing software. |
 
 `medh5_version` is the *format* version and is independent of the `medh5` Python package version.
@@ -484,8 +485,8 @@ Annotations reference classes by `uint16` id. The mapping id → meaning is the 
   resolved. Permitted only for very large vocabularies; readers that cannot resolve `uri` **MUST**
   treat class names as unknown but **MUST** still read the annotation data. A collection **MAY**
   carry the resolved label set once at `/` and let sample roots use `form = "ref"` with
-  `uri = "medh5:/label_set"`; the reference implementation neither writes nor resolves that form in
-  1.x (Appendix C).
+  `uri = "medh5:/label_set"`; the reference implementation neither writes nor resolves that form
+  (Appendix C).
 
 **Canonical serialization (normative).** `label_set.sha256` is the digest of the label set's *content*,
 computed so that two implementations in two languages agree. The digested document is
@@ -642,6 +643,10 @@ absent from the file.
 | `contours` | seg | §8.6 | planar polygons (DICOM RTSTRUCT interop) |
 | `mesh` | seg | §8.7 | triangle surface mesh |
 | `classification` | cls | §9 | labels at sample/timepoint/grid/roi/slice scope, incl. change across timepoints |
+
+The Task column says which tasks a kind serves. Which one an annotation serves is its own `task`
+attribute (§6.2), and that is what the `det` profile reads (§1.3): an `instances` annotation written
+for detection makes a detection dataset, and one written for segmentation does not.
 
 ---
 
@@ -1158,7 +1163,8 @@ landmark correspondence and lesion tracking agree by construction.
 
 `type` ∈ {`import`, `annotate`, `review`, `predict`, `resample`, `register`, `derive`, `deidentify`,
 `transcode`, `other`}. Objects link to activities through their `prov` attribute. Timestamps are
-RFC 3339 UTC. A validator at level `semantic` **MUST** report dangling `prov` references (E601).
+RFC 3339 (E604 otherwise) and **SHOULD** be in UTC (`Z`); one with another offset names the same
+instant. A validator at level `semantic` **MUST** report dangling `prov` references (E601).
 
 > Rationale: 0.x kept review state in a nested `extra["review"]` dict with an ad-hoc history list.
 > That records *that* something was reviewed but not *what produced the data being reviewed*, and it
@@ -1262,9 +1268,12 @@ visits, per-visit acquisition detail belongs in `/meta → acquisition` (§4.5),
 ```
 
 Each entry is a **membership claim**, not an authority. The dataset-level manifest is authoritative;
-`manifest_sha256` lets a reader detect a file whose in-file claim predates the current split. A
-validator **MUST** warn (W906) when two files claim the same `set_id` with different
-`manifest_sha256`.
+`manifest_sha256` lets a reader detect a file whose in-file claim predates the current split. Two
+claims of one `set_id` with different `manifest_sha256` conflict (W906). A validator **MUST** warn of
+a conflict among the claims of one sample; it validates each sample on its own, a collection's members
+included. A split audit, which reads the samples of a cohort together (`medh5 splits` in the
+reference implementation), **MUST** warn of a conflict between samples. Validating one file cannot
+see the rest of its cohort, so the cross-file check is the audit's.
 
 > **Rationale.** Splits are a property of a *cohort*, not of a sample, but training code overwhelmingly
 > works file-by-file. Recording the claim in-file makes single-file debugging possible; hashing the
@@ -1302,22 +1311,40 @@ The sample root **SHOULD** carry `content_id`, the Merkle root over the sorted d
 lines = sorted( f"{path}\t{digest}\n" for every dataset with a digest )
        + [ "meta\t" + hex( H(meta_json_utf8) ) + "\n" ]
        + sorted( f"@{obj}\t" + "<algo>:" + hex( H(canonical_attrs(obj)) ) + "\n"
-                 for every object with spec-defined attributes )
+                 for every object with an attribute line )
 content_id = "<algo>:" + hex( H( "".join(lines) ) )
 ```
 
 `hex` is lowercase hexadecimal. The three kinds of line spell a digest differently, and an
 implementation reproduces each to the byte: a dataset line carries the dataset's `digest` attribute as
 stored (`<algo>:<hex>`, §13.1), an attribute line carries `<algo>:` before the hex digest, and the
-`meta` line carries the bare hex digest. The objects with spec-defined attributes are the sample root
-and every member of `grids/`, `images/`, `annotations/` and `transforms/`; each has its line whichever
-of its section's attributes it carries, `{}` when it carries none.
+`meta` line carries the bare hex digest. The objects with an attribute line are the sample root and
+every member of `grids/`, `images/`, `annotations/` and `transforms/`; each has its line whichever of
+its covered attributes (below) it carries, `{}` when it carries none.
 
-`canonical_attrs` serialises the object's spec-defined attributes as one JSON object in the
+`canonical_attrs` serialises the covered attributes the object carries as one JSON object in the
 canonical JSON of §5.1, keyed by attribute name: a string as a string, a boolean as `true`/`false`,
 an integer or float scalar as a number of that type, and an array as nested lists of the same. Each of the three groups of lines is
 sorted independently and they are concatenated in the order shown. Paths are relative to the **sample
 root**, so a sample extracted from a collection keeps its `content_id` (§2.2).
+
+**The covered attributes** are exactly these, by object; any other attribute an object carries ---
+its own `digest`, an extension's, one a later minor version defines --- has no part in its line:
+
+| Object | Covered attributes |
+|---|---|
+| the sample root | `medh5_version`, `medh5_kind`, `medh5_profiles` |
+| `grids/<id>` | `shape`, `axis_names`, `axis_kinds`, `spacing`, `origin`, `direction`, `coord_system`, `units`, `timepoint`, `frame_uid`, `time_values`, `time_units`, `chunk_hint`, `patch_hint` |
+| `images/<id>` | `grid`, `modality`, `value_type`, `channel_names`, `rescale_slope`, `rescale_intercept`, `value_units`, `window_center`, `window_width`, `valid_mask`, `prov`, `levels`, `downsample_factors`, `downsample_method`, `grid_levels` |
+| `annotations/<id>` | `kind`, `task`, `grid`, `timepoints`, `space`, `frame_uid`, `class_ids`, `annotated_class_ids`, `closure`, `ignore_id`, `ignore_mask`, `prov`, `quality`, `derived_from`, `scope`, `scope_ids`, `multilabel`, `normalized`, `threshold`, `skeleton` |
+| `transforms/<id>` | `kind`, `from_frame`, `to_frame`, `from_grid`, `to_grid`, `units`, `invertible`, `inverse_id`, `prov`, `metrics`, `field_grid`, `vector_space`, `interpolation`, `extrapolation`, `cp_grid`, `order`, `components` |
+
+These are the lists every implementation has covered since 1.0, and they are not quite the
+attributes this specification defines. §8.5's `correspondence` is **not** covered: a validator
+checks that it resolves (E413), but `content_id` does not attest it, and an edit to it changes no
+line. `scope_ids`, which §9 stores as a dataset --- covered, as every dataset is, by its digest --- is
+listed among the annotation attributes as well, so an attribute of that name enters its annotation's
+line.
 
 **`index/` is outside `content_id` entirely** — neither its datasets (they carry no digest, §13.1)
 nor its attributes contribute a line. This is normative, not incidental: `content_id` is advertised
@@ -1345,8 +1372,7 @@ recomputes while a reader of that name reads other bytes. A validator **MUST** r
 relies on `content_id` may count it as covered. A later path outside those groups is an extension's
 and no error. No `content_id` changes.
 
-At the root, the covered attributes are exactly `medh5_version`, `medh5_kind` and `medh5_profiles`.
-`created` and `generator` are **excluded**, and `content_id` obviously cannot cover itself: two
+At the root, `created` and `generator` are **excluded**, and `content_id` obviously cannot cover itself: two
 byte-identical samples written an hour apart by different tools **MUST** share a `content_id`, or it
 is not a content address and cannot serve as a cache or dedup key. An object's own `digest` attribute
 is likewise excluded from its `canonical_attrs`, because the dataset lines already carry it.
@@ -1360,8 +1386,8 @@ Properties this buys, all absent from 0.x's single monolithic hash:
 
 ### 13.3 Derived index invalidation
 
-Every object under `index/` (§14.3) **MUST** carry `source_digest`, the digest of the annotation it
-derives from. An annotation is a *group*, and only datasets carry a `digest`, so the quantity is
+Each index entry `index/<ann_id>` (§14.3) --- the entry, not the objects inside it --- **MUST** carry
+`source_digest`, the digest of the annotation it derives from. An annotation is a *group*, and only datasets carry a `digest`, so the quantity is
 defined here: `source_digest` is
 
 ```
@@ -1539,10 +1565,13 @@ one.
   and a writer **MUST NOT** amend, recompress or pack such a file, since it cannot preserve what it
   does not know ([1.1](medh5-1.1.md) §2.2).
 * Third-party extensions live under `/meta → extra.<reverse-dns-namespace>` and under HDF5 groups
-  named `x_<namespace>_<name>`. Neither is touched by validators, and both survive amend --- unless
-  they hold an HDF5 reference (an object or region reference, alone or inside a compound, array or
-  variable-length type). A reference is an address in the file that holds it, which no copy into a
-  new file preserves, so a writer **MUST NOT** amend, recompress or pack a file holding one.
+  named `x_<namespace>_<name>`. Validators give them no meaning: `extra` is checked only as part of
+  `/meta` (§2.4), and an extension dataset only as every dataset is --- its `digest` (E701), which
+  like any dataset's has its line in `content_id` (§13.1, §13.2), and its storage (W902). Both
+  survive amend --- unless they hold an HDF5 reference (an object or region reference, alone or
+  inside a compound, array or variable-length type). A reference is an address in the file that
+  holds it, which no copy into a new file preserves, so a writer **MUST NOT** amend, recompress or
+  pack a file holding one.
 * Registering a new annotation `kind` or transform `kind` requires a MINOR bump and an entry in
   §6.3 / §10.1.
 
@@ -1664,9 +1693,9 @@ any machine. On one, with a 192×256×256 synthetic CT and eight classes, a mult
 costs 3.4 ms, foreground centre sampling 0.03 ms (O(1) in volume size, via §14.3; 0.05 ms at 63
 classes), a metadata-only read 0.19 ms, and `open()` → first patch 2.3 ms.
 
-Forty clauses have been corrected — ten during implementation, eleven in the 1.x package
+Forty-eight clauses have been corrected — ten during implementation, eleven in the 1.x package
 releases that followed, four when the engine was written a second time, in Rust, for the 2.0
-package, one when it implemented 1.1, and fourteen in the audits of 2.0 before its release — each because
+package, one when it implemented 1.1, and twenty-two in the audits of 2.0 before its release — each because
 writing the code showed the text was not implementable, not unambiguous, or not what the
 implementation could honestly promise, as written:
 
@@ -1712,6 +1741,14 @@ implementation could honestly promise, as written:
 | §2.2, §15.2 | A collection holds its `samples` group with at least one sample root, and a `samples` group missing or empty is **E008**. §15.2 gave E008 to "a group required by §2.3", which lays out a sample root, and §2.2 required no group --- while the corpus scores a collection without `samples` as E008, and the reference reports an empty one too: a collection holding no sample has nothing a reader can open. |
 | §15.2 | Six codes are described by everything the reference validator reports under them: **E001** also a file, or an object a check must read, that cannot be read; **E108** a timepoint `id` repeated; **E405** a dataset whose shape disagrees with the annotation's own datasets, mesh `faces` indexing outside its `vertices` among them; **E411** a stored value the kind does not permit, a `probmap` value outside [0, 1] or a keypoint `visibility` other than 0, 1 or 2; **E412** an unknown `task`, `closure`, `space` or `scope`; **E502** a transform without the frames or parameters its kind requires, mapping a frame to itself, or naming an unknown `vector_space`. The table named one condition for each, so a validator implementing it as written gave another code, or none, for defects the reference reported under these --- each as 1.x did, but for the `probmap` checks 2.0 added. The registry's summaries of E003 and E306 likewise name what §2.2 and this table already said: a collection's sample key is `{1,255}`, and an unknown parent is E306. |
 | §15.1 | `integrity` also makes the value checks that need every stored value of a bulk dataset --- `probmap` values in [0, 1] (E411) and `normalized` sums (E404) --- in the same full read that recomputes its digest. The table placed every encoding invariant at `semantic`, which reads no probability map whole: a validator following it read every map at the default level, and reported there what the reference reports only at `integrity`. |
+| §13.2 | The covered attributes are listed, object by object, and §8.5's `correspondence` is named as not covered. The clause hashed "spec-defined attributes", which `correspondence` is, while the 1.x package, the prototype (§C.2) and the engine have all covered one fixed list per object that leaves it out --- and that names `scope_ids`, a §9 dataset, among the annotation attributes. An implementation following the text computed another `content_id` for every file with landmark pairs, and an edit to `correspondence` was invisible to integrity validation. Covering it now would change the address of every such file; no `content_id` changes. |
+| §1.3 | `training` requires a sampling index with at least one entry, and an entry gone stale is W905, not a profile violation. "Present and current" made a stale entry an E009, while §13.3 has a reader ignore it and **MUST NOT** treat it as a file error --- and the corpus case `W905-stale-index`, which declares `training`, is valid. |
+| §1.3, §6.3 | Each of `det`, `reg` and `curation` requires what a validator reports E009 without: an annotation whose `task` is `detection`, whatever its kind; a transform whose `from_frame` and `to_frame` are each a grid's `frame_uid`; a provenance activity. `det` named a §8 annotation, while §6.3 gives `instances`, a §7 kind, to detection too, and the reference writer and validator read the declared task. "Resolvable endpoints" and a "§11 provenance graph" said nothing a validator could check: a `reg` claim whose transform related frames no grid has, and a `curation` claim with no activity recorded, validated. |
+| §12.3 | W906 is a validator's within one sample and a split audit's across samples. The clause asked a validator to compare two files, which validating a file cannot do: the reference validator compares one sample's claims --- as the corpus case `W906-conflicting-splits`, one file holding two, expects --- and `medh5 splits` compares a cohort's, so a validator written from the text failed that case and could not do what the text asked. |
+| §16 | A validator checks an extension dataset as it checks every dataset --- its `digest`, which enters `content_id`, and its storage --- and gives it no other meaning. "Neither is touched by validators" contradicted §13.2, which gives every digested dataset a line in `content_id`: a validator that skipped `x_` groups computed another `content_id` for the same file, and the reference validator reported W902 on an unchunked extension dataset and E701 on an edited one. |
+| §2.1 | The root attribute table is a sample root's: a collection's own `/` requires only `medh5_kind` and `medh5_version` (§2.2). Read as "on the file (`/`)", it required `medh5_profiles` at the root of a collection, whose members each declare their own, so every valid collection of the corpus failed the text. |
+| §13.3 | `source_digest` is required of each index entry, `index/<ann_id>`, not of "every object under `index/`": the datasets and the `fg_coords/` group inside an entry never carried one, and §14.3 places the attribute on the entry. |
+| §2.1, §11.1 | A timestamp --- a provenance activity's, and the root's `created` --- is RFC 3339 (E604 otherwise, for provenance) and **SHOULD** be in UTC. "RFC 3339 UTC" read as a requirement nothing enforced: every validator since 1.0 has accepted an offset such as `+01:00`, which names the same instant, and reported E604 only for text that is not RFC 3339 --- so files the implementations passed failed the text. |
 
 ### C.2 Prototype checks
 

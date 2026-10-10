@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from pathlib import Path
 
 import h5py
@@ -21,6 +22,7 @@ import medh5
 from medh5.errors import MEDH5ValidationError
 from medh5.integrity import array_digest, canonical_attrs, dataset_digest
 from medh5.labels import canonical_json
+from tests.helpers import ROOT
 
 # Floats either side of every notation boundary §5.1 states, and the values a
 # shortest-round-trip printer most often gets wrong.
@@ -144,6 +146,120 @@ def test_S13_2_canonical_attrs_is_the_canonical_json_of_the_attributes(
         ).decode()
     with medh5.open(path) as sample:
         assert canonical_attrs(sample.root["grids/g"], list(names)) == expected
+
+
+def _covered_attributes() -> dict[str, set[str]]:
+    """§13.2's table of covered attributes, by object: ``""`` for the root,
+    else the group whose members the row is for."""
+    spec = (ROOT / "docs/spec/medh5-1.0.md").read_text(encoding="utf-8")
+    section = spec[spec.index("### 13.2") : spec.index("### 13.3")]
+    table = section[section.index("| Object | Covered attributes |") :]
+    covered: dict[str, set[str]] = {}
+    for row in table.splitlines()[2:]:
+        if not row.startswith("|"):
+            break
+        target, names = row.strip("|").split("|")
+        group = re.search(r"`(\w+)/<id>`", target)
+        covered[group.group(1) if group else ""] = set(re.findall(r"`(\w+)`", names))
+    return covered
+
+
+def _content_id_from_the_text(path: Path, covered: dict[str, set[str]]) -> str:
+    """§13.2 followed literally, with h5py, json and hashlib: nothing of the
+    engine's between the text and the bytes."""
+
+    def hexdigest(data: bytes) -> str:
+        return hashlib.sha256(data).hexdigest()
+
+    def plain(value: object) -> object:
+        if isinstance(value, bytes):
+            return value.decode("utf-8")
+        if isinstance(value, np.ndarray):
+            return [plain(v) for v in value] if value.ndim else plain(value[()])
+        if isinstance(value, np.generic):
+            return value.item()
+        return value
+
+    def attribute_line(path: str, obj: h5py.HLObject, names: set[str]) -> str:
+        doc = {n: plain(obj.attrs[n]) for n in sorted(names) if n in obj.attrs}
+        return f"@{path}\tsha256:{hexdigest(_python(doc))}\n"
+
+    datasets: list[str] = []
+    attributes: list[str] = []
+    with h5py.File(path, "r") as handle:
+
+        def visit(name: str, obj: h5py.HLObject) -> None:
+            if (
+                isinstance(obj, h5py.Dataset)
+                and not name.startswith("index/")
+                and "digest" in obj.attrs
+            ):
+                datasets.append(f"{name}\t{plain(obj.attrs['digest'])}\n")
+
+        handle.visititems(visit)
+        meta = plain(handle["meta"][()])
+        assert isinstance(meta, str)
+        attributes.append(attribute_line("", handle, covered[""]))
+        for group in ("grids", "images", "annotations", "transforms"):
+            for member in handle.get(group, {}):
+                obj = handle[f"{group}/{member}"]
+                attributes.append(
+                    attribute_line(f"{group}/{member}", obj, covered[group])
+                )
+    lines = (
+        sorted(datasets)
+        + [f"meta\t{hexdigest(meta.encode('utf-8'))}\n"]
+        + sorted(attributes)
+    )
+    return "sha256:" + hexdigest("".join(lines).encode("utf-8"))
+
+
+def test_S13_2_the_covered_attributes_reproduce_content_id(tmp_path: Path) -> None:
+    """An implementation that reads §13.2's table computes the engine's address:
+    for every kind of object, and for a landmark pair, whose `correspondence`
+    the table leaves out."""
+    path = tmp_path / "pair.medh5"
+    points = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+    with medh5.create(path, sample_id="pair", subject_id="s") as w:
+        w.add_timepoint("tp0", days_from_baseline=0)
+        w.add_timepoint("tp1", days_from_baseline=30)
+        for tp in ("tp0", "tp1"):
+            w.add_grid(
+                f"ct_{tp}",
+                shape=(4, 4, 4),
+                spacing=(1.0, 1.0, 1.0),
+                timepoint=tp,
+                frame_uid=f"pseudo:{tp}",
+            )
+            w.add_image(
+                f"CT_{tp}",
+                np.zeros((4, 4, 4), np.int16),
+                grid=f"ct_{tp}",
+                modality="CT",
+            )
+        w.add_points("fid_tp0", points, grid="ct_tp0", correspondence="fid_tp1")
+        w.add_points("fid_tp1", points, grid="ct_tp1", correspondence="fid_tp0")
+        w.add_transform(
+            "tp0_to_tp1",
+            kind="affine",
+            from_frame="pseudo:tp0",
+            to_frame="pseudo:tp1",
+            matrix=np.eye(4),
+        )
+
+    covered = _covered_attributes()
+    with medh5.open(path) as sample:
+        stored = sample.content_id
+        engine = sample.attr_name_map()
+    assert {obj.split("/")[0] for obj in engine} == set(covered)
+    for obj, names in engine.items():
+        assert set(names) == covered[obj.split("/")[0]], obj
+    assert "correspondence" not in covered["annotations"]
+    with h5py.File(path, "r") as handle:
+        assert handle["annotations/fid_tp0"].attrs["correspondence"] == "fid_tp1"
+    assert _content_id_from_the_text(path, covered) == stored
+    covering = {**covered, "annotations": covered["annotations"] | {"correspondence"}}
+    assert _content_id_from_the_text(path, covering) != stored
 
 
 @pytest.mark.parametrize(

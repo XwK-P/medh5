@@ -71,10 +71,10 @@ s.profiles   # {"core", "seg", "det", "curation", "longitudinal"}
 | `seg` | a label set and at least one voxel annotation (a bare `mask` does not count) |
 | `det` | a label set and at least one annotation whose `task` is `detection` |
 | `cls` | a label set and at least one classification annotation |
-| `reg` | at least one transform |
-| `curation` | a provenance graph, and `quality` on every annotation |
+| `reg` | at least one transform whose `from_frame` and `to_frame` are each the `frame_uid` of one of the sample's grids |
+| `curation` | a provenance graph recording at least one activity, and `quality` on every annotation |
 | `multiscale` | the §4.3 pyramid layout on every image |
-| `training` | a sampling index, present and current |
+| `training` | a sampling index with at least one entry; a stale entry is `W905`, not a missing profile |
 | `longitudinal` | at least two declared timepoints, each grid bound to one, and stable instance ids for objects seen at more than one visit (§7.4) |
 | `clinical` | **format 1.1**: the `clinical/` group --- a canonical descriptor with the subject clock, at least one event, and the documents and links the events use ([1.1](../spec/medh5-1.1.md) §3–§7) |
 
