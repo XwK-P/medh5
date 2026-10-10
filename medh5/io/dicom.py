@@ -83,6 +83,25 @@ def require_pydicom() -> Any:
     return require("pydicom", extra="dicom", purpose="DICOM conversion")
 
 
+def _dcmread(path: str | os.PathLike[str], **options: Any) -> Any:
+    """``pydicom.dcmread``, refusing by name a file that is not DICOM.
+
+    pydicom's own error names neither the file nor the reader, and is no
+    ``MEDH5Error``: a caller catching every input problem as one missed it,
+    and the command line printed a traceback.
+    """
+    require_pydicom()
+    from pydicom import dcmread
+    from pydicom.errors import InvalidDicomError
+
+    try:
+        return dcmread(os.fspath(path), **options)
+    except InvalidDicomError as exc:
+        raise MEDH5ValidationError(
+            f"{os.fspath(path)} is not a DICOM file: {exc}"
+        ) from None
+
+
 @dataclass(slots=True)
 class Series:
     """One DICOM series, resolved into a volume and its geometry."""
@@ -223,10 +242,9 @@ def read_series(
     series: Series, *, report: ConversionReport | None = None
 ) -> tuple[npt.NDArray[Any], dict[str, Any]]:
     """One series as ``(volume, geometry)``, ordered and measured (§3.3)."""
-    pydicom = require_pydicom()
     if not series.paths:
         raise MEDH5ValidationError(f"series {series.series_uid} has no files")
-    slices = [pydicom.dcmread(p) for p in series.paths]
+    slices = [_dcmread(p) for p in series.paths]
     orientation = np.asarray(
         _agreed(
             slices,
@@ -270,6 +288,15 @@ def read_series(
         expect=2,
     )
     _check_stacked(positions, normal, pixel_spacing, series, report)
+    # One matrix, too: slices of different sizes are no volume, and reached
+    # `np.stack` as a `ValueError` naming nothing.
+    _agreed(
+        slices,
+        lambda s: [int(s.Rows), int(s.Columns)],
+        "Rows/Columns",
+        series,
+        expect=2,
+    )
     volume = np.stack([np.asarray(s.pixel_array) for s in slices])
     photometric = _text(getattr(slices[0], "PhotometricInterpretation", None))
     if photometric == "MONOCHROME1" and report is not None:
@@ -552,8 +579,10 @@ def from_dicom(
 ) -> ConversionReport:
     """Convert a DICOM tree into one sample per subject (or per study).
 
-    *out* is a directory when more than one sample results, and a file path when
-    exactly one does.
+    *out* is a directory --- each sample named for its subject inside it ---
+    when more than one sample results, when it is a directory already, or when
+    it ends in a path separator (``out/``); otherwise it is the file the one
+    sample is written to.
     """
     log = report or ConversionReport(converter="from-dicom")
     log.source = os.fspath(root)
@@ -582,14 +611,20 @@ def from_dicom(
     ]
     groups = group_by_subject(occasions, mode=group_by, report=log)
     target = Path(os.fspath(out))
-    multiple = len(groups) > 1
-    if multiple:
+    named = os.fspath(out)
+    directory = (
+        len(groups) > 1
+        or target.is_dir()
+        or named.endswith(os.sep)
+        or (os.altsep is not None and named.endswith(os.altsep))
+    )
+    if directory:
         target.mkdir(parents=True, exist_ok=True)
     used: set[str] = set()
     for group in groups:
         path = (
             target / f"{output_name(group, used, safe=_safe)}.medh5"
-            if multiple
+            if directory
             else target
         )
         _write_subject(group, path, codec=codec, log=log)
@@ -763,11 +798,15 @@ def _write_subject(
             "returns HU and read() returns stored values (§4.2)",
             {"subject": group.subject_id},
         )
-        log.warn(
+        # Information, not a warning: a warning fails the conversion, and
+        # this one was on every conversion, so `convert from-dicom` exited 1
+        # on every success.  The validator reports the file (W903).
+        log.add(
             "deidentification",
             "no de-identification record was written: this converter does not "
             "de-identify, and a file without the record must be treated as "
             "potentially identifying (§11.4, W903)",
+            "info",
             {"subject": group.subject_id},
         )
     log.outputs.append(str(path))

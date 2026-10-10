@@ -43,10 +43,9 @@ def read_rtstruct(
     path: str | os.PathLike[str],
 ) -> tuple[dict[int, list[npt.NDArray[np.float64]]], dict[str, Any]]:
     """An RTSTRUCT as ``{roi number: [contour, ...]}`` in patient coordinates."""
-    from medh5.io.dicom import require_pydicom
+    from medh5.io.dicom import _dcmread
 
-    pydicom = require_pydicom()
-    dataset = pydicom.dcmread(os.fspath(path))
+    dataset = _dcmread(path)
     if getattr(dataset, "Modality", None) != "RTSTRUCT":
         raise MEDH5ValidationError(
             f"{path} declares Modality="
@@ -485,7 +484,7 @@ def to_rtstruct(
     the grid's.
     """
     import medh5
-    from medh5.io.dicom import require_pydicom
+    from medh5.io.dicom import _dcmread, require_pydicom
     from medh5.io.dicom_seg import frames_agree
 
     pydicom = require_pydicom()
@@ -494,7 +493,7 @@ def to_rtstruct(
 
     log = report or ConversionReport(converter="to-rtstruct")
     log.source = os.fspath(sample)
-    datasets = [pydicom.dcmread(os.fspath(p)) for p in source_images]
+    datasets = [_dcmread(p) for p in source_images]
     if not datasets:
         raise MEDH5ValidationError("to_rtstruct needs the source DICOM images")
     reference = datasets[0]

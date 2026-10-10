@@ -97,21 +97,37 @@ def _convert(command: str, args: Mapping[str, Any]) -> int:
     """Run converter *command* (``from-nifti``, ``to-dicom-seg``, ...) on its
     parsed arguments, keyed as the 1.x parser named them; the exit code.
 
-    A handled failure --- a format error, a missing optional dependency, a
-    missing file, a name the file does not have --- prints ``medh5: <why>`` and
-    exits 1, as every native command does.
+    A handled failure --- a format error (an input that is not the format
+    named is refused as one by the readers), a missing optional dependency, a
+    file that cannot be read or written, a name the file does not have ---
+    prints ``medh5: <why>`` and exits 1, as every native command does.  A
+    ``--report`` that names a directory is refused before anything is
+    converted, not after the output is written.
     """
     handler = _HANDLERS.get(command)
     if handler is None:
         return _fail("usage: medh5 convert COMMAND ... (see --help)")
+    report = args.get("report")
+    if report and Path(report).is_dir():
+        return _fail(f"--report {report} is a directory; name the file to write")
     try:
         return handler(SimpleNamespace(**args))
-    except (MEDH5Error, ImportError, FileNotFoundError) as exc:
-        return _fail(str(exc))
-    except LookupError as exc:
-        return _fail(_what(exc))
     except BrokenPipeError:  # pragma: no cover - `medh5 convert ... | head`
         return EXIT_OK
+    except (MEDH5Error, ImportError) as exc:
+        return _fail(str(exc))
+    except OSError as exc:
+        return _fail(_os_error(exc))
+    except LookupError as exc:
+        return _fail(_what(exc))
+
+
+def _os_error(exc: OSError) -> str:
+    """``<file>: <why>`` for an error that names its file, as the shell
+    says it; the message as it is otherwise."""
+    if exc.filename is not None and exc.strerror:
+        return f"{exc.filename}: {exc.strerror}"
+    return str(exc)
 
 
 def _pairs(values: list[str] | None, what: str) -> dict[str, str]:

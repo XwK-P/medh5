@@ -205,6 +205,25 @@ class TestRtstruct:
                 tmp_path / "x.dcm",
             )
 
+    def test_an_rtstruct_comes_in_through_the_command_line(
+        self, prepared, tmp_path, capsys
+    ):
+        """`medh5 convert from-rtstruct`; a file that is not DICOM is refused by
+        name, where pydicom's error was a traceback."""
+        from medh5.cli import EXIT_ERROR, EXIT_OK, main
+
+        rt = self._rtstruct(prepared, tmp_path, hole=False)
+        path = str(prepared["path"])
+        argv = ["convert", "from-rtstruct", str(rt), path, "--id", "rois"]
+        assert main(argv) == EXIT_OK
+        with medh5.open(prepared["path"]) as sample:
+            assert sample.annotations["rois"].kind == "contours"
+        text = tmp_path / "notes.dcm"
+        text.write_text("not DICOM", encoding="utf-8")
+        capsys.readouterr()
+        assert main(["convert", "from-rtstruct", str(text), path]) == EXIT_ERROR
+        assert capsys.readouterr().err.startswith(f"medh5: {text} is not a DICOM file")
+
     def test_a_non_rtstruct_is_refused(self, prepared):
         from medh5.io.rtstruct import read_rtstruct
 
@@ -212,7 +231,6 @@ class TestRtstruct:
             read_rtstruct(prepared["series"]["paths"][0])
 
     def test_S8_6_imported_rtstruct_polygons_record_their_plane(self, tmp_path: Path):
-        pydicom = pytest.importorskip("pydicom")
         from pydicom.dataset import Dataset, FileMetaDataset
         from pydicom.uid import ExplicitVRLittleEndian, generate_uid
 

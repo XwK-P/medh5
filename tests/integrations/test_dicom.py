@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +24,6 @@ class TestF06DicomSameModality:
     def test_two_series_of_one_modality_import_side_by_side(
         self, tmp_path: Path
     ) -> None:
-        pytest.importorskip("pydicom")
         from pydicom.uid import generate_uid
 
         from medh5.io.dicom import from_dicom
@@ -58,7 +58,6 @@ class TestF06DicomSameModality:
             assert sample.images["MR_1_tp0"].grid_id == "mr_1_tp0"
 
     def test_a_single_series_keeps_its_short_name(self, tmp_path: Path) -> None:
-        pytest.importorskip("pydicom")
         from pydicom.uid import generate_uid
 
         from medh5.io.dicom import from_dicom
@@ -80,10 +79,6 @@ class TestF06DicomSameModality:
 
 class TestW18Converters:
     """F-19, F-25."""
-
-    @pytest.fixture(autouse=True)
-    def _pydicom(self) -> None:
-        pytest.importorskip("pydicom")
 
     def _tilted(self, root: Path, degrees: float) -> Path:
         import pydicom
@@ -495,12 +490,55 @@ class TestDicom:
             assert "PatientName" not in acquisition
             assert "PatientID" not in acquisition
 
-    def test_a_converted_file_says_it_is_not_de_identified(self, tree, tmp_path):
+    def test_S11_4_a_converted_file_says_it_is_not_de_identified(
+        self, tree, tmp_path, capsys
+    ):
+        """As information, which the validator repeats (W903): a warning fails
+        a conversion, and this one was on every conversion, so `medh5 convert
+        from-dicom` exited 1 on every success."""
+        from medh5.cli import EXIT_OK, main
         from medh5.io.dicom import from_dicom
 
         report = from_dicom(tree["root"], tmp_path / "s.medh5")
-        assert any(w.kind == "deidentification" for w in report.warnings)
+        (note,) = report.of_kind("deidentification")
+        assert note.severity == "info" and report.ok
         assert "W903" in validate_file(tmp_path / "s.medh5").codes
+        out = tmp_path / "cli.medh5"
+        assert main(["convert", "from-dicom", str(tree["root"]), str(out)]) == EXIT_OK
+        assert "de-identif" in capsys.readouterr().out and out.is_file()
+
+    @pytest.mark.parametrize("how", ["separator", "existing"])
+    def test_an_out_directory_holds_one_sample_too(self, tree, tmp_path, how):
+        """`out/` names a directory whatever the number of samples: with one
+        subject in the tree it was written as a file named `out`, and an
+        existing directory ended in an `OSError` traceback."""
+        from medh5.cli import EXIT_OK, main
+
+        folder = tmp_path / "out"
+        if how == "existing":
+            folder.mkdir()
+        named = str(folder) + (os.sep if how == "separator" else "")
+        assert main(["convert", "from-dicom", str(tree["root"]), named]) == EXIT_OK
+        (written,) = folder.glob("*.medh5")
+        with medh5.open(written) as sample:
+            assert sample.identity.subject_id == "PSEUDO-001"
+
+    def test_S3_3_slices_of_two_matrix_sizes_are_refused_by_name(self, tree):
+        """They reached `np.stack`, whose `ValueError` named nothing."""
+        import pydicom
+
+        from medh5.io.dicom import read_series, scan_dicom
+
+        target = sorted((tree["root"] / "v1" / "ct").glob("*.dcm"))[3]
+        ds = pydicom.dcmread(str(target))
+        ds.Rows, ds.Columns = 8, 10
+        ds.PixelData = np.zeros((8, 10), np.uint16).tobytes()
+        ds.save_as(str(target))
+        wanted = tree["ct0"]["series_uid"]
+        series = next(s for s in scan_dicom(tree["root"]) if s.series_uid == wanted)
+        with pytest.raises(MEDH5ValidationError, match="Rows/Columns") as caught:
+            read_series(series)
+        assert caught.value.code is None
 
     def test_group_by_study_keeps_the_visits_apart(self, tree, tmp_path):
         from medh5.io.dicom import from_dicom
@@ -533,7 +571,6 @@ class TestDicom:
             from_dicom(tmp_path / "empty", tmp_path / "x.medh5")
 
     def test_dicom_enhanced_objects_and_monochrome1_are_reported(self, tmp_path: Path):
-        pydicom = pytest.importorskip("pydicom")
         from pydicom.dataset import Dataset, FileMetaDataset
         from pydicom.uid import ExplicitVRLittleEndian, generate_uid
 
