@@ -82,7 +82,7 @@ _DatasetBase = dataset_base()
 
 
 class _Epoch:
-    """The epoch, in a tensor every ``DataLoader`` worker shares (F-17).
+    """The epoch, in a tensor every ``DataLoader`` worker shares.
 
     Patches are seeded with ``(seed, epoch, index)``.  An ``int`` attribute set
     in the main process never reached a worker started with
@@ -338,8 +338,8 @@ class _Base(_DatasetBase):  # type: ignore[misc,valid-type]
         Patch coordinates count from the *padded* patch's first voxel, so a
         patch reaching past the volume shifts every box by the padding before
         it: subtracting the start alone left boxes ``pad_before`` voxels from
-        the anatomy they bound (L05 of the 2.0 audit).  Only the requested
-        classes are returned, as every other label format does (L09).
+        the anatomy they bound.  Only the requested classes are returned, as
+        every other label format does.
         """
         wanted = None if classes is None else set(classes)
         objects = []
@@ -843,9 +843,9 @@ class PairedPatchDataset(_Base):
         else:
             # One frame, but each grid's numbers are in its own units (§3.5):
             # a point in millimetres read on a grid in metres landed a
-            # thousandfold off (N10 of the round-3 audit).  Two conventions
-            # are refused here (E414): §3.3 rule 4 compares world coordinates
-            # in one `coord_system` only.
+            # thousandfold off.  Two conventions are refused here (E414):
+            # §3.3 rule 4 compares world coordinates in one `coord_system`
+            # only.
             world = source.world_into(target, world)
         index = target.world_to_index(world)[0]
         return tuple(int(round(float(v))) for v in index)
@@ -873,8 +873,8 @@ def _require_units(transform: Any, source: Any, target: Any) -> None:
 
     A transform maps points in its own ``units``, and 1.0 defines no transform
     across units.  One in millimetres between two metre grids moved every
-    point a thousand times as far as it was meant to (F06 of the round-4
-    audit); nothing is converted here --- the file is wrong, and says so.
+    point a thousand times as far as it was meant to; nothing is converted
+    here --- the file is wrong, and says so.
     """
     wrong = [grid for grid in (source, target) if grid.units != transform.units]
     if wrong:
