@@ -148,7 +148,6 @@ class TestDicomSeg:
         reconstruction".  Frames carry their own position; they are placed.
         """
         hd = pytest.importorskip("highdicom")
-        pydicom = pytest.importorskip("pydicom")
         from pydicom.uid import generate_uid
 
         from medh5.io.dicom import from_dicom
@@ -449,6 +448,19 @@ class TestSegFramesSitOnTheGrid:
             placed = place_frames([self._frame(position)], geometry, grid)
             assert placed[1][2].all() and not placed[1][3].any()
 
+    def test_S3_5_a_grid_without_patient_coordinates_is_E414(self, tmp_path):
+        """A grid in pixels has no place for a patient position: its space is
+        what is wrong, as the RTSTRUCT importer says, not a shape (E405)."""
+        from medh5.io.dicom_seg import place_frames
+
+        path = self._grid(tmp_path, units="px", spacing=(1.0, 1.0, 1.0))
+        with medh5.open(path) as sample:
+            grid = sample.grids["g"]
+            frames = [self._frame(grid.index_to_world([2, 0, 0]))]
+            with pytest.raises(MEDH5ValidationError, match="uncalibrated") as caught:
+                place_frames(frames, self._geometry(grid), grid)
+            assert caught.value.code == "E414"
+
 
 def _rewrite_frames(seg: Path, out: Path, change: Any = None) -> Path:
     """The SEG with its plane orientation and pixel measures moved out of the
@@ -522,7 +534,8 @@ class TestSegGeometryPerFrame:
         )
         with pytest.raises(MEDH5ValidationError, match="not one volume") as caught:
             from_dicom_seg(out, prepared["path"], ann_id="turned")
-        assert caught.value.code == "E405"
+        # About the SEG alone, so no §15.2 code (there is no sample yet).
+        assert caught.value.code is None
         with medh5.open(prepared["path"]) as sample:
             assert "turned" not in sample.annotations
 
@@ -577,6 +590,41 @@ class TestSegExportGeometry:
                 timepoint=timepoint,
             )
             w.add_segmentation(name, grid=name, masks={1: np.ascontiguousarray(liver)})
+
+    def test_S3_4_source_images_in_another_frame_are_E414(self, prepared, tmp_path):
+        """Another frame of reference is E414, as on import; a frame `medh5
+        scrub` pseudonymised is compared through the scrub's salt."""
+        from medh5.curation.scrub import pseudonymise
+        from medh5.io.dicom_seg import to_dicom_seg
+
+        frame = prepared["series"]["frame_uid"]
+        with medh5.open(prepared["path"]) as sample:
+            grid = sample.grids[prepared["grid"]]
+            lattice = {
+                "shape": grid.shape,
+                "spacing": grid.spacing,
+                "origin": grid.origin,
+                "direction": np.asarray(grid.direction),
+                "timepoint": grid.timepoint,
+            }
+        with medh5.amend(prepared["path"]) as w:
+            for name, uid in (
+                ("other", "9.9.9"),
+                ("scrubbed", pseudonymise(frame, "s")),
+            ):
+                w.add_grid(name, frame_uid=uid, **lattice)
+                w.add_segmentation(name, grid=name, masks={1: prepared["liver"]})
+        sources = prepared["series"]["paths"]
+        with pytest.raises(MEDH5ValidationError, match="across frames") as caught:
+            to_dicom_seg(prepared["path"], "other", sources, tmp_path / "a.dcm")
+        assert caught.value.code == "E414"
+        with pytest.raises(MEDH5ValidationError, match="frame_salt=") as caught:
+            to_dicom_seg(prepared["path"], "scrubbed", sources, tmp_path / "b.dcm")
+        assert caught.value.code == "E414"
+        out = to_dicom_seg(
+            prepared["path"], "scrubbed", sources, tmp_path / "c.dcm", frame_salt="s"
+        )
+        assert pydicom.dcmread(str(out)).FrameOfReferenceUID == frame
 
     @pytest.mark.parametrize("how", ["turned", "shifted", "resampled"])
     def test_N01_an_annotation_on_another_grid_is_refused(
@@ -753,6 +801,115 @@ class TestSegFrameIdentity:
         assert not report.of_kind("frame")
         with medh5.open(source) as sample:
             assert np.array_equal(sample.annotations["seg"].dense(["liver"])[0], mask)
+
+
+class TestSegKinds:
+    """A SEG is read only as what its frames hold: a LABELMAP frame holds
+    every segment by pixel value and names none, and was read as a BINARY
+    frame of segment 1 --- as was any frame that named no segment."""
+
+    @staticmethod
+    def _exported(prepared: dict[str, Any], tmp_path: Path) -> Path:
+        from medh5.io.dicom_seg import to_dicom_seg
+
+        return to_dicom_seg(
+            prepared["path"], "organs", prepared["series"]["paths"], tmp_path / "s.dcm"
+        )
+
+    def test_S7_a_labelmap_seg_is_refused_by_name(self, prepared, tmp_path):
+        from medh5.io.dicom_seg import from_dicom_seg
+
+        out = self._exported(prepared, tmp_path)
+        dataset = pydicom.dcmread(str(out))
+        dataset.SegmentationType = "LABELMAP"
+        dataset.save_as(str(out), enforce_file_format=True)
+        before = prepared["path"].read_bytes()
+        with pytest.raises(MEDH5ValidationError, match="LABELMAP") as caught:
+            from_dicom_seg(out, prepared["path"], ann_id="labelmap")
+        assert caught.value.code is None
+        assert prepared["path"].read_bytes() == before
+
+    def test_S7_a_frame_naming_no_segment_is_refused(self, prepared, tmp_path):
+        from medh5.io.dicom_seg import read_dicom_seg_frames
+
+        out = self._exported(prepared, tmp_path)
+        dataset = pydicom.dcmread(str(out))
+        del dataset.PerFrameFunctionalGroupsSequence[-1].SegmentIdentificationSequence
+        dataset.save_as(str(out), enforce_file_format=True)
+        with pytest.raises(MEDH5ValidationError, match="names no segment"):
+            read_dicom_seg_frames(out)
+
+    def test_S7_a_segment_named_in_the_shared_groups_is_read(self, prepared, tmp_path):
+        """A functional group may sit in the shared item (PS3.3 C.7.6.16), and
+        highdicom names a single-segment SEG's one segment there."""
+        from medh5.io.dicom_seg import from_dicom_seg, to_dicom_seg
+
+        with medh5.amend(prepared["path"]) as w:
+            w.add_segmentation(
+                "liver", grid=prepared["grid"], masks={1: prepared["liver"]}
+            )
+        out = to_dicom_seg(
+            prepared["path"], "liver", prepared["series"]["paths"], tmp_path / "l.dcm"
+        )
+        dataset = pydicom.dcmread(str(out))
+        shared = dataset.SharedFunctionalGroupsSequence[0]
+        if "SegmentIdentificationSequence" not in shared:
+            frames = dataset.PerFrameFunctionalGroupsSequence
+            identification = frames[0].SegmentIdentificationSequence
+            shared.SegmentIdentificationSequence = identification
+            for item in frames:
+                del item.SegmentIdentificationSequence
+            dataset.save_as(str(out), enforce_file_format=True)
+        from_dicom_seg(out, prepared["path"], ann_id="back")
+        with medh5.open(prepared["path"]) as sample:
+            back = sample.annotations["back"].dense(["liver"])[0]
+            assert np.array_equal(back, prepared["liver"])
+
+
+class TestSegCommandLine:
+    """`medh5 convert to-dicom-seg` and `from-dicom-seg`."""
+
+    def test_a_seg_goes_out_and_back_through_the_command_line(self, prepared, tmp_path):
+        from medh5.cli import EXIT_OK, main
+
+        out = tmp_path / "s.dcm"
+        sources = [a for p in prepared["series"]["paths"] for a in ("--source", p)]
+        path = str(prepared["path"])
+        assert (
+            main(["convert", "to-dicom-seg", path, "organs", str(out), *sources]) == 0
+        )
+        argv = ["convert", "from-dicom-seg", str(out), path, "--id", "back"]
+        assert main(argv) == EXIT_OK
+        with medh5.open(prepared["path"]) as sample:
+            back = sample.annotations["back"]
+            assert np.array_equal(back.dense(["liver"])[0], prepared["liver"])
+            assert np.array_equal(back.dense(["lesion"])[0], prepared["lesion"])
+
+    def test_a_file_that_is_not_dicom_is_refused_by_name(
+        self, prepared, tmp_path, capsys
+    ):
+        """pydicom's error named no file and was no `MEDH5Error`: the command
+        line printed a traceback."""
+        from medh5.cli import EXIT_ERROR, main
+
+        text = tmp_path / "notes.medh5"
+        text.write_text("not DICOM", encoding="utf-8")
+        path = str(prepared["path"])
+        for argv in (
+            ["from-dicom-seg", str(text), path],
+            [
+                "to-dicom-seg",
+                path,
+                "organs",
+                str(tmp_path / "x.dcm"),
+                "--source",
+                str(text),
+            ],
+        ):
+            assert main(["convert", *argv]) == EXIT_ERROR
+            err = capsys.readouterr().err
+            assert err.startswith(f"medh5: {text} is not a DICOM file"), err
+        assert not (tmp_path / "x.dcm").exists()
 
 
 class TestSparseSegReader:

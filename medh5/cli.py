@@ -215,7 +215,15 @@ def _to_dicom_seg(args: Any) -> int:
     from medh5.io.report import ConversionReport
 
     report = ConversionReport(converter="to-dicom-seg")
-    to_dicom_seg(args.path, args.annotation, args.source, args.out, report=report)
+    to_dicom_seg(
+        args.path,
+        args.annotation,
+        args.source,
+        args.out,
+        # `--frame-salt`, where the grammar gives this command one.
+        frame_salt=getattr(args, "frame_salt", None),
+        report=report,
+    )
     return _finish(report, args)
 
 
