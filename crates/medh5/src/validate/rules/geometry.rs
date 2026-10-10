@@ -224,6 +224,8 @@ fn check_grid(ctx: &Context, grid: &Node, name: &str, location: &str) -> Result<
     Ok(out)
 }
 
+/// Semantic: every grid bound to a declared timepoint (§3.7: E106, E107),
+/// frames across timepoints (W910) and a transform relating them (W911).
 pub fn check_timepoints(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     let mut out = Vec::new();
     let Some(doc) = &ctx.document else { return Ok(out) };

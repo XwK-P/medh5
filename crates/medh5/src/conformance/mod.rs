@@ -39,13 +39,20 @@ pub type Build = Arc<dyn Fn(&Path) -> Result<()> + Send + Sync>;
 /// One corpus entry.
 #[derive(Clone)]
 pub struct Case {
+    /// The case's name, which is also its file's stem.
     pub name: String,
+    /// What the file holds, in one sentence.
     pub description: String,
+    /// The specification clause the case exercises.
     pub clause: String,
+    /// How the file is made; `None` for a case read from a published
+    /// manifest ([`Case::from_record`]).
     pub build: Option<Build>,
     /// The validation level the case is checked at.
     pub level: String,
+    /// The error codes a conforming validator reports, and no others.
     pub errors: Vec<String>,
+    /// The warning codes a conforming validator reports, and no others.
     pub warnings: Vec<String>,
     /// `.medh5c` for a collection case (§2.1).
     pub suffix: String,
@@ -69,10 +76,12 @@ impl fmt::Debug for Case {
 }
 
 impl Case {
+    /// Whether the file conforms: it expects no error.
     pub fn valid(&self) -> bool {
         self.errors.is_empty()
     }
 
+    /// The case's entry in `expected.json`.
     pub fn to_json(&self) -> Value {
         let sorted = |v: &[String]| -> Vec<String> {
             let mut s = v.to_vec();
@@ -120,17 +129,26 @@ impl Case {
 /// What running one case produced.
 #[derive(Debug, Clone)]
 pub struct CaseResult {
+    /// The case run.
     pub case: Case,
+    /// The file validated.
     pub path: String,
+    /// The error codes the validator reported.
     pub got_errors: Vec<String>,
+    /// The warning codes the validator reported.
     pub got_warnings: Vec<String>,
+    /// Expected codes the validator did not report.
     pub missing: Vec<String>,
+    /// Codes the validator reported that the case does not expect.
     pub unexpected: Vec<String>,
+    /// Why the case could not be run at all, when it could not.
     pub error: Option<String>,
+    /// Every diagnostic the validator reported, one line each.
     pub details: Vec<String>,
 }
 
 impl CaseResult {
+    /// A result for `case` at `path`, with nothing reported yet.
     pub fn new(case: Case, path: String) -> CaseResult {
         CaseResult {
             case,
@@ -144,10 +162,12 @@ impl CaseResult {
         }
     }
 
+    /// Whether the validator reported exactly the expected codes.
     pub fn ok(&self) -> bool {
         self.missing.is_empty() && self.unexpected.is_empty() && self.error.is_none()
     }
 
+    /// The result as `conformance run --json` prints it.
     pub fn to_json(&self) -> Value {
         let sorted = |v: &[String]| -> Vec<String> {
             let mut s = v.to_vec();
@@ -184,6 +204,7 @@ pub fn cases() -> &'static [Case] {
     CASES.get_or_init(build::registry)
 }
 
+/// The case called `name`, or [`Error::Key`].
 pub fn case_by_name(name: &str) -> Result<&'static Case> {
     cases()
         .iter()

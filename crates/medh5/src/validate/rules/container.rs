@@ -22,6 +22,8 @@ use crate::Result;
 /// The major version this validator implements.
 pub const SUPPORTED_MAJOR: &str = "1";
 
+/// Structural: the root's version, kind and profiles, the required groups
+/// and `/meta`, and identifier syntax (E001--E004, E006--E008, W913).
 pub fn check_container(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     let mut out = Vec::new();
     let root = ctx.root.clone();
@@ -298,6 +300,7 @@ fn projected(parsed: &Value) -> Option<Value> {
     Some(out)
 }
 
+/// Structural: bulk datasets stored chunked and compressed (W902).
 pub fn check_bulk_storage(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     let mut out = Vec::new();
     for (name, ds) in ops::datasets(&ctx.root)? {
@@ -320,6 +323,7 @@ pub fn check_bulk_storage(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     Ok(out)
 }
 
+/// Semantic: what each profile the sample is held to requires (§1.3, E009).
 pub fn check_profiles(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     let mut out = Vec::new();
     let mut kinds = BTreeSet::new();

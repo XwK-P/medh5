@@ -75,7 +75,7 @@ fn main() -> medh5::Result<()> {
 | [`companion`] | task-cache-1 --- task manifests, source pins, preflight row views, feature caches |
 
 Errors are one [`Error`] type whose diagnostic code, when it has one, is the
-§15.2 code the validator reports for the same defect.
+code the validator reports for the same defect (§15.2, [1.1] §11.2).
 
 [the specification]: https://medh5.readthedocs.io/en/latest/spec/medh5-1.0/
 [1.1]: https://medh5.readthedocs.io/en/latest/spec/medh5-1.1/

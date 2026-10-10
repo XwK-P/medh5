@@ -13,6 +13,9 @@ use crate::sample::image::VALUE_TYPES;
 use crate::validate::Diagnostic;
 use crate::Result;
 
+/// Structural: every image against §4.1--§4.2 --- its attributes, its grid
+/// and shape, channel names (E101, E105, E201--E205) --- and float storage an
+/// `int16` would hold losslessly (W907).
 pub fn check_images(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     let mut out = Vec::new();
     let Some(node) = ops::child_group(&ctx.root, "images") else { return Ok(out) };

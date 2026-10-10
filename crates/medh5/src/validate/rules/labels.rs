@@ -23,6 +23,8 @@ pub fn check_label_set(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     Ok(out)
 }
 
+/// Semantic: every class an annotation uses bound to an ontology code
+/// (§5.2, W912).
 pub fn check_ontology_bindings(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     let mut out = Vec::new();
     let Some(ls) = ctx.document.as_ref().and_then(|d| d.label_set.as_ref()) else { return Ok(out) };

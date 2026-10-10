@@ -31,10 +31,15 @@ use crate::Result;
 /// deferred, and what its one scan found.
 #[derive(Debug, Clone, Default)]
 pub struct ClinicalTables {
+    /// `clinical/meta`, when it parsed and its schema accepted it.
     pub descriptor: Option<Descriptor>,
+    /// `clinical/events`, when it is a group.
     pub events: Option<RawTable>,
+    /// `clinical/documents`, its `text` deferred, when present.
     pub documents: Option<RawTable>,
+    /// `clinical/links`, when present.
     pub links: Option<RawTable>,
+    /// What the span rule needs of the stored document text.
     pub texts: ScannedTexts,
 }
 

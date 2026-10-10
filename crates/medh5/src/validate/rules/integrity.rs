@@ -14,6 +14,10 @@ use crate::json::{py_float, repr_int_tuple, repr_str};
 use crate::validate::Diagnostic;
 use crate::Result;
 
+/// Integrity: every object digest and `content_id` (§13.1--§13.2:
+/// E701--E704, W901, W913 for a projection's), the sampling index's currency
+/// (§13.3, W905), and the stored values of probability maps as the digest
+/// pass reads them (§7.5: E404, E411).
 pub fn check_integrity(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     let mut out = Vec::new();
     let root = ctx.root.clone();

@@ -78,6 +78,7 @@ fn check_links(
     Ok(out)
 }
 
+/// Semantic: one split set claimed against one manifest (§12.3, W906).
 pub fn check_splits(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     let mut out = Vec::new();
     let Some(doc) = &ctx.document else { return Ok(out) };

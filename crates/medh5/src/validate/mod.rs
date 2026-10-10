@@ -34,10 +34,16 @@ pub const SAMPLES_GROUP: &str = "samples";
 /// One finding.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Diagnostic {
+    /// The diagnostic code (spec §15.2, 1.1 §11.2): stable API.
     pub code: String,
+    /// An HDF5 path, or a JSON pointer into `/meta` after `/meta#`.
     pub location: String,
+    /// What is wrong, for a person.
     pub message: String,
+    /// `error` or `warning`, as the code table gives the code; `strict`
+    /// promotes a warning without changing this.
     pub severity: String,
+    /// The level the pass ran at.
     pub level: String,
 }
 
@@ -47,6 +53,7 @@ impl Diagnostic {
         crate::codes::get(&self.code).map(|c| c.summary.as_str()).unwrap_or("")
     }
 
+    /// The diagnostic as `validate --json` prints it.
     pub fn to_json(&self) -> Value {
         json!({
             "code": self.code,
@@ -66,14 +73,22 @@ impl Diagnostic {
 /// Everything a validation pass found.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Report {
+    /// The file validated, as the caller named it.
     pub path: String,
+    /// The level the pass ran at.
     pub level: String,
+    /// The profiles the file was held to: those it declares, then any the
+    /// caller required besides.
     pub profiles: Vec<String>,
+    /// Every finding, errors first, then by code and location.
     pub diagnostics: Vec<Diagnostic>,
+    /// What was checked: the rules run, and whether `/meta` reached its
+    /// schema (a collection lists its sample roots instead).
     pub checked: Value,
 }
 
 impl Report {
+    /// An empty report for `path` at `level`.
     pub fn new(path: &str, level: &str) -> Report {
         Report {
             path: path.into(),
@@ -93,10 +108,13 @@ impl Report {
         }
     }
 
+    /// The diagnostics that are errors at this level, warnings promoted at
+    /// `strict` included.
     pub fn errors(&self) -> Vec<&Diagnostic> {
         self.diagnostics.iter().filter(|d| self.effective(d) == "error").collect()
     }
 
+    /// The diagnostics that are warnings at this level (none at `strict`).
     pub fn warnings(&self) -> Vec<&Diagnostic> {
         self.diagnostics.iter().filter(|d| self.effective(d) == "warning").collect()
     }
@@ -122,6 +140,7 @@ impl Report {
         self.errors().is_empty()
     }
 
+    /// The report as `validate --json` prints it.
     pub fn to_json(&self) -> Value {
         json!({
             "path": self.path,

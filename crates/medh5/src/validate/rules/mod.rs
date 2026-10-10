@@ -15,6 +15,7 @@
 //! - `transforms` --- §10
 //! - `curation` --- §11--§12
 //! - `integrity` --- §13
+//! - `clinical` --- 1.1 §3--§8
 
 mod annotations;
 mod clinical;
@@ -58,13 +59,24 @@ pub use transforms::check_transforms;
 
 /// What every rule gets: the file, the parsed document, and the level.
 pub struct Context {
+    /// The sample root.
     pub root: hdf5::Group,
+    /// The file, as the report names it.
     pub path: String,
+    /// The level the pass runs at.
     pub level: String,
+    /// The profiles the sample is held to: those it declares, and any the
+    /// caller requires besides.
     pub profiles: Vec<String>,
+    /// `/meta`, once the document rule has parsed it; `None` when it could
+    /// not be, and the checks that need it are skipped.
     pub document: Option<SampleDocument>,
+    /// Skip the warning-only checks that read bulk data (the writer's commit
+    /// gate).
     pub errors_only: bool,
+    /// Whether `/meta` was checked against its schema.
     pub schema_checked: bool,
+    /// The digest attribute names, where integrity is checked.
     pub attr_names: Option<AttrNameMap>,
     /// The root's `medh5_version`, when it has one.
     pub version: Option<String>,
@@ -81,6 +93,7 @@ pub struct Context {
 pub type Rule = fn(&mut Context) -> Result<Vec<Diagnostic>>;
 
 impl Context {
+    /// A context for `root`, held to `profiles`, before any rule has run.
     pub fn new(root: hdf5::Group, path: &str, level: &str, profiles: Vec<String>, errors_only: bool) -> Context {
         let version = attrs::get_str(&root, "medh5_version").ok().flatten();
         let projection = version.as_deref().is_some_and(crate::version::is_projection);
@@ -118,6 +131,7 @@ impl Context {
         }
     }
 
+    /// A finding at `location`, at the severity the code table gives `code`.
     pub fn err(&self, code: &str, location: impl Into<String>, message: impl Into<String>) -> Diagnostic {
         Diagnostic {
             code: code.into(),
