@@ -1443,7 +1443,7 @@ a new 64³ window for every read ([`bench_io.py`](../examples/bench_io.py)):
 | Profile | Write | Size | Ratio | 64³ patch read | Full-volume read |
 |---|---|---|---|---|---|
 | `training` (lz4 L1) | 0.07 s | 12.80 MiB | 1.9× | 1.3 ms | 0.02 s |
-| `balanced`-ish (lz4hc L8) | 0.54 s | 12.33 MiB | 1.9× | 1.0 ms | 0.02 s |
+| lz4hc L8 (the 0.x default) | 0.54 s | 12.33 MiB | 1.9× | 1.0 ms | 0.02 s |
 | `archive` (zstd L9 + bitshuffle) | 5.37 s | 9.53 MiB | 2.5× | 2.3 ms | 0.03 s |
 | `portable` (gzip L4) | 0.48 s | 9.72 MiB | 2.5× | 8.9 ms | 0.08 s |
 

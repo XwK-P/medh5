@@ -41,7 +41,8 @@ print(f"volume {SHAPE} = {np.prod(SHAPE)/1e6:.1f}M voxels; raw float32 = {raw_f3
 
 profiles = {
     "training  lz4  L1 +shuffle":  (raw_i16, dict(hdf5plugin.Blosc2(cname="lz4", clevel=1, filters=hdf5plugin.Blosc2.SHUFFLE))),
-    "balanced  lz4hc L8 +shuffle": (raw_i16, dict(hdf5plugin.Blosc2(cname="lz4hc", clevel=8, filters=hdf5plugin.Blosc2.SHUFFLE))),
+    # The 0.x default codec, not a profile: `balanced` is Blosc2 zstd L3.
+    "0.x       lz4hc L8 +shuffle": (raw_i16, dict(hdf5plugin.Blosc2(cname="lz4hc", clevel=8, filters=hdf5plugin.Blosc2.SHUFFLE))),
     "archive   zstd L9 +bitshuf":  (raw_i16, dict(hdf5plugin.Blosc2(cname="zstd", clevel=9, filters=hdf5plugin.Blosc2.BITSHUFFLE))),
     "portable  gzip L4 +shuffle":  (raw_i16, dict(compression="gzip", compression_opts=4, shuffle=True)),
     "f32       lz4hc L8 +shuffle": (raw_f32, dict(hdf5plugin.Blosc2(cname="lz4hc", clevel=8, filters=hdf5plugin.Blosc2.SHUFFLE))),
