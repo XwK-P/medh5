@@ -947,6 +947,15 @@ class TestDatasetCommands:
         )
         assert code == EXIT_ERROR
 
+    def test_index_of_a_root_that_is_not_there_says_so(self, capsys, tmp_path):
+        """It wrote a manifest of nobody, and said nothing of the root."""
+        missing = tmp_path / "no-such-cohort"
+        manifest = tmp_path / "m.json"
+        code, out = run(capsys, "dataset", "index", str(missing), "-o", str(manifest))
+        assert code == EXIT_ERROR
+        assert repr(str(missing)) in out.err
+        assert not manifest.exists()
+
     def test_split_then_write_claims(self, capsys, cohort, tmp_path):
         manifest = tmp_path / "m.json"
         run(capsys, "dataset", "index", str(cohort), "-o", str(manifest))

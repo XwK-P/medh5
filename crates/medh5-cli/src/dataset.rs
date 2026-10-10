@@ -34,7 +34,13 @@ pub fn dispatch(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
 }
 
 fn index(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
-    let (manifest, failures) = scan(Path::new(req_str(m, "root")), flag(m, "strict"))?;
+    let root = req_str(m, "root");
+    // A root that cannot be listed --- missing, unreadable --- is an error,
+    // not a cohort of nobody written out as one.
+    if !Path::new(root).is_file() {
+        std::fs::read_dir(root).map_err(|e| os_error(&e, root))?;
+    }
+    let (manifest, failures) = scan(Path::new(root), flag(m, "strict"))?;
     let target = manifest.save(Path::new(req_str(m, "out")))?;
     let digest = manifest.sha256();
     if flag(m, "json") {
