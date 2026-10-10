@@ -376,12 +376,14 @@ def wrap_transform(handle: Any) -> Transform:
     return made
 
 
-# -- resolution (§10.2) -------------------------------------------------------------
+# -- resolution (§10.1) -------------------------------------------------------------
 
 
 def frame_graph(transforms: Mapping[str, Transform]) -> dict[str, list[str]]:
     """Frame -> frames one hop away, as :func:`resolve_between` would walk
-    them: a reverse edge exists only where the inverse can be evaluated."""
+    them: a reverse edge exists only where the inverse can be evaluated, and
+    a transform and the stored inverse its ``inverse_id`` names are one edge
+    each way (§10.1)."""
     found: dict[str, list[str]] = _core.frame_graph(transforms)
     return found
 

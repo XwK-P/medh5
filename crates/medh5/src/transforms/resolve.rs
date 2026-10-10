@@ -53,16 +53,15 @@ fn edges(transforms: &IndexMap<String, Transform>) -> Result<IndexMap<String, Ve
 }
 
 /// Frame -> frames one hop away, as [`resolve_between`] would walk them.
+///
+/// The edges are [`resolve_between`]'s own, so a transform and the stored
+/// inverse its `inverse_id` names are one edge each way, as they are one
+/// route (§10.1), not two.
 pub fn frame_graph(transforms: &IndexMap<String, Transform>) -> Result<IndexMap<String, Vec<String>>> {
-    let mut graph: IndexMap<String, Vec<String>> = IndexMap::new();
-    for transform in transforms.values() {
-        graph.entry(transform.from_frame().to_string()).or_default().push(transform.to_frame().to_string());
-        graph.entry(transform.to_frame().to_string()).or_default();
-        if can_invert(transform)? {
-            graph.get_mut(transform.to_frame()).expect("inserted above").push(transform.from_frame().to_string());
-        }
-    }
-    Ok(graph)
+    Ok(edges(transforms)?
+        .into_iter()
+        .map(|(frame, steps)| (frame, steps.into_iter().map(|(neighbour, _)| neighbour).collect()))
+        .collect())
 }
 
 /// The shortest transform path between two frames, or `None`.

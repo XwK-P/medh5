@@ -734,6 +734,16 @@ class TestResolution:
             assert graph["f1"] == []
             assert sample.resolve_frames("f1", "f0") is None
 
+    def test_S10_1_the_frame_graph_draws_a_stored_inverse_pair_once(self, tmp_path):
+        """A transform and the stored inverse its `inverse_id` names are one
+        route each way (§10.1), as the resolver walks them; the graph drew
+        each of the two edges twice."""
+        from medh5.transforms import frame_graph
+
+        path = registered(tmp_path / "reg.medh5", inverse=True)
+        with medh5.open(path) as sample:
+            assert frame_graph(dict(sample.transforms)) == {"F0": ["F1"], "F1": ["F0"]}
+
     def test_S10_resolve_frames_is_memoised_per_handle(self, tmp_path: Path):
         path = tmp_path / "memo.medh5"
         with Flat.open_writer(path, frames=True) as w:
