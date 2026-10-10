@@ -1,11 +1,11 @@
 {
-  "$comment": "The normative diagnostic code table (spec 1.0 §15.2, extended by 1.1 §9). The single source: the engine embeds it, the validator, conformance corpus and documentation all read it. Codes are stable API: a meaning never changes and a retired code is never reused.",
+  "$comment": "The normative diagnostic code table (spec 1.0 §15.2, extended by 1.1 §11.2). The single source: the engine embeds it, the validator, conformance corpus and documentation all read it. Codes are stable API: a meaning never changes and a retired code is never reused.",
   "codes": [
     {
       "code": "E001",
       "severity": "error",
       "domain": "container",
-      "summary": "missing or empty `medh5_version`"
+      "summary": "missing or empty `medh5_version`, or the file or an object a check must read cannot be read"
     },
     {
       "code": "E002",
@@ -17,7 +17,7 @@
       "code": "E003",
       "severity": "error",
       "domain": "container",
-      "summary": "identifier does not match [A-Za-z0-9_.-]{1,128}"
+      "summary": "identifier does not match its syntax: [A-Za-z0-9_.-]{1,128} and not `meta`, or [A-Za-z0-9_.-]{1,255} for a collection's sample key"
     },
     {
       "code": "E004",
@@ -47,7 +47,7 @@
       "code": "E008",
       "severity": "error",
       "domain": "container",
-      "summary": "a group required by the layout is absent"
+      "summary": "a group required by the layout is absent (`grids`, `images`, a collection's `samples`), or a collection holds no sample root"
     },
     {
       "code": "E009",
@@ -113,7 +113,7 @@
       "code": "E108",
       "severity": "error",
       "domain": "geometry",
-      "summary": "`timepoints` is empty, or `index` is not dense/increasing"
+      "summary": "`timepoints` is empty, an `id` repeats, or `index` is not dense/increasing"
     },
     {
       "code": "E109",
@@ -197,7 +197,7 @@
       "code": "E306",
       "severity": "error",
       "domain": "labels",
-      "summary": "class entry is missing a required field or has a bad id range"
+      "summary": "class entry is missing a required field, has an id out of range, or names an unknown parent"
     },
     {
       "code": "E401",
@@ -227,7 +227,7 @@
       "code": "E405",
       "severity": "error",
       "domain": "annotations",
-      "summary": "dataset shape is inconsistent with the grid"
+      "summary": "dataset shape is inconsistent with the grid or with the annotation's other datasets, or mesh `faces` index outside its `vertices`"
     },
     {
       "code": "E406",
@@ -245,7 +245,7 @@
       "code": "E408",
       "severity": "error",
       "domain": "annotations",
-      "summary": "`mask_offsets` are not monotonically increasing"
+      "summary": "offsets decrease, or contour or mesh offsets do not end at the number of vertices or faces they index"
     },
     {
       "code": "E409",
@@ -263,19 +263,19 @@
       "code": "E411",
       "severity": "error",
       "domain": "annotations",
-      "summary": "dataset dtype is not permitted for the annotation `kind`"
+      "summary": "dataset dtype is not permitted for the annotation `kind`, or a stored value is not one it permits (a `probmap` value outside [0, 1], a keypoint `visibility` other than 0, 1 or 2)"
     },
     {
       "code": "E412",
       "severity": "error",
       "domain": "annotations",
-      "summary": "required annotation attribute is missing"
+      "summary": "required annotation attribute is missing, or `task`, `closure`, `space` or `scope` holds an unknown value"
     },
     {
       "code": "E413",
       "severity": "error",
       "domain": "annotations",
-      "summary": "annotation references an object that does not exist"
+      "summary": "a reference does not resolve, or an ignore or validity mask is not a `mask` on the same grid"
     },
     {
       "code": "E414",
@@ -293,7 +293,7 @@
       "code": "E502",
       "severity": "error",
       "domain": "transforms",
-      "summary": "unknown transform `kind`"
+      "summary": "transform `kind` is missing or unknown, or a transform lacks the frames or parameters its kind requires, maps a frame to itself, or names an unknown `vector_space`"
     },
     {
       "code": "E503",

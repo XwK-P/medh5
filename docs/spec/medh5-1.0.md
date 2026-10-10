@@ -94,10 +94,11 @@ All object paths in this specification are relative to a **sample root group**:
 
 * in a `sample` file the sample root is `/`;
 * in a `collection` file each sample root is `/samples/<sample_key>`, where `<sample_key>` matches
-  `[A-Za-z0-9_.-]{1,255}` and is unique in the file.
+  `[A-Za-z0-9_.-]{1,255}` (E003) and is unique in the file.
 
-A collection file **MUST** carry `medh5_kind = "collection"` at `/` and **MUST** repeat
-`medh5_version` on `/`. Each sample root in a collection **MUST** be structurally identical to a
+A collection file **MUST** carry `medh5_kind = "collection"` at `/`, **MUST** repeat
+`medh5_version` on `/`, and **MUST** hold the `samples` group with at least one sample root
+(E008). Each sample root in a collection **MUST** be structurally identical to a
 standalone sample and **MUST** carry its own `medh5_profiles` and `content_id` (E007, E010). This
 makes `sample ⊂ collection` a strict containment: extracting a sample root into a new file is a pure
 copy. Packing and unpacking **MUST NOT** re-encode bulk data — chunks move as stored bytes — so a
@@ -436,8 +437,9 @@ Voxel annotations MAY be pyramided identically, with `downsample_method = "neare
 ### 4.4 Validity masks
 
 Real acquisitions have invalid regions: outside the reconstruction circle, zero-padded after
-resampling, truncated FOV. `valid_mask` names a `mask`-kind annotation whose `true` voxels are
-acquired data. Loss functions and intensity statistics **SHOULD** honour it. This is distinct from
+resampling, truncated FOV. `valid_mask` names a `mask`-kind annotation on the image's grid whose
+`true` voxels are acquired data (E413 otherwise). Loss functions and intensity statistics
+**SHOULD** honour it. This is distinct from
 the *annotation* coverage of §11.3, which is about what was labelled, not what was imaged.
 
 ### 4.5 Acquisition parameters
@@ -763,7 +765,7 @@ a 45× reduction, because storage is proportional to object volume, not image vo
 
 | Dataset | Shape | dtype | Notes |
 |---|---|---|---|
-| `data` | `(len(class_ids), *shape_spatial)` | `float16`/`float32` | values in [0,1] |
+| `data` | `(len(class_ids), *shape_spatial)` | `float16`/`float32` | values in [0,1] (E411) |
 | `normalized` | attr `bool` | | `true` ⟹ channels sum to 1 across classes at each voxel |
 | `threshold` | attr `float64` | | OPTIONAL, default `0.5`: the probability at or above which a voxel *contains* the class (§7.6); in [0, 1] |
 
@@ -823,7 +825,8 @@ runs on the way out. No `.medh5` file stores runs.
 
 * In `labelmap` / `layers`, the value `ignore_id` marks ignore voxels.
 * In `bitmask`, `instances` and `probmap`, ignore regions **MUST** be expressed as a separate
-  `mask`-kind annotation named by the `ignore_mask` attribute. So **MUST** a region that overlaps
+  `mask`-kind annotation on the same grid, named by the `ignore_mask` attribute (E413 otherwise).
+  So **MUST** a region that overlaps
   any class's voxels, under every encoding: one in-band value per voxel cannot say both "this class"
   and "ignored", so an in-band region would lose one or the other where they meet.
 * `0` means **background — verified absent for `annotated_class_ids`**. It does not mean "unknown".
@@ -924,7 +927,7 @@ Planar polygons, for DICOM RTSTRUCT round-trips and slice-wise manual annotation
 | Dataset | Shape | dtype | Meaning |
 |---|---|---|---|
 | `vertices` | `(V, S)` | `float32` | concatenated polygon vertices |
-| `contour_offsets` | `(M+1,)` | `int64` | polygon *m* spans `[o[m], o[m+1])` |
+| `contour_offsets` | `(M+1,)` | `int64` | polygon *m* spans `[o[m], o[m+1])`; non-decreasing, the last equal to `V` (E408) |
 | `contour_class_ids` | `(M,)` | `uint16` | |
 | `contour_plane` | `(M, 2)` | `int32` | `(axis, index)` of the plane each polygon lies in; `axis = −1` for out-of-plane |
 | `contour_role` | `(M,)` | `uint8` | `0` = outer boundary, `1` = hole |
@@ -939,7 +942,7 @@ Rasterisation to a voxel annotation is an explicit, provenance-tracked activity 
 | `faces` | `(F, 3)` | `int32` | triangles, counter-clockwise seen from outside |
 | `normals` | `(V, 3)` | `float32` | OPTIONAL |
 | `vertex_class_ids` | `(V,)` | `uint16` | OPTIONAL, for multi-structure meshes |
-| `mesh_offsets` | `(M+1,)` | `int64` | OPTIONAL, several meshes in one annotation |
+| `mesh_offsets` | `(M+1,)` | `int64` | OPTIONAL, several meshes in one annotation: mesh *m* is faces `[o[m], o[m+1])`; non-decreasing, the last equal to `F` (E408) |
 | `mesh_class_ids` | `(M,)` | `uint16` | OPTIONAL |
 
 Meshes are **surfaces**, not fallbacks for voxel data: a `mesh` annotation does not satisfy the `seg`
@@ -1501,7 +1504,7 @@ tens of GiB and cannot exist.
 |---|---|
 | `structural` | layout, required attributes, dtypes, shapes, identifier syntax, JSON schema of `/meta` |
 | `semantic` | cross-references resolve; geometry consistency; class ids ⊆ label set; encoding invariants; transform frame chaining; profile requirements |
-| `integrity` | `digest` per object, `content_id`, index `source_digest` currency |
+| `integrity` | `digest` per object, `content_id`, index `source_digest` currency; and the value checks that need every stored value, made in the same full read of a bulk dataset: `probmap` values in [0, 1] (E411) and `normalized` sums (E404) |
 | `strict` | all of the above with warnings promoted to errors |
 
 ### 15.2 Error codes
@@ -1513,12 +1516,12 @@ one.
 
 | Range | Domain | Examples |
 |---|---|---|
-| `E0xx` | container | `E001` missing `medh5_version`; `E002` unsupported major version; `E003` bad identifier; `E004` `/meta` absent or not valid JSON; `E005` `/meta` fails schema; `E006` missing or unknown `medh5_kind`; `E007` missing `medh5_profiles` or unknown profile; `E008` a group required by §2.3 is absent; `E009` a declared profile's requirements are not met; `E010` a sample root in a `collection` lacks its own `content_id` |
-| `E1xx` | geometry | `E101` referenced grid does not exist; `E102` `direction` not orthonormal; `E103` spatial axes not trailing/contiguous; `E104` `spacing ≤ 0`; `E105` multiscale geometry inconsistent; `E106` grid without `timepoint` in a multi-timepoint sample; `E107` grid `timepoint` not declared; `E108` `timepoints` empty, or `index` not dense and increasing; `E109` required grid attribute missing or of the wrong rank; `E110` `axis_kinds` invalid for the declared dimensionality; `E111` `grids` contains no grid |
+| `E0xx` | container | `E001` missing or empty `medh5_version`, or the file or an object a check must read cannot be read; `E002` unsupported major version; `E003` an identifier that does not match its syntax (§2.2, §2.3); `E004` `/meta` absent or not valid JSON; `E005` `/meta` fails schema; `E006` missing or unknown `medh5_kind`; `E007` missing `medh5_profiles` or unknown profile; `E008` a group required by the layout is absent --- a §2.3 group, or a collection's `samples` --- or a collection holds no sample root (§2.2); `E009` a declared profile's requirements are not met; `E010` a sample root in a `collection` lacks its own `content_id` |
+| `E1xx` | geometry | `E101` referenced grid does not exist; `E102` `direction` not orthonormal; `E103` spatial axes not trailing/contiguous; `E104` `spacing ≤ 0`; `E105` multiscale geometry inconsistent; `E106` grid without `timepoint` in a multi-timepoint sample; `E107` grid `timepoint` not declared; `E108` `timepoints` empty, a timepoint `id` repeated, or `index` not dense and increasing; `E109` required grid attribute missing or of the wrong rank; `E110` `axis_kinds` invalid for the declared dimensionality; `E111` `grids` contains no grid |
 | `E2xx` | images | `E201` `images` empty; `E202` image shape ≠ grid shape; `E203` unknown `value_type`; `E204` `channel_names` length ≠ channel extent; `E205` required image attribute missing |
 | `E3xx` | label set | `E301` missing label set for a declared profile; `E302` duplicate class id or key; `E303` reserved id used; `E304` hierarchy cycle; `E305` `ref` label set lacking `uri`/`sha256`, or unresolvable; `E306` class entry missing a required field, out of id range, or naming an unknown parent |
-| `E4xx` | annotations | `E401` unknown `kind`; `E402` class id not in label set; `E403` `annotated_class_ids ⊄ class_ids`; `E404` encoding invariant violated (e.g. a class in two layers); `E405` shape mismatch with grid; `E406` box `lo > hi`; `E407` `rotations` not a proper rotation; `E408` offsets not monotonic; `E409` `timepoints` references an undeclared timepoint; `E410` a dataset required by the `kind` is absent; `E411` dataset dtype not permitted for the `kind`; `E412` required annotation attribute missing; `E413` reference to a skeleton, correspondence, ignore mask or source annotation that does not exist; `E414` `space` invalid for the annotation's grid or frame |
-| `E5xx` | transforms | `E501` composite frame chain broken; `E502` unknown transform kind; `E503` field grid not in `from_frame`; `E504` affine last row ≠ `[0…0 1]`; `E505` `inverse_id` not mutually consistent; `E506` `units` missing or not the units of the grids in its frames |
+| `E4xx` | annotations | `E401` unknown `kind`; `E402` class id not in label set; `E403` `annotated_class_ids ⊄ class_ids`; `E404` encoding invariant violated (e.g. a class in two layers); `E405` shape mismatch with the grid, or between an annotation's own datasets, mesh `faces` indexing outside its `vertices` among them; `E406` box `lo > hi`; `E407` `rotations` not a proper rotation; `E408` offsets that decrease, or `contour_offsets`/`mesh_offsets` whose last value is not the number of vertices/faces they index (§8.6, §8.7); `E409` `timepoints` references an undeclared timepoint; `E410` a dataset required by the `kind` is absent; `E411` dataset dtype not permitted for the `kind`, or a stored value it does not permit: a `probmap` value outside [0, 1] (§7.5), a keypoint `visibility` other than 0, 1 or 2 (§8.4); `E412` required annotation attribute missing, or an unknown `task`, `closure`, `space` or `scope`; `E413` a `skeleton`, `correspondence`, `derived_from`, `ignore_mask` or `valid_mask` reference that does not resolve, or an `ignore_mask`/`valid_mask` naming an annotation that is not a `mask` on the same grid (§4.4, §7.7); `E414` `space` invalid for the annotation's grid or frame |
+| `E5xx` | transforms | `E501` composite frame chain broken; `E502` missing or unknown transform `kind`, or a transform lacking the frames or parameters its kind requires, mapping a frame to itself, or naming an unknown `vector_space`; `E503` field grid not in `from_frame`; `E504` affine last row ≠ `[0…0 1]`; `E505` `inverse_id` not mutually consistent; `E506` `units` missing or not the units of the grids in its frames |
 | `E6xx` | curation | `E601` dangling `prov` reference; `E602` unknown `quality` key; `E603` unknown agent or activity type; `E604` non-RFC3339 timestamp; `E605` activity names an undeclared agent |
 | `E7xx` | integrity | `E701` object digest mismatch; `E702` `content_id` mismatch; `E703` malformed digest string; `E704` an object `content_id` covers reached at a path that is not its own |
 | `W9xx` | warnings | `W901` no digests; `W902` uncompressed or unchunked bulk dataset; `W903` no `deidentification`; `W904` partial coverage without an ignore region; `W905` stale `index/` entry; `W906` conflicting split claims; `W907` `float32` storage where `int16 + rescale` is lossless; `W908` `layers` count far from the greedy-colouring optimum; `W909` one `instance_id` carrying two class ids; `W910` grids in different timepoints sharing a `frame_uid`; `W911` multi-timepoint sample with no transform relating any two timepoints; `W912` a class used by an annotation carries no ontology binding |
@@ -1652,17 +1655,18 @@ $ medh5 conformance run ./corpus
 
 **Every code in §15.2 has a corpus case.** The implementation gates on `cargo clippy` and `rustfmt`
 for the engine, `ruff`, `mypy --strict` and ≥ 90 % test coverage for the Python package, and the
-corpus through both the Python and the native command line; a test asserts that the §15.2 table and
-the implementation's code registry are identical, so the two cannot drift.
+corpus through both the Python and the native command line; a test asserts that the §15.2 table,
+with the codes 1.1 §11.2 adds, and the implementation's code registry list the same codes, so
+neither can gain a code the other lacks.
 
 The §14 performance claims are reproducible rather than asserted: `medh5 bench` re-measures them on
 any machine. On one, with a 192×256×256 synthetic CT and eight classes, a multi-class 64³ label read
 costs 3.4 ms, foreground centre sampling 0.03 ms (O(1) in volume size, via §14.3; 0.05 ms at 63
 classes), a metadata-only read 0.19 ms, and `open()` → first patch 2.3 ms.
 
-Thirty-five clauses have been corrected — ten during implementation, eleven in the 1.x package
+Forty clauses have been corrected — ten during implementation, eleven in the 1.x package
 releases that followed, four when the engine was written a second time, in Rust, for the 2.0
-package, one when it implemented 1.1, and nine in the audits of 2.0 before its release — each because
+package, one when it implemented 1.1, and fourteen in the audits of 2.0 before its release — each because
 writing the code showed the text was not implementable, not unambiguous, or not what the
 implementation could honestly promise, as written:
 
@@ -1703,6 +1707,11 @@ implementation could honestly promise, as written:
 | §13.2 | A line binds a dataset's bytes to the path it names: a path through `grids/`, `images/`, `annotations/` or `transforms/` that is not its object's own --- an alias sorting before it, a second link, a soft link, a group reached twice, an external link --- is covered nowhere, and is **E704**. Coverage had been judged by object: an attested name held by such a path could be relinked after a pin to other covered bytes, which changed no line, so the root recomputed and a task's source pin, `verify` and the validator all passed while a reader read other bytes. The reference writer makes no links, so no file it writes changes, and no `content_id` changes. |
 | §10.1 | A transform's `units` are those of the grids in its frames, checked: one whose `units` are missing or are not those of a grid in either frame is **E506**, and a reader refuses to apply it to a grid in other units. "Matching the frames' grids" had no code to report a mismatch, and the reference writer defaulted `units` to `mm` whatever the grids were in: a transform in millimetres between two metre grids validated, and the paired loader, applying it to the grids' coordinates as they were, moved every point a thousand times its displacement. A writer given no `units` now takes the grids'. |
 | §8.5 | `points` may carry `instance_ids`. §10.6 asks points that mark trackable objects to carry equal `instance_ids` across visits, and §8.5 listed no such dataset, so a writer held to the table could not follow the clause. A track joins such points as presence: a point marks an object and measures nothing. |
+| §8.6, §8.7, §15.2 | `contour_offsets` and `mesh_offsets` end at the length of what they index --- `vertices` for contours, `faces` for meshes --- and offsets that end anywhere else are **E408**, as offsets that decrease are. The table defined E408 as offsets "not monotonic", §8.7 did not say what `mesh_offsets` counts, and the corpus case `E408-contour-offsets`, whose offsets increase and stop two vertices short, expects E408: a validator written from the text failed the case, and had nothing to hold a mesh's offsets to. |
+| §4.4, §7.7, §15.2 | An `ignore_mask` or a `valid_mask` names a `mask` annotation on the grid of the object naming it; one naming another kind of annotation, or a mask on another grid, is **E413**, as one naming nothing is. §15.2 gave E413 only to a reference "that does not exist" and left `valid_mask` off its list, and no clause put the mask on the same grid --- while the corpus scores an `ignore_mask` naming an annotation that is not a `mask`, and the reference writer and validator refuse a mask on another grid, whose voxels are not the ones it would delimit. |
+| §2.2, §15.2 | A collection holds its `samples` group with at least one sample root, and a `samples` group missing or empty is **E008**. §15.2 gave E008 to "a group required by §2.3", which lays out a sample root, and §2.2 required no group --- while the corpus scores a collection without `samples` as E008, and the reference reports an empty one too: a collection holding no sample has nothing a reader can open. |
+| §15.2 | Six codes are described by everything the reference validator reports under them: **E001** also a file, or an object a check must read, that cannot be read; **E108** a timepoint `id` repeated; **E405** a dataset whose shape disagrees with the annotation's own datasets, mesh `faces` indexing outside its `vertices` among them; **E411** a stored value the kind does not permit, a `probmap` value outside [0, 1] or a keypoint `visibility` other than 0, 1 or 2; **E412** an unknown `task`, `closure`, `space` or `scope`; **E502** a transform without the frames or parameters its kind requires, mapping a frame to itself, or naming an unknown `vector_space`. The table named one condition for each, so a validator implementing it as written gave another code, or none, for defects the reference reported under these --- each as 1.x did, but for the `probmap` checks 2.0 added. The registry's summaries of E003 and E306 likewise name what §2.2 and this table already said: a collection's sample key is `{1,255}`, and an unknown parent is E306. |
+| §15.1 | `integrity` also makes the value checks that need every stored value of a bulk dataset --- `probmap` values in [0, 1] (E411) and `normalized` sums (E404) --- in the same full read that recomputes its digest. The table placed every encoding invariant at `semantic`, which reads no probability map whole: a validator following it read every map at the default level, and reported there what the reference reports only at `integrity`. |
 
 ### C.2 Prototype checks
 

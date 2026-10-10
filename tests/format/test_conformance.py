@@ -260,14 +260,14 @@ class TestSpecSync:
             expected = "warning" if code.code.startswith("W") else "error"
             assert code.severity == expected
 
-    def test_S12_appendix_C_records_the_four_2_0_corrections(self) -> None:
+    def test_appendix_C_records_the_four_corrections_of_the_rewrite(self) -> None:
         spec = (ROOT / "docs/spec/medh5-1.0.md").read_text(encoding="utf-8")
         section = spec[spec.index("### C.1") : spec.index("### C.2")]
         for clause in ("| §2.5 |", "| §5.1, §13.2 |", "| §13.1 |", "| §14.3 |"):
             assert clause in section
         assert "four when the engine was written a second time, in Rust" in section
 
-    def test_S12_appendix_C_states_how_many_clauses_it_lists(self):
+    def test_appendix_C_states_how_many_clauses_it_lists(self):
         spec = (ROOT / "docs/spec/medh5-1.0.md").read_text(encoding="utf-8")
         section = spec[spec.index("### C.1") : spec.index("### C.2")]
         table = section[section.index("| Clause | Correction |") :]
@@ -277,27 +277,9 @@ class TestSpecSync:
             if line.startswith("| §") or line.startswith("| ")
         ]
         rows = rows[: next((i for i, r in enumerate(rows) if not r.strip()), len(rows))]
-        words = {
-            20: "Twenty",
-            21: "Twenty-one",
-            22: "Twenty-two",
-            23: "Twenty-three",
-            24: "Twenty-four",
-            25: "Twenty-five",
-            26: "Twenty-six",
-            27: "Twenty-seven",
-            28: "Twenty-eight",
-            29: "Twenty-nine",
-            30: "Thirty",
-            31: "Thirty-one",
-            32: "Thirty-two",
-            33: "Thirty-three",
-            34: "Thirty-four",
-            35: "Thirty-five",
-            36: "Thirty-six",
-        }
-        assert f"{words[len(rows)]} clauses have been corrected" in section
-        # The 1.4.2 correction is recorded; 2.0's three follow it.
+        stated = f"{_spelled(len(rows)).capitalize()} clauses have been corrected"
+        assert stated in section
+        # The 1.4.2 correction is recorded; 2.0's follow it.
         assert any(r.startswith("| §10.1 |") for r in rows)
 
 
