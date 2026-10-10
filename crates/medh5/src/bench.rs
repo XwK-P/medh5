@@ -2,10 +2,12 @@
 //!
 //! The numbers in the performance guide and §14 were measured on one machine;
 //! this module is the way to re-run them, so a claim like "18x faster
-//! foreground sampling" can be checked rather than believed.  A measurement
-//! below target is reported as such --- a benchmark that always passes is a
-//! benchmark nobody reads.  The dataloader throughput run needs PyTorch and
-//! lives in the Python package.
+//! foreground sampling" can be checked rather than believed.  A metric in
+//! [`TARGETS`] below its target is reported as such --- a benchmark that
+//! always passes is a benchmark nobody reads.  The others (an image patch
+//! read, a paired read, the dataloader throughput) are measured and printed
+//! without a target.  The throughput run needs PyTorch and lives in the
+//! Python package.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -192,10 +194,8 @@ pub fn benchmark_file(path: &Path, annotation: Option<&str>, patch: usize, repea
             None,
             crate::sampling::ClassWeights::Named("uniform".into()),
         )?;
-        let mut rng = Rng::new(0);
-        let indexed = sample.index()?.contains_key(ann_id.as_str());
-        let value = timed(|| sampler.draw(&sample, Some(ann_id), &mut rng, None).map(|_| ()), repeats, 3)?;
-        out.push(Measurement::targeted("foreground_sample_ms", value, json!({"used_index": indexed})));
+        let (value, used_index) = foreground_draws(&sampler, &sample, ann_id, repeats)?;
+        out.push(Measurement::targeted("foreground_sample_ms", value, json!({"used_index": used_index})));
     }
     let image = sample.image(&image_id)?;
     let mut k = 0;
@@ -412,10 +412,39 @@ pub fn many_class_measurement(path: &Path, patch: usize, repeats: usize) -> Resu
         None,
         crate::sampling::ClassWeights::Named("uniform".into()),
     )?;
+    let (value, used_index) = foreground_draws(&sampler, &sample, &ann_id, repeats)?;
+    Ok(Measurement::targeted("foreground_sample_many_ms", value, json!({"classes": classes, "used_index": used_index})))
+}
+
+/// The median foreground draw, and whether the index answered the draws:
+/// what the sampler decided ([`crate::sampling::Patch::used_index`]), not
+/// whether an index entry exists --- a stale one, or one lacking a class,
+/// exists and is scanned past.  `false` when any draw scanned, `null` when
+/// no draw found foreground to ask about.
+fn foreground_draws(
+    sampler: &PatchSampler,
+    sample: &crate::sample::Sample,
+    ann_id: &str,
+    repeats: usize,
+) -> Result<(f64, Value)> {
     let mut rng = Rng::new(0);
-    let value = timed(|| sampler.draw(&sample, Some(&ann_id), &mut rng, None).map(|_| ()), repeats, 3)?;
-    let indexed = sample.index()?.contains_key(ann_id.as_str());
-    Ok(Measurement::targeted("foreground_sample_many_ms", value, json!({"classes": classes, "used_index": indexed})))
+    let mut answers = BTreeSet::new();
+    let value = timed(
+        || {
+            answers.insert(sampler.draw(sample, Some(ann_id), &mut rng, None)?.used_index);
+            Ok(())
+        },
+        repeats,
+        3,
+    )?;
+    let used_index = if answers.contains(&Some(false)) {
+        json!(false)
+    } else if answers.contains(&Some(true)) {
+        json!(true)
+    } else {
+        Value::Null
+    };
+    Ok((value, used_index))
 }
 
 /// The table `medh5 bench` prints, and the verdict under it.

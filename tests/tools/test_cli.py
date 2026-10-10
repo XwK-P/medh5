@@ -1111,8 +1111,16 @@ class TestRecompressAndBench:
             "2",
             "--no-throughput",
         )
-        assert "target" in out.out
-        assert code in (EXIT_OK, EXIT_ERROR)
+        rows = [line for line in out.out.splitlines() if "(target ≤" in line]
+        assert len(rows) >= 4, "each targeted row prints its target"
+        missed = [row.split()[1] for row in rows if row.startswith("!")]
+        verdict = out.out.rstrip().splitlines()[-1]
+        if missed:
+            assert verdict.endswith(f"below target: {', '.join(missed)}")
+            assert code == EXIT_ERROR
+        else:
+            assert verdict == "all targets met"
+            assert code == EXIT_OK
 
 
 class TestConvert:

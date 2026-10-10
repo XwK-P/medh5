@@ -150,15 +150,25 @@ class TestPatchSampler:
                 sampler.draw(sample, "organs_tp0", rng).class_id for _ in range(10)
             } == {2}
 
-    def test_unknown_strategy_and_weights_are_refused(self, indexed):
+    def test_unknown_strategy_and_weights_are_refused(self):
         with pytest.raises(MEDH5ValidationError):
             PatchSampler(8, strategy="vibes")
         with pytest.raises(MEDH5ValidationError):
             PatchSampler(8, foreground_prob=1.5)
-        with medh5.open(indexed) as sample, pytest.raises(MEDH5ValidationError):
-            PatchSampler(8, strategy="foreground", class_weights="popularity").draw(
-                sample, "organs_tp0", np.random.default_rng(0)
-            )
+
+    @pytest.mark.parametrize(
+        "weights",
+        ["popularity", {1: -1.0}, {1: float("nan")}, {1: 1.0, 2: float("inf")}],
+    )
+    def test_S14_3_a_weighting_no_draw_could_apply_is_refused_when_configured(
+        self, weights
+    ):
+        """An unknown name, or a weight below zero or not a number, was taken
+        and failed at the first draw --- in a DataLoader worker, an epoch in
+        --- or drew with probabilities nobody asked for."""
+        with pytest.raises(MEDH5ValidationError, match="class_weights"):
+            PatchSampler(8, strategy="foreground", class_weights=weights)
+        PatchSampler(8, strategy="foreground", class_weights={1: 0.0, 2: 2.5})
 
     def test_an_empty_class_falls_back_to_uniform(self, tmp_path, label_set):
         path = tmp_path / "empty.medh5"
@@ -228,6 +238,47 @@ class TestPatchSampler:
             assert not drawn.used_index, "a stale index is scanned past, not read"
             mask = sample.annotations["organs_tp0"].dense([drawn.class_id])[0]
             assert mask[drawn.center], "and the centre it fell back to is foreground"
+
+    def test_S14_3_a_class_the_annotation_cannot_express_keeps_the_index(
+        self, indexed, masks
+    ):
+        """A sampler is configured once for a cohort, and a class this file
+        does not hold has no voxels in it (§6.2).  It counts zero, and the
+        index answers for the classes the file holds --- the draw scanned the
+        labels instead, for every file missing one of the cohort's classes."""
+        sampler = PatchSampler(
+            8, strategy="foreground", foreground_classes=["spleen", "vessel"]
+        )
+        rng = np.random.default_rng(8)
+        with medh5.open(indexed) as sample:
+            assert 4 not in sample.annotations["organs_tp0"].class_ids
+            draws = [sampler.draw(sample, "organs_tp0", rng) for _ in range(10)]
+        assert {(d.strategy, d.class_id, d.used_index) for d in draws} == {
+            ("foreground", 2, True)
+        }
+        assert all(masks[2][d.center] for d in draws)
+
+    def test_S14_3_an_index_caching_no_coordinates_is_refused_and_scanned_past(
+        self, indexed, masks
+    ):
+        """``max_coords=0`` wrote an index with every class counted and no
+        coordinate to draw, and every foreground draw from it failed."""
+        with (
+            pytest.raises(MEDH5ValidationError, match="max_coords"),
+            medh5.amend(indexed) as w,
+        ):
+            w.build_index(max_coords=0)
+        with h5py.File(indexed, "r+") as handle:
+            entry = handle["index/organs_tp0"]
+            entry.attrs["max_coords"] = 0
+            for name in list(entry["fg_coords"]):
+                del entry["fg_coords"][name]
+                entry["fg_coords"].create_dataset(name, shape=(0, 3), dtype=np.int32)
+        sampler = PatchSampler(8, strategy="foreground", foreground_classes=[2])
+        with medh5.open(indexed) as sample:
+            drawn = sampler.draw(sample, "organs_tp0", np.random.default_rng(0))
+        assert (drawn.class_id, drawn.used_index) == (2, False)
+        assert masks[2][drawn.center]
 
     def test_a_mask_is_never_the_foreground_annotation(self, tmp_path: Path):
         from medh5.sampling import PatchSampler

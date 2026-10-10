@@ -1080,7 +1080,8 @@ impl SampleWriter {
     // -- index ------------------------------------------------------------------------
 
     /// Build sampling indices for the named voxel annotations (§14.3); all
-    /// non-mask voxel annotations when `ann_ids` is `None`.
+    /// non-mask voxel annotations when `ann_ids` is `None`.  `max_coords` is
+    /// at least 1: an index caching no coordinates answers no draw.
     pub fn build_index(
         &mut self,
         ann_ids: Option<&[String]>,
@@ -1088,6 +1089,11 @@ impl SampleWriter {
         occupancy: Option<Option<usize>>,
         seed: u64,
     ) -> Result<Vec<String>> {
+        if max_coords == Some(0) {
+            return Err(Error::invalid(
+                "max_coords must be at least 1: an index caching no coordinates cannot answer a foreground draw",
+            ));
+        }
         let names: Vec<String> = match ann_ids {
             Some(ids) => ids.to_vec(),
             None => self

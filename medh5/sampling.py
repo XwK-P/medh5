@@ -55,8 +55,9 @@ class Patch:
     used_index: bool | None = None
     """Whether the §14.3 index answered the foreground query.
 
-    ``True`` when it did, ``False`` when the foreground had to be scanned because
-    no current index was present, and **``None`` when the question did not
+    ``True`` when it did, ``False`` when the labels were scanned instead ---
+    the annotation has no index, its index is stale, or the index lacks a
+    class the draw could pick --- and **``None`` when the question did not
     arise** --- a uniform draw consults no index at all.
 
     The third state is not pedantry.  This defaulted to ``True``, so a uniform
@@ -164,6 +165,14 @@ class PatchSampler:
         the strategy nearly every segmentation recipe actually uses, because
         pure foreground sampling never shows the model the background it will
         be evaluated on.
+
+    ``foreground_classes`` are the classes a foreground draw may target, by id
+    or label-set key (every class of the annotation when ``None``).  A class
+    the annotation cannot express has no voxels in it and counts zero, so one
+    list can serve a whole cohort.  ``class_weights`` picks among them:
+    ``"uniform"``, ``"inverse_frequency"``, ``"frequency"``, or a mapping of
+    class id to a finite weight of at least 0 --- anything else is refused
+    here, not at the first draw.
 
     A stale index is never trusted: its coordinates point at foreground the
     annotation no longer has, so the sampler scans instead --- and says so on

@@ -11,7 +11,6 @@
 //! frontend asks.
 
 use indexmap::IndexMap;
-use ndarray::Axis;
 use serde_json::{json, Value};
 
 use crate::annotations::Annotation;
@@ -23,6 +22,8 @@ use crate::{Error, Result};
 
 pub const STRATEGIES: [&str; 3] = ["uniform", "foreground", "balanced"];
 pub const PAIR_MODES: [&str; 3] = ["consecutive", "baseline_vs_all", "all_pairs"];
+/// The named class weightings; anything else is an explicit map.
+pub const CLASS_WEIGHTINGS: [&str; 3] = ["uniform", "inverse_frequency", "frequency"];
 
 /// One draw: where to read, and how the location was chosen.
 #[derive(Debug, Clone, PartialEq)]
@@ -204,6 +205,7 @@ impl PatchSampler {
         if !(0.0..=1.0).contains(&foreground_prob) {
             return Err(Error::invalid("foreground_prob must lie in [0, 1]"));
         }
+        check_class_weights(&class_weights)?;
         Ok(PatchSampler { patch_size, strategy: strategy.into(), foreground_prob, foreground_classes, class_weights })
     }
 
@@ -316,17 +318,19 @@ impl PatchSampler {
         Ok(sample.reference_grid()?.grid_id)
     }
 
-    /// A foreground voxel, from the index when there is a current one.
+    /// A foreground voxel, from the index when it can answer.
     ///
-    /// A stale index is worse than none: its coordinates point at foreground
-    /// the annotation no longer has, so it is never consulted.  Nor is one
-    /// built over some of the candidate classes, which would never pick the
-    /// others.  Either way the class is picked by `class_weights` from every
-    /// candidate's voxel count, and `None` --- no candidate with foreground
-    /// and weight --- is the answer, not a cue to pick unweighted: the
-    /// index path fell back to a scan that drew classes uniformly, so a class
-    /// weighted zero was drawn, and the no-index path ignored the weights
-    /// altogether (F20 of the round-4 audit).
+    /// A candidate the annotation cannot express has no voxels in it (§6.2),
+    /// so it counts zero on either path: a sampler given a cohort's classes
+    /// draws from the index of a file that holds only some of them.  The
+    /// index answers when it is current, caches coordinates, and indexes
+    /// every candidate the annotation can express.  A stale one is worse
+    /// than none --- its coordinates point at foreground the annotation no
+    /// longer has --- and one without some of those classes would never pick
+    /// them; then the labels are scanned.  Either way the class is picked by
+    /// `class_weights` from every candidate's voxel count, and `None` --- no
+    /// candidate with foreground and weight --- is the answer, not a cue to
+    /// pick unweighted.
     fn foreground_center(
         &self,
         sample: &Sample,
@@ -334,15 +338,21 @@ impl PatchSampler {
         rng: &mut Rng,
     ) -> Result<Option<(Vec<i64>, i64, bool)>> {
         let ann = sample.annotation(annotation)?;
-        let classes = self.classes(ann)?;
+        let expressible = ann.class_ids();
+        let mut classes: Vec<i64> = Vec::new();
+        for class_id in self.classes(ann)? {
+            if expressible.contains(&class_id) && !classes.contains(&class_id) {
+                classes.push(class_id);
+            }
+        }
         if classes.is_empty() {
             return Ok(None);
         }
         let index = if sample.fresh_indices()?.contains(annotation) { sample.index()?.get(annotation) } else { None };
         if let Some(index) = index {
-            let mut covered = true;
+            let mut covered = index.max_coords()? >= 1;
             for c in &classes {
-                covered &= index.has_class(*c)?;
+                covered = covered && index.has_class(*c)?;
             }
             if covered {
                 let counts = index.voxel_counts()?;
@@ -393,21 +403,28 @@ impl PatchSampler {
         Ok(Some(rng.choice_weighted(&ids, &probabilities)?))
     }
 
-    /// The O(volume) fallback for a file with no current sampling index:
-    /// every candidate class counted, one dense mask at a time, a class
-    /// picked by `class_weights` as the index path picks it, and a voxel of
-    /// that class.
+    /// The O(volume) fallback where no index answers: every candidate
+    /// counted at once ([`Annotation::voxel_counts`], one pass over the
+    /// labels where the encoding allows it), a class picked by
+    /// `class_weights` as the index path picks it, and a voxel of that
+    /// class --- the one class decoded to a mask.
     fn scan_center(&self, ann: &Annotation, classes: &[i64], rng: &mut Rng) -> Result<Option<(Vec<i64>, i64, bool)>> {
-        let mut counted: IndexMap<i64, i64> = IndexMap::new();
-        for class_id in classes {
-            if !counted.contains_key(class_id) {
-                let mask = ann.dense(Some(&[ClassKey::Id(*class_id)]), None)?;
-                counted.insert(*class_id, mask.iter().filter(|v| **v).count() as i64);
-            }
-        }
+        let keys: Vec<ClassKey> = classes.iter().map(|c| ClassKey::Id(*c)).collect();
+        let counted: IndexMap<i64, i64> = ann
+            .voxel_counts(Some(&keys))?
+            .into_iter()
+            .map(|(c, n)| (c, i64::try_from(n).unwrap_or(i64::MAX)))
+            .collect();
         let Some(class_id) = self.pick_class(&counted, rng)? else { return Ok(None) };
-        let mask = ann.dense(Some(&[ClassKey::Id(class_id)]), None)?.index_axis_move(Axis(0), 0);
+        let mask = ann.dense_class(class_id, &ann.window(None)?)?;
         let total = mask.iter().filter(|v| **v).count();
+        if total == 0 {
+            return Err(Error::Runtime(format!(
+                "annotation {}: class {class_id} counts {} voxel(s) and its mask holds none",
+                repr_str(&ann.ann_id),
+                counted.get(&class_id).copied().unwrap_or(0)
+            )));
+        }
         let pick = rng.integer(0, total as i64)? as usize;
         // `np.argwhere` order: C order over the voxels.
         let (flat, _) = mask.iter().enumerate().filter(|(_, v)| **v).nth(pick).expect("pick < total");
@@ -418,6 +435,26 @@ impl PatchSampler {
             rest /= extent;
         }
         Ok(Some((coords, class_id, false)))
+    }
+}
+
+/// Refuse a weighting no draw could apply: an unknown name, or a weight that
+/// is negative or not a number (`NaN` would make every probability `NaN`).
+fn check_class_weights(weights: &ClassWeights) -> Result<()> {
+    match weights {
+        ClassWeights::Named(name) if !CLASS_WEIGHTINGS.contains(&name.as_str()) => Err(Error::invalid(format!(
+            "unknown class_weights {}; expected one of {} or a mapping of class id to weight",
+            repr_str(name),
+            repr_list(&CLASS_WEIGHTINGS)
+        ))),
+        ClassWeights::Explicit(map) => match map.iter().find(|(_, w)| !w.is_finite() || **w < 0.0) {
+            Some((class_id, weight)) => Err(Error::invalid(format!(
+                "class_weights gives class {class_id} the weight {}; a weight is a finite number of at least 0",
+                py_float(*weight)
+            ))),
+            None => Ok(()),
+        },
+        ClassWeights::Named(_) => Ok(()),
     }
 }
 
@@ -632,5 +669,20 @@ mod tests {
         assert_eq!(err.to_string(), "patch_size (64,) has 1 axes; the grid has 3");
         let err = coerce_patch_size(&PatchSize::Scalar(0), 2).unwrap_err();
         assert_eq!(err.to_string(), "patch_size (0, 0) must be positive on every axis");
+    }
+
+    #[test]
+    fn s14_3_class_weights_no_draw_could_apply_are_refused_when_configured() {
+        let sampler = |weights| PatchSampler::new(PatchSize::Scalar(8), "foreground", 0.5, None, weights);
+        for name in CLASS_WEIGHTINGS {
+            assert!(sampler(ClassWeights::Named(name.into())).is_ok(), "{name}");
+        }
+        let err = sampler(ClassWeights::Named("popularity".into())).unwrap_err();
+        assert!(err.to_string().starts_with("unknown class_weights 'popularity'"), "{err}");
+        for bad in [-1.0, f64::NAN, f64::INFINITY] {
+            let err = sampler(ClassWeights::Explicit(IndexMap::from([(1, 1.0), (2, bad)]))).unwrap_err();
+            assert!(err.to_string().starts_with("class_weights gives class 2 the weight"), "{err}");
+        }
+        assert!(sampler(ClassWeights::Explicit(IndexMap::from([(1, 0.0), (2, 2.5)]))).is_ok());
     }
 }

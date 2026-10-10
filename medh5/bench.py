@@ -5,9 +5,11 @@ measured on one machine.  Published without a way to re-run them they are
 marketing; this module is the way to re-run them, so a claim like "18× faster
 foreground sampling" can be checked rather than believed.
 
-Every metric here is one the performance guide sets a target for.  A
-measurement below target is reported as such and the exit status says so --- a
-benchmark that always passes is a benchmark nobody reads.
+A metric the performance guide sets a target for (:data:`TARGETS`) is checked
+against it: a measurement below target is reported as such and the exit status
+says so --- a benchmark that always passes is a benchmark nobody reads.  The
+others --- an image patch read, a paired read, the dataloader throughput --- are
+measured and printed without one.
 """
 
 from __future__ import annotations
@@ -90,8 +92,12 @@ def benchmark_file(
     patch: int = 64,
     repeats: int = 20,
 ) -> list[Measurement]:
-    """Every targeted metric on one file (and the paired-read metrics when it
-    is longitudinal)."""
+    """Every targeted metric on one file but the many-class draw, an image
+    patch read, and the paired read when the file is longitudinal.
+
+    The foreground draw's ``detail["used_index"]`` is what the sampler did
+    (:attr:`medh5.sampling.Patch.used_index`): an index that is stale, or
+    lacks a class the draw could pick, is scanned past and reported so."""
     return [
         Measurement.from_json(doc)
         for doc in _core.bench_benchmark_file(
@@ -124,10 +130,13 @@ def throughput(
     workers: int = 0,
     annotation: str | None = None,
 ) -> Measurement:
-    """Sustained patches/s through the real dataloader (target: ≥ 400/s).
+    """Sustained patches/s through the real dataloader.
 
     Measured end to end --- open, sample, read, decompress, collate --- because
-    that is the number that decides whether a GPU waits.
+    that is the number that decides whether a GPU waits.  The measurement
+    carries no target: the rate depends on the worker count and the machine
+    more than on the file, so the performance guide's ≥ 400/s is not checked
+    here.
     """
     from torch.utils.data import DataLoader
 

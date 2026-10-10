@@ -24,9 +24,10 @@ medh5 index build cohort/*.medh5 --max-coords 4096
 ```
 
 Per voxel annotation, per class, it stores a bounded sample of foreground
-coordinates, the exact voxel count and a tight bounding box. Foreground patch
-sampling becomes a lookup instead of a scan, and `medh5 dataset stats` gets its
-class counts for a few hundred bytes rather than a decompression pass.
+coordinates (at most `--max-coords`, which must be at least 1), the exact voxel
+count and a tight bounding box. Foreground patch sampling becomes a lookup
+instead of a scan, and `medh5 dataset stats` gets its class counts for a few
+hundred bytes rather than a decompression pass.
 
 **How to tell you are missing it.** Nothing fails — the sampler falls back to
 scanning the labels and records what it did:
@@ -37,9 +38,12 @@ patch["used_index"]     # True, False, or None
 ```
 
 Three states, because there are three answers. `True` means the index answered
-the foreground query; `False` means the foreground had to be scanned because no
-current index was present; **`None` means the question did not arise** — a
-uniform draw consults no index at all.
+the foreground query; `False` means the labels had to be scanned instead,
+because the annotation has no current index or its index lacks a class the draw
+could pick; **`None` means the question did not arise** — a uniform draw
+consults no index at all. A class in `foreground_classes` that an annotation
+cannot express is not one the draw could pick: it has no voxels there, so one
+sampler configured for a whole cohort keeps every file's index.
 
 `False` is the one that costs you:
 
@@ -184,10 +188,11 @@ Two things to know before quoting these.
 samples it builds, so 0.03 ms is the indexed path — the one you get after
 `medh5 index build`, not the one you get by default. Unindexed, the same draw
 scans the labels: 63 ms on this volume, 650 ms at 512³, growing with the volume
-while the indexed draw stays flat. `used_index` in the batch metadata says which
-you measured. The 63-class row exists because the class count is the other
-axis: before 1.4.2 each draw re-read the index's class table once per class,
-0.9 ms at eight classes and 7.6 ms at 63.
+while the indexed draw stays flat. `used_index` in the batch metadata, and in
+the row's `detail` under `bench --json`, says which you measured. The 63-class
+row exists because the class count is the other axis: before 1.4.2 each draw
+re-read the index's class table once per class, 0.9 ms at eight classes and
+7.6 ms at 63.
 
 **`bench` does not check the throughput target.** The rows with a target are
 verified and reported against; throughput depends on worker count, so it is

@@ -153,9 +153,9 @@ raising from inside `torch.stack`, and it refuses by name a key some items of
 the batch carry and others do not.
 
 `used_index` is worth logging. `False` means the sampler fell back to scanning
-the volume because there was no current sampling index — the difference between
-0.03 ms and 650 ms per draw at 512³. `None` means the draw was uniform and
-consulted no index, so there is nothing to report.
+the volume because no current sampling index held the classes it could draw —
+the difference between 0.03 ms and 650 ms per draw at 512³. `None` means the
+draw was uniform and consulted no index, so there is nothing to report.
 
 ## The DataLoader
 
