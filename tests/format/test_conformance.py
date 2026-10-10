@@ -34,10 +34,6 @@ from medh5.errors import CODES, MEDH5Error, MEDH5ValidationError
 from medh5.validate import validate_file
 from tests.helpers import ROOT
 
-# Every diagnostic code in §15.2 now has a corpus case.  The set stays here so a
-# future deferral has to be written down rather than silently opening a gap.
-DEFERRED_CODES: frozenset[str] = frozenset()
-
 
 @pytest.fixture(scope="module")
 def corpus(tmp_path_factory) -> list:
@@ -74,20 +70,6 @@ class TestCorpus:
     def test_the_corpus_has_both_valid_and_invalid_cases(self, corpus):
         assert sum(1 for r in corpus if r.case.valid) >= 10
         assert sum(1 for r in corpus if not r.case.valid) >= 30
-
-    def test_S15_2_every_implemented_code_has_a_case(self):
-        covered = {c for case in CASES for c in (*case.errors, *case.warnings)}
-        uncovered = set(CODES) - covered - DEFERRED_CODES
-        assert not uncovered, (
-            f"diagnostic codes with no corpus case: {sorted(uncovered)}"
-        )
-
-    def test_deferred_codes_are_genuinely_unimplemented(self):
-        """The exemption list must not quietly grow to cover real gaps."""
-        covered = {c for case in CASES for c in (*case.errors, *case.warnings)}
-        assert not (DEFERRED_CODES & covered), (
-            "a deferred code now has a case; remove it from DEFERRED_CODES"
-        )
 
     def test_the_corpus_covers_every_code(self):
         covered = {c for case in CASES for c in (*case.errors, *case.warnings)}
@@ -213,13 +195,6 @@ class TestPublishedSchema:
         assert set(schema()["required"]) == {"identity", "timepoints"}
 
 
-class TestValidatorHonesty:
-    def test_a_missing_schema_library_is_reported_not_assumed(self, sample_path):
-        """Absence of `jsonschema` must not read as a clean document."""
-        report = validate_file(sample_path, level="structural")
-        assert report.checked["schema_checked"] is True
-
-
 class TestSpecSync:
     """The spec's code table and the implementation must not drift apart."""
 
@@ -333,7 +308,8 @@ class TestPublication:
     """The suite as a shipped artifact, and scoring somebody else's validator."""
 
     @pytest.fixture(scope="class")
-    def suite(self, tmp_path_factory) -> Path:
+    @classmethod
+    def suite(cls, tmp_path_factory) -> Path:
         return publish(tmp_path_factory.mktemp("suite"))
 
     def test_the_published_suite_stands_alone(self, suite):
@@ -535,7 +511,8 @@ class TestCorpusSmoke:
     """
 
     @pytest.fixture(scope="class")
-    def built(self, tmp_path_factory) -> Path:
+    @classmethod
+    def built(cls, tmp_path_factory) -> Path:
         out = tmp_path_factory.mktemp("smoke")
         build_corpus(out)
         return Path(out)

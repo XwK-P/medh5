@@ -115,12 +115,20 @@ class TestReport:
 
 
 class TestRules:
-    def test_S15_2_every_emitted_code_is_in_the_table(self, sample_path):
-        from medh5.conformance import CASES
+    def test_S15_2_every_emitted_code_is_in_the_table(self, tmp_path):
+        """Whatever the validator reports over the whole corpus, at the level
+        that runs every rule, is a code the table defines: one it emitted and
+        the table did not would be API nobody documented."""
+        from medh5.conformance import build_corpus
 
-        for case in CASES:
-            for code in (*case.errors, *case.warnings):
-                assert code in CODES, code
+        build_corpus(tmp_path)
+        emitted = {
+            d.code
+            for path in sorted(tmp_path.glob("*.medh5*"))
+            for d in validate_file(path, level="strict").diagnostics
+        }
+        assert len(emitted) > 50, sorted(emitted)
+        assert emitted <= set(CODES), sorted(emitted - set(CODES))
 
     def test_S2_1_an_empty_version_is_E001(self, sample_path):
         """E001 is a missing or empty `medh5_version`; an empty one was
@@ -445,7 +453,9 @@ class TestN12Strings:
             timeout=300,
         )
         assert run.returncode == 0, run.stderr[-2000:]
-        assert "E00" in run.stdout
+        # Uncapped, the declared string reads and is E004; under the cap it is
+        # refused, which the driver reports as E001.
+        assert "E001" in run.stdout, run.stdout
 
 
 class TestF10DecodedStrings:
