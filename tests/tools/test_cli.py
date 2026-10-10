@@ -640,6 +640,71 @@ class TestFixAndScrub:
         assert run(capsys, "scrub", str(sample_path))[0] == EXIT_OK
 
 
+class TestBatches:
+    """A command over several files reports on every one: a file it cannot
+    process is an entry of its own, the files before it keep their reports,
+    the files after it are still done, and the command fails at the end."""
+
+    @pytest.fixture
+    def batch(self, tmp_path, sample_path):
+        broken = tmp_path / "broken.medh5"
+        broken.write_bytes(b"not hdf5")
+        after = tmp_path / "after.medh5"
+        after.write_bytes(sample_path.read_bytes())
+        return [str(sample_path), str(broken), str(after)]
+
+    def test_verify_goes_on_past_a_file_it_cannot_read(self, capsys, batch):
+        code, out = run(capsys, "verify", *batch, "--json")
+        assert code == EXIT_ERROR
+        payload = json.loads(out.out)
+        assert [entry["ok"] for entry in payload] == [True, False, True]
+        assert payload[1]["path"] == batch[1]
+        assert payload[1]["error"] in out.err
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            ["fix"],
+            ["recompress", "--profile", "portable"],
+            ["scrub"],
+            ["index", "build"],
+            ["labels", "check"],
+        ],
+    )
+    def test_every_batch_command_goes_on(self, capsys, batch, command):
+        code, out = run(capsys, *command, *batch, "--json")
+        assert code == EXIT_ERROR
+        payload = json.loads(out.out)
+        assert batch[1] in out.out and batch[2] in out.out, payload
+        assert "medh5: " in out.err
+
+    def test_a_refused_scrub_keeps_the_reports_of_files_already_changed(
+        self, capsys, tmp_path, sample_path
+    ):
+        """A clinical sample is refused by design; the files scrubbed before
+        it were changed, and their reports carry the only key to the
+        pseudonyms written (`uid_map`)."""
+        from medh5.conformance import build_corpus
+
+        build_corpus(tmp_path, names=["clinical-one-visit-history"])
+        clinical = tmp_path / "clinical-one-visit-history.medh5"
+        code, out = run(
+            capsys,
+            "scrub",
+            str(sample_path),
+            str(clinical),
+            "--apply",
+            "--salt",
+            "s",
+            "--json",
+        )
+        assert code == EXIT_ERROR
+        first, refused = json.loads(out.out)
+        assert first["path"] == str(sample_path) and first["applied"]
+        assert "uid_map" in first
+        assert refused["ok"] is False and "clinical profile" in refused["error"]
+
+
 class TestDatasetCommands:
     """The cohort commands: index, split, stats, check."""
 

@@ -31,10 +31,15 @@ pub fn scrub(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     for path in get_paths(m, "paths") {
         let result =
             if apply_changes { apply(Path::new(&path), &options) } else { scan(Path::new(&path), &options.profile) };
+        // A refused file --- a clinical sample is refused by design --- must
+        // not lose the reports of the files already scrubbed: their `uid_map`
+        // is the only key to the pseudonyms written.
         let report = match result {
             Ok(r) => r,
-            Err(e) if e.is_medh5() => return Ok(ctx.fail(e.to_string())),
-            Err(e) => return Err(e),
+            Err(e) => {
+                reports.push(ctx.file_failed(&path, &e));
+                continue;
+            }
         };
         reports.push(report.to_json());
         if !as_json {

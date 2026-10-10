@@ -69,12 +69,17 @@ fn show(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
 fn check(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let paths = get_paths(m, "paths");
     let mut seen: IndexMap<String, Vec<String>> = IndexMap::new();
+    let mut unreadable = serde_json::Map::new();
     let mut rows = Vec::new();
     for path in &paths {
         let label_set = match open_sample(Path::new(path)).and_then(|s| Ok(s.label_set()?.cloned())) {
             Ok(ls) => ls,
-            Err(e) if e.is_medh5() => return Ok(ctx.fail(e.to_string())),
-            Err(e) => return Err(e),
+            Err(e) => {
+                let failed = ctx.file_failed(path, &e);
+                unreadable.insert(path.clone(), failed["error"].clone());
+                rows.push(vec![path.clone(), "(unreadable)".to_string()]);
+                continue;
+            }
         };
         let key = match &label_set {
             Some(ls) if !ls.is_empty() || ls.declared_sha256().is_some() => {
@@ -86,20 +91,21 @@ fn check(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
         seen.entry(key.clone()).or_default().push(path.clone());
         rows.push(vec![path.clone(), key]);
     }
+    let ok = seen.len() <= 1 && unreadable.is_empty();
     if flag(m, "json") {
         let vocabularies: serde_json::Map<String, Value> = seen.iter().map(|(k, v)| (k.clone(), json!(v))).collect();
-        ctx.emit(&json!({"vocabularies": vocabularies}), true);
+        ctx.emit(&json!({"vocabularies": vocabularies, "unreadable": unreadable}), true);
     } else {
         ctx.print(table(&rows, &["file", "vocabulary"]));
         if seen.len() > 1 {
             ctx.print(format!(
                 "\n{} distinct vocabularies across {} files; class ids are not comparable between them.",
                 seen.len(),
-                paths.len()
+                paths.len() - unreadable.len()
             ));
         }
     }
-    Ok(if seen.len() <= 1 { EXIT_OK } else { EXIT_ERROR })
+    Ok(if ok { EXIT_OK } else { EXIT_ERROR })
 }
 
 fn registry_cmd(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {

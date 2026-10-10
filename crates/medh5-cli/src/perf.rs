@@ -24,17 +24,23 @@ fn recompress_cmd(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     }
     let profile = req_str(m, "profile");
     let mut results = Vec::new();
+    let mut document = Vec::new();
     for path in &paths {
         match recompress(Path::new(path), profile, out.map(Path::new), flag(m, "rechunk")) {
-            Ok(r) => results.push(r),
-            Err(e) if e.is_medh5() => return Ok(ctx.fail(e.to_string())),
-            Err(e) => return Err(e),
+            Ok(r) => {
+                document.push(r.to_json());
+                results.push(r);
+            }
+            Err(e) => document.push(ctx.file_failed(path, &e)),
         }
     }
-    let all_ok = results.iter().all(|r| r.ok());
+    let all_ok = results.len() == paths.len() && results.iter().all(|r| r.ok());
     if flag(m, "json") {
-        ctx.emit(&Value::Array(results.iter().map(|r| r.to_json()).collect()), true);
+        ctx.emit(&Value::Array(document), true);
         return Ok(if all_ok { EXIT_OK } else { EXIT_ERROR });
+    }
+    if results.is_empty() {
+        return Ok(EXIT_ERROR);
     }
     let rows: Vec<Vec<String>> = results
         .iter()

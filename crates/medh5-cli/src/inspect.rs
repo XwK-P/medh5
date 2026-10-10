@@ -16,6 +16,7 @@ use medh5::labels::ClassKey;
 use medh5::sample::Sample;
 use medh5::storage::codecs::describe_filters;
 use medh5::validate::validate_paths;
+use medh5::Error;
 
 use crate::common::*;
 
@@ -378,14 +379,17 @@ fn verify(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let mut ok = true;
     for path in get_paths(m, "paths") {
         let result = match open(m, &path) {
-            Ok(AnyFile::Collection(c)) => return Ok(ctx.fail(needs_key(&path, &c)?)),
+            Ok(AnyFile::Collection(c)) => needs_key(&path, &c).and_then(|why| Err(Error::File(why))),
             Ok(AnyFile::Sample(s)) => s.verify(partial.as_deref()),
             Err(e) => Err(e),
         };
         let result = match result {
             Ok(r) => r,
-            Err(e) if e.is_medh5() => return Ok(ctx.fail(e.to_string())),
-            Err(e) => return Err(e),
+            Err(e) => {
+                results.push(ctx.file_failed(&path, &e));
+                ok = false;
+                continue;
+            }
         };
         let mut summary = Map::new();
         summary.insert("path".into(), json!(path));
@@ -429,11 +433,15 @@ fn fix_cmd(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
         max_coords: None,
     };
     let mut results = Vec::new();
+    let mut failed = false;
     for path in get_paths(m, "paths") {
         let repair = match fix(Path::new(&path), &options) {
             Ok(r) => r,
-            Err(e) if e.is_medh5() => return Ok(ctx.fail(e.to_string())),
-            Err(e) => return Err(e),
+            Err(e) => {
+                results.push(ctx.file_failed(&path, &e));
+                failed = true;
+                continue;
+            }
         };
         results.push(repair.to_json());
         if as_json {
@@ -477,7 +485,7 @@ fn fix_cmd(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
         !truthy(&r["changed"]) && (truthy(&r["diagnosis"]["needs_index"]) || truthy(&r["diagnosis"]["needs_digests"]))
     });
     ctx.emit(&Value::Array(results), as_json);
-    Ok(if outstanding { EXIT_ERROR } else { EXIT_OK })
+    Ok(if outstanding || failed { EXIT_ERROR } else { EXIT_OK })
 }
 
 fn timeline(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {

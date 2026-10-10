@@ -204,6 +204,7 @@ fn index_build(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let occupancy = if occupancy == 0 { None } else { Some(occupancy.max(0) as usize) };
     let seed = get_i64(m, "seed").unwrap_or(0);
     let mut built = Map::new();
+    let mut failed = false;
     for path in get_paths(m, "paths") {
         let names = (|| -> medh5::Result<Vec<String>> {
             let mut writer = amend(Path::new(&path), None)?;
@@ -213,8 +214,13 @@ fn index_build(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
         })();
         let names = match names {
             Ok(n) => n,
-            Err(e) if e.is_medh5() => return Ok(ctx.fail(e.to_string())),
-            Err(e) => return Err(e),
+            Err(e) => {
+                // `null` in the document: the reason is on stderr.
+                ctx.file_failed(&path, &e);
+                built.insert(path, Value::Null);
+                failed = true;
+                continue;
+            }
         };
         if !as_json {
             let listed = if names.is_empty() { "(nothing)".to_string() } else { names.join(", ") };
@@ -224,5 +230,5 @@ fn index_build(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     }
     let any = built.values().any(truthy);
     ctx.emit(&Value::Object(built), as_json);
-    Ok(if any { EXIT_OK } else { EXIT_ERROR })
+    Ok(if any && !failed { EXIT_OK } else { EXIT_ERROR })
 }

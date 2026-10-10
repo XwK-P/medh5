@@ -4,7 +4,7 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use clap::ArgMatches;
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use medh5::json::{format_g, pretty, repr_str};
 use medh5::Error;
@@ -103,6 +103,16 @@ impl<'a> Ctx<'a> {
     pub fn usage(&mut self, message: impl AsRef<str>) -> i32 {
         self.eprint(format!("medh5: {}", message.as_ref()));
         EXIT_USAGE
+    }
+
+    /// A file of a batch that could not be processed: `medh5: why` on stderr
+    /// as it happens, and the file's entry in the `--json` document.  The
+    /// batch goes on, so the files before it keep their reports and the files
+    /// after it are still processed; the command fails at the end.
+    pub fn file_failed(&mut self, path: &str, error: &Error) -> Value {
+        let message = top_level_message(error);
+        self.eprint(format!("medh5: {message}"));
+        json!({"path": path, "ok": false, "error": message})
     }
 
     pub fn flush(&mut self) {

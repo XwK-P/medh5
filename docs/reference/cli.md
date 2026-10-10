@@ -17,6 +17,12 @@ Exit codes are Unix-conventional: **0** success, **1** a handled error or a
 failed check, **2** a usage error. Every inspection command takes `--json` and
 writes a machine-readable document to stdout.
 
+A command given several files reports on each of them. One it cannot process
+is named on stderr --- and, with `--json`, is an entry of its own carrying the
+`error` --- and the files after it are still processed; the command then
+exits with 1. Output that cannot be written (a full disk) fails the command
+too.
+
 ## Inspecting
 
 ### `medh5 info`
