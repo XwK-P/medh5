@@ -5,35 +5,52 @@ use std::path::Path;
 use clap::ArgMatches;
 use serde_json::{json, Value};
 
-use medh5::conformance::{build_corpus, cases, check_checksums, publish, run_corpus, score, summarize, CaseResult};
+use medh5::conformance::{
+    build_corpus, case_by_name, cases, check_checksums, publish, run_corpus, score, summarize, CaseResult,
+};
+use medh5::json::repr_str;
 use medh5::pyval::py_path;
 use medh5::Error;
 
 use crate::common::*;
 
 pub fn dispatch(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
+    let names = m.subcommand().and_then(|(_, sub)| sub.try_get_many::<String>("names").ok().flatten());
+    let names: Option<Vec<String>> = names.map(|n| n.cloned().collect());
+    let chosen = match chosen(names.as_deref()) {
+        Ok(n) => n,
+        Err(why) => return Ok(ctx.usage(why)),
+    };
+    let names = names.as_deref();
     match m.subcommand() {
         Some(("list", sub)) => list(sub, ctx),
         Some(("build", sub)) => {
-            let names = get_strs(sub, "names");
-            let manifest = build_corpus(Path::new(req_str(sub, "outdir")), names.as_deref())?;
-            ctx.print(format!("wrote {} cases and {}", cases().len(), py_path(&manifest)));
+            let manifest = build_corpus(Path::new(req_str(sub, "outdir")), names)?;
+            ctx.print(format!("wrote {chosen} cases and {}", py_path(&manifest)));
             Ok(EXIT_OK)
         }
         Some(("run", sub)) => {
-            let names = get_strs(sub, "names");
-            let results = run_corpus(Path::new(req_str(sub, "outdir")), names.as_deref())?;
+            let results = run_corpus(Path::new(req_str(sub, "outdir")), names)?;
             Ok(report(&results, None, flag(sub, "json"), ctx))
         }
         Some(("publish", sub)) => {
-            let names = get_strs(sub, "names");
-            let root = py_path(&publish(Path::new(req_str(sub, "outdir")), names.as_deref())?);
-            ctx.print(format!("wrote the suite to {root}: {} cases, see {root}/README.md", cases().len()));
+            let root = py_path(&publish(Path::new(req_str(sub, "outdir")), names)?);
+            ctx.print(format!("wrote the suite to {root}: {chosen} cases, see {root}/README.md"));
             Ok(EXIT_OK)
         }
         Some(("score", sub)) => score_cmd(sub, ctx),
         _ => Ok(ctx.usage("usage: medh5 conformance {list|build|run|publish|score}")),
     }
+}
+
+/// How many cases `--case` selects --- every case when it names none --- or
+/// why it selects nothing: a name no case has would build, run or publish an
+/// empty corpus and report it a success.
+fn chosen(names: Option<&[String]>) -> Result<usize, String> {
+    if let Some(unknown) = names.into_iter().flatten().find(|n| case_by_name(n).is_err()) {
+        return Err(format!("no conformance case {} (`medh5 conformance list` names them)", repr_str(unknown)));
+    }
+    Ok(cases().iter().filter(|c| names.is_none_or(|n| n.contains(&c.name))).count())
 }
 
 fn list(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {

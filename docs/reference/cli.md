@@ -576,7 +576,8 @@ medh5 conformance build OUTDIR [--case NAME]
 
 Write the corpus files and `expected.json`, and nothing else. Use this when you
 want the cases as fixtures; use `publish` when you want the whole distributable
-suite.
+suite. `--case`, here and in `run` and `publish`, repeats to name several
+cases; a name the corpus does not have is refused as a usage error.
 
 ### `medh5 conformance run`
 

@@ -524,6 +524,7 @@ class TestConformanceCommands:
             capsys, "conformance", "build", str(tmp_path), "--case", "core-minimal"
         )
         assert code == EXIT_OK
+        assert out.out.startswith("wrote 1 cases and ")
         assert (tmp_path / "core-minimal.medh5").exists()
         assert (tmp_path / "expected.json").exists()
         code, out = run(
@@ -532,11 +533,23 @@ class TestConformanceCommands:
         assert code == EXIT_OK
         assert "1/1 cases pass" in out.out
 
+    @pytest.mark.parametrize("command", ["build", "run", "publish"])
+    def test_a_case_name_the_corpus_lacks_is_refused(self, capsys, tmp_path, command):
+        """A misspelt `--case` built, ran or published nothing and reported a
+        whole corpus written, or "0/0 cases pass"."""
+        code, out = run(
+            capsys, "conformance", command, str(tmp_path / "out"), "--case", "nosuch"
+        )
+        assert code == EXIT_USAGE
+        assert "no conformance case 'nosuch'" in out.err
+        assert not (tmp_path / "out").exists()
+
     def test_publish_then_score(self, capsys, tmp_path):
         code, out = run(
             capsys, "conformance", "publish", str(tmp_path), "--case", "core-minimal"
         )
         assert code == EXIT_OK
+        assert ": 1 cases, see " in out.out
         assert (tmp_path / "README.md").exists()
         assert (tmp_path / "SHA256SUMS").exists()
 
