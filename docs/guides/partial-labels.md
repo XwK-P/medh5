@@ -5,15 +5,16 @@ record what you actually looked for, so a model learns from your data and not
 from your annotation schedule.
 
 **The one distinction to hold on to.** `class_ids` is what an annotation
-*contains*. `annotated_class_ids` is what was *looked for*. A class examined and
+*can express* --- every class its data can encode, whether or not a voxel
+carries it. `annotated_class_ids` is what was *looked for*. A class examined and
 found absent is a usable negative example; a class nobody examined is not, and
 collapsing the two is how a model learns that a site's scans have no spleens.
 
 ```python
-ann.class_ids            # what is here
+ann.class_ids            # what it can express
 ann.annotated_class_ids  # what was examined
 ann.is_annotated("spleen")
-ann.is_fully_covered     # nothing appears that was not examined
+ann.is_fully_covered     # every class it can express was examined
 ```
 
 ## Which coverage claim do you want?
@@ -68,9 +69,11 @@ annotated in a tenth of the cohort does not look ten times rarer than it is.
 
 ## "Some voxels I cannot label either way"
 
-That is an **ignore** region — class `65535` — and it is different from
-background. It marks voxels that must not contribute to a loss in *either*
-direction:
+That is an **ignore** region, and it is different from background. It marks
+voxels that must not contribute to a loss in *either* direction. It is not a
+class: in band (`labelmap`, `layers`) its voxels hold the annotation's
+`ignore_id` --- `65535` unless the header says otherwise --- and under the other
+encodings it is a separate `mask` annotation:
 
 ```python
 ann.has_ignore_region       # is there one at all?
@@ -102,6 +105,12 @@ region = s.ignore_region("organs", roi=(slice(0, 8),) * 3)
 sibling mask --- and is all `False` where the annotation has no region. The
 per-encoding `ignore_mask()` exists only on `labelmap` and `layers`, and sees
 only the in-band part.
+
+`ann.labelmap()` flattens with the region in it, under every encoding: an
+ignored voxel reads as the ignore id, never as `0`, which means verified
+absent. Its `dtype=` must hold that id too, so `labelmap(dtype=np.uint8)` of
+an annotation with an ignore region is refused (`ValueError`) rather than
+folding `65535` into `255`.
 
 Use it for a truncated field of view, an unreadable region, a structure a rater
 declined to call. Do not use it for "background": background is a positive
@@ -159,9 +168,9 @@ which never looked for it — the exact substitution this page exists to prevent
 `e.annotations[name]["timepoints"]` narrows it further when a sample carries
 per-visit annotations.
 
-`Entry`'s own pair — `has_class(class_id)` for what is present,
-`examined(class_id)` for what was looked for — draws the same distinction as an
-annotation does, at sample scope.
+`Entry`'s own pair — `has_class(class_id)` for a class some annotation
+names, `examined(class_id)` for what was looked for — draws the same
+distinction as an annotation does, at sample scope.
 
 Straight off a sample, when you are not working from a manifest:
 

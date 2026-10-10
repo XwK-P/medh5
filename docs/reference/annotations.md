@@ -12,7 +12,7 @@ ann.kind                   # how it is stored
 ann.task                   # what it is for: segmentation, detection, classification
 ann.grid_id                # the geometry it lives on
 ann.timepoints             # which visits it describes
-ann.class_ids              # classes it declares
+ann.class_ids              # classes it can express
 ann.annotated_class_ids    # classes that were examined (§11.3)
 ann.closure                # "explicit" | "implicit"
 ann.quality_key, ann.prov  # links into quality and provenance
@@ -20,11 +20,13 @@ ann.quality_key, ann.prov  # links into quality and provenance
 
 ### Coverage
 
-`class_ids` is what is here. `annotated_class_ids` is what was looked for.
+`class_ids` is what the annotation can express: every class its data can
+encode, whether or not any voxel carries it. `annotated_class_ids` is what was
+looked for.
 
 ```python
 ann.is_annotated("spleen")   # was this class examined at all?
-ann.is_fully_covered         # nothing appears that was not examined
+ann.is_fully_covered         # every class it can express was examined
 ```
 
 A class in `annotated_class_ids` with zero voxels was **examined and absent** —
@@ -32,8 +34,10 @@ a usable negative example. A class in neither was not examined, and its absence
 carries no information. Training code that treats the second as a negative is
 learning from the annotator's schedule.
 
-An **ignore** region (class `65535`) marks voxels that must not contribute to a
-loss in either direction:
+An **ignore** region marks voxels that must not contribute to a loss in either
+direction. It is not a class: in band (`labelmap`, `layers`) its voxels hold
+the annotation's `ignore_id` (`65535` unless the header says otherwise), and
+under the other encodings it is a separate `mask` annotation:
 
 ```python
 ann.has_ignore_region      # is there one at all?
@@ -55,7 +59,8 @@ to it (§7.7). On those three `ignore_mask()` is not defined.
 
 **Read it with `s.ignore_region(ann_id, roi=...)`**, which answers for every
 encoding: it combines the in-band region and the sibling mask, and is all
-`False` where there is none. See
+`False` where there is none. `ann.labelmap()` holds it too, under every
+encoding: an ignored voxel reads as the ignore id, never as `0`. See
 [Partial labels and coverage](../guides/partial-labels.md#some-voxels-i-cannot-label-either-way).
 
 ## Voxel annotations
@@ -72,6 +77,11 @@ ann.labelmap()                          # (*spatial) class ids, priority order
 ann.voxel_counts()                      # {class_id: count}
 ann.class_bboxes()                      # {class_id: (S, 2) index-space bounds}
 ```
+
+A `roi` is a window of the grid, one slice per spatial axis, read whole: a
+slice with a step other than 1 raises `ValueError`. `labelmap(dtype=...)`
+must hold every class id, and the ignore id where a voxel is ignored; a
+narrower dtype raises `ValueError` rather than folding two values into one.
 
 | Encoding | Stores | Good for | Overlap | Instances |
 |---|---|---|---|---|
@@ -173,8 +183,12 @@ w.add_boxes("lesions", boxes, class_ids=["lesion"], grid="ct",
 b = s.annotations["lesions"]
 b.boxes[0]              # [[1.5, 5.5], [3.5, 8.5], [4.5, 10.5]]
 b.as_slices()[0]        # (slice(2, 6), slice(4, 9), slice(5, 11))
-b.class_ids, b.scores, b.instance_ids
+b.object_class_ids, b.scores, b.instance_ids   # one entry per box
 ```
+
+`object_class_ids` is each box's class. `class_ids` is the header's coverage
+tuple, as on every annotation: every class the annotation can express, which
+holds each box's class and may hold classes no box has (§6.2).
 
 `space="index"` or `space="world"`. The half-voxel offset between a box edge
 and a slice bound is the convention written down in spec §8.1, and it is the
@@ -195,12 +209,13 @@ their own grid only, since the planes they name are that grid's.
 
 **2-D boxes on a slice.** A box with a degenerate axis (`lo == hi`) plus
 `slice_index` is the common radiology annotation — a lesion drawn on one slice
-of a 3-D study (§8.2):
+of a 3-D study (§8.2). Two lesions, on slices 5 and 9:
 
-<!-- illustrative -->
 ```python
-w.add_boxes("lesions", boxes, class_ids=["lesion"], grid="ct",
-            space="index", slice_index=[37, 41])
+boxes = np.array([[[5, 5], [3.5, 8.5], [4.5, 10.5]],      # (N, S, 2), with
+                  [[9, 9], [10.5, 16.5], [6.5, 12.5]]])   # lo == hi on axis 0
+w.add_boxes("lesions", boxes, class_ids=["lesion", "lesion"], grid="ct",
+            space="index", slice_index=[5, 9])
 ```
 
 `slice_index` is a **per-box column**: one plane for each box, shape `(N,)`, and
@@ -216,8 +231,10 @@ used to be clamped to the edge, both silently.
 w.add_obb("nodules", centers, sizes, rotations, class_ids=["nodule"], grid="ct")
 ```
 
-`rotations` are rotation matrices. Centre, size and rotation round-trip through
-the corner representation exactly.
+`rotations` are rotation matrices: column *k* is the direction of the box's
+local axis *k*, and each must be a proper rotation (orthonormal, determinant
++1, to 1e-4 — §8.3). `ann.corners()` gives each box's `2**S` corners,
+`center + R @ (±size / 2)`; there is no conversion back from corners.
 
 ### Keypoints and points
 

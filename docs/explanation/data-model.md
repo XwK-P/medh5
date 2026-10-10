@@ -97,7 +97,7 @@ Every annotation carries two sets:
 
 | | |
 |---|---|
-| `class_ids` | classes this annotation **contains** |
+| `class_ids` | classes this annotation **can express**, present or not |
 | `annotated_class_ids` | classes that were **examined**, found or not |
 
 ```python
@@ -106,7 +106,7 @@ ann.class_ids               # (1, 2, 3)  — declared: liver, spleen, lesion
 ann.annotated_class_ids     # (1, 2, 3)  — all three were examined
 ann.voxel_counts()          # {1: 512, 2: 0, 3: 27}  — the spleen is absent
 ann.is_annotated("vessel")  # False      — nobody looked for a vessel
-ann.is_fully_covered        # True       — nothing appears that was not examined
+ann.is_fully_covered        # True       — every class it can express was examined
 ```
 
 Class 2 is in `class_ids` with zero voxels: examined, and absent. Class 4 is in

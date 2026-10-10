@@ -58,7 +58,7 @@ voxel index is a voxel centre, both written down. Converting to NIfTI or DICOM
 moves numbers between conventions explicitly, and
 [refuses when it cannot](explanation/refusals.md).
 
-**Absence is not silence.** `class_ids` says what an annotation contains;
+**Absence is not silence.** `class_ids` says what an annotation can express;
 `annotated_class_ids` says what was *looked for*. A class searched for and not
 found is recorded as searched for and not found, which is a different training
 signal from a class nobody examined. See
