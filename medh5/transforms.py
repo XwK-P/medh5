@@ -4,7 +4,7 @@ A transform maps points from ``from_frame`` to ``to_frame``: ``x_M = T(x_F)``,
 the ITK convention, with no attribute to switch it.  The classes here are views
 over the format engine's transform model, which evaluates every kind:
 ``identity`` and ``affine`` (§10.3), ``displacement`` (§10.4), ``bspline``
-(§10.5) and ``composite`` (§10.2).
+and ``composite`` (§10.5).
 
 Resolution walks the frame graph, not transform names; it inverts a step only
 where the inverse can be evaluated, refuses an ambiguous pair, and returns

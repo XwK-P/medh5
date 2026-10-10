@@ -83,8 +83,11 @@ fn encode_composite(components: &Bound<'_, PyAny>) -> R<AnnotationPayload> {
 /// The B-spline basis weights at `t`: `(order + 1, *t.shape)`.
 #[pyfunction]
 fn basis<'py>(py: Python<'py>, order: i64, t: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
+    // The order sizes the output, so it is refused (E502) before anything is
+    // allocated by it: `basis(2**31, 0.5)` asked for 16 GB and aborted.
+    model::basis(order, 0.0)?;
     let ts = f64_array(t)?;
-    let n = (order + 1).max(0) as usize;
+    let n = (order + 1) as usize;
     let mut shape = vec![n];
     shape.extend_from_slice(ts.shape());
     let mut out = ArrayD::<f64>::zeros(IxDyn(&shape));

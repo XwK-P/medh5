@@ -2,13 +2,15 @@
 
 use std::collections::BTreeMap;
 
+use indexmap::IndexMap;
+
 use super::{
     child, children, float_list, grid_spatial, has_member, loc, read_f64, str_attr, strs_attr, sub_dataset, Context,
 };
 use crate::h5::attrs;
 use crate::h5::ops::{self, Node};
 use crate::json::{repr_int_tuple, repr_list, repr_str};
-use crate::transforms::model::{composite_cycle, Siblings, TRANSFORM_KINDS, VECTOR_SPACES};
+use crate::transforms::model::{affine_dimension, composite_cycles, DEFAULT_ORDER, TRANSFORM_KINDS, VECTOR_SPACES};
 use crate::validate::Diagnostic;
 use crate::Result;
 
@@ -16,8 +18,19 @@ pub fn check_transforms(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     let mut out = Vec::new();
     let Some(node) = ops::child_group(&ctx.root, "transforms") else { return Ok(out) };
     let grids = ops::child_group(&ctx.root, "grids");
+    let transforms = children(&node)?;
+    // Every composite's components, read once: a cycle is found for all of
+    // them in one walk, where rebuilding the transforms and walking from each
+    // composite in turn was quadratic in the number of composites.
+    let mut graph: IndexMap<String, Vec<String>> = IndexMap::new();
+    for (name, t) in &transforms {
+        if str_attr(loc(t), "kind")?.as_deref() == Some("composite") {
+            graph.insert(name.clone(), strs_attr(loc(t), "components")?);
+        }
+    }
+    let cycles = composite_cycles(&graph)?;
     let mut declared: BTreeMap<String, (String, String)> = BTreeMap::new();
-    for (name, t) in children(&node)? {
+    for (name, t) in transforms {
         let location = format!("/transforms/{name}");
         let a = loc(&t);
         let Some(kind) = str_attr(a, "kind")? else {
@@ -49,11 +62,11 @@ pub fn check_transforms(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
         }
         out.extend(check_units(ctx, &name, &t, grids.as_ref(), &source, &target)?);
         match kind.as_str() {
-            "affine" => out.extend(check_affine(ctx, &name, &t)?),
+            "affine" => out.extend(check_affine(ctx, &name, &t, grids.as_ref(), &source, &target)?),
             "displacement" | "bspline" => {
                 out.extend(check_field_transform(ctx, &name, &t, &kind, &source, grids.as_ref())?)
             }
-            "composite" => out.extend(check_composite(ctx, &name, &t, &node, &source, &target)?),
+            "composite" => out.extend(check_composite(ctx, &name, &t, &node, &source, &target, cycles.get(&name))?),
             _ => {}
         }
     }
@@ -78,16 +91,8 @@ fn check_units(
         return Ok(vec![ctx.err("E506", location, "transform has no `units`; §10.1 requires the units it maps")]);
     };
     let Some(grids) = grids else { return Ok(Vec::new()) };
-    let mut named = Vec::new();
-    for key in ["from_grid", "to_grid"] {
-        named.extend(str_attr(a, key)?);
-    }
     let mut wrong = Vec::new();
-    for (grid_id, g) in children(grids)? {
-        let frame = str_attr(loc(&g), "frame_uid")?;
-        if !(frame.as_deref().is_some_and(|f| f == source || f == target) || named.contains(&grid_id)) {
-            continue;
-        }
+    for (grid_id, g) in related_grids(group, grids, source, target)? {
         let found = str_attr(loc(&g), "units")?.unwrap_or_else(|| "mm".into());
         if found != units {
             wrong.push(format!("grid {} is in {}", repr_str(&grid_id), repr_str(&found)));
@@ -107,25 +112,45 @@ fn check_units(
     )])
 }
 
-fn check_affine(ctx: &Context, name: &str, group: &Node) -> Result<Vec<Diagnostic>> {
+/// The grids a transform relates, by id: those in either of its frames, and
+/// `from_grid` and `to_grid` (§10.1).
+fn related_grids(group: &Node, grids: &hdf5::Group, source: &str, target: &str) -> Result<Vec<(String, Node)>> {
+    let mut named = Vec::new();
+    for key in ["from_grid", "to_grid"] {
+        named.extend(str_attr(loc(group), key)?);
+    }
+    let mut out = Vec::new();
+    for (grid_id, g) in children(grids)? {
+        let frame = str_attr(loc(&g), "frame_uid")?;
+        if frame.as_deref().is_some_and(|f| f == source || f == target) || named.contains(&grid_id) {
+            out.push((grid_id, g));
+        }
+    }
+    Ok(out)
+}
+
+/// `matrix` is `(S+1, S+1)` for `S` the spatial axes of every grid the
+/// affine relates, and its last row is `[0 … 0 1]` (§10.3).
+fn check_affine(
+    ctx: &Context,
+    name: &str,
+    group: &Node,
+    grids: Option<&hdf5::Group>,
+    source: &str,
+    target: &str,
+) -> Result<Vec<Diagnostic>> {
     let location = format!("/transforms/{name}");
     let Some(ds) = sub_dataset(group, "matrix") else {
         return Ok(vec![ctx.err("E502", location, "kind 'affine' requires a `matrix` dataset")]);
     };
+    let s = match affine_dimension(&ds.shape()) {
+        Ok(s) => s,
+        Err(e) => return Ok(vec![ctx.err("E504", location, e.message())]),
+    };
     let m = read_f64(&ds)?;
-    if m.ndim() != 2 || m.shape()[0] != m.shape()[1] {
-        return Ok(vec![ctx.err(
-            "E504",
-            location,
-            format!("`matrix` must be square (S+1, S+1), got {}", repr_int_tuple(m.shape())),
-        )]);
-    }
-    let n = m.shape()[0];
-    let last: Vec<f64> = (0..n).map(|c| m[[n - 1, c]]).collect();
-    let mut expected = vec![0.0; n];
-    if n > 0 {
-        expected[n - 1] = 1.0;
-    }
+    let last: Vec<f64> = (0..=s).map(|c| m[[s, c]]).collect();
+    let mut expected = vec![0.0; s + 1];
+    expected[s] = 1.0;
     if !crate::geometry::linalg::allclose(&last, &expected, 1e-9, 1e-5) {
         return Ok(vec![ctx.err(
             "E504",
@@ -133,7 +158,27 @@ fn check_affine(ctx: &Context, name: &str, group: &Node) -> Result<Vec<Diagnosti
             format!("last row must be [0 \u{2026} 0 1], got {}", float_list(&last)),
         )]);
     }
-    Ok(Vec::new())
+    let Some(grids) = grids else { return Ok(Vec::new()) };
+    let mut wrong = Vec::new();
+    for (grid_id, g) in related_grids(group, grids, source, target)? {
+        let n_spatial = strs_attr(loc(&g), "axis_kinds")?.iter().filter(|k| *k == "spatial").count();
+        if n_spatial != s {
+            wrong.push(format!("grid {} has {n_spatial} spatial axes", repr_str(&grid_id)));
+        }
+    }
+    if wrong.is_empty() {
+        return Ok(Vec::new());
+    }
+    Ok(vec![ctx.err(
+        "E504",
+        location,
+        format!(
+            "`matrix` is ({0}, {0}), an affine of {s} spatial axes, and {1}: an affine maps a point of the grids \
+             it relates, one coordinate per spatial axis (§10.3)",
+            s + 1,
+            wrong.join(", ")
+        ),
+    )])
 }
 
 fn check_field_transform(
@@ -194,9 +239,9 @@ fn check_field_transform(
                 format!("{components} components on a {n_spatial}-D lattice; they must match"),
             ));
         }
+        let lattice: Vec<i64> = shape.get(1..).unwrap_or(&[]).iter().map(|v| *v as i64).collect();
         if kind == "displacement" {
             let spatial = grid_spatial(grids, &grid_id)?;
-            let lattice: Vec<i64> = shape.get(1..).unwrap_or(&[]).iter().map(|v| *v as i64).collect();
             if lattice != spatial {
                 out.push(ctx.err(
                     "E503",
@@ -206,6 +251,31 @@ fn check_field_transform(
                         repr_int_tuple(&lattice),
                         repr_str(&grid_id),
                         repr_int_tuple(&spatial)
+                    ),
+                ));
+            }
+        } else {
+            // What the writer refuses (§10.5): a lattice of another rank than
+            // its grid's, or one too small for the spline's order.
+            let order = attrs::get_i64(loc(group), "order")?.unwrap_or(DEFAULT_ORDER);
+            if lattice.len() != n_spatial {
+                out.push(ctx.err(
+                    "E503",
+                    format!("{location}/{dataset}"),
+                    format!(
+                        "control-point lattice {} has {} axes on a {n_spatial}-D grid",
+                        repr_int_tuple(&lattice),
+                        lattice.len()
+                    ),
+                ));
+            } else if lattice.iter().any(|extent| *extent < order + 1) {
+                out.push(ctx.err(
+                    "E503",
+                    format!("{location}/{dataset}"),
+                    format!(
+                        "an order-{order} B-spline needs at least {} control points per axis, got {}",
+                        order + 1,
+                        repr_int_tuple(&lattice)
                     ),
                 ));
             }
@@ -221,6 +291,7 @@ fn check_composite(
     node: &hdf5::Group,
     source: &str,
     target: &str,
+    cycle: Option<&Vec<String>>,
 ) -> Result<Vec<Diagnostic>> {
     let mut out = Vec::new();
     let location = format!("/transforms/{name}");
@@ -235,14 +306,7 @@ fn check_composite(
         out.push(ctx.err("E501", location, format!("names components {} that do not exist", repr_list(&unknown))));
         return Ok(out);
     }
-    let mut siblings = Siblings::new();
-    for member in ops::members(node)? {
-        if let Some(g) = ops::child_group(node, &member) {
-            siblings.insert(member, g);
-        }
-    }
-    let cycle = composite_cycle(name, &siblings)?;
-    if !cycle.is_empty() {
+    if let Some(cycle) = cycle {
         out.push(ctx.err(
             "E501",
             location,

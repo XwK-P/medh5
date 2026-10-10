@@ -2,7 +2,7 @@
 
 use ndarray::ArrayD;
 
-use super::model::{check_field_options, LAST_ROW_TOL, SUPPORTED_ORDERS, VECTOR_SPACES};
+use super::model::{affine_dimension, check_field_options, LAST_ROW_TOL, SUPPORTED_ORDERS, VECTOR_SPACES};
 use crate::annotations::payload::{Payload, PayloadData};
 use crate::array::{DType, NdArray};
 use crate::geometry::linalg::{allclose, det};
@@ -20,14 +20,7 @@ pub fn encode_identity() -> Payload {
 /// Index-space affines are deliberately not storable: one that means something
 /// only in one grid's index space silently breaks when the image is resampled.
 pub fn encode_affine(matrix: &ArrayD<f64>) -> Result<Payload> {
-    let shape = matrix.shape();
-    if shape.len() != 2 || shape[0] != shape[1] {
-        return Err(Error::coded(
-            "E504",
-            format!("affine `matrix` must be square (S+1, S+1), got {}", repr_int_tuple(shape)),
-        ));
-    }
-    let dim = shape[0] - 1;
+    let dim = affine_dimension(matrix.shape())?;
     let last: Vec<f64> = (0..=dim).map(|c| matrix[[dim, c]]).collect();
     let mut expected = vec![0.0; dim + 1];
     expected[dim] = 1.0;

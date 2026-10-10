@@ -1,21 +1,22 @@
 //! The transform header (§10.1) and one reader type for every kind.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use indexmap::IndexMap;
-use ndarray::{Array2, ArrayD, Axis, IxDyn};
+use ndarray::{Array2, ArrayD, IxDyn};
 use serde_json::{json, Map, Value};
 
 use super::apply::{
-    as_points, folding_fraction, inside_extent, jacobian_determinant, linear_sample, refuse_outside, sample_field,
-    to_world_vectors, EXTRAPOLATIONS,
+    as_points, check_points, folding_fraction, inside_extent, jacobian_determinant, linear_sample, refuse_outside,
+    sample_field, to_world_vectors, EXACT_INTEGER, EXTRAPOLATIONS,
 };
 use crate::array::{Index, NdArray, Slice};
-use crate::geometry::grid::Grid;
+use crate::geometry::grid::{Grid, MAX_SPATIAL, MIN_SPATIAL};
 use crate::geometry::linalg::{det, inv};
 use crate::h5::attrs::{self, AttrValue};
 use crate::h5::{data, ops};
-use crate::json::{repr_list, repr_str};
+use crate::json::{repr_int_tuple, repr_list, repr_str};
 use crate::{Error, Result};
 
 /// The transform kinds 1.0 defines (§10).
@@ -62,6 +63,62 @@ pub fn units_disagreeing<'a>(grids: impl IntoIterator<Item = &'a Grid>, units: &
         .filter(|g| g.units != units)
         .map(|g| format!("grid {} is in {}", repr_str(&g.grid_id), repr_str(&g.units)))
         .collect()
+}
+
+/// `S` of an affine `matrix` of `shape`: `(S+1, S+1)`, for the 2 or 3
+/// spatial axes of a grid (§3.1, §10.3), or E504.
+///
+/// Every use of a matrix indexes it by its row count, so one of another
+/// shape was a panic rather than an error: a `(5, 2)` matrix was sliced past
+/// its last column, a `(4, 3)` one read past it, and an empty one underflowed.
+pub fn affine_dimension(shape: &[usize]) -> Result<usize> {
+    match *shape {
+        [rows, cols] if rows == cols && (MIN_SPATIAL + 1..=MAX_SPATIAL + 1).contains(&rows) => Ok(rows - 1),
+        _ => Err(Error::coded(
+            "E504",
+            format!(
+                "affine `matrix` must be (S+1, S+1) for the {MIN_SPATIAL} or {MAX_SPATIAL} spatial axes of a grid \
+                 (§10.3), got {}",
+                repr_int_tuple(shape)
+            ),
+        )),
+    }
+}
+
+/// Refuse the affine stored in `group` unless its matrix is `(S+1, S+1)` for
+/// the spatial axes of every one of `grids`, the grids it relates (§10.3,
+/// E504); a transform of another kind passes.
+///
+/// A `(3, 3)` matrix between two 3-D frames was written and validated, and
+/// was applied to 3-D points by regrouping their coordinates in twos.
+pub fn check_affine_rank<'a>(
+    transform_id: &str,
+    group: &hdf5::Group,
+    grids: impl IntoIterator<Item = &'a Grid>,
+) -> Result<()> {
+    if attrs::get_str(group, "kind")?.as_deref() != Some("affine") {
+        return Ok(());
+    }
+    let Some(ds) = ops::child_dataset(group, "matrix") else { return Ok(()) };
+    let s = affine_dimension(&ds.shape())?;
+    let wrong: Vec<String> = grids
+        .into_iter()
+        .filter(|g| g.n_spatial() != s)
+        .map(|g| format!("grid {} has {} spatial axes", repr_str(&g.grid_id), g.n_spatial()))
+        .collect();
+    if wrong.is_empty() {
+        return Ok(());
+    }
+    Err(Error::coded(
+        "E504",
+        format!(
+            "transform {}: `matrix` is ({2}, {2}), an affine of {s} spatial axes, and {}: an affine maps a point \
+             of the grids it relates, one coordinate per spatial axis (§10.3)",
+            repr_str(transform_id),
+            wrong.join(", "),
+            s + 1
+        ),
+    ))
 }
 
 /// The attribute header every transform carries (spec §10.1).
@@ -490,25 +547,24 @@ impl Transform {
 
     // -- affine (§10.3) -------------------------------------------------------
 
-    /// The homogeneous `(S+1, S+1)` world-to-world matrix.
+    /// The homogeneous `(S+1, S+1)` world-to-world matrix; one of another
+    /// shape is refused (E504, [`affine_dimension`]).
     pub fn matrix(&self) -> Result<Array2<f64>> {
         self.require_kind("affine", "matrix")?;
         let ds = ops::child_dataset(&self.group, "matrix")
             .ok_or_else(|| self.missing("`affine` requires a `matrix` dataset", "E502"))?;
-        let m = data::read(&ds)?.to_f64();
-        let n = m.shape().first().copied().unwrap_or(0);
-        let c = m.shape().get(1).copied().unwrap_or(0);
-        Ok(m.into_shape_with_order((n, c))?)
+        let n = affine_dimension(&ds.shape()).map_err(|e| self.missing(e.message(), "E504"))? + 1;
+        Ok(data::read(&ds)?.to_f64().into_shape_with_order((n, n))?)
     }
 
     /// Spatial dimensionality of an affine.
     pub fn n_spatial(&self) -> Result<usize> {
-        Ok(self.matrix()?.nrows().saturating_sub(1))
+        Ok(self.matrix()?.nrows() - 1)
     }
 
     fn linear_det(&self) -> Result<f64> {
         let m = self.matrix()?;
-        let dim = m.nrows().saturating_sub(1);
+        let dim = m.nrows() - 1;
         Ok(det(&m.slice(ndarray::s![..dim, ..dim]).to_owned()))
     }
 
@@ -543,8 +599,33 @@ impl Transform {
 
     // -- displacement (§10.4) ---------------------------------------------------
 
-    /// The `field` dataset of a displacement transform.
+    /// The `field` dataset of a displacement transform: `(S, *spatial)` on
+    /// its field grid (§10.4), or E503.
+    ///
+    /// Every sampler indexes the field by the grid's axes, so a field of
+    /// another shape was a panic rather than an error.
     pub fn field(&self) -> Result<hdf5::Dataset> {
+        let ds = self.field_dataset()?;
+        let grid = self.field_grid()?;
+        let mut expected = vec![grid.n_spatial()];
+        expected.extend(grid.spatial_shape());
+        let shape = ds.shape();
+        if shape != expected {
+            return Err(self.missing(
+                &format!(
+                    "`field` is {}, not the (S, *spatial) {} of field grid {} (§10.4)",
+                    repr_int_tuple(&shape),
+                    repr_int_tuple(&expected),
+                    repr_str(&grid.grid_id)
+                ),
+                "E503",
+            ));
+        }
+        Ok(ds)
+    }
+
+    /// The stored `field` dataset, whatever its shape.
+    fn field_dataset(&self) -> Result<hdf5::Dataset> {
         self.require_kind("displacement", "field")?;
         ops::child_dataset(&self.group, "field")
             .ok_or_else(|| self.missing("`displacement` requires a `field` dataset", "E502"))
@@ -628,6 +709,7 @@ impl Transform {
         let ds = self.field()?;
         let shape = ds.shape();
         let spatial: Vec<usize> = shape[1..].to_vec();
+        check_points(&spatial, indices)?;
         let interpolation = self.interpolation()?;
         let extrapolation = self.extrapolation()?;
         if interpolation != "linear" || indices.nrows() == 0 {
@@ -642,9 +724,16 @@ impl Transform {
         let mut lo = vec![0i64; dim];
         let mut hi = vec![0i64; dim];
         for axis in 0..dim {
+            // The window is taken over the points clamped onto the lattice,
+            // as `linear_sample` clamps them --- NaN to the first sample, an
+            // infinity to the edge --- so it holds every sample the whole
+            // field would give them.  Unclamped, `-inf` overflowed the bound
+            // or moved the window off the samples a finite point needed.
+            let top = spatial[axis] as f64 - 1.0;
             let column = indices.column(axis);
-            let min = column.iter().copied().fold(f64::INFINITY, f64::min);
-            let max = column.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            let clamped = column.iter().map(|v| v.max(0.0).min(top));
+            let min = clamped.clone().fold(f64::INFINITY, f64::min);
+            let max = clamped.fold(f64::NEG_INFINITY, f64::max);
             let n = spatial[axis] as i64;
             let l = (min.floor() as i64 - 1).clamp(0, (n - 1).max(0));
             let h = (max.ceil() as i64 + 2).clamp(l + 1, n.max(l + 1));
@@ -701,12 +790,31 @@ impl Transform {
 
     // -- bspline (§10.5) --------------------------------------------------------
 
-    /// `(S, *cp_shape)` control-point coefficients.
+    /// `(S, *cp_shape)` control-point coefficients: `S` components on the
+    /// `S` spatial axes of the control-point grid, with a point on every
+    /// axis (§10.5), or E503.
     pub fn control_points(&self) -> Result<ArrayD<f64>> {
-        self.require_kind("bspline", "control_points")?;
-        let ds = ops::child_dataset(&self.group, "control_points")
-            .ok_or_else(|| self.missing("`bspline` requires `control_points`", "E502"))?;
+        let ds = self.control_points_dataset()?;
+        let s = self.cp_grid()?.n_spatial();
+        let shape = ds.shape();
+        if shape.len() != s + 1 || shape[0] != s || shape[1..].contains(&0) {
+            return Err(self.missing(
+                &format!(
+                    "`control_points` is {}, not (S, *cp_shape) with S = {s}, the spatial axes of its grid, and a \
+                     point on every axis (§10.5)",
+                    repr_int_tuple(&shape)
+                ),
+                "E503",
+            ));
+        }
         Ok(data::read(&ds)?.to_f64())
+    }
+
+    /// The stored `control_points` dataset, whatever its shape.
+    fn control_points_dataset(&self) -> Result<hdf5::Dataset> {
+        self.require_kind("bspline", "control_points")?;
+        ops::child_dataset(&self.group, "control_points")
+            .ok_or_else(|| self.missing("`bspline` requires `control_points`", "E502"))
     }
 
     /// The id of the control-point grid.
@@ -738,8 +846,22 @@ impl Transform {
         let grid = self.cp_grid()?;
         let coefficients = self.control_points()?;
         let order = self.order()?;
+        // The order sizes every buffer below, so one this reader cannot
+        // evaluate is refused before it does (E502), and so is a lattice too
+        // small for it, which the writer refuses (E503).
+        basis(order, 0.0)?;
         let dim = coefficients.shape()[0];
         let extent: Vec<i64> = coefficients.shape()[1..].iter().map(|n| *n as i64).collect();
+        if extent.iter().any(|n| *n < order + 1) {
+            return Err(self.missing(
+                &format!(
+                    "an order-{order} B-spline needs at least {} control points per axis, got {}",
+                    order + 1,
+                    repr_int_tuple(&coefficients.shape()[1..])
+                ),
+                "E503",
+            ));
+        }
         let flat = points_of(points, dim)?;
         let flat_world: Vec<f64> = flat.iter().copied().collect();
         let cp_index = Array2::from_shape_vec(flat.dim(), grid.world_to_index(&flat_world)?)?;
@@ -750,7 +872,10 @@ impl Transform {
             let mut first = vec![0i64; dim];
             let mut weights = vec![vec![0.0; k]; dim];
             for axis in 0..dim {
-                let c = cp_index[[row, axis]];
+                // Past `EXACT_INTEGER` a coordinate has no fraction to weigh
+                // and every tap is beyond the lattice, so the clamp changes
+                // nothing but the integer arithmetic, which overflowed.
+                let c = cp_index[[row, axis]].clamp(-EXACT_INTEGER, EXACT_INTEGER);
                 first[axis] = c.floor() as i64 - (order - 1).div_euclid(2);
                 weights[axis] = basis(order, c - c.floor())?;
             }
@@ -925,7 +1050,7 @@ impl Transform {
                     out.insert("jacobian_determinant".into(), crate::json::num(self.jacobian_determinant_value()?));
                 }
                 "displacement" => {
-                    let ds = self.field()?;
+                    let ds = self.field_dataset()?;
                     out.insert("field_grid".into(), json!(self.field_grid_id()?));
                     out.insert("vector_space".into(), json!(self.vector_space()?));
                     out.insert("interpolation".into(), json!(self.interpolation()?));
@@ -936,7 +1061,7 @@ impl Transform {
                     out.insert("cp_grid".into(), json!(self.cp_grid_id()?));
                     out.insert("order".into(), json!(self.order()?));
                     out.insert("vector_space".into(), json!(self.vector_space()?));
-                    out.insert("cp_shape".into(), json!(self.control_points()?.shape()));
+                    out.insert("cp_shape".into(), json!(self.control_points_dataset()?.shape()));
                 }
                 "composite" => {
                     out.insert("components".into(), json!(self.component_ids()?));
@@ -1004,27 +1129,209 @@ pub fn cropped_grid(grid: &Grid, roi: &[Slice]) -> Result<Grid> {
 /// Walked on the `components` attributes alone, so it opens nothing and
 /// cannot recurse.
 pub fn composite_cycle(start: &str, siblings: &Siblings) -> Result<Vec<String>> {
-    let mut stack: Vec<(String, Vec<String>)> = vec![(start.to_string(), vec![start.to_string()])];
-    let mut seen = std::collections::HashSet::new();
-    while let Some((name, trail)) = stack.pop() {
-        let Some(node) = siblings.get(&name) else { continue };
-        if attrs::get_str(node, "kind")?.as_deref() != Some("composite") {
-            continue;
+    cycle_from(start, |name| match siblings.get(name) {
+        Some(node) if attrs::get_str(node, "kind")?.as_deref() == Some("composite") => {
+            Ok(attrs::get_strs(node, "components")?.unwrap_or_default())
         }
-        for child in attrs::get_strs(node, "components")?.unwrap_or_default() {
+        _ => Ok(Vec::new()),
+    })
+}
+
+/// The first path by which `start` reaches itself through `components`, or
+/// empty: a depth-first walk that remembers how it reached each node rather
+/// than copying the path to it, which made a chain quadratic to walk.
+fn cycle_from(start: &str, mut components: impl FnMut(&str) -> Result<Vec<String>>) -> Result<Vec<String>> {
+    let mut stack = vec![start.to_string()];
+    let mut reached_from: HashMap<String, String> = HashMap::new();
+    while let Some(name) = stack.pop() {
+        for child in components(&name)? {
             if child == start {
-                let mut path = trail.clone();
-                path.push(child);
+                let mut path = vec![child, name];
+                while let Some(previous) = reached_from.get(&path[path.len() - 1]) {
+                    path.push(previous.clone());
+                }
+                path.reverse();
                 return Ok(path);
             }
-            if seen.insert(child.clone()) {
-                let mut path = trail.clone();
-                path.push(child.clone());
-                stack.push((child, path));
+            if !reached_from.contains_key(&child) {
+                reached_from.insert(child.clone(), name.clone());
+                stack.push(child);
             }
         }
     }
     Ok(Vec::new())
+}
+
+/// Composites that reach one another up to which each is given its own whole
+/// path by [`composite_cycles`].
+pub const CYCLE_PATHS: usize = 64;
+
+/// How many names of a path [`composite_cycles`] gives a composite among more
+/// than [`CYCLE_PATHS`] that reach one another.
+pub const CYCLE_SHOWN: usize = 8;
+
+/// Every composite that reaches itself through `components`, with a path by
+/// which it does: `[name, …, name]`.
+///
+/// `graph` maps each composite to its components.  Whether a composite lies
+/// on a cycle is decided for all of them in one walk (Tarjan's strongly
+/// connected components): walking from each in turn took a file of a
+/// thousand chained composites thirty seconds to validate.  Among at most
+/// [`CYCLE_PATHS`] composites that reach one another, each has the path
+/// [`composite_cycle`] reports for it.  Among more, a path is its first
+/// [`CYCLE_SHOWN`] names, `…` and the composite again: every one of them
+/// written out was quadratic in the size of the ring.
+pub fn composite_cycles(graph: &IndexMap<String, Vec<String>>) -> Result<IndexMap<String, Vec<String>>> {
+    let position: HashMap<&str, usize> = graph.keys().enumerate().map(|(i, k)| (k.as_str(), i)).collect();
+    let next: Vec<Vec<usize>> = graph
+        .values()
+        .map(|children| children.iter().filter_map(|c| position.get(c.as_str()).copied()).collect())
+        .collect();
+    let n = next.len();
+    let unseen = usize::MAX;
+    let (mut order, mut low, mut scc) = (vec![unseen; n], vec![0; n], vec![0; n]);
+    let (mut on_stack, mut stack, mut sizes) = (vec![false; n], Vec::new(), Vec::new());
+    let mut counter = 0;
+    for root in 0..n {
+        if order[root] != unseen {
+            continue;
+        }
+        let mut walk = vec![(root, 0)];
+        order[root] = counter;
+        low[root] = counter;
+        counter += 1;
+        stack.push(root);
+        on_stack[root] = true;
+        while let Some(&(v, i)) = walk.last() {
+            if let Some(&w) = next[v].get(i) {
+                walk.last_mut().expect("just read").1 += 1;
+                if order[w] == unseen {
+                    order[w] = counter;
+                    low[w] = counter;
+                    counter += 1;
+                    stack.push(w);
+                    on_stack[w] = true;
+                    walk.push((w, 0));
+                } else if on_stack[w] {
+                    low[v] = low[v].min(order[w]);
+                }
+                continue;
+            }
+            walk.pop();
+            if let Some(&(u, _)) = walk.last() {
+                low[u] = low[u].min(low[v]);
+            }
+            if low[v] == order[v] {
+                let mut size = 0;
+                while let Some(w) = stack.pop() {
+                    on_stack[w] = false;
+                    scc[w] = sizes.len();
+                    size += 1;
+                    if w == v {
+                        break;
+                    }
+                }
+                sizes.push(size);
+            }
+        }
+    }
+    let names: Vec<&String> = graph.keys().collect();
+    let mut members: Vec<Vec<usize>> = vec![Vec::new(); sizes.len()];
+    for v in 0..n {
+        members[scc[v]].push(v);
+    }
+    let mut paths: Vec<Option<Vec<usize>>> = vec![None; n];
+    let elided = usize::MAX;
+    // Within a large component, each member's next step toward its first
+    // member, found for all of them in one search backwards from it.
+    let mut toward = vec![unseen; n];
+    let mut before: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for v in 0..n {
+        for &w in &next[v] {
+            if scc[w] == scc[v] {
+                before[w].push(v);
+            }
+        }
+    }
+    for group in &members {
+        let first = group[0];
+        if group.len() == 1 && !next[first].contains(&first) {
+            continue;
+        }
+        if group.len() <= CYCLE_PATHS {
+            for &v in group {
+                paths[v] = Some(cycle_within(v, &next, &scc));
+            }
+            continue;
+        }
+        toward[first] = first;
+        let mut queue = std::collections::VecDeque::from([first]);
+        while let Some(w) = queue.pop_front() {
+            for &v in &before[w] {
+                if toward[v] == unseen {
+                    toward[v] = w;
+                    queue.push_back(v);
+                }
+            }
+        }
+        for &v in group {
+            // Each member reaches the first, and the first reaches it back:
+            // the path is shown as far as the first, or for the first itself
+            // (or one containing itself directly) as it is.
+            let (mut path, mut whole) = if v == first || next[v].contains(&v) {
+                (cycle_within(v, &next, &scc), true)
+            } else {
+                let mut path = vec![v];
+                while path.len() <= CYCLE_SHOWN && path[path.len() - 1] != first {
+                    path.push(toward[path[path.len() - 1]]);
+                }
+                (path, false)
+            };
+            if path.len() > CYCLE_SHOWN {
+                path.truncate(CYCLE_SHOWN);
+                whole = false;
+            }
+            if !whole {
+                path.extend([elided, v]);
+            }
+            paths[v] = Some(path);
+        }
+    }
+    let mut out = IndexMap::new();
+    for (v, path) in paths.into_iter().enumerate() {
+        let Some(path) = path else { continue };
+        let shown = path.iter().map(|i| if *i == elided { "…".to_string() } else { names[*i].clone() }).collect();
+        out.insert(names[v].clone(), shown);
+    }
+    Ok(out)
+}
+
+/// The first path by which `start` reaches itself along `next` without
+/// leaving its component, as [`cycle_from`] finds it: no walk that leaves a
+/// strongly connected component returns to it.
+fn cycle_within(start: usize, next: &[Vec<usize>], scc: &[usize]) -> Vec<usize> {
+    let mut stack = vec![start];
+    let mut reached_from: HashMap<usize, usize> = HashMap::new();
+    while let Some(v) = stack.pop() {
+        for &w in &next[v] {
+            if scc[w] != scc[start] {
+                continue;
+            }
+            if w == start {
+                let mut path = vec![w, v];
+                while let Some(&previous) = reached_from.get(&path[path.len() - 1]) {
+                    path.push(previous);
+                }
+                path.reverse();
+                return path;
+            }
+            if let std::collections::hash_map::Entry::Vacant(entry) = reached_from.entry(w) {
+                entry.insert(v);
+                stack.push(w);
+            }
+        }
+    }
+    Vec::new()
 }
 
 /// The transform `inverse_id` names, if it really maps the other way.
@@ -1098,7 +1405,83 @@ pub fn check_field_options(vector_space: &str, interpolation: &str, extrapolatio
     Ok(())
 }
 
-/// Shape helper: the stacked first axis of a field.
-pub fn components_of(field: &ArrayD<f64>) -> usize {
-    field.len_of(Axis(0))
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn s10_3_a_matrix_is_s_plus_one_square_for_two_or_three_axes() {
+        assert_eq!(affine_dimension(&[3, 3]).unwrap(), 2);
+        assert_eq!(affine_dimension(&[4, 4]).unwrap(), 3);
+        // Each of these was a panic or an underflow wherever it was used.
+        for shape in [&[5, 2][..], &[4, 3], &[0, 0], &[1, 1], &[2, 2], &[5, 5], &[16], &[]] {
+            assert_eq!(affine_dimension(shape).unwrap_err().code(), Some("E504"), "{shape:?}");
+        }
+    }
+
+    fn graph(edges: &[(&str, &[&str])]) -> IndexMap<String, Vec<String>> {
+        edges.iter().map(|(k, v)| (k.to_string(), v.iter().map(|c| c.to_string()).collect())).collect()
+    }
+
+    #[test]
+    fn s10_5_every_composite_on_a_cycle_is_found_with_its_path() {
+        // c1 -> c2 -> c3 -> c1 is a cycle; c0 reaches it without being on it,
+        // and `loop` contains itself directly.
+        let g = graph(&[
+            ("c0", &["a", "c1"]),
+            ("c1", &["a", "c2"]),
+            ("c2", &["c3"]),
+            ("c3", &["b", "c1"]),
+            ("loop", &["loop"]),
+            ("fine", &["a", "b"]),
+        ]);
+        let cycles = composite_cycles(&g).unwrap();
+        assert_eq!(cycles.keys().collect::<Vec<_>>(), ["c1", "c2", "c3", "loop"]);
+        assert_eq!(cycles["c1"], ["c1", "c2", "c3", "c1"]);
+        assert_eq!(cycles["c3"], ["c3", "c1", "c2", "c3"]);
+        assert_eq!(cycles["loop"], ["loop", "loop"]);
+    }
+
+    #[test]
+    fn s10_5_a_long_chain_of_composites_is_walked_once() {
+        // Walked from each composite in turn, copying the path at every step,
+        // this was cubic: a thousand chained composites took thirty seconds
+        // to validate.  A hundred thousand are one walk.
+        let n = 100_000;
+        let g: IndexMap<String, Vec<String>> =
+            (0..n).map(|i| (format!("c{i}"), vec!["leg".to_string(), format!("c{}", i + 1)])).collect();
+        let started = std::time::Instant::now();
+        assert!(composite_cycles(&g).unwrap().is_empty());
+        assert!(started.elapsed() < std::time::Duration::from_secs(10), "{:?}", started.elapsed());
+        // Closed into a ring, every one of them is on the cycle, and up to
+        // `CYCLE_PATHS` of them each has its whole path.
+        let ring = |n: usize, chord: bool| -> IndexMap<String, Vec<String>> {
+            (0..n)
+                .map(|i| {
+                    let mut components = vec![format!("c{}", (i + 1) % n)];
+                    if chord && i == 1 {
+                        components.push("c0".into());
+                    }
+                    (format!("c{i}"), components)
+                })
+                .collect()
+        };
+        let cycles = composite_cycles(&ring(50, false)).unwrap();
+        assert_eq!(cycles.len(), 50);
+        assert_eq!(cycles["c7"].len(), 51);
+        assert_eq!((cycles["c7"][0].as_str(), cycles["c7"][1].as_str()), ("c7", "c8"));
+        // Each of a hundred thousand written out was ten billion names.  Past
+        // `CYCLE_PATHS`, a path is where it starts, and how it closes.
+        let started = std::time::Instant::now();
+        let cycles = composite_cycles(&ring(n, false)).unwrap();
+        assert!(started.elapsed() < std::time::Duration::from_secs(10), "{:?}", started.elapsed());
+        assert_eq!(cycles.len(), n);
+        assert!(cycles.values().all(|path| path.len() <= CYCLE_SHOWN + 2 && path[path.len() - 2] == "…"));
+        assert_eq!(cycles["c7"][..3], ["c7", "c8", "c9"]);
+        assert_eq!(cycles["c7"][CYCLE_SHOWN..], ["…", "c7"]);
+        assert_eq!(cycles["c99999"], ["c99999", "c0", "…", "c99999"]);
+        // A short cycle is shown whole wherever it is.
+        let cycles = composite_cycles(&ring(1000, true)).unwrap();
+        assert_eq!(cycles["c0"], ["c0", "c1", "c0"]);
+    }
 }

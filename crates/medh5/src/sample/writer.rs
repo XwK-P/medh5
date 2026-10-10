@@ -1155,7 +1155,7 @@ impl SampleWriter {
                     grid.frame_uid.as_deref().is_some_and(|f| f == from_frame || f == to_frame)
                         || named.contains(&grid.grid_id)
                 });
-                let wrong = crate::transforms::model::units_disagreeing(grids, &units);
+                let wrong = crate::transforms::model::units_disagreeing(grids.clone(), &units);
                 if !wrong.is_empty() {
                     return Err(Error::coded(
                         "E506",
@@ -1168,6 +1168,8 @@ impl SampleWriter {
                         ),
                     ));
                 }
+                // So, for the same reason, is an affine's dimension (§10.3, E504).
+                crate::transforms::model::check_affine_rank(name, &g, grids)?;
             }
         }
         let dangling = doc.provenance.dangling_agent_refs();

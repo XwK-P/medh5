@@ -1064,7 +1064,9 @@ ambiguity here is the leading cause of silently mirrored registration results.
 | `matrix` | `(S+1, S+1)` | `float64` | homogeneous, world→world, last row `[0…0 1]` |
 
 `x_M_h = matrix @ x_F_h`, both in world coordinates in `units`. Index-space affines are **not** stored;
-compose with the grids' affines (§3.3) to obtain one.
+compose with the grids' affines (§3.3) to obtain one. *S* is the number of spatial axes of the grids in
+`from_frame` and `to_frame`: a `matrix` of any other shape, like one whose last row is not `[0…0 1]`,
+is **E504**.
 
 ### 10.4 `displacement`
 
@@ -1099,7 +1101,7 @@ precision (≈ 5e-4 relative) is far below registration accuracy and halves fiel
 
 | Dataset / attr | Meaning |
 |---|---|
-| `control_points` `(S, *cp_shape)` `float64` | coefficients in `vector_space` |
+| `control_points` `(S, *cp_shape)` `float64` | coefficients in `vector_space`: *S* components on the *S* spatial axes of `cp_grid`, at least `order + 1` points per axis (E503) |
 | `cp_grid` attr | grid id describing control-point spacing/origin/direction |
 | `order` attr `int` | spline order, default 3 |
 
@@ -1693,9 +1695,9 @@ any machine. On one, with a 192×256×256 synthetic CT and eight classes, a mult
 costs 3.4 ms, foreground centre sampling 0.03 ms (O(1) in volume size, via §14.3; 0.05 ms at 63
 classes), a metadata-only read 0.19 ms, and `open()` → first patch 2.3 ms.
 
-Forty-eight clauses have been corrected — ten during implementation, eleven in the 1.x package
+Forty-nine clauses have been corrected — ten during implementation, eleven in the 1.x package
 releases that followed, four when the engine was written a second time, in Rust, for the 2.0
-package, one when it implemented 1.1, and twenty-two in the audits of 2.0 before its release — each because
+package, one when it implemented 1.1, and twenty-three in the audits of 2.0 before its release — each because
 writing the code showed the text was not implementable, not unambiguous, or not what the
 implementation could honestly promise, as written:
 
@@ -1749,6 +1751,7 @@ implementation could honestly promise, as written:
 | §2.1 | The root attribute table is a sample root's: a collection's own `/` requires only `medh5_kind` and `medh5_version` (§2.2). Read as "on the file (`/`)", it required `medh5_profiles` at the root of a collection, whose members each declare their own, so every valid collection of the corpus failed the text. |
 | §13.3 | `source_digest` is required of each index entry, `index/<ann_id>`, not of "every object under `index/`": the datasets and the `fg_coords/` group inside an entry never carried one, and §14.3 places the attribute on the entry. |
 | §2.1, §11.1 | A timestamp --- a provenance activity's, and the root's `created` --- is RFC 3339 (E604 otherwise, for provenance) and **SHOULD** be in UTC. "RFC 3339 UTC" read as a requirement nothing enforced: every validator since 1.0 has accepted an offset such as `+01:00`, which names the same instant, and reported E604 only for text that is not RFC 3339 --- so files the implementations passed failed the text. |
+| §3.2, §10.3, §10.5 | The numbers that place a point are bounded as far as placing one needs: a grid's `spacing` and `origin` are finite (**E104**, **E109**), an affine's `matrix` is `(S+1, S+1)` for the *S* spatial axes of the grids in its frames (**E504**), and a B-spline's `control_points` hold *S* components on a lattice of *S* axes with at least `order + 1` points on each (**E503**). "Positive" admitted an infinite spacing, nothing bounded the origin, and *S* was defined for a grid but never for a transform, which has no grid of its own: a 3×3 affine between 3-D grids validated and moved each point with its coordinates regrouped in twos, a matrix that was not square panicked whatever read it, and a lattice too short for its order, which the writer refused, validated. |
 
 ### C.2 Prototype checks
 

@@ -7,6 +7,8 @@ no flag to reverse it.
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -126,6 +128,14 @@ def registered(
     return path
 
 
+def plant(path: Path, transform_id: str, name: str, data: Any) -> None:
+    """Replace a transform's dataset with *data*, as a malformed file holds it."""
+    with h5py.File(path, "r+") as handle:
+        group = handle[f"transforms/{transform_id}"]
+        del group[name]
+        group.create_dataset(name, data=data)
+
+
 class TestDirectionConvention:
     def test_S10_2_maps_from_frame_points_to_to_frame(self, tmp_path):
         """§10.2: x_M = T(x_F). The one convention, with no flag to reverse it."""
@@ -183,6 +193,69 @@ class TestAffine:
         singular[0, 0] = 0.0
         with pytest.raises(MEDH5ValidationError):
             encode_affine(singular)
+
+    @pytest.mark.parametrize("shape", [(5, 2), (4, 3), (0, 0), (1, 1), (16,)])
+    def test_S10_3_a_malformed_matrix_is_E504_not_a_panic(self, tmp_path, shape):
+        """Every use of a matrix indexed it by its row count, so a stored one
+        of another shape panicked --- ``medh5 info`` too --- where the
+        validator reported E504, or for (0, 0) and (1, 1) nothing at all."""
+        path = registered(tmp_path / "reg.medh5")
+        plant(path, "tp0_to_tp1", "matrix", np.ones(shape))
+        with medh5.open(path) as sample:
+            transform: Any = sample.transforms["tp0_to_tp1"]
+            calls = [
+                lambda: transform.transform_points([[0.0, 0.0, 0.0]]),
+                lambda: transform.n_spatial,
+                lambda: transform.jacobian_determinant_value,
+                sample.summary,
+            ]
+            for call in calls:
+                with pytest.raises(MEDH5ValidationError, match="must be") as exc:
+                    call()
+                assert exc.value.code == "E504"
+            assert transform.is_invertible  # as declared
+            resolved = sample.transform_between("tp0", "tp1")
+            assert resolved is not None and resolved.transform_id == "tp0_to_tp1"
+        assert "E504" in validate_file(path).codes
+
+    def test_S10_3_points_are_grouped_by_their_last_axis(self, tmp_path):
+        """Three 2-D points were read as two 3-D ones, and moved."""
+        path = registered(tmp_path / "reg.medh5")
+        with medh5.open(path) as sample:
+            transform = sample.transforms["tp0_to_tp1"]
+            with pytest.raises(ValueError, match="3 coordinates on their last axis"):
+                transform.transform_points([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
+            assert np.allclose(
+                transform.transform_points([1.0, 2.0, 3.0]), [1, 2, 3] + SHIFT
+            )
+
+    def test_S10_3_an_affine_of_another_dimension_than_its_grids_is_E504(
+        self, tmp_path
+    ):
+        """A 3x3 matrix between two 3-D frames was written and validated, and
+        moved 3-D points by regrouping their coordinates in twos."""
+        with (
+            pytest.raises(MEDH5ValidationError, match="2 spatial axes") as exc,
+            medh5.create(tmp_path / "a.medh5", codec="portable") as w,
+        ):
+            for name, frame in (("g0", "F0"), ("g1", "F1")):
+                w.add_grid(name, shape=SHAPE, spacing=(1.0, 1.0, 1.0), frame_uid=frame)
+                w.add_image(
+                    f"CT_{name}", np.zeros(SHAPE, np.int16), grid=name, modality="CT"
+                )
+            w.add_transform(
+                "t", kind="affine", from_frame="F0", to_frame="F1", matrix=np.eye(3)
+            )
+        assert exc.value.code == "E504"
+        path = registered(tmp_path / "reg.medh5")
+        plant(path, "tp0_to_tp1", "matrix", np.eye(3))
+        found = [d for d in validate_file(path).errors if d.code == "E504"]
+        assert len(found) == 1 and found[0].location == "/transforms/tp0_to_tp1"
+        with (
+            medh5.open(path) as sample,
+            pytest.raises(ValueError, match="2 coordinates"),
+        ):
+            sample.transforms["tp0_to_tp1"].transform_points([[1.0, 2.0, 3.0]])
 
     def test_a_rotation_scales_volume_by_its_determinant(self, tmp_path):
         matrix = np.diag([2.0, 3.0, 4.0, 1.0])
@@ -309,6 +382,80 @@ class TestDisplacement:
             )
             assert moved[0, 0] == pytest.approx(3.0 + 2.0 * 1.5)
 
+    @pytest.mark.parametrize("shape", [(), (3, 16, 16), (3, 0, 16, 16), (2, *SHAPE)])
+    def test_S10_4_a_malformed_field_is_E503_not_a_panic(self, tmp_path, shape):
+        """The validator reported each of these (E503); every sampler indexed
+        the field by its grid's axes regardless, and panicked."""
+        path = registered(tmp_path / "reg.medh5", displacement=True)
+        plant(path, "refine", "field", np.zeros(shape, np.float32))
+        with medh5.open(path) as sample:
+            transform: Any = sample.transforms["refine"]
+            calls = [
+                lambda: transform.transform_points([[1.0, 1.0, 1.0]]),
+                lambda: transform.sample_indices([[1.0, 1.0, 1.0]]),
+                transform.jacobian_determinant,
+                lambda: transform.max_magnitude,
+            ]
+            for call in calls:
+                with pytest.raises(MEDH5ValidationError, match="field") as exc:
+                    call()
+                assert exc.value.code == "E503"
+            assert transform.summary()["field_shape"] == list(shape)
+        assert "E503" in validate_file(path).codes
+
+    def test_S10_4_sampled_points_have_one_coordinate_per_axis(self, tmp_path):
+        """``sample_indices`` skipped the check its samplers make, and a point
+        of another width panicked."""
+        path = registered(tmp_path / "reg.medh5", displacement=True)
+        with medh5.open(path) as sample:
+            transform: Any = sample.transforms["refine"]
+            for points in (np.zeros((2, 2)), np.zeros((1, 4))):
+                with pytest.raises(ValueError, match="coordinate"):
+                    transform.sample_indices(points)
+
+    @pytest.mark.parametrize("extrapolation", ["zero", "nearest"])
+    def test_S10_4_windowed_sampling_equals_the_whole_field_at_any_coordinate(
+        self, tmp_path: Path, extrapolation: str
+    ):
+        """An infinite or vast coordinate overflowed the window's bounds, or
+        moved the window off the samples the other points needed, and NaN
+        read a sample the whole field does not give it."""
+        from medh5.transforms import sample_field
+
+        field = np.arange(3 * np.prod(SHAPE), dtype=np.float32).reshape(3, *SHAPE)
+        path = tmp_path / "field.medh5"
+        with medh5.create(path, sample_id="f") as w:
+            w.add_grid("g", shape=SHAPE, spacing=(1.0, 1.0, 1.0), frame_uid="f0")
+            w.add_image("CT", np.zeros(SHAPE, np.int16), grid="g", modality="CT")
+            w.add_transform(
+                "warp",
+                kind="displacement",
+                from_frame="f0",
+                to_frame="f1",
+                field=field,
+                field_grid="g",
+                extrapolation=extrapolation,
+            )
+        nan = np.nan
+        far = np.array(
+            [
+                [-np.inf, 5, 5],
+                [nan, 6, 6],
+                [1e300, 2, 2],
+                [-1e300, 3, 3],
+                [nan, nan, nan],
+            ]
+        )
+        with medh5.open(path) as sample:
+            transform: Any = sample.transforms["warp"]
+            for row in far:
+                points = np.vstack([row, [2.0, 3.0, 4.0]])
+                assert np.array_equal(
+                    transform.sample_indices(points),
+                    sample_field(field, points, extrapolation=extrapolation),
+                    equal_nan=True,
+                ), row
+
     def test_field_shape_and_options_are_checked(self):
         with pytest.raises(MEDH5ValidationError) as exc:
             encode_displacement(np.zeros((2, 4, 4, 4)), field_grid="g")
@@ -428,6 +575,40 @@ class TestBSpline:
             direct = transform.displacement_at(centre)[0]
             index = grid.world_to_index(centre)[0].round().astype(int)
             assert np.allclose(field[(slice(None), *index)], direct, atol=1e-3)
+
+    @pytest.mark.parametrize("shape", [(3, 6, 6), (3, 0, 6, 6), (), (3, 2, 2, 2)])
+    def test_S10_5_malformed_control_points_are_E503_not_a_panic(self, tmp_path, shape):
+        """Evaluated regardless of their shape, these indexed past the lattice
+        or clamped to an empty one, and the validator checked their component
+        count alone; a lattice too small for the order was evaluated too,
+        where the writer refuses it."""
+        path = registered(tmp_path / "reg.medh5", bspline=True)
+        plant(path, "ffd", "control_points", np.zeros(shape))
+        with medh5.open(path) as sample:
+            transform: Any = sample.transforms["ffd"]
+            with pytest.raises(MEDH5ValidationError) as exc:
+                transform.transform_points([[6.0, 6.0, 6.0]])
+            assert exc.value.code == "E503"
+            assert transform.summary()["cp_shape"] == list(shape)
+        assert "E503" in validate_file(path).codes
+
+    def test_S10_5_basis_refuses_an_order_before_sizing_by_it(self):
+        """``basis(2**31, 0.5)`` allocated 16 GB for its weights before
+        looking at the order, and the process aborted.  Run apart, so a
+        regression fails this test alone."""
+        script = (
+            "from medh5.transforms import basis\n"
+            "try:\n"
+            "    basis(2**31, 0.5)\n"
+            "except Exception as exc:\n"
+            "    assert exc.code == 'E502', exc\n"
+            "else:\n"
+            "    raise AssertionError('refused nothing')\n"
+        )
+        done = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=120
+        )
+        assert done.returncode == 0, done.stderr
 
     def test_unsupported_orders_and_shapes_are_refused(self):
         with pytest.raises(MEDH5ValidationError) as exc:
@@ -1071,6 +1252,16 @@ class TestInterpolation:
         for call in calls:
             with pytest.raises(ValueError, match=f"{columns} coordinate"):
                 call()
+
+    def test_a_field_with_no_spatial_sample_is_a_value_error(self):
+        """A 0-d field, or one with an empty axis, panicked in every sampler."""
+        from medh5.transforms import cubic_sample, sample_field
+
+        points = np.zeros((1, 2))
+        for field in (np.float64(1.0), np.zeros(4), np.zeros((1, 0, 4))):
+            for call in (linear_sample, cubic_sample, sample_field):
+                with pytest.raises(ValueError, match="at least one sample"):
+                    call(field, points)
 
     def test_linear_sample_reproduces_grid_values(self):
         field = np.arange(2 * 4 * 4, dtype=np.float64).reshape(2, 4, 4)

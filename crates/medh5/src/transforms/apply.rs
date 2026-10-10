@@ -14,11 +14,16 @@ use ndarray::{Array2, ArrayD, Axis, Dimension, IxDyn};
 
 use crate::geometry::grid::Grid;
 use crate::geometry::linalg::{det, inv};
-use crate::json::repr_str;
+use crate::json::{repr_int_tuple, repr_str};
 use crate::{Error, Result};
 
 /// The `extrapolation` values of a displacement field (§10.4).
 pub const EXTRAPOLATIONS: [&str; 3] = ["zero", "nearest", "error"];
+
+/// `2**52`: from here on every `f64` is an integer.  A continuous coordinate
+/// clamped to it keeps its interpolation weights, and the integer indices
+/// computed from it stay far from overflow.
+pub const EXACT_INTEGER: f64 = 4_503_599_627_370_496.0;
 
 fn check_extrapolation(extrapolation: &str) -> Result<()> {
     if !EXTRAPOLATIONS.contains(&extrapolation) {
@@ -57,13 +62,33 @@ pub fn refuse_outside(inside: &[bool]) -> Result<()> {
     Err(Error::invalid(format!("{outside} point(s) fall outside the field and extrapolation='error'")))
 }
 
-/// `(N, S)` view of `(..., S)` coordinates.
+/// `(N, S)` view of `(..., S)` coordinates: `dim` of them on the last axis.
+///
+/// Only the last axis says what a point is.  Regrouping the values by their
+/// count instead read three 2-D points as two 3-D ones, and a 3-D affine
+/// applied to them returned coordinates mixed across points, with no error.
 pub fn as_points(coords: &ArrayD<f64>, dim: usize) -> Result<Array2<f64>> {
-    let flat: Vec<f64> = coords.iter().copied().collect();
-    if dim == 0 || flat.len() % dim != 0 {
-        return Err(Error::Value(format!("cannot reshape array of size {} into shape (-1, {dim})", flat.len())));
+    if dim == 0 || coords.shape().last() != Some(&dim) {
+        return Err(Error::Value(format!(
+            "points must have {dim} coordinates on their last axis, one per spatial axis, got shape {}",
+            repr_int_tuple(coords.shape())
+        )));
     }
+    let flat: Vec<f64> = coords.iter().copied().collect();
     Ok(Array2::from_shape_vec((flat.len() / dim, dim), flat)?)
+}
+
+/// Refuse a field that is not `(C, *spatial)` with a sample on every axis.
+/// The samplers index it by those axes, so a 0-d field or an empty axis
+/// panicked.
+pub fn check_field(field: &ArrayD<f64>) -> Result<()> {
+    if field.ndim() < 2 || field.shape()[1..].contains(&0) {
+        return Err(Error::Value(format!(
+            "a field is (C, *spatial) with at least one sample per spatial axis, got shape {}",
+            repr_int_tuple(field.shape())
+        )));
+    }
+    Ok(())
 }
 
 /// Multilinear interpolation of `(C, *spatial)` data at continuous indices.
@@ -71,6 +96,7 @@ pub fn as_points(coords: &ArrayD<f64>, dim: usize) -> Result<Array2<f64>> {
 /// `coords` is `(N, S)` in the field's continuous index coordinates.  Points
 /// outside follow `extrapolation`: `zero`, `nearest` (clamp) or `error`.
 pub fn linear_sample(field: &ArrayD<f64>, coords: &Array2<f64>, extrapolation: &str) -> Result<Array2<f64>> {
+    check_field(field)?;
     let components = field.shape()[0];
     let spatial: Vec<usize> = field.shape()[1..].to_vec();
     let dim = spatial.len();
@@ -326,6 +352,7 @@ fn spline_interpolate(coeffs: &ArrayD<f64>, coords: &Array2<f64>, boundary: Boun
 /// out with no displacement (D5 of the 2.0 audit).  `nearest` interpolates the
 /// edge-extended field, as SciPy does.
 pub fn cubic_sample(field: &ArrayD<f64>, coords: &Array2<f64>, extrapolation: &str) -> Result<Array2<f64>> {
+    check_field(field)?;
     check_extrapolation(extrapolation)?;
     let spatial: Vec<usize> = field.shape()[1..].to_vec();
     check_points(&spatial, coords)?;
@@ -338,15 +365,14 @@ pub fn cubic_sample(field: &ArrayD<f64>, coords: &Array2<f64>, extrapolation: &s
     let boundary = if extrapolation == "nearest" { Boundary::Nearest } else { Boundary::Constant };
     // Clamped to the outermost samples, every point is interpolated; `zero`
     // then zeroes the points beyond the extent, as `linear_sample` does.
-    let clamped;
-    let coords = if boundary == Boundary::Constant {
-        clamped = Array2::from_shape_fn(coords.dim(), |(row, axis)| {
-            coords[[row, axis]].clamp(0.0, (spatial[axis] as f64 - 1.0).max(0.0))
-        });
-        &clamped
-    } else {
-        coords
-    };
+    // `nearest` interpolates the edge-extended field everywhere, and its
+    // points are clamped only to `EXACT_INTEGER`, where the weights stop
+    // changing --- unclamped, a coordinate of 1e300 overflowed the indices.
+    let clamped = Array2::from_shape_fn(coords.dim(), |(row, axis)| match boundary {
+        Boundary::Constant => coords[[row, axis]].clamp(0.0, (spatial[axis] as f64 - 1.0).max(0.0)),
+        Boundary::Nearest => coords[[row, axis]].clamp(-EXACT_INTEGER, EXACT_INTEGER),
+    });
+    let coords = &clamped;
     let components = field.shape()[0];
     let mut out = Array2::<f64>::zeros((coords.nrows(), components));
     for c in 0..components {
@@ -420,9 +446,14 @@ pub fn gradient(values: &ArrayD<f64>, axis: usize) -> Result<ArrayD<f64>> {
 
 /// `det(I + du/dx)` per voxel of the field grid; values `<= 0` mark folding.
 pub fn jacobian_determinant(field: &ArrayD<f64>, grid: &Grid, vector_space: &str) -> Result<ArrayD<f64>> {
-    let dim = field.shape()[0];
-    if dim != grid.n_spatial() {
-        return Err(Error::coded("E503", format!("field has {dim} components for a {}-D grid", grid.n_spatial())));
+    // Differentiated along every axis of the grid, a field of another rank
+    // was indexed past its own axes.
+    let dim = grid.n_spatial();
+    if field.ndim() != dim + 1 || field.shape()[0] != dim {
+        return Err(Error::coded(
+            "E503",
+            format!("a field of shape {} is not (S, *spatial) for a {dim}-D grid", repr_int_tuple(field.shape())),
+        ));
     }
     let linear = linear_part(grid);
     let world = match vector_space {
@@ -668,6 +699,53 @@ mod tests {
             assert!(message.contains("not a weighting"), "{message}");
         }
         assert_eq!(tre_from_warped(&warped, &moving, Some(&[0.0, 1.0])).unwrap().mean, 10.0);
+    }
+
+    #[test]
+    fn s10_points_are_grouped_by_their_last_axis() {
+        // Six values are three 2-D points, not two 3-D ones.
+        let points = ArrayD::from_shape_vec(IxDyn(&[3, 2]), vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]).unwrap();
+        assert!(as_points(&points, 3).unwrap_err().to_string().contains("got shape (3, 2)"));
+        assert_eq!(as_points(&points, 2).unwrap().dim(), (3, 2));
+        let one = ArrayD::from_shape_vec(IxDyn(&[3]), vec![1.0, 2.0, 3.0]).unwrap();
+        assert_eq!(as_points(&one, 3).unwrap().dim(), (1, 3));
+        assert!(as_points(&ArrayD::from_elem(IxDyn(&[]), 1.0), 3).is_err());
+    }
+
+    #[test]
+    fn s10_4_a_field_without_a_sample_on_every_axis_is_refused() {
+        let points = Array2::zeros((1, 2));
+        for shape in [&[][..], &[4], &[1, 0, 4]] {
+            let field = ArrayD::zeros(IxDyn(shape));
+            for mode in EXTRAPOLATIONS {
+                assert!(linear_sample(&field, &points, mode).unwrap_err().to_string().contains("(C, *spatial)"));
+                assert!(cubic_sample(&field, &points, mode).unwrap_err().to_string().contains("(C, *spatial)"));
+            }
+        }
+        let grid = Grid::from_spec(crate::geometry::grid::GridSpec {
+            grid_id: "g".into(),
+            shape: vec![4, 4, 4],
+            spacing: vec![1.0, 1.0, 1.0],
+            ..Default::default()
+        })
+        .unwrap();
+        for shape in [&[3, 4, 4][..], &[2, 4, 4, 4], &[3, 4, 4, 4, 4]] {
+            let err = jacobian_determinant(&ArrayD::zeros(IxDyn(shape)), &grid, "world").unwrap_err();
+            assert_eq!(err.code(), Some("E503"), "{shape:?}");
+        }
+    }
+
+    #[test]
+    fn s10_4_a_coordinate_of_any_size_samples_the_edge() {
+        // `nearest` cubic sampling computed indices from the coordinate
+        // itself, and 1e300 overflowed them.  Far enough out, every
+        // coordinate takes the edge-extended field's value there.
+        let field = ArrayD::from_shape_fn(IxDyn(&[1, 4, 5]), |i| (i[1] * 5 + i[2]) as f64);
+        let far = |v: f64| Array2::from_shape_vec((1, 2), vec![v, 2.0]).unwrap();
+        for (huge, near) in [(1e300, 1e3), (-1e300, -1e3), (f64::INFINITY, 1e3), (EXACT_INTEGER * 4.0, 1e3)] {
+            let at = cubic_sample(&field, &far(huge), "nearest").unwrap()[[0, 0]];
+            assert_eq!(at, cubic_sample(&field, &far(near), "nearest").unwrap()[[0, 0]], "{huge}");
+        }
     }
 
     #[test]
