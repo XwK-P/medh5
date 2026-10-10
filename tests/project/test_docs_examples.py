@@ -34,20 +34,37 @@ README = ROOT / "README.md"
 PAGES = sorted(p for p in DOCS.rglob("*.md") if "spec/medh5-1.0.md" not in str(p))
 
 
+# A fenced block: its opening fence, its language and its body, up to the
+# closing fence --- each found from its own opening, so the prose between two
+# blocks is never read as one.
+_FENCE = re.compile(r"^[ \t]*```(\w*)[^\n]*\n(.*?)^[ \t]*```", re.S | re.M)
+
+
+# A shell operator: a bar or an ampersand standing alone, or any redirection.
+_SHELL = re.compile(r"(^|\s)(\|\|?|&&?)(\s|$)|[<>]")
+
+
+def _token(word: str) -> str:
+    """A synopsis word without its brackets: `[--level` is the flag `--level`."""
+    return word.lstrip("[({").rstrip("])},")
+
+
 def _shell_lines() -> list[tuple[Path, str]]:
     """Every `medh5 ...` invocation in a fenced block, line continuations joined."""
     out: list[tuple[Path, str]] = []
     for path in [*PAGES, README]:
-        for block in re.findall(
-            r"```(?:bash|sh|console)?\n(.*?)```", path.read_text(encoding="utf-8"), re.S
-        ):
+        for language, block in _FENCE.findall(path.read_text(encoding="utf-8")):
+            if language not in ("", "bash", "sh", "console"):
+                continue
             for line in re.sub(r"\\\n\s*", " ", block).splitlines():
                 line = line.strip().removeprefix("$ ").strip()
                 if not line.startswith("medh5 "):
                     continue
-                # Placeholder forms (`PATH...`, `medh5 COMMAND [args]`) and
-                # pipelines are prose, not invocations.
-                if line.endswith("...") or any(c in line for c in "|<>&"):
+                # A trailing `...` elides arguments, and a pipeline or a
+                # redirection is more than one invocation.  A bar between two
+                # words is a synopsis's alternatives (`[--metric dice|iou]`),
+                # whose flags are checked like any others.
+                if line.endswith("...") or _SHELL.search(line):
                     continue
                 out.append((path, line))
     return out
@@ -172,31 +189,67 @@ STALE_CLAIMS: tuple[tuple[str, str, str, str | None], ...] = (
 
 @pytest.mark.parametrize(("path", "line"), _shell_lines(), ids=lambda v: str(v)[:60])
 def test_documented_cli_flags_exist(path: Path, line: str) -> None:
-    """A flag in the documentation is a flag the CLI defines.
+    """A command in the documentation is a command the CLI defines, and so is
+    every flag --- a synopsis's bracketed ones included.
 
     `--source ct/*.dcm` looked right for years and never worked: the option takes
     one value per occurrence, so the glob expanded and argparse exited with
     `unrecognized arguments` before the export began.
     """
     tree = _parser_tree()
-    tokens = shlex.split(line)[1:]
+    tokens = [_token(word) for word in shlex.split(line)[1:]]
     command: tuple[str, ...] = ()
     for token in tokens:
         if token.startswith("-") or (*command, token) not in tree:
             break
         command = (*command, token)
-    parser = tree.get(command)
-    if parser is None:  # a placeholder command name; nothing to check
-        return
+    parser = tree[command]
+    rest = tokens[len(command) :]
+    if parser["commands"] and rest and not rest[0].startswith("-"):
+        # `medh5 COMMAND [args]` is a placeholder; any other word after a
+        # command group must name one of its commands.
+        if re.fullmatch(r"[A-Z][A-Z_]*", rest[0]):
+            return
+        named = " ".join(("medh5", *command))
+        pytest.fail(
+            f"{path.name}: `{line}`: {rest[0]!r} is not a command of `{named}` "
+            f"({', '.join(sorted(parser['commands']))})"
+        )
     defined = set(parser["options"])
     used = [
         token
-        for token in tokens[len(command) :]
+        for token in rest
         # A negative number is a value (`--date-shift-days -117`), not a flag.
         if token.startswith("-") and not re.fullmatch(r"-\d+(\.\d+)?", token)
     ]
     unknown = [f for f in used if f.split("=")[0] not in defined]
     assert not unknown, f"{path.name}: `{line}` uses undefined flag(s) {unknown}"
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "medh5 valdate case.medh5",
+        "medh5 dataset chek cohort/",
+        "medh5 conformance rnu /tmp/corpus",
+        "medh5 validate PATH [--levle L]",
+        "medh5 agree PATH A B [--metirc dice|iou]",
+    ],
+)
+def test_a_misspelled_command_or_flag_is_caught(line: str) -> None:
+    """The check above fails what it exists to fail: a command group followed
+    by a word that names none of its commands, and a synopsis's bracketed flag
+    the CLI does not define."""
+    with pytest.raises((AssertionError, pytest.fail.Exception)):
+        test_documented_cli_flags_exist(Path("page.md"), line)
+
+
+def test_a_synopsis_with_alternatives_is_checked() -> None:
+    """`[--profile basic|strict]` is a synopsis, not a pipeline, so its line
+    is checked; `|| { ... }` is shell, and is not."""
+    lines = [line for _, line in _shell_lines()]
+    assert any("[--profile basic|strict]" in line for line in lines)
+    assert not any("||" in line for line in lines)
 
 
 def test_the_registration_preflight_resolves_on_frames() -> None:
