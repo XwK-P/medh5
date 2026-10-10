@@ -297,7 +297,7 @@ Activity types: `import`, `annotate`, `review`, `predict`, `resample`,
 w.add_grid("ct_tp0", shape=(192, 256, 256), spacing=(1.5, 0.8, 0.8),
            origin=(-144.0, -102.4, -102.4), direction=np.eye(3),
            coord_system="LPS", timepoint="tp0",
-           frame_uid="pseudo:frame-a", patch_hint=(96, 96, 96))
+           frame_uid="pseudo:frame-tp0", patch_hint=(96, 96, 96))
 
 w.add_image("CT_tp0", array, grid="ct_tp0", modality="CT",
             value_type="quantitative", value_units="HU",
@@ -334,11 +334,11 @@ kind, stats = w.add_segmentation(
 w.add_boxes("lesions", boxes, class_ids=["lesion"], grid="ct_tp0",
             space="index", scores=[0.91], instance_ids=[7])
 w.add_obb("nodules", centers, sizes, rotations, class_ids=["nodule"], grid="ct")
-w.add_keypoints("landmarks", points, keypoint_classes, class_ids, grid="ct")
+w.add_keypoints("landmarks", keypoints, keypoint_classes, class_ids, grid="ct")
 w.add_points("fiducials_tp0", points, grid="ct",
              correspondence="fiducials_tp1")   # the paired point set (§10.6)
 w.add_contours("rtstruct", polygons, grid="ct", space="world")
-w.add_mesh("surface", vertices, faces, space="world")
+w.add_mesh("surface", vertices, faces, space="world", frame_uid="pseudo:frame-tp0")
 w.add_classification("response", {"progressive": 1.0}, scope="sample",
                      timepoints=["tp0", "tp1"])   # the interval, not one visit
 ```
@@ -365,11 +365,11 @@ be one of `mm`, `um`, `m`, `px` (§3.2).
 
 ```python
 w.add_transform("tp0_to_tp1", kind="affine",
-                from_frame="pseudo:frame-a", to_frame="pseudo:frame-b",
+                from_frame="pseudo:frame-tp0", to_frame="pseudo:frame-tp1",
                 matrix=matrix4x4, invertible=True)
 
 w.add_transform("warp", kind="displacement",
-                from_frame="a", to_frame="b",
+                from_frame="pseudo:frame-tp0", to_frame="pseudo:frame-tp1",
                 field=field, field_grid="ct_tp0", vector_space="world")
 ```
 

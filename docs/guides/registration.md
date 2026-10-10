@@ -138,9 +138,11 @@ both directions resolve:
 
 ```python
 w.add_transform("tp0_to_tp1", kind="displacement", field=fwd,
-                from_frame="frame-tp0", to_frame="frame-tp1", field_grid="ct_tp0")
+                from_frame="pseudo:frame-tp0", to_frame="pseudo:frame-tp1",
+                field_grid="ct_tp0")
 w.add_transform("tp1_to_tp0", kind="displacement", field=back,
-                from_frame="frame-tp1", to_frame="frame-tp0", field_grid="ct_tp1")
+                from_frame="pseudo:frame-tp1", to_frame="pseudo:frame-tp0",
+                field_grid="ct_tp1")
 ```
 
 **Linking them with `inverse_id` is fine, and says more.** Declare each as the
@@ -153,11 +155,11 @@ be mutual where both sides make one).
 
 ```python
 w.add_transform("tp0_to_tp1", kind="displacement", field=fwd,
-                from_frame="frame-tp0", to_frame="frame-tp1", field_grid="ct_tp0",
-                inverse_id="tp1_to_tp0")
+                from_frame="pseudo:frame-tp0", to_frame="pseudo:frame-tp1",
+                field_grid="ct_tp0", inverse_id="tp1_to_tp0")
 w.add_transform("tp1_to_tp0", kind="displacement", field=back,
-                from_frame="frame-tp1", to_frame="frame-tp0", field_grid="ct_tp1",
-                inverse_id="tp0_to_tp1")
+                from_frame="pseudo:frame-tp1", to_frame="pseudo:frame-tp0",
+                field_grid="ct_tp1", inverse_id="tp0_to_tp1")
 ```
 
 | what you write | forward | reverse |

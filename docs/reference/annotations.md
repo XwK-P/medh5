@@ -222,7 +222,7 @@ the corner representation exactly.
 ### Keypoints and points
 
 ```python
-w.add_keypoints("landmarks", points, keypoint_classes, class_ids,
+w.add_keypoints("landmarks", keypoints, keypoint_classes, class_ids,
                 grid="ct", visibility=vis, skeleton="spine-17")
 w.add_points("fiducials_tp0", points, grid="ct",
              correspondence="fiducials_tp1")
