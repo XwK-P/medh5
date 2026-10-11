@@ -160,6 +160,10 @@ fn s3_the_clock_is_fixed_once_written() {
     let mut w = amend(&path, None).unwrap();
     let err = w.set_clock(Clock::relative("another", "elsewhere")).unwrap_err();
     assert_eq!(err.code(), Some("E802"));
+    // 1.1 §3 defines no conversion between clocks; the refusal pointed at a
+    // manifest that records "verified conversions", which none does.
+    assert!(err.message().contains("no conversion between clocks is defined"), "{}", err.message());
+    assert!(!err.message().contains("verified conversion"), "{}", err.message());
     w.abort();
 }
 

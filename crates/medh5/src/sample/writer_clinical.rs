@@ -90,7 +90,7 @@ impl SampleWriter {
                 "E802",
                 format!(
                     "this sample's clinical clock is {}; times already written are measured on it, so it cannot \
-                     become {} (a manifest records verified conversions between clocks)",
+                     become {}: no conversion between clocks is defined (1.1 §3)",
                     repr_str(&records.descriptor.clock.id),
                     repr_str(&descriptor.clock.id)
                 ),
