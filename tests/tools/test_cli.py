@@ -1749,6 +1749,35 @@ class TestConvert:
         assert main(["convert", *argv, "--frame-salt", "s3cret"]) == EXIT_OK
         assert handed["frame_salt"] == "s3cret"
 
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["to-nifti", "{shard}", "CT_tp0", "{tmp}/x.nii.gz"],
+            ["to-dicom-seg", "{shard}", "organs_tp0", "{tmp}/x.dcm", "--source", "1"],
+            ["to-rtstruct", "{shard}", "organs_tp0", "{tmp}/x.dcm", "--source", "1"],
+            ["from-dicom-seg", "{tmp}/seg.dcm", "{shard}"],
+            ["from-rtstruct", "{tmp}/rt.dcm", "{shard}"],
+            ["to-nnunet", "{tmp}/nn", "{tmp}/m0.medh5", "{shard}"],
+        ],
+    )
+    def test_S2_2_a_converter_handed_a_collection_names_the_way_to_a_member(
+        self, capsys, tmp_path, argv
+    ):
+        """The engine refuses a collection in the Python API's words, and a
+        converter on one told the command line to "open it with
+        open_collection()"; it names `medh5 unpack`, before reading anything."""
+        member = write_sample(tmp_path / "m0.medh5")
+        shard = tmp_path / "s.medh5c"
+        assert run(capsys, "pack", str(member), "-o", str(shard))[0] == EXIT_OK
+        argv = [a.format(shard=shard, tmp=tmp_path) for a in argv]
+        code, out = run(capsys, "convert", *argv)
+        assert code == EXIT_ERROR
+        assert out.err == (
+            f"medh5: {shard} is a collection of 1 sample(s); this command works "
+            f"on sample files --- extract them with `medh5 unpack {shard} -o DIR`\n"
+        )
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["m0.medh5", "s.medh5c"]
+
     @pytest.fixture
     def nifti(self, tmp_path):
         nib = pytest.importorskip("nibabel")

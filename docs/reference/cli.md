@@ -367,7 +367,9 @@ medh5 convert to-nnunet OUT PATH... [--dataset-name NAME] [--annotation A]
 ```
 
 All but `to-nifti` also take `[--report FILE] [--json]`. Options marked `...`
-repeat, one value per occurrence.
+repeat, one value per occurrence. `PATH` and `SAMPLE` are sample files: a
+collection is refused before anything is converted, and `medh5 unpack`
+extracts its members.
 
 `from-nifti --fourth-axis` says what a 4-D series' extra axis is — `time` for
 cine, DCE and 4-D CT, `channel` for multi-b-value DWI and multi-echo; `auto`

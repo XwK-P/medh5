@@ -160,6 +160,27 @@ def _pairs(values: list[str] | None, what: str) -> dict[str, str]:
     return out
 
 
+def _sample_file(path: str) -> str:
+    """*path*, as the sample file a converter reads or imports into.
+
+    A collection is refused with the way to its members, as every native
+    command that works on samples refuses one: the engine's refusal names the
+    Python API's (``open it with open_collection()``), which tells a command
+    line user nothing they can type.
+    """
+    from medh5.collection import open_collection
+
+    try:
+        with open_collection(path) as shard:
+            count = len(shard)
+    except (MEDH5Error, OSError):  # not a collection: the converter says what
+        return path
+    raise MEDH5Error(
+        f"{path} is a collection of {count} sample(s); this command works on "
+        f"sample files --- extract them with `medh5 unpack {path} -o DIR`"
+    )
+
+
 def _finish(report: ConversionReport, args: Any) -> int:
     if getattr(args, "report", None):
         Path(args.report).write_text(
@@ -193,7 +214,7 @@ def _to_nifti(args: Any) -> int:
     from medh5.io.nifti import to_nifti
 
     written = to_nifti(
-        args.path,
+        _sample_file(args.path),
         args.image,
         args.out,
         physical=not args.stored,
@@ -222,7 +243,7 @@ def _from_dicom_seg(args: Any) -> int:
 
     report = from_dicom_seg(
         args.seg,
-        args.sample,
+        _sample_file(args.sample),
         ann_id=args.ann_id,
         grid=args.grid,
         frame_salt=args.frame_salt,
@@ -236,7 +257,7 @@ def _to_dicom_seg(args: Any) -> int:
 
     report = ConversionReport(converter="to-dicom-seg")
     to_dicom_seg(
-        args.path,
+        _sample_file(args.path),
         args.annotation,
         args.source,
         args.out,
@@ -252,7 +273,7 @@ def _from_rtstruct(args: Any) -> int:
 
     report = from_rtstruct(
         args.rtstruct,
-        args.sample,
+        _sample_file(args.sample),
         ann_id=args.ann_id,
         grid=args.grid,
         rasterize=args.rasterize,
@@ -268,7 +289,7 @@ def _to_rtstruct(args: Any) -> int:
 
     report = ConversionReport(converter="to-rtstruct")
     to_rtstruct(
-        args.path,
+        _sample_file(args.path),
         args.annotation,
         args.source,
         args.out,
@@ -289,7 +310,7 @@ def _to_nnunet(args: Any) -> int:
     from medh5.io.nnunetv2 import to_nnunetv2
 
     report = to_nnunetv2(
-        args.paths,
+        [_sample_file(p) for p in args.paths],
         args.out,
         dataset_name=args.dataset_name,
         annotation=args.annotation,
