@@ -5,6 +5,7 @@
 //! atomically (§14.4).
 
 pub mod image;
+pub mod projection;
 pub mod reader;
 
 pub use image::{Image, ImageNode, SPEC_IMAGE_ATTRS, VALUE_TYPES};

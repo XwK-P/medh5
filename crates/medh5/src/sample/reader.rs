@@ -9,6 +9,7 @@ use ndarray::{ArrayD, IxDyn};
 use serde_json::{json, Map, Value};
 
 use super::image::{Image, SPEC_IMAGE_ATTRS};
+use super::projection;
 use crate::annotations::header::SPEC_ANNOTATION_ATTRS;
 use crate::annotations::{Annotation, Grids};
 use crate::array::Slice;
@@ -16,14 +17,14 @@ use crate::clinical::{Clinical, Documents};
 use crate::curation::identity::{Cohort, Identity};
 use crate::curation::timeline::Timeline;
 use crate::document::{SampleDocument, META_DATASET};
-use crate::geometry::grid::{read_grids, Grid, SPEC_GRID_ATTRS};
+use crate::geometry::grid::{read_grid, read_grids, Grid, SPEC_GRID_ATTRS};
 use crate::h5::attrs::{self, AttrValue};
 use crate::h5::{data, file, ops};
 use crate::integrity::{compute_content_id, stale_index_entries, verify_root, AttrNameMap, VerifyResult};
 use crate::json::{repr_list, repr_str};
 use crate::labels::LabelSet;
 use crate::storage::index::{read_indices, SamplingIndex};
-use crate::transforms::model::{read_transforms, Transform, SPEC_TRANSFORM_ATTRS};
+use crate::transforms::model::{open_transforms, transform_groups, Transform, TransformHeader, SPEC_TRANSFORM_ATTRS};
 use crate::transforms::resolve::{frames_of_timepoint, resolve_between};
 use crate::{Error, Result, FORMAT_VERSION};
 
@@ -46,6 +47,28 @@ pub fn missing_key(what: &str, key: &str, available: impl IntoIterator<Item = St
     Error::Key(format!("no {what} {}; available: {}", repr_str(key), repr_list(&names)))
 }
 
+/// A failed lookup of `key` in `listing`: the W913 of an object a later
+/// minor's file holds that the projection leaves out, else the `KeyError`
+/// naming the available ones.
+fn lookup_failure<'a>(
+    left_out: &IndexMap<String, Error>,
+    what: &str,
+    key: &str,
+    available: impl IntoIterator<Item = &'a String>,
+) -> Error {
+    match left_out.get(key) {
+        Some(left_out) => left_out.clone(),
+        None => missing_key(what, key, available.into_iter().cloned()),
+    }
+}
+
+/// The grids an image lies on: its own, and a pyramid's levels'.
+fn image_grids(location: &hdf5::Location) -> Result<Vec<String>> {
+    let mut out: Vec<String> = attrs::get_str(location, "grid")?.into_iter().collect();
+    out.extend(attrs::get_strs(location, "grid_levels")?.unwrap_or_default());
+    Ok(out)
+}
+
 /// What `cell` holds, read by `init` on first use, once `root` is known to
 /// be open: a closed file answers a lookup as an empty one, which read as a
 /// sample without its groups (E008) or its document --- and a value read
@@ -58,6 +81,48 @@ fn cached<'a, T>(root: &hdf5::Group, cell: &'a OnceLock<Result<T>>, init: impl F
     }
 }
 
+/// One group's objects as this engine reads them: those it can, by id, and
+/// those a later minor's file holds that its projection leaves out
+/// ([`projection`]), each with the W913 a lookup of it raises.
+#[derive(Debug)]
+struct Listing<T> {
+    items: T,
+    left_out: IndexMap<String, Error>,
+}
+
+impl<T> Listing<T> {
+    fn all(items: T) -> Self {
+        Listing { items, left_out: IndexMap::new() }
+    }
+}
+
+/// An object a later minor's projection leaves out: the W913 a lookup of it
+/// raises, and the value it holds where that is why, read up to which
+/// whatever else is wrong with it is the error it was
+/// ([`projection::read_up_to`]).
+#[derive(Debug)]
+struct Aside {
+    error: Error,
+    value: Option<projection::Later>,
+}
+
+impl Aside {
+    /// Left out for the value it holds.
+    fn holds(what: &str, id: &str, value: projection::Later, version: &str) -> Self {
+        Aside { error: projection::holds(what, id, &value, version), value: Some(value) }
+    }
+
+    /// Left out with an object it depends on, and not read.
+    fn depends(error: Error) -> Self {
+        Aside { error, value: None }
+    }
+}
+
+/// A sample's annotations, by id.
+type Annotations = IndexMap<String, Arc<Annotation>>;
+/// A sample's transforms, by id.
+type Transforms = IndexMap<String, Transform>;
+
 /// A read-only view of one sample root.
 ///
 /// Every collection is read once per handle: a `Sample` is read-only, and
@@ -69,11 +134,11 @@ pub struct Sample {
     pub root: hdf5::Group,
     handle: Option<hdf5::File>,
     document: OnceLock<Result<SampleDocument>>,
-    grids: OnceLock<Result<Arc<Grids>>>,
-    images: OnceLock<Result<IndexMap<String, Image>>>,
-    annotations: OnceLock<Result<IndexMap<String, Arc<Annotation>>>>,
-    transforms: OnceLock<Result<Arc<IndexMap<String, Transform>>>>,
-    index: OnceLock<Result<IndexMap<String, SamplingIndex>>>,
+    grids: OnceLock<Result<Listing<Arc<Grids>>>>,
+    images: OnceLock<Result<Listing<IndexMap<String, Image>>>>,
+    annotations: OnceLock<Result<Listing<Annotations>>>,
+    transforms: OnceLock<Result<Listing<Arc<Transforms>>>>,
+    index: OnceLock<Result<Listing<IndexMap<String, SamplingIndex>>>>,
     fresh: OnceLock<Result<BTreeSet<String>>>,
     clinical: OnceLock<Result<Option<Arc<Clinical>>>>,
     documents: OnceLock<Result<Option<Arc<Documents>>>>,
@@ -228,41 +293,110 @@ impl Sample {
 
     // -- objects -----------------------------------------------------------------
 
-    /// The sample's grids, with §3.7's implicit timepoint resolved: with
-    /// exactly one declared timepoint, a grid that names none belongs to it.
-    pub fn grids(&self) -> Result<&Arc<Grids>> {
+    /// The version a later minor's file declares, when this engine reads the
+    /// file as a projection (1.1 §2.2); `None` for a version it implements.
+    fn later_minor(&self) -> Option<String> {
+        attrs::get_str(&self.root, "medh5_version").ok().flatten().filter(|v| crate::version::is_projection(v))
+    }
+
+    /// The objects a later minor's file holds that this engine's projection
+    /// leaves out (1.1 §2.2), by path (`grids/g`), each with the W913 a lookup
+    /// of it raises: one holding a value only that minor defines, and what
+    /// depends on one.  Empty, and nothing read, for a file of a version this
+    /// engine implements.
+    pub fn left_out(&self) -> Result<IndexMap<String, Error>> {
+        let mut out = IndexMap::new();
+        if self.later_minor().is_none() {
+            return Ok(out);
+        }
+        let groups = [
+            ("grids", &self.grid_listing()?.left_out),
+            ("images", &self.image_listing()?.left_out),
+            ("annotations", &self.annotation_listing()?.left_out),
+            ("transforms", &self.transform_listing()?.left_out),
+            ("index", &self.index_listing()?.left_out),
+        ];
+        for (group, left_out) in groups {
+            out.extend(left_out.iter().map(|(name, e)| (format!("{group}/{name}"), e.clone())));
+        }
+        Ok(out)
+    }
+
+    fn grid_listing(&self) -> Result<&Listing<Arc<Grids>>> {
         cached(&self.root, &self.grids, || {
-            let stored: Grids = read_grids(&self.root)?.into_iter().collect();
+            let Listing { items: stored, left_out } = self.read_grid_listing()?;
             let declared = match self.timepoints() {
                 Ok(t) => t.ids(),
-                Err(e) if e.is_medh5() => return Ok(Arc::new(stored)),
+                Err(e) if e.is_medh5() => return Ok(Listing { items: Arc::new(stored), left_out }),
                 Err(e) => return Err(e),
             };
             if declared.len() != 1 {
-                return Ok(Arc::new(stored));
+                return Ok(Listing { items: Arc::new(stored), left_out });
             }
             let only = declared[0].clone();
-            Ok(Arc::new(
-                stored
-                    .into_iter()
-                    .map(|(gid, g)| {
-                        let g = if g.timepoint.is_none() { g.with_timepoint(Some(only.clone())) } else { g };
-                        (gid, g)
-                    })
-                    .collect(),
-            ))
+            let items = stored
+                .into_iter()
+                .map(|(gid, g)| {
+                    let g = if g.timepoint.is_none() { g.with_timepoint(Some(only.clone())) } else { g };
+                    (gid, g)
+                })
+                .collect();
+            Ok(Listing { items: Arc::new(items), left_out })
         })
     }
 
-    /// A grid by id (`KeyError` naming the available ones).
+    /// The stored grids, a later minor's left out where they hold an axis kind
+    /// only it defines.
+    fn read_grid_listing(&self) -> Result<Listing<Grids>> {
+        let Some(version) = self.later_minor() else {
+            return Ok(Listing::all(read_grids(&self.root)?.into_iter().collect()));
+        };
+        let Some(node) = ops::child_group(&self.root, "grids") else {
+            return Err(Error::coded("E008", "sample has no `grids` group"));
+        };
+        let mut out = Listing::all(Grids::new());
+        for name in ops::members(&node)? {
+            let Some(group) = ops::child_group(&node, &name) else { continue };
+            let read = || read_grid(&group, Some(&name));
+            match projection::grid_value(&group)? {
+                Some(value) => {
+                    projection::read_up_to(&value, read)?;
+                    out.left_out.insert(name.clone(), projection::holds("grid", &name, &value, &version));
+                }
+                None => {
+                    out.items.insert(name.clone(), read()?);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// The sample's grids, with §3.7's implicit timepoint resolved: with
+    /// exactly one declared timepoint, a grid that names none belongs to it.
+    /// A later minor's file lists those its projection reads ([`left_out`]).
+    ///
+    /// [`left_out`]: Sample::left_out
+    pub fn grids(&self) -> Result<&Arc<Grids>> {
+        Ok(&self.grid_listing()?.items)
+    }
+
+    /// A grid by id: `KeyError` naming the available ones, or W913 for one a
+    /// later minor's file holds that this engine's projection leaves out.
     pub fn grid(&self, grid_id: &str) -> Result<&Grid> {
-        let grids = self.grids()?;
-        grids.get(grid_id).ok_or_else(|| missing_key("grid", grid_id, grids.keys().cloned()))
+        let listing = self.grid_listing()?;
+        listing
+            .items
+            .get(grid_id)
+            .ok_or_else(|| lookup_failure(&listing.left_out, "grid", grid_id, listing.items.keys()))
     }
 
     /// `grids/ref` when present, else the grid of the first image (§3.2).
     pub fn reference_grid(&self) -> Result<Grid> {
-        let grids = self.grids()?;
+        let listing = self.grid_listing()?;
+        if let Some(left_out) = listing.left_out.get("ref") {
+            return Err(left_out.clone());
+        }
+        let grids = &listing.items;
         if let Some(g) = grids.get("ref") {
             return Ok(g.clone());
         }
@@ -284,48 +418,123 @@ impl Sample {
         Ok(grids[names[0].as_str()].clone())
     }
 
-    /// The sample's images, by id (name order).
-    pub fn images(&self) -> Result<&IndexMap<String, Image>> {
+    fn image_listing(&self) -> Result<&Listing<IndexMap<String, Image>>> {
         cached(&self.root, &self.images, || {
-            let grids = self.grids()?.clone();
+            let grids = self.grid_listing()?;
+            let mut out = Listing::all(IndexMap::new());
             let Some(node) = ops::child_group(&self.root, "images") else {
-                return Ok(IndexMap::new());
+                return Ok(out);
             };
-            ops::members(&node)?
-                .into_iter()
-                .map(|name| Ok((name.clone(), Image::open(&name, &node, grids.clone())?)))
-                .collect()
+            for name in ops::members(&node)? {
+                let on = if grids.left_out.is_empty() {
+                    Vec::new()
+                } else if let Some(group) = ops::child_group(&node, &name) {
+                    image_grids(&group)?
+                } else if let Some(dataset) = ops::child_dataset(&node, &name) {
+                    image_grids(&dataset)?
+                } else {
+                    Vec::new()
+                };
+                match on.iter().find_map(|gid| grids.left_out.get(gid).map(|e| (gid, e))) {
+                    Some((gid, cause)) => {
+                        let left_out = projection::depends("image", &name, "lies on", "grid", gid, cause);
+                        out.left_out.insert(name, left_out);
+                    }
+                    None => {
+                        let image = Image::open(&name, &node, grids.items.clone())?;
+                        out.items.insert(name, image);
+                    }
+                }
+            }
+            Ok(out)
         })
     }
 
-    /// One image (`KeyError` naming the available ones).
+    /// The sample's images, by id (name order).  A later minor's file lists
+    /// those its projection reads ([`left_out`]).
+    ///
+    /// [`left_out`]: Sample::left_out
+    pub fn images(&self) -> Result<&IndexMap<String, Image>> {
+        Ok(&self.image_listing()?.items)
+    }
+
+    /// One image: `KeyError` naming the available ones, or W913 for one a
+    /// later minor's file holds that this engine's projection leaves out.
     pub fn image(&self, image_id: &str) -> Result<&Image> {
-        let images = self.images()?;
-        images.get(image_id).ok_or_else(|| missing_key("image", image_id, images.keys().cloned()))
+        let listing = self.image_listing()?;
+        listing
+            .items
+            .get(image_id)
+            .ok_or_else(|| lookup_failure(&listing.left_out, "image", image_id, listing.items.keys()))
     }
 
-    /// The sample's annotations, by id (name order).
-    pub fn annotations(&self) -> Result<&IndexMap<String, Arc<Annotation>>> {
+    fn annotation_listing(&self) -> Result<&Listing<Annotations>> {
         cached(&self.root, &self.annotations, || {
-            let grids = self.grids()?.clone();
+            let grids = self.grid_listing()?;
             let label_set = self.label_set()?.cloned().map(Arc::new);
+            let mut out = Listing::all(IndexMap::new());
             let Some(node) = ops::child_group(&self.root, "annotations") else {
-                return Ok(IndexMap::new());
+                return Ok(out);
             };
-            ops::members(&node)?
-                .into_iter()
-                .filter_map(|name| ops::child_group(&node, &name).map(|g| (name, g)))
-                .map(|(name, group)| {
-                    Ok((name.clone(), Arc::new(Annotation::open(&name, group, grids.clone(), label_set.clone())?)))
-                })
-                .collect()
+            let aside = self.annotations_left_out(&node)?;
+            for name in ops::members(&node)? {
+                let Some(group) = ops::child_group(&node, &name) else { continue };
+                let open = || Annotation::open(&name, group.clone(), grids.items.clone(), label_set.clone());
+                match aside.get(&name) {
+                    None => {
+                        out.items.insert(name.clone(), Arc::new(open()?));
+                    }
+                    Some(Aside { error, value }) => {
+                        if let Some(value) = value {
+                            projection::read_up_to(value, open)?;
+                        }
+                        out.left_out.insert(name.clone(), error.clone());
+                    }
+                }
+            }
+            Ok(out)
         })
     }
 
-    /// One annotation (`KeyError` naming the available ones).
+    /// The annotations under `node` a later minor's projection leaves out:
+    /// one lying on a grid left out, or holding a value only that minor
+    /// defines.  Decided from their attributes, so what indexes an annotation
+    /// is told apart without the document the annotations are read with.
+    fn annotations_left_out(&self, node: &hdf5::Group) -> Result<IndexMap<String, Aside>> {
+        let mut out = IndexMap::new();
+        let Some(version) = self.later_minor() else { return Ok(out) };
+        let grids = &self.grid_listing()?.left_out;
+        for name in ops::members(node)? {
+            let Some(group) = ops::child_group(node, &name) else { continue };
+            let gid = attrs::get_str(&group, "grid")?;
+            let aside = if let Some((gid, cause)) = gid.as_ref().and_then(|g| grids.get(g).map(|e| (g, e))) {
+                Aside::depends(projection::depends("annotation", &name, "lies on", "grid", gid, cause))
+            } else if let Some(value) = projection::annotation_value(&group)? {
+                Aside::holds("annotation", &name, value, &version)
+            } else {
+                continue;
+            };
+            out.insert(name, aside);
+        }
+        Ok(out)
+    }
+
+    /// The sample's annotations, by id (name order).  A later minor's file
+    /// lists those its projection reads ([`left_out`]).
+    ///
+    /// [`left_out`]: Sample::left_out
+    pub fn annotations(&self) -> Result<&IndexMap<String, Arc<Annotation>>> {
+        Ok(&self.annotation_listing()?.items)
+    }
+
+    /// One annotation: `KeyError` naming the available ones, or W913 for one
+    /// a later minor's file holds that this engine's projection leaves out.
     pub fn annotation(&self, ann_id: &str) -> Result<&Arc<Annotation>> {
-        let anns = self.annotations()?;
-        anns.get(ann_id).ok_or_else(|| missing_key("annotation", ann_id, anns.keys().cloned()))
+        let listing = self.annotation_listing()?;
+        listing
+            .items
+            .get(ann_id)
+            .ok_or_else(|| lookup_failure(&listing.left_out, "annotation", ann_id, listing.items.keys()))
     }
 
     /// The §7.7 ignore region of a voxel annotation, under any encoding: in
@@ -400,7 +609,11 @@ impl Sample {
 
     fn referenced_mask(&self, owner: &str, attr: &str, reference: &str, window: &[Slice]) -> Result<ArrayD<bool>> {
         let name = annotation_id(reference);
-        let target = self.annotations()?.get(name).filter(|a| a.kind() == "mask");
+        let listing = self.annotation_listing()?;
+        if let Some(left_out) = listing.left_out.get(name) {
+            return Err(left_out.clone());
+        }
+        let target = listing.items.get(name).filter(|a| a.kind() == "mask");
         match target {
             None => Err(Error::coded(
                 "E413",
@@ -414,9 +627,46 @@ impl Sample {
         }
     }
 
-    /// The sampling index entries, by annotation id.
+    fn index_listing(&self) -> Result<&Listing<IndexMap<String, SamplingIndex>>> {
+        cached(&self.root, &self.index, || {
+            let stored = read_indices(&self.root)?;
+            let annotations = match ops::child_group(&self.root, "annotations") {
+                Some(node) if self.later_minor().is_some() => self.annotations_left_out(&node)?,
+                _ => return Ok(Listing::all(stored)),
+            };
+            // An entry indexes its annotation's voxels.
+            let mut out = Listing::all(IndexMap::new());
+            for (name, entry) in stored {
+                match annotations.get(&name) {
+                    Some(Aside { error: cause, .. }) => {
+                        let left_out = projection::depends("index entry", &name, "indexes", "annotation", &name, cause);
+                        out.left_out.insert(name, left_out);
+                    }
+                    None => {
+                        out.items.insert(name, entry);
+                    }
+                }
+            }
+            Ok(out)
+        })
+    }
+
+    /// The sampling index entries, by annotation id.  A later minor's file
+    /// lists those its projection reads ([`left_out`]).
+    ///
+    /// [`left_out`]: Sample::left_out
     pub fn index(&self) -> Result<&IndexMap<String, SamplingIndex>> {
-        cached(&self.root, &self.index, || read_indices(&self.root))
+        Ok(&self.index_listing()?.items)
+    }
+
+    /// One index entry: `KeyError`, or W913 for one a later minor's file
+    /// holds that this engine's projection leaves out.
+    pub fn index_entry(&self, ann_id: &str) -> Result<&SamplingIndex> {
+        let listing = self.index_listing()?;
+        listing.items.get(ann_id).ok_or_else(|| match listing.left_out.get(ann_id) {
+            Some(left_out) => left_out.clone(),
+            None => Error::Key(format!("no index entry {}", repr_str(ann_id))),
+        })
     }
 
     /// Index entries whose `source_digest` still matches their source.
@@ -427,15 +677,75 @@ impl Sample {
         })
     }
 
-    /// The file's transforms, read once.
-    pub fn transforms(&self) -> Result<&Arc<IndexMap<String, Transform>>> {
-        cached(&self.root, &self.transforms, || Ok(Arc::new(read_transforms(&self.root, self.grids()?.clone())?)))
+    fn transform_listing(&self) -> Result<&Listing<Arc<Transforms>>> {
+        cached(&self.root, &self.transforms, || {
+            let grids = self.grid_listing()?;
+            let mut groups = transform_groups(&self.root)?;
+            let Some(version) = self.later_minor() else {
+                return Ok(Listing::all(Arc::new(open_transforms(groups, grids.items.clone())?)));
+            };
+            let mut left_out: IndexMap<String, Error> = IndexMap::new();
+            for (name, group) in &groups {
+                // A field is sampled on its grid, a B-spline's lattice laid on its own.
+                let mut on = None;
+                for key in ["field_grid", "cp_grid"] {
+                    let Some(gid) = attrs::get_str(group, key)? else { continue };
+                    if let Some(cause) = grids.left_out.get(&gid) {
+                        let relation = if key == "field_grid" { "is sampled on" } else { "lays its lattice on" };
+                        on = Some(projection::depends("transform", name, relation, "grid", &gid, cause));
+                        break;
+                    }
+                }
+                if let Some(depends) = on {
+                    left_out.insert(name.clone(), depends);
+                } else if let Some(value) = projection::transform_value(group)? {
+                    projection::read_up_to(&value, || TransformHeader::read(group))?;
+                    left_out.insert(name.clone(), projection::holds("transform", name, &value, &version));
+                }
+            }
+            // A composite is its components: one left out leaves it out, and
+            // so on up a chain of composites.
+            loop {
+                let mut more: Vec<(String, Error)> = Vec::new();
+                for (name, group) in &groups {
+                    if left_out.contains_key(name) || attrs::get_str(group, "kind")?.as_deref() != Some("composite") {
+                        continue;
+                    }
+                    let components = attrs::get_strs(group, "components")?.unwrap_or_default();
+                    if let Some((step, cause)) = components.iter().find_map(|c| left_out.get(c).map(|e| (c, e))) {
+                        more.push((
+                            name.clone(),
+                            projection::depends("transform", name, "composes", "transform", step, cause),
+                        ));
+                    }
+                }
+                if more.is_empty() {
+                    break;
+                }
+                left_out.extend(more);
+            }
+            // What is left out is no sibling an `inverse_id` resolves to.
+            groups.retain(|name, _| !left_out.contains_key(name));
+            Ok(Listing { items: Arc::new(open_transforms(groups, grids.items.clone())?), left_out })
+        })
     }
 
-    /// One transform (`KeyError` naming the available ones).
+    /// The file's transforms, read once.  A later minor's file lists those
+    /// its projection reads ([`left_out`]).
+    ///
+    /// [`left_out`]: Sample::left_out
+    pub fn transforms(&self) -> Result<&Arc<IndexMap<String, Transform>>> {
+        Ok(&self.transform_listing()?.items)
+    }
+
+    /// One transform: `KeyError` naming the available ones, or W913 for one
+    /// a later minor's file holds that this engine's projection leaves out.
     pub fn transform(&self, transform_id: &str) -> Result<&Transform> {
-        let all = self.transforms()?;
-        all.get(transform_id).ok_or_else(|| missing_key("transform", transform_id, all.keys().cloned()))
+        let listing = self.transform_listing()?;
+        listing
+            .items
+            .get(transform_id)
+            .ok_or_else(|| lookup_failure(&listing.left_out, "transform", transform_id, listing.items.keys()))
     }
 
     /// The transform relating two timepoints, grids or frames (§10).
@@ -476,14 +786,19 @@ impl Sample {
 
     /// The frames a key names: a timepoint's (every grid's at that visit),
     /// else a grid's own, else the key as a frame uid --- in that order,
-    /// because the namespaces are separate (§2.3) and may collide.
+    /// because the namespaces are separate (§2.3) and may collide.  A grid a
+    /// later minor's projection leaves out names no frame: W913.
     pub fn frames_for(&self, key: &str) -> Result<Vec<String>> {
         let timeline = self.timepoints()?;
         if timeline.contains(key) {
             return Ok(frames_of_timepoint(self.grids()?, key));
         }
-        if let Some(grid) = self.grids()?.get(key) {
+        let grids = self.grid_listing()?;
+        if let Some(grid) = grids.items.get(key) {
             return Ok(grid.frame_uid.iter().filter(|f| !f.is_empty()).cloned().collect());
+        }
+        if let Some(left_out) = grids.left_out.get(key) {
+            return Err(left_out.clone());
         }
         if self.known_frames()?.contains(key) {
             return Ok(vec![key.to_string()]);
@@ -584,6 +899,11 @@ impl Sample {
         out.insert("index".into(), json!(index));
         if let Some(clinical) = self.clinical()? {
             out.insert("clinical".into(), clinical.summary());
+        }
+        let left_out = self.left_out()?;
+        if !left_out.is_empty() {
+            let why: Map<String, Value> = left_out.into_iter().map(|(path, e)| (path, json!(e.message()))).collect();
+            out.insert("left_out".into(), Value::Object(why));
         }
         Ok(Value::Object(out))
     }
@@ -815,5 +1135,48 @@ mod tests {
         refused_as_closed("Transform::matrix", rigid.matrix());
         refused_as_closed("Transform::field", warp.field());
         refused_as_closed("read_transforms", read_transforms(&sample.root, grids));
+    }
+
+    /// `grids/g_tp0` given an axis kind only a later minor defines, and the
+    /// file `version`.
+    fn with_a_later_axis_kind(path: &Path, version: &str) {
+        crate::h5::init();
+        let file = hdf5::File::open_rw(path).unwrap();
+        let root = file.as_group().unwrap();
+        let kinds = ["depth", "spatial", "spatial"].map(String::from).to_vec();
+        attrs::write(&root.group("grids/g_tp0").unwrap(), "axis_kinds", &AttrValue::Strs(kinds)).unwrap();
+        attrs::write(&root, "medh5_version", &AttrValue::Str(version.into())).unwrap();
+        drop(root);
+        file.close().unwrap();
+    }
+
+    /// 1.1 §2.2: a grid of an axis kind only a later minor defines is left
+    /// out of the projection with what lies on it --- its image, and the
+    /// field sampled on it --- and a lookup of any of them is W913, the
+    /// frames the grid's id names included; in a file of 1.1 it is the E110
+    /// it was.
+    #[test]
+    fn s2_2_a_later_minors_grid_is_left_out_with_what_lies_on_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = crate::bench::synthetic_pair(dir.path(), &[4, 6, 5], "portable", 7).unwrap();
+        with_a_later_axis_kind(&path, "1.2");
+        let sample = open_sample(&path).unwrap();
+        let left_out: Vec<String> = sample.left_out().unwrap().into_keys().collect();
+        assert_eq!(left_out, ["grids/g_tp0", "images/CT_tp0", "transforms/warp"]);
+        assert_eq!(sample.grids().unwrap().keys().collect::<Vec<_>>(), ["g_tp1"]);
+        assert_eq!(sample.images().unwrap().keys().collect::<Vec<_>>(), ["CT_tp1"]);
+        assert!(sample.transforms().unwrap().is_empty());
+        let lookups = [sample.grid("g_tp0").err(), sample.frames_for("g_tp0").err(), sample.transform("warp").err()];
+        for failed in lookups {
+            let failed = failed.expect("a lookup of what is left out fails");
+            assert_eq!(failed.code(), Some("W913"), "{failed:?}");
+        }
+        assert_eq!(sample.frames_for("g_tp1").unwrap(), ["bench:frame-1"]);
+        drop(sample);
+
+        with_a_later_axis_kind(&path, "1.1");
+        let sample = open_sample(&path).unwrap();
+        assert!(sample.left_out().unwrap().is_empty());
+        assert_eq!(sample.grids().unwrap_err().code(), Some("E110"));
     }
 }

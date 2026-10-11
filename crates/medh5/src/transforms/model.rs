@@ -1370,17 +1370,29 @@ pub fn can_invert(inner: &Transform) -> Result<bool> {
 /// is refused, where HDF5 finding no member in it read as a sample without
 /// transforms.
 pub fn read_transforms(root: &hdf5::Group, grids: Arc<IndexMap<String, Grid>>) -> Result<IndexMap<String, Transform>> {
+    open_transforms(transform_groups(root)?, grids)
+}
+
+/// Every transform group under `<root>/transforms`, by id.  A closed
+/// file is refused (see [`read_transforms`]).
+pub fn transform_groups(root: &hdf5::Group) -> Result<Siblings> {
     crate::h5::alive(root)?;
+    let mut groups = Siblings::new();
     let Some(node) = ops::child_group(root, "transforms") else {
-        return Ok(IndexMap::new());
+        return Ok(groups);
     };
-    let mut siblings = Siblings::new();
     for name in ops::members(&node)? {
         if let Some(g) = ops::child_group(&node, &name) {
-            siblings.insert(name, g);
+            groups.insert(name, g);
         }
     }
-    let siblings = Arc::new(siblings);
+    Ok(groups)
+}
+
+/// Open each of `groups` as a transform: an `inverse_id` or a composite's
+/// component resolves among them alone.
+pub fn open_transforms(groups: Siblings, grids: Arc<IndexMap<String, Grid>>) -> Result<IndexMap<String, Transform>> {
+    let siblings = Arc::new(groups);
     siblings
         .iter()
         .map(|(name, group)| Ok((name.clone(), Transform::open(name, group.clone(), grids.clone(), siblings.clone())?)))
