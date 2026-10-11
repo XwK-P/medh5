@@ -1,7 +1,9 @@
 //! `medh5.labels`: the vocabulary (spec §5).
 
+use std::sync::OnceLock;
+
 use pyo3::prelude::*;
-use pyo3::sync::PyOnceLock;
+use pyo3::pyclass::{PyTraverseError, PyVisit};
 use pyo3::types::{PyDict, PyString, PyTuple};
 use serde_json::{Map, Value};
 
@@ -218,9 +220,21 @@ impl Skeleton {
 
 // -- LabelClass --------------------------------------------------------------------------
 
-#[pyclass(module = "medh5.labels", name = "LabelClass", skip_from_py_object, frozen, eq)]
-#[derive(Clone, PartialEq)]
-pub struct LabelClass(pub engine::LabelClass);
+/// One semantic class (§5.2).
+///
+/// `properties` is the class's own dict, as 1.x's dataclass field was: made
+/// on its first read, the same object on every read after, and read back
+/// whenever the class is used --- `to_json`, `==`, `is_lesion`, a label set
+/// or a writer given it.  A class a document's label set hands out writes an
+/// edit to it through to the document.
+#[pyclass(module = "medh5.labels", name = "LabelClass", skip_from_py_object, frozen)]
+pub struct LabelClass {
+    /// The class as made.  Its `properties` may have been edited since:
+    /// `current` is the class as it stands.
+    pub inner: engine::LabelClass,
+    /// `properties`, once read, and where the class was read from.
+    held: crate::records::Held,
+}
 
 fn ontology_codes(codes: Option<&Bound<'_, PyAny>>) -> R<Vec<engine::OntologyCode>> {
     let mut out = Vec::new();
@@ -236,18 +250,72 @@ fn ontology_codes(codes: Option<&Bound<'_, PyAny>>) -> R<Vec<engine::OntologyCod
 }
 
 impl LabelClass {
+    /// The fields of the 1.x dataclass, in order.
+    const FIELDS: &'static [&'static str] =
+        &["id", "key", "name", "parents", "category", "color", "codes", "laterality", "properties"];
+
+    pub fn wrap(inner: engine::LabelClass) -> Self {
+        LabelClass { inner, held: crate::records::Held::new(1) }
+    }
+
+    /// The class `key` of the label set of `document`, read as `inner`: an
+    /// edit to its `properties` is written back to the document's class,
+    /// while that is still what was read.
+    pub fn read_from(inner: engine::LabelClass, document: &Bound<'_, PyAny>, key: &str) -> Self {
+        let mut made = Self::wrap(inner);
+        made.held.read_from(document.clone().unbind(), "label_set", Some(key));
+        made
+    }
+
     pub fn tuple_color<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        match &self.0.color {
+        match &self.inner.color {
             Some(c) => Ok(PyTuple::new(py, c)?.into_any()),
             None => Ok(py.None().into_bound(py)),
         }
     }
-}
 
-impl LabelClass {
-    /// The fields of the 1.x dataclass, in order.
-    const FIELDS: &'static [&'static str] =
-        &["id", "key", "name", "parents", "category", "color", "codes", "laterality", "properties"];
+    /// Whether `properties` has not been read: `inner` is then the class.
+    fn is_untouched(&self) -> bool {
+        self.held.is_untouched()
+    }
+
+    /// The class as it stands --- its `properties` as edited --- parsed again,
+    /// so that every rule holds of it; and its JSON form.
+    pub fn current(&self, py: Python<'_>) -> R<(engine::LabelClass, Value)> {
+        let Some(properties) = self.held.get(0) else { return Ok((self.inner.clone(), self.inner.to_json())) };
+        let mut doc = match self.inner.to_json() {
+            Value::Object(m) => m,
+            _ => Map::new(),
+        };
+        match py_to_json(properties.bind(py))? {
+            Value::Object(m) if m.is_empty() => {
+                doc.shift_remove("properties");
+            }
+            v => {
+                doc.insert("properties".into(), v);
+            }
+        }
+        let class = engine::LabelClass::from_json(&Value::Object(doc))?;
+        let json = class.to_json();
+        Ok((class, json))
+    }
+
+    /// The engine value of a Python argument, and its JSON form: this class
+    /// as it stands, or its JSON form.
+    pub fn current_of(obj: &Bound<'_, PyAny>) -> R<(engine::LabelClass, Value)> {
+        if let Ok(c) = obj.cast::<LabelClass>() {
+            return c.get().current(obj.py());
+        }
+        let class = engine::LabelClass::from_json(&py_to_json(obj)?)?;
+        let json = class.to_json();
+        Ok((class, json))
+    }
+
+    /// The engine value of a Python argument: this class as it stands, or
+    /// its JSON form.
+    pub fn arg(obj: &Bound<'_, PyAny>) -> R<engine::LabelClass> {
+        Ok(Self::current_of(obj)?.0)
+    }
 }
 
 #[pymethods]
@@ -289,7 +357,7 @@ impl LabelClass {
             },
             _ => Map::new(),
         };
-        Ok(LabelClass(engine::LabelClass::build(
+        Ok(LabelClass::wrap(engine::LabelClass::build(
             id,
             key,
             name,
@@ -303,23 +371,23 @@ impl LabelClass {
     }
     #[getter]
     fn id(&self) -> i64 {
-        self.0.id
+        self.inner.id
     }
     #[getter]
     fn key(&self) -> &str {
-        &self.0.key
+        &self.inner.key
     }
     #[getter]
     fn name(&self) -> &str {
-        &self.0.name
+        &self.inner.name
     }
     #[getter]
     fn parents<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
-        PyTuple::new(py, &self.0.parents)
+        PyTuple::new(py, &self.inner.parents)
     }
     #[getter]
     fn category(&self) -> Option<&str> {
-        self.0.category.as_deref()
+        self.inner.category.as_deref()
     }
     #[getter]
     fn color<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
@@ -327,77 +395,152 @@ impl LabelClass {
     }
     #[getter]
     fn codes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
-        PyTuple::new(py, self.0.codes.iter().map(|c| OntologyCode(c.clone())))
+        PyTuple::new(py, self.inner.codes.iter().map(|c| OntologyCode(c.clone())))
     }
     #[getter]
     fn laterality(&self) -> Option<&str> {
-        self.0.laterality.as_deref()
+        self.inner.laterality.as_deref()
     }
+    /// Free-form properties: the class's own dict.
     #[getter]
-    fn properties<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        map_to_py(py, &self.0.properties)
+    fn properties<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
+        let py = slf.py();
+        let me = slf.get();
+        if let Some(found) = me.held.get(0) {
+            return Ok(found.bind(py).clone());
+        }
+        let plain = map_to_py(py, &me.inner.properties)?.into_any();
+        let anchor = me.held.anchor(slf.as_any(), &me.inner.to_json(), None)?;
+        Ok(me.held.keep(0, crate::records::containers(plain, anchor.as_ref())?))
     }
+    /// Whether the class marks a lesion: `properties["is_lesion"]`, else its
+    /// category.
     #[getter]
-    fn is_lesion(&self) -> bool {
-        self.0.is_lesion()
+    fn is_lesion(&self, py: Python<'_>) -> R<bool> {
+        Ok(self.current(py)?.0.is_lesion())
     }
-    fn to_json<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        json_to_py(py, &self.0.to_json())
+    /// The class as it stands, as JSON.
+    fn to_json<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyAny>> {
+        Ok(json_to_py(py, &self.current(py)?.1)?)
     }
     #[classmethod]
     fn from_json(_cls: &Bound<'_, pyo3::types::PyType>, doc: &Bound<'_, PyAny>) -> R<Self> {
-        Ok(LabelClass(engine::LabelClass::from_json(&py_to_json(doc)?)?))
+        Ok(LabelClass::wrap(engine::LabelClass::from_json(&py_to_json(doc)?)?))
     }
+    // Equal as they stand; a class whose edits break a rule equals none.
+    fn __eq__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> bool {
+        let Ok(other) = other.cast::<LabelClass>() else { return false };
+        match (self.current(py), other.get().current(py)) {
+            (Ok(a), Ok(b)) => a.0 == b.0,
+            _ => false,
+        }
+    }
+    // Over the fields an edit cannot change, so that it holds while the class
+    // lives; classes equal as they stand agree on those, so hash alike.
     fn __hash__(&self) -> isize {
-        json_hash(&self.0.to_json())
+        let mut fixed = self.inner.to_json();
+        if let Value::Object(m) = &mut fixed {
+            m.shift_remove("properties");
+        }
+        json_hash(&fixed)
     }
     fn __repr__(slf: &Bound<'_, Self>) -> PyResult<String> {
-        let names = ["id", "key", "name", "parents", "category", "color", "codes", "laterality", "properties"];
-        let fields = names.iter().map(|n| Ok((*n, slf.getattr(*n)?))).collect::<PyResult<Vec<_>>>()?;
+        let py = slf.py();
+        let me = slf.get();
+        let fields = Self::FIELDS
+            .iter()
+            .map(|n| match (*n, me.held.get(0)) {
+                ("properties", Some(found)) => Ok((*n, found.bind(py).clone())),
+                ("properties", None) => Ok((*n, map_to_py(py, &me.inner.properties)?.into_any())),
+                _ => Ok((*n, slf.getattr(*n)?)),
+            })
+            .collect::<PyResult<Vec<_>>>()?;
         dataclass_repr("LabelClass", &fields)
     }
     fn __reduce__<'py>(slf: &Bound<'py, Self>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyTuple>)> {
         reduce_via_json(slf.as_any())
     }
+    fn __traverse__(&self, visit: PyVisit<'_>) -> Result<(), PyTraverseError> {
+        self.held.traverse(&visit)
+    }
 }
 
 // -- LabelSet ------------------------------------------------------------------------------
 
+/// A controlled vocabulary (§5.1).
+///
+/// The classes are the set's own objects, as 1.x kept them --- those it was
+/// given, and from the first read those it hands out (`ls[2] is
+/// ls["liver"]`) --- so an edit to one's `properties` is the set's, digest
+/// included, and for a document's label set, the document's.
 #[pyclass(module = "medh5.labels", name = "LabelSet", skip_from_py_object, frozen)]
-pub struct LabelSet(pub engine::LabelSet, PyOnceLock<Py<PyTuple>>);
+pub struct LabelSet {
+    /// The vocabulary as given or read.
+    pub inner: engine::LabelSet,
+    /// The class objects, once given or read, in `inner`'s order.
+    classes: OnceLock<Py<PyTuple>>,
+    /// The document this is the label set of.
+    document: Option<Py<PyAny>>,
+}
+
+/// `set` with its classes replaced by `classes` (the same ids and keys),
+/// validated again.
+pub fn with_classes(set: &engine::LabelSet, classes: Vec<engine::LabelClass>) -> medh5::Result<engine::LabelSet> {
+    engine::LabelSet::new(
+        set.id.clone(),
+        classes,
+        set.version.clone(),
+        set.relations.clone(),
+        set.skeletons.clone(),
+        set.form.clone(),
+        set.uri.clone(),
+        set.declared_sha256().map(str::to_string),
+    )
+}
 
 impl LabelSet {
     pub fn wrap(inner: engine::LabelSet) -> Self {
-        LabelSet(inner, PyOnceLock::new())
+        LabelSet { inner, classes: OnceLock::new(), document: None }
+    }
+
+    /// The label set of `document`, read as `inner`.
+    pub fn read_from(inner: engine::LabelSet, document: &Bound<'_, PyAny>) -> Self {
+        LabelSet { inner, classes: OnceLock::new(), document: Some(document.clone().unbind()) }
     }
 
     /// The classes as Python objects, made once: `ls[2] is ls["liver"]`.
     fn class_objects<'py>(&self, py: Python<'py>) -> PyResult<&Bound<'py, PyTuple>> {
-        Ok(self
-            .1
-            .get_or_try_init(py, || {
-                PyTuple::new(py, self.0.classes().iter().map(|c| LabelClass(c.clone()))).map(Bound::unbind)
-            })?
-            .bind(py))
+        if self.classes.get().is_none() {
+            let made = self
+                .inner
+                .classes()
+                .iter()
+                .map(|c| match &self.document {
+                    Some(document) => Py::new(py, LabelClass::read_from(c.clone(), document.bind(py), &c.key)),
+                    None => Py::new(py, LabelClass::wrap(c.clone())),
+                })
+                .collect::<PyResult<Vec<_>>>()?;
+            // A read on another thread may have got there first; either will do.
+            let _ = self.classes.set(PyTuple::new(py, made)?.unbind());
+        }
+        Ok(self.classes.get().expect("made").bind(py))
     }
 
     fn class_object<'py>(&self, py: Python<'py>, class: &engine::LabelClass) -> PyResult<Bound<'py, PyAny>> {
-        let position = self.0.classes().iter().position(|c| c.id == class.id).unwrap_or(0);
+        let position = self.inner.classes().iter().position(|c| c.id == class.id).unwrap_or(0);
         self.class_objects(py)?.get_item(position)
     }
-}
 
-fn label_classes(classes: Option<&Bound<'_, PyAny>>) -> R<Vec<engine::LabelClass>> {
-    let mut out = Vec::new();
-    let Some(classes) = classes else { return Ok(out) };
-    for item in classes.try_iter()? {
-        let item = item?;
-        match item.cast::<LabelClass>() {
-            Ok(c) => out.push(c.get().0.clone()),
-            Err(_) => out.push(engine::LabelClass::from_json(&py_to_json(&item)?)?),
+    /// The vocabulary as it stands: its classes' `properties` as edited.
+    pub fn current(&self, py: Python<'_>) -> R<engine::LabelSet> {
+        let Some(objects) = self.classes.get() else { return Ok(self.inner.clone()) };
+        let objects = objects.bind(py);
+        if objects.iter().all(|c| c.cast::<LabelClass>().map(|c| c.get().is_untouched()).unwrap_or(true)) {
+            return Ok(self.inner.clone());
         }
+        let classes = objects.iter().map(|c| LabelClass::arg(&c)).collect::<R<Vec<_>>>()?;
+        Ok(with_classes(&self.inner, classes)?)
     }
-    Ok(out)
 }
 
 fn relations(items: Option<&Bound<'_, PyAny>>) -> R<Vec<engine::Relation>> {
@@ -426,10 +569,10 @@ fn skeletons(items: Option<&Bound<'_, PyAny>>) -> R<Vec<engine::Skeleton>> {
     Ok(out)
 }
 
-/// A label set argument: the binding class, or its JSON form.
+/// A label set argument: the binding class as it stands, or its JSON form.
 pub fn label_set_arg(obj: &Bound<'_, PyAny>) -> R<engine::LabelSet> {
     if let Ok(ls) = obj.cast::<LabelSet>() {
-        return Ok(ls.get().0.clone());
+        return ls.get().current(obj.py());
     }
     engine::LabelSet::from_json(Some(&py_to_json(obj)?))?
         .ok_or_else(|| medh5::Error::invalid("an empty label set document").into())
@@ -437,10 +580,12 @@ pub fn label_set_arg(obj: &Bound<'_, PyAny>) -> R<engine::LabelSet> {
 
 #[pymethods]
 impl LabelSet {
+    // The classes it is given are kept, in id order, as 1.x kept them.
     #[new]
     #[pyo3(signature = (id, classes=None, *, version="1.0.0", relations=None, skeletons=None, form="inline", uri=None, sha256=None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
+        py: Python<'_>,
         id: String,
         classes: Option<&Bound<'_, PyAny>>,
         version: &str,
@@ -450,61 +595,78 @@ impl LabelSet {
         uri: Option<String>,
         sha256: Option<String>,
     ) -> R<Self> {
-        Ok(LabelSet::wrap(engine::LabelSet::new(
+        let mut given = Vec::new();
+        if let Some(items) = classes {
+            for item in items.try_iter()? {
+                let item = item?;
+                let value = LabelClass::arg(&item)?;
+                let object = match item.cast::<LabelClass>() {
+                    Ok(class) => class.clone().unbind(),
+                    Err(_) => Py::new(py, LabelClass::wrap(value.clone()))?,
+                };
+                given.push((value, object));
+            }
+        }
+        // Stable, as the engine's own sort is: the objects stay beside theirs.
+        given.sort_by_key(|(value, _)| value.id);
+        let (values, objects): (Vec<_>, Vec<_>) = given.into_iter().unzip();
+        let made = LabelSet::wrap(engine::LabelSet::new(
             id,
-            label_classes(classes)?,
+            values,
             version.to_string(),
             self::relations(relations)?,
             self::skeletons(skeletons)?,
             form.to_string(),
             uri,
             sha256,
-        )?))
+        )?);
+        let _ = made.classes.set(PyTuple::new(py, objects)?.unbind());
+        Ok(made)
     }
     #[getter]
     fn id(&self) -> &str {
-        &self.0.id
+        &self.inner.id
     }
     #[getter]
     fn version(&self) -> &str {
-        &self.0.version
+        &self.inner.version
     }
     #[getter]
     fn form(&self) -> &str {
-        &self.0.form
+        &self.inner.form
     }
     #[getter]
     fn uri(&self) -> Option<&str> {
-        self.0.uri.as_deref()
+        self.inner.uri.as_deref()
     }
     #[getter]
     fn relations<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
-        PyTuple::new(py, self.0.relations.iter().map(|r| Relation(r.clone())))
+        PyTuple::new(py, self.inner.relations.iter().map(|r| Relation(r.clone())))
     }
     #[getter]
     fn skeletons<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
-        PyTuple::new(py, self.0.skeletons.iter().map(|s| Skeleton(s.clone())))
+        PyTuple::new(py, self.inner.skeletons.iter().map(|s| Skeleton(s.clone())))
     }
     fn check(&self) -> R<()> {
-        Ok(self.0.check()?)
+        Ok(self.inner.check()?)
     }
     fn __len__(&self) -> usize {
-        self.0.len()
+        self.inner.len()
     }
     fn __iter__<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
         Ok(slf.getattr("classes")?.try_iter()?.into_any())
     }
     fn __contains__(&self, item: &Bound<'_, PyAny>) -> bool {
         if let Ok(s) = item.cast::<PyString>() {
-            return self.0.by_key(&s.to_string()).is_some();
+            return self.inner.by_key(&s.to_string()).is_some();
         }
         match item.extract::<i64>() {
-            Ok(i) => self.0.contains_id(i),
+            Ok(i) => self.inner.contains_id(i),
             Err(_) => false,
         }
     }
     fn __repr__(&self) -> String {
-        self.0.repr()
+        self.inner.repr()
     }
     #[getter]
     fn classes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
@@ -512,44 +674,44 @@ impl LabelSet {
     }
     #[getter]
     fn ids<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
-        PyTuple::new(py, self.0.ids())
+        PyTuple::new(py, self.inner.ids())
     }
     #[getter]
     fn keys<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
-        PyTuple::new(py, self.0.keys())
+        PyTuple::new(py, self.inner.keys())
     }
     fn __getitem__<'py>(&self, py: Python<'py>, key: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
         let key = lookup_key(key)?;
-        Ok(self.class_object(py, self.0.lookup(&key)?)?)
+        Ok(self.class_object(py, self.inner.lookup(&key)?)?)
     }
     fn get<'py>(&self, py: Python<'py>, key: &Bound<'py, PyAny>) -> PyResult<Option<Bound<'py, PyAny>>> {
         let Ok(key) = lookup_key(key) else { return Ok(None) };
-        match self.0.get(&key) {
+        match self.inner.get(&key) {
             Some(c) => Ok(Some(self.class_object(py, c)?)),
             None => Ok(None),
         }
     }
     fn resolve<'py>(&self, py: Python<'py>, keys: &Bound<'py, PyAny>) -> R<Bound<'py, PyTuple>> {
         let keys = keys_arg(keys)?;
-        let found = self.0.resolve(&keys)?;
+        let found = self.inner.resolve(&keys)?;
         let objects = found.iter().map(|c| self.class_object(py, c)).collect::<PyResult<Vec<_>>>()?;
         Ok(PyTuple::new(py, objects)?)
     }
     fn ids_for<'py>(&self, py: Python<'py>, keys: &Bound<'py, PyAny>) -> R<Bound<'py, PyTuple>> {
         let keys = keys_arg(keys)?;
-        Ok(PyTuple::new(py, self.0.ids_for(&keys)?)?)
+        Ok(PyTuple::new(py, self.inner.ids_for(&keys)?)?)
     }
     fn missing<'py>(&self, py: Python<'py>, ids: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyTuple>> {
-        PyTuple::new(py, self.0.missing(crate::convert::class_ids(ids)?))
+        PyTuple::new(py, self.inner.missing(crate::convert::class_ids(ids)?))
     }
     fn ancestors<'py>(&self, py: Python<'py>, key: &Bound<'py, PyAny>) -> R<Bound<'py, PyTuple>> {
-        Ok(PyTuple::new(py, self.0.ancestors(&lookup_key(key)?)?)?)
+        Ok(PyTuple::new(py, self.inner.ancestors(&lookup_key(key)?)?)?)
     }
     fn descendants<'py>(&self, py: Python<'py>, key: &Bound<'py, PyAny>) -> R<Bound<'py, PyTuple>> {
-        Ok(PyTuple::new(py, self.0.descendants(&lookup_key(key)?)?)?)
+        Ok(PyTuple::new(py, self.inner.descendants(&lookup_key(key)?)?)?)
     }
     fn close<'py>(&self, py: Python<'py>, ids: &Bound<'py, PyAny>, closure: &str) -> R<Bound<'py, PyTuple>> {
-        Ok(PyTuple::new(py, self.0.close(&crate::convert::class_ids(ids)?, closure)?)?)
+        Ok(PyTuple::new(py, self.inner.close(&crate::convert::class_ids(ids)?, closure)?)?)
     }
     #[pyo3(signature = (key, predicate=None))]
     fn relations_of<'py>(
@@ -558,33 +720,34 @@ impl LabelSet {
         key: &Bound<'py, PyAny>,
         predicate: Option<&str>,
     ) -> R<Bound<'py, PyTuple>> {
-        let found = self.0.relations_of(&lookup_key(key)?, predicate)?;
+        let found = self.inner.relations_of(&lookup_key(key)?, predicate)?;
         Ok(PyTuple::new(py, found.into_iter().map(|r| Relation(r.clone())))?)
     }
     fn skeleton(&self, skeleton_id: &str) -> R<Skeleton> {
-        Ok(Skeleton(self.0.skeleton(skeleton_id)?.clone()))
+        Ok(Skeleton(self.inner.skeleton(skeleton_id)?.clone()))
     }
     fn colors<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let out = PyDict::new(py);
-        for (id, rgba) in self.0.colors() {
+        for (id, rgba) in self.inner.colors() {
             out.set_item(id, PyTuple::new(py, rgba)?)?;
         }
         Ok(out)
     }
-    fn content_doc<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        json_to_py(py, &self.0.content_doc())
+    fn content_doc<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyAny>> {
+        Ok(json_to_py(py, &self.current(py)?.content_doc())?)
     }
     #[pyo3(signature = (algo="sha256"))]
-    fn digest(&self, algo: &str) -> R<String> {
-        Ok(self.0.digest(algo)?)
+    fn digest(&self, py: Python<'_>, algo: &str) -> R<String> {
+        Ok(self.current(py)?.digest(algo)?)
     }
     #[getter]
-    fn sha256(&self) -> String {
-        self.0.sha256()
+    fn sha256(&self, py: Python<'_>) -> R<String> {
+        Ok(self.current(py)?.sha256())
     }
+    /// The vocabulary as it stands, as JSON.
     #[pyo3(signature = (*, form=None))]
-    fn to_json<'py>(&self, py: Python<'py>, form: Option<&str>) -> PyResult<Bound<'py, PyAny>> {
-        json_to_py(py, &self.0.to_json(form))
+    fn to_json<'py>(&self, py: Python<'py>, form: Option<&str>) -> R<Bound<'py, PyAny>> {
+        Ok(json_to_py(py, &self.current(py)?.to_json(form))?)
     }
     #[classmethod]
     fn from_json(_cls: &Bound<'_, pyo3::types::PyType>, doc: &Bound<'_, PyAny>) -> R<Option<Self>> {
@@ -593,15 +756,19 @@ impl LabelSet {
         }
         Ok(engine::LabelSet::from_json(Some(&py_to_json(doc)?))?.map(LabelSet::wrap))
     }
-    fn as_ref(&self, uri: &str) -> R<LabelSet> {
-        Ok(LabelSet::wrap(self.0.as_ref(uri)?))
+    fn as_ref(&self, py: Python<'_>, uri: &str) -> R<LabelSet> {
+        Ok(LabelSet::wrap(self.current(py)?.as_ref(uri)?))
     }
     #[pyo3(signature = (keys, *, id=None))]
-    fn subset(&self, keys: &Bound<'_, PyAny>, id: Option<&str>) -> R<LabelSet> {
-        Ok(LabelSet::wrap(self.0.subset(&keys_arg(keys)?, id)?))
+    fn subset(&self, py: Python<'_>, keys: &Bound<'_, PyAny>, id: Option<&str>) -> R<LabelSet> {
+        Ok(LabelSet::wrap(self.current(py)?.subset(&keys_arg(keys)?, id)?))
     }
     fn __reduce__<'py>(slf: &Bound<'py, Self>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyTuple>)> {
         reduce_via_json(slf.as_any())
+    }
+    fn __traverse__(&self, visit: PyVisit<'_>) -> Result<(), PyTraverseError> {
+        visit.call(self.classes.get())?;
+        visit.call(&self.document)
     }
 }
 

@@ -330,6 +330,15 @@ mapping. `LabelSet.digest()` is canonical, so two files either agree on the
 vocabulary or they demonstrably do not — which is how `medh5 dataset check`
 catches a cohort where class 3 means two different things.
 
+A class's `properties` is its own dict: an edit is kept, and counts in the
+set's digest. The set `w.label_set(...)` returns is the document's, as is
+`w.document.label_set`, so an edit through either reaches the file:
+
+```python
+w.document.label_set["liver"].properties["window"] = [-150, 250]
+assert w.document.label_set["liver"].properties["window"] == [-150, 250]
+```
+
 Bundled vocabularies:
 
 ```

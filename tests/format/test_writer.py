@@ -1214,9 +1214,50 @@ class TestDocumentEdits:
             assert w.document.identity.sex == "F"
             assert w.document.identity.extra == {"consent": "research-only"}
 
+    def test_S5_2_an_edit_to_a_class_property_reaches_the_file(self, tmp_path: Path):
+        """The label set the writer returns, and the one its document hands
+        out, is the document's: 1.x stored and returned the set it was given."""
+        path = tmp_path / "labels.medh5"
+        with Flat.open_writer(path) as w:
+            given = Flat.label_set()
+            given["liver"].properties["paired"] = False
+            returned = w.label_set(given)
+            assert returned is not given
+            returned["liver"].properties["window"] = [-150, 250]
+            lesion = w.document.label_set["lesion"]
+            lesion.properties["is_lesion"] = True
+            lesion.properties["grading"] = {"scale": "LI-RADS"}
+            lesion.properties["grading"]["levels"] = 5
+        with medh5.open(path) as sample:
+            labels = sample.label_set
+            assert labels["liver"].properties == {
+                "paired": False,
+                "window": [-150, 250],
+            }
+            assert labels["lesion"].properties == {
+                "is_lesion": True,
+                "grading": {"scale": "LI-RADS", "levels": 5},
+            }
+            assert labels.sha256 == sample.document.to_json()["label_set"]["sha256"]
+
+    def test_S2_4_an_edit_to_a_class_changed_since_is_refused(self, tmp_path: Path):
+        """Writing the stale class back would undo the other change."""
+        with Flat.open_writer(tmp_path / "stale-class.medh5") as w:
+            held = w.document.label_set["liver"]
+            w.document.label_set["liver"].properties["window"] = [-150, 250]
+            with pytest.raises(
+                RuntimeError, match=r"`document.label_set\['liver'\]` has changed"
+            ):
+                held.properties["paired"] = False
+            w.document.label_set["liver"].properties["paired"] = False  # read again
+            assert w.document.label_set["liver"].properties == {
+                "window": [-150, 250],
+                "paired": False,
+            }
+
     def test_S2_4_a_record_read_and_dropped_is_collected(self, tmp_path: Path):
-        """A record and the dicts that write through it refer to each other;
-        the cycle is the collector's to free."""
+        """A record, or a label class, and the dicts that write through it
+        refer to each other; the cycle is the collector's to free."""
         import gc
 
         from medh5._live import _Anchor
@@ -1230,4 +1271,5 @@ class TestDocumentEdits:
             for n in range(50):
                 w.document.identity.extra["n"] = n
                 w.document.timepoints["tp0"].series_uids["CT"] = str(n)
+                w.document.label_set["liver"].properties["n"] = n
             assert anchors() == before

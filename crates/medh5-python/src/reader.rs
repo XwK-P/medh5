@@ -389,11 +389,11 @@ impl AnnotationHandle {
     }
     #[getter]
     fn classes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
-        PyTuple::new(py, self.inner.classes().into_iter().map(crate::labels::LabelClass))
+        PyTuple::new(py, self.inner.classes().into_iter().map(crate::labels::LabelClass::wrap))
     }
     #[getter]
     fn annotated_classes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
-        PyTuple::new(py, self.inner.annotated_classes().into_iter().map(crate::labels::LabelClass))
+        PyTuple::new(py, self.inner.annotated_classes().into_iter().map(crate::labels::LabelClass::wrap))
     }
     fn class_key(&self, class_id: i64) -> String {
         self.inner.class_key(class_id)

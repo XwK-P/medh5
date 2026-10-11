@@ -7,9 +7,10 @@ is a ``dict`` that writes every edit through to it: a member set, replaced or
 deleted, and a value nested in a member changed in place.
 
 The records a document hands out are members too.  ``w.document.identity``,
-``w.activity(...)``, a timepoint, a quality record: each record keeps its dicts
-(``extra``, ``params``, ``series_uids``, an agreement's ``per_class``), and an
-edit to one rewrites the record as a whole in the document.
+``w.activity(...)``, a timepoint, a quality record, a label set's class: each
+keeps its dicts (``extra``, ``params``, ``series_uids``, an agreement's
+``per_class``, a class's ``properties``), and an edit to one rewrites the
+record as a whole in the document.
 
 What a view holds is what the document held when it was read, and again after
 every edit made through it.  A value set is converted as ``SampleWriter.extra``

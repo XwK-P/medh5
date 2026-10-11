@@ -2512,6 +2512,15 @@ class Issue:
 @final
 @dataclass(frozen=True)
 class LabelClass:
+    """One semantic class (§5.2).
+
+    `properties` is the class's own dict, as 1.x's dataclass field was: made
+    on its first read, the same object on every read after, and read back
+    whenever the class is used --- `to_json`, `==`, `is_lesion`, a label set
+    or a writer given it.  A class a document's label set hands out writes an
+    edit to it through to the document.
+    """
+
     id: int
     key: str
     name: str
@@ -2520,15 +2529,28 @@ class LabelClass:
     color: tuple[int, int, int, int] | None = ...
     codes: tuple[OntologyCode, ...] = ...
     laterality: str | None = ...
-    properties: Mapping[str, Any] = ...
+    properties: dict[str, Any] = ...
     @classmethod
     def from_json(cls, doc: Mapping[str, Any]) -> LabelClass: ...
     @property
-    def is_lesion(self) -> bool: ...
-    def to_json(self) -> dict[str, Any]: ...
+    def is_lesion(self) -> bool:
+        """Whether the class marks a lesion: `properties["is_lesion"]`, else its
+        category.
+        """
+        ...
+    def to_json(self) -> dict[str, Any]:
+        """The class as it stands, as JSON."""
+        ...
 
 @final
 class LabelSet:
+    """A controlled vocabulary (§5.1).
+
+    The classes are the set's own objects, as 1.x kept them --- those it was
+    given, and from the first read those it hands out (`ls[2] is
+    ls["liver"]`) --- so an edit to one's `properties` is the set's, digest
+    included, and for a document's label set, the document's.
+    """
     def __new__(
         cls,
         id: str,
@@ -2588,7 +2610,9 @@ class LabelSet:
     def subset(
         self, keys: Iterable[int | str], *, id: str | None = None
     ) -> LabelSet: ...
-    def to_json(self, *, form: str | None = None) -> dict[str, Any]: ...
+    def to_json(self, *, form: str | None = None) -> dict[str, Any]:
+        """The vocabulary as it stands, as JSON."""
+        ...
     @property
     def uri(self) -> str | None: ...
     @property
@@ -2739,6 +2763,7 @@ class Provenance:
         agents: Sequence[Agent] | None = None,
         activities: Sequence[Activity] | None = None,
     ) -> Self: ...
+    def __bool__(self) -> bool: ...
     def __eq__(self, other: object, /) -> bool: ...
     __hash__: ClassVar[None]  # type: ignore[assignment]
     def __iter__(self) -> Iterator[Activity]:
@@ -3339,7 +3364,11 @@ class SampleWriter:
     def infer_profiles(self) -> frozenset[str]:
         """Profiles this sample actually satisfies, unioned with declared ones."""
         ...
-    def label_set(self, label_set: LabelSet) -> LabelSet: ...
+    def label_set(self, label_set: LabelSet) -> LabelSet:
+        """Set the label set, as it stands; the document's is returned, so an
+        edit to a class's `properties` through it reaches the file.
+        """
+        ...
     def organization(self, name: str, **fields: Any) -> Agent: ...
     @property
     def path(self) -> str:

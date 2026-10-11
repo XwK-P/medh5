@@ -334,6 +334,12 @@ impl Provenance {
     fn __iter__<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
         Ok(slf.getattr("activities")?.try_iter()?.into_any())
     }
+    /// Whether the graph holds anything --- an agent or an activity --- as
+    /// 1.x's did: `len` counts activities only, and a graph that has
+    /// declared its agents and no activity yet is not empty.
+    fn __bool__(&self) -> bool {
+        !self.inner.is_empty()
+    }
     fn __len__(&self) -> usize {
         self.inner.n_activities()
     }

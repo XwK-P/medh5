@@ -213,7 +213,7 @@ pub fn read_field<'py>(
 
 /// `plain` (a JSON value), or with an anchor, its objects and arrays as
 /// containers that write an edit back through it.
-fn containers<'py>(plain: Bound<'py, PyAny>, anchor: Option<&Bound<'py, PyAny>>) -> PyResult<Bound<'py, PyAny>> {
+pub fn containers<'py>(plain: Bound<'py, PyAny>, anchor: Option<&Bound<'py, PyAny>>) -> PyResult<Bound<'py, PyAny>> {
     static NESTED: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
     match anchor {
         Some(anchor) => NESTED.import(plain.py(), "medh5._live", "_nested")?.call1((plain, anchor)),

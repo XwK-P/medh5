@@ -13,7 +13,7 @@ use crate::curation::{
     timeline_arg, Activity, Cohort, Deidentification, Identity, QualityRecord, SplitClaim, Timeline, Timepoint,
 };
 use crate::errors::R;
-use crate::labels::{label_set_arg, LabelSet};
+use crate::labels::{label_set_arg, with_classes, LabelClass, LabelSet};
 
 /// Where a document object's fields live.
 enum Source {
@@ -255,9 +255,12 @@ impl SampleDocument {
         let value = Cohort::arg(value)?;
         self.edit(py, |d| d.cohort = value)
     }
+    /// The label set; an edit to a class's `properties` reaches the
+    /// document.
     #[getter]
-    fn label_set(&self, py: Python<'_>) -> PyResult<Option<LabelSet>> {
-        self.read(py, |d| d.label_set.clone().map(LabelSet::wrap))
+    fn label_set(slf: &Bound<'_, Self>) -> PyResult<Option<LabelSet>> {
+        let found = slf.borrow().read(slf.py(), |d| d.label_set.clone())?;
+        Ok(found.map(|set| LabelSet::read_from(set, slf.as_any())))
     }
     #[setter]
     fn set_label_set(&mut self, py: Python<'_>, value: &Bound<'_, PyAny>) -> R<()> {
@@ -434,7 +437,8 @@ impl SampleDocument {
     /// Replace one member with `value`, if it is still the one read as
     /// `token`; the new token.  A member is a key of `acquisition` or
     /// `extra`, or a record: `identity`, `cohort` or `deidentification`, a
-    /// quality record by key, a timepoint or an activity by id.
+    /// quality record by key, a timepoint or an activity by id, a label
+    /// set's class by key.
     #[pyo3(signature = (field, key, token, value))]
     fn _replace_member(
         &mut self,
@@ -492,6 +496,24 @@ impl SampleDocument {
                         }
                         _ => Ok(false),
                     }
+                })??
+                .then(|| dump(json))
+            }
+            ("label_set", Some(class_key)) => {
+                let (new, json) = LabelClass::current_of(value)?;
+                self.edit(py, |d| -> medh5::Result<bool> {
+                    let Some(set) = &d.label_set else { return Ok(false) };
+                    match set.by_key(class_key) {
+                        Some(found) if found.id == new.id && medh5::json::canonical(&found.to_json()) == token => {}
+                        _ => return Ok(false),
+                    }
+                    let classes = set
+                        .classes()
+                        .iter()
+                        .map(|c| if c.key == class_key { new.clone() } else { c.clone() })
+                        .collect();
+                    d.label_set = Some(with_classes(set, classes)?);
+                    Ok(true)
                 })??
                 .then(|| dump(json))
             }

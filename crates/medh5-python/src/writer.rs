@@ -500,10 +500,12 @@ impl SampleWriter {
         Ok(Timepoint::read_from(made, &Self::document_view(slf)?, "timepoints", Some(timepoint_id)))
     }
 
-    fn label_set<'py>(&mut self, label_set: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
+    /// Set the label set, as it stands; the document's is returned, so an
+    /// edit to a class's `properties` through it reaches the file.
+    fn label_set(slf: &Bound<'_, Self>, label_set: &Bound<'_, PyAny>) -> R<crate::labels::LabelSet> {
         let ls = crate::labels::label_set_arg(label_set)?;
-        self.writer()?.label_set(ls);
-        Ok(label_set.clone())
+        let stored = slf.try_borrow_mut()?.writer()?.label_set(ls);
+        Ok(crate::labels::LabelSet::read_from(stored, &Self::document_view(slf)?))
     }
 
     #[pyo3(signature = (name, agent_id=None, **fields))]

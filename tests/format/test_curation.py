@@ -67,6 +67,16 @@ class TestProvenance:
         assert [a.id for a in graph] == ["a1", "a2"]
         assert "2 activities" in repr(graph)
 
+    def test_S11_1_a_graph_with_only_agents_is_not_empty(self):
+        """1.x's graph was true when it held an agent or an activity: ``len``
+        counts activities, and agents declared before any activity are not
+        nothing."""
+        assert not Provenance()
+        agents_only = Provenance([Agent("r1", "person", "pseudonym:RAD-07")])
+        assert agents_only
+        assert len(agents_only) == 0
+        assert Provenance(activities=[Activity("a1", "import")])
+
     def test_dangling_agents_are_reported_not_raised(self):
         graph = Provenance(activities=[Activity("a1", "import", agent="ghost")])
         assert graph.dangling_agent_refs() == (("a1", "ghost"),)

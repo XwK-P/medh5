@@ -70,6 +70,71 @@ class TestLabelClass:
         assert LabelClass.from_json(entry.to_json()) == entry
 
 
+class TestClassProperties:
+    """§5.2: a class's ``properties`` is the class's own dict, as 1.x's
+    dataclass field was --- an edit in place is kept, and is what the class,
+    and a label set holding it, are from then on."""
+
+    def test_S5_2_an_edit_to_properties_is_kept(self):
+        import copy
+        import pickle
+
+        liver = LabelClass(2, "liver", "Liver", properties={"paired": False})
+        held = liver.properties
+        assert type(held) is dict
+        assert liver.properties is held
+        held["bodypart"] = "abdomen"
+        edited = {"paired": False, "bodypart": "abdomen"}
+        assert liver.properties == edited
+        assert liver.to_json()["properties"] == edited
+        assert liver == LabelClass.from_json(liver.to_json())
+        assert liver != LabelClass(2, "liver", "Liver", properties={"paired": False})
+        for copied in (
+            pickle.loads(pickle.dumps(liver)),
+            copy.copy(liver),
+            copy.deepcopy(liver),
+        ):
+            assert copied.properties == edited
+        assert f"properties={edited!r}" in repr(liver)
+
+    def test_S5_2_is_lesion_reads_the_properties_as_they_stand(self):
+        mass = LabelClass(7, "mass", "Mass", category="organ")
+        assert not mass.is_lesion
+        mass.properties["is_lesion"] = True
+        assert mass.is_lesion
+
+    def test_S5_2_a_hash_outlives_an_edit(self):
+        """A dict changes in place, a hash must not: a class hashes by the
+        fields an edit cannot reach, so equal classes still hash alike."""
+        liver = LabelClass(2, "liver", "Liver")
+        before = hash(liver)
+        liver.properties["paired"] = False
+        assert hash(liver) == before
+        same = LabelClass(2, "liver", "Liver", properties={"paired": False})
+        assert liver == same
+        assert hash(liver) == hash(same)
+
+    def test_S5_2_a_property_json_cannot_hold_is_refused_where_it_is_used(self):
+        liver = LabelClass(2, "liver", "Liver")
+        liver.properties["callback"] = object()
+        with pytest.raises(TypeError, match="not JSON serializable"):
+            liver.to_json()
+        with pytest.raises(TypeError, match="not JSON serializable"):
+            LabelSet("anat", classes=[liver])
+
+    def test_S5_1_a_label_set_keeps_its_classes_and_digests_them_as_they_stand(self):
+        liver = LabelClass(2, "liver", "Liver")
+        anat = LabelSet("anat", classes=[liver, LabelClass(1, "organ", "Organ")])
+        assert anat["liver"] is liver
+        assert anat[2] is liver
+        before = anat.digest()
+        liver.properties["paired"] = False
+        assert anat.to_json()["classes"][1]["properties"] == {"paired": False}
+        assert anat.digest() != before
+        assert anat.digest() == LabelSet.from_json(anat.to_json()).digest()
+        assert anat.subset(["liver"])["liver"].properties == {"paired": False}
+
+
 class TestLabelSet:
     def test_S5_2_hierarchy_is_a_dag_not_a_tree(self):
         """§5.2: a class may have several parents; ancestors close transitively."""
