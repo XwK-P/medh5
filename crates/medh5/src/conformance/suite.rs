@@ -317,9 +317,10 @@ something to diagnose.
 **A `.medh5c` case is a collection** (spec §2.1) --- it contains samples rather
 than being one. `"file_suffix"` in the manifest tells you which.
 
-**Verify the bytes first.** `{CHECKSUMS}` covers every published file; `medh5
-conformance score` warns when a case has drifted, because a score over files
-that are not the published files is not a score.
+**Verify the bytes first.** `{CHECKSUMS}` covers every published file, and
+`medh5 conformance score` fails the score when one has drifted, whatever the
+cases say, naming it (under `changed` with `--json`). A score over files that
+are not the published files is not a score.
 
 The specification is `docs/spec/medh5-1.0.md` with `docs/spec/medh5-1.1.md`
 in the medh5 repository, and every case names the clause it tests in

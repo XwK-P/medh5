@@ -462,6 +462,13 @@ class TestPublication:
         readme = (publish(tmp_path / "suite") / "README.md").read_text("utf-8")
         assert f"{len(CASES) - shards} samples and {shards} collections" in readme
 
+    def test_the_published_readme_says_a_drifted_suite_fails_the_score(self, suite):
+        """It said `medh5 conformance score` warns when a case has drifted;
+        the score fails, whatever the cases say."""
+        readme = " ".join((suite / "README.md").read_text("utf-8").split())
+        assert "warns when" not in readme
+        assert "fails the score when one has drifted" in readme
+
     def test_the_example_submissions_name_cases_the_suite_holds(self, suite):
         """The README and the conformance page named `E102-not-orthonormal`,
         a file no suite has held: the case is `E102-non-orthonormal`."""

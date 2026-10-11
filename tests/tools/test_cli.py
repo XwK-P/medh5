@@ -786,7 +786,7 @@ class TestConformanceCommands:
         assert code == EXIT_ERROR
         assert "unexpected" in out.out and "E101" in out.out
 
-    def test_score_warns_when_the_files_have_drifted(self, capsys, tmp_path):
+    def test_score_fails_when_the_files_have_drifted(self, capsys, tmp_path):
         run(capsys, "conformance", "publish", str(tmp_path), "--case", "core-minimal")
         case = tmp_path / "core-minimal.medh5"
         case.write_bytes(case.read_bytes() + b"\x00")
