@@ -337,6 +337,35 @@ class TestInfo:
         assert main(["timeline", str(shard)]) == 1
         assert "--key" in capsys.readouterr().err
 
+    def test_S2_2_a_later_minors_file_lists_its_projection(self, tmp_path, capsys):
+        """One grid of an axis kind only a later minor defines failed `info`
+        whole.  It lists what the projection reads, names what it leaves
+        out, and `--json` says why; a file of 1.1 fails as it did."""
+        path = tmp_path / "later.medh5"
+        with Organs.writer(path) as w:
+            w.add_grid(
+                "h", shape=Organs.SHAPE, spacing=(1.0, 1.0, 1.0), timepoint="tp0"
+            )
+            w.add_image("MR", np.zeros(Organs.SHAPE, np.int16), grid="h", modality="MR")
+            w.add_segmentation("seg", grid="g", masks=Organs.blocks())
+        with h5py.File(path, "r+") as handle:
+            kinds = ["depth", "spatial", "spatial"]
+            handle["grids/g"].attrs["axis_kinds"] = encode_attr(kinds)
+            handle.attrs["medh5_version"] = encode_attr("1.2")
+        code, out = run(capsys, "info", str(path))
+        assert code == EXIT_OK
+        assert "MR" in out.out
+        assert "left out     grids/g, images/CT, annotations/seg (W913" in out.out
+        code, out = run(capsys, "info", str(path), "--json")
+        payload = json.loads(out.out)
+        assert [grid["id"] for grid in payload["grids"]] == ["h"]
+        assert "axis kind 'depth'" in payload["left_out"]["grids/g"]
+        with h5py.File(path, "r+") as handle:
+            handle.attrs["medh5_version"] = encode_attr("1.1")
+        code, out = run(capsys, "info", str(path))
+        assert code == EXIT_ERROR
+        assert "E110" in out.err
+
 
 class TestValidate:
     def test_a_clean_file_exits_zero(self, capsys, sample_path):

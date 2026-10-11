@@ -181,6 +181,11 @@ fn sample_info(path: &str, sample: &Sample, as_json: bool, ctx: &mut Ctx) -> Cmd
             cell(&label["form"])
         ));
     }
+    // A later minor's objects this engine cannot read (1.1 §2.2).
+    if let Value::Object(left_out) = s("left_out") {
+        let paths: Vec<&str> = left_out.keys().map(String::as_str).collect();
+        ctx.print(format!("\nleft out     {} (W913: a later minor's; --json says why)", paths.join(", ")));
+    }
     Ok(EXIT_OK)
 }
 
