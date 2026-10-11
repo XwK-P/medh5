@@ -81,8 +81,9 @@ binary, to keep the specification's Appendix C.2 honest.
 - Name a test after the clause it holds: `test_S8_1_boxes_shift_by_half_a_voxel`,
   `s14_4_the_source_is_closed_before_the_replace`.
 - Put a test with what it tests, not with the release that fixed it: the module
-  for that part of the spec, tool or integration. A regression test cites its
-  finding in its name; the changelog says which release fixed it.
+  for that part of the spec, tool or integration. A regression test is named,
+  like any other, for the clause it holds; the changelog says which release
+  fixed it.
 - Build fixtures with the **public writer**, so every reader test is also a
   writer test: shared builders are in `tests/helpers.py`, fixtures in
   `tests/conftest.py`, and the small samples the regression tests use in

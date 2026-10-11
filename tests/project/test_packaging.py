@@ -192,7 +192,7 @@ def test_release_the_homebrew_formula_names_the_binaries_ci_builds() -> None:
     }
 
 
-def test_R03_the_2_0_0_notes_describe_the_format_it_writes() -> None:
+def test_the_2_0_0_notes_describe_the_format_it_writes() -> None:
     """The release publishes its CHANGELOG section, and only that section.
 
     2.0.0's said "The file format is unchanged: 1.0" while the engine writes
@@ -246,7 +246,7 @@ class TestPublicNames:
             require("no_such_module_medh5", extra="dicomseg", purpose="testing")
         assert require("json", extra="x", purpose="y").dumps({}) == "{}"
 
-    def test_Q11_the_dead_names_are_gone(self):
+    def test_the_dead_names_are_gone(self):
         import medh5.geometry as grid
         import medh5.transforms as apply
 
@@ -262,7 +262,7 @@ class TestRepositoryGates:
         text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
         assert '"RUF100"' in text
 
-    def test_K03_actions_are_pinned_by_commit(self):
+    def test_actions_are_pinned_by_commit(self):
         uses = []
         for name in ("ci.yml", "release.yml"):
             text = (ROOT / ".github/workflows" / name).read_text(encoding="utf-8")
@@ -306,7 +306,7 @@ class TestRepositoryGates:
         assert tested == {"aarch64-unknown-linux-gnu", "x86_64-apple-darwin"}
         assert "-rs" in jobs["test-monai"]
 
-    def test_K03_the_release_runs_ci_on_the_tagged_commit(self):
+    def test_the_release_runs_ci_on_the_tagged_commit(self):
         ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         release = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
         assert "workflow_call:" in ci and "concurrency:" in ci
@@ -318,10 +318,9 @@ class TestRepositoryGates:
 
 
 class TestDistribution:
-    """What the release ships, and how it ships it (R01--R08, W02 of the 2.0
-    audit)."""
+    """What the release ships, and how it ships it."""
 
-    def test_R01_the_required_check_needs_every_job(self):
+    def test_the_required_check_needs_every_job(self):
         """The ruleset required `build` and `test-macos (3.12)`, names no job
         reports --- a matrix reports `build (<target>)` --- so no pull request
         could merge, and a job added later would not have been required.  One
@@ -333,7 +332,7 @@ class TestDistribution:
         assert sorted(needs) == sorted(jobs)
         assert "if: always()" in gate and 'result != "success"' in gate
 
-    def test_R02_the_notices_name_what_is_compiled_in(self):
+    def test_the_notices_name_what_is_compiled_in(self):
         """Every crate the notices list is Cargo.lock's, at its version, and
         the C libraries are there; CI regenerates the file and fails on a
         difference (`--check`), which needs the crate sources this cannot."""
@@ -351,7 +350,7 @@ class TestDistribution:
         )
         assert "--check" in _jobs(CI.read_text(encoding="utf-8"))["rust"]
 
-    def test_R02_every_artifact_carries_the_licences(self):
+    def test_every_artifact_carries_the_licences(self):
         """The wheel (as `license-files`), the sdist (with them), each binary
         archive, and each crate --- whose MIT licence must travel with it."""
         assert (
@@ -370,14 +369,14 @@ class TestDistribution:
         )
         assert '"LICENSE",' in sys_manifest.split("include = [", 1)[1].split("]")[0]
 
-    def test_R02_the_installed_package_carries_the_notices(self):
+    def test_the_installed_package_carries_the_notices(self):
         names = {str(f) for f in distribution("medh5").files or []}
         for notice in ("LICENSE", "THIRD_PARTY_NOTICES"):
             assert any(n.endswith(f".dist-info/licenses/{notice}") for n in names), (
                 notice
             )
 
-    def test_R02_the_generator_covers_every_crate_or_refuses(self, tmp_path):
+    def test_the_generator_covers_every_crate_or_refuses(self, tmp_path):
         notices = _release_script("third_party_notices.py")
 
         def package(name: str, licence: str, files: dict[str, str]) -> dict:
@@ -433,7 +432,7 @@ class TestDistribution:
         assert notices.offers_mit("Apache-2.0 OR MIT")
         assert not notices.offers_mit("(MIT OR Apache-2.0) AND Unicode-3.0")
 
-    def test_R04_the_maturin_floor_writes_pep_639_metadata(self):
+    def test_the_maturin_floor_writes_pep_639_metadata(self):
         """1.9.0 wrote the legacy `License` field and 1.8 could not read the
         table; the floor is 1.9.3, and CI builds the sdist with exactly it."""
         text = PYPROJECT.read_text(encoding="utf-8")
@@ -493,7 +492,7 @@ class TestDistribution:
             assert re.findall(r'"pydicom([^"]*)"', extras[extra]) == [">=3.0"]
         assert re.findall(r'"highdicom([^"]*)"', extras["dicomseg"]) == [">=0.23"]
 
-    def test_R05_a_published_crate_is_skipped_only_when_identical(self):
+    def test_a_published_crate_is_skipped_only_when_identical(self):
         """A re-run after a partial release skips a crate already on crates.io
         only if its contents are the tagged commit's; cargo's generated files,
         whose spelling follows the cargo version, are not compared."""
@@ -519,7 +518,7 @@ class TestDistribution:
             "build.rs: only in the published one"
         ]
 
-    def test_R05_dists_and_assets_are_compared_by_digest(self):
+    def test_dists_and_assets_are_compared_by_digest(self):
         release = _release_script("release.py")
         local = {"medh5-2.0.0.tar.gz": "a", "medh5-2.0.0-cp310-abi3-x.whl": "b"}
         assert release.dist_version(list(local)) == "2.0.0"
@@ -621,7 +620,7 @@ class TestDistribution:
         assert not release.in_index("medh5-sys", "2.0.1")
         assert not release.in_index("medh5", "2.0.0")
 
-    def test_R05_R06_every_publishing_step_can_run_again(self):
+    def test_every_publishing_step_can_run_again(self):
         """`cargo publish --workspace` refused a re-run once one crate was up,
         `gh release create` once the release existed, and an unchanged formula
         failed `git commit`; a missing token in this repository only warned."""
@@ -646,7 +645,7 @@ class TestDistribution:
         contributing = (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
         assert "### If a release fails partway" in contributing
 
-    def test_R07_the_sdist_carries_what_its_project_tests_read(self):
+    def test_the_sdist_carries_what_its_project_tests_read(self):
         """Four of the shipped project tests read files the sdist left out, so
         they failed from the archive; CI now runs them from it."""
         include = re.findall(
@@ -673,7 +672,7 @@ class TestDistribution:
         sdist = _jobs(CI.read_text(encoding="utf-8"))["sdist"]
         assert "rm -rf medh5" in sdist and "pytest tests/project" in sdist
 
-    def test_W02_a_damaged_file_is_reported_by_every_binary(self, tmp_path):
+    def test_a_damaged_file_is_reported_by_every_binary(self, tmp_path):
         """An HDF5 compiled without NDEBUG aborts on a damaged file; CI damages
         files for every platform's binary, and for a build from a copy of the
         workspace without `.cargo/config.toml` --- a crates.io build --- which
