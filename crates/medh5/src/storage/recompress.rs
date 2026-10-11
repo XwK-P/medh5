@@ -19,7 +19,7 @@ use crate::h5::attrs;
 use crate::h5::data::{self, Kind};
 use crate::h5::file::{atomic_rewrite, open_read};
 use crate::h5::graph::{copy_stored, CopyHooks, GraphCopy};
-use crate::h5::ops;
+use crate::h5::{ops, relative_name};
 use crate::integrity::verify_root;
 use crate::json::repr_str;
 use crate::sample::reader::{attr_name_map_of, require_major};
@@ -124,7 +124,7 @@ pub fn recompress(path: &Path, profile: &str, out: Option<&Path>, rechunk: bool)
         let src_root = src.as_group()?;
         ops::refuse_references(&src_root, "recompression")?;
         let dst_root = dst.as_group()?;
-        let mut hooks = Recode { codec: &codec, rechunk, result: &mut result, layouts: Vec::new() };
+        let mut hooks = Recode { codec: &codec, rechunk, result: &mut result, layouts: Vec::new(), roots: Vec::new() };
         GraphCopy::new(&src_root, &dst_root).members(&src_root, &dst_root, &[], &mut hooks)?;
         for key in attrs::names(&src_root)? {
             attrs::copy_raw(&src_root, &dst_root, &key)?;
@@ -295,35 +295,43 @@ struct Recode<'a> {
     /// One entry per group entered: the layout of the sample root it is,
     /// when it is one.
     layouts: Vec<Option<Layout>>,
+    /// One entry per group entered: its name, when it is a sample root.
+    roots: Vec<Option<String>>,
 }
 
 impl CopyHooks for Recode<'_> {
     fn enter(&mut self, src: &hdf5::Group) -> Result<()> {
-        let own = self.rechunk && ops::child_group(src, "grids").is_some();
-        self.layouts.push(own.then(|| Layout::new(src)));
+        let root = ops::child_group(src, "grids").is_some();
+        self.roots.push(root.then(|| src.name()));
+        self.layouts.push((self.rechunk && root).then(|| Layout::new(src)));
         Ok(())
     }
 
     fn leave(&mut self, _src: &hdf5::Group) {
         self.layouts.pop();
+        self.roots.pop();
     }
 
     fn dataset(&mut self, src: &hdf5::Group, name: &str, dst: &hdf5::Group) -> Result<()> {
-        // The innermost sample root's layout, as the walk nests them.
+        // The innermost sample root, and its layout, as the walk nests them.
+        let root = self.roots.iter().rev().find_map(Option::as_deref).unwrap_or("/");
         let layout = self.layouts.iter_mut().rev().find_map(Option::as_mut);
-        copy_dataset(src, name, dst, self.codec, self.rechunk, self.result, layout)
+        copy_dataset(src, name, dst, self.codec, self.rechunk, self.result, layout, root)
     }
 }
 
-fn role(ds: &hdf5::Dataset) -> Role {
-    let path = ds.name();
-    if path.contains("/annotations/") || path.contains("/transforms/") || path.contains("/index/") {
-        Role::Label
-    } else {
-        Role::Image
+/// The codec a dataset takes, by the section of its sample root it lies in
+/// (`relative` is its path from that root): what `annotations/`,
+/// `transforms/` and `index/` hold is coded as labels, the rest as images.
+/// A collection member named `annotations` holds images like any other.
+fn role(relative: &str) -> Role {
+    match relative.split('/').next() {
+        Some("annotations" | "transforms" | "index") => Role::Label,
+        _ => Role::Image,
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn copy_dataset(
     parent: &hdf5::Group,
     name: &str,
@@ -332,6 +340,7 @@ fn copy_dataset(
     rechunk: bool,
     result: &mut RecompressResult,
     layout: Option<&mut Layout>,
+    root: &str,
 ) -> Result<()> {
     let ds = parent.dataset(name)?;
     let dtype = match data::kind(&ds)? {
@@ -356,7 +365,7 @@ fn copy_dataset(
         data::chunks(&ds)
     };
     let shape = ds.shape();
-    let new_layout = dataset_layout(&shape, dtype.itemsize(), codec, role(&ds), chunks);
+    let new_layout = dataset_layout(&shape, dtype.itemsize(), codec, role(&relative_name(&ds.name(), root)), chunks);
     if new_layout.chunks.is_none() {
         // Below the compression threshold: copied through as stored, exactly
         // what a fresh write would leave contiguous.

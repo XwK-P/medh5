@@ -499,6 +499,29 @@ class TestRecompress:
         with medh5.open(path) as s:
             assert s.verify().ok and s.content_id == before
 
+    def test_S14_2_a_member_named_annotations_keeps_the_image_codec(
+        self, tmp_path: Path
+    ):
+        """The codec was chosen by searching the absolute path for
+        ``/annotations/``, so every image of a collection member keyed
+        ``annotations`` was re-encoded as a label."""
+        import shutil
+
+        from medh5.collection import pack
+        from medh5.storage import recompress
+
+        shape = (32, 48, 48)
+        image = np.random.default_rng(3).integers(-1000, 1000, shape).astype(np.int16)
+        source = tmp_path / "m.medh5"
+        with medh5.create(source, sample_id="m", codec="portable") as w:
+            w.add_grid("g", shape=shape, spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", image, grid="g", modality="CT")
+        alone = shutil.copy(source, tmp_path / "alone.medh5")
+        shard = pack([source], tmp_path / "s.medh5c", keys=["annotations"])
+        standalone = {p: c for p, _, c in recompress(alone, "balanced").changed}
+        member = {p: c for p, _, c in recompress(shard, "balanced").changed}
+        assert member["/samples/annotations/images/CT"] == standalone["/images/CT"]
+
     def test_S13_1_recompression_preserves_the_content_id(self, tmp_path, label_set):
         from medh5.storage import recompress
 
