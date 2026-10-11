@@ -309,8 +309,9 @@ pub fn verify_root(
 
 /// [`verify_root`], handing every block of every digested dataset it reads to
 /// `inspect` with the dataset's path (relative to `root`): what a check of
-/// stored values needs, at the cost of no second read.  The blocks are whole
-/// rows of each dataset's leading axis ([`dataset_digest_inspected`]).
+/// stored values needs, at the cost of no second read.  The blocks are each
+/// dataset in C order, about [`STREAM_BYTES`] at a time
+/// ([`dataset_digest_inspected`]).
 pub fn verify_root_inspecting(
     root: &hdf5::Group,
     attr_names: Option<&AttrNameMap>,

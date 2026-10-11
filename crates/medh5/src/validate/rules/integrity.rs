@@ -148,9 +148,14 @@ pub fn check_integrity(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
 /// The sums are checked only on a map whose shape is one --- a row per class
 /// it declares, on its grid's spatial shape, which the semantic level holds it
 /// to (E405) --- and held one map at a time: allocated, fallibly, when its
-/// first row is read, and judged and freed after its last.  A shape of
+/// first block is read, and judged and freed after its last.  A shape of
 /// `(0, 2**62)` allocated a sum per voxel before anything was checked, and
 /// the validator panicked.
+///
+/// A block is whatever the digest pass reads, about
+/// [`STREAM_BYTES`](crate::integrity::digest::STREAM_BYTES) in C order: each
+/// value is placed by how many came before it, so no block need hold a
+/// class's plane whole.
 struct ProbmapCheck {
     class_ids: Vec<i64>,
     spatial: Vec<usize>,
@@ -159,7 +164,8 @@ struct ProbmapCheck {
     /// Voxels per class where the sums are checked: declared normalized, on a
     /// sound shape.
     summed: Option<usize>,
-    rows: usize,
+    /// The values read so far, in C order: where the next block starts.
+    seen: usize,
     sums: Vec<f64>,
     bad: Option<(usize, usize, f64)>,
     /// The first voxel whose sum is off, and the sum.
@@ -202,7 +208,7 @@ fn probmaps(ctx: &Context) -> Result<BTreeMap<String, ProbmapCheck>> {
                 } else {
                     None
                 },
-                rows: 0,
+                seen: 0,
                 sums: Vec::new(),
                 bad: None,
                 off: None,
@@ -215,12 +221,12 @@ fn probmaps(ctx: &Context) -> Result<BTreeMap<String, ProbmapCheck>> {
 }
 
 impl ProbmapCheck {
+    /// The next block of the map, in C order, of any size.
     fn feed(&mut self, block: &NdArray) {
         self.read = true;
-        let values = block.to_f64();
-        let rows = values.shape().first().copied().unwrap_or(0);
-        let voxels = values.len() / rows.max(1);
-        if self.rows == 0 && self.unsummed.is_none() {
+        // The values of one class: a voxel's place is its offset in a plane.
+        let plane = self.spatial.iter().try_fold(1usize, |n, e| n.checked_mul(*e)).unwrap_or(usize::MAX).max(1);
+        if self.seen == 0 && self.unsummed.is_none() {
             if let Some(n) = self.summed {
                 if let Err(e) = self.sums.try_reserve_exact(n) {
                     self.unsummed = Some(format!("the sums of its {n} voxels do not fit in memory ({e})"));
@@ -230,17 +236,19 @@ impl ProbmapCheck {
                 }
             }
         }
+        let values = block.to_f64();
         for (k, v) in values.iter().enumerate() {
+            let at = self.seen + k;
             if self.bad.is_none() && !(0.0..=1.0).contains(v) {
-                self.bad = Some((self.rows + k / voxels.max(1), k % voxels.max(1), *v));
+                self.bad = Some((at / plane, at % plane, *v));
             }
             if self.summed.is_some() {
-                self.sums[k % voxels] += *v;
+                self.sums[at % plane] += *v;
             }
         }
-        self.rows += rows;
-        if self.rows >= self.classes && self.summed.is_some() {
-            // The last row: judged now, so the next map's sums are not held
+        self.seen += values.len();
+        if self.seen / plane >= self.classes && self.summed.is_some() {
+            // The last value: judged now, so the next map's sums are not held
             // beside these.
             let (dtype, classes) = (self.dtype, self.classes);
             self.off = self
@@ -292,5 +300,50 @@ impl ProbmapCheck {
             out.push(ctx.err("E001", format!("/{path}"), format!("`normalized` could not be checked: {why}")));
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A normalized map of `classes` planes over `spatial`, before any read.
+    fn unread(classes: usize, spatial: &[usize]) -> ProbmapCheck {
+        ProbmapCheck {
+            class_ids: (1..=classes as i64).collect(),
+            spatial: spatial.to_vec(),
+            dtype: DType::F32,
+            classes,
+            summed: Some(spatial.iter().product()),
+            seen: 0,
+            sums: Vec::new(),
+            bad: None,
+            off: None,
+            unsummed: None,
+            read: false,
+        }
+    }
+
+    /// The stored values are judged from blocks of any size, in C order: the
+    /// check asked the digest pass for whole rows of the leading axis, so the
+    /// integrity level read every dataset a row at a time --- a class's whole
+    /// plane of a probability map, one channel of a channel-first image.
+    #[test]
+    fn s7_5_a_probability_map_is_judged_from_blocks_of_any_size() {
+        // Two classes on a 2 x 3 grid: class 1 holds 1.5 at voxel (0, 1), and
+        // the classes sum to 0.75 at voxel (1, 2).
+        let first = [0.25f32, 1.5, 0.5, 0.5, 0.5, 0.5];
+        let second = [0.75f32, -0.5, 0.5, 0.5, 0.5, 0.25];
+        let flat: Vec<f32> = first.iter().chain(&second).copied().collect();
+        for size in 1..=flat.len() {
+            let mut check = unread(2, &[2, 3]);
+            for block in flat.chunks(size) {
+                check.feed(&NdArray::from_vec(&[block.len()], block.to_vec()).unwrap());
+            }
+            assert_eq!(check.bad, Some((0, 1, 1.5)), "blocks of {size}");
+            assert_eq!(check.off, Some((5, 0.75)), "blocks of {size}");
+            assert_eq!(check.voxel(5), "(1, 2)");
+            assert!(check.sums.is_empty(), "freed once judged");
+        }
     }
 }

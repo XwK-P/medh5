@@ -89,17 +89,16 @@ pub fn dataset_digest_streamed(ds: &hdf5::Dataset, path: &str, algo: &str, strea
 pub type Inspect<'a> = &'a mut dyn FnMut(&NdArray) -> Result<()>;
 
 /// [`dataset_digest_streamed`], handing every block of a numeric dataset it
-/// reads to `inspect` --- in order, whole rows of the leading axis --- so a
-/// check of the stored values costs no second read.
+/// reads to `inspect`, in C order, so a check of the stored values costs no
+/// second read.
 ///
-/// Without `inspect`, a block is about `stream_bytes` however the dataset is
-/// shaped: when one row of the leading axis is larger, the leading axes are
-/// read an index at a time and the first axis whose rows fit is sliced.  A
-/// channel-first image, a layered annotation or a displacement field has a
-/// short leading axis, and a row at a time read and copied one 256 MiB row
-/// whole.  With `inspect`, whose checks read a row whole, a block is whole
-/// rows, as many as fit.  A row no buffer can hold is refused either way, as
-/// any read is.
+/// A block is about `stream_bytes` however the dataset is shaped: when one
+/// row of the leading axis is larger, the leading axes are read an index at a
+/// time and the first axis whose rows fit is sliced.  A channel-first image,
+/// a layered annotation or a displacement field has a short leading axis, and
+/// a row at a time read and copied one 256 MiB row whole --- as the value
+/// checks still asked for, until they placed each value by its offset.  A
+/// row no buffer can hold is refused, as any read is.
 pub fn dataset_digest_inspected(
     ds: &hdf5::Dataset,
     path: &str,
@@ -166,7 +165,7 @@ pub fn dataset_digest_inspected(
             }
             // A row too large to hold is refused, not read a slice at a time.
             data::ensure_allocatable(ds, &shape[1..], dtype.itemsize())?;
-            for_each_block(ds, &shape, dtype.itemsize(), stream_bytes, inspect.is_some(), &mut |block| {
+            for_each_block(ds, &shape, dtype.itemsize(), stream_bytes, &mut |block| {
                 if let Some(f) = inspect.as_mut() {
                     f(&block)?;
                 }
@@ -184,19 +183,18 @@ fn row_bytes(shape: &[usize], axis: usize, itemsize: usize) -> usize {
 }
 
 /// Read a numeric dataset of `shape` in C order, a block at a time, each
-/// about `budget` bytes: whole rows of the leading axis when one fits or
-/// `whole_rows` asks for them, else the leading axes an index at a time and
-/// the first axis whose rows fit sliced.
+/// about `budget` bytes: whole rows of the leading axis when one fits, else
+/// the leading axes an index at a time and the first axis whose rows fit
+/// sliced.
 fn for_each_block(
     ds: &hdf5::Dataset,
     shape: &[usize],
     itemsize: usize,
     budget: usize,
-    whole_rows: bool,
     each: &mut dyn FnMut(NdArray) -> Result<()>,
 ) -> Result<()> {
     let mut axis = 0;
-    while !whole_rows && axis + 1 < shape.len() && row_bytes(shape, axis, itemsize) > budget {
+    while axis + 1 < shape.len() && row_bytes(shape, axis, itemsize) > budget {
         axis += 1;
     }
     let step = (budget / row_bytes(shape, axis, itemsize)).max(1);
@@ -399,10 +397,12 @@ pub fn root_algo(root: &hdf5::Group) -> Result<String> {
 mod tests {
     use super::*;
 
-    /// Without a check reading whole rows, no block is larger than the
-    /// budget however short the leading axis --- a row at a time read one
-    /// channel of a channel-first image whole --- and the blocks are the
-    /// array in C order, so the digest is the same for any budget.
+    /// No block is larger than the budget however short the leading axis ---
+    /// a row at a time read one channel of a channel-first image whole --- and
+    /// the blocks are the array in C order, so the digest is the same for any
+    /// budget.  A check of the stored values gets the same bounded blocks: it
+    /// asked for whole rows, and the integrity level held a row of every
+    /// dataset at once.
     #[test]
     fn s13_1_a_short_leading_axis_is_read_in_bounded_blocks() {
         let dir = tempfile::tempdir().unwrap();
@@ -415,7 +415,7 @@ mod tests {
         let shape = ds.shape();
         for budget in [4, 100, 1280, 4000, 1 << 20] {
             let mut blocks: Vec<NdArray> = Vec::new();
-            for_each_block(&ds, &shape, 4, budget, false, &mut |block| {
+            for_each_block(&ds, &shape, 4, budget, &mut |block| {
                 blocks.push(block);
                 Ok(())
             })
@@ -426,14 +426,17 @@ mod tests {
             assert_eq!(flat, data.iter().copied().collect::<Vec<_>>(), "budget {budget}");
             assert_eq!(dataset_digest_streamed(&ds, "d", "sha256", budget).unwrap(), whole, "budget {budget}");
         }
-        // A check reading rows whole gets whole rows of the leading axis.
-        let mut rows = Vec::new();
+        let mut inspected: Vec<NdArray> = Vec::new();
         let each: Inspect<'_> = &mut |block: &NdArray| {
-            rows.push(block.shape());
+            inspected.push(block.clone());
             Ok(())
         };
         assert_eq!(dataset_digest_inspected(&ds, "d", "sha256", 100, Some(each)).unwrap(), whole);
-        assert_eq!(rows, vec![vec![1, 3, 16, 20], vec![1, 3, 16, 20]]);
+        let shapes: Vec<Vec<usize>> = inspected.iter().map(NdArray::shape).collect();
+        assert!(inspected.iter().all(|b| b.len() * 4 <= 100), "{shapes:?}");
+        let flat: Vec<f32> =
+            inspected.iter().flat_map(|b| b.cast::<f32>().iter().copied().collect::<Vec<_>>()).collect();
+        assert_eq!(flat, data.iter().copied().collect::<Vec<_>>());
     }
 
     /// A string hashes as stored: decoded as text, invalid UTF-8 became U+FFFD
