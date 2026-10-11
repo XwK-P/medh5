@@ -77,9 +77,9 @@ fn main() -> medh5::Result<()> {
 Errors are one [`Error`] type whose diagnostic code, when it has one, is the
 code the validator reports for the same defect (§15.2, [1.1] §11.2).
 
-[the specification]: https://medh5.readthedocs.io/en/latest/spec/medh5-1.0/
-[1.1]: https://medh5.readthedocs.io/en/latest/spec/medh5-1.1/
-[task and cache contract]: https://medh5.readthedocs.io/en/latest/spec/task-cache-1/
+[the specification]: https://medh5.readthedocs.io/en/stable/spec/medh5-1.0/
+[1.1]: https://medh5.readthedocs.io/en/stable/spec/medh5-1.1/
+[task and cache contract]: https://medh5.readthedocs.io/en/stable/spec/task-cache-1/
 [`version`]: https://docs.rs/medh5/latest/medh5/version/
 [`clinical`]: https://docs.rs/medh5/latest/medh5/clinical/
 [`companion`]: https://docs.rs/medh5/latest/medh5/companion/

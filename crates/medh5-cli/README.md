@@ -47,4 +47,4 @@ medh5 convert from-nifti case.medh5 --image CT=ct.nii.gz
 `medh5 migrate`, which reads 0.x files, is native.
 
 The full command reference is at
-[medh5.readthedocs.io](https://medh5.readthedocs.io/en/latest/reference/cli/).
+[medh5.readthedocs.io](https://medh5.readthedocs.io/en/stable/reference/cli/).

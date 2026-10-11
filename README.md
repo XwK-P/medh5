@@ -16,9 +16,9 @@ keypoints, contours, meshes, classification, registration between visits,
 provenance and quality records, and per-object integrity digests --- and, from
 format **1.1**, the clinical history around the images, with *when each fact
 became known*, so a model trained at a cutoff reads only what was available
-then. Format versions [**1.0**](https://medh5.readthedocs.io/en/latest/spec/medh5-1.0/) and
-[**1.1**](https://medh5.readthedocs.io/en/latest/spec/medh5-1.1/), with normative specifications and a
-[157-case conformance suite](https://medh5.readthedocs.io/en/latest/spec/conformance/) any implementation can run.
+then. Format versions [**1.0**](https://medh5.readthedocs.io/en/stable/spec/medh5-1.0/) and
+[**1.1**](https://medh5.readthedocs.io/en/stable/spec/medh5-1.1/), with normative specifications and a
+[157-case conformance suite](https://medh5.readthedocs.io/en/stable/spec/conformance/) any implementation can run.
 
 ```python
 import medh5
@@ -63,11 +63,11 @@ will do, the 1.x line remains --- pure Python over h5py, writing format 1.0:
 **[medh5.readthedocs.io](https://medh5.readthedocs.io/)** — tutorials, how-to
 guides, the Python and CLI reference, and the normative specification.
 
-[Write your first sample](https://medh5.readthedocs.io/en/latest/tutorials/first-sample/) ·
-[How-to guides](https://medh5.readthedocs.io/en/latest/guides/) ·
-[Python API](https://medh5.readthedocs.io/en/latest/reference/python-api/) ·
-[CLI](https://medh5.readthedocs.io/en/latest/reference/cli/) ·
-[Specification](https://medh5.readthedocs.io/en/latest/spec/medh5-1.0/)
+[Write your first sample](https://medh5.readthedocs.io/en/stable/tutorials/first-sample/) ·
+[How-to guides](https://medh5.readthedocs.io/en/stable/guides/) ·
+[Python API](https://medh5.readthedocs.io/en/stable/reference/python-api/) ·
+[CLI](https://medh5.readthedocs.io/en/stable/reference/cli/) ·
+[Specification](https://medh5.readthedocs.io/en/stable/spec/medh5-1.0/)
 
 ## What the format is for
 
@@ -87,7 +87,7 @@ guides, the Python and CLI reference, and the normative specification.
   became available; strict prospective selection decides what a row may read,
   and tasks and feature caches are pinned to the sample versions they read.
 
-[The reasoning behind each](https://medh5.readthedocs.io/en/latest/explanation/design-rationale/).
+[The reasoning behind each](https://medh5.readthedocs.io/en/stable/explanation/design-rationale/).
 
 ## Write a sample
 
@@ -165,8 +165,8 @@ batch = next(iter(DataLoader(train, batch_size=8, collate_fn=collate_clinical)))
 batch["present"]["mr"], batch["events"]["mask"], batch["target"]["observed"]
 ```
 
-See [clinical history](https://medh5.readthedocs.io/en/latest/guides/clinical/) and
-[training on clinical tasks](https://medh5.readthedocs.io/en/latest/guides/clinical-training/).
+See [clinical history](https://medh5.readthedocs.io/en/stable/guides/clinical/) and
+[training on clinical tasks](https://medh5.readthedocs.io/en/stable/guides/clinical-training/).
 
 ## Command line
 
@@ -245,10 +245,10 @@ as a projection, never amending it. A minor version may add optional objects,
 profiles, encodings and diagnostic codes; it may not change what an existing
 one means (spec §16). The **package** follows semantic versioning from 1.0.0:
 2.0 moved the implementation to the Rust engine and changed the Python API at
-the HDF5 boundary ([what changed](https://medh5.readthedocs.io/en/latest/changelog/)).
+the HDF5 boundary ([what changed](https://medh5.readthedocs.io/en/stable/changelog/)).
 
 0.x files are not readable by 1.0 and are not meant to be — `medh5 migrate`
-converts them once. See [Migrate from 0.x](https://medh5.readthedocs.io/en/latest/guides/migrate-0x/).
+converts them once. See [Migrate from 0.x](https://medh5.readthedocs.io/en/stable/guides/migrate-0x/).
 
 ## Contributing
 
