@@ -245,6 +245,14 @@ class Sample:
 
     @property
     def document(self) -> SampleDocument:
+        """The sample document, ``/meta`` (§2.4).
+
+        A later minor's --- a 1.2 file's --- is read as its supported
+        projection (1.1 §2.2): members only that minor defines are set aside,
+        and an unknown value is read as its vocabulary's ``other``, or as
+        absent where it has none (in a member the schema requires, that leaves
+        the document unreadable, E005).
+        """
         if self._document is None:
             self._document = self._handle.document()
         return self._document
@@ -458,7 +466,7 @@ class Sample:
     # -- integrity ---------------------------------------------------------
 
     def attr_name_map(self) -> dict[str, tuple[str, ...]]:
-        """Object path -> spec-defined attribute names, for ``content_id``."""
+        """Object path -> the attribute names ``content_id`` covers (§13.2)."""
         found: dict[str, tuple[str, ...]] = self._handle.attr_name_map()
         return found
 

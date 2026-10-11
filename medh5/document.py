@@ -13,6 +13,12 @@ then has to decide which copy to believe.
 The document model, its serialisation and its JSON Schema check are the format
 engine's; the schema is embedded in it (``crates/medh5/data/``), so checking
 E005 needs no optional dependency.
+
+A later minor's ``/meta`` --- a 1.2 file's --- is read as its supported
+projection (1.1 §2.2), by ``Sample.document`` and :func:`read_document` alike:
+members only that minor defines are set aside, and an unknown value is read as
+its vocabulary's ``other``, or as absent where it has none (in a member the
+schema requires, that leaves the document unreadable, E005).
 """
 
 from __future__ import annotations
@@ -33,7 +39,8 @@ provenance, quality, splits, acquisition, de-identification and extensions."""
 new_document = _core.new_document
 
 read_document = _core.read_document
-"""The sample document under a sample root (``sample.root``), parsed."""
+"""The sample document under a sample root (``sample.root``), parsed: a later
+minor's as its supported projection (1.1 §2.2)."""
 
 read_document_text = _core.read_document_text
 """The raw ``/meta`` text under a sample root."""
