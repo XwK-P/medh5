@@ -412,11 +412,16 @@ fn check_inverses(
         let Some(other) = str_attr(loc(&t), "inverse_id")? else { continue };
         let location = format!("/transforms/{name}");
         let Some((os, ot)) = declared.get(&other) else {
-            out.push(ctx.err(
-                "E505",
-                location,
-                format!("`inverse_id` names {}, which does not exist", repr_str(&other)),
-            ));
+            // A transform that exists but could not be judged --- a kind this
+            // validator does not know, no frames --- has its own finding there
+            // (E502, or W913 in a later minor's file); it is not missing.
+            if child(node, &other).is_none() {
+                out.push(ctx.err(
+                    "E505",
+                    location,
+                    format!("`inverse_id` names {}, which does not exist", repr_str(&other)),
+                ));
+            }
             continue;
         };
         if (os, ot) != (target, source) {

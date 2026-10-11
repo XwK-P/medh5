@@ -1412,6 +1412,26 @@ class TestProjectionRead:
         found = validate_file(path).diagnostics
         assert ("W913", "/transforms/ba") in {(d.code, d.location) for d in found}
 
+    @pytest.mark.parametrize(("version", "code"), [("1.1", "E502"), ("1.2", "W913")])
+    def test_S10_1_an_inverse_of_a_kind_not_known_is_its_own_finding(
+        self, tmp_path, version, code
+    ):
+        """The validator reported `ab`'s `inverse_id` as naming a transform that
+        does not exist (E505) beside `ba`'s own finding, which failed a later
+        minor's file the projection reads."""
+        path = self._edited(
+            self._chained(tmp_path / "c.medh5"),
+            "transforms/ba",
+            "kind",
+            "similarity",
+            version=version,
+        )
+        report = validate_file(path)
+        found = {(d.code, d.location) for d in report.diagnostics}
+        assert (code, "/transforms/ba") in found
+        assert not [d for d in report.diagnostics if d.code == "E505"], found
+        assert report.ok is (version == "1.2")
+
     @pytest.mark.parametrize(
         ("node", "attribute", "value", "code", "listing"),
         [
