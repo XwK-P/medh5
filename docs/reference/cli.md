@@ -143,11 +143,14 @@ auto-selector would cost for each candidate encoding.
 medh5 seg convert PATH ANNOTATION --to KIND [--dry-run] [--drop-identity] [--json]
 ```
 
-Losslessly re-encode a voxel annotation: `labelmap`, `layers`, `bitmask`,
-`instances`, `probmap`. `--dry-run` prints the size change without writing.
-From `instances` to a dense encoding the voxels survive and the object ids do
-not, so it is refused unless `--drop-identity` says to drop them; the file then
-records a `transcode` activity saying so.
+Re-encode a voxel annotation: `labelmap`, `layers`, `bitmask`, `instances`,
+`probmap`. `--dry-run` prints the size change without writing. Every
+conversion is lossless but one, as §7.6 allows: a `probmap` is lossless only
+under its `threshold` (§7.5), so another encoding keeps the voxels at or above
+it as the class and loses the probabilities. From `instances` to a dense
+encoding the voxels survive and the object ids do not, so it is refused unless
+`--drop-identity` says to drop them; the file then records a `transcode`
+activity saying so.
 
 ### `medh5 index build`
 

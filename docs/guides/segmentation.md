@@ -70,7 +70,10 @@ disjoint are not — usually a rater including a lesion in the organ it sits in.
 
 ## Change the encoding later
 
-Losslessly, without touching the annotation's meaning:
+Without touching the annotation's meaning --- losslessly, except for a
+`probmap`, which §7.6 makes lossless only under its `threshold` (§7.5): another
+encoding keeps the voxels at or above it as the class, and the probabilities
+are gone:
 
 ```bash
 medh5 seg convert case.medh5 organs --to bitmask --dry-run

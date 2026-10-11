@@ -1180,6 +1180,9 @@ fn transcode_payload<'py>(
 }
 
 /// Convert an open voxel annotation to another encoding (§7.6).
+/// A `probmap` is thresholded at its `threshold` (§7.5): another encoding
+/// keeps the voxels at or above it as the class, and none of the
+/// probabilities.
 #[pyfunction]
 #[pyo3(signature = (annotation, to_kind, *, drop_identity=false))]
 fn transcode(annotation: &Bound<'_, PyAny>, to_kind: &str, drop_identity: bool) -> R<AnnotationPayload> {

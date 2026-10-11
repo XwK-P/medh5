@@ -1133,7 +1133,10 @@ impl SampleWriter {
 /// Convert an open voxel annotation to another encoding (§7.6).
 ///
 /// Refuses rather than dropping what the target cannot express: an in-band
-/// ignore region, object identity, and class identity itself.
+/// ignore region, object identity, and class identity itself.  A `probmap`
+/// is the exception §7.6 makes: it is lossless only under its `threshold`
+/// (§7.5), so another encoding keeps the voxels at or above the threshold as
+/// the class, and none of the probabilities.
 pub fn transcode(annotation: &Annotation, to_kind: &str, drop_identity: bool) -> Result<Payload> {
     check_target(to_kind)?;
     check_identity(annotation.kind(), to_kind, drop_identity)?;

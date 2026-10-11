@@ -25,7 +25,7 @@ from tests.helpers import (
     write_sample,
     write_series,
 )
-from tests.kits import Framed, Hierarchy, Organs
+from tests.kits import Framed, Hierarchy, Numbered, Organs
 
 
 def run(capsys, *argv):
@@ -666,6 +666,29 @@ class TestSegAndIndex:
             assert seg.kind == "bitmask"
             for class_id, mask in masks.items():
                 assert np.array_equal(seg.dense([class_id])[0], mask)
+
+    def test_S7_6_a_probmap_is_converted_through_its_threshold(self, capsys, tmp_path):
+        """§7.6 makes a probmap lossless only under its `threshold` (§7.5):
+        another encoding keeps the voxels at or above it, and the help called
+        every conversion lossless."""
+        path = tmp_path / "soft.medh5"
+        votes = np.zeros(Numbered.SHAPE, np.float32)
+        votes[1], votes[2], votes[3] = 0.29, 0.3, 0.9
+        with Numbered.writer(path) as w:
+            w.add_segmentation(
+                "soft", grid="g", probabilities={1: votes}, threshold=0.3
+            )
+        argv = ["seg", "convert", str(path), "soft", "--to", "layers"]
+        assert run(capsys, *argv)[0] == EXIT_OK
+        with medh5.open(path) as sample:
+            soft = sample.annotations["soft"]
+            assert soft.kind == "layers"
+            assert np.array_equal(soft.dense([1])[0], votes >= 0.3)
+        code, out = run(capsys, "seg", "convert", "--help")
+        assert code == EXIT_OK
+        assert "a probmap is thresholded at its threshold (§7.5) and loses its " in (
+            " ".join(out.out.split())
+        )
 
     def test_index_build(self, capsys, sample_path):
         import medh5

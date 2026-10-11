@@ -204,7 +204,10 @@ fn seg() -> Vec<Command> {
         )
         .subcommand(
             Command::new("convert")
-                .about("re-encode losslessly (spec §7.6)")
+                .about(
+                    "re-encode (spec §7.6): losslessly, except that a probmap is thresholded at its threshold (§7.5) \
+                     and loses its probabilities",
+                )
                 .arg(positional("path", "the sample holding the annotation"))
                 .arg(positional("annotation", "the voxel annotation to re-encode"))
                 .arg(

@@ -846,6 +846,9 @@ impl SampleWriter {
     }
 
     /// Re-encode a voxel annotation in place, preserving its header (§7.6).
+    /// A `probmap` is thresholded at its `threshold` (§7.5): another encoding
+    /// keeps the voxels at or above it as the class, and none of the
+    /// probabilities.
     #[pyo3(signature = (ann_id, to_kind, *, codec=None, drop_identity=false))]
     fn transcode_annotation(
         &mut self,

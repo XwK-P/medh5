@@ -1761,7 +1761,11 @@ def to_world_vectors(
 def transcode(
     annotation: VoxelAnnotation, to_kind: str, *, drop_identity: bool = False
 ) -> AnnotationPayload:
-    """Convert an open voxel annotation to another encoding (§7.6)."""
+    """Convert an open voxel annotation to another encoding (§7.6).
+    A `probmap` is thresholded at its `threshold` (§7.5): another encoding
+    keeps the voxels at or above it as the class, and none of the
+    probabilities.
+    """
     ...
 
 def transcode_payload(
@@ -3406,7 +3410,11 @@ class SampleWriter:
         codec: str | None = None,
         drop_identity: bool = False,
     ) -> str:
-        """Re-encode a voxel annotation in place, preserving its header (§7.6)."""
+        """Re-encode a voxel annotation in place, preserving its header (§7.6).
+        A `probmap` is thresholded at its `threshold` (§7.5): another encoding
+        keeps the voxels at or above it as the class, and none of the
+        probabilities.
+        """
         ...
 
 @final

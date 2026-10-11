@@ -142,6 +142,11 @@ dropped**. Four cases:
 | anything → `mask` | A `mask` has no classes, so every class would merge into one volume and the coverage contract would be lost. Build a deliberate union with `encode_mask` and write it with `add_mask`. |
 | `instances` → dense | Every voxel survives and every `instance_id` does not — and `instance_id` is what tracking joins on across visits (§7.4). Refused unless you pass `drop_identity=True` (`--drop-identity`), which records a `transcode` activity saying identity was dropped. One-way: identity is not recoverable afterwards. |
 
+One conversion loses something and is not refused, because §7.6 allows it: a
+`probmap` is lossless only under its `threshold` (§7.5). Converted to another
+encoding, it keeps the voxels at or above the threshold as the class, and its
+probabilities are gone --- keep the `probmap` where they still matter.
+
 ### Instances
 
 Per-object masks, ids and boxes, from an encoding that carries identity:

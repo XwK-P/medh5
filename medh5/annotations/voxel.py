@@ -12,7 +12,9 @@ The encoders, the measurement that chooses an encoding (§7.6) and the
 transcoder are the format engine's; the writer, the command line and this
 module call the same functions.  A transcode refuses rather than dropping what
 the target cannot express: an in-band ignore region, object identity, class
-identity itself.
+identity itself.  A ``probmap`` is the one exception, as §7.6 allows: it is
+lossless only under its ``threshold`` (§7.5), so another encoding keeps the
+voxels at or above it as the class, and none of the probabilities.
 """
 
 from __future__ import annotations
