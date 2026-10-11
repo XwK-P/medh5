@@ -53,7 +53,11 @@ fn recompress_cmd(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
                 human_bytes(r.bytes_after as f64),
                 format!("{:.2}x", r.ratio()),
                 if r.content_id_preserved { "yes".into() } else { "CHANGED".into() },
-                if r.verified { "ok".into() } else { format!("FAILED ({})", r.mismatched.len() + r.unattested.len()) },
+                if r.verified {
+                    "ok".into()
+                } else {
+                    format!("FAILED ({})", r.mismatched.len() + r.unattested.len() + r.unverified.len())
+                },
             ]
         })
         .collect();
@@ -64,6 +68,11 @@ fn recompress_cmd(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
         }
         for name in &result.unattested {
             ctx.print(format!("  UNSIGNED  {name} (no line of content_id covers it at this path)"));
+        }
+        // What the check of the output could not read, and why: the output
+        // has replaced the input by then, so it is named, not raised.
+        for name in &result.unverified {
+            ctx.print(format!("  UNCHECKED {name}"));
         }
         for name in &result.kept {
             ctx.print(format!("  KEPT      {name} (copied as stored: a rebuild would lose its type)"));

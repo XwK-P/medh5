@@ -1706,6 +1706,44 @@ class TestRecompressAndBench:
         assert code == EXIT_OK
         assert json.loads(out.out)[0]["kept"] == ["/x_types/colours"]
 
+    def test_S14_4_recompress_names_what_the_output_check_could_not_read(
+        self, capsys, tmp_path
+    ):
+        """The output has replaced the input when it is checked, so what the
+        check cannot read --- here a chunk whose deflate stream is damaged ---
+        is reported, not raised.  The text output said ``FAILED (0)`` and
+        nothing more; it names it on an ``UNCHECKED`` line, as ``--json`` lists
+        it under ``unverified``."""
+
+        def damaged(name: str) -> Path:
+            path = write_sample(tmp_path / name, codec="portable")
+            pair = np.dtype([("a", "<i4"), ("b", "<f4")])
+            with h5py.File(path, "r+") as f:
+                table = f.create_dataset(
+                    "x_acme/table",
+                    shape=(4,),
+                    dtype=pair,
+                    chunks=(4,),
+                    compression="gzip",
+                )
+                table.id.write_direct_chunk((0,), b"\xa5" * 16)
+                table.attrs["digest"] = "sha256:" + "0" * 64
+            return path
+
+        path = damaged("text.medh5")
+        code, out = run(capsys, "recompress", str(path), "--profile", "archive")
+        assert code == EXIT_ERROR
+        assert "FAILED (1)" in out.out
+        (unchecked,) = [ln for ln in out.out.splitlines() if "UNCHECKED" in ln]
+        assert unchecked.startswith("  UNCHECKED /: ")
+        assert unchecked.endswith("/x_acme/table")
+        path = damaged("json.medh5")
+        code, out = run(
+            capsys, "recompress", str(path), "--profile", "archive", "--json"
+        )
+        assert code == EXIT_ERROR
+        assert json.loads(out.out)[0]["unverified"] == [unchecked.split(maxsplit=1)[1]]
+
     def test_bench_runs_against_a_file(self, capsys, longitudinal_path):
         code, out = run(
             capsys,

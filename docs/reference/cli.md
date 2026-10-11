@@ -443,7 +443,9 @@ the digest is over content and not over its encoding.
 The output is **verified** against the digests it carries before the command
 returns, and the exit code follows: a file whose bytes had already been
 corrupted before you re-encoded it now fails here rather than reporting a
-preserved `content_id` and exiting 0.
+preserved `content_id` and exiting 0. What the check cannot read --- the output
+has replaced the input by then --- fails it too, named on an `UNCHECKED` line
+(`unverified` in `--json`).
 
 ### `medh5 bench`
 
