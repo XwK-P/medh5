@@ -1211,9 +1211,9 @@ def encode_labelmap(
     ignore_id: int = ...,
 ) -> AnnotationPayload:
     """Pack mutually exclusive class masks into one integer volume (§7.1).
-    `ignore` is painted as `ignore_id` where no class claims the voxel; a
-    region of another shape (E405), or an `ignore_id` outside 1..65535 or
-    equal to a class id (E404), is refused.
+    `ignore` is painted as `ignore_id`; a region that overlaps a class (E404:
+    §7.7 puts it in a sibling `mask`), a region of another shape (E405), or an
+    `ignore_id` outside 1..65535 or equal to a class id (E404) is refused.
     """
     ...
 
@@ -1284,8 +1284,8 @@ def encode_voxels(
 ) -> tuple[Any, ...]:
     """Encode class masks, choosing the encoding by measurement when asked to:
     `(payload, stats)`.  An ignore region rides in band only under
-    `labelmap`/`layers`; any other choice is refused (E404), because one
-    payload cannot carry the §7.7 sibling mask.
+    `labelmap`/`layers`, and only where it meets no class; anything else is
+    refused (E404), because one payload cannot carry the §7.7 sibling mask.
     """
     ...
 

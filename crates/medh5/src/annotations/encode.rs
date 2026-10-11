@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 
 use half::f16;
-use ndarray::{ArrayD, Axis, Dimension, IxDyn, Slice as NdSlice};
+use ndarray::{ArrayD, ArrayViewD, Axis, Dimension, IxDyn, Slice as NdSlice};
 
 use super::layout::{column_problems, mask_problems};
 use super::payload::{normalize_masks, packbits, unpackbits, Masks, Payload, PayloadData};
@@ -92,16 +92,41 @@ fn check_ignore(ignore: Option<&ArrayD<bool>>, shape: &[usize], ignore_id: i64, 
     Ok(())
 }
 
+/// Refuse an in-band ignore region that meets a class (E404, §7.7): one value
+/// per voxel cannot say both "this class" and "ignored".  Painted only where
+/// no class was, the region lost every voxel it shared with a class --- and in
+/// `layers` it went into the voxel's other layers instead, an in-band region
+/// over a class.  Such a region is a separate `mask` annotation named by
+/// `ignore_mask`, as `SampleWriter::add_segmentation` writes it.  `claimed`
+/// is where `classes` holds a class.
+fn refuse_ignore_over_class(ignore: &ArrayD<bool>, claimed: &ArrayD<bool>, classes: ArrayViewD<'_, u16>) -> Result<()> {
+    if !ndarray::Zip::from(ignore).and(claimed).fold(false, |acc, i, c| acc || (*i && *c)) {
+        return Ok(());
+    }
+    let first = first_true(&ndarray::Zip::from(ignore).and(claimed).map_collect(|i, c| *i && *c)).unwrap_or_default();
+    Err(Error::coded(
+        "E404",
+        format!(
+            "the ignore region overlaps class {} at voxel {}: one value per voxel cannot hold both, so a region that \
+             meets a class is a separate `mask` annotation named by `ignore_mask` (§7.7), which \
+             SampleWriter.add_segmentation writes",
+            classes[first.as_slice()],
+            repr_int_tuple(&first)
+        ),
+    ))
+}
+
 // -- labelmap -------------------------------------------------------------------
 
 /// Pack mutually exclusive class masks into one integer volume (§7.1).
 ///
 /// Raises E404 when two classes claim the same voxel: silently letting the last
 /// writer win would turn a curation error into a training set nobody can audit.
-/// `ignore` is painted as `ignore_id` where no class claims the voxel; a region
-/// of another shape (E405), or an `ignore_id` outside `1..=65535` or equal to
-/// a class id (E404), is refused.  The volume is `uint16` only when a class id
-/// or a painted ignore voxel needs it.
+/// `ignore` is painted as `ignore_id`; a region that overlaps a class (E404:
+/// §7.7 puts it in a sibling `mask`), a region of another shape (E405), or an
+/// `ignore_id` outside `1..=65535` or equal to a class id (E404) is refused.
+/// The volume is `uint16` only when a class id or a painted ignore voxel
+/// needs it.
 pub fn encode_labelmap(
     masks: &Masks,
     spatial_shape: Option<&[usize]>,
@@ -133,12 +158,13 @@ pub fn encode_labelmap(
         });
     }
     // The dtype follows what is stored: an ignore region no voxel carries
-    // (all false, or every voxel claimed) leaves a `uint8` volume `uint8`.
+    // (all false) leaves a `uint8` volume `uint8`.
     let mut ignored = false;
     if let Some(ign) = ignore {
+        refuse_ignore_over_class(ign, &claimed, data.view())?;
         let value = ignore_id as u16;
-        ndarray::Zip::from(&mut data).and(ign).and(&claimed).for_each(|d, i, c| {
-            if *i && !*c {
+        ndarray::Zip::from(&mut data).and(ign).for_each(|d, i| {
+            if *i {
                 *d = value;
                 ignored = true;
             }
@@ -209,9 +235,10 @@ pub fn encode_layers(
             });
         }
         if let Some(ign) = ignore {
+            refuse_ignore_over_class(ign, &claimed, plane.view())?;
             let value = ignore_id as u16;
-            ndarray::Zip::from(&mut plane).and(ign).and(&claimed).for_each(|d, i, c| {
-                if *i && !*c {
+            ndarray::Zip::from(&mut plane).and(ign).for_each(|d, i| {
+                if *i {
                     *d = value;
                     ignored = true;
                 }

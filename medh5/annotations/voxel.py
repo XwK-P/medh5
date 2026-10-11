@@ -352,12 +352,13 @@ def encode_voxels(
     Returns the payload **and** the statistics behind the choice, so a writer can
     report why it picked what it picked (spec §7.6).
 
-    An ``ignore`` region rides in band only under ``labelmap`` and ``layers``.
-    The other encodings express it as a separate ``mask`` annotation (§7.7),
-    which one payload cannot hold, so the choice is refused rather than the
-    region dropped: ``SampleWriter.add_segmentation`` writes the sibling mask
-    for those, and this function --- which returns a payload and nothing
-    else --- has nowhere to put it.
+    An ``ignore`` region rides in band only under ``labelmap`` and ``layers``,
+    and only where it meets no class.  Otherwise §7.7 expresses it as a
+    separate ``mask`` annotation, which one payload cannot hold, so the call is
+    refused (E404) rather than the region dropped:
+    ``SampleWriter.add_segmentation`` writes the sibling mask, and this
+    function --- which returns a payload and nothing else --- has nowhere to
+    put it.
     """
     payload, stats = _core.encode_voxels(
         masks, spatial_shape, encoding=encoding, ignore=ignore, **kwargs

@@ -802,6 +802,33 @@ class TestPayloadEncoderGuards:
         assert exc.value.code == "E405"
 
     @pytest.mark.parametrize("encode", [encode_labelmap, encode_layers])
+    def test_S7_7_an_ignore_region_over_a_class_is_refused_in_band(self, encode):
+        """One value per voxel cannot hold a class and the ignore id.  Painted
+        where no class was, the region silently lost the voxels it shared with
+        one --- and `layers` painted it into their other layers, an in-band
+        region over a class --- where §7.7 puts it in a sibling `mask`."""
+        liver = np.zeros(self.SHAPE, bool)
+        liver[1, 1:4, 1:4] = True
+        lesion = np.zeros(self.SHAPE, bool)
+        lesion[1, 2:5, 2:5] = True  # over the liver: two layers
+        ignore = np.zeros(self.SHAPE, bool)
+        ignore[3] = True
+        ignore[1, 1, 1] = True  # a liver voxel
+        kind = encode.__name__.removeprefix("encode_")
+        masks = {1: liver} if kind == "labelmap" else {1: liver, 3: lesion}
+        for refused in (
+            lambda: encode(masks, self.SHAPE, ignore=ignore),
+            lambda: encode_voxels(masks, self.SHAPE, encoding=kind, ignore=ignore),
+        ):
+            with pytest.raises(MEDH5ValidationError, match=r"class 1 at voxel \(1, 1, 1\)") as exc:
+                refused()
+            assert exc.value.code == "E404"
+        ignore[1, 1, 1] = False
+        data = np.asarray(encode(masks, self.SHAPE, ignore=ignore).datasets["data"])
+        ignored = data == 65535 if data.ndim == 3 else (data == 65535).all(axis=0)
+        assert np.array_equal(ignored, ignore)
+
+    @pytest.mark.parametrize("encode", [encode_labelmap, encode_layers])
     @pytest.mark.parametrize("ignore_id", [70000, -1, 0, 1])
     def test_S6_2_the_ignore_id_is_a_uint16_no_class_uses(self, encode, ignore_id):
         """Cast unchecked, 70000 was stored as 4464, -1 as 65535, 0 as
