@@ -192,6 +192,13 @@ STALE_CLAIMS: tuple[tuple[str, str, str, str | None], ...] = (
         None,
     ),
     (
+        "a source build promised where PyO3 cannot make one",
+        r"free-threaded\s+C?Python(?!\s+3\.1[4-9])|\bPyPy\b(?!\s+3\.1[1-9])",
+        "PyO3 0.29 builds for free-threaded CPython from 3.14 and for PyPy from "
+        "3.11; on 3.13t or PyPy 3.10 the sdist cannot build.",
+        None,
+    ),
+    (
         "validate --json offered as a submission",
         r"emits a superset",
         "the scorer takes what `validate --json` reports --- `path` and "

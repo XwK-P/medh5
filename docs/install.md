@@ -61,9 +61,11 @@ several minutes and needs:
 - network access to crates.io, where the build fetches its Rust dependencies.
 
 This covers Alpine and other musl-based Linux, Linux with a glibc older than
-2.28 (Ubuntu 18.04, CentOS 7), Windows on ARM, PyPy and free-threaded CPython.
-If pip prints `Building wheel for medh5`, it found no wheel for your system and
-needs these three.
+2.28 (Ubuntu 18.04, CentOS 7), Windows on ARM, PyPy 3.11 and free-threaded
+CPython 3.14 or later. Free-threaded CPython 3.13 and PyPy 3.10 cannot build it
+at all: PyO3, the library that binds the engine to Python, does not support
+them. If pip prints `Building wheel for medh5`, it found no wheel for your
+system and needs these three.
 
 ## Only the command line
 
