@@ -46,6 +46,19 @@ class TestFix:
         assert diagnose(indexed).clean
         assert not fix(indexed).changed
 
+    def test_S14_3_a_missing_index_is_named_and_not_called_absent(
+        self, tmp_path: Path, label_set, masks
+    ):
+        """`fix` builds no missing index, and used to say there was none."""
+        path = write_sample(tmp_path / "bare.medh5", label_set=label_set, masks=masks)
+        assert diagnose(path).missing_index == ("organs_tp0",)
+        repair = fix(path, rebuild_index=True)
+        assert not repair.changed
+        assert repair.notes == [
+            "nothing to rebuild: no sampling index is stale; 1 voxel annotation(s) "
+            "have none (organs_tp0), which `medh5 index build` writes"
+        ]
+
     def test_an_external_edit_shows_up_as_a_digest_mismatch(self, indexed):
         """The case `fix` exists for: something edited the data past the writer."""
         _edit_mask_in_place(indexed)

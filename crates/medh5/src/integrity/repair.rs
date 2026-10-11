@@ -157,7 +157,15 @@ pub fn fix(path: &Path, options: &FixOptions) -> Result<Repair> {
         return Err(Error::invalid(message));
     }
     if diagnosis.stale_index.is_empty() && !options.rewrite_digests {
-        repair.notes.push("nothing to rebuild: no sampling index is stale or missing".into());
+        let mut note = String::from("nothing to rebuild: no sampling index is stale");
+        if !diagnosis.missing_index.is_empty() {
+            note.push_str(&format!(
+                "; {} voxel annotation(s) have none ({}), which `medh5 index build` writes",
+                diagnosis.missing_index.len(),
+                diagnosis.missing_index.join(", ")
+            ));
+        }
+        repair.notes.push(note);
         return Ok(repair);
     }
     let mut writer = amend(path, None)?;
