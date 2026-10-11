@@ -152,10 +152,9 @@ pub fn check_integrity(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
 /// `(0, 2**62)` allocated a sum per voxel before anything was checked, and
 /// the validator panicked.
 ///
-/// A block is whatever the digest pass reads, about
-/// [`STREAM_BYTES`](crate::integrity::digest::STREAM_BYTES) in C order: each
-/// value is placed by how many came before it, so no block need hold a
-/// class's plane whole.
+/// A block is whatever the digest pass reads, about [`STREAM_BYTES`] in C
+/// order: each value is placed by how many came before it, so no block need
+/// hold a class's plane whole.
 struct ProbmapCheck {
     class_ids: Vec<i64>,
     spatial: Vec<usize>,
