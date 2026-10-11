@@ -540,6 +540,26 @@ class TestSplits:
         assert exc.value.code == "E605"
         assert all(self._claims(entry.path) == [] for entry in built)
 
+    def test_S12_3_a_file_failing_its_digest_stops_the_write_before_it_starts(
+        self, cohort
+    ):
+        """A commit refuses to restamp a digest its source already failed
+        (E701); that was met at the commit of the file it fell on, after every
+        file before it had claimed the split."""
+        import h5py
+
+        last = sorted(cohort.glob("*.medh5"))[-1]
+        with h5py.File(last, "r+") as f:
+            f["images/CT_tp0"][0, 0, 0] += 1
+        built, failures = scan(cohort)
+        assert not failures
+        with pytest.raises(
+            MEDH5Error, match=r"does not match its digest \(images/CT_tp0\)"
+        ) as exc:
+            write_claims(make_splits(built, seed=0), built)
+        assert exc.value.code == "E701"
+        assert all(self._claims(entry.path) == [] for entry in built)
+
     def test_a_split_that_leaks_is_not_written(self, manifest):
         """An entry in two partitions was written as whichever came last."""
         from medh5.dataset.split import Assignment, Split

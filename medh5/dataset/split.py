@@ -224,8 +224,9 @@ def write_claims(
     leaves every file as it was: a ``fold`` the split lacks, a split whose
     :meth:`~Split.leaks` is not empty, a sample inside a collection, and each
     file amending would refuse --- a later minor version, an unknown profile,
-    HDF5 references, or a file the validator rejects.  Only a failure while
-    writing, such as a full disk, can stop it part way.  A fold outside the
+    HDF5 references, a file the validator rejects, or a dataset whose bytes
+    fail its digest (E701), which a commit refuses to restamp.  Only a failure
+    while writing, such as a full disk, can stop it part way.  A fold outside the
     split's range was not a refusal at all: every file was written as
     ``train``.
 

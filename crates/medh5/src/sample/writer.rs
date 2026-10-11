@@ -239,6 +239,50 @@ pub fn amend_into(path: &Path, out: &Path, codec: Option<&str>, without: &[&str]
     Ok(writer)
 }
 
+/// Refuse, by reading alone, a sample whose amendment a commit would refuse
+/// (E701): a dataset whose bytes fail the digest it carries, which the commit
+/// would restamp.  A tool that amends many files checks each before it writes
+/// any, so a refusal is met before the first file changes rather than at the
+/// file it falls on.  `shown` names the file in the refusal.
+pub fn refuse_failed_digests(root: &hdf5::Group, shown: &str) -> Result<()> {
+    // What a commit restamps: every dataset that has a digest to compute,
+    // but `meta` and the derived `index/` (§13.3), as `stamp_digests` walks.
+    let mut restamped = Vec::new();
+    for (name, ds) in ops::datasets(root)? {
+        let derived = name == META_DATASET || name.split('/').next() == Some("index");
+        if !derived && attrs::has(&ds, "digest") && crate::integrity::digest::digestible(&ds)? {
+            restamped.push(name);
+        }
+    }
+    let failed = failing_digests(root, &restamped)?;
+    if failed.is_empty() {
+        return Ok(());
+    }
+    Err(restamp_refused(shown, &failed))
+}
+
+/// E701 for amending the file `shown` names, whose datasets `failed` do not
+/// match their digests.
+fn restamp_refused(shown: &str, failed: &[String]) -> Error {
+    let one = failed.len() == 1;
+    let listed = failed.iter().take(5).cloned().collect::<Vec<_>>().join(", ");
+    let more = if failed.len() > 5 { format!(" (and {} more)", failed.len() - 5) } else { String::new() };
+    Error::coded(
+        "E701",
+        format!(
+            "refusing to amend {shown}: {} {} not match {} digest{} ({listed}{more}), and a commit would restamp {} \
+             --- re-attesting bytes nobody verified, with no record that they changed. Restore the content, or \
+             restamp it deliberately with `medh5 fix --rewrite-digests --reason ...`, which records the reason in \
+             the file's provenance",
+            if one { "a dataset" } else { "datasets" },
+            if one { "does" } else { "do" },
+            if one { "its" } else { "their" },
+            if one { "" } else { "s" },
+            if one { "it" } else { "them" },
+        ),
+    )
+}
+
 impl SampleWriter {
     /// A writer for `path`; `source` copies an existing sample in (amend),
     /// but for the top-level members it names.
@@ -1351,21 +1395,7 @@ impl SampleWriter {
         if failed.is_empty() {
             return Ok(());
         }
-        let shown: Vec<String> = failed.iter().take(5).cloned().collect();
-        let more = if failed.len() > 5 { format!(" (and {} more)", failed.len() - 5) } else { String::new() };
-        Err(Error::coded(
-            "E701",
-            format!(
-                "refusing to amend {}: {} {} not match {} digest{} ({}{more}), and a commit would restamp {} ---                  re-attesting bytes nobody verified, with no record that they changed. Restore the content, or                  restamp it deliberately with `medh5 fix --rewrite-digests --reason ...`, which records the reason                  in the file's provenance",
-                repr_str(&source.to_string_lossy()),
-                if failed.len() == 1 { "a dataset" } else { "datasets" },
-                if failed.len() == 1 { "does" } else { "do" },
-                if failed.len() == 1 { "its" } else { "their" },
-                if failed.len() == 1 { "" } else { "s" },
-                shown.join(", "),
-                if failed.len() == 1 { "it" } else { "them" },
-            ),
-        ))
+        Err(restamp_refused(&repr_str(&source.to_string_lossy()), &failed))
     }
 
     /// Refuse to write a file the validator would reject (§15): the
@@ -1459,5 +1489,26 @@ mod tests {
         // Stamping only what carries no digest restamps nothing it inherited.
         amend(&path, None).unwrap().commit(false).unwrap();
         assert_eq!(mismatched(&path), vec!["images/CT".to_string()]);
+    }
+
+    /// Read alone, a sample is refused as its amendment's commit refuses it,
+    /// so a tool amending many files meets the refusal before writing any.
+    #[test]
+    fn s13_1_reading_refuses_the_amendment_its_commit_would() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.medh5");
+        sample(&path);
+        let shown = repr_str(&path.to_string_lossy());
+        let read = || refuse_failed_digests(&open_read(&path).unwrap().as_group().unwrap(), &shown);
+        read().unwrap();
+        {
+            let file = hdf5::File::open_rw(&path).unwrap();
+            let ct = file.dataset("images/CT").unwrap();
+            ct.write_slice(&ndarray::arr3(&[[[999i16]]]), (0..1, 0..1, 0..1)).unwrap();
+        }
+        let refused = read().unwrap_err();
+        let committed = amend(&path, None).unwrap().commit(true).unwrap_err();
+        assert_eq!((refused.code(), refused.to_string()), (committed.code(), committed.to_string()));
+        assert!(!refused.to_string().contains("  "), "{refused}");
     }
 }

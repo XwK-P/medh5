@@ -18,7 +18,7 @@ use crate::dataset::manifest::{Entry, Manifest};
 use crate::h5::{attrs, ops};
 use crate::json::{num, repr_list, repr_str};
 use crate::sample::open_sample;
-use crate::sample::writer::amend;
+use crate::sample::writer::{amend, refuse_failed_digests};
 use crate::{Error, Result};
 
 /// Ratios when none are given.
@@ -461,9 +461,10 @@ fn deal<'a>(ordered: Vec<(Option<String>, String, Vec<&'a Entry>)>, shares: &Ind
 /// Every refusal is met before the first file is amended: the fold, a split
 /// that places something twice, a sample inside a collection, and each file
 /// amending would refuse --- another major or a later minor (1.1 §2.3), a
-/// profile this engine does not implement, HDF5 references, and a file the
-/// validator rejects, which a commit refuses to write (§15).  Only a failure
-/// while writing, such as a full disk, can stop it part way.
+/// profile this engine does not implement, HDF5 references, a file the
+/// validator rejects, which a commit refuses to write (§15), and a dataset
+/// whose bytes fail its digest, which a commit refuses to restamp (E701).
+/// Only a failure while writing, such as a full disk, can stop it part way.
 pub fn write_claims(
     split: &Split,
     manifest: &Manifest,
@@ -558,8 +559,10 @@ pub fn write_claims(
 
 /// What amending `path` and committing it would refuse, found by reading:
 /// a collection or another major (on opening), a later minor or a profile
-/// this engine does not implement (1.1 §2.3), HDF5 references, and an error
-/// the validator reports at the level a commit checks (§15).
+/// this engine does not implement (1.1 §2.3), HDF5 references, an error the
+/// validator reports at the level a commit checks (§15), and a digest the
+/// bytes fail, which the commit would restamp (E701) --- met at commit, it
+/// stopped the run after the files before it had claimed the split.
 fn claimable(path: &Path) -> Result<()> {
     let shown = repr_str(&path.to_string_lossy());
     let sample = open_sample(path)?;
@@ -576,7 +579,7 @@ fn claimable(path: &Path) -> Result<()> {
             ),
         ));
     }
-    Ok(())
+    refuse_failed_digests(&sample.root, &shown)
 }
 
 /// How a split names one manifest entry: its path, or `path::key` for a

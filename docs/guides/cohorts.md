@@ -137,8 +137,9 @@ changes, so a refused write leaves every file as it was: a fold the split does
 not have (or a fold given for a split made with ratios), a split that places
 something twice, a sample inside a collection, and each file an amendment would
 refuse — a later minor version, a profile this engine does not implement, HDF5
-references, or a file the validator rejects. Only a failure while writing, such
-as a full disk, can stop it part way.
+references, a file the validator rejects, or a dataset whose bytes fail its
+digest (E701). Only a failure while writing, such as a full disk, can stop it
+part way.
 
 Assignment is deterministic given the manifest's entries, the seed and the
 parameters — a hash, not a shuffle — so two machines produce the same
