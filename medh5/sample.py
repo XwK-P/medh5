@@ -479,11 +479,8 @@ class Sample:
         return found
 
 
-FRAME_ATTRS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("grids", ("frame_uid",)),
-    ("annotations", ("frame_uid",)),
-    ("transforms", ("from_frame", "to_frame")),
-)
+FRAME_ATTRS: tuple[tuple[str, tuple[str, ...]], ...] = _core.FRAME_ATTRS
+"""Where frame-of-reference uids are named: ``(group, attribute names)``."""
 
 
 def annotation_id(reference: str) -> str:

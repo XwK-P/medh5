@@ -1568,6 +1568,11 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(annotation_id, m)?)?;
     let py = m.py();
     m.add("FORMAT_VERSION", medh5::FORMAT_VERSION)?;
+    let frames = medh5::sample::FRAME_ATTRS
+        .iter()
+        .map(|(group, names)| Ok((*group, PyTuple::new(py, *names)?)))
+        .collect::<PyResult<Vec<_>>>()?;
+    m.add("FRAME_ATTRS", PyTuple::new(py, frames)?)?;
     m.add("PROFILES", PyTuple::new(py, medh5::sample::PROFILES)?)?;
     m.add("ROOT_DIGEST_ATTRS", PyTuple::new(py, medh5::sample::ROOT_DIGEST_ATTRS)?)?;
     m.add("SPEC_IMAGE_ATTRS", PyTuple::new(py, medh5::sample::SPEC_IMAGE_ATTRS)?)?;

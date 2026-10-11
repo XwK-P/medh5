@@ -90,6 +90,7 @@ __all__ = [
     "FLOAT16_SAFE_VOXELS",
     "FORMAT_VERSION",
     "FORMS",
+    "FRAME_ATTRS",
     "FeatureCacheHandle",
     "GEOMETRIC_KINDS",
     "GEOMETRY_RTOL",
@@ -565,6 +566,7 @@ EXTRAPOLATIONS: tuple[str, ...]
 FLOAT16_SAFE_VOXELS: float
 FORMAT_VERSION: str
 FORMS: tuple[str, ...]
+FRAME_ATTRS: tuple[tuple[str, tuple[str, ...]], ...]
 GEOMETRIC_KINDS: tuple[str, ...]
 GEOMETRY_RTOL: float
 GROUPABLE: tuple[str, ...]
