@@ -959,6 +959,19 @@ class TestErrorsNameTheFile:
             assert repr(str(sample_path)) in out.err, argv
 
 
+def _strings(value):
+    """Every string in a JSON document, keys included."""
+    if isinstance(value, dict):
+        for key, item in value.items():
+            yield key
+            yield from _strings(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _strings(item)
+    elif isinstance(value, str):
+        yield value
+
+
 class TestBatches:
     """A command over several files reports on every one: a file it cannot
     process is an entry of its own, the files before it keep their reports,
@@ -994,7 +1007,10 @@ class TestBatches:
         code, out = run(capsys, *command, *batch, "--json")
         assert code == EXIT_ERROR
         payload = json.loads(out.out)
-        assert batch[1] in out.out and batch[2] in out.out, payload
+        # Looked for in the parsed document: JSON escapes the backslashes of
+        # a Windows path, so the raw text never holds the path as given.
+        named = set(_strings(payload))
+        assert batch[1] in named and batch[2] in named, payload
         assert "medh5: " in out.err
 
     def test_a_refused_scrub_keeps_the_reports_of_files_already_changed(

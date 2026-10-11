@@ -21,6 +21,7 @@ onto the grid so a reader never has to infer them.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 from collections.abc import Iterable, Mapping, Sequence
@@ -475,6 +476,14 @@ def read_nifti(
         # problem as one missed it, and the command line printed a traceback.
         raise MEDH5ValidationError(
             f"{os.fspath(path)} is not a NIfTI file: {exc}"
+        ) from None
+    except FileNotFoundError as exc:
+        if exc.filename is not None:
+            raise
+        # nibabel's names no `filename`, and spells the path in POSIX form
+        # (`C:/...` on Windows): name the file as it was given.
+        raise FileNotFoundError(
+            errno.ENOENT, "No such file or no access", os.fspath(path)
         ) from None
     notes = _geometry_notes(image, path, assume_geometry=assume_geometry)
     units, unit_stated = _units(image)
