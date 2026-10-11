@@ -5,7 +5,8 @@ use std::collections::BTreeMap;
 use indexmap::IndexMap;
 
 use super::{
-    child, children, float_list, grid_spatial, has_member, loc, read_f64, str_attr, strs_attr, sub_dataset, Context,
+    child, children, float_list, grid_spatial, has_member, kinds_known, loc, read_f64, str_attr, strs_attr,
+    sub_dataset, Context,
 };
 use crate::h5::attrs;
 use crate::h5::ops::{self, Node};
@@ -161,6 +162,11 @@ fn check_affine(
     let Some(grids) = grids else { return Ok(Vec::new()) };
     let mut wrong = Vec::new();
     for (grid_id, g) in related_grids(group, grids, source, target)? {
+        // A grid naming an axis kind this validator does not know has no
+        // count of spatial axes to hold the matrix to; its own finding stands.
+        if !kinds_known(grids, &grid_id)? {
+            continue;
+        }
         let n_spatial = strs_attr(loc(&g), "axis_kinds")?.iter().filter(|k| *k == "spatial").count();
         if n_spatial != s {
             wrong.push(format!("grid {} has {n_spatial} spatial axes", repr_str(&grid_id)));
@@ -227,7 +233,9 @@ fn check_field_transform(
     if !VECTOR_SPACES.contains(&space.as_str()) {
         out.push(ctx.unknown("E502", location.clone(), format!("unknown vector_space {}", repr_str(&space))));
     }
-    if let Some(ds) = sub_dataset(group, dataset) {
+    // The field and the lattice are measured in the grid's spatial axes,
+    // which a kind this validator does not know leaves uncounted.
+    if let (Some(ds), true) = (sub_dataset(group, dataset), kinds_known(grids, &grid_id)?) {
         let shape = ds.shape();
         let kinds = strs_attr(&g, "axis_kinds")?;
         let n_spatial = kinds.iter().filter(|k| *k == "spatial").count();

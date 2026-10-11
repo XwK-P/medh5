@@ -22,7 +22,7 @@ from medh5.validate import (
     validate_root,
 )
 from tests.helpers import encode_attr, str_dtype, write_sample
-from tests.kits import Framed, History, Numbered
+from tests.kits import Framed, History, Numbered, Organs
 
 
 def codes(path, level="semantic"):
@@ -1197,3 +1197,39 @@ class TestProjection:
         report = validate_file(self._later(path))
         assert at(report, f"/{node}") == ["W913"]
         assert report.ok, report.diagnostics
+
+    def test_S2_2_an_unknown_axis_kind_is_the_grids_finding_alone(self, tmp_path):
+        """Which axes are spatial is not known where a grid names a kind this
+        validator does not: an annotation on it was E405, its extents counted
+        from the kinds it knows, under the grid's own W913."""
+        path = tmp_path / "s.medh5"
+        with Organs.writer(path) as w:
+            w.add_segmentation("seg", grid="g", masks=Organs.blocks())
+        with h5py.File(path, "r+") as handle:
+            handle["grids/g"].attrs["axis_kinds"] = encode_attr(
+                ["depth", "spatial", "spatial"]
+            )
+        assert at(validate_file(path), "/annotations/seg/data") == []
+        report = validate_file(self._later(path))
+        assert at(report, "/grids/g") == ["W913"]
+        assert at(report, "/annotations/seg/data") == []
+        assert report.ok, report.diagnostics
+
+    def test_S2_2_nothing_is_measured_against_an_unknown_axis_kind(self, tmp_path):
+        """Index-space boxes, a field sampled on the grid and an affine relating
+        it were E405, E503 and E504, each counting the grid's spatial axes from
+        the kinds this validator knows."""
+        path = self._assorted(tmp_path / "a.medh5")
+        assert validate_file(path).ok
+        with h5py.File(path, "r+") as handle:
+            handle["grids/g"].attrs["axis_kinds"] = encode_attr(
+                ["depth", "spatial", "spatial"]
+            )
+        report = validate_file(self._later(path))
+        assert at(report, "/grids/g") == ["W913"]
+        assert report.ok, report.diagnostics
+        measured = {"/annotations/found", "/transforms/warp", "/transforms/rigid"}
+        found = [
+            d for d in report.diagnostics if d.location.startswith(tuple(measured))
+        ]
+        assert not found, found

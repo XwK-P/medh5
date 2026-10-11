@@ -34,6 +34,7 @@ use std::collections::BTreeSet;
 use ndarray::ArrayD;
 
 use crate::document::SampleDocument;
+use crate::geometry::grid::AXIS_KINDS;
 use crate::h5::attrs;
 use crate::h5::data::{self, Kind};
 use crate::h5::ops::{self, Node, NodeKind};
@@ -247,6 +248,15 @@ fn grid_spatial(grids: &hdf5::Group, grid_id: &str) -> Result<Vec<i64>> {
     let shape = attrs::get_i64s(&g, "shape")?.unwrap_or_default();
     let kinds = strs_attr(&g, "axis_kinds")?;
     Ok(shape.iter().zip(&kinds).filter(|(_, k)| *k == "spatial").map(|(s, _)| *s).collect())
+}
+
+/// Whether this validator knows every one of a grid's `axis_kinds`.  Where it
+/// does not, which axes are spatial is not known: nothing is measured against
+/// them, and the grid's own finding (E110, W913 in a later minor's file)
+/// stands for what would have been.
+fn kinds_known(grids: &hdf5::Group, grid_id: &str) -> Result<bool> {
+    let g = grids.group(grid_id)?;
+    Ok(strs_attr(&g, "axis_kinds")?.iter().all(|k| AXIS_KINDS.contains(&k.as_str())))
 }
 
 /// The rules a level runs, with their names.  Each level includes every

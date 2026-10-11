@@ -4,7 +4,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use super::geometric::{bad_boxes, check_classification, check_geometric};
 use super::{
-    dtype_name, grid_spatial, has_member, int_set, loc, read_f64, read_i64, str_attr, strs_attr, sub_dataset, Context,
+    dtype_name, grid_spatial, has_member, int_set, kinds_known, loc, read_f64, read_i64, str_attr, strs_attr,
+    sub_dataset, Context,
 };
 use crate::annotations::header::{ANNOTATION_KINDS, RESERVED_KINDS, TASKS, VOXEL_KINDS};
 use crate::annotations::layout::{self, mask_problems};
@@ -183,10 +184,10 @@ pub fn check_annotations(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
                 ));
             }
         }
-        // The grid's spatial axes, where it has them: what index coordinates
-        // and instance masks are measured against.
+        // The grid's spatial axes, where it has them and they are known: what
+        // index coordinates and instance masks are measured against.
         let spatial: Option<Vec<usize>> = match (&grid_id, &grids) {
-            (Some(gid), Some(g)) if ops::exists(g, gid) => grid_spatial(g, gid)
+            (Some(gid), Some(g)) if ops::exists(g, gid) && kinds_known(g, gid)? => grid_spatial(g, gid)
                 .ok()
                 .filter(|s| !s.is_empty())
                 .map(|s| s.iter().map(|v| (*v).max(0) as usize).collect()),
@@ -343,21 +344,25 @@ fn check_voxel_shape(
         return Ok(out);
     }
     let Some(ds) = sub_dataset(group, "data") else { return Ok(out) };
-    let spatial = grid_spatial(grids, gid)?;
     let shape: Vec<i64> = ds.shape().iter().map(|v| *v as i64).collect();
     let stacked = matches!(kind, "layers" | "bitmask" | "probmap");
     let tail: Vec<i64> = if stacked { shape.get(1..).unwrap_or(&[]).to_vec() } else { shape.clone() };
-    if tail != spatial {
-        out.push(ctx.err(
-            "E405",
-            format!("/annotations/{name}/data"),
-            format!(
-                "spatial shape {} != grid {} spatial shape {}",
-                repr_int_tuple(&tail),
-                repr_str(gid),
-                repr_int_tuple(&spatial)
-            ),
-        ));
+    // A grid naming an axis kind this validator does not know has no spatial
+    // shape to compare with: its own finding stands, and the rest is judged.
+    if kinds_known(grids, gid)? {
+        let spatial = grid_spatial(grids, gid)?;
+        if tail != spatial {
+            out.push(ctx.err(
+                "E405",
+                format!("/annotations/{name}/data"),
+                format!(
+                    "spatial shape {} != grid {} spatial shape {}",
+                    repr_int_tuple(&tail),
+                    repr_str(gid),
+                    repr_int_tuple(&spatial)
+                ),
+            ));
+        }
     }
     // A probmap's leading axis is its classes (§7.5): a plane per class id.
     // Absent or unreadable `class_ids` are another rule's finding.
