@@ -144,8 +144,12 @@ s.compute_content_id()          # recompute rather than read
 
 Two properties follow from digesting content rather than encoding:
 
-**Recompression preserves `content_id`.** Every stored byte changes; no digest
-does. A cohort re-encoded for training is still verifiably the same data.
+**Recompression preserves `content_id`.** Every re-encoded dataset's stored
+bytes change; no digest does. A cohort re-encoded for training is still
+verifiably the same data. A dataset whose stored type a rebuild would change ---
+an enumeration with its names, a committed (named) type, another byte order ---
+is copied as stored instead, and listed in `RecompressResult.kept` (`KEPT` on
+the command line); strings and other non-numeric data are copied as stored too.
 
 **The root is not a substitute for the objects.** Because `content_id` hashes
 *digests*, editing a dataset without restamping it breaks that object's digest

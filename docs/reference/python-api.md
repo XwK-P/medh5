@@ -425,6 +425,7 @@ with medh5.open("cohort/P-03.medh5") as s:
     c.event("lab0").available_us       # inclusive (lo, hi) bounds, or None
     c.documents                        # (DocumentInfo, ...): no text read yet
     c.text("report0_text_v1")          # one document's text, read now
+    s.document_text("report0_text_v1") # the same, without reading the events
     c.links                            # (Link, ...)
     chosen = c.select(24 * HOUR)       # -> Selection, strict prospective
     chosen.certified, chosen.event_ids

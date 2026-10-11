@@ -426,8 +426,9 @@ medh5 recompress PATH --profile P --out FILE [--rechunk] [--json]
 ```
 
 Re-encode bulk data under `training`, `balanced`, `archive` or `portable`.
-Every stored byte changes; no `content_id` does, because the digest is over
-content and not over its encoding.
+Every re-encoded dataset's stored bytes change (one whose type a rebuild would
+lose is copied as stored, and printed as `KEPT`); no `content_id` does, because
+the digest is over content and not over its encoding.
 
 The output is **verified** against the digests it carries before the command
 returns, and the exit code follows: a file whose bytes had already been
