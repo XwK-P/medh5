@@ -328,7 +328,8 @@ out `h5py` objects --- and the behaviour changes below.
 - **A drifted conformance suite fails the score** (`medh5 conformance score`,
   exit 1, `"ok": false`): a score over files that are not the published ones
   is not a score. `--json` lists them under `changed`, where a warning was
-  printed before the document.
+  printed before the document. The published suite's README says the score
+  fails, where it said it warns.
 - **`E004` quotes the engine's JSON parser** ("key must be a string at line 1
   column 2") rather than Python's `json` module.
 - **A NaN or infinity in the sample document is refused** with
@@ -362,20 +363,34 @@ out `h5py` objects --- and the behaviour changes below.
 - **`FORMAT_VERSION` is `"1.1"`**, the newest version the package writes. A
   sample without the clinical profile is still written as `1.0`.
 - **A later minor is a projection.** A file of a minor version newer than the
-  package implements opens and validates as what it knows, with every unknown
-  item reported as `W913` --- an unrecomputable `content_id` too, rather than
-  `E702` --- and is never amended, recompressed or packed (`MEDH5VersionError`).
-  An unknown value in its `/meta` (`sex: "X"`, a new activity `type`) is set
-  aside or read as `other`, and a grid's unknown unit or axis kind is `W913`
-  too: one such value stopped every document rule, so a planted `E107` went
-  unreported and the file passed. An annotation's unknown `task`, `closure`,
-  `space` or `scope`, and a transform's unknown `vector_space`, are `W913` to
-  the validator as well, where they failed the file; at a version the package
-  implements they stay `E412` and `E502`. `Sample.document` and
-  `read_document` read `/meta` through the same projection, where they
-  refused (`E005`) what the validator passed; a required member that nothing
-  known can stand in for is still `E005`, which names it. 1.0 §16's "accept a
-  higher MINOR" is corrected accordingly (Appendix C.1).
+  package implements opens, lists and validates as what it knows, with every
+  unknown item reported as `W913` --- an unrecomputable `content_id` too,
+  rather than `E702` --- and is never amended, recompressed or packed
+  (`MEDH5VersionError`). An unknown value in its `/meta` (`sex: "X"`, a new
+  activity `type`) is set aside or read as `other`, and a grid's unknown unit
+  or axis kind is `W913` too: one such value stopped every document rule, so
+  a planted `E107` went unreported and the file passed. An annotation's
+  unknown `task`, `closure`, `space` or `scope`, and a transform's unknown
+  `vector_space`, are `W913` to the validator as well, where they failed the
+  file; at a version the package implements they stay `E412` and `E502`.
+  `Sample.document` and `read_document` read `/meta` through the same
+  projection, where they refused (`E005`) what the validator passed; a
+  required member holding a value nothing known can stand in for (an agent's
+  `type`) leaves the document unreadable, under `W913`, naming the member.
+  1.0 §16's "accept a higher MINOR" is corrected accordingly (Appendix C.1).
+- **A later minor's objects are listed as its projection.** A grid,
+  annotation or transform holding a value only that minor defines --- an axis
+  kind; an annotation's kind, task, closure, space or scope; a transform's
+  kind or a field's vector space --- is left out of `Sample.grids`, `.images`,
+  `.annotations`, `.transforms` and `.index`, and so is what depends on it: an
+  image or annotation on a grid left out, a field sampled on one, a composite
+  of a transform left out, an index entry of an annotation left out. Looking
+  one up raises `MEDH5ValidationError` coded `W913`, naming the value, and
+  `summary()["left_out"]` and a `left out` line in `medh5 info` name them all.
+  One such object failed whole listings (`E110`, `E401`, `E412`, `E502`), and
+  `summary()` and `medh5 info` with them, though the validator passed the
+  file. A defect met before the value is still the error it was (a grid's
+  shape, `E109`).
 - **An unknown profile refuses an amendment** (`E007`) before anything is
   written, instead of being re-derived away.
 - **`--profile` and `profiles=` add to the profiles a file declares**, where
@@ -550,7 +565,11 @@ out `h5py` objects --- and the behaviour changes below.
   Their geometry was given to every frame unchecked, so an annotation on a
   grid turned in plane, or shifted 10 mm in the same frame, was exported
   centimetres from where it was drawn. Images in either slice order are
-  matched to their slices.
+  matched to their slices. A SEG holds a segment per class, so any kind but
+  `labelmap`, `layers`, `bitmask`, `instances` and `probmap` is refused
+  (`E401`) before anything is read, where boxes failed with an
+  `AttributeError` traceback and a `mask`, which has no classes, with an
+  `IndexError` from highdicom.
 - **`from_nnunetv2` reads what the header's scaling means**: an image keeps
   `scl_slope`/`scl_inter` as its rescale (they were dropped, leaving a CT at its
   stored counts), and label ids are matched after the scale, which must leave
@@ -637,11 +656,12 @@ out `h5py` objects --- and the behaviour changes below.
   deleted first, and the refusal left the image it described without its
   b-values.
 - **A NIfTI export is named `.nii` or `.nii.gz`** (`to_nifti`,
-  `convert to-nifti`, and so `to_nnunetv2(file_ending=…)`): a directory or any
-  other name, `.NII` and `.nii.bz2` included, is refused before the file is
-  written. nibabel takes the format, and the name, from the suffix, so the
-  temporary beside such a target was written under another name and left
-  behind, or `out.img` became an image whose `.hdr` was the stray.
+  `convert to-nifti`, `to_nnunetv2(file_ending=…)`): a directory or any other
+  name, `.NII` and `.nii.bz2` included, is refused before the file is written,
+  and by `to_nnunetv2` before it creates a folder. nibabel takes the format,
+  and the name, from the suffix, so the temporary beside such a target was
+  written under another name and left behind, or `out.img` became an image
+  whose `.hdr` was the stray.
 - **A channel axis is exported as one** (`to_nifti`): with a b-value per
   channel as four dimensions and a `.bval`, the layout diffusion tools read;
   otherwise as NIfTI's vector dimension (`dim[5]`, vector intent), with
@@ -656,10 +676,11 @@ out `h5py` objects --- and the behaviour changes below.
   over a class is written as ignore, which nnU-Net neither trains nor scores.
   `from_nnunetv2` reads the label back as the region, where it made it a class
   called `ignore`.
-- **A one-class NIfTI export refuses an annotation with an ignore region**
-  (`to_nifti(class_key=…)`, `convert to-nifti --class`, §7.7): a 0/1 mask has
-  no value for "ignored", and its 0 says "examined, absent", so every ignored
-  voxel was exported as a negative. Exported whole, the annotation's labelmap
+- **A one-class NIfTI export and a DICOM SEG export refuse an annotation with
+  an ignore region** (`to_nifti(class_key=…)`, `convert to-nifti --class`,
+  `to_dicom_seg`, §7.7): a 0/1 mask and a `BINARY` segment have no value for
+  "ignored", and their 0 says "examined, absent", so every ignored voxel was
+  exported as a negative. Exported whole to NIfTI, the annotation's labelmap
   writes those voxels as its `ignore_id`.
 - **A MONAI crop keeps the image's `spatial_shape`** (`to_metatensor(roi=…)`):
   it was the crop's whole shape, channel axis included, and `SaveImage` wrote a
@@ -733,6 +754,15 @@ out `h5py` objects --- and the behaviour changes below.
   measures its own volume, which its rotation leaves alone, and a point is
   presence. An annotation of another kind that carries `instance_ids` is
   named in `Tracking.skipped`, and the rest still join.
+- **Instance ids minted from masks are unique within the sample** (§7.4):
+  masks written with `masks=` and stored as `instances` were numbered from 1
+  in every annotation, as in 1.x, so two visits' lesions centimetres apart
+  were both object 1, and `tracks()` joined them. The writer mints above the
+  largest `instance_id` the sample holds (its first such annotation still
+  starts at 1) and keeps the ids given with `instances=`. Files already
+  written keep theirs: nothing marks an id as minted. An id past the largest
+  `uint64` is refused (`E404`), by `instances_from_masks` too, where it
+  wrapped to 0.
 - **Volume change is measured in millimetres** (`Track.relative_change`,
   `medh5 track`): each observation's volume is in its grid's units cubed, so a
   visit on a grid in metres beside one in millimetres read as a millionfold
@@ -1148,10 +1178,13 @@ out `h5py` objects --- and the behaviour changes below.
   unreadable file. The error's own code is reported (`E405` there), and
   `E001` only for what could not be read, at the object where the rule knows
   it.
-- **One unknown axis kind is one finding**: the annotations and transforms on
-  a grid naming one were measured against the axes the known kinds counted,
-  adding `E405`, `E503` and `E504` to the grid's own `E110` --- and failing a
-  later minor's file, where the grid's was only `W913`.
+- **One unknown value is one finding**: the annotations and transforms on a
+  grid naming an unknown axis kind were measured against the axes the known
+  kinds counted, adding `E405`, `E503` and `E504` to the grid's own `E110`,
+  and an `inverse_id` naming a transform of an unknown kind, or without
+  frames, added `E505` ("does not exist") to that transform's own `E502`. In
+  a later minor's file, where the unknown value is only `W913`, the added
+  errors failed the file.
 - **An unreadable `/meta` no longer floods a clinical sample with `E813`**:
   every timepoint, activity and de-identification reference was checked
   against an empty document, and a task's preflight refused the subject for
@@ -1417,7 +1450,10 @@ out `h5py` objects --- and the behaviour changes below.
   converter or to a command without `--key`, or a sample to `ls` or `unpack`,
   is told what the file is and pointed to `medh5 unpack` or `medh5 info`, not
   to `open_collection()` or `medh5.open`, and `seg stats`, `agree` and the
-  clinical commands no longer quote the engine's lookup sentence.
+  clinical commands no longer quote the engine's lookup sentence. A SEG or
+  RTSTRUCT conversion refused over a frame `medh5 scrub` pseudonymised names
+  `--frame-salt` beside `frame_salt=`, where it named the keyword alone, or
+  nothing when exporting an RTSTRUCT.
 - **`pack` never writes over one of its own sources**, which replaced the
   sample with the collection, and `unpack` refuses members whose names differ
   only in case, or a member named twice. `dataset index` refuses a root it
