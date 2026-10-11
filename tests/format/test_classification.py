@@ -319,8 +319,8 @@ class TestMultiAssertionScopes:
             assert sample.annotations["cls"].summary()["labels"] == {"lesion": 1.0}
 
 
-class TestF23ClassificationRows:
-    def test_F23_S9_one_class_per_lesion(self, tmp_path: Path):
+class TestClassificationRows:
+    def test_S9_one_class_per_lesion(self, tmp_path: Path):
         """ "Lesion 1 malignant, lesion 2 benign" needs the class twice."""
         path = tmp_path / "rows.medh5"
         with Numbered.writer(path) as w:
@@ -336,7 +336,7 @@ class TestF23ClassificationRows:
             assert [(a.class_id, a.value) for a in by_unit[1]] == [(1, 1.0)]
             assert [(a.class_id, a.value) for a in by_unit[2]] == [(1, 0.0)]
 
-    def test_F23_rows_carry_schemes(self, tmp_path: Path):
+    def test_S9_rows_carry_schemes(self, tmp_path: Path):
         path = tmp_path / "schemes.medh5"
         with Numbered.writer(path) as w:
             w.add_classification(
@@ -348,7 +348,7 @@ class TestF23ClassificationRows:
             assertions = sample.annotations["grade"].assertions()
             assert [a.scheme_value for a in assertions] == ["4", "2"]
 
-    def test_F23_rows_of_different_widths_are_refused(self, tmp_path: Path):
+    def test_S9_rows_of_different_widths_are_refused(self, tmp_path: Path):
         with Numbered.writer(tmp_path / "mixed.medh5") as w:
             with pytest.raises(MEDH5ValidationError) as caught:
                 w.add_classification(
@@ -357,7 +357,7 @@ class TestF23ClassificationRows:
             assert caught.value.code == "E405"
             w.abort()
 
-    def test_F23_a_column_given_twice_is_refused(self, tmp_path: Path):
+    def test_a_column_given_twice_is_refused(self, tmp_path: Path):
         with Numbered.writer(tmp_path / "twice.medh5") as w:
             with pytest.raises(MEDH5ValidationError, match="once"):
                 w.add_classification(

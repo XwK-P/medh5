@@ -261,15 +261,15 @@ class TestVerifyRoot:
         assert "images/CT_tp0" in result.malformed
 
 
-class TestW10Integrity:
-    """L-12, L-17: a check that checks, and an amend that stays addressed."""
+class TestIntegrity:
+    """A check that checks, and an amend that stays addressed."""
 
     def _sample(self, path: Path) -> Path:
         with Organs.writer(path) as w:
             w.add_segmentation("seg", grid="g", masks=Organs.blocks())
         return path
 
-    def test_L12_S13_1_recompress_verifies_what_it_wrote(self, tmp_path: Path):
+    def test_S13_1_recompress_verifies_what_it_wrote(self, tmp_path: Path):
         """`content_id_preserved` compared the attribute it had just copied.
 
         True by construction --- including on a file whose bytes were corrupted
@@ -297,9 +297,7 @@ class TestW10Integrity:
         with medh5.open(broken) as sample:
             assert not sample.verify().ok
 
-    def test_L12_the_cli_exit_code_follows_the_verification(
-        self, tmp_path: Path, capsys
-    ):
+    def test_the_cli_exit_code_follows_the_verification(self, tmp_path: Path, capsys):
         import h5py
 
         from medh5.cli import main
@@ -313,7 +311,7 @@ class TestW10Integrity:
         assert main(["recompress", str(broken), "--profile", "portable"]) == 1
         assert "FAILED" in capsys.readouterr().out
 
-    def test_L17_S13_2_an_amend_without_digests_stays_addressed(self, tmp_path: Path):
+    def test_S13_2_an_amend_without_digests_stays_addressed(self, tmp_path: Path):
         """`digests=False` dropped `content_id` and left the file unaddressed.
 
         The flag exists to skip re-reading what copy-on-write already brought
@@ -331,7 +329,7 @@ class TestW10Integrity:
             assert result.ok
             assert not result.undigested
 
-    def test_L17_a_fresh_file_is_fully_stamped_either_way(self, tmp_path: Path):
+    def test_S13_2_a_fresh_file_is_fully_stamped_either_way(self, tmp_path: Path):
         path = tmp_path / "fresh.medh5"
         writer = Organs.writer(path)
         writer.add_segmentation("seg", grid="g", masks=Organs.blocks())
@@ -474,8 +472,8 @@ class TestDigestedTypes:
             assert sample.verify().mismatched == ("x_site/fixed", "x_site/vlen")
 
 
-class TestL26Verify:
-    """L-26: an undigested dataset inside an attested object fails `verify`."""
+class TestVerify:
+    """An undigested dataset inside an attested object fails `verify`."""
 
     def _boxes(self, path: Path) -> Path:
         with Framed.writer(path) as w:
@@ -484,7 +482,7 @@ class TestL26Verify:
             )
         return path
 
-    def test_L26_S13_2_an_undigested_dataset_in_an_annotation_fails_verify(
+    def test_S13_2_an_undigested_dataset_in_an_annotation_fails_verify(
         self, tmp_path: Path
     ):
         """`instance_ids` added without a digest verified, and `tracks()` used it."""
@@ -499,7 +497,9 @@ class TestL26Verify:
             assert result.unattested == ("annotations/det/instance_ids",)
             assert result.summary()["unattested"] == ["annotations/det/instance_ids"]
 
-    def test_L26_recompress_names_the_unattested_dataset(self, tmp_path: Path, capsys):
+    def test_S13_2_recompress_names_the_unattested_dataset(
+        self, tmp_path: Path, capsys
+    ):
         """It failed with `FAILED (0)` and no path, in the table and the JSON."""
         from medh5.cli import main
         from medh5.storage import recompress
@@ -518,7 +518,7 @@ class TestL26Verify:
         assert "FAILED (1)" in out
         assert "UNSIGNED  annotations/det/instance_ids" in out
 
-    def test_L26_fix_counts_it_as_needing_digests(self, tmp_path: Path):
+    def test_S13_2_fix_counts_it_as_needing_digests(self, tmp_path: Path):
         from medh5.integrity import diagnose
 
         path = self._boxes(tmp_path / "det.medh5")
@@ -530,7 +530,7 @@ class TestL26Verify:
         assert diagnosis.needs_digests
         assert diagnosis.unattested == ("annotations/det/instance_ids",)
 
-    def test_L26_the_writers_files_have_none_and_an_unaddressed_file_is_not_judged(
+    def test_S13_2_the_writers_files_have_none_and_an_unaddressed_file_is_not_judged(
         self, tmp_path: Path
     ):
         path = self._boxes(tmp_path / "det.medh5")
@@ -546,12 +546,12 @@ class TestL26Verify:
             assert s.verify().unattested == ()
 
 
-class TestF13CyclicCompare:
-    """F13 of the round-4 audit: comparing a tree that links back to an
+class TestCyclicCompare:
+    """Comparing a tree that links back to an
     ancestor recursed without end, and a self-cycle overflowed the stack ---
     a segfault, not an exception.  Trees are compared as graphs now."""
 
-    def test_F13_S14_4_a_cycle_compares_once_at_the_default_stack_size(
+    def test_S14_4_a_cycle_compares_once_at_the_default_stack_size(
         self, tmp_path: Path
     ):
         import subprocess
@@ -576,7 +576,7 @@ class TestF13CyclicCompare:
         assert run.returncode == 0, (run.returncode, run.stderr[-2000:])
         assert run.stdout.strip() == "()"
 
-    def test_F13_an_alias_differs_from_a_duplicate(self, tmp_path: Path):
+    def test_S13_2_an_alias_differs_from_a_duplicate(self, tmp_path: Path):
         from medh5.integrity import subtrees_identical
 
         alias = write_sample(tmp_path / "alias.medh5")
@@ -590,8 +590,8 @@ class TestF13CyclicCompare:
         assert any(line.startswith("/zzz_alias") for line in found), found
 
 
-class TestF01BoundPaths:
-    """F01 of the round-4 audit: a line binds bytes to the path it names
+class TestBoundPaths:
+    """A line binds bytes to the path it names
     (§13.2, E704).  Coverage was judged by object, so a file crafted with an
     alias sorting before `images/` --- holding the image's line, digested and
     sealed there --- passed every check, and relinking `images/CT_tp0` to
@@ -601,7 +601,7 @@ class TestF01BoundPaths:
 
     @staticmethod
     def _crafted(path: Path) -> str:
-        """The audit's file: an alias sorting before `images/` holding the
+        """The crafted file: an alias sorting before `images/` holding the
         image's line, and a decoy --- the image's attributes over other voxels
         --- with a line of its own, both digested and the root sealed."""
         write_sample(path)
@@ -623,7 +623,7 @@ class TestF01BoundPaths:
             handle.attrs["content_id"] = content_id
         return content_id
 
-    def test_F01_S13_2_a_name_an_earlier_alias_holds_is_unbound(self, tmp_path: Path):
+    def test_S13_2_a_name_an_earlier_alias_holds_is_unbound(self, tmp_path: Path):
         from medh5.errors import MEDH5IntegrityError
         from medh5.task import SourceRef
 
@@ -642,7 +642,7 @@ class TestF01BoundPaths:
             SourceRef.pin(path)
 
     @pytest.mark.parametrize("link", ["hard", "soft"])
-    def test_F01_S13_2_a_relink_under_an_unchanged_root_is_refused(
+    def test_S13_2_a_relink_under_an_unchanged_root_is_refused(
         self, tmp_path: Path, link: str
     ):
         from medh5.task import SourceRef
@@ -667,7 +667,7 @@ class TestF01BoundPaths:
         diagnostics = validate_file(path, level="integrity").diagnostics
         assert ("E704", "/images/CT_tp0") in {(d.code, d.location) for d in diagnostics}
 
-    def test_F01_S13_2_a_later_alias_changes_nothing(self, tmp_path: Path):
+    def test_S13_2_a_later_alias_changes_nothing(self, tmp_path: Path):
         """The control: a second path after every attested group is an
         extension's, and the image keeps its own path and its line."""
         from medh5.task import SourceRef
@@ -685,7 +685,7 @@ class TestF01BoundPaths:
         pin = SourceRef.pin(path, uri=path.name)
         assert pin.check(tmp_path) == [] and pin.check(tmp_path, deep=True) == []
 
-    def test_F01_S13_2_a_second_path_inside_an_attested_group_is_unbound(
+    def test_S13_2_a_second_path_inside_an_attested_group_is_unbound(
         self, tmp_path: Path
     ):
         """Inside the groups every path is judged: a second link, a soft link,

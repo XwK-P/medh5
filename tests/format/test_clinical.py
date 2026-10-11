@@ -95,7 +95,7 @@ class TestVersions:
         with pytest.raises(MEDH5VersionError):
             pack([future], tmp_path / "shard.medh5c")
 
-    def test_C06_a_member_of_a_text_column_follows_the_version(
+    def test_S2_2_a_member_of_a_text_column_follows_the_version(
         self, history: Path, tmp_path: Path
     ):
         """A member a UTF-8 column does not define is a later minor's under a
@@ -115,7 +115,7 @@ class TestVersions:
             }
             assert found == {expected}, (version, found)
 
-    def test_C11_S4_a_big_endian_numeric_column_is_E805(
+    def test_S4_a_big_endian_numeric_column_is_E805(
         self, history: Path, tmp_path: Path
     ):
         """1.1 §4 stores numeric columns little-endian; HDF5 converts on read,
@@ -136,12 +136,12 @@ class TestVersions:
         "column",
         ["events/event_id", "events/value_text", "documents/text", "links/relation"],
     )
-    def test_C11_S4_big_endian_offsets_are_E805(
+    def test_S4_big_endian_offsets_are_E805(
         self, history: Path, tmp_path: Path, column: str
     ):
         """A UTF-8 column's offsets are little-endian too: the packed branch
         checked their dtype and rank and not their byte order, so big-endian
-        offsets validated (C11 of the 2.0 re-audit) --- required, nullable
+        offsets validated --- required, nullable
         (empty in every row here) and deferred columns alike."""
         assert "E805" not in validate_file(history).codes
         path = tmp_path / "big.medh5"
@@ -465,8 +465,8 @@ class TestAmendment:
             clinical.augment(sample_path, records)
 
 
-class TestF02ImmutableVersions:
-    """F02 of the round-4 audit: an amendment could attach a payload to an
+class TestImmutableVersions:
+    """An amendment could attach a payload to an
     event version the file already held.  Text linked to an inherited
     text-less document event available at 1 h was owned by that version, and
     selection at 24 h admitted it, though it was written later; an image could
@@ -483,7 +483,7 @@ class TestF02ImmutableVersions:
         available_us=HOUR,
     )
 
-    def test_F02_S7_3_text_attached_to_an_inherited_version_is_refused(
+    def test_S7_3_text_attached_to_an_inherited_version_is_refused(
         self, tmp_path: Path
     ):
         path = tmp_path / "note.medh5"
@@ -502,7 +502,7 @@ class TestF02ImmutableVersions:
         with medh5.open(path) as s:
             assert s.content_id == before
 
-    def test_F02_S7_3_an_image_attached_to_an_inherited_version_is_refused(
+    def test_S7_3_an_image_attached_to_an_inherited_version_is_refused(
         self, history: Path
     ):
         with pytest.raises(MEDH5ValidationError) as caught, medh5.amend(history) as w:
@@ -517,7 +517,7 @@ class TestF02ImmutableVersions:
             )
         assert caught.value.code == "E809"
 
-    def test_F02_S7_3_a_grounding_of_an_inherited_version_stays_allowed(
+    def test_S7_3_a_grounding_of_an_inherited_version_stays_allowed(
         self, history: Path
     ):
         """A link from an inherited version that is not its structural link
@@ -551,7 +551,7 @@ class TestF02ImmutableVersions:
             assert not s.clinical.select(48 * HOUR).admits("annotation", "lesions_tp0")
             assert s.clinical.select(72 * HOUR).admits("annotation", "lesions_tp0")
 
-    def test_F02_S7_2_a_superseding_version_owns_the_text_from_its_availability(
+    def test_S7_2_a_superseding_version_owns_the_text_from_its_availability(
         self, tmp_path: Path
     ):
         path = tmp_path / "note.medh5"
@@ -866,7 +866,7 @@ class TestValidation:
 
     @pytest.mark.parametrize("dropped", ["source_end", "source_start"])
     def test_S7_1_a_span_is_both_endpoints_or_neither(self, tmp_path: Path, dropped):
-        """C05: a link record has a span or none, so a stored half-null pair
+        """A link record has a span or none, so a stored half-null pair
         reached the span rules as no span, validated, and lost the endpoint
         that was there on export."""
         path = tmp_path / "spans.medh5"
@@ -1052,8 +1052,8 @@ class TestSelection:
         assert limited.event_ids == ["ct1", "recist1"]
         assert SelectionPolicy.from_json(SelectionPolicy(kinds=("imaging",)).to_json())
 
-    def test_F15_S9_1_a_window_bounds_plans_from_below(self):
-        """F15 of the round-4 audit: a seven-day window at day +1 excluded a
+    def test_S9_1_a_window_bounds_plans_from_below(self):
+        """A seven-day window at day +1 excluded a
         completed event of day -100 and admitted the same event planned.  The
         window's lower edge holds for plans; only the cutoff is not theirs."""
 
@@ -1174,7 +1174,7 @@ class TestSelection:
 
     @pytest.mark.parametrize("keep", ["latest", "earliest"])
     def test_S9_1_a_limit_of_zero_keeps_no_timed_event(self, keep):
-        """C01: the schema admits 0, which panicked the engine."""
+        """The schema admits 0, which panicked the engine."""
         timed = Event(
             "t", "t", "other", "point", "final", effective_start_us=0, available_us=HOUR
         )
@@ -1187,7 +1187,7 @@ class TestSelection:
 
     @pytest.mark.parametrize("order_by", ["effective", "available"])
     def test_S9_1_a_static_fact_is_not_a_timed_event(self, order_by):
-        """C02: ordered by availability, a static fact counted against the
+        """Ordered by availability, a static fact counted against the
         limit on timed events and was dropped."""
         timed = Event(
             "t",
@@ -1246,9 +1246,9 @@ def test_write_sample_helper_stays_1_0(tmp_path: Path, label_set, masks):
         assert s.version == "1.0"
 
 
-class TestF08Projection:
-    """An imaging projection holds no byte of the history it drops (F08 of
-    the round-4 audit).  ``clinical strip`` copied the file, then amended the
+class TestProjection:
+    """An imaging projection holds no byte of the history it drops.
+    ``clinical strip`` copied the file, then amended the
     copy to unlink ``clinical/``; HDF5 does not reclaim an unlinked group's
     space, so the output verified as 1.0 while every record --- a report's
     text included --- was still in its bytes."""
@@ -1282,9 +1282,7 @@ class TestF08Projection:
         return path.read_bytes()
 
     @pytest.mark.parametrize("codec", ["portable", "balanced"])
-    def test_F08_S10_strip_leaves_no_record_in_the_bytes(
-        self, tmp_path: Path, codec: str
-    ):
+    def test_S10_strip_leaves_no_record_in_the_bytes(self, tmp_path: Path, codec: str):
         import hashlib
 
         source = self._history(tmp_path / "history.medh5", codec)
@@ -1303,7 +1301,7 @@ class TestF08Projection:
 
         scrubber.scan(out)
 
-    def test_F08_the_command_line_strip_leaves_no_record_either(self, tmp_path: Path):
+    def test_S10_the_command_line_strip_leaves_no_record_either(self, tmp_path: Path):
         from medh5.cli import main
 
         source = self._history(tmp_path / "history.medh5", "portable")
@@ -1312,7 +1310,7 @@ class TestF08Projection:
         assert self.MARKER.encode() not in self._bytes(out)
 
     @pytest.mark.parametrize("readd", [False, True], ids=["dropped", "re-added"])
-    def test_F08_S10_drop_clinical_leaves_no_record_in_the_bytes(
+    def test_S10_drop_clinical_leaves_no_record_in_the_bytes(
         self, tmp_path: Path, readd: bool
     ):
         path = self._history(tmp_path / "history.medh5", "portable")
@@ -1334,7 +1332,7 @@ class TestF08Projection:
             else:
                 assert s.clinical is None and s.version == "1.0"
 
-    def test_F08_a_refused_strip_writes_nothing(self, tmp_path: Path, sample_path):
+    def test_S10_a_refused_strip_writes_nothing(self, tmp_path: Path, sample_path):
         out = tmp_path / "nothing.medh5"
         with pytest.raises(MEDH5ValidationError):
             clinical.strip(sample_path, out)  # no clinical profile to strip

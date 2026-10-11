@@ -283,13 +283,13 @@ class TestEncoders:
             encode_probmap({1: np.full(SHAPE, 1.5)}, SHAPE)
         assert exc.value.code == "E411"
 
-    def test_C09_a_probability_that_is_not_a_number_is_refused(self):
+    def test_S7_5_a_probability_that_is_not_a_number_is_refused(self):
         """`f64::min` and `max` skip NaN, so the range check passed a map of NaN."""
         with pytest.raises(MEDH5ValidationError, match="not numbers") as exc:
             encode_probmap({1: np.full(SHAPE, np.nan)}, SHAPE)
         assert exc.value.code == "E411"
 
-    def test_C09_a_normalized_map_sums_to_one(self):
+    def test_S7_5_a_normalized_map_sums_to_one(self):
         with pytest.raises(MEDH5ValidationError, match="sum to 0.9") as exc:
             encode_probmap(
                 {1: np.full(SHAPE, 0.5), 2: np.full(SHAPE, 0.4)}, SHAPE, normalized=True
@@ -299,7 +299,7 @@ class TestEncoders:
             {1: np.full(SHAPE, 0.6), 2: np.full(SHAPE, 0.4)}, SHAPE, normalized=True
         )
 
-    def test_C08_S7_5_a_value_no_dtype_keeps_on_its_side_is_refused(self):
+    def test_S7_5_a_value_no_dtype_keeps_on_its_side_is_refused(self):
         """§7.5: a writer MUST store a dtype under which every voxel keeps its
         side of the threshold.  Within float32 rounding of it, none does, and
         the map was stored as float32 anyway --- one voxel across the line."""
@@ -327,7 +327,7 @@ class TestEncoders:
         assert exc.value.code == "E405"
 
     @pytest.mark.parametrize("n", range(2, 11))
-    def test_F15_S7_5_a_vote_fraction_survives_its_storage(self, tmp_path: Path, n):
+    def test_S7_5_a_vote_fraction_survives_its_storage(self, tmp_path: Path, n):
         """float16 put k/n just under the threshold k/n for n = 3, 5, 6, 7, 9, 10."""
         for k in range(1, n):
             votes = np.zeros(Numbered.SHAPE)
@@ -346,7 +346,7 @@ class TestEncoders:
                 )
                 assert annotation.data.dtype in (np.float16, np.float32)
 
-    def test_F15_float16_is_kept_where_it_is_exact(self, tmp_path: Path):
+    def test_S7_5_float16_is_kept_where_it_is_exact(self, tmp_path: Path):
         path = tmp_path / "half.medh5"
         votes = np.zeros(Numbered.SHAPE)
         votes[2:4] = 0.5
@@ -368,7 +368,7 @@ class TestTranscoding:
         decoded = payload_to_masks(converted, spatial_shape=SHAPE)
         assert masks_equal(masks, decoded)
         # Back from `instances`, the voxels survive and the ids do not, so that
-        # leg has to be asked for (L-25).
+        # leg has to be asked for.
         back = transcode_payload(
             converted,
             "layers",
@@ -417,9 +417,7 @@ class TestTranscoding:
             payload_to_masks(payload)
         assert exc.value.code == "E405"
 
-    def test_Q13_S16_a_transcode_carries_attributes_it_does_not_know(
-        self, tmp_path: Path
-    ):
+    def test_S16_a_transcode_carries_attributes_it_does_not_know(self, tmp_path: Path):
         """`AnnotationHeader.read` dropped them; `amend` carries them elsewhere."""
         path = tmp_path / "t.medh5"
         mask = np.zeros(Framed.SHAPE, bool)
@@ -759,7 +757,7 @@ class TestPayloadEncoderGuards:
         assert empty.class_ids == ()
 
     @pytest.mark.parametrize("class_id", [0, -1, 65535, 70000])
-    def test_Q14_S5_3_every_encoder_refuses_an_id_out_of_range(
+    def test_S5_3_every_encoder_refuses_an_id_out_of_range(
         self, tmp_path: Path, class_id: int
     ):
         """numpy 2 raised OverflowError at the uint16 cast; numpy 1.24 wrapped."""

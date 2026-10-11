@@ -971,8 +971,8 @@ class TestSliceIndexBoxes:
         assert slices[0] == slice(2, 5)
 
 
-class TestL32GeometricGrids:
-    """L-32: index coordinates belong to the annotation's own grid."""
+class TestGeometricGrids:
+    """Index coordinates belong to the annotation's own grid."""
 
     def _two_grids(self, path: Path, *, frame: str | None = "F") -> Path:
         w = medh5.create(path, sample_id="s", subject_id="s", codec="portable")
@@ -989,7 +989,7 @@ class TestL32GeometricGrids:
         w.commit()
         return path
 
-    def test_L32_S3_3_another_grid_of_the_frame_converts_through_world(
+    def test_S3_3_another_grid_of_the_frame_converts_through_world(
         self, tmp_path: Path
     ):
         """A box on the 4 mm grid came back unchanged when asked for the 1 mm grid."""
@@ -1010,7 +1010,7 @@ class TestL32GeometricGrids:
             assert boxes.to_world([[1.5, 3.5, 3.5]]).tolist() == [[6.0, 7.0, 7.0]]
 
     @pytest.mark.parametrize("frame", ["OTHER", None])
-    def test_L32_a_grid_of_another_or_no_frame_is_refused(
+    def test_S3_3_a_grid_of_another_or_no_frame_is_refused(
         self, tmp_path: Path, frame: str | None
     ):
         with medh5.open(self._two_grids(tmp_path / "g.medh5", frame=frame)) as s:
@@ -1024,7 +1024,7 @@ class TestL32GeometricGrids:
                     call()
                 assert caught.value.code == "E414"
 
-    def test_L32_boxes_on_a_slice_stay_on_their_own_grid(self, tmp_path: Path):
+    def test_S8_2_boxes_on_a_slice_stay_on_their_own_grid(self, tmp_path: Path):
         path = tmp_path / "slices.medh5"
         w = medh5.create(path, sample_id="s", subject_id="s", codec="portable")
         w.add_grid("lo", shape=(8, 16, 16), spacing=(4.0, 2.0, 2.0), frame_uid="F")
@@ -1045,10 +1045,10 @@ class TestL32GeometricGrids:
                 boxes.as_slices(grid="hi")
 
 
-class TestN10WorldUnits:
+class TestWorldUnits:
     """World coordinates are numbers in their grid's units (§3.5, §8.1), and
-    two grids' are compared in one convention only (§3.3 rule 4) --- N10 of
-    the round-3 audit: a point at 1 mm went to index 1000 on a grid of 0.001 m
+    two grids' are compared in one convention only (§3.3 rule 4).  Read as
+    they were, a point at 1 mm went to index 1000 on a grid of 0.001 m
     voxels, and an LPS point was read on an RAS grid unflipped."""
 
     @staticmethod
@@ -1070,7 +1070,7 @@ class TestN10WorldUnits:
         w.commit()
         return path
 
-    def test_N10_S3_5_a_world_point_lands_in_another_grids_units(self, tmp_path: Path):
+    def test_S3_5_a_world_point_lands_in_another_grids_units(self, tmp_path: Path):
         with medh5.open(self._sample(tmp_path / "m.medh5")) as s:
             seed, voxel = s.annotations["seed"], s.annotations["voxel"]
             np.testing.assert_allclose(
@@ -1100,7 +1100,7 @@ class TestN10WorldUnits:
     @pytest.mark.parametrize(
         ("coord_system", "units"), [("RAS", "mm"), ("custom", "mm"), ("LPS", "px")]
     )
-    def test_N10_S3_3_rule_4_another_convention_or_px_is_refused(
+    def test_S3_3_rule_4_another_convention_or_px_is_refused(
         self, tmp_path: Path, coord_system: str, units: str
     ):
         path = self._sample(
@@ -1120,11 +1120,11 @@ class TestN10WorldUnits:
             assert caught.value.code == "E414"
 
 
-class TestF18AsWorld:
+class TestAsWorld:
     """``as_world(grid)`` answers in *grid*'s world.  Stored world boxes came
     back as stored whatever grid was named: a box at 3 mm asked for on a grid
     in metres read as 3 m, and one asked for in another frame or convention
-    came back unrefused (F18 of the round-4 audit)."""
+    came back unrefused."""
 
     BOX = np.array([[[2.0, 4.0], [3.0, 6.0], [1.0, 5.0]]], np.float32)
 
@@ -1139,7 +1139,7 @@ class TestF18AsWorld:
             w.add_boxes("world", self.BOX, [1], grid="mm", space="world")
         return path
 
-    def test_F18_S3_5_another_grid_gets_its_own_units(self, tmp_path: Path):
+    def test_S3_5_another_grid_gets_its_own_units(self, tmp_path: Path):
         path = self._sample(tmp_path / "m.medh5", spacing=(0.001,) * 3, units="m")
         with medh5.open(path) as s:
             boxes = s.annotations["world"]
@@ -1155,7 +1155,7 @@ class TestF18AsWorld:
             ("F", {"spacing": (1.0, 1.0, 1.0), "coord_system": "RAS"}),
         ],
     )
-    def test_F18_S3_3_another_frame_or_convention_is_refused(
+    def test_S3_3_another_frame_or_convention_is_refused(
         self, tmp_path: Path, frame: str, other: dict[str, Any]
     ):
         path = self._sample(tmp_path / "x.medh5", frame=frame, **other)

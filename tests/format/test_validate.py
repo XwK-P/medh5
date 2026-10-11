@@ -252,8 +252,8 @@ class TestRules:
 
 class TestStoredProbabilities:
     """§7.5 at the integrity level, on the bytes the digest pass reads: values
-    are numbers in [0, 1], and a `normalized` map's classes sum to 1 (C09 of
-    the 2.0 audit).  Only `threshold` was checked."""
+    are numbers in [0, 1], and a `normalized` map's classes sum to 1.  Only
+    `threshold` was checked."""
 
     @staticmethod
     def _probmap(path: Path) -> Path:
@@ -264,7 +264,7 @@ class TestStoredProbabilities:
         return path
 
     @pytest.mark.parametrize("value", [np.nan, 1.5, -0.25])
-    def test_C09_a_stored_value_outside_the_unit_interval_is_E411(
+    def test_S7_5_a_stored_value_outside_the_unit_interval_is_E411(
         self, tmp_path, value
     ):
         path = self._probmap(tmp_path / "pm.medh5")
@@ -280,7 +280,7 @@ class TestStoredProbabilities:
         # Values are read where the digests are: not below the integrity level.
         assert "E411" not in validate_file(path, level="semantic").codes
 
-    def test_C09_a_normalized_map_that_does_not_sum_to_one_is_E404(self, tmp_path):
+    def test_S7_5_a_normalized_map_that_does_not_sum_to_one_is_E404(self, tmp_path):
         path = self._probmap(tmp_path / "pm.medh5")
         assert validate_file(path, level="integrity").ok
         with h5py.File(path, "r+") as f:
@@ -321,10 +321,10 @@ class TestStoredProbabilities:
             assert f["annotations/soft/data"].dtype == np.float16
         return path
 
-    def test_C09_a_map_that_lost_its_mass_is_E404_at_any_class_count(self, tmp_path):
+    def test_S7_5_a_map_that_lost_its_mass_is_E404_at_any_class_count(self, tmp_path):
         """The allowance was `classes · epsilon`: 1.000001 at 1,024 float16
-        classes, so a normalized map whose every value was zeroed validated
-        (C09 of the 2.0 re-audit).  It is the rounding of the values stored,
+        classes, so a normalized map whose every value was zeroed validated.
+        It is the rounding of the values stored,
         so a softmax's rounding passes and a lost, halved or grown mass does
         not."""
         rng = np.random.default_rng(9)
@@ -348,11 +348,11 @@ class TestStoredProbabilities:
         "shape",
         [(0, 2**62), (0, 2**62, 1, 1), (2, 0, 2**62, 2**62), (0,), (0, 8, 12, 12)],
     )
-    def test_N07_a_malformed_normalized_shape_is_reported(self, tmp_path, shape):
+    def test_S7_5_a_malformed_normalized_shape_is_reported(self, tmp_path, shape):
         """The sums were allocated for the declared voxels before the shape was
         checked: `(0, 2**62)` asked for 2**65 bytes and the validator panicked
-        --- a PanicException, which `except Exception` does not catch (N07 of
-        the 2.0 re-audit).  A map is summed only on its own shape, a row per
+        --- a PanicException, which `except Exception` does not catch.  A map
+        is summed only on its own shape, a row per
         declared class on its grid; any other is the semantic level's E405."""
         path = self._probmap(tmp_path / "pm.medh5")
         with h5py.File(path, "r+") as f:
@@ -365,7 +365,7 @@ class TestStoredProbabilities:
         assert "E405" in report.codes
 
     @pytest.mark.parametrize("shape", [(1, 2**62), (2, 8, 12, 12 * 10**9)])
-    def test_N07_a_dataset_too_large_to_hold_is_reported(self, tmp_path, shape):
+    def test_S14_5_a_dataset_too_large_to_hold_is_reported(self, tmp_path, shape):
         """A file may declare a dataset of any extent and store none of it: the
         digest pass asked the allocator for a row of 2**63 bytes (a panic) or of
         9 TB (an abort, killing the process) for a 10 KiB file.  A read that
@@ -383,8 +383,8 @@ class TestStoredProbabilities:
         assert "more than this process can hold" in found.message
 
 
-class TestN12Strings:
-    """A string read is sized as a numeric one (N12 of the round-3 audit): its
+class TestStrings:
+    """A string read is sized as a numeric one: its
     buffer was `vec![0; width * n]`, unchecked, so a file of a few kilobytes
     declaring strings it does not store panicked the validator or aborted a
     capped process."""
@@ -405,13 +405,13 @@ class TestN12Strings:
         ],
         ids=["declared", "vector"],
     )
-    def test_N12_a_meta_that_is_not_one_string_is_E004(self, tmp_path, dataset):
+    def test_S2_4_a_meta_that_is_not_one_string_is_E004(self, tmp_path, dataset):
         path = self._meta(tmp_path / "meta.medh5", **dataset)
         report = validate_file(path, level="structural")
         (found,) = [d for d in report.diagnostics if d.code == "E004"]
         assert "scalar" in found.message
 
-    def test_N12_strings_too_large_to_hold_are_reported(self, tmp_path):
+    def test_S14_5_strings_too_large_to_hold_are_reported(self, tmp_path):
         path = write_sample(tmp_path / "s.medh5")
         with h5py.File(path, "r+") as f:
             ds = f.create_dataset(
@@ -428,7 +428,7 @@ class TestN12Strings:
     @pytest.mark.skipif(
         not Path("/proc/self/status").exists(), reason="the cap is Linux's"
     )
-    def test_N12_a_capped_process_reports_a_huge_scalar_string(self, tmp_path):
+    def test_S14_5_a_capped_process_reports_a_huge_scalar_string(self, tmp_path):
         """A 1 GiB scalar string, declared and never stored, was allocated
         outright: under a cap the process aborted.  Reserved fallibly, it is an
         error the validator reports."""
@@ -458,9 +458,9 @@ class TestN12Strings:
         assert "E001" in run.stdout, run.stdout
 
 
-class TestF10DecodedStrings:
-    """A string read is budgeted by what it decodes to (F10 of the round-4
-    audit).  Every element decodes to a `String` beyond its stored bytes, so a
+class TestDecodedStrings:
+    """A string read is budgeted by what it decodes to.  Every element
+    decodes to a `String` beyond its stored bytes, so a
     few kilobytes of compressed one-byte strings held hundreds of megabytes
     once read --- and the digest read every string of the dataset at once."""
 
@@ -478,7 +478,7 @@ class TestF10DecodedStrings:
             ds.attrs["digest"] = "sha256:" + "0" * 64
         return path
 
-    def test_F10_S13_1_a_digest_reads_strings_a_slab_at_a_time(self, tmp_path):
+    def test_S13_1_a_digest_reads_strings_a_slab_at_a_time(self, tmp_path):
         path = self._planted(tmp_path / "small.medh5", 200_000)
         report = validate_file(path, level="integrity")
         assert "E701" in {d.code for d in report.diagnostics}
@@ -486,7 +486,9 @@ class TestF10DecodedStrings:
     @pytest.mark.skipif(
         not Path("/proc/self/status").exists(), reason="the cap is Linux's"
     )
-    def test_F10_a_capped_process_digests_what_it_could_not_hold_whole(self, tmp_path):
+    def test_S13_1_a_capped_process_digests_what_it_could_not_hold_whole(
+        self, tmp_path
+    ):
         """40 million one-byte strings: 40 KB of file, about 2 GB decoded at
         once.  Under a cap of the process's size plus 512 MiB the digest is
         computed a slab at a time and the mismatch reported."""
@@ -673,7 +675,7 @@ class TestCompositeUnits:
 class TestAtScale:
     """The checks hold at the sizes real files have."""
 
-    def test_F21_S7_7_the_in_band_ignore_check_has_no_size_cap(self, tmp_path: Path):
+    def test_S7_7_the_in_band_ignore_check_has_no_size_cap(self, tmp_path: Path):
         """E411 fired on a correct 512×512×256 labelmap: the check declined to
         look past 64M elements and then reported what it had not found.
 
@@ -697,7 +699,7 @@ class TestAtScale:
         report = validate_file(path)
         assert not [c for c in report.codes if c in ("E411", "W904")], report.codes
 
-    def test_F21_a_ct_sized_labelmap_with_an_ignore_region_validates(
+    def test_S7_7_a_ct_sized_labelmap_with_an_ignore_region_validates(
         self, tmp_path: Path
     ):
         """The reproduction at its real size: 256×512×512, just past 64M elements.
@@ -748,7 +750,7 @@ class TestAtScale:
         with medh5.open(path) as sample:
             assert sample.annotations["seg"].has_ignore_region
 
-    def test_P10_the_overlap_graph_is_read_in_slabs(self, tmp_path: Path):
+    def test_S7_2_the_overlap_graph_is_read_in_slabs(self, tmp_path: Path):
         """The slab-bounded read is the engine's (`overlap_edges_within`, held
         at a 64-byte and a 1-byte budget by its Rust test); what W908 judges
         from that graph is checked here: one overlap needs two layers, so two

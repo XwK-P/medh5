@@ -147,7 +147,7 @@ class TestProvenance:
             assert exc.value.code == "E005"
             assert what in str(exc.value)
 
-    def test_L14_an_agent_carries_its_organization_as_a_field(self):
+    def test_S11_1_an_agent_carries_its_organization_as_a_field(self):
         from medh5.curation import Agent
 
         agent = Agent.from_json(
@@ -229,7 +229,7 @@ class TestIdentity:
         assert back == record
         assert Deidentification.from_json(None) is None
 
-    def test_Q11_a_deidentification_record_without_a_method_is_refused(
+    def test_S11_4_a_deidentification_record_without_a_method_is_refused(
         self, tmp_path: Path
     ):
         """An `assert` stood here, and `python -O` cleared the record instead."""
@@ -359,9 +359,7 @@ class TestDocument:
             ),
         ],
     )
-    def test_L14_S2_4_a_closed_object_refuses_an_unknown_key(
-        self, build: Any, what: str
-    ):
+    def test_S2_4_a_closed_object_refuses_an_unknown_key(self, build: Any, what: str):
         """Four objects are `additionalProperties: false`, and three had `extra`.
 
         Anything placed there failed E005 at `commit()`, so the mapping was an

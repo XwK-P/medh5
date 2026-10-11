@@ -530,7 +530,7 @@ class TestFastPathsAreExact:
             assert sample.annotations["lm"].has_ignore_region
             assert sample.annotations["fov"].summary()["true_voxels"] == 64
 
-    def test_P05_the_class_table_is_read_once_per_annotation(self, tmp_path: Path):
+    def test_the_class_table_is_read_once_per_annotation(self, tmp_path: Path):
         """`dense()` asked the table once per class: 63 reads for 63 classes."""
 
         masks = {c: np.zeros(Organs.SHAPE, dtype=bool) for c in range(1, 4)}
@@ -567,7 +567,7 @@ class TestFastPathsAreExact:
     @pytest.mark.parametrize(
         "encoding", ["labelmap", "layers", "bitmask", "instances", "probmap"]
     )
-    def test_P07_voxel_counts_agree_with_the_generic_path(
+    def test_S7_6_voxel_counts_agree_with_the_generic_path(
         self, tmp_path: Path, encoding: str
     ):
         path = tmp_path / f"{encoding}.medh5"
@@ -602,7 +602,7 @@ class TestFastPathsAreExact:
             }
             assert fast == slow
 
-    def test_P07_an_empty_class_still_counts_zero(self, tmp_path: Path):
+    def test_S11_3_an_empty_class_still_counts_zero(self, tmp_path: Path):
         """The coverage contract: examined and absent is not the same as missing."""
         path = tmp_path / "empty.medh5"
         with Organs.writer(path) as w:
@@ -619,13 +619,13 @@ class TestFastPathsAreExact:
             assert set(counts) == {1, 2, 3}
 
     @pytest.mark.parametrize("encoding", ["layers", "bitmask"])
-    def test_P09_S14_plane_counts_read_within_the_slab_budget(
+    def test_S14_plane_counts_read_within_the_slab_budget(
         self, tmp_path: Path, encoding: str
     ):
         """`data[layer]` read the whole plane before the slab loop bounded nothing.
 
         The read budget is the engine's: its Rust tests
-        (`annotations::payload::tests::p09_s14_*`) hold every planned read to a
+        (`annotations::payload::tests::s14_*`) hold every planned read to a
         4 KiB budget, tiling the dataset exactly, and the counts to the
         full-budget ones.  Here: the counts a reader gets are exact."""
         shape = (16, 32, 32)

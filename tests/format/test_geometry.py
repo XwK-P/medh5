@@ -144,8 +144,8 @@ class TestBoxConvention:
         assert np.any(bounds[:, 0] < naive_lo - 1e-9)
 
 
-class TestF25MisshapenArguments:
-    """F25 of the round-4 audit: an affine that is not ``(S+1, S+1)``, or a
+class TestMisshapenArguments:
+    """An affine that is not ``(S+1, S+1)``, or a
     box clipped to a shape of another rank, indexed past what it was given
     and raised ``PanicException`` --- a ``BaseException``, which ``except
     Exception`` does not catch.  Each is a ``ValueError`` now."""
@@ -159,7 +159,7 @@ class TestF25MisshapenArguments:
         ],
         ids=["4x3", "empty", "1x1"],
     )
-    def test_F25_S3_3_an_affine_that_is_not_square_is_a_value_error(self, affine):
+    def test_S3_3_an_affine_that_is_not_square_is_a_value_error(self, affine):
         for call in (
             lambda: decompose_affine(affine),
             lambda: index_to_world(affine, np.zeros((2, 3))),
@@ -170,7 +170,7 @@ class TestF25MisshapenArguments:
                 call()
             assert type(info.value).__name__ != "PanicException"
 
-    def test_F25_S8_1_a_box_and_a_shape_of_another_rank_are_refused(self):
+    def test_S8_1_a_box_and_a_shape_of_another_rank_are_refused(self):
         box = np.array([[0.0, 1.0], [0.0, 1.0], [0.0, 1.0]])
         with pytest.raises(ValueError, match="one extent per axis|extents"):
             box_to_slices(box, (4, 4))

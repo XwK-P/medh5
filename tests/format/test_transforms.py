@@ -786,7 +786,7 @@ class TestResolution:
         with medh5.open(path) as sample:
             assert sample.transform_between("tp0", "tp0") is None
             # A frame nothing in the file declares is a mistyped key, not "no
-            # registration exists" (L-35).
+            # registration exists".
             with pytest.raises(KeyError, match="F9"):
                 sample.transform_between("F0", "F9")
 
@@ -955,11 +955,11 @@ class TestResolution:
             assert back is sample.resolve_frames("f1", "f0")
 
 
-class TestF06Units:
+class TestUnits:
     """§10.1: a transform maps coordinates in its ``units``, which are the
     units of the grids in both its frames.  ``units`` defaulted to ``mm``
     whatever the grids were in, an explicit one the grids disagreed with was
-    written as given, and nothing checked either (F06 of the round-4 audit)."""
+    written as given, and nothing checked either."""
 
     SPACING = {"mm": (1.5, 0.8, 0.8), "m": (0.0015, 0.0008, 0.0008)}
 
@@ -1015,7 +1015,7 @@ class TestF06Units:
         return path
 
     @pytest.mark.parametrize("unit", ["mm", "m"])
-    def test_F06_S10_1_the_default_is_the_grids_units(self, tmp_path, unit):
+    def test_S10_1_the_default_is_the_grids_units(self, tmp_path, unit):
         path = self._pair(tmp_path / "pair.medh5", units=(unit, unit))
         with medh5.open(path) as sample:
             assert sample.transforms["t"].units == unit
@@ -1023,19 +1023,19 @@ class TestF06Units:
             assert sample.resolve_frames("F1", "F0").units == unit
         assert "E506" not in {d.code for d in validate_file(path).diagnostics}
 
-    def test_F06_S10_1_a_unit_the_grids_are_not_in_is_refused(self, tmp_path):
+    def test_S10_1_a_unit_the_grids_are_not_in_is_refused(self, tmp_path):
         with pytest.raises(MEDH5ValidationError, match="'ct_tp0' is in 'm'") as exc:
             self._pair(tmp_path / "a.medh5", units=("m", "m"), declared="mm")
         assert exc.value.code == "E506"
         # The matching declaration, as the control.
         self._pair(tmp_path / "b.medh5", units=("m", "m"), declared="m")
 
-    def test_F06_S10_1_frames_in_two_units_have_no_one_transform(self, tmp_path):
+    def test_S10_1_frames_in_two_units_have_no_one_transform(self, tmp_path):
         with pytest.raises(MEDH5ValidationError) as exc:
             self._pair(tmp_path / "a.medh5", units=("mm", "m"))
         assert exc.value.code == "E506"
 
-    def test_F06_a_transform_written_before_its_grids_is_checked_at_commit(
+    def test_S10_1_a_transform_written_before_its_grids_is_checked_at_commit(
         self, tmp_path
     ):
         """No grid said `m` when the transform was declared, so it took `mm`:
@@ -1045,7 +1045,7 @@ class TestF06Units:
         assert exc.value.code == "E506"
         self._pair(tmp_path / "b.medh5", units=("m", "m"), declared="m", first=True)
 
-    def test_F06_an_amendment_mends_such_a_transform(self, tmp_path):
+    def test_S10_1_an_amendment_mends_such_a_transform(self, tmp_path):
         """1.x wrote `mm` whatever the grids were in.  An amendment that leaves
         such a transform as it is would write a file the validator rejects,
         and is refused; one that removes it and adds it again in its grids'
@@ -1077,7 +1077,7 @@ class TestF06Units:
         assert not validate_file(path).errors
 
     @pytest.mark.parametrize("planted", ["m", None])
-    def test_F06_S10_1_the_validator_holds_units_to_the_grids(self, tmp_path, planted):
+    def test_S10_1_the_validator_holds_units_to_the_grids(self, tmp_path, planted):
         path = self._pair(tmp_path / "pair.medh5")
         with h5py.File(path, "r+") as handle:
             attrs = handle["transforms/t"].attrs
@@ -1321,7 +1321,7 @@ class TestInterpolation:
         with pytest.raises(MEDH5ValidationError):
             cubic_sample(field, outside, extrapolation="wing-it")
 
-    def test_D5_S10_4_the_margin_takes_the_outermost_samples_value(self):
+    def test_S10_4_the_margin_takes_the_outermost_samples_value(self):
         """Half a voxel inside the extent, `error` admitted a point and cubic ---
         SciPy's constant mode --- gave it no displacement, where linear gave the
         outermost sample's value."""
@@ -1581,8 +1581,8 @@ class TestAmbiguousResolution:
             )
 
 
-class TestL35FrameGraph:
-    """L-35, S-12: inverses are one route, composites end, and typos are errors."""
+class TestFrameGraph:
+    """Inverses are one route, composites end, and typos are errors."""
 
     def _visits(self, path: Path) -> Any:
         w = medh5.create(path, sample_id="s", subject_id="s", codec="portable")
@@ -1601,7 +1601,7 @@ class TestL35FrameGraph:
             )
         return w
 
-    def test_L35_S12_mutually_declared_inverses_resolve_both_ways(self, tmp_path: Path):
+    def test_S10_1_mutually_declared_inverses_resolve_both_ways(self, tmp_path: Path):
         """What E505 checks as "mutually consistent" raised E501 in both directions."""
         path = tmp_path / "mutual.medh5"
         field = np.ones((3, 8, 8, 8), np.float32)
@@ -1629,7 +1629,7 @@ class TestL35FrameGraph:
             point = [[1.0, 1.0, 1.0]]
             assert forward.transform_points(point).tolist() == [[2.0, 2.0, 2.0]]
 
-    def test_L35_S12_a_one_sided_declaration_is_one_route(self, tmp_path: Path):
+    def test_S10_1_a_one_sided_declaration_is_one_route(self, tmp_path: Path):
         """An affine's analytic inverse and the stored transform naming it are one."""
         path = tmp_path / "one-sided.medh5"
         shift = np.eye(4)
@@ -1648,7 +1648,7 @@ class TestL35FrameGraph:
             assert s.transform_between("tp0", "tp1").transform_id == "fwd"
             assert s.transform_between("tp1", "tp0").transform_id == "bwd"
 
-    def test_L35_a_composite_that_contains_itself_is_E501(self, tmp_path: Path):
+    def test_S10_5_a_composite_that_contains_itself_is_E501(self, tmp_path: Path):
         """It validated clean and evaluating it raised RecursionError."""
         path = tmp_path / "cycle.medh5"
         with self._visits(path) as w:
@@ -1682,7 +1682,7 @@ class TestL35FrameGraph:
         assert caught.value.code == "E501"
         assert "contains itself" in str(caught.value)
 
-    def test_L35_a_mistyped_key_is_a_KeyError_not_no_registration(self, tmp_path: Path):
+    def test_a_mistyped_key_is_a_KeyError_not_no_registration(self, tmp_path: Path):
         path = tmp_path / "typo.medh5"
         with self._visits(path) as w:
             w.add_transform(
@@ -1694,6 +1694,6 @@ class TestL35FrameGraph:
             with pytest.raises(KeyError, match="TP1"):
                 s.transform_between("tp0", "TP1")
 
-    def test_L35_the_registration_guide_no_longer_warns_against_linking(self):
+    def test_the_registration_guide_no_longer_warns_against_linking(self):
         guide = (ROOT / "docs/guides/registration.md").read_text(encoding="utf-8")
         assert "Do not link them with `inverse_id`" not in guide

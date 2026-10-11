@@ -253,7 +253,7 @@ class TestSamplingIndex:
             assert seg.is_annotated(2)
             assert not seg.dense([2])[0].any()
 
-    def test_P06_the_occupancy_map_equals_the_loop_it_replaced(self):
+    def test_S14_3_the_occupancy_map_equals_the_loop_it_replaced(self):
         from medh5.storage import occupancy as _occupancy
 
         rng = np.random.default_rng(0)
@@ -276,7 +276,7 @@ class TestSamplingIndex:
         with pytest.raises(ValueError, match="at least 1"):
             _occupancy(np.ones((4, 4, 4), dtype=bool), 0)
 
-    def test_P12_S14_3_the_occupancy_map_is_compressed_one_class_per_chunk(
+    def test_S14_3_the_occupancy_map_is_compressed_one_class_per_chunk(
         self, tmp_path: Path
     ):
         """52 MB of mostly `False` at 200 classes and 512³, stored contiguous."""
@@ -332,11 +332,11 @@ def test_S14_2_a_window_reads_what_hdf5plugin_wrote(
         np.testing.assert_array_equal(ds[5, 3:40, 7], values[5, 3:40, 7])
 
 
-def test_N19_blosclz_chunks_read_whole_by_window_and_in_one_dimension(
+def test_S14_2_blosclz_chunks_read_whole_by_window_and_in_one_dimension(
     tmp_path: Path,
 ) -> None:
     """The vendored C-Blosc2 is 3.3.5, whose BloscLZ refuses a match length
-    that would wrap (N19 of the 2.0 re-audit; the refusal is held by
+    that would wrap (the refusal is held by
     `medh5-sys`'s tests).  The controls: what `hdf5plugin` wrote with BloscLZ
     reads whole through HDF5's filter, by window through the block reader, and
     as a plain one-dimensional dataset."""
@@ -364,11 +364,11 @@ def test_N19_blosclz_chunks_read_whole_by_window_and_in_one_dimension(
         np.testing.assert_array_equal(flat[1234:5678], line[1234:5678])
 
 
-class TestF07FilterValues:
+class TestFilterValues:
     """A stored filter pipeline is file content: a Blosc2 chunk-size value
     (``cd_values[3]``) smaller than the chunk it describes failed an assertion
     in the vendored filter and aborted the process (SIGABRT at
-    ``blosc2_filter.c:534``, F07 of the round-4 audit).  It is the filter's
+    ``blosc2_filter.c:534``).  It is the filter's
     ordinary error now, whichever way the dataset is read."""
 
     # Planted without `hdf5plugin`: with the filter registered, HDF5 runs its
@@ -438,7 +438,7 @@ class TestF07FilterValues:
         return path
 
     @pytest.mark.parametrize("how", ["full", "window"])
-    def test_F07_S14_2_a_chunk_size_the_chunk_exceeds_is_an_error(
+    def test_S14_2_a_chunk_size_the_chunk_exceeds_is_an_error(
         self, planted: Path, how: str
     ) -> None:
         run = self._run("-c", self.READ, str(planted), how)
@@ -446,7 +446,7 @@ class TestF07FilterValues:
         assert run.stdout.startswith("refused:"), run.stdout
         assert "does not match the chunk size" in run.stdout
 
-    def test_F07_S15_the_validator_reports_it(self, planted: Path) -> None:
+    def test_S15_the_validator_reports_it(self, planted: Path) -> None:
         run = self._run(
             "-m", "medh5.cli", "validate", "--level", "integrity", str(planted)
         )
@@ -455,13 +455,13 @@ class TestF07FilterValues:
 
 
 class TestRecompress:
-    def test_F12_S14_2_a_type_a_rebuild_would_lose_is_copied_as_stored(
+    def test_S14_2_a_type_a_rebuild_would_lose_is_copied_as_stored(
         self, tmp_path: Path
     ) -> None:
         """Recompress rebuilt every bulk dataset from a plain number type:
         an enumeration lost its names and a committed type its identity and
-        attributes, while the result reported ``ok`` (F12 of the round-4
-        audit).  Such a dataset is copied as stored and reported as kept."""
+        attributes, while the result reported ``ok``.  Such a dataset is
+        copied as stored and reported as kept."""
         from medh5.storage import recompress
 
         path = write_sample(tmp_path / "typed.medh5", codec="portable")
@@ -604,7 +604,7 @@ class TestRecompress:
         assert len(results) == 2
         assert set(results[0].to_json()) >= {"path", "profile", "ratio", "content_id"}
 
-    def test_L28_S14_1_rechunk_chunks_the_way_the_writer_does(self, tmp_path: Path):
+    def test_S14_1_rechunk_chunks_the_way_the_writer_does(self, tmp_path: Path):
         """A `layers` dataset went to h5py's (2, 16, 24, 48), and drew W902."""
         from medh5.storage import fit_chunks, grid_chunks, recompress
 
@@ -647,7 +647,7 @@ class TestRecompress:
             assert image.chunks == grid_chunks(grid, image.dtype.itemsize)
         assert "W902" not in validate_file(path, level="strict").codes
 
-    def test_L28_rechunk_finds_each_sample_root_in_a_collection(self, tmp_path: Path):
+    def test_S14_1_rechunk_finds_each_sample_root_in_a_collection(self, tmp_path: Path):
         from medh5.storage import recompress
 
         shape = (32, 64, 64)  # 256 KiB of layers: chunked
@@ -683,8 +683,8 @@ class TestRecompress:
             assert all(collection[key].verify().ok for key in collection)
 
 
-class TestC10References:
-    """A file holding HDF5 references is not rewritten (C10 of the 2.0 audit).
+class TestReferences:
+    """A file holding HDF5 references is not rewritten.
 
     A reference is an address in its own file.  Amend, recompress, pack and
     repack write a new file, where a copied object reference pointed wherever
@@ -708,16 +708,15 @@ class TestC10References:
                     "rows", data=np.array([(1, target)], dtype=compound)
                 )
             elif where == "named_type":
-                # A committed datatype carries attributes too (C10 of the 2.0
-                # re-audit): the walk of groups and datasets passed it by.
+                # A committed datatype carries attributes too: the walk of
+                # groups and datasets passed it by.
                 group = f.require_group("x_ext")
                 group["t"] = np.dtype("<f4")
                 group["t"].attrs["x_ref"] = target
             elif where in ("unlinked_type", "unlinked_attribute_type"):
                 # A committed datatype whose name was removed lives on as the
                 # type of what uses it, attributes and all: the walk of named
-                # types passed it by, and a rewrite nulled the reference
-                # (C10 of the round-3 audit).
+                # types passed it by, and a rewrite nulled the reference.
                 group = f.require_group("x_ext")
                 group["t"] = np.dtype("<u4")
                 group["t"].attrs["x_ref"] = target
@@ -746,7 +745,7 @@ class TestC10References:
             "unlinked_attribute_type",
         ],
     )
-    def test_C10_a_file_holding_references_is_not_rewritten(self, tmp_path, where):
+    def test_S16_a_file_holding_references_is_not_rewritten(self, tmp_path, where):
         from medh5.collection import pack
         from medh5.storage import recompress
 
@@ -766,7 +765,7 @@ class TestC10References:
         with medh5.open(path) as sample:
             assert sample.images
 
-    def test_C10_an_unlinked_type_without_references_is_rewritten(self, tmp_path):
+    def test_S16_an_unlinked_type_without_references_is_rewritten(self, tmp_path):
         """The control: a committed type with no reference anywhere in it is
         another tool's content like any other, and every rewrite carries it."""
         from medh5.collection import pack
@@ -789,7 +788,7 @@ class TestC10References:
             assert kept.attrs["note"] == "kept"
 
 
-class TestB02LinkGraphs:
+class TestLinkGraphs:
     """A file's links form a graph, which every tool walks once per object and
     `recompress` copies as a graph.
 
@@ -819,7 +818,7 @@ class TestB02LinkGraphs:
         return path
 
     @pytest.mark.parametrize("kind", ["hard", "soft", "alias"])
-    def test_B02_every_tool_finishes_on_a_linked_graph(self, tmp_path: Path, kind):
+    def test_every_tool_finishes_on_a_linked_graph(self, tmp_path: Path, kind):
         import subprocess
         import sys
 
@@ -844,7 +843,7 @@ class TestB02LinkGraphs:
         assert done.returncode == 0, done.stderr[-2000:]
         assert done.stdout.strip().endswith("finished")
 
-    def test_B02_recompress_keeps_soft_links_aliases_and_cycles(self, tmp_path: Path):
+    def test_S16_recompress_keeps_soft_links_aliases_and_cycles(self, tmp_path: Path):
         from medh5.storage import recompress
 
         path = self._linked(tmp_path, "alias")

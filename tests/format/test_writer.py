@@ -2,9 +2,8 @@
 
 The writer is held to the validator: a rule the validator enforces is refused
 at the call or at commit, and every tool that rewrites a file --- amend, scrub,
-fix, recompress, unpack --- passes the same gate.  Class names cite the audit
-finding a test reproduces (``W14``, ``L30``, ...), as the changelog entry of the
-release that fixed it does.
+fix, recompress, unpack --- passes the same gate.  A test is named for the
+clause it holds; the changelog says which release made the writer hold it.
 """
 
 from __future__ import annotations
@@ -30,7 +29,7 @@ from medh5.validate import validate_file
 from tests.kits import Flat, Framed, Numbered, Organs
 
 
-class TestW2WriterSideRefusals:
+class TestWriterSideRefusals:
     """Every new validator rule is refused by the writer at commit as well."""
 
     def _refused(self, tmp_path: Path, code: str, build: Any) -> None:
@@ -168,13 +167,13 @@ class TestW2WriterSideRefusals:
         assert exc.value.code == "E109"
 
 
-class TestW7WriterContracts:
-    """F-07, F-09, F-13: what the writer is handed reaches the file, or is refused."""
+class TestWriterContracts:
+    """What the writer is handed reaches the file, or is refused."""
 
     @pytest.mark.parametrize(
         "encoding", ["labelmap", "layers", "bitmask", "instances", "probmap", "auto"]
     )
-    def test_F07_S7_7_an_ignore_region_survives_every_encoding(
+    def test_S7_7_an_ignore_region_survives_every_encoding(
         self, tmp_path: Path, encoding: str
     ):
         """`ignore=` was forwarded to the encoder only under two of six kinds.
@@ -238,9 +237,7 @@ class TestW7WriterContracts:
                 read_back = sibling.read()
             assert np.array_equal(read_back, region)
 
-    def test_F07_S7_7_the_sibling_mask_validates_and_silences_W904(
-        self, tmp_path: Path
-    ):
+    def test_S7_7_the_sibling_mask_validates_and_silences_W904(self, tmp_path: Path):
         from medh5.validate import validate_file
 
         path = tmp_path / "cover.medh5"
@@ -257,7 +254,7 @@ class TestW7WriterContracts:
         assert "W904" not in report.codes
         assert not [c for c in report.codes if c.startswith("E")]
 
-    def test_F07_ignore_and_ignore_mask_together_are_refused(self, tmp_path: Path):
+    def test_S7_7_ignore_and_ignore_mask_together_are_refused(self, tmp_path: Path):
         """Two sources of one fact cannot be kept in agreement."""
         with (
             pytest.raises(MEDH5ValidationError) as exc,
@@ -274,7 +271,7 @@ class TestW7WriterContracts:
             )
         assert exc.value.code == "E404"
 
-    def test_F07_encode_voxels_refuses_what_one_payload_cannot_carry(self):
+    def test_S7_7_encode_voxels_refuses_what_one_payload_cannot_carry(self):
         """The payload-level entry point had the identical silent branch.
 
         It returns one payload and so cannot create the sibling mask; refusing
@@ -295,7 +292,7 @@ class TestW7WriterContracts:
         )
         assert payload.kind == "layers"
 
-    def test_F07_S7_6_selection_costs_the_widening_an_ignore_forces(self):
+    def test_S7_6_selection_costs_the_widening_an_ignore_forces(self):
         """An in-band ignore forces `uint16` planes, so the choice must see it."""
         from medh5.annotations.voxel import select_encoding
 
@@ -308,9 +305,7 @@ class TestW7WriterContracts:
 
         assert cost_model(widened, ignore=True).layers > cost_model(plain).layers
 
-    def test_F09_S11_1_a_provenance_id_is_never_silently_overwritten(
-        self, tmp_path: Path
-    ):
+    def test_S11_1_a_provenance_id_is_never_silently_overwritten(self, tmp_path: Path):
         """`person("Alice", agent_id="s2")` then `software("tool")` left one agent.
 
         The automatic ids are `<type initial><n>` and `act_<type>_<n>`, which
@@ -337,7 +332,7 @@ class TestW7WriterContracts:
                 == "import"
             )
 
-    def test_F09_an_explicit_duplicate_id_raises(self, tmp_path: Path):
+    def test_S11_1_an_explicit_duplicate_id_raises(self, tmp_path: Path):
         with Organs.writer(tmp_path / "dup.medh5") as w:
             alice = w.person("Alice", agent_id="s2")
             with pytest.raises(MEDH5ValidationError, match="already declared"):
@@ -347,14 +342,14 @@ class TestW7WriterContracts:
                 w.activity("annotate", activity_id="act1", agent=alice)
             w.add_segmentation("seg", grid="g", masks=Organs.blocks())
 
-    def test_F09_replace_is_available_for_the_one_legitimate_rewrite(self):
+    def test_S11_1_replace_is_available_for_the_one_legitimate_rewrite(self):
         from medh5.curation import Agent, Provenance
 
         graph = Provenance(agents=[Agent("a1", "person", "Alice")])
         graph.add_agent(Agent("a1", "person", "pseudo:abc"), replace=True)
         assert graph.agent("a1").name == "pseudo:abc"
 
-    def test_F13_S7_6_transcoding_to_mask_is_refused(self, tmp_path: Path):
+    def test_S7_6_transcoding_to_mask_is_refused(self, tmp_path: Path):
         """`mask` has no classes, so the conversion erased the coverage contract.
 
         Every class was OR-ed into one volume, `class_ids` and
@@ -380,7 +375,7 @@ class TestW7WriterContracts:
             assert annotation.class_ids == (1, 3)
             assert annotation.annotated_class_ids == (1, 3)
 
-    def test_F13_TRANSCODABLE_is_the_whole_truth(self):
+    def test_S7_6_TRANSCODABLE_is_the_whole_truth(self):
         from medh5.annotations.voxel import (
             TRANSCODABLE,
             encode_masks,
@@ -393,10 +388,10 @@ class TestW7WriterContracts:
             transcode_payload(payload, "mask", spatial_shape=Organs.SHAPE)
 
 
-class TestW14RewriteGate:
-    """F-20, F-22, L-27, L-31, Q-15: what every door into a file checks."""
+class TestRewriteGate:
+    """What every door into a file checks."""
 
-    def test_F20_S16_amend_refuses_a_future_major(self, tmp_path: Path):
+    def test_S16_amend_refuses_a_future_major(self, tmp_path: Path):
         """`open` refused a 2.0 file; `amend` restamped it 1.0 and carried on."""
         path = Numbered.plain(tmp_path / "v2.medh5")
         with h5py.File(path, "r+") as handle:
@@ -406,7 +401,7 @@ class TestW14RewriteGate:
             medh5.amend(path)
         assert path.read_bytes() == before
 
-    def test_F20_S16_amend_keeps_a_later_minor(self, tmp_path: Path):
+    def test_S16_amend_keeps_a_later_minor(self, tmp_path: Path):
         """A 1.1 file's objects are carried through, so it stays a 1.1 file."""
         path = Numbered.plain(tmp_path / "v11.medh5")
         with h5py.File(path, "r+") as handle:
@@ -418,7 +413,7 @@ class TestW14RewriteGate:
             assert handle.attrs["medh5_version"] == "1.1"
             assert "x_future" in handle
 
-    def test_F20_the_scrub_and_fix_doors_are_the_same_gate(self, tmp_path: Path):
+    def test_S16_the_scrub_and_fix_doors_are_the_same_gate(self, tmp_path: Path):
         from medh5.curation import scrub
 
         path = Numbered.plain(tmp_path / "v2s.medh5")
@@ -445,7 +440,7 @@ class TestW14RewriteGate:
             )
         return path
 
-    def test_F22_external_storage_is_refused_by_every_tool(
+    def test_S2_external_storage_is_refused_by_every_tool(
         self, tmp_path: Path, secret: Path
     ):
         """A crafted file made `recompress` copy a local file into its output."""
@@ -463,7 +458,7 @@ class TestW14RewriteGate:
         assert not out.exists()
         assert validate_file(path).codes == ("E001",)
 
-    def test_F22_an_external_link_is_refused(self, tmp_path: Path):
+    def test_S2_an_external_link_is_refused(self, tmp_path: Path):
         other = Numbered.plain(tmp_path / "other.medh5")
         path = Numbered.plain(tmp_path / "linked.medh5")
         with h5py.File(path, "r+") as handle:
@@ -471,7 +466,7 @@ class TestW14RewriteGate:
         with pytest.raises(MEDH5FileError, match="external link"):
             medh5.open(path)
 
-    def test_F22_a_virtual_dataset_is_refused(self, tmp_path: Path):
+    def test_S2_a_virtual_dataset_is_refused(self, tmp_path: Path):
         source = tmp_path / "source.h5"
         with h5py.File(source, "w") as handle:
             handle["data"] = np.arange(16, dtype="u1")
@@ -484,7 +479,7 @@ class TestW14RewriteGate:
             medh5.open(path)
 
     @pytest.mark.skipif(os.name == "nt", reason="Windows cannot replace an open file")
-    def test_F22_the_check_is_remembered_for_the_file_it_read(
+    def test_S2_the_check_is_remembered_for_the_file_it_read(
         self, tmp_path: Path, secret: Path
     ):
         """A path replaced between the open and the check must not inherit it.
@@ -493,7 +488,7 @@ class TestW14RewriteGate:
         replacement landing in between was recorded as checked while the handle
         scanned the old file, and its next open skipped the check.  The race
         itself is the engine's to hold (`h5::ops::tests::
-        f22_the_check_is_remembered_for_the_file_it_read`); through the public
+        s2_the_check_is_remembered_for_the_file_it_read`); through the public
         door, a file checked and remembered does not vouch for its replacement.
         """
         target = Numbered.plain(tmp_path / "target.medh5")
@@ -504,7 +499,7 @@ class TestW14RewriteGate:
         with pytest.raises(MEDH5FileError, match="not self-contained"):
             medh5.open(target)
 
-    def test_W01_a_file_of_a_checked_files_length_and_time_is_still_checked(
+    def test_S2_a_file_of_a_checked_files_length_and_time_is_still_checked(
         self, tmp_path: Path
     ):
         """The memo is keyed by the opened file's identity, never by its length
@@ -535,7 +530,7 @@ class TestW14RewriteGate:
         sys.platform == "win32" or getattr(os, "geteuid", lambda: 1)() == 0,
         reason="POSIX file modes, which root ignores",
     )
-    def test_Q15_a_read_only_sample_can_still_be_amended(self, tmp_path: Path):
+    def test_S14_4_a_read_only_sample_can_still_be_amended(self, tmp_path: Path):
         """The temporary took the target's `0o444` and HDF5 could not write it."""
         path = Numbered.plain(tmp_path / "read-only.medh5")
         os.chmod(path, 0o444)
@@ -548,7 +543,7 @@ class TestW14RewriteGate:
             writer.commit()
         assert stat.S_IMODE(path.stat().st_mode) == 0o444
 
-    def test_L31_unpack_refuses_a_member_name_that_is_a_path(self, tmp_path: Path):
+    def test_S2_2_unpack_refuses_a_member_name_that_is_a_path(self, tmp_path: Path):
         from medh5.collection import pack, unpack
 
         shard = tmp_path / "s.medh5c"
@@ -559,7 +554,7 @@ class TestW14RewriteGate:
             unpack(shard, tmp_path / "out")
         assert not list(tmp_path.rglob("evil*"))
 
-    def test_L27_S14_amend_keeps_a_portable_file_portable(self, tmp_path: Path):
+    def test_S14_amend_keeps_a_portable_file_portable(self, tmp_path: Path):
         """New datasets in an amended `portable` file were Blosc2."""
         from medh5.storage import describe_filters
 
@@ -573,7 +568,7 @@ class TestW14RewriteGate:
             assert describe_filters(stored).startswith("gzip")
 
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
-    def test_Q15_the_temporary_file_is_never_more_permissive(self, tmp_path: Path):
+    def test_S14_4_the_temporary_file_is_never_more_permissive(self, tmp_path: Path):
         path = Numbered.plain(tmp_path / "perm.medh5")
         os.chmod(path, 0o600)
         writer = medh5.amend(path)
@@ -586,12 +581,10 @@ class TestW14RewriteGate:
         assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
-class TestW19WriterEqualsValidator:
-    """L-19...L-25, L-37, S-13: one definition of a valid file."""
+class TestWriterEqualsValidator:
+    """One definition of a valid file."""
 
-    def test_L19_S10_3_a_field_off_its_grid_is_refused_at_the_call(
-        self, tmp_path: Path
-    ):
+    def test_S10_3_a_field_off_its_grid_is_refused_at_the_call(self, tmp_path: Path):
         """A (3,4,4,4) field on a 16³ grid was written, then read as T(x) = x."""
         with medh5.create(tmp_path / "disp.medh5", sample_id="s") as w:
             w.add_timepoint("tp0", index=0)
@@ -628,7 +621,7 @@ class TestW19WriterEqualsValidator:
                 )
             w.abort()
 
-    def test_L19_commit_refuses_what_the_validator_rejects(self, tmp_path: Path):
+    def test_S15_commit_refuses_what_the_validator_rejects(self, tmp_path: Path):
         """Anything written through the handle is held to the same rules."""
         path = Numbered.plain(tmp_path / "keep.medh5")
         before = path.read_bytes()
@@ -640,7 +633,7 @@ class TestW19WriterEqualsValidator:
         assert path.read_bytes() == before, "the refused commit replaced the file"
         assert not [p for p in tmp_path.iterdir() if ".tmp" in p.name]
 
-    def test_L20_S5_1_a_ref_label_set_is_written(self, tmp_path: Path):
+    def test_S5_1_a_ref_label_set_is_written(self, tmp_path: Path):
         """The writer refused what the validator accepts: E402 under form=ref."""
         path = tmp_path / "ref.medh5"
         mask = np.zeros(Numbered.SHAPE, bool)
@@ -654,7 +647,7 @@ class TestW19WriterEqualsValidator:
             w.add_segmentation("seg", grid="g", masks={1: mask})
         assert validate_file(path).ok
 
-    def test_L21_the_schema_check_needs_no_optional_dependency(self):
+    def test_the_schema_check_needs_no_optional_dependency(self):
         """1.4.1 made jsonschema a core dependency so E005 was checked
         everywhere.  2.0 compiles the validator into the engine: NumPy is the
         only runtime dependency, and the check is always there."""
@@ -666,7 +659,7 @@ class TestW19WriterEqualsValidator:
         assert [re.split(r"[<>=!~ ;\[]", r, maxsplit=1)[0] for r in core] == ["numpy"]
         assert validate_against_schema({"identity": {}})
 
-    def test_L21_S2_4_commit_checks_the_schema(self, tmp_path: Path):
+    def test_S2_4_commit_checks_the_schema(self, tmp_path: Path):
         """A class key like `Left-Kidney` failed E005 only where jsonschema was."""
         with Numbered.writer(tmp_path / "schema.medh5") as w:
             w.extra("x", {"fine": 1})
@@ -683,7 +676,7 @@ class TestW19WriterEqualsValidator:
     @pytest.mark.parametrize(
         ("field", "value"), [("units", "cm"), ("units", "inch"), ("time_units", "min")]
     )
-    def test_L22_S3_2_units_outside_the_list_are_refused(
+    def test_S3_2_units_outside_the_list_are_refused(
         self, tmp_path: Path, field: str, value: str
     ):
         with medh5.create(tmp_path / "u.medh5", sample_id="s") as w:
@@ -701,7 +694,7 @@ class TestW19WriterEqualsValidator:
             assert caught.value.code == "E109"
             w.abort()
 
-    def test_L23_one_source_and_a_matching_encoding(self, tmp_path: Path):
+    def test_S7_6_one_source_and_a_matching_encoding(self, tmp_path: Path):
         """`masks=` was dropped when `probabilities=` came too."""
         from medh5.annotations.voxel import InstanceInput
 
@@ -724,7 +717,7 @@ class TestW19WriterEqualsValidator:
             assert kind == "probmap"
 
     @pytest.mark.parametrize("encoding", Numbered.ENCODINGS)
-    def test_L24_S7_7_an_overlapping_region_reads_back_whole(
+    def test_S7_7_an_overlapping_region_reads_back_whole(
         self, tmp_path: Path, encoding: str
     ):
         """Under `labelmap` 56 of 64 ignored voxels came back; `bitmask` gave 64."""
@@ -739,7 +732,7 @@ class TestW19WriterEqualsValidator:
             assert annotation.header.ignore_mask == "seg_ignore"
         assert validate_file(path).ok
 
-    def test_L24_a_region_clear_of_the_classes_stays_in_band(self, tmp_path: Path):
+    def test_S7_7_a_region_clear_of_the_classes_stays_in_band(self, tmp_path: Path):
         path = tmp_path / "band.medh5"
         Numbered.encoded(path, "labelmap")
         with medh5.open(path) as sample:
@@ -764,7 +757,7 @@ class TestW19WriterEqualsValidator:
             )
         return path
 
-    def test_L25_S7_4_a_transcode_does_not_drop_identity_silently(self, tmp_path: Path):
+    def test_S7_4_a_transcode_does_not_drop_identity_silently(self, tmp_path: Path):
         """After instances -> labelmap, tracks() was empty and nothing said so."""
         path = self._lesions(tmp_path / "tc.medh5")
         with medh5.amend(path) as w:
@@ -781,7 +774,7 @@ class TestW19WriterEqualsValidator:
             assert activity.outputs == ("annotations/les",)
         assert validate_file(path).ok
 
-    def test_L25_the_cli_flag(self, tmp_path: Path, capsys):
+    def test_the_cli_flag(self, tmp_path: Path, capsys):
         from medh5.cli import main
 
         path = self._lesions(tmp_path / "cli.medh5")
@@ -792,7 +785,7 @@ class TestW19WriterEqualsValidator:
         with medh5.open(path) as sample:
             assert sample.annotations["les"].kind == "layers"
 
-    def test_L37_S7_4_examined_and_none_found(self, tmp_path: Path):
+    def test_S7_4_examined_and_none_found(self, tmp_path: Path):
         """`instances=[]` was refused (E410): a resolved lesion read unexamined."""
         from medh5.annotations.voxel import InstanceInput
 
@@ -830,7 +823,7 @@ class TestW19WriterEqualsValidator:
             assert tracking.state_at(7, "tp1") == "resolved"
             assert tracking.is_resolved(7)
 
-    def test_L37_an_empty_list_alone_says_nothing_and_is_refused(self, tmp_path: Path):
+    def test_S7_4_an_empty_list_alone_says_nothing_and_is_refused(self, tmp_path: Path):
         with Numbered.writer(tmp_path / "bare.medh5") as w:
             with pytest.raises(
                 MEDH5ValidationError, match="annotated_classes"
@@ -845,7 +838,7 @@ class TestW19WriterEqualsValidator:
         """Every corpus file, amended as it is: refused, or written valid.
 
         The writer and the validator each enforced a hand-kept list of rules,
-        and the two drifted (L-19...L-22).  With ``commit()`` running the
+        and the two drifted.  With ``commit()`` running the
         validator there is one list --- which this checks from the outside, over
         the conformance corpus: a no-op amend of each of its files either
         refuses the file or writes one the validator passes, and a valid case
@@ -880,8 +873,8 @@ class TestW19WriterEqualsValidator:
         assert refused and written
 
 
-class TestL30DuplicateIds:
-    """L-30: two nodes with one id are refused, not merged."""
+class TestDuplicateIds:
+    """Two nodes with one id are refused, not merged."""
 
     def _duplicated(self, path: Path, section: str) -> Path:
         with Framed.writer(path) as w:
@@ -898,7 +891,7 @@ class TestL30DuplicateIds:
         return path
 
     @pytest.mark.parametrize("section", ["agents", "activities"])
-    def test_L30_a_duplicated_provenance_id_is_refused_on_read(
+    def test_S11_1_a_duplicated_provenance_id_is_refused_on_read(
         self, tmp_path: Path, section: str
     ):
         """The reader kept the last, and a no-op amend deleted the other."""
@@ -911,9 +904,7 @@ class TestL30DuplicateIds:
         assert path.read_bytes() == before
         assert validate_file(path).errors
 
-    def test_L30_S7_4_the_writer_refuses_two_objects_sharing_an_id(
-        self, tmp_path: Path
-    ):
+    def test_S7_4_the_writer_refuses_two_objects_sharing_an_id(self, tmp_path: Path):
         first = np.zeros(Framed.SHAPE, bool)
         first[1:3, 1:3, 1:3] = True
         second = np.zeros(Framed.SHAPE, bool)
@@ -932,7 +923,7 @@ class TestL30DuplicateIds:
             )
         assert caught.value.code == "E404"
 
-    def test_L30_S7_4_the_validator_reports_a_shared_id_as_E404(self, tmp_path: Path):
+    def test_S7_4_the_validator_reports_a_shared_id_as_E404(self, tmp_path: Path):
         first = np.zeros(Framed.SHAPE, bool)
         first[1:3, 1:3, 1:3] = True
         second = np.zeros(Framed.SHAPE, bool)
@@ -952,7 +943,7 @@ class TestL30DuplicateIds:
             ids[...] = np.array([5, 5], dtype=ids.dtype)
         assert "E404" in validate_file(path).codes
 
-    def test_L30_the_W909_corpus_case_is_the_sample_scoped_conflict(
+    def test_S7_4_the_W909_corpus_case_is_the_sample_scoped_conflict(
         self, tmp_path: Path
     ):
         """One id classed apart across two annotations: a warning, and no E404."""

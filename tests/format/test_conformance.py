@@ -636,7 +636,7 @@ def _spelled(n: int) -> str:
 
 
 class TestStatedCounts:
-    """Every place the corpus size is written down agrees with the corpus (D-09).
+    """Every place the corpus size is written down agrees with the corpus.
 
     The count was maintained by hand in about ten places --- the README, the
     site's front page, the conformance page, Appendix C and the CI comments ---
@@ -655,7 +655,7 @@ class TestStatedCounts:
         "docs/spec/conformance.md",
         "docs/spec/medh5-1.0.md",
         # The crates' READMEs are their pages on crates.io; the CLI's said 117
-        # for the release whose corpus had 153 (R08 of the 2.0 audit).
+        # for the release whose corpus had 153.
         *sorted(
             p.relative_to(ROOT).as_posix() for p in ROOT.glob("crates/*/README.md")
         ),
@@ -681,18 +681,18 @@ class TestStatedCounts:
             found += [(name, int(n)) for n in re.findall(pattern, text)]
         return found
 
-    def test_D09_every_stated_corpus_size_is_the_corpus_size(self):
+    def test_every_stated_corpus_size_is_the_corpus_size(self):
         stated = [hit for pattern in self.STATED for hit in self._stated(pattern)]
         assert len(stated) >= 12, stated  # the count is still written down
         wrong = [(where, n) for where, n in stated if n != len(CASES)]
         assert not wrong, f"the corpus has {len(CASES)} cases; stated: {wrong}"
 
-    def test_D09_the_stated_invalid_count_is_the_corpus_count(self):
+    def test_the_stated_invalid_count_is_the_corpus_count(self):
         invalid = sum(1 for case in CASES if case.errors)
         stated = self._stated(r"(\d+) of the \d+ cases are deliberately invalid")
         assert stated and all(n == invalid for _, n in stated), (invalid, stated)
 
-    def test_D09_the_conformance_page_breakdown_is_the_corpus_breakdown(self):
+    def test_the_conformance_page_breakdown_is_the_corpus_breakdown(self):
         """The page splits the total several ways, and each split drifts too.
 
         Only the total was checked, so the total stayed right while the page

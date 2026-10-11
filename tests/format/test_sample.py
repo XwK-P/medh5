@@ -614,9 +614,9 @@ class TestAmend:
             assert "organs_tp1" not in sample.annotations
             assert "organs_tp1" not in sample.index
 
-    def test_F08_S14_4_a_removed_annotation_leaves_no_bytes(self, sample_path):
+    def test_S14_4_a_removed_annotation_leaves_no_bytes(self, sample_path):
         """HDF5 never reclaims an unlinked group's space: a removed annotation
-        stayed in the amended file's bytes (F08 of the round-4 audit).  The
+        stayed in the amended file's bytes.  The
         commit rewrites the file from its root when something was removed."""
         marker = "SYNTHETIC-RATER-NOTE-41d9"
         with h5py.File(sample_path, "r+") as f:
@@ -1094,7 +1094,7 @@ class TestOpen:
         with medh5.open(path, "r") as sample:
             assert sample.identity.sample_id == "ro"
 
-    def test_Q10_S3_2_a_file_with_no_grids_raises_E111(self, tmp_path: Path):
+    def test_S3_2_a_file_with_no_grids_raises_E111(self, tmp_path: Path):
         """`reference_grid` ended in `grids[sorted(grids)[0]]` --- a bare IndexError."""
         import h5py
 
@@ -1145,7 +1145,7 @@ class TestDocument:
             assert document.summary()["label_set"]["classes"] == 4
 
 
-class TestF03ImplicitTimepoint:
+class TestImplicitTimepoint:
     """§3.7 rule 2: with one declared timepoint a grid may omit the attribute."""
 
     def _write(self, path: Path) -> None:
