@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [2.0.1] — 2026-10-11
+
+**Documentation only.** The code is 2.0.0's; this release carries the new
+install instructions and the corrected dashes to the pages PyPI, crates.io and
+the documentation's `stable` version show.
+
 ### Added
 
 - **An install page** ([Install](docs/install.md), after Home): one command for
