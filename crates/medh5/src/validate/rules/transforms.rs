@@ -15,6 +15,11 @@ use crate::transforms::model::{affine_dimension, composite_cycles, DEFAULT_ORDER
 use crate::validate::Diagnostic;
 use crate::Result;
 
+/// Semantic: every transform against §10 --- its kind, frames and parameters
+/// (E502), its units (E506), an affine's matrix (E504), a field's or a
+/// lattice's grid (E101, E503), a composite's chain (E501), and each declared
+/// inverse (E505).  A kind or vector space only a later minor defines is W913
+/// in its files (1.1 §2.2).
 pub fn check_transforms(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     let mut out = Vec::new();
     let Some(node) = ops::child_group(&ctx.root, "transforms") else { return Ok(out) };

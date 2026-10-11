@@ -70,6 +70,13 @@ pub fn geometric_dtypes(kind: &str) -> &'static [(&'static str, &'static [&'stat
     }
 }
 
+/// Structural: every annotation against §6--§9 --- its header (E401, E403,
+/// E412), what it names (E101, E402, E409, E413, E414), the reserved ids
+/// (E303), its datasets against its kind and grid (E405, E408, E410, E411)
+/// and a stacked encoding's chunks (W902), each kind's invariants (E404,
+/// E406, E407, W908, W909), and partial coverage without an ignore region
+/// (W904).  A kind or value only a later minor defines is W913 in its files
+/// (1.1 §2.2).
 pub fn check_annotations(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     let mut out = Vec::new();
     let grids = ops::child_group(&ctx.root, "grids");
