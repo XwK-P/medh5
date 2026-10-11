@@ -21,8 +21,8 @@ use medh5::sample::writer_annotations::{
 };
 
 use crate::convert::{
-    bool_array, class_key, class_keys, f64_array, f64_vec, i64_array, i64_vec, json_to_py, kwargs_to_map,
-    matrix as to_matrix, opt_strings, py_to_json, py_to_nd, strings,
+    bool_array, class_key, class_keys, f64_array, f64_vec, i64_array, i64_vec, kwargs_to_map, matrix as to_matrix,
+    opt_strings, py_to_json, py_to_nd, strings,
 };
 use crate::curation::{Activity, Agent, Cohort, Deidentification, Identity, QualityRecord, SplitClaim, Timepoint};
 use crate::errors::R;
@@ -356,6 +356,13 @@ impl SampleWriter {
         self.writer()
     }
 
+    /// The writer's document, as `document` hands it out: a record the
+    /// writer returns is read from it, so an edit to one of the record's
+    /// dicts reaches the file.
+    fn document_view<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
+        Ok(Bound::new(slf.py(), crate::document::SampleDocument::of_writer(slf.clone().unbind()))?.into_any())
+    }
+
     fn writer(&mut self) -> R<&mut EngineWriter> {
         if self.inner.is_closed() {
             return Err(medh5::Error::invalid("this writer has already committed or aborted").into());
@@ -472,22 +479,25 @@ impl SampleWriter {
 
     /// Merge fields into the identity (`sample_id`, `subject_id`, ...).
     #[pyo3(signature = (**fields))]
-    fn identity(&mut self, fields: Option<&Bound<'_, PyDict>>) -> R<Identity> {
+    fn identity(slf: &Bound<'_, Self>, fields: Option<&Bound<'_, PyDict>>) -> R<Identity> {
         let map = kwargs_to_map(fields)?;
-        Ok(Identity::wrap(self.writer()?.identity(map)?))
+        let made = slf.try_borrow_mut()?.writer()?.identity(map)?;
+        Ok(Identity::read_from(made, &Self::document_view(slf)?, "identity", None))
     }
 
     #[pyo3(signature = (**fields))]
-    fn cohort(&mut self, fields: Option<&Bound<'_, PyDict>>) -> R<Cohort> {
+    fn cohort(slf: &Bound<'_, Self>, fields: Option<&Bound<'_, PyDict>>) -> R<Cohort> {
         let map = kwargs_to_map(fields)?;
-        Ok(Cohort::wrap(self.writer()?.cohort(map)?))
+        let made = slf.try_borrow_mut()?.writer()?.cohort(map)?;
+        Ok(Cohort::read_from(made, &Self::document_view(slf)?, "cohort", None))
     }
 
     /// Declare a timepoint; the first explicit one replaces the implicit `tp0`.
     #[pyo3(signature = (timepoint_id, **fields))]
-    fn add_timepoint(&mut self, timepoint_id: &str, fields: Option<&Bound<'_, PyDict>>) -> R<Timepoint> {
+    fn add_timepoint(slf: &Bound<'_, Self>, timepoint_id: &str, fields: Option<&Bound<'_, PyDict>>) -> R<Timepoint> {
         let map = kwargs_to_map(fields)?;
-        Ok(Timepoint::wrap(self.writer()?.add_timepoint(timepoint_id, map)?))
+        let made = slf.try_borrow_mut()?.writer()?.add_timepoint(timepoint_id, map)?;
+        Ok(Timepoint::read_from(made, &Self::document_view(slf)?, "timepoints", Some(timepoint_id)))
     }
 
     fn label_set<'py>(&mut self, label_set: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
@@ -517,7 +527,7 @@ impl SampleWriter {
     /// Record an activity; ids are `act_<type>_<n>` unless given.
     #[pyo3(signature = (activity_type, *, agent=None, activity_id=None, **fields))]
     fn activity(
-        &mut self,
+        slf: &Bound<'_, Self>,
         activity_type: &str,
         agent: Option<&Bound<'_, PyAny>>,
         activity_id: Option<&str>,
@@ -525,14 +535,17 @@ impl SampleWriter {
     ) -> R<Activity> {
         let agent = agent_ref(agent)?;
         let map = kwargs_to_map(fields)?;
-        Ok(Activity::wrap(self.writer()?.activity(activity_type, agent.as_deref(), activity_id, map)?))
+        let made = slf.try_borrow_mut()?.writer()?.activity(activity_type, agent.as_deref(), activity_id, map)?;
+        let id = made.id.clone();
+        Ok(Activity::read_from(made, &Self::document_view(slf)?, "provenance.activities", Some(&id)))
     }
 
     /// Create or replace a quality record (status defaults to `draft`).
     #[pyo3(signature = (key, **fields))]
-    fn set_quality(&mut self, key: &str, fields: Option<&Bound<'_, PyDict>>) -> R<QualityRecord> {
+    fn set_quality(slf: &Bound<'_, Self>, key: &str, fields: Option<&Bound<'_, PyDict>>) -> R<QualityRecord> {
         let map = kwargs_to_map(fields)?;
-        Ok(QualityRecord::wrap(self.writer()?.set_quality(key, map)?))
+        let made = slf.try_borrow_mut()?.writer()?.set_quality(key, map)?;
+        Ok(QualityRecord::read_from(made, &Self::document_view(slf)?, "quality", Some(key)))
     }
 
     /// Record a split claim, replacing any earlier claim for the same set.
@@ -543,21 +556,23 @@ impl SampleWriter {
     }
 
     #[pyo3(signature = (**fields))]
-    fn deidentification(&mut self, fields: Option<&Bound<'_, PyDict>>) -> R<Deidentification> {
+    fn deidentification(slf: &Bound<'_, Self>, fields: Option<&Bound<'_, PyDict>>) -> R<Deidentification> {
         let map = kwargs_to_map(fields)?;
-        Ok(Deidentification::wrap(self.writer()?.deidentification(map)?))
+        let made = slf.try_borrow_mut()?.writer()?.deidentification(map)?;
+        Ok(Deidentification::read_from(made, &Self::document_view(slf)?, "deidentification", None))
     }
 
-    /// Merge acquisition parameters for one image; returns them all.
+    /// Merge acquisition parameters for one image; returns them all, as the
+    /// document's dict: an edit to it reaches the file.
     #[pyo3(signature = (image_id, **params))]
     fn acquisition<'py>(
-        &mut self,
-        py: Python<'py>,
+        slf: &Bound<'py, Self>,
         image_id: &str,
         params: Option<&Bound<'py, PyDict>>,
     ) -> R<Bound<'py, PyAny>> {
         let map = kwargs_to_map(params)?;
-        Ok(json_to_py(py, &self.writer()?.acquisition(image_id, map))?)
+        slf.try_borrow_mut()?.writer()?.acquisition(image_id, map);
+        Ok(Self::document_view(slf)?.getattr("acquisition")?.get_item(image_id)?)
     }
 
     /// Set a namespaced extension member of the document.

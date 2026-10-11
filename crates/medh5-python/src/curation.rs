@@ -1,9 +1,11 @@
 //! `medh5.curation` value types: identity, provenance, quality, timeline
 //! (spec §3.7, §11, §12).
 
+use std::sync::OnceLock;
+
 use pyo3::exceptions::PyKeyError;
 use pyo3::prelude::*;
-use pyo3::sync::PyOnceLock;
+use pyo3::pyclass::{PyTraverseError, PyVisit};
 use pyo3::types::{PyDict, PyFrozenSet, PySlice, PyString, PyTuple};
 use serde_json::Value;
 
@@ -149,9 +151,19 @@ record_class!(
 );
 
 /// Who did what (§11.1): agents and the activities they performed.
+///
+/// The activities are the graph's own objects, as 1.x kept them --- those it
+/// was given, and from the first read those it hands out --- so an edit to
+/// one's `params` is the graph's.  A document's provenance makes every change
+/// to the document as well.
 #[pyclass(module = "medh5.curation", name = "Provenance", skip_from_py_object)]
 pub struct Provenance {
+    /// The agents, and the activities as given or read.
     pub inner: prov_engine::Provenance,
+    /// The activity objects, once given or read, in `inner`'s order.
+    activities: Option<Vec<Py<Activity>>>,
+    /// The document this is the provenance of.
+    document: Option<Py<PyAny>>,
 }
 
 fn agent_arg(obj: &Bound<'_, PyAny>) -> R<prov_engine::Agent> {
@@ -162,11 +174,74 @@ fn activity_arg(obj: &Bound<'_, PyAny>) -> R<prov_engine::Activity> {
     Activity::arg(obj)
 }
 
+impl Provenance {
+    pub fn wrap(inner: prov_engine::Provenance) -> Self {
+        Provenance { inner, activities: None, document: None }
+    }
+
+    /// The provenance of `document`, read as `inner`.
+    pub fn read_from(inner: prov_engine::Provenance, document: &Bound<'_, PyAny>) -> Self {
+        Provenance { inner, activities: None, document: Some(document.clone().unbind()) }
+    }
+
+    /// The object for an activity of the graph: for a document's
+    /// provenance, one whose edits reach the document's activity.
+    fn object(&self, py: Python<'_>, activity: prov_engine::Activity) -> PyResult<Py<Activity>> {
+        match &self.document {
+            Some(document) => {
+                let id = activity.id.clone();
+                Py::new(py, Activity::read_from(activity, document.bind(py), "provenance.activities", Some(&id)))
+            }
+            None => Py::new(py, Activity::wrap(activity)),
+        }
+    }
+
+    /// The activity objects, made on the first read.
+    fn objects(&mut self, py: Python<'_>) -> PyResult<&Vec<Py<Activity>>> {
+        if self.activities.is_none() {
+            let made = self.inner.activities().map(|a| self.object(py, a.clone())).collect::<PyResult<Vec<_>>>()?;
+            self.activities = Some(made);
+        }
+        Ok(self.activities.as_ref().expect("made"))
+    }
+
+    /// The activity objects whose activity `keep` selects.
+    fn select<'py>(
+        &mut self,
+        py: Python<'py>,
+        keep: impl Fn(&prov_engine::Activity) -> bool,
+    ) -> PyResult<Bound<'py, PyTuple>> {
+        let chosen: Vec<usize> = self.inner.activities().enumerate().filter(|(_, a)| keep(a)).map(|(i, _)| i).collect();
+        let objects = self.objects(py)?;
+        PyTuple::new(py, chosen.into_iter().map(|i| objects[i].clone_ref(py)))
+    }
+
+    /// The graph as it stands: its activities as edited.
+    pub fn current(&self, py: Python<'_>) -> R<prov_engine::Provenance> {
+        let Some(objects) = &self.activities else { return Ok(self.inner.clone()) };
+        let activities = objects.iter().map(|a| activity_arg(a.bind(py).as_any())).collect::<R<Vec<_>>>()?;
+        Ok(prov_engine::Provenance::new(self.inner.agents().cloned().collect(), activities)?)
+    }
+
+    /// Make a change to the document's provenance, for a document's
+    /// provenance; whether there was one to make it to.
+    fn write_through(
+        &self,
+        py: Python<'_>,
+        change: impl FnOnce(&mut prov_engine::Provenance) -> medh5::Result<()>,
+    ) -> R<bool> {
+        let Some(document) = &self.document else { return Ok(false) };
+        let document = document.bind(py).cast::<crate::document::SampleDocument>().map_err(PyErr::from)?;
+        document.try_borrow_mut()?.edit(py, |d| change(&mut d.provenance))??;
+        Ok(true)
+    }
+}
+
 #[pymethods]
 impl Provenance {
     #[new]
     #[pyo3(signature = (agents=None, activities=None))]
-    fn new(agents: Option<&Bound<'_, PyAny>>, activities: Option<&Bound<'_, PyAny>>) -> R<Self> {
+    fn new(py: Python<'_>, agents: Option<&Bound<'_, PyAny>>, activities: Option<&Bound<'_, PyAny>>) -> R<Self> {
         let mut a = Vec::new();
         if let Some(items) = agents {
             for item in items.try_iter()? {
@@ -174,12 +249,19 @@ impl Provenance {
             }
         }
         let mut b = Vec::new();
+        let mut objects = Vec::new();
         if let Some(items) = activities {
             for item in items.try_iter()? {
-                b.push(activity_arg(&item?)?);
+                let item = item?;
+                let value = activity_arg(&item)?;
+                objects.push(match item.cast::<Activity>() {
+                    Ok(given) => given.clone().unbind(),
+                    Err(_) => Py::new(py, Activity::wrap(value.clone()))?,
+                });
+                b.push(value);
             }
         }
-        Ok(Provenance { inner: prov_engine::Provenance::new(a, b)? })
+        Ok(Provenance { inner: prov_engine::Provenance::new(a, b)?, activities: Some(objects), document: None })
     }
     fn __repr__(&self) -> String {
         self.inner.repr()
@@ -189,14 +271,16 @@ impl Provenance {
         PyTuple::new(py, self.inner.agents().cloned().map(Agent::wrap).collect::<Vec<_>>())
     }
     #[getter]
-    fn activities<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
-        PyTuple::new(py, self.inner.activities().cloned().map(Activity::wrap).collect::<Vec<_>>())
+    fn activities<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
+        self.select(py, |_| true)
     }
     fn agent(&self, agent_id: &str) -> R<Agent> {
         Ok(Agent::wrap(self.inner.agent(agent_id)?.clone()))
     }
-    fn activity(&self, activity_id: &str) -> R<Activity> {
-        Ok(Activity::wrap(self.inner.activity(activity_id)?.clone()))
+    fn activity(&mut self, py: Python<'_>, activity_id: &str) -> R<Py<Activity>> {
+        self.inner.activity(activity_id)?;
+        let found = self.select(py, |a| a.id == activity_id)?;
+        Ok(found.get_item(0)?.cast_into::<Activity>().map_err(PyErr::from)?.unbind())
     }
     fn has_activity(&self, activity_id: &str) -> bool {
         self.inner.has_activity(activity_id)
@@ -204,19 +288,45 @@ impl Provenance {
     fn has_agent(&self, agent_id: &str) -> bool {
         self.inner.has_agent(agent_id)
     }
+    /// Add an agent; an id already in the graph is refused unless `replace`.
     #[pyo3(signature = (agent, *, replace=false))]
-    fn add_agent(&mut self, agent: &Bound<'_, PyAny>, replace: bool) -> R<Agent> {
-        Ok(Agent::wrap(self.inner.add_agent(agent_arg(agent)?, replace)?))
+    fn add_agent<'py>(&mut self, agent: &Bound<'py, PyAny>, replace: bool) -> R<Bound<'py, PyAny>> {
+        let value = agent_arg(agent)?;
+        // The document first: what it refuses is refused here too.
+        let written = self.write_through(agent.py(), |p| p.add_agent(value.clone(), replace).map(drop))?;
+        self.inner.add_agent(value.clone(), replace || written)?;
+        Ok(match agent.cast::<Agent>() {
+            Ok(given) => given.clone().into_any(),
+            Err(_) => Bound::new(agent.py(), Agent::wrap(value))?.into_any(),
+        })
     }
+    /// Add an activity; an id already in the graph is refused unless
+    /// `replace`.  The activity given is kept, as 1.x kept it; a document's
+    /// provenance keeps, and returns, the document's.
     #[pyo3(signature = (activity, *, replace=false))]
-    fn add_activity(&mut self, activity: &Bound<'_, PyAny>, replace: bool) -> R<Activity> {
-        Ok(Activity::wrap(self.inner.add_activity(activity_arg(activity)?, replace)?))
+    fn add_activity(&mut self, activity: &Bound<'_, PyAny>, replace: bool) -> R<Py<Activity>> {
+        let py = activity.py();
+        let value = activity_arg(activity)?;
+        let written = self.write_through(py, |p| p.add_activity(value.clone(), replace).map(drop))?;
+        self.objects(py)?;
+        let at = self.inner.activities().position(|a| a.id == value.id);
+        self.inner.add_activity(value.clone(), replace || written)?;
+        let object = match activity.cast::<Activity>() {
+            Ok(given) if !written => given.clone().unbind(),
+            _ => self.object(py, value)?,
+        };
+        let objects = self.activities.get_or_insert_with(Vec::new);
+        match at {
+            Some(i) => objects[i] = object.clone_ref(py),
+            None => objects.push(object.clone_ref(py)),
+        }
+        Ok(object)
     }
-    fn activities_by_type<'py>(&self, py: Python<'py>, activity_type: &str) -> PyResult<Bound<'py, PyTuple>> {
-        PyTuple::new(py, self.inner.activities_by_type(activity_type).into_iter().cloned().map(Activity::wrap))
+    fn activities_by_type<'py>(&mut self, py: Python<'py>, activity_type: &str) -> PyResult<Bound<'py, PyTuple>> {
+        self.select(py, |a| a.r#type == activity_type)
     }
-    fn produced_by<'py>(&self, py: Python<'py>, object_path: &str) -> PyResult<Bound<'py, PyTuple>> {
-        PyTuple::new(py, self.inner.produced_by(object_path).into_iter().cloned().map(Activity::wrap))
+    fn produced_by<'py>(&mut self, py: Python<'py>, object_path: &str) -> PyResult<Bound<'py, PyTuple>> {
+        self.select(py, |a| a.outputs.iter().any(|o| o == object_path))
     }
     fn dangling_agent_refs<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
         PyTuple::new(py, self.inner.dangling_agent_refs())
@@ -227,19 +337,35 @@ impl Provenance {
     fn __len__(&self) -> usize {
         self.inner.n_activities()
     }
-    fn to_json<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        json_to_py(py, &self.inner.to_json())
+    /// The graph as it stands, as JSON.
+    fn to_json<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyAny>> {
+        Ok(json_to_py(py, &self.current(py)?.to_json())?)
     }
     #[classmethod]
     fn from_json(_cls: &Bound<'_, pyo3::types::PyType>, doc: &Bound<'_, PyAny>) -> R<Self> {
         let value = if doc.is_none() { None } else { Some(py_to_json(doc)?) };
-        Ok(Provenance { inner: prov_engine::Provenance::from_json(value.as_ref())? })
+        Ok(Provenance::wrap(prov_engine::Provenance::from_json(value.as_ref())?))
     }
-    fn __eq__(&self, other: &Bound<'_, PyAny>) -> bool {
-        other.cast::<Provenance>().map(|o| o.borrow().inner == self.inner).unwrap_or(false)
+    fn __eq__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> bool {
+        let Ok(other) = other.cast::<Provenance>() else { return false };
+        let Ok(other) = other.try_borrow() else { return false };
+        match (self.current(py), other.current(py)) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => false,
+        }
     }
     fn __reduce__<'py>(slf: &Bound<'py, Self>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyTuple>)> {
         crate::values::reduce_via_json(slf.as_any())
+    }
+    fn __traverse__(&self, visit: PyVisit<'_>) -> Result<(), PyTraverseError> {
+        for activity in self.activities.iter().flatten() {
+            visit.call(activity)?;
+        }
+        visit.call(&self.document)
+    }
+    fn __clear__(&mut self) {
+        self.activities = None;
+        self.document = None;
     }
 }
 
@@ -361,35 +487,66 @@ record_class!(
 );
 
 /// The sample's timepoints, in acquisition order; indexable by position or id.
+///
+/// The timepoints are the timeline's own objects, as 1.x kept them --- those
+/// it was given, and from the first read those it hands out --- so an edit to
+/// one's `series_uids` is the timeline's, and for a document's timeline, the
+/// document's.
 #[pyclass(module = "medh5.curation", name = "Timeline", skip_from_py_object, frozen)]
 pub struct Timeline {
+    /// The timepoints as given or read.
     pub inner: tl_engine::Timeline,
-    points: PyOnceLock<Py<PyTuple>>,
+    /// The timepoint objects, once given or read, in `inner`'s order.
+    points: OnceLock<Py<PyTuple>>,
+    /// The document this is the timeline of.
+    document: Option<Py<PyAny>>,
 }
 
 impl Timeline {
     pub fn wrap(inner: tl_engine::Timeline) -> Self {
-        Timeline { inner, points: PyOnceLock::new() }
+        Timeline { inner, points: OnceLock::new(), document: None }
+    }
+
+    /// The timeline of `document`, read as `inner`.
+    pub fn read_from(inner: tl_engine::Timeline, document: &Bound<'_, PyAny>) -> Self {
+        Timeline { inner, points: OnceLock::new(), document: Some(document.clone().unbind()) }
     }
 
     fn objects<'py>(&self, py: Python<'py>) -> PyResult<&Bound<'py, PyTuple>> {
-        Ok(self
-            .points
-            .get_or_try_init(py, || {
-                PyTuple::new(py, self.inner.iter().cloned().map(Timepoint::wrap)).map(Bound::unbind)
-            })?
-            .bind(py))
+        if self.points.get().is_none() {
+            let made = self
+                .inner
+                .iter()
+                .map(|t| match &self.document {
+                    Some(document) => {
+                        Py::new(py, Timepoint::read_from(t.clone(), document.bind(py), "timepoints", Some(&t.id)))
+                    }
+                    None => Py::new(py, Timepoint::wrap(t.clone())),
+                })
+                .collect::<PyResult<Vec<_>>>()?;
+            // A read on another thread may have got there first; either will do.
+            let _ = self.points.set(PyTuple::new(py, made)?.unbind());
+        }
+        Ok(self.points.get().expect("made").bind(py))
     }
 
     fn position(&self, id: &str) -> Option<usize> {
         self.inner.iter().position(|t| t.id == id)
     }
+
+    /// The timeline as it stands: its timepoints as edited.
+    pub fn current(&self, py: Python<'_>) -> R<tl_engine::Timeline> {
+        let Some(points) = self.points.get() else { return Ok(self.inner.clone()) };
+        let points = points.bind(py).iter().map(|p| Timepoint::arg(&p)).collect::<R<Vec<_>>>()?;
+        Ok(tl_engine::Timeline::new(points)?)
+    }
 }
 
-/// A timeline argument: the binding class, or a list of timepoints.
+/// A timeline argument: the binding class as it stands, or a list of
+/// timepoints.
 pub fn timeline_arg(obj: &Bound<'_, PyAny>) -> R<tl_engine::Timeline> {
     if let Ok(t) = obj.cast::<Timeline>() {
-        return Ok(t.get().inner.clone());
+        return t.get().current(obj.py());
     }
     let mut points = Vec::new();
     for item in obj.try_iter()? {
@@ -400,9 +557,26 @@ pub fn timeline_arg(obj: &Bound<'_, PyAny>) -> R<tl_engine::Timeline> {
 
 #[pymethods]
 impl Timeline {
+    /// A timeline of `timepoints`, which it keeps, in index order, as 1.x
+    /// kept them.
     #[new]
-    fn new(timepoints: &Bound<'_, PyAny>) -> R<Self> {
-        Ok(Timeline::wrap(timeline_arg(timepoints)?))
+    fn new(py: Python<'_>, timepoints: &Bound<'_, PyAny>) -> R<Self> {
+        let mut given = Vec::new();
+        for item in timepoints.try_iter()? {
+            let item = item?;
+            let value = Timepoint::arg(&item)?;
+            let object = match item.cast::<Timepoint>() {
+                Ok(point) => point.clone().unbind(),
+                Err(_) => Py::new(py, Timepoint::wrap(value.clone()))?,
+            };
+            given.push((value, object));
+        }
+        // Stable, as the engine's own sort is: the objects stay beside theirs.
+        given.sort_by_key(|(value, _)| value.index);
+        let (values, objects): (Vec<_>, Vec<_>) = given.into_iter().unzip();
+        let made = Timeline::wrap(tl_engine::Timeline::new(values)?);
+        let _ = made.points.set(PyTuple::new(py, objects)?.unbind());
+        Ok(made)
     }
     fn check(&self) -> R<()> {
         Ok(self.inner.check()?)
@@ -464,8 +638,12 @@ impl Timeline {
     fn __repr__(&self) -> String {
         self.inner.repr()
     }
-    fn __eq__(&self, other: &Bound<'_, PyAny>) -> bool {
-        other.cast::<Timeline>().map(|o| o.get().inner == self.inner).unwrap_or(false)
+    fn __eq__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> bool {
+        let Ok(other) = other.cast::<Timeline>() else { return false };
+        match (self.current(py), other.get().current(py)) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => false,
+        }
     }
     #[getter]
     fn ids<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
@@ -488,8 +666,9 @@ impl Timeline {
         let index = self.position(&found.id).unwrap_or(0);
         Ok(self.objects(py)?.get_item(index)?)
     }
-    fn to_json<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        json_to_py(py, &self.inner.to_json())
+    /// The timeline as it stands, as JSON.
+    fn to_json<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyAny>> {
+        Ok(json_to_py(py, &self.current(py)?.to_json())?)
     }
     #[classmethod]
     fn from_json(_cls: &Bound<'_, pyo3::types::PyType>, docs: &Bound<'_, PyAny>) -> R<Self> {
@@ -510,6 +689,10 @@ impl Timeline {
     }
     fn __reduce__<'py>(slf: &Bound<'py, Self>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyTuple>)> {
         crate::values::reduce_via_json(slf.as_any())
+    }
+    fn __traverse__(&self, visit: PyVisit<'_>) -> Result<(), PyTraverseError> {
+        visit.call(self.points.get())?;
+        visit.call(&self.document)
     }
 }
 

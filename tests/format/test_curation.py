@@ -362,3 +362,124 @@ class TestDocument:
             build()
         assert exc.value.code == "E005"
         assert what in str(exc.value)
+
+
+class TestRecordEdits:
+    """§3.7, §11, §12: a record's dicts are the record's own, as 1.x's
+    dataclass fields were --- an edit in place is kept, and is what the
+    record is wherever it is used next."""
+
+    @pytest.mark.parametrize(
+        ("build", "field", "key", "value"),
+        [
+            (lambda: Identity("s", "p"), "extra", "consent", "research-only"),
+            (lambda: Cohort(site_id="a"), "extra", "batch", 7),
+            (lambda: Deidentification("dicom-psi"), "extra", "tool", "scrub"),
+            (lambda: Activity("a", "review"), "params", "window", [-150, 250]),
+            (lambda: Agreement("dice", 0.9, against="r2"), "per_class", "1", 0.5),
+            (lambda: Timepoint("tp0", 0), "series_uids", "CT", "1.2.840.99"),
+        ],
+    )
+    def test_S11_S12_an_edit_to_a_records_dict_is_kept(
+        self, build: Any, field: str, key: str, value: Any
+    ):
+        import copy
+        import pickle
+
+        record = build()
+        held = getattr(record, field)
+        assert type(held) is dict
+        assert getattr(record, field) is held
+        held[key] = value
+        assert getattr(record, field) == {key: value}
+        written = record.to_json()
+        # `extra` is the record's other members, at its top level.
+        assert (written if field == "extra" else written[field])[key] == value
+        assert record == type(record).from_json(written)
+        assert record != build()
+        for copied in (
+            pickle.loads(pickle.dumps(record)),
+            copy.copy(record),
+            copy.deepcopy(record),
+        ):
+            assert getattr(copied, field) == {key: value}
+        assert f"{field}={{{key!r}: {value!r}}}" in repr(record)
+
+    def test_S2_4_a_document_given_edited_records_holds_the_edits(self):
+        identity = Identity("s", "p")
+        identity.extra["consent"] = "research-only"
+        point = Timepoint("tp0", 0)
+        point.series_uids["CT"] = "1.2.840.99"
+        activity = Activity("a", "review", agent="r")
+        activity.params["window"] = [-150, 250]
+        quality = QualityRecord(
+            "draft", agreement=[Agreement("dice", 0.9, against="r2")]
+        )
+        quality.agreement[0].per_class["1"] = 0.5
+        document = SampleDocument(
+            identity,
+            Timeline([point]),
+            provenance=Provenance([Agent("r", "person", "Reader")], [activity]),
+            quality={"CT": quality},
+        )
+        written = document.to_json()
+        assert written["identity"]["consent"] == "research-only"
+        assert written["timepoints"][0]["series_uids"] == {"CT": "1.2.840.99"}
+        assert written["provenance"]["activities"][0]["params"] == {
+            "window": [-150, 250]
+        }
+        assert written["quality"]["CT"]["agreement"][0]["per_class"] == {"1": 0.5}
+
+    def test_S12_1_an_extra_member_named_after_a_field_is_refused(self):
+        """``extra`` is every member the record has no field for: one named
+        ``sex`` is the field, and which of the two the file should hold is
+        not for the reader to guess."""
+        identity = Identity("s", "p", sex="M")
+        identity.extra["sex"] = "F"
+        with pytest.raises(MEDH5ValidationError, match="'sex', which is a field"):
+            identity.to_json()
+        del identity.extra["sex"]
+        assert identity.to_json() == {"sample_id": "s", "subject_id": "p", "sex": "M"}
+
+    def test_S11_2_a_nested_records_dict_is_kept(self):
+        record = QualityRecord(
+            "draft", agreement=[Agreement("dice", 0.9, against="r2")]
+        )
+        assert record.agreement[0] is record.agreement[0]
+        record.agreement[0].per_class["1"] = 0.8
+        assert record.to_json()["agreement"][0]["per_class"] == {"1": 0.8}
+        assert QualityRecord.from_json(record.to_json()) == record
+
+    def test_S11_S12_a_hash_outlives_an_edit(self):
+        """A dict changes in place, a hash must not: records hash by the
+        fields an edit cannot reach, so equal records still hash alike."""
+        identity = Identity("s", "p")
+        before = hash(identity)
+        identity.extra["consent"] = "research-only"
+        assert hash(identity) == before
+        same = Identity("s", "p", extra={"consent": "research-only"})
+        assert identity == same
+        assert hash(identity) == hash(same)
+
+    def test_S11_1_provenance_keeps_the_activities_it_is_given(self):
+        given = Activity("a", "review", agent="r")
+        provenance = Provenance([Agent("r", "person", "Reader")], [given])
+        assert provenance.activity("a") is given
+        given.params["window"] = [-150, 250]
+        added = provenance.add_activity(Activity("b", "annotate", agent="r"))
+        assert provenance.activity("b") is added
+        added.params["tool"] = "brush"
+        assert [a["params"] for a in provenance.to_json()["activities"]] == [
+            {"window": [-150, 250]},
+            {"tool": "brush"},
+        ]
+        assert provenance.activities_by_type("annotate") == (added,)
+
+    def test_S3_7_a_timeline_keeps_the_timepoints_it_is_given(self):
+        later = Timepoint("tp1", 1)
+        timeline = Timeline([later, Timepoint("tp0", 0)])
+        assert timeline["tp1"] is later
+        assert timeline[1] is later
+        later.series_uids["CT"] = "1.2.840.99"
+        assert timeline.to_json()[1]["series_uids"] == {"CT": "1.2.840.99"}
+        assert Timeline.from_json(timeline.to_json()) == timeline

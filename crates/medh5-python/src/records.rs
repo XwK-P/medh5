@@ -7,13 +7,27 @@
 //! `from_json`, which is where every rule lives.  Fields read back out of the
 //! JSON with the Python types 1.x returned (tuples for sequences, floats for
 //! floats, nested records for nested values).
+//!
+//! A container field --- a dict (`Identity.extra`, `Activity.params`), or
+//! nested records whose dicts are editable (`QualityRecord.agreement`) --- is
+//! the record's own, as 1.x's dataclass fields were: made on its first read,
+//! the same object on every read after, and read back whenever the record is
+//! used (`to_json`, `==`, a writer or a document given it).  So an edit in
+//! place is kept, and every rule is checked again on the record as edited.
+//! A record a document hands out writes each such edit through to the
+//! document as well (`medh5._live`).
+
+use std::sync::OnceLock;
 
 use pyo3::exceptions::{PyAttributeError, PyTypeError};
 use pyo3::prelude::*;
+use pyo3::pyclass::{PyTraverseError, PyVisit};
+use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyDict, PyTuple};
 use serde_json::{Map, Value};
 
 use crate::convert::{json_to_py, py_to_json};
+use crate::errors::R;
 
 /// How one field reads back.
 #[derive(Clone, Copy)]
@@ -33,11 +47,23 @@ pub enum Kind {
     /// `False` when absent.
     FalseDefault,
     /// A nested record, built by the given constructor (`None` when absent).
-    Record(fn(Python<'_>, &Value) -> PyResult<Py<PyAny>>),
+    Record(MakeRecord),
     /// A tuple of nested records.
-    Records(fn(Python<'_>, &Value) -> PyResult<Py<PyAny>>),
+    Records(MakeRecord),
     /// Every top-level member not named by another field (`{}` when none).
     Extra,
+}
+
+/// A nested record's constructor: its JSON form, and the anchor its
+/// containers write through, if it has one.
+pub type MakeRecord = fn(Python<'_>, &Value, Option<&Bound<'_, PyAny>>) -> PyResult<Py<PyAny>>;
+
+impl Kind {
+    /// Whether the field holds something an edit in place can change: a
+    /// dict, or nested records, which have dicts of their own.
+    pub fn is_container(self) -> bool {
+        matches!(self, Kind::Dict | Kind::Extra | Kind::Record(_) | Kind::Records(_))
+    }
 }
 
 pub struct Field {
@@ -98,8 +124,16 @@ fn missing_arguments(class: &str, missing: &[&str]) -> PyErr {
     PyTypeError::new_err(format!("{class}.__init__() missing {} required positional {plural}: {names}", missing.len()))
 }
 
-/// Read one field from a record's JSON form.
-pub fn read_field<'py>(py: Python<'py>, json: &Value, fields: &[Field], f: &Field) -> PyResult<Bound<'py, PyAny>> {
+/// Read one field from a record's JSON form.  A container field is made
+/// new: anchored, when `anchor` is given, so that an edit to it is written
+/// back through the anchor (`medh5._live`).
+pub fn read_field<'py>(
+    py: Python<'py>,
+    json: &Value,
+    fields: &[Field],
+    f: &Field,
+    anchor: Option<&Bound<'py, PyAny>>,
+) -> PyResult<Bound<'py, PyAny>> {
     let value = json.get(f.key);
     let none = || py.None().into_bound(py);
     Ok(match f.kind {
@@ -138,10 +172,13 @@ pub fn read_field<'py>(py: Python<'py>, json: &Value, fields: &[Field], f: &Fiel
             }
             _ => PyTuple::empty(py).into_any(),
         },
-        Kind::Dict => match value {
-            Some(v @ Value::Object(_)) => json_to_py(py, v)?,
-            _ => PyDict::new(py).into_any(),
-        },
+        Kind::Dict => {
+            let plain = match value {
+                Some(v @ Value::Object(_)) => json_to_py(py, v)?,
+                _ => PyDict::new(py).into_any(),
+            };
+            containers(plain, anchor)?
+        }
         Kind::Default(text) => match value {
             Some(v) if !v.is_null() => json_to_py(py, v)?,
             _ => text.into_pyobject(py)?.into_any(),
@@ -151,12 +188,12 @@ pub fn read_field<'py>(py: Python<'py>, json: &Value, fields: &[Field], f: &Fiel
             _ => false.into_pyobject(py)?.to_owned().into_any(),
         },
         Kind::Record(make) => match value {
-            Some(v) if !v.is_null() => make(py, v)?.into_bound(py),
+            Some(v) if !v.is_null() => make(py, v, anchor)?.into_bound(py),
             _ => none(),
         },
         Kind::Records(make) => match value {
             Some(Value::Array(items)) => {
-                PyTuple::new(py, items.iter().map(|i| make(py, i)).collect::<PyResult<Vec<_>>>()?)?.into_any()
+                PyTuple::new(py, items.iter().map(|i| make(py, i, anchor)).collect::<PyResult<Vec<_>>>()?)?.into_any()
             }
             _ => PyTuple::empty(py).into_any(),
         },
@@ -169,9 +206,194 @@ pub fn read_field<'py>(py: Python<'py>, json: &Value, fields: &[Field], f: &Fiel
                     }
                 }
             }
-            out.into_any()
+            containers(out.into_any(), anchor)?
         }
     })
+}
+
+/// `plain` (a JSON value), or with an anchor, its objects and arrays as
+/// containers that write an edit back through it.
+fn containers<'py>(plain: Bound<'py, PyAny>, anchor: Option<&Bound<'py, PyAny>>) -> PyResult<Bound<'py, PyAny>> {
+    static NESTED: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+    match anchor {
+        Some(anchor) => NESTED.import(plain.py(), "medh5._live", "_nested")?.call1((plain, anchor)),
+        None => Ok(plain),
+    }
+}
+
+/// A new `medh5._live._Anchor`: for the record read as `token` from member
+/// `field` (and `key`) of `document`, whose `_replace_member` it calls.
+pub fn new_anchor<'py>(
+    document: &Bound<'py, PyAny>,
+    field: &str,
+    key: Option<&str>,
+    token: &str,
+) -> PyResult<Bound<'py, PyAny>> {
+    static ANCHOR: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+    ANCHOR.import(document.py(), "medh5._live", "_Anchor")?.call1((document, field, key, token))
+}
+
+/// Where a record a document handed out was read from.
+struct Member {
+    document: Py<PyAny>,
+    field: String,
+    key: Option<String>,
+}
+
+/// What a record keeps beside its JSON form: its container fields, once
+/// read, and where it was read from, if a document handed it out.
+pub struct Held {
+    /// One cell per field, filled for a container field on its first read.
+    cells: Box<[OnceLock<Py<PyAny>>]>,
+    /// The document member the record was read from.
+    member: Option<Member>,
+    /// The anchor its containers write through: made when the first of them
+    /// is read, so that a record only read for its other fields is never
+    /// anchored.
+    anchor: OnceLock<Py<PyAny>>,
+}
+
+impl Held {
+    pub fn new(fields: usize) -> Self {
+        Held { cells: (0..fields).map(|_| OnceLock::new()).collect(), member: None, anchor: OnceLock::new() }
+    }
+
+    /// Whether no container has been read: the JSON form is then the record.
+    pub fn is_untouched(&self) -> bool {
+        self.cells.iter().all(|c| c.get().is_none())
+    }
+
+    /// Field `i`'s container, if it has been read.
+    pub fn get(&self, i: usize) -> Option<&Py<PyAny>> {
+        self.cells[i].get()
+    }
+
+    /// Keep `value` as field `i`'s container, unless one already is (a read
+    /// on another thread got there first); the one kept.
+    pub fn keep<'py>(&self, i: usize, value: Bound<'py, PyAny>) -> Bound<'py, PyAny> {
+        let py = value.py();
+        let _ = self.cells[i].set(value.clone().unbind());
+        self.cells[i].get().map(|v| v.bind(py).clone()).unwrap_or(value)
+    }
+
+    /// Record that the record was read from member `field` (`key`) of
+    /// `document`.
+    pub fn read_from(&mut self, document: Py<PyAny>, field: &str, key: Option<&str>) {
+        self.member = Some(Member { document, field: field.to_string(), key: key.map(str::to_string) });
+    }
+
+    /// The anchor the containers write through: given, made now from the
+    /// member read (with `record` as its root), or none for a record no
+    /// document handed out.
+    pub fn anchor<'py>(
+        &self,
+        record: &Bound<'py, PyAny>,
+        json: &Value,
+        given: Option<&Bound<'py, PyAny>>,
+    ) -> PyResult<Option<Bound<'py, PyAny>>> {
+        let py = record.py();
+        if let Some(found) = self.anchor.get() {
+            return Ok(Some(found.bind(py).clone()));
+        }
+        let made = match (given, &self.member) {
+            (Some(anchor), _) => anchor.clone(),
+            (None, Some(m)) => {
+                let token = medh5::json::canonical(json);
+                let anchor = new_anchor(m.document.bind(py), &m.field, m.key.as_deref(), &token)?;
+                anchor.setattr("root", record)?;
+                anchor
+            }
+            (None, None) => return Ok(None),
+        };
+        let _ = self.anchor.set(made.unbind());
+        Ok(self.anchor.get().map(|a| a.bind(py).clone()))
+    }
+
+    pub fn traverse(&self, visit: &PyVisit<'_>) -> Result<(), PyTraverseError> {
+        for cell in self.cells.iter() {
+            visit.call(cell.get())?;
+        }
+        if let Some(m) = &self.member {
+            visit.call(&m.document)?;
+        }
+        visit.call(self.anchor.get())
+    }
+}
+
+/// A record's JSON form with each container read put back: a dict as it
+/// now stands (omitted when empty), the extra members replaced by the
+/// `extra` dict's, nested records as each now stands.  Not validated: the
+/// caller parses it.
+pub fn merged_json(py: Python<'_>, class: &str, json: &Value, fields: &[Field], held: &Held) -> R<Value> {
+    let mut out = match json {
+        Value::Object(m) => m.clone(),
+        _ => Map::new(),
+    };
+    let named = |k: &str| fields.iter().any(|f| f.key == k);
+    for (i, f) in fields.iter().enumerate() {
+        let Some(value) = held.get(i) else { continue };
+        let value = value.bind(py);
+        match f.kind {
+            Kind::Dict => match py_to_json(value)? {
+                Value::Object(m) if m.is_empty() => {
+                    out.shift_remove(f.key);
+                }
+                v => {
+                    out.insert(f.key.to_string(), v);
+                }
+            },
+            Kind::Extra => {
+                out.retain(|k, _| named(k));
+                if let Value::Object(extra) = py_to_json(value)? {
+                    for (k, v) in extra {
+                        if named(&k) {
+                            return Err(medh5::Error::invalid(format!(
+                                "{class}.{} holds {}, which is a field of {class}, not an extra member; \
+                                 give the field itself (dataclasses.replace)",
+                                f.name,
+                                medh5::json::repr_str(&k)
+                            ))
+                            .into());
+                        }
+                        out.insert(k, v);
+                    }
+                }
+            }
+            Kind::Record(_) => {
+                if value.is_none() {
+                    out.shift_remove(f.key);
+                } else {
+                    out.insert(f.key.to_string(), py_to_json(&value.call_method0("to_json")?)?);
+                }
+            }
+            Kind::Records(_) => {
+                let items = value
+                    .try_iter()?
+                    .map(|r| py_to_json(&r?.call_method0("to_json")?))
+                    .collect::<PyResult<Vec<_>>>()?;
+                if items.is_empty() {
+                    out.shift_remove(f.key);
+                } else {
+                    out.insert(f.key.to_string(), Value::Array(items));
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(Value::Object(out))
+}
+
+/// A hash of the fields an edit cannot change.  A container can be edited
+/// in place, and a hash must not change while the record lives; records
+/// equal as they stand agree on these fields, so they hash alike.
+pub fn fixed_hash(json: &Value, fields: &[Field]) -> isize {
+    let mut fixed = Map::new();
+    for f in fields.iter().filter(|f| !f.kind.is_container()) {
+        if let Some(v) = json.get(f.key) {
+            fixed.insert(f.key.to_string(), v.clone());
+        }
+    }
+    crate::values::json_hash(&Value::Object(fixed))
 }
 
 /// The JSON object a constructor call describes: arguments matched to
@@ -274,8 +496,12 @@ macro_rules! record_class {
     ) => {
         #[pyclass(module = $module, name = $py, skip_from_py_object, frozen)]
         pub struct $rust {
+            /// The record as made.  Its container fields may have been
+            /// edited since: `current` is the record as it stands.
             pub inner: $engine,
+            /// `inner`'s JSON form.
             pub json: serde_json::Value,
+            held: $crate::records::Held,
         }
 
         impl $rust {
@@ -286,7 +512,16 @@ macro_rules! record_class {
             pub fn wrap(inner: $engine) -> Self {
                 let dump: fn(&$engine) -> serde_json::Value = $dump;
                 let json = dump(&inner);
-                $rust { inner, json }
+                $rust { inner, json, held: $crate::records::Held::new(Self::FIELDS.len()) }
+            }
+
+            /// The record of member `field` (`key`) of `document`, read as
+            /// `inner`: an edit to one of its containers is written back to
+            /// the member, while the member is still what was read.
+            pub fn read_from(inner: $engine, document: &Bound<'_, PyAny>, field: &str, key: Option<&str>) -> Self {
+                let mut made = Self::wrap(inner);
+                made.held.read_from(document.clone().unbind(), field, key);
+                made
             }
 
             pub fn from_value(value: &serde_json::Value) -> $crate::errors::R<Self> {
@@ -294,19 +529,85 @@ macro_rules! record_class {
                 Ok(Self::wrap(parse(value)?))
             }
 
-            /// A Python object for a nested JSON value (used by `Kind::Record`).
-            pub fn py_from_json(py: Python<'_>, value: &serde_json::Value) -> PyResult<Py<PyAny>> {
-                let made = Self::from_value(value).map_err(PyErr::from)?;
-                Ok(Py::new(py, made)?.into_any())
+            /// A Python object for a nested JSON value (used by `Kind::Record`),
+            /// its containers anchored to `anchor` if one is given.
+            pub fn py_from_json(
+                py: Python<'_>,
+                value: &serde_json::Value,
+                anchor: Option<&Bound<'_, PyAny>>,
+            ) -> PyResult<Py<PyAny>> {
+                let made = Bound::new(py, Self::from_value(value).map_err(PyErr::from)?)?;
+                if let Some(anchor) = anchor {
+                    Self::anchor_containers(&made, anchor)?;
+                }
+                Ok(made.into_any().unbind())
             }
 
-            /// The engine value of a Python argument: this class, or its JSON form.
-            pub fn arg(obj: &Bound<'_, PyAny>) -> $crate::errors::R<$engine> {
+            /// The record as it stands --- its containers as edited --- parsed
+            /// again, so that every rule holds of it; and its JSON form.
+            pub fn current(&self, py: Python<'_>) -> $crate::errors::R<($engine, serde_json::Value)> {
+                if self.held.is_untouched() {
+                    return Ok((self.inner.clone(), self.json.clone()));
+                }
+                let merged = $crate::records::merged_json(py, $py, &self.json, Self::FIELDS, &self.held)?;
+                let parse: fn(&serde_json::Value) -> medh5::Result<$engine> = $parse;
+                let dump: fn(&$engine) -> serde_json::Value = $dump;
+                let inner = parse(&merged)?;
+                let json = dump(&inner);
+                Ok((inner, json))
+            }
+
+            /// The engine value of a Python argument, and its JSON form: this
+            /// class as it stands, or its JSON form.
+            pub fn current_of(obj: &Bound<'_, PyAny>) -> $crate::errors::R<($engine, serde_json::Value)> {
                 if let Ok(rec) = obj.cast::<$rust>() {
-                    return Ok(rec.get().inner.clone());
+                    return rec.get().current(obj.py());
                 }
                 let parse: fn(&serde_json::Value) -> medh5::Result<$engine> = $parse;
-                Ok(parse(&$crate::convert::py_to_json(obj)?)?)
+                let dump: fn(&$engine) -> serde_json::Value = $dump;
+                let inner = parse(&$crate::convert::py_to_json(obj)?)?;
+                let json = dump(&inner);
+                Ok((inner, json))
+            }
+
+            /// The engine value of a Python argument: this class as it stands,
+            /// or its JSON form.
+            pub fn arg(obj: &Bound<'_, PyAny>) -> $crate::errors::R<$engine> {
+                Ok(Self::current_of(obj)?.0)
+            }
+
+            /// Make every container of `record`, anchored to `anchor`.
+            fn anchor_containers(record: &Bound<'_, Self>, anchor: &Bound<'_, PyAny>) -> PyResult<()> {
+                let py = record.py();
+                let me = record.get();
+                for (i, f) in Self::FIELDS.iter().enumerate() {
+                    if f.kind.is_container() {
+                        me.held.keep(i, $crate::records::read_field(py, &me.json, Self::FIELDS, f, Some(anchor))?);
+                    }
+                }
+                Ok(())
+            }
+
+            /// Field `i`, read: a container is made on its first read --- with
+            /// every other container, anchored, for a record a document
+            /// handed out --- and kept.
+            fn field_value<'py>(record: &Bound<'py, Self>, i: usize) -> PyResult<Bound<'py, PyAny>> {
+                let py = record.py();
+                let me = record.get();
+                let f = &Self::FIELDS[i];
+                if !f.kind.is_container() {
+                    return $crate::records::read_field(py, &me.json, Self::FIELDS, f, None);
+                }
+                if let Some(found) = me.held.get(i) {
+                    return Ok(found.bind(py).clone());
+                }
+                if let Some(anchor) = me.held.anchor(record.as_any(), &me.json, None)? {
+                    Self::anchor_containers(record, &anchor)?;
+                    if let Some(found) = me.held.get(i) {
+                        return Ok(found.bind(py).clone());
+                    }
+                }
+                Ok(me.held.keep(i, $crate::records::read_field(py, &me.json, Self::FIELDS, f, None)?))
             }
         }
 
@@ -335,15 +636,16 @@ macro_rules! record_class {
                 $crate::records::signature(py, Self::FIELDS)
             }
 
-            fn __getattr__<'py>(&self, py: Python<'py>, name: &str) -> PyResult<Bound<'py, PyAny>> {
-                match Self::FIELDS.iter().find(|f| f.name == name) {
-                    Some(f) => $crate::records::read_field(py, &self.json, Self::FIELDS, f),
+            fn __getattr__<'py>(slf: &Bound<'py, Self>, name: &str) -> PyResult<Bound<'py, PyAny>> {
+                match Self::FIELDS.iter().position(|f| f.name == name) {
+                    Some(i) => Self::field_value(slf, i),
                     None => Err($crate::records::missing_attribute($py, name)),
                 }
             }
 
-            fn to_json<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-                $crate::convert::json_to_py(py, &self.json)
+            /// The record as it stands, as JSON.
+            fn to_json<'py>(&self, py: Python<'py>) -> $crate::errors::R<Bound<'py, PyAny>> {
+                Ok($crate::convert::json_to_py(py, &self.current(py)?.1)?)
             }
 
             /// The fields too: they are read through `__getattr__`, and
@@ -374,12 +676,18 @@ macro_rules! record_class {
                 Self::from_value(&$crate::convert::py_to_json(doc)?).map(Some)
             }
 
-            fn __eq__(&self, other: &Bound<'_, PyAny>) -> bool {
-                other.cast::<$rust>().map(|o| o.get().json == self.json).unwrap_or(false)
+            /// Equal as they stand; a record whose edits break a rule equals
+            /// none.
+            fn __eq__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> bool {
+                let Ok(other) = other.cast::<$rust>() else { return false };
+                match (self.current(py), other.get().current(py)) {
+                    (Ok(a), Ok(b)) => a.1 == b.1,
+                    _ => false,
+                }
             }
 
             fn __hash__(&self) -> isize {
-                $crate::values::json_hash(&self.json)
+                $crate::records::fixed_hash(&self.json, Self::FIELDS)
             }
 
             fn __repr__(slf: &Bound<'_, Self>) -> PyResult<String> {
@@ -387,13 +695,37 @@ macro_rules! record_class {
                 let me = slf.get();
                 let fields = Self::FIELDS
                     .iter()
-                    .map(|f| Ok((f.name, $crate::records::read_field(py, &me.json, Self::FIELDS, f)?)))
+                    .enumerate()
+                    .map(|(i, f)| {
+                        let value = match me.held.get(i) {
+                            Some(found) => found.bind(py).clone(),
+                            None => $crate::records::read_field(py, &me.json, Self::FIELDS, f, None)?,
+                        };
+                        Ok((f.name, value))
+                    })
                     .collect::<PyResult<Vec<_>>>()?;
                 $crate::values::dataclass_repr($py, &fields)
             }
 
             fn __reduce__<'py>(slf: &Bound<'py, Self>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, pyo3::types::PyTuple>)> {
                 $crate::values::reduce_via_json(slf.as_any())
+            }
+
+            /// Anchor a record just read to `anchor` (`medh5._live`): its
+            /// containers, made now, write an edit back through it.
+            fn _anchor_to(slf: &Bound<'_, Self>, anchor: &Bound<'_, PyAny>) -> PyResult<()> {
+                let me = slf.get();
+                if !me.held.is_untouched() {
+                    return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                        "a record whose fields have been read cannot be anchored",
+                    ));
+                }
+                me.held.anchor(slf.as_any(), &me.json, Some(anchor))?;
+                Self::anchor_containers(slf, anchor)
+            }
+
+            fn __traverse__(&self, visit: pyo3::pyclass::PyVisit<'_>) -> Result<(), pyo3::pyclass::PyTraverseError> {
+                self.held.traverse(&visit)
             }
 
             $($($methods)*)?

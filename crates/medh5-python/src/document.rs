@@ -9,7 +9,9 @@ use serde_json::{Map, Value};
 use medh5::document as engine;
 
 use crate::convert::{json_to_py, py_to_json};
-use crate::curation::{timeline_arg, Cohort, Deidentification, Identity, QualityRecord, SplitClaim, Timeline};
+use crate::curation::{
+    timeline_arg, Activity, Cohort, Deidentification, Identity, QualityRecord, SplitClaim, Timeline, Timepoint,
+};
 use crate::errors::R;
 use crate::labels::{label_set_arg, LabelSet};
 
@@ -57,7 +59,7 @@ impl SampleDocument {
         }
     }
 
-    fn edit<T>(&mut self, py: Python<'_>, f: impl FnOnce(&mut engine::SampleDocument) -> T) -> R<T> {
+    pub(crate) fn edit<T>(&mut self, py: Python<'_>, f: impl FnOnce(&mut engine::SampleDocument) -> T) -> R<T> {
         match &mut self.source {
             Source::Owned(doc) => Ok(f(doc)),
             Source::Writer(w) => {
@@ -116,12 +118,31 @@ fn live_members<'py>(doc: &Bound<'py, SampleDocument>, field: &str) -> PyResult<
     class.bind(py).call_method1("_of", (doc, field))
 }
 
-fn changed(field: &str, key: &str) -> medh5::Error {
+/// How a member is named to a caller: `document.identity`,
+/// `document.extra['tool']`, `document.provenance.activity('act_1')`.
+fn member_name(field: &str, key: Option<&str>) -> String {
+    match (field, key) {
+        (_, None) => format!("document.{field}"),
+        ("provenance.activities", Some(id)) => format!("document.provenance.activity({})", medh5::json::repr_str(id)),
+        (_, Some(key)) => format!("document.{field}[{}]", medh5::json::repr_str(key)),
+    }
+}
+
+fn changed(field: &str, key: Option<&str>) -> medh5::Error {
     medh5::Error::Runtime(format!(
-        "`document.{field}[{}]` has changed since it was read, and an edit to what was read would undo that; \
+        "`{}` has changed since it was read, and an edit to what was read would undo that; \
          read it again and edit that",
-        medh5::json::repr_str(key)
+        member_name(field, key)
     ))
+}
+
+/// Replace `slot` with `value`, if it is still what was read as `token`.
+fn swap<T>(slot: &mut T, dump: impl Fn(&T) -> Value, token: &str, value: T) -> bool {
+    if medh5::json::canonical(&dump(slot)) != token {
+        return false;
+    }
+    *slot = value;
+    true
 }
 
 impl SampleDocument {
@@ -201,27 +222,33 @@ impl SampleDocument {
         }
         Ok(SampleDocument::owned(doc))
     }
+    /// The identity; an edit to its `extra` reaches the document.
     #[getter]
-    fn identity(&self, py: Python<'_>) -> PyResult<Identity> {
-        self.read(py, |d| Identity::wrap(d.identity.clone()))
+    fn identity(slf: &Bound<'_, Self>) -> PyResult<Identity> {
+        let found = slf.borrow().read(slf.py(), |d| d.identity.clone())?;
+        Ok(Identity::read_from(found, slf.as_any(), "identity", None))
     }
     #[setter]
     fn set_identity(&mut self, py: Python<'_>, value: &Bound<'_, PyAny>) -> R<()> {
         let value = Identity::arg(value)?;
         self.edit(py, |d| d.identity = value)
     }
+    /// The timepoints; an edit to one's `series_uids` reaches the document.
     #[getter]
-    fn timepoints(&self, py: Python<'_>) -> PyResult<Timeline> {
-        self.read(py, |d| Timeline::wrap(d.timepoints.clone()))
+    fn timepoints(slf: &Bound<'_, Self>) -> PyResult<Timeline> {
+        let found = slf.borrow().read(slf.py(), |d| d.timepoints.clone())?;
+        Ok(Timeline::read_from(found, slf.as_any()))
     }
     #[setter]
     fn set_timepoints(&mut self, py: Python<'_>, value: &Bound<'_, PyAny>) -> R<()> {
         let value = timeline_arg(value)?;
         self.edit(py, |d| d.timepoints = value)
     }
+    /// The cohort; an edit to its `extra` reaches the document.
     #[getter]
-    fn cohort(&self, py: Python<'_>) -> PyResult<Cohort> {
-        self.read(py, |d| Cohort::wrap(d.cohort.clone()))
+    fn cohort(slf: &Bound<'_, Self>) -> PyResult<Cohort> {
+        let found = slf.borrow().read(slf.py(), |d| d.cohort.clone())?;
+        Ok(Cohort::read_from(found, slf.as_any(), "cohort", None))
     }
     #[setter]
     fn set_cohort(&mut self, py: Python<'_>, value: &Bound<'_, PyAny>) -> R<()> {
@@ -237,9 +264,12 @@ impl SampleDocument {
         let value = if value.is_none() { None } else { Some(label_set_arg(value)?) };
         self.edit(py, |d| d.label_set = value)
     }
+    /// The provenance graph; an agent or activity added to it, and an edit
+    /// to an activity's `params`, reach the document.
     #[getter]
-    fn provenance(&self, py: Python<'_>) -> PyResult<crate::curation::Provenance> {
-        self.read(py, |d| crate::curation::Provenance { inner: d.provenance.clone() })
+    fn provenance(slf: &Bound<'_, Self>) -> PyResult<crate::curation::Provenance> {
+        let found = slf.borrow().read(slf.py(), |d| d.provenance.clone())?;
+        Ok(crate::curation::Provenance::read_from(found, slf.as_any()))
     }
     #[setter]
     fn set_provenance(&mut self, py: Python<'_>, value: &Bound<'_, PyAny>) -> R<()> {
@@ -277,9 +307,12 @@ impl SampleDocument {
         let value = object(py_to_json(value)?);
         self.edit(py, |d| d.acquisition = value)
     }
+    /// The de-identification record; an edit to its `extra` reaches the
+    /// document.
     #[getter]
-    fn deidentification(&self, py: Python<'_>) -> PyResult<Option<Deidentification>> {
-        self.read(py, |d| d.deidentification.clone().map(Deidentification::wrap))
+    fn deidentification(slf: &Bound<'_, Self>) -> PyResult<Option<Deidentification>> {
+        let found = slf.borrow().read(slf.py(), |d| d.deidentification.clone())?;
+        Ok(found.map(|record| Deidentification::read_from(record, slf.as_any(), "deidentification", None)))
     }
     #[setter]
     fn set_deidentification(&mut self, py: Python<'_>, value: &Bound<'_, PyAny>) -> R<()> {
@@ -333,8 +366,9 @@ impl SampleDocument {
     fn group_id(&self, py: Python<'_>) -> PyResult<String> {
         self.read(py, |d| d.group_id().to_string())
     }
-    fn quality_of(&self, py: Python<'_>, key: Option<&str>) -> PyResult<Option<QualityRecord>> {
-        self.read(py, |d| d.quality_of(key).cloned().map(QualityRecord::wrap))
+    fn quality_of(slf: &Bound<'_, Self>, key: Option<&str>) -> PyResult<Option<QualityRecord>> {
+        let found = slf.borrow().read(slf.py(), |d| d.quality_of(key).cloned())?;
+        Ok(found.map(|record| QualityRecord::read_from(record, slf.as_any(), "quality", key)))
     }
     fn summary<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         json_to_py(py, &self.read(py, |d| d.summary())?)
@@ -358,7 +392,7 @@ impl SampleDocument {
         crate::values::reduce_via_json(slf.as_any())
     }
 
-    // -- what the live views of `quality`, `acquisition` and `extra` call -----
+    // -- what the live views of the document's members call -------------------
 
     /// The members of `field` as `(key, value, token)`: the token is the
     /// member's canonical JSON, which `_replace_member` compares.
@@ -367,7 +401,8 @@ impl SampleDocument {
         match Members::of(field)? {
             Members::Quality => {
                 for (k, v) in self.read(py, |d| d.quality.clone())? {
-                    out.append((k, QualityRecord::wrap(v), ""))?;
+                    let token = medh5::json::canonical(&v.to_json());
+                    out.append((k, QualityRecord::wrap(v), token))?;
                 }
             }
             members => {
@@ -397,29 +432,91 @@ impl SampleDocument {
     }
 
     /// Replace one member with `value`, if it is still the one read as
-    /// `token`; the new token.
+    /// `token`; the new token.  A member is a key of `acquisition` or
+    /// `extra`, or a record: `identity`, `cohort` or `deidentification`, a
+    /// quality record by key, a timepoint or an activity by id.
+    #[pyo3(signature = (field, key, token, value))]
     fn _replace_member(
         &mut self,
         py: Python<'_>,
         field: &str,
-        key: &str,
+        key: Option<&str>,
         token: &str,
         value: &Bound<'_, PyAny>,
     ) -> R<String> {
-        let members = Members::of(field)?;
-        let value = py_to_json(value)?;
-        let written = medh5::json::canonical(&value);
-        self.edit(py, |d| {
-            let found = members.json_mut(d);
-            match found.get(key) {
-                Some(current) if medh5::json::canonical(current) == token => {
-                    found.insert(key.to_string(), value);
-                    Ok(written)
-                }
-                _ => Err(changed(field, key)),
+        let dump = |v: Value| medh5::json::canonical(&v);
+        let replaced = match (field, key) {
+            ("identity", None) => {
+                let (new, json) = Identity::current_of(value)?;
+                self.edit(py, |d| swap(&mut d.identity, |v| v.to_json(), token, new))?.then(|| dump(json))
             }
-        })?
-        .map_err(Into::into)
+            ("cohort", None) => {
+                let (new, json) = Cohort::current_of(value)?;
+                self.edit(py, |d| swap(&mut d.cohort, |v| v.to_json(), token, new))?.then(|| dump(json))
+            }
+            ("deidentification", None) => {
+                let (new, json) = Deidentification::current_of(value)?;
+                let read = |v: &Option<medh5::curation::identity::Deidentification>| {
+                    v.as_ref().map(|r| r.to_json()).unwrap_or(Value::Null)
+                };
+                self.edit(py, |d| swap(&mut d.deidentification, read, token, Some(new)))?.then(|| dump(json))
+            }
+            ("quality", Some(k)) => {
+                let (new, json) = QualityRecord::current_of(value)?;
+                self.edit(py, |d| match d.quality.get_mut(k) {
+                    Some(slot) => swap(slot, |v| v.to_json(), token, new),
+                    None => false,
+                })?
+                .then(|| dump(json))
+            }
+            ("timepoints", Some(id)) => {
+                let (new, json) = Timepoint::current_of(value)?;
+                self.edit(py, |d| -> medh5::Result<bool> {
+                    let mut points = d.timepoints.points().to_vec();
+                    let Some(slot) = points.iter_mut().find(|t| t.id == id) else { return Ok(false) };
+                    if !swap(slot, |v| v.to_json(), token, new) {
+                        return Ok(false);
+                    }
+                    d.timepoints = medh5::curation::timeline::Timeline::new(points)?;
+                    Ok(true)
+                })??
+                .then(|| dump(json))
+            }
+            ("provenance.activities", Some(id)) => {
+                let (new, json) = Activity::current_of(value)?;
+                self.edit(py, |d| -> medh5::Result<bool> {
+                    match d.provenance.activity(id) {
+                        Ok(found) if medh5::json::canonical(&found.to_json()) == token => {
+                            d.provenance.add_activity(new, true)?;
+                            Ok(true)
+                        }
+                        _ => Ok(false),
+                    }
+                })??
+                .then(|| dump(json))
+            }
+            (_, Some(k)) => {
+                let members = Members::of(field)?;
+                if matches!(members, Members::Quality) {
+                    return Err(PyKeyError::new_err(field.to_string()).into());
+                }
+                let value = py_to_json(value)?;
+                let written = medh5::json::canonical(&value);
+                self.edit(py, |d| {
+                    let found = members.json_mut(d);
+                    match found.get(k) {
+                        Some(current) if medh5::json::canonical(current) == token => {
+                            found.insert(k.to_string(), value);
+                            true
+                        }
+                        _ => false,
+                    }
+                })?
+                .then_some(written)
+            }
+            (_, None) => return Err(PyKeyError::new_err(field.to_string()).into()),
+        };
+        replaced.ok_or_else(|| changed(field, key).into())
     }
 
     /// Delete one member (`KeyError` when there is none).
@@ -452,7 +549,7 @@ impl SampleDocument {
 
 pub fn provenance_arg(obj: &Bound<'_, PyAny>) -> R<medh5::curation::provenance::Provenance> {
     if let Ok(p) = obj.cast::<crate::curation::Provenance>() {
-        return Ok(p.borrow().inner.clone());
+        return p.try_borrow()?.current(obj.py());
     }
     Ok(medh5::curation::provenance::Provenance::from_json(Some(&py_to_json(obj)?))?)
 }
@@ -492,7 +589,7 @@ fn new_document(
     let mut doc = engine::new_document(sample_id, subject_id, None)?;
     if let Some(t) = timepoints.filter(|t| !t.is_none()) {
         doc.timepoints = match t.cast::<Timeline>() {
-            Ok(tl) => tl.get().inner.clone(),
+            Ok(tl) => tl.get().current(t.py())?,
             Err(_) => {
                 let ids = crate::convert::strings(t)?;
                 engine::new_document(sample_id, subject_id, Some(&ids))?.timepoints

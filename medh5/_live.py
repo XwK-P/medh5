@@ -1,10 +1,15 @@
-"""Live views of a sample document's free-form members.
+"""Live views of a sample document's members.
 
 ``SampleDocument.extra``, ``.acquisition`` and ``.quality`` are dicts a caller
 edits in place --- ``w.document.extra["tool"] = {...}`` reaches the file --- as
 1.x's dataclass fields were.  The document lives in the format engine, so each
 is a ``dict`` that writes every edit through to it: a member set, replaced or
 deleted, and a value nested in a member changed in place.
+
+The records a document hands out are members too.  ``w.document.identity``,
+``w.activity(...)``, a timepoint, a quality record: each record keeps its dicts
+(``extra``, ``params``, ``series_uids``, an agreement's ``per_class``), and an
+edit to one rewrites the record as a whole in the document.
 
 What a view holds is what the document held when it was read, and again after
 every edit made through it.  A value set is converted as ``SampleWriter.extra``
@@ -16,7 +21,8 @@ than written over it, and the member's containers refuse every further edit
 --- read the member again and edit that.
 
 A copy of a view (``copy.copy``, ``dict(view)``, ``pickle``) is a plain
-``dict``, detached from the document.
+``dict``, detached from the document; a copy of a record is a record no
+document handed out.
 """
 
 from __future__ import annotations
@@ -30,11 +36,13 @@ __all__ = ["Members"]
 
 class _Anchor:
     """One member's containers, and the member as the document held it when
-    they were read (its canonical JSON)."""
+    they were read (its canonical JSON).  The member is a key of *field*, or
+    with no *key*, the field itself (``identity``); its root is the value read
+    --- a record, or plain JSON."""
 
     __slots__ = ("document", "field", "key", "root", "stale", "token")
 
-    def __init__(self, document: Any, field: str, key: str, token: str) -> None:
+    def __init__(self, document: Any, field: str, key: str | None, token: str) -> None:
         self.document = document
         self.field = field
         self.key = key
@@ -42,11 +50,20 @@ class _Anchor:
         self.root: Any = None
         self.stale = False
 
+    @property
+    def member(self) -> str:
+        """The member, as a caller names it."""
+        if self.key is None:
+            return f"document.{self.field}"
+        if self.field == "provenance.activities":
+            return f"document.provenance.activity({self.key!r})"
+        return f"document.{self.field}[{self.key!r}]"
+
     def check(self) -> None:
         if self.stale:
             raise RuntimeError(
-                f"`document.{self.field}[{self.key!r}]` was read before an edit "
-                "the document refused; read it again and edit that"
+                f"`{self.member}` was read before an edit the document "
+                "refused; read it again and edit that"
             )
 
     def rewrite(self) -> None:
@@ -99,12 +116,9 @@ class Members(dict[str, Any]):
             anchor = self._anchors.get(key)
             if anchor is not None and anchor.token == token and not anchor.stale:
                 held[key] = anchor.root
-            elif self._field == "quality":
-                held[key] = value
-                continue
             else:
                 anchor = _Anchor(self._document, self._field, key, token)
-                anchor.root = held[key] = _nested(value, anchor)
+                anchor.root = held[key] = _adopted(value, anchor)
             anchors[key] = anchor
         dict.clear(self)
         dict.update(self, held)
@@ -340,6 +354,16 @@ class _NestedList(list[Any]):
 
     def __reduce__(self) -> tuple[Any, ...]:
         return (list, (list(self),))
+
+
+def _adopted(value: Any, anchor: _Anchor) -> Any:
+    """*value*, read as *anchor*'s member, writing its edits back through
+    *anchor*: a record (a quality record) anchored, plain JSON as
+    containers."""
+    if hasattr(value, "_anchor_to"):
+        value._anchor_to(anchor)
+        return value
+    return _nested(value, anchor)
 
 
 def _nested(value: Any, anchor: _Anchor) -> Any:

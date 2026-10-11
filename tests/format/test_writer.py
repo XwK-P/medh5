@@ -1074,8 +1074,9 @@ class TestJsonValues:
 
 class TestDocumentEdits:
     """§2.4: ``SampleWriter.document`` is the document being written, and its
-    free-form members --- ``extra``, ``acquisition``, ``quality`` --- are dicts
-    whose edits reach the file, nested ones too, as 1.x's fields did."""
+    free-form members --- ``extra``, ``acquisition``, ``quality`` --- and the
+    dicts of the records it hands out are dicts whose edits reach the file,
+    nested ones too, as 1.x's fields did."""
 
     def test_S2_4_an_edit_in_place_reaches_the_file(self, tmp_path: Path):
         path = tmp_path / "edits.medh5"
@@ -1136,3 +1137,97 @@ class TestDocumentEdits:
             w.document.extra["mytool"] = given
             given["shape"] = (9, 9)
             assert w.document.extra["mytool"] == {"shape": [2, 3], "scale": 0.5}
+
+    def test_S2_4_an_edit_to_a_records_dict_reaches_the_file(self, tmp_path: Path):
+        """What the writer returns, and what its document hands out, is the
+        document's record: 1.x returned the document's own object."""
+        from medh5.curation import Activity, Agent
+
+        path = tmp_path / "records.medh5"
+        with Flat.open_writer(path) as w:
+            w.identity(sex="F").extra["consent"] = "research-only"
+            w.document.identity.extra["trial"] = {"arm": "A"}
+            w.document.identity.extra["trial"]["visits"] = [1]
+            w.document.identity.extra["trial"]["visits"].append(2)
+            w.cohort(site_id="site-B").extra["batch"] = 7
+            review = w.activity("review", agent=w.person("RAD-08"), activity_id="r1")
+            review.params["window"] = [1, 2]
+            w.document.provenance.activity("r1").params["level"] = 3
+            graph = w.document.provenance
+            graph.add_agent(Agent("p9", "person", "Second reader"))
+            added = graph.add_activity(Activity("r2", "review", agent="p9"))
+            added.params["tool"] = "brush"
+            w.document.timepoints["tp0"].series_uids["CT"] = "1.2.840.99"
+            quality = w.set_quality(
+                "CT", agreement=[{"metric": "dice", "value": 0.8, "against": "r2"}]
+            )
+            quality.agreement[0].per_class["1"] = 0.8
+            w.document.quality["CT"].agreement[0].per_class["2"] = 0.7
+            w.acquisition("CT", kvp=120)["mA"] = 300
+        with medh5.open(path) as sample:
+            document = sample.document
+            assert document.identity.extra == {
+                "consent": "research-only",
+                "trial": {"arm": "A", "visits": [1, 2]},
+            }
+            assert document.cohort.extra == {"batch": 7}
+            assert document.provenance.activity("r1").params == {
+                "window": [1, 2],
+                "level": 3,
+            }
+            assert document.provenance.activity("r2").params == {"tool": "brush"}
+            assert document.provenance.has_agent("p9")
+            assert document.timepoints["tp0"].series_uids == {"CT": "1.2.840.99"}
+            assert document.quality["CT"].agreement[0].per_class == {"1": 0.8, "2": 0.7}
+            assert document.acquisition == {"CT": {"kvp": 120, "mA": 300}}
+
+    def test_S2_4_a_record_given_to_the_writer_carries_its_edits(self, tmp_path: Path):
+        from medh5.curation import Activity, Identity, Timeline, Timepoint
+
+        path = tmp_path / "given.medh5"
+        with Flat.open_writer(path) as w:
+            identity = Identity(sample_id="given", subject_id="p")
+            identity.extra["consent"] = "research-only"
+            w.document.identity = identity
+            point = Timepoint("tp0", 0)
+            point.series_uids["CT"] = "1.2.840.99"
+            w.document.timepoints = Timeline([point])
+            activity = Activity("r1", "import", agent=w.person("RAD-08").id)
+            activity.params["source"] = "PACS"
+            w.document.provenance.add_activity(activity)
+        with medh5.open(path) as sample:
+            document = sample.document
+            assert document.identity.extra == {"consent": "research-only"}
+            assert document.timepoints["tp0"].series_uids == {"CT": "1.2.840.99"}
+            assert document.provenance.activity("r1").params == {"source": "PACS"}
+
+    def test_S2_4_an_edit_to_a_record_changed_since_is_refused(self, tmp_path: Path):
+        """Writing the stale record back would undo the other change."""
+        with Flat.open_writer(tmp_path / "stale.medh5") as w:
+            held = w.document.identity
+            w.identity(sex="F")
+            with pytest.raises(RuntimeError, match="`document.identity` has changed"):
+                held.extra["consent"] = "research-only"
+            with pytest.raises(RuntimeError, match="was read before an edit"):
+                held.extra["consent"] = "research-only"
+            w.document.identity.extra["consent"] = "research-only"  # read again
+            assert w.document.identity.sex == "F"
+            assert w.document.identity.extra == {"consent": "research-only"}
+
+    def test_S2_4_a_record_read_and_dropped_is_collected(self, tmp_path: Path):
+        """A record and the dicts that write through it refer to each other;
+        the cycle is the collector's to free."""
+        import gc
+
+        from medh5._live import _Anchor
+
+        def anchors() -> int:
+            gc.collect()
+            return sum(isinstance(o, _Anchor) for o in gc.get_objects())
+
+        with Flat.open_writer(tmp_path / "gc.medh5") as w:
+            before = anchors()
+            for n in range(50):
+                w.document.identity.extra["n"] = n
+                w.document.timepoints["tp0"].series_uids["CT"] = str(n)
+            assert anchors() == before
