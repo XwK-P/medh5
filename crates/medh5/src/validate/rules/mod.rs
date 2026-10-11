@@ -1,9 +1,10 @@
 //! The validation rules, one section of the spec at a time (§15).
 //!
 //! Each rule returns every diagnostic it finds.  An error met on one object
-//! is that object's finding, and the rule goes on to the next; a rule that
-//! stops on an error has it reported by the driver --- under the error's own
-//! code, or E001 when it has none --- and the remaining rules still run.
+//! is that object's finding --- under the error's own code, or E001 (it could
+//! not be read) when it has none --- and the rule goes on to the next; a rule
+//! that stops on an error has it reported by the driver the same way, and the
+//! remaining rules still run.
 //!
 //! One module per domain of the §15.2 code table, so a rule has one obvious home:
 //! - `container` --- §1.3, §2
@@ -143,12 +144,13 @@ impl Context {
     }
 
     /// An error met while checking one object, as that object's finding: under
-    /// the error's own code when it has one, `code` otherwise.  A rule that
-    /// reports it and moves on still checks every other object.
-    pub fn failed(&self, code: &str, location: impl Into<String>, error: &Error) -> Diagnostic {
+    /// the error's own code when it has one, the defect met, and as E001 when
+    /// it has none, the object could not be read.  A rule that reports it and
+    /// moves on still checks every other object.
+    pub fn failed(&self, location: impl Into<String>, error: &Error) -> Diagnostic {
         match error.code() {
             Some(own) => self.err(own, location, error.message()),
-            None => self.err(code, location, format!("could not be read: {}", error.python_line())),
+            None => self.err("E001", location, format!("could not be read: {}", error.python_line())),
         }
     }
 

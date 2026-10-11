@@ -34,7 +34,7 @@ pub fn check_geometry(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
         let location = format!("/grids/{name}");
         match check_grid(ctx, &grid, &name, &location) {
             Ok(found) => out.extend(found),
-            Err(e) => out.push(ctx.failed("E109", location, &e)),
+            Err(e) => out.push(ctx.failed(location, &e)),
         }
     }
     Ok(out)
@@ -220,7 +220,7 @@ fn check_grid(ctx: &Context, grid: &Node, name: &str, location: &str) -> Result<
     if out.is_empty() && is_valid_id(name) {
         if let Node::Group(group) = grid {
             if let Err(e) = read_grid(group, Some(name)) {
-                out.push(ctx.failed("E109", location, &e));
+                out.push(ctx.failed(location, &e));
             }
         }
     }

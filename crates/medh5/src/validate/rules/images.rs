@@ -124,7 +124,7 @@ pub fn check_multiscale(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
         let location = format!("/images/{name}");
         match check_levels(ctx, &image, &grids, &location) {
             Ok(found) => out.extend(found),
-            Err(e) => out.push(ctx.failed("E105", location, &e)),
+            Err(e) => out.push(ctx.failed(location, &e)),
         }
     }
     Ok(out)
@@ -229,7 +229,7 @@ fn check_levels(ctx: &Context, image: &hdf5::Group, grids: &hdf5::Group, locatio
     let refs: Vec<&crate::geometry::grid::Grid> = levels.iter().collect();
     match check_pyramid(&levels[0], &refs, &factors, GEOMETRY_RTOL) {
         Ok(problems) => out.extend(problems.into_iter().map(|p| ctx.err("E105", location, p))),
-        Err(e) => out.push(ctx.failed("E105", location, &e)),
+        Err(e) => out.push(ctx.failed(location, &e)),
     }
     Ok(out)
 }

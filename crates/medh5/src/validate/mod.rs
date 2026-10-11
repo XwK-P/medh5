@@ -434,4 +434,17 @@ mod tests {
         assert!(found[1].message.starts_with("check_b could not read the file: "), "{}", found[1].message);
         assert_eq!(found[2].severity, "warning");
     }
+
+    #[test]
+    fn s15_2_an_object_that_cannot_be_read_is_e001_where_it_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = hdf5::File::create(dir.path().join("x.medh5")).unwrap();
+        let ctx = rules::Context::new(file.as_group().unwrap(), "x.medh5", "semantic", Vec::new(), false);
+        let defect = ctx.failed("/grids/g", &Error::coded("E104", "spacing (0.0, 1.0) must be finite and > 0"));
+        assert_eq!((defect.code.as_str(), defect.location.as_str()), ("E104", "/grids/g"));
+        assert_eq!(defect.message, "spacing (0.0, 1.0) must be finite and > 0");
+        let unread = ctx.failed("/grids/g", &Error::Io("H5Aread failed".into()));
+        assert_eq!((unread.code.as_str(), unread.location.as_str()), ("E001", "/grids/g"));
+        assert!(unread.message.starts_with("could not be read: "), "{}", unread.message);
+    }
 }
