@@ -1027,7 +1027,7 @@ def _pad_sequences(values: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     for key in values[0]:
         # The trailing shape of the rows that have entries: an empty row
         # pads whatever its own, and rows that disagree are refused rather
-        # than collated in one order and not the other (F16).
+        # than collated in one order and not the other.
         filled = [v[key] for v, n in zip(values, lengths, strict=True) if n]
         first = filled[0] if filled else values[0][key]
         trailing = tuple(first.shape[1:])
