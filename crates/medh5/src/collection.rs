@@ -391,6 +391,23 @@ pub fn unpack(path: &Path, outdir: &Path, keys: Option<&[String]>, suffix: &str)
             format!("collection has no sample(s) {}; known keys: {}", repr_list(&missing), repr_list(&known)),
         ));
     }
+    // A case-insensitive file system holds one of two names that differ only
+    // in case: the second member written would replace the first.
+    let mut taken: std::collections::HashMap<String, &String> = std::collections::HashMap::new();
+    for key in &wanted {
+        if let Some(first) = taken.insert(key.to_ascii_lowercase(), key) {
+            return Err(Error::invalid(if first == key {
+                format!("member {} is named twice; each is written once", repr_str(key))
+            } else {
+                format!(
+                    "members {} and {} would be written to the same file on a case-insensitive file system; \
+                     unpack them into separate directories",
+                    repr_str(first),
+                    repr_str(key)
+                )
+            }));
+        }
+    }
     let group = collection.group()?;
     let mut written = Vec::new();
     for key in wanted {

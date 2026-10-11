@@ -157,6 +157,20 @@ class TestUnpack:
             unpack(shard, tmp_path / "out", keys=["ghost"])
         assert "ghost" in str(exc.value)
 
+    def test_S2_2_members_differing_only_in_case_are_not_unpacked_together(
+        self, tmp_path, members
+    ):
+        """On a case-insensitive file system the second file replaced the
+        first, and the result listed both."""
+        shard = pack(members[:2], tmp_path / "cased.medh5c", keys=["Case", "case"])
+        out = tmp_path / "out"
+        with pytest.raises(MEDH5ValidationError, match="case-insensitive"):
+            unpack(shard, out)
+        with pytest.raises(MEDH5ValidationError, match="named twice"):
+            unpack(shard, out, keys=["Case", "Case"])
+        assert list(out.iterdir()) == []
+        assert [p.name for p in unpack(shard, out, keys=["case"])] == ["case.medh5"]
+
     def test_extract_writes_one_file_where_asked(self, tmp_path, shard):
         target = tmp_path / "just_one.medh5"
         assert extract(shard, "case_1", target) == target
