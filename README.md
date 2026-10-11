@@ -66,7 +66,7 @@ the same bytes. Building it compiles HDF5, which needs Rust 1.85.1 or later, a
 C compiler and CMake.
 
 Other systems, building from source, the 1.x line and troubleshooting are on the
-[install page](https://medh5.readthedocs.io/en/latest/install/).
+[install page](https://medh5.readthedocs.io/en/stable/install/).
 
 ## Documentation
 
