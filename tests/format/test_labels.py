@@ -8,6 +8,7 @@ import textwrap
 
 import pytest
 
+import medh5
 from medh5 import labels
 from medh5.errors import CODES, MEDH5ValidationError
 from medh5.labels import (
@@ -50,6 +51,33 @@ class TestLabelClass:
         with pytest.raises(MEDH5ValidationError, match="outside") as exc:
             LabelClass(out_of_range, "vessel", "Vessel")
         assert exc.value.code == "E306"
+
+    @pytest.mark.parametrize("class_id", [0, IGNORE_ID, -5, 70000])
+    def test_S15_2_the_writer_codes_an_id_as_a_class_entry_is_coded(
+        self, tmp_path, class_id
+    ):
+        """The encoders' guard and the writer's header check answered E303 for
+        any id outside 1..65534; they keep it for a reserved id, as a class
+        entry and the validator do, and give any other E306."""
+        with pytest.raises(MEDH5ValidationError) as entry:
+            LabelClass(class_id, "vessel", "Vessel")
+        with pytest.raises(MEDH5ValidationError) as guard:
+            labels.check_class_id(class_id)
+        writer = medh5.create(tmp_path / "ids.medh5")
+        try:
+            writer.add_grid("g", shape=(2, 2, 2), spacing=(1.0, 1.0, 1.0))
+            with pytest.raises(MEDH5ValidationError) as header:
+                writer.add_boxes(
+                    "b",
+                    [[[0, 1], [0, 1], [0, 1]]],
+                    [1],
+                    grid="g",
+                    annotated_classes=[class_id],
+                )
+        finally:
+            writer.abort()
+        expected = "E303" if class_id in (0, IGNORE_ID) else "E306"
+        assert guard.value.code == header.value.code == entry.value.code == expected
 
     def test_colour_must_be_rgba(self):
         with pytest.raises(MEDH5ValidationError):

@@ -46,7 +46,8 @@ STORAGE_DTYPES = (np.dtype(np.float16), np.dtype(np.float32))
 
 
 def checked_class_id(class_id: Any) -> int:
-    """A class id in the writable range ``1..65534``, or a coded refusal (E303)."""
+    """A class id in the writable range ``1..65534``, or a coded refusal: E303
+    for a reserved id (0 or 65535), E306 for any other outside the range."""
     return int(_core.check_class_id(class_id))
 
 

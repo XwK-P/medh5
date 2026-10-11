@@ -703,10 +703,10 @@ class TestPayloadEncoderGuards:
         """
         mask = np.zeros(self.SHAPE, bool)
         mask[1] = True
-        for bad in (0, -1, 65535, 70000):
+        for bad, code in ((0, "E303"), (-1, "E306"), (65535, "E303"), (70000, "E306")):
             with pytest.raises(MEDH5ValidationError) as exc:
                 encode_labelmap({bad: mask}, self.SHAPE)
-            assert exc.value.code == "E303"
+            assert exc.value.code == code
         assert encode_labelmap({1: mask}, self.SHAPE).class_ids == (1,)
         assert encode_labelmap({65534: mask}, self.SHAPE).class_ids == (65534,)
 
@@ -781,7 +781,7 @@ class TestPayloadEncoderGuards:
         ):
             with pytest.raises(MEDH5ValidationError) as caught:
                 encode()
-            assert caught.value.code == "E303"
+            assert caught.value.code == ("E303" if class_id in (0, 65535) else "E306")
 
     @pytest.mark.parametrize("encode", [encode_labelmap, encode_layers])
     def test_S7_7_an_ignore_region_of_another_shape_is_E405(self, encode):

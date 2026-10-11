@@ -172,10 +172,12 @@ impl AnnotationHeader {
         outside.sort();
         outside.dedup();
         if !outside.is_empty() {
+            // A reserved id is E303 (above); any other outside the range is
+            // E306, as `check_class_id` and the validator give it.
             return Err(Error::coded(
-                "E303",
+                "E306",
                 format!(
-                    "class id(s) {} are outside the writable range [{}, {}] (spec §5.3)",
+                    "class id(s) {} are outside the class id range {}..{} (spec §5.3)",
                     repr_int_list(&outside),
                     BACKGROUND_ID + 1,
                     IGNORE_ID - 1

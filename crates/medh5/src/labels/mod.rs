@@ -34,20 +34,26 @@ pub const FORMS: [&str; 2] = ["inline", "ref"];
 /// At or below this class count, `form: inline` is REQUIRED (§5.1).
 pub const INLINE_REQUIRED_BELOW: usize = 4096;
 
-/// A class id in the writable range `1..=65534`, or a coded refusal (E303).
+/// A class id in the writable range `1..=65534`, or a coded refusal: E303 for
+/// a reserved id (0 or 65535), E306 for any other outside the range --- the
+/// codes the validator and [`LabelClass::new`] give them (§15.2).
 ///
 /// Every encoder that stores class ids goes through this before its `uint16`
 /// cast; unchecked, `-1` became 65535 (the ignore value) and `70000` became
 /// `4464`, each decoding as a different class than was asked for.
 pub fn check_class_id(class_id: i64) -> Result<u16> {
-    if !(BACKGROUND_ID < class_id && class_id <= MAX_CLASS_ID) {
+    if class_id == BACKGROUND_ID || class_id == IGNORE_ID {
         return Err(Error::coded(
             "E303",
             format!(
-                "class id {class_id} is outside the writable range [{}, {MAX_CLASS_ID}]: \
-                 {BACKGROUND_ID} is background and {IGNORE_ID} is ignore (spec §5.3)",
-                BACKGROUND_ID + 1
+                "class id {class_id} is reserved: {BACKGROUND_ID} is background and {IGNORE_ID} is ignore (spec §5.3)"
             ),
+        ));
+    }
+    if !(BACKGROUND_ID < class_id && class_id <= MAX_CLASS_ID) {
+        return Err(Error::coded(
+            "E306",
+            format!("class id {class_id} is outside the class id range 1..{MAX_CLASS_ID} (spec §5.3)"),
         ));
     }
     Ok(class_id as u16)
@@ -877,6 +883,16 @@ mod tests {
             assert_eq!(LabelClass::new(id, "vessel", "Vessel").unwrap_err().code(), Some(code), "{id}");
         }
         assert!(LabelClass::new(MAX_CLASS_ID, "vessel", "Vessel").is_ok());
+    }
+
+    #[test]
+    fn s15_2_the_encoders_guard_codes_an_id_as_a_class_entry_is_coded() {
+        // The guard answered E303 for every id outside the range.
+        for id in [BACKGROUND_ID, IGNORE_ID, -5, 70_000] {
+            let entry = LabelClass::new(id, "vessel", "Vessel").unwrap_err();
+            assert_eq!(check_class_id(id).unwrap_err().code(), entry.code(), "{id}");
+        }
+        assert_eq!(check_class_id(MAX_CLASS_ID).unwrap(), 65534);
     }
 
     #[test]
