@@ -137,7 +137,7 @@ stored digests cover the pre-edit bytes and an integrity pass adds a
 `"mutated": true`.
 
 *(That correction came from running it. The README first said deeper was safe;
-it is not, and 111 of the cases prove it.)*
+it is not, and 110 of the cases prove it.)*
 
 **A `.medh5c` case is a collection** (§2.1) — it contains samples rather than
 being one. `"file_suffix"` says which.

@@ -408,12 +408,16 @@ fn label_classes(doc: &mut Map<String, Value>) -> &mut Vec<Value> {
 /// Used only where the edit is something a writer would do; invalid cases
 /// deliberately skip it, which is what makes E701/E702 reachable at all.
 pub(super) fn restamp(path: &Path) -> Result<()> {
-    mutate(path, |root| {
-        stamp_digests(root, "sha256", &["index"], false)?;
-        let names = attr_name_map_of(root)?;
-        let content_id = compute_content_id(root, &names, "sha256", None)?;
-        attrs::write(root, "content_id", &AttrValue::Str(content_id))
-    })
+    mutate(path, reseal)
+}
+
+/// [`restamp`] on an open sample root: every digest over the bytes stored,
+/// and the `content_id` over those digests.
+fn reseal(root: &hdf5::Group) -> Result<()> {
+    stamp_digests(root, "sha256", &["index"], false)?;
+    let names = attr_name_map_of(root)?;
+    let content_id = compute_content_id(root, &names, "sha256", None)?;
+    attrs::write(root, "content_id", &AttrValue::Str(content_id))
 }
 
 // -- builders -------------------------------------------------------------------------
@@ -1310,8 +1314,13 @@ fn write_garbage_meta(root: &hdf5::Group) -> Result<()> {
     Ok(())
 }
 
+/// `images/CT`'s integers stored as `float32`, and stamped as stored: the
+/// copy carried the `int16` digest, so the file failed integrity and a no-op
+/// amend refused to restamp it (E701), while what it exists to show is a
+/// valid file that draws W907.
 fn store_float_ct(root: &hdf5::Group) -> Result<()> {
-    rewrite_dataset(root, "images/CT", Some(DType::F32))
+    rewrite_dataset(root, "images/CT", Some(DType::F32))?;
+    reseal(root)
 }
 
 fn duplicate_layer_class(root: &hdf5::Group) -> Result<()> {
@@ -1627,8 +1636,13 @@ fn first_invalid_batch(cases: &mut Vec<Case>) {
             })
         })
         .warnings(&["W906"]),
-        invalid_core("W907-float-storage", "Integer-valued data stored as float32.", "§4.2", &[], store_float_ct)
-            .warnings(&["W907"]),
+        // Edited after the writer, as the cases around it are, but stamped as
+        // stored: it verifies, so it is not `mutated`.
+        case("W907-float-storage", "Integer-valued data stored as float32.", "§4.2", |p| {
+            base(p, &SHAPE)?;
+            mutate(p, store_float_ct)
+        })
+        .warnings(&["W907"]),
         invalid_seg(
             "E303-reserved-class-id",
             "An annotation claiming the ignore id.",
