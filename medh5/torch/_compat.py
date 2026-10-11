@@ -17,7 +17,7 @@ except Exception:  # pragma: no cover - torch is an optional extra
 
 
 def require_torch() -> None:
-    """Raise a message that says how to fix it, rather than an ImportError."""
+    """Without PyTorch, raise an ``ImportError`` that says how to install it."""
     if not AVAILABLE:  # pragma: no cover - depends on the environment
         raise ImportError(
             "PyTorch is required for medh5.torch. Install it with: "

@@ -72,7 +72,6 @@ OPTIONAL = frozenset(
         "nibabel",
         "pydicom",
         "scipy",
-        "SimpleITK",
         "torch",
     }
 )
