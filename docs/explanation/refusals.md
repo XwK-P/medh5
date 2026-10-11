@@ -177,9 +177,10 @@ is refused by name, and so is a frame that names no segment.
 **Export writes an annotation onto its own grid only.** A SEG's frames take
 their geometry from its source images, so the images must be the annotation
 grid's slices (`E405` otherwise) in its frame of reference (`E414`; a frame
-`medh5 scrub` pseudonymised is compared through `frame_salt=`). The export used
-to compare nothing, and an annotation on a grid turned in plane, or shifted
-10 mm, was written centimetres from where it was drawn.
+`medh5 scrub` pseudonymised is compared through `frame_salt=`, `--frame-salt`
+on the command line). The export used to compare nothing, and an annotation on
+a grid turned in plane, or shifted 10 mm, was written centimetres from where it
+was drawn.
 
 **Export refuses an ignore region.** A binary segment has no value for "not
 examined": its 0 says examined and absent. Written from `dense()`, every voxel

@@ -647,6 +647,7 @@ class TestSegExportGeometry:
         with pytest.raises(MEDH5ValidationError, match="frame_salt=") as caught:
             to_dicom_seg(prepared["path"], "scrubbed", sources, tmp_path / "b.dcm")
         assert caught.value.code == "E414"
+        assert "--frame-salt" in str(caught.value), "the command line's name too"
         out = to_dicom_seg(
             prepared["path"], "scrubbed", sources, tmp_path / "c.dcm", frame_salt="s"
         )
@@ -936,6 +937,41 @@ class TestSegCommandLine:
             err = capsys.readouterr().err
             assert err.startswith(f"medh5: {text} is not a DICOM file"), err
         assert not (tmp_path / "x.dcm").exists()
+
+    def test_S3_4_a_scrubbed_frame_names_the_flag_that_compares_it(
+        self, prepared, tmp_path, capsys
+    ):
+        """Refused for a frame `medh5 scrub` pseudonymised, the command line
+        was told to pass `frame_salt=`, a keyword it has no way to take."""
+        from medh5.cli import EXIT_ERROR, EXIT_OK, main
+        from medh5.curation.scrub import pseudonymise
+
+        with medh5.open(prepared["path"]) as sample:
+            grid = sample.grids[prepared["grid"]]
+            lattice = {
+                "shape": grid.shape,
+                "spacing": grid.spacing,
+                "origin": grid.origin,
+                "direction": np.asarray(grid.direction),
+                "timepoint": grid.timepoint,
+            }
+        frame = pseudonymise(prepared["series"]["frame_uid"], "s")
+        with medh5.amend(prepared["path"]) as w:
+            w.add_grid("scrubbed", frame_uid=frame, **lattice)
+            w.add_segmentation(
+                "scrubbed", grid="scrubbed", masks={1: prepared["liver"]}
+            )
+        path = str(prepared["path"])
+        sources = [a for p in prepared["series"]["paths"] for a in ("--source", p)]
+        seg = str(tmp_path / "s.dcm")
+        export = ["convert", "to-dicom-seg", path, "scrubbed", seg, *sources]
+        assert main(export) == EXIT_ERROR
+        assert "--frame-salt" in capsys.readouterr().err
+        assert main([*export, "--frame-salt", "s"]) == EXIT_OK
+        back = ["convert", "from-dicom-seg", seg, path, "--grid", "scrubbed"]
+        assert main(back) == EXIT_ERROR
+        assert "--frame-salt" in capsys.readouterr().err
+        assert main([*back, "--frame-salt", "s"]) == EXIT_OK
 
 
 class TestSparseSegReader:

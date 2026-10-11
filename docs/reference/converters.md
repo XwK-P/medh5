@@ -221,8 +221,8 @@ frame by frame.
 be that grid's slices --- rows and columns running the same way at the same
 spacing, each image starting at its slice's first voxel --- or the export is
 refused (`E405`); nothing is resampled. They must be in the grid's frame of
-reference where it states one (`E414` otherwise); `frame_salt=` compares a frame
-`medh5 scrub` pseudonymised.
+reference where it states one (`E414` otherwise); `--frame-salt` (`frame_salt=`)
+compares a frame `medh5 scrub` pseudonymised.
 
 <!-- illustrative -->
 ```python

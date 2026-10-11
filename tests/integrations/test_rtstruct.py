@@ -636,6 +636,7 @@ class TestPatientCoordinates:
         with pytest.raises(MEDH5ValidationError, match="frame_salt") as exc:
             self._imported(path, rt)
         assert exc.value.code == "E414"
+        assert "--frame-salt" in str(exc.value), "the command line's name too"
         (vertices, frame), report = self._imported(path, rt, frame_salt="s3cret")
         assert frame == hidden
         assert np.allclose(vertices, self._expected_mm(path), atol=1e-4)

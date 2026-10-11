@@ -266,7 +266,8 @@ def _require_same_frame(
 
     hint = (
         " The grid's frame is a `medh5 scrub` pseudonym: pass the scrub's salt "
-        f"as frame_salt= to compare {source}'s frame as the scrub wrote it."
+        "as frame_salt= (`--frame-salt` on the command line) to compare "
+        f"{source}'s frame as the scrub wrote it."
         if str(grid.frame_uid).startswith(PSEUDONYM_PREFIX) and salt is None
         else ""
     )
@@ -1011,8 +1012,8 @@ def _source_slices(
 
         hint = (
             " The grid's frame is a `medh5 scrub` pseudonym: pass the scrub's "
-            "salt as frame_salt= to compare the images' frame as the scrub "
-            "wrote it."
+            "salt as frame_salt= (`--frame-salt` on the command line) to "
+            "compare the images' frame as the scrub wrote it."
             if str(grid.frame_uid).startswith(PSEUDONYM_PREFIX) and salt is None
             else ""
         )
