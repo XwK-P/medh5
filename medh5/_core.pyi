@@ -1529,7 +1529,9 @@ def quality_from_json(doc: Mapping[str, Any] | None) -> dict[str, QualityRecord]
 def quality_to_json(records: Mapping[str, QualityRecord]) -> dict[str, Any]: ...
 def raw_chunks(dataset: Any) -> list[bytes]: ...
 def read_document(root: Group) -> SampleDocument:
-    """The sample document under a sample root, parsed."""
+    """The sample document under a sample root, parsed: a later minor's as its
+    supported projection (1.1 §2.2).
+    """
     ...
 
 def read_document_text(root: Group) -> str:
@@ -2898,8 +2900,9 @@ class SampleHandle:
     @property
     def content_id(self) -> str | None: ...
     def document(self) -> SampleDocument:
-        """The sample document (§2), as read: a copy, so editing it changes
-        nothing in the file.
+        """The sample document (§2), as read --- a later minor's as its supported
+        projection (1.1 §2.2): a copy, so editing it changes nothing in the
+        file.
         """
         ...
     def document_text(self, document_id: str) -> str:

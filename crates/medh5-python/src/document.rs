@@ -632,7 +632,8 @@ fn read_document_text(root: &Bound<'_, PyAny>) -> R<String> {
     Ok(medh5::sample::read_document_text(&crate::integrity::group_of(root)?)?)
 }
 
-/// The sample document under a sample root, parsed.
+/// The sample document under a sample root, parsed: a later minor's as its
+/// supported projection (1.1 §2.2).
 #[pyfunction]
 fn read_document(root: &Bound<'_, PyAny>) -> R<SampleDocument> {
     Ok(SampleDocument::owned(medh5::sample::read_document(&crate::integrity::group_of(root)?)?))

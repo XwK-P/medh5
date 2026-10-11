@@ -145,8 +145,10 @@ impl Sample {
 
     // -- document -------------------------------------------------------------
 
+    /// `/meta`, parsed once: a later minor's as its supported projection
+    /// ([`read_document`]).
     pub fn document(&self) -> Result<&SampleDocument> {
-        cached(&self.root, &self.document, || SampleDocument::loads(&read_document_text(&self.root)?))
+        cached(&self.root, &self.document, || read_document(&self.root))
     }
 
     pub fn identity(&self) -> Result<&Identity> {
@@ -600,9 +602,12 @@ pub fn read_document_text(root: &hdf5::Group) -> Result<String> {
     }
 }
 
-/// Read and parse `<root>/meta`.
+/// Read and parse `<root>/meta`: exactly in a version this engine
+/// implements, and in a higher minor as its supported projection, which a
+/// reader must accept (1.1 §2.2, [`SampleDocument::loads_version`]).
 pub fn read_document(root: &hdf5::Group) -> Result<SampleDocument> {
-    SampleDocument::loads(&read_document_text(root)?)
+    let version = attrs::get_str(root, "medh5_version").ok().flatten();
+    SampleDocument::loads_version(&read_document_text(root)?, version.as_deref())
 }
 
 /// Every frame-of-reference UID in a file, and the attributes naming it.

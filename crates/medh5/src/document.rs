@@ -7,6 +7,7 @@
 use std::sync::OnceLock;
 
 use indexmap::IndexMap;
+use jsonschema::error::ValidationErrorKind;
 use serde_json::{json, Map, Value};
 
 use crate::curation::identity::splits_from_json;
@@ -99,6 +100,59 @@ pub fn validate_document_version(doc: &Value, version: &str) -> (Vec<String>, Ve
     let relaxed = schema_messages(projection_validator(), doc);
     let tolerated = exact.into_iter().filter(|m| !relaxed.contains(m)).collect();
     (relaxed, tolerated)
+}
+
+/// A higher minor's document as this version reads it (1.1 §2.2, 1.0 §16):
+/// an unknown member dropped, and an unknown value read as its vocabulary's
+/// `other` or, where the vocabulary has none, as absent.  `Err` names, as a
+/// path into the document, a member the schema requires that holds such a
+/// value: nothing this version knows can stand in for it.
+///
+/// What the projection does not tolerate either --- a wrong type, a broken
+/// pattern --- is left as it is: a defect in any version.
+pub fn projected(parsed: &Value) -> std::result::Result<Value, String> {
+    let mut out = parsed.clone();
+    let mut dropped: Vec<(String, String)> = Vec::new();
+    for error in validator().iter_errors(parsed) {
+        let at = error.instance_path().as_str().to_string();
+        let unread = || at.split('/').filter(|s| !s.is_empty()).map(unescape).collect::<Vec<_>>().join("/");
+        match error.kind() {
+            ValidationErrorKind::AdditionalProperties { unexpected }
+            | ValidationErrorKind::UnevaluatedProperties { unexpected } => {
+                dropped.extend(unexpected.iter().map(|member| (at.clone(), member.clone())));
+            }
+            ValidationErrorKind::Enum { options } => {
+                if options.as_array().is_some_and(|o| o.iter().any(|v| v == "other")) {
+                    *out.pointer_mut(&at).ok_or_else(unread)? = Value::from("other");
+                    continue;
+                }
+                let (parent, segment) = at.rsplit_once('/').ok_or_else(unread)?;
+                let owner = error
+                    .schema_path()
+                    .as_str()
+                    .strip_suffix(&format!("/properties/{segment}/enum"))
+                    .ok_or_else(unread)?;
+                let member = unescape(segment);
+                let required = schema().pointer(&format!("{owner}/required"));
+                if required.and_then(Value::as_array).is_some_and(|r| r.iter().any(|v| v == member.as_str())) {
+                    return Err(unread());
+                }
+                dropped.push((parent.to_string(), member));
+            }
+            _ => {}
+        }
+    }
+    for (parent, member) in dropped {
+        if let Some(Value::Object(map)) = out.pointer_mut(&parent) {
+            map.remove(&member);
+        }
+    }
+    Ok(out)
+}
+
+/// One JSON-pointer segment as the member name it escapes.
+fn unescape(segment: &str) -> String {
+    segment.replace("~1", "/").replace("~0", "~")
 }
 
 /// Every error `validator` finds in `doc`, worded as Python's `jsonschema`
@@ -304,12 +358,33 @@ impl SampleDocument {
     /// The `NaN` and `Infinity` 1.x wrote read as `null`; the validator
     /// reports them (E004), because JSON has neither.
     pub fn loads(text: &str) -> Result<Self> {
-        let (doc, _) =
-            crate::json::loads_lenient(text).map_err(|e| Error::Schema(format!("`meta` is not valid JSON: {e}")))?;
-        if !doc.is_object() {
-            return Err(Error::Schema("`meta` must hold a JSON object".into()));
+        Self::from_json(&parse_object(text)?)
+    }
+
+    /// Parse the `/meta` of a file declaring `version`: exactly, as
+    /// [`loads`](Self::loads) does, in a version this engine implements, and
+    /// as its supported projection in a higher minor (1.1 §2.2), which a
+    /// reader **MUST** accept --- what only a later minor defines set aside
+    /// ([`projected`]), as the validator reads past it.  A value nothing this
+    /// version knows can stand in for, in a member the schema requires, leaves
+    /// that document unreadable (E005).
+    pub fn loads_version(text: &str, version: Option<&str>) -> Result<Self> {
+        let doc = parse_object(text)?;
+        let Some(later) = version.filter(|v| crate::version::is_projection(v)) else {
+            return Self::from_json(&doc);
+        };
+        match projected(&doc) {
+            Ok(read) => Self::from_json(&read),
+            Err(at) => Err(Error::coded(
+                "E005",
+                format!(
+                    "`meta` holds at {at} a value only a later minor defines, in a member the schema requires: \
+                     MEDH5 {} has nothing to read in its place, so this MEDH5 {later} document cannot be read as \
+                     its projection (1.1 §2.2)",
+                    crate::version::LATEST_VERSION
+                ),
+            )),
         }
-        Self::from_json(&doc)
     }
 
     /// Schema messages for this document (empty when valid).
@@ -364,6 +439,16 @@ impl SampleDocument {
 
 fn missing_member(name: &str) -> Error {
     Error::Schema(format!("sample document is missing required member {}", repr_str(name)))
+}
+
+/// `/meta`'s text as the JSON object it must hold.
+fn parse_object(text: &str) -> Result<Value> {
+    let (doc, _) =
+        crate::json::loads_lenient(text).map_err(|e| Error::Schema(format!("`meta` is not valid JSON: {e}")))?;
+    if !doc.is_object() {
+        return Err(Error::Schema("`meta` must hold a JSON object".into()));
+    }
+    Ok(doc)
 }
 
 /// Start a document with the two required members filled in.

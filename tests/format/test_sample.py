@@ -1144,6 +1144,54 @@ class TestDocument:
             assert document.quality_of(None) is None
             assert document.summary()["label_set"]["classes"] == 4
 
+    @staticmethod
+    def _rewritten(path: Path, version: str, edit: Any) -> Path:
+        """`/meta` edited by *edit*, and the root declaring *version*."""
+        with h5py.File(path, "r+") as handle:
+            document = json.loads(as_str(handle["meta"][()]))
+            edit(document)
+            del handle["meta"]
+            handle.create_dataset("meta", data=json.dumps(document), dtype=str_dtype())
+            handle.attrs["medh5_version"] = encode_attr(version)
+        return path
+
+    def test_S2_2_a_later_minors_document_is_read_as_its_projection(self, sample_path):
+        """1.1 §2.2: a reader MUST accept a higher minor for reading.  The
+        validator read past a value only a later minor defines (W913), and the
+        reader refused the same document (E005)."""
+        from medh5.document import read_document
+
+        def later(document: dict[str, Any]) -> None:
+            document["identity"]["sex"] = "X"
+            document["provenance"]["activities"][0]["type"] = "synthesize"
+
+        self._rewritten(sample_path, "1.2", later)
+        with medh5.open(sample_path) as sample:
+            assert sample.identity.sex is None
+            assert sample.document.provenance.activities[0].type == "other"
+            assert read_document(sample.root).identity.sex is None
+        # A version this reader implements is held to the schema as written.
+        self._rewritten(sample_path, "1.0", lambda _: None)
+        with medh5.open(sample_path) as sample:
+            with pytest.raises(MEDH5ValidationError) as caught:
+                _ = sample.document
+            assert caught.value.code == "E005"
+
+    def test_S2_2_a_value_nothing_known_stands_in_for_is_named(self, sample_path):
+        """An agent's `type` is required and its vocabulary has no `other`, so a
+        later minor's value leaves the document unread, and says where."""
+
+        def robot(document: dict[str, Any]) -> None:
+            document["provenance"]["agents"][0]["type"] = "robot"
+
+        self._rewritten(sample_path, "1.2", robot)
+        with medh5.open(sample_path) as sample:
+            with pytest.raises(
+                MEDH5ValidationError, match="provenance/agents/0/type"
+            ) as caught:
+                _ = sample.document
+            assert caught.value.code == "E005"
+
 
 class TestImplicitTimepoint:
     """§3.7 rule 2: with one declared timepoint a grid may omit the attribute."""
