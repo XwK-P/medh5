@@ -14,8 +14,8 @@ from tests.helpers import write_sample
 from tests.kits import Framed
 
 
-class TestL33SplitLeaks:
-    """L-33: a leak is found over subjects and grouping keys together."""
+class TestSplitLeaks:
+    """A leak is found over subjects and grouping keys together."""
 
     def _cohort(self, root: Path) -> list[Path]:
         paths = []
@@ -28,7 +28,7 @@ class TestL33SplitLeaks:
             paths.append(path)
         return paths
 
-    def test_L33_S12_3_one_subject_under_two_group_ids_is_a_leak(self, tmp_path: Path):
+    def test_S12_3_one_subject_under_two_group_ids_is_a_leak(self, tmp_path: Path):
         """It reported `leaks = 0, ok = True` --- the case the splitter refuses."""
         from medh5.curation.splits import audit_splits
 
@@ -40,7 +40,7 @@ class TestL33SplitLeaks:
         assert leak.partitions == ("test", "train")
         assert "fam-B" in str(leak)
 
-    def test_L33_C202_finds_the_same_leak(self, tmp_path: Path):
+    def test_C202_finds_the_same_leak(self, tmp_path: Path):
         from medh5.dataset.check import check
         from medh5.dataset.manifest import scan
 
@@ -52,7 +52,7 @@ class TestL33SplitLeaks:
         assert "fam-A" in finding.where and "fam-B" in finding.where
         assert "patient-7" in finding.message
 
-    def test_L33_units_join_through_subjects_transitively(self):
+    def test_S12_3_units_join_through_subjects_transitively(self):
         from medh5.curation.splits import anatomy_units
 
         units = anatomy_units(

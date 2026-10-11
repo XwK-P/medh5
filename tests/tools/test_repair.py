@@ -95,7 +95,7 @@ class TestFix:
             direct = sample.annotations["organs_tp0"].voxel_counts()
             assert counts == direct
 
-    def test_U05_restamping_and_rebuilding_at_once_leave_the_index_current(
+    def test_S13_3_restamping_and_rebuilding_at_once_leave_the_index_current(
         self, indexed
     ):
         """The rebuild list was the diagnosis from before the restamp: the index
@@ -116,7 +116,7 @@ class TestFix:
             counts = sample.index["organs_tp0"].voxel_counts
             assert counts == sample.annotations["organs_tp0"].voxel_counts()
 
-    def test_U05_restamping_alone_names_the_index_it_leaves_stale(self, indexed):
+    def test_S13_3_restamping_alone_names_the_index_it_leaves_stale(self, indexed):
         _edit_mask_in_place(indexed)
         repair = fix(indexed, rewrite_digests=True, reason="edited by an external tool")
         assert repair.rebuilt_index == ()

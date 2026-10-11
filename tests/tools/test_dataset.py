@@ -384,18 +384,18 @@ class TestSplits:
             {"train": -1.0, "val": 2.0},
         ],
     )
-    def test_U01_a_ratio_is_a_finite_number_of_at_least_zero(self, manifest, ratios):
+    def test_a_ratio_is_a_finite_number_of_at_least_zero(self, manifest, ratios):
         """NaN and infinity panicked the engine (a ``BaseException`` no
         ``except Exception`` catches); a negative share was written down."""
         with pytest.raises(MEDH5ValidationError, match="finite number"):
             make_splits(manifest, ratios=ratios)
 
-    def test_U01_finite_shares_whose_sum_overflows_still_split(self, manifest):
+    def test_finite_shares_whose_sum_overflows_still_split(self, manifest):
         split = make_splits(manifest, ratios={"train": 1e308, "test": 1e308}, seed=0)
         assert set(split.counts) == {"train", "test"}
         assert sum(split.counts.values()) == 6
 
-    def test_U01_the_command_line_refuses_a_ratio_that_is_not_a_number(
+    def test_the_command_line_refuses_a_ratio_that_is_not_a_number(
         self, cohort, tmp_path, capsys
     ):
         from medh5.cli import EXIT_ERROR, main
@@ -453,7 +453,9 @@ class TestSplits:
         with pytest.raises(MEDH5ValidationError, match="unpack"):
             write_claims(make_splits(built), built)
 
-    def test_U02_members_of_one_collection_are_named_one_by_one(self, cohort, tmp_path):
+    def test_S12_3_members_of_one_collection_are_named_one_by_one(
+        self, cohort, tmp_path
+    ):
         """A split's entries held the file's path alone, so the members of one
         collection placed in two partitions put the whole collection in both
         per-partition file lists."""
@@ -470,7 +472,7 @@ class TestSplits:
         for entry in built:
             assert f"{entry.path}::{entry.key}" in placed[split.partition_of(entry)]
 
-    def test_U02_an_entry_in_two_partitions_is_a_leak(self, manifest):
+    def test_S12_3_an_entry_in_two_partitions_is_a_leak(self, manifest):
         """`leaks()` checked groups alone: a loaded split placing one file
         under two groups in two partitions passed it."""
         from medh5.dataset.split import Assignment, Split
@@ -491,7 +493,7 @@ class TestSplits:
             return [(c.set_id, c.partition) for c in sample.document.splits]
 
     @pytest.mark.parametrize("fold", [2, 7, -1])
-    def test_U06_a_fold_the_split_lacks_is_refused_before_any_write(
+    def test_S12_3_a_fold_the_split_lacks_is_refused_before_any_write(
         self, manifest, fold
     ):
         """Fold 7 of a 2-fold split matched no assignment, so every file was
@@ -568,7 +570,7 @@ class TestSplits:
             write_claims(Split.from_json(legacy), manifest, fold=3)
         assert all(self._claims(entry.path) == [] for entry in manifest)
 
-    def test_U06_a_refused_write_leaves_every_file_as_it_was(self, cohort):
+    def test_S12_3_a_refused_write_leaves_every_file_as_it_was(self, cohort):
         """The member of a collection was refused after the files before it
         had been amended: half a cohort claimed the split."""
         members = sorted(cohort.glob("case-[45].medh5"))
@@ -937,7 +939,7 @@ class TestCohortCheck:
         assert missing.where == (str(shard),)
         assert missing.message.startswith("1 manifest file(s)")
 
-    def test_L16_C202_groups_by_the_grouping_key(self, tmp_path: Path):
+    def test_C202_groups_by_the_grouping_key(self, tmp_path: Path):
         """`dataset check` grouped by subject; `medh5 splits` by the §12.2 key.
 
         A family or longitudinal group straddling two partitions was a LEAK in
@@ -990,7 +992,7 @@ class TestCohortWorkflow:
         assert main(["dataset", "check", manifest, "--deep"]) == 0
 
 
-class TestF02StatisticsArePhysical:
+class TestStatisticsArePhysical:
     """§4.2: the loaders read `stored × slope + intercept`; so do the statistics."""
 
     SLOPE, INTERCEPT = 2.0, -1024.0

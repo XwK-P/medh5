@@ -24,8 +24,8 @@ from tests.helpers import SHAPE, block, lesion, write_raters
 from tests.kits import Framed
 
 
-class TestL29Agreement:
-    """L-29, L-38: agreement scores what was measured, and its record is storable."""
+class TestMeasuredAgreement:
+    """Agreement scores what was measured, and its record is storable."""
 
     def _raters(self, path: Path) -> Path:
         empty = np.empty((0, 3, 2), np.float32)
@@ -48,7 +48,7 @@ class TestL29Agreement:
             )
         return path
 
-    def test_L29_two_raters_who_found_nothing_are_undefined_not_zero(
+    def test_S11_2_two_raters_who_found_nothing_are_undefined_not_zero(
         self, tmp_path: Path
     ):
         """Object F1 was 0.0 --- and so was the record --- when both found nothing."""
@@ -61,9 +61,7 @@ class TestL29Agreement:
             with pytest.raises(MEDH5ValidationError, match="nothing was comparable"):
                 result.to_record()
 
-    def test_L29_S11_3_a_class_one_rater_never_examined_is_skipped(
-        self, tmp_path: Path
-    ):
+    def test_S11_3_a_class_one_rater_never_examined_is_skipped(self, tmp_path: Path):
         """Identical work scored 0.667 when the other rater never looked for c2."""
         from medh5.curation.agreement import compare_instances
 
@@ -73,7 +71,7 @@ class TestL29Agreement:
             assert result.only_in_a == ()
             assert result.skipped == ("c2 (not examined by both)",)
 
-    def test_L29_index_boxes_on_different_grids_are_refused(self, tmp_path: Path):
+    def test_S8_1_index_boxes_on_different_grids_are_refused(self, tmp_path: Path):
         """Boxes on a 4 mm and a 1 mm grid were compared in raw index units."""
         from medh5.curation.agreement import compare_instances
 
@@ -88,7 +86,7 @@ class TestL29Agreement:
             compare_instances(s.annotations["a"], s.annotations["b"])
         assert caught.value.code == "E101"
 
-    def test_L29_boxes_in_different_spaces_are_refused(self, tmp_path: Path):
+    def test_S8_1_boxes_in_different_spaces_are_refused(self, tmp_path: Path):
         from medh5.curation.agreement import compare_instances
 
         path = tmp_path / "spaces.medh5"
@@ -106,7 +104,7 @@ class TestL29Agreement:
             compare_instances(s.annotations["a"], s.annotations["b"])
         assert caught.value.code == "E414"
 
-    def test_L29_world_boxes_compare_within_one_frame(self, tmp_path: Path):
+    def test_S3_3_world_boxes_compare_within_one_frame(self, tmp_path: Path):
         """Two gridless world annotations passed a grid test as `None == None`."""
         from medh5.curation.agreement import compare_instances
 
@@ -123,7 +121,7 @@ class TestL29Agreement:
                 compare_instances(s.annotations["a"], s.annotations["b"])
         assert caught.value.code == "E414"
 
-    def test_L29_compare_refuses_an_argument_it_cannot_use(self, tmp_path: Path):
+    def test_compare_refuses_an_argument_it_cannot_use(self, tmp_path: Path):
         from medh5.curation.agreement import compare
 
         path = self._raters(tmp_path / "a.medh5")
@@ -142,7 +140,7 @@ class TestL29Agreement:
             with pytest.raises(MEDH5ValidationError, match="common kind"):
                 compare(s.annotations["r3"], s.annotations["s1"])
 
-    def test_L29_medh5_agree_on_two_boxes_annotations(self, tmp_path: Path, capsys):
+    def test_medh5_agree_on_two_boxes_annotations(self, tmp_path: Path, capsys):
         """It exited with `'BoxesAnnotation' object has no attribute 'dense'`."""
         from medh5.cli import main
 
@@ -153,7 +151,7 @@ class TestL29Agreement:
         assert main(["agree", str(path), "r1", "r2", "--record"]) == 1
         assert "nothing was comparable" in capsys.readouterr().err
 
-    def test_L29_voxel_agreement_with_nothing_comparable_is_undefined(
+    def test_S11_2_voxel_agreement_with_nothing_comparable_is_undefined(
         self, tmp_path: Path
     ):
         from medh5.curation.agreement import compare_voxel
@@ -170,7 +168,7 @@ class TestL29Agreement:
             with pytest.raises(MEDH5ValidationError):
                 result.to_record()
 
-    def test_L29_an_undefined_voxel_comparison_is_reported_not_refused(
+    def test_S11_2_an_undefined_voxel_comparison_is_reported_not_refused(
         self, tmp_path: Path, capsys
     ):
         """The report went through `to_record()`, so it refused as the record does."""
@@ -193,9 +191,7 @@ class TestL29Agreement:
         assert main(["agree", str(path), "a", "b", "--record"]) == 1
         assert "nothing was comparable" in capsys.readouterr().err
 
-    def test_L38_S11_2_an_agreement_record_can_be_stored_in_its_file(
-        self, tmp_path: Path
-    ):
+    def test_S11_2_an_agreement_record_can_be_stored_in_its_file(self, tmp_path: Path):
         """Keyed by class name, and by `mean_iou`, no record passed the schema."""
         from medh5.curation.agreement import compare_instances, compare_voxel
 
@@ -294,7 +290,7 @@ class TestAgreement:
 
     def test_instances_on_two_visits_grids_are_refused(self, series):
         # Index boxes on two grids count different voxels; comparing them
-        # number for number measured nothing (L-29).
+        # number for number measured nothing.
         with (
             medh5.open(series) as sample,
             pytest.raises(MEDH5ValidationError) as exc,
@@ -367,9 +363,8 @@ class TestAgreement:
             assert result.mean_iou is None
 
 
-class TestU03IgnoredVoxels:
-    """§7.7: a voxel either rater declared unexamined is evidence neither way
-    (U03 of the 2.0 audit)."""
+class TestIgnoredVoxels:
+    """§7.7: a voxel either rater declared unexamined is evidence neither way."""
 
     @staticmethod
     def _slab(z0: int, z1: int) -> np.ndarray:
@@ -384,7 +379,7 @@ class TestU03IgnoredVoxels:
         return region
 
     @pytest.mark.parametrize("encoding", ["labelmap", "bitmask"])
-    def test_U03_what_one_rater_never_examined_is_not_scored(
+    def test_S7_7_what_one_rater_never_examined_is_not_scored(
         self, tmp_path: Path, encoding: str
     ):
         """Identical work scored 0.75: rater b's finding where rater a declared
@@ -412,7 +407,7 @@ class TestU03IgnoredVoxels:
             assert compare_voxel(b, a).value == pytest.approx(1.0)
             assert compare_voxel(a, b, metric="iou").value == pytest.approx(1.0)
 
-    def test_U03_nothing_outside_the_ignore_regions_is_nothing_comparable(
+    def test_S7_7_nothing_outside_the_ignore_regions_is_nothing_comparable(
         self, tmp_path: Path
     ):
         """Each rater found the class only where the other never looked."""
@@ -438,8 +433,8 @@ class TestU03IgnoredVoxels:
             assert result.skipped == ("c1 (empty in both outside the ignore region)",)
 
 
-class TestN10AcrossSamples:
-    """A grid id is its sample's own name (N10 of the 2.0 re-audit): two
+class TestAcrossSamples:
+    """A grid id is its sample's own name: two
     samples each calling a grid `g` were compared voxel for voxel and box for
     box though one was 100 mm away or in an unrelated frame, scoring 1.0, and
     grids of two shapes, each with an ignore region, panicked the merge."""
@@ -474,7 +469,7 @@ class TestN10AcrossSamples:
                 w.add_boxes("world", box, ["c1"], space="world", frame_uid=frame)
         return path
 
-    def test_N10_a_grid_of_the_same_name_elsewhere_is_another_grid(
+    def test_S3_3_a_grid_of_the_same_name_elsewhere_is_another_grid(
         self, tmp_path: Path
     ):
         here = self._sample(tmp_path / "here.medh5")
@@ -499,7 +494,7 @@ class TestN10AcrossSamples:
                 compare_instances(h.annotations["world"], o.annotations["world"])
             assert caught.value.code == "E414"
 
-    def test_N10_grids_of_two_shapes_are_refused_not_merged(self, tmp_path: Path):
+    def test_S3_3_grids_of_two_shapes_are_refused_not_merged(self, tmp_path: Path):
         def ignored(shape: tuple[int, int, int]) -> np.ndarray:
             region = np.zeros(shape, bool)
             region[0] = True
@@ -519,7 +514,9 @@ class TestN10AcrossSamples:
             compare_voxel(s.annotations["seg"], big.annotations["seg"])
         assert caught.value.code == "E101"
 
-    def test_N10_one_lattice_in_one_frame_compares_across_samples(self, tmp_path: Path):
+    def test_S3_3_one_lattice_in_one_frame_compares_across_samples(
+        self, tmp_path: Path
+    ):
         """Two raters' files of one scan: their grids share a frame and are
         one lattice, whatever they are called."""
         a = self._sample(tmp_path / "a.medh5")
@@ -537,10 +534,10 @@ class TestN10AcrossSamples:
             assert same.value == 1.0
 
 
-class TestN10WorldUnits:
+class TestWorldUnits:
     """World coordinates are numbers in their grid's units (§3.5) and are
-    compared in one convention only (§3.3 rule 4) --- N10 of the round-3
-    audit: one frame's boxes in metres against millimetres scored an F1 of 0
+    compared in one convention only (§3.3 rule 4).  Read as they were, one
+    frame's boxes in metres against millimetres scored an F1 of 0
     where they were the same boxes, and in LPS against RAS an IoU of 1 where
     they were disjoint."""
 
@@ -564,7 +561,7 @@ class TestN10WorldUnits:
             w.add_boxes("ras_same", flipped, ["c1"], grid="ras", space="world")
         return path
 
-    def test_N10_S3_5_one_frames_boxes_compare_in_one_unit(self, tmp_path: Path):
+    def test_S3_5_one_frames_boxes_compare_in_one_unit(self, tmp_path: Path):
         with medh5.open(self._raters(tmp_path / "units.medh5")) as s:
             mm, metres, far = (s.annotations[k] for k in ("mm", "metres", "far"))
             assert compare_instances(mm, metres).value == pytest.approx(1.0)
@@ -573,7 +570,7 @@ class TestN10WorldUnits:
             assert compare_instances(far, mm).value == 0.0
             assert compare(mm, metres).value == pytest.approx(1.0)
 
-    def test_N10_S3_3_rule_4_two_conventions_are_refused(self, tmp_path: Path):
+    def test_S3_3_rule_4_two_conventions_are_refused(self, tmp_path: Path):
         with medh5.open(self._raters(tmp_path / "conventions.medh5")) as s:
             mm = s.annotations["mm"]
             for other in ("ras", "ras_same"):

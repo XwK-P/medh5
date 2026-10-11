@@ -86,7 +86,7 @@ class TestBench:
         names = [m.name for m in benchmark_file(pair, patch=4, repeats=2)]
         assert "paired_center_ms" in names
 
-    def test_T11_the_bench_has_a_many_class_row(self, tmp_path: Path):
+    def test_the_bench_has_a_many_class_row(self, tmp_path: Path):
         from medh5.bench import (
             MANY_CLASSES,
             TARGETS,
@@ -102,7 +102,7 @@ class TestBench:
         assert measured.target == TARGETS["foreground_sample_many_ms"][0]
         assert measured.detail == {"classes": MANY_CLASSES, "used_index": True}
 
-    def test_Q19_bench_json_is_only_the_document(self, capsys):
+    def test_bench_json_is_only_the_document(self, capsys):
         """Progress lines on stdout ahead of the JSON made `--json` unparsable.
 
         The engine writes the synthetic samples at their published size, so

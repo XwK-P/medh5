@@ -122,7 +122,7 @@ class TestEntryPoint:
         assert during == [signal.SIG_DFL, before]
         assert signal.getsignal(signal.SIGINT) is before
 
-    def test_Q12_a_missing_name_is_a_handled_cli_error(self, tmp_path: Path, capsys):
+    def test_a_missing_name_is_a_handled_cli_error(self, tmp_path: Path, capsys):
         """`convert to-nifti FILE <unknown image>` ended in a KeyError traceback."""
         pytest.importorskip("nibabel")
         from medh5.cli import main
@@ -136,7 +136,7 @@ class TestEntryPoint:
         assert code == 1
         assert capsys.readouterr().err.startswith("medh5: no image 'PET'")
 
-    def test_Q12_a_bare_key_is_named(self):
+    def test_a_bare_key_is_named(self):
         from medh5.cli import _what
 
         assert _what(KeyError("PET")) == "no such entry: 'PET'"
@@ -313,7 +313,7 @@ class TestInfo:
         roles = {o["name"]: o["role"] for o in json.loads(out.out)["objects"]}
         assert roles[member] == role
 
-    def test_L15_the_inspection_commands_take_a_shard_with_a_key(
+    def test_the_inspection_commands_take_a_shard_with_a_key(
         self, tmp_path: Path, capsys
     ):
         from medh5.cli import main

@@ -19,8 +19,8 @@ from tests.helpers import SHAPE, encode_attr, write_dicom_series
 from tests.kits import Numbered, Organs
 
 
-class TestW8Deidentification:
-    """F-08: the attestation, the scope it covers, and the exit code."""
+class TestDeidentificationAttestation:
+    """The attestation, the scope it covers, and the exit code."""
 
     def _dirty(self, path: Path) -> Path:
         from medh5.curation import Issue
@@ -52,7 +52,7 @@ class TestW8Deidentification:
             w.extra("dicom", {"PatientID": "MRN-1"})
         return path
 
-    def test_F08_S11_4_apply_acts_on_everything_it_flags(self, tmp_path: Path):
+    def test_S11_4_apply_acts_on_everything_it_flags(self, tmp_path: Path):
         """A strict apply used to leave three identifiers it had itself flagged.
 
         `apply` cleaned `extra` and `acquisition` only, then wrote a record
@@ -82,7 +82,7 @@ class TestW8Deidentification:
         # The independent re-scan, which is the check the tool now makes itself.
         assert not scrub.scan(path, profile="strict").actionable
 
-    def test_F08_the_record_states_what_the_run_achieved(self, tmp_path: Path):
+    def test_S11_4_the_record_states_what_the_run_achieved(self, tmp_path: Path):
         from medh5.curation import scrub
 
         path = self._dirty(tmp_path / "record.medh5")
@@ -92,7 +92,7 @@ class TestW8Deidentification:
             assert activity.params["remaining_actionable"] == 0
             assert activity.params["changes"] >= activity.params["remaining"]
 
-    def test_F08_apply_is_idempotent_and_stays_green(self, tmp_path: Path):
+    def test_apply_is_idempotent_and_stays_green(self, tmp_path: Path):
         """A rule that fires on its own output can never go green in a pipeline."""
         from medh5.curation import scrub
 
@@ -102,7 +102,7 @@ class TestW8Deidentification:
         assert first.ok and second.ok
         assert not second.remaining_actionable
 
-    def test_F08_the_ids_a_join_needs_are_reported_and_never_rewritten(
+    def test_S11_4_the_ids_a_join_needs_are_reported_and_never_rewritten(
         self, tmp_path: Path
     ):
         from medh5.curation import scrub
@@ -120,7 +120,7 @@ class TestW8Deidentification:
         with medh5.open(path) as sample:
             assert sample.identity.subject_id == "Doe^Jane"
 
-    def test_F08_the_cli_exit_code_follows_the_re_scan(self, tmp_path: Path, capsys):
+    def test_the_cli_exit_code_follows_the_re_scan(self, tmp_path: Path, capsys):
         from medh5.cli import main
 
         path = self._dirty(tmp_path / "cli.medh5")
@@ -133,8 +133,8 @@ class TestW8Deidentification:
         assert main(["scrub", str(path), "--profile", "strict"]) == 0
 
 
-class TestW15Deidentification:
-    """F-14, L-36: the scan and the clean see every string, and say so."""
+class TestDeidentification:
+    """The scan and the clean see every string, and say so."""
 
     @pytest.fixture
     def dicom_import(self, tmp_path: Path) -> dict[str, Any]:
@@ -151,7 +151,7 @@ class TestW15Deidentification:
         from_dicom(tmp_path / "dcm", out)
         return {"path": out, **info}
 
-    def test_F14_S11_4_the_importer_says_where_the_ids_came_from(self, dicom_import):
+    def test_S11_4_the_importer_says_where_the_ids_came_from(self, dicom_import):
         from medh5.curation import scrub
 
         path = dicom_import["path"]
@@ -165,7 +165,7 @@ class TestW15Deidentification:
         assert ("identity", "identity.sample_id") in rules
         assert ("uid", "provenance.activities[act_import_1].inputs[0]") in rules
 
-    def test_F14_a_strict_apply_fails_while_the_ids_are_record_numbers(
+    def test_S11_4_a_strict_apply_fails_while_the_ids_are_record_numbers(
         self, dicom_import
     ):
         """It used to exit 0 over the PatientID and a real SeriesInstanceUID."""
@@ -182,7 +182,7 @@ class TestW15Deidentification:
         # The real UID the timepoint was pseudonymised from is not left beside it.
         assert dicom_import["series_uid"].encode() not in path.read_bytes()
 
-    def test_F14_pseudonymised_ids_leave_no_identifier_bytes(self, dicom_import):
+    def test_S11_4_pseudonymised_ids_leave_no_identifier_bytes(self, dicom_import):
         from medh5.curation import scrub
 
         path = dicom_import["path"]
@@ -221,14 +221,14 @@ class TestW15Deidentification:
         again = scrub.apply(path, profile="strict", salt="pep", pseudonymise_ids=True)
         assert again.ok
 
-    def test_F14_pseudonymising_ids_needs_a_salt(self, dicom_import):
+    def test_S11_4_pseudonymising_ids_needs_a_salt(self, dicom_import):
         """An unsalted hash of a record number is reversed by hashing them all."""
         from medh5.curation import scrub
 
         with pytest.raises(MEDH5ValidationError, match="salt"):
             scrub.apply(dicom_import["path"], pseudonymise_ids=True)
 
-    def test_F14_a_file_named_after_the_record_number_is_reported(
+    def test_S11_4_a_file_named_after_the_record_number_is_reported(
         self, dicom_import, tmp_path: Path
     ):
         from medh5.curation import scrub
@@ -240,7 +240,7 @@ class TestW15Deidentification:
         assert [f.rule for f in report.remaining] == ["file_name"]
         assert not report.ok
 
-    def test_F14_the_cli_flag(self, dicom_import, capsys):
+    def test_the_cli_flag(self, dicom_import, capsys):
         from medh5.cli import main
 
         path = str(dicom_import["path"])
@@ -264,7 +264,7 @@ class TestW15Deidentification:
         capsys.readouterr()
         assert main(["scrub", path, "--profile", "strict"]) == 0
 
-    def test_F14_reminting_an_id_retires_its_recorded_source(self, tmp_path: Path):
+    def test_S11_4_reminting_an_id_retires_its_recorded_source(self, tmp_path: Path):
         """A re-minted id is not a DICOM id, and must not be reported as one."""
         from medh5.curation import scrub
 
@@ -279,7 +279,7 @@ class TestW15Deidentification:
         assert "identity" not in {f.rule for f in scrub.scan(path).findings}
 
     @pytest.mark.parametrize("name", ["Müller^Hans", "山田^太郎", "Ødegård^Åse"])
-    def test_L36_a_person_name_in_any_script(self, tmp_path: Path, name: str):
+    def test_S11_4_a_person_name_in_any_script(self, tmp_path: Path, name: str):
         from medh5.curation import scrub
 
         path = tmp_path / "pn.medh5"
@@ -287,7 +287,7 @@ class TestW15Deidentification:
             w.extra("src", {"reader": name})
         assert [f.rule for f in scrub.scan(path).actionable] == ["person_name"]
 
-    def test_L36_an_age_over_89_and_an_organization(self, tmp_path: Path):
+    def test_S11_4_an_age_over_89_and_an_organization(self, tmp_path: Path):
         from medh5.curation import scrub
 
         path = tmp_path / "age.medh5"
@@ -304,7 +304,7 @@ class TestW15Deidentification:
             names = [a.name for a in sample.document.provenance.agents]
             assert "St Elsewhere General" not in names
 
-    def test_L36_an_identifying_attribute_on_an_hdf5_object(self, tmp_path: Path):
+    def test_S11_4_an_identifying_attribute_on_an_hdf5_object(self, tmp_path: Path):
         """The key rules apply to attribute names as they do to `/meta` keys."""
         from medh5.curation import scrub
 
@@ -324,7 +324,7 @@ class TestW15Deidentification:
         assert b"Doe^Jane" not in path.read_bytes()
         assert b"Lee^Bo" not in path.read_bytes()
 
-    def test_L36_every_string_slot_is_removed_or_reported(self, tmp_path: Path):
+    def test_S11_4_every_string_slot_is_removed_or_reported(self, tmp_path: Path):
         """The invariant the location lists could not keep.
 
         A distinct person name is planted in every string slot a fully populated
@@ -453,7 +453,7 @@ class TestW15Deidentification:
         assert validate_file(path).ok
 
 
-class TestW15ScrubRules:
+class TestScrubRules:
     """The rules the traversal applies, one place each."""
 
     def _with_inputs(self, path: Path, *refs: str) -> Path:
@@ -462,7 +462,7 @@ class TestW15ScrubRules:
             w.activity("import", agent=tool, inputs=list(refs))
         return path
 
-    def test_F14_a_source_path_keeps_its_file_name_or_goes(self, tmp_path: Path):
+    def test_S11_4_a_source_path_keeps_its_file_name_or_goes(self, tmp_path: Path):
         """Export directories routinely name the patient or the site."""
         from medh5.curation import scrub
 
@@ -488,7 +488,7 @@ class TestW15ScrubRules:
         assert inputs[:2] == ("<path removed>", "nifti:<path removed>")
         assert b"MRN12345" not in strict.read_bytes()
 
-    def test_F14_a_date_without_a_shift_is_removed(self, tmp_path: Path):
+    def test_S11_4_a_date_without_a_shift_is_removed(self, tmp_path: Path):
         from medh5.curation import scrub
 
         path = tmp_path / "date.medh5"
@@ -498,7 +498,7 @@ class TestW15ScrubRules:
         with medh5.open(path) as sample:
             assert sample.document.timepoints["tp0"].date is None
 
-    def test_L36_mapping_keys_are_read_as_text(self, tmp_path: Path):
+    def test_S11_4_mapping_keys_are_read_as_text(self, tmp_path: Path):
         """`{"Doe^Jane": ...}` names a person as surely as a value does."""
         from medh5.curation import scrub
 
@@ -517,7 +517,7 @@ class TestW15ScrubRules:
         assert "Doe^Jane" not in source
         assert source[report.uid_map[uid]] == "CT"
 
-    def test_L36_a_compound_dataset_with_text_is_reported_not_skipped(
+    def test_S11_4_a_compound_dataset_with_text_is_reported_not_skipped(
         self, tmp_path: Path
     ):
         from medh5.curation import scrub
@@ -529,7 +529,7 @@ class TestW15ScrubRules:
         (finding,) = [f for f in scrub.scan(path).findings if f.where == "x_log"]
         assert finding.rule == "unreadable" and not finding.actionable
 
-    def test_L36_an_id_is_reviewed_and_never_renamed(self, tmp_path: Path):
+    def test_S11_4_an_id_is_reviewed_and_never_renamed(self, tmp_path: Path):
         """Renaming one end of a reference breaks it; a person re-mints ids."""
         from medh5.curation import scrub
 
@@ -549,7 +549,7 @@ class TestW15ScrubRules:
             assert sample.images["CT"].grid_id == uid
         assert validate_file(path).ok
 
-    def test_F14_the_group_id_follows_the_subject_id(self, tmp_path: Path):
+    def test_S12_2_the_group_id_follows_the_subject_id(self, tmp_path: Path):
         from medh5.curation import scrub
 
         path = tmp_path / "group.medh5"
@@ -561,7 +561,7 @@ class TestW15ScrubRules:
             assert subject == report.uid_map["subj-1"]
             assert sample.document.cohort.group_id == subject
 
-    def test_L36_a_rewritten_string_dataset_keeps_its_filters(self, tmp_path: Path):
+    def test_a_rewritten_string_dataset_keeps_its_filters(self, tmp_path: Path):
         """Widening a fixed-length dataset kept its compression and dropped the
         rest: a checksummed column lost its Fletcher32 to a scrub."""
         import hdf5plugin
@@ -1149,7 +1149,7 @@ class TestScrubDates:
         assert scrubber.scan(path).clean
 
 
-class TestB08ClinicalIsNotScrubbed:
+class TestClinicalIsNotScrubbed:
     """The clinical profile is outside what this tool examines (1.1 §6:
     de-identification covers the body as well as the metadata).  Its text is
     packed UTF-8, which the string sweep never read, and a date shift moved
@@ -1184,7 +1184,7 @@ class TestB08ClinicalIsNotScrubbed:
         return path
 
     @pytest.mark.parametrize("profile", ["basic", "strict"])
-    def test_B08_a_clinical_sample_is_never_clean(self, tmp_path: Path, profile):
+    def test_S11_4_a_clinical_sample_is_never_clean(self, tmp_path: Path, profile):
         report = scrubber.scan(self._clinical(tmp_path), profile=profile)
         assert not report.clean
         found = [f for f in report.findings if f.rule == "clinical"]
@@ -1195,7 +1195,7 @@ class TestB08ClinicalIsNotScrubbed:
     @pytest.mark.parametrize(
         "options", [{}, {"profile": "strict"}, {"date_shift_days": -117}]
     )
-    def test_B08_apply_refuses_a_clinical_sample(self, tmp_path: Path, options):
+    def test_S11_4_apply_refuses_a_clinical_sample(self, tmp_path: Path, options):
         path = self._clinical(tmp_path)
         with medh5.open(path) as sample:
             before = sample.content_id
@@ -1221,7 +1221,7 @@ class TestB08ClinicalIsNotScrubbed:
         with pytest.raises(MEDH5ValidationError, match="clinical strip"):
             scrubber.apply(path)
 
-    def test_B08_the_imaging_projection_is_scrubbed(self, tmp_path: Path):
+    def test_S11_4_the_imaging_projection_is_scrubbed(self, tmp_path: Path):
         from medh5.clinical import strip
 
         projection = tmp_path / "imaging.medh5"

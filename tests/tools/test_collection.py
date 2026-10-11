@@ -282,7 +282,7 @@ class TestOpening:
         with pytest.raises(MEDH5VersionError):
             pack([member], tmp_path / "t.medh5c")
 
-    def test_L13_open_collection_takes_no_mode(self, tmp_path: Path):
+    def test_open_collection_takes_no_mode(self, tmp_path: Path):
         import inspect
 
         from medh5.collection import open_collection, pack
@@ -390,9 +390,9 @@ class TestValidation:
         assert "E002" in validate_file(shard).codes
 
 
-class TestF11GraphCopy:
-    """Pack, unpack and amend copy a sample as a graph (F11 of the round-4
-    audit).  Copied member by member, a hard link between two members became a
+class TestGraphCopy:
+    """Pack, unpack and amend copy a sample as a graph.  Copied member by
+    member, a hard link between two members became a
     second dataset --- a new line under ``content_id`` --- and a soft link was
     expanded into one: packed and unpacked, the sample failed ``verify``, and
     a no-op amend changed its address."""
@@ -416,7 +416,7 @@ class TestF11GraphCopy:
         assert group.get("x_soft", getlink=True).path == f"{root}/images/CT_tp0"
         assert group["x_ext"].get("relative", getlink=True).path == "loop"
 
-    def test_F11_S2_2_pack_and_unpack_keep_aliases_cycles_and_soft_links(
+    def test_S2_2_pack_and_unpack_keep_aliases_cycles_and_soft_links(
         self, tmp_path: Path
     ):
         source = self._linked(tmp_path / "linked.medh5")
@@ -439,9 +439,7 @@ class TestF11GraphCopy:
         with medh5.open(source) as a, medh5.open(unpacked) as b:
             assert subtrees_identical(a.root, b.root) == ()
 
-    def test_F11_S14_4_a_no_op_amend_keeps_the_graph_and_the_address(
-        self, tmp_path: Path
-    ):
+    def test_S14_4_a_no_op_amend_keeps_the_graph_and_the_address(self, tmp_path: Path):
         path = self._linked(tmp_path / "amended.medh5")
         with medh5.open(path) as s:
             before = s.content_id
@@ -453,7 +451,7 @@ class TestF11GraphCopy:
             assert s.content_id == before
             assert s.verify().ok
 
-    def test_F11_a_soft_link_out_of_its_member_is_not_unpacked(self, tmp_path: Path):
+    def test_S2_2_a_soft_link_out_of_its_member_is_not_unpacked(self, tmp_path: Path):
         """A member's soft link to another member's object has no meaning in
         a file of its own; the unpack is refused rather than repointed."""
         a = write_sample(tmp_path / "a.medh5")

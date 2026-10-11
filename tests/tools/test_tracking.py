@@ -207,7 +207,7 @@ class TestInstanceIdentity:
             assert tracking[42].volume("tp0") == pytest.approx(64.0)
 
 
-class TestF01InstanceIdsBeyondUint32:
+class TestInstanceIdsBeyondUint32:
     """§7.4, §8.2: `instance_ids` is `uint32` **or** `uint64`, on both sides."""
 
     def test_S7_4_instances_round_trip_a_64_bit_id(self, tmp_path: Path) -> None:
@@ -334,10 +334,10 @@ class TestF01InstanceIdsBeyondUint32:
             assert tracking.is_persistent(Hierarchy.BIG)
 
 
-class TestU04OneAnswerPerVisit:
-    """One object seen by several annotations at one visit (U04 of the 2.0 audit)."""
+class TestOneAnswerPerVisit:
+    """One object seen by several annotations at one visit."""
 
-    def test_U04_two_raters_masks_of_a_visit_are_refused_by_every_accessor(
+    def test_S7_4_two_raters_masks_of_a_visit_are_refused_by_every_accessor(
         self, series
     ):
         """`at` and `volume` answered with the first rater, `volumes` with the
@@ -371,7 +371,7 @@ class TestU04OneAnswerPerVisit:
             assert track.volume("tp1") == pytest.approx(6 * 6 * 6 * 2.0)
             assert tracking.state_at(7, "tp0") == PRESENT
 
-    def test_U04_a_box_beside_a_mask_defers_to_the_mask(self, series):
+    def test_S7_4_a_box_beside_a_mask_defers_to_the_mask(self, series):
         """A detection of the lesion beside its segmentation is one answer, the
         mask's: a box's volume is its bounding box's."""
         with medh5.amend(series) as w:
@@ -394,7 +394,7 @@ class TestU04OneAnswerPerVisit:
             )
             assert track.relative_change("tp0", "tp1") == pytest.approx((216 - 64) / 64)
 
-    def test_U04_the_command_line_names_an_ambiguous_visit(self, series, capsys):
+    def test_the_command_line_names_an_ambiguous_visit(self, series, capsys):
         from medh5.cli import main
 
         with medh5.amend(series) as w:
@@ -413,11 +413,11 @@ class TestU04OneAnswerPerVisit:
         assert row.split()[0] == "7"
 
 
-class TestF19VolumeUnits:
+class TestVolumeUnits:
     """An observation's volume is in its grid's units cubed, and two visits
     are compared in millimetres: a visit in metres beside one in millimetres
     read as a millionfold change, and an uncalibrated one beside either as a
-    change at all (F19 of the round-4 audit)."""
+    change at all."""
 
     SPACING = {
         "mm": (2.0, 1.0, 1.0),
@@ -458,7 +458,7 @@ class TestF19VolumeUnits:
         return path
 
     @pytest.mark.parametrize("unit", ["m", "um"])
-    def test_F19_the_same_lesion_in_other_units_has_not_changed(
+    def test_S3_5_the_same_lesion_in_other_units_has_not_changed(
         self, tmp_path, label_set, unit
     ):
         path = self._visits(tmp_path / "s.medh5", label_set, ("mm", unit), (2, 2))
@@ -487,13 +487,15 @@ class TestF19VolumeUnits:
             pytest.approx(64 * 2.0),
         ]
 
-    def test_F19_growth_across_a_change_of_units_is_measured(self, tmp_path, label_set):
+    def test_S3_5_growth_across_a_change_of_units_is_measured(
+        self, tmp_path, label_set
+    ):
         path = self._visits(tmp_path / "s.medh5", label_set, ("mm", "m"), (2, 3))
         with medh5.open(path) as sample:
             change = sample.tracks()[7].relative_change("tp0", "tp1")
             assert change == pytest.approx((216 - 64) / 64)
 
-    def test_F19_an_uncalibrated_visit_beside_a_calibrated_one_has_no_change(
+    def test_S3_5_an_uncalibrated_visit_beside_a_calibrated_one_has_no_change(
         self, tmp_path, label_set
     ):
         path = self._visits(tmp_path / "a.medh5", label_set, ("mm", "px"), (2, 3))
@@ -507,7 +509,7 @@ class TestF19VolumeUnits:
             change = sample.tracks()[7].relative_change("tp0", "tp1")
             assert change == pytest.approx((216 - 64) / 64)
 
-    def test_F19_an_area_beside_a_volume_has_no_change(self, tmp_path, label_set):
+    def test_S3_5_an_area_beside_a_volume_has_no_change(self, tmp_path, label_set):
         path = tmp_path / "dims.medh5"
         plane = SHAPE[1:]
         with medh5.create(path, sample_id="dims", codec="portable") as w:
@@ -542,7 +544,7 @@ class TestF19VolumeUnits:
             assert track.volume("tp1") == pytest.approx(16.0), "an area, in mm²"
             assert track.relative_change("tp0", "tp1") is None
 
-    def test_F19_the_command_line_shows_millimetres(self, tmp_path, label_set, capsys):
+    def test_the_command_line_shows_millimetres(self, tmp_path, label_set, capsys):
         from medh5.cli import main
 
         path = self._visits(tmp_path / "s.medh5", label_set, ("mm", "m"), (2, 2))
@@ -553,11 +555,11 @@ class TestF19VolumeUnits:
         assert "mm³" in out
 
 
-class TestF21TrackedKinds:
+class TestTrackedKinds:
     """Every annotation that carries ``instance_ids`` was joined, and only
     masks and axis-aligned boxes could be read as objects: an oriented box or
     a landmark carrying the ids §10.6 asks for aborted the join, and ``medh5
-    track`` with it (F21 of the round-4 audit)."""
+    track`` with it."""
 
     @staticmethod
     def _rotation(degrees: float) -> np.ndarray:
@@ -613,7 +615,7 @@ class TestF21TrackedKinds:
             )
         return path
 
-    def test_F21_S7_4_oriented_boxes_join_and_measure(self, tmp_path, label_set):
+    def test_S7_4_oriented_boxes_join_and_measure(self, tmp_path, label_set):
         path = self._visits(tmp_path / "obb.medh5", label_set)
         with medh5.open(path) as sample:
             tracking = sample.tracks()
@@ -631,16 +633,14 @@ class TestF21TrackedKinds:
             assert box.shape == (3, 2) and np.all(box[:, 0] < box[:, 1])
             assert tracking.is_new(9) and tracking.skipped == {}
 
-    def test_F21_masks_and_oriented_boxes_join_one_track(self, tmp_path, label_set):
+    def test_S7_4_masks_and_oriented_boxes_join_one_track(self, tmp_path, label_set):
         path = self._visits(tmp_path / "mixed.medh5", label_set, mask_first=True)
         with medh5.open(path) as sample:
             track = sample.tracks()[7]
             assert [o.kind for o in track] == ["instances", "obb"]
             assert track.relative_change("tp0", "tp1") == pytest.approx((216 - 64) / 64)
 
-    def test_F21_S10_6_points_mark_presence_and_measure_nothing(
-        self, tmp_path, label_set
-    ):
+    def test_S10_6_points_mark_presence_and_measure_nothing(self, tmp_path, label_set):
         path = self._visits(tmp_path / "obb.medh5", label_set)
         with medh5.amend(path) as w:
             w.add_points(
@@ -661,7 +661,7 @@ class TestF21TrackedKinds:
             assert np.array_equal(point.box, [[3.0, 3.0], [3.0, 3.0], [3.0, 3.0]])
             assert tracking.state_at(11, "tp0") == PRESENT
 
-    def test_F21_a_kind_no_track_reads_is_reported_not_fatal(
+    def test_a_kind_no_track_reads_is_reported_not_fatal(
         self, tmp_path, label_set, capsys
     ):
         from medh5.cli import main

@@ -247,8 +247,8 @@ class TestManifest:
         assert back.base == task.base
 
 
-class TestF17ConceptToken:
-    def test_F17_tokens_escape_their_delimiter_and_keep_the_plain_ones(self):
+class TestConceptToken:
+    def test_tokens_escape_their_delimiter_and_keep_the_plain_ones(self):
         from medh5.task import concept_token
 
         assert concept_token("observation", "http://loinc.org", "2160-0") == (
@@ -266,8 +266,8 @@ class TestF17ConceptToken:
         assert concept_token("k", "é|", "ü") == "k|é\\||ü"
 
 
-class TestF14Integers:
-    """F14 of the round-4 audit: JSON Schema's `integer` admits `3.0`, and an
+class TestIntegers:
+    """JSON Schema's `integer` admits `3.0`, and an
     element that did not read as an integer was dropped --- `classes: [3.0]`
     read no class and `patch: [4.0, 8, 8]` a 2-D patch.  Refused instead."""
 
@@ -280,7 +280,7 @@ class TestF14Integers:
             ("patch", [4, 8, 1e30]),
         ],
     )
-    def test_F14_a_number_that_is_not_an_integer_is_refused(
+    def test_S3_1_a_number_that_is_not_an_integer_is_refused(
         self, setup, field: str, value: list[Any]
     ):
         task, _ = setup
@@ -292,7 +292,7 @@ class TestF14Integers:
         # The schema refuses a fraction; the parser, what the schema admits.
         assert "integer" in str(caught.value) and field in str(caught.value)
 
-    def test_F14_integers_and_a_non_positive_patch(self, setup):
+    def test_S3_5_integers_and_a_non_positive_patch(self, setup):
         task, _ = setup
         doc = task.to_json()
         doc["slots"][0].update(classes=[3, 7], patch=[4, 8, 8])
@@ -304,7 +304,7 @@ class TestF14Integers:
         assert caught.value.code == "T101"
 
     @pytest.mark.parametrize("value", [3.0, 3.5, "3"])
-    def test_F14_a_manifest_entry_refuses_a_class_id_that_is_not_an_integer(
+    def test_a_manifest_entry_refuses_a_class_id_that_is_not_an_integer(
         self, tmp_path: Path, value: Any
     ):
         """Through Python and through the engine alike."""
@@ -571,7 +571,7 @@ class TestSources:
         source = task.subjects[1].sources[0]
         assert found(source.check(task.base)) == ["T302"]
 
-    def test_B03_a_dataset_the_root_does_not_cover_breaks_the_pin(self, setup):
+    def test_S2_a_dataset_the_root_does_not_cover_breaks_the_pin(self, setup):
         """`content_id` is a root over *stored* digests, so a dataset added
         without one changes no root: a planted column passed the shallow and
         the deep check and a fresh preflight while the rows read its values
@@ -599,12 +599,12 @@ class TestSources:
         assert "E818" in validate_file(paths["P-02"], level="integrity").codes
 
     @pytest.mark.parametrize("alias", ["aaa", "zzz"])
-    def test_B03_a_root_alias_does_not_hide_an_undigested_column(self, setup, alias):
+    def test_S2_a_root_alias_does_not_hide_an_undigested_column(self, setup, alias):
         """A walk of the root visits an object once, at its first path, and the
         pin decided what an object belongs to by that path: an undigested
         column linked first at the root, before `clinical` in name order, was
         no clinical dataset, and the shallow and deep checks and a preflight
-        passed it while the rows read it (B03 of the 2.0 re-audit).  Membership
+        passed it while the rows read it.  Membership
         is reached through each attested group, whatever else links to it."""
         task, paths = setup
         with h5py.File(paths["P-02"], "r+") as f:
@@ -624,7 +624,7 @@ class TestSources:
         assert found(report.findings) == ["T302"]
         assert {r.status for r in report.rows if r.subject_id == "P-02"} == {"error"}
 
-    def test_B03_a_later_alias_of_a_clinical_column_breaks_no_pin(self, setup):
+    def test_S2_a_later_alias_of_a_clinical_column_breaks_no_pin(self, setup):
         """The control.  A later alias of a digested column changes no line,
         so it changes no root and breaks no pin."""
         task, paths = setup
@@ -655,10 +655,10 @@ class TestSources:
         return content_id
 
     @pytest.mark.parametrize("link", ["hard", "soft"])
-    def test_F01_S2_a_clinical_column_relinked_after_its_pin_is_refused(
+    def test_S2_a_clinical_column_relinked_after_its_pin_is_refused(
         self, tmp_path: Path, link: str
     ):
-        """F01 of the round-4 audit.  A file crafted before its pin --- an
+        """A file crafted before its pin --- an
         alias sorting before `clinical` holding the column's line, and a decoy
         with a line of its own, both digested and sealed --- passed every check
         by object: relinking the column to the decoy changed no line, so the
@@ -704,12 +704,12 @@ class TestSources:
             (d.code, d.location) for d in diagnostics
         }
 
-    def test_B03_a_column_soft_linked_elsewhere_is_outside_the_pin(self, setup):
+    def test_S2_a_column_soft_linked_elsewhere_is_outside_the_pin(self, setup):
         """Readers follow a soft link as HDF5 does; the walk that decides what
         a pin covers followed hard links only.  Optional columns linked softly
         to storage under `index/`, which the root excludes, were read by every
-        selection while the pin, the deep check and a preflight passed (B03 of
-        the round-3 audit).  Attestation walks what readers read."""
+        selection while the pin, the deep check and a preflight passed.
+        Attestation walks what readers read."""
         task, paths = setup
         with h5py.File(paths["P-02"], "r+") as f:
             events = f["clinical/events"]
@@ -762,14 +762,14 @@ class TestSources:
             values[0, 3] = by
             matrix[...] = values
 
-    def test_B03_a_transform_aliased_under_index_is_outside_the_pin(
+    def test_S2_a_transform_aliased_under_index_is_outside_the_pin(
         self, tmp_path: Path
     ):
         """An object is listed once, under the first path that reaches it, and
         `index/` is outside the root: a transform also linked under `index/`
         before its sample was restamped and pinned was in no dataset line, and
         its translation moved from 2 to 102 mm under a matching root and an
-        unchanged pin (B03 of the round-3 audit).  Covered is by identity."""
+        unchanged pin.  Covered is by identity."""
         from medh5.errors import MEDH5IntegrityError
 
         path = self._registered(tmp_path / "reg.medh5")
@@ -792,7 +792,7 @@ class TestSources:
             d.location for d in report.diagnostics if d.code == "E702"
         }
 
-    def test_B03_an_unaliased_transform_is_held_by_its_digest(self, tmp_path: Path):
+    def test_S2_an_unaliased_transform_is_held_by_its_digest(self, tmp_path: Path):
         """The control: without the alias the pin holds, and an edit fails the
         deep check and the validator."""
         path = self._registered(tmp_path / "reg.medh5")
@@ -1049,7 +1049,7 @@ class TestPreflight:
             value_num=1.0,
         )
 
-    def test_C07_fragments_that_contradict_are_their_subjects_finding(
+    def test_S3_3_fragments_that_contradict_are_their_subjects_finding(
         self, tmp_path: Path
     ):
         """Each fragment's revision chain was sound, but merged v0 was
@@ -1084,12 +1084,12 @@ class TestPreflight:
         assert report.row("bad").status == "error"
         assert report.row("good").status == "eligible"
 
-    def test_B04_one_row_identity_reads_one_input(self, tmp_path: Path):
+    def test_S3_5_one_row_identity_reads_one_input(self, tmp_path: Path):
         """Two fragments of one subject hold the same reconciled imaging event,
         each describing its own CT --- every voxel 11 in one, 93 in the other.
         The slot kept the first fragment the manifest listed while the row
         fingerprint sorts the pins, so reordering two sources changed the
-        input under one row identity (B04 of the 2.0 re-audit).  A tie goes to
+        input under one row identity.  A tie goes to
         the smallest pinned `content_id`, whatever the order."""
         root = tmp_path / "b04"
         root.mkdir()
@@ -1120,7 +1120,7 @@ class TestPreflight:
         assert forward[2] == canonical.content_id
         assert forward[1] == (11.0 if canonical is refs["a"] else 93.0)
 
-    def test_C13_a_reconciled_document_event_owns_one_text(self, tmp_path: Path):
+    def test_S3_3_a_reconciled_document_event_owns_one_text(self, tmp_path: Path):
         """The event JSON agreed while each fragment's event owned another
         text --- "NO metastasis" and "Metastasis CONFIRMED" --- and the merged
         version owned both.  A copy under another id is the same text."""
@@ -1585,14 +1585,12 @@ class TestCaches:
         abandoned = FeatureCache.open(path)
         abandoned.abandon()
 
-    def test_B04_a_row_feature_holds_for_the_row_it_was_built_from(
-        self, tmp_path: Path
-    ):
+    def test_S8_a_row_feature_holds_for_the_row_it_was_built_from(self, tmp_path: Path):
         """An honest patient-level feature --- the mean of the CT the row's slot
         reads --- built while the subject had one fragment still validated
         after a second fragment of the same visit was added and the slot read
         that one instead: the cutoff and the admitted versions were the same,
-        the image and so the feature were not (B04 of the 2.0 re-audit).  The
+        the image and so the feature were not.  The
         entry pins the fingerprint of the row it was built from; a relocated
         copy of unchanged content is the same row."""
         root = tmp_path / "b04"
@@ -1650,11 +1648,11 @@ class TestCaches:
         )
         assert validate_cache(cache, task=relocated).ok
 
-    def test_N06_an_event_feature_names_no_row(self, setup, tmp_path: Path):
+    def test_S7_2_an_event_feature_names_no_row(self, setup, tmp_path: Path):
         """An event-level entry declaring a later row, its cutoff and its
         history validated against that row, while a lookup by event version
-        --- which `documents=` makes --- served it to every row (N06 of the
-        2.0 re-audit).  An event feature names no row: the writer refuses
+        --- which `documents=` makes --- served it to every row.  An event
+        feature names no row: the writer refuses
         one, and a manifest declaring one fails its schema."""
         task, _ = setup
         later = task.preflight().row("P-01@d95")
@@ -1706,7 +1704,7 @@ class TestCaches:
             )
             f.attrs["manifest_digest"] = "sha256:" + hashlib.sha256(text).hexdigest()
 
-    def test_B04_a_row_feature_reads_only_its_subjects_sources(
+    def test_S8_a_row_feature_reads_only_its_subjects_sources(
         self, setup, tmp_path: Path
     ):
         """Event ids are local to a sample, so two patients' rows admit the same
@@ -1751,7 +1749,9 @@ class TestCaches:
         own = write(tmp_path / "cohort" / "own.medh5cache", [relocated])
         assert validate_cache(own, task=task).ok
 
-    def test_C03_an_entry_is_the_layout_its_cache_declares(self, setup, tmp_path: Path):
+    def test_S7_1_an_entry_is_the_layout_its_cache_declares(
+        self, setup, tmp_path: Path
+    ):
         """The checksum vouches for the bytes, not for the declaration: a header
         relabelled `float64[999]` validated and served `float32[2]`."""
         task, _ = setup
@@ -1778,7 +1778,7 @@ class TestCaches:
                 cache.event_feature(source.content_id, "rep_v1")
             assert caught.value.code == "T402"
 
-    def test_C04_a_cache_holds_what_its_level_requires(self, setup, tmp_path: Path):
+    def test_S7_2_a_cache_holds_what_its_level_requires(self, setup, tmp_path: Path):
         """The writer required a patient cache to name its task and every entry
         its row, cutoff and selection, and nothing read it back: a cache
         relabelled `patient` with none of it validated against the task."""
@@ -1810,7 +1810,7 @@ class TestCaches:
         assert found(findings) == ["T405"] and "set_id" in str(findings[0])
 
     @pytest.mark.parametrize("cutoff", [2**63, -(2**63) - 1, 3600000000.0])
-    def test_C12_a_cutoff_is_a_64_bit_integer(self, setup, cutoff):
+    def test_S3_1_a_cutoff_is_a_64_bit_integer(self, setup, cutoff):
         """JSON Schema's `integer` admits `3600000000.0`, which serialisers
         write for integers, and values past int64; both read as cutoff 0 and
         validated --- moving the row, and what it may read."""
@@ -1822,7 +1822,7 @@ class TestCaches:
         assert caught.value.code == "T101"
 
     @pytest.mark.parametrize("cutoff", [2**63 - 1, -(2**63)])
-    def test_C12_both_int64_endpoints_are_cutoffs(self, setup, cutoff):
+    def test_S3_1_both_int64_endpoints_are_cutoffs(self, setup, cutoff):
         task, _ = setup
         doc = task.to_json()
         fine = TaskManifest(dict(doc, rows=[dict(doc["rows"][0], cutoff_us=cutoff)]))

@@ -323,7 +323,7 @@ class TestPatchSampler:
             assert patch.strategy == "uniform"
             assert patch.used_index is None
 
-    def test_P08_an_indexed_draw_reads_at_most_two_datasets_at_63_classes(
+    def test_S14_3_an_indexed_draw_reads_at_most_two_datasets_at_63_classes(
         self, tmp_path: Path, monkeypatch
     ):
         """190 HDF5 reads and 7.6 ms per draw: the class table, re-read per class."""
@@ -348,7 +348,7 @@ class TestPatchSampler:
         assert patch.used_index is True
         assert reads["n"] <= 2 * draws
 
-    def test_P08_a_draw_picks_what_it_picked_before(self, tmp_path: Path):
+    def test_S14_3_a_draw_picks_what_it_picked_before(self, tmp_path: Path):
         """One row is read instead of the pool, and the same row: runs reproduce.
 
         A seed --- an int, or a NumPy generator in a given state --- picks the
@@ -530,13 +530,12 @@ class TestUniformIsUniform:
         assert all(pad == (20, 20) for pad in patch.pad)
 
 
-class TestF20WeightedPicks:
+class TestWeightedPicks:
     """Every foreground draw picks its class by ``class_weights`` from every
     candidate's voxel count, with an index or without.  The scan that stands
     in for a missing or stale index drew classes uniformly, so
     ``inverse_frequency`` meant nothing there and a class weighted zero was
-    drawn; and with an index, an empty weighted pool fell back to that scan
-    (F20 of the round-4 audit)."""
+    drawn; and with an index, an empty weighted pool fell back to that scan."""
 
     DRAWS = 300
     # `masks`: 512, 216 and 27 voxels.
@@ -562,14 +561,14 @@ class TestF20WeightedPicks:
             return [sampler.draw(sample, "organs_tp0", rng) for _ in range(self.DRAWS)]
 
     @pytest.mark.parametrize("which", ["absent", "fresh", "stale"])
-    def test_F20_a_class_weighted_zero_is_never_drawn(self, indexed, which):
+    def test_S14_3_a_class_weighted_zero_is_never_drawn(self, indexed, which):
         draws = self._draws(self._variant(indexed, which), {1: 0.0, 2: 1.0, 3: 1.0})
         assert {d.class_id for d in draws} == {2, 3}
         assert {d.used_index for d in draws} == {which == "fresh"}
 
     @pytest.mark.parametrize("which", ["absent", "fresh", "stale"])
     @pytest.mark.parametrize("policy", ["frequency", "inverse_frequency"])
-    def test_F20_the_policies_hold_with_or_without_an_index(
+    def test_S14_3_the_policies_hold_with_or_without_an_index(
         self, indexed, which, policy
     ):
         draws = self._draws(self._variant(indexed, which), policy)
@@ -583,7 +582,7 @@ class TestF20WeightedPicks:
             assert seen == pytest.approx(weight / total, abs=0.08), class_id
 
     @pytest.mark.parametrize("which", ["absent", "fresh", "stale"])
-    def test_F20_an_empty_weighted_pool_draws_no_foreground(self, indexed, which):
+    def test_S14_3_an_empty_weighted_pool_draws_no_foreground(self, indexed, which):
         """No candidate with foreground and weight: a uniform window, not a
         foreground one picked without the weights."""
         draws = self._draws(self._variant(indexed, which), {1: 0.0, 2: 0.0})
