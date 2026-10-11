@@ -182,9 +182,9 @@ impl Track {
     /// The two volumes are compared in millimetres: each observation's are
     /// its grid's `units` cubed, and a visit on a grid in metres beside one
     /// in millimetres read as a millionfold change.  Two volumes that share
-    /// no physical measure --- an
-    /// uncalibrated (`px`) grid beside a calibrated one, an area beside a
-    /// volume --- have no change between them, and are `None`.
+    /// no physical measure --- an uncalibrated (`px`) grid beside a
+    /// calibrated one, an area beside a volume --- have no change between
+    /// them, and are `None`.
     pub fn relative_change(&self, first: &str, second: &str) -> Result<Option<f64>> {
         let (Some(before), Some(after)) = (self.at(first)?, self.at(second)?) else {
             return Ok(None);

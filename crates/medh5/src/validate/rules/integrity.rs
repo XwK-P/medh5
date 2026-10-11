@@ -97,10 +97,10 @@ pub fn check_integrity(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
         // dataset carrying a digest that no line lists claims an attestation
         // it does not have: its object is reached first through `index/`,
         // which the root excludes, or only through a soft link, and its bytes
-        // changed under a matching root and an unchanged pin.
-        // A path that is not its object's own is covered
-        // nowhere: relinked to other covered bytes, it changed no line, and a
-        // reader read them under a matching root and an unchanged pin.
+        // changed under a matching root and an unchanged pin.  A path that is
+        // not its object's own is covered nowhere: relinked to other covered
+        // bytes, it changed no line, and a reader read them under a matching
+        // root and an unchanged pin.
         for found in unbound(&root)? {
             let at = format!("/{}", found.path);
             match found.binding {
