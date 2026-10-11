@@ -38,7 +38,7 @@ pub(super) fn check_geometric(
             out.push(ctx.err("E412", location.clone(), format!("kind {} requires a `space` attribute", repr_str(kind))))
         }
         Some(s) if !SPACES.contains(&s) => {
-            out.push(ctx.err("E412", location.clone(), format!("unknown space {}", repr_str(s))))
+            out.push(ctx.unknown("E412", location.clone(), format!("unknown space {}", repr_str(s))))
         }
         Some("index") if grid_id.is_none() => {
             out.push(ctx.err("E412", location.clone(), "space='index' names a grid's coordinates, but no `grid`"))
@@ -48,7 +48,10 @@ pub(super) fn check_geometric(
         }
         _ => {}
     }
-    if let (Some(s), Some(gid), Some(g)) = (space.as_deref(), grid_id, grids) {
+    // A later minor's space is that minor's to place: what it means on this
+    // grid is not this validator's to judge.
+    let judged = space.as_deref().filter(|s| SPACES.contains(s) || !ctx.projection);
+    if let (Some(s), Some(gid), Some(g)) = (judged, grid_id, grids) {
         if s != "index" && ops::exists(g, gid) {
             let grid_group = g.group(gid)?;
             let units = str_attr(&grid_group, "units")?.unwrap_or_else(|| "mm".into());
@@ -267,7 +270,7 @@ pub(super) fn check_classification(
     match scope.as_deref() {
         None => out.push(ctx.err("E412", location.clone(), "`classification` requires a `scope` attribute")),
         Some(s) if !SCOPES.contains(&s) => {
-            out.push(ctx.err("E412", location.clone(), format!("unknown classification scope {}", repr_str(s))))
+            out.push(ctx.unknown("E412", location.clone(), format!("unknown classification scope {}", repr_str(s))))
         }
         _ => {}
     }

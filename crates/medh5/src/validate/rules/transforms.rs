@@ -225,7 +225,7 @@ fn check_field_transform(
     }
     let space = str_attr(loc(group), "vector_space")?.unwrap_or_else(|| "world".into());
     if !VECTOR_SPACES.contains(&space.as_str()) {
-        out.push(ctx.err("E502", location.clone(), format!("unknown vector_space {}", repr_str(&space))));
+        out.push(ctx.unknown("E502", location.clone(), format!("unknown vector_space {}", repr_str(&space))));
     }
     if let Some(ds) = sub_dataset(group, dataset) {
         let shape = ds.shape();

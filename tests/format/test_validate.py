@@ -22,7 +22,7 @@ from medh5.validate import (
     validate_root,
 )
 from tests.helpers import encode_attr, str_dtype, write_sample
-from tests.kits import History, Numbered
+from tests.kits import Framed, History, Numbered
 
 
 def codes(path, level="semantic"):
@@ -1146,3 +1146,54 @@ class TestProjection:
         report = validate_file(self._later(path), level="structural")
         assert at(report, "/grids/g") == ["W913"]
         assert report.ok
+
+    @staticmethod
+    def _assorted(path: Path) -> Path:
+        """Boxes, a classification, a displacement field and an affine, each
+        on grid `g` or relating it."""
+        with Framed.writer(path) as w:
+            w.add_grid(
+                "h", shape=Framed.SHAPE, spacing=(2.0, 1.0, 1.0), frame_uid="5.6"
+            )
+            w.add_image("MR", np.zeros(Framed.SHAPE, np.int16), grid="h", modality="MR")
+            w.add_boxes("found", [Framed.box(1.5, 2.5)], [1], grid="g")
+            w.add_classification("graded", {1: 1.0}, grid="g")
+            w.add_transform(
+                "warp",
+                kind="displacement",
+                from_frame="1.2.3.4",
+                to_frame="5.6",
+                field=np.zeros((3, *Framed.SHAPE), np.float32),
+                field_grid="g",
+            )
+            w.add_transform(
+                "rigid",
+                kind="affine",
+                from_frame="5.6",
+                to_frame="1.2.3.4",
+                matrix=np.eye(4),
+            )
+        return path
+
+    @pytest.mark.parametrize(
+        ("node", "attribute", "value", "code"),
+        [
+            ("annotations/graded", "task", "tracking", "E412"),
+            ("annotations/graded", "closure", "transitive", "E412"),
+            ("annotations/found", "space", "patient", "E412"),
+            ("annotations/graded", "scope", "lesion_pair", "E412"),
+            ("transforms/warp", "vector_space", "material", "E502"),
+        ],
+    )
+    def test_S2_2_an_unknown_annotation_or_transform_value_is_W913(
+        self, tmp_path, node, attribute, value, code
+    ):
+        """Unknown grid units and `/meta` values were W913 in a later minor's
+        file, and these the error a file of a known version gets."""
+        path = self._assorted(tmp_path / "a.medh5")
+        with h5py.File(path, "r+") as handle:
+            handle[node].attrs[attribute] = encode_attr(value)
+        assert at(validate_file(path), f"/{node}") == [code]
+        report = validate_file(self._later(path))
+        assert at(report, f"/{node}") == ["W913"]
+        assert report.ok, report.diagnostics

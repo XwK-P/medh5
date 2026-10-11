@@ -96,12 +96,12 @@ pub fn check_annotations(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
         }
         if let Some(task) = str_attr(a, "task")? {
             if !TASKS.contains(&task.as_str()) {
-                out.push(ctx.err("E412", location.clone(), format!("unknown task {}", repr_str(&task))));
+                out.push(ctx.unknown("E412", location.clone(), format!("unknown task {}", repr_str(&task))));
             }
         }
         if let Some(closure) = str_attr(a, "closure")? {
             if !CLOSURES.contains(&closure.as_str()) {
-                out.push(ctx.err("E412", location.clone(), format!("unknown closure {}", repr_str(&closure))));
+                out.push(ctx.unknown("E412", location.clone(), format!("unknown closure {}", repr_str(&closure))));
             }
         }
         if !attrs::has(a, "annotated_class_ids") && kind != "mask" {
