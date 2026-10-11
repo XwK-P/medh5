@@ -714,16 +714,31 @@ fn empty_instances(ndim: usize, class_ids: &[i64], store_masks: bool) -> Result<
     Ok(p)
 }
 
-/// One object per class --- what a converter can honestly infer from masks.
-pub fn instances_from_masks(masks: &Masks, start_id: u64) -> Vec<InstanceInput> {
+/// The id minted for the `i`-th class from `start_id`, refused (E404) past
+/// the largest `uint64` rather than wrapped to 0 --- another object's id.
+fn minted_id(start_id: u64, i: usize) -> Result<u64> {
+    start_id.checked_add(i as u64).ok_or_else(|| {
+        Error::coded(
+            "E404",
+            format!("instance ids minted from {start_id} run past {}, the largest a uint64 holds", u64::MAX),
+        )
+    })
+}
+
+/// One object per class --- what a converter can honestly infer from masks
+/// --- the `i`-th class's minted `start_id + i`.  An id past the largest
+/// `uint64` is refused (E404).
+pub fn instances_from_masks(masks: &Masks, start_id: u64) -> Result<Vec<InstanceInput>> {
     masks
         .iter()
         .enumerate()
-        .map(|(i, (class_id, mask))| InstanceInput {
-            class_id: *class_id,
-            instance_id: start_id + i as u64,
-            mask: Some(mask.clone()),
-            ..Default::default()
+        .map(|(i, (class_id, mask))| {
+            Ok(InstanceInput {
+                class_id: *class_id,
+                instance_id: minted_id(start_id, i)?,
+                mask: Some(mask.clone()),
+                ..Default::default()
+            })
         })
         .collect()
 }
@@ -926,15 +941,7 @@ pub fn encode_masks(
             let start_id = options.start_id.unwrap_or(1);
             let mut objects = Vec::new();
             for (i, (c, m)) in masks.iter().enumerate().filter(|(_, (_, m))| m.iter().any(|v| *v)) {
-                let Some(instance_id) = start_id.checked_add(i as u64) else {
-                    return Err(Error::coded(
-                        "E404",
-                        format!(
-                            "instance ids minted from {start_id} run past {}, the largest a uint64 holds",
-                            u64::MAX
-                        ),
-                    ));
-                };
+                let instance_id = minted_id(start_id, i)?;
                 objects.push(InstanceInput { class_id: *c, instance_id, mask: Some(m.clone()), ..Default::default() });
             }
             let ids: Vec<i64> = masks.keys().copied().collect();
@@ -1066,6 +1073,21 @@ mod tests {
             }
         }
         assert_eq!(encode_labelmap(&masks, None, None, IGNORE_ID).unwrap_err().code(), Some("E404"));
+    }
+
+    #[test]
+    fn s7_4_an_id_minted_past_the_largest_uint64_is_refused() {
+        // Unchecked, `start_id + i` panicked in a debug build and wrapped to
+        // 0 --- another object's id --- in a release one.
+        let masks = masks();
+        let shape = vec![16usize, 24, 24];
+        let top = u64::MAX - 1;
+        let first_two: Masks = masks.iter().take(2).map(|(c, m)| (*c, m.clone())).collect();
+        let minted: Vec<u64> = instances_from_masks(&first_two, top).unwrap().iter().map(|o| o.instance_id).collect();
+        assert_eq!(minted, vec![top, u64::MAX]);
+        assert_eq!(instances_from_masks(&masks, top).unwrap_err().code(), Some("E404"));
+        let options = EncodeOptions { start_id: Some(top), ..Default::default() };
+        assert_eq!(encode_masks(&masks, "instances", Some(&shape), &options).unwrap_err().code(), Some("E404"));
     }
 
     #[test]

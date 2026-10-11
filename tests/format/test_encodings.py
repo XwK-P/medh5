@@ -25,6 +25,7 @@ from medh5.annotations.voxel import (
     encode_probmap,
     encode_voxels,
     greedy_colour,
+    instances_from_masks,
     layers_from_colouring,
     masks_equal,
     payload_to_masks,
@@ -737,6 +738,20 @@ class TestPayloadEncoderGuards:
         assert int(np.asarray(payload.datasets["instance_ids"])[0]) == top
         with pytest.raises(MEDH5ValidationError) as exc:
             encode_masks({1: first, 2: second}, "instances", self.SHAPE, start_id=top)
+        assert exc.value.code == "E404"
+
+    def test_S7_4_instances_from_masks_mints_no_id_past_the_largest_uint64(self):
+        """Its `start_id + i` was unchecked too: a debug build raised a
+        `PanicException`, which `except Exception` does not catch, and a
+        release build wrapped to 0, two objects sharing an id."""
+        first, second = np.zeros(self.SHAPE, bool), np.zeros(self.SHAPE, bool)
+        first[1] = True
+        second[2] = True
+        top = 2**64 - 1
+        (only,) = instances_from_masks({1: first}, start_id=top)
+        assert only.instance_id == top
+        with pytest.raises(MEDH5ValidationError) as exc:
+            instances_from_masks({1: first, 2: second}, start_id=top)
         assert exc.value.code == "E404"
 
     def test_S11_3_a_class_examined_and_absent_survives_the_instances_decode(self):

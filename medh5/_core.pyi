@@ -1354,7 +1354,8 @@ def instance_id_dtype(ids: Any) -> Any:
 
 def instances_from_masks(masks: Any, *, start_id: int = 1) -> list[Any]:
     """One object per class mask, ids from `start_id`: the field values of
-    `InstanceInput`s, as `(class_id, instance_id, mask)` triples.
+    `InstanceInput`s, as `(class_id, instance_id, mask)` triples.  An id past
+    the largest `uint64` is refused (E404).
     """
     ...
 

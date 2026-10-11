@@ -286,7 +286,8 @@ def encode_instances(
 def instances_from_masks(
     masks: Mapping[int, npt.NDArray[Any]], *, start_id: int = 1
 ) -> list[InstanceInput]:
-    """One object per class mask, minting ids from *start_id*.
+    """One object per class mask, minting ids from *start_id*; an id past the
+    largest ``uint64`` is refused (E404).
 
     A writer keeps the ids, and ids are sample-scoped (§7.4): an object whose
     id another annotation of the sample uses is that object.  Start above the

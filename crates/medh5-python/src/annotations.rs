@@ -1063,13 +1063,14 @@ fn encode_instances(
 }
 
 /// One object per class mask, ids from `start_id`: the field values of
-/// `InstanceInput`s, as `(class_id, instance_id, mask)` triples.
+/// `InstanceInput`s, as `(class_id, instance_id, mask)` triples.  An id past
+/// the largest `uint64` is refused (E404).
 #[pyfunction]
 #[pyo3(signature = (masks, *, start_id=1))]
 fn instances_from_masks<'py>(py: Python<'py>, masks: &Bound<'py, PyAny>, start_id: u64) -> R<Bound<'py, PyList>> {
     let masks = masks_arg(masks)?;
     let out = PyList::empty(py);
-    for i in enc::instances_from_masks(&masks, start_id) {
+    for i in enc::instances_from_masks(&masks, start_id)? {
         let mask = match i.mask {
             Some(m) => array_to_py(py, m),
             None => py.None().into_bound(py),
