@@ -359,17 +359,8 @@ pub fn or_dash(value: &Value) -> String {
     }
 }
 
-/// Python truthiness of a JSON value.
-pub fn truthy(value: &Value) -> bool {
-    match value {
-        Value::Null => false,
-        Value::Bool(b) => *b,
-        Value::Number(n) => n.as_f64().is_some_and(|f| f != 0.0),
-        Value::String(s) => !s.is_empty(),
-        Value::Array(a) => !a.is_empty(),
-        Value::Object(o) => !o.is_empty(),
-    }
-}
+/// Python truthiness of a JSON value: the engine's one implementation.
+pub use medh5::pyval::truthy;
 
 /// `",".join(values)` over a JSON array of strings.
 pub fn join_strs(value: &Value, sep: &str) -> String {
