@@ -89,13 +89,13 @@
       "code": "E104",
       "severity": "error",
       "domain": "geometry",
-      "summary": "`spacing` is not strictly positive"
+      "summary": "`spacing` is not finite and strictly positive"
     },
     {
       "code": "E105",
       "severity": "error",
       "domain": "geometry",
-      "summary": "multiscale level geometry is inconsistent with level 0"
+      "summary": "a multiscale image's levels are malformed (`levels`, `grid_levels` or `downsample_factors` missing or inconsistent, a level dataset missing), or a level's geometry is inconsistent with level 0"
     },
     {
       "code": "E106",
@@ -119,7 +119,7 @@
       "code": "E109",
       "severity": "error",
       "domain": "geometry",
-      "summary": "required grid attribute is missing or has the wrong rank"
+      "summary": "a grid attribute is missing where required, malformed or the wrong size (including a non-positive or uncountable `shape`, a non-finite `origin` and a non-positive `chunk_hint`), or `units`/`time_units` is outside its vocabulary"
     },
     {
       "code": "E110",
@@ -299,13 +299,13 @@
       "code": "E503",
       "severity": "error",
       "domain": "transforms",
-      "summary": "displacement field grid is not in `from_frame`"
+      "summary": "a displacement field or B-spline control points do not fit their grid: `field_grid`/`cp_grid` is missing or not in `from_frame`, a `field` is not `(S, *spatial)` on its grid, or `control_points` are not `(S, *cp_shape)` on the grid's spatial axes with at least `order + 1` points on each"
     },
     {
       "code": "E504",
       "severity": "error",
       "domain": "transforms",
-      "summary": "affine last row is not [0 … 0 1]"
+      "summary": "affine `matrix` is not `(S+1, S+1)` for the S spatial axes of the grids it relates, or its last row is not [0 … 0 1]"
     },
     {
       "code": "E505",
