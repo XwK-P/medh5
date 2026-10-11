@@ -7,7 +7,7 @@
 //! where every other build returns the error the validator reports.  This
 //! repository's `.cargo/config.toml` adds it; a build from crates.io never
 //! reads that file.  The build script includes this module and stops such a
-//! build rather than produce that binary (W02 of the 2.0 audit).
+//! build rather than produce that binary.
 //!
 //! It reads the flags HDF5 *was* compiled with --- the `CFLAGS` line of the
 //! `libhdf5.settings` HDF5 installs --- not the environment, which says what
@@ -109,7 +109,7 @@ mod tests {
     }
 
     #[test]
-    fn w02_ndebug_is_found_however_it_is_spelled() {
+    fn ndebug_is_found_however_it_is_spelled() {
         for flags in ["/DNDEBUG", "-DNDEBUG", "/O2 /D NDEBUG", "-D NDEBUG=1", "/MD /DNDEBUG=1"] {
             assert!(defines_ndebug(flags), "{flags}");
         }
@@ -119,7 +119,7 @@ mod tests {
     }
 
     #[test]
-    fn w02_the_flags_are_the_cflags_line_and_no_other() {
+    fn the_flags_are_the_cflags_line_and_no_other() {
         let text = settings("/DWIN32 /D_WINDOWS /nologo /MD /Brepro");
         assert_eq!(settings_cflags(&text), Some("/DWIN32 /D_WINDOWS /nologo /MD /Brepro"));
         // H5_CFLAGS names NDEBUG here; it is not what reached the compiler.
@@ -128,7 +128,7 @@ mod tests {
     }
 
     #[test]
-    fn w02_an_hdf5_compiled_without_ndebug_is_refused() {
+    fn an_hdf5_compiled_without_ndebug_is_refused() {
         let text = settings("/DWIN32 /D_WINDOWS /nologo /MD /Brepro");
         let message = refusal(MSVC, true, Ok((PLACE, &text)), None).unwrap();
         for expected in [
@@ -147,14 +147,14 @@ mod tests {
     }
 
     #[test]
-    fn w02_an_hdf5_compiled_with_it_builds() {
+    fn an_hdf5_compiled_with_it_builds() {
         for flags in ["/DWIN32 /nologo /MD /DNDEBUG", "-std=c11 -fPIC -O3 -DNDEBUG"] {
             assert!(refusal(MSVC, true, Ok((PLACE, &settings(flags))), None).is_none(), "{flags}");
         }
     }
 
     #[test]
-    fn w02_what_cannot_be_read_is_refused_too() {
+    fn what_cannot_be_read_is_refused_too() {
         let message = refusal(MSVC, true, Err("no such file"), None).unwrap();
         assert!(message.contains("no such file") && message.contains(OPT_OUT), "{message}");
         let message = refusal(MSVC, true, Ok((PLACE, "Build Mode: Release\n")), None).unwrap();
@@ -162,7 +162,7 @@ mod tests {
     }
 
     #[test]
-    fn w02_a_debug_build_and_the_opt_out_build() {
+    fn a_debug_build_and_the_opt_out_build() {
         let text = settings("/MD /Zi");
         // An unoptimised build keeps HDF5's assertions on every target.
         assert!(refusal(MSVC, false, Ok((PLACE, &text)), None).is_none());

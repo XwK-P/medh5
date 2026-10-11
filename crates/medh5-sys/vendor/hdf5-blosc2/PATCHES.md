@@ -14,7 +14,7 @@ chunk would go on to be decompressed into the wrong buffer.
 
 1. **Decompression (B2ND).** `assert(outbuf_size >= size)` aborted the process
    (SIGABRT) when the chunk-size filter value (`cd_values[3]`) was smaller than
-   the chunk it describes (audit F07). The size is now computed with overflow
+   the chunk it describes. The size is now computed with overflow
    checks from the stored array's shape, the array's type size must be the
    filter's, and the buffer must hold the array --- exactly, when the filter
    values name the chunk shape, since HDF5 expects the whole chunk back.

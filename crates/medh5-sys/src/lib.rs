@@ -45,8 +45,8 @@ pub const BLOSC2_FILTER_ID: u32 = 32026;
 ///
 /// 3.3.5 carries upstream's fixes to BloscLZ's bounds checks: in 3.3.2 a
 /// match length accumulated past `i32::MAX` before it was checked, so a chunk
-/// of a few megabytes could wrap it and write past the block (N19 of the 2.0
-/// re-audit; c-blosc2 3.3.3 and 3.3.5).  Any Blosc2 chunk a file carries
+/// of a few megabytes could wrap it and write past the block (c-blosc2
+/// 3.3.3 and 3.3.5).  Any Blosc2 chunk a file carries
 /// reaches that decoder, whatever codec this crate writes with.
 pub const BLOSC2_VERSION: &str = "3.3.5";
 
@@ -173,7 +173,7 @@ mod tests {
     }
 
     #[test]
-    fn n19_a_blosclz_match_length_past_i32_max_is_refused() {
+    fn a_blosclz_match_length_past_i32_max_is_refused() {
         // 255 x 8,421,506 > i32::MAX: 3.3.2 added each byte before checking
         // and wrapped (undefined behaviour; in practice a negative length,
         // which then passed the bounds checks).  Refused before the addition.
@@ -186,7 +186,7 @@ mod tests {
     }
 
     #[test]
-    fn n19_a_blosc2_chunk_with_an_overlong_match_is_refused() {
+    fn a_blosc2_chunk_with_an_overlong_match_is_refused() {
         // Upstream's own reproduction (tests/test_blosclz_bounds.c): a Blosc2
         // chunk claiming one 64 KiB BloscLZ block whose stream is a match
         // longer than the block.
@@ -212,7 +212,7 @@ mod tests {
     }
 
     #[test]
-    fn n19_valid_blosclz_chunks_still_round_trip() {
+    fn valid_blosclz_chunks_still_round_trip() {
         let values: Vec<u8> = (0..1_048_576_u32).map(|i| ((i / 7) % 251) as u8).collect();
         let mut chunk = vec![0u8; values.len() + 32];
         let mut back = vec![0u8; values.len()];

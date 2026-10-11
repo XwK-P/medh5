@@ -52,7 +52,7 @@ pub fn build_affine(spacing: &[f64], origin: &[f64], direction: &Array2<f64>) ->
 /// Anything else is refused --- a matrix that is not square, or smaller than
 /// 2x2 --- because every function here indexes the affine by the size of its
 /// rows: a 4x3 one read past its last column, and an empty one underflowed,
-/// each a panic rather than an error (F25 of the round-4 audit).
+/// each a panic rather than an error.
 pub fn spatial_axes(affine: &Array2<f64>) -> Result<usize> {
     let (rows, cols) = affine.dim();
     if rows != cols || rows < 2 {
@@ -319,11 +319,11 @@ mod tests {
         assert_eq!(c, vec![vec![0.0, 10.0], vec![0.0, 11.0], vec![1.0, 10.0], vec![1.0, 11.0]]);
     }
 
-    /// F25: a matrix that is not `(S+1, S+1)`, points that are not `S`
+    /// A matrix that is not `(S+1, S+1)`, points that are not `S`
     /// coordinates each, and a shape that is not one extent per axis are
     /// errors.  Each indexed past what it was given and panicked.
     #[test]
-    fn f25_s3_3_misshapen_arguments_are_errors_not_panics() {
+    fn s3_3_misshapen_arguments_are_errors_not_panics() {
         let tall = Array2::from_shape_fn((4, 3), |(r, c)| if r == c { 2.0 } else { 0.0 });
         let empty = Array2::<f64>::zeros((0, 0));
         let one = Array2::<f64>::ones((1, 1));

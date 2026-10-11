@@ -312,7 +312,7 @@ pub fn strip(path: &Path, out: &Path) -> Result<StripReport> {
     };
     // The projection is built from the source without its clinical group,
     // which is never copied: copying the file and deleting the group left
-    // every record in the output's bytes (F08 of the round-4 audit).
+    // every record in the output's bytes.
     let result = (|| -> Result<StripReport> {
         let mut writer = crate::sample::writer::amend_into(path, out, None, &[GROUP])?;
         let content_id_after = writer.commit(true)?;

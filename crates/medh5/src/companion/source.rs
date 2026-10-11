@@ -128,9 +128,9 @@ impl SourceRef {
         // E818).  Every path through the attested groups is judged, soft links
         // followed as readers follow them: an object listed under no line ---
         // reached first through `index/`, or only through a soft link --- is
-        // no more covered than one without a digest (B03), and a name held by
+        // no more covered than one without a digest, and a name held by
         // an alias could be relinked to other covered bytes under the same
-        // root (F01 of the round-4 audit).
+        // root.
         let uncovered = crate::integrity::unattested(&sample.root)?;
         if !uncovered.is_empty() {
             out.push(Finding::new(

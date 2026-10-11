@@ -399,8 +399,8 @@ impl Grid {
     /// World coordinates are numbers in a grid's units (§3.5), so one frame's
     /// points in millimetres and in metres are different numbers: read as they
     /// were, a point at 1 mm on a grid of 0.001 m voxels went to index 1000,
-    /// and two raters' equal boxes scored an F1 of 0 (N10 of the round-3
-    /// audit).  E414 when nothing relates the two (`world_scale_into`).
+    /// and two raters' equal boxes scored an F1 of 0.  E414 when nothing
+    /// relates the two (`world_scale_into`).
     pub fn world_into(&self, other: &Grid, points: &[f64]) -> Result<Vec<f64>> {
         let scale = self.world_scale_into(other)?;
         if scale == 1.0 {
@@ -744,7 +744,7 @@ mod tests {
     }
 
     #[test]
-    fn n10_world_coordinates_carry_into_another_grids_units() {
+    fn s3_5_world_coordinates_carry_into_another_grids_units() {
         let (mm, m, um) = (calibrated("a", "LPS", "mm"), calibrated("b", "LPS", "m"), calibrated("c", "LPS", "um"));
         assert_eq!(mm.world_into(&m, &[1.0, 2.0, 3.0]).unwrap(), vec![1e-3, 2e-3, 3e-3]);
         assert_eq!(m.world_into(&um, &[1.0, 0.0, -2.0]).unwrap(), vec![1e6, 0.0, -2e6]);
@@ -752,7 +752,7 @@ mod tests {
     }
 
     #[test]
-    fn n10_s3_3_rule_4_two_conventions_or_px_relate_by_no_factor() {
+    fn s3_3_rule_4_two_conventions_or_px_relate_by_no_factor() {
         let lps = calibrated("a", "LPS", "mm");
         for other in [calibrated("b", "RAS", "mm"), calibrated("c", "LPS", "px"), calibrated("d", "custom", "mm")] {
             assert_eq!(lps.world_into(&other, &[1.0, 1.0, 1.0]).unwrap_err().code(), Some("E414"));

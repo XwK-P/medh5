@@ -301,7 +301,7 @@ pub fn contains_at(values: &NdArray, threshold: f64) -> ArrayD<bool> {
 /// When none does --- a value within `float32` rounding of the threshold, on
 /// the other side of it --- the map is refused (E411) rather than stored as
 /// `float32` anyway, which moved that voxel across the threshold at write time
-/// while §7.5 says a writer MUST NOT (C08 of the 2.0 audit).
+/// while §7.5 says a writer MUST NOT.
 pub fn storage_dtype(planes: &[ArrayD<f64>], threshold: f64, requested: DType) -> Result<DType> {
     let allowed = [DType::F16, DType::F32];
     let mut candidates: Vec<DType> = allowed.iter().copied().filter(|d| d.itemsize() >= requested.itemsize()).collect();
@@ -346,8 +346,8 @@ pub fn storage_dtype(planes: &[ArrayD<f64>], threshold: f64, requested: DType) -
 ///
 /// The rounding is bounded by the values stored, not by the class count
 /// alone: `classes · epsilon` reached 1 at 1,024 float16 classes, and a map
-/// whose every value was zeroed then validated as normalized (C09 of the 2.0
-/// re-audit).  This bound stays below 2e-3 at every count a class id allows.
+/// whose every value was zeroed then validated as normalized.  This bound
+/// stays below 2e-3 at every count a class id allows.
 pub fn normalization_tolerance(dtype: DType, classes: usize, sum: f64) -> f64 {
     // The unit roundoff and the smallest positive subnormal.
     let (unit, tiny) = match dtype {
@@ -399,8 +399,8 @@ pub fn encode_probmap(
             }
             _ => {}
         }
-        // `f64::min`/`max` skip NaN, so a fold over them passed a map of NaN
-        // (C09 of the 2.0 audit): every value is tested.
+        // `f64::min`/`max` skip NaN, so a fold over them passed a map of NaN:
+        // every value is tested.
         if let Some(bad) = arr.iter().find(|v| !(0.0..=1.0).contains(*v)) {
             let what = if bad.is_nan() { "values that are not numbers" } else { "values outside [0, 1]" };
             return Err(Error::coded("E411", format!("probability map for class {class_id} has {what}")));
@@ -1067,10 +1067,9 @@ mod tests {
 
     /// The allowance is bounded by the values stored, at every class count a
     /// class id allows: `classes · epsilon` was 1.000001 at 1,024 float16
-    /// classes, and a map whose every value was zeroed validated as normalized
-    /// (C09 of the 2.0 re-audit).
+    /// classes, and a map whose every value was zeroed validated as normalized.
     #[test]
-    fn c09_s7_5_no_class_count_admits_a_lost_mass() {
+    fn s7_5_no_class_count_admits_a_lost_mass() {
         for dtype in [DType::F16, DType::F32] {
             for classes in [1, 2, 1024, 65536] {
                 assert!(normalization_tolerance(dtype, classes, 0.0) < 2e-3, "{dtype:?}, {classes}");
@@ -1086,7 +1085,7 @@ mod tests {
     /// every one rounds down by almost half a unit in its last place --- the
     /// worst float16 can do --- and a softmax over 1,024 classes.
     #[test]
-    fn c09_s7_5_a_map_the_writer_stores_meets_the_bound() {
+    fn s7_5_a_map_the_writer_stores_meets_the_bound() {
         let shape = [2usize, 2];
         let b = 2f64.powi(-10);
         let below = b + 2f64.powi(-21) * (1.0 - 2f64.powi(-20));

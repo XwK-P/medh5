@@ -97,11 +97,10 @@ pub fn check_integrity(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
         // dataset carrying a digest that no line lists claims an attestation
         // it does not have: its object is reached first through `index/`,
         // which the root excludes, or only through a soft link, and its bytes
-        // changed under a matching root and an unchanged pin (B03 of the
-        // round-3 audit).  A path that is not its object's own is covered
+        // changed under a matching root and an unchanged pin.
+        // A path that is not its object's own is covered
         // nowhere: relinked to other covered bytes, it changed no line, and a
-        // reader read them under a matching root and an unchanged pin (F01 of
-        // the round-4 audit).
+        // reader read them under a matching root and an unchanged pin.
         for found in unbound(&root)? {
             let at = format!("/{}", found.path);
             match found.binding {
@@ -144,14 +143,14 @@ pub fn check_integrity(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
 /// where it is `normalized`, summing to 1 over its classes at every voxel ---
 /// checked on the bytes the integrity pass reads anyway.  Only the threshold
 /// was checked, so a map of NaN, or one declared normalised that was not,
-/// validated clean (C09 of the 2.0 audit).
+/// validated clean.
 ///
 /// The sums are checked only on a map whose shape is one --- a row per class
 /// it declares, on its grid's spatial shape, which the semantic level holds it
 /// to (E405) --- and held one map at a time: allocated, fallibly, when its
 /// first row is read, and judged and freed after its last.  A shape of
 /// `(0, 2**62)` allocated a sum per voxel before anything was checked, and
-/// the validator panicked (N07 of the 2.0 re-audit).
+/// the validator panicked.
 struct ProbmapCheck {
     class_ids: Vec<i64>,
     spatial: Vec<usize>,

@@ -669,7 +669,7 @@ pub fn validate_cache(
     // An event-level entry encodes one event version of its source, and the
     // document that version owns.  An entry joined to another version's text
     // --- a newer revision's, say --- was served to every row admitting the
-    // version it names, before that text existed (F03 of the round-4 audit).
+    // version it names, before that text existed.
     // Checked against the source, so with or without a task.
     if cache.header.level == "event" {
         let mut owners: HashMap<(String, Option<String>, String), std::result::Result<Ownership, String>> =
@@ -729,8 +729,7 @@ pub fn validate_cache(
                 // The row as it was built from: a source added to its subject
                 // changes what its slots read without changing a cutoff or an
                 // admitted version, so only the fingerprint, which pins every
-                // source version, binds the feature to its inputs (B04 of the
-                // 2.0 re-audit).
+                // source version, binds the feature to its inputs.
                 let current = admitted.row_fingerprint(row_id).unwrap_or_default();
                 if entry.row_fingerprint.as_deref() != Some(current) {
                     report.findings.push(Finding::new(

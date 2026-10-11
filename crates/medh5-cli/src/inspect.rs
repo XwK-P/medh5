@@ -626,7 +626,7 @@ fn track(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
                 } else {
                     // Two raters measured it there: no one volume is the visit's.
                     // Millimetres where the grid is calibrated, so visits on
-                    // grids in different units read alike (F19).
+                    // grids in different units read alike.
                     match track.at(tp) {
                         Ok(Some(o)) => match (o.volume_mm(), o.volume) {
                             (Some(v), _) | (None, Some(v)) => gp(v, 4),

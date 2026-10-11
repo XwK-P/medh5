@@ -510,8 +510,7 @@ impl<'a> Prepared<'a> {
         // bounds every admitted event, plans included; only its upper edge,
         // the cutoff, is not a plan's --- a plan may lie after it.  Plans were
         // admitted with no window at all, so a stale order from a hundred days
-        // before a seven-day window was read beside the week (F15 of the
-        // round-4 audit).
+        // before a seven-day window was read beside the week.
         let outside = |order: Bounds| -> Option<&'static str> {
             let lo_edge = window_lo?;
             let inside = |t: i64| if policy.context_boundary == "closed" { t >= lo_edge } else { t > lo_edge };
@@ -744,12 +743,12 @@ mod tests {
         }
     }
 
-    /// F15: the window bounds every admitted event from below, plans
+    /// The window bounds every admitted event from below, plans
     /// included, at its boundary and under either uncertainty; only the
     /// cutoff is not a plan's edge.  Plans were admitted with no window, so a
     /// stale order from day -100 was read beside a seven-day window.
     #[test]
-    fn f15_s9_1_the_window_bounds_plans_from_below() {
+    fn s9_1_the_window_bounds_plans_from_below() {
         const DAY: i64 = 24 * HOUR;
         let cutoff = DAY;
         let planned = |id: &str, effective: Bounds, available: i64| {
@@ -832,7 +831,7 @@ mod tests {
         assert_eq!(dropped.excluded.get("event_limit"), Some(&2));
     }
 
-    /// C01: the schema admits `max_events = 0`, which indexed one past the
+    /// The schema admits `max_events = 0`, which indexed one past the
     /// kept range (`keep = latest`) or underflowed `max - 1` (`earliest`).
     #[test]
     fn s9_1_a_limit_of_zero_keeps_no_timed_event() {
@@ -856,7 +855,7 @@ mod tests {
         }
     }
 
-    /// C02: under `order_by = available` a static fact took its availability
+    /// Under `order_by = available` a static fact took its availability
     /// as an order, joined the timed events, and a limit dropped it.
     #[test]
     fn s9_1_a_static_fact_is_unordered_whatever_orders_the_timed() {

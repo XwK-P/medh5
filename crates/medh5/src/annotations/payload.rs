@@ -341,7 +341,7 @@ mod tests {
     }
 
     #[test]
-    fn p09_s14_slabs_stay_within_the_budget_and_tile_the_dataset() {
+    fn s14_slabs_stay_within_the_budget_and_tile_the_dataset() {
         for (shape, itemsize, prefix) in [
             (vec![2, 16, 32, 32], 2, vec![]),  // layers, read whole: descends to rows
             (vec![1, 16, 32, 32], 8, vec![0]), // one bitmask plane
@@ -356,7 +356,7 @@ mod tests {
     }
 
     #[test]
-    fn p09_s14_plane_counts_read_within_the_slab_budget() {
+    fn s14_plane_counts_read_within_the_slab_budget() {
         let dir = tempfile::tempdir().unwrap();
         let file = hdf5::File::create(dir.path().join("planes.h5")).unwrap();
         let mut layers = ndarray::Array4::<u16>::zeros((2, 16, 32, 32));

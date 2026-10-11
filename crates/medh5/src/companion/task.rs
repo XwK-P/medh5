@@ -84,7 +84,7 @@ impl Slot {
     /// integers or refused (T101): JSON Schema's `integer` admits `3.0`, and
     /// an element that did not read as an integer was dropped, so `classes:
     /// [3.0]` read no class and `patch: [4.0, 8, 8]` a 2-D patch, without a
-    /// word (F14 of the round-4 audit).
+    /// word.
     fn from_json(v: &Value) -> Result<Slot> {
         let name = v["name"].as_str().unwrap_or_default().to_string();
         let integers = |field: &str| -> Result<Option<Vec<i64>>> {

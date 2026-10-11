@@ -349,7 +349,7 @@ fn spline_interpolate(coeffs: &ArrayD<f64>, coords: &Array2<f64>, boundary: Boun
 /// outermost sample and the extent's edge takes that sample's value, as
 /// [`linear_sample`] gives it; SciPy's constant mode is zero beyond the
 /// outermost samples, so such a point --- one `error` had admitted --- came
-/// out with no displacement (D5 of the 2.0 audit).  `nearest` interpolates the
+/// out with no displacement.  `nearest` interpolates the
 /// edge-extended field, as SciPy does.
 pub fn cubic_sample(field: &ArrayD<f64>, coords: &Array2<f64>, extrapolation: &str) -> Result<Array2<f64>> {
     check_field(field)?;
@@ -622,7 +622,7 @@ mod tests {
     }
 
     #[test]
-    fn d5_s10_4_the_margin_takes_the_outermost_samples_value_as_linear_gives_it() {
+    fn s10_4_the_margin_takes_the_outermost_samples_value_as_linear_gives_it() {
         // Constant mode is zero beyond the outermost samples, so a point `error`
         // admitted --- half a voxel inside the extent --- had no displacement.
         let field = ArrayD::from_shape_fn(IxDyn(&[1, 3, 4]), |i| {

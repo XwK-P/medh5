@@ -910,7 +910,7 @@ impl SampleWriter {
     /// registration between two metre grids written without it declared
     /// millimetres, and an explicit `units` the grids disagreed with was
     /// written as given; either way a reader applied it to coordinates in
-    /// other units than it maps (F06 of the round-4 audit).  The default is
+    /// other units than it maps.  The default is
     /// the grids' units, `mm` with none to say, and a `units` that is not
     /// theirs --- or grids that disagree --- is refused (E506).
     fn transform_units(

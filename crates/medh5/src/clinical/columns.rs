@@ -289,7 +289,7 @@ fn read_vec<T: crate::array::Element>(ds: &hdf5::Dataset) -> Result<Vec<T>> {
 /// Whether a dataset's numbers are stored big-endian.  1.1 §4 stores a
 /// numeric column little-endian; HDF5 converts one stored the other way on
 /// read, so its values read correctly, and it is still another dtype than the
-/// profile's (C11 of the 2.0 audit).
+/// profile's.
 fn big_endian(ds: &hdf5::Dataset) -> bool {
     ds.dtype().is_ok_and(|t| t.size() > 1 && t.byte_order() == hdf5::datatype::ByteOrder::BigEndian)
 }
@@ -395,7 +395,7 @@ fn read_values(
             };
             // A member this engine does not define is a later minor's under a
             // projection (1.1 §2.2), as at the table's level; it was E804
-            // whatever the version (C06 of the 2.0 audit).
+            // whatever the version.
             for member in ops::members(&column)? {
                 if member != "data" && member != "offsets" {
                     let (code, why) = if projection {
@@ -435,8 +435,8 @@ fn read_values(
                 ));
                 return Ok(None);
             }
-            // The scalar columns' rule holds for offsets too (C11 of the 2.0
-            // re-audit): a reader may take the buffer as stored.
+            // The scalar columns' rule holds for offsets too: a reader may
+            // take the buffer as stored.
             if big_endian(&offsets_ds) {
                 problems.push(Problem::new(
                     "E805",

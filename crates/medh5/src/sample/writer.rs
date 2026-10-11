@@ -355,8 +355,7 @@ impl SampleWriter {
     ///
     /// HDF5 does not reclaim an unlinked group's space, so the commit
     /// rewrites the file from its root before it replaces anything: unlinked
-    /// alone, every record stayed in the file's bytes (F08 of the round-4
-    /// audit).
+    /// alone, every record stayed in the file's bytes.
     ///
     /// The event versions the amended file held stay held: one added again
     /// in this amendment must be what it was, attesting what it did (1.1

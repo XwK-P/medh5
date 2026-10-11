@@ -1480,7 +1480,7 @@ fn valid_cases(cases: &mut Vec<Case>) {
             seg_instances,
         )
         .warnings(w912),
-        // The verified negative tracking depends on (S-13): a follow-up at
+        // The verified negative tracking depends on: a follow-up at
         // which a lesion has resolved is told apart from one nobody examined
         // only by this.
         case(
@@ -2282,7 +2282,7 @@ fn audit_round_four(cases: &mut Vec<Case>) {
     ]);
 }
 
-/// F06: a transform between grids in metres is in metres --- the writer's
+/// A transform between grids in metres is in metres --- the writer's
 /// default, taken from the grids, where it used to be `mm` whatever they were.
 fn reg_in_metres(path: &Path) -> Result<()> {
     let mut rng = Rng::new(SEED);
@@ -2320,7 +2320,7 @@ fn reg_in_metres(path: &Path) -> Result<()> {
     })
 }
 
-/// F01: the walk reaches `images/CT` first at `aaa_alias`, so its line is
+/// The walk reaches `images/CT` first at `aaa_alias`, so its line is
 /// there --- restamped and resealed, as a crafted file's would be.
 fn alias_before_images(path: &Path) -> Result<()> {
     base(path, &SHAPE)?;

@@ -405,8 +405,8 @@ pub fn check_clinical_digests(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     }
     let Some(group) = ops::child_group(&ctx.root, GROUP) else { return Ok(out) };
     let mut missing = Vec::new();
-    // Soft links followed, as the readers follow them (B03 of the round-3
-    // audit): a column linked to storage elsewhere is a column all the same.
+    // Soft links followed, as the readers follow them: a column linked to
+    // storage elsewhere is a column all the same.
     ops::visit_resolving(&group, &mut |path, node| {
         if let Node::Dataset(d) = node {
             if !attrs::has(d, "digest") {

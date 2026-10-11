@@ -75,8 +75,8 @@ impl Split {
     /// The entries of `partition`: a file's path, or `path::key` for a sample
     /// inside a collection --- the locator task sources use.  Two members of
     /// one collection in different partitions were both its path, so a loader
-    /// building per-partition file lists put the whole collection in both
-    /// (U02 of the 2.0 audit).  A split written before carries paths alone.
+    /// building per-partition file lists put the whole collection in both.
+    /// A split written before carries paths alone.
     pub fn paths(&self, partition: &str) -> Vec<String> {
         self.assignments.iter().filter(|a| a.partition == partition).flat_map(|a| a.entries.iter().cloned()).collect()
     }

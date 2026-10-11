@@ -182,8 +182,8 @@ impl Annotation {
     /// continuous index, through world when the grids differ.
     ///
     /// World coordinates are carried into the target grid's units first: a
-    /// point at 1 mm on a grid of 0.001 m voxels was index 1000 (N10 of the
-    /// round-3 audit).  A target in another `coord_system` is refused (E414),
+    /// point at 1 mm on a grid of 0.001 m voxels was index 1000.  A target
+    /// in another `coord_system` is refused (E414),
     /// where an LPS point used to be read as RAS unflipped.
     pub fn to_index(&self, coords: &ArrayD<f64>, grid: GridRef) -> Result<ArrayD<f64>> {
         let target = self.resolve_grid(grid)?;
@@ -345,7 +345,7 @@ impl Annotation {
     /// Stored world boxes are returned as stored only on their own grid.
     /// They were for any grid, so a box at 3 mm asked for on a grid in
     /// metres came back as 3 m, and one in another frame or convention came
-    /// back unrefused (F18 of the round-4 audit): another grid goes through
+    /// back unrefused: another grid goes through
     /// [`Self::world_corners`], which converts units and refuses (E414).
     pub fn as_world(&self, grid: GridRef) -> Result<ndarray::Array3<f64>> {
         let own = match grid {

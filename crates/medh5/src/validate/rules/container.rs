@@ -177,7 +177,7 @@ pub fn check_document(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
         return Ok(out);
     };
     // One string (§2.4), checked before anything is read: a vector `meta` was
-    // read whole and cut to its first element (N12 of the 2.0 re-audit).
+    // read whole and cut to its first element.
     if !meta.is_scalar() {
         out.push(ctx.err(
             "E004",

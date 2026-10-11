@@ -779,7 +779,7 @@ mod tests {
     use ndarray::{s, Array4};
 
     #[test]
-    fn p10_the_overlap_graph_is_read_in_slabs() {
+    fn s7_2_the_overlap_graph_is_read_in_slabs() {
         // Two layers of 8 rows of 4x4 uint16: 64 bytes a row, so a 64-byte
         // budget reads one row per slab.
         let dir = tempfile::tempdir().unwrap();

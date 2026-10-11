@@ -563,8 +563,8 @@ fn write_group(
 /// the nnU-Net exporter reads a stashed `dataset.json`; the other keys are
 /// kept under `extra.legacy`, one entry per timepoint.  Every file's whole
 /// `extra` went to `extra.legacy`, so the stash was never where it is read,
-/// and in a grouped migration each file's replaced the one before (F26 of the
-/// round-4 audit).  A later file whose `nnunetv2` differs from the first's
+/// and in a grouped migration each file's replaced the one before.  A later
+/// file whose `nnunetv2` differs from the first's
 /// keeps it in its own entry, and the report says so: one sample has one
 /// `dataset.json`.
 #[derive(Default)]

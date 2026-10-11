@@ -149,7 +149,7 @@ impl Track {
     /// [`Track::measurements_at`] finds --- or `None` where the object was not
     /// seen.  Refused where it finds two, two raters' masks of one visit: the
     /// first rater's answered `at` and `volume` and the last one's `volumes`,
-    /// so one track reported two volumes for one visit (U04 of the 2.0 audit).
+    /// so one track reported two volumes for one visit.
     /// Every accessor below answers by this rule.
     pub fn at(&self, timepoint: &str) -> Result<Option<&Observation>> {
         let found = self.measurements_at(timepoint);
@@ -181,8 +181,8 @@ impl Track {
     ///
     /// The two volumes are compared in millimetres: each observation's are
     /// its grid's `units` cubed, and a visit on a grid in metres beside one
-    /// in millimetres read as a millionfold change (F19 of the round-4
-    /// audit).  Two volumes that share no physical measure --- an
+    /// in millimetres read as a millionfold change.  Two volumes that share
+    /// no physical measure --- an
     /// uncalibrated (`px`) grid beside a calibrated one, an area beside a
     /// volume --- have no change between them, and are `None`.
     pub fn relative_change(&self, first: &str, second: &str) -> Result<Option<f64>> {
@@ -369,7 +369,7 @@ pub fn carries_instance_ids(ann: &Annotation) -> bool {
 /// Every annotation [`carries_instance_ids`] admits was joined, and only
 /// masks and axis-aligned boxes could be read as objects: an oriented box
 /// or a landmark carrying the ids §10.6 asks for aborted the whole join,
-/// and `medh5 track` with it (F21 of the round-4 audit).  A kind no track
+/// and `medh5 track` with it.  A kind no track
 /// reads is reported, never fatal.
 fn unjoinable(ann: &Annotation) -> Option<String> {
     let kind = ann.kind();

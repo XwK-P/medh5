@@ -310,7 +310,7 @@ pub fn compare_voxel(
     let pair = classes_to_compare(a, b, classes)?;
     // A voxel either annotation ignores (§7.7) is evidence neither for nor
     // against agreement, so it is left out of both: counted, it scored a rater
-    // against voxels the other declared unexamined (U03 of the 2.0 audit).
+    // against voxels the other declared unexamined.
     let ignored = match (a.ignore_region()?, b.ignore_region()?) {
         (Some(mut left), Some(right)) => {
             same_shape(&left, &right, a, b)?;
@@ -369,8 +369,7 @@ fn one_sample(a: &Annotation, b: &Annotation) -> bool {
 ///
 /// A grid id is a sample's own name.  Two samples each calling a grid `g`
 /// were compared voxel for voxel though one was shifted 100 mm, and their
-/// ignore regions merged though their shapes differed, which panicked (N10
-/// of the 2.0 re-audit).
+/// ignore regions merged though their shapes differed, which panicked.
 fn on_one_grid(a: &Annotation, b: &Annotation) -> bool {
     if one_sample(a, b) {
         return a.grid_id() == b.grid_id();
@@ -515,7 +514,7 @@ pub fn compare_instances(
 /// A shared frame says two annotations' world is one place, not that their
 /// numbers are in one unit: the same boxes in metres and in millimetres scored
 /// an F1 of 0, and boxes in LPS against RAS an IoU of 1 where they were
-/// disjoint (N10 of the round-3 audit) --- which E414 now refuses, since §3.3
+/// disjoint --- which E414 now refuses, since §3.3
 /// rule 4 compares world coordinates in one `coord_system` only.  An
 /// annotation that names no grid states neither, and is taken as it is.
 fn in_the_world_of(a: &Annotation, b: &Annotation, objects: &mut [Instance]) -> Result<()> {

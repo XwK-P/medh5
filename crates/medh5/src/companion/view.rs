@@ -273,7 +273,7 @@ fn merge(history: &mut History, subject: &Subject) -> Result<Vec<Finding>> {
     // A version several fragments hold is merged from the one with the
     // smallest pinned `content_id`, not the first listed: what a row reads
     // through it --- the document it owns, the key of its event feature ---
-    // must not depend on the order the manifest names its sources (B04).
+    // must not depend on the order the manifest names its sources.
     for (id, held) in holders.iter().filter(|(_, h)| h.len() > 1) {
         let chosen = *held
             .iter()
@@ -781,8 +781,7 @@ impl<'a> Rows<'a> {
     ///
     /// Never by the order the manifest lists sources in: the row fingerprint
     /// sorts the pins, so a tie kept by the first fragment made one row
-    /// identity two inputs, and a feature cached for one served the other
-    /// (B04 of the 2.0 re-audit).
+    /// identity two inputs, and a feature cached for one served the other.
     fn fill(&self, slot: &Slot, selection: &Selection, order: &[Option<Option<Bounds>>]) -> SlotFill {
         let mut fill = SlotFill::empty(slot);
         let events = &self.history.merged.events;

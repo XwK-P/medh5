@@ -210,8 +210,7 @@ impl Entry {
             get(k).as_array().map(|a| a.iter().map(crate::json::py_str).collect()).unwrap_or_default()
         };
         // Refused, never dropped: a class id that did not read as an integer
-        // --- `3.0` --- left the entry without the class (F14 of the round-4
-        // audit).
+        // --- `3.0` --- left the entry without the class.
         let list_int = |k: &str| -> Result<Vec<i64>> {
             match get(k).as_array() {
                 None => Ok(Vec::new()),
