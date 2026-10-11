@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 # The Python package, with the extension built from crates/ (maturin, release
 # profile) and the extras the test suite needs.  Re-run after changing Rust.
-pip install -e ".[dev,torch,nifti,dicom,dicomseg,itk]"
+pip install -e ".[dev,torch,nifti,dicom,dicomseg]"
 
 # The engine and the native CLI
 cargo fmt --all -- --check
@@ -96,8 +96,9 @@ and the CLI are layers over it, and all three read and write the same bytes.
   (vendored) and the Blosc2 (32026) and Zstandard (32015) HDF5 filters.
 - **`crates/medh5-cli`** — the `medh5` command line (crates.io `medh5-cli`).
   The Python console script runs the same code through `_core.cli_main`;
-  converters are Python and the standalone binary spawns `python3 -m medh5.cli`
-  for them (`Host`).
+  the converters and the dataloader benchmark are Python, and the standalone
+  binary runs them through `Host`: `-m medh5.cli` under `MEDH5_PYTHON`, else
+  `python3` (`python` on Windows).
 - **`crates/medh5-python`** — the PyO3 extension `medh5._core` (not published;
   maturin builds it into the wheel). Engine handles live in a facade's
   `._handle`; result types are rebuilt as the 1.x Python classes.
@@ -119,7 +120,7 @@ it into every file's `generator`. The crates' `=X.Y.Z` pins on each other in
 
 ## Invariants that are easy to break
 
-- **Coverage.** `class_ids` is what an annotation contains;
+- **Coverage.** `class_ids` is what an annotation *can express*;
   `annotated_class_ids` is what was *looked for*. A class examined and absent is
   a usable negative; a class nobody examined is not. Never collapse the two.
 - **Boxes sit at voxel edges**, indices at voxel centres. `[a, b]` is the slice
@@ -211,9 +212,10 @@ it into every file's `generator`. The crates' `=X.Y.Z` pins on each other in
 `docs/` is the MkDocs site: `tutorials/`, `guides/` (how-to), `reference/`,
 `explanation/`, `spec/`, and `examples/` (standalone scripts). `CHANGELOG.md`
 stays at the root and `hooks/mkdocs_hooks.py` pulls it in; the same hook renders
-the diagnostic-code, cohort-code and schema tables from their sources (edit
-`crates/medh5/data/codes.json`, the `CHECK_CODES` table in
-`crates/medh5/src/dataset/check.rs`, or the schema — never the page) and emits
+the diagnostic-code, cohort-code, task-and-cache-code and schema tables from
+their sources (edit `crates/medh5/data/codes.json`, the `CHECK_CODES` table in
+`crates/medh5/src/dataset/check.rs`, the `CODES` table in
+`crates/medh5/src/companion/mod.rs`, or the schema — never the page) and emits
 redirects for moved pages (`REDIRECTS`). There are no separate design records:
 the reasoning lives in `docs/explanation/design-rationale.md`.
 
