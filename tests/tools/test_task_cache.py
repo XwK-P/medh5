@@ -1499,9 +1499,7 @@ class TestCaches:
         assert findings("missing", admitted[:2]) == ["T406"]
         assert findings("extra", [*admitted, "rep_v2"]) == ["T406"]
 
-    def test_S8_an_entry_its_source_cannot_verify_is_T407(
-        self, setup, tmp_path: Path
-    ):
+    def test_S8_an_entry_its_source_cannot_verify_is_T407(self, setup, tmp_path: Path):
         """An event-level entry is checked against its source.  A source whose
         clinical tables are malformed but sealed passes its pin, which compares
         digests only; its entries were accepted unchecked --- one naming an
