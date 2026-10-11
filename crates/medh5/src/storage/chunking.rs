@@ -166,9 +166,9 @@ pub fn optimize_chunks(
 
 /// The chunk shape the writer gives an array laid out on `grid` (§14.1).
 ///
-/// A `chunk_hint` is a preference, held to the array: each entry is clipped
-/// to `1..=extent`, as the computed chunks are --- HDF5 refuses a chunk larger
-/// than a fixed-size dataset, or of extent 0.
+/// A `chunk_hint` is a preference, held to the array: each entry, positive
+/// (§3.2, E109), is clipped to its extent, as the computed chunks are ---
+/// HDF5 refuses a chunk larger than a fixed-size dataset.
 pub fn grid_chunks(grid: &Grid, itemsize: usize, leading: usize) -> Result<Vec<usize>> {
     if let Some(hint) = &grid.chunk_hint {
         if leading == 0 {

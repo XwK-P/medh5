@@ -235,7 +235,7 @@ the *k*-th spatial axis.
 | `frame_uid` | `str` | SHOULD | frame-of-reference identifier (§3.4) |
 | `time_values` | `float64[T]` | if `time` axis | acquisition time per time index, in `time_units` |
 | `time_units` | `str` | if `time` axis | `"s"` (default) or `"ms"` |
-| `chunk_hint` | `int64[N]` | MAY | writer's preferred chunk shape (§14.1) |
+| `chunk_hint` | `int64[N]` | MAY | writer's preferred chunk shape, every extent positive (§14.1) |
 | `patch_hint` | `int64[S]` | MAY | intended training patch size (§14.1) |
 
 `grids` **MUST** contain at least one grid. The grid named `ref` (if present) is the sample's
@@ -1703,9 +1703,9 @@ any machine. On one, with a 192×256×256 synthetic CT and eight classes, a mult
 costs 3.4 ms, foreground centre sampling 0.03 ms (O(1) in volume size, via §14.3; 0.05 ms at 63
 classes), a metadata-only read 0.19 ms, and `open()` → first patch 2.3 ms.
 
-Fifty-one clauses have been corrected — ten during implementation, eleven in the 1.x package
+Fifty-two clauses have been corrected — ten during implementation, eleven in the 1.x package
 releases that followed, four when the engine was written a second time, in Rust, for the 2.0
-package, one when it implemented 1.1, and twenty-five in the audits of 2.0 before its release — each because
+package, one when it implemented 1.1, and twenty-six in the audits of 2.0 before its release — each because
 writing the code showed the text was not implementable, not unambiguous, or not what the
 implementation could honestly promise, as written:
 
@@ -1762,6 +1762,7 @@ implementation could honestly promise, as written:
 | §3.2, §10.3, §10.5 | The numbers that place a point are bounded as far as placing one needs: a grid's `spacing` and `origin` are finite (**E104**, **E109**), an affine's `matrix` is `(S+1, S+1)` for the *S* spatial axes of the grids in its frames (**E504**), and a B-spline's `control_points` hold *S* components on a lattice of *S* axes with at least `order + 1` points on each (**E503**). "Positive" admitted an infinite spacing, nothing bounded the origin, and *S* was defined for a grid but never for a transform, which has no grid of its own: a 3×3 affine between 3-D grids validated and moved each point with its coordinates regrouped in twos, a matrix that was not square panicked whatever read it, and a lattice too short for its order, which the writer refused, validated. |
 | §13.1 | A string dataset's payload is each string's stored bytes, a fixed-length string's without its NUL padding; a dataset of another fixed-size type hashes as `|V<n>` over its stored elements; and other variable-length data has no digest. "Hashed in UTF-8" said neither which bytes nor what a fixed-length string or a compound hashes as. 1.x hashed what `h5py` reads --- stored bytes, a compound as `|V<n>` --- while the 2.0 engine decoded strings as text, replacing invalid UTF-8, so different stored bytes shared a digest and an edit to them went unseen, and refused a compound outright, so a valid file holding one in an extension group could be neither amended nor verified. No digest of a valid UTF-8 string changes. |
 | §14.4 | Amend copies through what it does not interpret only in a version the writer implements; a file of a higher minor, or one declaring a profile the writer does not implement, is not amended at all. The clause asked a 1.0 writer to copy a future minor's objects through untouched, while §16 forbids amending such a file: a writer cannot preserve what it does not know --- it would restamp digests and re-derive profiles over content it cannot read --- and the reference writer refuses the amendment. |
+| §3.2 | Each extent of a `chunk_hint` is positive, and a hint with one that is not is **E109**. The table called the hint a chunk shape and bounded nothing, and the validator checked only its length: a hint of `0` or `-1` validated, though no chunk has an extent below 1 --- a writer that handed it to HDF5 failed at the first chunked dataset on the grid. A hint larger than the array is clipped to it, as §14.1 has every chunk. |
 
 ### C.2 Prototype checks
 

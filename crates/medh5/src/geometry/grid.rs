@@ -282,6 +282,14 @@ impl Grid {
             if hint.len() != ndim {
                 return Err(Error::coded("E109", format!("grid {gid}: chunk_hint must have {ndim} entries")));
             }
+            // A chunk shape (§3.2): HDF5 has no chunk extent below 1, and
+            // reading `0` or `-1` as some other extent would be a guess.
+            if hint.iter().any(|c| *c <= 0) {
+                return Err(Error::coded(
+                    "E109",
+                    format!("grid {gid}: chunk_hint {} must be positive", repr_int_tuple(hint)),
+                ));
+            }
         }
         Ok(())
     }
@@ -729,6 +737,26 @@ mod tests {
         assert!(err.message().contains("more elements than a 64-bit count holds"));
         let large = Grid::from_spec(spec(vec![1 << 20, 1 << 20, 1 << 20])).unwrap();
         assert_eq!(large.n_voxels(), 1 << 60);
+    }
+
+    #[test]
+    fn s3_2_a_chunk_hint_is_a_chunk_shape() {
+        // HDF5 has no chunk extent below 1: a hint of 0 or -1 validated, and
+        // the writer then took it for 1, one voxel per chunk along its axis.
+        let spec = |hint: Vec<i64>| GridSpec {
+            grid_id: "g".into(),
+            shape: vec![4, 4, 4],
+            spacing: vec![1.0; 3],
+            chunk_hint: Some(hint),
+            ..Default::default()
+        };
+        for hint in [vec![0, 4, 4], vec![4, -1, 4]] {
+            let err = Grid::from_spec(spec(hint.clone())).unwrap_err();
+            assert_eq!(err.code(), Some("E109"), "{hint:?}");
+            assert!(err.message().contains("must be positive"), "{}", err.message());
+        }
+        // Larger than the grid is a preference the writer clips (§14.1).
+        assert!(Grid::from_spec(spec(vec![8, 4, 1])).is_ok());
     }
 
     fn calibrated(id: &str, coord_system: &str, units: &str) -> Grid {

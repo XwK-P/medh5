@@ -211,6 +211,10 @@ fn check_grid(ctx: &Context, grid: &Node, name: &str, location: &str) -> Result<
                 if let Some(n) = want.filter(|n| hint.len() != *n) {
                     out.push(ctx.err("E109", location, format!("`{key}` has {} entries for {n} {axes}", hint.len())));
                 }
+                // A chunk shape (§3.2) has no extent below 1.
+                if key == "chunk_hint" && hint.iter().any(|c| *c <= 0) {
+                    out.push(ctx.err("E109", location, format!("`{key}` {} must be positive", repr_int_tuple(&hint))));
+                }
             }
         }
     }

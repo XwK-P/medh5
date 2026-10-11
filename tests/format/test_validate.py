@@ -806,6 +806,8 @@ class TestGrids:
             ("time_units", "h", "E109"),
             ("patch_hint", np.array([2, 2]), "E109"),
             ("chunk_hint", np.array([2, 2]), "E109"),
+            ("chunk_hint", np.array([0, 6, 6]), "E109"),
+            ("chunk_hint", np.array([4, -1, 6]), "E109"),
         ],
     )
     def test_S3_2_a_malformed_grid_is_reported(self, tmp_path, attribute, value, code):

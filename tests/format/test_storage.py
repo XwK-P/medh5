@@ -95,6 +95,18 @@ class TestChunking:
         with medh5.open(path) as sample:
             assert sample.images["CT"].chunks == (64, 16, 64)
 
+    @pytest.mark.parametrize("hint", [(0, 16, 16), (16, -1, 16)])
+    def test_S3_2_a_chunk_hint_extent_is_positive(self, tmp_path: Path, hint):
+        """A hint of 0 or -1 was written, though no chunk has an extent below
+        1: the writer took it for 1, and the validator passed it."""
+        with medh5.create(tmp_path / "hinted.medh5", codec="portable") as w:
+            with pytest.raises(MEDH5ValidationError) as caught:
+                w.add_grid(
+                    "g", shape=(64, 64, 64), spacing=(1.0, 1.0, 1.0), chunk_hint=hint
+                )
+            assert caught.value.code == "E109"
+            w.abort()
+
     def test_axis_kinds_must_describe_the_shape(self):
         with pytest.raises(MEDH5ValidationError):
             optimize_chunks((4, 4), ("spatial",), (2,))
