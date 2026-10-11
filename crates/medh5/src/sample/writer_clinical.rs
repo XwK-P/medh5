@@ -347,8 +347,16 @@ impl SampleWriter {
                         other => OBJECT_GROUPS.iter().filter(|(k, _)| *k == other).map(|(_, g)| (*g, target)).collect(),
                     };
                     for (group, name) in objects {
-                        let was = object_digests(&source, group, name, &algo)?;
-                        if was.is_some() && was != object_digests(&root, group, name, &algo)? {
+                        let was = object_digests(&source, group, name, &algo, true)?;
+                        // Digests that differ are settled by the content: a
+                        // digest restamped over unchanged bytes (`medh5 fix
+                        // --rewrite-digests`) changes nothing a version
+                        // attests, and a payload rewritten under its id does.
+                        if was.is_some()
+                            && was != object_digests(&root, group, name, &algo, true)?
+                            && object_digests(&source, group, name, &algo, false)?
+                                != object_digests(&root, group, name, &algo, false)?
+                        {
                             return Err(changed(format!("{kind} {}", repr_str(target)), id));
                         }
                     }
@@ -384,15 +392,22 @@ fn attested<'a>(events: &'a [Event], links: &'a [Link]) -> HashMap<&'a str, Vec<
 }
 
 /// The digest of every dataset of object `name` in `group` (the object
-/// itself, when it is a dataset), by path: the one it carries, or its
-/// content's when it carries none --- a dataset written in this amendment,
-/// stamped only at commit.  `None` when there is no such object.
-fn object_digests(root: &hdf5::Group, group: &str, name: &str, algo: &str) -> Result<Option<BTreeMap<String, String>>> {
+/// itself, when it is a dataset), by path: with `stored`, the one it
+/// carries, or its content's when it carries none --- a dataset written in
+/// this amendment, stamped only at commit; without, always its content's.
+/// `None` when there is no such object.
+fn object_digests(
+    root: &hdf5::Group,
+    group: &str,
+    name: &str,
+    algo: &str,
+    stored: bool,
+) -> Result<Option<BTreeMap<String, String>>> {
     let Some(parent) = ops::child_group(root, group) else { return Ok(None) };
     let digest = |ds: &hdf5::Dataset, path: &str| -> Result<String> {
         match attrs::get_str(ds, "digest")? {
-            Some(stored) => Ok(stored),
-            None => crate::integrity::dataset_digest(ds, path, algo),
+            Some(carried) if stored => Ok(carried),
+            _ => crate::integrity::dataset_digest(ds, path, algo),
         }
     };
     let path = format!("{group}/{name}");

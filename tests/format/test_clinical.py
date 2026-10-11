@@ -696,6 +696,29 @@ class TestHeldVersions:
         with medh5.open(path) as s:
             assert s.content_id == before
 
+    @pytest.mark.parametrize("damage", ["digest", "bytes"])
+    def test_S7_3_a_digest_restamped_over_the_same_bytes_changes_nothing(
+        self, tmp_path: Path, damage: str
+    ):
+        """Re-attesting the bytes a payload has --- `fix --rewrite-digests` over
+        a wrong digest, or over bytes edited outside medh5 --- is no change to
+        what a version attests: the amendment changes no content.  Comparing
+        stored digests alone refused it (E809)."""
+        from medh5.integrity import fix
+
+        path = tmp_path / "ct.medh5"
+        History.write(path)
+        with h5py.File(path, "r+") as f:
+            image = f["images/CT_tp0"]
+            if damage == "digest":
+                image.attrs["digest"] = "sha256:" + "0" * 64
+            else:
+                volume = image[...]
+                volume[0, 0, 0] += 1
+                image[...] = volume
+        fix(path, rewrite_digests=True, reason="re-attested in a test")
+        assert not validate_file(path, level="integrity").errors
+
     def test_S7_3_a_transform_a_held_version_attests_is_fixed(self, tmp_path: Path):
         path = tmp_path / "reg.medh5"
         History.write(path)
