@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
-## [2.0.0] — 2026-10-08
+## [2.0.0] — 2026-10-11
 
 **One format engine, three frontends.** The format is now implemented once, in
 Rust: the [`medh5`](https://crates.io/crates/medh5) crate is the canonical
@@ -42,44 +42,60 @@ out `h5py` objects --- and the behaviour changes below.
 
 - **The Rust crates.** `medh5` (the engine), `medh5-sys` (HDF5 built from
   source and linked statically, C-Blosc2, and the Blosc2 and Zstandard HDF5
-  filters --- nothing to install) and `medh5-cli` (the `medh5` binary). Their
-  version is the package's, from one place: the Cargo workspace.
-- **The native command line**, from `cargo install medh5-cli`, the binaries on
-  each GitHub Release, or Homebrew. The `medh5` command `pip` installs runs the
-  same Rust code, so both give the same output and exit codes. The converters
-  (`convert …`, `migrate`) are Python integrations: the binary runs them
-  through a Python that has the package (`python3`, or `MEDH5_PYTHON`).
-- **Wheels** for Linux (x86_64, aarch64), macOS (x86_64, arm64) and Windows
-  (x64): one `abi3` wheel per platform serves CPython 3.10 and later. For MSVC
-  targets `.cargo/config.toml` gives the C builds `-DNDEBUG`: cmake-rs drops
-  CMake's release flags under the Visual Studio generator, and HDF5's
-  assertions would abort the process on a damaged file instead of reporting it.
-  A build that never reads that file --- `cargo install medh5-cli` from
-  crates.io --- is stopped by `medh5-sys` when the HDF5 it links was compiled
-  without `NDEBUG` (read from HDF5's own `libhdf5.settings`), naming the
-  variable to set --- `-DNDEBUG`, which `cl` takes as it takes `/DNDEBUG` and no
-  shell rewrites, where Git Bash turns `/DNDEBUG` into a path
-  (`C:/Program Files/Git/DNDEBUG`) and CMake's compiler check fails;
-  `MEDH5_SYS_SKIP_NDEBUG_CHECK=1` overrides. CI damages files for every
-  platform's binary, and for such a build, and fails on an abort.
+  filters --- nothing to install) and `medh5-cli` (the `medh5` binary), for
+  Rust 1.85.1 or later. Their version is the package's, from one place: the
+  Cargo workspace.
+- **The native command line**, from `cargo install --locked medh5-cli`, the
+  binaries on each GitHub Release, or Homebrew. The `medh5` command `pip`
+  installs runs the same Rust code, so both give the same output and exit
+  codes. `migrate` is native; the converters (`convert …`) and the dataloader
+  row of `medh5 bench` are the Python integrations, which the binary runs
+  through a Python that has the package (`MEDH5_PYTHON`, else `python3`, or
+  `python` on Windows).
+- **Wheels** for Linux (x86_64 and aarch64, glibc 2.28 or later), macOS 11 or
+  later (x86_64, arm64) and Windows (x64): one `abi3` wheel per platform serves
+  CPython 3.10 and later. For MSVC targets `.cargo/config.toml` gives the C
+  builds `-DNDEBUG`: cmake-rs drops CMake's release flags under the Visual
+  Studio generator, and HDF5's assertions would abort the process on a damaged
+  file instead of reporting it. A build that never reads that file ---
+  `cargo install --locked medh5-cli` from crates.io --- is stopped by
+  `medh5-sys` when the HDF5 it links was compiled without `NDEBUG` (read from
+  HDF5's own `libhdf5.settings`), naming the variable to set --- `-DNDEBUG`,
+  which `cl` takes as it takes `/DNDEBUG` and no shell rewrites, where Git Bash
+  turns `/DNDEBUG` into a path (`C:/Program Files/Git/DNDEBUG`) and CMake's
+  compiler check fails; `MEDH5_SYS_SKIP_NDEBUG_CHECK=1` overrides. CI damages
+  files for every platform's binary, and for such a build, and fails on an
+  abort.
 - **`THIRD_PARTY_NOTICES`**: the licences of everything the engine compiles in
-  --- HDF5, C-Blosc2 and its codecs, the HDF5-Blosc2 filter and every Rust
-  crate --- in the wheel's `.dist-info/licenses/`, the sdist and every binary
-  archive; each crate carries `LICENSE`. The file is generated from
-  `Cargo.lock` (`.github/scripts/third_party_notices.py`), and CI fails while
-  it is stale.
+  --- HDF5, C-Blosc2 and its codecs, the HDF5-Blosc2 filter, every Rust crate
+  and the Rust standard library --- in the wheel's `.dist-info/licenses/`, the
+  sdist and every binary archive; each crate carries `LICENSE`. The file is
+  generated from `Cargo.lock` (`.github/scripts/third_party_notices.py`), and
+  CI fails while it is stale. The wheels declare the licences of everything
+  they compile in, where 1.x declared `MIT`, and so does the Homebrew formula:
+  `MIT AND BSD-3-Clause AND BSD-2-Clause AND Zlib AND Apache-2.0 AND MIT-0`.
 - **A release that fails partway can be finished** by re-running its failed
   jobs: each publishing step skips what is already published *and identical*
-  to the run's build, publishes the rest, and stops on anything published from
-  something else; a last job checks PyPI, crates.io, the release page and the
-  tap. In this repository a missing `CARGO_REGISTRY_TOKEN` or
-  `HOMEBREW_TAP_TOKEN` fails its job instead of warning. `CONTRIBUTING.md` has
-  the runbook. CI's one required check is `ci-ok`, which needs every other job.
+  to the run's build --- on PyPI the wheels and the sdist, not the
+  attestations Trusted Publishing writes beside them --- publishes the rest,
+  and stops on anything published from something else; a last job checks
+  PyPI, crates.io, the release page and the tap. Each crate is verified from
+  its package without `CARGO_REGISTRY_TOKEN` in the environment, where a
+  dependency's build script could read it, and published once crates.io's
+  index serves the crate before it. In this repository a missing
+  `CARGO_REGISTRY_TOKEN` or `HOMEBREW_TAP_TOKEN` fails its job instead of
+  warning. `CONTRIBUTING.md` has the runbook, and what to set up before the
+  first release to each registry. CI's one required check is `ci-ok`, which
+  needs every other job.
 - **The sdist** builds with maturin 1.9.3 or later, the first to write PEP
   639's `License-Expression` (CI builds it with exactly 1.9.3), and carries
   the workflows, release scripts, `mkdocs.yml` and docs hooks its own
   `tests/project` and the documentation read; CI runs those tests from the
   unpacked archive.
+- **CI runs what ships, where it ships**: the test suite on the Linux aarch64
+  and macOS x86_64 wheels too, `medh5.torch` on Windows, the engine's tests on
+  Windows and macOS, `cargo package` for the three crates on every pull
+  request, and each binary's hand-over of the converters to Python.
 - **Types for the engine**: `medh5/_core.pyi`, checked against the built module
   by `stubtest` in the test suite, so `mypy --strict` users keep the 1.x
   signatures.
@@ -186,8 +202,14 @@ out `h5py` objects --- and the behaviour changes below.
 - **`RecompressResult.kept`** (`KEPT` in `medh5 recompress`): the datasets
   copied as stored because a fresh write of their dtype would not be their
   stored type --- an enumeration, a committed datatype.
-- **`to_nnunetv2(unlabeled=…)`** (`--unlabeled refuse|test`),
-  **`to_rtstruct(frame_salt=…)`** (`--frame-salt`) and
+- **`RecompressResult.unverified`** and **`VerifyResult.unverifiable`**: what
+  the check of a recompressed output could not read, reported with `verified`
+  false where it was raised after the output had replaced the input; and the
+  datasets carrying a digest their type cannot have (§13.1: variable-length
+  data other than strings, references), neither compared nor counted as
+  mismatched.
+- **`to_nnunetv2(unlabeled=…)`** (`--unlabeled refuse|test`), **`frame_salt=`**
+  (`--frame-salt`) on every DICOM SEG and RTSTRUCT conversion, and
   **`medh5.task.concept_token`**, below.
 - **Runnable examples**: `clinical_longitudinal.py` (the worked example: write,
   reopen, validate, preflight, batch), `clinical_collection.py` (a subject split
@@ -204,26 +226,63 @@ out `h5py` objects --- and the behaviour changes below.
   `medh5.nodes` views. The operations a caller used still work --- `ds[...]`,
   `numpy.asarray(ds)`, `shape`, `dtype`, `chunks`, `attrs`, `group["a/b"]`,
   `in`, `keys()` --- but `h5py`-only API (`.id`, `create_dataset`,
-  `visititems`, …) is gone, and a string-list attribute reads as a `list` of
-  `str` rather than a NumPy object array. For anything else, open the file with
-  `h5py` (`pip install "medh5[h5py]"`); it is plain HDF5.
+  `visititems`, …) is gone, a string-list attribute reads as a `list` of `str`
+  rather than a NumPy object array, and an array of a dataset is always a copy
+  (`numpy.asarray(ds, copy=False)` raises `ValueError`, as `h5py`'s does). For
+  anything else, open the file with `h5py` (`pip install "medh5[h5py]"`); it is
+  plain HDF5.
 - **Functions that took an `h5py` object take a view**:
   `medh5.integrity`'s digests and verification, `medh5.storage`'s
   `describe_filters`, `is_bulk` and `read_indices`, `read_document`,
   `read_grid`, `read_grids`, `collect_digests`, `AnnotationHeader.read` and
   `TransformHeader.read`.
 - **Closing a sample closes what was read from it**, as `h5py`'s
-  `File.close()` does: a view used afterwards raises `MEDH5FileError` ("the
-  file this object was read from has been closed") instead of answering from a
-  stale handle or keeping the file open and locked.
+  `File.close()` does: a view keeps the values it read while open --- ids, an
+  annotation's or transform's header --- and anything that would read the file
+  raises `MEDH5FileError` ("the file this object was read from has been
+  closed"), instead of answering from a stale handle, keeping the file open and
+  locked, or giving a wrong answer (a shape of `()`, a name of `''`) or a wrong
+  error (`E410`, a bare `OSError`). A member got from `Collection[key]` does
+  not own its shard: closing it (`with collection[key] as s:`) releases that
+  member alone, where it closed the shard, and `Collection.close()` closes
+  them all.
+- **A region of interest is one slice per spatial axis, without a step** (the
+  annotation readers --- `dense`, `labelmap`, `ignore_mask`, `read_layer` ---
+  `Sample.ignore_region` and `valid_region`, `read_field`, …): an integer `v`
+  was read as `slice(v, v+1)`, so `-1` read nothing, and a step was dropped,
+  so `dense(roi=(slice(0, 4, 2), …))` returned four planes where `Image.read`
+  returns two. An integer is a `TypeError` naming the slice that reads it
+  (`slice(-1, None)`), a step other than 1 a `ValueError`. `valid_region`
+  resolves a negative bound and clips to the grid as the annotation readers
+  do, where it returned a region larger than the grid.
+- **Casts saturate.** `Image.read(dtype=…)` and every engine conversion take a
+  value the target cannot hold to the nearest one it can --- 300 becomes 255
+  as `uint8`, −1 becomes 0, and NaN 0 --- where NumPy's `astype`, which 1.x
+  used, wraps them to 44 and 255.
+- **`labelmap(dtype=…)` refuses a dtype that cannot hold its values**
+  (`ValueError`): a narrower one saturated, so class 300 and the ignore id both
+  read as 255 in `uint8`. The dtype must hold every class id and, where a voxel
+  is ignored, the ignore id; `bool` is refused (`dense()` gives boolean
+  planes).
+- **An annotation is checked when it is opened**: columns out of step, a mask
+  larger than its grid or a voxel volume of the wrong shape raise when
+  `Sample.annotations` opens it, as a malformed header always did, rather than
+  when a reader reaches the bad row; one such annotation makes the whole
+  mapping raise.
 - **NumPy is the only runtime dependency.** `h5py`, `hdf5plugin` and
   `jsonschema` are no longer installed; HDF5, the filters, the JSON Schema
   validator and the interpolation SciPy did are compiled into the engine.
+- **Off the wheels' platforms, installing builds the engine.** musl, an older
+  glibc, Windows on ARM, PyPy and a free-threaded CPython get the sdist, which
+  needs Rust 1.85.1 or later, a C compiler, CMake and network access to
+  crates.io, where 1.x was pure Python. `pip install "medh5<2"` keeps the 1.x
+  line, which writes format 1.0.
 - **Random draws come from the engine.** Patch sampling, foreground draws and
   index subsampling use one small generator (PCG-64) in the engine, so a seed
   fixes the draws from Python, Rust and the command line alike. `rng=` takes
-  an `int`, a sequence of `int`s --- `PatchDataset` passes
-  `(seed, epoch, index)` --- or `None` for fresh entropy; a
+  an `int` from 0 to 2⁶⁴ − 1, a sequence of them --- `PatchDataset` passes
+  `(seed, epoch, index)` --- or `None` for fresh entropy; a seed outside that
+  range is a `ValueError`, where `2**64` drew `rng=0`'s patches. A
   `numpy.random.Generator` still works, and now supplies one seed (advancing)
   rather than being drawn from. The streams are not NumPy's, so a seeded 1.x
   pipeline picks different patches under 2.0, from the same distributions.
@@ -247,6 +306,26 @@ out `h5py` objects --- and the behaviour changes below.
 - **`medh5.cli.main()` returns the exit code** for every outcome --- `--help`
   and `--version` return 0 and a usage error 2 --- instead of raising
   `SystemExit` for those three. Only the console script exits.
+- **Every usage error exits 2**, as documented, where these exited 1: a
+  command group without a subcommand (`medh5 seg`), `clinical select` with
+  both cutoffs or neither, `recompress --out` with several inputs,
+  `scrub --pseudonymise-ids` without `--apply` or `--salt`, and
+  `fix --rewrite-digests` without `--reason`. So is an argument that is not
+  UTF-8: a Latin-1 file name from a shell glob ended the binary in a panic
+  (exit 101) and the console script in a traceback.
+- **A count is held to its least value, not clamped to it**:
+  `index build --max-coords` must be at least 1, and `build_index` refuses
+  `max_coords=0` --- a negative value or 0 wrote an index caching no
+  coordinates, from which every foreground draw failed, and which the sampler
+  now scans past. `--occupancy` must be at least 0 (0 builds no map),
+  `dataset stats --stride` at least 1 and `--workers` at least 0, and
+  `bench --patch` and `--repeats` at least 1; `dataset stats --image` or
+  `--annotation` naming an id no sample has fails, where it printed an empty
+  table.
+- **A drifted conformance suite fails the score** (`medh5 conformance score`,
+  exit 1, `"ok": false`): a score over files that are not the published ones
+  is not a score. `--json` lists them under `changed`, where a warning was
+  printed before the document.
 - **`E004` quotes the engine's JSON parser** ("key must be a string at line 1
   column 2") rather than Python's `json` module.
 - **A NaN or infinity in the sample document is refused** with
@@ -255,16 +334,45 @@ out `h5py` objects --- and the behaviour changes below.
   outside Python accepts. A file 1.x wrote that way still opens --- the tokens
   read as `None` --- and now validates with **E004**. An *attribute* may still
   hold one, and hashes exactly as 1.x hashed it.
+- **A JSON value without one canonical spelling is refused.** A set or
+  frozenset in a document was written in hash order, so `content_id` changed
+  with `PYTHONHASHSEED`: it raises the `TypeError` `json.dumps` raises, as an
+  iterator does. A `Decimal` NaN or infinity, which became `null`, and an
+  integer outside −2⁶³ … 2⁶⁴ − 1, which became a rounded float, are
+  `MEDH5ValidationError` (store such an integer as a string); every 64-bit
+  integer is kept exactly.
+- **A label set's class id below 0 or above 65535 is `E306`**, as §15.2 has
+  it, where it was `E303`, which is a reserved id (0 or 65535) given to a
+  class.
 - **`FORMAT_VERSION` is `"1.1"`**, the newest version the package writes. A
-  sample without the clinical profile is still written as `1.0`;
-  `written_version(source, profiles)` says which.
+  sample without the clinical profile is still written as `1.0`.
 - **A later minor is a projection.** A file of a minor version newer than the
   package implements opens and validates as what it knows, with every unknown
   item reported as `W913` --- an unrecomputable `content_id` too, rather than
   `E702` --- and is never amended, recompressed or packed (`MEDH5VersionError`).
-  1.0 §16's "accept a higher MINOR" is corrected accordingly (Appendix C.1).
+  An unknown value in its `/meta` (`sex: "X"`, a new activity `type`) is set
+  aside or read as `other`, and a grid's unknown unit or axis kind is `W913`
+  too: one such value stopped every document rule, so a planted `E107` went
+  unreported and the file passed. 1.0 §16's "accept a higher MINOR" is
+  corrected accordingly (Appendix C.1).
 - **An unknown profile refuses an amendment** (`E007`) before anything is
   written, instead of being re-derived away.
+- **`--profile` and `profiles=` add to the profiles a file declares**, where
+  they replaced them: a clinical sample validated with `--profile seg` failed
+  `E803` and skipped its clinical rules. An unknown profile name is refused
+  (`ValueError`, or a usage error from `medh5 validate`) rather than passing
+  the file.
+- **What a profile requires is checked** (`E009`, §1.3, Appendix C.1): `reg`
+  a transform whose `from_frame` and `to_frame` are each one of the sample's
+  grid `frame_uid`s, `curation` a provenance activity --- agents alone do not
+  count --- beside `quality` on every annotation, and `multiscale` every image
+  a §4.3 pyramid; `det` an annotation whose `task` is `detection`, of any
+  kind, and `training` an index with an entry, a stale one being `W905`. §1.3
+  said "resolvable endpoints" and "a provenance graph", which no validator
+  could check. The writer infers `reg` and `curation` by the same tests.
+  **A file 1.x wrote can fail `E009`**: it declared `reg` for any transform and
+  `curation` for any provenance record; a no-op `medh5.amend(path)` re-derives
+  the profiles and drops the claim.
 - **A collection declares its newest member's version** (`E011` when lower).
 - **The torch handle cache is keyed by `(path, sample_key)`**: `open_cached`
   and `HandleCache.get` / `lease` take an optional member key, so collection
@@ -284,7 +392,11 @@ out `h5py` objects --- and the behaviour changes below.
   subject at a time by `Admitted::preflight` or from a `Preflight` by
   `Admitted::of`) instead of the whole preflight.
 - **A damaged source is a finding, not a failed preflight**: clinical bytes
-  that cannot be read fail the pin (T302) and the table check (T306).
+  that cannot be read fail the pin (T302) and the table check (T306), and an
+  image or annotation that cannot be read is its subject's T306, with that
+  subject's rows in error. Preflight reads object tables and no voxel:
+  centring an `eligible_instances` crop decoded every mask, so one mask that no
+  longer decompressed failed the whole cohort's preflight.
 - **Only an imaging version fills a slot** (task-cache-1 §3.5): an image some
   other kind of event `describes` is not the slot's.
 - **A row's fingerprint determines its inputs, and a row feature pins it**
@@ -346,12 +458,18 @@ out `h5py` objects --- and the behaviour changes below.
 - **`scrub` does not de-identify the clinical profile, and says so.** Its text
   is packed UTF-8, which the sweep does not read, and a date shift moves
   `/meta`'s dates, not the clinical clock (1.1 §3, §6). A scan of a sample that
-  carries the profile reports it as not examined --- never clean --- and
-  `--apply` refuses the file rather than write an attestation the records would
+  carries the profile, or a `clinical` group it does not declare, reports it as
+  not examined --- never clean --- and `--apply` refuses the file, before
+  writing anything, rather than write an attestation the records would
   contradict; `medh5 clinical strip` writes the imaging projection to share
   instead.
 - **A split ratio is a finite number of at least 0** (`MEDH5ValidationError`):
   1.x accepted a negative share and wrote it into the split.
+- **A k-fold split has no more folds than groups** (`make_splits`):
+  `--k-folds 1000000000` aborted the process allocating the empty folds.
+  `ratios` given with `k_folds`, which were recorded unchecked, are refused,
+  and a k-fold split records none. `leaks()` compares folds as well as
+  partitions.
 
 - **A NIfTI mask added to a sample must sit on its grid** (`import_seg_nifti`):
   spacing, origin and direction are compared with the grid's, lengths in
@@ -364,17 +482,30 @@ out `h5py` objects --- and the behaviour changes below.
   metres converts, and frame times two volumes both state must agree --- the
   first file's times stood for every other's. A volume that states times lends
   them to one that does not.
+- **NIfTI mask names become class keys a sample allows** (`from_nifti`,
+  `import_seg_nifti`): `Liver` or `GTV-1` were taken as keys as given and
+  failed the document schema at commit (`E005`). The key is the name as a key
+  allows it (`gtv_1`), the display name the name as given, and two names that
+  make one key are refused.
+- **A conversion reports what it assumed**, as guesses, which leave the exit
+  status alone: `identity` where no subject identity was established
+  (`from_nifti` without `subject_id`, each case of `from_nnunetv2`), and
+  `units` for a NIfTI file stating no spatial unit --- `unknown`, the header's
+  default and what an export of a `px` grid writes --- which is read as
+  millimetres, as it was without a word. `from_nnunetv2` reports that once per
+  dataset, and the reader's sform and qform guesses, which it dropped.
 - **A DICOM SEG must sit on the grid in plane, too** (`from_dicom_seg`): each
   frame must start at its slice's first voxel, and the SEG's row and column
   directions and pixel spacing must be the grid's (`E405` otherwise); patient
   positions are converted for an RAS grid or other length units rather than
-  read as the grid's own. Every frame's orientation and pixel spacing are read
-  where the file keeps them --- its own functional groups or the shared ones
-  --- and every frame is checked: the first orientation found stood for all of
-  them, so a frame turned in plane was placed as the first one, and spacing
-  kept per frame read as 1 mm. Frames turned or spaced against each other are
-  refused (`E405`), and a frame stating no pixel spacing is refused rather
-  than read as 1 mm.
+  read as the grid's own, and a grid in pixels or another convention, where no
+  patient position is a place, is `E414`. Every frame's orientation and pixel
+  spacing are read where the file keeps them --- its own functional groups or
+  the shared ones --- and every frame is checked: the first orientation found
+  stood for all of them, so a frame turned in plane was placed as the first
+  one, and spacing kept per frame read as 1 mm. Frames turned or spaced
+  against each other are refused, with no code, being about the SEG alone, and
+  a frame stating no pixel spacing is refused rather than read as 1 mm.
 - **A DICOM SEG is not placed in a frame known to be another**
   (`from_dicom_seg`): a grid whose frame of reference is known and is not the
   SEG's is refused (`E414`), matched or named with `--grid`, before the sample
@@ -389,12 +520,15 @@ out `h5py` objects --- and the behaviour changes below.
   planes at 10, 12.5 and 17.5 mm read as 3.75 mm apart and the middle one 1.25
   mm from its position. Planes no regular stack holds are refused.
 - **`to_dicom_seg` writes an annotation only onto its own grid**: the source
-  images must be the annotation grid's slices --- one frame of reference, rows
-  and columns running the same way at the same spacing, each image a slice
-  starting at its first voxel (`E405` otherwise). Their geometry was given to
-  every frame unchecked, so an annotation on a grid turned in plane, or shifted
-  10 mm in the same frame, was exported centimetres from where it was drawn.
-  Images in either slice order are matched to their slices.
+  images must be the annotation grid's slices --- in its frame of reference
+  where the grid states one (`E414` otherwise, as on import; `frame_salt=`
+  compares a frame `medh5 scrub` pseudonymised), rows and columns running the
+  same way at the same spacing, each image a slice starting at its first voxel
+  (`E405` otherwise) --- and a grid in pixels or another convention is `E414`.
+  Their geometry was given to every frame unchecked, so an annotation on a
+  grid turned in plane, or shifted 10 mm in the same frame, was exported
+  centimetres from where it was drawn. Images in either slice order are
+  matched to their slices.
 - **`from_nnunetv2` reads what the header's scaling means**: an image keeps
   `scl_slope`/`scl_inter` as its rescale (they were dropped, leaving a CT at its
   stored counts), and label ids are matched after the scale, which must leave
@@ -413,8 +547,9 @@ out `h5py` objects --- and the behaviour changes below.
   where only the classes with a value of their own were written and the
   components named only inside regions became background. A case whose label
   volume does not give back every exported label --- two classes on one voxel
-  --- is refused before any of its files is written. These refusals carry no
-  §15.2 code: the samples are valid, and what they fail is nnU-Net's layout.
+  --- refuses the export before any case is written, where the cases before it
+  were left written with no `dataset.json`. These refusals carry no §15.2
+  code: the samples are valid, and what they fail is nnU-Net's layout.
 - **A `probmap` is refused where it cannot mean what it was given** (`E411`):
   a probability that is not a number (the range check skipped NaN), and a map
   in which some value is within `float32` rounding of the threshold on the
@@ -492,6 +627,16 @@ out `h5py` objects --- and the behaviour changes below.
   it was the crop's whole shape, channel axis included, and `SaveImage` wrote a
   two-channel crop as one channel. As after a MONAI crop, `spatial_shape` and
   `original_affine` describe the image and `affine` the crop.
+- **MONAI receives affines in millimetres** (`medh5.monai`): an affine in the
+  grid's own units was read as millimetres, so a metre grid's voxels were a
+  thousand times too small; a `px` grid stays in pixels. `from_metatensor`
+  refuses a tensor without an affine or a space, where it substituted an
+  identity affine in LPS.
+- **A `labelmap` item holds the requested classes only, as `int64`**
+  (`VolumeDataset`, `PatchDataset`, `GridPatchDataset`): every other class was
+  painted beneath them while `meta["annotated"]` named only the requested
+  ones, and a `uint16` plane is no `CrossEntropyLoss` target. The ignore value
+  (65535) is kept.
 - **A split names each member of a collection** (`Split.paths`, the `entries`
   of `medh5 dataset split -o`): `path::key`, the locator task sources use. It
   was the collection's path, so members placed in two partitions put the whole
@@ -500,8 +645,21 @@ out `h5py` objects --- and the behaviour changes below.
 - **`write_claims` checks everything before it writes**
   (`medh5 dataset split --write-claims`): a fold a k-fold split does not have is
   refused --- it matched no assignment, so every file was written as `train` ---
-  and a sample inside a collection is refused before the first file is amended,
-  where the files before it had been.
+  and so are a `fold` given for a ratio split, a split that leaks, a sample
+  inside a collection, and a file that amending would refuse (a later minor
+  version, an unknown profile, HDF5 references) or that fails validation at the
+  level the commit uses, each before the first file is amended, where the
+  files before it had been. An I/O failure partway can still leave the files
+  before it claimed.
+- **`dataset check` compares what a class id means** (C102, C302): ids were
+  grouped by `label_set_id@version`, so one id and version carrying two meanings
+  passed with a C101 warning, and a version bump that kept every class was a
+  C102 error. Manifests record each entry's `class_keys`, and C102 reports an
+  id whose key differs between label sets; a manifest indexed before this
+  reports every id two label sets share until it is re-indexed. Coverage
+  reports `named_in` where it reported `present_in`, which counted the samples
+  naming a class as those holding it, so C302 never fired: it reports a class
+  named somewhere and examined nowhere.
 - **Voxel agreement leaves out what either rater did not examine**
   (`compare_voxel`, `medh5 agree`): a voxel either annotation declares ignored
   (§7.7, in band or as the `mask` its `ignore_mask` names) counts neither for
@@ -510,6 +668,10 @@ out `h5py` objects --- and the behaviour changes below.
   frame and are one lattice (`E101`, §3.3 rule 4): a grid id is its sample's
   own name, and two samples each calling a grid `g` were scored 1.0 though 100
   mm apart, and grids of two shapes with ignore regions panicked the merge.
+- **`dice_agreement({})` is refused**: a mean Dice over no class was 0.0,
+  which says two annotations disagree everywhere when nobody compared them.
+- **`dataset.scan(on_error=…)` takes `"warn"` or `"raise"`**: anything but
+  `"raise"` was read as `"warn"`.
 - **World coordinates are compared in one unit and one convention**
   (`compare_instances`, `Annotation.to_index` and `to_world`, the paired
   loader): one frame's numbers are in each grid's units (§3.5), so they are
@@ -526,7 +688,7 @@ out `h5py` objects --- and the behaviour changes below.
   --- two raters --- are refused; `at` and `volume` answered with the first
   rater and `volumes` with the last. `observations_at()` and
   `measurements_at()` list them, and `Observation.kind` says which annotation
-  kind each came from.
+  kind each came from, as `medh5 track --json` does, with `volume_mm`.
 - **Tracking joins every kind that identifies objects.** An oriented box
   (`obb`) or a landmark carrying `instance_ids` made the whole join fail, and
   `medh5 track` with it: an oriented box joins on its enclosing box and
@@ -551,12 +713,24 @@ out `h5py` objects --- and the behaviour changes below.
   (`MEDH5ValidationError`). The engine panicked on too few coordinates and
   ignored extra ones, and paired weights with landmarks by position, dropping
   the excess: two landmarks with one weight reported the first one's error
-  alone. 1.x refused the coordinates, and broadcast a single weight.
+  alone. 1.x refused the coordinates, and broadcast a single weight. A
+  transform's points (`transform_points`, …) carry their coordinates on their
+  last axis: a flat array whose length was a multiple of S was regrouped into
+  points, and is a `ValueError` unless it is one point (`[x, y, z]`).
+  `target_registration_error` also refuses weights that are negative, not
+  finite or all zero, and with no landmarks reports NaN for `mean`, `median`
+  and `max` (`n = 0`), not a 0.0 that reads as a perfect registration.
 - **`fix(rewrite_digests=True, rebuild_index=True)` leaves the index
   current**: the index entries to rebuild are found after the restamp. They were
   the diagnosis from before it, so an index the restamp made stale was left
   stale by the call asked to rebuild it. Restamping alone names the entries it
   leaves stale.
+- **An amendment never restamps a digest its source failed** (`E701`, naming
+  the paths, before anything is written): a no-op `amend` --- or `scrub`,
+  `augment`, split claims, `fix` without `--rewrite-digests`, which commit
+  through it --- made a file edited behind the library's back verify again,
+  with no record that its bytes had changed. Restore the bytes, or run
+  `medh5 fix --rewrite-digests --reason …`, which records why.
 - **Each attested path is bound to its bytes** (§13.2, `E704`): every path
   through `grids/`, `images/`, `annotations/` and `transforms/` (and
   `clinical/` where the profile is declared), soft links followed, must be its
@@ -586,16 +760,22 @@ out `h5py` objects --- and the behaviour changes below.
   `drop_clinical()`, `remove_annotation()`): the profile was unlinked, and HDF5
   never reclaims an unlinked object, so every record --- report text included
   --- stayed in the output's bytes. The output is rebuilt from what remains.
-- **An amendment cannot give an event version a payload it did not have**
-  (`E809`): text linked to an inherited, text-less document event available
-  at 1 h was owned by that version and admitted at 24 h, before it existed. A
-  new version superseding it carries the payload (1.1 §7.3).
+- **What an event version attests is fixed with it** (`E809`, 1.1 §7.3,
+  Appendix A): an amendment cannot give a version the file already holds a
+  payload it did not have --- text linked to an inherited, text-less document
+  event available at 1 h was owned by that version and admitted at 24 h,
+  before it existed --- nor add a link the version itself asserts, nor change
+  a payload or transform it attests; and a held version dropped with the
+  profile and added again is held to what it was. A new version superseding it
+  carries the change. Payloads are compared by content, so
+  `medh5 fix --rewrite-digests` over unchanged bytes still commits.
 - **A cache entry must be owned by the version it is filed under** (`T407`):
   `validate_cache` checks every event-level entry's event and document against
   its source, and the training dataset checks the document before every read,
   also after a reopen or a pickle. A feature filed under a version but
   encoding a later revision's text was served to every row that admitted the
-  version.
+  version. An entry whose source's clinical tables cannot be read is `T407`
+  too, where it was accepted unchecked.
 - **The context window bounds plans too** (1.1 §9.1): a plan's effective time
   is bounded below by the window like any other event's; only the cutoff is
   not a plan's edge. A stale order from 100 days before a seven-day window was
@@ -613,6 +793,10 @@ out `h5py` objects --- and the behaviour changes below.
   prevalent, censors a window it may fall in, and as a negative observes
   nothing. Both were read as having occurred: a cancelled operation in the
   window labelled its row positive.
+- **A target names its horizon**: `Target(horizon_us=…)` is required, and it
+  and the members after it are keyword-only --- its default of 0 always failed
+  the schema (`T101`). `negative` may be left out (`[]`), and an unknown `roi`
+  or `censoring` is `T101` alone, where it was `T102` as well.
 - **Integers are integers** in task slots (`patch`, `classes`) and dataset
   manifests: JSON Schema's `integer` admits `3.0`, and a value that did not
   read as an integer was dropped. It is refused (`T101` in a task, a
@@ -639,9 +823,16 @@ out `h5py` objects --- and the behaviour changes below.
   the index or from a scan alike: the scan that stands in for a missing or
   stale index picked classes uniformly, and with an index an empty weighted
   pool fell back to that scan, so a class weighted zero was drawn. An index is
-  used only when it covers every candidate class, and a draw with no candidate
-  that has both foreground and weight is a uniform one. **Seeded draws without
-  a current index differ from earlier 2.0 builds.**
+  used only when it covers every candidate class the annotation can express
+  --- a `foreground_classes` entry it cannot express counts zero, where it sent
+  every draw to the scan --- and a draw with no candidate that has both
+  foreground and weight is a uniform one. The scan counts every candidate in
+  one pass and decodes only the class it drew. `PatchSampler` checks
+  `class_weights` when it is built: an unknown weighting, or a weight that is
+  negative or not finite, raises `MEDH5ValidationError` there, not at the
+  first draw. A `mask` annotation yields no foreground draw. **Seeded draws
+  without a current index, or for a class a file lacks, differ from earlier
+  2.0 builds.**
 - **nnU-Net exports are planned before the first file is written**
   (`to_nnunetv2`, `medh5 convert to-nnunet`): a case's `sample_id` and the
   dataset name must be file names --- a sample key, not `.` or `..`, no two
@@ -652,13 +843,22 @@ out `h5py` objects --- and the behaviour changes below.
   records the class id of each renumbered value (`medh5_class_ids`), which
   `from_nnunetv2` reads back; a stashed `dataset.json` that does not name a
   class some case carries is extended with it (a region-based one is refused),
-  where the class was written as background.
-- **RTSTRUCT contours are patient coordinates** (`to_rtstruct`): millimetres,
-  LPS --- a metre grid's 0.003 was written for 3 mm and an RAS grid's x and y
-  unflipped. A grid in pixels or another convention is refused, and so are
-  contours with no grid to give their units (`E414`). The source images must
-  share one frame of reference, and the contours' must be it; they were filed
-  under the first image's frame whatever the grid's. `frame_salt` compares a
+  where the class was written as background. Without a stash, a CT image's
+  channel is named `CT`, which nnU-Net normalises as CT; named for its image
+  (`CT_tp0`), it was z-scored.
+- **RTSTRUCT contours are patient coordinates, both ways** (`to_rtstruct`,
+  `from_rtstruct`): millimetres, LPS. The export wrote a metre grid's 0.003 for
+  3 mm and an RAS grid's x and y unflipped, and the import stored `ContourData`
+  as the grid's world coordinates as they were: a square from an RAS grid came
+  back mirrored off the grid, `--rasterize` silently skipping what fell
+  outside, and one from a metre grid read its millimetres as metres. A grid in
+  pixels or another convention is refused, and so are contours with no grid to
+  give their units (`E414`). On export the source images must share one frame
+  of reference, and the contours' must be it; they were filed under the first
+  image's frame whatever the grid's. On import a grid in another known frame
+  --- matched, the sample's only one, or named with `grid=` --- is refused
+  (`E414`) before the sample is touched, and where either side states no frame
+  the placement is a recorded guess. `frame_salt=` (`--frame-salt`) compares a
   frame `medh5 scrub` pseudonymised.
 - **A migrated `extra.nnunetv2` is where the exporter reads it** (Appendix B):
   `/meta → extra.nnunetv2`, and every other 0.x `extra` key under
@@ -666,6 +866,10 @@ out `h5py` objects --- and the behaviour changes below.
   `extra.legacy`, so `to_nnunetv2` never found the stash, and a grouped
   migration kept only the last file's. Grouped files whose stashes differ keep
   the first, and the report warns.
+- **A 0.x file without a spacing migrates to an uncalibrated grid**
+  (`units="px"`, §3.5, a `geometry` decision in the report), not to
+  millimetre voxels nobody measured, and a `coord_system` it does not state is
+  LPS on a recorded guess.
 
 ### Removed
 
@@ -673,6 +877,12 @@ out `h5py` objects --- and the behaviour changes below.
 - `medh5::h5::ops::copy_object` and `copy_unknown` (Rust): they copied one
   member at a time, which is how an alias became a second object;
   `medh5::h5::graph` copies a sample as a graph.
+- More of the Rust API: `medh5::validate::clinical_errors`
+  (`clinical_checked` returns the same diagnostics),
+  `integrity::digest::walk`, `integrity::repair::shown` and
+  `h5::data::is_enum`. `medh5_cli::app` and `medh5_cli::common` are private:
+  the crate's API is `run`, `run_os`, `run_with`, `utf8_args`,
+  `command_tree`, `Host`, `top_level_message` and the exit codes.
 - The argparse internals of `medh5.cli` (`build_parser`, `MODULES` and the
   per-command modules); `command_tree()` describes the grammar and `main()` runs
   it.
@@ -685,9 +895,10 @@ out `h5py` objects --- and the behaviour changes below.
   through `SampleWriter`, which stamps digests and indices at commit; reading
   through `medh5.open`.
 - The `schema` and `interp` extras, which installed `jsonschema` and SciPy for
-  work the engine now does, and `medh5.document.schema_available()`, which
-  could only answer `True`. `pip install "medh5[schema]"` warns that the extra
-  is unknown and installs the package.
+  work the engine now does, the `itk` extra, whose SimpleITK nothing used, and
+  `medh5.document.schema_available()`, which could only answer `True`.
+  `pip install "medh5[schema]"` or `"medh5[itk]"` warns that the extra is
+  unknown and installs the package.
 - **The second and third copies of the JSON Schema.** `schemas/` and the
   package's `medh5/schemas/` held the bytes the engine embeds, kept equal by a
   test. The one file is `crates/medh5/data/medh5-sample-1.0.schema.json`: §2.4
@@ -704,6 +915,7 @@ out `h5py` objects --- and the behaviour changes below.
   (`medh5.io.legacy.read_legacy` and `legacy_meta`), and the private
   `medh5.cli._common` helpers `human_bytes`, `indent` and `table`, which only
   the test suite called, with the two engine bindings behind them.
+- `VerifyResult.details`, which nothing filled.
 
 ### Fixed
 
@@ -728,6 +940,17 @@ out `h5py` objects --- and the behaviour changes below.
   the counter --- undefined behaviour in the decoder every Blosc2 read goes
   through. 3.3.5 checks first, with upstream's other bounds fixes since 3.3.2;
   tests feed the overflowing streams to the decoder.
+- **A stored chunk is read within its file**: a crafted file declaring an
+  oversized chunk made a windowed read or `integrity.raw_chunks` reserve
+  gigabytes, or abort; such a chunk is read through HDF5, or refused
+  (`OSError`). `raw_chunks` and `subtrees_identical` list a dataset's chunks in
+  one pass, where 10 000 chunks took 13 s.
+- **Strings and compound types digest as 1.x digested them** (§13.1,
+  Appendix C.1): a string dataset over its stored bytes, a fixed-length one's
+  without its NUL padding --- the engine decoded strings as text, so two values
+  differing only in invalid UTF-8 shared a digest --- and a compound, array or
+  opaque dataset as `|V<n>`, on which `amend`, `verify`, validation and
+  `recompress` failed. No digest of a valid UTF-8 string changes.
 - **The specification names bytes, not Python functions.** A second
   implementation found three clauses it could only satisfy by reading 1.x's
   code: booleans and strings (§2.5) were `np.bool_` and `h5py.string_dtype()`,
@@ -766,12 +989,231 @@ out `h5py` objects --- and the behaviour changes below.
   `annotations/` and `transforms/` has an attribute line. The pseudo-code wrote
   `H(...)` for both kinds and named no objects; the text now says what every
   implementation has written since 1.0, and no digest changes.
+- **§13.2 lists the attributes `content_id` covers**, object by object
+  (Appendix C.1). It hashed "spec-defined attributes", which include §8.5's
+  `correspondence`, while every implementation since 1.0 has covered one fixed
+  list per object that leaves it out --- and names `scope_ids`, a §9 dataset,
+  among the annotation attributes --- so an implementation following the text
+  computed another `content_id` for every file with landmark pairs. No
+  `content_id` changes; `correspondence` is named as not covered.
+- **Six more 1.0 clauses say what the implementations do** (Appendix C.1):
+  validating a sample compares its own split claims for `W906`, and a split
+  audit (`medh5 splits`) a cohort's (§12.3); a validator checks an extension
+  dataset's digest and storage as it does every dataset's (§16); the root
+  attribute table is a sample root's, a collection's `/` needing only
+  `medh5_kind` and `medh5_version` (§2.1); `source_digest` is on each index
+  entry, not on every object under `index/` (§13.3); a timestamp is RFC 3339
+  and **SHOULD** be UTC, an offset having always passed `E604` (§2.1, §11.1);
+  and amend copies through what it does not interpret only in a version the
+  writer implements (§14.4).
+- **The specification says what the corpus scores** (Appendix C.1, 1.1
+  Appendix A), where a validator written from §15.2 failed cases the reference
+  passes: `contour_offsets` and `mesh_offsets` end at the number of vertices
+  or faces they index (`E408`, which said only "not monotonic"); an
+  `ignore_mask` or `valid_mask` names a `mask` on its object's grid (`E413`);
+  a collection holds a `samples` group with a sample root (`E008`); and
+  `integrity`, not `semantic`, makes the `probmap` value checks, in its full
+  read (§15.1). 1.1 §11.1 puts `E802`'s rule for a `shifted_utc` clock at
+  `semantic` and lists `E704` among the integrity codes. The summaries of
+  `E001`, `E003`, `E008`, `E108`, `E306`, `E405`, `E408`, `E411`, `E412`,
+  `E413` and `E502` --- `CODES[…].summary`, the published `codes.json`, the
+  reference page --- add what the validator reports under them that they left
+  out. The text changed, not the verdicts.
+- **1.1 defines what it relied on**
+  ([Appendix A](docs/spec/medh5-1.1.md#appendix-a--changes-from-the-reviewed-draft-and-why)):
+  a *recognised* `clinical` group, and when an undeclared one is `E803` (§3);
+  the identifier columns `E809` holds non-empty, `record_id` taking the 1.0 id
+  syntax (§4, §5.1); an `instance` endpoint as one in some annotation's
+  `instance_ids`, `E813` when none holds it (§7.1); an amendment that drops the
+  clinical profile as the §10 projection, written at 1.0 (§2.1); no conversion
+  between clocks --- fragments join only on one clock (`T304`), and versions
+  that contradict each other are refused (`T305`), not resolved (§3, §7.2);
+  and an event of `unknown` time as a plan only when `planned`, as the engine
+  always read it (§9.1).
+- **task-cache-1's digests can be reproduced from its text**: §3.1–§3.3 and
+  §7.1 define, to the byte, a manifest's normal form, what each fingerprint
+  hashes, the reconciliation digest (an event version as the clinical schema
+  spells it, all nineteen members) and a cache's `manifest_digest` (over the
+  stored manifest's bytes), and §3.5 the order a slot's images are tried in and
+  where an `eligible_instances` crop is centred. The engine computed each this
+  way already. `T404` says what it is found for --- a cache or preflight of
+  another task, manifest, row or row version, or a cache changed since it was
+  validated --- where it said "another task, cutoff or selection", though a
+  cache read under another selection is `T406`.
 - **The §14.2 codec table timed a cache.** Its 64³ patch reads --- 0.08 ms for
   every codec, gzip included --- re-read one window through one open dataset,
   which HDF5's chunk cache answers after the first read, and the text concluded
   that patch reads are codec-insensitive. Re-measured with a new window per
   read, the codec shows: 1.3 ms for `training`'s lz4, 8.9 ms for `portable`'s
   gzip.
+- **Every stated count is the real one**: the code table has 95 codes (pages
+  said 93 and 71), the clinical profile 36 corpus cases, 8 valid
+  and 28 invalid (they said 35 and 27), and the corpus *at least* one case per
+  code, not one each, nor one per clause; tests now read every stated count. The
+  published suite's README names a case it holds (`E102-non-orthonormal`),
+  counts its codes against both tables, and says the scorer takes
+  `medh5 validate --json`'s `path` and `diagnostics` as they are, where it
+  said the command "emits a superset" of a submission; its manifest cites
+  §5.4 for the hierarchy cycle. The level pages describe the payload scans as
+  they run: the ignore-region and layer scans have had no 64 M cap since 1.4.1
+  --- they read a bounded slab at a time, so memory is bounded and the work is
+  not --- only the `int16` probe is capped, at 4 M values, and a `structural`
+  pass scans for an ignore region only where the answer decides a finding.
+- **The documentation's examples run as written, and say what the API
+  does.** The docs test passed a block whose only error was an unbound name
+  --- thirty did, and ten ran nothing --- and now supplies what the pages
+  leave to their prose and fails a name nobody binds; five examples the writer
+  refused are fixed. The first tutorial validates at the default level, where
+  its file passes with two warnings, not at `strict`, where it fails, and the
+  CLI check reads every block, catching a misspelled subcommand and a
+  synopsis's bracketed flags. The annotation pages say that `class_ids` is
+  what an annotation can express, that a box's class is in `object_class_ids`
+  and that the ignore region is a region, not "class 65535"; the API
+  reference and the longitudinal guide give `physical_size`,
+  `transform_points` and track volumes in their grid's or transform's units,
+  not millimetres; and §14.2's lz4hc L8 row is the 0.x default codec, not
+  `balanced`.
+- **A grid is finite and countable, and the validator checks it as the reader
+  does** (§3.2, Appendix C.1): an infinite spacing is `E104`, a NaN or
+  infinite origin `E109`, and a shape whose voxel count overflows 64 bits
+  `E109` --- `n_voxels` of a 2⁶² × 2⁶² × 2 grid was 0. The validator passed
+  grids `open` refuses --- `spacing`, `origin` or hints of the wrong length, a
+  `direction` that is not S×S, spacing that is not a finite positive number, a
+  non-positive extent --- and gave a NaN `direction` a residual of 0; each is
+  reported under the reader's code (`E102`, `E103`, `E104`, `E109`, `E110`),
+  and `units` or `time_units` outside the §3.2 vocabularies is `E109`.
+- **A pyramid is checked whole**: an empty `grid_levels` panicked the
+  validator, and `add_pyramid` with no levels the writer, and nothing compared
+  `levels` with `grid_levels`, required a dataset for every level, compared a
+  level's shape with its grid or checked the shape of `downsample_factors`.
+  Each is `E105` (a level's shape `E202`), and a refused pyramid leaves
+  nothing behind, so a corrected retry commits.
+- **A rule that stops reports what stopped it**: any error a rule raised
+  became one `E001` at `/`, so six instance ids for three class ids read as an
+  unreadable file. The error's own code is reported (`E405` there), and
+  `E001` only for what could not be read, at the object where the rule knows
+  it.
+- **An unreadable `/meta` no longer floods a clinical sample with `E813`**:
+  every timepoint, activity and de-identification reference was checked
+  against an empty document, and a task's preflight refused the subject for
+  it. The record rules that need no document still run.
+- **`integrity` reports `W908`**, as `semantic` and `strict` do, so each level
+  includes the ones before it.
+- **An empty `medh5_version` is `E001`**, not `E002`.
+- **A malformed transform is an error, not a crash** (§10.3, §10.5, Appendix
+  C.1): a `matrix`, `field` or `control_points` of the wrong shape panicked
+  whatever read it --- `is_invertible`, `summary()`, resolution,
+  `medh5 info`. A matrix is `(S+1, S+1)` for two or three spatial axes
+  (`E504`), a field `(S, *spatial)` on its field grid, and control points
+  `(S, *cp_shape)` on the axes of `cp_grid` with at least `order + 1` on each
+  (`E503`), which the validator checks as the writer always has.
+  `linear_sample`, `cubic_sample` and `sample_field` refuse a field without a
+  sample on every axis, and `basis` an order it cannot evaluate before sizing
+  its output by it: `basis(2**31, 0.5)` aborted the process.
+- **An affine moves points of its own dimension** (§10.3): a 3×3 matrix
+  between two 3-D frames was written, validated, and applied to 3-D points by
+  regrouping their coordinates in twos; the writer and the validator refuse it
+  (`E504`).
+- **Windowed displacement sampling is the whole field's at any coordinate**
+  (`Transform.sample_indices`): the window is taken over the points clamped
+  onto the lattice, where an infinite coordinate overflowed it or moved it off
+  the samples a finite point needed, and points of the wrong width are
+  refused.
+- **A label hierarchy as deep as the id space loads**: the cycle check
+  recursed once per parent link, and a chain through every id crashed
+  whatever opened the file (SIGSEGV).
+- **`frame_graph` draws a transform and its stored inverse once each way**
+  (§10.1), as resolution walks them; it drew each edge twice.
+- **Composite cycles are found in one walk**: every composite rebuilt its
+  siblings and walked from itself, so a thousand chained composites took
+  thirty seconds to validate.
+- **An annotation whose datasets disagree is refused, not read past.**
+  Readers indexed per-object columns by row and trusted the mask shapes: a
+  column one row short panicked, a planted mask shape of 2⁵⁰ voxels aborted
+  the process allocating it, falling `mask_offsets` panicked, and a span
+  shorter than its crop read back with the missing voxels `false`. Every
+  per-object column is held to one row per object, index coordinates to the
+  grid's rank, a voxel volume to its grid's shape and a `probmap` to a plane
+  per class (`E405`); an `instances` object to a mask of its box's extent, no
+  larger than its grid (`E405`), and to offsets that delimit exactly its
+  packed crop inside `mask_data` (`E408`). `payload_to_masks` and
+  `transcode_payload` hold a payload to the same rules, and decode a box
+  hanging off the grid as a reader does, where they refused it. The validator
+  reports the same codes, where it passed most of these files, panicked on
+  boxes of the wrong shape beside `slice_index`, and answered the rest with
+  one `E001`. `encode_instances` refuses a crop that is not its box's extent,
+  and `encode_classification` takes one value per class id (`E405`).
+- **`class_ids` holds every class an annotation can express** (§6.2): an
+  `instances` annotation written with `annotated_classes=`, or built with
+  `encode_instances(class_ids=…)`, declared the classes examined in place of
+  its objects', so an object's class was missing from the header while
+  `contains()` still answered for it. The two are united, and the validator
+  reports an object of a class the header does not declare (`E404`).
+- **`labelmap()` keeps the ignore region under every encoding** (§7.7): only
+  the `labelmap` kind read `ignore_id` at an ignored voxel; `layers`,
+  `bitmask`, `instances` and `probmap`, and any region kept in a sibling mask,
+  flattened it to 0, a verified absence --- and so did
+  `to_nifti(annotation=…)`, which exports `labelmap()`.
+- **World coordinates are read in the frame they name** (§3.4): an annotation
+  in `space="world"` whose `frame_uid` is not its grid's frame was written,
+  validated and read through the grid's affine as the grid's own. The writer,
+  the validator and a read on that grid refuse it (`E414`); a grid that states
+  no frame still takes it.
+- **Values are checked before they are narrowed**: keypoint visibility 256
+  was stored as 0 and 258 as 2, and a face index past 2³¹ or a contour plane
+  or `slice_index` past `int32` wrapped into range. Each is refused (`E411`,
+  `E405`), and a NaN classification value is `E404` to the validator, as it
+  was to the writer.
+- **The exported encoders validate as the writer does**: `encode_labelmap`,
+  `encode_layers` and `encode_voxels` panicked on an `ignore` region of
+  another shape (`E405` now), and stored any `ignore_id` cast to `uint16` ---
+  70000 became 4464, −1 65535, and 1 class 1; it must be a `uint16` that is
+  neither background nor a class (`E404`). An `ignore=` region no voxel
+  carries no longer makes a `uint16` labelmap, which the writer refused as its
+  own output (`E411`).
+- **A polygon with no stored plane is out of plane**, `(-1, 0)`, `Polygon`'s
+  own default, rather than `(-1, -1)`.
+- **An array in any NumPy memory layout is written**: every writer entry
+  point refused a Fortran-ordered, transposed, flipped or strided array ---
+  nibabel's `get_fdata()`, `x.T`, `np.flip(x, 0)` --- with "input array is
+  not in standard layout"; it is copied into C order, as 1.x did.
+- **Edits to the document reach the file again**:
+  `w.document.extra["tool"] = {…}`, the same for `acquisition` and `quality`,
+  and an edit to a value nested in one, changed a fresh copy and were dropped.
+  Each is a dict whose edits write through; an edit to a member changed since
+  it was read raises `RuntimeError` rather than undo that change, and a copy
+  (`copy.copy`, `dict(…)`, `pickle`) is a plain, detached dict.
+- **`AnnotationPayload` is a mutable record again**: `datasets` and `attrs`
+  were rebuilt on every access, so `payload.attrs["k"] = v`, an array edited
+  in place or a dataset added was lost. They are the payload's own dicts, its
+  fields can be reassigned, and the writer, the transcoder and
+  `payload_to_masks` read it as it stands.
+- **Every class 1.x shipped as a dataclass pickles and copies**:
+  `AnnotationHeader`, `TransformHeader`, `Pyramid`, `AnnotationPayload`,
+  `OverlapStats`, `CostModel`, `IndexPayload`, `Observation`, `Track` and
+  `Tracking` raised on `pickle.dumps` and `copy.copy`. `Attrs`, `Dataset`,
+  `Group` and `SamplingIndex` name their public modules (`medh5.nodes`,
+  `medh5.storage`) in `__module__`.
+- **Signatures say what a call takes**: `help()` and `inspect.signature` show
+  the curation records' fields (`Identity`, `Activity`, `QualityRecord`, …)
+  where they showed `(*args, **kwargs)`, and too many arguments is a
+  dataclass's `TypeError` ("takes from 3 to 7 positional arguments"); `Grid`,
+  `LabelSet`, `Skeleton` and `AnnotationHeader` show their real defaults, not
+  `...`.
+- **Patch arithmetic refuses impossible shapes**: `coerce_patch_size`
+  refuses more than 32 axes before allocating ---
+  `coerce_patch_size(4, 2**31)` aborted the process --- and `window_around`
+  and `grid_patches` a negative shape or patch, whose windows ran backwards
+  and read nothing.
+- **A grid with `-0.0` in it hashes like its `0.0` twin**, which it already
+  compared equal to, so a set or dict of grids holds it once.
+- **Reads that decompress release the GIL**: annotation, transform and region
+  reads, `PatchSampler.draw`, the digests and `verify_root`.
+- **A `chunk_hint` larger than its grid is clipped to it**, where the write
+  failed with `OSError`, and `storage.occupancy(mask, 0)` is a `ValueError`,
+  where it panicked.
+- **Errors name what failed**: a failed flush reports HDF5's own message, not
+  "HDF5 error", and a missing grid's `KeyError` names the grids there are.
 - **Detection boxes in a padded patch are where their voxels are.** A patch
   reaching past the volume is padded before as well as after, and
   `label_format="instances"` subtracted the patch start alone, leaving every box
@@ -785,6 +1227,148 @@ out `h5py` objects --- and the behaviour changes below.
   against the level's shape, its step composed into the affine, the resolved
   `[start, stop, step]` recorded in `meta["medh5"]["roi"]`, and an integer
   index --- which drops an axis the affine keeps --- refused.
+- **Torch windows are drawn on the grid their images share** (`PatchDataset`,
+  `GridPatchDataset`): they were placed on the reference grid, so a dataset
+  scoped to a later visit (`timepoint="tp1"`) refused every item of a
+  multi-visit sample. `PairedPatchDataset` refuses the `annotations=`,
+  `label_format=` and `timepoint=` it ignored, and a `samples_per_pair` below
+  1; `collate` takes the keys of every item, not the first's, and names a key
+  some items lack.
+- **nnU-Net imports keep every channel and every ignored voxel**
+  (`from_nnunetv2`): channels were keyed by name, and nnU-Net names a channel
+  for its normalisation, so a second `zscore` channel replaced the first; each
+  is an image of its own (`zscore_0000`). The ignore label, one above the
+  written values, was restored along with them and could become a class id. A
+  label value `dataset.json` does not declare is refused, as nnU-Net refuses
+  it, where it was background for every class.
+- **`medh5 convert from-dicom` exits 0 on success**: the note that no
+  de-identification record was written was a warning, on every conversion; it
+  is information, and the validator reports the file (`W903`). An output path
+  that is an existing directory, or ends in a separator, holds the samples
+  even when there is only one, where it became a file of that name or an
+  `OSError`; slices of two matrix sizes are refused by name.
+- **A DICOM SEG is read only as what its frames hold**
+  (`read_dicom_seg_frames`, `from_dicom_seg`): a `LABELMAP` SEG, whose frames
+  hold every segment by pixel value, was read as `BINARY` with every frame
+  segment 1, as was a frame naming no segment; both are refused. A segment
+  named in the shared functional groups, where highdicom names a
+  single-segment SEG's, is read from there.
+- **`read_nifti(transpose=False)` counts a 4-D file's frames on its fourth
+  axis**, not its first: a four-frame file had as many frame times as its x
+  extent.
+- **A converter's input errors are `medh5: <why>`, not tracebacks**
+  (`medh5 convert`): a file that is not DICOM or NIfTI is refused as such,
+  naming it, where pydicom's and nibabel's own errors escaped; any `OSError`
+  is reported, exiting 1; and a `--report` naming a directory is refused
+  before the conversion, not after its output is written.
+- **The DICOM extras need pydicom 3.0, and `dicomseg` highdicom 0.23**:
+  writing an RTSTRUCT passes `enforce_file_format` to `save_as`, which pydicom
+  3.0 added, so under the old floors (2.4 and 0.22) it raised `TypeError`.
+- **0.x migration keeps a cohort coherent** (Appendix B): names that become
+  one class key (`liver`, `Liver`) are one class, listed in the report ---
+  `--write-labels` refused the sidecar (`E302`) on the guide's own example ---
+  and their masks are stored as their union, where the second replaced the
+  first. `extra.nnunetv2.labels` that disagree keep the first file's ids, with
+  a warning, where the last silently won. A file that cannot be written is
+  reported (`failed`) and the rest migrated, where the first ended the run.
+  `extra.review` is the quality record of every annotation migrated from its
+  file, and the `review` activity names them as outputs: the record was keyed
+  `seg`, which no annotation was, even in a file of boxes. An mtime order is
+  reported once per subject, not twice.
+- **`scrub` finds and shifts every date and date-time, in ASCII digits.** The
+  date rules matched any script's decimal digits and the shift sliced the
+  match as ASCII, so a `StudyDate` in Devanagari digits made
+  `scrub --apply --date-shift-days` panic. An ISO date needed a word boundary
+  after its day, which a date-time never has: a date-time in free text went
+  unreported, one under a date attribute was dropped, a timepoint's was
+  deleted rather than shifted, and only a value's first date moved --- while
+  the attestation recorded the shift and the re-scan found nothing left. Every
+  date in a value moves, a date-time keeps its time, DICOM `DT` values count,
+  and an eight-digit code naming no day (SNOMED CT `52988006`) is no longer a
+  date finding no `--apply` could clear. A timepoint `date` or a timestamp in
+  another script's digits is `E604`.
+- **Prevalence is at most 1** (`compute_stats`, `medh5 dataset stats`):
+  presence was counted wherever a class's voxels were but examination only
+  where the class was looked for, giving a prevalence of 3.0; it is the share
+  of the samples that looked which found it.
+- **The cohort tools take collection members**: `dataset stats` and
+  `compute_stats` measure a member by its locator (`path::key`), findings
+  name members, and C401, C402 and C501 count a shard once.
+- **The documented cohort workflow runs**: `dataset stats --partition` after
+  `--write-claims` told the caller to run the `--write-claims` they had just
+  run; it says to re-index, as the guides now do, and the README's
+  `migrate --group-by subject` has the `--subject-key` it needs.
+- **`medh5 bench` reports what the sampler did**: `used_index` meant that an
+  index entry existed, so a stale one was reported as used.
+- **Output that cannot be written fails the command**: `clinical export`,
+  `info --json` or `tree` onto a full disk exited 0, and now report
+  `cannot write output` and exit 1. A reader that leaves early
+  (`medh5 validate … | head`) no longer turns a failed check into success, and
+  a character the stdout encoding cannot spell --- Windows writes a redirected
+  stdout in its ANSI code page --- is escaped, where `tree` dropped its
+  box-drawing lines.
+- **Every `--json` output is one JSON document**: `labels show --json` on a
+  sample without a label set prints `null`, and
+  `migrate --write-labels --json` puts its review note on stderr.
+- **A batch reports on every file**: `verify`, `fix`, `scrub`, `recompress`,
+  `index build` and `labels check` stopped at the first file they could not
+  process, printing nothing with `--json`, so `scrub --apply` lost the
+  `uid_map` of the files it had pseudonymised. Each file gets an entry
+  (`{"path", "ok": false, "error"}` for a failure), the batch goes on, and the
+  command exits 1 at the end.
+- **`verify` and `fix` say why they fail**: `verify` names a digest it cannot
+  check on its `MALFORMED` line, `fix` the datasets no line of the
+  `content_id` covers, and `fix --rebuild-index` the annotations that have no
+  index, pointing to `medh5 index build`.
+- **`seg stats` recommends only an encoding that keeps the annotation**: it
+  recommended a dense encoding for instances, which drops every
+  `instance_id`, and called that lossless.
+- **`clinical select --cutoff-hours` refuses NaN, infinity and a time off the
+  subject clock**, which selected at 0 µs or at the clock's ends, and
+  certified the result.
+- **`conformance build|run|publish --case` refuses a name the corpus lacks**,
+  and says how many cases it wrote: `--case nosuch` exited 0, and `run`
+  reported "0/0 cases pass".
+- **Errors name their file, in the command line's own words**: an I/O or
+  parse error says `[Errno 2] No such file or directory: 'm.json'` or
+  `'m.json' is not JSON: …`, where it said "No such file or directory (os
+  error 2)" or "EOF while parsing a value". A collection handed to a command
+  without `--key`, or a sample to `ls` or `unpack`, is told what the file is
+  and pointed to `medh5 unpack` or `medh5 info`, not to `open_collection()`
+  or `medh5.open`, and `seg stats`, `agree` and the clinical commands no
+  longer quote the engine's lookup sentence.
+- **`pack` never writes over one of its own sources**, which replaced the
+  sample with the collection, and `unpack` refuses members whose names differ
+  only in case, or a member named twice. `dataset index` refuses a root it
+  cannot list, where it wrote an empty manifest; `tree` names the clinical
+  group and a shard's members, which it called extension objects; and
+  recompressing a shard keeps the image codec for the images of a member
+  keyed `annotations`.
+- **Ctrl-C ends the console script at once**: a command running in native
+  code ran to completion and then printed a `KeyboardInterrupt` traceback.
+- **The standalone binary hands a command to Python without the current
+  directory on `sys.path`**: a `json.py` beside the files being converted was
+  imported, and run, in place of the standard library's.
+- **A world-space box centres a crop where it is** (task-cache-1 §3.5): its
+  millimetres were read as voxel indices, so the crop landed elsewhere with
+  every voxel marked valid. Boxes are carried into the grid's index space
+  first, and an annotation whose boxes cannot be placed is passed over.
+- **A source without `local_subject_id` is held to its subject's id**
+  (`T303`): another patient's file listed under `P-01` passed preflight.
+- **A row feature's versions are compared as a set**: listing them in another
+  order was `T406`; only a missing or extra version is.
+- **`ClinicalTaskDataset` checks `row_features` against the sources it
+  reads**: for a task held without a base, a valid cache was refused (`T404`,
+  `T406`).
+- **`imaging_events_from_timepoints` keeps a visit's fractional day and its
+  range**: 1.75 days became [1, 2) days, and is [1.75, 2.75); an interval the
+  clock cannot hold wrapped, and makes no event, with a note; and an image id
+  over 120 characters made an invalid event id, and keeps its first 103
+  characters and 16 hex digits of a hash.
+- **Revision chains are checked in linear time** --- 16 000 versions of one
+  record took 17 s to validate --- and **preflight's string columns have
+  64-bit offsets**: a subject whose text passed 2 GiB raised a
+  `PanicException`.
 
 ### Performance
 
