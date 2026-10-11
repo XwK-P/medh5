@@ -245,7 +245,7 @@
       "code": "E408",
       "severity": "error",
       "domain": "annotations",
-      "summary": "offsets decrease, or contour or mesh offsets do not end at the number of vertices or faces they index"
+      "summary": "offsets decrease or do not delimit their data: an `instances` object's span in `mask_data` is not its packed crop's size or runs past its end, or contour or mesh offsets do not end at the number of vertices or faces they index"
     },
     {
       "code": "E409",
