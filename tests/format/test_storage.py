@@ -82,6 +82,19 @@ class TestChunking:
         assert found > 0
         assert detect_l3_bytes() == found
 
+    def test_S14_1_a_chunk_hint_never_exceeds_the_extent(self, tmp_path: Path):
+        """A hint larger than the grid was passed to HDF5 as given, which
+        refuses a chunk larger than a fixed-size dataset (OSError)."""
+        path = tmp_path / "hinted.medh5"
+        shape = (64, 64, 64)
+        with medh5.create(path, codec="portable") as w:
+            w.add_grid(
+                "g", shape=shape, spacing=(1.0, 1.0, 1.0), chunk_hint=(128, 16, 96)
+            )
+            w.add_image("CT", np.zeros(shape, np.int16), grid="g", modality="CT")
+        with medh5.open(path) as sample:
+            assert sample.images["CT"].chunks == (64, 16, 64)
+
     def test_axis_kinds_must_describe_the_shape(self):
         with pytest.raises(MEDH5ValidationError):
             optimize_chunks((4, 4), ("spatial",), (2,))

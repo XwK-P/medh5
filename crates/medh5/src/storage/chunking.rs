@@ -165,10 +165,15 @@ pub fn optimize_chunks(
 }
 
 /// The chunk shape the writer gives an array laid out on `grid` (§14.1).
+///
+/// A `chunk_hint` is a preference, held to the array: each entry is clipped
+/// to `1..=extent`, as the computed chunks are --- HDF5 refuses a chunk larger
+/// than a fixed-size dataset, or of extent 0.
 pub fn grid_chunks(grid: &Grid, itemsize: usize, leading: usize) -> Result<Vec<usize>> {
     if let Some(hint) = &grid.chunk_hint {
         if leading == 0 {
-            return Ok(hint.iter().map(|c| (*c).max(0) as usize).collect());
+            let shape = grid.shape_usize();
+            return Ok(hint.iter().zip(shape).map(|(c, n)| (*c).clamp(1, n.max(1) as i64) as usize).collect());
         }
     }
     let mut shape = vec![1usize; leading];
