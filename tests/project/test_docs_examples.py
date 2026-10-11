@@ -184,6 +184,21 @@ STALE_CLAIMS: tuple[tuple[str, str, str, str | None], ...] = (
         "direction raise E501.",
         None,
     ),
+    (
+        "validator payload scans described as capped",
+        r"capped at 64\s*M\b|same 64\s*M cap",
+        "the ignore-region and layer-overlap scans read the whole payload in "
+        "slabs of at most 8 MiB: the memory is bounded, the work is not.",
+        None,
+    ),
+    (
+        "validate --json offered as a submission",
+        r"emits a superset",
+        "the scorer takes what `validate --json` reports --- `path` and "
+        "`diagnostics` in place of `file`, `errors` and `warnings` --- which "
+        "is no superset of a submission.",
+        None,
+    ),
 )
 
 
