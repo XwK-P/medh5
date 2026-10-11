@@ -1038,6 +1038,14 @@ class TestRequiredProfiles:
         assert set(report.profiles) == {"core", "curation", "seg", "reg"}
         assert at(report, "/") == ["E009"]
 
+    def test_S1_3_a_profile_only_required_is_not_called_declared(self, sample_path):
+        """E009 said "profile `reg` is declared" of a profile the file does not
+        declare, which only the caller required."""
+        report = validate_file(sample_path, profiles=["reg"])
+        (found,) = [d for d in report.diagnostics if d.code == "E009"]
+        assert found.message.startswith("profile `reg` requires"), found.message
+        assert "declared" not in found.message
+
     def test_S1_3_a_requirement_never_waives_a_declared_profile(self, tmp_path):
         path = tmp_path / "h.medh5"
         History.write(path)

@@ -131,7 +131,7 @@ pub fn check_clinical(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     let modern = crate::version::at_least(&version, MIN_VERSION);
     let Some(group) = group else {
         if held(ctx) {
-            out.push(ctx.err("E009", "/", "profile `clinical` is declared but `clinical/` is absent"));
+            out.push(ctx.err("E009", "/", "profile `clinical` requires the `clinical/` group, and it is absent"));
         } else if ops::exists(&ctx.root, GROUP) && modern {
             out.push(ctx.err("E803", "/clinical", "`clinical` is reserved by MEDH5 1.1 for the clinical profile"));
         }

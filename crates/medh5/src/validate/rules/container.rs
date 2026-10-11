@@ -338,13 +338,17 @@ pub fn check_profiles(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     }
     let declared: BTreeSet<&str> = ctx.profiles.iter().map(String::as_str).collect();
     if declared.contains("seg") && !kinds.iter().any(|k| VOXEL_KINDS.contains(&k.as_str()) && k != "mask") {
-        out.push(ctx.err("E009", "/", "profile `seg` is declared but no voxel annotation is present"));
+        out.push(ctx.err("E009", "/", "profile `seg` requires a voxel annotation, and none is present"));
     }
     if declared.contains("det") && !tasks.contains("detection") {
-        out.push(ctx.err("E009", "/", "profile `det` is declared but no annotation declares task='detection'"));
+        out.push(ctx.err(
+            "E009",
+            "/",
+            "profile `det` requires an annotation of task='detection', and none declares it",
+        ));
     }
     if declared.contains("cls") && !kinds.contains("classification") {
-        out.push(ctx.err("E009", "/", "profile `cls` is declared but no classification annotation is present"));
+        out.push(ctx.err("E009", "/", "profile `cls` requires a classification annotation, and none is present"));
     }
     let count = |g: &str| -> Result<usize> {
         Ok(match ops::child_group(&ctx.root, g) {
@@ -354,18 +358,18 @@ pub fn check_profiles(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     };
     if declared.contains("reg") {
         if count("transforms")? == 0 {
-            out.push(ctx.err("E009", "/", "profile `reg` is declared but no transform is present"));
+            out.push(ctx.err("E009", "/", "profile `reg` requires a transform, and none is present"));
         } else if !relates_grids(&ctx.root)? {
             out.push(ctx.err(
                 "E009",
                 "/transforms",
-                "profile `reg` is declared but no transform has endpoints in the sample: none has a `from_frame` and \
-                 a `to_frame` that are each the `frame_uid` of one of its grids",
+                "profile `reg` requires a transform with endpoints in the sample, and none has a `from_frame` and a \
+                 `to_frame` that are each the `frame_uid` of one of its grids",
             ));
         }
     }
     if declared.contains("training") && count("index")? == 0 {
-        out.push(ctx.err("E009", "/", "profile `training` is declared but no sampling index is present"));
+        out.push(ctx.err("E009", "/", "profile `training` requires a sampling index, and none is present"));
     }
     if declared.contains("multiscale") {
         for (name, image) in ctx.children("images")? {
@@ -373,8 +377,7 @@ pub fn check_profiles(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
                 out.push(ctx.err(
                     "E009",
                     format!("/images/{name}"),
-                    "profile `multiscale` is declared but this image is single-scale: the profile lays out every \
-                     image as a §4.3 pyramid",
+                    "profile `multiscale` lays out every image as a §4.3 pyramid, and this image is single-scale",
                 ));
             }
         }
@@ -384,7 +387,7 @@ pub fn check_profiles(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
             out.push(ctx.err(
                 "E009",
                 "/meta#provenance",
-                "profile `curation` is declared but the provenance graph (§11.1) records no activity",
+                "profile `curation` requires a provenance activity, and the provenance graph (§11.1) records none",
             ));
         }
         if declared.contains("longitudinal") && doc.timepoints.len() < 2 {
