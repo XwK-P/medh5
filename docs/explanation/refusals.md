@@ -190,8 +190,8 @@ an `AttributeError` and the other as an `IndexError` out of `highdicom`.
 
 **Export refuses an ignore region.** A binary segment has no value for "not
 examined": its 0 says examined and absent. Written from `dense()`, every voxel
-the annotation ignores (§7.7) went out as that 0 --- unexamined tissue
-exported as verified negative --- so an annotation with an ignore region is
+the annotation ignores (§7.7) went out as that 0 — unexamined tissue
+exported as verified negative — so an annotation with an ignore region is
 refused. A NIfTI labelmap keeps the region, as the annotation's ignore id.
 
 **Writing requires `highdicom`** rather than assembling the IOD by hand.

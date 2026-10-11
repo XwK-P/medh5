@@ -145,7 +145,7 @@ dropped**. Four cases:
 One conversion loses something and is not refused, because §7.6 allows it: a
 `probmap` is lossless only under its `threshold` (§7.5). Converted to another
 encoding, it keeps the voxels at or above the threshold as the class, and its
-probabilities are gone --- keep the `probmap` where they still matter.
+probabilities are gone — keep the `probmap` where they still matter.
 
 ### Instances
 

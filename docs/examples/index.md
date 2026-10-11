@@ -16,9 +16,9 @@ API, end to end, and the test suite runs each of them
 |---|---|
 | [`clinical_longitudinal.py`](clinical_longitudinal.py) | The worked example of 1.1 §9.3 as a cohort: two CT visits, an intervening lab, a report and its revision, follow-up responses. Writes, reopens and validates every file, preflights a progression task, and prints a training batch whose rows see different visits, missing modalities and histories of different lengths |
 | [`clinical_collection.py`](clinical_collection.py) | A subject split across two members of a `.medh5c` shard: refused until its duplicated event is reconciled, then trained on through worker processes |
-| [`clinical_cache.py`](clinical_cache.py) | Event- and patient-level feature caches, then every way one stops being usable --- a source amended (stale), bytes rotted (corrupt), a whole-history embedding (inadmissible), statistics fitted on the wrong split --- and the explicit re-pin |
+| [`clinical_cache.py`](clinical_cache.py) | Event- and patient-level feature caches, then every way one stops being usable — a source amended (stale), bytes rotted (corrupt), a whole-history embedding (inadmissible), statistics fitted on the wrong split — and the explicit re-pin |
 | [`bench_clinical.py`](bench_clinical.py) | Write, select, read, batch, cache and amend costs on a synthetic cohort ([results below](#clinical-paths-format-11)) |
-| [`bench_preflight.py`](bench_preflight.py) | A task's preflight, dataset and items on a large multi-site cohort --- many events, documents, fragments and cutoffs --- each measured in its own interpreter: time, peak memory, bytes read ([results below](#preflight-at-cohort-scale)) |
+| [`bench_preflight.py`](bench_preflight.py) | A task's preflight, dataset and items on a large multi-site cohort — many events, documents, fragments and cutoffs — each measured in its own interpreter: time, peak memory, bytes read ([results below](#preflight-at-cohort-scale)) |
 
 ```bash
 pip install "medh5[torch,h5py]"   # h5py: clinical_cache.py rots a cache's bytes with it
@@ -142,8 +142,8 @@ as from its 1.0 projection, and opening a sample reads no clinical table until
 images dominate it. Selection is metadata-only and milliseconds per subject;
 preflight is dominated by re-verifying every pinned sample's clinical digests,
 which is what lets it detect an edit under an unchanged stored root. At this
-size two workers do not beat one process --- each worker pays its own opens for
-48 small rows --- so measure your own shard and worker layout before choosing.
+size two workers do not beat one process — each worker pays its own opens for
+48 small rows — so measure your own shard and worker layout before choosing.
 
 ### Preflight at cohort scale
 
@@ -184,22 +184,22 @@ subjects one at a time too (commit `3921e74` → now):
 | `--json` (1.6 GB written) | 130 s, 12.3 GB | 70 s, 315 MiB |
 
 Where the time went, and what changed: rows had copied their subject's event
-records (every row of every subject, through JSON, into Python objects --- 5 GB
+records (every row of every subject, through JSON, into Python objects — 5 GB
 for 720 rows), every row rebuilt the revision chains, every event was digested
 to find the few held twice, each source's tables were read twice and its text
 decompressed three times. Now a subject's history is prepared once and shared by
 its rows as indices, only duplicates are digested, a source is walked once and
 its tables read once, text is read only to verify it, and the result crosses
 into Python as columns built a subject at a time. What remains is the guarantee
-itself (a profile of the engine, by instructions): checking each pin --- one
-walk of the file and a hash of every clinical byte --- is ≈40 % of the work,
+itself (a profile of the engine, by instructions): checking each pin — one
+walk of the file and a hash of every clinical byte — is ≈40 % of the work,
 validating each source's clinical tables ≈30 %, opening the sources ≈8 %, and
 selecting at every cutoff and building every row ≈12 %. The hash is SHA-256 in
 software here (this CPU has no SHA extensions; the `sha2` crate uses them where
-they exist), ≈14 % on its own. Reading the clinical tables twice --- hashed,
-then validated --- is not where the time goes: every HDF5 read with its
+they exist), ≈14 % on its own. Reading the clinical tables twice — hashed,
+then validated — is not where the time goes: every HDF5 read with its
 decompression, in both passes, is 6.5 %, so one pass would save 3–4 % and tie
-the digest code to clinical parsing. Threads do not help --- every HDF5 call
+the digest code to clinical parsing. Threads do not help — every HDF5 call
 holds one lock; four threads ran slower than one. Items with notes are bound by
 the deliberately naive `HashingTextEncoder`: without documents the same items
 build at ≈130 per second.
@@ -213,7 +213,7 @@ per-object digests, `content_id` and `source_digest` (§13), plus reader-side
 round trips for the affine, the box↔slice convention, instance mask decoding and
 lossless `layers ↔ bitmask` transcoding. Each check raises when it fails. CI
 runs it on every push, then validates the file it wrote at integrity level with
-the wheel and the native binary --- its own checks are its own reading of the
+the wheel and the native binary — its own checks are its own reading of the
 text, and for a while that reading computed a `content_id` no implementation
 agreed with.
 

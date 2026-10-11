@@ -15,8 +15,8 @@ units say.
 
 `--annotation` alone writes the annotation's labelmap, with every ignored voxel
 as its ignore id (`65535` unless the header says otherwise). `--class` writes
-one class as a 0/1 mask, which cannot say "ignored" --- its `0` says "examined,
-absent" --- so it refuses an annotation with an ignore region: export the
+one class as a 0/1 mask, which cannot say "ignored" — its `0` says "examined,
+absent" — so it refuses an annotation with an ignore region: export the
 labelmap instead. The output is a `.nii` or `.nii.gz` file.
 
 The round trip from `from_nifti` reproduces the affine and the voxels; a file
@@ -32,8 +32,8 @@ medh5 convert to-dicom-seg case.medh5 organs out.dcm \
 ```
 
 `--source` is the original series the segmentation refers to; a SEG is only
-meaningful against one. The annotation is one with classes --- a `labelmap`,
-`layers`, `bitmask`, `instances` or `probmap` --- written one segment per
+meaningful against one. The annotation is one with classes — a `labelmap`,
+`layers`, `bitmask`, `instances` or `probmap` — written one segment per
 class; any other kind, a `mask` among them, is refused (`E401`).
 
 **Repeat the flag once per file.** `--source` takes exactly one value per
@@ -99,7 +99,7 @@ Classes are matched by **id**, not by name — which is why import keeps nnU-Net
 own integers. The label table is every case's classes, and a case is written
 against it only if it examined every one (`annotated_class_ids`): 0 in an
 nnU-Net label volume is a verified negative, which a class nobody looked for is
-not, so such a case is refused --- `--class` exports a subset every case
+not, so such a case is refused — `--class` exports a subset every case
 examined. A class a case cannot name is refused (`E402`) rather than
 skipped; a skipped class produces a `dataset.json` listing it, label files of
 the right shape, and every voxel zero.

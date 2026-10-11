@@ -70,8 +70,8 @@ Merkle `content_id` that survives recompression; a validator with a
 conformance corpus, at least one case per code, that any implementation can run.
 
 **What was known, when.** From format 1.1 a sample may carry the subject's
-clinical history beside the images --- labs, reports and their revisions,
-diagnoses, medications, assessments --- each with when it happened *and* when
+clinical history beside the images — labs, reports and their revisions,
+diagnoses, medications, assessments — each with when it happened *and* when
 it became known. A model trained at a cutoff reads only what was available
 then: the preliminary report, not the amendment two days later; the baseline
 scan, not the follow-up; a lesion mask only after someone drew it. Tasks and
@@ -126,7 +126,7 @@ The **format** is versioned by `medh5_version`: [1.0](spec/medh5-1.0.md), and
 nothing else. A sample is written at the lowest version its content needs, so
 imaging-only data is still 1.0. A minor version may add optional objects,
 profiles, encodings and diagnostic codes; it may not change what an existing
-one means, and a reader opens a later minor as a projection --- validated for
+one means, and a reader opens a later minor as a projection — validated for
 what it knows, never amended. See spec §16 and 1.1 §2.
 
 The **package** follows semantic versioning from 1.0.0. `medh5.__version__` is

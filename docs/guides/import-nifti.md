@@ -34,8 +34,8 @@ A file with a scale (`scl_slope`/`scl_inter`) comes back as its physical values
 by default, as floats; `to-nifti --stored` writes the stored voxels and the
 scale, as the file had them.
 
-Mask names become class keys as a label set allows them --- `--mask GTV-1=...`
-is the class `gtv_1`, displayed as `GTV-1` --- and two names that make one key
+Mask names become class keys as a label set allows them — `--mask GTV-1=...`
+is the class `gtv_1`, displayed as `GTV-1` — and two names that make one key
 are refused. NIfTI names no subject, so give one with `--subject-id`; without
 it the sample is a subject of its own, and the report says so (`identity`). A
 file that states no spatial unit is read as millimetres, as a guess (`units`).

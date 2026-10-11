@@ -6,7 +6,7 @@ them, in one self-describing HDF5 container.  This crate is the canonical
 implementation of formats 1.0 and 1.1 ([the specification], and [1.1] for the
 optional clinical profile): the data model, HDF5 I/O, validation, chunked
 access, compression, geometry and transforms, annotations, provenance,
-integrity --- and, for 1.1, clinical events on a subject clock, strict
+integrity — and, for 1.1, clinical events on a subject clock, strict
 prospective selection, and the [task and cache contract] training builds on.
 
 It has two siblings, and all three read and write the same bytes:
@@ -58,21 +58,21 @@ fn main() -> medh5::Result<()> {
 
 | Module | Specification |
 |---|---|
-| [`sample`] | §2, §4, §14.4 --- reading (`Sample`) and writing (`SampleWriter`, `create`, `amend`) |
-| [`geometry`] | §3 --- grids, affines, frames, multiscale |
-| [`annotations`] | §5--§9 --- the voxel and geometric encodings, headers, coverage |
-| [`transforms`] | §10 --- affine, displacement, B-spline and composite transforms |
-| [`labels`] | §5 --- label sets, hierarchies and ontology codes |
-| [`curation`] | §11, §12 --- identity, provenance, quality, timelines, splits, scrubbing |
-| [`integrity`] | §13 --- per-object digests and `content_id` |
-| [`storage`] | §14 --- codec profiles, chunking, the sampling index |
-| [`validate`] | §15 --- the validator and its diagnostic codes ([`codes`]) |
-| [`collection`] | §2.2 --- packing samples into a `.medh5c` shard |
+| [`sample`] | §2, §4, §14.4 — reading (`Sample`) and writing (`SampleWriter`, `create`, `amend`) |
+| [`geometry`] | §3 — grids, affines, frames, multiscale |
+| [`annotations`] | §5–§9 — the voxel and geometric encodings, headers, coverage |
+| [`transforms`] | §10 — affine, displacement, B-spline and composite transforms |
+| [`labels`] | §5 — label sets, hierarchies and ontology codes |
+| [`curation`] | §11, §12 — identity, provenance, quality, timelines, splits, scrubbing |
+| [`integrity`] | §13 — per-object digests and `content_id` |
+| [`storage`] | §14 — codec profiles, chunking, the sampling index |
+| [`validate`] | §15 — the validator and its diagnostic codes ([`codes`]) |
+| [`collection`] | §2.2 — packing samples into a `.medh5c` shard |
 | [`dataset`], [`sampling`] | cohort manifests, splits, statistics; patch sampling |
 | [`conformance`] | the conformance corpus third-party implementations run |
-| [`version`] | 1.1 §2 --- which versions are read fully, read as a projection, or refused |
-| [`clinical`] | 1.1 §3--§10 --- the clinical profile: records, columns, checks, selection, augmentation |
-| [`companion`] | task-cache-1 --- task manifests, source pins, preflight row views, feature caches |
+| [`version`] | 1.1 §2 — which versions are read fully, read as a projection, or refused |
+| [`clinical`] | 1.1 §3–§10 — the clinical profile: records, columns, checks, selection, augmentation |
+| [`companion`] | task-cache-1 — task manifests, source pins, preflight row views, feature caches |
 
 Errors are one [`Error`] type whose diagnostic code, when it has one, is the
 code the validator reports for the same defect (§15.2, [1.1] §11.2).

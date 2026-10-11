@@ -74,7 +74,7 @@ w.add_segmentation("lesions_tp1", grid="ct_tp1", encoding="instances",
 ```
 
 Masks carry no identity, so the writer asserts none. A segmentation given as
-`masks=` and stored as `instances` --- chosen by measurement or asked for ---
+`masks=` and stored as `instances` — chosen by measurement or asked for —
 holds one object per class, each minted an id above every id the sample already
 holds, so it joins nothing. Correspondence is the caller's to assert: pass
 `instances=` with the ids.
@@ -95,13 +95,13 @@ $ medh5 track case.medh5 --class lesion
 ```
 
 Each visit answers with one observation: the object's mask, where an
-`instances` annotation saw it, or else its box --- axis-aligned or oriented
+`instances` annotation saw it, or else its box — axis-aligned or oriented
 (`obb`, whose volume its rotation leaves alone). A detection beside a
 segmentation of the same lesion is the common case, and a box's volume is its
 bounding box's, so the mask is the measurement. A landmark (`points`, with the
 `instance_ids` §10.6 asks of trackable points) marks the object without
 measuring it, and answers only where nothing else saw it. Two masks of one
-visit --- two raters --- are not one answer: `at`, `volume`, `volumes` and
+visit — two raters — are not one answer: `at`, `volume`, `volumes` and
 `relative_change` refuse rather than pick a rater, and `observations_at()`
 lists every observation of the visit (each with its annotation's `kind`) for
 the caller to choose from. An annotation of another kind that carries
@@ -110,8 +110,8 @@ the caller to choose from. An annotation of another kind that carries
 Volumes are in their grid's units cubed (`Observation.units`), and
 `relative_change` compares two visits in millimetres (`volume_mm`), so a
 follow-up on a grid in metres reads as the change it is. Visits with no
-physical measure in common --- an uncalibrated (`px`) grid beside a calibrated
-one, an area beside a volume --- have no change, and it is `None`. `medh5
+physical measure in common — an uncalibrated (`px`) grid beside a calibrated
+one, an area beside a volume — have no change, and it is `None`. `medh5
 track` prints volumes in mm³.
 
 ### Three states, not two

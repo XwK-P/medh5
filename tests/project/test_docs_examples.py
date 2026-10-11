@@ -332,6 +332,40 @@ def test_corrected_claims_stay_corrected(
     assert not hits, f"{label}: {why}\n  " + "\n  ".join(hits)
 
 
+# What is not prose on a Markdown page: fenced and inline code, link targets,
+# reference definitions, comments, table separator rows and horizontal rules.
+_NOT_PROSE = re.compile(
+    r"^[ \t]*```.*?^[ \t]*```"
+    r"|(`+)(?:(?!\n\n).)+?\1"
+    r"|\]\([^)]*\)|<https?://[^>]+>|^[ \t]*\[[^\]\n]+\]:[^\n]*|<!--.*?-->"
+    r"|^[ \t]*\|?(?:[ \t]*:?-+:?[ \t]*\|)+[ \t]*(?::?-+:?)?[ \t]*$"
+    r"|^[ \t]*---[ \t]*$",
+    re.S | re.M,
+)
+
+
+def test_a_dash_is_written_as_a_dash() -> None:
+    """`---` is three hyphens to GitHub, PyPI, crates.io and the site alike ---
+    none of their Markdown makes it a dash --- and every page printed it so,
+    over six hundred times, beside the `—` the newer prose wrote."""
+    pages = [
+        README,
+        ROOT / "CHANGELOG.md",
+        ROOT / "CONTRIBUTING.md",
+        *sorted(ROOT.glob("crates/*/README.md")),
+        *sorted(DOCS.rglob("*.md")),
+    ]
+    hits: list[str] = []
+    for path in pages:
+        text = path.read_text(encoding="utf-8")
+        prose = _NOT_PROSE.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), text)
+        for match in re.finditer(r"(?<!-)---(?!-)", prose):
+            line = text.count("\n", 0, match.start()) + 1
+            where = path.relative_to(ROOT).as_posix()
+            hits.append(f"{where}:{line}: {text.splitlines()[line - 1].strip()[:80]}")
+    assert not hits, "write a dash as `—`, not `---`:\n  " + "\n  ".join(hits)
+
+
 def test_the_rust_example_on_the_docs_page_is_the_tested_one() -> None:
     """`cargo test` compiles and runs the engine crate's README; the docs page
     shows the same block, so it is tested too --- as long as they are one."""

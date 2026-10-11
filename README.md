@@ -13,7 +13,7 @@ ground truth — in a single self-describing HDF5 file.**
 
 Multi-modality images, segmentation in five encodings, detection boxes,
 keypoints, contours, meshes, classification, registration between visits,
-provenance and quality records, and per-object integrity digests --- and, from
+provenance and quality records, and per-object integrity digests — and, from
 format **1.1**, the clinical history around the images, with *when each fact
 became known*, so a model trained at a cutoff reads only what was available
 then. Format versions [**1.0**](https://medh5.readthedocs.io/en/stable/spec/medh5-1.0/) and
@@ -52,10 +52,10 @@ Rust 1.85.1 or later, a C compiler and CMake, for HDF5.
 
 There is a wheel for CPython 3.10 and later on Linux x86_64 and aarch64 (glibc
 2.28 or later), macOS 11 or later (x86_64 and arm64) and Windows x64. Anywhere
-else --- musl, an older glibc, Windows on ARM, PyPy, a free-threaded CPython
---- `pip` falls back to the sdist, and building the engine from it needs the
+else — musl, an older glibc, Windows on ARM, PyPy, a free-threaded CPython
+— `pip` falls back to the sdist, and building the engine from it needs the
 same Rust, C compiler and CMake, and network access to crates.io. Where neither
-will do, the 1.x line remains --- pure Python over h5py, writing format 1.0:
+will do, the 1.x line remains — pure Python over h5py, writing format 1.0:
 `pip install "medh5<2"`.
 
 ## Documentation
@@ -149,7 +149,7 @@ every access, so a forked worker abandons the parent's handles on first use
 rather than reading through or closing them.
 
 With a clinical history (format 1.1), a **task** asks a question at a cutoff,
-and the batch holds only what was known then --- images from the visit
+and the batch holds only what was known then — images from the visit
 available at the cutoff, the report version current at it, missing modalities
 and censored targets as masks rather than zeros:
 

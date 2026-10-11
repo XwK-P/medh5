@@ -1,8 +1,8 @@
 # medh5-sys
 
 Native dependencies of the [`medh5`](https://crates.io/crates/medh5) format
-engine, built from source so that every frontend --- the Rust crate, the
-Python wheel and the `medh5` command line --- carries the same libraries and
+engine, built from source so that every frontend — the Rust crate, the
+Python wheel and the `medh5` command line — carries the same libraries and
 needs nothing installed:
 
 - **HDF5**, statically linked through `hdf5-metno-sys` (`static`, `zlib`);
@@ -22,7 +22,7 @@ before touching a file.
 release flags under the Visual Studio generator, `/DNDEBUG` included, so HDF5
 keeps its assertions and a damaged file aborts the process instead of
 returning an error. Set `CFLAGS_x86_64_pc_windows_msvc=-DNDEBUG` (or the
-variable for your target) when building --- `-D`, which `cl` takes as it takes
+variable for your target) when building — `-D`, which `cl` takes as it takes
 `/D`, because a POSIX shell on Windows such as Git Bash rewrites `/DNDEBUG` into
 a path; this repository's
 `.cargo/config.toml` does, and a crates.io build never reads that file.  So

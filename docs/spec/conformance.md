@@ -13,8 +13,8 @@ the specification's tables: 1.0 §15.2, and the codes [1.1](medh5-1.1.md) §11.2
 adds.
 
 36 of the cases are the `clinical` profile's (format 1.1): the worked example of
-1.1 §9.3 --- two imaging visits, an intervening lab, a delayed report and its
-revision, a follow-up assessment --- a one-visit history, time uncertainty,
+1.1 §9.3 — two imaging visits, an intervening lab, a delayed report and its
+revision, a follow-up assessment — a one-visit history, time uncertainty,
 UTF-8 text, a vocabulary wider than the voxel class space, a collection mixing
 1.0 and 1.1 members, a higher minor read as a projection, and one invalid file
 at least per clinical code. The cases of 1.0 are unchanged, and a 1.0 file stays a
@@ -49,7 +49,7 @@ wrote the suite to suite/: 157 cases, see suite/README.md
 | `codes.json` | the diagnostic code table as data (1.0 §15.2 and 1.1 §11.2) |
 | `medh5-sample-1.0.schema.json` | the JSON Schema for `/meta` |
 | `medh5-clinical-1.schema.json` | the JSON Schema for `clinical/meta` and clinical records (1.1) |
-| `medh5-task-1.schema.json`, `medh5-cache-1.schema.json` | the [task and cache contract](task-cache-1.md)'s schemas --- published here for convenience, not scored by the corpus |
+| `medh5-task-1.schema.json`, `medh5-cache-1.schema.json` | the [task and cache contract](task-cache-1.md)'s schemas — published here for convenience, not scored by the corpus |
 | `companion/` | the task-and-cache fixtures: task manifests over the suite's clinical samples, and `expected.json` (below) |
 | `SHA256SUMS` | over every file above |
 | `README.md` | the contract, generated with the suite |
@@ -63,12 +63,12 @@ The corpus scores a format validator. `companion/` scores an implementation of
 the separately versioned [task and cache contract](task-cache-1.md): fourteen
 task manifests over the suite's own clinical samples, each pinned to the
 content those samples have in the suite. `companion/expected.json` gives, for
-each, the level it is checked at --- `validate`, the manifest alone with no
-file opened, or `preflight`, its sources opened too --- and the exact set of
+each, the level it is checked at — `validate`, the manifest alone with no
+file opened, or `preflight`, its sources opened too — and the exact set of
 `T` codes checking it must find: one invalid manifest per code from `T101` to
 `T306`. For the valid one it also gives each row's status, the event versions
 strict selection admits at its cutoff, the image filling its slot and its
-target label --- so two implementations of prospective selection can be
+target label — so two implementations of prospective selection can be
 compared on more than their error codes.
 
 ```
@@ -191,5 +191,5 @@ A minor version may add codes. It may not change what an existing one means:
 An implementation of 1.0 that reads a 1.1 file is reading a higher minor
 version: the clinical cases are not addressed to it. The higher-minor case
 (`W913-higher-minor-projection`) is what such an implementation should do with
-a newer file than it implements --- read the supported projection, report what
+a newer file than it implements — read the supported projection, report what
 it does not know as `W913`, and never amend it.

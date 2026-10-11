@@ -1,8 +1,8 @@
 # Train on clinical tasks
 
 A prediction made at a moment may only use what was known at that moment. This page builds a
-**task** over clinical samples --- which subjects, which cutoffs, what a row may read, what it
-predicts --- checks it before training, and turns it into real batches: images from different
+**task** over clinical samples — which subjects, which cutoffs, what a row may read, what it
+predicts — checks it before training, and turns it into real batches: images from different
 visits, missing modalities, histories of different lengths, document features, and a target that may
 be unobserved. The contract is [Task and cache contract 1](../spec/task-cache-1.md); every decision
 about what a row may see is the engine's, made once at preflight.
@@ -14,7 +14,7 @@ for some, day 200.
 
 ## Describe the task
 
-A task names its **sources** --- each pinned to the `content_id` it was built from --- assigns every
+A task names its **sources** — each pinned to the `content_id` it was built from — assigns every
 **subject** to a partition before any row exists, and lists the **rows**: a subject at a cutoff.
 Slots are stable names for modalities, never filenames; the target is an event concept read after
 the cutoff.
@@ -48,18 +48,18 @@ assert task.validate() == []
 assert task.task_fingerprint != task.manifest_fingerprint
 ```
 
-The **task fingerprint** identifies the definition --- policy, slots, target --- and not the rows, so
+The **task fingerprint** identifies the definition — policy, slots, target — and not the rows, so
 two spellings of one task share it. The **row fingerprint** adds the subject, the pinned source
 versions and the cutoff: an example's identity depends on the data it reads, not on a patient id.
 
 ## Check it before training
 
-Preflight opens every source once, checks every pin --- recomputing the clinical datasets' digests,
-not trusting the stored root --- and says per row what it may read and why it is in or out. No voxel
+Preflight opens every source once, checks every pin — recomputing the clinical datasets' digests,
+not trusting the stored root — and says per row what it may read and why it is in or out. No voxel
 is read, and no report is *used*: text is read only to verify it (its digest, and its UTF-8, a slab at
 a time) and to compare a document two fragments both hold. Subjects are taken one at a time, their
 files closed before the next subject's open, and every row of a subject indexes one shared history
-(`report.subjects`, `row.selected`) rather than copying it --- so a cohort of thousands of cutoffs
+(`report.subjects`, `row.selected`) rather than copying it — so a cohort of thousands of cutoffs
 costs a few arrays, not an object per event per row.
 
 ```python
@@ -120,8 +120,8 @@ assert train.concepts.fitted_on["partition"] == "train"
 
 What each part of a batch means, and the masks that keep it honest:
 
-- **Images** come from the newest image of the slot's modality that the row's selection admits ---
-  baseline at 24 h, follow-up at day 95 --- read as a window on the image's own grid. Nothing is
+- **Images** come from the newest image of the slot's modality that the row's selection admits —
+  baseline at 24 h, follow-up at day 95 — read as a window on the image's own grid. Nothing is
   resampled. With `roi="eligible_instances"` the window is centred on an annotation *available at the
   cutoff*; before the lesion masks were drawn, the crop falls back to the grid centre
   (`meta["visits"]["ct"]["roi"] == "center_fallback"`), because centring it on a mask drawn later
@@ -132,20 +132,20 @@ What each part of a batch means, and the masks that keep it honest:
 - **`label`, `annotated` and `ignore`** are segmentation supervision for the slot's classes. Like the
   target, supervision may come from after the cutoff, and it never enters an input. `annotated` says
   whether a class was examined: a 0 in an unexamined class is not a negative.
-- **`events`** is the admitted history in clinical order --- concept, kind, status, normalised value
-  with its comparator, and every time it has --- padded to the longest history in the batch, with
+- **`events`** is the admitted history in clinical order — concept, kind, status, normalised value
+  with its comparator, and every time it has — padded to the longest history in the batch, with
   `mask` marking real events. A revised report contributes the version known at the cutoff.
 - **A value keeps its category and its unit.** `value_index` indexes a text value (`female`,
   `positive`) as the fitted pair of concept and value. A numeric value is normalised only in the unit
-  its concept was fitted in: `unit` is 2 for those, 1 for a value in another unit --- present, and
-  left at 0 rather than mixed in among standard scores --- and fitting refuses a concept whose
+  its concept was fitted in: `unit` is 2 for those, 1 for a value in another unit — present, and
+  left at 0 rather than mixed in among standard scores — and fitting refuses a concept whose
   training values come in two units.
 - **Time keeps its uncertainty.** An event's effective start, its end and its availability are each
   given as bounds, as ages before the cutoff (`start_age_h[..., 0]` the least, `[..., 1]` the most): a
   diagnosis known to the day keeps its whole day, not a guessed hour. Each has a `*_known` mask, so an
   unknown time is never read as zero hours. `temporal_type` tells a `static` fact from an event of
   unknown time; `tie_group` marks events whose times overlap, whose order in the sequence is not
-  evidence; `plan` marks a plan admitted by the `plans` policy --- `planned`, or its start not
+  evidence; `plan` marks a plan admitted by the `plans` policy — `planned`, or its start not
   definitely at or before the cutoff.
   `has_value`, `comparator` (`< 5` is not 5) and `missing` (a result not done, never a negative) keep
   missingness apart from measurement.
@@ -159,8 +159,8 @@ on anything else is refused (T405).
 
 ## Read documents
 
-Give the dataset an encoder, and each row gets one feature per admitted document --- the version known
-at its cutoff --- read when the item is built:
+Give the dataset an encoder, and each row gets one feature per admitted document — the version known
+at its cutoff — read when the item is built:
 
 ```python
 from medh5.cache import HashingTextEncoder
@@ -174,7 +174,7 @@ item["meta"]["document_events"]        # ['report0_v1'] at 24 h
 ```
 
 `HashingTextEncoder` is a deterministic, dependency-free fixture, not a language model. A real encoder
-goes in the same place --- anything with `encode(text) -> array` and a `dim` --- or, better, into a
+goes in the same place — anything with `encode(text) -> array` and a `dim` — or, better, into a
 cache.
 
 ## Cache features
@@ -223,11 +223,11 @@ medh5 cache validate cohort/reports.medh5cache --task cohort/progression.task.js
 
 - **Stale** (T403): a source no longer has the content an entry pins. Rebuild the entry.
 - **Corrupt** (T401, T402): the cache's own bytes no longer match their checksums. Rebuild the cache.
-- **Not this task's** (T404--T406): built for another task or cutoff, fitted on another split, or ---
-  for a patient-level feature --- encoding event versions its row does not admit, such as a
+- **Not this task's** (T404–T406): built for another task or cutoff, fitted on another split, or —
+  for a patient-level feature — encoding event versions its row does not admit, such as a
   whole-history embedding.
 - **Mis-joined** (T407): an event-level entry names an event its source does not hold, or a
-  document that event does not own --- a report's feature filed under its earlier version, say.
+  document that event does not own — a report's feature filed under its earlier version, say.
   Rebuild the entry; the training dataset refuses it too, before reading it.
 
 A cache never redefines its sources: a failed validation rejects the cache, and the samples are
@@ -235,7 +235,7 @@ untouched.
 
 ## Fragments and collection members
 
-A subject may be spread over several samples --- one per export, or members of a `.medh5c` shard ---
+A subject may be spread over several samples — one per export, or members of a `.medh5c` shard —
 on one clock. List them all as the subject's sources; preflight checks that every fragment is that
 subject, that their clocks agree, and that an event present in several fragments is the same event.
 Record the duplicates once:
@@ -245,7 +245,7 @@ medh5 task reconcile cohort/progression.task.json --out cohort/reconciled.task.j
 ```
 
 A member of a collection is named by the shard and its key, and pins the member's own `content_id`
---- packing does not change it:
+— packing does not change it:
 
 ```python
 from medh5.collection import pack
@@ -263,7 +263,7 @@ across two members of a shard.
 
 ## Workers
 
-Handles follow the 1.0 §14.4 rules. Every source --- file or member --- is opened through the
+Handles follow the 1.0 §14.4 rules. Every source — file or member — is opened through the
 per-process cache of [`medh5.torch`](../reference/torch.md), keyed by `(path, sample_key)`, so a
 forked worker abandons its parent's handles instead of reading through them; a feature cache is
 opened in the process that reads it and is abandoned, never closed, across a fork.
@@ -278,7 +278,7 @@ loader = DataLoader(train, batch_size=8, num_workers=4, persistent_workers=True,
 ```
 
 The dataset holds only what pickles: the manifest, the preflight's columns, the fitted vocabulary
-and the cache's path --- NumPy arrays, which a forked worker shares rather than copies. Workers
+and the cache's path — NumPy arrays, which a forked worker shares rather than copies. Workers
 re-read nothing that preflight decided, and read each source as the version its row pins: a handle
 cached from before the file was replaced (`amend` writes a new file) is reopened, and a source that
 changed after the preflight is refused (T302).

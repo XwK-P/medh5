@@ -112,7 +112,7 @@ so a clause has one obvious home in the code.
   documentation read; a test asserts that it and the §15.2 table list the same
   codes. A code's meaning never changes, and a retired code is never reused. A
   new code needs a conformance case, in `crates/medh5/src/conformance/build.rs`
-  --- or `clinical.rs` beside it, for a 1.1 code; a test fails until it has one.
+  — or `clinical.rs` beside it, for a 1.1 code; a test fails until it has one.
 - **Versioning follows §16**: a minor format version may add objects, kinds,
   profiles and codes; it may not change what an existing one means.
 - The JSON Schema lives in one place, `crates/medh5/data/`, beside the code
@@ -140,6 +140,9 @@ Documentation here is checked against the code, not proofread:
 - **Corrected claims stay corrected.** The same file keeps a list of statements
   that were once wrong in the documentation; add to it when you fix a claim
   that could plausibly come back.
+- **A dash is `—`.** GitHub, PyPI, crates.io and the site all print `---` as
+  three hyphens, so the pages, the READMEs, `CHANGELOG.md` and this file write
+  the character; the same file checks each of them.
 - **Counts are checked.** Where a page states the size of the conformance
   corpus or its breakdown, a test compares it with the corpus.
 - **Measurements say how they were taken.** A number on a page comes from a
@@ -174,9 +177,9 @@ reader can decide whether their pipeline is affected.
 The version lives in `[workspace.package] version` in `Cargo.toml`: every
 crate inherits it, maturin stamps it on the wheel, and the engine writes it into
 every file's `generator`. The crates also name each other at exactly that
-version --- the `=X.Y.Z` pins of `medh5-sys`, `medh5` and `medh5-cli` under
+version — the `=X.Y.Z` pins of `medh5-sys`, `medh5` and `medh5-cli` under
 `[workspace.dependencies]`, which crates.io needs because it publishes each
-crate on its own --- and a test holds the pins to the version. To release, set
+crate on its own — and a test holds the pins to the version. To release, set
 the version and the three pins (and `Cargo.lock` with `cargo update -w`), move
 the unreleased notes under the new version, dated the day of the release, and
 push a `vX.Y.Z` tag on a commit whose CI passed.
@@ -191,7 +194,7 @@ push a `vX.Y.Z` tag on a commit whose CI passed.
    before anything is published;
 3. publishes the wheels and the sdist to PyPI through Trusted Publishing, and
    the crates to crates.io (`medh5-sys`, `medh5`, `medh5-cli`, in that order,
-   with the `CARGO_REGISTRY_TOKEN` secret --- each crate built from its package
+   with the `CARGO_REGISTRY_TOKEN` secret — each crate built from its package
    without the token in the environment, then uploaded, and in the index before
    the next one, which resolves against it);
 4. creates the GitHub Release, with the changelog section as its notes and the
@@ -218,7 +221,7 @@ version once it is published.
 ### Before the first release to a registry
 
 What a release needs from a registry is set up once, outside the repository,
-and a gap in it shows only when the tag runs --- by which time PyPI may have the
+and a gap in it shows only when the tag runs — by which time PyPI may have the
 version. Before the first tag that publishes there:
 
 - **crates.io**: the account the token belongs to has a verified email
@@ -230,7 +233,7 @@ version. Before the first tag that publishes there:
   `release.yml` and the `pypi` environment, as it has since 1.x; renaming
   either here means renaming it there.
 - **Homebrew**: the tap (`XwK-P/homebrew-medh5`) exists, and
-  `HOMEBREW_TAP_TOKEN` can push to it --- a fine-grained token with read and
+  `HOMEBREW_TAP_TOKEN` can push to it — a fine-grained token with read and
   write access to that repository's contents.
 
 After it, add a second owner to each crate (`cargo owner --add`), so that

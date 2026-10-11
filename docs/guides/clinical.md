@@ -1,7 +1,7 @@
 # Clinical history beside the images
 
 Format 1.1 lets a sample carry the subject's clinical history next to the images: laboratory values,
-reports and their revisions, diagnoses, medications, assessments --- each with **when it happened**
+reports and their revisions, diagnoses, medications, assessments — each with **when it happened**
 and **when it became known**. This page shows how to write that history, read it back, ask what was
 known at a moment, and add it to files you already have. The rules are [MEDH5 1.1](../spec/medh5-1.1.md);
 the cohort used below is the one
@@ -13,7 +13,7 @@ Nothing changes for imaging-only data: a sample without clinical records is stil
 
 Times are signed microseconds on one **subject clock**, and every time is a pair of inclusive bounds:
 an exact instant is one integer, a date known to the day is the day's bounds, and an unknown time is
-`None` --- never a guess. Declare the clock first; then add events, documents and the links between
+`None` — never a guess. Declare the clock first; then add events, documents and the links between
 them and the imaging objects.
 
 ```python
@@ -48,15 +48,15 @@ with medh5.open("history.medh5") as s:
 
 The writer checks every record as it is added and the whole history at `commit`, as it does for
 images: a `point` without a start, an observation with a value but no code, a link to an image that
-does not exist --- each is refused with its diagnostic code rather than written.
+does not exist — each is refused with its diagnostic code rather than written.
 
 A few rules carry most of the meaning:
 
 - **A version is immutable.** A revised report is a new event with the same `record_id` and a new
-  document, linked to the old version by `supersedes` --- never an edit of the old row. A measurement
+  document, linked to the old version by `supersedes` — never an edit of the old row. A measurement
   corrected later, or an interval whose end was learned later, is a new version too. So is what a
   version attests: an amendment refuses to give a version the file already held a payload or a
-  relationship it did not have, or to replace one it did (`E809`) --- a grounding drawn later is
+  relationship it did not have, or to replace one it did (`E809`) — a grounding drawn later is
   asserted by a new event, available when it was drawn, and a corrected mask is a new annotation.
 - **Unknown stays unknown.** Leave `available_us` as `None` when the source does not say; never
   substitute the time the data was ingested. Strict selection will then never use the event, which is
@@ -101,7 +101,7 @@ with medh5.open("cohort/P-03.medh5") as s:
     text = s.clinical.text("report0_text_v1")      # read when asked for
 ```
 
-A later revision whose availability is unknown --- or straddles the cutoff --- makes the selection
+A later revision whose availability is unknown — or straddles the cutoff — makes the selection
 **uncertifiable** rather than silently handing back the older version: whether the older version was
 still current at the cutoff is exactly what is unknown. `latest_provable` is the one named
 alternative, and says so in its status:
@@ -123,7 +123,7 @@ medh5 clinical select cohort/P-03.medh5 --cutoff-hours 24
 
 ## Add a history to a 1.0 file
 
-`augment` copies a sample's objects as stored --- their digests do not change --- adds the records,
+`augment` copies a sample's objects as stored — their digests do not change — adds the records,
 and writes a 1.1 sample with a new identity. It reports what the records leave unknown, and refuses
 a `clinical` group it did not write rather than reinterpret it.
 
@@ -151,7 +151,7 @@ events, links, notes = clinical.imaging_events_from_timepoints("case.medh5")
 clock = clinical.baseline_day_clock("clock")
 ```
 
-The command line takes the same records as a logical-record bundle --- the JSON
+The command line takes the same records as a logical-record bundle — the JSON
 `ClinicalRecords.to_json()` returns and `medh5 clinical export` writes, checked against
 `medh5-clinical-1.schema.json`:
 
@@ -164,7 +164,7 @@ medh5 clinical augment case.medh5 case-records.json --out case-1.1.medh5
 
 Removing the clinical profile is the imaging projection (1.1 §2.1, §10), and only ever a requested
 operation: the result is a different sample, with its own `content_id`, written at the lowest
-version what remains needs --- 1.0 for imaging alone. `medh5 clinical strip` writes it to a new file
+version what remains needs — 1.0 for imaging alone. `medh5 clinical strip` writes it to a new file
 and reports the loss:
 
 ```bash
@@ -187,8 +187,8 @@ with medh5.open("cohort/P-03.medh5") as s:
 medh5 validate cohort/P-03.medh5 --level integrity
 ```
 
-Clinical tables are checked like everything else: the column encoding, the records, and --- at
-`integrity` --- every clinical dataset's digest, recomputed from the bytes, so an edit to a report
+Clinical tables are checked like everything else: the column encoding, the records, and — at
+`integrity` — every clinical dataset's digest, recomputed from the bytes, so an edit to a report
 is found even when the stored `content_id` was left alone. A file of a **later** minor version than
 this package implements is read as a projection: what is known is validated, what is not is reported
 as `W913`, and the file is never amended.

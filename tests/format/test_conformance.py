@@ -745,7 +745,7 @@ class TestStatedCounts:
         }
         assert stated == {where: [str(len(clinical))] for where in stated}, stated
         assert re.findall(r"profile:\s+(\w+) valid", spec) == [_spelled(valid)]
-        invalid = re.findall(r"---\s+and\s+([\w-]+)\s+invalid", spec)
+        invalid = re.findall(r"—\s+and\s+([\w-]+)\s+invalid", spec)
         assert invalid == [_spelled(len(clinical) - valid)], invalid
 
     def test_S15_2_every_stated_code_count_is_the_registry_size(self):

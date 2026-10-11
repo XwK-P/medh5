@@ -41,8 +41,8 @@ What 1.1 deliberately does not do, and which version would:
 
 A writer writes the **lowest version its content needs**: `1.0` when a sample holds imaging alone,
 `1.1` when it declares `clinical`. An amendment never lowers the version a file already declares
-(§2.3), except one that removes the clinical profile: that is the §10 imaging projection ---
-separately requested, and a different sample with its own `content_id` --- whether it is written to
+(§2.3), except one that removes the clinical profile: that is the §10 imaging projection —
+separately requested, and a different sample with its own `content_id` — whether it is written to
 a new file (`medh5 clinical strip`) or in place of its source (`drop_clinical` in an amendment), and
 it is written at the lowest version what remains needs.
 
@@ -50,7 +50,7 @@ it is written at the lowest version what remains needs.
 
 An implementation distinguishes:
 
-1. **reading a supported projection** --- for example the 1.0 imaging objects of a 1.1 file;
+1. **reading a supported projection** — for example the 1.0 imaging objects of a 1.1 file;
 2. **validating declared profiles**, which requires implementing their semantics;
 3. **amending a file**, which requires preserving all supported and opaque content, its
    declarations and its integrity contract.
@@ -60,8 +60,8 @@ of a **higher minor** version than it implements, an implementation:
 
 - **MUST NOT** reject the file solely for its minor version, and **MAY** expose the supported
   projection;
-- reports every item of the newer version it does not know --- a profile, a `/meta` member, an
-  enumerated value, a column, an attribute --- as **W913**, not as the error the same item would be
+- reports every item of the newer version it does not know — a profile, a `/meta` member, an
+  enumerated value, a column, an attribute — as **W913**, not as the error the same item would be
   in a file of a version it implements, and reports the version itself as **W913** at `/`;
 - **MUST NOT** claim conformance to the newer version, or clinical-training support, because the
   file opened and its projection validated;
@@ -82,8 +82,8 @@ A writer that implements every declared profile re-derives the **known** profile
 content, as in 1.0: an edit that removes the last voxel annotation removes the `seg` claim rather
 than keeping a false one. A no-op amendment therefore preserves every declaration of a valid file.
 A recognised `clinical` group (§3) carries its profile through an amendment untouched, byte for
-byte, until the amendment changes it (§8). A `clinical` group that is **not** the profile's --- a
-1.0 file's own extension --- is copied through and never reinterpreted.
+byte, until the amendment changes it (§8). A `clinical` group that is **not** the profile's — a
+1.0 file's own extension — is copied through and never reinterpreted.
 
 ### 2.4 Subject grouping
 
@@ -127,8 +127,8 @@ The descriptor:
 {"clock":{"id":"subject-clock-01","origin_description":"acquisition start of the baseline CT (tp0)","reference":"relative","unit":"us"},"schema":"medh5.clinical/1"}
 ```
 
-`clinical/meta` is serialized in the canonical JSON of 1.0 §5.1 --- sorted keys, no whitespace,
-UTF-8 --- so equal descriptors digest equally (**E801** otherwise). Its schema is
+`clinical/meta` is serialized in the canonical JSON of 1.0 §5.1 — sorted keys, no whitespace,
+UTF-8 — so equal descriptors digest equally (**E801** otherwise). Its schema is
 `medh5-clinical-1.schema.json` (`#/$defs/descriptor`), closed (**E802**):
 
 - `schema` **MUST** be `medh5.clinical/1`.
@@ -143,13 +143,13 @@ UTF-8 --- so equal descriptors digest equally (**E801** otherwise). Its schema i
 An origin need not be birth or the first image; negative times are valid, including events before
 baseline imaging. Fragments of a subject that share a clock **MUST** share its origin and unit. No
 conversion between clocks is defined: a task's preflight joins a subject's fragments only when they
-declare one clock --- the same `clock` object --- and refuses the temporal join otherwise (**T304**,
+declare one clock — the same `clock` object — and refuses the temporal join otherwise (**T304**,
 [task-cache-1](task-cache-1.md) §3.3). Ingestion time is never a clinical origin by default. Date
 shifts preserve one timeline across images, reports and events.
 
 ## 4. Column encoding
 
-One primitive column layout --- no HDF5 compound records, no pickles, no group per event. Every column
+One primitive column layout — no HDF5 compound records, no pickles, no group per event. Every column
 of a table has the same row count `N`.
 
 | Logical column | HDF5 representation |
@@ -163,7 +163,7 @@ offsets never decrease, the last equals `B`, and row `i` is `data[offsets[i]:off
 **MUST** decode as UTF-8 (**E806**). Offsets count bytes, not code points.
 
 Required columns have no validity dataset. A nullable column without one is entirely valid, and an
-**omitted** optional column is entirely null --- not zero. A null numeric cell **MUST** hold `0` and
+**omitted** optional column is entirely null — not zero. A null numeric cell **MUST** hold `0` and
 a null string cell **MUST** be empty (equal adjacent offsets), so stale bytes cannot leak a source
 value (**E807**); a mask with values other than 0 and 1, a mask for a required or absent column, or a
 mask of the wrong length is **E807** too. A zero-length valid string is distinct from a null.
@@ -178,8 +178,8 @@ The set of columns is **closed** at 1.1: an unknown column is **E804** (W913 in 
 projection, §2.2). Large numeric columns and UTF-8 buffers **SHOULD** be chunked and compressed with
 a 1.0 §14.2 codec; offsets and small tables **MAY** be contiguous; `clinical/meta` stays an
 uncompressed scalar. Physical row order is not clinical chronology and not an identifier. Writers
-**SHOULD** store events by known effective start, then event id, with unknown-time rows last --- the
-reference writer does --- and derived lookup orderings never change identities.
+**SHOULD** store events by known effective start, then event id, with unknown-time rows last — the
+reference writer does — and derived lookup orderings never change identities.
 
 ## 5. Events and temporal semantics
 
@@ -217,7 +217,7 @@ Values (**E812** unless stated):
 - `code_system` and `code` are both valid or both null. A missing terminology version stays null.
 - `value_comparator` and `unit` are null when `value_num` is null. A numeric value **SHOULD** carry a
   unit (**W914** when it does not), and a converter **MUST NOT** invent one. `<5` is
-  `value_comparator = lt`, `value_num = 5` --- never an exact 5.
+  `value_comparator = lt`, `value_num = 5` — never an exact 5.
 - `value_num` and `value_text` are never both valid. A `missing_reason` requires both null: a
   missing expected result is absence plus its reason, never a negative finding.
 - An `observation` carrying a value names what was measured (`code_system` and `code`; a declared
@@ -239,8 +239,8 @@ implies midnight or an order within the day. Temporal uncertainty (the bounds) a
 |---|---|---|
 | `point` | required | absent |
 | `interval` | required | optional (null: ongoing or unknown); valid ends admit a start-before-end assignment, `start_lo ≤ end_hi` |
-| `static` | absent | absent --- availability is still meaningful |
-| `unknown` | absent | absent --- never silently treated as `static` |
+| `static` | absent | absent — availability is still meaningful |
+| `unknown` | absent | absent — never silently treated as `static` |
 
 Any other combination is **E811**. Source precision is represented by the bounds; the microsecond
 unit does not claim microsecond precision. Availability need not follow occurrence: an order can be
@@ -272,9 +272,9 @@ this profile `media_type` **MUST** be `text/plain` (**E810**); the text may be i
 
 Each document is **owned by exactly one** `document` event, which links it by `describes` and owns its
 timing, status and provenance, and a `document` event owns **at most one** document (**E815**): one
-text, one event version, one availability --- an event whose text is not stored owns none. A revision
+text, one event version, one availability — an event whose text is not stored owns none. A revision
 is a new document *and* a new event version; the `record_id` persists. The text is the canonical,
-de-identified source content --- not token ids, a summary or an embedding. Imported whitespace and
+de-identified source content — not token ids, a summary or an embedding. Imported whitespace and
 Unicode are preserved after documented de-identification; any change to the stored bytes is a new
 document and a new event version with explicit provenance, and is not a newly issued report: its source
 availability is retained when the same information is being represented. Model summaries belong in
@@ -286,7 +286,7 @@ as well as metadata: a date-shift field alone claims nothing about free text.
 
 No text needs to be read to read the rest of the profile. The `text` offsets alone give every
 document's byte length, so a reader can open the profile, select at a cutoff and know which documents
-a row may read without decompressing a report, and read one document's bytes when it is asked for ---
+a row may read without decompressing a report, and read one document's bytes when it is asked for —
 checking that row's UTF-8 then (**E806**), as every row is checked on its own. A validator still checks
 every row, which it can do a bounded slab of the buffer at a time; a span's endpoints need only the
 bytes at them.
@@ -309,8 +309,8 @@ Optional columns: `source_start` and `source_end` (`uint64`, a text span, valid 
 source), `target_annotation_id` (UTF-8, valid only for an `instance` target) and
 `asserted_by_event_id` (UTF-8, the event version that supplies the relationship as evidence).
 
-- Every endpoint **MUST** resolve within the sample root --- never against a working directory or an
-  absolute HDF5 path --- and every `asserted_by_event_id` to a local event version (**E813**). Each
+- Every endpoint **MUST** resolve within the sample root — never against a working directory or an
+  absolute HDF5 path — and every `asserted_by_event_id` to a local event version (**E813**). Each
   sample therefore holds the local closure of its links, including the predecessors `supersedes`
   names.
 - `instance` ids are the canonical decimal string of a sample-scoped `instance_id`, and the instance
@@ -330,27 +330,27 @@ For `supersedes` the source is the **newer** event version and the target the ol
 of one `record_id`. Different versions keep their own documents and availability. A version that
 supersedes itself, two successors of one version (a branch), two predecessors of one version (a
 merge), a cycle, a record whose versions the links do not order into one chain, or availability
-bounds that definitely contradict the direction --- the newer version known available before the
-older could have been --- are **E816**. When availability cannot order eligible revisions, the chain
+bounds that definitely contradict the direction — the newer version known available before the
+older could have been — are **E816**. When availability cannot order eligible revisions, the chain
 does. Versions held by several fragments of a subject are merged by the task contract before
 selection ([task-cache-1](task-cache-1.md) §3.3): a version two fragments hold has one content,
-which the manifest records, and anything else --- a difference, an unrecorded duplicate, chains each
-sound but contradicting once merged --- is **T305**, the subject's rows in error. No order is
+which the manifest records, and anything else — a difference, an unrecorded duplicate, chains each
+sound but contradicting once merged — is **T305**, the subject's rows in error. No order is
 invented to resolve it.
 
 ### 7.3 Attribution
 
 A relationship used as a model input **MUST** be attested at the cutoff (§9): either it is the
-immutable **structural** link from an event to its own payload --- a `document` event `describes`
-its document, an `imaging` event `describes` its image --- or its `asserted_by_event_id` names an
+immutable **structural** link from an event to its own payload — a `document` event `describes`
+its document, an `imaging` event `describes` its image — or its `asserted_by_event_id` names an
 event version eligible at the cutoff. Adding or replacing an owned payload needs a new event
 version. An unattributed link supports navigation, never a claim about what was known when: a
 report-to-lesion grounding drawn later is not available with the original report.
 
 A single file cannot show when a link was written, so the rule is enforced where it can be: at the
 amendment boundary, where what an event version the sample already held attests is fixed with it. A
-writer amending a sample **MUST** refuse --- **E809**, as for a repeated event id: each would change a
-version already written --- a structural link from such a version, a link whose
+writer amending a sample **MUST** refuse — **E809**, as for a repeated event id: each would change a
+version already written — a structural link from such a version, a link whose
 `asserted_by_event_id` names one, and any change to a payload one attests: an image, document,
 annotation, transform or grid its links admit with it (§9.1 step 5), compared by its datasets'
 digests, and for an instance the annotations carrying it. Attached or replaced later, the payload or
@@ -372,13 +372,13 @@ helper's derived states.
 
 ## 8. Integrity, packing and amendment
 
-Every dataset under `clinical/` --- byte buffers, offsets, validity masks and `clinical/meta` ---
+Every dataset under `clinical/` — byte buffers, offsets, validity masks and `clinical/meta` —
 **MUST** carry its 1.0 §13.1 digest (**E818**). `clinical/meta` is digested as a variable-length
 string dataset; only the root `meta` keeps its special 1.0 §13.2 treatment.
 
 The 1.0 §13.2 Merkle construction and its covered attributes are **unchanged**: clinical objects
 define no attribute but the dataset `digest`, so clinical semantics are attested through dataset
-content, the descriptor included. Checking the stored root alone is insufficient --- a verifier
+content, the descriptor included. Checking the stored root alone is insufficient — a verifier
 recomputes the relevant datasets (**E701**); the conformance cases `E701-clinical-text-edited` and
 `E701-clinical-descriptor-edited` change bytes under an unchanged stored root. Where the profile is
 declared, `clinical/` is attested as the four 1.0 groups are: every path through it is its object's
@@ -399,7 +399,7 @@ packed (§2.2).
 
 ## 9. Information availability and prospective selection
 
-Selection is part of the profile's meaning --- what a record says about what was known when --- so
+Selection is part of the profile's meaning — what a record says about what was known when — so
 it is defined here, normatively, and implemented once, in the engine: the same rules decide what a
 cutoff admits from Rust, Python and the command line. Tasks name a policy
 ([task-cache-1](task-cache-1.md) §3.4); this section defines what each policy admits.
@@ -413,13 +413,13 @@ For cutoff `c` (`selection = strict_prospective`, the default):
    version definitely available after `c` (`available_lo > c`) leaves the earlier one usable. A
    newer version whose availability is unknown, or straddles `c`, makes the selection
    **uncertifiable**: the earlier version is still reported, but the row cannot be certified and a
-   task excludes it with that reason --- the earlier record is never silently turned into an ordinary
+   task excludes it with that reason — the earlier record is never silently turned into an ordinary
    missing feature, because that missingness would itself depend on the later history. A selected
    version marked `entered_in_error` withdraws the record.
 3. **Kind, plan, context.** The task's kinds filter. A `static` event is admitted unless the policy
    excludes static events, and is unordered. Otherwise the order time is the effective start (or the
    availability, with `order_by = available`); an event with no order time is excluded
-   (`unknown_time`) --- unknown time is never placed on the timeline. An event that is `planned`, or
+   (`unknown_time`) — unknown time is never placed on the timeline. An event that is `planned`, or
    whose effective start is known and not definitely at or before `c`, is a **plan**: excluded unless
    the policy admits plans, and never a completed outcome. An event of `unknown` time has no start to
    place after `c`: only `order_by = available` gives it an order time, and it is admitted as unknown,
@@ -436,8 +436,8 @@ For cutoff `c` (`selection = strict_prospective`, the default):
    policy says; a limit of 0 keeps none. Static events are unordered under every ordering, so a limit
    never counts or drops them.
 5. **Payloads.** Only payloads the selected versions attest are admitted (§7.3): the structural
-   targets of selected `document` and `imaging` events, and the endpoints --- with any
-   `target_annotation_id` --- of links asserted by a selected event whose event and document endpoints
+   targets of selected `document` and `imaging` events, and the endpoints — with any
+   `target_annotation_id` — of links asserted by a selected event whose event and document endpoints
    are themselves admitted. A future label, annotation, later-visit registration or whole-history
    embedding cannot enter through a secondary reference. Eligibility covers every input dependency,
    including the choice of image, region and crop centre.
@@ -480,7 +480,7 @@ annotations only. An absent follow-up is censoring under the task's policy, neve
 - **1.0 files stay 1.0.** Nothing migrates them automatically; a writer keeps writing 1.0 when no
   clinical capability is needed.
 - **Augmentation** (`medh5 clinical augment`, `medh5.clinical.augment`) copies a sample's objects
-  as stored --- paths and compressed payloads unchanged, so their digests are unchanged --- adds
+  as stored — paths and compressed payloads unchanged, so their digests are unchanged — adds
   source-backed events, documents and links, and computes the new 1.1 identity. It never resamples.
   It reports what the records leave unknown (availability, precision); missing data stays unknown.
   If `clinical/` already exists and is not this profile's, augmentation refuses rather than
@@ -524,9 +524,9 @@ complete table, generated from the engine's registry, is
 ### 11.3 Conformance
 
 The corpus ([Conformance suite](conformance.md)) holds the 1.0 cases unchanged and 36 cases for this
-profile: eight valid --- the §9.3 worked example, a one-visit history with years of laboratory values,
+profile: eight valid — the §9.3 worked example, a one-visit history with years of laboratory values,
 time uncertainty, UTF-8 text, a vocabulary wider than the class space, a mixed-version collection, a
-higher-minor projection, and a value without a unit --- and twenty-eight invalid, at least one per new
+higher-minor projection, and a value without a unit — and twenty-eight invalid, at least one per new
 error code. The task-and-cache contract is not part of the format corpus; the published suite carries
 its own fixtures beside it ([task-cache-1](task-cache-1.md) §10), whose valid task states the selection
 §9.3 describes for every row.
@@ -542,33 +542,33 @@ or reviewing that implementation before its release, showed it was needed.
 | Clause | Change | Why |
 |---|---|---|
 | §2.1 | A writer writes the lowest version its content needs: 1.0 for imaging, 1.1 with `clinical`. | The draft said writers "SHOULD continue using 1.0" and that production defaults must not emit 1.1 before implementation; one rule states both, and keeps every 1.0 reader working for imaging-only data. |
-| §2.1 | An amendment that removes the clinical profile lowers the version: it is the §10 imaging projection, written to a new file or in place of its source. | Found by the review of 2.0 before its release: "an amendment never lowers the version" contradicted the reference writer, whose `drop_clinical` in an amendment rewrites a 1.1 sample in place as 1.0 --- the projection §10 describes, a different sample with its own `content_id`. |
+| §2.1 | An amendment that removes the clinical profile lowers the version: it is the §10 imaging projection, written to a new file or in place of its source. | Found by the review of 2.0 before its release: "an amendment never lowers the version" contradicted the reference writer, whose `drop_clinical` in an amendment rewrites a 1.1 sample in place as 1.0 — the projection §10 describes, a different sample with its own `content_id`. |
 | §2.2 | Unknown items of a higher minor are **W913**, the version itself is W913 at `/`, and an unrecomputable `content_id` is W913, not E702. | The draft required "unsupported features reported explicitly" and "integrity unsupported, not verified" but allocated no code. Reporting an item a later minor may define as an error would make the projection unusable; reporting nothing would claim conformance. |
 | §2.3 | Known profiles are re-derived from the amended content; unknown profiles and higher minors refuse the amendment. | "A no-op amend MUST NOT silently remove an unsupported profile" was read against 1.0's rule that profiles are derived, not inherited. Keeping every declaration through any edit would keep false claims (an amendment removing the last voxel annotation would still declare `seg`); refusing the unknown is what the draft's safety requirement needs. |
 | §3 | The descriptor is canonical JSON, checked as such (E801); `shifted_utc` requires a declared de-identification (E802). | §8 of the draft required canonical serialization without saying what a validator does with a non-canonical one; equal descriptors must digest equally. A shifted clock is meaningless without the shift it is relative to. |
 | §3 | The declaration without the group, without events, or in a 1.0 file is E009; the group without the declaration E803. | The draft said "A recognized `clinical/meta` descriptor without that profile declaration is invalid" and that events need "at least one row", but gave no codes. |
-| §3 | A `clinical` group is *recognised* when its `meta` holds a JSON object whose `schema` is `medh5.clinical/1`. Undeclared, a recognised group is E803 in any version, and from 1.1 on so is any object named `clinical`; in a 1.0 file an unrecognised one is an extension. | Found by the review of 2.0 before its release: E803 and the §2.3 amendment rule turned on "a recognised `clinical/` group", which nothing defined, so a validator could not tell a 1.0 file's own extension from an undeclared profile; the reference validator's rule --- the name reserved from 1.1 on, the descriptor deciding before --- was written nowhere. |
+| §3 | A `clinical` group is *recognised* when its `meta` holds a JSON object whose `schema` is `medh5.clinical/1`. Undeclared, a recognised group is E803 in any version, and from 1.1 on so is any object named `clinical`; in a 1.0 file an unrecognised one is an extension. | Found by the review of 2.0 before its release: E803 and the §2.3 amendment rule turned on "a recognised `clinical/` group", which nothing defined, so a validator could not tell a 1.0 file's own extension from an undeclared profile; the reference validator's rule — the name reserved from 1.1 on, the descriptor deciding before — was written nowhere. |
 | §3, §7.2 | No conversion between clocks is defined: a subject's fragments join only on one clock (T304), and the versions they share are merged by the task contract, which refuses what does not agree (T305). | Found by the review of 2.0 before its release: the text deferred to "a verified conversion" the task contract never defined, and called cross-fragment revisions "resolved" before selection, where the contract refuses them; an implementation looked for a conversion and a resolution that do not exist. |
 | §4 | Each numeric column has one dtype (`int64` times, `float64` values, `uint64` spans); the column set is closed (E804) except in a higher minor's projection (W913). | "A fixed-width numeric dtype" let two writers store the same time as `int32` and `int64`, which digest differently; a closed set is what lets a 1.1 validator tell an unknown column from a misspelled one. |
 | §4 | A mask for a required or omitted column, or with values other than 0/1, is E807. | The draft defined mask values but not where a mask may appear. |
-| §4 | A UTF-8 column's `offsets` are little-endian, as the numeric columns are (E805). | Found by the re-audit of 2.0: the table said it of the numeric columns only, and a column whose offsets were stored big-endian validated --- correct to a reader converting through HDF5, and not to one reading the buffer as the format lays it out. |
+| §4 | A UTF-8 column's `offsets` are little-endian, as the numeric columns are (E805). | Found by the re-audit of 2.0: the table said it of the numeric columns only, and a column whose offsets were stored big-endian validated — correct to a reader converting through HDF5, and not to one reading the buffer as the format lays it out. |
 | §4, §5.1 | The identifier columns are listed, table by table, and `record_id` takes the 1.0 id syntax, as `event_id` and `document_id` do. | Found by the review of 2.0 before its release: "Identifier columns are non-empty" named no column, and only two ids had a syntax, while the reference writer and validator refuse an empty `unit` or `prov` and a `record_id` of `rec 1` (E809): which empty strings and which record ids were errors could not be read from the text. |
 | §5.1 | `W914` for a numeric value without a unit. | The draft's "SHOULD carry a unit" needed a reportable form that is not an error. |
 | §5.3 | An imaging event's `timepoint_id` must equal its image's grid timepoint (E814). | Stated in the draft without a code. |
-| §6 | A document is owned by **exactly one** `document` event, and a `document` event owns **at most one** document (E815). | "MUST be linked from an immutable `document` event" allowed two owners, and then the document's availability would be ambiguous. The converse was found implementing the cache contract: two texts under one event would share one availability, status and revision chain --- revising either would force a copy of the other --- and an event-level feature (task contract §7) would no longer name one text. |
+| §6 | A document is owned by **exactly one** `document` event, and a `document` event owns **at most one** document (E815). | "MUST be linked from an immutable `document` event" allowed two owners, and then the document's availability would be ambiguous. The converse was found implementing the cache contract: two texts under one event would share one availability, status and revision chain — revising either would force a copy of the other — and an event-level feature (task contract §7) would no longer name one text. |
 | §7.1 | An `instance` endpoint resolves through the `instance_ids` dataset of an annotation of any kind, and is E813 when none holds it; a `target_annotation_id` that does not hold it is E814. | Found by the review of 2.0 before its release: "An instance-bearing annotation" was undefined, and the clause gave E814 for an instance found nowhere, which the reference validator reports as the unresolved endpoint it is (E813). |
 | §7.2 | Merging chains (two predecessors) and a record whose versions the links do not order into one chain are E816, beside branches, cycles and contradicted availability. | The draft required "an acyclic, unambiguous `supersedes` chain"; a record with two unrelated versions is ambiguous in exactly the way selection cannot resolve. |
 | §7.3 | A writer amending a sample refuses a structural link from an event version the sample already held (E809). | Found by the fourth audit of 2.0: "adding or replacing an owned payload needs a new event version" had no point of enforcement, and one file cannot show when a link was written. Text attached in an amendment to an inherited text-less document event was owned by a version available a day before the text existed, and selection admitted it at that cutoff. |
-| §7.3 | An amendment also refuses a link asserted by an event version the sample held, and any change to a payload such a version attests; a held version dropped with the profile and added again in the same amendment is held to what it was. | Found by the review of 2.0 before its release: refusing only the structural link left three ways to attach later information to an earlier version --- a grounding asserted by the original report, a lesion mask replaced under the id a procedure attests, and the refused link added once the profile was dropped and its records added again --- and selection admitted each at the old version's availability. |
+| §7.3 | An amendment also refuses a link asserted by an event version the sample held, and any change to a payload such a version attests; a held version dropped with the profile and added again in the same amendment is held to what it was. | Found by the review of 2.0 before its release: refusing only the structural link left three ways to attach later information to an earlier version — a grounding asserted by the original report, a lesion mask replaced under the id a procedure attests, and the refused link added once the profile was dropped and its records added again — and selection admitted each at the old version's availability. |
 | §8 | A collection's outer version must be at least each member's (E011); the packer declares the newest member's, and refuses a higher-minor member. | The draft required `1.1` outside a 1.1 member but gave no code, and said nothing of a member newer than the packer. |
 | §9 | Strict selection, the plan rule, tie groups, the event-limit boundary and payload attestation are defined here, normatively, and the task contract only names a policy. | The draft placed them in a companion "not an additional payload requirement". They define what a record *means* about what was known when; two implementations of one selection must agree, so they belong to the profile. |
 | §9.1 | An event with no order time (`unknown` time ordered by effective start, or without the time `order_by` names) is excluded as `unknown_time`. | "Unknown/coarse times may be excluded or handled by an explicitly named alternative policy": strict excludes them, and the exclusion is counted. |
-| §9.1 | A selected `entered_in_error` version withdraws the record; an uncertain later revision makes the row *uncertifiable* while still reporting the earlier version. | Draft step 2 said to exclude the row and also that an earlier version "remains usable"; the preflight needs both facts --- why the row is excluded, and what it would otherwise have read. |
-| §9.1 | The context window bounds every admitted event's order time from below, plans included; a plan may lie after the cutoff. | Found by the fourth audit of 2.0: read literally, `[c − w, c]` excluded every future plan under `order_by = effective`, while the implementation applied no window to plans at all --- so a stale order from 100 days before a 7-day window was admitted beside the week. The lower edge is what a window is for; the upper is the cutoff, which plans exist to lie beyond. |
+| §9.1 | A selected `entered_in_error` version withdraws the record; an uncertain later revision makes the row *uncertifiable* while still reporting the earlier version. | Draft step 2 said to exclude the row and also that an earlier version "remains usable"; the preflight needs both facts — why the row is excluded, and what it would otherwise have read. |
+| §9.1 | The context window bounds every admitted event's order time from below, plans included; a plan may lie after the cutoff. | Found by the fourth audit of 2.0: read literally, `[c − w, c]` excluded every future plan under `order_by = effective`, while the implementation applied no window to plans at all — so a stale order from 100 days before a 7-day window was admitted beside the week. The lower edge is what a window is for; the upper is the cutoff, which plans exist to lie beyond. |
 | §9.1 | An event-count limit counts **timed** events only, and a limit of 0 keeps none of them; a static event is unordered under every `order_by`. | Found by the 2.0 audit: ordered by availability, a static fact became a timed event a limit could drop, though step 3 calls it unordered and the task contract limits timed events; and 0, which the task schema admits, had no defined boundary. |
-| §9.1 | An event of `unknown` time is a plan only when `planned`: the plan rule reads a known effective start, and `order_by = available` admits an unknown-time event as unknown. | Found by the review of 2.0 before its release: the text made every event whose start is not definitely at or before `c` a plan, so an unknown-time event --- which has no start --- was one, excluded by default, and the ordering by availability that admits such events admitted none. The engine, its documentation and its tests always admitted it as unknown, which reads nothing unknown at the cutoff: its availability is at or before it, and its time stays marked unknown (task contract §6), never placed on the timeline. |
+| §9.1 | An event of `unknown` time is a plan only when `planned`: the plan rule reads a known effective start, and `order_by = available` admits an unknown-time event as unknown. | Found by the review of 2.0 before its release: the text made every event whose start is not definitely at or before `c` a plan, so an unknown-time event — which has no start — was one, excluded by default, and the ordering by availability that admits such events admitted none. The engine, its documentation and its tests always admitted it as unknown, which reads nothing unknown at the cutoff: its availability is at or before it, and its time stays marked unknown (task contract §6), never placed on the timeline. |
 | §11 | Diagnostic codes E011, E801–E819, W913 and W914 are allocated, each with a conformance case. | The draft did not allocate codes for unimplemented rules; they are now implemented. |
-| §11.1 | `semantic` checks E802's rule for a `shifted_utc` clock, which needs `/meta`'s de-identification record; the rest of E802 stays `structural`. `integrity` adds E818 beside every 1.0 digest code, E704 included. | Found by the review of 2.0 before its release: the clause placed all of E802 at `structural`, though that rule compares the descriptor with `/meta`, a cross-reference the reference validator checks at `semantic` with the record rules --- so a validator built from the text reported at `structural` a defect the reference reports only from `semantic` on; and it named 1.0's integrity codes E701–E703, written before 2.0 allocated E704. |
+| §11.1 | `semantic` checks E802's rule for a `shifted_utc` clock, which needs `/meta`'s de-identification record; the rest of E802 stays `structural`. `integrity` adds E818 beside every 1.0 digest code, E704 included. | Found by the review of 2.0 before its release: the clause placed all of E802 at `structural`, though that rule compares the descriptor with `/meta`, a cross-reference the reference validator checks at `semantic` with the record rules — so a validator built from the text reported at `structural` a defect the reference reports only from `semantic` on; and it named 1.0's integrity codes E701–E703, written before 2.0 allocated E704. |
 
 ## Appendix B — Schemas
 

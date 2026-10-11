@@ -18,8 +18,8 @@ failed check, **2** a usage error. Every inspection command takes `--json` and
 writes a machine-readable document to stdout.
 
 A command given several files reports on each of them. One it cannot process
-is named on stderr --- and, with `--json`, is an entry of its own carrying the
-`error` --- and the files after it are still processed; the command then
+is named on stderr — and, with `--json`, is an entry of its own carrying the
+`error` — and the files after it are still processed; the command then
 exits with 1. Output that cannot be written (a full disk) fails the command
 too.
 
@@ -402,7 +402,7 @@ scrub wrote it, rather than refused as another frame.
 unless `--id` names another; `to-nnunet` exports annotation `seg` unless
 `--annotation` names another, as dataset `Dataset001_medh5` unless
 `--dataset-name` does, with every class the cases carry unless `--class` names
-the ones to export --- each of them examined by every case. A case without the
+the ones to export — each of them examined by every case. A case without the
 annotation is refused unless `--unlabeled test` writes it to `imagesTs`.
 
 See [Converters](converters.md).
@@ -443,8 +443,8 @@ the digest is over content and not over its encoding.
 The output is **verified** against the digests it carries before the command
 returns, and the exit code follows: a file whose bytes had already been
 corrupted before you re-encoded it now fails here rather than reporting a
-preserved `content_id` and exiting 0. What the check cannot read --- the output
-has replaced the input by then --- fails it too, named on an `UNCHECKED` line
+preserved `content_id` and exiting 0. What the check cannot read — the output
+has replaced the input by then — fails it too, named on an `UNCHECKED` line
 (`unverified` in `--json`).
 
 ### `medh5 bench`
@@ -498,7 +498,7 @@ whole policy (contract §3.4).
 medh5 clinical export PATH [--key K] [--out RECORDS.json]
 ```
 
-The logical-record bundle --- clock, events, documents with their text, links ---
+The logical-record bundle — clock, events, documents with their text, links —
 as JSON, checked against `medh5-clinical-1.schema.json`.
 
 ### `medh5 clinical augment`
@@ -544,8 +544,8 @@ rows and source ids (T1xx, T2xx). Prints the task and manifest fingerprints.
 medh5 task preflight MANIFEST [--base DIR] [--deep] [--json]
 ```
 
-Open and check every source --- pins, identities, clocks, duplicated events
---- and report every row: `eligible`, `uncertifiable`, `excluded` or `error`,
+Open and check every source — pins, identities, clocks, duplicated events
+— and report every row: `eligible`, `uncertifiable`, `excluded` or `error`,
 with the reason, the event count, the image filling each slot and the target
 label. Exits 1 when anything was found. `--deep` re-verifies every dataset of
 every source, not only the clinical ones.
@@ -558,8 +558,8 @@ links by position in its subject's `links`, and the payloads.
 
 Both forms take the subjects one at a time and hold neither the cohort's
 histories nor its document: `--json` writes each subject's history as soon as
-it is merged, with the members in the order they become known --- the two
-fingerprints, `subjects`, `rows`, then `ok`, `counts` and `findings` --- and
+it is merged, with the members in the order they become known — the two
+fingerprints, `subjects`, `rows`, then `ok`, `counts` and `findings` — and
 the table keeps one line per row. Memory follows the largest subject and the
 rows, not the cohort.
 
@@ -570,7 +570,7 @@ medh5 task reconcile MANIFEST [--base DIR] [--out OUT]
 ```
 
 Record, per subject, the event versions several of its fragments hold and the
-digest they share --- what preflight checks duplicates against.
+digest they share — what preflight checks duplicates against.
 
 ### `medh5 cache validate`
 
@@ -583,7 +583,7 @@ entries (T403) are told apart from *corrupt* ones (T401, T402), and an
 event-level entry must name a version its source holds and the document that
 version owns (T407). With `--task`,
 also that it was built for this task and its cutoffs (T404), fitted on its
-training partition (T405), and encodes only versions its rows admit (T406) ---
+training partition (T405), and encodes only versions its rows admit (T406) —
 the task is preflighted a subject at a time, keeping only each row's cutoff
 and admitted versions.
 
@@ -634,8 +634,8 @@ medh5 conformance score SUITE RESULTS.json [--json]
 
 Score any implementation's results against a published suite. See
 [Conformance](../spec/conformance.md). A suite whose files no longer match its
-`SHA256SUMS` fails the score, whatever the cases say --- a score over files
-that are not the published ones is not a score --- and `--json` names those
+`SHA256SUMS` fails the score, whatever the cases say — a score over files
+that are not the published ones is not a score — and `--json` names those
 files under `changed`.
 
 ## Related

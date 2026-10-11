@@ -32,8 +32,8 @@ What everything is, rather than how to do anything. For task-shaped answers, see
 | **[Profiles and validation levels](profiles-and-levels.md)** | What to check, and how much. |
 | **[Runnable examples](../examples/index.md)** | A complete sample written by following the specification, plus the benchmark scripts. |
 
-The [specification](../spec/medh5-1.0.md) --- with [1.1](../spec/medh5-1.1.md)
+The [specification](../spec/medh5-1.0.md) — with [1.1](../spec/medh5-1.1.md)
 for the clinical profile, and the separately versioned
-[task and cache contract](../spec/task-cache-1.md) --- is the normative
+[task and cache contract](../spec/task-cache-1.md) — is the normative
 statement of all of it. Where this section and the specification disagree, one
 of them is a bug.

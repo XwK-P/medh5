@@ -129,7 +129,7 @@ A warning is legal and worth knowing: nothing records how the data was
 de-identified (`w.deidentification(...)` records it), and the label set's
 classes carry no ontology code (`codes=` on each `LabelClass`).
 `--level strict` promotes warnings to errors, so it fails this file until both
-are addressed --- it is the gate for a dataset you publish, not for a first
+are addressed — it is the gate for a dataset you publish, not for a first
 sample.
 
 ## Build a sampling index
