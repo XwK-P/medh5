@@ -266,10 +266,12 @@ class _Base(_DatasetBase):  # type: ignore[misc,valid-type]
         """``(labels, ignore, annotated)`` for every requested annotation.
 
         The ignore region is read through :meth:`Sample.ignore_region`, which
-        knows both places §7.7 lets an encoding keep it.  Reading labels with
-        ``dense()`` or ``labelmap()`` alone returned 0 at every ignored voxel
-        under ``layers``, ``bitmask``, ``instances`` and ``probmap`` --- the
-        voxels §7.7 exists to keep out of the loss went into it as negatives.
+        knows both places §7.7 lets an encoding keep it --- in band, and in a
+        sibling mask --- and goes beside the labels as ``ignore``: ``dense()``
+        planes have no value for it.  A ``labelmap`` item carries it as well,
+        as ``IGNORE_ID`` (65535): ``labelmap()`` writes the annotation's own
+        ``ignore_id`` there, which a file may declare as another value, and
+        one ``ignore_index=65535`` then serves every file.
         """
         if self.label_format == "none" or not self.annotations:
             return {}, {}, {}
@@ -315,6 +317,7 @@ class _Base(_DatasetBase):  # type: ignore[misc,valid-type]
                     # background, as in every other label format.
                     array[~np.isin(array, [*requested, IGNORE_ID])] = 0
                 if region is not None:
+                    # As 65535, whatever `ignore_id` the file declares.
                     array[region] = IGNORE_ID
                 pad: float = IGNORE_ID
             else:

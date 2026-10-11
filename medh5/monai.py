@@ -321,7 +321,8 @@ def to_dict(
     grid's** affine, which is what ``Spacingd(keys=["CT", "organs"],
     mode=["bilinear", "nearest"])`` needs in order to resample both
     consistently.  Class ids keep their §5.3 values, and every voxel in the
-    §7.7 ignore region is ``65535`` whichever encoding stores it
+    §7.7 ignore region is ``65535`` whichever encoding stores it, and whatever
+    ``ignore_id`` the annotation declares
     (:meth:`~medh5.sample.Sample.ignore_region`).
 
     The annotation's grid is not assumed to be the first image's.  A sample
@@ -344,12 +345,10 @@ def to_dict(
         # every class id above 32767 -- §5.3 gives them the full `uint16` range
         # -- and turned the ignore id 65535 into -1 without anything saying so.
         planes = np.asarray(ann.labelmap(), dtype=np.int64)
-        # The ignore region comes through as 65535 under *every* encoding;
-        # mask it out with `ignore_index=65535`.  `labelmap()` paints classes
-        # only, so this used to hold for the `labelmap` kind alone and write 0
-        # --- background --- at the ignored voxels of `layers`, `bitmask`,
-        # `instances` and `probmap` annotations, and of a region kept in a
-        # sibling mask.
+        # `labelmap()` writes the ignore region as the annotation's own
+        # `ignore_id`, in band or from its sibling mask (§7.7), and a file may
+        # declare another id than 65535.  Every item carries 65535, so one
+        # `ignore_index=65535` masks it out of the loss whatever the file says.
         if isinstance(ann, VoxelAnnotation):
             planes[sample.ignore_region(ann_id)] = IGNORE_ID
         item[ann_id] = _metatensor(planes, _annotation_meta(sample, ann, space=space))
