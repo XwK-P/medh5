@@ -412,7 +412,7 @@ impl AnnotationHandle {
     }
     fn has_dataset(&self, name: &str) -> R<bool> {
         self.live()?;
-        Ok(self.inner.optional_dataset(name).is_some())
+        Ok(self.inner.optional_dataset(name)?.is_some())
     }
 
     // -- voxel ------------------------------------------------------------------
@@ -593,7 +593,7 @@ impl AnnotationHandle {
     #[getter]
     fn has_masks(&self) -> R<bool> {
         self.live()?;
-        Ok(self.inner.has_masks())
+        Ok(self.inner.has_masks()?)
     }
     #[getter]
     fn boxes<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyAny>> {

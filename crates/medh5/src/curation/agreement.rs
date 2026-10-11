@@ -494,7 +494,7 @@ pub fn compare_instances(
     let ids_b: std::collections::HashSet<u64> = right.iter().map(|o| o.instance_id).collect();
     let shared: std::collections::HashSet<u64> =
         left.iter().map(|o| o.instance_id).filter(|i| ids_b.contains(i)).collect();
-    let mut result = if !shared.is_empty() && carries_instance_ids(a) && carries_instance_ids(b) {
+    let mut result = if !shared.is_empty() && carries_instance_ids(a)? && carries_instance_ids(b)? {
         match_by_id(&left, &right, &shared, threshold, &b.ann_id)
     } else {
         match_by_iou(&left, &right, threshold, &b.ann_id)

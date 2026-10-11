@@ -646,8 +646,11 @@ pub fn read_grid(group: &hdf5::Group, grid_id: Option<&str>) -> Result<Grid> {
     Ok(grid)
 }
 
-/// Read every grid under `<sample root>/grids`, in name order.
+/// Read every grid under `<sample root>/grids`, in name order.  A closed
+/// file is refused, where HDF5 finding no member in it read as a sample
+/// without grids (E008).
 pub fn read_grids(root: &hdf5::Group) -> Result<Vec<(String, Grid)>> {
+    crate::h5::alive(root)?;
     let Some(grids) = ops::child_group(root, "grids") else {
         return Err(Error::coded("E008", "sample has no `grids` group"));
     };

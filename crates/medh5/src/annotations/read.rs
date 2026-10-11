@@ -189,11 +189,11 @@ impl Annotation {
         let grid = self.header.grid.as_deref().and_then(|g| self.grids.get(g).map(|grid| (g, grid)));
         let rank =
             grid.filter(|_| layout::ranked(self.kind(), self.header.space.as_deref())).map(|(_, g)| g.n_spatial());
-        let shape_of = |name: &str| self.optional_dataset(name).map(|d| d.shape());
+        let shape_of = |name: &str| ops::child_dataset(&self.group, name).map(|d| d.shape());
         if let Some(problem) = layout::column_problems(self.kind(), &shape_of, rank).first() {
             return Err(problem.error(&self.ann_id));
         }
-        let data = if is_voxel_kind(self.kind()) { self.optional_dataset("data") } else { None };
+        let data = if is_voxel_kind(self.kind()) { self.optional_dataset("data")? } else { None };
         if let (Some((gid, grid)), Some(data)) = (grid, data) {
             let shape = data.shape();
             let stacked = matches!(self.kind(), "layers" | "bitmask" | "probmap");
@@ -443,14 +443,17 @@ impl Annotation {
 
     // -- datasets -------------------------------------------------------------
 
-    /// A member dataset, or `None` when absent.
-    pub fn optional_dataset(&self, name: &str) -> Option<hdf5::Dataset> {
-        ops::child_dataset(&self.group, name)
+    /// A member dataset, or `None` when absent.  A closed file is refused:
+    /// HDF5 finds no member in one, which read as an absent dataset (E410,
+    /// or no masks, no scores).
+    pub fn optional_dataset(&self, name: &str) -> Result<Option<hdf5::Dataset>> {
+        crate::h5::alive(&self.group)?;
+        Ok(ops::child_dataset(&self.group, name))
     }
 
     /// A member dataset the kind requires (E410 when absent).
     pub fn dataset(&self, name: &str) -> Result<hdf5::Dataset> {
-        self.optional_dataset(name).ok_or_else(|| {
+        self.optional_dataset(name)?.ok_or_else(|| {
             let id = repr_str(&self.ann_id);
             let message = match self.kind() {
                 k if is_geometric_kind(k) => {
@@ -477,7 +480,7 @@ impl Annotation {
 
     /// A whole numeric dataset cast to `T`, or `None` when absent.
     pub fn read_optional<T: Element>(&self, name: &str) -> Result<Option<ArrayD<T>>> {
-        match self.optional_dataset(name) {
+        match self.optional_dataset(name)? {
             None => Ok(None),
             Some(ds) => Ok(Some(data::read(&ds)?.cast::<T>())),
         }
@@ -485,7 +488,7 @@ impl Annotation {
 
     /// A string dataset, or `None` when absent.
     pub fn read_strings_optional(&self, name: &str) -> Result<Option<Vec<String>>> {
-        match self.optional_dataset(name) {
+        match self.optional_dataset(name)? {
             None => Ok(None),
             Some(ds) => Ok(Some(data::read_strings(&ds)?)),
         }
@@ -957,7 +960,7 @@ impl Annotation {
 
     fn layer_table(&self) -> Result<&LayerTable> {
         cached(&self.layers, || {
-            let ds = self.optional_dataset("layer_class_ids").ok_or_else(|| {
+            let ds = self.optional_dataset("layer_class_ids")?.ok_or_else(|| {
                 Error::coded(
                     "E410",
                     format!("annotation {}: `layers` requires `layer_class_ids`", repr_str(&self.ann_id)),
@@ -1033,7 +1036,7 @@ impl Annotation {
 
     fn bit_table(&self) -> Result<&BitTable> {
         cached(&self.bits, || {
-            let ds = self.optional_dataset("bit_class_ids").ok_or_else(|| {
+            let ds = self.optional_dataset("bit_class_ids")?.ok_or_else(|| {
                 Error::coded(
                     "E410",
                     format!("annotation {}: `bitmask` requires `bit_class_ids`", repr_str(&self.ann_id)),
@@ -1130,7 +1133,7 @@ impl Annotation {
     fn instance_columns(&self) -> Result<&InstanceColumns> {
         cached(&self.columns, || {
             let boxes = self.read_as::<f32>("boxes")?;
-            let (mask_offsets, mask_shapes) = if self.has_masks() {
+            let (mask_offsets, mask_shapes) = if self.has_masks()? {
                 let offsets: Vec<i64> = self.read_as::<i64>("mask_offsets")?.iter().copied().collect();
                 let shapes = self.read_as::<i64>("mask_shapes")?;
                 let stored = self.dataset_shape("mask_data")?.iter().product();
@@ -1155,8 +1158,8 @@ impl Annotation {
     }
 
     /// Whether an `instances` annotation stores per-object masks.
-    pub fn has_masks(&self) -> bool {
-        self.optional_dataset("mask_data").is_some()
+    pub fn has_masks(&self) -> Result<bool> {
+        Ok(self.optional_dataset("mask_data")?.is_some())
     }
 
     /// `(N, S, 2)` object boxes (`instances` and `boxes`).
@@ -1220,7 +1223,7 @@ impl Annotation {
     /// Decode one object's bbox-local mask.
     pub fn crop(&self, index: usize) -> Result<Option<ArrayD<bool>>> {
         self.require_kind(&["instances"], "crop()")?;
-        if !self.has_masks() {
+        if !self.has_masks()? {
             return Ok(None);
         }
         let columns = self.instance_columns()?;
@@ -1412,7 +1415,7 @@ impl Annotation {
             }
             "instances" => {
                 out.insert("objects".into(), json!(self.n_objects()?));
-                out.insert("has_masks".into(), json!(self.has_masks()));
+                out.insert("has_masks".into(), json!(self.has_masks()?));
                 out.insert("instance_ids".into(), json!(self.instance_columns()?.instance_ids));
             }
             _ => {}

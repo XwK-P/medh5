@@ -545,14 +545,22 @@ impl Transform {
         Error::coded(code, format!("transform {}: {what}", repr_str(&self.transform_id)))
     }
 
+    /// A parameter dataset of the stored transform, or `None` when absent.
+    /// A closed file is refused: HDF5 finds no member in one, which read as
+    /// a transform without its parameters (E502).
+    fn parameters(&self, name: &str) -> Result<Option<hdf5::Dataset>> {
+        crate::h5::alive(&self.group)?;
+        Ok(ops::child_dataset(&self.group, name))
+    }
+
     // -- affine (§10.3) -------------------------------------------------------
 
     /// The homogeneous `(S+1, S+1)` world-to-world matrix; one of another
     /// shape is refused (E504, [`affine_dimension`]).
     pub fn matrix(&self) -> Result<Array2<f64>> {
         self.require_kind("affine", "matrix")?;
-        let ds = ops::child_dataset(&self.group, "matrix")
-            .ok_or_else(|| self.missing("`affine` requires a `matrix` dataset", "E502"))?;
+        let ds =
+            self.parameters("matrix")?.ok_or_else(|| self.missing("`affine` requires a `matrix` dataset", "E502"))?;
         let n = affine_dimension(&ds.shape()).map_err(|e| self.missing(e.message(), "E504"))? + 1;
         Ok(data::read(&ds)?.to_f64().into_shape_with_order((n, n))?)
     }
@@ -627,8 +635,7 @@ impl Transform {
     /// The stored `field` dataset, whatever its shape.
     fn field_dataset(&self) -> Result<hdf5::Dataset> {
         self.require_kind("displacement", "field")?;
-        ops::child_dataset(&self.group, "field")
-            .ok_or_else(|| self.missing("`displacement` requires a `field` dataset", "E502"))
+        self.parameters("field")?.ok_or_else(|| self.missing("`displacement` requires a `field` dataset", "E502"))
     }
 
     /// The id of the grid the field is sampled on.
@@ -813,8 +820,7 @@ impl Transform {
     /// The stored `control_points` dataset, whatever its shape.
     fn control_points_dataset(&self) -> Result<hdf5::Dataset> {
         self.require_kind("bspline", "control_points")?;
-        ops::child_dataset(&self.group, "control_points")
-            .ok_or_else(|| self.missing("`bspline` requires `control_points`", "E502"))
+        self.parameters("control_points")?.ok_or_else(|| self.missing("`bspline` requires `control_points`", "E502"))
     }
 
     /// The id of the control-point grid.
@@ -1360,8 +1366,11 @@ pub fn can_invert(inner: &Transform) -> Result<bool> {
     Ok(stored_inverse(inner)?.is_some())
 }
 
-/// Every transform under `<sample root>/transforms`, by id.
+/// Every transform under `<sample root>/transforms`, by id.  A closed file
+/// is refused, where HDF5 finding no member in it read as a sample without
+/// transforms.
 pub fn read_transforms(root: &hdf5::Group, grids: Arc<IndexMap<String, Grid>>) -> Result<IndexMap<String, Transform>> {
+    crate::h5::alive(root)?;
     let Some(node) = ops::child_group(root, "transforms") else {
         return Ok(IndexMap::new());
     };

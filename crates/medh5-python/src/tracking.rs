@@ -483,12 +483,12 @@ impl Tracking {
 
 /// Whether an annotation carries object identity (`instance_ids`) to join on.
 #[pyfunction]
-fn carries_instance_ids(annotation: &Bound<'_, PyAny>) -> PyResult<bool> {
+fn carries_instance_ids(annotation: &Bound<'_, PyAny>) -> R<bool> {
     let handle = match annotation.cast::<crate::reader::AnnotationHandle>() {
         Ok(h) => h.clone(),
-        Err(_) => annotation.getattr("_handle")?.cast_into::<crate::reader::AnnotationHandle>()?,
+        Err(_) => annotation.getattr("_handle")?.cast_into::<crate::reader::AnnotationHandle>().map_err(PyErr::from)?,
     };
-    Ok(engine::carries_instance_ids(&handle.get().inner))
+    Ok(engine::carries_instance_ids(&handle.get().inner)?)
 }
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {

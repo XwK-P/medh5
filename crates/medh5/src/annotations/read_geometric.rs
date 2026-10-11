@@ -574,7 +574,7 @@ impl Annotation {
 
     /// The number of sub-meshes.
     pub fn n_submeshes(&self) -> Result<usize> {
-        Ok(match self.optional_dataset("mesh_offsets") {
+        Ok(match self.optional_dataset("mesh_offsets")? {
             None => 1,
             Some(ds) => ds.shape().first().copied().unwrap_or(0).saturating_sub(1),
         })

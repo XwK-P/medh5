@@ -359,8 +359,9 @@ pub const TRACKED_KINDS: [&str; 4] = ["instances", "boxes", "obb", "points"];
 
 /// Whether an annotation declares object identity a join can trust: a
 /// `boxes` annotation without `instance_ids` numbers its rows positionally.
-pub fn carries_instance_ids(ann: &Annotation) -> bool {
-    ann.kind() == "instances" || ann.optional_dataset("instance_ids").is_some()
+/// A closed file is refused rather than read as one without them.
+pub fn carries_instance_ids(ann: &Annotation) -> Result<bool> {
+    Ok(ann.kind() == "instances" || ann.optional_dataset("instance_ids")?.is_some())
 }
 
 /// Why no track can join an annotation that carries `instance_ids`, or
@@ -380,7 +381,7 @@ fn unjoinable(ann: &Annotation) -> Option<String> {
             crate::json::repr_list(&TRACKED_KINDS)
         ));
     }
-    if kind == "points" && ann.optional_dataset("class_ids").is_none() {
+    if kind == "points" && matches!(ann.optional_dataset("class_ids"), Ok(None)) {
         return Some("its points carry no `class_ids`, so no track could say what they follow".into());
     }
     None
@@ -480,7 +481,7 @@ pub fn build_tracks(sample: &Sample, class_key: Option<&ClassKey>, do_measure: b
     let implicit: Vec<String> = if declared.len() == 1 { declared.clone() } else { vec![String::new()] };
     let mut skipped = IndexMap::new();
     for ann in sample.annotations()?.values() {
-        if !carries_instance_ids(ann) {
+        if !carries_instance_ids(ann)? {
             continue;
         }
         if let Some(why) = unjoinable(ann) {

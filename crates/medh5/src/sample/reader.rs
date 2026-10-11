@@ -768,4 +768,52 @@ mod tests {
         let Err(Error::Key(message)) = sample.grid("nope") else { panic!("a missing grid is a KeyError") };
         assert_eq!(message, format!("no grid 'nope'; available: {}", repr_list(&known)));
     }
+
+    fn refused_as_closed<T>(what: &str, result: Result<T>) {
+        match result {
+            Err(Error::File(message)) => assert_eq!(message, crate::h5::CLOSED, "{what}"),
+            Err(other) => panic!("{what}: {other} ({:?}), not the closed-file error", other.code()),
+            Ok(_) => panic!("{what} answered from a closed file"),
+        }
+    }
+
+    /// An annotation, a transform or a root a Rust caller keeps past the
+    /// close of its file refuses with the closed-file error.  HDF5 finds no
+    /// member in a closed file, which read as an annotation without `data`
+    /// (E410) or masks, a transform without its parameters (E502), and a
+    /// sample without grids (E008) or transforms.
+    #[test]
+    fn s14_4_a_view_kept_past_the_close_refuses_rather_than_reads_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let shape = [8, 12, 10];
+        let labelled =
+            crate::bench::synthetic_sample(dir.path(), &shape, 2, "portable", false, 7, "labelled.medh5").unwrap();
+        let pair = crate::bench::synthetic_pair(dir.path(), &shape, "portable", 7).unwrap();
+        let mut writer = crate::sample::amend(&pair, None).unwrap();
+        let rigid = crate::sample::writer_annotations::TransformSpec {
+            matrix: Some(ndarray::Array2::<f64>::eye(4).into_dyn()),
+            ..Default::default()
+        };
+        writer.add_transform("rigid", "affine", "bench:frame-0", "bench:frame-1", rigid).unwrap();
+        writer.commit(true).unwrap();
+
+        let sample = open_sample(&labelled).unwrap();
+        let organs = sample.annotation("organs").unwrap();
+        organs.dataset("data").unwrap();
+        sample.close_file().unwrap();
+        refused_as_closed("Annotation::dataset", organs.dataset("data"));
+        refused_as_closed("Annotation::optional_dataset", organs.optional_dataset("data"));
+        refused_as_closed("Annotation::has_masks", organs.has_masks());
+        refused_as_closed("read_grids", read_grids(&sample.root));
+
+        let sample = open_sample(&pair).unwrap();
+        let grids = sample.grids().unwrap().clone();
+        let (rigid, warp) = (sample.transform("rigid").unwrap(), sample.transform("warp").unwrap());
+        rigid.matrix().unwrap();
+        warp.field().unwrap();
+        sample.close_file().unwrap();
+        refused_as_closed("Transform::matrix", rigid.matrix());
+        refused_as_closed("Transform::field", warp.field());
+        refused_as_closed("read_transforms", read_transforms(&sample.root, grids));
+    }
 }
