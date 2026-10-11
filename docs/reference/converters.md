@@ -237,7 +237,10 @@ not**: `to_dicom_seg` writes `BINARY` from `dense()`, which for a `probmap`
 applies the stored threshold, so fractional data is thresholded on the way out.
 A binary segment cannot mark an ignore region either --- its 0 says examined
 and absent --- so an annotation that ignores any voxel (§7.7) is refused;
-`to_nifti` with `annotation=` writes its labelmap, ignore id included.
+`to_nifti` with `annotation=` writes its labelmap, ignore id included. A SEG
+holds one segment per class: the export takes a `labelmap`, `layers`,
+`bitmask`, `instances` or `probmap` annotation, and refuses any other kind
+(`E401`) --- a `mask`, which has no classes, among them.
 
 Writing needs `highdicom` (`pip install "medh5[dicomseg]"`).
 

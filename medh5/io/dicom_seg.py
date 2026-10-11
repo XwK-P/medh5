@@ -33,7 +33,6 @@ import numpy as np
 import numpy.typing as npt
 
 from medh5._optional import require
-from medh5.annotations import VoxelAnnotation
 from medh5.errors import MEDH5ValidationError
 from medh5.io._common import sanitize_key
 from medh5.io.report import ConversionReport
@@ -881,6 +880,11 @@ def to_dicom_seg(
 ) -> Path:
     """Export one voxel annotation as a DICOM SEG against its source slices.
 
+    A SEG holds one segment per class, so the annotation is a ``labelmap``,
+    ``layers``, ``bitmask``, ``instances`` or ``probmap``; any other kind is
+    refused (E401) before anything is read --- a ``mask`` too, having no
+    classes.
+
     *source_images* are the DICOM files the segmentation was drawn on: a SEG is
     defined by reference to them, and one written without them is orphaned in
     every PACS that receives it.  They must be the annotation grid's slices,
@@ -900,27 +904,26 @@ def to_dicom_seg(
     log = report or ConversionReport(converter="to-dicom-seg")
     log.source = os.fspath(sample)
 
-    datasets = [_dcmread(p) for p in source_images]
-    if not datasets:
-        raise MEDH5ValidationError("to_dicom_seg needs the source DICOM images")
-    normal = _source_normal(datasets[0])
-    datasets.sort(key=lambda d: float(np.dot(_ipp(d), normal)))
-
     with medh5.open(sample) as opened:
         annotation = opened.annotations[ann_id]
+        _require_segments(annotation, ann_id)
+        datasets = [_dcmread(p) for p in source_images]
+        if not datasets:
+            raise MEDH5ValidationError("to_dicom_seg needs the source DICOM images")
+        normal = _source_normal(datasets[0])
+        datasets.sort(key=lambda d: float(np.dot(_ipp(d), normal)))
         slices = _source_slices(annotation.grid, datasets, log, frame_salt)
         ids = annotation.resolve_classes(classes)
-        if isinstance(annotation, VoxelAnnotation):
-            ignored = int(np.count_nonzero(opened.ignore_region(ann_id)))
-            if ignored:
-                raise MEDH5ValidationError(
-                    f"annotation {ann_id!r} ignores {ignored} voxel(s) (§7.7), "
-                    "which a BINARY SEG cannot mark --- a segment's 0 would say "
-                    "they were examined and found absent; export it to NIfTI "
-                    "instead (`to_nifti` with annotation=, `medh5 convert "
-                    "to-nifti --annotation`), whose labelmap writes them as its "
-                    f"ignore id {annotation.ignore_id}"
-                )
+        ignored = int(np.count_nonzero(opened.ignore_region(ann_id)))
+        if ignored:
+            raise MEDH5ValidationError(
+                f"annotation {ann_id!r} ignores {ignored} voxel(s) (§7.7), "
+                "which a BINARY SEG cannot mark --- a segment's 0 would say "
+                "they were examined and found absent; export it to NIfTI "
+                "instead (`to_nifti` with annotation=, `medh5 convert "
+                "to-nifti --annotation`), whose labelmap writes them as its "
+                f"ignore id {annotation.ignore_id}"
+            )
         planes = np.asarray(annotation.dense(list(ids)), dtype=bool)
         descriptions = [
             hd.seg.SegmentDescription(
@@ -972,6 +975,32 @@ def to_dicom_seg(
     )
     log.outputs.append(str(target))
     return target
+
+
+#: The kinds a SEG export writes: those with classes, one segment each.
+_SEGMENT_KINDS = ("labelmap", "layers", "bitmask", "instances", "probmap")
+
+
+def _require_segments(annotation: Any, ann_id: str) -> None:
+    """Refuse an annotation a SEG cannot hold (E401).
+
+    A SEG holds one segment per class.  A geometric annotation has no voxels
+    to write and a ``mask`` no class to write them as (§6.3); the export met
+    them as an ``AttributeError`` and an ``IndexError`` out of highdicom.
+    """
+    if annotation.kind in _SEGMENT_KINDS:
+        return
+    what = (
+        "a 'mask', which has no classes (§6.3)"
+        if annotation.kind == "mask"
+        else f"{annotation.kind!r}, not a voxel annotation"
+    )
+    kinds = ", ".join(repr(kind) for kind in _SEGMENT_KINDS[:-1])
+    raise MEDH5ValidationError(
+        f"annotation {ann_id!r} is {what}; a SEG holds one segment per class "
+        f"of a {kinds} or {_SEGMENT_KINDS[-1]!r} annotation",
+        code="E401",
+    )
 
 
 def _source_slices(

@@ -165,6 +165,60 @@ class TestDicomSeg:
         assert f"ignores {int(ignore.sum())} voxel(s)" in str(caught.value)
         assert not out.exists()
 
+    @staticmethod
+    def _without_segments(prepared: dict[str, Any]) -> None:
+        """Boxes, which have no voxels, and a `mask`, which has no classes."""
+        with medh5.amend(prepared["path"]) as writer:
+            writer.add_boxes(
+                "det",
+                grid=prepared["grid"],
+                boxes=[[[1.0, 3.0], [2.0, 6.0], [3.0, 8.0]]],
+                class_ids=[1],
+                task="detection",
+            )
+            writer.add_mask("fov", prepared["liver"], grid=prepared["grid"])
+
+    @pytest.mark.parametrize(
+        ("ann_id", "why"),
+        [
+            ("det", "is 'boxes', not a voxel annotation"),
+            ("fov", "is a 'mask', which has no classes"),
+        ],
+    )
+    def test_S6_3_a_kind_a_seg_cannot_hold_is_refused_before_anything_is_read(
+        self, prepared, tmp_path, ann_id, why
+    ):
+        """A SEG holds one segment per class. Boxes reached `dense()` and
+        failed with an `AttributeError`; a mask wrote no segment, and
+        highdicom failed with an `IndexError`."""
+        from medh5.io.dicom_seg import to_dicom_seg
+
+        self._without_segments(prepared)
+        out = tmp_path / "s.dcm"
+        # Read, a source that is not there would be refused on its own.
+        with pytest.raises(MEDH5ValidationError) as caught:
+            to_dicom_seg(prepared["path"], ann_id, [tmp_path / "absent.dcm"], out)
+        assert caught.value.code == "E401"
+        message = str(caught.value)
+        assert why in message
+        assert "'labelmap', 'layers', 'bitmask', 'instances' or 'probmap'" in message
+        assert not out.exists()
+
+    def test_S6_3_the_command_line_refuses_it_by_name(self, prepared, tmp_path, capsys):
+        from medh5.cli import EXIT_ERROR, main
+
+        self._without_segments(prepared)
+        sources = [a for p in prepared["series"]["paths"] for a in ("--source", p)]
+        for ann_id in ("det", "fov"):
+            out = tmp_path / f"{ann_id}.dcm"
+            path = str(prepared["path"])
+            argv = ["convert", "to-dicom-seg", path, ann_id, str(out), *sources]
+            assert main(argv) == EXIT_ERROR
+            err = capsys.readouterr().err
+            assert err.startswith(f"medh5: [E401] annotation {ann_id!r} is"), err
+            assert "Traceback" not in err
+            assert not out.exists()
+
     def test_S3_3_a_seg_with_omitted_frames_imports(self, tmp_path: Path):
         """highdicom's default omits empty frames, and the import refused it.
 

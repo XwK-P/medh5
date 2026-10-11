@@ -31,7 +31,7 @@ would report there:
 | Code | Refused because |
 |---|---|
 | `E101` | an import cannot tell which of the sample's grids a SEG or RTSTRUCT belongs to |
-| `E401` | the annotation is of a kind the format cannot hold (`to-rtstruct` on a mask) |
+| `E401` | the annotation is of a kind the format cannot hold (`to-rtstruct` on a mask, `to-dicom-seg` on boxes or a `mask`) |
 | `E402` | a class the sample's label set does not have |
 | `E405` | a mask or SEG does not fit its grid: another shape, or frames that are not the grid's slices; a SEG export whose source images are not the annotation grid's slices |
 | `E414` | a space or frame of reference the annotation cannot be in: a grid in another known frame, or one in pixels or another convention where patient coordinates are needed |
@@ -181,6 +181,12 @@ grid's slices (`E405` otherwise) in its frame of reference (`E414`; a frame
 on the command line). The export used to compare nothing, and an annotation on
 a grid turned in plane, or shifted 10 mm, was written centimetres from where it
 was drawn.
+
+**Export writes segments, one per class.** A `labelmap`, `layers`, `bitmask`,
+`instances` or `probmap` annotation is exported; any other kind is refused
+(`E401`) before anything is read. A geometric annotation has no voxels to
+write, and a `mask` no class to name a segment by: the export met the one as
+an `AttributeError` and the other as an `IndexError` out of `highdicom`.
 
 **Export refuses an ignore region.** A binary segment has no value for "not
 examined": its 0 says examined and absent. Written from `dense()`, every voxel
