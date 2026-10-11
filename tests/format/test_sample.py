@@ -226,6 +226,48 @@ class TestWriteRead:
             )
         assert exc.value.code == "E105"
 
+    def test_S4_3_a_pyramid_without_levels_is_refused(self, tmp_path):
+        with medh5.create(tmp_path / "x.medh5") as w:
+            minimal(w)
+            with pytest.raises(MEDH5ValidationError) as exc:
+                w.add_pyramid("P", [], grid_levels=[], modality="CT")
+        assert exc.value.code == "E105"
+
+    def test_S4_3_a_refused_pyramid_leaves_nothing_behind(self, tmp_path):
+        """A level of the wrong shape, or an unknown downsampling method, was
+        refused after the image's group was made: the corrected call then
+        failed with "name already exists", and the commit with it."""
+        from medh5.geometry import derive_level_grid
+
+        path = tmp_path / "pyr.medh5"
+        shape = (16, 32, 32)
+        with medh5.create(path, codec="portable") as w:
+            base = w.add_grid("l0", shape=shape, spacing=(1.0, 1.0, 1.0))
+            half = derive_level_grid(base, (2, 2, 2), "l1")
+            w.add_grid("l1", shape=half.shape, spacing=half.spacing, origin=half.origin)
+            levels = [np.zeros(shape, np.int16), np.zeros(half.shape, np.int16)]
+            with pytest.raises(MEDH5ValidationError) as exc:
+                w.add_pyramid(
+                    "CT",
+                    [levels[0], levels[0]],
+                    grid_levels=["l0", "l1"],
+                    modality="CT",
+                )
+            assert exc.value.code == "E202"
+            with pytest.raises(MEDH5ValidationError) as exc:
+                w.add_pyramid(
+                    "CT",
+                    levels,
+                    grid_levels=["l0", "l1"],
+                    modality="CT",
+                    downsample_method="nearest-ish",
+                )
+            assert exc.value.code == "E105"
+            w.add_pyramid("CT", levels, grid_levels=["l0", "l1"], modality="CT")
+        with medh5.open(path) as sample:
+            assert sample.images["CT"].levels == 2
+        assert validate_file(path).ok
+
 
 class TestProfiles:
     def test_profiles_are_inferred_from_content(self, sample_path, longitudinal_path):

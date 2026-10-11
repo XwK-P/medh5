@@ -240,6 +240,17 @@ pub fn amend_into(path: &Path, out: &Path, codec: Option<&str>, without: &[&str]
     Ok(writer)
 }
 
+/// `written`, or --- when it failed --- nothing: the object `name` the failed
+/// write began under `parent` is unlinked, so a corrected retry can write it
+/// and a commit never finds it half-written.  The write's own error is the
+/// one reported.
+fn or_unlink<T>(parent: &hdf5::Group, name: &str, written: Result<T>) -> Result<T> {
+    if written.is_err() {
+        ops::unlink(parent, name).ok();
+    }
+    written
+}
+
 impl SampleWriter {
     /// A writer for `path`; `source` copies an existing sample in (amend),
     /// but for the top-level members it names.
@@ -829,7 +840,8 @@ impl SampleWriter {
             Role::Image,
             Some(chunks),
         );
-        let node = data::create(&self.group("images")?, image_id, data, &layout)?;
+        let parent = self.group("images")?;
+        let node = data::create(&parent, image_id, data, &layout)?;
         let mut values: Vec<(&str, Option<AttrValue>)> = vec![
             ("grid", Some(AttrValue::Str(grid.into()))),
             ("modality", Some(AttrValue::Str(modality.into()))),
@@ -844,7 +856,7 @@ impl SampleWriter {
             ("prov", options.prov.map(AttrValue::Str)),
         ];
         values.retain(|(_, v)| v.is_some());
-        attrs::write_all(&node, &values)?;
+        or_unlink(&parent, image_id, attrs::write_all(&node, &values))?;
         self.images.insert(image_id.to_string(), (grid.to_string(), modality.to_string()));
         self.image_multiscale.insert(image_id.to_string(), false);
         Ok(node)
@@ -867,6 +879,12 @@ impl SampleWriter {
         }
         let value_type = options.value_type.clone().unwrap_or_else(|| "intensity".into());
         super::image::check_value_type(&value_type)?;
+        if levels.is_empty() {
+            return Err(Error::coded(
+                "E105",
+                format!("image {}: a pyramid needs at least one level", repr_str(image_id)),
+            ));
+        }
         if levels.len() != grid_levels.len() {
             return Err(Error::coded(
                 "E105",
@@ -883,8 +901,10 @@ impl SampleWriter {
                 format!("image {}: inconsistent pyramid geometry: {}", repr_str(image_id), problems.join("; ")),
             ));
         }
-        let group = self.group("images")?.create_group(image_id)?;
+        // Every check comes before the first write, so a refused pyramid
+        // leaves nothing a corrected retry would collide with.
         let profile = self.profile(options.codec.as_deref())?;
+        let mut layouts = Vec::with_capacity(levels.len());
         for (level, (array, target)) in levels.iter().zip(&grids).enumerate() {
             let shape: Vec<i64> = array.shape().iter().map(|v| *v as i64).collect();
             if shape != target.shape {
@@ -900,8 +920,7 @@ impl SampleWriter {
                 ));
             }
             let chunks = self.chunks_for(target, array.dtype().itemsize(), 0)?;
-            let layout = dataset_layout(&array.shape(), array.dtype().itemsize(), &profile, Role::Image, Some(chunks));
-            data::create(&group, &level.to_string(), array, &layout)?;
+            layouts.push(dataset_layout(&array.shape(), array.dtype().itemsize(), &profile, Role::Image, Some(chunks)));
         }
         let pyramid = Pyramid::new(levels.len(), factors, downsample_method, grid_levels.to_vec())?;
         let mut values: Vec<(String, AttrValue)> = vec![
@@ -922,9 +941,15 @@ impl SampleWriter {
             values.push(("prov".into(), AttrValue::Str(v)));
         }
         values.extend(pyramid.attrs());
-        for (k, v) in &values {
-            attrs::write(&group, k, v)?;
-        }
+        let parent = self.group("images")?;
+        let group = parent.create_group(image_id)?;
+        let written = levels
+            .iter()
+            .zip(&layouts)
+            .enumerate()
+            .try_for_each(|(level, (array, layout))| data::create(&group, &level.to_string(), array, layout).map(drop))
+            .and_then(|()| values.iter().try_for_each(|(k, v)| attrs::write(&group, k, v)));
+        or_unlink(&parent, image_id, written)?;
         self.images.insert(image_id.to_string(), (grid_levels[0].clone(), modality.to_string()));
         self.image_multiscale.insert(image_id.to_string(), true);
         Ok(group)
