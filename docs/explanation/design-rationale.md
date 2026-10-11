@@ -250,7 +250,8 @@ pipeline know what was knowable when". Each choice below follows from that.
 
 The draft this implements was reviewed before a line of it was written, and
 implementing it still corrected sixteen of its clauses --- an unallocated code,
-an ambiguous dtype, a rule a validator could not check. Each correction, and
+an ambiguous dtype, a rule a validator could not check --- and reviewing that
+implementation before its release corrected twelve more. Each correction, and
 why, is in [1.1 Appendix A](../spec/medh5-1.1.md#appendix-a--changes-from-the-reviewed-draft-and-why).
 
 ## Non-goals
