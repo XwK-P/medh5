@@ -15,8 +15,9 @@ use crate::json::{repr_list, repr_str};
 use crate::pyval::{self, get_list, get_str, require, to_str};
 use crate::{Error, Result};
 
-/// `agent.type` values (§11.1).
-pub const AGENT_TYPES: [&str; 4] = ["person", "software", "organization", "model"];
+/// `agent.type` values (§11.1): the sample-document schema's.  A model is
+/// the `software` that runs it, as §11.1's own example records nnU-Net.
+pub const AGENT_TYPES: [&str; 3] = ["person", "software", "organization"];
 /// The schema's `agent` properties; the object is closed.
 pub const AGENT_FIELDS: [&str; 7] = ["id", "type", "name", "role", "version", "qualification", "organization"];
 /// The schema's `activity` properties; the object is closed.

@@ -44,7 +44,7 @@ class TestProvenance:
         """The workflow a review-status field cannot express."""
         graph = Provenance(
             agents=[
-                Agent("m1", "model", "nnU-Net", version="2.5.1"),
+                Agent("m1", "software", "nnU-Net", role="predictor", version="2.5.1"),
                 Agent("r1", "person", "pseudonym:RAD-07", role="annotator"),
             ],
             activities=[
@@ -95,6 +95,20 @@ class TestProvenance:
         assert exc.value.code == "E603"
         with pytest.raises(MEDH5ValidationError) as exc:
             Activity("a", "divination")
+        assert exc.value.code == "E603"
+
+    def test_S11_1_an_agent_type_is_one_the_schema_allows(self):
+        """`model` was an agent type to the parser and to no schema: an agent
+        of it was made and read back, and every document holding one failed
+        its schema (E005) at commit and in the validator.  A model is the
+        `software` that runs it."""
+        from medh5.curation import AGENT_TYPES
+        from medh5.document import schema
+
+        agent = schema()["$defs"]["agent"]["properties"]["type"]["enum"]
+        assert sorted(AGENT_TYPES) == sorted(agent)
+        with pytest.raises(MEDH5ValidationError) as exc:
+            Agent("m1", "model", "nnU-Net")
         assert exc.value.code == "E603"
 
     def test_S11_1_timestamps_must_be_rfc3339(self):
