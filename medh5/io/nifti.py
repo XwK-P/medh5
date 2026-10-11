@@ -148,9 +148,12 @@ def write_nifti(
     reader ever pairs the image with another export's timeline, and an export
     that fails before its image is whole changes nothing (see
     :func:`_withdraw_volume_statements`).
+
+    *path* names a ``.nii`` or ``.nii.gz`` file, and anything else is refused
+    before a file is written (:func:`_nifti_target`).
     """
     nib = require_nibabel()
-    target = Path(os.fspath(path))
+    target = _nifti_target(path)
     data = np.ascontiguousarray(array)
     matrix = np.array(affine, dtype=np.float64, copy=True)
     scale = MM_PER_UNIT.get(units)
@@ -359,6 +362,34 @@ def _write_timing(
     zooms[3] = 0.0
     header.set_zooms(zooms)
     return "unknown", [float(v) for v in times * SECONDS_PER_UNIT[unit]]
+
+
+NIFTI_SUFFIXES = (".nii.gz", ".nii")
+"""The names an export writes a NIfTI file under, and the only names whose
+sidecar and ``.bval`` this module finds beside them."""
+
+
+def _nifti_target(path: str | os.PathLike[str]) -> Path:
+    """*path* as the NIfTI file an export writes, refused before anything is.
+
+    nibabel chooses the format, and the file's name, from the suffix: the
+    temporary written beside a target without ``.nii`` or ``.nii.gz`` came
+    out under another name --- ``.nii`` appended, or an Analyze ``.img``
+    beside its ``.hdr`` --- so it was left behind when the rename failed, or
+    the target became an image whose header was the stray.  A directory is no
+    file to write.
+    """
+    target = Path(os.fspath(path))
+    if target.is_dir():
+        raise MEDH5ValidationError(
+            f"{target} is a directory; name the .nii or .nii.gz file to write"
+        )
+    if not target.name.endswith(NIFTI_SUFFIXES):
+        raise MEDH5ValidationError(
+            f"{target} is not a NIfTI file name: an export writes one ending in "
+            ".nii or .nii.gz"
+        )
+    return target
 
 
 def _sidecar_for(target: Path) -> Path:
@@ -1391,10 +1422,18 @@ def to_nifti(
     its voxels are that grid's, and the image's affine put a PET-grid mask at
     the CT's origin.  *report*, when given, collects what the header could not
     say as the grid does (see :func:`write_nifti`).
+
+    The whole annotation is its labelmap, where an ignored voxel (§7.7) is the
+    annotation's ``ignore_id``.  One class (*class_key*) is a 0/1 mask, which
+    has no value for "ignored", and its 0 says "examined, absent": an
+    annotation with an ignore region is refused rather than exported as one,
+    since the mask would turn every ignored voxel into a negative.
+
+    *out* is a ``.nii`` or ``.nii.gz`` file, checked before anything is read.
     """
     import medh5
 
-    target = Path(os.fspath(out))
+    target = _nifti_target(out)
     with medh5.open(path) as sample:
         image = sample.images[image_id]
         grid = image.grid
@@ -1402,11 +1441,19 @@ def to_nifti(
         if annotation is not None:
             ann = sample.annotations[annotation]
             grid = ann.grid
-            data = (
-                np.asarray(ann.labelmap(), dtype=np.uint16)
-                if class_key is None
-                else np.asarray(ann.dense([class_key])[0], dtype=np.uint8)
-            )
+            if class_key is None:
+                data = np.asarray(ann.labelmap(), dtype=np.uint16)
+            else:
+                data = np.asarray(ann.dense([class_key])[0], dtype=np.uint8)
+                ignored = int(np.count_nonzero(sample.ignore_region(annotation)))
+                if ignored:
+                    raise MEDH5ValidationError(
+                        f"annotation {annotation!r} ignores {ignored} voxel(s) "
+                        "(§7.7), which a one-class mask cannot mark --- its 0 "
+                        "would say they were examined and found absent; export "
+                        "the whole annotation instead (without a class), whose "
+                        f"labelmap writes them as its ignore id {ann.ignore_id}"
+                    )
         else:
             data = np.asarray(image.read(physical=physical))
             if not physical:

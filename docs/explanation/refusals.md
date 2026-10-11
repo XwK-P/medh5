@@ -71,6 +71,12 @@ as a label set allows one — lowercase letters, digits and underscores, so
 `GTV-1` is the class `gtv_1`, displayed as `GTV-1` — and `GTV-1` beside
 `gtv_1` would merge two masks into one class.
 
+**A one-class export of an annotation with an ignore region is refused**
+(`--class`, `to_nifti(class_key=...)`). A 0/1 mask has no value for "nobody
+looked here", and its `0` means "examined, absent" (§7.7), so every ignored
+voxel would leave as a negative. The whole annotation's labelmap keeps them, as
+its ignore id.
+
 ## DICOM
 
 **The stack must agree with itself.** A series is one volume with one geometry

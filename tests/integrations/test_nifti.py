@@ -450,6 +450,64 @@ class TestNifti:
         )
         assert np.asanyarray(nib.load(str(whole)).dataobj).max() == 1
 
+    @pytest.mark.parametrize("encoding", ["labelmap", "bitmask"])
+    def test_S7_7_a_one_class_mask_of_an_ignore_region_is_refused(
+        self, tmp_path, encoding
+    ):
+        """A one-class export is a 0/1 mask, and wrote 0 --- examined and
+        absent --- at every ignored voxel, in band or in a sibling mask.  The
+        whole annotation's labelmap keeps them as the ignore id."""
+        path = tmp_path / "ignored.medh5"
+        with Organs.writer(path) as w:
+            w.add_segmentation(
+                "organs",
+                grid="g",
+                masks={1: Organs.blocks()[1]},
+                encoding=encoding,
+                ignore=Organs.ignore(),
+                annotated_classes="all",
+            )
+        out = tmp_path / "liver.nii.gz"
+        with pytest.raises(MEDH5ValidationError, match="ignores 288 voxel"):
+            to_nifti(path, "CT", out, annotation="organs", class_key="liver")
+        assert not out.exists()
+        whole = to_nifti(path, "CT", tmp_path / "organs.nii.gz", annotation="organs")
+        # NIfTI is (x, y, z); the region is in MEDH5's (z, y, x).
+        labels = np.asanyarray(nib.load(str(whole)).dataobj).T
+        assert (labels[Organs.ignore()] == 65535).all()
+        assert (labels[Organs.blocks()[1]] == 1).all()
+
+    @pytest.mark.parametrize(
+        "name", ["plain", "ct.img", "ct.nii.txt", "folder", "folder.nii"]
+    )
+    def test_a_target_that_is_no_nifti_file_name_is_refused_first(
+        self, volumes, tmp_path, capsys, name
+    ):
+        """nibabel names the file it writes by the suffix, so the temporary
+        beside a target without ``.nii`` or ``.nii.gz`` came out under another
+        name --- ``.nii`` appended, or an ``.img`` beside its ``.hdr`` --- and
+        was left behind when the rename failed, or became the target's lost
+        header.  A directory failed the same way."""
+        from medh5.cli import EXIT_ERROR, main
+
+        sample = tmp_path / "s.medh5"
+        from_nifti({"CT": volumes["ct"]}, sample)
+        out = tmp_path / "out"
+        out.mkdir()
+        target = out / name
+        if name.startswith("folder"):
+            target.mkdir()
+        refused = r"is a directory|is not a NIfTI file name"
+        with pytest.raises(MEDH5ValidationError, match=refused):
+            to_nifti(sample, "CT", target)
+        assert main(["convert", "to-nifti", str(sample), "CT", str(target)]) == (
+            EXIT_ERROR
+        )
+        assert capsys.readouterr().err.startswith(f"medh5: {target} is ")
+        assert [p.name for p in out.iterdir()] == (
+            [name] if name.startswith("folder") else []
+        )
+
     def test_import_seg_into_an_existing_sample(self, volumes, tmp_path):
         from_nifti({"CT": volumes["ct"]}, tmp_path / "i.medh5")
         report = import_seg_nifti(

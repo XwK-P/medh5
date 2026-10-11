@@ -375,6 +375,11 @@ cine, DCE and 4-D CT, `channel` for multi-b-value DWI and multi-echo; `auto`
 do not say. `--assume-geometry` imports a file that declares no spatial mapping,
 recorded as a guess; without it such a file is refused.
 
+`to-nifti` writes `OUT`, a `.nii` or `.nii.gz` file. With `--annotation` it
+writes that annotation's labelmap, each ignored voxel as its ignore id; with
+`--class` too, one class as a 0/1 mask, refused for an annotation with an ignore
+region, which a mask has no value for.
+
 `from-dicom --group-by subject` (the default) merges a patient's studies into
 one multi-timepoint sample. Identity is never inferred from filenames, dates or
 accession numbers; when it cannot be established the command falls back to one

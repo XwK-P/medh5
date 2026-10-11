@@ -78,6 +78,14 @@ angles in the sidecar. An export replaces the per-volume fields and `.bval` an
 earlier export left beside the file, and keeps the sidecar's other fields. An
 annotation is exported on **its own** grid, whichever image is named.
 
+**An annotation is its labelmap, ignored voxels included.** The whole annotation
+is written as its `labelmap()`, where a voxel of the §7.7 ignore region is the
+annotation's `ignore_id` (`65535` unless the header says otherwise). One class
+(`--class`, `class_key=`) is a 0/1 mask, which has no value for "ignored" and
+whose `0` says "examined, absent", so it is refused for an annotation with an
+ignore region. The output is named `.nii` or `.nii.gz`; any other name, or a
+directory, is refused before anything is written.
+
 **Volumes must share one grid** --- shape, spacing, origin and direction, with
 lengths compared in millimetres, and frame times where both volumes state them.
 **A mask added with `import_seg_nifti` must sit on the sample's grid** in the

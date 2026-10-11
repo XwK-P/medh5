@@ -13,6 +13,12 @@ medh5 convert to-nifti case.medh5 CT liver.nii.gz --annotation organs --class li
 quantitative image is written after its rescale, so the numbers mean what the
 units say.
 
+`--annotation` alone writes the annotation's labelmap, with every ignored voxel
+as its ignore id (`65535` unless the header says otherwise). `--class` writes
+one class as a 0/1 mask, which cannot say "ignored" --- its `0` says "examined,
+absent" --- so it refuses an annotation with an ignore region: export the
+labelmap instead. The output is a `.nii` or `.nii.gz` file.
+
 The round trip from `from_nifti` reproduces the affine and the voxels; a file
 that had a scale comes back as its physical values unless `--stored` writes the
 stored voxels and the scale, as the file had them.
