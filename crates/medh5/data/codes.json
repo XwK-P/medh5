@@ -197,7 +197,7 @@
       "code": "E306",
       "severity": "error",
       "domain": "labels",
-      "summary": "class entry is missing a required field, has an id out of range, or names an unknown parent"
+      "summary": "a class entry is missing a required field, has an id out of range or names an unknown parent, or a relation names a class the label set does not hold"
     },
     {
       "code": "E401",

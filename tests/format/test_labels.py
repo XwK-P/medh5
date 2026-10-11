@@ -9,7 +9,7 @@ import textwrap
 import pytest
 
 from medh5 import labels
-from medh5.errors import MEDH5ValidationError
+from medh5.errors import CODES, MEDH5ValidationError
 from medh5.labels import (
     IGNORE_ID,
     LabelClass,
@@ -198,6 +198,19 @@ class TestLabelSet:
         with pytest.raises(MEDH5ValidationError) as exc:
             LabelSet("p", classes=[LabelClass(1, "a", "A", parents=[9])])
         assert exc.value.code == "E306"
+
+    def test_S5_4_a_relation_naming_no_class_is_E306(self):
+        """A relation's ends are classes of its label set: one naming another
+        id is E306, which the code table gave only to a class naming an
+        unknown parent."""
+        with pytest.raises(MEDH5ValidationError, match="relation") as exc:
+            LabelSet(
+                "r",
+                classes=[LabelClass(1, "a", "A")],
+                relations=[Relation(subject=1, predicate="part_of", object=9)],
+            )
+        assert exc.value.code == "E306"
+        assert "relation" in CODES["E306"].summary
 
     def test_S5_4_closure_explicit_never_infers(self):
         """§5.4: `explicit` MUST NOT add ancestors; `implicit` MUST."""
