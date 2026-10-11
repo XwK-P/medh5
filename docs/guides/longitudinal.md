@@ -73,6 +73,12 @@ w.add_segmentation("lesions_tp1", grid="ct_tp1", encoding="instances",
                    annotated_classes=["lesion"])
 ```
 
+Masks carry no identity, so the writer asserts none. A segmentation given as
+`masks=` and stored as `instances` --- chosen by measurement or asked for ---
+holds one object per class, each minted an id above every id the sample already
+holds, so it joins nothing. Correspondence is the caller's to assert: pass
+`instances=` with the ids.
+
 Then the join is a method:
 
 ```python

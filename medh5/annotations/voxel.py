@@ -286,7 +286,13 @@ def encode_instances(
 def instances_from_masks(
     masks: Mapping[int, npt.NDArray[Any]], *, start_id: int = 1
 ) -> list[InstanceInput]:
-    """One object per class mask, minting ids from *start_id*."""
+    """One object per class mask, minting ids from *start_id*.
+
+    A writer keeps the ids, and ids are sample-scoped (§7.4): an object whose
+    id another annotation of the sample uses is that object.  Start above the
+    sample's ids unless that is meant --- or give ``add_segmentation`` the
+    masks, which it mints ids for above them when it stores ``instances``.
+    """
     return [
         InstanceInput(class_id=class_id, instance_id=instance_id, mask=mask)
         for class_id, instance_id, mask in _core.instances_from_masks(

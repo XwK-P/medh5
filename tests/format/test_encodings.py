@@ -726,6 +726,19 @@ class TestPayloadEncoderGuards:
         )
         assert small.datasets["instance_ids"].dtype == np.uint32
 
+    def test_S7_4_ids_minted_past_the_largest_uint64_are_refused(self):
+        """Minted past 2**64 - 1, the next id wrapped to 0 --- another
+        object's id --- or, in a debug build, panicked."""
+        first, second = np.zeros(self.SHAPE, bool), np.zeros(self.SHAPE, bool)
+        first[1] = True
+        second[2] = True
+        top = 2**64 - 1
+        payload = encode_masks({1: first}, "instances", self.SHAPE, start_id=top)
+        assert int(np.asarray(payload.datasets["instance_ids"])[0]) == top
+        with pytest.raises(MEDH5ValidationError) as exc:
+            encode_masks({1: first, 2: second}, "instances", self.SHAPE, start_id=top)
+        assert exc.value.code == "E404"
+
     def test_S11_3_a_class_examined_and_absent_survives_the_instances_decode(self):
         """`payload_to_masks` keyed off the objects present, not the declared set.
 

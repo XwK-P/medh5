@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 import medh5
-from medh5.annotations.voxel import InstanceInput
+from medh5.annotations.voxel import InstanceInput, instances_from_masks
 from medh5.curation import PRESENT, RESOLVED, UNEXAMINED, carries_instance_ids
 from medh5.errors import MEDH5ValidationError
 from medh5.validate import validate_file
@@ -205,6 +205,124 @@ class TestInstanceIdentity:
             tracking = sample.tracks()
             assert tracking[42].timepoints == ("tp0", "tp1")
             assert tracking[42].volume("tp0") == pytest.approx(64.0)
+
+    PLACES = {"tp0": lesion(4, 4, 4, 1), "tp1": lesion(12, 18, 18, 1)}
+    """One lesion per visit, nowhere near each other."""
+
+    @staticmethod
+    def _visits(path: Path, label_set, annotate) -> Path:
+        """Two visits in their own frames; ``annotate(w, tp)`` writes each."""
+        with medh5.create(path, codec="portable") as w:
+            w.add_timepoint("tp0")
+            w.add_timepoint("tp1")
+            w.label_set(label_set)
+            for tp in ("tp0", "tp1"):
+                w.add_grid(
+                    f"g_{tp}",
+                    shape=SHAPE,
+                    spacing=(1.0, 1.0, 1.0),
+                    timepoint=tp,
+                    frame_uid=f"pseudo:{tp}",
+                )
+                w.add_image(
+                    f"CT_{tp}",
+                    np.zeros(SHAPE, dtype=np.int16),
+                    grid=f"g_{tp}",
+                    modality="CT",
+                )
+                annotate(w, tp)
+        return path
+
+    def test_S7_4_objects_minted_from_masks_join_nothing(self, tmp_path, label_set):
+        """Masks carry no identity, and stored as `instances` every
+        annotation's objects were minted ids from 1: the lesion of one visit
+        tracked as the other visit's, centimetres away."""
+
+        def annotate(w, tp):
+            w.add_segmentation(
+                f"les_{tp}",
+                grid=f"g_{tp}",
+                masks={3: self.PLACES[tp]},
+                encoding="instances",
+            )
+
+        path = self._visits(tmp_path / "minted.medh5", label_set, annotate)
+        with medh5.open(path) as sample:
+            assert list(sample.annotations["les_tp0"].instance_ids) == [1]
+            assert list(sample.annotations["les_tp1"].instance_ids) == [2]
+            tracking = sample.tracks()
+            assert tracking.summary()["persistent"] == []
+            assert [t.timepoints for t in tracking.values()] == [("tp0",), ("tp1",)]
+
+    def test_S7_4_ids_the_caller_gives_still_join(self, tmp_path, label_set):
+        """An explicit ``start_id``, like an explicit id, asserts the objects
+        are one; the writer keeps it."""
+
+        def annotate(w, tp):
+            w.add_segmentation(
+                f"les_{tp}",
+                grid=f"g_{tp}",
+                instances=instances_from_masks({3: self.PLACES[tp]}, start_id=1),
+            )
+
+        path = self._visits(tmp_path / "asserted.medh5", label_set, annotate)
+        with medh5.open(path) as sample:
+            tracking = sample.tracks()
+            assert tracking.summary()["persistent"] == [1]
+            assert tracking[1].timepoints == ("tp0", "tp1")
+
+    def test_S7_4_an_amendment_mints_above_every_id_the_file_holds(
+        self, tmp_path, label_set
+    ):
+        """Ids are sample-scoped, whatever kind carries them: a box's 42 is
+        taken, so the lesion masks added later become object 43."""
+
+        def annotate(w, tp):
+            if tp == "tp0":
+                w.add_boxes(
+                    "det_tp0",
+                    grid="g_tp0",
+                    boxes=[[[3.0, 5.0], [3.0, 5.0], [3.0, 5.0]]],
+                    class_ids=[3],
+                    instance_ids=[42],
+                    task="detection",
+                )
+
+        path = self._visits(tmp_path / "amended.medh5", label_set, annotate)
+        with medh5.amend(path) as w:
+            w.add_segmentation(
+                "les_tp1",
+                grid="g_tp1",
+                masks={3: self.PLACES["tp1"]},
+                encoding="instances",
+            )
+        with medh5.open(path) as sample:
+            assert list(sample.annotations["les_tp1"].instance_ids) == [43]
+            assert sample.tracks().summary()["persistent"] == []
+
+    def test_S7_4_no_id_is_minted_past_the_largest_uint64(self, tmp_path, label_set):
+        top = 2**64 - 1
+
+        def annotate(w, tp):
+            if tp == "tp0":
+                w.add_segmentation(
+                    "les_tp0",
+                    grid="g_tp0",
+                    instances=[
+                        InstanceInput(class_id=3, instance_id=top, mask=self.PLACES[tp])
+                    ],
+                )
+
+        path = self._visits(tmp_path / "full.medh5", label_set, annotate)
+        with pytest.raises(MEDH5ValidationError) as exc, medh5.amend(path) as w:
+            w.add_segmentation(
+                "les_tp1",
+                grid="g_tp1",
+                masks={3: self.PLACES["tp1"]},
+                encoding="instances",
+            )
+        assert exc.value.code == "E404"
+        assert str(top) in str(exc.value)
 
 
 class TestInstanceIdsBeyondUint32:

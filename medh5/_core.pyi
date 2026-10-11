@@ -3265,6 +3265,8 @@ class SampleWriter:
         """Write a voxel annotation, choosing the encoding by measurement.
 
         Returns the chosen `kind` and the overlap statistics behind the choice.
+        Masks stored as `instances` are one object per class, each minted an
+        id above every id the sample holds (§7.4).
         """
         ...
     def add_timepoint(self, timepoint_id: str, **fields: Any) -> Timepoint:

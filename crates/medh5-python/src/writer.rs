@@ -741,6 +741,8 @@ impl SampleWriter {
     /// Write a voxel annotation, choosing the encoding by measurement.
     ///
     /// Returns the chosen `kind` and the overlap statistics behind the choice.
+    /// Masks stored as `instances` are one object per class, each minted an
+    /// id above every id the sample holds (§7.4).
     #[pyo3(signature = (ann_id, *, grid, masks=None, probabilities=None, instances=None, encoding="auto",
         threshold=None, annotated_classes=None, closure="explicit", ignore=None, ignore_mask=None, timepoints=None,
         prov=None, quality=None, derived_from=None, task="segmentation", codec=None))]

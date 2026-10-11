@@ -362,12 +362,47 @@ impl SampleWriter {
                 let prefer = if encoding == "auto" { None } else { Some(encoding) };
                 let kind = select_encoding(&stats, false, prefer, in_band_possible);
                 let in_band = in_band_possible && IN_BAND_IGNORE_KINDS.contains(&kind.as_str());
-                let options =
-                    EncodeOptions { ignore: if in_band { ignore.cloned() } else { None }, ..Default::default() };
+                // Masks carry no identity: as `instances`, each class is one
+                // object, minted an id no object in the sample holds yet.
+                let start_id = if kind == "instances" { Some(self.unused_instance_id()?) } else { None };
+                let options = EncodeOptions {
+                    ignore: if in_band { ignore.cloned() } else { None },
+                    start_id,
+                    ..Default::default()
+                };
                 let payload = encode_masks(&given, &kind, Some(&shape), &options)?;
                 let ids = payload.class_ids.clone();
                 Ok((payload, Some(stats), ids, in_band))
             }
+        }
+    }
+
+    /// The first `instance_id` above every one the sample holds --- in the
+    /// file amended and in what this writer has added, under any annotation
+    /// kind that carries `instance_ids` --- or 1 when none does.
+    ///
+    /// Two distinct objects must not share an id (§7.4), and tracking joins
+    /// on it across visits: minted from 1 in every annotation, the objects of
+    /// one visit's masks became the objects of the next visit's.
+    fn unused_instance_id(&self) -> Result<u64> {
+        let annotations = self.root()?.group("annotations")?;
+        let mut largest = None;
+        for name in ops::members(&annotations)? {
+            let column = ops::child_group(&annotations, &name).and_then(|g| ops::child_dataset(&g, "instance_ids"));
+            if let Some(column) = column {
+                largest = largest.max(data::read(&column)?.cast::<u64>().iter().copied().max());
+            }
+        }
+        match largest {
+            None => Ok(1),
+            Some(top) => top.checked_add(1).ok_or_else(|| {
+                Error::coded(
+                    "E404",
+                    format!(
+                        "the sample already holds instance id {top}, the largest a uint64 can, so none is left to mint"
+                    ),
+                )
+            }),
         }
     }
 

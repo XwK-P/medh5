@@ -924,17 +924,19 @@ pub fn encode_masks(
         }
         "instances" => {
             let start_id = options.start_id.unwrap_or(1);
-            let objects: Vec<InstanceInput> = masks
-                .iter()
-                .enumerate()
-                .filter(|(_, (_, m))| m.iter().any(|v| *v))
-                .map(|(i, (c, m))| InstanceInput {
-                    class_id: *c,
-                    instance_id: start_id + i as u64,
-                    mask: Some(m.clone()),
-                    ..Default::default()
-                })
-                .collect();
+            let mut objects = Vec::new();
+            for (i, (c, m)) in masks.iter().enumerate().filter(|(_, (_, m))| m.iter().any(|v| *v)) {
+                let Some(instance_id) = start_id.checked_add(i as u64) else {
+                    return Err(Error::coded(
+                        "E404",
+                        format!(
+                            "instance ids minted from {start_id} run past {}, the largest a uint64 holds",
+                            u64::MAX
+                        ),
+                    ));
+                };
+                objects.push(InstanceInput { class_id: *c, instance_id, mask: Some(m.clone()), ..Default::default() });
+            }
             let ids: Vec<i64> = masks.keys().copied().collect();
             encode_instances(&objects, spatial_shape, options.store_masks.unwrap_or(true), Some(&ids))
         }
