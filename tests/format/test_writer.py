@@ -1334,7 +1334,7 @@ class TestRefusedWrites:
         with Flat.open_writer(path) as w:
             with pytest.raises(ValueError):
                 write(w, **_REFUSALS[refusal])
-            assert "transforms" not in w.handle.keys()
+            assert "transforms" not in w.handle
             write(w)
         with medh5.open(path) as sample:
             assert list(sample.transforms) == ["t"]
@@ -1398,9 +1398,11 @@ class TestRefusedWrites:
             w.build_index()
         with medh5.open(path) as sample:
             before = sample.annotations["a"].labelmap()
-        with medh5.amend(path) as w:
-            with pytest.raises(MEDH5ValidationError, match="unknown codec"):
-                w.transcode_annotation("a", "layers", codec="nope")
+        with (
+            medh5.amend(path) as w,
+            pytest.raises(MEDH5ValidationError, match="unknown codec"),
+        ):
+            w.transcode_annotation("a", "layers", codec="nope")
         with medh5.open(path) as sample:
             annotation = sample.annotations["a"]
             assert annotation.kind == "labelmap"

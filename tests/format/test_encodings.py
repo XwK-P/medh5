@@ -820,7 +820,9 @@ class TestPayloadEncoderGuards:
             lambda: encode(masks, self.SHAPE, ignore=ignore),
             lambda: encode_voxels(masks, self.SHAPE, encoding=kind, ignore=ignore),
         ):
-            with pytest.raises(MEDH5ValidationError, match=r"class 1 at voxel \(1, 1, 1\)") as exc:
+            with pytest.raises(
+                MEDH5ValidationError, match=r"class 1 at voxel \(1, 1, 1\)"
+            ) as exc:
                 refused()
             assert exc.value.code == "E404"
         ignore[1, 1, 1] = False
