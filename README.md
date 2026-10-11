@@ -33,30 +33,40 @@ with medh5.open("case_0001.medh5") as s:
 
 ## Install
 
-One format engine, written in Rust, with three frontends that read and write
-the same bytes:
-
 ```bash
-pip install medh5                      # the Python package
-pip install "medh5[torch,nifti,dicom]"
-cargo add medh5                        # the Rust crate
-cargo install --locked medh5-cli       # the `medh5` command line, natively
+pip install medh5
 ```
 
-The wheels carry the engine, HDF5 included, so reading and writing need only
-NumPy. Extras: `torch`, `monai`, `nifti`, `dicom`, `dicomseg`, and `h5py` for
-opening files with `h5py` directly. The `medh5` binary is also attached to every
-[GitHub Release](https://github.com/XwK-P/medh5/releases), and installs with
-`brew install XwK-P/medh5/medh5`; building it or the crate from source needs
-Rust 1.85.1 or later, a C compiler and CMake, for HDF5.
+That is all most people need: the Python package and the `medh5` command line,
+enough to create, read, validate and inspect files. HDF5 and its compression
+filters are built in, so NumPy is the only other dependency. pip downloads it
+ready-built for Python 3.10 and later on Linux (x86_64, ARM64), macOS (Intel,
+Apple silicon) and Windows (x64).
 
-There is a wheel for CPython 3.10 and later on Linux x86_64 and aarch64 (glibc
-2.28 or later), macOS 11 or later (x86_64 and arm64) and Windows x64. Anywhere
-else — musl, an older glibc, Windows on ARM, PyPy, a free-threaded CPython
-— `pip` falls back to the sdist, and building the engine from it needs the
-same Rust, C compiler and CMake, and network access to crates.io. Where neither
-will do, the 1.x line remains — pure Python over h5py, writing format 1.0:
-`pip install "medh5<2"`.
+Add an extra for each tool you connect medh5 to:
+
+| To… | Install |
+|---|---|
+| train with PyTorch | `pip install "medh5[torch]"` |
+| load samples into MONAI | `pip install "medh5[monai]"` |
+| import or export NIfTI and nnU-Net | `pip install "medh5[nifti]"` |
+| import DICOM series, SEG and RTSTRUCT | `pip install "medh5[dicom]"` |
+| export DICOM SEG | `pip install "medh5[dicomseg]"` |
+| open files directly with `h5py` | `pip install "medh5[h5py]"` |
+
+Extras combine: `pip install "medh5[torch,nifti,dicom]"`.
+
+**Only the command line, without Python?** `brew install XwK-P/medh5/medh5`, or
+download it from the [latest release](https://github.com/XwK-P/medh5/releases/latest).
+Converting DICOM or NIfTI files still needs the Python package.
+
+**Writing Rust?** `cargo add medh5` adds the format engine itself. The Python
+package and the command line run the same code, so all three read and write
+the same bytes. Building it compiles HDF5, which needs Rust 1.85.1 or later, a
+C compiler and CMake.
+
+Other systems, building from source, the 1.x line and troubleshooting are on the
+[install page](https://medh5.readthedocs.io/en/latest/install/).
 
 ## Documentation
 

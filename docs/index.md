@@ -16,10 +16,12 @@ with medh5.open("case_0001.medh5") as s:
 ```
 
 ```bash
-pip install medh5            # Python
-cargo add medh5              # Rust
-cargo install --locked medh5-cli  # the medh5 command line, natively
+pip install medh5
 ```
+
+That installs the Python package and the `medh5` command line. Extras for
+PyTorch, MONAI, DICOM and NIfTI, the command line without Python, and the Rust
+crate are on the [install page](install.md).
 
 One format engine, written in Rust, with three frontends that read and write
 the same bytes: the [Python package](reference/python-api.md), the

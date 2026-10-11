@@ -118,6 +118,7 @@ plugins:
 
 nav:
   - Home: index.md
+  - Install: install.md
 
   - Tutorials:
       - tutorials/index.md

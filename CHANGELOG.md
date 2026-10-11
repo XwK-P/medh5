@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- **An install page** ([Install](docs/install.md), after Home): one command for
+  most people, then what each extra is for and what it installs, where a wheel
+  exists and what building from source needs, the command line without Python,
+  the Rust crate, the 1.x line, and what to do when something goes wrong.
+
+### Changed
+
+- **The README's install section starts from the task**: `pip install medh5`,
+  a table of extras by what they connect to, then the binary and the crate.
+  The platform details moved to the install page, which the documentation's
+  home page and first tutorial now point to.
+
 ### Fixed
 
 - **A dash renders as a dash.** The documentation, the READMEs and this
