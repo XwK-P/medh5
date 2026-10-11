@@ -5,7 +5,8 @@
 reads the tag from `GITHUB_REF_NAME` and writes `release-notes.md`.  It runs
 before anything is published, so a tag whose version has no section fails
 there --- and so does a CHANGELOG with entries still under [Unreleased]: those
-are changes the release ships and its notes would not describe.
+are changes the release ships and its notes would not describe --- and notes
+longer than a GitHub release takes.
 """
 
 from __future__ import annotations
@@ -14,6 +15,10 @@ import os
 import pathlib
 import re
 import sys
+
+# GitHub refuses a release body longer than this, and the release is created
+# after the packages are published: the notes are measured here, before.
+GITHUB_LIMIT = 125_000
 
 
 def section(text: str, heading: str) -> str:
@@ -43,7 +48,13 @@ def notes(text: str, version: str, repository: str, tag: str) -> str:
     if not body:
         sys.exit(f"CHANGELOG.md has no section for {version}")
     blob = f"https://github.com/{repository}/blob/{tag}/"
-    return re.sub(r"\]\((?!https?://|#|mailto:)", "](" + blob, body)
+    body = re.sub(r"\]\((?!https?://|#|mailto:)", "](" + blob, body)
+    if len(body) > GITHUB_LIMIT:
+        sys.exit(
+            f"the release notes for {version} are {len(body)} characters; "
+            f"GitHub takes at most {GITHUB_LIMIT}"
+        )
+    return body
 
 
 def main() -> None:

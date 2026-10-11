@@ -214,6 +214,20 @@ def test_R03_the_2_0_0_notes_describe_the_format_it_writes() -> None:
         notes.check_unreleased("## [Unreleased]\n\n- not yet\n\n## [9.9.9]\n\n- x\n")
 
 
+def test_the_release_notes_fit_a_github_release() -> None:
+    """GitHub refuses a release body over its limit, and the release is
+    created after the packages are published, so the notes are refused when
+    they are written, before anything is published."""
+    notes = _release_script("release_notes.py")
+    text = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    assert len(notes.notes(text, "2.0.0", "XwK-P/medh5", "v2.0.0")) <= (
+        notes.GITHUB_LIMIT
+    )
+    long = "## [9.9.9]\n\n" + "- x\n" * (notes.GITHUB_LIMIT // 4 + 1)
+    with pytest.raises(SystemExit, match="GitHub takes at most"):
+        notes.notes(long, "9.9.9", "o/r", "v9.9.9")
+
+
 class TestPublicNames:
     """Where the public names live."""
 
