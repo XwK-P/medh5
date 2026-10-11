@@ -16,7 +16,7 @@ from tests.helpers import SHAPE
 from tests.kits import Hierarchy
 
 
-class TestMonaiF04LabelDtype:
+class TestMonaiLabelDtype:
     """`to_dict` labels are `int64`: the full id range, and the ignore id intact."""
 
     def test_S5_3_ids_beyond_int16_and_the_ignore_id_survive(
@@ -164,7 +164,7 @@ class TestMonai:
         assert np.allclose(shifted[:3, 3], grid.index_to_world([[2, 4, 0]])[0])
         assert np.allclose(shifted[:3, :3], affine[:3, :3])
 
-    def test_L08_a_negative_or_strided_roi_lands_where_its_voxels_are(self, tmp_path):
+    def test_S3_3_a_negative_or_strided_roi_lands_where_its_voxels_are(self, tmp_path):
         """A negative start counted from the first voxel, and a step was
         dropped: the crop's affine pointed at the wrong end of the volume, at
         the full spacing."""
@@ -195,10 +195,10 @@ class TestMonai:
         )
         assert tensor.meta["medh5"]["roi"] == [[3, 6, 1], [0, 7, 2], [1, 8, 3]]
 
-    def test_L08_a_cropped_channel_image_keeps_its_channels(self, tmp_path):
+    def test_S3_6_a_cropped_channel_image_keeps_its_channels(self, tmp_path):
         """`spatial_shape` was the crop's whole shape, channel axis included,
-        and SaveImage wrote a two-channel crop as one (L08 of the 2.0
-        re-audit).  It is the image's spatial shape, beside the
+        and SaveImage wrote a two-channel crop as one.  It is the image's
+        spatial shape, beside the
         `original_affine` it goes with, as after a MONAI crop: a resampling
         writer puts the crop back where it came from."""
         pytest.importorskip("monai")
@@ -249,7 +249,7 @@ class TestMonai:
         assert back.shape == (4, 5, 6, 2)
         assert np.count_nonzero(back.reshape(-1, 2), axis=0).all()
 
-    def test_L08_an_index_in_the_roi_is_refused(self, tmp_path):
+    def test_an_index_in_the_roi_is_refused(self, tmp_path):
         pytest.importorskip("monai")
         from medh5.monai import to_metatensor
 
@@ -418,7 +418,7 @@ class TestWithoutMonai:
         duck.meta = meta  # type: ignore[attr-defined]
         assert from_metatensor(duck)[1]["units"] == "px"
 
-    def test_Q17_original_channel_dim_follows_the_grid(self, tmp_path: Path):
+    def test_S3_6_original_channel_dim_follows_the_grid(self, tmp_path: Path):
         """`no_channel` on an RGB grid made `EnsureChannelFirst` add a second axis."""
         from medh5.monai import meta_dict
 

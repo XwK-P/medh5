@@ -352,11 +352,11 @@ class TestLabelKeys:
         assert warnings[1].detail["kept_by"] == "liver"
 
 
-class TestF26LegacyExtra:
+class TestLegacyExtra:
     """Appendix B puts a 0.x ``extra.nnunetv2`` at ``/meta → extra.nnunetv2``,
     where the nnU-Net exporter reads a stashed ``dataset.json``.  The whole
     ``extra`` went to ``extra.legacy`` instead, and a grouped migration kept
-    only the last file's (F26 of the round-4 audit)."""
+    only the last file's."""
 
     STASH = {
         "channel_names": {"0": "CT"},
@@ -388,15 +388,13 @@ class TestF26LegacyExtra:
         migrate(old, tmp_path / "case_a.medh5")
         return tmp_path / "case_a.medh5"
 
-    def test_F26_appendix_B_the_stash_is_at_meta_extra(self, tmp_path: Path):
+    def test_appendix_B_the_stash_is_at_meta_extra(self, tmp_path: Path):
         with medh5.open(self._migrated(tmp_path)) as sample:
             extra = sample.document.extra
             assert extra["nnunetv2"] == self.STASH
             assert extra["legacy"] == {"tp0": {"patient_id": "PAT-A"}}
 
-    def test_F26_appendix_B_the_stash_is_where_the_exporter_reads_it(
-        self, tmp_path: Path
-    ):
+    def test_appendix_B_the_stash_is_where_the_exporter_reads_it(self, tmp_path: Path):
         pytest.importorskip("nibabel")
         import json
 
@@ -411,7 +409,9 @@ class TestF26LegacyExtra:
         assert report.of_kind("dataset_json")[0].detail["reused"]
 
     @pytest.mark.parametrize("same", [True, False])
-    def test_F26_grouped_files_keep_every_files_extra(self, tmp_path: Path, same: bool):
+    def test_appendix_B_grouped_files_keep_every_files_extra(
+        self, tmp_path: Path, same: bool
+    ):
         from medh5.io.legacy import migrate_paths
 
         other = {**self.STASH, "description": "re-exported"}

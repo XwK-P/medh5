@@ -139,7 +139,7 @@ class TestDicomSeg:
         with pytest.raises(MEDH5ValidationError, match="different reconstruction"):
             from_dicom_seg(out, other, ann_id="x", grid="g")
 
-    def test_F12_S3_3_a_seg_with_omitted_frames_imports(self, tmp_path: Path):
+    def test_S3_3_a_seg_with_omitted_frames_imports(self, tmp_path: Path):
         """highdicom's default omits empty frames, and the import refused it.
 
         The reader assembled a volume from the planes present --- two slices,
@@ -211,7 +211,7 @@ class TestDicomSeg:
             counts = [int(dense[k].sum()) for k in range(shape[0])]
             assert counts == [int(mask[k, ..., 0].sum()) for k in range(shape[0])]
 
-    def test_F12_a_frame_that_is_not_a_slice_is_refused_by_name(self, tmp_path: Path):
+    def test_S3_3_a_frame_that_is_not_a_slice_is_refused_by_name(self, tmp_path: Path):
         """The refusal stays, and says which frame and why."""
         from medh5.io.dicom_seg import place_frames
 
@@ -366,7 +366,7 @@ class TestDicomSegExtras:
 
 class TestSegFramesSitOnTheGrid:
     """A frame's position, its rows and columns, and its pixel spacing are the
-    grid's (L02 of the 2.0 audit).  Only the first index of a frame's position
+    grid's.  Only the first index of a frame's position
     was read, and rows and columns compared by count, so a SEG shifted in
     plane, turned, or at another pixel spacing was laid on the grid as it was."""
 
@@ -403,7 +403,7 @@ class TestSegFramesSitOnTheGrid:
             "data": np.ones(Organs.SHAPE[1:], bool),
         }
 
-    def test_L02_a_frame_shifted_in_plane_is_refused(self, tmp_path):
+    def test_S3_2_a_frame_shifted_in_plane_is_refused(self, tmp_path):
         from medh5.io.dicom_seg import place_frames
 
         with medh5.open(self._grid(tmp_path)) as sample:
@@ -415,7 +415,7 @@ class TestSegFramesSitOnTheGrid:
                 place_frames(shifted, self._geometry(grid), grid)
             assert exc.value.code == "E405" and "frame 4" in str(exc.value)
 
-    def test_L02_another_orientation_or_pixel_spacing_is_refused(self, tmp_path):
+    def test_S3_2_another_orientation_or_pixel_spacing_is_refused(self, tmp_path):
         from medh5.io.dicom_seg import place_frames
 
         with medh5.open(self._grid(tmp_path)) as sample:
@@ -429,7 +429,7 @@ class TestSegFramesSitOnTheGrid:
                     frames, self._geometry(grid, spacing=(2.0, 0.7, 0.7)), grid
                 )
 
-    def test_L02_patient_positions_are_LPS_millimetres_whatever_the_grid(
+    def test_S3_5_patient_positions_are_LPS_millimetres_whatever_the_grid(
         self, tmp_path
     ):
         """An RAS grid in metres takes the same SEG, converted rather than refused."""
@@ -485,8 +485,8 @@ def _rewrite_frames(seg: Path, out: Path, change: Any = None) -> Path:
 
 
 class TestSegGeometryPerFrame:
-    """A functional group may sit in the shared item or in each frame's (L02 of
-    the 2.0 re-audit): the import took the first orientation it found and the
+    """A functional group may sit in the shared item or in each frame's: the
+    import took the first orientation it found and the
     shared pixel spacing for every frame, so a frame turned in plane was
     placed as the first was, and spacing kept per frame read as 1 mm."""
 
@@ -498,7 +498,7 @@ class TestSegGeometryPerFrame:
             prepared["path"], "organs", prepared["series"]["paths"], tmp_path / "s.dcm"
         )
 
-    def test_L02_geometry_kept_in_each_frame_imports_as_shared(
+    def test_S3_2_geometry_kept_in_each_frame_imports_as_shared(
         self, prepared, tmp_path
     ):
         """The series is 0.8 x 0.9 mm in plane, which the shared default of
@@ -513,7 +513,7 @@ class TestSegGeometryPerFrame:
             assert np.array_equal(imported.dense(["lesion"])[0], prepared["lesion"])
 
     @pytest.mark.parametrize("what", ["orientation", "spacing"])
-    def test_L02_a_later_frame_unlike_the_first_is_refused(
+    def test_S3_2_a_later_frame_unlike_the_first_is_refused(
         self, prepared, tmp_path, what
     ):
         from medh5.io.dicom_seg import from_dicom_seg
@@ -539,7 +539,7 @@ class TestSegGeometryPerFrame:
         with medh5.open(prepared["path"]) as sample:
             assert "turned" not in sample.annotations
 
-    def test_L02_a_frame_without_pixel_spacing_is_refused(self, prepared, tmp_path):
+    def test_S3_2_a_frame_without_pixel_spacing_is_refused(self, prepared, tmp_path):
         from medh5.io.dicom_seg import read_dicom_seg_frames
 
         def drop(item: Any, index: int, count: int) -> None:
@@ -556,7 +556,7 @@ class TestSegExportGeometry:
     """A SEG is written against its source images, frame k with image k's
     geometry, and the export compared the annotation's grid with neither:
     an annotation on a grid turned in plane, or shifted 10 mm in the same
-    frame, was written onto the source geometry (N01 of the 2.0 re-audit)."""
+    frame, was written onto the source geometry."""
 
     @staticmethod
     def _variant(prepared: dict[str, Any], name: str, how: str) -> None:
@@ -627,7 +627,7 @@ class TestSegExportGeometry:
         assert pydicom.dcmread(str(out)).FrameOfReferenceUID == frame
 
     @pytest.mark.parametrize("how", ["turned", "shifted", "resampled"])
-    def test_N01_an_annotation_on_another_grid_is_refused(
+    def test_S3_2_an_annotation_on_another_grid_is_refused(
         self, prepared, tmp_path, how
     ):
         from medh5.io.dicom_seg import to_dicom_seg
@@ -638,7 +638,7 @@ class TestSegExportGeometry:
             to_dicom_seg(prepared["path"], how, prepared["series"]["paths"], out)
         assert caught.value.code == "E405" and not out.exists()
 
-    def test_N01_exported_frames_sit_where_the_annotation_does(
+    def test_S3_3_exported_frames_sit_where_the_annotation_does(
         self, prepared, tmp_path
     ):
         """Every labelled SEG pixel, placed by its frame's own position,
@@ -717,12 +717,12 @@ def _highdicom_seg(paths: list[Any], mask: Any, out: Path) -> Path:
 
 
 class TestSegFrameIdentity:
-    """A SEG lands only in its own frame of reference (N15 of the round-3
-    audit): a grid in another known frame, with the same numbers, received
+    """A SEG lands only in its own frame of reference: a grid in another
+    known frame, with the same numbers, received
     every voxel --- from an explicit ``grid=`` without a word, from automatic
     matching on a recorded guess."""
 
-    def test_N15_placement_compares_frames_first(self, tmp_path: Path):
+    def test_S3_4_placement_compares_frames_first(self, tmp_path: Path):
         from medh5.curation.scrub import pseudonymise
         from medh5.io.dicom_seg import place_frames
 
@@ -751,7 +751,7 @@ class TestSegFrameIdentity:
         placed = place_frames(frames, geometry, scrubbed, frame_salt="salt")
         assert placed[1][2].all()
 
-    def test_N15_an_import_into_another_frame_leaves_the_sample(self, tmp_path: Path):
+    def test_S3_4_an_import_into_another_frame_leaves_the_sample(self, tmp_path: Path):
         from pydicom.uid import generate_uid
 
         from medh5.io.dicom import from_dicom
@@ -914,10 +914,10 @@ class TestSegCommandLine:
 
 class TestSparseSegReader:
     """A SEG that omits its empty frames reads back on the regular stack its
-    planes sit on (N18 of the round-3 audit): the median gap stood for the
+    planes sit on: the median gap stood for the
     step, so planes at 10, 12.5 and 17.5 mm read as a stack 3.75 mm apart."""
 
-    def test_N18_lattice(self):
+    def test_lattice(self):
         from medh5.io.dicom_seg import _lattice
 
         assert _lattice([10.0, 12.5, 17.5], None) == (2.5, [0, 1, 3])
@@ -926,7 +926,7 @@ class TestSparseSegReader:
         assert _lattice([10.0, 12.5, 16.25], None) is None
         assert _lattice([0.0, 2.5], 2.0) is None
 
-    def test_N18_omitted_planes_come_back_empty_where_they_were(self, tmp_path):
+    def test_S3_3_omitted_planes_come_back_empty_where_they_were(self, tmp_path):
         from pydicom.uid import generate_uid
 
         from medh5.io.dicom_seg import read_dicom_seg, read_dicom_seg_frames

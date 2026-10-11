@@ -206,7 +206,7 @@ class TestPatchDataset:
                 ],
             )
 
-    def test_L05_a_padded_patch_shifts_boxes_by_its_padding(self, tmp_path, label_set):
+    def test_S8_1_a_padded_patch_shifts_boxes_by_its_padding(self, tmp_path, label_set):
         """A 4^3 volume in an 8^3 patch is padded before as well as after; the
         boxes kept the unpadded crop's coordinates, two voxels off."""
         path = tmp_path / "small.medh5"
@@ -242,7 +242,7 @@ class TestPatchDataset:
         assert np.allclose(lesion["box"][:, 0] + 0.5, found.min(axis=0))
         assert np.allclose(lesion["box"][:, 1] - 0.5, found.max(axis=0))
 
-    def test_L09_instances_are_the_requested_classes(self, tmp_path, label_set):
+    def test_instances_are_the_requested_classes(self, tmp_path, label_set):
         path = tmp_path / "two.medh5"
         self._instances(path, label_set, (4, 4, 4))
         every = PatchDataset(
@@ -260,7 +260,7 @@ class TestPatchDataset:
         )
         assert [o["class_id"] for o in ds[0]["label"]["les"]] == [3]
 
-    def test_L05_a_box_touching_the_patch_edge_does_not_overlap_it(self):
+    def test_S8_1_a_box_touching_the_patch_edge_does_not_overlap_it(self):
         """Edges sit half a voxel out: a box ending at ``start - 0.5`` covers
         no voxel of the patch, and one starting at ``stop - 0.5`` none either."""
         from types import SimpleNamespace
@@ -486,11 +486,11 @@ class TestPairedPatchDataset:
         assert [b - a for a, b in zip(first, second, strict=True)] == [0, 0, 4]
         assert meta["interval_days"] == 90
 
-    def test_F06_S10_1_a_transform_in_other_units_is_not_applied(self, registered):
+    def test_S10_1_a_transform_in_other_units_is_not_applied(self, registered):
         """A transform maps coordinates in its own units, and none maps
         between two: one declaring metres between two millimetre grids moved
-        every point a thousandth of its displacement (F06 of the round-4
-        audit).  The writer refuses to write it, so it is planted."""
+        every point a thousandth of its displacement.  The writer refuses to
+        write it, so it is planted."""
         import h5py
 
         from tests.helpers import encode_attr
@@ -572,10 +572,9 @@ class TestPairedPatchDataset:
                 )
         return path
 
-    def test_N10_S3_5_one_frame_in_two_units_pairs_one_place(self, tmp_path):
+    def test_S3_5_one_frame_in_two_units_pairs_one_place(self, tmp_path):
         """The second visit's grid in metres: the first's centre, in
-        millimetres, was read on it as it was --- a thousandfold off (N10 of
-        the round-3 audit)."""
+        millimetres, was read on it as it was --- a thousandfold off."""
         path = self._one_frame(
             tmp_path / "units.medh5", spacing=(0.001, 0.001, 0.001), units="m"
         )
@@ -585,7 +584,7 @@ class TestPairedPatchDataset:
             ]
             assert meta["patches"]["tp0"]["center"] == meta["patches"]["tp1"]["center"]
 
-    def test_N10_S3_3_rule_4_one_frame_in_two_conventions_is_refused(self, tmp_path):
+    def test_S3_3_rule_4_one_frame_in_two_conventions_is_refused(self, tmp_path):
         path = self._one_frame(tmp_path / "ras.medh5", coord_system="RAS")
         ds = PairedPatchDataset([path], PatchSampler(8), align="transform")
         with pytest.raises(MEDH5ValidationError, match="coord_system") as caught:
@@ -1068,7 +1067,7 @@ class TestHandleCache:
         assert CACHE.maxsize == 4
         set_cache_size(before)
 
-    def test_P11_one_open_per_file_per_epoch(self, tmp_path: Path):
+    def test_one_open_per_file_per_epoch(self, tmp_path: Path):
         """`shuffle=True` re-opened 76 % of items' files at 100 files."""
         from medh5.sampling import PatchSampler
         from medh5.torch import FileGroupedSampler, PatchDataset
@@ -1099,7 +1098,7 @@ class TestHandleCache:
         assert orders[0] != orders[1]
         assert len(sampler) == len(dataset)
 
-    def test_P11_every_dataset_says_which_items_read_which_file(self, tmp_path: Path):
+    def test_every_dataset_says_which_items_read_which_file(self, tmp_path: Path):
         from medh5.sampling import PatchSampler
         from medh5.torch import (
             FileGroupedSampler,
@@ -1128,9 +1127,7 @@ class TestHandleCache:
         with pytest.raises(MEDH5ValidationError, match="file_groups"):
             FileGroupedSampler(list(range(4)))
 
-    def test_P11_T10_spawned_persistent_workers_follow_the_grouped_order(
-        self, tmp_path: Path
-    ):
+    def test_spawned_persistent_workers_follow_the_grouped_order(self, tmp_path: Path):
         """The spawn start method, asked for explicitly: Windows and macOS
         default to it, Linux to fork."""
         from torch.utils.data import DataLoader
@@ -1177,7 +1174,7 @@ class TestHandleCache:
         assert len(first) == len(second) == len(dataset)
         assert sorted(first) != sorted(second)
 
-    def test_P11_set_cache_size_is_public_and_shrinks_the_cache(self, tmp_path: Path):
+    def test_set_cache_size_is_public_and_shrinks_the_cache(self, tmp_path: Path):
         from medh5.torch import CACHE, set_cache_size
         from medh5.torch.handles import DEFAULT_MAXSIZE
 
@@ -1200,7 +1197,7 @@ class TestHandleCache:
             set_cache_size(DEFAULT_MAXSIZE)
             CACHE.close_all()
 
-    def test_Q16_a_leased_handle_outlives_eviction(self, tmp_path: Path):
+    def test_S14_4_a_leased_handle_outlives_eviction(self, tmp_path: Path):
         from medh5.torch.handles import HandleCache
 
         paths = []
@@ -1219,7 +1216,7 @@ class TestHandleCache:
         assert len(cache) == 1
         cache.close_all()
 
-    def test_Q16_threads_share_the_cache_without_closing_each_others_files(
+    def test_S14_4_threads_share_the_cache_without_closing_each_others_files(
         self, tmp_path: Path
     ):
         from medh5.torch.handles import HandleCache
@@ -1257,11 +1254,11 @@ class TestHandleCache:
         assert not failures, failures[:1]
 
 
-class TestW16Loaders:
-    """F-16, F-17, F-18, F-24, L-34: the file's contracts reach the model."""
+class TestLoaders:
+    """The file's contracts reach the model."""
 
     @pytest.mark.parametrize("encoding", Numbered.ENCODINGS)
-    def test_F16_S7_7_the_ignore_region_reaches_the_item(
+    def test_S7_7_the_ignore_region_reaches_the_item(
         self, tmp_path: Path, encoding: str
     ):
         """Every loader item dropped it; `layers` & co. then trained it as 0."""
@@ -1288,7 +1285,7 @@ class TestW16Loaders:
                 assert set(np.unique(label[~region]).tolist()) == {0, 1, 2}
 
     @pytest.mark.parametrize("encoding", Numbered.ENCODINGS)
-    def test_F16_padding_is_ignored_and_never_valid(
+    def test_S7_7_padding_is_ignored_and_never_valid(
         self, tmp_path: Path, encoding: str
     ):
         """Padding was labelled 0 --- background --- in every format."""
@@ -1319,7 +1316,7 @@ class TestW16Loaders:
         assert (item["label"]["seg"].numpy()[outside] == 65535).all()
         assert item["valid"]["CT"].numpy()[~outside].all()
 
-    def test_F16_S4_4_the_valid_mask_reaches_the_item(self, tmp_path: Path):
+    def test_S4_4_the_valid_mask_reaches_the_item(self, tmp_path: Path):
         from medh5.torch import VolumeDataset
 
         fov = np.zeros(Numbered.SHAPE, bool)
@@ -1338,7 +1335,7 @@ class TestW16Loaders:
         item = VolumeDataset([path], images=["CT"])[0]
         np.testing.assert_array_equal(item["valid"]["CT"].numpy(), fov)
 
-    def test_F16_S11_3_coverage_is_per_channel(self, tmp_path: Path):
+    def test_S11_3_coverage_is_per_channel(self, tmp_path: Path):
         """A 0 in a class nobody looked for is not a negative."""
         from medh5.torch import VolumeDataset
 
@@ -1351,7 +1348,7 @@ class TestW16Loaders:
         item = VolumeDataset([path], images=["CT"], annotations={"seg": [2, 1]})[0]
         assert item["meta"]["annotated"]["seg"].tolist() == [False, True]
 
-    def test_F16_the_batch_collates(self, tmp_path: Path):
+    def test_the_batch_collates(self, tmp_path: Path):
         from torch.utils.data import DataLoader
 
         from medh5.torch import VolumeDataset, collate
@@ -1368,7 +1365,7 @@ class TestW16Loaders:
             assert tuple(batch["valid"]["CT"].shape) == (2, *Numbered.SHAPE)
             assert tuple(batch["meta"]["annotated"]["seg"].shape) == (2, 2)
 
-    def test_F16_the_monai_bridge_writes_65535_under_every_encoding(
+    def test_S7_7_the_monai_bridge_writes_65535_under_every_encoding(
         self, tmp_path: Path
     ):
         pytest.importorskip("monai")
@@ -1382,7 +1379,7 @@ class TestW16Loaders:
                 values = np.asarray(label["seg"])[region]
             assert set(np.unique(values).tolist()) == {65535}, encoding
 
-    def test_F17_persistent_workers_see_the_epoch(self, tmp_path: Path):
+    def test_persistent_workers_see_the_epoch(self, tmp_path: Path):
         """The documented setup drew epoch 0's patches for the whole run."""
         from torch.utils.data import DataLoader
 
@@ -1415,7 +1412,7 @@ class TestW16Loaders:
         assert first == again
         assert dataset.epoch == 0
 
-    def test_F17_the_epoch_is_an_attribute_as_before(self, tmp_path: Path):
+    def test_the_epoch_is_an_attribute_as_before(self, tmp_path: Path):
         from medh5.sampling import PatchSampler
         from medh5.torch import PatchDataset
 
@@ -1452,7 +1449,7 @@ class TestW16Loaders:
                 )
         return path
 
-    def test_F18_S3_3_two_frameless_grids_are_not_registered(self, tmp_path: Path):
+    def test_S3_3_two_frameless_grids_are_not_registered(self, tmp_path: Path):
         """`None == None` let unregistered visits through as aligned."""
         from medh5.sampling import PatchSampler
         from medh5.torch import PairedPatchDataset
@@ -1466,7 +1463,7 @@ class TestW16Loaders:
         loose = PairedPatchDataset([path], PatchSampler(8), align="none")
         assert loose[0]["meta"]["aligned"] == "none"
 
-    def test_F18_registered_and_shared_frames_still_map(self, tmp_path: Path):
+    def test_S3_4_registered_and_shared_frames_still_map(self, tmp_path: Path):
         from medh5.sampling import PatchSampler
         from medh5.torch import PairedPatchDataset
 
@@ -1481,7 +1478,7 @@ class TestW16Loaders:
             assert item["meta"]["aligned"] == "transform"
             assert set(item["valid"]) == {"tp0", "tp1"}
 
-    def test_F24_class_weights_come_from_voxel_classes(self, tmp_path: Path):
+    def test_class_weights_come_from_voxel_classes(self, tmp_path: Path):
         """A sample-level diagnosis became the heaviest segmentation class."""
         from medh5.dataset.stats import compute_stats
 
@@ -1499,7 +1496,7 @@ class TestW16Loaders:
         assert set(weights) == {1, 2}
         assert weights[2] / weights[1] == pytest.approx(256 / 64)
 
-    def test_F24_an_absent_class_gets_no_weight_and_a_warning(self, tmp_path: Path):
+    def test_S11_3_an_absent_class_gets_no_weight_and_a_warning(self, tmp_path: Path):
         from medh5.dataset.stats import compute_stats
 
         liver, _, _ = Numbered.two_classes()
@@ -1513,7 +1510,7 @@ class TestW16Loaders:
         with pytest.warns(UserWarning, match=r"\[2\]"):
             assert set(stats.class_weights()) == {1}
 
-    def test_F24_present_and_examined_count_samples(self, tmp_path: Path):
+    def test_S11_3_present_and_examined_count_samples(self, tmp_path: Path):
         from medh5.dataset.stats import compute_stats
 
         liver, _, _ = Numbered.two_classes()
@@ -1539,7 +1536,7 @@ class TestW16Loaders:
         assert (stats.classes[1].present_in, stats.classes[1].examined_in) == (1, 1)
         assert stats.classes[1].voxels == 2 * int(liver.sum())
 
-    def test_L34_S4_4_moments_honour_the_valid_mask(self, tmp_path: Path):
+    def test_S4_4_moments_honour_the_valid_mask(self, tmp_path: Path):
         from medh5.dataset.stats import compute_stats
 
         shape = (8, 32, 32)

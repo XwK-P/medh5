@@ -288,9 +288,7 @@ class TestRtstruct:
             assert sample.label_set is not None
             assert sample.label_set[1].key == "gtv_1"
 
-    def test_Q18_S8_6_an_island_inside_a_hole_survives_rasterisation(
-        self, tmp_path: Path
-    ):
+    def test_S8_6_an_island_inside_a_hole_survives_rasterisation(self, tmp_path: Path):
         """Unioning outers and subtracting every hole erased the island."""
         from medh5.io.rtstruct import _assign_roles, _rasterize
 
@@ -319,7 +317,7 @@ class TestRtstruct:
         assert not mask[6, 6]  # inside the hole
         assert mask[9, 9]  # inside the island inside the hole
 
-    def test_Q18_two_overlapping_outlines_do_not_cancel(self, tmp_path: Path):
+    def test_S8_6_two_overlapping_outlines_do_not_cancel(self, tmp_path: Path):
         from medh5.io.rtstruct import _rasterize
 
         path = tmp_path / "plane.medh5"
@@ -337,13 +335,13 @@ class TestRtstruct:
         assert mask[5, 10]  # in both: one region, not a hole
 
 
-class TestF09PatientCoordinates:
+class TestPatientCoordinates:
     """``ContourData`` is DICOM patient coordinates: millimetres, LPS, and the
     one frame of reference the source images share.
 
     The exporter wrote each contour as stored --- a metre grid's 0.003 for
     3 mm, an RAS grid's x and y unflipped --- and filed it under the first
-    source image's frame whatever the grid's (F09 of the round-4 audit).
+    source image's frame whatever the grid's.
     """
 
     # A square on slice 2, in the grid's index space.
@@ -432,7 +430,7 @@ class TestF09PatientCoordinates:
         assert not report.of_kind("frame_of_reference"), "the frames were compared"
 
     @pytest.mark.parametrize("space", ["index", "world"])
-    def test_F09_a_metre_grid_is_written_in_millimetres(self, tmp_path, series, space):
+    def test_S8_6_a_metre_grid_is_written_in_millimetres(self, tmp_path, series, space):
         path = self._sample(
             tmp_path, frame_uid=series["frame_uid"], units="m", space=space
         )
@@ -443,7 +441,7 @@ class TestF09PatientCoordinates:
         assert np.allclose(points[:, 0], -5.0, atol=1e-3)
 
     @pytest.mark.parametrize("space", ["index", "world"])
-    def test_F09_an_ras_grid_is_flipped_into_lps(self, tmp_path, series, space):
+    def test_S8_6_an_ras_grid_is_flipped_into_lps(self, tmp_path, series, space):
         path = self._sample(
             tmp_path, frame_uid=series["frame_uid"], coord_system="RAS", space=space
         )
@@ -451,7 +449,7 @@ class TestF09PatientCoordinates:
         stored = self._expected_mm(path)
         assert np.allclose(points, stored * np.array([-1.0, -1.0, 1.0]), atol=1e-4)
 
-    def test_F09_S3_4_contours_in_another_frame_are_refused(self, tmp_path, series):
+    def test_S3_4_contours_in_another_frame_are_refused(self, tmp_path, series):
         path = self._sample(tmp_path, frame_uid="1.2.826.0.1.3680043.2.1125.9")
         out = tmp_path / "rt.dcm"
         with pytest.raises(MEDH5ValidationError, match="registration") as exc:
@@ -459,9 +457,7 @@ class TestF09PatientCoordinates:
         assert exc.value.code == "E414"
         assert not out.exists(), "nothing is filed under the wrong frame"
 
-    def test_F09_S3_4_world_contours_are_judged_by_their_own_frame(
-        self, tmp_path, series
-    ):
+    def test_S3_4_world_contours_are_judged_by_their_own_frame(self, tmp_path, series):
         """World coordinates live in the annotation's frame: a gridless
         annotation in another frame is refused like a grid's would be."""
         path = self._sample(
@@ -473,7 +469,7 @@ class TestF09PatientCoordinates:
             self._exported(path, series["paths"], tmp_path / "rt.dcm")
         assert exc.value.code == "E414"
 
-    def test_F09_a_pseudonymised_frame_is_compared_through_its_salt(
+    def test_S3_4_a_pseudonymised_frame_is_compared_through_its_salt(
         self, tmp_path, series
     ):
         from medh5.curation.scrub import pseudonymise
@@ -489,13 +485,13 @@ class TestF09PatientCoordinates:
         assert meta["frame_uid"] == series["frame_uid"], "filed under the real frame"
         assert np.allclose(points, self._expected_mm(path), atol=1e-4)
 
-    def test_F09_a_frameless_grid_is_a_recorded_guess(self, tmp_path, series):
+    def test_S3_4_a_frameless_grid_is_a_recorded_guess(self, tmp_path, series):
         path = self._sample(tmp_path, frame_uid=None)
         _, meta, report = self._exported(path, series["paths"], tmp_path / "rt.dcm")
         assert meta["frame_uid"] == series["frame_uid"]
         assert report.of_kind("frame_of_reference")
 
-    def test_F09_sources_in_two_frames_are_refused(self, tmp_path, series):
+    def test_S3_4_sources_in_two_frames_are_refused(self, tmp_path, series):
         from pydicom.uid import generate_uid
 
         other = write_dicom_series(
@@ -510,7 +506,7 @@ class TestF09PatientCoordinates:
             self._exported(path, sources, tmp_path / "rt.dcm")
         assert exc.value.code == "E414"
 
-    def test_F09_a_source_without_a_frame_is_refused(self, tmp_path, series):
+    def test_S3_4_a_source_without_a_frame_is_refused(self, tmp_path, series):
         import pydicom
 
         bare = tmp_path / "bare.dcm"
@@ -525,7 +521,7 @@ class TestF09PatientCoordinates:
     @pytest.mark.parametrize(
         ("units", "coord_system"), [("px", "LPS"), ("mm", "custom")]
     )
-    def test_F09_a_grid_without_patient_coordinates_is_refused(
+    def test_S8_6_a_grid_without_patient_coordinates_is_refused(
         self, tmp_path, series, units, coord_system
     ):
         path = self._sample(
@@ -538,7 +534,7 @@ class TestF09PatientCoordinates:
             self._exported(path, series["paths"], tmp_path / "rt.dcm")
         assert exc.value.code == "E414"
 
-    def test_F09_gridless_contours_are_refused(self, tmp_path, series):
+    def test_S8_6_gridless_contours_are_refused(self, tmp_path, series):
         """World coordinates are in their grid's units (§8); with no grid there
         is nothing to scale them by."""
         path = self._sample(
@@ -656,7 +652,7 @@ class TestF09PatientCoordinates:
         assert frame == series["frame_uid"], "the frame the coordinates are in"
         assert report.of_kind("grid") and report.of_kind("frame")
 
-    def test_F09_the_command_line_takes_the_frame_salt(self, tmp_path, series):
+    def test_the_command_line_takes_the_frame_salt(self, tmp_path, series):
         from medh5.cli import EXIT_OK, main
         from medh5.curation.scrub import pseudonymise
 

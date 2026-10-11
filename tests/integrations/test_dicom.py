@@ -18,7 +18,7 @@ from tests.helpers import write_dicom_series
 pydicom = pytest.importorskip("pydicom")
 
 
-class TestF06DicomSameModality:
+class TestDicomSameModality:
     """A study with several series of one modality imports, named by series."""
 
     def test_two_series_of_one_modality_import_side_by_side(
@@ -77,8 +77,9 @@ class TestF06DicomSameModality:
             }
 
 
-class TestW18Converters:
-    """F-19, F-25."""
+class TestConverters:
+    """A tilted gantry, demographics that contradict one PatientID, and a UID in
+    a file name: what the DICOM import refuses or reports."""
 
     def _tilted(self, root: Path, degrees: float) -> Path:
         import pydicom
@@ -100,7 +101,7 @@ class TestW18Converters:
             ds.save_as(path)
         return root
 
-    def test_F19_S3_a_tilted_gantry_stack_is_refused(self, tmp_path: Path):
+    def test_S3_a_tilted_gantry_stack_is_refused(self, tmp_path: Path):
         """It imported as an orthonormal grid, 17 mm off at the last slice."""
         from medh5.io.dicom import from_dicom
 
@@ -110,9 +111,7 @@ class TestW18Converters:
         assert "17.3 mm" in str(caught.value)
         assert not (tmp_path / "tilt.medh5").exists()
 
-    def test_F19_an_untilted_stack_imports_and_says_it_was_checked(
-        self, tmp_path: Path
-    ):
+    def test_S3_an_untilted_stack_imports_and_says_it_was_checked(self, tmp_path: Path):
         from medh5.io.dicom import from_dicom
 
         source = self._tilted(tmp_path / "flat", 0.0)
@@ -140,9 +139,7 @@ class TestW18Converters:
                 ds.save_as(path)
         return root
 
-    def test_F25_S2_2_contradicted_demographics_are_not_one_subject(
-        self, tmp_path: Path
-    ):
+    def test_S2_2_contradicted_demographics_are_not_one_subject(self, tmp_path: Path):
         """Two patients under an anonymiser's constant PatientID became one."""
         from medh5.io.dicom import from_dicom
 
@@ -171,7 +168,7 @@ class TestW18Converters:
             "1.2.826.0.1.3680043.8.498.2.medh5",
         ]
 
-    def test_F25_consistent_demographics_still_group(self, tmp_path: Path):
+    def test_S2_2_consistent_demographics_still_group(self, tmp_path: Path):
         from medh5.io.dicom import from_dicom
 
         source = self._studies(tmp_path / "b", [("F", "19500101"), ("F", "")])
@@ -182,7 +179,7 @@ class TestW18Converters:
             assert sample.timepoints.ids == ("tp0", "tp1")
         assert "identity" not in {n.kind for n in report.notes}
 
-    def test_F25_a_uid_in_a_file_name_is_reported_by_scrub(self, tmp_path: Path):
+    def test_S11_4_a_uid_in_a_file_name_is_reported_by_scrub(self, tmp_path: Path):
         from medh5.curation import scrub
         from medh5.io.dicom import from_dicom
 

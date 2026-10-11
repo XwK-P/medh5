@@ -49,7 +49,7 @@ def volumes(tmp_path: Path) -> dict[str, Path]:
     return paths
 
 
-class TestF05NiftiRescale:
+class TestNiftiRescale:
     """§4.2: `scl_slope`/`scl_inter` are the file's rescale, stored, not applied."""
 
     SLOPE, INTERCEPT = 2.0, -1024.0
@@ -562,7 +562,7 @@ class TestNifti:
         )
         assert not validate_file(tmp_path / "v.medh5", level="integrity").errors
 
-    def test_F10_S4_2_a_rescaled_image_exports_with_its_scale(self, tmp_path: Path):
+    def test_S4_2_a_rescaled_image_exports_with_its_scale(self, tmp_path: Path):
         """`image.read()` returns stored values; the exporters wrote them bare.
 
         A CT imported from DICOM with intercept −1024 exported every voxel 1024
@@ -591,7 +591,7 @@ class TestNifti:
         assert np.asanyarray(image.dataobj.get_unscaled()).flat[0] == 1000
         assert image.get_fdata().flat[0] == pytest.approx(-24.0)
 
-    def test_F11_S3_6_a_2D_sample_round_trips_through_NIfTI(self, tmp_path: Path):
+    def test_S3_6_a_2D_sample_round_trips_through_NIfTI(self, tmp_path: Path):
         """Both importers take 2-D input; both exporters stopped on a 3x3 affine.
 
         `convert_world` was defined for 4x4 only, so an imported radiograph
@@ -892,8 +892,8 @@ class TestDimensionality:
 
 
 class TestImportedMasksSitOnTheGrid:
-    """A mask's geometry is the grid's, not only its shape (L01 of the 2.0
-    audit): a translated, rotated, mirrored or rescaled mask of the right
+    """A mask's geometry is the grid's, not only its shape: a translated,
+    rotated, mirrored or rescaled mask of the right
     shape was imported onto voxels nobody drew on, with a warning at most."""
 
     @staticmethod
@@ -913,7 +913,7 @@ class TestImportedMasksSitOnTheGrid:
             ("rescaled", "spacing"),
         ],
     )
-    def test_L01_a_mask_from_another_grid_is_refused(
+    def test_S3_2_a_mask_from_another_grid_is_refused(
         self, volumes, tmp_path, change, field
     ):
         sample = tmp_path / "i.medh5"
@@ -933,7 +933,7 @@ class TestImportedMasksSitOnTheGrid:
         with medh5.open(sample) as opened:
             assert "seg" not in opened.annotations, "nothing was written"
 
-    def test_L01_assume_aligned_takes_the_voxels_and_says_so(self, volumes, tmp_path):
+    def test_assume_aligned_takes_the_voxels_and_says_so(self, volumes, tmp_path):
         sample = tmp_path / "i.medh5"
         from_nifti({"CT": volumes["ct"]}, sample)
         affine = AFFINE.copy()
@@ -946,7 +946,7 @@ class TestImportedMasksSitOnTheGrid:
         with medh5.open(sample) as opened:
             assert opened.annotations["seg"].dense(["liver"])[0].any()
 
-    def test_L01_the_same_grid_in_metres_is_the_same_grid(self, volumes, tmp_path):
+    def test_S3_5_the_same_grid_in_metres_is_the_same_grid(self, volumes, tmp_path):
         """Lengths are compared in millimetres, whatever the header's unit."""
         sample = tmp_path / "i.medh5"
         from_nifti({"CT": volumes["ct"]}, sample)
@@ -959,7 +959,7 @@ class TestImportedMasksSitOnTheGrid:
         report = import_seg_nifti(sample, {"liver": path})
         assert not [g for g in report.guesses if g.kind == "geometry"]
 
-    def test_L01_masks_are_compared_in_the_grid_s_coordinate_system(
+    def test_S3_3_masks_are_compared_in_the_grid_s_coordinate_system(
         self, volumes, tmp_path
     ):
         sample = tmp_path / "i.medh5"
@@ -970,8 +970,8 @@ class TestImportedMasksSitOnTheGrid:
 
 
 class TestGridsAgreeInTimeAndUnits:
-    """Volumes share a grid in units and frame times too (L06), and an export
-    says what its numbers are in (L07, L04)."""
+    """Volumes share a grid in units and frame times too, and an export
+    says what its numbers are in."""
 
     @staticmethod
     def _series(
@@ -987,7 +987,7 @@ class TestGridsAgreeInTimeAndUnits:
         nib.save(image, str(path))
         return path
 
-    def test_L06_the_same_grid_in_metres_converts(self, volumes, tmp_path):
+    def test_S3_5_the_same_grid_in_metres_converts(self, volumes, tmp_path):
         metres = AFFINE.copy()
         metres[:3, :] /= 1000.0
         image = nib.Nifti1Image(np.asarray(nib.load(volumes["ct"]).dataobj), metres)
@@ -998,18 +998,20 @@ class TestGridsAgreeInTimeAndUnits:
         with medh5.open(tmp_path / "s.medh5") as sample:
             assert sample.grids["ref"].units == "mm"
 
-    def test_L06_stated_frame_times_that_disagree_are_refused(self, tmp_path):
+    def test_S3_2_stated_frame_times_that_disagree_are_refused(self, tmp_path):
         a = self._series(tmp_path / "a.nii.gz", step=2.0, offset=5.0)
         b = self._series(tmp_path / "b.nii.gz", step=10.0, offset=20.0)
         with pytest.raises(MEDH5ValidationError, match="states frame times"):
             from_nifti({"A": a, "B": b}, tmp_path / "s.medh5")
 
-    def test_L06_frame_times_compare_in_seconds(self, tmp_path):
+    def test_S3_2_frame_times_compare_in_seconds(self, tmp_path):
         a = self._series(tmp_path / "a.nii.gz", step=2.0, offset=5.0)
         b = self._series(tmp_path / "b.nii.gz", step=2000.0, offset=5000.0, unit="msec")
         from_nifti({"A": a, "B": b}, tmp_path / "s.medh5")
 
-    def test_L06_a_volume_stating_times_lends_them_to_one_that_does_not(self, tmp_path):
+    def test_S3_2_a_volume_stating_times_lends_them_to_one_that_does_not(
+        self, tmp_path
+    ):
         a = self._series(tmp_path / "a.nii.gz", step=None)
         b = self._series(tmp_path / "b.nii.gz", step=2.0, offset=5.0)
         report = from_nifti({"A": a, "B": b}, tmp_path / "s.medh5")
@@ -1018,7 +1020,7 @@ class TestGridsAgreeInTimeAndUnits:
         (taken,) = [n for n in report.of_kind("time_values") if "takes them" in str(n)]
         assert taken.detail["from"] == "B"
 
-    def test_L07_an_export_states_its_units_and_frame_times(self, tmp_path):
+    def test_S3_2_an_export_states_its_units_and_frame_times(self, tmp_path):
         source = self._series(tmp_path / "a.nii.gz", step=2.5, offset=10.0)
         from_nifti({"A": source}, tmp_path / "s.medh5")
         out = to_nifti(tmp_path / "s.medh5", "A", tmp_path / "out.nii.gz")
@@ -1030,7 +1032,7 @@ class TestGridsAgreeInTimeAndUnits:
         assert geometry["time_values"] == pytest.approx([10.0, 12.5, 15.0])
         assert geometry["time_measured"]
 
-    def test_L07_uneven_frames_go_to_a_sidecar_and_come_back(self, tmp_path):
+    def test_S3_2_uneven_frames_go_to_a_sidecar_and_come_back(self, tmp_path):
         path = tmp_path / "s.medh5"
         with medh5.create(path, sample_id="s") as w:
             w.add_grid(
@@ -1058,7 +1060,7 @@ class TestGridsAgreeInTimeAndUnits:
         _, geometry = read_nifti(out)
         assert geometry["time_values"] == [0.0, 1.0, 3.0, 7.0]
 
-    def test_L07_a_grid_in_metres_exports_in_millimetres(self, tmp_path):
+    def test_S3_5_a_grid_in_metres_exports_in_millimetres(self, tmp_path):
         path = tmp_path / "s.medh5"
         with medh5.create(path, sample_id="s") as w:
             w.add_grid(
@@ -1072,7 +1074,7 @@ class TestGridsAgreeInTimeAndUnits:
         assert np.allclose(restored.header.get_zooms(), [1.0, 1.0, 2.0])
         assert np.allclose(np.abs(restored.affine[:3, 3]), [10.0, 20.0, 30.0])
 
-    def test_L04_an_annotation_exports_on_its_own_grid(self, tmp_path):
+    def test_S3_2_an_annotation_exports_on_its_own_grid(self, tmp_path):
         """A PET-grid mask exported beside the CT took the CT's affine."""
         path = tmp_path / "s.medh5"
         with Organs.writer(path) as w:
@@ -1095,8 +1097,8 @@ class TestGridsAgreeInTimeAndUnits:
 
 class TestExportsOwnTheirVolumeStatements:
     """What an export says about its volumes beside the file --- a sidecar's
-    per-volume fields, a ``.bval`` --- is replaced with the file (N03 of the
-    2.0 re-audit), and a channel axis is written as one (N04)."""
+    per-volume fields, a ``.bval`` --- is replaced with the file, and a
+    channel axis is written as one."""
 
     @staticmethod
     def _series(path: Path, times: list[float]) -> Path:
@@ -1136,7 +1138,7 @@ class TestExportsOwnTheirVolumeStatements:
                 w.acquisition("MR", **acquisition)
         return path
 
-    def test_N03_an_overwrite_replaces_the_timing_beside_the_file(self, tmp_path):
+    def test_an_overwrite_replaces_the_timing_beside_the_file(self, tmp_path):
         """Uneven frames wrote `VolumeTiming`; an even series written over the
         file left it, and the reader, which prefers it, read the old timeline
         for the new image.  Fields of no volume's are kept."""
@@ -1157,7 +1159,7 @@ class TestExportsOwnTheirVolumeStatements:
             sorted(p.name for p in tmp_path.iterdir() if p.name.startswith(".")) == []
         )
 
-    def test_N03_an_interrupted_overwrite_never_reads_another_timeline(
+    def test_an_interrupted_overwrite_never_reads_another_timeline(
         self, tmp_path, monkeypatch
     ):
         """The old timing is withdrawn before the image is replaced: an export
@@ -1182,13 +1184,13 @@ class TestExportsOwnTheirVolumeStatements:
         assert not [p for p in tmp_path.iterdir() if p.name.startswith(".")]
 
     @pytest.mark.parametrize("old", ["series", "dwi"])
-    def test_F24_an_export_that_cannot_write_its_image_changes_nothing(
+    def test_an_export_that_cannot_write_its_image_changes_nothing(
         self, tmp_path, monkeypatch, old
     ):
         """The old statements were withdrawn before the new image was
         serialised, so an export that failed to write it --- a full disk, a
         type NIfTI cannot hold --- left the old image with its timing or its
-        b-values gone (F24 of the round-4 audit).  The image is written first;
+        b-values gone.  The image is written first;
         until it is whole, nothing beside the file is touched."""
         import nibabel
 
@@ -1216,7 +1218,7 @@ class TestExportsOwnTheirVolumeStatements:
         assert {k: read_nifti(out)[1][k] for k in stated} == expected
         assert not [p for p in tmp_path.iterdir() if p.name.startswith(".")]
 
-    def test_N04_a_channel_axis_exports_as_one(self, tmp_path):
+    def test_S3_6_a_channel_axis_exports_as_one(self, tmp_path):
         """Written as a plain fourth axis, two MR channels read back as two
         frames of time, one second apart, unmeasured.  NIfTI-1 keeps a
         voxel's components on dim[5] under a vector intent."""
@@ -1238,7 +1240,7 @@ class TestExportsOwnTheirVolumeStatements:
         # Told outright, the reader agrees.
         assert read_nifti(out, fourth_axis="channel")[1]["leading_kind"] == "channel"
 
-    def test_N04_what_the_channels_mean_comes_back(self, tmp_path):
+    def test_S3_6_what_the_channels_mean_comes_back(self, tmp_path):
         """b-values in a .bval beside a four-dimensional file, the layout every
         diffusion tool reads; echo times in the sidecar."""
         dwi = self._channels(tmp_path / "dwi.medh5", b_values=[0.0, 1000.0])
@@ -1270,11 +1272,11 @@ class TestExportsOwnTheirVolumeStatements:
         assert read_nifti(tmp_path / "dwi.nii.gz")[1]["leading_kind"] == "time"
 
     @pytest.mark.parametrize("sidecar_text", ["{not json", "[]"])
-    def test_N16_a_refused_overwrite_leaves_the_old_files(self, tmp_path, sidecar_text):
+    def test_a_refused_overwrite_leaves_the_old_files(self, tmp_path, sidecar_text):
         """The `.bval` was withdrawn before the sidecar the new statements go
         to was read, so an export refused for that sidecar had already taken
-        the old image's b-values: it reread as an unmeasured time axis (N16 of
-        the round-3 audit).  Everything is checked before anything goes."""
+        the old image's b-values: it reread as an unmeasured time axis.
+        Everything is checked before anything goes."""
         out = tmp_path / "dwi.nii.gz"
         dwi = self._channels(tmp_path / "dwi.medh5", b_values=[0.0, 1200.0])
         to_nifti(dwi, "MR", out)
@@ -1291,7 +1293,7 @@ class TestExportsOwnTheirVolumeStatements:
             assert sample.document.acquisition["DWI"]["b_values"] == [0.0, 1200.0]
         assert not [p for p in tmp_path.iterdir() if p.name.startswith(".")]
 
-    def test_N16_an_object_sidecar_takes_the_new_statements(self, tmp_path):
+    def test_an_object_sidecar_takes_the_new_statements(self, tmp_path):
         """The control: a sidecar that is a JSON object keeps its other
         fields and takes the export's."""
         out = tmp_path / "dwi.nii.gz"

@@ -193,13 +193,13 @@ class TestWorkedExample:
         )
         assert ds[0]["row_feature"] is not None
 
-    def test_N11_a_cache_replaced_after_validation_is_refused(
+    def test_S8_a_cache_replaced_after_validation_is_refused(
         self, worked: dict[str, Any], tmp_path: Path
     ):
         """Construction validated a cache and kept only its path; the first
         read, a worker and an unpickled copy opened whatever the path named by
         then, and a replacement --- valid on its own --- served its features
-        with this row's image (N11 of the round-3 audit).  Every handle is held
+        with this row's image.  Every handle is held
         to the validated manifest's checksum; the same manifest rebuilt is the
         same cache."""
         import pickle
@@ -743,9 +743,9 @@ class TestHandles:
         assert lazy.get().path == str(path)  # the parent's handle still works
 
 
-def test_OBS01_ages_do_not_wrap_at_the_ends_of_the_clock():
+def test_S6_ages_do_not_wrap_at_the_ends_of_the_clock():
     """An age was an int64 difference, which wrapped for timestamps near the
-    ends of the clock (OBS-01 of the round-3 audit)."""
+    ends of the clock."""
     from medh5.torch.clinical import _hours_before
 
     ages = _hours_before(2**62, np.array([-(2**62), 2**62 - HOUR], dtype=np.int64))
@@ -843,8 +843,7 @@ def test_the_cutoff_in_hours_reads_the_preliminary_report(tmp_path: Path):
 
 class TestAdmissibility:
     """What a dataset is built from: this task's own preflight, and feature
-    caches of the level its role needs, fitted on this task's training split
-    (audit B05, B06)."""
+    caches of the level its role needs, fitted on this task's training split."""
 
     @staticmethod
     def _tasks(tmp_path: Path) -> tuple[TaskManifest, TaskManifest]:
@@ -889,7 +888,7 @@ class TestAdmissibility:
 
         return task("P-A", "P-B"), task("P-B", "P-A")
 
-    def test_B05_a_preflight_of_another_split_is_refused(self, tmp_path: Path):
+    def test_S6_a_preflight_of_another_split_is_refused(self, tmp_path: Path):
         """The definition fingerprint is shared by both instances; a preflight
         of the other one put this task's validation subject in its training
         rows, and the vocabulary fitted on it recorded this task's split."""
@@ -913,10 +912,10 @@ class TestAdmissibility:
         assert "observation|http://loinc.org|only-P-B" not in own.concepts.concepts
         assert "observation|http://loinc.org|only-P-A" in own.concepts.concepts
 
-    def test_N05_a_vocabulary_is_held_to_the_cache_comparison(self, tmp_path: Path):
+    def test_S7_3_a_vocabulary_is_held_to_the_cache_comparison(self, tmp_path: Path):
         """A vocabulary compared its task, partition and membership but not the
-        split, so one fitted under another `set_id` of the same subjects passed
-        (N05 of the 2.0 re-audit).  It is held to the comparison a cache is;
+        split, so one fitted under another `set_id` of the same subjects
+        passed.  It is held to the comparison a cache is;
         another membership or the held-out partition stays refused."""
         current, swapped = self._tasks(tmp_path)
         vocabulary = ConceptVocabulary.fit(current, current.preflight())
@@ -932,7 +931,7 @@ class TestAdmissibility:
         with pytest.raises(MEDH5ValidationError, match="set_id"):
             ClinicalTaskDataset(renamed, partition="train", concepts=vocabulary)
 
-    def test_B06_a_document_cache_is_event_level_and_fitted_on_training(
+    def test_S6_a_document_cache_is_event_level_and_fitted_on_training(
         self, tmp_path: Path
     ):
         """`documents=` was validated without the task --- so a cache fitted on
@@ -994,7 +993,7 @@ class TestAdmissibility:
 
 
 class TestValuesKeepTheirMeaning:
-    """A value's category and unit reach the batch (audit B07): `female` and
+    """A value's category and unit reach the batch: `female` and
     `male` were the same input, and 5 mg/dL and 5 mmol/L were normalised with
     one pooled mean."""
 
@@ -1066,7 +1065,7 @@ class TestValuesKeepTheirMeaning:
     def _field(item: dict[str, Any], event_id: str, name: str) -> Any:
         return item["events"][name][item["meta"]["event_ids"].index(event_id)]
 
-    def test_B07_categorical_values_are_inputs(self, tmp_path: Path):
+    def test_S6_categorical_values_are_inputs(self, tmp_path: Path):
         task = self._task(
             tmp_path, {"F": [self._sex("female")], "M": [self._sex("male")]}
         )
@@ -1080,7 +1079,7 @@ class TestValuesKeepTheirMeaning:
         assert ds.concepts.value_index(self.SEX, "not-seen") == UNKNOWN
         assert ds.concepts.value_index(self.SEX, None) == 0
 
-    def test_B07_values_in_two_units_are_refused_at_fit(self, tmp_path: Path):
+    def test_S7_3_values_in_two_units_are_refused_at_fit(self, tmp_path: Path):
         task = self._task(
             tmp_path,
             {"A": [self._glucose(5.0, "mg/dL")], "B": [self._glucose(5.0, "mmol/L")]},
@@ -1088,7 +1087,7 @@ class TestValuesKeepTheirMeaning:
         with pytest.raises(MEDH5ValidationError, match="more than one unit"):
             ConceptVocabulary.fit(task)
 
-    def test_B07_a_value_in_another_unit_is_present_and_not_normalised(
+    def test_S6_a_value_in_another_unit_is_present_and_not_normalised(
         self, tmp_path: Path
     ):
         task = self._task(
@@ -1110,7 +1109,7 @@ class TestValuesKeepTheirMeaning:
         assert int(self._field(other, "glu", "unit")) == 1
         assert float(self._field(other, "glu", "value")) == 0.0
 
-    def test_B07_the_vocabulary_records_units_and_categories(self, tmp_path: Path):
+    def test_S7_3_the_vocabulary_records_units_and_categories(self, tmp_path: Path):
         task = self._task(
             tmp_path,
             {
@@ -1130,8 +1129,8 @@ class TestValuesKeepTheirMeaning:
         assert batch["events"]["value_index"].shape == batch["events"]["concept"].shape
 
 
-class TestF03DocumentOwnership:
-    """F03 of the round-4 audit: an event-level entry was looked up by its
+class TestDocumentOwnership:
+    """An event-level entry was looked up by its
     event alone, so a feature filed under ``report0_v1`` that encoded the
     amended report --- written two days later --- validated clean and was
     served to every row admitting ``report0_v1``.  An entry encodes a version
@@ -1152,7 +1151,7 @@ class TestF03DocumentOwnership:
                 )
         return path
 
-    def test_F03_a_feature_joined_to_another_version_is_refused(
+    def test_S7_2_a_feature_joined_to_another_version_is_refused(
         self, worked: dict[str, Any]
     ):
         task = TaskManifest.load(worked["task"])
@@ -1176,7 +1175,7 @@ class TestF03DocumentOwnership:
         )
         assert validate_cache(right, base=task.base).ok
 
-    def test_F03_the_dataset_checks_the_document_before_it_reads(
+    def test_S7_2_the_dataset_checks_the_document_before_it_reads(
         self, worked: dict[str, Any]
     ):
         """An entry naming no document validates --- it may be an event's own
@@ -1202,8 +1201,8 @@ class TestF03DocumentOwnership:
             assert caught.value.code == "T407"
 
 
-class TestF16FeatureShapes:
-    """F16 of the round-4 audit: a row without documents took a feature of
+class TestFeatureShapes:
+    """A row without documents took a feature of
     shape ``(0, dim[0])`` while a row with them took the encoder's whole
     shape, so a batch collated in one order and raised in the other."""
 
@@ -1215,7 +1214,7 @@ class TestF16FeatureShapes:
         def encode(self, text: str) -> Any:
             return np.full((2, 3), len(text), np.float32)
 
-    def test_F16_rows_with_and_without_documents_collate_in_either_order(
+    def test_rows_with_and_without_documents_collate_in_either_order(
         self, tmp_path: Path
     ):
         task = timeline_task(tmp_path)
@@ -1235,7 +1234,7 @@ class TestF16FeatureShapes:
         vectors = ClinicalTaskDataset(task, documents=HashingTextEncoder(dim=4))
         assert tuple(vectors[ids.index("h1")]["documents"]["features"].shape) == (0, 4)
 
-    def test_F16_rows_that_disagree_are_refused(self, tmp_path: Path):
+    def test_rows_that_disagree_are_refused(self, tmp_path: Path):
         task = timeline_task(tmp_path)
         dataset = ClinicalTaskDataset(task, documents=self.Matrix())
         full = dataset[0]
@@ -1245,12 +1244,12 @@ class TestF16FeatureShapes:
             collate_clinical([full, other])
 
 
-class TestF17ConceptTokens:
-    """F17 of the round-4 audit: a concept token joined its fields with `|`
+class TestConceptTokens:
+    """A concept token joined its fields with `|`
     unescaped, so system ``alpha|beta`` with code ``gamma`` and system
     ``alpha`` with code ``beta|gamma`` were one input."""
 
-    def test_F17_delimiters_in_codes_keep_concepts_apart(self, tmp_path: Path):
+    def test_delimiters_in_codes_keep_concepts_apart(self, tmp_path: Path):
         from medh5.clinical import Event
         from medh5.task import SourceRef
         from tests.kits import History

@@ -335,7 +335,7 @@ class TestNnunet:
         with pytest.raises(MEDH5ValidationError, match="channel 1"):
             from_nnunetv2(dataset, tmp_path / "out", case_ids=["CASE_001"])
 
-    def test_F10_an_nnunet_export_keeps_the_physical_values(self, tmp_path: Path):
+    def test_S4_2_an_nnunet_export_keeps_the_physical_values(self, tmp_path: Path):
         from medh5.io.nnunetv2 import to_nnunetv2
 
         path = tmp_path / "ct.medh5"
@@ -356,7 +356,7 @@ class TestNnunet:
         assert image.get_data_dtype() == np.int16
         assert image.get_fdata().flat[0] == pytest.approx(-24.0)
 
-    def test_F11_a_2D_nnunet_dataset_round_trips(self, tmp_path: Path):
+    def test_S3_6_a_2D_nnunet_dataset_round_trips(self, tmp_path: Path):
         from medh5.io.nnunetv2 import from_nnunetv2, to_nnunetv2
 
         affine = np.diag([0.8, 0.9, 1.0, 1.0])
@@ -389,7 +389,7 @@ class TestNnunet:
         assert np.array_equal(np.asanyarray(back.dataobj), data)
         assert report.ok
 
-    def test_L18_the_report_lists_only_files_that_were_written(self, tmp_path: Path):
+    def test_the_report_lists_only_files_that_were_written(self, tmp_path: Path):
         from medh5.io.nnunetv2 import to_nnunetv2
 
         path = tmp_path / "bare.medh5"
@@ -407,7 +407,7 @@ class TestNnunet:
 
 class TestNnunetScaling:
     """A NIfTI's `scl_slope`/`scl_inter` are what its voxels mean, to nnU-Net
-    as to any reader (L03 of the 2.0 audit): an image's were dropped, and a
+    as to any reader: an image's were dropped, and a
     label volume's ids were matched before them."""
 
     @staticmethod
@@ -448,7 +448,7 @@ class TestNnunetScaling:
         )
         return root, stored, labels
 
-    def test_L03_an_image_keeps_its_scale_as_its_rescale(self, tmp_path):
+    def test_S4_2_an_image_keeps_its_scale_as_its_rescale(self, tmp_path):
         from medh5.io.nnunetv2 import from_nnunetv2
 
         root, stored, _ = self._dataset(tmp_path, image_scale=(1.0, -1024.0))
@@ -460,7 +460,7 @@ class TestNnunetScaling:
             assert np.allclose(physical, np.transpose(stored, (2, 1, 0)) - 1024.0)
         assert report.of_kind("value_scale")
 
-    def test_L03_labels_are_matched_after_their_scale(self, tmp_path):
+    def test_S4_2_labels_are_matched_after_their_scale(self, tmp_path):
         """Stored 1 with slope 32 is class 32 to every reader of the file."""
         from medh5.io.nnunetv2 import from_nnunetv2
 
@@ -470,14 +470,14 @@ class TestNnunetScaling:
             organ = sample.annotations["seg"].dense(["organ"])[0]
             assert int(organ.sum()) == int(labels.sum()) == 8
 
-    def test_L03_a_scale_that_makes_fractional_labels_is_refused(self, tmp_path):
+    def test_S4_2_a_scale_that_makes_fractional_labels_is_refused(self, tmp_path):
         from medh5.io.nnunetv2 import from_nnunetv2
 
         root, _, _ = self._dataset(tmp_path, label_scale=(0.5, 0.0))
         with pytest.raises(MEDH5ValidationError, match="not integers"):
             from_nnunetv2(root, tmp_path / "out")
 
-    def test_L04_labels_on_another_grid_than_the_channels_are_refused(self, tmp_path):
+    def test_S3_2_labels_on_another_grid_than_the_channels_are_refused(self, tmp_path):
         """The export wrote the labels with the reference grid's affine,
         whatever grid they were on."""
         from medh5.io.nnunetv2 import to_nnunetv2
@@ -494,12 +494,14 @@ class TestNnunetScaling:
 
 class TestNnunetIgnore:
     """nnU-Net's declared ignore label is the annotation's §7.7 ignore region,
-    both ways (N02 of the 2.0 re-audit): the export wrote ignored voxels as 0
+    both ways: the export wrote ignored voxels as 0
     --- verified background for every class --- and declared no ignore label,
     and the import read nnU-Net's ignore label as a class named ``ignore``."""
 
     @pytest.mark.parametrize("overlap", [False, True])
-    def test_N02_ignored_voxels_round_trip_as_the_ignore_label(self, tmp_path, overlap):
+    def test_S7_7_ignored_voxels_round_trip_as_the_ignore_label(
+        self, tmp_path, overlap
+    ):
         from medh5.io.nnunetv2 import from_nnunetv2, to_nnunetv2
 
         liver, spleen, region = Numbered.two_classes()
@@ -570,7 +572,7 @@ class TestNnunetIgnore:
             assert np.array_equal(seg.dense([1])[0], liver)
             assert np.array_equal(seg.dense([3])[0], spleen)
 
-    def test_N02_without_an_ignore_region_no_label_is_declared(self, tmp_path):
+    def test_S7_7_without_an_ignore_region_no_label_is_declared(self, tmp_path):
         from medh5.io.nnunetv2 import to_nnunetv2
 
         liver, spleen, _ = Numbered.two_classes()
@@ -581,7 +583,7 @@ class TestNnunetIgnore:
         labels = json.loads((tmp_path / "nn/D9/dataset.json").read_text())["labels"]
         assert "ignore" not in labels and not report.of_kind("ignore")
 
-    def test_N02_an_ignore_label_that_cannot_be_highest_is_refused(self):
+    def test_S7_7_an_ignore_label_that_cannot_be_highest_is_refused(self):
         """nnU-Net's ignore label must be the highest value, and the label
         volume is uint16: above a class 65535 there is no room for it."""
         from medh5.io.nnunetv2 import _ignore_value
@@ -594,8 +596,8 @@ class TestNnunetIgnore:
 
 class TestNnunetDatasetLabels:
     """The labels are the dataset's, each case is held to them, and every label
-    volume gives back what it exports (N13 and N14 of the round-3 audit); every
-    channel and the labels are one physical space (N17)."""
+    volume gives back what it exports; every channel and the labels are one
+    physical space."""
 
     SHAPE = (6, 8, 8)
 
@@ -641,7 +643,7 @@ class TestNnunetDatasetLabels:
         lesion[3:5, 5:7, 5:7] = True
         return organ, lesion
 
-    def test_N14_a_case_not_searched_for_a_class_is_refused(self, tmp_path: Path):
+    def test_S11_3_a_case_not_searched_for_a_class_is_refused(self, tmp_path: Path):
         """The labels were the first case's: a lesion only the second case
         carried became background, and the first case's unsearched lesion
         was written as its verified absence."""
@@ -669,7 +671,7 @@ class TestNnunetDatasetLabels:
         )
         assert int((written == 1).sum()) == int(organ.sum()) and written.max() == 1
 
-    def test_N14_the_command_line_names_the_classes_to_export(self, tmp_path, capsys):
+    def test_the_command_line_names_the_classes_to_export(self, tmp_path, capsys):
         """The refusal says to name the classes every case examined; the
         command line had no way to."""
         from medh5.cli import EXIT_OK, main
@@ -688,7 +690,7 @@ class TestNnunetDatasetLabels:
             != EXIT_OK
         )
 
-    def test_N14_complete_coverage_exports_in_either_order(self, tmp_path: Path):
+    def test_S11_3_complete_coverage_exports_in_either_order(self, tmp_path: Path):
         from medh5.io.nnunetv2 import to_nnunetv2
 
         organ, lesion = self._blocks()
@@ -703,7 +705,7 @@ class TestNnunetDatasetLabels:
             )
             assert int((written == 2).sum()) == int(lesion.sum())
 
-    def test_N14_overlapping_classes_are_refused_not_overwritten(self, tmp_path):
+    def test_S7_1_overlapping_classes_are_refused_not_overwritten(self, tmp_path):
         """One value per voxel: an organ under a lesion lost those voxels."""
         from medh5.io.nnunetv2 import to_nnunetv2
 
@@ -767,7 +769,7 @@ class TestNnunetDatasetLabels:
         ],
         ids=["convention", "units", "frame"],
     )
-    def test_N17_labels_in_another_space_are_refused(self, tmp_path, label_grid):
+    def test_S3_3_labels_in_another_space_are_refused(self, tmp_path, label_grid):
         """`is_congruent` compares numbers: a label grid with the channels'
         numbers in RAS, in metres, or in another known frame exported a pair
         48 mm, or a thousandfold, apart."""
@@ -781,7 +783,7 @@ class TestNnunetDatasetLabels:
             to_nnunetv2([path], tmp_path / "nn", dataset_name="D1")
         assert not (tmp_path / "nn").exists()
 
-    def test_N17_labels_on_another_lattice_of_the_space_are_refused(self, tmp_path):
+    def test_S3_2_labels_on_another_lattice_of_the_space_are_refused(self, tmp_path):
         from medh5.io.nnunetv2 import to_nnunetv2
 
         organ, _ = self._blocks()
@@ -794,7 +796,7 @@ class TestNnunetDatasetLabels:
         with pytest.raises(MEDH5ValidationError, match="another lattice"):
             to_nnunetv2([path], tmp_path / "nn", dataset_name="D1")
 
-    def test_N17_a_channel_in_another_space_is_refused(self, tmp_path):
+    def test_S3_3_a_channel_in_another_space_is_refused(self, tmp_path):
         from medh5.io.nnunetv2 import to_nnunetv2
 
         organ, _ = self._blocks()
@@ -807,7 +809,7 @@ class TestNnunetDatasetLabels:
         with pytest.raises(MEDH5ValidationError, match="channel 'MR'"):
             to_nnunetv2([path], tmp_path / "nn", dataset_name="D1")
 
-    def test_N17_one_space_on_two_grids_exports(self, tmp_path):
+    def test_S3_3_one_space_on_two_grids_exports(self, tmp_path):
         """The control: a second grid with the channels' lattice, convention,
         units and frame is their space; both files state one affine."""
         from medh5.io.nnunetv2 import to_nnunetv2
@@ -858,7 +860,7 @@ class TestNnunetDatasetLabels:
         (root / "dataset.json").write_text(json.dumps(document), encoding="utf-8")
         return volume
 
-    def test_N13_a_region_dataset_round_trips_every_voxel(self, tmp_path: Path):
+    def test_S7_a_region_dataset_round_trips_every_voxel(self, tmp_path: Path):
         """Components 1 and 2 exist only inside regions: the export wrote the
         scalar labels and left 16 tumour voxels as background.  Painted in
         `regions_class_order`, as nnU-Net converts regions back."""
@@ -872,7 +874,7 @@ class TestNnunetDatasetLabels:
         assert np.array_equal(written, volume)
         assert read_dataset_json(back) == read_dataset_json(tmp_path / "D")
 
-    def test_N13_regions_no_order_reconstructs_are_refused(self, tmp_path: Path):
+    def test_S7_regions_no_order_reconstructs_are_refused(self, tmp_path: Path):
         """Without `regions_class_order` the components cannot be painted, and
         the regions are refused rather than written as background."""
         from medh5.io.nnunetv2 import from_nnunetv2, to_nnunetv2
@@ -916,8 +918,8 @@ def nnunet_checks(root: Path) -> dict:
     return document
 
 
-class TestF05CaseNames:
-    """F05 of the round-4 audit: a case's ``sample_id`` was joined onto the
+class TestCaseNames:
+    """A case's ``sample_id`` was joined onto the
     export as a path, so ``../../victim`` --- or an absolute id --- wrote
     outside it, and two ids differing only in case overwrote each other on
     macOS and Windows while ``numTraining`` counted both."""
@@ -933,7 +935,7 @@ class TestF05CaseNames:
         return path
 
     @pytest.mark.parametrize("sample_id", ["../../victim", "/tmp/victim", "..", "a b"])
-    def test_F05_a_case_name_that_is_no_file_name_is_refused(
+    def test_a_case_name_that_is_no_file_name_is_refused(
         self, tmp_path: Path, sample_id: str
     ):
         from medh5.io.nnunetv2 import to_nnunetv2
@@ -947,7 +949,7 @@ class TestF05CaseNames:
         assert not (tmp_path / "nn").exists(), "refused before anything is written"
         assert not list(tmp_path.rglob("victim*"))
 
-    def test_F05_names_that_differ_only_in_case_are_refused(self, tmp_path: Path):
+    def test_names_that_differ_only_in_case_are_refused(self, tmp_path: Path):
         from medh5.io.nnunetv2 import to_nnunetv2
 
         a = self._case(tmp_path / "a.medh5", "Case1")
@@ -957,7 +959,7 @@ class TestF05CaseNames:
         assert not (tmp_path / "nn").exists()
 
     @pytest.mark.parametrize("name", ["../D1", "/abs", ".."])
-    def test_F05_the_dataset_name_is_a_name(self, tmp_path: Path, name: str):
+    def test_the_dataset_name_is_a_name(self, tmp_path: Path, name: str):
         from medh5.io.nnunetv2 import to_nnunetv2
 
         path = self._case(tmp_path / "a.medh5", "case1")
@@ -965,7 +967,7 @@ class TestF05CaseNames:
             to_nnunetv2([path], tmp_path / "nn", dataset_name=name)
         assert not (tmp_path / "nn").exists()
 
-    def test_F05_valid_names_export(self, tmp_path: Path):
+    def test_valid_names_export(self, tmp_path: Path):
         from medh5.io.nnunetv2 import to_nnunetv2
 
         paths = [self._case(tmp_path / f"{n}.medh5", n) for n in ("c-1", "c.2", "C_3")]
@@ -973,17 +975,15 @@ class TestF05CaseNames:
         nnunet_checks(tmp_path / "nn" / "D1")
 
 
-class TestF22Unlabeled:
-    """F22 of the round-4 audit: a case without the annotation was written to
+class TestUnlabeled:
+    """A case without the annotation was written to
     ``imagesTr`` with no label file, and counted in ``numTraining``."""
 
-    def test_F22_an_unlabeled_case_is_refused_or_a_test_case(
-        self, tmp_path: Path, capsys
-    ):
+    def test_an_unlabeled_case_is_refused_or_a_test_case(self, tmp_path: Path, capsys):
         from medh5.cli import EXIT_OK, main
         from medh5.io.nnunetv2 import to_nnunetv2
 
-        labeled = TestF05CaseNames._case(tmp_path / "a.medh5", "labeled")
+        labeled = TestCaseNames._case(tmp_path / "a.medh5", "labeled")
         bare = tmp_path / "bare.medh5"
         with medh5.create(bare, sample_id="bare", codec="portable") as w:
             w.add_grid("g", shape=Organs.SHAPE, spacing=(1.0, 1.0, 1.0))
@@ -1008,8 +1008,8 @@ class TestF22Unlabeled:
         assert nnunet_checks(tmp_path / "cli" / "D2")["numTraining"] == 1
 
 
-class TestF23ConsecutiveLabels:
-    """F23 of the round-4 audit: class ids with a gap were written as label
+class TestConsecutiveLabels:
+    """Class ids with a gap were written as label
     values with one, and nnU-Net's dataset check refuses them.  They are
     written ``1..K``, and the ids come back on import."""
 
@@ -1037,7 +1037,7 @@ class TestF23ConsecutiveLabels:
             w.add_segmentation("seg", grid="g", masks=masks)
         return path
 
-    def test_F23_gapped_ids_are_written_consecutive_and_come_back(self, tmp_path: Path):
+    def test_gapped_ids_are_written_consecutive_and_come_back(self, tmp_path: Path):
         from medh5.io.nnunetv2 import from_nnunetv2, to_nnunetv2
 
         path = self._case(tmp_path / "case1.medh5", {1: "organ", 3: "lesion"})
@@ -1062,7 +1062,7 @@ class TestF23ConsecutiveLabels:
         )
         assert nnunet_checks(tmp_path / "again" / "D1") == document
 
-    def test_F23_a_subset_is_renumbered_too(self, tmp_path: Path):
+    def test_a_subset_is_renumbered_too(self, tmp_path: Path):
         from medh5.io.nnunetv2 import to_nnunetv2
 
         path = self._case(tmp_path / "case1.medh5", {1: "organ", 3: "lesion"})
@@ -1071,7 +1071,7 @@ class TestF23ConsecutiveLabels:
         assert document["labels"] == {"background": 0, "lesion": 1}
         assert document["medh5_class_ids"] == {"1": 3}
 
-    def test_F23_consecutive_ids_record_nothing(self, tmp_path: Path):
+    def test_consecutive_ids_record_nothing(self, tmp_path: Path):
         from medh5.io.nnunetv2 import to_nnunetv2
 
         path = self._case(tmp_path / "case1.medh5", {1: "organ", 2: "lesion"})
@@ -1080,8 +1080,8 @@ class TestF23ConsecutiveLabels:
         assert "medh5_class_ids" not in document and not report.of_kind("label_values")
 
 
-class TestF04StashedLabels:
-    """F04 of the round-4 audit: a reused ``dataset.json`` that did not name a
+class TestStashedLabels:
+    """A reused ``dataset.json`` that did not name a
     class the cases carried wrote it as background in every case, and left it
     out of the labels.  A scalar stash is extended; a region-based one is
     refused; and every exported class is read back."""
@@ -1110,7 +1110,7 @@ class TestF04StashedLabels:
             w.extra("nnunetv2", stash)
         return path
 
-    def test_F04_a_scalar_stash_is_extended(self, tmp_path: Path):
+    def test_a_scalar_stash_is_extended(self, tmp_path: Path):
         from medh5.io.nnunetv2 import to_nnunetv2
 
         stash = {
@@ -1130,7 +1130,7 @@ class TestF04StashedLabels:
         volume = np.asarray(nib.load(str(root / "labelsTr/case1.nii.gz")).dataobj)
         assert int((volume == 2).sum()) == 4
 
-    def test_F04_a_region_stash_is_refused(self, tmp_path: Path):
+    def test_a_region_stash_is_refused(self, tmp_path: Path):
         from medh5.io.nnunetv2 import to_nnunetv2
 
         stash = {
@@ -1145,7 +1145,7 @@ class TestF04StashedLabels:
             to_nnunetv2([path], tmp_path / "nn", dataset_name="D1")
         assert not (tmp_path / "nn").exists()
 
-    def test_F04_a_class_no_label_reads_back_is_lost_and_refused(self):
+    def test_a_class_no_label_reads_back_is_lost_and_refused(self):
         """The backstop, on its own: the read-back covers every exported
         class, not only the labels'."""
         from medh5.io.nnunetv2 import _not_given_back
