@@ -25,7 +25,8 @@ use crate::{with_array, with_dtype, Error, Result};
 pub enum AttrValue {
     /// A scalar string.
     Str(String),
-    /// A 1-D (or flattened n-D) array of strings, with its shape.
+    /// An array of strings: a 1-D attribute's, or an n-D one's flattened in
+    /// C order (the shape is not kept).
     Strs(Vec<String>),
     /// A scalar boolean.
     Bool(bool),

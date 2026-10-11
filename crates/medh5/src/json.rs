@@ -313,7 +313,7 @@ pub fn py_str(value: &Value) -> String {
     }
 }
 
-/// `[‘a’, ‘b’]` as Python prints a list of strings.
+/// `['a', 'b']`, as Python prints a list of strings.
 pub fn repr_list<S: AsRef<str>>(items: &[S]) -> String {
     let inner: Vec<String> = items.iter().map(|s| repr_str(s.as_ref())).collect();
     format!("[{}]", inner.join(", "))
@@ -351,7 +351,9 @@ pub fn py_float(value: f64) -> String {
     }
 }
 
-/// `format(value, "g")`: six significant digits, exponent when out of range.
+/// `format(value, f".{precision}g")`: `precision` significant digits (at
+/// least one), in exponent form when the exponent is below -4 or at least
+/// `precision`, without trailing zeros.
 pub fn format_g(value: f64, precision: usize) -> String {
     if value.is_nan() {
         return "nan".to_string();

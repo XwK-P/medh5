@@ -200,6 +200,8 @@ pub fn is_strings(ds: &hdf5::Dataset) -> bool {
     matches!(kind(ds), Ok(Kind::Strings))
 }
 
+/// Whether a dataset is stored as an HDF5 enumeration other than the boolean
+/// one: `h5py`'s `FALSE = 0, TRUE = 1` enum is read as a boolean (§2.5).
 fn is_plain_enum(ds: &hdf5::Dataset) -> bool {
     matches!(ds.dtype().and_then(|t| t.to_descriptor()), Ok(TD::Enum(_)))
 }
@@ -292,11 +294,6 @@ fn read_enum(ds: &hdf5::Dataset, dtype: DType) -> Result<NdArray> {
         Ok(())
     })?;
     bytes_to_array(&buf, dtype, &shape)
-}
-
-/// Whether a dataset is stored as an HDF5 enum (booleans, as h5py writes them).
-pub fn is_enum(ds: &hdf5::Dataset) -> bool {
-    is_plain_enum(ds)
 }
 
 /// Read a hyperslab of an enum dataset as its base integer (or `bool`).
