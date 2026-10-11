@@ -194,8 +194,8 @@ pub fn visit(group: &hdf5::Group, f: &mut dyn FnMut(&str, &Node) -> Result<bool>
 ///
 /// Readers follow a soft link as HDF5 does, so a column of `clinical/` linked
 /// softly to storage under `index/` was read by every selection while the
-/// walk of hard links that decides what a pin covers never saw it (B03 of the
-/// round-3 audit).  Attestation walks what readers read.
+/// walk of hard links that decides what a pin covers never saw it.
+/// Attestation walks what readers read.
 pub fn visit_resolving(group: &hdf5::Group, f: &mut dyn FnMut(&str, &Node) -> Result<bool>) -> Result<()> {
     visit_links(group, true, f)
 }
@@ -410,12 +410,11 @@ fn holds_reference(tid: h5i::hid_t) -> bool {
 /// Attributes are read on every kind of object that carries them: groups,
 /// datasets and committed (named) datatypes.  [`visit`] walks groups and
 /// datasets, so a reference in an attribute of a committed datatype was
-/// missed, and a rewrite that copies the type nulled it (C10 of the 2.0
-/// re-audit).  A committed datatype need not keep a name: one whose link was
+/// missed, and a rewrite that copies the type nulled it.  A committed
+/// datatype need not keep a name: one whose link was
 /// removed lives on as the type of the datasets and attributes that use it,
 /// so each dataset's and attribute's type is opened too when it is a
-/// committed one --- `/path (type)@name` --- each type once, by identity
-/// (C10 of the round-3 audit).
+/// committed one --- `/path (type)@name` --- each type once, by identity.
 pub fn reference_carriers(root: &hdf5::Group) -> Result<Vec<String>> {
     /// The committed datatype `tid` is, opened as an object; `None` when it is
     /// transient.  Takes ownership of `tid`.
@@ -515,7 +514,7 @@ pub fn reference_carriers(root: &hdf5::Group) -> Result<Vec<String>> {
 /// carry over without understanding: copied, an object reference pointed
 /// wherever its address happened to land in the new file, and a no-op amend
 /// nulled the ones in an extension group --- while every digest still
-/// verified (C10 of the 2.0 audit).
+/// verified.
 pub fn refuse_references(root: &hdf5::Group, action: &str) -> Result<()> {
     let found = reference_carriers(root)?;
     if found.is_empty() {
@@ -608,8 +607,8 @@ fn descriptor(handle: &hdf5::File) -> Option<std::os::raw::c_int> {
 /// Elsewhere there is none.  Size and modification time alone do not tell two
 /// files apart --- an archive extracts many with one mtime, and the time is
 /// the author's to set --- so keying on them let a crafted file of a checked
-/// file's length and time skip the check (W01 of the 2.0 audit; 1.x keyed
-/// Windows on the volume serial and file index, which `std` cannot read).  No
+/// file's length and time skip the check (1.x keyed Windows on the volume
+/// serial and file index, which `std` cannot read).  No
 /// identity means no memo: the file is checked on every open rather than
 /// trusted on a guess.
 fn opened_identity(handle: &hdf5::File, path: Option<&Path>) -> Option<FileIdentity> {
@@ -788,7 +787,7 @@ mod tests {
     /// scanned the old file, and its next open skipped the check.
     #[cfg(unix)]
     #[test]
-    fn f22_the_check_is_remembered_for_the_file_it_read() {
+    fn s2_the_check_is_remembered_for_the_file_it_read() {
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("target.medh5");
         let bad = dir.path().join("bad.medh5");
@@ -803,10 +802,10 @@ mod tests {
         assert!(err.to_string().contains("external link"), "{err}");
     }
 
-    /// B01: HDF5 reads one coordinate per axis from the offset, so an offset
+    /// HDF5 reads one coordinate per axis from the offset, so an offset
     /// of the wrong length read past it (an empty one was a segfault).
     #[test]
-    fn b01_a_chunk_offset_has_one_coordinate_per_axis() {
+    fn s2_2_a_chunk_offset_has_one_coordinate_per_axis() {
         let dir = tempfile::tempdir().unwrap();
         let file = hdf5::File::create(dir.path().join("c.h5")).unwrap();
         let ds = file.new_dataset::<u8>().chunk((2, 2)).shape((4, 4)).create("c").unwrap();
@@ -859,7 +858,7 @@ mod tests {
     /// An unchanged file is checked once; the memo is what keeps re-opens cheap.
     #[cfg(unix)]
     #[test]
-    fn f22_an_unchanged_file_is_remembered() {
+    fn s2_an_unchanged_file_is_remembered() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("clean.medh5");
         plain(&path);
@@ -868,12 +867,12 @@ mod tests {
         assert!(checked_files().lock().unwrap().contains_key(&key));
     }
 
-    /// W01: without the opened file's identity nothing is remembered, so
+    /// Without the opened file's identity nothing is remembered, so
     /// every open is checked --- a file of a checked file's length and
     /// modification time is not taken for it.
     #[cfg(not(unix))]
     #[test]
-    fn w01_without_an_identity_every_open_is_checked() {
+    fn s2_without_an_identity_every_open_is_checked() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("clean.medh5");
         plain(&path);

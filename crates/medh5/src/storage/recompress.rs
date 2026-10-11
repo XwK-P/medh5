@@ -350,8 +350,7 @@ fn copy_dataset(
     // A rebuild writes `dtype`'s own type.  A stored type that is not that
     // one --- an enumeration with its names, a committed type with its
     // attributes, another byte order --- is copied as it is, not rebuilt
-    // into a plain number type and the rest silently lost (F12 of the
-    // round-4 audit).
+    // into a plain number type and the rest silently lost.
     if !data::stored_as_written(&ds, dtype)? {
         result.kept.push(ds.name());
         return copy_stored(parent, name, dst);

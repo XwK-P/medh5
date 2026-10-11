@@ -173,8 +173,7 @@ pub fn fix(path: &Path, options: &FixOptions) -> Result<Repair> {
             // Restamped before the index is planned: an entry pins its
             // annotation's digest (§13.3), so one rebuilt from the digests the
             // file had went stale when the commit restamped them --- and one
-            // that matched before the restamp went stale without being rebuilt
-            // (U05 of the 2.0 audit).
+            // that matched before the restamp went stale without being rebuilt.
             stamp_digests(&writer.root()?, "sha256", &["index"], false)?;
         }
         let mut names = stale_index_entries(&writer.root()?)?;

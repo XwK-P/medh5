@@ -393,8 +393,7 @@ pub fn object() -> Map<String, Value> {
 /// Every element of a JSON array as an integer, or why one is not: a
 /// number written with a fraction or an exponent --- `3.0` included --- or
 /// outside `i64`, or not a number at all.  Never dropped: a list that loses
-/// an element it could not read says something else than was written (F14
-/// of the round-4 audit).
+/// an element it could not read says something else than was written.
 pub fn integers(items: &[Value]) -> std::result::Result<Vec<i64>, String> {
     items
         .iter()

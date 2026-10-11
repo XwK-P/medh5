@@ -243,7 +243,7 @@ fn computed_content_id(root: &hdf5::Group) -> Option<String> {
 }
 
 /// Copy a sample root into `dst` as a graph: chunks as stored bytes, every
-/// alias, cycle and soft link kept (F11 of the round-4 audit), and the copy
+/// alias, cycle and soft link kept, and the copy
 /// checked before anything is committed --- a sample's `content_id` is
 /// unchanged by packing and unpacking (§2.2), so a copy that computes another
 /// is refused, never restamped.

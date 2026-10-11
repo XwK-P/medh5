@@ -7,7 +7,7 @@
 //! into a second dataset, and `H5O_COPY_EXPAND_SOFT_LINK_FLAG` turned a soft
 //! link into one too.  Each is a new dataset line under `content_id` (§13.2):
 //! packed and unpacked, a sample with an alias failed `verify`, and a no-op
-//! amend changed its address (F11 of the round-4 audit).
+//! amend changed its address.
 //!
 //! [`GraphCopy`] walks the source itself, with one map of what it has copied
 //! for the whole walk:
@@ -261,10 +261,10 @@ mod tests {
         file
     }
 
-    /// F11: a copy keeps the graph --- an alias, a cycle and soft links ---
+    /// A copy keeps the graph --- an alias, a cycle and soft links ---
     /// into a root of another name and back.
     #[test]
-    fn f11_s2_2_a_copy_keeps_aliases_cycles_and_soft_links() {
+    fn s2_2_a_copy_keeps_aliases_cycles_and_soft_links() {
         let dir = tempfile::tempdir().unwrap();
         let src = source(&dir.path().join("src.h5"));
         let packed = crate::h5::file::create_truncate(&dir.path().join("packed.h5")).unwrap();
@@ -287,7 +287,7 @@ mod tests {
 
     /// A soft link out of the sample root it is copied from cannot be kept.
     #[test]
-    fn f11_a_soft_link_out_of_its_sample_root_is_refused() {
+    fn s2_2_a_soft_link_out_of_its_sample_root_is_refused() {
         let dir = tempfile::tempdir().unwrap();
         let file = crate::h5::file::create_truncate(&dir.path().join("c.h5")).unwrap();
         let samples = file.create_group("samples").unwrap();
@@ -302,7 +302,7 @@ mod tests {
 
     /// Two datasets sharing one committed datatype share its copy.
     #[test]
-    fn f12_datasets_sharing_a_committed_type_share_its_copy() {
+    fn s2_2_datasets_sharing_a_committed_type_share_its_copy() {
         use crate::h5sys::{h5d, h5i, h5s, h5t};
         let dir = tempfile::tempdir().unwrap();
         let file = crate::h5::file::create_truncate(&dir.path().join("t.h5")).unwrap();

@@ -335,10 +335,9 @@ pub fn read_attribute(attr: &hdf5::Attribute) -> Result<AttrValue> {
 }
 
 fn read_strings_attr(attr: &hdf5::Attribute, td: &TD) -> Result<Vec<String>> {
-    // Sized before it is read, as a dataset is (N12 of the 2.0 re-audit),
-    // and by what it decodes to: a `String` per element beyond its stored
-    // bytes, since an attribute cannot be read in parts (F10 of the round-4
-    // audit).
+    // Sized before it is read, as a dataset is, and by what it decodes to:
+    // a `String` per element beyond its stored bytes, since an attribute
+    // cannot be read in parts.
     let itemsize = match td {
         TD::FixedAscii(width) | TD::FixedUnicode(width) => (*width).max(1).saturating_mul(2),
         _ => std::mem::size_of::<VarLenUnicode>(),

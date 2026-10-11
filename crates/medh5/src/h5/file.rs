@@ -262,7 +262,7 @@ impl AtomicFile {
     /// taking the old root to the new one, and carry on with that: what the
     /// copy does not reach is gone from the bytes.  HDF5 never reclaims an
     /// unlinked object's space, so a group removed from a file stays in it
-    /// until the file is rewritten (F08 of the round-4 audit).
+    /// until the file is rewritten.
     pub fn rebuild(mut self, copy: impl FnOnce(&hdf5::Group, &hdf5::Group) -> Result<()>) -> Result<AtomicFile> {
         if let Some(handle) = self.handle.take() {
             close_everything(handle, true)?;

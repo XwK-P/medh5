@@ -65,7 +65,7 @@ fn attested_groups(root: &hdf5::Group) -> Result<Vec<&'static str>> {
 /// which a second path to a covered object --- an alias sorting earlier, a
 /// soft link --- held the attested name: relinking that name to another
 /// covered object changed no line, so the root recomputed, the pin and
-/// `verify` held, and a reader read other bytes (F01 of the round-4 audit).
+/// `verify` held, and a reader read other bytes.
 ///
 /// Every link under an attested group is judged, soft links followed as
 /// readers follow them.  A group is entered only at its own first path, so
@@ -166,8 +166,8 @@ fn judge(
 ///
 /// A dataset without a digest is not covered; nor is one whose object is
 /// listed under no line --- reached first through `index/`, which the root
-/// excludes, or only through a soft link (B03 of the round-3 audit) --- nor
-/// one listed under another path (F01 of the round-4 audit).
+/// excludes, or only through a soft link --- nor one listed under another
+/// path.
 pub fn unattested(root: &hdf5::Group) -> Result<Vec<String>> {
     Ok(unbound(root)?.into_iter().map(|u| u.path).collect())
 }
@@ -404,7 +404,7 @@ fn verify(
 /// The trees are compared as graphs, the way a copy keeps them.  Each pair of
 /// objects is compared once, so a hard link back to an ancestor is a cycle to
 /// stop at rather than a recursion without end (a self-cycle overflowed the
-/// stack, F13 of the round-4 audit); a second link to an object must pair with
+/// stack); a second link to an object must pair with
 /// a second link to its counterpart, so an alias and a duplicate of the same
 /// bytes still differ; and a soft link is compared by the path it holds,
 /// relative to its tree's root, not followed.
@@ -621,11 +621,11 @@ mod tests {
         file
     }
 
-    /// F13: a hard link back to an ancestor is a cycle, compared once ---
+    /// A hard link back to an ancestor is a cycle, compared once ---
     /// the comparison of a self-cycle with itself recursed until the stack
     /// overflowed.
     #[test]
-    fn f13_s14_4_a_cycle_is_compared_once() {
+    fn s14_4_a_cycle_is_compared_once() {
         let dir = tempfile::tempdir().unwrap();
         let cyclic = |file: &hdf5::File| {
             file.link_hard("/", "loop").unwrap();
@@ -641,9 +641,9 @@ mod tests {
         assert!(found.iter().any(|d| d.starts_with("/images/self")), "{found:?}");
     }
 
-    /// F13: an alias and a duplicate of the same bytes are different graphs.
+    /// An alias and a duplicate of the same bytes are different graphs.
     #[test]
-    fn f13_s13_2_an_alias_is_not_a_duplicate() {
+    fn s13_2_an_alias_is_not_a_duplicate() {
         let dir = tempfile::tempdir().unwrap();
         let alias = tree(&dir.path().join("alias.h5"), |file| file.link_hard("/images/CT", "zzz").unwrap());
         let copy = tree(&dir.path().join("copy.h5"), |file| {
@@ -655,10 +655,10 @@ mod tests {
         assert!(subtrees_identical(&alias.as_group().unwrap(), &again.as_group().unwrap()).unwrap().is_empty());
     }
 
-    /// F13: a soft link is compared by the path it holds, whether it closes a
+    /// A soft link is compared by the path it holds, whether it closes a
     /// cycle, dangles or names a dataset, and never followed.
     #[test]
-    fn f13_soft_links_compare_by_target() {
+    fn s2_2_soft_links_compare_by_target() {
         let dir = tempfile::tempdir().unwrap();
         let soft = |target: &'static str| {
             move |file: &hdf5::File| {
@@ -704,11 +704,11 @@ mod tests {
         unbound(&file.as_group().unwrap()).unwrap().into_iter().map(|u| (u.path, u.binding)).collect()
     }
 
-    /// F01: a line binds bytes to the path it names.  An alias sorting before
+    /// A line binds bytes to the path it names.  An alias sorting before
     /// `images/` holds the image's line, so `images/CT` is a name no line
     /// binds --- it could be relinked to other covered bytes, changing no line.
     #[test]
-    fn f01_s13_2_an_earlier_alias_leaves_the_name_unbound() {
+    fn s13_2_an_earlier_alias_leaves_the_name_unbound() {
         let dir = tempfile::tempdir().unwrap();
         let file = stamped(&dir.path().join("a.h5"), |file| file.link_hard("/images/CT", "aaa").unwrap());
         assert_eq!(bindings(&file), vec![("images/CT".into(), Binding::Elsewhere { first: Some("aaa".into()) })]);
@@ -717,11 +717,11 @@ mod tests {
         assert_eq!(bindings(&file), vec![]);
     }
 
-    /// F01: inside an attested group every link is judged --- a second hard
+    /// Inside an attested group every link is judged --- a second hard
     /// link, a soft link, an external link --- and an undigested dataset at
     /// its own path is told apart from all of them.
     #[test]
-    fn f01_s13_2_every_link_through_an_attested_group_is_judged() {
+    fn s13_2_every_link_through_an_attested_group_is_judged() {
         let dir = tempfile::tempdir().unwrap();
         let other = dir.path().join("other.h5");
         tree(&other, |_| {});
@@ -744,10 +744,10 @@ mod tests {
         );
     }
 
-    /// F01: a group reached a second time --- a cycle, or an alias of a group
+    /// A group reached a second time --- a cycle, or an alias of a group
     /// --- is one finding, and is not walked again.
     #[test]
-    fn f01_s13_2_a_group_reached_twice_is_one_finding() {
+    fn s13_2_a_group_reached_twice_is_one_finding() {
         let dir = tempfile::tempdir().unwrap();
         let file = stamped(&dir.path().join("cycle.h5"), |file| {
             file.group("images").unwrap().link_hard("/images", "self").unwrap();
@@ -762,11 +762,11 @@ mod tests {
         );
     }
 
-    /// B03 stays E702: a digest on an object no line lists --- reached first
-    /// through `index/`, which sorts before `transforms/` --- is a claim the
+    /// A digest on an object no line lists --- reached first through
+    /// `index/`, which sorts before `transforms/` --- stays E702: a claim the
     /// root does not make.
     #[test]
-    fn b03_s13_2_a_digest_no_line_lists_is_unlisted() {
+    fn s13_2_a_digest_no_line_lists_is_unlisted() {
         let dir = tempfile::tempdir().unwrap();
         let file = stamped(&dir.path().join("index.h5"), |file| {
             let t = file.create_group("transforms").unwrap().create_group("t").unwrap();

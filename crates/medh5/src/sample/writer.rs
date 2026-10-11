@@ -214,8 +214,7 @@ pub fn amend(path: &Path, codec: Option<&str>) -> Result<SampleWriter> {
 /// [`amend`], writing the result to `out` and leaving the source's top-level
 /// members named in `without` behind.  What is left behind is never copied,
 /// so no byte of it reaches `out` --- where copying the file and deleting
-/// the group left every deleted byte in it (F08 of the round-4 audit).  The
-/// source is only read.
+/// the group left every deleted byte in it.  The source is only read.
 pub fn amend_into(path: &Path, out: &Path, codec: Option<&str>, without: &[&str]) -> Result<SampleWriter> {
     let source = open_read(path)?;
     let version = require_major(&source, path)?;
@@ -407,7 +406,7 @@ impl SampleWriter {
         // The source's graph comes across whole, as one copy: a hard link
         // between two of its groups stays one object, where copying group by
         // group made it two --- a new dataset line, so a no-op amend changed
-        // the `content_id` (F11 of the round-4 audit).  `meta` is written at
+        // the `content_id`.  `meta` is written at
         // commit; the groups a new sample starts with give way to the
         // source's.
         for name in ["grids", "images", "annotations"] {

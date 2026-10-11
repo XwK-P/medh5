@@ -228,7 +228,7 @@ fn physical_memory() -> Option<usize> {
 /// A file can declare a dataset of any extent and store none of it --- an
 /// unallocated chunk reads as the fill value --- so a 10 KiB file asked the
 /// allocator for 2**63 bytes, which panicked (`capacity overflow`), or for
-/// 9 TB, which aborted the process (N07 of the 2.0 re-audit).  The size is
+/// 9 TB, which aborted the process.  The size is
 /// computed with checked arithmetic, a buffer larger than the machine's
 /// memory is refused outright --- where the system overcommits (macOS, say)
 /// reserving one succeeds, and filling it is what kills the process --- and
@@ -660,7 +660,7 @@ pub fn read_stored_strings(ds: &hdf5::Dataset) -> Result<Vec<Vec<u8>>> {
 /// manifest).
 ///
 /// One string, so a dataset of any other shape is refused rather than read
-/// whole and cut to its first element (N12 of the 2.0 re-audit).
+/// whole and cut to its first element.
 pub fn read_scalar_string(ds: &hdf5::Dataset) -> Result<String> {
     if !ds.is_scalar() {
         return Err(Error::Value(format!(
@@ -959,12 +959,12 @@ mod tests {
         (dir, file, ds)
     }
 
-    /// B01: both writers hand HDF5 a buffer through `H5S_ALL`, which reads one
+    /// Both writers hand HDF5 a buffer through `H5S_ALL`, which reads one
     /// element per element of the dataset whatever the buffer holds.  Fewer
     /// values read past the buffer (none at all was a segfault); more were
     /// silently dropped.
     #[test]
-    fn b01_fixed_strings_take_one_value_per_element() {
+    fn s2_5_fixed_strings_take_one_value_per_element() {
         let (_dir, _file, ds) = fixed(3);
         let values: Vec<String> = ["a", "bb", "ccc", "d"].iter().map(|s| s.to_string()).collect();
         for wrong in [&values[..0], &values[..1], &values[..]] {
@@ -976,9 +976,9 @@ mod tests {
         assert_eq!(read_strings(&ds).unwrap(), values[..3]);
     }
 
-    /// B01: the element count is checked against a dataset of strings only.
+    /// The element count is checked against a dataset of strings only.
     #[test]
-    fn b01_only_strings_are_rewritten_as_strings() {
+    fn s2_5_only_strings_are_rewritten_as_strings() {
         let dir = tempfile::tempdir().unwrap();
         let file = hdf5::File::create(dir.path().join("n.h5")).unwrap();
         let ds = file.new_dataset::<u8>().shape([1]).create("n").unwrap();
@@ -989,9 +989,9 @@ mod tests {
     /// A read is refused before anything is reserved when it overflows or
     /// exceeds the machine's memory: where the system overcommits, a
     /// reservation of terabytes succeeds and filling it killed the process
-    /// (N07 of the 2.0 re-audit, on macOS).
+    /// (on macOS).
     #[test]
-    fn n07_a_read_no_machine_can_hold_is_refused_before_it_is_reserved() {
+    fn s14_5_a_read_no_machine_can_hold_is_refused_before_it_is_reserved() {
         assert!(holdable(&[4, 4], 8));
         assert!(holdable(&[0, usize::MAX], 8), "empty, whatever the other extents");
         assert!(!holdable(&[usize::MAX, 2], 8), "overflows");
@@ -1001,11 +1001,11 @@ mod tests {
         }
     }
 
-    /// N12: a string read is sized as a numeric one.  Its buffer was
+    /// A string read is sized as a numeric one.  Its buffer was
     /// `vec![0; width * n]`, unchecked: 2**59 strings of 16 bytes, declared
     /// and never stored, panicked on a capacity overflow.
     #[test]
-    fn n12_a_string_read_no_machine_can_hold_is_refused() {
+    fn s14_5_a_string_read_no_machine_can_hold_is_refused() {
         let dir = tempfile::tempdir().unwrap();
         let file = hdf5::File::create(dir.path().join("big.h5")).unwrap();
         let fixed = file
@@ -1079,10 +1079,10 @@ mod tests {
         assert!(vlen_text_bytes(&vlen, None).unwrap() >= 64 * 4000);
     }
 
-    /// F10: a whole read is budgeted by what it decodes to, not by its stored
+    /// A whole read is budgeted by what it decodes to, not by its stored
     /// bytes alone: many elements may name one stored string.
     #[test]
-    fn f10_a_whole_read_counts_what_it_decodes_to() {
+    fn s14_5_a_whole_read_counts_what_it_decodes_to() {
         assert_eq!(decoded_bytes(10, Some(1), 0), Some(10 * (STRING_COST + 2)));
         assert_eq!(decoded_bytes(10, None, 100), Some(10 * (STRING_COST + 8) + 200));
         assert_eq!(decoded_bytes(usize::MAX, Some(1), 0), None);
