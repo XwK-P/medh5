@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import h5py
@@ -60,6 +61,22 @@ class TestPack:
         path = pack(members, tmp_path / f"k{SUFFIX}", keys=["a", "b.1", "c-2"])
         with open_collection(path) as collection:
             assert list(collection) == ["a", "b.1", "c-2"]
+
+    def test_S2_2_a_shard_never_replaces_one_of_its_sources(self, tmp_path, members):
+        """Packing into a source's own path replaced that sample with the
+        collection, and the sample was gone."""
+        with medh5.open(members[1]) as sample:
+            before = sample.content_id
+        targets = [members[1]]
+        if os.name == "posix":
+            link = tmp_path / "link.medh5"
+            link.symlink_to(members[1])
+            targets.append(link)
+        for target in targets:
+            with pytest.raises(MEDH5ValidationError, match="one of the samples"):
+                pack(members, target)
+        with medh5.open(members[1]) as sample:
+            assert sample.content_id == before
 
     def test_duplicate_keys_are_refused(self, tmp_path, members):
         with pytest.raises(MEDH5ValidationError) as exc:

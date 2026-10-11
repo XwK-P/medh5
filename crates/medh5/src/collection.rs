@@ -264,11 +264,32 @@ pub(crate) fn copy_root(src: &hdf5::Group, dst: &hdf5::Group) -> Result<()> {
     Ok(())
 }
 
+/// Whether two paths name one file: the same device and inode on POSIX
+/// (a symbolic or hard link included), the same canonical path elsewhere.
+fn same_file(a: &Path, b: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        matches!((std::fs::metadata(a), std::fs::metadata(b)), (Ok(x), Ok(y)) if (x.dev(), x.ino()) == (y.dev(), y.ino()))
+    }
+    #[cfg(not(unix))]
+    {
+        matches!((std::fs::canonicalize(a), std::fs::canonicalize(b)), (Ok(x), Ok(y)) if x == y)
+    }
+}
+
 /// Copy sample files into one collection shard (§2.2); chunks move as raw
-/// bytes, so `unpack(pack(x)) == x` down to the compressed bytes.
+/// bytes, so `unpack(pack(x)) == x` down to the compressed bytes.  `out` may
+/// not be one of the sources: the shard would replace that sample.
 pub fn pack(sources: &[&Path], out: &Path, keys: Option<&[String]>) -> Result<PathBuf> {
     if sources.is_empty() {
         return Err(Error::coded("E008", "pack needs at least one sample file"));
+    }
+    if let Some(source) = sources.iter().find(|s| same_file(s, out)) {
+        return Err(Error::invalid(format!(
+            "{} is one of the samples being packed; write the shard to a new path",
+            repr_str(&source.to_string_lossy())
+        )));
     }
     if let Some(k) = keys {
         if k.len() != sources.len() {
