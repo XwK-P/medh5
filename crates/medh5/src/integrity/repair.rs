@@ -13,7 +13,6 @@ use std::path::Path;
 use serde_json::{json, Map, Value};
 
 use super::{stale_index_entries, stamp_digests};
-use crate::json::repr_str;
 use crate::sample::{amend, open_sample};
 use crate::{Error, Result, VERSION};
 
@@ -230,9 +229,4 @@ pub fn fix(path: &Path, options: &FixOptions) -> Result<Repair> {
 /// Repair many files.
 pub fn fix_paths(paths: &[&Path], options: &FixOptions) -> Result<Vec<Repair>> {
     paths.iter().map(|p| fix(p, options)).collect()
-}
-
-/// `repr()` helper kept for callers formatting a path the Python way.
-pub fn shown(path: &Path) -> String {
-    repr_str(&path.to_string_lossy())
 }

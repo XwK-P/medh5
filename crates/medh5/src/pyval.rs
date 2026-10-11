@@ -125,7 +125,8 @@ pub fn float_number(value: f64) -> Number {
     Number::from_f64(value).unwrap_or_else(|| Number::from(0))
 }
 
-/// Python's truthiness of a JSON value.
+/// Python's truthiness of a JSON value: `None`, `False`, `0`, `""`, `[]` and
+/// `{}` are false.
 pub fn truthy(value: &Value) -> bool {
     match value {
         Value::Null => false,

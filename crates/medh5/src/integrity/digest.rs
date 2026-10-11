@@ -25,7 +25,7 @@ use crate::array::{Index, NdArray, Slice};
 use crate::digest::{Hasher, DEFAULT_ALGO};
 use crate::h5::attrs::{self, AttrValue};
 use crate::h5::data::{self, Kind};
-use crate::h5::ops::{self, Node};
+use crate::h5::ops;
 use crate::{Error, Result};
 
 /// Slab size for streaming a large dataset through the hash.
@@ -231,11 +231,7 @@ fn for_each_block(
 /// Digests hash the object path, so it must be *sample-root relative*: a
 /// sample extracted from a collection digests identically standalone (§2.2).
 pub fn relative_path(name: &str, root: &hdf5::Group) -> String {
-    let base = format!("{}/", root.name().trim_end_matches('/'));
-    match name.strip_prefix(&base) {
-        Some(rest) => rest.to_string(),
-        None => name.trim_start_matches('/').to_string(),
-    }
+    crate::h5::relative_name(name, &root.name())
 }
 
 /// Canonical JSON over an object's spec-defined attributes (§13.2): sorted
@@ -396,11 +392,6 @@ pub fn compute_content_id(
 /// The digest algorithm a root declares, or the default.
 pub fn root_algo(root: &hdf5::Group) -> Result<String> {
     Ok(attrs::get_str(root, "digest_algo")?.unwrap_or_else(|| DEFAULT_ALGO.to_string()))
-}
-
-/// Visit helper re-exported for callers that walk a sample.
-pub fn walk(root: &hdf5::Group, f: &mut dyn FnMut(&str, &Node) -> Result<bool>) -> Result<()> {
-    ops::visit(root, f)
 }
 
 #[cfg(test)]
