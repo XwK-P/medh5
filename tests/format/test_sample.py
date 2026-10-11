@@ -27,7 +27,7 @@ from medh5.errors import (
 )
 from medh5.validate import validate_file
 from tests.helpers import SHAPE, as_str, encode_attr, str_dtype, write_sample
-from tests.kits import Flat, Hierarchy, Organs
+from tests.kits import Flat, Framed, Hierarchy, Organs
 
 # Windows keeps only a read-only bit, so a mode round trip cannot be asserted
 # there. The Linux matrix holds these; the Windows job exists for the replace
@@ -1191,6 +1191,322 @@ class TestDocument:
             ) as caught:
                 _ = sample.document
             assert caught.value.code == "E005"
+
+
+class TestProjectionRead:
+    """1.1 §2.2: a later minor's file is read as this engine's projection.  An
+    object holding a value only that minor defines failed the whole listing it
+    was in --- one grid's axis kind every image and annotation, one
+    annotation's task every annotation --- where the validator read past it
+    (W913).  It is left out, with what depends on it, and a lookup of it is
+    W913, saying why."""
+
+    LISTINGS = ("grids", "images", "annotations", "transforms", "index")
+
+    @staticmethod
+    def _sample(path: Path) -> Path:
+        """On grid `g` (frame 1.2.3.4): image `CT`, the indexed segmentation
+        `seg`, boxes `found`, classification `graded` and the field `warp`; on
+        grid `h` (frame 5.6): image `MR` and segmentation `segh`; and the affine
+        `rigid` from `h`'s frame to `g`'s."""
+        mask = np.zeros(Framed.SHAPE, bool)
+        mask[1:4, 2:6, 2:6] = True
+        with Framed.writer(path) as w:
+            w.add_grid(
+                "h", shape=Framed.SHAPE, spacing=(2.0, 1.0, 1.0), frame_uid="5.6"
+            )
+            w.add_image("MR", np.zeros(Framed.SHAPE, np.int16), grid="h", modality="MR")
+            w.add_segmentation("seg", grid="g", masks={1: mask})
+            w.add_segmentation("segh", grid="h", masks={1: mask})
+            w.add_boxes("found", [Framed.box(1.5, 2.5)], [1], grid="g")
+            w.add_classification("graded", {1: 1.0}, grid="g")
+            w.add_transform(
+                "warp",
+                kind="displacement",
+                from_frame="1.2.3.4",
+                to_frame="5.6",
+                field=np.zeros((3, *Framed.SHAPE), np.float32),
+                field_grid="g",
+            )
+            w.add_transform(
+                "rigid",
+                kind="affine",
+                from_frame="5.6",
+                to_frame="1.2.3.4",
+                matrix=np.eye(4),
+            )
+            w.build_index(["seg"])
+        return path
+
+    @staticmethod
+    def _edited(
+        path: Path, node: str, attribute: str, value: Any, version: str = "1.2"
+    ) -> Path:
+        """*node*'s *attribute* set to *value*, and the root at *version*."""
+        with h5py.File(path, "r+") as handle:
+            handle[node].attrs[attribute] = encode_attr(value)
+            handle.attrs["medh5_version"] = encode_attr(version)
+        return path
+
+    def _listed(self, sample: Any) -> dict[str, list[str]]:
+        return {name: sorted(getattr(sample, name)) for name in self.LISTINGS}
+
+    def test_S2_2_a_grid_of_a_later_axis_kind_is_left_out_with_what_lies_on_it(
+        self, tmp_path
+    ):
+        path = self._edited(
+            self._sample(tmp_path / "s.medh5"),
+            "grids/g",
+            "axis_kinds",
+            ["depth", "spatial", "spatial"],
+        )
+        with medh5.open(path) as sample:
+            assert self._listed(sample) == {
+                "grids": ["h"],
+                "images": ["MR"],
+                "annotations": ["segh"],
+                "transforms": ["rigid"],
+                "index": [],
+            }
+            assert sample.images["MR"].read().shape == Framed.SHAPE
+            assert sample.annotations["segh"].dense().any()
+            assert "g" not in sample.grids and sample.grids.get("g") is None
+            assert "CT" not in sample.images and sample.images.get("CT") is None
+            with pytest.raises(MEDH5ValidationError, match="axis kind 'depth'") as e:
+                _ = sample.grids["g"]
+            assert e.value.code == "W913" and "1.1 §2.2" in str(e.value)
+            lookups = [
+                (sample.images, "CT"),
+                (sample.annotations, "seg"),
+                (sample.annotations, "found"),
+                (sample.transforms, "warp"),
+                (sample.index, "seg"),
+            ]
+            for mapping, key in lookups:
+                with pytest.raises(MEDH5ValidationError, match="grid 'g'") as e:
+                    _ = mapping[key]
+                assert e.value.code == "W913", key
+            # Any other name is still the `KeyError` it was.
+            with pytest.raises(KeyError):
+                _ = sample.grids["nope"]
+            assert sorted(sample.summary()["left_out"]) == [
+                "annotations/found",
+                "annotations/graded",
+                "annotations/seg",
+                "grids/g",
+                "images/CT",
+                "index/seg",
+                "transforms/warp",
+            ]
+        assert validate_file(path).ok
+
+    @pytest.mark.parametrize(
+        ("ann_id", "attribute", "value"),
+        [
+            ("segh", "kind", "sdf"),
+            ("segh", "kind", "rle"),
+            ("segh", "task", "tracking"),
+            ("segh", "closure", "transitive"),
+            ("found", "space", "patient"),
+            ("graded", "scope", "lesion_pair"),
+        ],
+    )
+    def test_S2_2_an_annotation_of_a_later_value_is_left_out_alone(
+        self, tmp_path, ann_id, attribute, value
+    ):
+        path = self._edited(
+            self._sample(tmp_path / "s.medh5"),
+            f"annotations/{ann_id}",
+            attribute,
+            value,
+        )
+        with medh5.open(path) as sample:
+            known = {"seg", "segh", "found", "graded"} - {ann_id}
+            assert sorted(sample.annotations) == sorted(known)
+            assert sample.annotations["seg"].dense().any()
+            assert sorted(sample.index) == ["seg"]
+            with pytest.raises(MEDH5ValidationError, match=f"'{value}'") as e:
+                _ = sample.annotations[ann_id]
+            assert e.value.code == "W913"
+        assert validate_file(path).ok
+
+    @pytest.mark.parametrize(
+        ("transform_id", "attribute", "value"),
+        [("rigid", "kind", "similarity"), ("warp", "vector_space", "material")],
+    )
+    def test_S2_2_a_transform_of_a_later_value_is_left_out_alone(
+        self, tmp_path, transform_id, attribute, value
+    ):
+        path = self._edited(
+            self._sample(tmp_path / "s.medh5"),
+            f"transforms/{transform_id}",
+            attribute,
+            value,
+        )
+        with medh5.open(path) as sample:
+            (other,) = {"rigid", "warp"} - {transform_id}
+            assert sorted(sample.transforms) == [other]
+            moved = sample.transforms[other].transform_points(np.zeros((1, 3)))
+            assert moved.shape == (1, 3)
+            with pytest.raises(MEDH5ValidationError, match=f"'{value}'") as e:
+                _ = sample.transforms[transform_id]
+            assert e.value.code == "W913"
+        assert validate_file(path).ok
+
+    @staticmethod
+    def _chained(path: Path) -> Path:
+        """Frames 1, 2 and 3 on grids `a`, `b` and `c`; affines `ab` and `bc`
+        with their composite `ac`, and `ba`, the inverse `ab` names."""
+        with medh5.create(path, codec="portable") as w:
+            for gid, frame in (("a", "1"), ("b", "2"), ("c", "3")):
+                w.add_grid(
+                    gid, shape=(4, 6, 6), spacing=(1.0, 1.0, 1.0), frame_uid=frame
+                )
+            w.add_image("CT", np.zeros((4, 6, 6), np.int16), grid="a", modality="CT")
+            for tid, source, target in (
+                ("ab", "1", "2"),
+                ("ba", "2", "1"),
+                ("bc", "2", "3"),
+            ):
+                inverse = {"ab": "ba", "ba": "ab"}.get(tid)
+                w.add_transform(
+                    tid,
+                    kind="affine",
+                    from_frame=source,
+                    to_frame=target,
+                    matrix=np.eye(4),
+                    inverse_id=inverse,
+                )
+            w.add_transform(
+                "ac",
+                kind="composite",
+                from_frame="1",
+                to_frame="3",
+                components=["ab", "bc"],
+            )
+        return path
+
+    def test_S2_2_a_composite_of_a_step_left_out_is_left_out(self, tmp_path):
+        path = self._edited(
+            self._chained(tmp_path / "c.medh5"), "transforms/bc", "kind", "similarity"
+        )
+        with medh5.open(path) as sample:
+            assert sorted(sample.transforms) == ["ab", "ba"]
+            with pytest.raises(MEDH5ValidationError, match="transform 'bc'") as e:
+                _ = sample.transforms["ac"]
+            assert e.value.code == "W913"
+        assert validate_file(path).ok
+
+    def test_S2_2_a_stored_inverse_left_out_is_no_stored_inverse(self, tmp_path):
+        """`inverse_id` resolves among the transforms the projection reads: the
+        partner left out, `ab` has no stored inverse, as with an `inverse_id`
+        naming nothing, and is inverted as an affine with none is."""
+        path = self._edited(
+            self._chained(tmp_path / "c.medh5"), "transforms/ba", "kind", "similarity"
+        )
+        with medh5.open(path) as sample:
+            assert sorted(sample.transforms) == ["ab", "ac", "bc"]
+            assert sample.transforms["ab"].inverse() is None
+            back = sample.transform_between("b", "a")
+            assert back is not None and back.to_frame == "1"
+        found = validate_file(path).diagnostics
+        assert ("W913", "/transforms/ba") in {(d.code, d.location) for d in found}
+
+    @pytest.mark.parametrize(
+        ("node", "attribute", "value", "code", "listing"),
+        [
+            ("grids/g", "axis_kinds", ["depth", "spatial", "spatial"], "E110", "grids"),
+            ("annotations/segh", "kind", "sdf", "E401", "annotations"),
+            ("annotations/segh", "task", "tracking", "E412", "annotations"),
+            ("annotations/segh", "closure", "transitive", "E412", "annotations"),
+            ("transforms/rigid", "kind", "similarity", "E502", "transforms"),
+        ],
+    )
+    def test_S2_2_a_version_this_engine_implements_is_read_as_before(
+        self, tmp_path, node, attribute, value, code, listing
+    ):
+        path = self._edited(
+            self._sample(tmp_path / "s.medh5"), node, attribute, value, version="1.1"
+        )
+        with medh5.open(path) as sample:
+            with pytest.raises(MEDH5ValidationError) as e:
+                _ = getattr(sample, listing)
+            assert e.value.code == code
+
+    @pytest.mark.parametrize(
+        ("node", "edits", "code"),
+        [
+            # A grid's shape is read before its axis kinds,
+            ("grids/g", {"axis_kinds": ["depth", "spatial"]}, "E109"),
+            # boxes' classes before the space they are in is used,
+            (
+                "annotations/found",
+                {"space": "patient", "annotated_class_ids": [1, 2]},
+                "E403",
+            ),
+            # and a field's frames before its vector space is.
+            (
+                "transforms/warp",
+                {"vector_space": "material", "from_frame": None},
+                "E502",
+            ),
+        ],
+    )
+    def test_S2_2_a_defect_met_before_the_later_value_is_the_error_it_was(
+        self, tmp_path, node, edits, code
+    ):
+        """An object is read as far as a file of 1.1 is read before the value
+        is met: what is wrong with it before then fails the listing, with the
+        code it has in a file of any version."""
+        path = self._sample(tmp_path / "s.medh5")
+        listing = node.split("/")[0]
+        for version in ("1.1", "1.2"):
+            with h5py.File(path, "r+") as handle:
+                for name, value in edits.items():
+                    if value is None:
+                        handle[node].attrs.pop(name, None)
+                    else:
+                        handle[node].attrs[name] = encode_attr(value)
+                handle.attrs["medh5_version"] = encode_attr(version)
+            with medh5.open(path) as sample:
+                with pytest.raises(MEDH5ValidationError) as e:
+                    _ = getattr(sample, listing)
+                assert e.value.code == code, version
+
+    @pytest.mark.parametrize(
+        ("node", "attribute", "value"),
+        [
+            ("grids/g", "units", "cm"),
+            ("grids/g", "time_units", "h"),
+            ("images/MR", "value_type", "label"),
+        ],
+    )
+    def test_S2_2_a_value_the_reader_carries_as_written_leaves_nothing_out(
+        self, tmp_path, node, attribute, value
+    ):
+        path = self._edited(self._sample(tmp_path / "s.medh5"), node, attribute, value)
+        with medh5.open(path) as sample:
+            assert self._listed(sample)["images"] == ["CT", "MR"]
+            assert len(sample.annotations) == 4
+            assert "left_out" not in sample.summary()
+
+    def test_S2_2_a_member_that_lost_its_version_is_read_as_before(self, tmp_path):
+        """A collection member declaring no version is read as the oldest
+        (1.1 §8), no later minor's: its listings are a member's with its
+        version, and a missing key is the `KeyError` it was."""
+        from medh5.collection import open_collection, pack
+
+        members = [self._sample(tmp_path / f"{name}.medh5") for name in ("a", "b")]
+        shard = tmp_path / "s.medh5c"
+        pack(members, shard)
+        with h5py.File(shard, "r+") as handle:
+            del handle["samples/a"].attrs["medh5_version"]
+        with open_collection(shard) as collection:
+            lost = collection["a"]
+            assert self._listed(lost) == self._listed(collection["b"])
+            assert type(lost.grids) is dict
+            with pytest.raises(KeyError):
+                _ = lost.annotations["nope"]
 
 
 class TestImplicitTimepoint:

@@ -25,8 +25,9 @@ the format engine's ``SampleWriter``::
 
 from __future__ import annotations
 
+import contextlib
 import os
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -72,22 +73,49 @@ amend = _core.amend
 # --------------------------------------------------------------------------
 
 
+def _left_out(lookup: Callable[[str], Any] | None, key: object) -> None:
+    """Raise the engine's W913 when *key* names an object a later minor's
+    file holds that this engine's projection leaves out (1.1 §2.2); return
+    when the key is simply absent."""
+    if lookup is not None and isinstance(key, str):
+        with contextlib.suppress(KeyError):
+            lookup(key)
+
+
 class _Collection(Mapping[str, Any]):
-    """A read-only mapping with a helpful ``KeyError``."""
+    """A read-only mapping with a helpful ``KeyError``.
 
-    __slots__ = ("_items", "_what")
+    In a later minor's file it holds what this engine's projection reads
+    (1.1 §2.2): an object the projection leaves out is not in it, and looking
+    one up by name raises the engine's W913 error, which says why.
+    """
 
-    def __init__(self, what: str, items: Mapping[str, Any]) -> None:
+    __slots__ = ("_items", "_lookup", "_what")
+
+    def __init__(
+        self,
+        what: str,
+        items: Mapping[str, Any],
+        lookup: Callable[[str], Any] | None = None,
+    ) -> None:
         self._what = what
         self._items = dict(items)
+        self._lookup = lookup
 
     def __getitem__(self, key: str) -> Any:
         try:
             return self._items[key]
         except KeyError:
+            _left_out(self._lookup, key)
             raise KeyError(
                 f"no {self._what} {key!r}; available: {sorted(self._items)}"
             ) from None
+
+    def __contains__(self, key: object) -> bool:
+        return key in self._items
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self._items.get(key, default)
 
     def __iter__(self) -> Iterator[str]:
         return iter(self._items)
@@ -97,6 +125,27 @@ class _Collection(Mapping[str, Any]):
 
     def __repr__(self) -> str:
         return f"<{self._what}s: {sorted(self._items)}>"
+
+
+class _Listed(dict[str, Any]):
+    """A ``dict`` of what a later minor's file lists: what this engine's
+    projection reads (1.1 §2.2).  Looking up an object the projection leaves
+    out raises the engine's W913 error, which says why; any other missing key
+    is the ``KeyError`` a ``dict`` raises.  A copy is a plain ``dict``.
+    """
+
+    __slots__ = ("_lookup",)
+
+    def __init__(self, items: Mapping[str, Any], lookup: Callable[[str], Any]) -> None:
+        super().__init__(items)
+        self._lookup = lookup
+
+    def __missing__(self, key: str) -> Any:
+        _left_out(self._lookup, key)
+        raise KeyError(key)
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        return (dict, (dict(self),))
 
 
 class ImageCollection(_Collection):
@@ -185,7 +234,16 @@ class TimepointView:
 
 
 class Sample:
-    """A read-only view of one sample root (a file, or a collection member)."""
+    """A read-only view of one sample root (a file, or a collection member).
+
+    A file of a later minor version is read as this engine's projection
+    (``support == "projection"``, 1.1 §2.2): an object holding a value only
+    that minor defines --- a grid with an axis kind, an annotation or
+    transform of a kind this engine does not know --- is left out of
+    :attr:`grids`, :attr:`images`, :attr:`annotations`, :attr:`transforms` and
+    :attr:`index`, with what depends on it, and looking it up by name raises
+    :class:`~medh5.errors.MEDH5ValidationError` coded W913, which says why.
+    """
 
     __slots__ = (
         "_annotations",
@@ -321,6 +379,25 @@ class Sample:
 
     # -- objects -----------------------------------------------------------
 
+    def _later(self, lookup: Callable[[str], Any]) -> Callable[[str], Any] | None:
+        """The engine's lookup, for a mapping of a later minor's file: a key
+        its projection leaves out raises the W913 that says why.  A sample
+        declaring no version --- a collection member that lost it, read as
+        the oldest (1.1 §8) --- is no later minor's."""
+        try:
+            support = self._handle.support
+        except MEDH5ValidationError:
+            return None
+        return lookup if support == "projection" else None
+
+    def _listed(
+        self, items: Mapping[str, Any], lookup: Callable[[str], Any]
+    ) -> dict[str, Any]:
+        """*items* as a ``dict``; in a later minor's file, one whose lookup of
+        a key its projection leaves out raises the W913 that says why."""
+        later = self._later(lookup)
+        return dict(items) if later is None else _Listed(items, later)
+
     @property
     def grids(self) -> dict[str, Grid]:
         """The sample's grids, with §3.7's implicit timepoint resolved.
@@ -330,7 +407,7 @@ class Sample:
         one, and every timepoint-aware reader takes its answer from here.
         """
         if self._grids is None:
-            self._grids = dict(self._handle.grids())
+            self._grids = self._listed(self._handle.grids(), self._handle.grid)
         return self._grids
 
     @property
@@ -348,6 +425,7 @@ class Sample:
                     name: Image(self._handle.image(name))
                     for name in sorted(self._handle.image_ids())
                 },
+                self._later(self._handle.image),
             )
         return self._images
 
@@ -360,6 +438,7 @@ class Sample:
                     name: open_annotation(self._handle.annotation(name))
                     for name in sorted(self._handle.annotation_ids())
                 },
+                self._later(self._handle.annotation),
             )
         return self._annotations
 
@@ -390,9 +469,10 @@ class Sample:
     @property
     def index(self) -> dict[str, SamplingIndex]:
         if self._index is None:
-            self._index = {
-                name: self._handle.index(name) for name in self._handle.index_ids()
-            }
+            self._index = self._listed(
+                {name: self._handle.index(name) for name in self._handle.index_ids()},
+                self._handle.index,
+            )
         return self._index
 
     @property
@@ -410,6 +490,7 @@ class Sample:
                     name: wrap_transform(self._handle.transform(name))
                     for name in self._handle.transform_ids()
                 },
+                self._later(self._handle.transform),
             )
         return self._transforms
 

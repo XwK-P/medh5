@@ -1444,6 +1444,11 @@ impl SampleHandle {
         }
         Ok(out)
     }
+    /// One grid: `KeyError`, or W913 for one a later minor's file holds that
+    /// this engine's projection leaves out (1.1 §2.2).
+    fn grid(&self, grid_id: &str) -> R<Grid> {
+        Ok(Grid::wrap(self.sample()?.grid(grid_id)?.clone()))
+    }
     fn reference_grid(&self) -> R<Grid> {
         Ok(Grid::wrap(self.sample()?.reference_grid()?))
     }
@@ -1486,10 +1491,7 @@ impl SampleHandle {
     }
     fn index(&self, ann_id: &str) -> R<IndexHandle> {
         let sample = self.sample()?;
-        let found = sample
-            .index()?
-            .get(ann_id)
-            .ok_or_else(|| medh5::Error::Key(format!("no index entry {}", medh5::json::repr_str(ann_id))))?;
+        let found = sample.index_entry(ann_id)?;
         Ok(IndexHandle { inner: Arc::new(EngineIndex::new(&found.ann_id, found.group.clone())) })
     }
     fn fresh_indices(&self) -> R<Vec<String>> {
