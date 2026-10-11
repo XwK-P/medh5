@@ -794,8 +794,12 @@ class TestGrids:
             ("spacing", "abc", "E109"),
             ("spacing", np.array([np.nan, 1.0, 1.0]), "E104"),
             ("spacing", np.array([np.inf, 1.0, 1.0]), "E104"),
+            ("spacing", np.array([-np.inf, 1.0, 1.0]), "E104"),
             ("origin", np.array([np.nan, 0.0, 0.0]), "E109"),
+            ("origin", np.array([0.0, np.inf, 0.0]), "E109"),
+            ("origin", np.array([0.0, 0.0, -np.inf]), "E109"),
             ("shape", np.array([-4, 6, 6]), "E109"),
+            ("shape", np.array([2**62, 2**62, 2]), "E109"),
             ("units", "cm", "E109"),
             ("time_units", "h", "E109"),
             ("patch_hint", np.array([2, 2]), "E109"),
@@ -814,6 +818,17 @@ class TestGrids:
                 sample.grids["g"]
         except MEDH5ValidationError as refused:
             assert refused.code in found
+
+    def test_S3_2_a_shape_whose_voxels_cannot_be_counted_is_E109(self, tmp_path):
+        """Every count of a grid's voxels is a product of its extents, which
+        past a 64-bit count wrapped: 2**62 x 2**62 x 2 counted 0 voxels."""
+        path = core_sample(tmp_path / "g.medh5")
+        with h5py.File(path, "r+") as handle:
+            handle["grids/g"].attrs["shape"] = np.array([2**62, 2**62, 2])
+        report = validate_file(path, level="structural")
+        (found,) = [d for d in report.diagnostics if d.location == "/grids/g"]
+        assert found.code == "E109"
+        assert "more elements than a 64-bit count holds" in found.message
 
     def test_S3_2_a_nan_direction_is_not_orthonormal(self, tmp_path):
         """`f64::max` drops a NaN, so the residual read 0."""

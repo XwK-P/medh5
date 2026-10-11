@@ -71,6 +71,13 @@ fn check_grid(ctx: &Context, grid: &Node, name: &str, location: &str) -> Result<
     }
     if shape.iter().any(|s| *s <= 0) {
         out.push(ctx.err("E109", location, format!("shape {} must be positive", repr_int_tuple(&shape))));
+    } else if shape.iter().try_fold(1i64, |n, s| n.checked_mul(*s)).and_then(|n| usize::try_from(n).ok()).is_none() {
+        // Every count of the grid's voxels is a product of its extents.
+        out.push(ctx.err(
+            "E109",
+            location,
+            format!("shape {} has more elements than a 64-bit count holds", repr_int_tuple(&shape)),
+        ));
     }
     let mut unknown: Vec<&String> = kinds.iter().filter(|k| !AXIS_KINDS.contains(&k.as_str())).collect();
     unknown.sort();
@@ -115,11 +122,7 @@ fn check_grid(ctx: &Context, grid: &Node, name: &str, location: &str) -> Result<
         Some(spacing) => {
             entries("spacing", &spacing, &mut out);
             if spacing.iter().any(|v| !(v.is_finite() && *v > 0.0)) {
-                out.push(ctx.err(
-                    "E104",
-                    location,
-                    format!("spacing {} must be finite and strictly positive", float_list(&spacing)),
-                ));
+                out.push(ctx.err("E104", location, format!("spacing {} must be finite and > 0", float_list(&spacing))));
             }
         }
     }
