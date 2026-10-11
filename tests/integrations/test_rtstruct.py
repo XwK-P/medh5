@@ -455,6 +455,7 @@ class TestPatientCoordinates:
         with pytest.raises(MEDH5ValidationError, match="registration") as exc:
             self._exported(path, series["paths"], out)
         assert exc.value.code == "E414"
+        assert "frame_salt" not in str(exc.value), "no scrub wrote this frame"
         assert not out.exists(), "nothing is filed under the wrong frame"
 
     def test_S3_4_world_contours_are_judged_by_their_own_frame(self, tmp_path, series):
@@ -472,6 +473,8 @@ class TestPatientCoordinates:
     def test_S3_4_a_pseudonymised_frame_is_compared_through_its_salt(
         self, tmp_path, series
     ):
+        """Refused without its salt, the export said nothing of one, where the
+        SEG paths name it."""
         from medh5.curation.scrub import pseudonymise
 
         hidden = pseudonymise(series["frame_uid"], "s3cret")
@@ -479,6 +482,10 @@ class TestPatientCoordinates:
         with pytest.raises(MEDH5ValidationError) as exc:
             self._exported(path, series["paths"], tmp_path / "a.dcm")
         assert exc.value.code == "E414"
+        assert "frame_salt= (`--frame-salt` on the command line)" in str(exc.value)
+        with pytest.raises(MEDH5ValidationError) as exc:
+            self._exported(path, series["paths"], tmp_path / "a.dcm", frame_salt="no")
+        assert "frame_salt=" not in str(exc.value), "a salt was given: the wrong one"
         points, meta, _ = self._exported(
             path, series["paths"], tmp_path / "b.dcm", frame_salt="s3cret"
         )
@@ -653,8 +660,10 @@ class TestPatientCoordinates:
         assert frame == series["frame_uid"], "the frame the coordinates are in"
         assert report.of_kind("grid") and report.of_kind("frame")
 
-    def test_the_command_line_takes_the_frame_salt(self, tmp_path, series):
-        from medh5.cli import EXIT_OK, main
+    def test_S3_4_the_command_line_names_the_frame_salt_and_takes_it(
+        self, tmp_path, series, capsys
+    ):
+        from medh5.cli import EXIT_ERROR, EXIT_OK, main
         from medh5.curation.scrub import pseudonymise
 
         path = self._sample(
@@ -662,7 +671,9 @@ class TestPatientCoordinates:
         )
         argv = ["convert", "to-rtstruct", str(path), "rois"]
         sources = [arg for p in series["paths"] for arg in ("--source", p)]
-        assert main([*argv, str(tmp_path / "a.dcm"), *sources]) != EXIT_OK
+        assert main([*argv, str(tmp_path / "a.dcm"), *sources]) == EXIT_ERROR
+        err = capsys.readouterr().err
+        assert err.startswith("medh5: [E414]") and "--frame-salt" in err, err
         out = tmp_path / "b.dcm"
         salted = [*argv, str(out), *sources, "--frame-salt", "s3cret"]
         assert main(salted) == EXIT_OK

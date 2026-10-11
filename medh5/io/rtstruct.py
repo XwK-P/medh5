@@ -485,7 +485,7 @@ def to_rtstruct(
     """
     import medh5
     from medh5.io.dicom import _dcmread, require_pydicom
-    from medh5.io.dicom_seg import frames_agree
+    from medh5.io.dicom_seg import _salt_hint, frames_agree
 
     pydicom = require_pydicom()
     from pydicom.dataset import Dataset, FileMetaDataset
@@ -530,11 +530,14 @@ def to_rtstruct(
         )
         agree = frames_agree(frame_uid, stated, frame_salt)
         if agree is False:
+            hint = _salt_hint(
+                stated, frame_salt, "The annotation's", "the images' frame"
+            )
             raise MEDH5ValidationError(
                 f"annotation {ann_id!r} is in frame of reference {stated!r} and "
                 f"the source images in {frame_uid!r}: contours drawn in one frame "
                 "are not filed under another without a registration, which this "
-                "exporter does not apply",
+                f"exporter does not apply.{hint}",
                 code="E414",
             )
         if agree is None:

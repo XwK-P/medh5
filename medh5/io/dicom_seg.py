@@ -261,21 +261,29 @@ def _require_same_frame(
     """
     if frames_agree(frame, grid.frame_uid, salt) is not False:
         return
-    from medh5.curation.scrub import PSEUDONYM_PREFIX
-
-    hint = (
-        " The grid's frame is a `medh5 scrub` pseudonym: pass the scrub's salt "
-        "as frame_salt= (`--frame-salt` on the command line) to compare "
-        f"{source}'s frame as the scrub wrote it."
-        if str(grid.frame_uid).startswith(PSEUDONYM_PREFIX) and salt is None
-        else ""
-    )
+    hint = _salt_hint(grid.frame_uid, salt, "The grid's", f"{source}'s frame")
     raise MEDH5ValidationError(
         f"{source} was drawn in frame of reference {frame!r} and grid "
         f"{grid.grid_id!r} is in {grid.frame_uid!r}: equal geometry in two "
         "frames is no correspondence, and placing it there needs a "
         f"registration, which this importer does not apply.{hint}",
         code="E414",
+    )
+
+
+def _salt_hint(frame: str | None, salt: str | None, whose: str, compared: str) -> str:
+    """What a frame-of-reference refusal adds when *frame* --- *whose* frame
+    --- is a pseudonym ``medh5 scrub`` wrote and no *salt* was given: the
+    scrub's salt compares *compared* as the scrub wrote it.  Empty otherwise.
+    """
+    from medh5.curation.scrub import PSEUDONYM_PREFIX
+
+    if salt is not None or not str(frame).startswith(PSEUDONYM_PREFIX):
+        return ""
+    return (
+        f" {whose} frame is a `medh5 scrub` pseudonym: pass the scrub's salt "
+        "as frame_salt= (`--frame-salt` on the command line) to compare "
+        f"{compared} as the scrub wrote it."
     )
 
 
@@ -1037,15 +1045,7 @@ def _source_slices(
     if grid.frame_uid and not all(
         frames_agree(f, grid.frame_uid, salt) for f in frames
     ):
-        from medh5.curation.scrub import PSEUDONYM_PREFIX
-
-        hint = (
-            " The grid's frame is a `medh5 scrub` pseudonym: pass the scrub's "
-            "salt as frame_salt= (`--frame-salt` on the command line) to "
-            "compare the images' frame as the scrub wrote it."
-            if str(grid.frame_uid).startswith(PSEUDONYM_PREFIX) and salt is None
-            else ""
-        )
+        hint = _salt_hint(grid.frame_uid, salt, "The grid's", "the images' frame")
         raise MEDH5ValidationError(
             f"grid {grid.grid_id!r} is in frame {grid.frame_uid!r} and the source "
             f"images in {[f or None for f in frames]}; a segmentation is not "
