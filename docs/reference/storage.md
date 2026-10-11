@@ -166,9 +166,11 @@ $ medh5 fix case.medh5 --rewrite-digests --reason "rebuilt by an external tool"
 `os.replace` it into position on a clean exit. A file appears complete or not
 at all; an exception aborts and leaves nothing behind.
 
-`amend` is copy-on-write, and it copies through **every object it does not
-understand** — including ones written by a future minor version. Amending never
-silently drops what this reader cannot read.
+`amend` is copy-on-write, and it copies through **every object of its version
+it does not interpret**, extensions included, so amending never silently drops
+data. A file of a later minor version is read as a projection and is never
+amended: `amend`, `recompress` and `pack` refuse it (`MEDH5VersionError`,
+[1.1](../spec/medh5-1.1.md) §2.3).
 
 ## The sampling index
 

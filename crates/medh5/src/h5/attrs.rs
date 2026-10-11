@@ -704,9 +704,10 @@ pub fn require(obj: &hdf5::Location, name: &str, code: &str) -> Result<AttrValue
 
 /// Copy one attribute byte-for-byte, keeping its stored type and shape.
 ///
-/// An amend copies the root attributes it does not manage this way, so a
-/// value a later minor version wrote (§16) survives exactly as written ---
-/// an `int32` stays `int32`, a fixed-length string stays fixed-length.
+/// An amend copies the root attributes it does not manage this way, so an
+/// attribute this writer does not interpret --- an extension's --- survives
+/// exactly as written: an `int32` stays `int32`, a fixed-length string stays
+/// fixed-length.  (A file of a later minor version is not amended at all.)
 pub fn copy_raw(src: &hdf5::Location, dst: &hdf5::Location, name: &str) -> Result<()> {
     RawAttr::capture(src, name)?.restore(dst)
 }

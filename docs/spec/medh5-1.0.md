@@ -1502,8 +1502,10 @@ tens of GiB and cannot exist.
   new file from the old and atomically replace. HDF5 does not reclaim space on `del`, so repeated
   in-place add/remove monotonically bloats a file and fragments its chunk index. In-place amendment
   is permitted only for attribute-only edits and **MUST** be opt-in.
-* **Amend preserves unknown objects.** A 1.0 writer amending a file containing objects from a future
-  minor version **MUST** copy them through untouched.
+* **Amend preserves what it does not interpret.** A writer amending a file of a version it implements
+  **MUST** copy through untouched every object this specification does not define, extensions
+  included (§16). A file of a higher minor version, or one declaring a profile the writer does not
+  implement, is not amended at all (§16; [1.1](medh5-1.1.md) §2.3).
 * **Readers** open `mode="r"`. Concurrent readers across processes are safe. A single open HDF5
   file (an `h5py.File`, a Rust `hdf5::File`) **MUST NOT** be shared across threads without external
   locking, nor inherited across `fork` — a handle cache **MUST** be keyed by PID and dropped in the
@@ -1701,9 +1703,9 @@ any machine. On one, with a 192×256×256 synthetic CT and eight classes, a mult
 costs 3.4 ms, foreground centre sampling 0.03 ms (O(1) in volume size, via §14.3; 0.05 ms at 63
 classes), a metadata-only read 0.19 ms, and `open()` → first patch 2.3 ms.
 
-Fifty clauses have been corrected — ten during implementation, eleven in the 1.x package
+Fifty-one clauses have been corrected — ten during implementation, eleven in the 1.x package
 releases that followed, four when the engine was written a second time, in Rust, for the 2.0
-package, one when it implemented 1.1, and twenty-four in the audits of 2.0 before its release — each because
+package, one when it implemented 1.1, and twenty-five in the audits of 2.0 before its release — each because
 writing the code showed the text was not implementable, not unambiguous, or not what the
 implementation could honestly promise, as written:
 
@@ -1759,6 +1761,7 @@ implementation could honestly promise, as written:
 | §2.1, §11.1 | A timestamp --- a provenance activity's, and the root's `created` --- is RFC 3339 (E604 otherwise, for provenance) and **SHOULD** be in UTC. "RFC 3339 UTC" read as a requirement nothing enforced: every validator since 1.0 has accepted an offset such as `+01:00`, which names the same instant, and reported E604 only for text that is not RFC 3339 --- so files the implementations passed failed the text. |
 | §3.2, §10.3, §10.5 | The numbers that place a point are bounded as far as placing one needs: a grid's `spacing` and `origin` are finite (**E104**, **E109**), an affine's `matrix` is `(S+1, S+1)` for the *S* spatial axes of the grids in its frames (**E504**), and a B-spline's `control_points` hold *S* components on a lattice of *S* axes with at least `order + 1` points on each (**E503**). "Positive" admitted an infinite spacing, nothing bounded the origin, and *S* was defined for a grid but never for a transform, which has no grid of its own: a 3×3 affine between 3-D grids validated and moved each point with its coordinates regrouped in twos, a matrix that was not square panicked whatever read it, and a lattice too short for its order, which the writer refused, validated. |
 | §13.1 | A string dataset's payload is each string's stored bytes, a fixed-length string's without its NUL padding; a dataset of another fixed-size type hashes as `|V<n>` over its stored elements; and other variable-length data has no digest. "Hashed in UTF-8" said neither which bytes nor what a fixed-length string or a compound hashes as. 1.x hashed what `h5py` reads --- stored bytes, a compound as `|V<n>` --- while the 2.0 engine decoded strings as text, replacing invalid UTF-8, so different stored bytes shared a digest and an edit to them went unseen, and refused a compound outright, so a valid file holding one in an extension group could be neither amended nor verified. No digest of a valid UTF-8 string changes. |
+| §14.4 | Amend copies through what it does not interpret only in a version the writer implements; a file of a higher minor, or one declaring a profile the writer does not implement, is not amended at all. The clause asked a 1.0 writer to copy a future minor's objects through untouched, while §16 forbids amending such a file: a writer cannot preserve what it does not know --- it would restamp digests and re-derive profiles over content it cannot read --- and the reference writer refuses the amendment. |
 
 ### C.2 Prototype checks
 
