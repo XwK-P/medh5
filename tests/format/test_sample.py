@@ -1179,7 +1179,9 @@ class TestDocument:
 
     def test_S2_2_a_value_nothing_known_stands_in_for_is_named(self, sample_path):
         """An agent's `type` is required and its vocabulary has no `other`, so a
-        later minor's value leaves the document unread, and says where."""
+        later minor's value leaves the document unread, and says where --- under
+        W913, as the validator reports the value, not E005, which says the
+        document is malformed."""
 
         def robot(document: dict[str, Any]) -> None:
             document["provenance"]["agents"][0]["type"] = "robot"
@@ -1190,7 +1192,7 @@ class TestDocument:
                 MEDH5ValidationError, match="provenance/agents/0/type"
             ) as caught:
                 _ = sample.document
-            assert caught.value.code == "E005"
+            assert caught.value.code == "W913"
 
 
 class TestProjectionRead:

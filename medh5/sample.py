@@ -309,7 +309,8 @@ class Sample:
         projection (1.1 §2.2): members only that minor defines are set aside,
         and an unknown value is read as its vocabulary's ``other``, or as
         absent where it has none (in a member the schema requires, that leaves
-        the document unreadable, E005).
+        the document unreadable: ``W913``, the code the validator reports the
+        value under).
         """
         if self._document is None:
             self._document = self._handle.document()

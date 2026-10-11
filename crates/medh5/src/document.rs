@@ -367,7 +367,8 @@ impl SampleDocument {
     /// reader **MUST** accept --- what only a later minor defines set aside
     /// ([`projected`]), as the validator reads past it.  A value nothing this
     /// version knows can stand in for, in a member the schema requires, leaves
-    /// that document unreadable (E005).
+    /// that document unreadable: W913, as the validator reports the value, and
+    /// not the E005 a defect in a document of a version this engine implements is.
     pub fn loads_version(text: &str, version: Option<&str>) -> Result<Self> {
         let doc = parse_object(text)?;
         let Some(later) = version.filter(|v| crate::version::is_projection(v)) else {
@@ -376,7 +377,7 @@ impl SampleDocument {
         match projected(&doc) {
             Ok(read) => Self::from_json(&read),
             Err(at) => Err(Error::coded(
-                "E005",
+                "W913",
                 format!(
                     "`meta` holds at {at} a value only a later minor defines, in a member the schema requires: \
                      MEDH5 {} has nothing to read in its place, so this MEDH5 {later} document cannot be read as \

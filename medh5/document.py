@@ -18,7 +18,8 @@ A later minor's ``/meta`` --- a 1.2 file's --- is read as its supported
 projection (1.1 §2.2), by ``Sample.document`` and :func:`read_document` alike:
 members only that minor defines are set aside, and an unknown value is read as
 its vocabulary's ``other``, or as absent where it has none (in a member the
-schema requires, that leaves the document unreadable, E005).
+schema requires, that leaves the document unreadable: ``W913``, the code the
+validator reports the value under).
 """
 
 from __future__ import annotations
