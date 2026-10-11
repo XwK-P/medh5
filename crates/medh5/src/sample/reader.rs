@@ -255,7 +255,7 @@ impl Sample {
     /// A grid by id (`KeyError` naming the available ones).
     pub fn grid(&self, grid_id: &str) -> Result<&Grid> {
         let grids = self.grids()?;
-        grids.get(grid_id).ok_or_else(|| Error::Key(repr_str(grid_id)))
+        grids.get(grid_id).ok_or_else(|| missing_key("grid", grid_id, grids.keys().cloned()))
     }
 
     /// `grids/ref` when present, else the grid of the first image (§3.2).
@@ -746,5 +746,19 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
         }
+    }
+
+    /// A grid the sample lacks is a `KeyError` naming the ones it has, as
+    /// every other lookup by id is; it named only the missing one.
+    #[test]
+    fn s3_a_missing_grid_names_the_grids_there_are() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = crate::bench::synthetic_pair(dir.path(), &[8, 12, 10], "portable", 7).unwrap();
+        let sample = open_sample(&path).unwrap();
+        let mut known: Vec<String> = sample.grids().unwrap().keys().cloned().collect();
+        known.sort();
+        assert!(!known.is_empty());
+        let Err(Error::Key(message)) = sample.grid("nope") else { panic!("a missing grid is a KeyError") };
+        assert_eq!(message, format!("no grid 'nope'; available: {}", repr_list(&known)));
     }
 }
