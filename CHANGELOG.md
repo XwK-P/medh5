@@ -350,7 +350,13 @@ out `h5py` objects --- and the behaviour changes below.
   document hands out: `w.label_set(ls)` returns the document's set, not `ls`.
   An `extra` member named after a field of its record
   (`identity.extra["sex"]`), which 1.x wrote over the field, is refused.
-- **A label set's class id below 0 or above 65535 is `E306`**, as §15.2 has
+- **`model` is not an agent type** (`E603` when the agent is made): the schema
+  never allowed it, so such an agent was accepted and its document failed at
+  commit (`E005`). Record a model as the `software` that runs it, as §11.1
+  records nnU-Net.
+- **A class id below 0 or above 65535 is `E306`** --- in a label set, in the
+  guard every encoder runs and in the writer's annotation header check
+  (`encode_labelmap({70000: m})`, `annotated_classes=[-5]`) --- as §15.2 has
   it, where it was `E303`, which is a reserved id (0 or 65535) given to a
   class.
 - **`FORMAT_VERSION` is `"1.1"`**, the newest version the package writes. A
@@ -362,15 +368,22 @@ out `h5py` objects --- and the behaviour changes below.
   An unknown value in its `/meta` (`sex: "X"`, a new activity `type`) is set
   aside or read as `other`, and a grid's unknown unit or axis kind is `W913`
   too: one such value stopped every document rule, so a planted `E107` went
-  unreported and the file passed. 1.0 §16's "accept a higher MINOR" is
-  corrected accordingly (Appendix C.1).
+  unreported and the file passed. An annotation's unknown `task`, `closure`,
+  `space` or `scope`, and a transform's unknown `vector_space`, are `W913` to
+  the validator as well, where they failed the file; at a version the package
+  implements they stay `E412` and `E502`. `Sample.document` and
+  `read_document` read `/meta` through the same projection, where they
+  refused (`E005`) what the validator passed; a required member that nothing
+  known can stand in for is still `E005`, which names it. 1.0 §16's "accept a
+  higher MINOR" is corrected accordingly (Appendix C.1).
 - **An unknown profile refuses an amendment** (`E007`) before anything is
   written, instead of being re-derived away.
 - **`--profile` and `profiles=` add to the profiles a file declares**, where
   they replaced them: a clinical sample validated with `--profile seg` failed
   `E803` and skipped its clinical rules. An unknown profile name is refused
   (`ValueError`, or a usage error from `medh5 validate`) rather than passing
-  the file.
+  the file, and `E009` no longer calls a profile only the caller requires
+  "declared".
 - **What a profile requires is checked** (`E009`, §1.3, Appendix C.1): `reg`
   a transform whose `from_frame` and `to_frame` are each one of the sample's
   grid `frame_uid`s, `curation` a provenance activity --- agents alone do not
@@ -566,15 +579,15 @@ out `h5py` objects --- and the behaviour changes below.
   map was stored as `float32` anyway, moving that voxel across. A map written
   `normalized=True` whose classes do not sum to 1 is `E404`.
 - **Stored probabilities are validated** at the integrity level, on the bytes
-  the digest pass reads: a value outside [0, 1] or not a number is `E411`, and
-  a `normalized` map whose classes do not sum to 1 is `E404`. Only `threshold`
-  was checked. "Sum to 1" holds to the rounding of the values stored (§7.5,
-  Appendix C.1) --- under 2·10⁻³ at any class count, where an allowance of the
-  class count times the dtype's epsilon let a map of 1,024 `float16` classes
-  whose every value had been zeroed validate. A probmap's planes are one per
-  class id (`E405` otherwise), and a map is summed only on that shape: a
-  declared shape of `(0, 2**62)` allocated a sum per voxel and panicked the
-  validator.
+  the digest pass reads, in its bounded blocks (about 32 MiB): a value outside
+  [0, 1] or not a number is `E411`, and a `normalized` map whose classes do
+  not sum to 1 is `E404`. Only `threshold` was checked. "Sum to 1" holds to
+  the rounding of the values stored (§7.5, Appendix C.1) --- under 2·10⁻³ at
+  any class count, where an allowance of the class count times the dtype's
+  epsilon let a map of 1,024 `float16` classes whose every value had been
+  zeroed validate. A probmap's planes are one per class id (`E405`
+  otherwise), and a map is summed only on that shape: a declared shape of
+  `(0, 2**62)` allocated a sum per voxel and panicked the validator.
 - **A dataset too large to hold is reported, not a crash.** A file may declare
   a dataset of any extent and store none of it; reading one asked the
   allocator for, say, 2⁶³ bytes, which panicked, or 9 TB, which aborted the
@@ -585,6 +598,11 @@ out `h5py` objects --- and the behaviour changes below.
   overflow, and a scalar one of 2³⁰ bytes aborted under a memory limit. A
   `/meta` that is not one scalar string is `E004` (§2.4); a vector was read
   whole and cut to its first element.
+- **A `chunk_hint` is a chunk shape** (§3.2, Appendix C.1): an extent below 1
+  is `E109` to the writer, the validator and the reader, where the writer took
+  it for 1 and the validator passed it; a file holding one still opens, but
+  its grids no longer read. One larger than its grid is clipped to it, where
+  the write failed with `OSError`.
 - **A clinical numeric column stored big-endian is `E805`** (1.1 §4 stores them
   little-endian; HDF5 converted on read, so it validated clean), as are a UTF-8
   column's big-endian `offsets` (1.1 Appendix A), and a member a
@@ -667,10 +685,10 @@ out `h5py` objects --- and the behaviour changes below.
   refused --- it matched no assignment, so every file was written as `train` ---
   and so are a `fold` given for a ratio split, a split that leaks, a sample
   inside a collection, and a file that amending would refuse (a later minor
-  version, an unknown profile, HDF5 references) or that fails validation at the
-  level the commit uses, each before the first file is amended, where the
-  files before it had been. An I/O failure partway can still leave the files
-  before it claimed.
+  version, an unknown profile, HDF5 references, a digest it fails: `E701`) or
+  that fails validation at the level the commit uses, each before the first
+  file is amended, where the files before it had been. An I/O failure partway
+  can still leave the files before it claimed.
 - **`dataset check` compares what a class id means** (C102, C302): ids were
   grouped by `label_set_id@version`, so one id and version carrying two meanings
   passed with a C101 warning, and a version bump that kept every class was a
@@ -1029,16 +1047,21 @@ out `h5py` objects --- and the behaviour changes below.
 - **The specification says what the corpus scores** (Appendix C.1, 1.1
   Appendix A), where a validator written from §15.2 failed cases the reference
   passes: `contour_offsets` and `mesh_offsets` end at the number of vertices
-  or faces they index (`E408`, which said only "not monotonic"); an
-  `ignore_mask` or `valid_mask` names a `mask` on its object's grid (`E413`);
-  a collection holds a `samples` group with a sample root (`E008`); and
-  `integrity`, not `semantic`, makes the `probmap` value checks, in its full
-  read (§15.1). 1.1 §11.1 puts `E802`'s rule for a `shifted_utc` clock at
-  `semantic` and lists `E704` among the integrity codes. The summaries of
-  `E001`, `E003`, `E008`, `E108`, `E306`, `E405`, `E408`, `E411`, `E412`,
-  `E413` and `E502` --- `CODES[…].summary`, the published `codes.json`, the
-  reference page --- add what the validator reports under them that they left
-  out. The text changed, not the verdicts.
+  or faces they index, and an `instances` object's span in `mask_data` is its
+  packed crop (`E408`, which said only "not monotonic"); an `ignore_mask` or
+  `valid_mask` names a `mask` on its object's grid (`E413`); a collection
+  holds a `samples` group with a sample root (`E008`); and `integrity`, not
+  `semantic`, makes the `probmap` value checks, in its full read (§15.1). 1.1
+  §11.1 puts `E802`'s rule for a `shifted_utc` clock at `semantic` and lists
+  `E704` among the integrity codes. The summaries of `E001`, `E003`, `E008`,
+  `E104`, `E105`, `E108`, `E109`, `E306`, `E405`, `E408`, `E411`, `E412`,
+  `E413`, `E502`, `E503` and `E504` --- `CODES[…].summary`, the published
+  `codes.json`, the reference page --- add what the validator reports under
+  them that they left out. The text changed, not the verdicts.
+- **The corpus case `W907-float-storage` verifies**: it rewrote its image as
+  `float32` and kept the `int16` digest, so a case meant to be valid with
+  `W907` failed its digest (`E701`) and was marked `mutated`. It is stamped
+  over the bytes it stores; its expected outcome is unchanged.
 - **1.1 defines what it relied on**
   ([Appendix A](docs/spec/medh5-1.1.md#appendix-a--changes-from-the-reviewed-draft-and-why)):
   a *recognised* `clinical` group, and when an undeclared one is `E803` (§3);
@@ -1110,11 +1133,25 @@ out `h5py` objects --- and the behaviour changes below.
   level's shape with its grid or checked the shape of `downsample_factors`.
   Each is `E105` (a level's shape `E202`), and a refused pyramid leaves
   nothing behind, so a corrected retry commits.
+- **A refused write leaves nothing behind** (`add_*`, `transcode_annotation`):
+  an annotation's group was made before its codec was resolved or its
+  datasets and attributes written, so an unknown codec, or a string HDF5
+  cannot store, left half an object --- the corrected call failed with
+  "already exists", and the commit refused the file (`E412`) or kept the
+  object without what had failed --- as did `add_transform` and `add_grid`.
+  A write that fails partway is undone, its bytes too; an inline quality
+  record is filed once its object is written, where a refused duplicate
+  replaced the record of the one already there; and a refused transcode keeps
+  the annotation, which it had removed.
 - **A rule that stops reports what stopped it**: any error a rule raised
   became one `E001` at `/`, so six instance ids for three class ids read as an
   unreadable file. The error's own code is reported (`E405` there), and
   `E001` only for what could not be read, at the object where the rule knows
   it.
+- **One unknown axis kind is one finding**: the annotations and transforms on
+  a grid naming one were measured against the axes the known kinds counted,
+  adding `E405`, `E503` and `E504` to the grid's own `E110` --- and failing a
+  later minor's file, where the grid's was only `W913`.
 - **An unreadable `/meta` no longer floods a clinical sample with `E813`**:
   every timepoint, activity and de-identification reference was checked
   against an empty document, and a task's preflight refused the subject for
@@ -1192,7 +1229,11 @@ out `h5py` objects --- and the behaviour changes below.
   70000 became 4464, −1 65535, and 1 class 1; it must be a `uint16` that is
   neither background nor a class (`E404`). An `ignore=` region no voxel
   carries no longer makes a `uint16` labelmap, which the writer refused as its
-  own output (`E411`).
+  own output (`E411`), and one over a class is refused (`E404`): §7.7 keeps
+  such a region in a sibling `mask`, as the writer does, where
+  `encode_labelmap` lost those voxels and `encode_layers` painted the ignore
+  id into their other layers. A `layers` annotation holding one is refused a
+  transcode to `labelmap`, which lost the region.
 - **A polygon with no stored plane is out of plane**, `(-1, 0)`, `Polygon`'s
   own default, rather than `(-1, -1)`.
 - **An array in any NumPy memory layout is written**: every writer entry
@@ -1246,9 +1287,7 @@ out `h5py` objects --- and the behaviour changes below.
   compared equal to, so a set or dict of grids holds it once.
 - **Reads that decompress release the GIL**: annotation, transform and region
   reads, `PatchSampler.draw`, the digests and `verify_root`.
-- **A `chunk_hint` larger than its grid is clipped to it**, where the write
-  failed with `OSError`, and `storage.occupancy(mask, 0)` is a `ValueError`,
-  where it panicked.
+- **`storage.occupancy(mask, 0)` is a `ValueError`**, where it panicked.
 - **Errors name what failed**: a failed flush reports HDF5's own message, not
   "HDF5 error", and a missing grid's `KeyError` names the grids there are.
 - **Detection boxes in a padded patch are where their voxels are.** A patch
@@ -1382,10 +1421,12 @@ out `h5py` objects --- and the behaviour changes below.
 - **`pack` never writes over one of its own sources**, which replaced the
   sample with the collection, and `unpack` refuses members whose names differ
   only in case, or a member named twice. `dataset index` refuses a root it
-  cannot list, where it wrote an empty manifest; `tree` names the clinical
-  group and a shard's members, which it called extension objects; and
-  recompressing a shard keeps the image codec for the images of a member
-  keyed `annotations`.
+  cannot list, where it wrote an empty manifest, and it and `scan` report a
+  directory they cannot list with the files that would not open --- an
+  `OSError` when strict --- where they passed it over in silence; `tree` names
+  the clinical group and a shard's members, which it called extension
+  objects; and recompressing a shard keeps the image codec for the images of
+  a member keyed `annotations`.
 - **Ctrl-C ends the console script at once**: a command running in native
   code ran to completion and then printed a `KeyboardInterrupt` traceback.
 - **The standalone binary hands a command to Python without the current
