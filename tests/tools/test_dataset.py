@@ -165,7 +165,10 @@ class TestManifest:
         missing = tmp_path / "no-such-cohort"
         built, failures = scan(missing)
         assert len(built) == 0
-        assert len(failures) == 1 and "No such file or directory" in failures[0]
+        # In the system's own words: Windows says it cannot find the path.
+        with pytest.raises(FileNotFoundError) as listing:
+            os.listdir(missing)
+        assert len(failures) == 1 and listing.value.strerror in failures[0]
         with pytest.raises(OSError, match="no-such-cohort"):
             scan(missing, on_error="raise")
 
