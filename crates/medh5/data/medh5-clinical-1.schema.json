@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/XwK-P/medh5/schemas/medh5-clinical-1.schema.json",
+  "title": "MEDH5 1.1 clinical descriptor and logical records",
+  "description": "The root validates the descriptor stored, as canonical JSON, in the scalar string dataset `clinical/meta` of a sample declaring the `clinical` profile. `$defs/records` validates the logical-record interchange form of the profile's tables (events, documents, links), which the column encoding of docs/spec/medh5-1.1.md §4 stores. JSON Schema cannot check column shapes, references, revision chains or time-bound order; the engine's validator does (E8xx).",
+  "$ref": "#/$defs/descriptor",
+
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9_.-]{1,128}$" },
+    "token": { "type": "string", "minLength": 1 },
+    "optionalToken": { "type": ["string", "null"], "minLength": 1 },
+    "bounds": {
+      "description": "Inclusive bounds [lo, hi] on one instant, in signed microseconds on the subject clock; null when unknown. lo <= hi is the engine's check (E811).",
+      "type": ["array", "null"],
+      "items": { "type": "integer" },
+      "minItems": 2,
+      "maxItems": 2
+    },
+
+    "clock": {
+      "type": "object",
+      "required": ["id", "unit", "reference"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1,
+          "description": "Opaque clock identifier, scoped by the dataset's subject identity namespace. Fragments sharing it share origin and unit." },
+        "unit": { "const": "us" },
+        "reference": { "enum": ["relative", "utc", "shifted_utc"] },
+        "origin_description": { "type": "string", "minLength": 1,
+          "description": "What zero is on a relative clock. Required when reference is relative." }
+      },
+      "allOf": [
+        { "if": { "properties": { "reference": { "const": "relative" } } },
+          "then": { "required": ["origin_description"] } }
+      ]
+    },
+
+    "descriptor": {
+      "type": "object",
+      "required": ["schema", "clock"],
+      "additionalProperties": false,
+      "properties": {
+        "schema": { "const": "medh5.clinical/1" },
+        "clock": { "$ref": "#/$defs/clock" }
+      }
+    },
+
+    "event": {
+      "type": "object",
+      "required": ["event_id", "record_id", "kind", "temporal_type", "status"],
+      "additionalProperties": false,
+      "properties": {
+        "event_id": { "$ref": "#/$defs/id", "description": "Unique immutable event-version id." },
+        "record_id": { "$ref": "#/$defs/id", "description": "Logical record id shared by every revision." },
+        "kind": { "enum": ["imaging", "document", "observation", "diagnosis", "medication_order",
+                           "medication_administration", "procedure", "assessment", "other"] },
+        "temporal_type": { "enum": ["point", "interval", "static", "unknown"] },
+        "effective_start_us": { "$ref": "#/$defs/bounds" },
+        "effective_end_us": { "$ref": "#/$defs/bounds" },
+        "available_us": { "$ref": "#/$defs/bounds",
+          "description": "When this whole version became available in the source workflow; null when unknown, never guessed." },
+        "status": { "enum": ["unknown", "preliminary", "final", "amended", "entered_in_error", "planned",
+                             "in_progress", "completed", "cancelled"] },
+        "timepoint_id": { "anyOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }] },
+        "encounter_id": { "$ref": "#/$defs/optionalToken" },
+        "code_system": { "$ref": "#/$defs/optionalToken" },
+        "code": { "$ref": "#/$defs/optionalToken" },
+        "code_version": { "$ref": "#/$defs/optionalToken" },
+        "value_num": { "type": ["number", "null"] },
+        "value_comparator": { "enum": ["eq", "lt", "le", "gt", "ge", null] },
+        "unit": { "$ref": "#/$defs/optionalToken" },
+        "value_text": { "type": ["string", "null"] },
+        "missing_reason": { "$ref": "#/$defs/optionalToken" },
+        "prov": { "anyOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }] }
+      }
+    },
+
+    "document": {
+      "type": "object",
+      "required": ["document_id", "text"],
+      "additionalProperties": false,
+      "properties": {
+        "document_id": { "$ref": "#/$defs/id" },
+        "media_type": { "enum": ["text/plain"] },
+        "text": { "type": "string" },
+        "language": { "$ref": "#/$defs/optionalToken" },
+        "source_type": { "$ref": "#/$defs/optionalToken" }
+      }
+    },
+
+    "endpointType": { "enum": ["event", "document", "image", "grid", "annotation", "transform", "timepoint", "instance"] },
+
+    "link": {
+      "type": "object",
+      "required": ["source_type", "source_id", "relation", "target_type", "target_id"],
+      "additionalProperties": false,
+      "properties": {
+        "source_type": { "$ref": "#/$defs/endpointType" },
+        "source_id": { "$ref": "#/$defs/token" },
+        "relation": { "enum": ["describes", "compares_with", "measures", "derived_from", "supersedes", "assesses"] },
+        "target_type": { "$ref": "#/$defs/endpointType" },
+        "target_id": { "$ref": "#/$defs/token" },
+        "source_span": {
+          "description": "Half-open UTF-8 byte span [start, end) of a document source.",
+          "type": ["array", "null"],
+          "items": { "type": "integer", "minimum": 0 },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "target_annotation_id": { "anyOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }] },
+        "asserted_by_event_id": { "anyOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }] }
+      }
+    },
+
+    "records": {
+      "description": "The logical-record bundle: what `medh5 clinical augment` reads and `medh5 clinical export` writes.",
+      "type": "object",
+      "required": ["clinical"],
+      "additionalProperties": false,
+      "properties": {
+        "clinical": { "$ref": "#/$defs/descriptor" },
+        "events": { "type": "array", "items": { "$ref": "#/$defs/event" } },
+        "documents": { "type": "array", "items": { "$ref": "#/$defs/document" } },
+        "links": { "type": "array", "items": { "$ref": "#/$defs/link" } }
+      }
+    }
+  }
+}

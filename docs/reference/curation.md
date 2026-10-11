@@ -187,6 +187,32 @@ identifying.** Absence is never evidence.
 including, importantly, what it cannot do — is
 [De-identify and publish](../guides/deidentify.md).
 
+## Editing a record
+
+A record's dicts — `Identity.extra`, `Cohort.extra`,
+`Deidentification.extra`, `Activity.params`, `Timepoint.series_uids`, an
+agreement's `per_class` — are the record's own: an edit in place is kept, and
+every rule is checked again on the record as edited whenever it is used. A
+record the writer or a document hands out writes the edit through to the
+document, so it reaches the file at `commit`:
+
+```python
+w.identity(sex="F").extra["consent"] = "research-only"
+act = w.activity("review", agent=w.person("RAD-08"))
+act.params["window"] = [-150, 250]
+w.document.timepoints["tp1"].series_uids["CT"] = "1.2.840.99.1"
+
+assert w.document.identity.extra == {"consent": "research-only"}
+assert w.document.provenance.activity(act.id).params["window"] == [-150, 250]
+```
+
+A record given to the writer — `w.document.identity = record`,
+`w.document.provenance.add_activity(record)` — is stored as it stands then:
+edit what the document hands back, not the record given. An edit through a
+record read before its member changed another way (`w.identity(...)` again,
+say) raises `RuntimeError` rather than undoing that change; read it again and
+edit that.
+
 ## Collections and integrity
 
 Collections (`.medh5c`), per-object digests and `content_id` are container

@@ -14,4 +14,8 @@ mistaken for arbitrary.
   the alternatives weighed for each load-bearing decision, the costs accepted,
   and the non-goals.
 
-For the normative version, see [the specification](../spec/medh5-1.0.md).
+The design rationale's [1.1 section](design-rationale.md#clinical-context-and-prediction-tasks-11)
+covers the clinical profile and the task and cache contract.
+
+For the normative version, see [the specification](../spec/medh5-1.0.md) and
+[1.1](../spec/medh5-1.1.md).

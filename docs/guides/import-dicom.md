@@ -16,7 +16,10 @@ medh5 convert from-dicom /studies out/ --group-by subject
 That is the whole command for the common case. `--group-by subject` is the
 default: it resolves patient identity across studies and writes one
 multi-timepoint sample per patient, which is what makes a later split
-subject-safe.
+subject-safe. `out/` is a directory, and each sample is written into it named
+for its subject --- also when the tree holds one patient; without the trailing
+separator, a name that is not an existing directory is the file one sample is
+written to.
 
 To narrow it first:
 
@@ -81,7 +84,8 @@ makes the split subject-safe.
 
 ```bash
 medh5 dataset index out/ -o cohort.json   # re-scan, so the manifest sees it
-medh5 dataset split cohort.json --group-by group_id   # C204 if a group splits a subject
+medh5 dataset split cohort.json --group-by group_id --write-claims  # C204 if a group splits a subject
+medh5 dataset index out/ -o cohort.json   # re-scan, so the manifest sees the claims
 medh5 dataset check cohort.json           # C202 if the written claims disagree
 ```
 
@@ -96,8 +100,8 @@ was wrong, both commands will agree with it.
 ## 3. Expect refusals, and read them
 
 The importer would rather stop than write a file whose geometry is invented. A
-series is refused when its slices disagree about orientation, spacing or rescale;
-when slice gaps are irregular; when a required tag is missing or malformed; or
+series is refused when its slices disagree about orientation, spacing, matrix
+size or rescale; when slice gaps are irregular; when a required tag is missing or malformed; or
 when the stack is **sheared** — the slice origins drift within the slice plane,
 as a tilted gantry makes them in head CT. The grid the importer writes is
 orthonormal, so a sheared stack would place the far slices centimetres from
@@ -106,6 +110,11 @@ slice's offset, and de-tilting is left to a tool that records what it did. The
 tolerance is half a pixel, and a passing check is recorded as a
 `slice_alignment` decision. The messages name the offending `SOPInstanceUID` or
 series.
+
+One thing is assumed rather than refused, and the report records it as a guess
+(`slice_spacing`): a single-slice series that states no `SliceThickness` has no
+through-plane extent to measure, and is given 1 mm. No voxel moves with it ---
+a lone slice's centres do not depend on its thickness --- but its extent does.
 
 These refusals carry **no diagnostic code**, because a DICOM series is not a
 MEDH5 file yet. [The reasoning for each is here](../explanation/refusals.md#dicom).
@@ -118,13 +127,20 @@ medh5 timeline out/case_0001.medh5     # did the visits land as you expect?
 medh5 validate out/*.medh5 --level strict
 ```
 
-Values are stored as the scanner wrote them, with the modality LUT recorded
-rather than applied:
+Images are named for their modality and visit --- `CT_tp0` for the first
+visit's CT --- and values are stored as the scanner wrote them, with the
+modality LUT recorded rather than applied:
 
 ```python
-s.images["CT"].read()                  # stored counts
-s.images["CT"].read(physical=True)     # HU
+ct = next(i for i in s.images.values() if i.modality == "CT")
+ct.read()                  # stored counts
+ct.read(physical=True)     # HU
 ```
+
+The report also says that the files are not de-identified: the importer copies
+only the tags it names (§11.4), but it writes no de-identification record, and
+`medh5 validate` reports a file without one (`W903`). See
+[De-identify](deidentify.md).
 
 ## Related
 

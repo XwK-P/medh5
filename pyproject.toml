@@ -1,19 +1,31 @@
 [build-system]
-# >= 77 for the SPDX `license` string and `license-files`.
-requires = ["setuptools>=77"]
-build-backend = "setuptools.build_meta"
+# The package is the Rust engine (crates/medh5) compiled as `medh5._core`, plus
+# the Python sources under medh5/.  maturin builds both into one wheel.
+# 1.9.3 is the first maturin that writes PEP 639's `License-Expression` for
+# an SPDX `license` (1.9.0 still wrote the legacy `License` field, and 1.8
+# cannot read `license-files` as a list): the floor is the version CI's
+# `sdist` job builds with.
+requires = ["maturin>=1.9.3,<2"]
+build-backend = "maturin"
 
 [project]
 name = "medh5"
-# The one source of the version is `medh5/__about__.py`, which is what gets
-# stamped into every file's `generator` and every manifest; declaring it twice
-# needed a test to keep the two equal.
+# The one source of the version is the Cargo workspace (`Cargo.toml`): maturin
+# stamps it on the wheel, the engine stamps it into every file's `generator`,
+# and `medh5.__version__` reads it back from the compiled module.
 dynamic = ["version"]
 description = "Self-describing HDF5 container for one medical imaging sample and all of its ground truth: multi-timepoint, multi-modal images with segmentation, detection, classification and registration annotations, provenance and integrity."
 readme = "README.md"
 requires-python = ">=3.10"
-license = "MIT"
-license-files = ["LICENSE"]
+# The package is MIT.  Its wheels also compile in HDF5, C-Blosc2, Zstandard
+# and `subtle` (BSD-3-Clause), LZ4 and rust-numpy (BSD-2-Clause), zlib and
+# `foldhash` (Zlib), `unicode-general-category` (Apache-2.0) and
+# `borrow-or-share` (MIT-0).  THIRD_PARTY_NOTICES reproduces the licence of
+# everything they compile in, generated from Cargo.lock by
+# .github/scripts/third_party_notices.py; the Homebrew formula states the same
+# expression.
+license = "MIT AND BSD-3-Clause AND BSD-2-Clause AND Zlib AND Apache-2.0 AND MIT-0"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES"]
 authors = [
   { name = "Puyang Wang", email = "pauliwang411@gmail.com" },
 ]
@@ -37,7 +49,10 @@ classifiers = [
   "Development Status :: 5 - Production/Stable",
   "Intended Audience :: Developers",
   "Intended Audience :: Science/Research",
-  "Operating System :: OS Independent",
+  "Operating System :: MacOS",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Rust",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
@@ -49,12 +64,8 @@ classifiers = [
   "Typing :: Typed",
 ]
 dependencies = [
-  "h5py>=3.13",
-  "hdf5plugin>=4.1",
-  # Core since 1.4.1: without it E005 went unchecked, and `commit()` wrote
-  # documents a machine with it installed rejects (a class key like
-  # `Left-Kidney`).  The format's own schema is not optional.
-  "jsonschema>=4.18",
+  # HDF5, Blosc2 and the JSON Schema validator are compiled into the engine;
+  # NumPy is the one runtime dependency, because arrays are the API.
   "numpy>=1.24",
 ]
 
@@ -66,15 +77,19 @@ dev = [
   # started formatting Markdown. A lint gate that changes under you is not a gate.
   "ruff==0.16.3",
   "mypy==1.18.2",
-  "build>=1.0",
+  "maturin>=1.9.3,<2",
   "twine>=5.0",
-  "jsonschema>=4.18",
   "hypothesis>=6.100",
+  # The tests open files with h5py to plant the defects the validator must
+  # find; the package itself never imports it.
+  "h5py>=3.13",
+  "hdf5plugin>=4.1",
 ]
-schema = [
-  # jsonschema is a core dependency since 1.4.1; the extra stays so that
-  # existing `pip install "medh5[schema]"` lines keep working.
-  "jsonschema>=4.18",
+# Reading and writing medh5 files with h5py directly, as any HDF5 tool can:
+# hdf5plugin carries the Blosc2 filter the default profiles use.
+h5py = [
+  "h5py>=3.13",
+  "hdf5plugin>=4.1",
 ]
 torch = [
   "torch>=2.0",
@@ -89,22 +104,16 @@ nifti = [
   "nibabel>=5",
 ]
 dicom = [
-  "pydicom>=2.4",
+  # 3.0: writing an RTSTRUCT asks `save_as` to enforce the DICOM file format.
+  "pydicom>=3.0",
 ]
 dicomseg = [
   # Reading DICOM SEG and RTSTRUCT needs only pydicom; *writing* a SEG needs
   # highdicom, the reference implementation of the Segmentation IOD.  Building
   # the per-frame functional groups by hand is how invalid SEGs get published.
-  "highdicom>=0.22",
-  "pydicom>=2.4",
-]
-itk = [
-  "SimpleITK>=2.3",
-]
-interp = [
-  # Only needed to evaluate a displacement field that declares
-  # `interpolation: cubic`; linear interpolation is built in.
-  "scipy>=1.10",
+  # 0.23 is the first highdicom for pydicom 3.
+  "highdicom>=0.23",
+  "pydicom>=3.0",
 ]
 
 [project.urls]
@@ -113,25 +122,47 @@ Repository = "https://github.com/XwK-P/medh5"
 Issues = "https://github.com/XwK-P/medh5/issues"
 Changelog = "https://github.com/XwK-P/medh5/blob/main/CHANGELOG.md"
 Documentation = "https://medh5.readthedocs.io/"
-Specification = "https://github.com/XwK-P/medh5/blob/main/docs/spec/medh5-1.0.md"
+# The released documentation's, not main's: PyPI keeps these with the release.
+"Specification 1.0" = "https://medh5.readthedocs.io/en/stable/spec/medh5-1.0/"
+"Specification 1.1" = "https://medh5.readthedocs.io/en/stable/spec/medh5-1.1/"
 
 [project.scripts]
 medh5 = "medh5.cli:main"
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["medh5*"]
-
-[tool.setuptools.dynamic]
-version = { attr = "medh5.__about__.__version__" }
-
-[tool.setuptools.package-data]
-medh5 = ["py.typed", "schemas/*.json", "labels/vocabularies/*.json"]
-
-# Contributor guidance ships in the sdist (MANIFEST.in), not in installed packages.
-[tool.setuptools.exclude-package-data]
-"medh5.io" = ["CLAUDE.md"]
-"medh5.storage" = ["CLAUDE.md"]
+[tool.maturin]
+# The extension module is `medh5._core`; the Python half of the package is the
+# `medh5/` directory next to this file.
+manifest-path = "crates/medh5-python/Cargo.toml"
+module-name = "medh5._core"
+python-source = "."
+python-packages = ["medh5"]
+features = ["extension-module"]
+# The sdist carries what makes the package auditable --- the normative
+# specification, the documentation and the test suite --- as well as the
+# engine's sources, which hold the JSON Schema and the code table: a format
+# release whose source distribution omits the format is not one.
+include = [
+  # NDEBUG for HDF5 on MSVC targets: see the file.
+  { path = ".cargo/config.toml", format = "sdist" },
+  { path = "LICENSE", format = "sdist" },
+  { path = "CHANGELOG.md", format = "sdist" },
+  { path = "CONTRIBUTING.md", format = "sdist" },
+  { path = "docs/**/*.md", format = "sdist" },
+  { path = "docs/**/*.py", format = "sdist" },
+  { path = "tests/**/*.py", format = "sdist" },
+  { path = "tests/**/*.txt", format = "sdist" },
+  # What the shipped tests read about the project itself --- the workflows and
+  # release scripts `tests/project` checks --- and what the documentation is
+  # built with, so `pytest tests/project` and `mkdocs build` run from the
+  # unpacked sdist as they do from a checkout.
+  { path = ".github/dependabot.yml", format = "sdist" },
+  { path = ".github/scripts/*.py", format = "sdist" },
+  { path = ".github/scripts/*.sh", format = "sdist" },
+  { path = ".github/workflows/*.yml", format = "sdist" },
+  { path = "mkdocs.yml", format = "sdist" },
+  { path = "hooks/*.py", format = "sdist" },
+  { path = "docs/requirements.txt", format = "sdist" },
+]
 
 [tool.pytest.ini_options]
 addopts = "--cov=medh5 --cov-report=term-missing"
@@ -167,22 +198,12 @@ warn_unused_configs = true
 
 [[tool.mypy.overrides]]
 module = [
-  "h5py",
-  "h5py.*",
-  "hdf5plugin",
-  "hdf5plugin.*",
   "torch",
   "torch.*",
   "nibabel",
   "nibabel.*",
   "pydicom",
   "pydicom.*",
-  "SimpleITK",
-  "SimpleITK.*",
-  "jsonschema",
-  "jsonschema.*",
-  "scipy",
-  "scipy.*",
   "monai",
   "monai.*",
   "highdicom",

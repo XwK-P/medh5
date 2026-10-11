@@ -28,6 +28,13 @@ minutes.
 | **[Longitudinal studies](longitudinal.md)** | Timepoints, tracking one lesion across visits, paired sampling. |
 | **[Registration between visits](registration.md)** | Transforms, the frame graph, and what `None` means. |
 
+## Clinical history (format 1.1)
+
+| | |
+|---|---|
+| **[Clinical history beside the images](clinical.md)** | Labs, reports and their revisions on one subject clock; what was known at a moment; adding a history to 1.0 files. |
+| **[Train on clinical tasks](clinical-training.md)** | Task manifests, preflight, cutoff-aware batches with missing modalities, document features and caches that know when they are stale. |
+
 ## Working with a cohort
 
 | | |

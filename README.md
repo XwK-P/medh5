@@ -13,9 +13,12 @@ ground truth — in a single self-describing HDF5 file.**
 
 Multi-modality images, segmentation in five encodings, detection boxes,
 keypoints, contours, meshes, classification, registration between visits,
-provenance and quality records, and per-object integrity digests. Format
-version **1.0**, with a [normative specification](https://medh5.readthedocs.io/en/latest/spec/medh5-1.0/) and a
-[117-case conformance suite](https://medh5.readthedocs.io/en/latest/spec/conformance/) any implementation can run.
+provenance and quality records, and per-object integrity digests --- and, from
+format **1.1**, the clinical history around the images, with *when each fact
+became known*, so a model trained at a cutoff reads only what was available
+then. Format versions [**1.0**](https://medh5.readthedocs.io/en/stable/spec/medh5-1.0/) and
+[**1.1**](https://medh5.readthedocs.io/en/stable/spec/medh5-1.1/), with normative specifications and a
+[157-case conformance suite](https://medh5.readthedocs.io/en/stable/spec/conformance/) any implementation can run.
 
 ```python
 import medh5
@@ -30,26 +33,41 @@ with medh5.open("case_0001.medh5") as s:
 
 ## Install
 
+One format engine, written in Rust, with three frontends that read and write
+the same bytes:
+
 ```bash
-pip install medh5
+pip install medh5                      # the Python package
 pip install "medh5[torch,nifti,dicom]"
+cargo add medh5                        # the Rust crate
+cargo install --locked medh5-cli       # the `medh5` command line, natively
 ```
 
-Reading and writing needs only `h5py`, `hdf5plugin`, `numpy` and `jsonschema`
-(every write is checked against the format's JSON Schema). Extras: `torch`,
-`monai`, `nifti`, `dicom`, `dicomseg`, `itk`, `interp`; the old `schema` extra
-still installs and adds nothing.
+The wheels carry the engine, HDF5 included, so reading and writing need only
+NumPy. Extras: `torch`, `monai`, `nifti`, `dicom`, `dicomseg`, and `h5py` for
+opening files with `h5py` directly. The `medh5` binary is also attached to every
+[GitHub Release](https://github.com/XwK-P/medh5/releases), and installs with
+`brew install XwK-P/medh5/medh5`; building it or the crate from source needs
+Rust 1.85.1 or later, a C compiler and CMake, for HDF5.
+
+There is a wheel for CPython 3.10 and later on Linux x86_64 and aarch64 (glibc
+2.28 or later), macOS 11 or later (x86_64 and arm64) and Windows x64. Anywhere
+else --- musl, an older glibc, Windows on ARM, PyPy, a free-threaded CPython
+--- `pip` falls back to the sdist, and building the engine from it needs the
+same Rust, C compiler and CMake, and network access to crates.io. Where neither
+will do, the 1.x line remains --- pure Python over h5py, writing format 1.0:
+`pip install "medh5<2"`.
 
 ## Documentation
 
 **[medh5.readthedocs.io](https://medh5.readthedocs.io/)** — tutorials, how-to
 guides, the Python and CLI reference, and the normative specification.
 
-[Write your first sample](https://medh5.readthedocs.io/en/latest/tutorials/first-sample/) ·
-[How-to guides](https://medh5.readthedocs.io/en/latest/guides/) ·
-[Python API](https://medh5.readthedocs.io/en/latest/reference/python-api/) ·
-[CLI](https://medh5.readthedocs.io/en/latest/reference/cli/) ·
-[Specification](https://medh5.readthedocs.io/en/latest/spec/medh5-1.0/)
+[Write your first sample](https://medh5.readthedocs.io/en/stable/tutorials/first-sample/) ·
+[How-to guides](https://medh5.readthedocs.io/en/stable/guides/) ·
+[Python API](https://medh5.readthedocs.io/en/stable/reference/python-api/) ·
+[CLI](https://medh5.readthedocs.io/en/stable/reference/cli/) ·
+[Specification](https://medh5.readthedocs.io/en/stable/spec/medh5-1.0/)
 
 ## What the format is for
 
@@ -60,12 +78,16 @@ guides, the Python and CLI reference, and the normative specification.
 - **Absence is not silence** — a class examined and not found is recorded as
   such, which is a different training signal from one nobody examined.
 - **Every claim is checkable** — per-object digests, a Merkle `content_id` that
-  survives recompression, a stable diagnostic-code table, and a 117-case
+  survives recompression, a stable diagnostic-code table, and a 157-case
   conformance corpus.
-- **Reading a patch is fast** — a 64³ multi-class patch in ~4 ms, and O(1)
+- **Reading a patch is fast** — a 64³ multi-class patch in ~2.3 ms, and O(1)
   foreground sampling once `build_index()` has run.
+- **What was known, when** — labs, reports and their revisions, diagnoses and
+  assessments on one subject clock, each with when it happened and when it
+  became available; strict prospective selection decides what a row may read,
+  and tasks and feature caches are pinned to the sample versions they read.
 
-[The reasoning behind each](https://medh5.readthedocs.io/en/latest/explanation/design-rationale/).
+[The reasoning behind each](https://medh5.readthedocs.io/en/stable/explanation/design-rationale/).
 
 ## Write a sample
 
@@ -126,7 +148,30 @@ rather than required: the handle cache is PID-keyed and re-checks ownership on
 every access, so a forked worker abandons the parent's handles on first use
 rather than reading through or closing them.
 
+With a clinical history (format 1.1), a **task** asks a question at a cutoff,
+and the batch holds only what was known then --- images from the visit
+available at the cutoff, the report version current at it, missing modalities
+and censored targets as masks rather than zeros:
+
+```python
+from torch.utils.data import DataLoader
+from medh5.task import TaskManifest
+from medh5.torch import ClinicalTaskDataset, collate_clinical
+
+task = TaskManifest.load("cohort/progression.task.json")
+assert task.preflight().ok                  # every pin, clock and duplicate checked
+train = ClinicalTaskDataset(task, partition="train")
+batch = next(iter(DataLoader(train, batch_size=8, collate_fn=collate_clinical)))
+batch["present"]["mr"], batch["events"]["mask"], batch["target"]["observed"]
+```
+
+See [clinical history](https://medh5.readthedocs.io/en/stable/guides/clinical/) and
+[training on clinical tasks](https://medh5.readthedocs.io/en/stable/guides/clinical-training/).
+
 ## Command line
+
+`pip install medh5` puts `medh5` on the path; so does the standalone binary,
+which is the same code compiled ahead of time.
 
 ```bash
 medh5 info case.medh5                  # grids, images, annotations, coverage
@@ -136,20 +181,25 @@ medh5 timeline case.medh5              # visits and intervals
 medh5 track case.medh5 --class lesion  # per-lesion volumes across visits
 
 medh5 dataset index studies/ -o cohort.json
-medh5 dataset split cohort.json --group-by group_id --stratify-by site_id
+medh5 dataset split cohort.json --group-by group_id --stratify-by site_id --write-claims
+medh5 dataset index studies/ -o cohort.json  # record the claims just written
 medh5 dataset stats cohort.json --partition train --workers 8
 medh5 dataset check cohort.json --deep
 
 medh5 convert from-dicom /studies out/     # one sample per patient, all visits
 medh5 convert from-nifti case.medh5 --image CT=ct.nii.gz
 medh5 convert from-rtstruct plan.dcm case.medh5 --rasterize
-medh5 migrate old/*.medh5 -o new/ --group-by subject
+medh5 migrate old/*.medh5 -o new/ --group-by subject --subject-key extra.patient_id
 
 medh5 scrub out/*.medh5 --apply --date-shift-days -117
 medh5 pack cohort/*.medh5 -o shard.medh5c
 medh5 recompress cohort/*.medh5 --profile training
 medh5 bench                                # reproduce the performance targets
 medh5 conformance publish suite/           # the suite, for another implementation
+
+medh5 clinical select case.medh5 --cutoff-hours 24    # what was known then (1.1)
+medh5 task preflight progression.task.json           # every row: in or out, and why
+medh5 cache validate reports.medh5cache --task progression.task.json
 ```
 
 ## Interoperability
@@ -175,7 +225,7 @@ the geometry that makes a medical annotation reproducible.
 ## Reading it without medh5
 
 ```python
-import h5py, json, hdf5plugin       # hdf5plugin only for blosc2 profiles
+import h5py, json, hdf5plugin       # pip install "medh5[h5py]"; hdf5plugin for Blosc2
 
 with h5py.File("case_0001.medh5") as f:
     doc = json.loads(f["meta"][()])
@@ -188,12 +238,17 @@ with h5py.File("case_0001.medh5") as f:
 
 ## Versioning
 
-The **format** is 1.0. A minor version may add optional objects, profiles,
-encodings and diagnostic codes; it may not change what an existing one means
-(spec §16). The **package** follows semantic versioning from 1.0.0.
+The **format** is 1.1: 1.0 plus the optional `clinical` profile, and nothing
+else. A sample is written at the lowest version its content needs, so
+imaging-only data is still 1.0, which 1.x reads; a reader opens a later minor
+as a projection, never amending it. A minor version may add optional objects,
+profiles, encodings and diagnostic codes; it may not change what an existing
+one means (spec §16). The **package** follows semantic versioning from 1.0.0:
+2.0 moved the implementation to the Rust engine and changed the Python API at
+the HDF5 boundary ([what changed](https://medh5.readthedocs.io/en/stable/changelog/)).
 
 0.x files are not readable by 1.0 and are not meant to be — `medh5 migrate`
-converts them once. See [Migrate from 0.x](https://medh5.readthedocs.io/en/latest/guides/migrate-0x/).
+converts them once. See [Migrate from 0.x](https://medh5.readthedocs.io/en/stable/guides/migrate-0x/).
 
 ## Contributing
 

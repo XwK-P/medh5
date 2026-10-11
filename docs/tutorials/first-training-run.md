@@ -44,15 +44,18 @@ item["meta"]["patch"]["used_index"] # True, False, or None
 ```
 
 `used_index` is the one to look at. `None` means this draw asked no index
-anything — a uniform draw never does. `False` means the sampler scanned the
-volume, because the file carries no sampling index:
+anything — a uniform draw never does. `False` means no sampling index could
+answer, so the sampler scanned the labels: the file carries none, or the one it
+carries is stale (built before the annotation last changed) or incomplete (it
+lacks a class the draw could pick, or caches no coordinates). Build it, or
+build it again:
 
 ```bash
 medh5 index build case_0001.medh5
 ```
 
 Build it once and that draw becomes a lookup. On this toy volume the difference
-is milliseconds; at 512³ it is 312 ms per draw against 0.03.
+is milliseconds; at 512³ it is 2.4 s per draw against 0.03 ms.
 
 ## Loop
 

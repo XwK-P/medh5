@@ -17,11 +17,14 @@ docs_dir: docs
 # requirements file is not documentation and is excluded; it only lives here
 # because that is where Read the Docs looks for it. So are the scratch files and
 # JSON results the benchmark scripts write beside themselves when run from a
-# checkout: a local build would otherwise publish megabytes of HDF5.
+# checkout: a local build would otherwise publish megabytes of HDF5. And so is
+# the bytecode Python leaves beside the examples once the test suite has
+# imported them.
 exclude_docs: |
   requirements.txt
   examples/*.h5
   examples/*.json
+  __pycache__/
 
 # A broken cross-reference in a normative specification is a defect, not a
 # cosmetic problem: the pages link into it clause by clause.  `strict` turns
@@ -128,6 +131,8 @@ nav:
       - Partial labels and coverage: guides/partial-labels.md
       - Longitudinal studies: guides/longitudinal.md
       - Registration between visits: guides/registration.md
+      - Clinical history beside the images: guides/clinical.md
+      - Train on clinical tasks: guides/clinical-training.md
       - Classification and change labels: guides/classification.md
       - Import from DICOM: guides/import-dicom.md
       - Import from NIfTI and nnU-Net: guides/import-nifti.md
@@ -141,6 +146,7 @@ nav:
   - Reference:
       - reference/index.md
       - Python API: reference/python-api.md
+      - Rust crate: reference/rust.md
       - Command line: reference/cli.md
       - PyTorch and MONAI: reference/torch.md
       - Annotation kinds: reference/annotations.md
@@ -161,6 +167,8 @@ nav:
 
   - Specification:
       - Format specification 1.0: spec/medh5-1.0.md
+      - Format specification 1.1 (clinical): spec/medh5-1.1.md
+      - Task and cache contract 1: spec/task-cache-1.md
       - Conformance suite: spec/conformance.md
 
   - Changelog: changelog.md

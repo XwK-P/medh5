@@ -28,9 +28,12 @@ _SamplerBase = sampler_base()
 class FileGroupedSampler(_SamplerBase):  # type: ignore[misc,valid-type]
     """Shuffle files, and yield every item of a file before the next file.
 
-    *dataset* is any of this package's datasets: each says which items read
-    which file (``file_groups()``).  Items within a file are shuffled too, so
-    a batch still mixes the patches it draws.
+    *dataset* says which items read which file (``file_groups()``), as
+    :class:`~medh5.torch.VolumeDataset`, :class:`~medh5.torch.PatchDataset`,
+    :class:`~medh5.torch.GridPatchDataset` and
+    :class:`~medh5.torch.PairedPatchDataset` do; one that does not ---
+    :class:`~medh5.torch.ClinicalTaskDataset` --- is refused.  Items within a
+    file are shuffled too, so a batch still mixes the patches it draws.
 
     The epoch comes from :meth:`set_epoch` when it is called, else from the
     dataset's ``epoch`` (``PatchDataset.set_epoch`` moves both), else from the

@@ -27,3 +27,14 @@ results.json
 # Scratch files and results the benchmark scripts write beside themselves.
 docs/examples/*.h5
 docs/examples/*.json
+
+# Rust build output (the workspace in `crates/`).
+target/
+
+# The binary's archives, as `.github/scripts/build-dist.sh` writes them (its
+# wheels go to dist/).
+/cli/
+
+# The compiled engine, as `maturin develop` leaves it next to the sources.
+medh5/_core*.so
+medh5/_core*.pyd

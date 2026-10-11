@@ -54,6 +54,12 @@ lying *between* two slices is refused rather than assigned to one.
 """
 
 
+LATTICE_TOLERANCE = 1e-3
+"""How far, in millimetres, a plane may sit from the regular stack
+:func:`read_dicom_seg` returns: the plane positions it compares are rounded to
+1e-4 mm, and an affine that misplaces a plane by more is no description of it."""
+
+
 def read_dicom_seg_frames(
     path: str | os.PathLike[str],
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -71,14 +77,21 @@ def read_dicom_seg_frames(
     Frames carry their own ``ImagePositionPatient``, so :func:`place_frames`
     puts each one where it belongs instead.
     """
-    from medh5.io.dicom import require_pydicom
+    from medh5.io.dicom import _dcmread
 
-    pydicom = require_pydicom()
-    dataset = pydicom.dcmread(os.fspath(path))
+    dataset = _dcmread(path)
     if getattr(dataset, "Modality", None) != "SEG":
         raise MEDH5ValidationError(
             f"{path} declares Modality={getattr(dataset, 'Modality', None)!r}, "
             "not 'SEG'"
+        )
+    kind = str(getattr(dataset, "SegmentationType", BINARY))
+    if kind not in (BINARY, FRACTIONAL):
+        # A LABELMAP frame holds every segment, by pixel value, and names
+        # none: read as BINARY, each frame became segment 1.
+        raise MEDH5ValidationError(
+            f"{path} is a {kind} segmentation; this importer reads BINARY and "
+            "FRACTIONAL ones, whose frames each hold one segment"
         )
     segments = _segments(dataset)
     pixels = np.asarray(dataset.pixel_array)
@@ -86,7 +99,7 @@ def read_dicom_seg_frames(
         pixels = pixels[None]
     rows, columns = int(dataset.Rows), int(dataset.Columns)
     placement = _frame_placement(dataset, pixels.shape[0])
-    fractional = getattr(dataset, "SegmentationType", BINARY) == FRACTIONAL
+    fractional = kind == FRACTIONAL
     scale = float(getattr(dataset, "MaximumFractionalValue", 255) or 255)
 
     frames = [
@@ -94,6 +107,8 @@ def read_dicom_seg_frames(
             "index": index,
             "segment": placement["segments"][index],
             "position": placement["positions"][index],
+            "orientation": placement["orientations"][index],
+            "pixel_spacing": placement["pixel_spacings"][index],
             "plane": placement["indices"][index],
             "data": (
                 pixels[index].astype(np.float32) / scale
@@ -104,7 +119,7 @@ def read_dicom_seg_frames(
         for index in range(pixels.shape[0])
     ]
     geometry: dict[str, Any] = {
-        "shape": (len(placement["planes"]), rows, columns),
+        "shape": (max(placement["indices"]) + 1, rows, columns),
         "rows": rows,
         "columns": columns,
         "spacing": placement["spacing"],
@@ -117,6 +132,7 @@ def read_dicom_seg_frames(
         "fractional": fractional,
         "source_series": placement["source_series"],
         "planes": placement["planes"],
+        "regular": placement["regular"],
         "frames": len(frames),
         "scale": scale,
     }
@@ -127,6 +143,8 @@ def place_frames(
     frames: Sequence[Mapping[str, Any]],
     geometry: Mapping[str, Any],
     grid: Any,
+    *,
+    frame_salt: str | None = None,
 ) -> dict[int, npt.NDArray[Any]]:
     """Put each frame on the slice of *grid* that its position names (§3.3).
 
@@ -136,7 +154,13 @@ def place_frames(
     this grid is refused **by name** rather than force-fitted: it is either a
     different reconstruction or a different series, and both are answers the
     caller has to act on.
+
+    Before any of that, the frames of reference: a SEG drawn in one is not
+    placed on a grid in another, whatever their numbers (§3.4).
+    *frame_salt* compares the SEG's frame as ``medh5 scrub`` pseudonymised the
+    grid's (see :func:`frames_agree`).
     """
+    _require_same_frame(geometry.get("frame_uid"), grid, frame_salt)
     shape = tuple(grid.spatial_shape)
     if len(shape) != 3:
         raise MEDH5ValidationError(
@@ -151,6 +175,21 @@ def place_frames(
             "drawn on a different reconstruction",
             code="E405",
         )
+    signs, scale = _from_patient(grid)
+    _check_plane(geometry, grid, signs, scale)
+    for frame in frames:
+        # A frame read from a file carries its own plane; every one is checked,
+        # not only the file's first.
+        if frame.get("orientation") is not None:
+            own = {
+                "direction": _direction(np.asarray(frame["orientation"], np.float64)),
+                "spacing": [
+                    geometry["spacing"][0],
+                    *(float(v) for v in frame["pixel_spacing"]),
+                ],
+            }
+            whose = f"SEG frame {frame['index']}'s"
+            _check_plane(own, grid, signs, scale, whose=whose)
     dtype = np.float32 if geometry["fractional"] else bool
     volumes: dict[int, npt.NDArray[Any]] = {
         number: np.zeros(shape, dtype=dtype) for number in geometry["segments"]
@@ -159,8 +198,9 @@ def place_frames(
         segment = int(frame["segment"])
         if segment not in volumes:
             continue
-        index = np.asarray(grid.world_to_index(frame["position"]), dtype=np.float64)
-        position = float(index.reshape(-1)[0])
+        world = signs * np.asarray(frame["position"], dtype=np.float64) / scale
+        index = np.asarray(grid.world_to_index(world), dtype=np.float64).reshape(-1)
+        position = float(index[0])
         nearest = int(np.round(position))
         if abs(position - nearest) > SLICE_TOLERANCE or not 0 <= nearest < shape[0]:
             raise MEDH5ValidationError(
@@ -170,8 +210,138 @@ def place_frames(
                 "different reconstruction",
                 code="E405",
             )
+        # Its first pixel must be the slice's first voxel, too: rows and
+        # columns that match in number and not in place shifted every label.
+        if np.any(np.abs(index[1:3]) > SLICE_TOLERANCE):
+            raise MEDH5ValidationError(
+                f"SEG frame {frame['index']} (segment {segment}) starts at "
+                f"in-plane index ({index[1]:.3f}, {index[2]:.3f}) of grid "
+                f"{grid.grid_id!r}, not at (0, 0); the segmentation was drawn on a "
+                "shifted or different reconstruction",
+                code="E405",
+            )
         volumes[segment][nearest] = frame["data"]
     return volumes
+
+
+def frames_agree(
+    seg_frame: str | None, grid_frame: str | None, salt: str | None = None
+) -> bool | None:
+    """Whether a SEG's frame of reference is a grid's; ``None`` when either
+    states none, so there is nothing to compare.
+
+    A grid of a sample ``medh5 scrub`` pseudonymised holds its frame's
+    pseudonym, which the SEG's own UID never equals; with the scrub's *salt*
+    the SEG's is compared as the scrub would have written it --- an exact
+    correspondence, not an assumption.
+    """
+    if not seg_frame or not grid_frame:
+        return None
+    if seg_frame == grid_frame:
+        return True
+    if salt is not None:
+        from medh5.curation.scrub import pseudonymise
+
+        return pseudonymise(seg_frame, salt) == grid_frame
+    return False
+
+
+def _require_same_frame(
+    frame: str | None, grid: Any, salt: str | None, *, source: str = "the SEG"
+) -> None:
+    """Refuse a grid whose known frame of reference is not *frame* (§3.4).
+
+    Equal numbers in two frames are no correspondence: a grid with another
+    known frame and the same geometry received every voxel, from an explicit
+    ``grid=`` without a word and from automatic matching on a recorded guess.
+    Relating two frames is registration, which the importers do not apply.
+    Where either side states no frame, there is nothing to compare, and
+    placement rests on geometry, as it always has; the import records that
+    as a guess.  *source* names what was drawn in *frame*, for the message.
+    """
+    if frames_agree(frame, grid.frame_uid, salt) is not False:
+        return
+    hint = _salt_hint(grid.frame_uid, salt, "The grid's", f"{source}'s frame")
+    raise MEDH5ValidationError(
+        f"{source} was drawn in frame of reference {frame!r} and grid "
+        f"{grid.grid_id!r} is in {grid.frame_uid!r}: equal geometry in two "
+        "frames is no correspondence, and placing it there needs a "
+        f"registration, which this importer does not apply.{hint}",
+        code="E414",
+    )
+
+
+def _salt_hint(frame: str | None, salt: str | None, whose: str, compared: str) -> str:
+    """What a frame-of-reference refusal adds when *frame* --- *whose* frame
+    --- is a pseudonym ``medh5 scrub`` wrote and no *salt* was given: the
+    scrub's salt compares *compared* as the scrub wrote it.  Empty otherwise.
+    """
+    from medh5.curation.scrub import PSEUDONYM_PREFIX
+
+    if salt is not None or not str(frame).startswith(PSEUDONYM_PREFIX):
+        return ""
+    return (
+        f" {whose} frame is a `medh5 scrub` pseudonym: pass the scrub's salt "
+        "as frame_salt= (`--frame-salt` on the command line) to compare "
+        f"{compared} as the scrub wrote it."
+    )
+
+
+def _from_patient(grid: Any) -> tuple[npt.NDArray[np.float64], float]:
+    """The world-axis signs and the millimetres per grid unit that take a
+    DICOM patient position (LPS, mm) into *grid*'s world coordinates."""
+    from medh5.io.nifti import MM_PER_UNIT
+
+    if grid.coord_system not in ("LPS", "RAS"):
+        raise MEDH5ValidationError(
+            f"grid {grid.grid_id!r} is in {grid.coord_system!r}; a DICOM SEG is "
+            "placed by patient position (LPS), which only an LPS or RAS grid "
+            "can relate to",
+            code="E414",
+        )
+    scale = MM_PER_UNIT.get(grid.units)
+    if scale is None:
+        raise MEDH5ValidationError(
+            f"grid {grid.grid_id!r} is uncalibrated ({grid.units!r}), so no "
+            "patient position is a place on it",
+            code="E414",
+        )
+    flip = 1.0 if grid.coord_system == "LPS" else -1.0
+    return np.array([flip, flip, 1.0]), scale
+
+
+def _check_plane(
+    geometry: Mapping[str, Any],
+    grid: Any,
+    signs: npt.NDArray[np.float64],
+    scale: float,
+    *,
+    whose: str = "the SEG's",
+) -> None:
+    """The SEG's rows and columns run the way the grid's do, at its spacing.
+
+    Rows and columns were compared by count alone, so a SEG with the source's
+    matrix size but another orientation or pixel spacing --- another
+    reconstruction --- had its frames laid on this grid as they were.
+    """
+    seg = signs[:, None] * np.asarray(geometry["direction"], dtype=np.float64)
+    ours = np.asarray(grid.direction, dtype=np.float64)
+    if not np.allclose(seg[:, 1:], ours[:, 1:], atol=1e-4):
+        raise MEDH5ValidationError(
+            f"{whose} rows and columns run along {seg[:, 1:].T.round(4).tolist()}, "
+            f"grid {grid.grid_id!r}'s along {ours[:, 1:].T.round(4).tolist()}; it "
+            "was drawn on a different reconstruction",
+            code="E405",
+        )
+    pixel = np.asarray(geometry["spacing"][1:], dtype=np.float64)
+    voxel = np.asarray(grid.spacing[1:], dtype=np.float64) * scale
+    if not np.allclose(pixel, voxel, rtol=1e-4, atol=1e-4):
+        raise MEDH5ValidationError(
+            f"{whose} pixel spacing is {pixel.tolist()} mm, grid "
+            f"{grid.grid_id!r}'s {voxel.tolist()} mm; it was drawn on a "
+            "different reconstruction",
+            code="E405",
+        )
 
 
 def read_dicom_seg(
@@ -182,12 +352,23 @@ def read_dicom_seg(
     """A SEG file as ``{segment number: volume}`` plus its geometry and segments.
 
     The volume spans the planes the file carries, which is what a reader with
-    no other information can honestly build.  An import into an existing
-    sample goes through :func:`read_dicom_seg_frames` and :func:`place_frames`
-    instead, because the grid it is going onto is what knows how many slices
-    the study has.
+    no other information can honestly build --- on the regular stack they sit
+    on, so a plane the file omits between two it carries is an empty plane
+    and every plane is where ``geometry`` says (see :func:`_lattice`).  A file
+    whose planes no regular stack holds is refused.  An import into an
+    existing sample goes through :func:`read_dicom_seg_frames` and
+    :func:`place_frames` instead, because the grid it is going onto is what
+    knows how many slices the study has.
     """
     frames, geometry = read_dicom_seg_frames(path)
+    if not geometry["regular"]:
+        planes = [float(p) for p in geometry["planes"]]
+        raise MEDH5ValidationError(
+            f"the SEG's planes lie at {planes} mm along their normal, and no "
+            "regular stack places them all; read its frames with "
+            "read_dicom_seg_frames and place them on the grid they were drawn "
+            "on with place_frames"
+        )
     segments = geometry["segments"]
     depth, rows, columns = geometry["shape"]
     volumes: dict[int, npt.NDArray[Any]] = {
@@ -242,24 +423,44 @@ def _segments(dataset: Any) -> dict[int, dict[str, Any]]:
 
 
 def _frame_placement(dataset: Any, n_frames: int) -> dict[str, Any]:
-    """Where each frame belongs, from the per-frame functional groups."""
+    """Where each frame belongs, from the per-frame functional groups.
+
+    A functional group may sit in the shared item or in each frame's own
+    (PS3.3 C.7.6.16), so every frame's orientation and pixel spacing are read
+    where they are --- and the frames must agree on them, being one volume's
+    slices.  The first orientation found and the shared spacing stood for
+    every frame: a frame turned in plane was placed as the first one was, and
+    spacing kept in the frames read as 1 mm.
+    """
     shared = _first_item(dataset, "SharedFunctionalGroupsSequence")
     per_frame = list(getattr(dataset, "PerFrameFunctionalGroupsSequence", []))
-    orientation = _orientation(shared, per_frame)
-    normal = np.cross(orientation[:3], orientation[3:])
     positions: list[npt.NDArray[np.float64]] = []
     segments: list[int] = []
+    orientations: list[npt.NDArray[np.float64]] = []
+    pixels: list[npt.NDArray[np.float64]] = []
     for index in range(n_frames):
         group = per_frame[index] if index < len(per_frame) else None
         positions.append(_position(group, shared))
-        segments.append(_segment_number(group))
+        segments.append(_segment_number(group, shared, index))
+        orientations.append(_orientation(group, shared, index))
+        pixels.append(_pixel_spacing(group, shared, index))
+    _congruent(orientations, pixels)
+    orientation = orientations[0]
+    normal = np.cross(orientation[:3], orientation[3:])
     projected = [float(np.dot(p, normal)) for p in positions]
     planes = sorted(set(np.round(projected, 4)))
-    indices = [planes.index(round(v, 4)) for v in projected]
-    spacing = _spacing(shared, planes)
+    first = per_frame[0] if per_frame else None
+    regular = _lattice(planes, _between(first, shared))
+    # An import places every frame by its own position (`place_frames`), so a
+    # stack no regular lattice holds is still placeable; only a volume of the
+    # file's own (`read_dicom_seg`) needs one.
+    step, lattice = regular or (float("nan"), list(range(len(planes))))
+    indices = [lattice[planes.index(round(v, 4))] for v in projected]
+    spacing = [step, float(pixels[0][0]), float(pixels[0][1])]
     origin_index = indices.index(0) if 0 in indices else 0
     return {
         "planes": planes,
+        "regular": regular is not None,
         "indices": indices,
         "segments": segments,
         # Each frame's own `ImagePositionPatient`, kept rather than collapsed
@@ -267,25 +468,34 @@ def _frame_placement(dataset: Any, n_frames: int) -> dict[str, Any]:
         # onto needs the position, and the index is only meaningful among the
         # planes this file happens to carry.
         "positions": positions,
+        "orientations": orientations,
+        "pixel_spacings": pixels,
         "spacing": spacing,
         "origin": [float(v) for v in positions[origin_index]],
-        "direction": [
-            [float(v) for v in row]
-            for row in np.stack([normal, orientation[3:], orientation[:3]], axis=1)
-        ],
+        "direction": _direction(orientation),
         "source_series": _source_series(dataset),
     }
 
 
-def _orientation(shared: Any, per_frame: Sequence[Any]) -> npt.NDArray[np.float64]:
-    for holder in (shared, *per_frame):
-        group = _first_item(holder, "PlaneOrientationSequence")
-        if group is not None and hasattr(group, "ImageOrientationPatient"):
+def _direction(orientation: npt.NDArray[np.float64]) -> list[list[float]]:
+    """A frame's `ImageOrientationPatient` as a (slice, row, column) direction."""
+    normal = np.cross(orientation[:3], orientation[3:])
+    return [
+        [float(v) for v in row]
+        for row in np.stack([normal, orientation[3:], orientation[:3]], axis=1)
+    ]
+
+
+def _orientation(group: Any, shared: Any, index: int) -> npt.NDArray[np.float64]:
+    for holder in (group, shared):
+        plane = _first_item(holder, "PlaneOrientationSequence")
+        if plane is not None and hasattr(plane, "ImageOrientationPatient"):
             return np.asarray(
-                [float(v) for v in group.ImageOrientationPatient], dtype=np.float64
+                [float(v) for v in plane.ImageOrientationPatient], dtype=np.float64
             )
     raise MEDH5ValidationError(
-        "the SEG carries no ImageOrientationPatient, so its frames cannot be placed"
+        f"SEG frame {index} carries no ImageOrientationPatient, in its own "
+        "functional groups or the shared ones, so it cannot be placed"
     )
 
 
@@ -299,26 +509,91 @@ def _position(group: Any, shared: Any) -> npt.NDArray[np.float64]:
     raise MEDH5ValidationError("a SEG frame carries no ImagePositionPatient")
 
 
-def _segment_number(group: Any) -> int:
-    identification = _first_item(group, "SegmentIdentificationSequence")
-    if identification is None:
-        return 1
-    return int(getattr(identification, "ReferencedSegmentNumber", 1))
+def _pixel_spacing(group: Any, shared: Any, index: int) -> npt.NDArray[np.float64]:
+    for holder in (group, shared):
+        measures = _first_item(holder, "PixelMeasuresSequence")
+        if measures is not None and getattr(measures, "PixelSpacing", None):
+            return np.asarray(
+                [float(v) for v in measures.PixelSpacing], dtype=np.float64
+            )
+    raise MEDH5ValidationError(
+        f"SEG frame {index} carries no PixelSpacing, in its own functional "
+        "groups or the shared ones; where its pixels lie is not stated, and "
+        "it is refused rather than read as 1 mm"
+    )
 
 
-def _spacing(shared: Any, planes: Sequence[float]) -> list[float]:
-    measures = _first_item(shared, "PixelMeasuresSequence")
-    in_plane = [1.0, 1.0]
-    if measures is not None and hasattr(measures, "PixelSpacing"):
-        in_plane = [float(v) for v in measures.PixelSpacing]
-    if len(planes) > 1:
-        gaps = np.diff(np.asarray(planes, dtype=np.float64))
-        through = float(np.median(np.abs(gaps)))
-    elif measures is not None and getattr(measures, "SpacingBetweenSlices", None):
-        through = float(measures.SpacingBetweenSlices)
-    else:
-        through = 1.0
-    return [through, in_plane[0], in_plane[1]]
+def _between(group: Any, shared: Any) -> float | None:
+    for holder in (group, shared):
+        measures = _first_item(holder, "PixelMeasuresSequence")
+        if measures is not None and getattr(measures, "SpacingBetweenSlices", None):
+            return float(measures.SpacingBetweenSlices)
+    return None
+
+
+def _congruent(
+    orientations: Sequence[npt.NDArray[np.float64]],
+    pixels: Sequence[npt.NDArray[np.float64]],
+) -> None:
+    """Every frame oriented and spaced as the first: one volume's slices.
+
+    About the SEG alone, so no §15.2 code: the codes describe a sample, and
+    this refusal comes before there is one.
+    """
+    pairs = zip(orientations, pixels, strict=True)
+    for index, (orientation, pixel) in enumerate(pairs):
+        if not np.allclose(orientation, orientations[0], atol=1e-4):
+            raise MEDH5ValidationError(
+                f"SEG frame {index} is oriented {orientation.round(4).tolist()} and "
+                f"frame 0 {orientations[0].round(4).tolist()}: frames turned "
+                "against each other are not one volume's slices"
+            )
+        if not np.allclose(pixel, pixels[0], rtol=1e-4, atol=1e-6):
+            raise MEDH5ValidationError(
+                f"SEG frame {index} has pixel spacing {pixel.tolist()} mm and frame "
+                f"0 {pixels[0].tolist()} mm: frames of different spacing are not "
+                "one volume's slices"
+            )
+
+
+def _segment_number(group: Any, shared: Any, index: int) -> int:
+    """The segment a frame holds, from its own functional groups or the
+    shared ones; a frame that names none is refused, not read as segment 1."""
+    for holder in (group, shared):
+        identification = _first_item(holder, "SegmentIdentificationSequence")
+        number = getattr(identification, "ReferencedSegmentNumber", None)
+        if number is not None:
+            return int(number)
+    raise MEDH5ValidationError(
+        f"SEG frame {index} names no segment: no SegmentIdentificationSequence "
+        "with a ReferencedSegmentNumber, in its own functional groups or the "
+        "shared ones"
+    )
+
+
+def _lattice(
+    planes: Sequence[float], between: float | None
+) -> tuple[float, list[int]] | None:
+    """The regular stack the planes a SEG carries sit on: its step, and each
+    plane's index in it; ``None`` when no regular stack holds them.
+
+    A SEG may omit its empty frames, so the planes it carries need not be
+    adjacent.  The stack is the one whose step --- the stated
+    ``SpacingBetweenSlices``, else the smallest gap --- divides every gap a
+    whole number of times, the omitted planes empty.  The median gap stood
+    for the step: planes at 10, 12.5 and 17.5 mm read as a stack 3.75 mm
+    apart, the middle one 1.25 mm from where it was drawn.
+    """
+    if len(planes) < 2:
+        return (abs(between) if between else 1.0), [0] * len(planes)
+    gaps = np.diff(np.asarray(planes, dtype=np.float64))
+    step = abs(float(between)) if between else float(gaps.min())
+    whole = np.round(gaps / step)
+    # Exactly, to the positions' own precision: a gap a quarter step off would
+    # put its plane a quarter step from where the stack says it is.
+    if np.any(whole < 1) or np.any(np.abs(gaps - whole * step) > LATTICE_TOLERANCE):
+        return None
+    return step, [0, *np.cumsum(whole).astype(int).tolist()]
 
 
 def _first_item(holder: Any, name: str) -> Any:
@@ -346,29 +621,44 @@ def from_dicom_seg(
     ann_id: str = "seg",
     grid: str | None = None,
     annotated_classes: Sequence[str] | str = "all_given",
+    frame_salt: str | None = None,
     report: ConversionReport | None = None,
 ) -> ConversionReport:
     """Add a DICOM SEG's segments to an existing sample (§7).
 
     The SEG is matched to a grid by frame of reference where it declares one,
     and its shape is checked against that grid: a SEG drawn on a different
-    reconstruction is refused rather than force-fitted.
+    reconstruction is refused rather than force-fitted.  A grid --- matched or
+    named with *grid* --- whose frame of reference is known and is not the
+    SEG's is refused before the sample is touched: equal geometry in two
+    frames is no correspondence (§3.4).  Where the SEG or the grid states no
+    frame, the placement rests on geometry and the report records a guess.
+    *frame_salt* is the salt a ``medh5 scrub`` pseudonymised the sample's
+    frames with (:func:`frames_agree`).
     """
     import medh5
-    from medh5.labels.labelset import LabelClass, LabelSet, OntologyCode
+    from medh5.labels import LabelClass, LabelSet, OntologyCode
 
     log = report or ConversionReport(converter="from-dicom-seg")
     log.source = os.fspath(path)
     frames, geometry = read_dicom_seg_frames(path)
 
     with medh5.open(sample) as opened:
-        grid_id = grid or _match_grid(opened, geometry, log)
+        grid_id = grid or _match_grid(opened, geometry, log, frame_salt)
         target = opened.grids[grid_id]
         existing = opened.label_set
     # Placed by position, not reshaped by count: a SEG that omits its empty
     # frames covers only the slices it labels, and the grid is what says how
     # many slices the study has (§3.3).
-    volumes = place_frames(frames, geometry, target)
+    volumes = place_frames(frames, geometry, target, frame_salt=frame_salt)
+    if frames_agree(geometry.get("frame_uid"), target.frame_uid, frame_salt) is None:
+        log.guess(
+            "frame",
+            f"{'the SEG' if not geometry.get('frame_uid') else f'grid {grid_id!r}'} "
+            "states no frame of reference, so the frames could not be compared; "
+            "the SEG was placed by its geometry alone",
+            {"grid": grid_id, "seg_frame": geometry.get("frame_uid")},
+        )
     log.decision(
         "frames",
         f"{len(frames)} frame(s) were placed on grid {grid_id!r} by "
@@ -527,30 +817,60 @@ def _in_plane_match(grid: Any, geometry: Mapping[str, Any]) -> bool:
     )
 
 
-def _match_grid(sample: Any, geometry: Mapping[str, Any], log: ConversionReport) -> str:
-    """Pick the grid the SEG was drawn on, by frame of reference then by shape."""
+def _match_grid(
+    sample: Any,
+    geometry: Mapping[str, Any],
+    log: ConversionReport,
+    salt: str | None = None,
+) -> str:
+    """Pick the grid the SEG was drawn on, by frame of reference then by shape.
+
+    The shape is a fallback only among grids whose frame cannot be compared
+    with the SEG's: one in another known frame was matched on its rows and
+    columns alone.
+    """
     frame = geometry.get("frame_uid")
+    grids = list(sample.grids.values())
     if frame:
-        matches = [g for g in sample.grids.values() if g.frame_uid == frame]
+        matches = [g for g in grids if frames_agree(frame, g.frame_uid, salt)]
         if len(matches) == 1:
             return str(matches[0].grid_id)
         if len(matches) > 1:
             same = [g for g in matches if _in_plane_match(g, geometry)]
             if len(same) == 1:
                 return str(same[0].grid_id)
-    candidates = [g for g in sample.grids.values() if _in_plane_match(g, geometry)]
+    candidates = [
+        g
+        for g in grids
+        if _in_plane_match(g, geometry)
+        and frames_agree(frame, g.frame_uid, salt) is None
+    ]
     if len(candidates) == 1:
         log.guess(
             "grid",
             f"the SEG names frame {frame!r}, which no grid declares; it was "
-            f"matched to grid {candidates[0].grid_id!r} on shape alone",
+            f"matched to grid {candidates[0].grid_id!r}, which states no frame, "
+            "on shape alone",
             {"grid": candidates[0].grid_id},
         )
         return str(candidates[0].grid_id)
+    elsewhere = [
+        str(g.grid_id)
+        for g in grids
+        if _in_plane_match(g, geometry)
+        and frames_agree(frame, g.frame_uid, salt) is False
+    ]
     raise MEDH5ValidationError(
         f"cannot tell which grid the SEG belongs to: frame {frame!r} matches no "
-        f"grid and {len(candidates)} grid(s) share its rows and columns. Pass "
-        "grid= explicitly rather than letting the converter guess.",
+        f"grid and {len(candidates)} grid(s) without a frame share its rows and "
+        "columns"
+        + (
+            f"; {elsewhere} share them in another frame of reference, which is "
+            "no correspondence"
+            if elsewhere
+            else ""
+        )
+        + ". Pass grid= explicitly rather than letting the converter guess.",
         code="E101",
     )
 
@@ -563,32 +883,55 @@ def to_dicom_seg(
     *,
     classes: Sequence[int | str] | None = None,
     series_description: str = "medh5 segmentation",
+    frame_salt: str | None = None,
     report: ConversionReport | None = None,
 ) -> Path:
     """Export one voxel annotation as a DICOM SEG against its source slices.
 
+    A SEG holds one segment per class, so the annotation is a ``labelmap``,
+    ``layers``, ``bitmask``, ``instances`` or ``probmap``; any other kind is
+    refused (E401) before anything is read --- a ``mask`` too, having no
+    classes.
+
     *source_images* are the DICOM files the segmentation was drawn on: a SEG is
     defined by reference to them, and one written without them is orphaned in
-    every PACS that receives it.
+    every PACS that receives it.  They must be the annotation grid's slices,
+    in its frame of reference where the grid states one (E414 otherwise;
+    *frame_salt* compares a frame ``medh5 scrub`` pseudonymised, as
+    :func:`frames_agree` does) and on its lattice (E405 otherwise).
+
+    The SEG is ``BINARY``, so an annotation with an ignore region (§7.7) is
+    refused: a segment's 0 says a voxel was examined and found absent, and it
+    has no value for one nobody examined.
     """
     import medh5
 
     hd = require_highdicom()
-    from medh5.io.dicom import require_pydicom
+    from medh5.io.dicom import _dcmread
 
-    pydicom = require_pydicom()
     log = report or ConversionReport(converter="to-dicom-seg")
     log.source = os.fspath(sample)
 
-    datasets = [pydicom.dcmread(os.fspath(p)) for p in source_images]
-    if not datasets:
-        raise MEDH5ValidationError("to_dicom_seg needs the source DICOM images")
-    normal = _source_normal(datasets[0])
-    datasets.sort(key=lambda d: float(np.dot(_ipp(d), normal)))
-
     with medh5.open(sample) as opened:
         annotation = opened.annotations[ann_id]
+        _require_segments(annotation, ann_id)
+        datasets = [_dcmread(p) for p in source_images]
+        if not datasets:
+            raise MEDH5ValidationError("to_dicom_seg needs the source DICOM images")
+        normal = _source_normal(datasets[0])
+        datasets.sort(key=lambda d: float(np.dot(_ipp(d), normal)))
+        slices = _source_slices(annotation.grid, datasets, log, frame_salt)
         ids = annotation.resolve_classes(classes)
+        ignored = int(np.count_nonzero(opened.ignore_region(ann_id)))
+        if ignored:
+            raise MEDH5ValidationError(
+                f"annotation {ann_id!r} ignores {ignored} voxel(s) (§7.7), "
+                "which a BINARY SEG cannot mark --- a segment's 0 would say "
+                "they were examined and found absent; export it to NIfTI "
+                "instead (`to_nifti` with annotation=, `medh5 convert "
+                "to-nifti --annotation`), whose labelmap writes them as its "
+                f"ignore id {annotation.ignore_id}"
+            )
         planes = np.asarray(annotation.dense(list(ids)), dtype=bool)
         descriptions = [
             hd.seg.SegmentDescription(
@@ -604,9 +947,9 @@ def to_dicom_seg(
             )
             for i, class_id in enumerate(ids)
         ]
-        # highdicom wants (frames, rows, columns, segments); `dense` returns
-        # (segments, z, y, x).
-        pixels = np.transpose(planes, (1, 2, 3, 0))
+        # highdicom wants (frames, rows, columns, segments), a frame per
+        # source image in the order given; `dense` returns (segments, z, y, x).
+        pixels = np.transpose(planes, (1, 2, 3, 0))[slices]
         segmentation = hd.seg.Segmentation(
             source_images=datasets,
             pixel_array=pixels,
@@ -642,6 +985,123 @@ def to_dicom_seg(
     return target
 
 
+#: The kinds a SEG export writes: those with classes, one segment each.
+_SEGMENT_KINDS = ("labelmap", "layers", "bitmask", "instances", "probmap")
+
+
+def _require_segments(annotation: Any, ann_id: str) -> None:
+    """Refuse an annotation a SEG cannot hold (E401).
+
+    A SEG holds one segment per class.  A geometric annotation has no voxels
+    to write and a ``mask`` no class to write them as (§6.3); the export met
+    them as an ``AttributeError`` and an ``IndexError`` out of highdicom.
+    """
+    if annotation.kind in _SEGMENT_KINDS:
+        return
+    what = (
+        "a 'mask', which has no classes (§6.3)"
+        if annotation.kind == "mask"
+        else f"{annotation.kind!r}, not a voxel annotation"
+    )
+    kinds = ", ".join(repr(kind) for kind in _SEGMENT_KINDS[:-1])
+    raise MEDH5ValidationError(
+        f"annotation {ann_id!r} is {what}; a SEG holds one segment per class "
+        f"of a {kinds} or {_SEGMENT_KINDS[-1]!r} annotation",
+        code="E401",
+    )
+
+
+def _source_slices(
+    grid: Any,
+    datasets: Sequence[Any],
+    log: ConversionReport,
+    salt: str | None = None,
+) -> list[int]:
+    """The slice of *grid* each source image is, in the images' order.
+
+    A SEG is written against its source images: highdicom gives frame ``k``
+    the geometry of image ``k``, so the annotation's grid must be theirs ---
+    one frame of reference, rows and columns running the same way at the same
+    spacing, and each image one of its slices whose first pixel is the
+    slice's first voxel.  The export compared nothing, so an annotation on a
+    grid turned in plane, or shifted 10 mm in the same frame, was written
+    onto the source geometry, centimetres from where it was drawn.  A grid
+    that is not the images' is refused; nothing is resampled.  Another frame
+    of reference is E414, as on import; *salt* compares the images' frames
+    as ``medh5 scrub`` pseudonymised the grid's.
+    """
+    signs, scale = _from_patient(grid)
+    shape = tuple(grid.spatial_shape)
+    if len(shape) != 3 or len(datasets) != shape[0]:
+        raise MEDH5ValidationError(
+            f"grid {grid.grid_id!r} is {shape} and {len(datasets)} source "
+            "image(s) were given: a SEG is written a frame per source image, "
+            "so they must be the grid's slices, one each",
+            code="E405",
+        )
+    frames = sorted(
+        {str(getattr(d, "FrameOfReferenceUID", "") or "") for d in datasets}
+    )
+    if grid.frame_uid and not all(
+        frames_agree(f, grid.frame_uid, salt) for f in frames
+    ):
+        hint = _salt_hint(grid.frame_uid, salt, "The grid's", "the images' frame")
+        raise MEDH5ValidationError(
+            f"grid {grid.grid_id!r} is in frame {grid.frame_uid!r} and the source "
+            f"images in {[f or None for f in frames]}; a segmentation is not "
+            f"placed across frames of reference.{hint}",
+            code="E414",
+        )
+    if not grid.frame_uid:
+        log.guess(
+            "frame_of_reference",
+            f"grid {grid.grid_id!r} declares no frame_uid, so the source images "
+            "were matched to it by position alone",
+            {"grid": grid.grid_id},
+        )
+    order: list[int] = []
+    for k, dataset in enumerate(datasets):
+        whose = f"source image {k}'s"
+        if (int(dataset.Rows), int(dataset.Columns)) != shape[1:]:
+            raise MEDH5ValidationError(
+                f"{whose} matrix is {int(dataset.Rows)}x{int(dataset.Columns)} and "
+                f"grid {grid.grid_id!r}'s {shape[1]}x{shape[2]}; it is another "
+                "reconstruction",
+                code="E405",
+            )
+        orientation = np.asarray(
+            [float(v) for v in dataset.ImageOrientationPatient], dtype=np.float64
+        )
+        own = {
+            "direction": _direction(orientation),
+            "spacing": [0.0, *(float(v) for v in dataset.PixelSpacing)],
+        }
+        _check_plane(own, grid, signs, scale, whose=whose)
+        world = signs * _ipp(dataset) / scale
+        index = np.asarray(grid.world_to_index(world), dtype=np.float64).reshape(-1)
+        nearest = int(np.round(index[0]))
+        if (
+            abs(index[0] - nearest) > SLICE_TOLERANCE
+            or not 0 <= nearest < shape[0]
+            or np.any(np.abs(index[1:3]) > SLICE_TOLERANCE)
+        ):
+            raise MEDH5ValidationError(
+                f"source image {k} starts at index "
+                f"({index[0]:.3f}, {index[1]:.3f}, {index[2]:.3f}) of grid "
+                f"{grid.grid_id!r}, which is not the first voxel of one of its "
+                "slices; the annotation was drawn on another grid",
+                code="E405",
+            )
+        order.append(nearest)
+    if sorted(order) != list(range(shape[0])):
+        raise MEDH5ValidationError(
+            f"the source images fall on slices {order} of grid {grid.grid_id!r}; "
+            "a SEG needs each slice once",
+            code="E405",
+        )
+    return order
+
+
 def _source_normal(dataset: Any) -> npt.NDArray[np.float64]:
     orientation = np.asarray(
         [float(v) for v in dataset.ImageOrientationPatient], dtype=np.float64
@@ -659,6 +1119,7 @@ __all__ = [
     "BINARY",
     "FRACTIONAL",
     "SLICE_TOLERANCE",
+    "frames_agree",
     "from_dicom_seg",
     "place_frames",
     "read_dicom_seg",

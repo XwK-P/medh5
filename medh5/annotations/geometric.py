@@ -1,64 +1,38 @@
-"""Geometric annotations: boxes, oriented boxes, keypoints, points, contours,
-meshes (spec §8).
+"""Geometric annotations: boxes, oriented boxes, keypoints, points, contours
+and meshes (spec §8).
 
-Every coordinate in this module lives in a declared ``space`` --- continuous
-index coordinates of a named grid, or physical coordinates in a named frame of
-reference --- and readers convert through the affine rather than assuming a
-convention (§8.1).  Two consequences are easy to get wrong and are handled here
-once:
-
-**Boxes are measured at voxel edges.**  ``numpy slice a:b`` is ``[a-0.5, b-0.5]``,
-so a box converts to a slice without rounding.  Storing integer boxes, as 0.x
-did, cannot represent a resampled or rotated box at all.
-
-**An axis-aligned index box is not an axis-aligned world box.**  Under an oblique
-``direction`` it is an oriented box, so :meth:`BoxesAnnotation.as_world` returns
-the *enclosing* bounds and says so; :meth:`BoxesAnnotation.world_corners` is the
-exact conversion.
+**Boxes sit at voxel edges, indices at voxel centres**: ``[a, b]`` is the
+slice ``a+0.5 : b+0.5``.  The conversions here --- ``as_slices``,
+``to_world``, ``to_index`` --- are the format engine's, and refuse a grid in
+another frame of reference rather than guessing a transform.
 """
 
 from __future__ import annotations
 
-import json
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
 import numpy.typing as npt
 
-from medh5._hdf5 import as_str, str_dtype
-from medh5.annotations.base import Annotation, Instance, instance_id_dtype
-from medh5.annotations.payload import AnnotationPayload
-from medh5.errors import MEDH5ValidationError
-from medh5.geometry.affine import (
-    box_corners,
-    box_to_slices,
-    is_proper_rotation,
-)
-from medh5.geometry.grid import Grid
-from medh5.labels.labelset import check_class_id
+from medh5 import _core
+from medh5.annotations.base import Annotation, Instance, _instance
+from medh5.geometry import Grid
 
-SPACES = ("index", "world")
+SPACES: tuple[str, ...] = _core.SPACES
+CONTOUR_ROLES: tuple[str, ...] = _core.CONTOUR_ROLES
+VISIBILITY: dict[int, str] = dict(_core.VISIBILITY)
+ROTATION_TOL: float = _core.ROTATION_TOL
 
-CONTOUR_ROLES = ("outer", "hole")
-
-VISIBILITY = {0: "unlabelled", 1: "occluded", 2: "visible"}
-
-ROTATION_TOL = 1e-4
-
-
-def check_space(space: str) -> str:
-    if space not in SPACES:
-        raise MEDH5ValidationError(
-            f"space {space!r} must be one of {list(SPACES)}", code="E412"
-        )
-    return space
-
-
-# --------------------------------------------------------------------------
-# Shared reader behaviour
-# --------------------------------------------------------------------------
+check_space = _core.check_space
+check_slice_index = _core.check_slice_index
+encode_boxes = _core.encode_boxes
+encode_obb = _core.encode_obb
+encode_keypoints = _core.encode_keypoints
+encode_points = _core.encode_points
+encode_contours = _core.encode_contours
+encode_mesh = _core.encode_mesh
 
 
 class GeometricAnnotation(Annotation):
@@ -66,760 +40,210 @@ class GeometricAnnotation(Annotation):
 
     __slots__ = ()
 
-    # -- coordinate space --------------------------------------------------
-
     @property
     def space(self) -> str:
-        return check_space(self.header.space or "index")
+        return str(self._handle.space)
 
     @property
     def frame_uid(self) -> str | None:
-        if self.header.frame_uid is not None:
-            return self.header.frame_uid
-        if self.header.grid is not None and self.header.grid in self._grids:
-            return self._grids[self.header.grid].frame_uid
-        return None
+        found: str | None = self._handle.frame_uid
+        return found
 
     @property
     def n_spatial(self) -> int:
-        return self.grid.n_spatial
-
-    def _resolve_grid(self, grid: Grid | str | None) -> Grid:
-        if isinstance(grid, Grid):
-            return grid
-        if isinstance(grid, str):
-            try:
-                return self._grids[grid]
-            except KeyError:
-                raise MEDH5ValidationError(
-                    f"annotation {self.ann_id!r}: grid {grid!r} does not exist",
-                    code="E101",
-                ) from None
-        return self.grid
-
-    def _is_own(self, grid: Grid) -> bool:
-        own = self.header.grid
-        return own is not None and own in self._grids and grid == self._grids[own]
-
-    def _require_related(self, target: Grid) -> None:
-        """Refuse a grid this annotation's coordinates cannot be read on.
-
-        The annotation's own grid always relates.  Any other grid does only
-        through a shared frame of reference (§3.3), and a grid without a
-        ``frame_uid`` shares nothing, another frame-less grid included.
-        """
-        if self._is_own(target):
-            return
-        frame = self.frame_uid
-        if frame is not None and frame == target.frame_uid:
-            return
-        raise MEDH5ValidationError(
-            f"annotation {self.ann_id!r} is in frame {frame!r} and grid "
-            f"{target.grid_id!r} is in {target.frame_uid!r}; a transform is "
-            "required to relate them",
-            code="E414",
-        )
+        return int(self._handle.n_spatial)
 
     def to_world(
         self, coords: npt.ArrayLike, *, grid: Grid | str | None = None
     ) -> npt.NDArray[np.float64]:
         """Map coordinates from this annotation's ``space`` to world.
 
-        Index coordinates count the voxels of the annotation's **own** grid,
-        whichever *grid* is named: *grid* says whose world the caller wants,
-        which is the same world only when the frames match --- and is refused
-        otherwise.  Reading them as *grid*'s indices put a box drawn on a 4 mm
-        grid at a quarter of its size on a 1 mm one.
+        Index coordinates count the voxels of the annotation's **own** grid;
+        *grid* says whose world the caller wants, and is refused (E414) when
+        its frame differs.
         """
-        values = np.asarray(coords, dtype=np.float64)
-        if grid is not None:
-            self._require_related(self._resolve_grid(grid))
-        if self.space == "world":
-            return values
-        return self.grid.index_to_world(values)
+        found: npt.NDArray[np.float64] = self._handle.to_world(coords, grid=grid)
+        return found
 
     def to_index(
         self, coords: npt.ArrayLike, *, grid: Grid | str | None = None
     ) -> npt.NDArray[np.float64]:
-        """Map coordinates from this annotation's ``space`` to continuous index.
+        """Map coordinates from this annotation's ``space`` to *grid*'s
+        continuous index (the annotation's own grid when none is named)."""
+        found: npt.NDArray[np.float64] = self._handle.to_index(coords, grid=grid)
+        return found
 
-        The index is *grid*'s --- the annotation's own when none is named ---
-        reached through world when the two are different grids of one frame.
-        Returning index coordinates unchanged for another grid answered with
-        the annotation's voxels in place of *grid*'s.
-        """
-        values = np.asarray(coords, dtype=np.float64)
-        target = self._resolve_grid(grid)
-        self._require_related(target)
-        if self.space == "index":
-            if self._is_own(target):
-                return values
-            values = self.grid.index_to_world(values)
-        return target.world_to_index(values)
+    def _read(
+        self, name: str, dtype: npt.DTypeLike, required: bool = True
+    ) -> npt.NDArray[Any] | None:
+        if not required and not self._handle.has_dataset(name):
+            return None
+        return np.asarray(self._handle.dataset(name).read(), dtype=dtype)
 
-    # -- per-object columns ------------------------------------------------
-
-    def _dataset(self, name: str, required: bool = True) -> Any:
-        if name in self.group:
-            return self.group[name]
-        if required:
-            raise MEDH5ValidationError(
-                f"annotation {self.ann_id!r}: kind {self.kind!r} requires a "
-                f"{name!r} dataset",
-                code="E410",
-            )
-        return None
-
-    def _optional(self, name: str, dtype: npt.DTypeLike) -> npt.NDArray[Any] | None:
-        node = self._dataset(name, required=False)
-        return None if node is None else np.asarray(node[...], dtype=dtype)
+    def _need(self, name: str, dtype: npt.DTypeLike) -> npt.NDArray[Any]:
+        found = self._read(name, dtype)
+        assert found is not None
+        return found
 
     @property
     def object_class_ids(self) -> npt.NDArray[np.uint16]:
-        return np.asarray(self._dataset("class_ids")[...], dtype=np.uint16)
+        found: npt.NDArray[np.uint16] = self._handle.object_class_ids
+        return found
 
     @property
     def instance_ids(self) -> npt.NDArray[np.uint64] | None:
-        return self._optional("instance_ids", np.uint64)
+        found: npt.NDArray[np.uint64] | None = self._handle.instance_ids
+        return found
 
     @property
     def scores(self) -> npt.NDArray[np.float32] | None:
-        return self._optional("scores", np.float32)
+        found: npt.NDArray[np.float32] | None = self._handle.scores
+        return found
 
     @property
     def attributes(self) -> tuple[dict[str, Any], ...] | None:
         """Per-object free-form JSON, decoded."""
-        node = self._dataset("attributes", required=False)
-        if node is None:
-            return None
-        return tuple(json.loads(as_str(v) or "{}") for v in node[...])
-
-    def summary(self) -> dict[str, Any]:
-        return {
-            "id": self.ann_id,
-            "kind": self.kind,
-            "task": self.task,
-            "grid": self.grid_id,
-            "space": self.space,
-            "frame_uid": self.frame_uid,
-            "timepoints": list(self.timepoints),
-            "objects": len(self),
-            "classes": len(self.class_ids),
-            "annotated_classes": len(self.annotated_class_ids),
-            "fully_covered": self.is_fully_covered,
-            "quality": self.quality_key,
-            "prov": self.prov,
-        }
+        found = self._handle.attributes
+        return None if found is None else tuple(found)
 
     def __len__(self) -> int:
-        return int(self.object_class_ids.shape[0])
-
-
-# --------------------------------------------------------------------------
-# §8.2 boxes
-# --------------------------------------------------------------------------
-
-
-def _object_columns(
-    n: int,
-    class_ids: Sequence[int],
-    instance_ids: Sequence[int] | None,
-    scores: Sequence[float] | None,
-    attributes: Sequence[Mapping[str, Any]] | None,
-) -> dict[str, npt.NDArray[Any]]:
-    if len(class_ids) != n:
-        raise MEDH5ValidationError(
-            f"class_ids has {len(class_ids)} entries for {n} objects", code="E405"
-        )
-    out: dict[str, npt.NDArray[Any]] = {
-        "class_ids": np.asarray([check_class_id(c) for c in class_ids], dtype=np.uint16)
-    }
-    if instance_ids is not None:
-        # The width follows the data (§8.2 permits either); a hard `uint32`
-        # cast stored `2**32 + 7` as `7` and the reader, which returns
-        # `uint64`, had no way to tell.
-        out["instance_ids"] = np.asarray(
-            instance_ids, dtype=instance_id_dtype(instance_ids)
-        )
-    if scores is not None:
-        out["scores"] = np.asarray(scores, dtype=np.float32)
-    if attributes is not None:
-        out["attributes"] = np.array(
-            [json.dumps(dict(a), sort_keys=True) for a in attributes],
-            dtype=str_dtype(),
-        )
-    for name, column in out.items():
-        if column.shape[0] != n:
-            raise MEDH5ValidationError(
-                f"{name} has {column.shape[0]} entries for {n} objects", code="E405"
-            )
-    return out
-
-
-def _per_element(
-    name: str, values: Any, n: int, dtype: Any, unit: str
-) -> npt.NDArray[Any]:
-    """A per-element column, checked against the elements it labels.
-
-    ``_object_columns`` validates the columns *it* builds, but several encoders
-    append their own afterwards and so never reached that loop.  Each one that
-    skipped the check let a short column through to a file that read as valid,
-    with every element past its end silently unlabelled --- and for a
-    ``slice_index`` the effect was worse still, since a box it did not reach
-    stayed a zero-thickness slice and selected no voxels at all (§8.2).  One
-    helper rather than a check per call site, because the checks that existed
-    were exactly the ones somebody remembered to write.
-    """
-    array = np.asarray(values, dtype=dtype)
-    if array.shape[0] != n:
-        raise MEDH5ValidationError(
-            f"{name} has length {array.shape[0]}, but the annotation holds {n} "
-            f"{unit}; it carries one value for each of them",
-            code="E405",
-        )
-    return array
-
-
-def encode_boxes(
-    boxes: npt.ArrayLike,
-    class_ids: Sequence[int],
-    *,
-    instance_ids: Sequence[int] | None = None,
-    scores: Sequence[float] | None = None,
-    attributes: Sequence[Mapping[str, Any]] | None = None,
-    slice_index: Sequence[int] | None = None,
-) -> AnnotationPayload:
-    """Pack axis-aligned boxes, ``(N, S, 2)`` in ``[lo, hi]`` form (spec §8.2)."""
-    array = np.asarray(boxes, dtype=np.float32)
-    if array.ndim != 3 or array.shape[2] != 2:
-        raise MEDH5ValidationError(
-            f"boxes must have shape (N, S, 2), got {array.shape}", code="E405"
-        )
-    if array.size and np.any(array[..., 0] > array[..., 1]):
-        bad = int(np.sum(np.any(array[..., 0] > array[..., 1], axis=1)))
-        raise MEDH5ValidationError(
-            f"{bad} box(es) have lo > hi; boxes are stored [lo, hi] at voxel edges",
-            code="E406",
-        )
-    datasets: dict[str, npt.NDArray[Any]] = {"boxes": array}
-    datasets.update(
-        _object_columns(array.shape[0], class_ids, instance_ids, scores, attributes)
-    )
-    if slice_index is not None:
-        # Checked here rather than left to `_object_columns`, which validates
-        # the columns it builds and never sees this one. A short `slice_index`
-        # used to be accepted, and every box past its end stayed a degenerate
-        # zero-thickness slice selecting no voxels at all --- ground truth
-        # dropped by a writer that raised nothing (§8.2).
-        problem = check_slice_index(slice_index, array.shape[0])
-        if problem:
-            raise MEDH5ValidationError(problem, code="E405")
-        datasets["slice_index"] = np.asarray(slice_index, dtype=np.int32)
-    return AnnotationPayload(
-        kind="boxes",
-        datasets=datasets,
-        class_ids=tuple(sorted({int(c) for c in class_ids})),
-    )
-
-
-def _stacked(
-    arrays: list[npt.NDArray[np.float64]], empty: tuple[int, ...]
-) -> npt.NDArray[np.float64]:
-    """``np.stack`` that survives an annotation holding no objects.
-
-    An empty detection annotation is not a degenerate input to guard against ---
-    it is the *verified negative* the coverage contract exists to record: no
-    objects, and ``annotated_class_ids`` naming the classes that were searched
-    for and not found (§6.4, §9).  ``np.stack([])`` raises, so the one case the
-    model is designed to express was the one that crashed on read.
-    """
-    if not arrays:
-        return np.empty(empty, dtype=np.float64)
-    return np.stack(arrays)
-
-
-def _degenerate_axis(box: npt.NDArray[np.float64]) -> int | None:
-    """The single axis a box has no extent on, or ``None``.
-
-    ``slice_index`` on a box with genuine extent everywhere is not §8.2's
-    2D-on-a-slice form, and is left alone rather than reinterpreted.
-    """
-    flat = [axis for axis in range(len(box)) if box[axis][0] == box[axis][1]]
-    return flat[0] if len(flat) == 1 else None
-
-
-def check_slice_index(
-    planes: Any,
-    n_boxes: int,
-    *,
-    boxes: npt.NDArray[np.float64] | None = None,
-    shape: Sequence[int] | None = None,
-) -> str | None:
-    """What a ``slice_index`` must be, stated once (§8.2).
-
-    The writer, :meth:`BoxesAnnotation.as_slices` and the semantic validator all
-    enforce this, and three hand-written copies of one rule is exactly how
-    ``check_chain()`` and the validator came to disagree about composite units.
-    They call this instead, so the three cannot drift apart.
-
-    Shape is checked always.  The *range* needs the grid the plane indexes, so
-    it is checked wherever the caller has the index-space boxes and the grid
-    extent; a world-space box at write time does not (its mapping needs the
-    affine) and is checked on the way out instead.
-    """
-    array = np.asarray(planes)
-    if array.ndim != 1 or array.shape[0] != n_boxes:
-        return (
-            f"`slice_index` has shape {array.shape}, but it names one plane for "
-            f"each of {n_boxes} box(es), so its shape must be ({n_boxes},)"
-        )
-    if boxes is None or shape is None:
-        return None
-    for i in range(n_boxes):
-        axis = _degenerate_axis(boxes[i])
-        if axis is None:
-            continue
-        extent = int(shape[axis])
-        plane = int(array[i])
-        if not 0 <= plane < extent:
-            return (
-                f"box {i} names slice {plane} on an axis {extent} voxels deep; "
-                f"a plane outside the grid was clamped to the nearest edge, "
-                f"which silently moves the annotation to a different plane"
-            )
-    return None
-
-
-def _thicken_named_slice(
-    slices: tuple[slice, ...],
-    box: npt.NDArray[np.float64],
-    plane: int,
-    shape: Sequence[int],
-) -> tuple[slice, ...]:
-    """Give the axis a `slice_index` names one voxel of thickness (§8.2).
-
-    Only the degenerate axis is touched.  The plane is *not* clamped to the
-    grid: `check_slice_index` has already rejected one that falls outside it,
-    and clamping is what silently relocated a box annotated on slice 99 of an
-    8-slice grid to slice 7.
-    """
-    axis = _degenerate_axis(box)
-    if axis is None:
-        return slices
-    extent = int(shape[axis])
-    if not 0 <= plane < extent:
-        raise MEDH5ValidationError(
-            f"slice_index names slice {plane} on an axis {extent} voxels deep",
-            code="E405",
-        )
-    out = list(slices)
-    out[axis] = slice(plane, plane + 1)
-    return tuple(out)
+        return int(self._handle.n_items)
 
 
 class BoxesAnnotation(GeometricAnnotation):
-    """Reader for ``kind = "boxes"``."""
+    """Axis-aligned boxes, ``(N, S, 2)`` ``[lo, hi]`` at voxel edges (§8.2)."""
 
     __slots__ = ()
 
     @property
     def ndim(self) -> int:
-        """Spatial dimensionality, readable from the stored ``(N, S, 2)`` shape."""
-        return int(self._dataset("boxes").shape[1])
+        return int(self._handle.box_ndim)
 
     @property
     def boxes(self) -> npt.NDArray[np.float32]:
-        return np.asarray(self._dataset("boxes")[...], dtype=np.float32)
+        return self._need("boxes", np.float32)
 
     @property
     def slice_index(self) -> npt.NDArray[np.int32] | None:
-        return self._optional("slice_index", np.int32)
+        found: npt.NDArray[np.int32] | None = self._handle.slice_index
+        return found
 
     def as_slices(self, grid: Grid | str | None = None) -> list[tuple[slice, ...]]:
-        """Each box as a numpy index tuple, clipped to the grid.
-
-        A box carrying ``slice_index`` with a degenerate axis is §8.2's "2D box
-        on slice k", the common radiology annotation.  ``slice_index`` was never
-        read here, and a degenerate axis converts to a zero-thickness slice, so
-        the canonical form selected **no voxels at all**.  The named slice is
-        given one voxel of thickness instead.
-        """
-        target = self._resolve_grid(grid)
-        if self.space == "index" and self._is_own(target):
-            boxes = self.boxes.astype(np.float64)
-        else:
-            boxes = self._boxes_in_index(target)
-        planes = self.slice_index
-        if planes is not None and not self._is_own(target):
-            raise MEDH5ValidationError(
-                f"annotation {self.ann_id!r}: `slice_index` names planes of grid "
-                f"{self.grid_id!r}, not of {target.grid_id!r}; read these boxes on "
-                "their own grid",
-                code="E414",
-            )
-        if planes is not None:
-            # Files predating the writer's check exist, and the range check can
-            # only happen here for a world-space box --- its plane is not known
-            # until the box is in index space.
-            problem = check_slice_index(
-                planes, len(boxes), boxes=boxes, shape=target.spatial_shape
-            )
-            if problem:
-                raise MEDH5ValidationError(
-                    f"annotation {self.ann_id!r}: {problem}", code="E405"
-                )
-        out: list[tuple[slice, ...]] = []
-        for i in range(len(boxes)):
-            slices = box_to_slices(boxes[i], target.spatial_shape)
-            if planes is not None:
-                slices = _thicken_named_slice(
-                    slices, boxes[i], int(planes[i]), target.spatial_shape
-                )
-            out.append(slices)
-        return out
-
-    def _boxes_in_index(self, grid: Grid) -> npt.NDArray[np.float64]:
-        return _stacked(
-            [
-                self._bounds(self.to_index(box_corners(b), grid=grid))
-                for b in self.boxes
-            ],
-            (0, self.ndim, 2),
-        )
-
-    @staticmethod
-    def _bounds(corners: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
-        return np.stack([corners.min(axis=0), corners.max(axis=0)], axis=1)
+        """Each box as voxel slices of *grid* (the annotation's own by default)."""
+        return list(self._handle.as_slices(grid))
 
     def world_corners(self, grid: Grid | str | None = None) -> npt.NDArray[np.float64]:
-        """Exact ``(N, 2**S, S)`` world corners of every box."""
-        return _stacked(
-            [self.to_world(box_corners(b), grid=grid) for b in self.boxes],
-            (0, 2**self.ndim, self.ndim),
-        )
+        """``(N, 2**S, S)`` world corners of every box."""
+        found: npt.NDArray[np.float64] = self._handle.world_corners(grid)
+        return found
 
     def as_world(self, grid: Grid | str | None = None) -> npt.NDArray[np.float64]:
-        """``(N, S, 2)`` **enclosing** world bounds.
-
-        Under an oblique ``direction`` an axis-aligned index box is an oriented
-        box in world space, so these bounds are larger than the box itself; use
-        :meth:`world_corners` when that matters, or ``obb`` to store the box
-        exactly.
-        """
-        if self.space == "world":
-            return self.boxes.astype(np.float64)
-        return _stacked(
-            [self._bounds(c) for c in self.world_corners(grid)], (0, self.ndim, 2)
-        )
+        """``(N, S, 2)`` world-axis-aligned bounds of every box."""
+        found: npt.NDArray[np.float64] = self._handle.as_world(grid)
+        return found
 
     def __iter__(self) -> Iterator[Instance]:
-        classes = self.object_class_ids
-        ids = self.instance_ids
-        scores = self.scores
-        boxes = self.boxes
-        for i in range(boxes.shape[0]):
-            yield Instance(
-                index=i,
-                instance_id=int(ids[i]) if ids is not None else i,
-                class_id=int(classes[i]),
-                box=boxes[i],
-                score=None if scores is None else float(scores[i]),
-            )
-
-
-# --------------------------------------------------------------------------
-# §8.3 obb
-# --------------------------------------------------------------------------
-
-
-def encode_obb(
-    centers: npt.ArrayLike,
-    sizes: npt.ArrayLike,
-    rotations: npt.ArrayLike,
-    class_ids: Sequence[int],
-    *,
-    instance_ids: Sequence[int] | None = None,
-    scores: Sequence[float] | None = None,
-    attributes: Sequence[Mapping[str, Any]] | None = None,
-) -> AnnotationPayload:
-    """Pack oriented boxes as centre, **full** edge lengths and a rotation matrix.
-
-    Rotation *matrices*, not quaternions or Euler angles: they are
-    dimension-generic, have no ordering convention to get wrong and no
-    double-cover ambiguity, and S² floats per box is nothing beside image data.
-    """
-    c = np.asarray(centers, dtype=np.float32)
-    s = np.asarray(sizes, dtype=np.float32)
-    r = np.asarray(rotations, dtype=np.float32)
-    if c.ndim != 2:
-        # `boxes`, `mesh` and `instances` all raise a coded error here; `obb`
-        # unpacked the shape first and died with a bare ValueError about tuple
-        # lengths.  An empty detection annotation is the verified negative the
-        # coverage contract exists to record, so the caller needs to be told
-        # what shape to pass, not handed an unpacking failure.
-        raise MEDH5ValidationError(
-            f"obb centers must have shape (n, dim), got {c.shape}; for an empty "
-            "collection pass correctly-shaped empty arrays, e.g. "
-            "np.empty((0, 3)) with np.empty((0, 3, 3)) rotations",
-            code="E405",
-        )
-    n, dim = c.shape
-    if s.shape != (n, dim) or r.shape != (n, dim, dim):
-        raise MEDH5ValidationError(
-            f"obb shapes disagree: centers {c.shape}, sizes {s.shape}, "
-            f"rotations {r.shape}",
-            code="E405",
-        )
-    if np.any(s < 0):
-        raise MEDH5ValidationError("obb sizes must be non-negative", code="E406")
-    for i in range(n):
-        if not is_proper_rotation(r[i], ROTATION_TOL):
-            raise MEDH5ValidationError(
-                f"obb {i}: `rotations` must be orthonormal with det = +1 to "
-                f"{ROTATION_TOL:g}",
-                code="E407",
-            )
-    datasets = {"centers": c, "sizes": s, "rotations": r}
-    datasets.update(_object_columns(n, class_ids, instance_ids, scores, attributes))
-    return AnnotationPayload(
-        kind="obb",
-        datasets=datasets,
-        class_ids=tuple(sorted({int(v) for v in class_ids})),
-    )
+        for row in self._handle.instances():
+            yield _instance(row)
 
 
 class ObbAnnotation(GeometricAnnotation):
-    """Reader for ``kind = "obb"``."""
+    """Oriented boxes: centre, full edge lengths, rotation (§8.3)."""
 
     __slots__ = ()
 
     @property
     def centers(self) -> npt.NDArray[np.float32]:
-        return np.asarray(self._dataset("centers")[...], dtype=np.float32)
+        return self._need("centers", np.float32)
 
     @property
     def sizes(self) -> npt.NDArray[np.float32]:
-        return np.asarray(self._dataset("sizes")[...], dtype=np.float32)
+        return self._need("sizes", np.float32)
 
     @property
     def rotations(self) -> npt.NDArray[np.float32]:
-        return np.asarray(self._dataset("rotations")[...], dtype=np.float32)
+        return self._need("rotations", np.float32)
 
     def corners(self) -> npt.NDArray[np.float64]:
-        """``(N, 2**S, S)`` corners: ``center + R @ (size/2 * s)`` for every sign."""
-        centers = self.centers.astype(np.float64)
-        sizes = self.sizes.astype(np.float64)
-        rotations = self.rotations.astype(np.float64)
-        dim = centers.shape[1]
-        signs = np.indices((2,) * dim).reshape(dim, -1).T * 2.0 - 1.0
-        out = np.empty((centers.shape[0], signs.shape[0], dim))
-        for i in range(centers.shape[0]):
-            offsets = (signs * (sizes[i] / 2.0)) @ rotations[i].T
-            out[i] = centers[i] + offsets
-        return out
+        """``(N, 2**S, S)`` corners: ``center + R @ (size/2 * s)``."""
+        found: npt.NDArray[np.float64] = self._handle.obb_corners()
+        return found
 
     def as_aabb(self) -> npt.NDArray[np.float64]:
-        """``(N, S, 2)`` axis-aligned bounds enclosing each oriented box."""
-        corners = self.corners()
-        return np.stack([corners.min(axis=1), corners.max(axis=1)], axis=2)
+        """``(N, S, 2)`` axis-aligned bounds of every oriented box."""
+        found: npt.NDArray[np.float64] = self._handle.obb_as_aabb()
+        return found
 
     @property
     def volumes(self) -> npt.NDArray[np.float64]:
-        return np.asarray(
-            np.prod(self.sizes.astype(np.float64), axis=1), dtype=np.float64
-        )
-
-    def __len__(self) -> int:
-        return int(self.centers.shape[0])
-
-
-# --------------------------------------------------------------------------
-# §8.4 keypoints
-# --------------------------------------------------------------------------
-
-
-def encode_keypoints(
-    points: npt.ArrayLike,
-    keypoint_class_ids: Sequence[int],
-    class_ids: Sequence[int],
-    *,
-    visibility: npt.ArrayLike | None = None,
-    instance_ids: Sequence[int] | None = None,
-    scores: Sequence[float] | None = None,
-    skeleton: str | None = None,
-) -> AnnotationPayload:
-    """Pack ``(N, K, S)`` keypoints with per-slot classes and visibility."""
-    array = np.asarray(points, dtype=np.float32)
-    if array.ndim != 3:
-        raise MEDH5ValidationError(
-            f"keypoints must have shape (N, K, S), got {array.shape}", code="E405"
-        )
-    n, k = array.shape[0], array.shape[1]
-    if len(keypoint_class_ids) != k:
-        raise MEDH5ValidationError(
-            f"keypoint_class_ids has {len(keypoint_class_ids)} entries for "
-            f"{k} keypoint slots",
-            code="E405",
-        )
-    if visibility is None:
-        vis = np.full((n, k), 2, dtype=np.uint8)
-    else:
-        vis = np.asarray(visibility, dtype=np.uint8)
-        if vis.shape != (n, k):
-            raise MEDH5ValidationError(
-                f"visibility {vis.shape} must be (N, K) = ({n}, {k})", code="E405"
-            )
-        if np.any(vis > 2):
-            raise MEDH5ValidationError(
-                "visibility values must be 0 (unlabelled), 1 (occluded) or 2 (visible)",
-                code="E411",
-            )
-    datasets: dict[str, npt.NDArray[Any]] = {
-        "points": array,
-        "visibility": vis,
-        "keypoint_class_ids": np.asarray(
-            [check_class_id(c) for c in keypoint_class_ids], dtype=np.uint16
-        ),
-    }
-    datasets.update(_object_columns(n, class_ids, instance_ids, scores, None))
-    return AnnotationPayload(
-        kind="keypoints",
-        datasets=datasets,
-        attrs={"skeleton": skeleton} if skeleton else {},
-        class_ids=tuple(sorted({int(c) for c in (*class_ids, *keypoint_class_ids)})),
-    )
+        found: npt.NDArray[np.float64] = self._handle.obb_volumes()
+        return found
 
 
 class KeypointsAnnotation(GeometricAnnotation):
-    """Reader for ``kind = "keypoints"``."""
+    """``(N, K, S)`` keypoints with per-slot classes and visibility (§8.4)."""
 
     __slots__ = ()
 
     @property
     def points(self) -> npt.NDArray[np.float32]:
-        return np.asarray(self._dataset("points")[...], dtype=np.float32)
+        return self._need("points", np.float32)
 
     @property
     def visibility(self) -> npt.NDArray[np.uint8]:
-        node = self._dataset("visibility", required=False)
-        if node is None:
-            return np.full(self.points.shape[:2], 2, dtype=np.uint8)
-        return np.asarray(node[...], dtype=np.uint8)
+        found: npt.NDArray[np.uint8] = self._handle.visibility
+        return found
 
     @property
     def keypoint_class_ids(self) -> npt.NDArray[np.uint16]:
-        return np.asarray(self._dataset("keypoint_class_ids")[...], dtype=np.uint16)
+        return self._need("keypoint_class_ids", np.uint16)
 
     @property
     def skeleton_id(self) -> str | None:
-        value = self.group.attrs.get("skeleton")
-        return as_str(value) if value is not None else None
+        found: str | None = self._handle.skeleton_id
+        return found
 
     def skeleton(self) -> Any:
-        """The skeleton this annotation names, resolved from the label set."""
-        name = self.skeleton_id
-        if name is None:
-            return None
-        if self._label_set is None:
-            raise MEDH5ValidationError(
-                f"annotation {self.ann_id!r} names skeleton {name!r} but the sample "
-                "has no label set to resolve it",
-                code="E413",
-            )
-        return self._label_set.skeleton(name)
+        """The label set's skeleton this annotation names, if any."""
+        return self._handle.skeleton()
 
     def labelled(self) -> npt.NDArray[np.bool_]:
-        """``(N, K)`` mask of keypoints that were actually annotated."""
-        return self.visibility > 0
-
-    def __len__(self) -> int:
-        return int(self.points.shape[0])
-
-
-# --------------------------------------------------------------------------
-# §8.5 points
-# --------------------------------------------------------------------------
-
-
-def encode_points(
-    points: npt.ArrayLike,
-    *,
-    class_ids: Sequence[int] | None = None,
-    names: Sequence[str] | None = None,
-    weights: Sequence[float] | None = None,
-    correspondence: str | None = None,
-) -> AnnotationPayload:
-    """Pack a point set: landmarks, seeds, or one half of a correspondence pair."""
-    array = np.asarray(points, dtype=np.float32)
-    if array.ndim != 2:
-        raise MEDH5ValidationError(
-            f"points must have shape (N, S), got {array.shape}", code="E405"
-        )
-    datasets: dict[str, npt.NDArray[Any]] = {"points": array}
-    n = array.shape[0]
-    if class_ids is not None:
-        datasets["class_ids"] = _per_element(
-            "class_ids", [check_class_id(c) for c in class_ids], n, np.uint16, "points"
-        )
-    if names is not None:
-        datasets["names"] = _per_element("names", list(names), n, str_dtype(), "points")
-    if weights is not None:
-        datasets["weights"] = _per_element("weights", weights, n, np.float32, "points")
-    return AnnotationPayload(
-        kind="points",
-        datasets=datasets,
-        attrs={"correspondence": correspondence} if correspondence else {},
-        class_ids=tuple(sorted({int(c) for c in class_ids})) if class_ids else (),
-    )
+        found: npt.NDArray[np.bool_] = self._handle.labelled()
+        return found
 
 
 class PointsAnnotation(GeometricAnnotation):
-    """Reader for ``kind = "points"``."""
+    """A point set: landmarks, seeds, or half a correspondence (§8.5)."""
 
     __slots__ = ()
 
     @property
     def points(self) -> npt.NDArray[np.float32]:
-        return np.asarray(self._dataset("points")[...], dtype=np.float32)
+        return self._need("points", np.float32)
 
     @property
     def names(self) -> tuple[str, ...] | None:
-        node = self._dataset("names", required=False)
-        return None if node is None else tuple(as_str(v) for v in node[...])
+        found: tuple[str, ...] | None = self._handle.point_names
+        return found
 
     @property
     def weights(self) -> npt.NDArray[np.float32] | None:
-        return self._optional("weights", np.float32)
+        return self._read("weights", np.float32, required=False)
 
     @property
     def correspondence(self) -> str | None:
-        value = self.group.attrs.get("correspondence")
-        return as_str(value) if value is not None else None
-
-    @property
-    def object_class_ids(self) -> npt.NDArray[np.uint16]:
-        node = self._dataset("class_ids", required=False)
-        if node is None:
-            return np.zeros(self.points.shape[0], dtype=np.uint16)
-        return np.asarray(node[...], dtype=np.uint16)
+        found: str | None = self._handle.correspondence
+        return found
 
     def named(self) -> dict[str, npt.NDArray[np.float32]]:
-        """``name -> point``, for landmark sets."""
-        names = self.names
-        if names is None:
-            return {}
-        return dict(zip(names, self.points, strict=True))
+        """``name -> point`` for a named point set (``{}`` when unnamed)."""
+        return {
+            name: np.asarray(point, dtype=np.float32)
+            for name, point in self._handle.named_points().items()
+        }
 
     def world_points(self, grid: Grid | str | None = None) -> npt.NDArray[np.float64]:
         return self.to_world(self.points, grid=grid)
-
-    def __len__(self) -> int:
-        return int(self.points.shape[0])
-
-
-# --------------------------------------------------------------------------
-# §8.6 contours
-# --------------------------------------------------------------------------
 
 
 @dataclass(slots=True)
@@ -834,242 +258,78 @@ class Polygon:
     role: str = "outer"
 
     def __post_init__(self) -> None:
-        if self.role not in CONTOUR_ROLES:
-            raise MEDH5ValidationError(
-                f"contour role {self.role!r} must be one of {list(CONTOUR_ROLES)}",
-                code="E411",
-            )
-
-
-def encode_contours(
-    polygons: Sequence[Polygon], *, ndim: int | None = None
-) -> AnnotationPayload:
-    """Concatenate planar polygons with an offset table (spec §8.6).
-
-    Rasterising contours into a voxel annotation is an explicit,
-    provenance-tracked activity --- never something a reader does implicitly,
-    because the rasterisation rule (winding, hole handling, partial voxels) is a
-    decision that belongs in the record.
-
-    An empty *polygons* is a verified negative --- looked for, nothing drawn ---
-    and is as legitimate here as for boxes (§9); it needs *ndim* to shape the
-    empty vertex table, which ``add_contours`` supplies from the grid.
-    """
-    if not polygons:
-        if ndim is None:
-            raise MEDH5ValidationError(
-                "no polygons were supplied; an empty contours annotation needs "
-                "ndim= to shape its vertex table",
-                code="E410",
-            )
-        return AnnotationPayload(
-            kind="contours",
-            datasets={
-                "vertices": np.empty((0, int(ndim)), dtype=np.float32),
-                "contour_offsets": np.zeros(1, dtype=np.int64),
-                "contour_class_ids": np.empty(0, dtype=np.uint16),
-                "contour_plane": np.empty((0, 2), dtype=np.int32),
-                "contour_role": np.empty(0, dtype=np.uint8),
-            },
-            class_ids=(),
-        )
-    chunks = [np.asarray(p.vertices, dtype=np.float32) for p in polygons]
-    dim = chunks[0].shape[1]
-    for i, chunk in enumerate(chunks):
-        if chunk.ndim != 2 or chunk.shape[1] != dim:
-            raise MEDH5ValidationError(
-                f"polygon {i} has shape {chunk.shape}; expected (V, {dim})", code="E405"
-            )
-    offsets = np.zeros(len(chunks) + 1, dtype=np.int64)
-    offsets[1:] = np.cumsum([c.shape[0] for c in chunks], dtype=np.int64)
-    return AnnotationPayload(
-        kind="contours",
-        datasets={
-            "vertices": np.concatenate(chunks),
-            "contour_offsets": offsets,
-            "contour_class_ids": np.asarray(
-                [check_class_id(p.class_id) for p in polygons], dtype=np.uint16
-            ),
-            "contour_plane": np.asarray([p.plane for p in polygons], dtype=np.int32),
-            "contour_role": np.asarray(
-                [CONTOUR_ROLES.index(p.role) for p in polygons], dtype=np.uint8
-            ),
-        },
-        class_ids=tuple(sorted({int(p.class_id) for p in polygons})),
-    )
+        _core.check_contour_role(self.role)
 
 
 class ContoursAnnotation(GeometricAnnotation):
-    """Reader for ``kind = "contours"``."""
+    """Planar polygons with an offset table (§8.6) --- RTSTRUCT-shaped."""
 
     __slots__ = ()
 
     @property
     def vertices(self) -> npt.NDArray[np.float32]:
-        return np.asarray(self._dataset("vertices")[...], dtype=np.float32)
+        return self._need("vertices", np.float32)
 
     @property
     def offsets(self) -> npt.NDArray[np.int64]:
-        return np.asarray(self._dataset("contour_offsets")[...], dtype=np.int64)
-
-    @property
-    def object_class_ids(self) -> npt.NDArray[np.uint16]:
-        return np.asarray(self._dataset("contour_class_ids")[...], dtype=np.uint16)
+        return np.asarray(self._handle.contour_offsets, dtype=np.int64)
 
     @property
     def planes(self) -> npt.NDArray[np.int32]:
-        node = self._dataset("contour_plane", required=False)
-        if node is None:
-            return np.full((len(self), 2), -1, dtype=np.int32)
-        return np.asarray(node[...], dtype=np.int32)
+        found: npt.NDArray[np.int32] = self._handle.contour_planes
+        return found
 
     @property
     def roles(self) -> tuple[str, ...]:
-        node = self._dataset("contour_role", required=False)
-        if node is None:
-            return ("outer",) * len(self)
-        return tuple(CONTOUR_ROLES[int(v)] for v in node[...])
+        return tuple(self._handle.contour_roles)
 
     def polygon(self, index: int) -> npt.NDArray[np.float32]:
-        offsets = self.offsets
-        return self.vertices[int(offsets[index]) : int(offsets[index + 1])]
+        found: npt.NDArray[np.float32] = self._handle.polygon(int(index))
+        return found
 
     def polygons(self) -> Iterator[Polygon]:
-        classes = self.object_class_ids
-        planes = self.planes
-        roles = self.roles
-        for i in range(len(self)):
+        for vertices, class_id, plane, role in self._handle.polygons():
             yield Polygon(
-                vertices=self.polygon(i),
-                class_id=int(classes[i]),
-                plane=(int(planes[i][0]), int(planes[i][1])),
-                role=roles[i],
+                vertices=vertices,
+                class_id=int(class_id),
+                plane=(int(plane[0]), int(plane[1])),
+                role=role,
             )
 
     def by_plane(self) -> dict[tuple[int, int], list[int]]:
-        """Plane -> polygon indices, which is how RTSTRUCT data is consumed."""
-        out: dict[tuple[int, int], list[int]] = {}
-        for i, plane in enumerate(self.planes):
-            out.setdefault((int(plane[0]), int(plane[1])), []).append(i)
-        return out
-
-    def __len__(self) -> int:
-        return int(self.offsets.shape[0] - 1)
-
-
-# --------------------------------------------------------------------------
-# §8.7 mesh
-# --------------------------------------------------------------------------
-
-
-def encode_mesh(
-    vertices: npt.ArrayLike,
-    faces: npt.ArrayLike,
-    *,
-    normals: npt.ArrayLike | None = None,
-    vertex_class_ids: Sequence[int] | None = None,
-    mesh_offsets: Sequence[int] | None = None,
-    mesh_class_ids: Sequence[int] | None = None,
-) -> AnnotationPayload:
-    """Pack a triangle surface mesh (spec §8.7)."""
-    v = np.asarray(vertices, dtype=np.float32)
-    f = np.asarray(faces, dtype=np.int32)
-    if v.ndim != 2 or v.shape[1] != 3:
-        raise MEDH5ValidationError(
-            f"mesh vertices must have shape (V, 3), got {v.shape}", code="E405"
-        )
-    if f.ndim != 2 or f.shape[1] != 3:
-        raise MEDH5ValidationError(
-            f"mesh faces must have shape (F, 3), got {f.shape}", code="E405"
-        )
-    if f.size and (f.min() < 0 or f.max() >= v.shape[0]):
-        raise MEDH5ValidationError(
-            f"mesh faces index outside the {v.shape[0]} vertices", code="E405"
-        )
-    datasets: dict[str, npt.NDArray[Any]] = {"vertices": v, "faces": f}
-    if normals is not None:
-        n = np.asarray(normals, dtype=np.float32)
-        if n.shape != v.shape:
-            raise MEDH5ValidationError(
-                f"normals {n.shape} must match vertices {v.shape}", code="E405"
-            )
-        datasets["normals"] = n
-    if vertex_class_ids is not None:
-        datasets["vertex_class_ids"] = _per_element(
-            "vertex_class_ids",
-            [check_class_id(c) for c in vertex_class_ids],
-            v.shape[0],
-            np.uint16,
-            "vertices",
-        )
-    if mesh_offsets is not None:
-        datasets["mesh_offsets"] = np.asarray(mesh_offsets, dtype=np.int64)
-    if mesh_class_ids is not None:
-        # `mesh_offsets` is (M+1,) and `mesh_class_ids` is (M,) --- §8.7's table
-        # --- so the offsets name one more boundary than there are meshes.
-        meshes = 1 if mesh_offsets is None else len(mesh_offsets) - 1
-        datasets["mesh_class_ids"] = _per_element(
-            "mesh_class_ids",
-            [check_class_id(c) for c in mesh_class_ids],
-            meshes,
-            np.uint16,
-            "meshes",
-        )
-    declared = set()
-    if vertex_class_ids is not None:
-        declared |= {int(c) for c in vertex_class_ids}
-    if mesh_class_ids is not None:
-        declared |= {int(c) for c in mesh_class_ids}
-    return AnnotationPayload(
-        kind="mesh", datasets=datasets, class_ids=tuple(sorted(declared))
-    )
+        found: dict[tuple[int, int], list[int]] = self._handle.by_plane()
+        return found
 
 
 class MeshAnnotation(GeometricAnnotation):
-    """Reader for ``kind = "mesh"``.
-
-    A mesh is a **surface**, not a cheaper voxel annotation: it does not satisfy
-    the ``seg`` profile on its own, because you cannot ask it which class holds a
-    voxel without rasterising, and rasterising is a decision.
-    """
+    """A triangle surface mesh, optionally several submeshes (§8.7)."""
 
     __slots__ = ()
 
     @property
     def vertices(self) -> npt.NDArray[np.float32]:
-        return np.asarray(self._dataset("vertices")[...], dtype=np.float32)
+        return self._need("vertices", np.float32)
 
     @property
     def faces(self) -> npt.NDArray[np.int32]:
-        return np.asarray(self._dataset("faces")[...], dtype=np.int32)
+        return self._need("faces", np.int32)
 
     @property
     def normals(self) -> npt.NDArray[np.float32] | None:
-        return self._optional("normals", np.float32)
+        return self._read("normals", np.float32, required=False)
 
     @property
     def vertex_class_ids(self) -> npt.NDArray[np.uint16] | None:
-        return self._optional("vertex_class_ids", np.uint16)
-
-    @property
-    def object_class_ids(self) -> npt.NDArray[np.uint16]:
-        node = self._dataset("mesh_class_ids", required=False)
-        if node is not None:
-            return np.asarray(node[...], dtype=np.uint16)
-        return np.asarray(self.class_ids, dtype=np.uint16)
+        return self._read("vertex_class_ids", np.uint16, required=False)
 
     @property
     def n_submeshes(self) -> int:
-        node = self._dataset("mesh_offsets", required=False)
-        return 1 if node is None else int(node.shape[0] - 1)
+        return int(self._handle.n_submeshes)
 
     def bounds(self) -> npt.NDArray[np.float64]:
-        """``(3, 2)`` axis-aligned bounds of the surface."""
-        v = self.vertices.astype(np.float64)
-        return np.stack([v.min(axis=0), v.max(axis=0)], axis=1)
-
-    def __len__(self) -> int:
-        return int(self.faces.shape[0])
+        """``(S, 2)`` bounds of every vertex."""
+        found: npt.NDArray[np.float64] = self._handle.mesh_bounds()
+        return found
 
 
 GEOMETRIC_READERS: dict[str, Any] = {
@@ -1081,10 +341,10 @@ GEOMETRIC_READERS: dict[str, Any] = {
     "mesh": MeshAnnotation,
 }
 
-
 __all__ = [
     "CONTOUR_ROLES",
     "GEOMETRIC_READERS",
+    "ROTATION_TOL",
     "SPACES",
     "VISIBILITY",
     "BoxesAnnotation",

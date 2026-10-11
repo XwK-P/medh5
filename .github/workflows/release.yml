@@ -10,20 +10,22 @@ permissions: {}
 jobs:
   ci:
     # The whole CI, on the tagged commit.  The pull request's checks ran on its
-    # head, and a tag can be pushed on any commit; publishing waits on this.
+    # head, and a tag can be pushed on any commit; publishing waits on this,
+    # and publishes the wheels, sdist and binaries this run built.
     name: CI on the tagged commit
     uses: ./.github/workflows/ci.yml
     permissions:
       contents: read
 
   build:
-    name: Build distributions
+    name: Collect and check the distributions
     needs: ci
     runs-on: ubuntu-latest
     permissions:
       contents: read
     outputs:
       prerelease: ${{ steps.version.outputs.prerelease }}
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -31,89 +33,130 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install build tooling
-        run: pip install --upgrade build twine
+      - name: Install tooling
+        run: pip install --upgrade twine packaging
 
       - name: Classify the version
         id: version
         # By PEP 440, not by pattern: `1.5.0-rc.1` is `1.5.0rc1` spelled
-        # another way, and either is a pre-release.  `packaging` is here
-        # because `build` and `twine` require it.
+        # another way, and either is a pre-release.
         run: |
           python - <<'PY' >> "$GITHUB_OUTPUT"
           import os
           from packaging.version import Version
-          version = Version(os.environ["GITHUB_REF_NAME"].removeprefix("v"))
-          print(f"prerelease={str(version.is_prerelease).lower()}")
+          tag = os.environ["GITHUB_REF_NAME"].removeprefix("v")
+          print(f"version={tag}")
+          print(f"prerelease={str(Version(tag).is_prerelease).lower()}")
           PY
 
-      - name: Verify tag matches package version
+      - name: Verify the tag matches the version
         run: |
           python - <<'PY'
-          import os, pathlib, re, sys
+          import os, re, sys, tomllib
           ref = os.environ["GITHUB_REF"]
           m = re.fullmatch(r"refs/tags/v(.+)", ref)
           if not m:
               sys.exit(f"unexpected GITHUB_REF: {ref}")
           tag_version = m.group(1)
-          # `__about__` is the one source of the version: `pyproject.toml`
-          # declares it dynamic and reads it from here, and it is what gets
-          # stamped into every file's `generator` and into dataset manifests.
-          about = {}
-          exec((pathlib.Path("medh5") / "__about__.py").read_text(), about)
-          if about["__version__"] != tag_version:
-              sys.exit(
-                  f"tag {tag_version!r} does not match medh5.__version__ "
-                  f"{about['__version__']!r}"
-              )
-          print(f"tag and stamped version agree: {tag_version}")
+          # The Cargo workspace is the one source of the version: every crate
+          # inherits it, maturin stamps it on the wheel, and the engine writes
+          # it into every file's `generator`.
+          with open("Cargo.toml", "rb") as f:
+              version = tomllib.load(f)["workspace"]["package"]["version"]
+          if version != tag_version:
+              sys.exit(f"tag {tag_version!r} does not match the workspace version {version!r}")
+          print(f"tag and workspace version agree: {tag_version}")
           PY
 
       - name: Extract release notes from CHANGELOG.md
         # Here rather than in the release job: a tag whose version has no
-        # CHANGELOG section fails before anything reaches PyPI, not after.
-        run: |
-          python - <<'PY'
-          import os, pathlib, re, sys
-          tag = os.environ["GITHUB_REF_NAME"]
-          version = tag.removeprefix("v")
-          text = pathlib.Path("CHANGELOG.md").read_text(encoding="utf-8")
-          m = re.search(
-              rf"^## \[{re.escape(version)}\][^\n]*\n(.*?)(?=^## |\Z)",
-              text,
-              re.M | re.S,
-          )
-          notes = m.group(1).strip() if m else ""
-          if not notes:
-              sys.exit(f"CHANGELOG.md has no section for {version}")
-          # A relative link resolves in GitHub's file view and on the docs
-          # site, but not on a release page. Pin each one to the tagged commit.
-          blob = f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/blob/{tag}/"
-          notes = re.sub(r"\]\((?!https?://|#|mailto:)", "](" + blob, notes)
-          pathlib.Path("release-notes.md").write_text(notes + "\n", encoding="utf-8")
-          print(f"release notes: {len(notes)} characters from CHANGELOG.md [{version}]")
-          PY
+        # CHANGELOG section --- or a CHANGELOG with entries still under
+        # [Unreleased] --- fails before anything is published, not after.
+        run: python .github/scripts/release_notes.py
 
-      - name: Build sdist and wheel
-        run: python -m build
+      - name: Download what CI built
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: ci-dist-*
+          merge-multiple: true
+          path: dist/
+
+      - name: Download the binaries CI built
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: ci-cli-*
+          merge-multiple: true
+          path: cli/
 
       - name: twine check
         run: twine check dist/*
 
-      - name: Verify wheel contents
+      - name: Verify every platform, at this version
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           python - <<'PY'
-          import glob, sys, zipfile
-          wheels = glob.glob("dist/*.whl")
-          assert wheels, "no wheel produced"
-          with zipfile.ZipFile(wheels[0]) as z:
-              names = z.namelist()
-          missing = [n for n in ("medh5/py.typed",) if n not in names]
-          license_present = any(n.endswith("LICENSE") for n in names)
-          if missing or not license_present:
-              sys.exit(f"wheel missing required files: missing={missing} license={license_present}")
-          print("wheel contents ok")
+          import os, pathlib, sys, zipfile
+          from packaging.version import Version
+          # The wheels carry PEP 440's spelling of the version (2.1.0rc1), the
+          # binaries Cargo's (2.1.0-rc.1, as tagged).
+          raw = os.environ["VERSION"]
+          version = Version(raw)
+          wheels = sorted(pathlib.Path("dist").glob("*.whl"))
+          sdists = sorted(pathlib.Path("dist").glob("*.tar.gz"))
+          # One abi3 wheel per platform the project ships.
+          platforms = ("manylinux_2_28_x86_64", "manylinux_2_28_aarch64",
+                       "macosx_11_0_arm64", "macosx_11_0_x86_64", "win_amd64")
+          problems = []
+          for platform in platforms:
+              found = [w for w in wheels if w.name.endswith(f"-cp310-abi3-{platform}.whl")]
+              if len(found) != 1:
+                  problems.append(f"{len(found)} wheels for {platform}")
+          if len(sdists) != 1:
+              problems.append(f"{len(sdists)} sdists")
+          for dist in [*wheels, *sdists]:
+              if Version(dist.name.split("-")[1].removesuffix(".tar.gz")) != version:
+                  problems.append(f"{dist.name} is not version {version}")
+          for wheel in wheels:
+              names = zipfile.ZipFile(wheel).namelist()
+              for required in ("medh5/py.typed", "medh5/_core.pyi"):
+                  if required not in names:
+                      problems.append(f"{wheel.name} lacks {required}")
+              if not any(n.startswith("medh5/_core.") and not n.endswith(".pyi") for n in names):
+                  problems.append(f"{wheel.name} lacks the compiled engine")
+              for notice in ("LICENSE", "THIRD_PARTY_NOTICES"):
+                  if not any(n.endswith(f".dist-info/licenses/{notice}") for n in names):
+                      problems.append(f"{wheel.name} lacks {notice}")
+          binaries = sorted(p.name for p in pathlib.Path("cli").iterdir())
+          for target in ("x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu",
+                         "aarch64-apple-darwin", "x86_64-apple-darwin"):
+              if f"medh5-{raw}-{target}.tar.gz" not in binaries:
+                  problems.append(f"no binary for {target}")
+          if f"medh5-{raw}-x86_64-pc-windows-msvc.zip" not in binaries:
+              problems.append("no binary for x86_64-pc-windows-msvc")
+          # Each archive carries the licences of what the binary links.
+          import tarfile
+          for archive in sorted(pathlib.Path("cli").iterdir()):
+              if archive.name.endswith(".zip"):
+                  names = zipfile.ZipFile(archive).namelist()
+              else:
+                  names = tarfile.open(archive).getnames()
+              for notice in ("LICENSE", "THIRD_PARTY_NOTICES"):
+                  if not any(n.endswith(f"/{notice}") for n in names):
+                      problems.append(f"{archive.name} lacks {notice}")
+          if problems:
+              sys.exit("\n".join(problems))
+          print(*(p.name for p in [*wheels, *sdists]), *binaries, sep="\n")
           PY
+
+      - name: Checksum the binaries, and write the Homebrew formula
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          (cd cli && sha256sum -- * > SHA256SUMS && cat SHA256SUMS)
+          mkdir homebrew
+          python .github/scripts/homebrew_formula.py "$VERSION" cli/SHA256SUMS "$GITHUB_REPOSITORY" > homebrew/medh5.rb
+          cat homebrew/medh5.rb
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -123,9 +166,28 @@ jobs:
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
+          name: cli
+          path: cli/
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: homebrew
+          path: homebrew/
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
           name: release-notes
           path: release-notes.md
           if-no-files-found: error
+
+  # Every publishing step below can run again: a re-run after a partial
+  # release skips what is already published *and identical* to this run's
+  # build, publishes what is missing, and fails on anything published from
+  # something else (.github/scripts/release.py; CONTRIBUTING.md has the
+  # runbook).  In this repository a missing token fails its job; a fork that
+  # has none only warns.
 
   publish:
     name: Publish to PyPI
@@ -135,8 +197,11 @@ jobs:
       name: pypi
       url: https://pypi.org/p/medh5
     permissions:
+      contents: read    # the checkout, for the check after the upload
       id-token: write   # OIDC exchange for Trusted Publishing
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: dist
@@ -144,16 +209,57 @@ jobs:
 
       - name: Publish via PyPI Trusted Publishing
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          # A file PyPI already has is skipped, by name; the next step checks
+          # that it is this run's file.
+          skip-existing: true
+
+      - name: PyPI has every file, as this run built it
+        run: python3 .github/scripts/release.py pypi dist/
+
+  crates:
+    name: Publish to crates.io
+    # medh5-sys, then medh5, then medh5-cli, one at a time, each in the index
+    # before the next, which resolves against it.  Each is verified --- built
+    # from its package, running every dependency's build script --- without
+    # the token in the environment, then uploaded with it.  medh5-python is
+    # `publish = false`.
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: crates-io
+      url: https://crates.io/crates/medh5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup toolchain install stable --profile minimal && rustup default stable
+      - name: cargo publish, each crate not already there
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CANONICAL: ${{ github.repository == 'XwK-P/medh5' }}
+        run: |
+          if [[ -z "$CARGO_REGISTRY_TOKEN" ]]; then
+            if [[ "$CANONICAL" == true ]]; then
+              echo "::error::CARGO_REGISTRY_TOKEN is not set, so the crates cannot be published"
+              exit 1
+            fi
+            echo "::warning::CARGO_REGISTRY_TOKEN is not set, so the crates were not published"
+            exit 0
+          fi
+          python3 .github/scripts/release.py crates
 
   github-release:
     name: Create the GitHub Release
-    # After PyPI rather than beside it, so a release is never announced for a
-    # version that `pip install` cannot find.
-    needs: [build, publish]
+    # After the registries rather than beside them, so a release is never
+    # announced for a version that `pip install` or `cargo install` cannot find.
+    needs: [build, publish, crates]
     runs-on: ubuntu-latest
     permissions:
-      contents: write   # create the release and attach the distributions
+      contents: write   # create the release and attach its files
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: dist
@@ -161,9 +267,14 @@ jobs:
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
+          name: cli
+          path: cli/
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
           name: release-notes
 
-      - name: Create the release, with the distributions PyPI received
+      - name: Create the release, or attach what a failed run did not
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
@@ -174,9 +285,89 @@ jobs:
           if [[ "$PRERELEASE" == true ]]; then
             flags+=(--prerelease)
           fi
-          gh release create "$TAG" dist/* \
-            --repo "$GITHUB_REPOSITORY" \
-            --title "medh5 ${TAG#v}" \
-            --notes-file release-notes.md \
-            --verify-tag \
-            "${flags[@]}"
+          python3 .github/scripts/release.py github-release "$TAG" dist/* cli/* \
+            --notes release-notes.md "${flags[@]}"
+
+  homebrew:
+    name: Update the Homebrew tap
+    # The formula points at the release's binaries, so it follows the release.
+    # The tap is `<owner>/homebrew-medh5` unless the HOMEBREW_TAP variable names
+    # another; HOMEBREW_TAP_TOKEN needs write access to it.
+    needs: [build, github-release]
+    if: needs.build.outputs.prerelease != 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: homebrew
+          path: homebrew/
+
+      - name: Push the formula, unless the tap has it already
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAP: ${{ vars.HOMEBREW_TAP || format('{0}/homebrew-medh5', github.repository_owner) }}
+          VERSION: ${{ needs.build.outputs.version }}
+          CANONICAL: ${{ github.repository == 'XwK-P/medh5' }}
+        run: |
+          if [[ -z "$TAP_TOKEN" ]]; then
+            if [[ "$CANONICAL" == true ]]; then
+              echo "::error::HOMEBREW_TAP_TOKEN is not set, so $TAP cannot be updated"
+              exit 1
+            fi
+            echo "::warning::HOMEBREW_TAP_TOKEN is not set, so $TAP was not updated"
+            exit 0
+          fi
+          git clone --depth 1 "https://x-access-token:${TAP_TOKEN}@github.com/${TAP}.git" tap
+          mkdir -p tap/Formula
+          cp homebrew/medh5.rb tap/Formula/medh5.rb
+          cd tap
+          git add Formula/medh5.rb
+          # A re-run after the push succeeded finds nothing to commit.
+          if git diff --cached --quiet; then
+            echo "$TAP already has the formula for medh5 $VERSION"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "medh5 $VERSION"
+          git push
+
+  verify:
+    name: Every channel has the release
+    # Whatever became of the jobs before it: a release that stopped partway is
+    # reported as one, naming what is missing where.  A fork's release, which
+    # may lack the tokens, is not checked.
+    needs: [build, publish, crates, github-release, homebrew]
+    if: ${{ !cancelled() && needs.build.result == 'success' && github.repository == 'XwK-P/medh5' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist
+          path: dist/
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: cli
+          path: cli/
+
+      - name: PyPI, crates.io, the release page and the tap have this version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          PRERELEASE: ${{ needs.build.outputs.prerelease }}
+          TAP: ${{ vars.HOMEBREW_TAP || format('{0}/homebrew-medh5', github.repository_owner) }}
+        run: |
+          flags=()
+          # The tap takes final releases only.
+          if [[ "$PRERELEASE" != true ]]; then
+            flags+=(--tap "$TAP")
+          fi
+          python3 .github/scripts/release.py verify "$TAG" dist/ cli/ "${flags[@]}"

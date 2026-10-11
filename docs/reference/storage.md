@@ -39,7 +39,8 @@ $ medh5 recompress cohort/*.medh5 --profile archive
 ```
 
 Recompression is **in place** by default: each file is rewritten atomically
-under the new profile. `--out` writes beside the source instead, and takes a
+under the new profile, and a `.medh5c` collection member by member, each member
+keeping its `content_id`. `--out` writes beside the source instead, and takes a
 single input and a destination **filename** — not a directory, and not several
 files:
 
@@ -72,13 +73,17 @@ read is one seek. (`W902` warns only from 1 MiB, so the policy never trips its
 own warning.)
 
 ```python
-from medh5.storage.codecs import PROFILES, resolve_profile, dataset_kwargs
+from medh5.storage import PROFILES, resolve_profile, dataset_kwargs
 PROFILES["archive"].description
 ```
 
 ## Chunking
 
-The chunk is the real unit of I/O: reading one voxel reads a whole chunk. Two
+The chunk is the unit a read fetches: reading one voxel reads a whole stored
+chunk. Blosc2 compresses a chunk as a grid of blocks, and under the Blosc2
+profiles a window decompresses only the blocks it covers --- from the stored
+chunk, outside HDF5's lock --- so a chunk larger than the patch costs I/O rather
+than decompression; under `portable`, HDF5 decompresses the whole chunk. Two
 forces pull against each other — sizing to the L3 cache keeps a patch inside
 cache after decompression, sizing to the training patch keeps read
 amplification low — and the optimiser resolves them by starting at the patch,
@@ -101,7 +106,8 @@ annotation — and a displacement field's components — is chunked
 `(1, *spatial_chunk)`, so reading one plane does not decompress the others
 (§14.1). Combined with reading a multi-class `dense()` **by plane rather than by
 class**, a 200-class annotation packed into four layers is four reads and not
-two hundred — which is where the 64³ patch time went from 117 ms to 4 ms.
+two hundred — which, with block-level reads, is where the 64³ patch time went
+from 117 ms to about 2.3 ms.
 
 ```
 $ medh5 recompress case.medh5 --profile training --rechunk
@@ -115,7 +121,12 @@ for the stacked encodings and a displacement field's components.
 
 Every object carries a SHA-256 over its **decompressed** content, with the
 object's sample-root-relative path, dtype and shape fed into the hash first, so
-two arrays with the same bytes and different shapes do not collide.
+two arrays with the same bytes and different shapes do not collide. A string
+dataset hashes each string's stored bytes, never text decoded from them, and a
+dataset of another fixed-size type --- a compound in an extension group, say ---
+hashes its stored elements. Variable-length data other than strings has no
+digest: the writer stamps none, and `verify` lists a digest found on such a
+dataset as `unverifiable` rather than checking it (§13.1).
 
 The root carries `content_id`: a Merkle digest over those object digests plus
 the metadata attributes that define the sample.
@@ -134,8 +145,12 @@ s.compute_content_id()          # recompute rather than read
 
 Two properties follow from digesting content rather than encoding:
 
-**Recompression preserves `content_id`.** Every stored byte changes; no digest
-does. A cohort re-encoded for training is still verifiably the same data.
+**Recompression preserves `content_id`.** Every re-encoded dataset's stored
+bytes change; no digest does. A cohort re-encoded for training is still
+verifiably the same data. A dataset whose stored type a rebuild would change ---
+an enumeration with its names, a committed (named) type, another byte order ---
+is copied as stored instead, and listed in `RecompressResult.kept` (`KEPT` on
+the command line); strings and other non-numeric data are copied as stored too.
 
 **The root is not a substitute for the objects.** Because `content_id` hashes
 *digests*, editing a dataset without restamping it breaks that object's digest
@@ -156,9 +171,11 @@ $ medh5 fix case.medh5 --rewrite-digests --reason "rebuilt by an external tool"
 `os.replace` it into position on a clean exit. A file appears complete or not
 at all; an exception aborts and leaves nothing behind.
 
-`amend` is copy-on-write, and it copies through **every object it does not
-understand** — including ones written by a future minor version. Amending never
-silently drops what this reader cannot read.
+`amend` is copy-on-write, and it copies through **every object of its version
+it does not interpret**, extensions included, so amending never silently drops
+data. A file of a later minor version is read as a projection and is never
+amended: `amend`, `recompress` and `pack` refuse it (`MEDH5VersionError`,
+[1.1](../spec/medh5-1.1.md) §2.3).
 
 ## The sampling index
 
@@ -172,7 +189,7 @@ sampling O(1) in the volume instead of a scan, and gives `dataset stats` its
 class counts for a few hundred bytes instead of a decompression pass.
 
 A reader loads the class table and counts once per open, and a draw reads the
-one coordinate it picked — O(1) in the class count too: 0.10 ms at 63 classes.
+one coordinate it picked — O(1) in the class count too: 0.04 ms at 63 classes.
 The index's datasets are stored with the file's label codec, and the coarse
 `occupancy` map is chunked one class per chunk — the unit a reader asks about.
 

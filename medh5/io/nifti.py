@@ -21,6 +21,7 @@ onto the grid so a reader never has to infer them.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 from collections.abc import Iterable, Mapping, Sequence
@@ -32,7 +33,8 @@ import numpy.typing as npt
 
 from medh5._optional import require
 from medh5.errors import MEDH5ValidationError
-from medh5.geometry.affine import ORTHONORMAL_TOL, build_affine, decompose_affine
+from medh5.geometry import ORTHONORMAL_TOL, build_affine, decompose_affine
+from medh5.io._common import sanitize_key
 from medh5.io.report import ConversionReport
 
 RAS_TO_LPS = np.diag([-1.0, -1.0, 1.0, 1.0])
@@ -107,6 +109,12 @@ def write_nifti(
     path: str | os.PathLike[str],
     *,
     rescale: tuple[float, float] | None = None,
+    units: str = "mm",
+    time_values: Sequence[float] | None = None,
+    time_units: str | None = None,
+    leading: str | None = None,
+    channels: Mapping[str, Any] | None = None,
+    report: ConversionReport | None = None,
 ) -> Path:
     """Write one NIfTI file, recording *rescale* in the header (§4.2).
 
@@ -117,16 +125,284 @@ def write_nifti(
     nothing in it said so.  NIfTI has the two fields for exactly this, and
     every reader --- nibabel, SimpleITK, and therefore nnU-Net --- applies them
     on load, so writing them makes the stored volume mean what it meant here.
+
+    The header says what the numbers are in, too.  The exports wrote no units,
+    so a grid in metres read back as millimetres and every frame series as one
+    second apart from time 0.  *affine* is in the grid's *units*: lengths are
+    written in millimetres (a grid in ``m`` or ``um`` scaled to them), and an
+    uncalibrated ``px`` grid says so with NIfTI's "unknown".  A fourth axis
+    with *time_values* evenly spaced becomes ``pixdim[4]`` and ``toffset``;
+    uneven frames, which one temporal step cannot state, are written to a BIDS
+    sidecar's ``VolumeTiming`` beside the file --- which :func:`read_nifti`
+    reads back --- and the header's step is left at 0, which says nothing.
+
+    A fourth axis that is a *channel* axis (*leading*, §3.6) is said to be one
+    (see :func:`_channel_layout`), with what its channels mean taken from
+    *channels* --- the image's per-channel acquisition values.  Written as a
+    plain fourth axis it read back as time, with invented frame times.
+
+    The file owns the statements about its volumes beside it --- the
+    sidecar's per-volume fields and a ``.bval`` --- and an overwrite replaces
+    them: the new image is serialised first, the old statements are withdrawn
+    before it replaces the old image, and the new ones written after, so no
+    reader ever pairs the image with another export's timeline, and an export
+    that fails before its image is whole changes nothing (see
+    :func:`_withdraw_volume_statements`).
+
+    *path* names a ``.nii`` or ``.nii.gz`` file, and anything else is refused
+    before a file is written (:func:`_nifti_target`).
     """
     nib = require_nibabel()
-    target = Path(os.fspath(path))
+    target = _nifti_target(path)
     data = np.ascontiguousarray(array)
-    image = nib.Nifti1Image(data, np.asarray(affine, dtype=np.float64))
-    image.header.set_data_dtype(data.dtype)
+    matrix = np.array(affine, dtype=np.float64, copy=True)
+    scale = MM_PER_UNIT.get(units)
+    if scale is not None:
+        matrix[:3, :] *= scale
+    statements: dict[str, Any] = {}
+    b_values: list[float] | None = None
+    intent: str | None = None
+    if data.ndim == 4 and leading == "channel":
+        data, intent, statements, b_values = _channel_layout(data, channels, report)
+    image = nib.Nifti1Image(data, matrix)
+    header = image.header
+    header.set_data_dtype(data.dtype)
+    if intent is not None:
+        header.set_intent(intent)
     if rescale is not None:
-        image.header.set_slope_inter(float(rescale[0]), float(rescale[1]))
-    nib.save(image, str(target))
+        header.set_slope_inter(float(rescale[0]), float(rescale[1]))
+    if scale is None and report is not None:
+        report.decision(
+            "units",
+            f"the grid is in {units!r}, which has no physical size; the file's "
+            "spatial unit is NIfTI's 'unknown'",
+            {"units": units},
+        )
+    temporal = "unknown"
+    if time_values is not None and data.ndim == 4 and leading != "channel":
+        temporal, timing = _write_timing(
+            header, data.shape[3], time_values, time_units, report
+        )
+        if timing is not None:
+            statements["VolumeTiming"] = timing
+    header.set_xyzt_units(xyz="mm" if scale is not None else "unknown", t=temporal)
+    sidecar = _sidecar_for(target)
+    fields = _volume_statements(sidecar, needed=bool(statements))
+    temporary = target.with_name(f".{os.getpid()}-{target.name}")
+    try:
+        nib.save(image, str(temporary))
+        kept = _withdraw_volume_statements(target, sidecar, fields)
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+    if statements:
+        _replace_text(sidecar, json.dumps({**kept, **statements}, indent=2) + "\n")
+        if report is not None and "VolumeTiming" in statements:
+            report.decision(
+                "time_values",
+                "the frames are unevenly spaced, which one NIfTI temporal step "
+                f"cannot state; their times were written to {sidecar.name} as "
+                "VolumeTiming",
+                {"sidecar": str(sidecar), "frames": len(statements["VolumeTiming"])},
+            )
+    if b_values is not None:
+        _replace_text(
+            _sidecar_path(target, ".bval"), " ".join(f"{v:g}" for v in b_values) + "\n"
+        )
     return target
+
+
+def _channel_layout(
+    data: npt.NDArray[Any],
+    channels: Mapping[str, Any] | None,
+    report: ConversionReport | None,
+) -> tuple[npt.NDArray[Any], str | None, dict[str, Any], list[float] | None]:
+    """A channel axis as NIfTI states one (§3.6), and what its channels mean.
+
+    With a b-value per channel it is a diffusion series: four dimensions and
+    a ``.bval`` beside the file, the layout every diffusion tool reads.
+    Otherwise the voxels are vectors: NIfTI-1 puts a vector's components on
+    ``dim[5]``, with ``dim[4]`` --- time --- of 1, under a vector intent.
+    Either is what :func:`read_nifti` reads back as channels; per-channel echo
+    and inversion times, and flip angles, go to the sidecar as BIDS fields.
+    """
+    frames = int(data.shape[3])
+
+    def per_channel(keyword: str) -> list[float] | None:
+        """*keyword*'s numbers, one per channel, or nothing."""
+        values = (channels or {}).get(keyword)
+        if not isinstance(values, (list, tuple)) or len(values) != frames:
+            return None
+        try:
+            return [float(v) for v in values]
+        except (TypeError, ValueError):  # a list of something else
+            return None
+
+    statements = {
+        field: found
+        for keyword, field in CHANNEL_FIELDS.items()
+        if (found := per_channel(keyword)) is not None
+    }
+    b_values = per_channel("b_values")
+    intent: str | None = None
+    if b_values is None:
+        data = data.reshape((*data.shape[:3], 1, frames))
+        intent = "vector"
+    if report is not None:
+        report.decision(
+            "channels",
+            f"the fourth axis is a channel axis of {frames}; it was written "
+            + (
+                "with its b-values in a .bval beside the file"
+                if b_values is not None
+                else "as NIfTI's vector dimension (dim[5], vector intent)"
+            )
+            + (f", and {sorted(statements)} in the sidecar" if statements else ""),
+            {"channels": frames, "fields": sorted(statements)},
+        )
+    return data, intent, statements, b_values
+
+
+def _volume_statements(sidecar: Path, *, needed: bool) -> dict[str, Any] | None:
+    """The fields of the sidecar beside the file, read before anything is
+    written; ``None`` when there is no sidecar, or one that is not a JSON
+    object.
+
+    One that is not an object is left alone, and refused when this export has
+    fields to put in it --- refused *before* anything is withdrawn: the
+    ``.bval`` went first, so a refused export took a diffusion image's
+    b-values with it.
+    """
+    if not sidecar.exists():
+        return None
+    try:
+        fields = json.loads(sidecar.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        fields = None
+    if not isinstance(fields, dict):
+        if needed:
+            raise MEDH5ValidationError(
+                f"{sidecar} is not a JSON object, and this export writes its "
+                "per-volume fields there; move it aside first"
+            )
+        return None
+    return fields
+
+
+def _withdraw_volume_statements(
+    target: Path, sidecar: Path, fields: Mapping[str, Any] | None
+) -> dict[str, Any]:
+    """Withdraw what was said beside *target* about the volumes it is about
+    to replace; returns the sidecar's other *fields*, kept.
+
+    The regular-timing branch wrote nothing beside its file, and the reader
+    prefers a sidecar's ``VolumeTiming`` to the header: an overwrite of an
+    irregular series by a regular one read back the old timeline.  The
+    per-volume fields and a ``.bval`` are withdrawn once
+    the new image is serialised and before it replaces the old one, and the
+    new ones written after it, so an interrupted export leaves an image whose
+    timing reads as unmeasured, never as another image's.  Withdrawn before
+    the image was serialised, they went with an export that then failed to
+    write it, and left the old image unmeasured for nothing.
+    """
+    _sidecar_path(target, ".bval").unlink(missing_ok=True)
+    if fields is None:
+        return {}
+    # A list is a statement about each volume; a scalar `EchoTime` is the
+    # scanner's, about all of them, and stays.
+    kept = {
+        k: v
+        for k, v in fields.items()
+        if not (k in VOLUME_FIELDS and isinstance(v, list))
+    }
+    if len(kept) != len(fields):
+        _replace_text(sidecar, json.dumps(kept, indent=2) + "\n" if kept else None)
+    return kept
+
+
+def _replace_text(path: Path, text: str | None) -> None:
+    """*text* as *path*'s content through a rename, or *path* removed."""
+    if text is None:
+        path.unlink(missing_ok=True)
+        return
+    temporary = path.with_name(f".{os.getpid()}-{path.name}")
+    try:
+        temporary.write_text(text, encoding="utf-8")
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _write_timing(
+    header: Any,
+    frames: int,
+    time_values: Sequence[float],
+    time_units: str | None,
+    report: ConversionReport | None,
+) -> tuple[str, list[float] | None]:
+    """Put a time axis in *header*; its NIfTI unit, and --- uneven frames,
+    which one step cannot state --- their times in seconds for the sidecar."""
+    unit = time_units if time_units in SECONDS_PER_UNIT else "s"
+    times = np.asarray(time_values, dtype=np.float64)
+    if times.shape != (frames,):
+        raise MEDH5ValidationError(
+            f"{len(times)} frame times for a fourth axis of {frames} frames"
+        )
+    steps = np.diff(times)
+    if frames < 2 or (
+        np.all(steps > 0) and np.allclose(steps, steps[0], rtol=1e-6, atol=1e-9)
+    ):
+        zooms = list(header.get_zooms())
+        if frames >= 2:
+            zooms[3] = float(steps[0])
+        header.set_zooms(zooms)
+        header["toffset"] = float(times[0])
+        return {"s": "sec", "ms": "msec"}[unit], None
+    zooms = list(header.get_zooms())
+    zooms[3] = 0.0
+    header.set_zooms(zooms)
+    return "unknown", [float(v) for v in times * SECONDS_PER_UNIT[unit]]
+
+
+NIFTI_SUFFIXES = (".nii.gz", ".nii")
+"""The names an export writes a NIfTI file under, and the only names whose
+sidecar and ``.bval`` this module finds beside them."""
+
+
+def _nifti_target(path: str | os.PathLike[str]) -> Path:
+    """*path* as the NIfTI file an export writes, refused before anything is.
+
+    nibabel chooses the format, and the file's name, from the suffix: the
+    temporary written beside a target without ``.nii`` or ``.nii.gz`` came
+    out under another name --- ``.nii`` appended, or an Analyze ``.img``
+    beside its ``.hdr`` --- so it was left behind when the rename failed, or
+    the target became an image whose header was the stray.  A directory is no
+    file to write.
+    """
+    target = Path(os.fspath(path))
+    if target.is_dir():
+        raise MEDH5ValidationError(
+            f"{target} is a directory; name the .nii or .nii.gz file to write"
+        )
+    if not target.name.endswith(NIFTI_SUFFIXES):
+        raise MEDH5ValidationError(
+            f"{target} is not a NIfTI file name: an export writes one ending in "
+            ".nii or .nii.gz"
+        )
+    return target
+
+
+def _sidecar_for(target: Path) -> Path:
+    """The BIDS JSON sidecar path beside a NIfTI file."""
+    return _sidecar_path(target, ".json")
+
+
+def _sidecar_path(target: Path, suffix: str) -> Path:
+    """The file beside a NIfTI sharing its stem and ending in *suffix*."""
+    for extension in (".nii.gz", ".nii"):
+        if target.name.endswith(extension):
+            return target.with_name(target.name[: -len(extension)] + suffix)
+    return target.with_suffix(suffix)
 
 
 def _geometry_notes(
@@ -224,8 +500,33 @@ def read_nifti(
     ambiguous headers, for the caller to put in its conversion report.
     """
     nib = require_nibabel()
-    image = nib.load(os.fspath(path))
+    try:
+        image = nib.load(os.fspath(path))
+    except nib.filebasedimages.ImageFileError as exc:
+        # nibabel's error is no `MEDH5Error`: a caller catching every input
+        # problem as one missed it, and the command line printed a traceback.
+        raise MEDH5ValidationError(
+            f"{os.fspath(path)} is not a NIfTI file: {exc}"
+        ) from None
+    except FileNotFoundError as exc:
+        if exc.filename is not None:
+            raise
+        # nibabel's names no `filename`, and spells the path in POSIX form
+        # (`C:/...` on Windows): name the file as it was given.
+        raise FileNotFoundError(
+            errno.ENOENT, "No such file or no access", os.fspath(path)
+        ) from None
     notes = _geometry_notes(image, path, assume_geometry=assume_geometry)
+    units, unit_stated = _units(image)
+    if unit_stated is not None:
+        notes.append(
+            (
+                "units",
+                f"the file states its spatial unit as {unit_stated!r}, so its "
+                "lengths were read as millimetres, as NIfTI readers commonly do",
+                {"xyz_units": unit_stated},
+            )
+        )
     rescale = _rescale(image)
     data = _stored_data(image, rescale)
     # A trailing axis of extent 1 beyond the spatial block carries nothing:
@@ -260,7 +561,9 @@ def read_nifti(
     channel_field: str | None = None
     channel_values: tuple[float, ...] | None = None
     if data.ndim == 4:
-        frames = int(data.shape[0])
+        # The fourth axis leads once transposed and trails as NIfTI keeps it:
+        # read off the leading axis untransposed, the count was x's extent.
+        frames = int(data.shape[0] if transpose else data.shape[3])
         bids = _bids_axis(path, frames, fourth_axis)
         kind, stated = _fourth_axis(image, path, fourth_axis, bids)
         stated_by = bids[1] if bids is not None and bids[0] == kind else None
@@ -291,7 +594,7 @@ def read_nifti(
         "channel_values": None if channel_values is None else list(channel_values),
         "stated_by": stated_by,
         "squeezed": squeezed,
-        "units": _units(image),
+        "units": units,
         "dtype": str(data.dtype),
         "rescale": rescale,
         "header": {
@@ -409,6 +712,19 @@ PER_VOLUME_CHANNEL = {
     "FlipAngle": ("FlipAngle", "FA"),
 }
 PER_VOLUME_TIME = ("VolumeTiming",)
+
+# Sidecar fields stating one value per volume: what `read_nifti` reads as
+# the fourth axis's meaning, and so what an export owns beside its file.
+VOLUME_FIELDS = (*PER_VOLUME_TIME, *PER_VOLUME_CHANNEL)
+
+# A channel axis's per-channel acquisition values (§4.5), by the DICOM
+# keyword `read_nifti` stores them under, as the BIDS field it reads them from.
+CHANNEL_FIELDS = {
+    "EchoTime": "EchoTime",
+    "EchoNumbers": "EchoNumber",
+    "InversionTime": "InversionTime",
+    "FlipAngle": "FlipAngle",
+}
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -633,15 +949,21 @@ def _time_axis(
     return tuple(offset + k * step for k in range(frames)), units, True
 
 
-def _units(image: Any) -> str:
-    """The NIfTI spatial unit, mapped onto the §3.5 vocabulary."""
+def _units(image: Any) -> tuple[str, str | None]:
+    """The NIfTI spatial unit, mapped onto the §3.5 vocabulary, and what the
+    header said where that maps onto nothing (``None`` where it does).
+
+    ``unknown`` --- the header's default, and what an export of a grid in
+    pixels writes --- was read as millimetres without a word; it still is,
+    as NIfTI readers commonly do, and the caller reports it as a guess.
+    """
     try:
         spatial, _ = image.header.get_xyzt_units()
     except Exception:
-        return "mm"
-    return {"meter": "m", "mm": "mm", "micron": "um", "unknown": "mm"}.get(
-        str(spatial), "mm"
-    )
+        spatial = "unreadable"
+    known = {"meter": "m", "mm": "mm", "micron": "um"}
+    unit = known.get(str(spatial))
+    return ("mm", str(spatial)) if unit is None else (unit, None)
 
 
 def _text(value: Any) -> str:
@@ -810,6 +1132,16 @@ def from_nifti(
 
     target = Path(os.fspath(out))
     stem = sample_id or target.stem
+    if subject_id is None:
+        # Appendix B: a subject identity the converter could not establish is
+        # reported, not passed off as one; a set of NIfTI files states none.
+        log.guess(
+            "identity",
+            f"no subject_id was given and NIfTI states none, so the sample was "
+            f"written as a subject of its own (subject_id = {stem!r}); pass "
+            "subject_id= (--subject-id) to file it under its subject",
+            {"subject_id": stem},
+        )
     label_set = None
     if mask_arrays:
         label_set = _mint_label_set(sorted(mask_arrays), log)
@@ -896,7 +1228,10 @@ def from_nifti(
                 prov=activity,
             )
         if mask_arrays and label_set is not None:
-            resolved = {label_set[key].id: mask for key, mask in mask_arrays.items()}
+            resolved = {
+                _class_of(label_set, name).id: mask
+                for name, mask in mask_arrays.items()
+            }
             kind, stats = writer.add_segmentation(
                 "seg",
                 grid="ref",
@@ -922,6 +1257,51 @@ def from_nifti(
     return log
 
 
+# Millimetres in one §3.5 length unit; `px` has no physical size.
+MM_PER_UNIT = {"mm": 1.0, "m": 1000.0, "um": 1e-3}
+# Seconds in one §3.2 time unit.
+SECONDS_PER_UNIT = {"s": 1.0, "ms": 1e-3}
+
+
+def _lengths(geometry: Mapping[str, Any], key: str) -> npt.NDArray[np.float64]:
+    """*key* (``spacing`` or ``origin``) in millimetres where the unit has a size."""
+    values = np.asarray(geometry[key], dtype=np.float64)
+    return values * MM_PER_UNIT.get(str(geometry.get("units") or "mm"), 1.0)
+
+
+def _geometry_mismatch(
+    first: Mapping[str, Any], other: Mapping[str, Any]
+) -> str | None:
+    """The first of units, spacing, origin and direction two geometries
+    disagree on, or ``None``.
+
+    Lengths are compared in millimetres, so one grid stated in metres and in
+    millimetres agrees with itself; an uncalibrated (``px``) grid agrees only
+    with another.  Comparing the raw numbers took a grid in metres for one
+    1000 times smaller, and a mask with no origin check anywhere it pleased.
+    """
+    pixels = [str(g.get("units") or "mm") == "px" for g in (first, other)]
+    if pixels[0] != pixels[1]:
+        return "units"
+    for key in ("spacing", "origin", "direction"):
+        if key == "direction":
+            ours = np.asarray(first[key], dtype=np.float64)
+            theirs = np.asarray(other[key], dtype=np.float64)
+        else:
+            ours, theirs = _lengths(first, key), _lengths(other, key)
+        if ours.shape != theirs.shape or not np.allclose(ours, theirs, atol=1e-4):
+            return key
+    return None
+
+
+def _seconds(geometry: Mapping[str, Any]) -> npt.NDArray[np.float64] | None:
+    values = geometry.get("time_values")
+    if values is None:
+        return None
+    unit = str(geometry.get("time_units") or "s")
+    return np.asarray(values, dtype=np.float64) * SECONDS_PER_UNIT.get(unit, 1.0)
+
+
 def _same_grid(
     first: dict[str, Any], other: dict[str, Any], name: str, log: ConversionReport
 ) -> dict[str, Any]:
@@ -934,40 +1314,88 @@ def _same_grid(
     grid that does not exist --- nothing here is referenced). Reporting them
     under those codes told anything branching on the code an untrue story about
     what had gone wrong.
+
+    A grid is its timing as much as its space (§3.2), so frame times two
+    volumes both *state* must agree; only space was compared, and the first
+    file's times stood for every other's.  Where one states them and the other
+    does not, the stated ones are the grid's.
     """
     if tuple(first["shape"]) != tuple(other["shape"]):
         raise MEDH5ValidationError(
             f"{name!r} has shape {other['shape']}, but the first volume has "
             f"{first['shape']}; resample before converting"
         )
-    for key in ("spacing", "origin", "direction"):
-        if not np.allclose(
-            np.asarray(first[key], dtype=np.float64),
-            np.asarray(other[key], dtype=np.float64),
-            atol=1e-4,
-        ):
+    key = _geometry_mismatch(first, other)
+    if key is not None:
+        raise MEDH5ValidationError(
+            f"{name!r} disagrees with the first volume on {key}; resample "
+            "before converting rather than letting a converter do it silently"
+        )
+    ours, theirs = _seconds(first), _seconds(other)
+    if ours is None or theirs is None or np.allclose(ours, theirs, atol=1e-6):
+        return first
+    if first.get("time_measured") and other.get("time_measured"):
+        raise MEDH5ValidationError(
+            f"{name!r} states frame times {other['time_values']} "
+            f"{other['time_units']}, the first volume {first['time_values']} "
+            f"{first['time_units']}; one grid has one set of `time_values` "
+            "(§3.2), so convert them separately"
+        )
+    if not other.get("time_measured"):
+        return first
+    log.decision(
+        "time_values",
+        f"{name!r} states its frame times and the first volume does not, so "
+        "the grid takes them",
+        {"from": name, "time_units": other["time_units"]},
+    )
+    return {
+        **first,
+        "time_values": other["time_values"],
+        "time_units": other["time_units"],
+        "time_measured": True,
+    }
+
+
+def _mint_label_set(names: Sequence[str], log: ConversionReport) -> Any:
+    """Mask names become classes with minted ids (Appendix B).
+
+    The key is the name as §5.2's pattern allows it (:func:`sanitize_key`)
+    and the display name the name as given: taken as the key, ``Liver`` or
+    ``GTV-1`` failed the sample document's schema (E005) at commit.  Two
+    names that make one key are refused rather than merged into one class.
+    """
+    from medh5.labels import LabelClass, LabelSet
+
+    keys: dict[str, str] = {}
+    for name in names:
+        key = sanitize_key(name)
+        if key in keys:
             raise MEDH5ValidationError(
-                f"{name!r} disagrees with the first volume on {key}; resample "
-                "before converting rather than letting a converter do it silently"
+                f"masks {keys[key]!r} and {name!r} would both be class "
+                f"{key!r}; a class key keeps lowercase letters, digits and "
+                "underscores only, so rename one"
             )
-    return first
-
-
-def _mint_label_set(keys: Sequence[str], log: ConversionReport) -> Any:
-    """Mask filenames become class keys with minted ids (Appendix B)."""
-    from medh5.labels.labelset import LabelClass, LabelSet
-
+        keys[key] = name
     classes = [
-        LabelClass(i + 1, key, key.replace("_", " ").title())
-        for i, key in enumerate(keys)
+        LabelClass(i + 1, key, key.replace("_", " ").title() if key == name else name)
+        for i, (key, name) in enumerate(keys.items())
     ]
     log.decision(
         "label_set",
-        "class ids were minted from the mask names in sorted order; review the "
-        "generated label set before applying it cohort-wide",
+        "class ids were minted from the mask names in sorted order, and keys "
+        "from the names as a class key allows them; review the generated "
+        "label set before applying it cohort-wide",
         {"ids": {c.key: c.id for c in classes}},
     )
     return LabelSet("converted", version="1.0.0", classes=classes)
+
+
+def _class_of(label_set: Any, name: str) -> Any:
+    """The class a mask named *name* is: by the key minted from the name,
+    else by the name itself (a key, or an id)."""
+    found = label_set.get(sanitize_key(name))
+    return found if found is not None else label_set.get(name)
 
 
 def to_nifti(
@@ -978,6 +1406,7 @@ def to_nifti(
     physical: bool = True,
     annotation: str | None = None,
     class_key: int | str | None = None,
+    report: ConversionReport | None = None,
 ) -> Path:
     """Export one image, or one class of one annotation, as a NIfTI file.
 
@@ -988,27 +1417,67 @@ def to_nifti(
     rescale is written into the header, so the numbers a conforming reader
     gets are the physical ones either way.  A label volume has no rescale and
     is written as it is.
+
+    An annotation is written on **its own** grid, whatever *image_id* is on:
+    its voxels are that grid's, and the image's affine put a PET-grid mask at
+    the CT's origin.  *report*, when given, collects what the header could not
+    say as the grid does (see :func:`write_nifti`).
+
+    The whole annotation is its labelmap, where an ignored voxel (§7.7) is the
+    annotation's ``ignore_id``.  One class (*class_key*) is a 0/1 mask, which
+    has no value for "ignored", and its 0 says "examined, absent": an
+    annotation with an ignore region is refused rather than exported as one,
+    since the mask would turn every ignored voxel into a negative.
+
+    *out* is a ``.nii`` or ``.nii.gz`` file, checked before anything is read.
     """
     import medh5
 
-    target = Path(os.fspath(out))
+    target = _nifti_target(out)
     with medh5.open(path) as sample:
         image = sample.images[image_id]
         grid = image.grid
         rescale: tuple[float, float] | None = None
         if annotation is not None:
             ann = sample.annotations[annotation]
-            data = (
-                np.asarray(ann.labelmap(), dtype=np.uint16)
-                if class_key is None
-                else np.asarray(ann.dense([class_key])[0], dtype=np.uint8)
-            )
+            grid = ann.grid
+            if class_key is None:
+                data = np.asarray(ann.labelmap(), dtype=np.uint16)
+            else:
+                data = np.asarray(ann.dense([class_key])[0], dtype=np.uint8)
+                ignored = int(np.count_nonzero(sample.ignore_region(annotation)))
+                if ignored:
+                    raise MEDH5ValidationError(
+                        f"annotation {annotation!r} ignores {ignored} voxel(s) "
+                        "(§7.7), which a one-class mask cannot mark --- its 0 "
+                        "would say they were examined and found absent; export "
+                        "the whole annotation instead (without a class), whose "
+                        f"labelmap writes them as its ignore id {ann.ignore_id}"
+                    )
         else:
             data = np.asarray(image.read(physical=physical))
             if not physical:
                 rescale = image.rescale
         data, out_affine = for_export(grid, data)
-    return write_nifti(data, out_affine, target, rescale=rescale)
+        units, times, time_units = grid.units, grid.time_values, grid.time_units
+        leading = grid.axis_kinds[0] if len(grid.axis_kinds) == 4 else None
+        channels = (
+            sample.document.acquisition.get(image_id, {})
+            if annotation is None and leading == "channel"
+            else {}
+        )
+    return write_nifti(
+        data,
+        out_affine,
+        target,
+        rescale=rescale,
+        units=units,
+        time_values=times,
+        time_units=time_units,
+        leading=leading,
+        channels={k: v for k, v in channels.items() if isinstance(v, (list, tuple))},
+        report=report,
+    )
 
 
 def for_export(
@@ -1027,6 +1496,12 @@ def for_export(
     """
     affine = convert_world(grid.affine, source=grid.coord_system, target="RAS")
     spacing, origin, direction = decompose_affine(affine)
+    if len(spacing) == 2 and data.ndim > 2:
+        raise MEDH5ValidationError(
+            f"grid {grid.grid_id!r} is a 2-D plane with a {grid.axis_kinds[0]} "
+            "axis, which no NIfTI layout this exporter writes can state; export "
+            "its planes one at a time"
+        )
     if data.ndim >= 3:
         spatial = (data.ndim - 1, data.ndim - 2, data.ndim - 3)
         data = np.transpose(data, spatial + tuple(range(data.ndim - 3)))
@@ -1045,9 +1520,20 @@ def import_seg_nifti(
     coord_system: str | None = None,
     transpose: bool = True,
     annotated_classes: Sequence[str] | str = "all_given",
+    assume_aligned: bool = False,
     report: ConversionReport | None = None,
 ) -> ConversionReport:
-    """Add NIfTI masks to an existing sample, checking they sit on its grid."""
+    """Add NIfTI masks to an existing sample, checking they sit on its grid.
+
+    A mask must match the grid in shape *and* geometry --- spacing, origin and
+    direction, lengths compared in millimetres.  Shape alone let a mask
+    translated 10 cm, rotated or mirrored onto voxels nobody drew on, with a
+    warning at most.  A mismatch is refused unless *assume_aligned*, which
+    takes the voxels as the grid's anyway and records that as a guess: for a
+    header known to be wrong, never for a mask from another grid, which needs
+    resampling (by a tool that records it).  The comparison is in the grid's
+    coordinate system; *coord_system* may only repeat it.
+    """
     import medh5
 
     log = report or ConversionReport(converter="import-seg-nifti")
@@ -1055,8 +1541,19 @@ def import_seg_nifti(
     with medh5.open(path) as sample:
         grid_id = grid or sample.reference_grid.grid_id
         target_grid = sample.grids[grid_id]
-        system = coord_system or target_grid.coord_system
         existing = sample.label_set
+        system = target_grid.coord_system
+        reference = {
+            "spacing": list(target_grid.spacing),
+            "origin": list(target_grid.origin),
+            "direction": np.asarray(target_grid.direction).tolist(),
+            "units": target_grid.units,
+        }
+    if coord_system is not None and coord_system != system:
+        raise MEDH5ValidationError(
+            f"grid {grid_id!r} is in {system}, and masks are compared with it "
+            f"there; coord_system={coord_system!r} cannot apply"
+        )
 
     arrays: dict[str, npt.NDArray[np.bool_]] = {}
     for name, mask_path in masks.items():
@@ -1067,21 +1564,34 @@ def import_seg_nifti(
                 f"{target_grid.spatial_shape}",
                 code="E405",
             )
-        if not np.allclose(
-            np.asarray(geo["spacing"]), np.asarray(target_grid.spacing), atol=1e-4
-        ):
-            log.warn(
+        key = _geometry_mismatch(reference, geo)
+        if key is not None:
+            detail = {
+                "mask": name,
+                "field": key,
+                "mask_value": geo[key],
+                "grid_value": reference[key],
+            }
+            if not assume_aligned:
+                raise MEDH5ValidationError(
+                    f"mask {name!r} disagrees with grid {grid_id!r} on {key}: "
+                    "it was drawn on another grid, and taking its voxels as this "
+                    "one's would put the labels where nobody drew them --- "
+                    "resample it onto the grid first, or pass "
+                    "assume_aligned=True if its header is what is wrong"
+                )
+            log.guess(
                 "geometry",
-                f"mask {name!r} declares spacing {geo['spacing']}, the grid says "
-                f"{list(target_grid.spacing)}; the voxels were taken as aligned",
-                {"mask": name},
+                f"mask {name!r} disagrees with grid {grid_id!r} on {key}; its "
+                "voxels were taken as the grid's because assume_aligned=True",
+                detail,
             )
         arrays[name] = _as_mask(data, geo)
 
     label_set = existing
     if label_set is None:
         label_set = _mint_label_set(sorted(arrays), log)
-    missing = [k for k in arrays if label_set.get(k) is None]
+    missing = [k for k in arrays if _class_of(label_set, k) is None]
     if missing:
         raise MEDH5ValidationError(
             f"the sample's label set has no class(es) {missing}; add them or "
@@ -1098,7 +1608,7 @@ def import_seg_nifti(
         kind, _ = writer.add_segmentation(
             ann_id,
             grid=grid_id,
-            masks={label_set[k].id: v for k, v in arrays.items()},
+            masks={_class_of(label_set, k).id: v for k, v in arrays.items()},
             annotated_classes=annotated_classes,
             prov=activity,
         )

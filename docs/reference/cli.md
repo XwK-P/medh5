@@ -4,9 +4,24 @@
 medh5 COMMAND [args] [--json]
 ```
 
+The command line is a native program over the format engine. `pip install
+medh5` puts it on the path; so do `cargo install --locked medh5-cli`, the binaries
+attached to every GitHub Release, and `brew install XwK-P/medh5/medh5`. Each is
+the same code, with the same output and exit codes. The converters
+(`medh5 convert …`) and the dataloader row of `medh5 bench` are Python
+integrations: the standalone binary runs them through a Python that has the
+package installed (`python3`, or the interpreter `MEDH5_PYTHON` names), and
+says what to install when there is none. `medh5 migrate` is native.
+
 Exit codes are Unix-conventional: **0** success, **1** a handled error or a
 failed check, **2** a usage error. Every inspection command takes `--json` and
 writes a machine-readable document to stdout.
+
+A command given several files reports on each of them. One it cannot process
+is named on stderr --- and, with `--json`, is an entry of its own carrying the
+`error` --- and the files after it are still processed; the command then
+exits with 1. Output that cannot be written (a full disk) fails the command
+too.
 
 ## Inspecting
 
@@ -40,13 +55,15 @@ medh5 validate PATH... [--level L] [--profile P] [-v] [--json]
 
 Check against the specification. `--level` is `structural`, `semantic`
 (default), `integrity` or `strict`; each includes the ones before it.
-`--profile` overrides the profiles the file declares, so you can hold a file to
+`--profile` adds to the profiles the file declares, so you can hold a file to
 `det` even if it does not claim it. Diagnostics carry stable codes (spec §15.2).
+Every diagnostic is printed; `-v` adds, under each, what its code means.
 
 ```
-$ medh5 validate case.medh5 --level strict
-case.medh5: FAILED [strict] profiles=core,seg (1 errors, 0 warnings)
-  ERROR   E102 grids/ct: `direction` is not orthonormal to 1e-4
+$ medh5 validate case.medh5 -v
+case.medh5: FAILED [semantic] profiles=core (1 errors, 0 warnings)
+  ERROR   E102 /grids/ct: `direction` is not orthonormal (max residual 0.4)
+          -> `direction` is not orthonormal to 1e-4
 ```
 
 ### `medh5 verify`
@@ -56,15 +73,20 @@ medh5 verify PATH... [--key K] [--partial OBJ] [--json]
 ```
 
 Recompute every object's digest and the root `content_id`. `--partial` limits
-it to named objects — useful when you only want to know whether one image
-changed.
+it to datasets named by path (`images/CT`, `annotations/seg/data`) — useful
+when you only want to know whether one image changed. A digest that is not
+`ALGO:HEX`, or a `--partial` name with no digest at that path (a group, a
+typo), is reported as `MALFORMED` and fails the check.
 
 In a file that declares a `content_id`, a dataset inside a grid, image,
 annotation or transform that carries no digest fails the check (`UNSIGNED`):
 the root covers the digests present, so an undigested dataset added to an
 object — `instance_ids` on a boxes annotation, say — changes what it means
-without changing the root. The writer digests every dataset, so none of its
-files has one.
+without changing the root. So does a path there that is not its object's own
+— an alias sorting before it, a soft link — because a line binds bytes to the
+path it names, and such a name could be relinked to other covered bytes under
+the same root (`E704`). The writer digests every dataset and makes no links,
+so none of its files has either.
 
 ### `medh5 fix`
 
@@ -98,8 +120,11 @@ Timepoints, their intervals, and what belongs to each visit.
 medh5 track PATH [--class KEY] [--key K] [--json]
 ```
 
-Join instance ids across visits: per object, its volume at each timepoint, the
-relative change, and whether it is `present`, `resolved` or `unexamined`.
+Join instance ids across visits: per object, its volume at each timepoint in
+mm³ (in px on an uncalibrated grid), the relative change, and whether it is
+`present`, `resolved` or `unexamined`. Masks, boxes, oriented boxes and points
+join; an annotation of another kind that carries `instance_ids` is named as
+skipped, and the rest still join.
 
 ## Annotations
 
@@ -118,11 +143,14 @@ auto-selector would cost for each candidate encoding.
 medh5 seg convert PATH ANNOTATION --to KIND [--dry-run] [--drop-identity] [--json]
 ```
 
-Losslessly re-encode a voxel annotation: `labelmap`, `layers`, `bitmask`,
-`instances`, `probmap`. `--dry-run` prints the size change without writing.
-From `instances` to a dense encoding the voxels survive and the object ids do
-not, so it is refused unless `--drop-identity` says to drop them; the file then
-records a `transcode` activity saying so.
+Re-encode a voxel annotation: `labelmap`, `layers`, `bitmask`, `instances`,
+`probmap`. `--dry-run` prints the size change without writing. Every
+conversion is lossless but one, as §7.6 allows: a `probmap` is lossless only
+under its `threshold` (§7.5), so another encoding keeps the voxels at or above
+it as the class and loses the probabilities. From `instances` to a dense
+encoding the voxels survive and the object ids do not, so it is refused unless
+`--drop-identity` says to drop them; the file then records a `transcode`
+activity saying so.
 
 ### `medh5 index build`
 
@@ -132,9 +160,10 @@ medh5 index build PATH... [--max-coords N] [--occupancy K] [--seed S] [--json]
 
 Build or refresh sampling indices, which make foreground patch sampling O(1) in
 the volume. `--max-coords` bounds the stored coordinates per class (default
-4096); `--occupancy` sets the block size of the coarse per-class occupancy map,
-in voxels per axis (default 8, so the map is 1/8 resolution); `--seed` (default
-0) fixes the coordinate subsample, so rebuilding an index reproduces it.
+4096, at least 1); `--occupancy` sets the block size of the coarse per-class
+occupancy map, in voxels per axis (default 8, so the map is 1/8 resolution;
+`0` builds no map); `--seed` (default 0) fixes the coordinate subsample, so
+rebuilding an index reproduces it.
 
 ### `medh5 labels`
 
@@ -231,7 +260,8 @@ medh5 pack PATH... -o SHARD.medh5c [--key K ...] [--json]
 
 Bundle samples into one `.medh5c`. Chunks move as raw bytes, so packing is
 byte-identical and `content_id` is preserved. Each member's key is its file
-stem unless `--key` is repeated once per source, in order.
+stem unless `--key` is repeated once per source, in order. An output that is
+one of the samples being packed is refused, as is a directory.
 
 ### `medh5 unpack`
 
@@ -290,6 +320,8 @@ sampling index when it is current. `--partition train` restricts the pass to
 one partition of `--set-id` (default `default`), which is how you compute
 normalisation constants without looking at your test set. `--stride N` reads
 every Nth slab along the first axis — faster, approximate, and opt-in.
+`--image` or `--annotation` naming an id that no sample in the manifest (or the
+partition) has is an error, not an empty table.
 
 Intensity moments are over **physical** values: each image's rescale is applied
 first, which is what the loaders read with `physical=True`. `--stored` measures
@@ -323,18 +355,24 @@ medh5 convert to-nifti PATH IMAGE OUT [--annotation A --class K] [--stored]
 medh5 convert from-dicom ROOT OUT [--group-by subject|study]
                                   [--modality M ...] [--series UID ...]
 
-medh5 convert from-dicom-seg SEG SAMPLE [--id ANN] [--grid G]
+medh5 convert from-dicom-seg SEG SAMPLE [--id ANN] [--grid G] [--frame-salt S]
 medh5 convert to-dicom-seg PATH ANNOTATION OUT --source DICOM [--source DICOM ...]
+                                               [--frame-salt S]
 
 medh5 convert from-rtstruct RTSTRUCT SAMPLE [--id ANN] [--grid G] [--rasterize]
+                                            [--frame-salt S]
 medh5 convert to-rtstruct PATH ANNOTATION OUT --source DICOM [--source DICOM ...]
+                                              [--frame-salt S]
 
 medh5 convert from-nnunet ROOT OUT [--case ID ...]
 medh5 convert to-nnunet OUT PATH... [--dataset-name NAME] [--annotation A]
+                                    [--class K ...] [--unlabeled refuse|test]
 ```
 
 All but `to-nifti` also take `[--report FILE] [--json]`. Options marked `...`
-repeat, one value per occurrence.
+repeat, one value per occurrence. `PATH` and `SAMPLE` are sample files: a
+collection is refused before anything is converted, and `medh5 unpack`
+extracts its members.
 
 `from-nifti --fourth-axis` says what a 4-D series' extra axis is — `time` for
 cine, DCE and 4-D CT, `channel` for multi-b-value DWI and multi-echo; `auto`
@@ -342,15 +380,30 @@ cine, DCE and 4-D CT, `channel` for multi-b-value DWI and multi-echo; `auto`
 do not say. `--assume-geometry` imports a file that declares no spatial mapping,
 recorded as a guess; without it such a file is refused.
 
+`to-nifti` writes `OUT`, a `.nii` or `.nii.gz` file. With `--annotation` it
+writes that annotation's labelmap, each ignored voxel as its ignore id; with
+`--class` too, one class as a 0/1 mask, refused for an annotation with an ignore
+region, which a mask has no value for.
+
 `from-dicom --group-by subject` (the default) merges a patient's studies into
 one multi-timepoint sample. Identity is never inferred from filenames, dates or
 accession numbers; when it cannot be established the command falls back to one
-sample per study, warns, and records the fallback.
+sample per study, warns, and records the fallback. `OUT` is the file the one
+sample is written to, or a directory of samples named for their subjects: when
+several samples result, when it is an existing directory, or when it ends in a
+path separator (`out/`).
+
+`--frame-salt` is for a sample `medh5 scrub` pseudonymised: given the salt the
+scrub used, the DICOM side's frame of reference (the SEG's or the RTSTRUCT's on
+import, the source images' on export) is compared with the sample's as the
+scrub wrote it, rather than refused as another frame.
 
 `from-dicom-seg` writes annotation `seg` and `from-rtstruct` writes `contours`
 unless `--id` names another; `to-nnunet` exports annotation `seg` unless
 `--annotation` names another, as dataset `Dataset001_medh5` unless
-`--dataset-name` does.
+`--dataset-name` does, with every class the cases carry unless `--class` names
+the ones to export --- each of them examined by every case. A case without the
+annotation is refused unless `--unlabeled test` writes it to `imagesTs`.
 
 See [Converters](converters.md).
 
@@ -383,13 +436,16 @@ medh5 recompress PATH --profile P --out FILE [--rechunk] [--json]
 ```
 
 Re-encode bulk data under `training`, `balanced`, `archive` or `portable`.
-Every stored byte changes; no `content_id` does, because the digest is over
-content and not over its encoding.
+Every re-encoded dataset's stored bytes change (one whose type a rebuild would
+lose is copied as stored, and printed as `KEPT`); no `content_id` does, because
+the digest is over content and not over its encoding.
 
 The output is **verified** against the digests it carries before the command
 returns, and the exit code follows: a file whose bytes had already been
 corrupted before you re-encoded it now fails here rather than reporting a
-preserved `content_id` and exiting 0.
+preserved `content_id` and exiting 0. What the check cannot read --- the output
+has replaced the input by then --- fails it too, named on an `UNCHECKED` line
+(`unverified` in `--json`).
 
 ### `medh5 bench`
 
@@ -405,6 +461,131 @@ sample for the `foreground_sample_many_ms` row, which holds the foreground draw
 to its target where the class count is large. A longitudinal sample given as
 `PATH` gets the paired row when a transform relates its first two visits.
 Progress goes to stderr, so `--json` output is only the document.
+
+The `patch_throughput` row runs the PyTorch dataloader, so it needs
+`medh5[torch]`; the standalone binary hands it to Python as it does the
+converters. Without PyTorch the row is skipped with the reason on stderr, and
+`--no-throughput` skips it outright.
+
+## Clinical history (format 1.1)
+
+### `medh5 clinical show`
+
+```
+medh5 clinical show PATH [--key K] [--json]
+```
+
+The subject clock, every event version with its effective and available times,
+the documents (metadata, not text) and the links. See
+[Clinical history beside the images](../guides/clinical.md).
+
+### `medh5 clinical select`
+
+```
+medh5 clinical select PATH --cutoff-hours H [--policy POLICY] [--context-us W] [--key K] [--json]
+medh5 clinical select PATH --cutoff-us T [--policy-file POLICY.json] [--json]
+```
+
+What strict prospective selection (1.1 §9) admits at the cutoff: the event
+versions, the payloads they attest, the records a later revision of unknown
+availability makes uncertifiable, and how many events each rule excluded.
+`--policy latest_provable` names the one alternative; `--policy-file` takes a
+whole policy (contract §3.4).
+
+### `medh5 clinical export`
+
+```
+medh5 clinical export PATH [--key K] [--out RECORDS.json]
+```
+
+The logical-record bundle --- clock, events, documents with their text, links ---
+as JSON, checked against `medh5-clinical-1.schema.json`.
+
+### `medh5 clinical augment`
+
+```
+medh5 clinical augment PATH RECORDS.json [--out OUT] [--json]
+```
+
+Add a record bundle to a sample, in place or into `--out`: images and
+annotations are copied as stored (their digests do not change), the sample
+becomes 1.1 with a new `content_id`, and what the records leave unknown is
+reported. A `clinical` group the profile did not write is refused, never
+reinterpreted.
+
+### `medh5 clinical strip`
+
+```
+medh5 clinical strip PATH --out OUT [--json]
+```
+
+The imaging projection: a new file without the clinical profile, written as
+1.0, with the loss reported. Never in place.
+
+## Tasks and caches
+
+The [task and cache contract](../spec/task-cache-1.md): task manifests
+(`medh5.task/1`) and feature caches (`medh5.cache/1`). See
+[Train on clinical tasks](../guides/clinical-training.md).
+
+### `medh5 task validate`
+
+```
+medh5 task validate MANIFEST [--json]
+```
+
+Everything wrong with a manifest that opening no file can find: its schema,
+its policy, slots and target, its fingerprint, and its subjects, partitions,
+rows and source ids (T1xx, T2xx). Prints the task and manifest fingerprints.
+
+### `medh5 task preflight`
+
+```
+medh5 task preflight MANIFEST [--base DIR] [--deep] [--json]
+```
+
+Open and check every source --- pins, identities, clocks, duplicated events
+--- and report every row: `eligible`, `uncertifiable`, `excluded` or `error`,
+with the reason, the event count, the image filling each slot and the target
+label. Exits 1 when anything was found. `--deep` re-verifies every dataset of
+every source, not only the clinical ones.
+
+With `--json`, each subject's merged history is listed once, under
+`subjects` (its sources, event versions, links and owned documents), and each
+row names what it admits in `selection`: the admitted versions in input order
+(`events`, with their order bounds, tie groups and plan flags), the attested
+links by position in its subject's `links`, and the payloads.
+
+Both forms take the subjects one at a time and hold neither the cohort's
+histories nor its document: `--json` writes each subject's history as soon as
+it is merged, with the members in the order they become known --- the two
+fingerprints, `subjects`, `rows`, then `ok`, `counts` and `findings` --- and
+the table keeps one line per row. Memory follows the largest subject and the
+rows, not the cohort.
+
+### `medh5 task reconcile`
+
+```
+medh5 task reconcile MANIFEST [--base DIR] [--out OUT]
+```
+
+Record, per subject, the event versions several of its fragments hold and the
+digest they share --- what preflight checks duplicates against.
+
+### `medh5 cache validate`
+
+```
+medh5 cache validate CACHE [--task MANIFEST] [--base DIR] [--json]
+```
+
+Check a feature cache's checksums and every source pin it records: *stale*
+entries (T403) are told apart from *corrupt* ones (T401, T402), and an
+event-level entry must name a version its source holds and the document that
+version owns (T407). With `--task`,
+also that it was built for this task and its cutoffs (T404), fitted on its
+training partition (T405), and encodes only versions its rows admit (T406) ---
+the task is preflighted a subject at a time, keeping only each row's cutoff
+and admitted versions.
 
 ## Conformance
 
@@ -424,7 +605,8 @@ medh5 conformance build OUTDIR [--case NAME]
 
 Write the corpus files and `expected.json`, and nothing else. Use this when you
 want the cases as fixtures; use `publish` when you want the whole distributable
-suite.
+suite. `--case`, here and in `run` and `publish`, repeats to name several
+cases; a name the corpus does not have is refused as a usage error.
 
 ### `medh5 conformance run`
 
@@ -441,7 +623,8 @@ medh5 conformance publish OUTDIR [--case NAME]
 ```
 
 Write the distributable suite: cases, `expected.json`, the code table, the JSON
-Schema, `SHA256SUMS` and a README.
+Schemas (`/meta`, the clinical profile, and the task and cache contract's),
+`SHA256SUMS` and a README.
 
 ### `medh5 conformance score`
 
@@ -450,11 +633,15 @@ medh5 conformance score SUITE RESULTS.json [--json]
 ```
 
 Score any implementation's results against a published suite. See
-[Conformance](../spec/conformance.md).
+[Conformance](../spec/conformance.md). A suite whose files no longer match its
+`SHA256SUMS` fails the score, whatever the cases say --- a score over files
+that are not the published ones is not a score --- and `--json` names those
+files under `changed`.
 
 ## Related
 
 - **[Check a file before training on it](../guides/validate.md)** — `validate` versus `verify`.
 - **[Diagnostic codes](diagnostic-codes.md)** — every code these commands report.
 - **[Cohort check codes](cohort-checks.md)** — what `medh5 dataset check` reports.
+- **[Task and cache contract](../spec/task-cache-1.md#9-finding-codes)** — the T-codes `medh5 task` and `medh5 cache` report.
 - **[How-to guides](../guides/index.md)** — these commands in the tasks they belong to.

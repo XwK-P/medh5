@@ -10,9 +10,12 @@ pip install "medh5[torch]"
 
 ## Datasets
 
-All four take the same reading arguments: `images`, `annotations`,
-`label_format` (`onehot`, `labelmap`, `instances` or `none`), `physical`,
-`dtype`, `timepoint`.
+`VolumeDataset`, `PatchDataset` and `GridPatchDataset` take the same reading
+arguments: `images`, `annotations`, `label_format` (`onehot`, `labelmap`,
+`instances` or `none`), `physical`, `dtype`, `timepoint`. A patch is drawn, and
+a cover planned, on the grid the images they read share, so `timepoint="tp1"`
+reads the follow-up's grid. `PairedPatchDataset` takes `images`, `physical` and
+`dtype`, and refuses the other three: a pair chooses its own visits.
 
 ```python
 from medh5.torch import (
@@ -89,7 +92,10 @@ ds.report      # files, pairs, and cross-sectional files that contributed none
 `all_pairs`. Each item carries both visits' patches, `meta["pair"]` and
 `meta["interval_days"]`, and — where a change label spans exactly that pair —
 `item["label"][ann_id]`, that classification's `{class_key: value}`. `label=`
-names the change-label annotation explicitly instead.
+names the change-label annotation explicitly instead. An item's `images` and
+`valid` are keyed by timepoint first (`item["images"]["tp0"]["CT_tp0"]`), so
+`collate` batches pairs of the same two visits, and names the key when a batch
+mixes others.
 
 `report` does **not** resolve transforms. With `align="transform"`, a pair whose
 frames have no registration is still counted as a pair, and the failure surfaces
@@ -124,9 +130,11 @@ honour what it is handed:
 - **`ignore[ann]`** is `True` on the §7.7 ignore region, under whichever
   encoding stores it — in band for `labelmap` and `layers`, a sibling mask for
   the rest — and on any padding added to reach the patch size.
-  `label_format="labelmap"` also writes `65535` there, so
-  `CrossEntropyLoss(ignore_index=65535)` works directly. The one-hot planes are
-  `0` there: mask the loss with `ignore`.
+  `label_format="labelmap"` is an `int64` plane of the requested classes' ids,
+  every other class background, and writes `65535` there, so it is a
+  `CrossEntropyLoss(ignore_index=65535)` target as it stands, given a logit per
+  class id up to the largest requested. The one-hot planes are `0` there: mask
+  the loss with `ignore`.
 - **`valid[image]`** is the image's `valid_mask` (§4.4) where it declares one,
   all `True` otherwise, and never the padding.
 - **`meta["annotated"][ann]`** holds one flag per label channel, in the order you
@@ -141,12 +149,13 @@ loss = loss * keep[:, None] * batch["meta"]["annotated"]["organs"][..., None, No
 
 `collate` stacks tensors and leaves everything else as lists. When two samples
 disagree on a tensor's shape it names the key that disagreed rather than
-raising from inside `torch.stack`.
+raising from inside `torch.stack`, and it refuses by name a key some items of
+the batch carry and others do not.
 
 `used_index` is worth logging. `False` means the sampler fell back to scanning
-the volume because there was no current sampling index — the difference between
-0.03 ms and 312 ms per draw at 512³. `None` means the draw was uniform and
-consulted no index, so there is nothing to report.
+the volume because no current sampling index held the classes it could draw —
+the difference between 0.03 ms and 2.4 s per draw at 512³. `None` means the
+draw was uniform and consulted no index, so there is nothing to report.
 
 ## The DataLoader
 
@@ -194,13 +203,23 @@ loader = DataLoader(ds, batch_size=4, sampler=FileGroupedSampler(ds, seed=0),
 
 The order is a function of `(seed, epoch)`, and the epoch is the dataset's:
 `ds.set_epoch(epoch)` redraws the patches and reorders the files. Pass it
-instead of `shuffle=True`, not with it. It works with every dataset here, and
-with workers `samples_per_volume` should be a multiple of `batch_size`, since a
-file whose items straddle two batches is opened by both workers.
+instead of `shuffle=True`, not with it. It works with the four datasets above,
+which say which items read which file (`file_groups()`) --- `ClinicalTaskDataset`
+does not, and is refused --- and with workers `samples_per_volume` should be a
+multiple of `batch_size`, since a file whose items straddle two batches is
+opened by both workers.
 
 The cache is shared by the threads of a process and locked. A handle is held
 for the length of an item, so a thread-based loader never has one closed under
 it by another thread's eviction.
+
+The cache is `medh5.torch.CACHE`, a `HandleCache`, and `open_cached(path,
+sample_key=None)` opens a sample --- or a member of a `.medh5c` collection ---
+through it. The datasets read through `CACHE.lease(path, sample_key,
+content_id=...)`, which holds the handle until the block ends. Given the
+`content_id` a task's row pins, a lease reopens a handle whose file `amend`
+replaced after it was opened, and refuses a sample that is another version
+all the same (`T302`): what the row pins is what it reads.
 
 A 10-epoch soak over the cache leaves the handle count and the descriptor count
 flat; there is a test that asserts it.
@@ -227,6 +246,9 @@ two writers. See [Tune performance](../guides/performance.md#on-a-network-filesy
 
 `class_weights` picks which class a foreground draw targets: `uniform`,
 `inverse_frequency`, `frequency`, or an explicit `{class_id: weight}` mapping.
+It is applied to every candidate class's voxel count, from the index or from a
+scan alike; a class weighted zero is never drawn, and a draw with no candidate
+that has both foreground and weight is a uniform one.
 
 Foreground sampling is O(1) in the volume **if the file carries a sampling
 index**:
@@ -236,6 +258,69 @@ $ medh5 index build cohort/*.medh5
 ```
 
 Without one the sampler scans, still works, and records `used_index=False`.
+
+## Clinical tasks (format 1.1)
+
+`ClinicalTaskDataset` turns the rows of a [task manifest](../spec/task-cache-1.md)
+--- a subject at a cutoff --- into items; `collate_clinical` batches them.
+Every decision about what a row may read is the engine's, made once by the
+task's preflight; the dataset reads only that.
+
+```python
+from torch.utils.data import DataLoader
+from medh5.torch import ClinicalTaskDataset, collate_clinical
+
+train = ClinicalTaskDataset("cohort/progression.task.json", partition="train")
+batch = next(iter(DataLoader(train, batch_size=8, collate_fn=collate_clinical)))
+```
+
+| Argument | |
+|---|---|
+| `task` | A `TaskManifest` or the path of one |
+| `partition` | One partition of the task's split |
+| `statuses` | Preflight statuses to keep (`("eligible",)`) |
+| `concepts` | A `ConceptVocabulary` --- fitted on the training partition when omitted, refused when fitted on anything else (T405). It holds each concept's statistics in the one unit its training values were in (a concept whose training values are in two units is refused at fit time) and the text values each concept took |
+| `documents` | An event-level feature cache's path, or an encoder with `encode(text)` and `dim` |
+| `row_features` | A patient-level cache, validated against the task before any row reads it |
+| `base` | The directory relative source URIs resolve against --- the manifest's own directory when omitted |
+| `strict` | Refuse a task whose preflight has findings (default), or keep only the unaffected rows |
+| `preflight` | This manifest's `Preflight`, when it has been run already; one of another task, or another instance of this one, is refused (T404). Run here when omitted |
+
+A batch, for `B` rows:
+
+| Key | Shape | Meaning |
+|---|---|---|
+| `images[slot]` | `(B, C, *patch)` | The slot's window on its image's own grid; zeros where the slot is empty |
+| `present[slot]` | `(B,)` bool | Modality availability: an eligible image filled the slot |
+| `valid[slot]` | `(B, *patch)` bool | Field of view: inside the image and its valid region, never the padding |
+| `image_time[slot][...]` | `(B, 2)`, `(B,)` | The image's acquisition (`start_age_h`) and availability (`available_age_h`), as ages before the cutoff, with `start_known` and `available_known` |
+| `label[slot]`, `annotated[slot]` | `(B, K, *patch)`, `(B, K)` | Supervision for the slot's `classes`, and whether each was examined (coverage) |
+| `ignore[slot]` | `(B, *patch)` bool | Voxels a loss must not score: ignore regions and padding |
+| `events[...]` | `(B, N)`, `(B, N, 2)` | The admitted versions in input order, padded to the longest history; `mask` marks real events, `length` counts them (below) |
+| `documents[...]` | `(B, M, D)`, `(B, M)`, `(B, M, 2)` | `features` of the admitted documents, `event` (the owning version's position in `events`), `start_age_h` and `available_age_h` with their `*_known`; `mask` and `length` |
+| `target["value"]`, `target["observed"]` | `(B,)` | The label, and whether it is observed (a censored row is not) |
+| `meta` | list | Row id, subject, partition, cutoff, fingerprint, the admitted event ids, and per slot the visit that filled it |
+
+The event sequence keeps what 1.1 §5 distinguishes, and never collapses a time
+to one number:
+
+| `events[...]` | Shape | Meaning |
+|---|---|---|
+| `concept`, `kind`, `status`, `temporal_type` | `(B, N)` int | Vocabulary index (0 padding, 1 unseen); the kind, status and temporal type as their vocabulary's index + 1 (0 padding) |
+| `value`, `has_value` | `(B, N)` | The value, normalised by the fitted statistics; whether there is one --- an absent value is not 0 |
+| `unit` | `(B, N)` int | 2 when the value is in the unit its concept was fitted in (and so normalised); 1 when it is in another, or its concept was not fitted --- then `value` is 0; 0 without a value |
+| `value_index` | `(B, N)` int | The text value (`value_text`) as a fitted `(concept, value)` pair's index: 0 none, 1 a value the concept never took in training, fitted pairs from 2 (`ConceptVocabulary.n_values` in all) |
+| `comparator` | `(B, N)` int | `eq`, `lt`, ... as `COMPARATORS` index + 1 (`eq` when a value has none); 0 without a value |
+| `missing` | `(B, N)` bool | An expected result missing for a source reason: absence, never a negative |
+| `start_age_h`, `end_age_h`, `available_age_h` | `(B, N, 2)` | Effective start, effective end and availability as ages before the cutoff in hours: `[..., 0]` the least, `[..., 1]` the most, equal for an exact instant |
+| `start_known`, `end_known`, `available_known` | `(B, N)` bool | Whether that time is known; an unknown one is zeros, which are not a time |
+| `tie_group` | `(B, N)` int | Versions whose ordering times overlap share a group: their order is the storage tie-break, not evidence |
+| `plan` | `(B, N)` bool | Admitted as a plan (`plans` policy): `planned`, or its start not definitely at or before the cutoff |
+
+An age is negative only for what a version available at the cutoff itself recorded about later --- a
+plan's start, a course's recorded end; every `available_age_h` is at least 0. A `static` event has no
+effective time (`temporal_type`), which is not the same as an `unknown` one (strict selection never
+orders an unknown time; `order_by = "available"` admits it, as unknown).
 
 ## MONAI
 
@@ -254,11 +339,16 @@ with medh5.open(path) as s:
 the affine is right. `to_metatensor(..., roi=...)` shifts the origin to the
 ROI, so a patch keeps its world position.
 
-The affine is passed through in the grid's own `coord_system` — usually LPS —
-and labelled with it in the metadata MONAI reads, rather than silently converted.
-Pass `space="RAS"` when a consumer needs RAS: the conversion is a sign flip on
-the first two world axes of the affine, never a flip of the voxels.
-`from_metatensor(tensor)` returns the array and its metadata.
+The affine is in millimetres, which is what MONAI and the NIfTI files it saves
+read: a grid in `m` or `um` is scaled, and one in `px`, which has no size,
+stays in pixels (`meta["medh5"]["units"]` names the grid's unit). It is passed
+through in the grid's own `coord_system` — usually LPS — and labelled with it in
+the metadata MONAI reads, rather than silently converted. Pass `space="RAS"`
+when a consumer needs RAS: the conversion is a sign flip on the first two world
+axes of the affine, never a flip of the voxels. `from_metatensor(tensor)`
+returns the array and its geometry --- spacing, origin and direction in the
+tensor's space, and their `units` --- and refuses a tensor whose metadata states
+no affine or no space, which has none to return.
 
 `to_dict(sample, images, annotations)` builds a dictionary-transform item, with
 the same `space=` and `physical=` options.
@@ -277,3 +367,5 @@ so the geometry is testable — and tested — in an environment without it.
   these datasets read.
 - **[Longitudinal studies](../guides/longitudinal.md)** — what `PairedPatchDataset`
   is for.
+- **[Train on clinical tasks](../guides/clinical-training.md)** — what
+  `ClinicalTaskDataset` is for, and the masks it keeps apart.

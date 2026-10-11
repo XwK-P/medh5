@@ -1,0 +1,381 @@
+"""Live views of a sample document's members.
+
+``SampleDocument.extra``, ``.acquisition`` and ``.quality`` are dicts a caller
+edits in place --- ``w.document.extra["tool"] = {...}`` reaches the file --- as
+1.x's dataclass fields were.  The document lives in the format engine, so each
+is a ``dict`` that writes every edit through to it: a member set, replaced or
+deleted, and a value nested in a member changed in place.
+
+The records a document hands out are members too.  ``w.document.identity``,
+``w.activity(...)``, a timepoint, a quality record, a label set's class: each
+keeps its dicts (``extra``, ``params``, ``series_uids``, an agreement's
+``per_class``, a class's ``properties``), and an edit to one rewrites the
+record as a whole in the document.
+
+What a view holds is what the document held when it was read, and again after
+every edit made through it.  A value set is converted as ``SampleWriter.extra``
+converts one, and the view holds the conversion, not the object given.  A
+nested change rewrites its member as a whole, and only while the document's
+copy is still what the view read: once that member has changed another way
+(``SampleWriter.acquisition``, or another view), the change is refused rather
+than written over it, and the member's containers refuse every further edit
+--- read the member again and edit that.
+
+A copy of a view (``copy.copy``, ``dict(view)``, ``pickle``) is a plain
+``dict``, detached from the document; a copy of a record is a record no
+document handed out.
+"""
+
+from __future__ import annotations
+
+import copy
+from collections.abc import Iterable, Mapping
+from typing import Any, SupportsIndex
+
+__all__ = ["Members"]
+
+
+class _Anchor:
+    """One member's containers, and the member as the document held it when
+    they were read (its canonical JSON).  The member is a key of *field*, or
+    with no *key*, the field itself (``identity``); its root is the value read
+    --- a record, or plain JSON."""
+
+    __slots__ = ("document", "field", "key", "root", "stale", "token")
+
+    def __init__(self, document: Any, field: str, key: str | None, token: str) -> None:
+        self.document = document
+        self.field = field
+        self.key = key
+        self.token = token
+        self.root: Any = None
+        self.stale = False
+
+    @property
+    def member(self) -> str:
+        """The member, as a caller names it."""
+        if self.key is None:
+            return f"document.{self.field}"
+        if self.field == "provenance.activities":
+            return f"document.provenance.activity({self.key!r})"
+        return f"document.{self.field}[{self.key!r}]"
+
+    def check(self) -> None:
+        if self.stale:
+            raise RuntimeError(
+                f"`{self.member}` was read before an edit the document "
+                "refused; read it again and edit that"
+            )
+
+    def rewrite(self) -> None:
+        """Write the member back after a change nested in it."""
+        self.check()
+        try:
+            self.token = self.document._replace_member(
+                self.field, self.key, self.token, self.root
+            )
+        except BaseException:
+            # The change is made here and not in the document: these
+            # containers no longer hold what the document holds.
+            self.stale = True
+            raise
+
+
+class Members(dict[str, Any]):
+    """One free-form member mapping of a document (``extra``, ``acquisition``
+    or ``quality``), writing every edit through to the document."""
+
+    __slots__ = ("_anchors", "_document", "_field")
+
+    _document: Any
+    _field: str
+    _anchors: dict[str, _Anchor]
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        # Built directly --- by `dataclasses.asdict`, say --- a view is a
+        # plain dict, with no document to write through to.
+        super().__init__(*args, **kwargs)
+        self._document = None
+        self._field = ""
+        self._anchors = {}
+
+    @classmethod
+    def _of(cls, document: Any, field: str) -> Members:
+        """The view of *field* of *document*."""
+        view = cls()
+        view._document = document
+        view._field = field
+        view._sync()
+        return view
+
+    def _sync(self) -> None:
+        """Hold what the document holds, keeping the containers of a member
+        that has not changed (a caller may be holding them)."""
+        held: dict[str, Any] = {}
+        anchors: dict[str, _Anchor] = {}
+        for key, value, token in self._document._members(self._field):
+            anchor = self._anchors.get(key)
+            if anchor is not None and anchor.token == token and not anchor.stale:
+                held[key] = anchor.root
+            else:
+                anchor = _Anchor(self._document, self._field, key, token)
+                anchor.root = held[key] = _adopted(value, anchor)
+            anchors[key] = anchor
+        dict.clear(self)
+        dict.update(self, held)
+        self._anchors = anchors
+
+    # -- mutation ----------------------------------------------------------------
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        if self._document is None:
+            super().__setitem__(key, value)
+            return
+        self._document._set_member(self._field, key, value)
+        self._sync()
+
+    def __delitem__(self, key: str) -> None:
+        if self._document is None:
+            super().__delitem__(key)
+            return
+        self._document._delete_member(self._field, key)
+        self._sync()
+
+    def __ior__(self, other: Any) -> Members:  # type: ignore[override,misc]
+        self.update(other)
+        return self
+
+    def update(self, other: Any = (), /, **kwargs: Any) -> None:
+        if self._document is None:
+            super().update(other, **kwargs)
+            return
+        for key, value in dict(other, **kwargs).items():
+            self._document._set_member(self._field, key, value)
+        self._sync()
+
+    def setdefault(self, key: str, default: Any = None) -> Any:
+        if self._document is not None:
+            self._sync()
+        if key not in self:
+            self[key] = default
+        return self[key]
+
+    def pop(self, key: str, *default: Any) -> Any:
+        if self._document is None:
+            return super().pop(key, *default)
+        self._sync()
+        if key not in self:
+            if default:
+                return default[0]
+            raise KeyError(key)
+        # Detached: the member it was is gone from the document.
+        value = copy.deepcopy(self[key])
+        del self[key]
+        return value
+
+    def popitem(self) -> tuple[str, Any]:
+        if self._document is None:
+            return super().popitem()
+        self._sync()
+        if not self:
+            raise KeyError("popitem(): dictionary is empty")
+        key = next(reversed(self))
+        return key, self.pop(key)
+
+    def clear(self) -> None:
+        if self._document is None:
+            super().clear()
+            return
+        self._document._clear_members(self._field)
+        self._sync()
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        return (dict, (dict(self),))
+
+
+class _NestedDict(dict[str, Any]):
+    """A JSON object inside a member: an edit rewrites the member."""
+
+    __slots__ = ("_anchor",)
+
+    _anchor: _Anchor | None
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._anchor = None
+
+    def _adopt(self, value: Any) -> Any:
+        if self._anchor is None:
+            return value
+        self._anchor.check()
+        return _nested(self._anchor.document._plain(value), self._anchor)
+
+    def _changed(self) -> None:
+        if self._anchor is not None:
+            self._anchor.rewrite()
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        super().__setitem__(key, self._adopt(value))
+        self._changed()
+
+    def __delitem__(self, key: str) -> None:
+        if self._anchor is not None:
+            self._anchor.check()
+        super().__delitem__(key)
+        self._changed()
+
+    def __ior__(self, other: Any) -> _NestedDict:  # type: ignore[override,misc]
+        self.update(other)
+        return self
+
+    def update(self, other: Any = (), /, **kwargs: Any) -> None:
+        given = dict(other, **kwargs)
+        changes = {key: self._adopt(value) for key, value in given.items()}
+        super().update(changes)
+        self._changed()
+
+    def setdefault(self, key: str, default: Any = None) -> Any:
+        if key not in self:
+            self[key] = default
+        return self[key]
+
+    def pop(self, key: str, *default: Any) -> Any:
+        if key not in self:
+            if default:
+                return default[0]
+            raise KeyError(key)
+        if self._anchor is not None:
+            self._anchor.check()
+        value = super().pop(key)
+        self._changed()
+        return copy.deepcopy(value)
+
+    def popitem(self) -> tuple[str, Any]:
+        if self._anchor is not None:
+            self._anchor.check()
+        key, value = super().popitem()
+        self._changed()
+        return key, copy.deepcopy(value)
+
+    def clear(self) -> None:
+        if self._anchor is not None:
+            self._anchor.check()
+        super().clear()
+        self._changed()
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        return (dict, (dict(self),))
+
+
+class _NestedList(list[Any]):
+    """A JSON array inside a member: an edit rewrites the member."""
+
+    __slots__ = ("_anchor",)
+
+    _anchor: _Anchor | None
+
+    def __init__(self, *args: Any) -> None:
+        super().__init__(*args)
+        self._anchor = None
+
+    def _adopt(self, value: Any) -> Any:
+        if self._anchor is None:
+            return value
+        self._anchor.check()
+        return _nested(self._anchor.document._plain(value), self._anchor)
+
+    def _check(self) -> None:
+        if self._anchor is not None:
+            self._anchor.check()
+
+    def _changed(self) -> None:
+        if self._anchor is not None:
+            self._anchor.rewrite()
+
+    def __setitem__(self, index: Any, value: Any) -> None:
+        if isinstance(index, slice):
+            value = [self._adopt(v) for v in value]
+        else:
+            value = self._adopt(value)
+        super().__setitem__(index, value)
+        self._changed()
+
+    def __delitem__(self, index: SupportsIndex | slice) -> None:
+        self._check()
+        super().__delitem__(index)
+        self._changed()
+
+    def __iadd__(self, other: Iterable[Any]) -> _NestedList:  # type: ignore[misc]
+        self.extend(other)
+        return self
+
+    def __imul__(self, count: SupportsIndex) -> _NestedList:
+        self._check()
+        super().__imul__(count)
+        self._changed()
+        return self
+
+    def append(self, value: Any) -> None:
+        super().append(self._adopt(value))
+        self._changed()
+
+    def extend(self, values: Iterable[Any]) -> None:
+        super().extend([self._adopt(v) for v in values])
+        self._changed()
+
+    def insert(self, index: SupportsIndex, value: Any) -> None:
+        super().insert(index, self._adopt(value))
+        self._changed()
+
+    def pop(self, index: SupportsIndex = -1) -> Any:
+        self._check()
+        value = super().pop(index)
+        self._changed()
+        return copy.deepcopy(value)
+
+    def remove(self, value: Any) -> None:
+        self._check()
+        super().remove(value)
+        self._changed()
+
+    def clear(self) -> None:
+        self._check()
+        super().clear()
+        self._changed()
+
+    def sort(self, *, key: Any = None, reverse: bool = False) -> None:
+        self._check()
+        super().sort(key=key, reverse=reverse)
+        self._changed()
+
+    def reverse(self) -> None:
+        self._check()
+        super().reverse()
+        self._changed()
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        return (list, (list(self),))
+
+
+def _adopted(value: Any, anchor: _Anchor) -> Any:
+    """*value*, read as *anchor*'s member, writing its edits back through
+    *anchor*: a record (a quality record) anchored, plain JSON as
+    containers."""
+    if hasattr(value, "_anchor_to"):
+        value._anchor_to(anchor)
+        return value
+    return _nested(value, anchor)
+
+
+def _nested(value: Any, anchor: _Anchor) -> Any:
+    """*value* (plain JSON) with its objects and arrays as containers of
+    *anchor*'s member."""
+    nested: _NestedDict | _NestedList
+    if isinstance(value, Mapping):
+        nested = _NestedDict({k: _nested(v, anchor) for k, v in value.items()})
+    elif isinstance(value, list):
+        nested = _NestedList([_nested(v, anchor) for v in value])
+    else:
+        return value
+    nested._anchor = anchor
+    return nested

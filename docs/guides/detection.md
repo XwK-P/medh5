@@ -39,8 +39,11 @@ same physical object at another visit — see
 b = s.annotations["lesions"]
 b.boxes[0]              # [[1.5, 5.5], [3.5, 8.5], [4.5, 10.5]]
 b.as_slices()[0]        # (slice(2, 6), slice(4, 9), slice(5, 11))
-b.class_ids, b.scores, b.instance_ids
+b.object_class_ids, b.scores, b.instance_ids   # one entry per box
 ```
+
+`object_class_ids` is each box's class; `class_ids` is the header's coverage
+tuple, every class the annotation can express (§6.2).
 
 `as_slices()` is the round trip you want. Use it rather than rounding yourself:
 
@@ -51,12 +54,13 @@ crop = s.images["CT"].read(b.as_slices()[0])     # exactly the boxed voxels
 ## A lesion drawn on one slice
 
 The common radiology annotation is 2-D on a plane of a 3-D study: a box with a
-degenerate axis (`lo == hi`) plus `slice_index`:
+degenerate axis (`lo == hi`) plus `slice_index`. Two lesions, on slices 5 and 9:
 
-<!-- illustrative -->
 ```python
-w.add_boxes("lesions", boxes, class_ids=["lesion"], grid="ct",
-            space="index", slice_index=[37, 41])
+boxes = np.array([[[5, 5], [3.5, 8.5], [4.5, 10.5]],      # (N, S, 2), with
+                  [[9, 9], [10.5, 16.5], [6.5, 12.5]]])   # lo == hi on axis 0
+w.add_boxes("lesions", boxes, class_ids=["lesion", "lesion"], grid="ct",
+            space="index", slice_index=[5, 9])
 ```
 
 `slice_index` is a **per-box column** — one plane per box, shape `(N,)`, each

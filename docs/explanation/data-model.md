@@ -97,7 +97,7 @@ Every annotation carries two sets:
 
 | | |
 |---|---|
-| `class_ids` | classes this annotation **contains** |
+| `class_ids` | classes this annotation **can express**, present or not |
 | `annotated_class_ids` | classes that were **examined**, found or not |
 
 ```python
@@ -106,7 +106,7 @@ ann.class_ids               # (1, 2, 3)  — declared: liver, spleen, lesion
 ann.annotated_class_ids     # (1, 2, 3)  — all three were examined
 ann.voxel_counts()          # {1: 512, 2: 0, 3: 27}  — the spleen is absent
 ann.is_annotated("vessel")  # False      — nobody looked for a vessel
-ann.is_fully_covered        # True       — nothing appears that was not examined
+ann.is_fully_covered        # True       — every class it can express was examined
 ```
 
 Class 2 is in `class_ids` with zero voxels: examined, and absent. Class 4 is in
@@ -117,8 +117,13 @@ of the spleen. A sample where nobody looked is not. Collapsing the two is how a
 model learns that a whole site's scans have no spleens, and the format refuses
 to let a writer do it silently.
 
-An **ignore** region (`65535`) marks voxels that must not contribute to a loss
-in either direction.
+An **ignore** region (§7.7) marks voxels that must not contribute to a loss in
+either direction. It is not a class. A `labelmap` or `layers` annotation can
+hold it in band, as its `ignore_id` (`65535` unless the header says otherwise);
+every other encoding, and any region that overlaps a class's voxels, keeps it in
+a separate `mask` annotation that the header's `ignore_mask` names.
+`labelmap()` reads it back as the ignore id either way, and
+`Sample.ignore_region()` as one boolean volume.
 
 ## One annotation API, five voxel encodings
 
@@ -176,10 +181,40 @@ s.content_id            # "sha256:..." — the identity of the content
 ```
 
 Recompressing a file changes every stored byte and no digest, because the
-digest is over the content and not over its encoding. Editing a voxel through
-`medh5.amend` restamps that one object's digest and so the `content_id`; editing
-it behind the library's back leaves the stored digest describing the old bytes,
-which is exactly what `verify` reports.
+digest is over the content and not over its encoding. An object an amendment
+writes --- an annotation removed and added again, say --- is stamped with a new
+digest, and so the `content_id` changes. Editing an object behind the library's
+back leaves the stored digest describing the old bytes, which is exactly what
+`verify` reports, and an amendment will not restamp it: `medh5.amend` refuses
+such a file (E701) until the bytes are restored or a person restamps them with
+`medh5 fix --rewrite-digests --reason …`, which records why.
+
+## Clinical context (format 1.1)
+
+A 1.1 sample may also carry what happened to the subject between and around
+the scans, under `clinical/`:
+
+```
+case_0001.medh5
+└── clinical/
+    ├── meta         the subject clock: one origin, microseconds
+    ├── events/      one row per immutable version: what, when it happened, when it became known
+    ├── documents/   source text, owned by document events
+    └── links/       typed relationships to images, annotations, timepoints, instances
+```
+
+Two times describe every event: when it **happened** (`effective`) and when it
+became **available** --- and each is a pair of bounds, because a source that
+knows a date to the day does not know the hour. A revised report is a new
+version of the same record, never an edit. This is what lets a model trained
+on the file be asked only what was known at a moment: the preliminary report,
+not the amendment two days later; the baseline scan, not the follow-up; the
+lesion annotation only after someone drew it.
+
+The images are untouched. A clinical event needs no imaging timepoint ---
+years of laboratory values beside one CT is `core, clinical` --- and a sample
+without clinical records is still written as 1.0. See
+[Clinical history beside the images](../guides/clinical.md).
 
 ## Profiles
 
@@ -190,12 +225,13 @@ be asked to hold it to them.
 s.profiles   # {"core", "seg", "det", "curation", "longitudinal"}
 ```
 
-The nine profiles, and the four validation levels that go with them, are in
+The ten profiles, and the four validation levels that go with them, are in
 [Profiles and validation levels](../reference/profiles-and-levels.md).
 
 ## Related
 
 - **[Partial labels and coverage](../guides/partial-labels.md)** — the coverage contract as a task.
 - **[Longitudinal studies](../guides/longitudinal.md)** — what one-file-per-subject buys.
+- **[Train on clinical tasks](../guides/clinical-training.md)** — what the two times buy.
 - **[What the converters refuse, and why](refusals.md)** — geometry never being guessed.
 - **[Specification](../spec/medh5-1.0.md)** — the normative statement of all of it.

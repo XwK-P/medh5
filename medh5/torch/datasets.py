@@ -1,9 +1,12 @@
 """PyTorch datasets over MEDH5 samples.
 
-Three datasets, one contract: every item is a ``dict`` with ``images``,
-``valid``, ``label``, ``ignore`` and ``meta``.  Keeping the shape uniform is
-what lets a training script swap whole-volume for patch-based sampling by
-changing one constructor.
+Three datasets, one contract: every item of :class:`VolumeDataset`,
+:class:`PatchDataset` and :class:`GridPatchDataset` is a ``dict`` with
+``images``, ``valid``, ``label``, ``ignore`` and ``meta``.  Keeping the shape
+uniform is what lets a training script swap whole-volume for patch-based
+sampling by changing one constructor.  :class:`PairedPatchDataset` reads two
+visits: its ``images`` and ``valid`` are keyed by timepoint, and its only
+label is a change label (see its docstring).
 
 The file's contracts travel with the arrays, because a loss can only honour
 what it is handed:
@@ -27,9 +30,10 @@ Two things here are load-bearing:
 * **Files stay open per worker, keyed by PID.**  See :mod:`medh5.torch.handles`.
 
 Labels come back in one of three formats.  ``onehot`` is ``(C, *patch)`` float
-planes in the caller's class order; ``labelmap`` is a single ``uint16`` plane
-with ties broken by that same order; ``instances`` returns the objects
-overlapping the patch.  The class order is always the one the caller asked for,
+planes in the caller's class order; ``labelmap`` is a single ``int64`` plane of
+class ids, ties broken by that same order and every class not asked for
+background; ``instances`` returns the objects of the classes asked for that
+overlap the patch.  The class order is always the one the caller asked for,
 never the file's storage order, so channel *i* means the same structure across
 a cohort whose files were written by different tools.
 """
@@ -46,18 +50,19 @@ import numpy.typing as npt
 
 from medh5.annotations.base import VoxelAnnotation
 from medh5.errors import MEDH5ValidationError
-from medh5.labels.labelset import IGNORE_ID
+from medh5.labels import IGNORE_ID
 from medh5.sample import Sample, open_sample
 from medh5.sampling import (
     PairReport,
     Patch,
     PatchSampler,
+    Seed,
     TimepointPair,
     TimepointPairSampler,
     grid_patches,
 )
 from medh5.torch._compat import dataset_base, require_torch, to_tensor
-from medh5.torch.handles import CACHE, open_cached
+from medh5.torch.handles import CACHE
 
 LABEL_FORMATS = ("onehot", "labelmap", "instances", "none")
 ALIGNMENTS = ("none", "transform")
@@ -77,7 +82,7 @@ _DatasetBase = dataset_base()
 
 
 class _Epoch:
-    """The epoch, in a tensor every ``DataLoader`` worker shares (F-17).
+    """The epoch, in a tensor every ``DataLoader`` worker shares.
 
     Patches are seeded with ``(seed, epoch, index)``.  An ``int`` attribute set
     in the main process never reached a worker started with
@@ -132,9 +137,6 @@ class _Base(_DatasetBase):  # type: ignore[misc,valid-type]
 
     # -- reading -----------------------------------------------------------
 
-    def _sample(self, path: str) -> Sample:
-        return open_cached(path)
-
     def _lease(self, path: str) -> AbstractContextManager[Sample]:
         """The cached handle, held against eviction while an item is read."""
         return CACHE.lease(path)
@@ -170,6 +172,21 @@ class _Base(_DatasetBase):  # type: ignore[misc,valid-type]
         if self.timepoint is not None:
             return tuple(sorted(sample.at(self.timepoint).images))
         return tuple(sorted(sample.images))
+
+    def _images_grid(self, sample: Sample) -> str | None:
+        """The one grid the images this dataset reads share --- what a window
+        is drawn, and a cover planned, in --- or ``None`` when it reads none.
+
+        Not the reference grid: a dataset scoped to a later visit, by
+        ``timepoint=`` or ``images=``, drew every window on the first visit's
+        grid and refused every item it read.
+        """
+        names = self._image_ids(sample)
+        if not names:
+            return None
+        return self._single_grid(
+            sample, {f"image {n!r}": sample.images[n].grid_id for n in names}
+        )
 
     @staticmethod
     def _single_grid(sample: Sample, members: Mapping[str, str]) -> str:
@@ -249,10 +266,12 @@ class _Base(_DatasetBase):  # type: ignore[misc,valid-type]
         """``(labels, ignore, annotated)`` for every requested annotation.
 
         The ignore region is read through :meth:`Sample.ignore_region`, which
-        knows both places §7.7 lets an encoding keep it.  Reading labels with
-        ``dense()`` or ``labelmap()`` alone returned 0 at every ignored voxel
-        under ``layers``, ``bitmask``, ``instances`` and ``probmap`` --- the
-        voxels §7.7 exists to keep out of the loss went into it as negatives.
+        knows both places §7.7 lets an encoding keep it --- in band, and in a
+        sibling mask --- and goes beside the labels as ``ignore``: ``dense()``
+        planes have no value for it.  A ``labelmap`` item carries it as well,
+        as ``IGNORE_ID`` (65535): ``labelmap()`` writes the annotation's own
+        ``ignore_id`` there, which a file may declare as another value, and
+        one ``ignore_index=65535`` then serves every file.
         """
         if self.label_format == "none" or not self.annotations:
             return {}, {}, {}
@@ -269,8 +288,9 @@ class _Base(_DatasetBase):  # type: ignore[misc,valid-type]
             ann = sample.annotations[ann_id]
             wanted = list(classes) if classes else None
             examined = set(ann.annotated_class_ids)
+            requested = ann.resolve_classes(wanted)
             annotated[ann_id] = np.asarray(
-                [c in examined for c in ann.resolve_classes(wanted)], dtype=bool
+                [c in examined for c in requested], dtype=bool
             )
             region = (
                 sample.ignore_region(ann_id, roi)
@@ -282,11 +302,22 @@ class _Base(_DatasetBase):  # type: ignore[misc,valid-type]
                     region if patch is None else patch.apply_padding(region, value=True)
                 )
             if self.label_format == "instances":
-                labels[ann_id] = self._instances_in(ann, patch)
+                chosen = None if wanted is None else requested
+                labels[ann_id] = self._instances_in(ann, patch, chosen)
                 continue
             if self.label_format == "labelmap":
-                array = np.asarray(ann.labelmap(roi=roi, priority=wanted))
+                # `int64`, the target dtype a classification loss takes: the
+                # `uint16` plane was refused by `CrossEntropyLoss`.
+                array = np.asarray(
+                    ann.labelmap(roi=roi, priority=wanted), dtype=np.int64
+                )
+                if wanted is not None:
+                    # `priority` orders the requested classes on top, and the
+                    # rest are painted beneath them: what was not asked for is
+                    # background, as in every other label format.
+                    array[~np.isin(array, [*requested, IGNORE_ID])] = 0
                 if region is not None:
+                    # As 65535, whatever `ignore_id` the file declares.
                     array[region] = IGNORE_ID
                 pad: float = IGNORE_ID
             else:
@@ -298,20 +329,34 @@ class _Base(_DatasetBase):  # type: ignore[misc,valid-type]
         return labels, ignore, annotated
 
     @staticmethod
-    def _instances_in(ann: Any, patch: Patch | None) -> list[dict[str, Any]]:
-        """Objects overlapping the patch, with boxes in patch coordinates."""
+    def _instances_in(
+        ann: Any, patch: Patch | None, classes: Sequence[int] | None = None
+    ) -> list[dict[str, Any]]:
+        """Objects of *classes* (all, when ``None``) overlapping the patch, with
+        boxes in patch coordinates.
+
+        A box ``[a, b]`` sits at voxel edges --- it is the slice
+        ``a+0.5 : b+0.5`` --- so it overlaps the voxels the patch read,
+        ``start .. stop - 1``, when ``b > start - 0.5`` and ``a < stop - 0.5``.
+        Patch coordinates count from the *padded* patch's first voxel, so a
+        patch reaching past the volume shifts every box by the padding before
+        it: subtracting the start alone left boxes ``pad_before`` voxels from
+        the anatomy they bound.  Only the requested classes are returned, as
+        every other label format does.
+        """
+        wanted = None if classes is None else set(classes)
         objects = []
         for obj in ann.instances():
+            if wanted is not None and obj.class_id not in wanted:
+                continue
             box = np.asarray(obj.box, dtype=np.float64)
             if patch is not None:
-                offset = np.asarray([s.start for s in patch.slices], dtype=np.float64)
-                extent = np.asarray(
-                    [s.stop - s.start for s in patch.slices], dtype=np.float64
-                )
-                local = box - offset[:, None]
-                if np.any(local[:, 1] < 0) or np.any(local[:, 0] > extent):
+                start = np.asarray([s.start for s in patch.slices], dtype=np.float64)
+                stop = np.asarray([s.stop for s in patch.slices], dtype=np.float64)
+                before = np.asarray([b for b, _ in patch.padding], dtype=np.float64)
+                if np.any(box[:, 1] <= start - 0.5) or np.any(box[:, 0] >= stop - 0.5):
                     continue
-                box = local
+                box = box - start[:, None] + before[:, None]
             objects.append(
                 {
                     "instance_id": obj.instance_id,
@@ -438,13 +483,22 @@ class PatchDataset(_Base):
     def __getitem__(self, index: int) -> dict[str, Any]:
         path = self.paths[index // self.samples_per_volume]
         with self._lease(path) as sample:
-            rng = np.random.default_rng((self.seed, self.epoch, index))
-            patch = self.sampler.draw(sample, self.annotation, rng)
+            patch = self.sampler.draw(
+                sample,
+                self.annotation,
+                (self.seed, self.epoch, index),
+                grid=self._images_grid(sample),
+            )
             return self._item(sample, patch)
 
 
 class GridPatchDataset(_Base):
-    """Deterministic sliding-window cover of every file --- the inference path."""
+    """Deterministic sliding-window cover of every file --- the inference path.
+
+    The cover is planned on the grid the images read share (the reference
+    grid when none is read), so images on more than one grid are refused
+    here rather than at the first item.
+    """
 
     def __init__(
         self,
@@ -460,8 +514,10 @@ class GridPatchDataset(_Base):
         self._plan: list[tuple[str, Patch]] = []
         for path in self.paths:
             with self._scan(path) as sample:
-                reference = sample.reference_grid
-                shape, grid_id = reference.spatial_shape, reference.grid_id
+                planned = sample.grids[
+                    self._images_grid(sample) or sample.reference_grid.grid_id
+                ]
+                shape, grid_id = planned.spatial_shape, planned.grid_id
             self._plan.extend(
                 (path, patch)
                 for patch in grid_patches(
@@ -496,6 +552,14 @@ class PairedPatchDataset(_Base):
     A cross-sectional file contributes no pairs.  The count is reported through
     :attr:`report` rather than absorbed: a dataset that silently drops most of
     its files looks exactly like one that is training normally.
+
+    An item's ``images`` and ``valid`` are keyed by timepoint, then image; its
+    ``label``, where there is one, is the change label spanning the pair
+    (*label* names it).  Of the reading arguments it takes ``images``,
+    ``physical`` and ``dtype``: the pair chooses the visits, and *annotation*
+    the foreground windows are drawn from, so ``timepoint=``,
+    ``annotations=`` and ``label_format=`` are refused rather than taken and
+    ignored.
     """
 
     def __init__(
@@ -511,6 +575,13 @@ class PairedPatchDataset(_Base):
         seed: int = 0,
         **kwargs: Any,
     ) -> None:
+        unread = sorted(set(kwargs) & {"annotations", "label_format", "timepoint"})
+        if unread:
+            raise MEDH5ValidationError(
+                f"PairedPatchDataset does not read {unread}: a pair's visits are "
+                "its own, `annotation=` names what its windows are drawn from, "
+                "and `label=` the change label an item carries"
+            )
         super().__init__(paths, **kwargs)
         if align not in ALIGNMENTS:
             raise MEDH5ValidationError(
@@ -520,6 +591,8 @@ class PairedPatchDataset(_Base):
         self.pair_sampler = pair_sampler or TimepointPairSampler()
         self.align = align
         self.samples_per_pair = int(samples_per_pair)
+        if self.samples_per_pair < 1:
+            raise MEDH5ValidationError("samples_per_pair must be at least 1")
         self.annotation = annotation
         self.label = label
         self.seed = int(seed)
@@ -566,8 +639,7 @@ class PairedPatchDataset(_Base):
 
     def _paired_item(self, sample: Sample, index: int) -> dict[str, Any]:
         _, pair = self._plan[index // self.samples_per_pair]
-        rng = np.random.default_rng((self.seed, self.epoch, index))
-        first = self._patch_for(sample, pair.first, rng)
+        first = self._patch_for(sample, pair.first, (self.seed, self.epoch, index))
         second = self._corresponding(sample, pair, first)
         images = {
             pair.first: self._read_at(sample, pair.first, first),
@@ -653,9 +725,7 @@ class PairedPatchDataset(_Base):
             sample, {f"image {n!r}": sample.images[n].grid_id for n in names}
         )
 
-    def _patch_for(
-        self, sample: Sample, timepoint: str, rng: np.random.Generator
-    ) -> Patch:
+    def _patch_for(self, sample: Sample, timepoint: str, rng: Seed) -> Patch:
         """A window in *timepoint*'s own grid, annotated or not.
 
         The grid is named rather than left to the sampler.  `_annotation_at`
@@ -742,7 +812,10 @@ class PairedPatchDataset(_Base):
         transform = None
         if source.frame_uid and target.frame_uid:
             transform = sample.resolve_frames(source.frame_uid, target.frame_uid)
-        if transform is None and not source.comparable_with(target):
+        one_frame = source.frame_uid is not None and (
+            source.frame_uid == target.frame_uid
+        )
+        if transform is None and not one_frame:
             # A `None` here has two possible meanings: the grids already share
             # a frame (nothing to apply), or no path exists between them.  Only
             # the first makes the coordinates comparable, and §3.3 says what
@@ -768,7 +841,15 @@ class PairedPatchDataset(_Base):
                 "index window from both"
             )
         if transform is not None:
+            _require_units(transform, source, target)
             world = transform.transform_points(world)
+        else:
+            # One frame, but each grid's numbers are in its own units (§3.5):
+            # a point in millimetres read on a grid in metres landed a
+            # thousandfold off.  Two conventions are refused here (E414):
+            # §3.3 rule 4 compares world coordinates in one `coord_system`
+            # only.
+            world = source.world_into(target, world)
         index = target.world_to_index(world)[0]
         return tuple(int(round(float(v))) for v in index)
 
@@ -788,6 +869,25 @@ class PairedPatchDataset(_Base):
             )
             out[image_id] = patch.apply_padding(array)
         return out
+
+
+def _require_units(transform: Any, source: Any, target: Any) -> None:
+    """Refuse a transform whose coordinates are not both grids' (§10.1, E506).
+
+    A transform maps points in its own ``units``, and 1.0 defines no transform
+    across units.  One in millimetres between two metre grids moved every
+    point a thousand times as far as it was meant to; nothing is converted
+    here --- the file is wrong, and says so.
+    """
+    wrong = [grid for grid in (source, target) if grid.units != transform.units]
+    if wrong:
+        raise MEDH5ValidationError(
+            f"transform {transform.transform_id!r} maps coordinates in "
+            f"{transform.units!r}, and "
+            + ", ".join(f"grid {grid.grid_id!r} is in {grid.units!r}" for grid in wrong)
+            + ": a transform applies only to grids in its units (§10.1)",
+            code="E506",
+        )
 
 
 __all__ = [

@@ -60,8 +60,38 @@ still describes the same physical volume.
 conversion is a sign flip on the affine, `diag(-1, -1, 1, 1)`, and nothing else
 — no resampling, no reinterpretation. `--coord-system RAS` keeps RAS.
 
-**Round trip.** `from_nifti` → `to_nifti` reproduces the affine and the voxels
-bit-for-bit.
+**Round trip.** `from_nifti` → `to_nifti` reproduces the affine and the voxels.
+A file with a scale (`scl_slope`/`scl_inter`) comes back as its physical values
+by default --- floats, with no scale; `--stored` (`physical=False`) writes the
+stored voxels and the scale, as the file had them.
+
+**An export says what its numbers are in.** Lengths are written in millimetres
+--- a grid in `m` or `um` is scaled to them, and an uncalibrated `px` grid gets
+NIfTI's "unknown" --- and a time axis whose frames are evenly spaced becomes
+`pixdim[4]` and `toffset`, in the grid's time unit. Uneven frames cannot be one
+temporal step: their times go to a BIDS sidecar's `VolumeTiming` beside the
+file (`out.json` for `out.nii.gz`), which `from_nifti` reads back, and the
+header's step is left at 0. A channel axis is written as one: with a b-value per
+channel, four dimensions and a `.bval`; otherwise NIfTI's vector dimension
+(`dim[5]`, vector intent), with per-channel echo and inversion times and flip
+angles in the sidecar. An export replaces the per-volume fields and `.bval` an
+earlier export left beside the file, and keeps the sidecar's other fields. An
+annotation is exported on **its own** grid, whichever image is named.
+
+**An annotation is its labelmap, ignored voxels included.** The whole annotation
+is written as its `labelmap()`, where a voxel of the §7.7 ignore region is the
+annotation's `ignore_id` (`65535` unless the header says otherwise). One class
+(`--class`, `class_key=`) is a 0/1 mask, which has no value for "ignored" and
+whose `0` says "examined, absent", so it is refused for an annotation with an
+ignore region. The output is named `.nii` or `.nii.gz`; any other name, or a
+directory, is refused before anything is written.
+
+**Volumes must share one grid** --- shape, spacing, origin and direction, with
+lengths compared in millimetres, and frame times where both volumes state them.
+**A mask added with `import_seg_nifti` must sit on the sample's grid** in the
+same sense, not only match its shape: a mask from another grid is refused
+rather than laid onto voxels nobody drew on. `assume_aligned=True` takes its
+voxels anyway, for a header known to be wrong, and records the guess.
 
 **`scl_slope` and `scl_inter` become the image's rescale**, the way the DICOM
 modality LUT does. The voxels keep the dtype the file stores them in;
@@ -70,7 +100,20 @@ modality LUT does. The voxels keep the dtype the file stores them in;
 applied.
 
 `--assume-geometry` imports a file that declares no spatial mapping, recording
-the fallback as a guess. Without it, such a file is refused.
+the fallback as a guess. Without it, such a file is refused. A file that states
+no spatial unit (NIfTI's `unknown`, the header's default, and what an export of
+a `px` grid writes) is read as millimetres, as NIfTI readers commonly do, and
+the report records that as a guess too.
+
+**Mask names become class keys** as a label set allows them --- lowercase
+letters, digits and underscores --- and the name as given is the class's
+display name: `--mask GTV-1=gtv.nii.gz` is the class `gtv_1`, named `GTV-1`.
+Two names that make one key are refused. A mask added with `import_seg_nifti`
+is found in the sample's label set by the key its name makes.
+
+**A sample is one subject**, and NIfTI names none: without `--subject-id`
+(`subject_id=`) the sample is a subject of its own, its id the sample's, and
+the report records that as a guess (`identity`).
 
 **A 4-D series' extra axis is decided, not assumed.** Cine, DCE and 4-D CT put
 time there; multi-b-value DWI and multi-echo series put channels there (§3.6),
@@ -93,6 +136,11 @@ from medh5.io.dicom import scan_dicom, read_series, from_dicom, select_series
 report = from_dicom("/studies", "out/", group_by="subject", modalities=["CT"])
 ```
 
+**`out` is a directory** --- each sample named for its subject inside it ---
+when the tree holds more than one sample, when it is a directory already, or
+when it ends in a separator (`out/`); otherwise it is the file the one sample
+is written to.
+
 **Slices are ordered by geometry** — position projected on the slice normal, not
 `InstanceNumber`, which is a display order and is regularly wrong.
 
@@ -104,7 +152,9 @@ become the image's `rescale`, so `read(physical=True)` gives HU and `read()`
 gives what the scanner stored.
 
 **Tags are an explicit allow-list.** Imaging physics goes to `acquisition`;
-everything else stays out (§11.4).
+everything else stays out (§11.4). The importer does not de-identify, and
+writes no de-identification record: the report says so, and the validator
+reports such a file (`W903`).
 
 **Enhanced multi-frame objects are reported, not read.** The importer reads
 classic single-frame series. An Enhanced CT/MR/PET object keeps its geometry
@@ -136,7 +186,43 @@ $ medh5 convert to-dicom-seg case.medh5 organs out.dcm \
 ```
 
 **Frames are placed by geometry**, from each frame's `PlanePositionSequence` —
-not by frame index. **Segments match by label, not by number.**
+not by frame index. Each frame must lie on one of the grid's slices and start at
+its first voxel, and its row and column directions and pixel spacing must be the
+grid's; a SEG drawn on another reconstruction is refused (`E405`) rather than
+force-fitted. A frame's orientation, pixel spacing and segment are read where
+the file keeps them, in its own functional groups or the shared ones; frames
+turned or spaced against each other are refused, and so is a frame stating no
+pixel spacing or naming no segment. Positions are DICOM's (LPS, millimetres),
+converted for an RAS grid or one in other length units; a grid in pixels or
+another convention is refused (`E414`). **Segments match by label, not by
+number.** A `BINARY` or `FRACTIONAL` SEG is read; a `LABELMAP` one, whose frames
+hold every segment by pixel value, is refused by name.
+
+**Frames of reference come first.** A SEG is matched to the grid that shares
+its `FrameOfReferenceUID`, and a grid — matched or named with `--grid` — whose
+frame is known and is another is refused (`E414`) before the sample is touched:
+equal geometry in two frames is no correspondence, and relating them is
+registration, which the importer does not apply. Where the SEG or the grid
+states no frame there is nothing to compare; the placement rests on geometry
+and the report records a guess. A sample `medh5 scrub` pseudonymised holds its
+frames' pseudonyms: `--frame-salt` (`frame_salt=`) gives the scrub's salt, and
+the SEG's frame is compared as the scrub wrote it. `frames_agree` asks the same
+question on its own: equal, not, or `None` when either frame is unknown.
+
+**A SEG may omit its empty frames.** An import places each frame on the grid by
+its own position. `read_dicom_seg`, which has no grid and builds the SEG's own
+volume, puts the planes the file carries on the regular stack they sit on ---
+its step the stated `SpacingBetweenSlices`, else the smallest gap, and every
+gap a whole number of steps, to 10⁻³ mm --- with the planes it omits empty;
+planes no such stack holds are refused, and `read_dicom_seg_frames` reads them
+frame by frame.
+
+**Export writes an annotation onto its own grid only**: the source images must
+be that grid's slices --- rows and columns running the same way at the same
+spacing, each image starting at its slice's first voxel --- or the export is
+refused (`E405`); nothing is resampled. They must be in the grid's frame of
+reference where it states one (`E414` otherwise); `--frame-salt` (`frame_salt=`)
+compares a frame `medh5 scrub` pseudonymised.
 
 <!-- illustrative -->
 ```python
@@ -149,6 +235,12 @@ to_dicom_seg("case.medh5", "organs", ["ct/1.dcm", "ct/2.dcm"], "out.dcm")
 Import preserves overlapping segments and `FRACTIONAL` values. **Export does
 not**: `to_dicom_seg` writes `BINARY` from `dense()`, which for a `probmap`
 applies the stored threshold, so fractional data is thresholded on the way out.
+A binary segment cannot mark an ignore region either --- its 0 says examined
+and absent --- so an annotation that ignores any voxel (§7.7) is refused;
+`to_nifti` with `annotation=` writes its labelmap, ignore id included. A SEG
+holds one segment per class: the export takes a `labelmap`, `layers`,
+`bitmask`, `instances` or `probmap` annotation, and refuses any other kind
+(`E401`) --- a `mask`, which has no classes, among them.
 
 Writing needs `highdicom` (`pip install "medh5[dicomseg]"`).
 
@@ -171,9 +263,27 @@ from_rtstruct("plan.dcm", "case.medh5", rasterize=False)
 **Contours stay contours** (§8.6), in world coordinates. `--rasterize` is opt-in,
 and the rule it used goes into the provenance graph.
 
+**The import reads patient coordinates.** `ContourData` is millimetres in LPS,
+and the contours are stored in their grid's world coordinates --- scaled for a
+grid in other length units, flipped in x and y for an RAS one; a grid in pixels
+or another convention is refused (`E414`). They go onto the grid that shares
+the RTSTRUCT's frame of reference, or the sample's only grid, and a grid ---
+matched or named with `--grid` --- whose frame is known and is another is
+refused (`E414`) before the sample is touched. `frame_salt=` compares a frame
+`medh5 scrub` pseudonymised, and the contours then carry the grid's pseudonym.
+Where the RTSTRUCT or the grid states no frame, the report records a guess.
+
 Each imported polygon records the slice it lies on as `contour_plane`
 `(0, k)`, in the grid's index space, so `by_plane()` on the result groups the
 structure set the way the planner drew it.
+
+**The export writes patient coordinates**, as DICOM defines them: millimetres,
+LPS. A grid in metres is scaled and an RAS one flipped in x and y; a grid in
+pixels or another convention is refused, and so are contours with no grid to
+give their units. The source images must share one frame of reference, and the
+contours must be in it --- the annotation's `frame_uid` in world space, its
+grid's in index space; `--frame-salt` compares a frame `medh5 scrub`
+pseudonymised. Contours that state no frame are recorded as a guess.
 
 ### nnU-Net v2
 
@@ -190,15 +300,65 @@ from_nnunetv2("/Dataset001_Liver", "out/")
 to_nnunetv2(["case1.medh5", "case2.medh5"], "/out", dataset_name="Dataset001_Liver")
 ```
 
-Each case's channels and per-class masks are bundled into one sample.
+Each case's channels and per-class masks are bundled into one sample, and each
+case is a subject of its own: a dataset of cases names no patients, so the
+report records that as a guess (`identity`) --- two cases of one patient are
+two subjects, and a split by file is subject-safe only if no patient has two.
+An image is named for its channel; nnU-Net reads `channel_names` as
+normalisation schemes, so two channels may share a name (`zscore`), and those
+images are named for their channel index as well (`zscore_0000`).
 
 **nnU-Net's class ids are kept**, so a model trained against the original
-dataset still means the same thing. **Region labels become §5.1 DAG parents**: a
-region that is the union of two components is a class whose components name it
-as a parent, which is exactly what the hierarchy is for.
+dataset still means the same thing. A file's `scl_slope`/`scl_inter` mean what
+they mean to nnU-Net: an image keeps them as its rescale, and label ids are read
+after them (a scaling that makes non-integer labels is refused). **Region
+labels become §5.1 DAG parents**: a region that is the union of two components
+is a class whose components name it as a parent, which is exactly what the
+hierarchy is for. **nnU-Net's `ignore` label is the annotation's ignore
+region** (§7.7), both ways: never a class, and never background. **A label
+volume holds only what `labels` declares**: a value it does not is refused, as
+nnU-Net refuses it, rather than read as background for every class.
 
 The parsed `dataset.json` is stashed in `extra["nnunetv2"]`, so `to-nnunet`
-reproduces the original dataset definition rather than inventing one.
+reproduces the original dataset definition rather than inventing one: its
+channel names and other fields as stashed, its labels unless a case needs them
+extended or renumbered (below), and `numTraining` and `file_ending` those of
+the files written. Without a stash a channel is named for its image, and a CT
+image `CT`: nnU-Net reads the name as the channel's normalisation, and any name
+but `CT` --- `CT_tp0`, say --- z-scores it.
+
+**The export checks the dataset before it writes a file**, and a refusal of any
+case refuses the export with nothing written. nnU-Net reads one
+physical space per case and one label table for the dataset, so every channel
+and the labels must be one lattice in one frame, convention and unit ---
+nothing is resampled --- and the label table is the union of the cases'
+classes, one name per id. **Every case must have examined every class
+exported** (`annotated_class_ids`): a class one case never looked for would be
+written as its background, a negative nobody observed; `classes=` exports a
+subset all of them examined.
+
+**Every file is a name under the dataset.** A case's files are named by its
+`sample_id`, which must be a sample key (`[A-Za-z0-9_.-]`, not `.` or `..`),
+and no two cases may differ only in case --- one would overwrite the other on a
+case-insensitive file system; `--dataset-name` is held to the same rule, and
+`file_ending=` is `.nii.gz` (the default) or `.nii`: every file is NIfTI. **Every
+case is a training case**: one without the annotation is refused, or with
+`unlabeled="test"` (`--unlabeled test`) written to `imagesTs` and left out of
+`numTraining`. **Label values are consecutive**, as nnU-Net requires: class ids
+with a gap --- `{1, 3}`, or a subset `--class` exports --- are written as
+`1..K` in ascending order, and `dataset.json` records each value's class id as
+`medh5_class_ids`, which `from-nnunet` reads back, so the ids survive the round
+trip. A stashed `dataset.json` that does not name a class some case carries is
+extended with it (a region-based one is refused instead): the class was written
+as background.
+
+**A case is written only if its labels come back.** Region labels are painted
+in `regions_class_order`, as nnU-Net converts them back; without one, each
+class is written as its own value. Each exported label is then read back from
+the volume outside the ignore region, and a case whose volume does not give one
+back --- a region its components do not cover, a voxel two classes share --- is
+refused before any file is written. These refusals carry no §15.2 code: the
+samples are valid, and what they fail is nnU-Net's layout.
 
 ### 0.x files
 
