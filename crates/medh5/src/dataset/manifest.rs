@@ -464,15 +464,29 @@ pub fn find(root: &Path) -> Result<Vec<PathBuf>> {
     find_with(root, &SUFFIXES)
 }
 
-/// [`find`] for other file suffixes (each with its leading dot).
+/// [`find`] for other file suffixes (each with its leading dot).  A directory
+/// that cannot be listed is passed over; [`scan_with`] reports it.
 pub fn find_with(root: &Path, suffixes: &[&str]) -> Result<Vec<PathBuf>> {
+    Ok(walk(root, suffixes).0)
+}
+
+/// The files under `root` with one of `suffixes`, in a stable order, and the
+/// directories under it that could not be listed, with why.
+fn walk(root: &Path, suffixes: &[&str]) -> (Vec<PathBuf>, Vec<(PathBuf, std::io::Error)>) {
     if root.is_file() {
-        return Ok(vec![root.to_path_buf()]);
+        return (vec![root.to_path_buf()], Vec::new());
     }
     let mut found = Vec::new();
+    let mut unlisted = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        let Ok(listing) = std::fs::read_dir(&dir) else { continue };
+        let listing = match std::fs::read_dir(&dir) {
+            Ok(listing) => listing,
+            Err(e) => {
+                unlisted.push((dir, e));
+                continue;
+            }
+        };
         for item in listing.flatten() {
             let path = item.path();
             let is_dir = item.file_type().map(|t| t.is_dir()).unwrap_or(false);
@@ -487,7 +501,8 @@ pub fn find_with(root: &Path, suffixes: &[&str]) -> Result<Vec<PathBuf>> {
         }
     }
     found.sort();
-    Ok(found)
+    unlisted.sort_by(|a, b| a.0.cmp(&b.0));
+    (found, unlisted)
 }
 
 /// Build a manifest from a directory tree, and report what would not open.
@@ -498,11 +513,22 @@ pub fn scan(root: &Path, strict: bool) -> Result<(Manifest, Vec<String>)> {
     scan_with(root, &SUFFIXES, strict)
 }
 
-/// [`scan`] over the files [`find_with`] finds.
+/// [`scan`] over the files [`find_with`] finds.  A directory that cannot be
+/// listed is a failure as a file that will not open is: passed over in
+/// silence, it left the manifest short of every sample under it, even when
+/// `strict`.
 pub fn scan_with(root: &Path, suffixes: &[&str], strict: bool) -> Result<(Manifest, Vec<String>)> {
     let mut manifest = Manifest { root: Some(root.to_string_lossy().into_owned()), ..Default::default() };
     let mut failures = Vec::new();
-    for path in find_with(root, suffixes)? {
+    let (paths, unlisted) = walk(root, suffixes);
+    for (dir, error) in unlisted {
+        let error = crate::error::os_error(&error, &dir);
+        if strict {
+            return Err(error);
+        }
+        failures.push(format!("{}: {}", dir.display(), error.python_str()));
+    }
+    for path in paths {
         match entries_for(&path) {
             Ok(entries) => manifest.entries.extend(entries),
             Err(e) if e.is_medh5() || matches!(e, Error::Io(_)) => {

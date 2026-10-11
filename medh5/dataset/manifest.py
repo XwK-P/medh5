@@ -281,10 +281,11 @@ def scan(
 ) -> tuple[Manifest, tuple[str, ...]]:
     """Build a manifest from a directory tree, and report what would not open.
 
-    Returns the manifest and the paths that failed.  A cohort scan that dies on
-    one broken file has told you nothing about the other 9 999;
-    ``on_error="raise"`` re-raises the first failure instead (the default is
-    ``"warn"``, and any other value is refused).
+    Returns the manifest and the paths that failed: files that would not open,
+    and directories that could not be listed, whose samples the manifest
+    lacks.  A cohort scan that dies on one broken file has told you nothing
+    about the other 9 999; ``on_error="raise"`` re-raises the first failure
+    instead (the default is ``"warn"``, and any other value is refused).
     """
     doc, failures = _core.dataset_scan(
         os.fspath(root), suffixes=list(suffixes), on_error=on_error

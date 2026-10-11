@@ -8,6 +8,8 @@ partition, what the intensity distribution is over a whole study.
 from __future__ import annotations
 
 import json
+import os
+import sys
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -155,6 +157,35 @@ class TestManifest:
         (cohort / "broken.medh5").write_bytes(b"not hdf5")
         with pytest.raises(MEDH5Error):
             scan(cohort, on_error="raise")
+
+    def test_a_root_that_cannot_be_listed_is_a_failure(self, tmp_path):
+        """A directory that could not be listed was passed over in silence:
+        the manifest was short of everything under it, with no failure to say
+        so, even on a strict scan."""
+        missing = tmp_path / "no-such-cohort"
+        built, failures = scan(missing)
+        assert len(built) == 0
+        assert len(failures) == 1 and "No such file or directory" in failures[0]
+        with pytest.raises(OSError, match="no-such-cohort"):
+            scan(missing, on_error="raise")
+
+    @pytest.mark.skipif(
+        sys.platform == "win32" or getattr(os, "geteuid", lambda: 1)() == 0,
+        reason="POSIX file modes, which root ignores",
+    )
+    def test_a_subdirectory_that_cannot_be_listed_is_a_failure(self, cohort):
+        hidden = cohort / "site-C"
+        hidden.mkdir()
+        hidden.chmod(0)
+        try:
+            built, failures = scan(cohort)
+            assert len(built) == 6
+            assert len(failures) == 1
+            assert "site-C" in failures[0] and "Permission denied" in failures[0]
+            with pytest.raises(OSError, match="site-C"):
+                scan(cohort, on_error="raise")
+        finally:
+            hidden.chmod(0o755)
 
     def test_an_unknown_error_mode_is_refused(self, cohort):
         """Anything but ``"raise"`` read as ``"warn"``, so a misspelt strict
