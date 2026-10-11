@@ -541,6 +541,7 @@ def to_nnunetv2(
 
     Everything is checked before anything is written:
 
+    * *file_ending* is ``.nii.gz`` or ``.nii``: every file written is NIfTI;
     * every case's name is a **file name under the dataset**: its
       ``sample_id`` is a sample key (``[A-Za-z0-9_.-]``), not ``.`` or ``..``,
       and no two differ only in case --- an id was a path, and
@@ -567,12 +568,17 @@ def to_nnunetv2(
       refused case refuses the export, before any case's files are written.
     """
     import medh5
-    from medh5.io.nifti import require_nibabel
+    from medh5.io.nifti import NIFTI_SUFFIXES, require_nibabel
 
     require_nibabel()
     if unlabeled not in UNLABELED:
         raise MEDH5ValidationError(
             f"unlabeled= is one of {list(UNLABELED)}, not {unlabeled!r}"
+        )
+    if file_ending not in NIFTI_SUFFIXES:
+        raise MEDH5ValidationError(
+            f"file_ending= is one of {list(NIFTI_SUFFIXES)}, not {file_ending!r}: "
+            "every file the export writes is NIfTI"
         )
     log = report or ConversionReport(converter="to-nnunet")
     root = _dataset_root(out, dataset_name)

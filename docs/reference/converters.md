@@ -337,7 +337,8 @@ subset all of them examined.
 **Every file is a name under the dataset.** A case's files are named by its
 `sample_id`, which must be a sample key (`[A-Za-z0-9_.-]`, not `.` or `..`),
 and no two cases may differ only in case --- one would overwrite the other on a
-case-insensitive file system; `--dataset-name` is held to the same rule. **Every
+case-insensitive file system; `--dataset-name` is held to the same rule, and
+`file_ending=` is `.nii.gz` (the default) or `.nii`: every file is NIfTI. **Every
 case is a training case**: one without the annotation is refused, or with
 `unlabeled="test"` (`--unlabeled test`) written to `imagesTs` and left out of
 `numTraining`. **Label values are consecutive**, as nnU-Net requires: class ids

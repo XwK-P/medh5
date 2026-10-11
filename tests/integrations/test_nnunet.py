@@ -404,6 +404,27 @@ class TestNnunet:
         assert not any("labelsTr" in o for o in report.outputs)
         assert any("imagesTs" in o for o in report.outputs)
 
+    @pytest.mark.parametrize("ending", [".nrrd", "nii.gz", ".NII.GZ"])
+    def test_a_file_ending_that_is_not_nifti_is_refused_first(
+        self, tmp_path: Path, ending: str
+    ):
+        """Every file the export writes is NIfTI: another ending made the
+        dataset's folders, then failed at its first file and left them."""
+        from medh5.io.nnunetv2 import to_nnunetv2
+
+        path = tmp_path / "ct.medh5"
+        with medh5.create(path, sample_id="ct", codec="portable") as w:
+            w.add_grid("g", shape=Organs.SHAPE, spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", np.zeros(Organs.SHAPE, np.int16), grid="g", modality="CT")
+            mask = np.zeros(Organs.SHAPE, bool)
+            mask[1:3, 1:3, 1:3] = True
+            w.add_segmentation("seg", grid="g", masks={1: mask})
+        with pytest.raises(MEDH5ValidationError, match="file_ending= is one of"):
+            to_nnunetv2([path], tmp_path / "nn", dataset_name="D1", file_ending=ending)
+        assert not (tmp_path / "nn").exists(), "refused before anything is written"
+        to_nnunetv2([path], tmp_path / "nn", dataset_name="D1", file_ending=".nii")
+        assert nnunet_checks(tmp_path / "nn" / "D1")["file_ending"] == ".nii"
+
 
 class TestNnunetScaling:
     """A NIfTI's `scl_slope`/`scl_inter` are what its voxels mean, to nnU-Net
