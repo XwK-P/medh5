@@ -143,8 +143,7 @@ GROUPABLE: tuple[str, ...] = _core.GROUPABLE
 
 def _integers(doc: Mapping[str, Any], name: str) -> tuple[int, ...]:
     """A list of class ids, each an integer or refused --- as the engine
-    refuses it: `int(3.5)` is 3, and `3.0` read as no class at all (F14 of the
-    round-4 audit)."""
+    refuses it: `int(3.5)` is 3, and `3.0` read as no class at all."""
     out = []
     for value in doc.get(name, ()):
         if isinstance(value, bool) or not isinstance(value, int):

@@ -309,8 +309,7 @@ class ConceptVocabulary:
                 "T405",
             )
         # The cache's comparison, set_id included: a vocabulary fitted under
-        # another split of the same subjects passed its own (N05 of the 2.0
-        # re-audit).
+        # another split of the same subjects passed its own.
         problems = fitted_on_mismatches(task, self.fitted_on)
         if problems:
             raise MEDH5ValidationError(f"the vocabulary was {problems[0]}", "T405")
@@ -377,7 +376,7 @@ class _LazyCache:
     closed it; the first read, a worker and an unpickled copy each opened
     whatever the path named by then, and a cache replaced in between --- valid
     for another patient's row of the same id --- served its features with
-    this patient's image (N11 of the round-3 audit).  Every handle is checked
+    this patient's image.  Every handle is checked
     against the validated manifest's checksum, on the handle that then serves
     the features; a rebuild that writes the same manifest is the same cache.
     """
@@ -756,7 +755,7 @@ class ClinicalTaskDataset(_DatasetBase):  # type: ignore[misc,valid-type]
                     )
                 # The feature of the text this version owns, and no other: an
                 # entry joined to a later revision's text was served to rows
-                # that admit only this version (F03 of the round-4 audit).
+                # that admit only this version.
                 if entry.document_id != document_id:
                     raise MEDH5ValidationError(
                         f"the document cache's feature for event {event_id!r} "
@@ -774,8 +773,7 @@ class ClinicalTaskDataset(_DatasetBase):  # type: ignore[misc,valid-type]
             features.append(np.asarray(feature, dtype=np.float32))
         # A row without documents has the declared shape whole, so it pads
         # beside a row with them in either order: it was `(0, shape[0])`, and
-        # a batch led by it could not take a rank-2 feature (F16 of the
-        # round-4 audit).
+        # a batch led by it could not take a rank-2 feature.
         shape = self._feature_shape() if not features else features[0].shape
         k = np.asarray([e for _, e, _, _ in owned], dtype=np.int64)
         out: dict[str, npt.NDArray[Any]] = {
@@ -951,8 +949,8 @@ def _hours_before(cutoff_us: int, times: npt.ArrayLike) -> npt.NDArray[np.float6
     """Hours from each of *times* to the cutoff, in float64.
 
     An ``int64`` difference of two timestamps near the ends of the clock
-    wrapped: a span of 584,000 years read as a small negative age (OBS-01 of
-    the round-3 audit).  A double cannot wrap, and loses only digits no
+    wrapped: a span of 584,000 years read as a small negative age.  A double
+    cannot wrap, and loses only digits no
     float32 age keeps.
     """
     return (float(cutoff_us) - np.asarray(times, dtype=np.float64)) / HOUR

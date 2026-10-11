@@ -490,7 +490,7 @@ jobs:
     # with this package, and each of its checks raises.  But a check is the
     # prototype's own reading of the text: its `content_id` and
     # `source_digest` once disagreed with the spec and with every
-    # implementation while it printed "[ok]" (U07 of the 2.0 audit).  So the
+    # implementation while it printed "[ok]".  So the
     # file it writes is validated, at integrity level, by the wheel and by the
     # native binary this run built.
     needs: build
