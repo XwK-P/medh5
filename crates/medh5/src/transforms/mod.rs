@@ -15,7 +15,7 @@ pub use apply::{
 };
 pub use encode::{encode_affine, encode_bspline, encode_composite, encode_displacement, encode_identity};
 pub use model::{
-    can_invert, read_transforms, stored_inverse, Body, Transform, TransformHeader, INTERPOLATIONS,
-    SPEC_TRANSFORM_ATTRS, TRANSFORM_KINDS, VECTOR_SPACES,
+    can_invert, stored_inverse, Body, Transform, TransformHeader, INTERPOLATIONS, SPEC_TRANSFORM_ATTRS,
+    TRANSFORM_KINDS, VECTOR_SPACES,
 };
 pub use resolve::{frame_graph, frames_of_timepoint, resolve_between};

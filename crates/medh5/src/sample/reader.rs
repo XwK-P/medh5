@@ -1127,14 +1127,13 @@ mod tests {
         refused_as_closed("read_grids", read_grids(&sample.root));
 
         let sample = open_sample(&pair).unwrap();
-        let grids = sample.grids().unwrap().clone();
         let (rigid, warp) = (sample.transform("rigid").unwrap(), sample.transform("warp").unwrap());
         rigid.matrix().unwrap();
         warp.field().unwrap();
         sample.close_file().unwrap();
         refused_as_closed("Transform::matrix", rigid.matrix());
         refused_as_closed("Transform::field", warp.field());
-        refused_as_closed("read_transforms", read_transforms(&sample.root, grids));
+        refused_as_closed("transform_groups", transform_groups(&sample.root));
     }
 
     /// `grids/g_tp0` given an axis kind only a later minor defines, and the

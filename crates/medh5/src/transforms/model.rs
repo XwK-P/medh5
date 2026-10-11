@@ -1366,15 +1366,9 @@ pub fn can_invert(inner: &Transform) -> Result<bool> {
     Ok(stored_inverse(inner)?.is_some())
 }
 
-/// Every transform under `<sample root>/transforms`, by id.  A closed file
-/// is refused, where HDF5 finding no member in it read as a sample without
-/// transforms.
-pub fn read_transforms(root: &hdf5::Group, grids: Arc<IndexMap<String, Grid>>) -> Result<IndexMap<String, Transform>> {
-    open_transforms(transform_groups(root)?, grids)
-}
-
-/// Every transform group under `<root>/transforms`, by id.  A closed
-/// file is refused (see [`read_transforms`]).
+/// Every transform group under `<sample root>/transforms`, by id.  A closed
+/// file is refused, where HDF5 finding no member in it read as a sample
+/// without transforms.
 pub fn transform_groups(root: &hdf5::Group) -> Result<Siblings> {
     crate::h5::alive(root)?;
     let mut groups = Siblings::new();
