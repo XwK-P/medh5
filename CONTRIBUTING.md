@@ -197,13 +197,20 @@ push a `vX.Y.Z` tag on a commit whose CI passed.
    with the `CARGO_REGISTRY_TOKEN` secret — each crate built from its package
    without the token in the environment, then uploaded, and in the index before
    the next one, which resolves against it);
-4. creates the GitHub Release, with the changelog section as its notes and the
-   distributions, the binaries and their `SHA256SUMS` attached;
+4. creates the GitHub Release, with the changelog section as its notes (each
+   paragraph on one line, since a release page breaks a line wherever its
+   source does) and the distributions, the binaries and their `SHA256SUMS`
+   attached;
 5. pushes the Homebrew formula for the binaries to the tap
    (`<owner>/homebrew-medh5`, or the `HOMEBREW_TAP` variable) with the
    `HOMEBREW_TAP_TOKEN` secret. Pre-releases skip this step;
 6. checks that PyPI, crates.io, the release page and the tap all have the
    version.
+
+Unlike what the registries hold, a release's notes can be corrected after it:
+fix the version's section, then `python .github/scripts/release_notes.py vX.Y.Z`
+writes them again and `gh release edit vX.Y.Z --notes-file release-notes.md`
+puts them on the release page.
 
 In this repository a missing `CARGO_REGISTRY_TOKEN` or `HOMEBREW_TAP_TOKEN`
 fails the step that needs it; in a fork the step warns and does nothing, so a

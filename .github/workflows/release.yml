@@ -34,7 +34,8 @@ jobs:
           python-version: "3.12"
 
       - name: Install tooling
-        run: pip install --upgrade twine packaging
+        # markdown-it-py parses CHANGELOG.md for the release notes.
+        run: pip install --upgrade twine packaging markdown-it-py
 
       - name: Classify the version
         id: version

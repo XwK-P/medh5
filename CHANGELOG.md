@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A release page breaks no line of its notes mid-sentence.** GitHub prints
+  each newline in a release's notes as a line break, and the notes are this
+  file's sections, wrapped at 80 columns, so every release page broke each
+  paragraph at every line. The notes now put each paragraph on one line and
+  render as the section does; `python .github/scripts/release_notes.py vX.Y.Z`
+  writes a published release's notes again, for `gh release edit`.
+
 ## [2.0.1] — 2026-10-11
 
 **Documentation only.** The code is 2.0.0's; this release carries the new
