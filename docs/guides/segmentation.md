@@ -26,7 +26,10 @@ kind, stats = w.add_segmentation(...)     # ("layers", OverlapStats(...))
 labelmap cannot hold both, and the writer picks among the encodings that can:
 `instances` for sparse localized objects, `layers` while the classes pack into
 few planes, `bitmask` beyond that. Disjoint classes get a `labelmap`, which is
-smaller. This is a storage decision and nothing you read later depends on it.
+smaller. This is a storage decision: what you read through the class contract
+--- `dense()`, `contains()`, `labelmap()` and `voxel_counts()`, the ignore
+region included --- does not depend on it. Only `instances()` does, since a
+dense encoding keeps no objects to return.
 
 **`annotated_classes` is the argument to think about**, not the encoding. Above
 it names the spleen although there is no spleen mask, recording "we looked and

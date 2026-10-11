@@ -162,11 +162,23 @@ medh5 clinical augment case.medh5 case-records.json --out case-1.1.medh5
 
 ## Remove it again
 
-The imaging projection is a separate, requested operation, never an amendment: the result is a
-different sample, written as 1.0, and the loss is reported.
+Removing the clinical profile is the imaging projection (1.1 §2.1, §10), and only ever a requested
+operation: the result is a different sample, with its own `content_id`, written at the lowest
+version what remains needs --- 1.0 for imaging alone. `medh5 clinical strip` writes it to a new file
+and reports the loss:
 
 ```bash
 medh5 clinical strip cohort/P-03.medh5 --out P-03-imaging.medh5
+```
+
+`drop_clinical()` in an amendment writes it in place of its source:
+
+```python
+with medh5.amend("cohort/P-03.medh5") as w:
+    w.drop_clinical()
+
+with medh5.open("cohort/P-03.medh5") as s:
+    assert s.version == "1.0"
 ```
 
 ## Check it

@@ -143,8 +143,9 @@ it is not, and 111 of the cases prove it.)*
 being one. `"file_suffix"` says which.
 
 **Verify the bytes first.** `SHA256SUMS` covers every published file, and
-`medh5 conformance score` warns when a case has drifted. A score over files
-that are not the published files is not a score.
+`medh5 conformance score` fails the score when one has drifted, whatever the
+cases say, naming it (under `changed` with `--json`). A score over files that
+are not the published files is not a score.
 
 ## From Python
 

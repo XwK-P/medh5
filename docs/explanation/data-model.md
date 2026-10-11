@@ -117,8 +117,13 @@ of the spleen. A sample where nobody looked is not. Collapsing the two is how a
 model learns that a whole site's scans have no spleens, and the format refuses
 to let a writer do it silently.
 
-An **ignore** region (`65535`) marks voxels that must not contribute to a loss
-in either direction.
+An **ignore** region (§7.7) marks voxels that must not contribute to a loss in
+either direction. It is not a class. A `labelmap` or `layers` annotation can
+hold it in band, as its `ignore_id` (`65535` unless the header says otherwise);
+every other encoding, and any region that overlaps a class's voxels, keeps it in
+a separate `mask` annotation that the header's `ignore_mask` names.
+`labelmap()` reads it back as the ignore id either way, and
+`Sample.ignore_region()` as one boolean volume.
 
 ## One annotation API, five voxel encodings
 
