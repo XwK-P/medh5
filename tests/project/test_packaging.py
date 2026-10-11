@@ -228,6 +228,92 @@ def test_the_release_notes_fit_a_github_release() -> None:
         notes.notes(long, "9.9.9", "o/r", "v9.9.9")
 
 
+def test_a_release_page_breaks_no_line_of_the_changelog() -> None:
+    """A release page, like a comment, breaks a line at every newline, and the
+    changelog wraps at 80 columns: every release page up to 2.0.1 broke each
+    paragraph at every line.  The notes render as the changelog does --- the
+    same blocks, the same words --- with no line broken."""
+    from markdown_it import MarkdownIt
+
+    notes = _release_script("release_notes.py")
+    page = MarkdownIt("commonmark", {"breaks": True}).enable("table")
+    text = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    flowed = notes.unwrap(text)
+    assert notes.shown(flowed) == notes.shown(text)
+    assert "<br" not in page.render(flowed)
+    versions = re.findall(r"^## \[(\d[^\]]*)\]", text, re.M)
+    assert {"0.5.0", "2.0.0"} <= set(versions)
+    for version in versions:
+        body = notes.notes(text, version, "XwK-P/medh5", f"v{version}")
+        assert "<br" not in page.render(body), version
+
+
+def test_the_release_notes_join_a_paragraphs_lines_and_nothing_else() -> None:
+    notes = _release_script("release_notes.py")
+    wrapped = [
+        "### Fixed",
+        "- **A list item** wrapped",
+        "  over lines, against a target of",
+        "  400.",
+        "  - a nested item,",
+        "    wrapped",
+        "",
+        "A line that ends in a hard break\\",
+        "keeps it, and",
+        "the rest joins.",
+        "",
+        "```python",
+        "x = 1",
+        "y = 2",
+        "```",
+        "",
+        "| a | b |",
+        "| - | - |",
+        "",
+        "    indented",
+        "    code",
+        "",
+        "> a quote",
+        "> as written",
+        "",
+        "[ref]: https://example.org",
+    ]
+    flowed = wrapped.copy()
+    flowed[1:6] = [
+        "- **A list item** wrapped over lines, against a target of 400.",
+        "  - a nested item, wrapped",
+    ]
+    flowed[5:7] = ["keeps it, and the rest joins."]
+    assert notes.unwrap("\n".join(wrapped)) == "\n".join(flowed)
+
+
+def test_release_notes_that_would_read_otherwise_unwrapped_stay_as_written(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    notes = _release_script("release_notes.py")
+    assert notes.unwrap("one\ntwo") == "one two"
+    monkeypatch.setattr(notes, "shown", lambda source: source)
+    assert notes.unwrap("one\ntwo") == "one\ntwo"
+
+
+def test_a_published_releases_notes_are_written_again_by_its_tag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`release_notes.py vX.Y.Z` rewrites a published release's notes, for
+    `gh release edit`; the [Unreleased] check is the release workflow's."""
+    notes = _release_script("release_notes.py")
+    (tmp_path / "CHANGELOG.md").write_text(
+        "## [Unreleased]\n\n- next\n\n## [1.0.0] — 2026-01-01\n\nOne\nline.\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    notes.main(["v1.0.0"])
+    assert (tmp_path / "release-notes.md").read_text(encoding="utf-8") == "One line.\n"
+    monkeypatch.setenv("GITHUB_REF_NAME", "v1.0.0")
+    with pytest.raises(SystemExit, match="Unreleased"):
+        notes.main([])
+
+
 class TestPublicNames:
     """Where the public names live."""
 

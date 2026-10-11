@@ -79,6 +79,9 @@ dev = [
   "mypy==1.18.2",
   "maturin>=1.9.3,<2",
   "twine>=5.0",
+  # The release notes are the changelog, parsed to rejoin its wrapped lines
+  # (.github/scripts/release_notes.py); its tests render them.
+  "markdown-it-py>=2.2",
   "hypothesis>=6.100",
   # The tests open files with h5py to plant the defects the validator must
   # find; the package itself never imports it.
