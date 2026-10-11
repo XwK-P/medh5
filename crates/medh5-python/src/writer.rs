@@ -461,8 +461,8 @@ impl SampleWriter {
     }
 
     /// The file being built, for tools that rewrite what the builder does not
-    /// model.  `commit` stamps every dataset that carries no digest, and
-    /// refuses to restamp one the amended file already failed (E701).
+    /// model.  `commit` stamps what is written through it, and refuses
+    /// (E701) to restamp a dataset the amended file already failed.
     #[getter]
     fn handle(&self) -> R<Group> {
         Ok(Group::wrap(self.inner.root()?))
