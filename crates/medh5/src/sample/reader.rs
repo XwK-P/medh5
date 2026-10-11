@@ -539,7 +539,7 @@ impl Sample {
 
     // -- integrity -------------------------------------------------------------------
 
-    /// Object path -> spec-defined attribute names, for `content_id`.
+    /// Object path -> the attribute names `content_id` covers (§13.2).
     pub fn attr_name_map(&self) -> Result<AttrNameMap> {
         attr_name_map_of(&self.root)
     }
@@ -631,7 +631,9 @@ pub fn frame_references(root: &hdf5::Group) -> Result<IndexMap<String, Vec<Strin
     Ok(out.into_iter().collect())
 }
 
-/// Object path -> spec-defined attribute names, for `content_id` (§13.2).
+/// Object path -> the attribute names `content_id` covers (§13.2): one fixed
+/// list per kind of object, which is not every attribute the specification
+/// defines (§8.5's `correspondence` is not covered).
 ///
 /// Derived from the file, and shared by the reader and the writer, so the two
 /// agree by construction.

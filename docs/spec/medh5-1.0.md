@@ -776,8 +776,8 @@ a 45× reduction, because storage is proportional to object volume, not image vo
 
 For soft ground truth, inter-rater probability maps, distillation targets and predicted logits after
 sigmoid/softmax. **MUST** be chunked `(1, *spatial_chunk)`, or below 64 KiB may be contiguous
-(§14.1). `threshold` is a spec-defined attribute
-and so is covered by `content_id` (§13.2): two readers of one file answer `contains` identically.
+(§14.1). `threshold` is one of the attributes
+`content_id` covers (§13.2): two readers of one file answer `contains` identically.
 
 `contains` is decided **at the stored precision**: a voxel contains the class where its stored value
 is `>= threshold` converted to the stored dtype. A writer **MUST** store `data` in a dtype under which

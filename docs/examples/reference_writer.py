@@ -66,11 +66,12 @@ def sha256_hex(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-# The attributes the specification defines, per object -- all that `canonical_attrs` covers.
+# The covered attributes (13.2), per object -- all that `canonical_attrs` hashes. They are not
+# quite the attributes the specification defines: 8.5's `correspondence` is not covered.
 # At the root, exactly these three; `created`, `generator` and `content_id` itself are out.
 ROOT_ATTRS = ("medh5_version", "medh5_kind", "medh5_profiles")
-# For each member of these groups, its section's attributes (3.2, 4, 6-9, 10). Its own `digest`
-# is out: the dataset lines carry it. Every member has a line, `{}` if it carries none of them.
+# For each member of these groups, 13.2's list for it. Its own `digest` is out: the dataset
+# lines carry it. Every member has a line, `{}` if it carries none of them.
 SPEC_ATTRS = {
     "grids": ("shape", "axis_names", "axis_kinds", "spacing", "origin", "direction", "coord_system",
               "units", "timepoint", "frame_uid", "time_values", "time_units", "chunk_hint",
@@ -100,7 +101,7 @@ def plain(v):
 
 
 def canonical_attrs(obj, names):
-    """The 5.1 canonical JSON of the spec-defined attributes *obj* carries.
+    """The 5.1 canonical JSON of the covered attributes (13.2) *obj* carries.
 
     `allow_nan` is json's default: a NaN attribute hashes as `NaN`, as every implementation does.
     """

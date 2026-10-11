@@ -234,8 +234,9 @@ pub fn relative_path(name: &str, root: &hdf5::Group) -> String {
     crate::h5::relative_name(name, &root.name())
 }
 
-/// Canonical JSON over an object's spec-defined attributes (§13.2): sorted
-/// keys, arrays as nested lists, floats in shortest round-trip form.
+/// Canonical JSON over the attributes of `names` --- an object's covered
+/// attributes (§13.2) --- that it carries: sorted keys, arrays as nested
+/// lists, floats in shortest round-trip form.
 pub fn canonical_attrs(obj: &hdf5::Location, names: &[&str]) -> Result<String> {
     let present = attrs::names(obj)?;
     let mut wanted: Vec<&str> = names.iter().copied().filter(|n| present.iter().any(|p| p == n)).collect();
@@ -336,7 +337,7 @@ pub fn group_digest(group: &hdf5::Group, root: &hdf5::Group, algo: &str) -> Resu
     Ok(hasher.finish())
 }
 
-/// Object path -> the spec-defined attribute names `content_id` covers.
+/// Object path -> the attribute names `content_id` covers (§13.2).
 pub type AttrNameMap = IndexMap<String, Vec<&'static str>>;
 
 /// The Merkle root over dataset digests, `meta` and canonical attributes.
