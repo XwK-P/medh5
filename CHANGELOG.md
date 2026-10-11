@@ -82,7 +82,9 @@ out `h5py` objects --- and the behaviour changes below.
   PyPI, crates.io, the release page and the tap. Each crate is verified from
   its package without `CARGO_REGISTRY_TOKEN` in the environment, where a
   dependency's build script could read it, and published once crates.io's
-  index serves the crate before it. In this repository a missing
+  index serves the crate before it. Release notes longer than a GitHub release
+  takes (125,000 characters) are refused before anything is published, not
+  once the packages are on PyPI and crates.io. In this repository a missing
   `CARGO_REGISTRY_TOKEN` or `HOMEBREW_TAP_TOKEN` fails its job instead of
   warning. `CONTRIBUTING.md` has the runbook, and what to set up before the
   first release to each registry. CI's one required check is `ci-ok`, which
@@ -202,9 +204,10 @@ out `h5py` objects --- and the behaviour changes below.
 - **`RecompressResult.kept`** (`KEPT` in `medh5 recompress`): the datasets
   copied as stored because a fresh write of their dtype would not be their
   stored type --- an enumeration, a committed datatype.
-- **`RecompressResult.unverified`** and **`VerifyResult.unverifiable`**: what
-  the check of a recompressed output could not read, reported with `verified`
-  false where it was raised after the output had replaced the input; and the
+- **`RecompressResult.unverified`** (`UNCHECKED` in `medh5 recompress`,
+  counted in its `FAILED`) and **`VerifyResult.unverifiable`**: what the check
+  of a recompressed output could not read, reported with `verified` false
+  where it was raised after the output had replaced the input; and the
   datasets carrying a digest their type cannot have (§13.1: variable-length
   data other than strings, references), neither compared nor counted as
   mismatched.
@@ -341,6 +344,12 @@ out `h5py` objects --- and the behaviour changes below.
   integer outside −2⁶³ … 2⁶⁴ − 1, which became a rounded float, are
   `MEDH5ValidationError` (store such an integer as a string); every 64-bit
   integer is kept exactly.
+- **A record or label set given to a writer is stored as it stands**
+  (`w.document.identity = rec`, `w.label_set(ls)`): an edit to `rec` or `ls`
+  afterwards reached the file in 1.x, and no longer does. Edit what the
+  document hands out: `w.label_set(ls)` returns the document's set, not `ls`.
+  An `extra` member named after a field of its record
+  (`identity.extra["sex"]`), which 1.x wrote over the field, is refused.
 - **A label set's class id below 0 or above 65535 is `E306`**, as §15.2 has
   it, where it was `E303`, which is a reserved id (0 or 65535) given to a
   class.
@@ -609,6 +618,12 @@ out `h5py` objects --- and the behaviour changes below.
   object is refused before anything is withdrawn: the image's `.bval` was
   deleted first, and the refusal left the image it described without its
   b-values.
+- **A NIfTI export is named `.nii` or `.nii.gz`** (`to_nifti`,
+  `convert to-nifti`, and so `to_nnunetv2(file_ending=…)`): a directory or any
+  other name, `.NII` and `.nii.bz2` included, is refused before the file is
+  written. nibabel takes the format, and the name, from the suffix, so the
+  temporary beside such a target was written under another name and left
+  behind, or `out.img` became an image whose `.hdr` was the stray.
 - **A channel axis is exported as one** (`to_nifti`): with a b-value per
   channel as four dimensions and a `.bval`, the layout diffusion tools read;
   otherwise as NIfTI's vector dimension (`dim[5]`, vector intent), with
@@ -623,6 +638,11 @@ out `h5py` objects --- and the behaviour changes below.
   over a class is written as ignore, which nnU-Net neither trains nor scores.
   `from_nnunetv2` reads the label back as the region, where it made it a class
   called `ignore`.
+- **A one-class NIfTI export refuses an annotation with an ignore region**
+  (`to_nifti(class_key=…)`, `convert to-nifti --class`, §7.7): a 0/1 mask has
+  no value for "ignored", and its 0 says "examined, absent", so every ignored
+  voxel was exported as a negative. Exported whole, the annotation's labelmap
+  writes those voxels as its `ignore_id`.
 - **A MONAI crop keeps the image's `spatial_shape`** (`to_metatensor(roi=…)`):
   it was the crop's whole shape, channel axis included, and `SaveImage` wrote a
   two-channel crop as one channel. As after a MONAI crop, `spatial_shape` and
@@ -1073,6 +1093,8 @@ out `h5py` objects --- and the behaviour changes below.
   `transform_points` and track volumes in their grid's or transform's units,
   not millimetres; and §14.2's lz4hc L8 row is the 0.x default codec, not
   `balanced`.
+- **The READMEs link the released documentation** (`/en/stable/`), where they
+  linked `main`'s (`/en/latest/`) --- on the PyPI and crates.io pages too.
 - **A grid is finite and countable, and the validator checks it as the reader
   does** (§3.2, Appendix C.1): an infinite spacing is `E104`, a NaN or
   infinite origin `E109`, and a shape whose voxel count overflows 64 bits
@@ -1183,6 +1205,21 @@ out `h5py` objects --- and the behaviour changes below.
   Each is a dict whose edits write through; an edit to a member changed since
   it was read raises `RuntimeError` rather than undo that change, and a copy
   (`copy.copy`, `dict(…)`, `pickle`) is a plain, detached dict.
+- **A record's dicts are its own, and a document's records write through**:
+  `Identity.extra`, `Cohort.extra`, `Deidentification.extra`,
+  `Activity.params`, `Timepoint.series_uids`, `Agreement.per_class` and
+  `LabelClass.properties` were rebuilt on every read, so an edit to one was
+  lost. Each is kept from its first read, and `to_json`, `==`, a copy or a
+  writer reads the record as edited; its hash leaves out what an edit can
+  change. A record read from a writer's document --- `w.document.identity`, a
+  timepoint, a quality record, a class of `w.document.label_set`, or one
+  `w.identity(…)` and its siblings return --- writes each edit through to the
+  document, and an edit through one whose entry has changed since it was read
+  raises `RuntimeError`. `w.document.provenance.add_agent` and `add_activity`
+  reach the document, where they added to a copy, and so does an edit to the
+  dict `w.acquisition()` returns. `Provenance`, `Timeline` and `LabelSet`
+  keep the records and classes they are given, as 1.x did, and
+  `bool(Provenance([agent]))` is true again.
 - **`AnnotationPayload` is a mutable record again**: `datasets` and `attrs`
   were rebuilt on every access, so `payload.attrs["k"] = v`, an array edited
   in place or a dataset added was lost. They are the payload's own dicts, its
@@ -1259,8 +1296,9 @@ out `h5py` objects --- and the behaviour changes below.
 - **A converter's input errors are `medh5: <why>`, not tracebacks**
   (`medh5 convert`): a file that is not DICOM or NIfTI is refused as such,
   naming it, where pydicom's and nibabel's own errors escaped; any `OSError`
-  is reported, exiting 1; and a `--report` naming a directory is refused
-  before the conversion, not after its output is written.
+  is reported, exiting 1, and a missing NIfTI file is named as it was given,
+  where nibabel spelled a Windows path `C:/…`; and a `--report` naming a
+  directory is refused before the conversion, not after its output is written.
 - **The DICOM extras need pydicom 3.0, and `dicomseg` highdicom 0.23**:
   writing an RTSTRUCT passes `enforce_file_format` to `save_as`, which pydicom
   3.0 added, so under the old floors (2.4 and 0.22) it raised `TypeError`.
@@ -1323,6 +1361,10 @@ out `h5py` objects --- and the behaviour changes below.
 - **`seg stats` recommends only an encoding that keeps the annotation**: it
   recommended a dense encoding for instances, which drops every
   `instance_id`, and called that lossless.
+- **`seg convert` says that it thresholds a `probmap`**: converting one keeps
+  the voxels at or above its `threshold` and drops the probabilities (§7.5,
+  §7.6), where the help, the command-line reference and the segmentation
+  guide called every conversion lossless.
 - **`clinical select --cutoff-hours` refuses NaN, infinity and a time off the
   subject clock**, which selected at 0 µs or at the clock's ends, and
   certified the result.
@@ -1332,11 +1374,11 @@ out `h5py` objects --- and the behaviour changes below.
 - **Errors name their file, in the command line's own words**: an I/O or
   parse error says `[Errno 2] No such file or directory: 'm.json'` or
   `'m.json' is not JSON: …`, where it said "No such file or directory (os
-  error 2)" or "EOF while parsing a value". A collection handed to a command
-  without `--key`, or a sample to `ls` or `unpack`, is told what the file is
-  and pointed to `medh5 unpack` or `medh5 info`, not to `open_collection()`
-  or `medh5.open`, and `seg stats`, `agree` and the clinical commands no
-  longer quote the engine's lookup sentence.
+  error 2)" or "EOF while parsing a value". A collection handed to a
+  converter or to a command without `--key`, or a sample to `ls` or `unpack`,
+  is told what the file is and pointed to `medh5 unpack` or `medh5 info`, not
+  to `open_collection()` or `medh5.open`, and `seg stats`, `agree` and the
+  clinical commands no longer quote the engine's lookup sentence.
 - **`pack` never writes over one of its own sources**, which replaced the
   sample with the collection, and `unpack` refuses members whose names differ
   only in case, or a member named twice. `dataset index` refuses a root it
