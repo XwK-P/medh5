@@ -79,10 +79,11 @@ each read:
 
 | Codec | Write | Size | Ratio | 64³ read | Full read |
 |---|---|---|---|---|---|
-| lz4 L1 (`training`) | 0.07 s | 12.80 MiB | 1.9× | 1.3 ms | 0.02 s |
-| lz4hc L8 (the 0.x default) | 0.54 s | 12.33 MiB | 1.9× | 1.0 ms | 0.02 s |
-| zstd L9 + bitshuffle (`archive`) | 5.37 s | 9.53 MiB | 2.5× | 2.3 ms | 0.03 s |
-| gzip L4 (`portable`) | 0.48 s | 9.72 MiB | 2.5× | 8.9 ms | 0.08 s |
+| lz4 L1 (`training`) | 0.05 s | 12.80 MiB | 1.9× | 1.0 ms | 0.02 s |
+| zstd L3 (`balanced`) | 0.09 s | 9.16 MiB | 2.6× | 2.3 ms | 0.03 s |
+| lz4hc L8 (the 0.x default) | 0.48 s | 12.33 MiB | 1.9× | 0.8 ms | 0.02 s |
+| zstd L9 + bitshuffle (`archive`) | 3.36 s | 9.53 MiB | 2.5× | 1.6 ms | 0.02 s |
+| gzip L4 (`portable`) | 0.42 s | 9.72 MiB | 2.5× | 8.6 ms | 0.08 s |
 
 The same volume stored as `float32` rather than `int16` plus a rescale is
 36.75 MiB against 12.33 MiB at lz4hc L8 — three times the disk for no

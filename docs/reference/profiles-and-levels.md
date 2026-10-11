@@ -27,15 +27,20 @@ additionally reads layer data to judge encoding optimality. Both scans read the
 whole payload, in slabs of at most 8 MiB: the slabs bound the memory a large
 volume takes, not the work, which grows with its size.
 
-Measured on a 12.6 Mvox, 18.7 MB sample — against a metadata-only `open()` of
-0.5 ms:
+Measured on a 12.6 Mvox, 25.2 MB sample (`medh5.bench.synthetic_sample()`: an
+`int16` CT and eight classes in `layers`) — against a metadata-only `open()`
+of 0.13 ms:
 
 | | |
 |---|---|
-| `structural` | 62 ms |
-| `semantic` | 62 ms |
-| `integrity` | 143 ms |
+| `structural` | 1.4 ms |
+| `semantic` | 287 ms |
+| `integrity` | 513 ms |
+| `strict` | 505 ms |
 
+`structural` found nothing to scan on this sample --- its image is `int16` and
+its annotation's coverage complete --- so its time is the metadata's; a float
+image, or a labelmap or layers payload with partial coverage, adds a scan.
 So `semantic` is the right default and `integrity` is what to run after a file
 has moved between machines — but neither belongs in a hot path, and a
 per-iteration `validate` will cost you.

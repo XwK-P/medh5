@@ -28,6 +28,14 @@ with open_any(path, key=None) as opened:   # a Sample or a Collection, whichever
 and opens no arrays. Use it as a context manager, or call `.close()`. It is
 read-only; every edit goes through `medh5.amend`, which is copy-on-write.
 
+A file of a later minor version than the package implements opens as its
+projection (`s.support` is `"projection"`, [1.1](../spec/medh5-1.1.md) §2.2).
+A grid, annotation or transform holding a value only that minor defines is
+left out of `s.grids`, `s.images`, `s.annotations`, `s.transforms` and
+`s.index`, with whatever depends on it. Looking one up raises
+`MEDH5ValidationError` coded `W913`, and `s.summary()["left_out"]` names each
+one, as `medh5 info` does.
+
 ## Sample
 
 ### Identity and structure

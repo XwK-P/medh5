@@ -9,10 +9,10 @@ The short version, in payoff order:
 
 | Lever | Worth | Do it when |
 |---|---|---|
-| **Build a sampling index** | foreground sampling goes from O(volume) to O(1) — 63 ms → 0.03 ms on a 12 Mvox volume, 650 ms → 0.03 ms at 512³ | always, unless you only sample uniformly |
+| **Build a sampling index** | foreground sampling goes from O(volume) to O(1) — 210 ms → 0.03 ms on a 12.6 Mvox volume, 2.4 s → 0.03 ms at 512³ | always, unless you only sample uniformly |
 | **Set `patch_hint` on the grid** | sizes chunks to what you will actually read | at write time, if you know your patch size |
 | **`--profile training`** | decompresses fastest | the cohort is read far more often than written |
-| **`num_workers > 0`** | ~400 → 600–760 patches/s (64³) with four workers on four cores | always, with `worker_init_fn` |
+| **`num_workers > 0`** | ~590 → 880–980 patches/s (64³) with four workers on four cores | always, with `worker_init_fn` |
 | **`FileGroupedSampler`** | one open per file per epoch instead of one per item | shuffled training over more files than the handle cache holds |
 
 ## Build the index first
@@ -125,11 +125,11 @@ forked worker either way. See [PyTorch and MONAI](../reference/torch.md#the-data
 Each worker keeps its 32 most recently used files open. `shuffle=True`
 permutes *items*, so with `samples_per_volume` items per file and more files
 than that, consecutive items rarely share a file and most of them open it
-again: at 100 small files and 4 items each, 304 opens an epoch and 0.77 ms per
-item.
+again: at 100 small files and 4 items each, about 295 opens an epoch and
+1.1 ms per item.
 
 `FileGroupedSampler` shuffles files and yields each file's items together —
-100 opens, one per file, and 0.30 ms per item on the same run:
+100 opens, one per file, and 0.52 ms per item on the same run:
 
 ```python
 from medh5.torch import FileGroupedSampler
@@ -163,19 +163,20 @@ cluster, not about the file.
 
 ## The numbers
 
-Measured with 2.0 on one four-core machine, on a 192×256×256 synthetic CT with
-eight classes, reading a new window for every patch; 1.4.4 on the same machine
-was as fast or slower on every row ([changelog](../changelog.md)). The 0.x column is the layout 1.0 replaced, as
+Measured with 2.0.0 on one four-core machine, on a 192×256×256 synthetic CT
+with eight classes, reading a new window for every patch. 1.4.4, measured
+beside an earlier build of 2.0, was as fast or slower on every row
+([changelog](../changelog.md)). The 0.x column is the layout 1.0 replaced, as
 measured then.
 
 | Metric | Target | 0.x | Measured |
 |---|---|---|---|
-| 64³ patch, multi-class labels only | ≤ 10 ms | 117 ms | **3.4 ms** |
+| 64³ patch, multi-class labels only | ≤ 10 ms | 117 ms | **2.3 ms** |
 | Foreground centre sampling *(indexed)* | ≤ 1 ms, O(1) memory | 9.2 ms, O(volume) | **0.03 ms** |
-| … at 63 classes | ≤ 1 ms | — | **0.05 ms** |
-| Metadata-only read | ≤ 2 ms | ~1.5 ms | **0.19 ms** |
-| Full `open()` → first patch | ≤ 15 ms | ~120 ms | **2.3 ms** |
-| Sustained 64³ throughput | ≥ 400 patches/s | ~60 | **600–760** (4 workers, 4 cores) |
+| … at 63 classes | ≤ 1 ms | — | **0.04 ms** |
+| Metadata-only read | ≤ 2 ms | ~1.5 ms | **0.13 ms** |
+| Full `open()` → first patch | ≤ 15 ms | ~120 ms | **1.6 ms** |
+| Sustained 64³ throughput | ≥ 400 patches/s | ~60 | **880–980** (4 workers, 4 cores) |
 
 ```
 $ medh5 bench                       # builds a synthetic sample and measures
@@ -187,7 +188,7 @@ Two things to know before quoting these.
 **The sampling rows need an index.** `bench` calls `build_index()` on the
 samples it builds, so 0.03 ms is the indexed path — the one you get after
 `medh5 index build`, not the one you get by default. Unindexed, the same draw
-scans the labels: 63 ms on this volume, 650 ms at 512³, growing with the volume
+scans the labels: 210 ms on this volume, 2.4 s at 512³, growing with the volume
 while the indexed draw stays flat. `used_index` in the batch metadata, and in
 the row's `detail` under `bench --json`, says which you measured. The 63-class
 row exists because the class count is the other axis: before 1.4.2 each draw
@@ -198,9 +199,9 @@ re-read the index's class table once per class, 0.9 ms at eight classes and
 verified and reported against; throughput depends on worker count, so it is
 measured and printed without one, and *all targets met* is a statement about
 the checked rows. `medh5 bench` with no `--workers` runs single-process, around
-400 patches/s here; pass `--workers 4` to reproduce the number above. It is the
+590 patches/s here; pass `--workers 4` to reproduce the number above. It is the
 row that depends most on the machine and the patch: here the four workers share
-four cores with the main process, and at 96³ the same loader moves about 335
+four cores with the main process, and at 96³ the same loader moves about 490
 patches/s.
 
 Three decisions are behind the label-read number: each stacked plane is

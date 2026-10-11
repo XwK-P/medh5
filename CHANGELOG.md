@@ -1117,8 +1117,8 @@ out `h5py` objects --- and the behaviour changes below.
   every codec, gzip included --- re-read one window through one open dataset,
   which HDF5's chunk cache answers after the first read, and the text concluded
   that patch reads are codec-insensitive. Re-measured with a new window per
-  read, the codec shows: 1.3 ms for `training`'s lz4, 8.9 ms for `portable`'s
-  gzip.
+  read, the codec shows: 1.0 ms for `training`'s lz4, 8.6 ms for `portable`'s
+  gzip, and the table gains `balanced`, the default.
 - **Every stated count is the real one**: the code table has 95 codes (pages
   said 93 and 71), the clinical profile 36 corpus cases, 8 valid
   and 28 invalid (they said 35 and 27), and the corpus *at least* one case per

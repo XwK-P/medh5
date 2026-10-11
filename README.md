@@ -80,7 +80,7 @@ guides, the Python and CLI reference, and the normative specification.
 - **Every claim is checkable** — per-object digests, a Merkle `content_id` that
   survives recompression, a stable diagnostic-code table, and a 157-case
   conformance corpus.
-- **Reading a patch is fast** — a 64³ multi-class patch in ~3.5 ms, and O(1)
+- **Reading a patch is fast** — a 64³ multi-class patch in ~2.3 ms, and O(1)
   foreground sampling once `build_index()` has run.
 - **What was known, when** — labs, reports and their revisions, diagnoses and
   assessments on one subject clock, each with when it happened and when it

@@ -79,11 +79,11 @@ feature caches are separately versioned companions, pinned to the exact sample
 versions they read. See [clinical history](guides/clinical.md) and
 [training on clinical tasks](guides/clinical-training.md).
 
-**Reading a patch is fast.** A 64³ multi-class patch reads in ~3.5 ms, against
+**Reading a patch is fast.** A 64³ multi-class patch reads in ~2.3 ms, against
 117 ms measured on 0.x, because chunks are sized for it and the sampling index
 makes foreground sampling O(1) in the volume — 0.03 ms per draw at 12.6 Mvox and
 at 512³ alike. The index is written by `build_index()` and is not automatic:
-without one the same draw scans the labels and costs 63 ms and 650 ms. See
+without one the same draw scans the labels and costs 210 ms and 2.4 s. See
 [tune performance](guides/performance.md), and run `medh5 bench` on your own
 hardware.
 

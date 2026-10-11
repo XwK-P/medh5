@@ -31,9 +31,10 @@ medh5 validate case.medh5 --level strict
 **None of them is free.** Even `structural` decompresses voxels — it reads a
 float image of up to 4 M values to test int16-losslessness, and may scan a
 labelmap or layers payload for an ignore region: the whole payload, in bounded
-slabs, so memory is bounded and the work is not. On a 12.6 Mvox sample: 62 ms for
-`structural` and `semantic`, 143 ms for `integrity`, against 0.5 ms for a
-metadata-only `open()`. Do not put one in a hot path.
+slabs, so memory is bounded and the work is not. On a 12.6 Mvox sample: 1.4 ms
+for `structural`, which found nothing there to scan, 287 ms for `semantic` and
+513 ms for `integrity`, against 0.13 ms for a metadata-only `open()`. Do not
+put one in a hot path.
 
 `strict` runs no extra rules — it promotes warnings to errors. Full table and
 measurements in

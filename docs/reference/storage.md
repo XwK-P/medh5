@@ -107,7 +107,7 @@ annotation — and a displacement field's components — is chunked
 (§14.1). Combined with reading a multi-class `dense()` **by plane rather than by
 class**, a 200-class annotation packed into four layers is four reads and not
 two hundred — which, with block-level reads, is where the 64³ patch time went
-from 117 ms to about 3.5 ms.
+from 117 ms to about 2.3 ms.
 
 ```
 $ medh5 recompress case.medh5 --profile training --rechunk
@@ -189,7 +189,7 @@ sampling O(1) in the volume instead of a scan, and gives `dataset stats` its
 class counts for a few hundred bytes instead of a decompression pass.
 
 A reader loads the class table and counts once per open, and a draw reads the
-one coordinate it picked — O(1) in the class count too: 0.05 ms at 63 classes.
+one coordinate it picked — O(1) in the class count too: 0.04 ms at 63 classes.
 The index's datasets are stored with the file's label codec, and the coarse
 `occupancy` map is chunked one class per chunk — the unit a reader asks about.
 

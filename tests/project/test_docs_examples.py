@@ -104,7 +104,7 @@ STALE_CLAIMS: tuple[tuple[str, str, str, str | None], ...] = (
         "validation described as metadata-only",
         r"touches no voxel|never touches a voxel|costs nothing to run",
         "`structural` and `semantic` do bounded payload scans; "
-        "measured 62 ms on 12.6 Mvox.",
+        "`semantic` measured 287 ms on 12.6 Mvox.",
         None,
     ),
     (

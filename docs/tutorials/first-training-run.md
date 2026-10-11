@@ -55,7 +55,7 @@ medh5 index build case_0001.medh5
 ```
 
 Build it once and that draw becomes a lookup. On this toy volume the difference
-is milliseconds; at 512³ it is 650 ms per draw against 0.03.
+is milliseconds; at 512³ it is 2.4 s per draw against 0.03 ms.
 
 ## Loop
 
