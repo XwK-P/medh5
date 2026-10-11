@@ -39,7 +39,8 @@ $ medh5 recompress cohort/*.medh5 --profile archive
 ```
 
 Recompression is **in place** by default: each file is rewritten atomically
-under the new profile. `--out` writes beside the source instead, and takes a
+under the new profile. A `.medh5c` collection is recompressed member by member,
+each member keeping its `content_id`. `--out` writes beside the source instead, and takes a
 single input and a destination **filename** — not a directory, and not several
 files:
 

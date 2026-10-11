@@ -499,6 +499,31 @@ class TestRecompress:
         with medh5.open(path) as s:
             assert s.verify().ok and s.content_id == before
 
+    def test_S2_2_a_shard_is_recompressed_member_by_member(self, tmp_path: Path):
+        """Every member of a collection is re-encoded, and keeps its address."""
+        from medh5.collection import open_collection, pack
+        from medh5.storage import recompress
+
+        shape = (32, 48, 48)
+        sources = []
+        for i in range(2):
+            path = tmp_path / f"m{i}.medh5"
+            image = np.random.default_rng(i).integers(-1000, 1000, shape)
+            with medh5.create(path, sample_id=f"m{i}", codec="portable") as w:
+                w.add_grid("g", shape=shape, spacing=(1.0, 1.0, 1.0))
+                w.add_image("CT", image.astype(np.int16), grid="g", modality="CT")
+            sources.append(path)
+        shard = pack(sources, tmp_path / "s.medh5c")
+        with open_collection(shard) as collection:
+            before = {key: collection[key].content_id for key in collection}
+        result = recompress(shard, "archive")
+        assert result.ok and result.datasets == 2
+        changed = {path for path, _, _ in result.changed}
+        assert changed == {"/samples/m0/images/CT", "/samples/m1/images/CT"}
+        with open_collection(shard) as collection:
+            assert {key: collection[key].content_id for key in collection} == before
+            assert all(collection[key].verify().ok for key in collection)
+
     def test_S14_2_a_member_named_annotations_keeps_the_image_codec(
         self, tmp_path: Path
     ):
