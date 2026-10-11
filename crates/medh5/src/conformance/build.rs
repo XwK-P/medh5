@@ -1444,7 +1444,7 @@ pub(super) fn registry() -> Vec<Case> {
     fifth_batch(&mut cases);
     // 2.0 / format 1.1: the clinical profile.
     cases.extend(super::clinical::cases());
-    audit_round_four(&mut cases);
+    sixth_batch(&mut cases);
     cases
 }
 
@@ -2240,8 +2240,8 @@ fn fourth_batch(cases: &mut Vec<Case>) {
     ]);
 }
 
-/// The cases the fourth audit of 2.0 added.
-fn audit_round_four(cases: &mut Vec<Case>) {
+/// 2.0.0: an attested path is the path its line names (§13.2), and a transform is in its grids' units (§10.1).
+fn sixth_batch(cases: &mut Vec<Case>) {
     cases.extend([
         case(
             "E704-aliased-attested-path",
