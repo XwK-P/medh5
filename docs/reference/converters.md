@@ -235,6 +235,9 @@ to_dicom_seg("case.medh5", "organs", ["ct/1.dcm", "ct/2.dcm"], "out.dcm")
 Import preserves overlapping segments and `FRACTIONAL` values. **Export does
 not**: `to_dicom_seg` writes `BINARY` from `dense()`, which for a `probmap`
 applies the stored threshold, so fractional data is thresholded on the way out.
+A binary segment cannot mark an ignore region either --- its 0 says examined
+and absent --- so an annotation that ignores any voxel (§7.7) is refused;
+`to_nifti` with `annotation=` writes its labelmap, ignore id included.
 
 Writing needs `highdicom` (`pip install "medh5[dicomseg]"`).
 

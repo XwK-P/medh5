@@ -65,6 +65,13 @@ Fractional values survive the *import* direction, not this one. Check
 the operating point you want — or keep the probabilities in the `.medh5` and
 export something else.
 
+**An ignore region is refused.** A binary segment has two values, and its 0
+says the voxel was examined and the structure is absent. The voxels an
+annotation ignores (§7.7), in band or through its `ignore_mask`, would go out
+as that 0, so `to-dicom-seg` refuses an annotation with any, and says how many.
+`to-nifti --annotation` writes the labelmap, with each ignored voxel as the
+annotation's ignore id.
+
 Writing goes through `highdicom` rather than assembling the IOD by hand, which
 is how invalid SEGs get published.
 

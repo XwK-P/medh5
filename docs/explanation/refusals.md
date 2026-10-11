@@ -181,6 +181,12 @@ grid's slices (`E405` otherwise) in its frame of reference (`E414`; a frame
 to compare nothing, and an annotation on a grid turned in plane, or shifted
 10 mm, was written centimetres from where it was drawn.
 
+**Export refuses an ignore region.** A binary segment has no value for "not
+examined": its 0 says examined and absent. Written from `dense()`, every voxel
+the annotation ignores (§7.7) went out as that 0 --- unexamined tissue
+exported as verified negative --- so an annotation with an ignore region is
+refused. A NIfTI labelmap keeps the region, as the annotation's ignore id.
+
 **Writing requires `highdicom`** rather than assembling the IOD by hand.
 Building per-frame functional groups yourself is how invalid SEGs get published.
 

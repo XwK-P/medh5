@@ -33,6 +33,7 @@ import numpy as np
 import numpy.typing as npt
 
 from medh5._optional import require
+from medh5.annotations import VoxelAnnotation
 from medh5.errors import MEDH5ValidationError
 from medh5.io._common import sanitize_key
 from medh5.io.report import ConversionReport
@@ -885,6 +886,10 @@ def to_dicom_seg(
     in its frame of reference where the grid states one (E414 otherwise;
     *frame_salt* compares a frame ``medh5 scrub`` pseudonymised, as
     :func:`frames_agree` does) and on its lattice (E405 otherwise).
+
+    The SEG is ``BINARY``, so an annotation with an ignore region (§7.7) is
+    refused: a segment's 0 says a voxel was examined and found absent, and it
+    has no value for one nobody examined.
     """
     import medh5
 
@@ -904,6 +909,17 @@ def to_dicom_seg(
         annotation = opened.annotations[ann_id]
         slices = _source_slices(annotation.grid, datasets, log, frame_salt)
         ids = annotation.resolve_classes(classes)
+        if isinstance(annotation, VoxelAnnotation):
+            ignored = int(np.count_nonzero(opened.ignore_region(ann_id)))
+            if ignored:
+                raise MEDH5ValidationError(
+                    f"annotation {ann_id!r} ignores {ignored} voxel(s) (§7.7), "
+                    "which a BINARY SEG cannot mark --- a segment's 0 would say "
+                    "they were examined and found absent; export it to NIfTI "
+                    "instead (`to_nifti` with annotation=, `medh5 convert "
+                    "to-nifti --annotation`), whose labelmap writes them as its "
+                    f"ignore id {annotation.ignore_id}"
+                )
         planes = np.asarray(annotation.dense(list(ids)), dtype=bool)
         descriptions = [
             hd.seg.SegmentDescription(

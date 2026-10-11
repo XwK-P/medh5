@@ -139,6 +139,32 @@ class TestDicomSeg:
         with pytest.raises(MEDH5ValidationError, match="different reconstruction"):
             from_dicom_seg(out, other, ann_id="x", grid="g")
 
+    @pytest.mark.parametrize("encoding", ["labelmap", "bitmask"])
+    def test_S7_7_an_annotation_with_an_ignore_region_is_refused(
+        self, prepared, tmp_path, encoding
+    ):
+        """A binary segment's 0 says examined and absent: written from
+        `dense()`, every voxel the annotation ignores went out as that 0 ---
+        in band (`labelmap`) or in its sibling mask (`bitmask`) alike."""
+        from medh5.io.dicom_seg import to_dicom_seg
+
+        ignore = np.zeros_like(prepared["liver"])
+        ignore[0] = True  # a slice nobody read, clear of the liver
+        with medh5.amend(prepared["path"]) as writer:
+            writer.add_segmentation(
+                "partial",
+                grid=prepared["grid"],
+                masks={1: prepared["liver"]},
+                ignore=ignore,
+                encoding=encoding,
+            )
+        out = tmp_path / "s.dcm"
+        sources = prepared["series"]["paths"]
+        with pytest.raises(MEDH5ValidationError, match="ignores") as caught:
+            to_dicom_seg(prepared["path"], "partial", sources, out)
+        assert f"ignores {int(ignore.sum())} voxel(s)" in str(caught.value)
+        assert not out.exists()
+
     def test_S3_3_a_seg_with_omitted_frames_imports(self, tmp_path: Path):
         """highdicom's default omits empty frames, and the import refused it.
 
