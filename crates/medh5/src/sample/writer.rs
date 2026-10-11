@@ -239,17 +239,6 @@ pub fn amend_into(path: &Path, out: &Path, codec: Option<&str>, without: &[&str]
     Ok(writer)
 }
 
-/// `written`, or --- when it failed --- nothing: the object `name` the failed
-/// write began under `parent` is unlinked, so a corrected retry can write it
-/// and a commit never finds it half-written.  The write's own error is the
-/// one reported.
-fn or_unlink<T>(parent: &hdf5::Group, name: &str, written: Result<T>) -> Result<T> {
-    if written.is_err() {
-        ops::unlink(parent, name).ok();
-    }
-    written
-}
-
 impl SampleWriter {
     /// A writer for `path`; `source` copies an existing sample in (amend),
     /// but for the top-level members it names.
@@ -320,6 +309,19 @@ impl SampleWriter {
 
     fn group(&self, name: &str) -> Result<hdf5::Group> {
         Ok(self.root()?.group(name)?)
+    }
+
+    /// `written`, or --- when it failed --- nothing: the object `name` the
+    /// failed write began under `parent` is unlinked, so a corrected retry can
+    /// write it and a commit never finds it half-written, and the commit
+    /// rewrites the file, so none of its bytes stay behind either.  The
+    /// write's own error is the one reported.
+    pub(crate) fn or_unlink<T>(&mut self, parent: &hdf5::Group, name: &str, written: Result<T>) -> Result<T> {
+        if written.is_err() && ops::exists(parent, name) {
+            ops::unlink(parent, name).ok();
+            self.compact = true;
+        }
+        written
     }
 
     /// Discard the in-progress file, leaving any existing one untouched.
@@ -854,7 +856,7 @@ impl SampleWriter {
             ("prov", options.prov.map(AttrValue::Str)),
         ];
         values.retain(|(_, v)| v.is_some());
-        or_unlink(&parent, image_id, attrs::write_all(&node, &values))?;
+        self.or_unlink(&parent, image_id, attrs::write_all(&node, &values))?;
         self.images.insert(image_id.to_string(), (grid.to_string(), modality.to_string()));
         self.image_multiscale.insert(image_id.to_string(), false);
         Ok(node)
@@ -947,7 +949,7 @@ impl SampleWriter {
             .enumerate()
             .try_for_each(|(level, (array, layout))| data::create(&group, &level.to_string(), array, layout).map(drop))
             .and_then(|()| values.iter().try_for_each(|(k, v)| attrs::write(&group, k, v)));
-        or_unlink(&parent, image_id, written)?;
+        self.or_unlink(&parent, image_id, written)?;
         self.images.insert(image_id.to_string(), (grid_levels[0].clone(), modality.to_string()));
         self.image_multiscale.insert(image_id.to_string(), true);
         Ok(group)

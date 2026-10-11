@@ -22,6 +22,7 @@ import numpy as np
 import pytest
 
 import medh5
+from medh5.annotations.geometric import Polygon
 from medh5.annotations.voxel import InstanceInput
 from medh5.errors import MEDH5FileError, MEDH5ValidationError, MEDH5VersionError
 from medh5.labels import LabelClass, LabelSet
@@ -1259,3 +1260,150 @@ class TestDocumentEdits:
                 w.document.timepoints["tp0"].series_uids["CT"] = str(n)
                 w.document.label_set["liver"].properties["n"] = n
             assert anchors() == before
+
+
+_BOXES = np.array([[[0, 2], [1, 3], [2, 4]]], float)
+
+# One call per annotation writer, each taking the keyword that refuses it.
+_ANNOTATION_WRITES: dict[str, Any] = {
+    "boxes": lambda w, **kw: w.add_boxes("a", _BOXES, [1], grid="g", **kw),
+    "obb": lambda w, **kw: w.add_obb(
+        "a", np.ones((1, 3)), np.ones((1, 3)), np.eye(3)[None], [1], grid="g", **kw
+    ),
+    "keypoints": lambda w, **kw: w.add_keypoints(
+        "a", np.ones((1, 2, 3)), [1, 3], [1], grid="g", **kw
+    ),
+    "points": lambda w, **kw: w.add_points("a", np.ones((2, 3)), grid="g", **kw),
+    "contours": lambda w, **kw: w.add_contours(
+        "a", [Polygon(np.ones((3, 3)), 1, (0, 1))], grid="g", **kw
+    ),
+    "mesh": lambda w, **kw: w.add_mesh(
+        "a", np.eye(3), np.array([[0, 1, 2]]), grid="g", space="index", **kw
+    ),
+    "classification": lambda w, **kw: w.add_classification("a", {1: 1.0}, **kw),
+    "segmentation": lambda w, **kw: w.add_segmentation(
+        "a", grid="g", masks={1: Flat.mask()}, **kw
+    ),
+    "mask": lambda w, **kw: w.add_mask("a", Flat.mask(), grid="g", **kw),
+}
+
+# Refused before anything is written, and refused partway: a string HDF5
+# cannot store fails the attribute write after the datasets are written.
+_REFUSALS = {"codec": {"codec": "nope"}, "attribute": {"prov": "act\x00ivity"}}
+
+
+class TestRefusedWrites:
+    """§14.4: a write the builder refuses leaves nothing behind.  Refused once
+    its group was made, an annotation, transform or grid stayed half-written:
+    a corrected retry found its name taken, and the commit refused the file
+    (E412) --- or kept the object without the attributes it failed to write."""
+
+    @pytest.mark.parametrize("refusal", sorted(_REFUSALS))
+    @pytest.mark.parametrize("kind", sorted(_ANNOTATION_WRITES))
+    def test_S6_2_a_refused_annotation_leaves_nothing_behind(
+        self, tmp_path: Path, kind: str, refusal: str
+    ):
+        path = tmp_path / "ann.medh5"
+        write = _ANNOTATION_WRITES[kind]
+        with Flat.open_writer(path) as w:
+            with pytest.raises(ValueError):
+                write(w, **_REFUSALS[refusal])
+            assert list(w.handle["annotations"].keys()) == []
+            write(w)
+        with medh5.open(path) as sample:
+            assert list(sample.annotations) == ["a"]
+        assert validate_file(path).ok
+
+    @pytest.mark.parametrize("refusal", sorted(_REFUSALS))
+    def test_S10_1_a_refused_transform_leaves_nothing_behind(
+        self, tmp_path: Path, refusal: str
+    ):
+        """The `transforms` group the refused write made goes with it."""
+        path = tmp_path / "tr.medh5"
+
+        def write(w: Any, **kw: Any) -> None:
+            w.add_transform(
+                "t",
+                kind="affine",
+                from_frame="f0",
+                to_frame="f1",
+                matrix=np.eye(4),
+                **kw,
+            )
+
+        with Flat.open_writer(path) as w:
+            with pytest.raises(ValueError):
+                write(w, **_REFUSALS[refusal])
+            assert "transforms" not in w.handle.keys()
+            write(w)
+        with medh5.open(path) as sample:
+            assert list(sample.transforms) == ["t"]
+        assert validate_file(path).ok
+
+    def test_S3_2_a_grid_that_cannot_be_written_whole_is_not_written(
+        self, tmp_path: Path
+    ):
+        path = tmp_path / "grid.medh5"
+        with Flat.open_writer(path) as w:
+            with pytest.raises(ValueError):
+                w.add_grid("h", shape=Flat.SHAPE, spacing=(1, 1, 1), frame_uid="f\x00")
+            w.add_grid("h", shape=Flat.SHAPE, spacing=(1, 1, 1), frame_uid="f1")
+        with medh5.open(path) as sample:
+            assert sample.grids["h"].frame_uid == "f1"
+        assert validate_file(path).ok
+
+    def test_S11_2_a_refused_write_files_no_quality_record(self, tmp_path: Path):
+        """A record given inline is filed with what it describes: filed first,
+        a refused write left it behind, and a refused duplicate replaced the
+        record of the object already written under its id."""
+        path = tmp_path / "quality.medh5"
+        affine = {"kind": "affine", "from_frame": "f0", "to_frame": "f1"}
+        with Flat.open_writer(path) as w:
+            with pytest.raises(MEDH5ValidationError) as exc:
+                w.add_boxes(
+                    "a",
+                    _BOXES,
+                    [1],
+                    grid="g",
+                    closure="nope",
+                    quality={"status": "draft"},
+                )
+            assert exc.value.code == "E412"
+            assert "a" not in w.document.quality
+            w.add_boxes("a", _BOXES, [1], grid="g", quality={"status": "approved"})
+            w.add_transform(
+                "t", matrix=np.eye(4), metrics={"status": "approved"}, **affine
+            )
+            with pytest.raises(MEDH5ValidationError, match="already exists"):
+                w.add_boxes("a", _BOXES, [1], grid="g", quality={"status": "rejected"})
+            with pytest.raises(MEDH5ValidationError, match="already exists"):
+                w.add_transform(
+                    "t", matrix=np.eye(4), metrics={"status": "rejected"}, **affine
+                )
+        with medh5.open(path) as sample:
+            quality = sample.document.quality
+            assert {k: quality[k].status for k in quality} == {
+                "a": "approved",
+                "t": "approved",
+            }
+
+    def test_S7_6_a_refused_transcode_keeps_the_annotation(self, tmp_path: Path):
+        """The annotation was removed before its new encoding was written, so
+        a refused transcode lost it, and the commit refused the half-written
+        group in its place (E412)."""
+        path = tmp_path / "transcode.medh5"
+        masks = {1: Flat.mask(), 3: Flat.mask((5, 5, 5))}
+        with Flat.open_writer(path) as w:
+            w.add_segmentation("a", grid="g", masks=masks, encoding="labelmap")
+            w.build_index()
+        with medh5.open(path) as sample:
+            before = sample.annotations["a"].labelmap()
+        with medh5.amend(path) as w:
+            with pytest.raises(MEDH5ValidationError, match="unknown codec"):
+                w.transcode_annotation("a", "layers", codec="nope")
+        with medh5.open(path) as sample:
+            annotation = sample.annotations["a"]
+            assert annotation.kind == "labelmap"
+            np.testing.assert_array_equal(annotation.labelmap(), before)
+            assert list(sample.index) == ["a"]
+        assert validate_file(path).ok

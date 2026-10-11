@@ -152,18 +152,28 @@ impl SampleWriter {
         }
     }
 
-    fn quality_key(&mut self, ann_id: &str, quality: Option<&QualityArg>) -> Result<Option<String>> {
+    /// The quality key a header names, and the record to file under it once
+    /// the annotation or transform is written ([`Self::file_quality`]).  A
+    /// record given inline is filed only then: filed first, a refused write
+    /// left it behind, and a refused duplicate replaced the record of the
+    /// object already written under its id.
+    fn quality_key(id: &str, quality: Option<&QualityArg>) -> Result<(Option<String>, Option<QualityRecord>)> {
         match quality {
-            None => Ok(None),
-            Some(QualityArg::Key(k)) => Ok(Some(k.clone())),
+            None => Ok((None, None)),
+            Some(QualityArg::Key(k)) => Ok((Some(k.clone()), None)),
             Some(QualityArg::Record(fields)) => {
                 let mut doc = Map::new();
                 doc.insert("status".into(), Value::String("draft".into()));
                 doc.extend(fields.clone());
                 let record = QualityRecord::from_json(&Value::Object(doc))?;
-                self.document.quality.insert(ann_id.to_string(), record);
-                Ok(Some(ann_id.to_string()))
+                Ok((Some(id.to_string()), Some(record)))
             }
+        }
+    }
+
+    fn file_quality(&mut self, id: &str, record: Option<QualityRecord>) {
+        if let Some(record) = record {
+            self.document.quality.insert(id.to_string(), record);
         }
     }
 
@@ -273,21 +283,22 @@ impl SampleWriter {
         header.closure = options.common.closure.clone().unwrap_or_else(|| "explicit".into());
         header.ignore_mask = ignore_mask;
         header.prov = options.common.prov.clone();
-        header.quality = self.quality_key(ann_id, options.common.quality.as_ref())?;
+        let (quality, record) = Self::quality_key(ann_id, options.common.quality.as_ref())?;
+        header.quality = quality;
         header.derived_from = options.common.derived_from.clone();
         header.extra = payload.attrs.clone();
         header.check()?;
         self.write_annotation(ann_id, &header, &payload, Some(&target), options.common.codec.as_deref())?;
         if let (Some(name), Some(ignore)) = (sibling, options.ignore) {
-            self.add_mask(
-                &name,
-                ignore,
-                grid,
-                "other",
-                options.common.prov.as_deref(),
-                options.common.codec.as_deref(),
-            )?;
+            let (prov, codec) = (options.common.prov.as_deref(), options.common.codec.as_deref());
+            if let Err(error) = self.add_mask(&name, ignore, grid, "other", prov, codec) {
+                // The annotation names the mask as its ignore region, so it
+                // goes with it.
+                self.remove_annotation(ann_id).ok();
+                return Err(error);
+            }
         }
+        self.file_quality(ann_id, record);
         Ok((payload.kind, stats))
     }
 
@@ -406,30 +417,38 @@ impl SampleWriter {
         if ops::exists(&node, ann_id) {
             return Err(Error::invalid(format!("annotation {} already exists", repr_str(ann_id))));
         }
-        let group = node.create_group(ann_id)?;
+        // The codec is refused before the group is made, and a write that
+        // fails partway is unlinked: a refused annotation leaves no group a
+        // corrected retry would collide with, or a commit would refuse (E412)
+        // or keep without the attributes it failed to write.
         let profile = resolve_profile(Some(codec.unwrap_or(&self.codec)))?;
-        for (name, dataset) in &payload.datasets {
-            match dataset {
-                PayloadData::Strings(values) => {
-                    data::create_strings(&group, name, values)?;
-                }
-                PayloadData::Array(array) => {
-                    let mut chunks = None;
-                    if let Some(g) = grid {
-                        if name == "data" && array.ndim() >= g.n_spatial() {
-                            let proposed = self.chunks_for(g, array.dtype().itemsize(), payload.stacked_axes)?;
-                            chunks = fit_chunks(&proposed, &array.shape());
-                        }
+        let group = node.create_group(ann_id)?;
+        let written = (|| -> Result<()> {
+            for (name, dataset) in &payload.datasets {
+                match dataset {
+                    PayloadData::Strings(values) => {
+                        data::create_strings(&group, name, values)?;
                     }
-                    let layout =
-                        dataset_layout(&array.shape(), array.dtype().itemsize(), &profile, Role::Label, chunks);
-                    data::create(&group, name, array, &layout)?;
+                    PayloadData::Array(array) => {
+                        let mut chunks = None;
+                        if let Some(g) = grid {
+                            if name == "data" && array.ndim() >= g.n_spatial() {
+                                let proposed = self.chunks_for(g, array.dtype().itemsize(), payload.stacked_axes)?;
+                                chunks = fit_chunks(&proposed, &array.shape());
+                            }
+                        }
+                        let layout =
+                            dataset_layout(&array.shape(), array.dtype().itemsize(), &profile, Role::Label, chunks);
+                        data::create(&group, name, array, &layout)?;
+                    }
                 }
             }
-        }
-        for (k, v) in header.attrs() {
-            crate::h5::attrs::write(&group, &k, &v)?;
-        }
+            for (k, v) in header.attrs() {
+                crate::h5::attrs::write(&group, &k, &v)?;
+            }
+            Ok(())
+        })();
+        self.or_unlink(&node, ann_id, written)?;
         self.annotation_kinds.insert(ann_id.to_string(), header.kind.clone());
         Ok(group)
     }
@@ -490,8 +509,7 @@ impl SampleWriter {
         let objects = if dropped { annotation.n_objects()? } else { 0 };
         drop(annotation);
         let grid = self.grid_ref(header.grid.as_deref().unwrap_or(""))?.clone();
-        self.remove_annotation(ann_id)?;
-        header.kind = to_kind.to_string();
+        let before = std::mem::replace(&mut header.kind, to_kind.to_string());
         header.class_ids = payload.class_ids.clone();
         header.annotated_class_ids.retain(|c| payload.class_ids.contains(c));
         for (k, v) in &payload.attrs {
@@ -501,9 +519,29 @@ impl SampleWriter {
                 header.extra.push((k.clone(), v.clone()));
             }
         }
-        let written = self.write_annotation(ann_id, &header, &payload, Some(&grid), codec)?;
-        for raw in carried.iter().filter(|raw| !payload.attrs.iter().any(|(k, _)| raw.name() == k)) {
-            raw.restore(&written)?;
+        // The annotation is moved aside, not removed, until its new encoding
+        // is written whole: a write refused (an unknown codec) or failing
+        // partway puts it back as it was, where removed first it was lost.
+        // The name is no annotation id, so it collides with none.
+        let aside = format!("{ann_id} (transcoding)");
+        node.relink(ann_id, &aside)?;
+        let written = self.write_annotation(ann_id, &header, &payload, Some(&grid), codec).and_then(|written| {
+            carried
+                .iter()
+                .filter(|raw| !payload.attrs.iter().any(|(k, _)| raw.name() == k))
+                .try_for_each(|raw| raw.restore(&written))
+        });
+        if let Err(error) = self.or_unlink(&node, ann_id, written) {
+            node.relink(&aside, ann_id).ok();
+            self.annotation_kinds.insert(ann_id.to_string(), before);
+            return Err(error);
+        }
+        ops::unlink(&node, &aside)?;
+        // Its bytes stay in the file being built until commit rewrites it,
+        // and an index derived from the old encoding goes with it.
+        self.compact = true;
+        if let Some(index) = ops::child_group(&self.root()?, "index") {
+            ops::unlink(&index, ann_id)?;
         }
         if dropped {
             let tool = self.software("medh5", Some(VERSION), Map::new())?;
@@ -614,12 +652,15 @@ impl SampleWriter {
         header.annotated_class_ids = annotated;
         header.closure = options.closure.clone().unwrap_or_else(|| "explicit".into());
         header.prov = options.prov.clone();
-        header.quality = self.quality_key(ann_id, options.quality.as_ref())?;
+        let (quality, record) = Self::quality_key(ann_id, options.quality.as_ref())?;
+        header.quality = quality;
         header.derived_from = options.derived_from.clone();
         header.extra = payload.attrs.clone();
         header.extra.extend(extra);
         header.check()?;
-        self.write_annotation(ann_id, &header, &payload, target.as_ref(), options.codec.as_deref())
+        let group = self.write_annotation(ann_id, &header, &payload, target.as_ref(), options.codec.as_deref())?;
+        self.file_quality(ann_id, record);
+        Ok(group)
     }
 
     /// Write axis-aligned boxes as `(N, S, 2)` float `[lo, hi]` (§8.2).
@@ -854,33 +895,45 @@ impl SampleWriter {
         header.invertible = spec.invertible;
         header.inverse_id = spec.inverse_id.clone();
         header.prov = spec.prov.clone();
-        header.metrics = self.quality_key(transform_id, spec.metrics.as_ref())?;
+        let (metrics, record) = Self::quality_key(transform_id, spec.metrics.as_ref())?;
+        header.metrics = metrics;
         header.extra = payload.attrs.clone();
         let root = self.root()?;
-        let node = match ops::child_group(&root, "transforms") {
+        let existing = ops::child_group(&root, "transforms");
+        if existing.as_ref().is_some_and(|node| ops::exists(node, transform_id)) {
+            return Err(Error::invalid(format!("transform {} already exists", repr_str(transform_id))));
+        }
+        // As for an annotation, the codec is refused before anything is made,
+        // and a write that fails partway is unlinked --- with the `transforms`
+        // group, when this write made it.
+        let profile = resolve_profile(Some(spec.codec.as_deref().unwrap_or(&self.codec)))?;
+        let made = existing.is_none();
+        let node = match existing {
             Some(g) => g,
             None => root.create_group("transforms")?,
         };
-        if ops::exists(&node, transform_id) {
-            return Err(Error::invalid(format!("transform {} already exists", repr_str(transform_id))));
-        }
-        let group = node.create_group(transform_id)?;
-        let profile = resolve_profile(Some(spec.codec.as_deref().unwrap_or(&self.codec)))?;
-        for (name, dataset) in &payload.datasets {
-            let PayloadData::Array(array) = dataset else { continue };
-            let mut chunks = None;
-            if name == "field" || name == "control_points" {
-                if let Some(g) = spec.field_grid.as_ref().and_then(|g| self.grids.get(g)) {
-                    chunks = field_chunks(g, &array.shape(), array.dtype().itemsize())?;
+        let written = (|| -> Result<hdf5::Group> {
+            let group = node.create_group(transform_id)?;
+            for (name, dataset) in &payload.datasets {
+                let PayloadData::Array(array) = dataset else { continue };
+                let mut chunks = None;
+                if name == "field" || name == "control_points" {
+                    if let Some(g) = spec.field_grid.as_ref().and_then(|g| self.grids.get(g)) {
+                        chunks = field_chunks(g, &array.shape(), array.dtype().itemsize())?;
+                    }
                 }
+                let layout = dataset_layout(&array.shape(), array.dtype().itemsize(), &profile, Role::Label, chunks);
+                data::create(&group, name, array, &layout)?;
             }
-            let layout = dataset_layout(&array.shape(), array.dtype().itemsize(), &profile, Role::Label, chunks);
-            data::create(&group, name, array, &layout)?;
-        }
-        for (k, v) in header.attrs() {
-            crate::h5::attrs::write(&group, &k, &v)?;
-        }
+            for (k, v) in header.attrs() {
+                crate::h5::attrs::write(&group, &k, &v)?;
+            }
+            Ok(group)
+        })();
+        let (parent, begun) = if made { (&root, "transforms") } else { (&node, transform_id) };
+        let group = self.or_unlink(parent, begun, written)?;
         self.transform_frames.insert(transform_id.to_string(), (from_frame.to_string(), to_frame.to_string()));
+        self.file_quality(transform_id, record);
         Ok(group)
     }
 
