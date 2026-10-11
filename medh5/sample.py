@@ -370,7 +370,12 @@ class Sample:
     def valid_region(
         self, image_id: str, roi: Sequence[slice] | None = None
     ) -> npt.NDArray[np.bool_]:
-        """Where an image holds data (§4.4): its ``valid_mask``, or everywhere."""
+        """Where an image holds data (§4.4): its ``valid_mask``, or everywhere.
+
+        *roi* covers the spatial axes and is resolved as an annotation's
+        window is --- a negative bound counts from the end, and every bound is
+        clipped to its axis --- and a slice with a step other than 1 is
+        refused (``ValueError``)."""
         found: npt.NDArray[np.bool_] = self._handle.valid_region(image_id, roi)
         return found
 

@@ -353,22 +353,46 @@ impl Sample {
     }
 
     /// Where an image holds data (§4.4): its `valid_mask`, or everywhere.
+    ///
+    /// `roi` covers the spatial axes, resolved as an annotation's window is:
+    /// a negative bound counts from the end and every bound is clipped to its
+    /// axis, and a slice with a step other than 1 is refused (`ValueError`),
+    /// so the region lines up with the image patch it masks.
     pub fn valid_region(&self, image_id: &str, roi: Option<&[Slice]>) -> Result<ArrayD<bool>> {
         let image = self.image(image_id)?;
         let shape = image.grid()?.spatial_shape();
-        let window: Vec<(i64, i64)> = match roi {
-            None => shape.iter().map(|n| (0, *n as i64)).collect(),
-            Some(r) => r.iter().zip(&shape).map(|(s, n)| (s.start.unwrap_or(0), s.stop.unwrap_or(*n as i64))).collect(),
+        let window: Vec<(usize, usize)> = match roi {
+            None => shape.iter().map(|n| (0, *n)).collect(),
+            Some(roi) => {
+                if roi.len() != shape.len() {
+                    return Err(Error::invalid(format!(
+                        "roi has {} axes; grid has {} spatial axes",
+                        roi.len(),
+                        shape.len()
+                    )));
+                }
+                roi.iter()
+                    .zip(&shape)
+                    .map(|(s, n)| {
+                        let (a, b, step) = s.resolve(*n)?;
+                        if step != 1 {
+                            return Err(Error::Value(format!(
+                                "image {}: a region of interest is read whole, so a slice with step {step} is \
+                                 refused; read the region, then slice the result with the step",
+                                repr_str(image_id)
+                            )));
+                        }
+                        Ok((a, b))
+                    })
+                    .collect::<Result<_>>()?
+            }
         };
         match image.valid_mask()? {
             None => {
-                let dims: Vec<usize> = window.iter().map(|(a, b)| (b - a).max(0) as usize).collect();
+                let dims: Vec<usize> = window.iter().map(|(a, b)| b - a).collect();
                 Ok(ArrayD::from_elem(IxDyn(&dims), true))
             }
-            Some(reference) => {
-                let slices: Vec<Slice> = window.iter().map(|(a, b)| Slice::new(*a, *b)).collect();
-                self.referenced_mask(image_id, "valid_mask", &reference, &slices)
-            }
+            Some(reference) => self.referenced_mask(image_id, "valid_mask", &reference, &window_slices(&window)),
         }
     }
 

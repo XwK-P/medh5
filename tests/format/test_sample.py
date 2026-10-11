@@ -177,6 +177,42 @@ class TestWriteRead:
             with pytest.raises(MEDH5ValidationError):
                 image.read([slice(0, 4)])
 
+    @pytest.mark.parametrize("masked", [False, True])
+    def test_S4_4_a_valid_region_resolves_its_window_as_an_annotation_does(
+        self, tmp_path, masked
+    ):
+        """A negative start was taken as written: with no `valid_mask` the
+        region came back larger than the grid, and with one it disagreed with
+        the mask it was read from.  A step was ignored."""
+        fov = np.zeros(SHAPE, dtype=bool)
+        fov[-2:, 1:5, :] = True
+        path = tmp_path / "fov.medh5"
+        with medh5.create(path, codec="portable") as w:
+            minimal(w)
+            w.add_mask("fov", fov, grid="g")
+            if masked:
+                w.add_image(
+                    "PET",
+                    np.zeros(SHAPE, np.float32),
+                    grid="g",
+                    modality="PT",
+                    valid_mask="fov",
+                )
+        image = "PET" if masked else "CT"
+        expected = fov if masked else np.ones(SHAPE, dtype=bool)
+        with medh5.open(path) as sample:
+            for roi in (
+                (slice(-2, None), slice(None), slice(None)),
+                (slice(None, -3), slice(1, 100), slice(-4, -1)),
+            ):
+                region = sample.valid_region(image, roi)
+                assert region.shape == sample.images[image].read(roi).shape
+                np.testing.assert_array_equal(region, expected[roi])
+            with pytest.raises(ValueError, match="step 2"):
+                sample.valid_region(image, (slice(0, 4, 2), slice(None), slice(None)))
+            with pytest.raises(MEDH5ValidationError, match="spatial axes"):
+                sample.valid_region(image, (slice(0, 4),))
+
     def test_S4_3_pyramid_levels_are_addressable(self, tmp_path):
         from medh5.geometry import derive_level_grid
 
