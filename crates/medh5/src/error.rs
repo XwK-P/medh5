@@ -15,7 +15,10 @@ use std::fmt;
 pub enum Error {
     /// A file cannot be opened, is not HDF5, or is structurally unreadable.
     File(String),
-    /// The file declares a `medh5_version` major this reader does not implement.
+    /// The file's `medh5_version` is one this operation cannot work with: a
+    /// major this reader does not implement, none at all (a 0.x file), or ---
+    /// for `amend`, `recompress` and `pack` --- a later minor, which this
+    /// engine reads only as a projection (1.1 §2.3).
     Version(String),
     /// The sample document is absent, is not JSON, or violates its schema.
     Schema(String),

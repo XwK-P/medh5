@@ -44,7 +44,15 @@ class MEDH5FileError(MEDH5Error, OSError):
 
 
 class MEDH5VersionError(MEDH5Error):
-    """The file declares a ``medh5_version`` major this reader does not implement."""
+    """The file's ``medh5_version`` is one this operation cannot work with.
+
+    Raised when a file declares a major this reader does not implement, or
+    declares no version at all (a 0.x file, which ``medh5 migrate`` converts);
+    and when ``amend``, ``recompress`` or ``pack`` is given a file --- or a
+    member --- of a later minor version, which this engine reads only as a
+    projection and so cannot rewrite without losing what it does not know
+    (1.1 §2.3).
+    """
 
 
 class MEDH5SchemaError(MEDH5Error):
