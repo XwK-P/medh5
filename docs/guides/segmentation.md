@@ -27,8 +27,8 @@ labelmap cannot hold both, and the writer picks among the encodings that can:
 `instances` for sparse localized objects, `layers` while the classes pack into
 few planes, `bitmask` beyond that. Disjoint classes get a `labelmap`, which is
 smaller. This is a storage decision: what you read through the class contract
---- `dense()`, `contains()`, `labelmap()` and `voxel_counts()`, the ignore
-region included --- does not depend on it. Only `instances()` does, since a
+— `dense()`, `contains()`, `labelmap()` and `voxel_counts()`, the ignore
+region included — does not depend on it. Only `instances()` does, since a
 dense encoding keeps no objects to return.
 
 **`annotated_classes` is the argument to think about**, not the encoding. Above
@@ -73,7 +73,7 @@ disjoint are not — usually a rater including a lesion in the organ it sits in.
 
 ## Change the encoding later
 
-Without touching the annotation's meaning --- losslessly, except for a
+Without touching the annotation's meaning — losslessly, except for a
 `probmap`, which §7.6 makes lossless only under its `threshold` (§7.5): another
 encoding keeps the voxels at or above it as the class, and the probabilities
 are gone:

@@ -81,8 +81,8 @@ PROFILES["archive"].description
 
 The chunk is the unit a read fetches: reading one voxel reads a whole stored
 chunk. Blosc2 compresses a chunk as a grid of blocks, and under the Blosc2
-profiles a window decompresses only the blocks it covers --- from the stored
-chunk, outside HDF5's lock --- so a chunk larger than the patch costs I/O rather
+profiles a window decompresses only the blocks it covers — from the stored
+chunk, outside HDF5's lock — so a chunk larger than the patch costs I/O rather
 than decompression; under `portable`, HDF5 decompresses the whole chunk. Two
 forces pull against each other — sizing to the L3 cache keeps a patch inside
 cache after decompression, sizing to the training patch keeps read
@@ -123,7 +123,7 @@ Every object carries a SHA-256 over its **decompressed** content, with the
 object's sample-root-relative path, dtype and shape fed into the hash first, so
 two arrays with the same bytes and different shapes do not collide. A string
 dataset hashes each string's stored bytes, never text decoded from them, and a
-dataset of another fixed-size type --- a compound in an extension group, say ---
+dataset of another fixed-size type — a compound in an extension group, say —
 hashes its stored elements. Variable-length data other than strings has no
 digest: the writer stamps none, and `verify` lists a digest found on such a
 dataset as `unverifiable` rather than checking it (§13.1).
@@ -147,8 +147,8 @@ Two properties follow from digesting content rather than encoding:
 
 **Recompression preserves `content_id`.** Every re-encoded dataset's stored
 bytes change; no digest does. A cohort re-encoded for training is still
-verifiably the same data. A dataset whose stored type a rebuild would change ---
-an enumeration with its names, a committed (named) type, another byte order ---
+verifiably the same data. A dataset whose stored type a rebuild would change —
+an enumeration with its names, a committed (named) type, another byte order —
 is copied as stored instead, and listed in `RecompressResult.kept` (`KEPT` on
 the command line); strings and other non-numeric data are copied as stored too.
 

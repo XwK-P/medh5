@@ -5,7 +5,7 @@ record what you actually looked for, so a model learns from your data and not
 from your annotation schedule.
 
 **The one distinction to hold on to.** `class_ids` is what an annotation
-*can express* --- every class its data can encode, whether or not a voxel
+*can express* — every class its data can encode, whether or not a voxel
 carries it. `annotated_class_ids` is what was *looked for*. A class examined and
 found absent is a usable negative example; a class nobody examined is not, and
 collapsing the two is how a model learns that a site's scans have no spleens.
@@ -72,7 +72,7 @@ annotated in a tenth of the cohort does not look ten times rarer than it is.
 That is an **ignore** region, and it is different from background. It marks
 voxels that must not contribute to a loss in *either* direction. It is not a
 class: in band (`labelmap`, `layers`) its voxels hold the annotation's
-`ignore_id` --- `65535` unless the header says otherwise --- and under the other
+`ignore_id` — `65535` unless the header says otherwise — and under the other
 encodings it is a separate `mask` annotation:
 
 ```python
@@ -86,8 +86,8 @@ It used to return that mask, and the ignored voxels went into the loss.
 
 **Writing it is one argument.** `add_segmentation(..., ignore=region)` stores
 the region wherever the chosen encoding can hold it: in band under `labelmap`
-and `layers`, and as a sibling `mask` annotation named `<ann_id>_ignore` ---
-same grid, same provenance, referenced by `header.ignore_mask` --- under
+and `layers`, and as a sibling `mask` annotation named `<ann_id>_ignore` —
+same grid, same provenance, referenced by `header.ignore_mask` — under
 `bitmask`, `instances` and `probmap`, which cannot hold a reserved id (§7.7).
 A region that **overlaps a class** goes to the sibling mask under every
 encoding, because one in-band value per voxel cannot say "liver" and "ignored"
@@ -101,8 +101,8 @@ region = s.ignore_region("organs")                  # bool, the whole grid
 region = s.ignore_region("organs", roi=(slice(0, 8),) * 3)
 ```
 
-`ignore_region` reads both places §7.7 allows --- the data itself and the
-sibling mask --- and is all `False` where the annotation has no region. The
+`ignore_region` reads both places §7.7 allows — the data itself and the
+sibling mask — and is all `False` where the annotation has no region. The
 per-encoding `ignore_mask()` exists only on `labelmap` and `layers`, and sees
 only the in-band part.
 
@@ -135,8 +135,8 @@ item["valid"]["CT"]                   # where the image holds data (§4.4)
 `ignore_index=65535` works directly; see
 [the torch reference](../reference/torch.md#a-batch) for a masked loss.
 
-Working from a manifest instead --- to choose samples by coverage before loading
-anything --- the same facts are metadata there and cost nothing to consult:
+Working from a manifest instead — to choose samples by coverage before loading
+anything — the same facts are metadata there and cost nothing to consult:
 
 ```python
 from medh5.dataset import Manifest

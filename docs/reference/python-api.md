@@ -415,7 +415,7 @@ Objects this reader does not understand — a `x_` group, an unknown attribute �
 are copied through untouched, so amending never silently drops what it cannot
 read. A file it cannot preserve is refused before anything is written: a later
 minor version (read as a projection, `MEDH5VersionError`), a profile this
-package does not implement (`E007`), or one holding HDF5 references --- addresses
+package does not implement (`E007`), or one holding HDF5 references — addresses
 in the old file, which no copy preserves (`MEDH5FileError`). Anything holding the file open across an
 `amend` keeps reading the old version.
 
@@ -453,8 +453,8 @@ with medh5.open("cohort/P-03.medh5") as s:
 | `strip(path, out)` | The imaging projection, as a new 1.0 file |
 | `imaging_events_from_timepoints(path)` | Day-precision imaging events from `days_from_baseline` |
 
-The writer takes the records one at a time --- `w.set_clock(...)`,
-`w.add_event(...)`, `w.add_document(...)`, `w.add_link(...)` --- or as a
+The writer takes the records one at a time — `w.set_clock(...)`,
+`w.add_event(...)`, `w.add_document(...)`, `w.add_link(...)` — or as a
 bundle, `w.add_records(records)`; each accepts the dataclass, a dict, or
 keywords. See [Clinical history beside the images](../guides/clinical.md).
 
@@ -479,7 +479,7 @@ row.events, row.slots["ct"].image_id, row.target.status
 
 | | |
 |---|---|
-| `TaskManifest.row_fingerprint(row_id)` | One example's identity: the task, the subject, its sources' pinned `content_id`s and the cutoff (contract §3.2) --- what a row feature pins |
+| `TaskManifest.row_fingerprint(row_id)` | One example's identity: the task, the subject, its sources' pinned `content_id`s and the cutoff (contract §3.2) — what a row feature pins |
 | `medh5.task.concept_token(kind, code_system, code)` | An event's concept as a vocabulary keys it: the kind, the coding system and the code, a separator inside either escaped so two concepts never share a token |
 | `CacheWriter.add(entry_id, values, *, sources, ...)` | One entry, naming every source version it read; at the patient level also its row, fingerprint, cutoff and the versions it encodes |
 | `CacheWriter.add_row(row, values)` | A preflight row's feature, its id, fingerprint, cutoff, admitted versions and sources taken from the `RowView` |

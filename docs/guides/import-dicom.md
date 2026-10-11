@@ -17,7 +17,7 @@ That is the whole command for the common case. `--group-by subject` is the
 default: it resolves patient identity across studies and writes one
 multi-timepoint sample per patient, which is what makes a later split
 subject-safe. `out/` is a directory, and each sample is written into it named
-for its subject --- also when the tree holds one patient; without the trailing
+for its subject — also when the tree holds one patient; without the trailing
 separator, a name that is not an existing directory is the file one sample is
 written to.
 
@@ -113,8 +113,8 @@ series.
 
 One thing is assumed rather than refused, and the report records it as a guess
 (`slice_spacing`): a single-slice series that states no `SliceThickness` has no
-through-plane extent to measure, and is given 1 mm. No voxel moves with it ---
-a lone slice's centres do not depend on its thickness --- but its extent does.
+through-plane extent to measure, and is given 1 mm. No voxel moves with it —
+a lone slice's centres do not depend on its thickness — but its extent does.
 
 These refusals carry **no diagnostic code**, because a DICOM series is not a
 MEDH5 file yet. [The reasoning for each is here](../explanation/refusals.md#dicom).
@@ -127,8 +127,8 @@ medh5 timeline out/case_0001.medh5     # did the visits land as you expect?
 medh5 validate out/*.medh5 --level strict
 ```
 
-Images are named for their modality and visit --- `CT_tp0` for the first
-visit's CT --- and values are stored as the scanner wrote them, with the
+Images are named for their modality and visit — `CT_tp0` for the first
+visit's CT — and values are stored as the scanner wrote them, with the
 modality LUT recorded rather than applied:
 
 ```python

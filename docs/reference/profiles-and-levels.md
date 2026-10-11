@@ -21,7 +21,7 @@ Each level includes the ones before it, so `strict` runs everything.
 **None of the levels is free.** Even `structural` decompresses voxels: it reads
 an image to decide whether a float array would be lossless as `int16` (only an
 image of at most 4 M values), and scans a labelmap or layers payload to find an
-in-band ignore region where the answer decides a finding --- partial coverage
+in-band ignore region where the answer decides a finding — partial coverage
 (W904), or a `uint16` labelmap whose ids would fit `uint8` (E411). `semantic`
 additionally reads layer data to judge encoding optimality. Both scans read the
 whole payload, in slabs of at most 8 MiB: the slabs bound the memory a large
@@ -38,8 +38,8 @@ of 0.13 ms:
 | `integrity` | 513 ms |
 | `strict` | 505 ms |
 
-`structural` found nothing to scan on this sample --- its image is `int16` and
-its annotation's coverage complete --- so its time is the metadata's; a float
+`structural` found nothing to scan on this sample — its image is `int16` and
+its annotation's coverage complete — so its time is the metadata's; a float
 image, or a labelmap or layers payload with partial coverage, adds a scan.
 So `semantic` is the right default and `integrity` is what to run after a file
 has moved between machines — but neither belongs in a hot path, and a
@@ -81,7 +81,7 @@ s.profiles   # {"core", "seg", "det", "curation", "longitudinal"}
 | `multiscale` | the §4.3 pyramid layout on every image |
 | `training` | a sampling index with at least one entry; a stale entry is `W905`, not a missing profile |
 | `longitudinal` | at least two declared timepoints, each grid bound to one, and stable instance ids for objects seen at more than one visit (§7.4) |
-| `clinical` | **format 1.1**: the `clinical/` group --- a canonical descriptor with the subject clock, at least one event, and the documents and links the events use ([1.1](../spec/medh5-1.1.md) §3–§7) |
+| `clinical` | **format 1.1**: the `clinical/` group — a canonical descriptor with the subject clock, at least one event, and the documents and links the events use ([1.1](../spec/medh5-1.1.md) §3–§7) |
 
 `--profile` holds the file to a profile **besides** those it claims, which is the
 useful direction: a tool can require `det` and get a diagnostic whether or not

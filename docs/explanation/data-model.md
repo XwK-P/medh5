@@ -182,7 +182,7 @@ s.content_id            # "sha256:..." — the identity of the content
 
 Recompressing a file changes every stored byte and no digest, because the
 digest is over the content and not over its encoding. An object an amendment
-writes --- an annotation removed and added again, say --- is stamped with a new
+writes — an annotation removed and added again, say — is stamped with a new
 digest, and so the `content_id` changes. Editing an object behind the library's
 back leaves the stored digest describing the old bytes, which is exactly what
 `verify` reports, and an amendment will not restamp it: `medh5.amend` refuses
@@ -204,15 +204,15 @@ case_0001.medh5
 ```
 
 Two times describe every event: when it **happened** (`effective`) and when it
-became **available** --- and each is a pair of bounds, because a source that
+became **available** — and each is a pair of bounds, because a source that
 knows a date to the day does not know the hour. A revised report is a new
 version of the same record, never an edit. This is what lets a model trained
 on the file be asked only what was known at a moment: the preliminary report,
 not the amendment two days later; the baseline scan, not the follow-up; the
 lesion annotation only after someone drew it.
 
-The images are untouched. A clinical event needs no imaging timepoint ---
-years of laboratory values beside one CT is `core, clinical` --- and a sample
+The images are untouched. A clinical event needs no imaging timepoint —
+years of laboratory values beside one CT is `core, clinical` — and a sample
 without clinical records is still written as 1.0. See
 [Clinical history beside the images](../guides/clinical.md).
 

@@ -1,9 +1,9 @@
 # Rust crate
 
 The format is implemented once, in Rust. The [`medh5`](https://crates.io/crates/medh5)
-crate is that implementation --- the data model, HDF5 I/O, validation, chunked
+crate is that implementation — the data model, HDF5 I/O, validation, chunked
 access, compression, geometry and transforms, annotations, provenance and
-integrity --- and the Python package and the `medh5` command line are frontends
+integrity — and the Python package and the `medh5` command line are frontends
 over it. All three read and write the same bytes.
 
 ```toml
@@ -12,12 +12,12 @@ medh5 = "2"
 ```
 
 HDF5 and the compression filters are built from source and linked statically
-(the `medh5-sys` crate), so a dependent crate needs nothing installed --- only a
+(the `medh5-sys` crate), so a dependent crate needs nothing installed — only a
 C compiler and CMake at build time, which HDF5's build uses.
 
 **For an MSVC target**, give the C build `NDEBUG`:
 `CFLAGS_x86_64_pc_windows_msvc=-DNDEBUG` (or the variable for your target), in
-the environment or under `[env]` in your `.cargo/config.toml` --- `-D`, which
+the environment or under `[env]` in your `.cargo/config.toml` — `-D`, which
 `cl` takes as it takes `/D`, since Git Bash rewrites `/DNDEBUG` into a path. cmake-rs drops
 CMake's release flags under the Visual Studio generator, `/DNDEBUG` with them,
 so HDF5 would keep its assertions and abort the process on a damaged file where
@@ -69,21 +69,21 @@ home; the [API documentation](https://docs.rs/medh5) has every item.
 
 | Module | Specification |
 |---|---|
-| `sample` | §2, §4, §14.4 --- `Sample` (reading), `SampleWriter`, `create` and `amend` |
-| `geometry` | §3 --- grids, affines, frames, multiscale |
-| `annotations` | §5–§9 --- the voxel and geometric encodings, headers, coverage |
-| `transforms` | §10 --- affine, displacement, B-spline and composite transforms |
-| `labels` | §5 --- label sets, hierarchies, ontology codes |
-| `curation` | §11, §12 --- identity, provenance, quality, timelines, splits, scrubbing |
-| `integrity` | §13 --- object digests and `content_id` |
-| `storage` | §14 --- codec profiles, chunking, the sampling index |
-| `validate`, `codes` | §15 --- the validator and the diagnostic code table |
-| `collection` | §2.2 --- `.medh5c` shards |
+| `sample` | §2, §4, §14.4 — `Sample` (reading), `SampleWriter`, `create` and `amend` |
+| `geometry` | §3 — grids, affines, frames, multiscale |
+| `annotations` | §5–§9 — the voxel and geometric encodings, headers, coverage |
+| `transforms` | §10 — affine, displacement, B-spline and composite transforms |
+| `labels` | §5 — label sets, hierarchies, ontology codes |
+| `curation` | §11, §12 — identity, provenance, quality, timelines, splits, scrubbing |
+| `integrity` | §13 — object digests and `content_id` |
+| `storage` | §14 — codec profiles, chunking, the sampling index |
+| `validate`, `codes` | §15 — the validator and the diagnostic code table |
+| `collection` | §2.2 — `.medh5c` shards |
 | `dataset`, `sampling` | cohort manifests, splits and statistics; patch sampling |
 | `conformance` | the conformance corpus |
-| `version` | [1.1](../spec/medh5-1.1.md) §2 --- which versions are read fully, read as a projection, or refused |
-| `clinical` | [1.1](../spec/medh5-1.1.md) §3–§10 --- the clinical profile: records, columns, checks, selection, augmentation |
-| `companion` | [task-cache-1](../spec/task-cache-1.md) --- task manifests, source pins, preflight row views, feature caches |
+| `version` | [1.1](../spec/medh5-1.1.md) §2 — which versions are read fully, read as a projection, or refused |
+| `clinical` | [1.1](../spec/medh5-1.1.md) §3–§10 — the clinical profile: records, columns, checks, selection, augmentation |
+| `companion` | [task-cache-1](../spec/task-cache-1.md) — task manifests, source pins, preflight row views, feature caches |
 
 Errors are one `medh5::Error`; when a defect has a §15.2 code, the error carries
 the code the validator reports for the same defect.

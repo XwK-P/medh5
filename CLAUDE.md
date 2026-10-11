@@ -226,7 +226,9 @@ The docs are tested, not proofread:
   above its fence; fewer than half may.
 - `tests/project/test_docs_examples.py` checks every documented `medh5 …` flag
   against the parser, and keeps `STALE_CLAIMS` — statements once wrong in the
-  docs that must not come back.
+  docs that must not come back. It also refuses `---` as a dash in the pages,
+  the READMEs, `CHANGELOG.md` and `CONTRIBUTING.md`: GitHub, PyPI and the site
+  print it as three hyphens, so write `—` there.
 - `TestStatedCounts` in `tests/format/test_conformance.py` compares every stated
   corpus size and breakdown with the corpus.
 - The engine crate's README is its crate documentation, so its Rust example is a

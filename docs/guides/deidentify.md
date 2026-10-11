@@ -13,12 +13,12 @@ established that you do not need to.
 **Nor does it de-identify the clinical profile** (format 1.1). Reports, the
 text of every event, coded values and the subject clock can carry anything
 an identifier can, and a date shift applied to `/meta` would not move the
-clinical clock --- images and history would tell two times (1.1 §3, §6). So a
+clinical clock — images and history would tell two times (1.1 §3, §6). So a
 scan of a sample that carries the profile reports it as **not examined** (it is
 never clean), and `--apply` refuses the file rather than attest a
-de-identification it did not do. Share the imaging projection instead ---
+de-identification it did not do. Share the imaging projection instead —
 `medh5 clinical strip case.medh5 --out case.imaging.medh5` writes the sample
-without its clinical records, as a different file --- or de-identify the
+without its clinical records, as a different file — or de-identify the
 records with a tool that covers free text and dates, and record that.
 
 ## 1. Look before you change anything

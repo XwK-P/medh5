@@ -9,25 +9,10 @@ look at it from the shell. About twenty minutes.
 pip install medh5
 ```
 
-Extras, all optional:
-
-| Extra | For |
-|---|---|
-| `torch` | `medh5.torch` datasets and samplers |
-| `monai` | `medh5.monai` MetaTensor adapter |
-| `nifti` | NIfTI import and export (nibabel) |
-| `dicom` | DICOM, DICOM SEG and RTSTRUCT reading (pydicom) |
-| `dicomseg` | *Writing* DICOM SEG (highdicom) |
-| `h5py` | Opening a file with `h5py` directly (h5py, hdf5plugin) |
-
-```bash
-pip install "medh5[torch,nifti,dicom]"
-```
-
-Nothing but NumPy is needed to read or write a file. The package is a layer over
-the format engine, which is written in Rust and carries HDF5, its compression
-filters and the JSON Schema check that `/meta` passes on every write and every
-validation.
+That is all this tutorial needs: it brings NumPy, and HDF5 is built in. The
+extras for PyTorch, MONAI, DICOM and NIfTI are on the
+[install page](../install.md); [the next tutorial](first-training-run.md) adds
+PyTorch.
 
 ## Write a sample
 
@@ -129,7 +114,7 @@ A warning is legal and worth knowing: nothing records how the data was
 de-identified (`w.deidentification(...)` records it), and the label set's
 classes carry no ontology code (`codes=` on each `LabelClass`).
 `--level strict` promotes warnings to errors, so it fails this file until both
-are addressed --- it is the gate for a dataset you publish, not for a first
+are addressed — it is the gate for a dataset you publish, not for a first
 sample.
 
 ## Build a sampling index

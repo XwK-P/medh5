@@ -16,10 +16,12 @@ with medh5.open("case_0001.medh5") as s:
 ```
 
 ```bash
-pip install medh5            # Python
-cargo add medh5              # Rust
-cargo install --locked medh5-cli  # the medh5 command line, natively
+pip install medh5
 ```
+
+That installs the Python package and the `medh5` command line. Extras for
+PyTorch, MONAI, DICOM and NIfTI, the command line without Python, and the Rust
+crate are on the [install page](install.md).
 
 One format engine, written in Rust, with three frontends that read and write
 the same bytes: the [Python package](reference/python-api.md), the
@@ -70,8 +72,8 @@ Merkle `content_id` that survives recompression; a validator with a
 conformance corpus, at least one case per code, that any implementation can run.
 
 **What was known, when.** From format 1.1 a sample may carry the subject's
-clinical history beside the images --- labs, reports and their revisions,
-diagnoses, medications, assessments --- each with when it happened *and* when
+clinical history beside the images — labs, reports and their revisions,
+diagnoses, medications, assessments — each with when it happened *and* when
 it became known. A model trained at a cutoff reads only what was available
 then: the preliminary report, not the amendment two days later; the baseline
 scan, not the follow-up; a lesion mask only after someone drew it. Tasks and
@@ -126,7 +128,7 @@ The **format** is versioned by `medh5_version`: [1.0](spec/medh5-1.0.md), and
 nothing else. A sample is written at the lowest version its content needs, so
 imaging-only data is still 1.0. A minor version may add optional objects,
 profiles, encodings and diagnostic codes; it may not change what an existing
-one means, and a reader opens a later minor as a projection --- validated for
+one means, and a reader opens a later minor as a projection — validated for
 what it knows, never amended. See spec §16 and 1.1 §2.
 
 The **package** follows semantic versioning from 1.0.0. `medh5.__version__` is
