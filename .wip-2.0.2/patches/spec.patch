@@ -1,0 +1,99 @@
+diff --git a/docs/spec/medh5-1.0.md b/docs/spec/medh5-1.0.md
+index 4f16dce..7ed634c 100644
+--- a/docs/spec/medh5-1.0.md
++++ b/docs/spec/medh5-1.0.md
+@@ -272,9 +272,11 @@ Consequences that readers and writers **MUST** honour:
+    Voxel *i* spans `[i-0.5, i+0.5)`.
+ 3. A `channel` or `time` axis has no geometric extent; it is never part of **i**.
+ 4. Two grids are **physically comparable without a transform** if and only if they share `frame_uid`
+-   and `coord_system`. They need not share `shape`, `spacing` or `direction`. A grid without a
+-   `frame_uid` shares a frame with nothing — including another grid without one: two absent frames
+-   are not one frame, and nothing says their world coordinates agree.
++   and `coord_system` and have the same number of spatial axes *S*. They need not share `shape`,
++   `spacing` or `direction`. A grid without a `frame_uid` shares a frame with nothing — including
++   another grid without one: two absent frames are not one frame, and nothing says their world
++   coordinates agree. Nor does a 2-D grid share a world with a 3-D one, whatever frame both name: a
++   plane's world coordinates are two numbers (§3.6), a volume's three.
+ 
+ ### 3.4 Frames of reference
+ 
+@@ -315,6 +317,11 @@ magnitudes are all expressed in the grid's `units`. `units = "px"` declares an u
+ | RGB / multi-echo | `["channel","spatial","spatial"]` | `channel_names` on the image (§4.1) |
+ | Multi-b-value DWI | `["channel"] + ["spatial"]*3` | b-values in `acquisition` (§4.5) |
+ 
++With *S* = 2, `spacing`, `origin` and `direction` refer to the **first two world axes** of
++`coord_system` — L and P under `LPS`, R and A under `RAS` — and the grid's plane is the one where the
++third world coordinate is 0. A 2-D grid has no third coordinate to place a plane elsewhere, so a slice
++that lies elsewhere, or not parallel to that plane, is a one-slice 3-D grid, which keeps where it lies.
++
+ Diffusion gradients, multiple echoes and multiple contrast phases **SHOULD** be separate images on a
+ shared grid when they are separately addressable in training, and a `channel` axis when they are
+ always consumed together.
+@@ -404,6 +411,10 @@ dataset — or on the group, inherited by every level:
+ | `displacement` | `float32` | vector field; see §10.4 |
+ | `mask` | `bool`/`uint8` | validity / FOV mask |
+ 
++Whatever its `value_type`, an image's samples **MUST** be numbers — an integer, floating-point or
++boolean dtype — at every level of a pyramid (§4.3). An image stored as strings, a compound or any
++other type holds no value a reader can read, and is **E001**.
++
+ **Physical value** = `stored × rescale_slope + rescale_intercept`. Readers **MUST** apply this when
+ asked for physical values and **MUST NOT** apply it silently when returning raw arrays; the API
+ **MUST** make the choice explicit.
+@@ -580,8 +591,12 @@ Every annotation declares how ancestors are to be interpreted via `closure`:
+ | `explicit` | Only the listed classes hold. `liver_segment_iv` present does **not** imply `liver`. |
+ | `implicit` | All `is_a` ancestors of a listed class also hold. |
+ 
+-Readers **MUST NOT** infer ancestors when `closure = "explicit"`. Writers **SHOULD** use `implicit`
+-for hierarchical classification and `explicit` for voxel annotations.
++Readers **MUST NOT** infer ancestors when `closure = "explicit"`, and **MUST** when it is `implicit`:
++every state and membership query then answers a class as present wherever a class it is an `is_a`
++ancestor of is present — `contains` (§7.6), a dense read, counts and bounds, and a classification's
++state in each scope unit (§9). What is stored stays literal: the closure is applied when an
++annotation is read, never written into it. Writers **SHOULD** use `implicit` for hierarchical
++classification and `explicit` for voxel annotations.
+ 
+ ### 5.5 Skeletons
+ 
+@@ -621,6 +636,10 @@ for classes and a region of interest, never for a storage layout.
+ | `derived_from` | `str[]` | MAY | annotation ids this was computed from (consensus, propagation) |
+ | `digest` | `str` | SHOULD | §13.1 |
+ 
++An annotation without `task` or `closure`, or of a kind other than `mask` without `class_ids`, is
++**E412**: a reader would otherwise guess its task from its kind, read its closure as `explicit`, and
++take its classes from its data.
++
+ `class_ids` ⊇ every class the data can encode. `annotated_class_ids` is what the annotator committed to
+ finding. `annotated_class_ids ⊆ class_ids` **MUST** hold. The set difference is the crux of partial
+ labelling: a class in `class_ids` but not in `annotated_class_ids` may be present in the patient and
+@@ -754,7 +773,8 @@ annotations, where each file is internally consistent and only the join is wrong
+ 
+ An object present at one timepoint and absent at another is represented by its absence from that
+ timepoint's annotation; a *resolved* lesion is distinguishable from an *unexamined* one only through
+-`annotated_class_ids` (§11.3), which is why coverage is required.
++`annotated_class_ids` and the annotation's ignore region (§7.7, §11.3) — an absence inside, or
++possibly inside, an ignore region is unexamined — which is why coverage is required.
+ 
+ **`N = 0` is permitted.** An `instances` annotation with no objects and a non-empty
+ `annotated_class_ids` states that those classes were examined and nothing was found — the verified
+@@ -976,7 +996,9 @@ profile on its own.
+ Semantics:
+ 
+ * A class in `annotated_class_ids` with **no** entry in the `class_ids` *dataset* is a **negative**:
+-  it was looked for and not found. A class not in `annotated_class_ids` is **unknown**. Because
++  it was looked for and not found — unless, under `closure = "implicit"`, a class it is an `is_a`
++  ancestor of is asserted positive in the same scope unit, which makes it positive (§5.4). A class
++  not in `annotated_class_ids` is **unknown**. Because
+   `annotated_class_ids ⊆ class_ids` must hold for the *attribute* (§6.2), a writer includes every
+   searched-for class in the attribute even when no assertion carries it. This is the general rule for
+   kinds whose `class_ids` attribute does not index storage — §8 and §9 — and it is why the attribute
+@@ -1641,7 +1663,8 @@ $ h5ls -r case_0001.medh5
+ 
+ Reading it: `PET_tp0` needs no transform to reach `CT_tp0` — same `frame_uid`. `CT_tp1` does, because
+ follow-up is a new frame. Lesion 3 appears at baseline and not at follow-up, and because
+-`annotated_class_ids` covers lesions at both visits, that absence means *resolved*, not *unexamined*.
++`annotated_class_ids` covers lesions at both visits and no ignore region hides any part of either,
++that absence means *resolved*, not *unexamined*.
+ 
+ ## Appendix B — 0.x → 1.0 mapping
+ 
