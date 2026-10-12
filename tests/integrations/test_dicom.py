@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -187,6 +188,342 @@ class TestConverters:
         report = from_dicom(source, tmp_path / "out")
         findings = scrub.scan(report.outputs[0]).findings
         assert "file_name" in {f.rule for f in findings}
+
+    def test_S2_3_a_non_ascii_patient_id_names_an_ascii_sample(self, tmp_path: Path):
+        """A sample id is `[A-Za-z0-9_.-]`, and the id was made by keeping every
+        alphanumeric character: `Müller^Hans` aborted the import (E003)."""
+        import pydicom
+
+        from medh5.io.dicom import from_dicom
+
+        root = tmp_path / "dicom"
+        series = write_dicom_series(
+            root, patient_id="X", study_uid="1.2.826.0.1.3680043.8.498.7",
+            study_date="20240102", shape=(2, 4, 4),
+        )  # fmt: skip
+        for path in series["paths"]:
+            ds = pydicom.dcmread(path)
+            ds.SpecificCharacterSet = "ISO_IR 192"
+            ds.PatientID = "Müller^Hans"
+            ds.save_as(path, enforce_file_format=True)
+        report = from_dicom(root, f"{tmp_path / 'out'}{os.sep}")
+        (written,) = report.outputs
+        assert Path(written).name == "Muller_Hans.medh5"
+        with medh5.open(written) as sample:
+            assert sample.identity.sample_id == "Muller_Hans"
+            assert sample.identity.subject_id == "Müller^Hans", "the id is kept whole"
+
+
+def _restack(paths: list[str], along: list[float]) -> None:
+    """Move the slices of a `write_dicom_series` stack, in writing order, to
+    *along* millimetres along their normal (``-x``), to four decimals."""
+    import pydicom
+
+    for path, distance in zip(sorted(paths), along, strict=True):
+        ds = pydicom.dcmread(path)
+        _, y, z = (float(v) for v in ds.ImagePositionPatient)
+        ds.ImagePositionPatient = [-float(f"{distance:.4f}"), y, z]
+        ds.save_as(path, enforce_file_format=True)
+
+
+def _instance_uids(root: Path) -> list[str]:
+    """The SOPInstanceUIDs of a `write_dicom_series` stack, in writing order."""
+    return [str(pydicom.dcmread(p).SOPInstanceUID) for p in sorted(root.glob("*.dcm"))]
+
+
+class TestSlicePositions:
+    """Every slice is held to its place in the regular stack, within a tenth of
+    a slice and at least 0.01 mm.  Each gap was held to 1 % of the median gap
+    instead: gaps within it drifted slices off the grid unseen, and positions
+    merely rounded to 0.01 mm were refused (F07)."""
+
+    @staticmethod
+    def _series(root: Path, along: Any) -> Any:
+        from medh5.io.dicom import scan_dicom
+
+        along = [float(z) for z in along]
+        written = write_dicom_series(
+            root, patient_id="P", study_uid="1.2.826.0.1.3680043.8.498.5",
+            study_date="20240102", shape=(len(along), 4, 4),
+        )  # fmt: skip
+        _restack(written["paths"], along)
+        (series,) = scan_dicom(root)
+        return series
+
+    def test_S3_3_drift_that_every_gap_hides_is_refused(self, tmp_path: Path):
+        """Twenty gaps 0.9 % long, then twenty 0.9 % short: each within 1 % of
+        the median, and the middle slice 0.45 mm --- 1.8 tenths of a slice ---
+        from where the grid put it."""
+        from medh5.cli import EXIT_ERROR, main
+        from medh5.io.dicom import read_series
+
+        gaps = [2.5225] * 20 + [2.4775] * 20
+        along = np.concatenate([[0.0], np.cumsum(gaps)]) + 10.0
+        series = self._series(tmp_path / "drift", along)
+        with pytest.raises(MEDH5ValidationError, match="irregular slice gaps") as exc:
+            read_series(series)
+        found = re.search(
+            r"the slice at index (\d+) of 41 \(instance ([\d.]+)\) ([\d.]+) mm off, "
+            r"beyond the ([\d.]+) mm tolerance",
+            str(exc.value),
+        )
+        assert found, str(exc.value)
+        index, uid, off, tolerance = found.groups()
+        assert float(off) > float(tolerance) >= 0.25
+        assert uid == _instance_uids(tmp_path / "drift")[int(index)]
+        out = tmp_path / "drift.medh5"
+        assert main(["convert", "from-dicom", str(tmp_path / "drift"), str(out)]) == (
+            EXIT_ERROR
+        )
+        assert not out.exists()
+
+    @pytest.mark.parametrize(
+        ("step", "decimals", "count"), [(0.625, 2, 120), (1.25, 1, 60)]
+    )
+    def test_S3_3_rounded_positions_are_a_regular_stack(
+        self, tmp_path: Path, step: float, decimals: int, count: int
+    ):
+        """Positions rounded per slice accumulate nothing: 0.625 mm slices
+        written to 0.01 mm have gaps of 0.62 and 0.63 mm, and were refused."""
+        from medh5.io.dicom import read_series
+
+        along = np.round(10.0 + step * np.arange(count), decimals)
+        gaps = np.diff(along)
+        median = np.median(gaps)
+        assert np.max(np.abs(gaps - median)) > 0.01 * median, "1 % of the median gap"
+        report = ConversionReport()
+        _, geometry = read_series(self._series(tmp_path / "r", along), report=report)
+        assert geometry["spacing"][0] == pytest.approx(step, abs=1e-3)
+        (note,) = report.of_kind("slice_spacing")
+        rounding = 0.5 * 10.0**-decimals
+        assert note.detail["max_through_plane_error_mm"] <= 2 * rounding + 1e-6
+        assert note.detail["tolerance_mm"] == pytest.approx(0.1 * step, abs=1e-4)
+        # Where the grid puts each slice is within the stated bound of the file.
+        grid = geometry["origin"][0] - np.arange(count) * geometry["spacing"][0]
+        assert np.max(np.abs(grid + along)) <= note.detail["tolerance_mm"]
+
+    def test_S3_3_a_regular_stack_keeps_its_spacing(self, tmp_path: Path):
+        """The median gap, where it places every slice: what 2.0.1 wrote."""
+        from medh5.io.dicom import read_series, scan_dicom
+
+        write_dicom_series(
+            tmp_path / "ct", patient_id="P", study_uid="1.2.826.0.1.3680043.8.498.6",
+            study_date="20240102",
+        )  # fmt: skip
+        report = ConversionReport()
+        _, geometry = read_series(scan_dicom(tmp_path / "ct")[0], report=report)
+        assert geometry["spacing"][0] == 2.5
+        (note,) = report.of_kind("slice_spacing")
+        assert note.detail["estimate"] == "median gap"
+        assert note.detail["max_through_plane_error_mm"] == 0.0
+
+    def test_S3_3_a_missing_slice_is_named(self, tmp_path: Path):
+        from medh5.io.dicom import read_series
+
+        along = [10.0 + 2.5 * k for k in range(8) if k != 4]
+        series = self._series(tmp_path / "gap", along)
+        with pytest.raises(MEDH5ValidationError, match="missing 1 slice") as exc:
+            read_series(series)
+        assert "is 5 mm along the slice normal, 2 times the 2.5 mm" in str(exc.value)
+
+    def test_S3_3_a_duplicate_slice_is_named(self, tmp_path: Path):
+        """Two copies of one file were reported as irregular gaps."""
+        import shutil
+
+        from medh5.io.dicom import read_series, scan_dicom
+
+        root = tmp_path / "dup"
+        written = write_dicom_series(
+            root, patient_id="P", study_uid="1.2.826.0.1.3680043.8.498.8",
+            study_date="20240102", shape=(5, 4, 4),
+        )  # fmt: skip
+        copied = sorted(written["paths"])[2]
+        shutil.copy(copied, root / "copy.dcm")
+        uid = str(pydicom.dcmread(copied).SOPInstanceUID)
+        with pytest.raises(MEDH5ValidationError, match="coincident positions") as exc:
+            read_series(scan_dicom(root)[0])
+        assert f"instances {uid} and {uid}" in str(exc.value)
+
+
+def _rt_dose(path: Path, like: str, frames: int = 3) -> None:
+    """An RT Dose grid beside a CT: multi-frame, with a patient position."""
+    from pydicom.dataset import Dataset, FileMetaDataset
+    from pydicom.uid import ExplicitVRLittleEndian, RTDoseStorage, generate_uid
+
+    reference = pydicom.dcmread(like)
+    ds = Dataset()
+    ds.file_meta = FileMetaDataset()
+    ds.file_meta.MediaStorageSOPClassUID = RTDoseStorage
+    ds.file_meta.MediaStorageSOPInstanceUID = generate_uid()
+    ds.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+    ds.SOPClassUID = RTDoseStorage
+    ds.SOPInstanceUID = ds.file_meta.MediaStorageSOPInstanceUID
+    for tag in ("PatientID", "StudyInstanceUID", "StudyDate", "FrameOfReferenceUID"):
+        setattr(ds, tag, getattr(reference, tag))
+    ds.SeriesInstanceUID = generate_uid()
+    ds.Modality = "RTDOSE"
+    ds.ImagePositionPatient = list(reference.ImagePositionPatient)
+    ds.ImageOrientationPatient = list(reference.ImageOrientationPatient)
+    ds.PixelSpacing = [4.0, 4.0]
+    ds.NumberOfFrames = frames
+    ds.GridFrameOffsetVector = [-2.5 * k for k in range(frames)]
+    ds.DoseGridScaling = 1e-4
+    ds.DoseUnits, ds.DoseType = "GY", "PHYSICAL"
+    ds.Rows = ds.Columns = 2
+    ds.SamplesPerPixel = 1
+    ds.PhotometricInterpretation = "MONOCHROME2"
+    ds.BitsAllocated = ds.BitsStored = 16
+    ds.HighBit = 15
+    ds.PixelRepresentation = 0
+    ds.PixelData = np.zeros((frames, 2, 2), np.uint16).tobytes()
+    ds.save_as(str(path), enforce_file_format=True)
+
+
+class TestOneSeriesDoesNotStopTheTree:
+    """A series the importer cannot read is left out with a warning, and the
+    series beside it are imported.  An RT Dose grid, a localizer, a transfer
+    syntax nothing decodes --- each aborted the whole tree, the dose grid as a
+    4-D grid nobody declared."""
+
+    @pytest.fixture
+    def ct(self, tmp_path: Path) -> dict[str, Any]:
+        root = tmp_path / "dicom"
+        series = write_dicom_series(
+            root / "ct", patient_id="P1", study_uid="1.2.826.0.1.3680043.8.498.9",
+            study_date="20240102", shape=(3, 4, 4),
+        )  # fmt: skip
+        return {"root": root, **series}
+
+    def _second(self, ct: dict[str, Any], *, modality: str = "MR") -> dict[str, Any]:
+        return write_dicom_series(
+            ct["root"] / "second", patient_id="P1",
+            study_uid="1.2.826.0.1.3680043.8.498.9", study_date="20240102",
+            modality=modality, shape=(3, 4, 4), seed=5,
+        )  # fmt: skip
+
+    def _only_the_ct(self, out: Path, ct: dict[str, Any]) -> None:
+        with medh5.open(out) as sample:
+            assert sorted(sample.images) == ["CT_tp0"]
+            assert sample.timepoints["tp0"].series_uids == {
+                "CT_tp0": ct["series_uid"]
+            }, "the timepoint names only what was written"
+            assert np.array_equal(sample.images["CT_tp0"].read(), ct["volume"])
+
+    def test_S3_an_rt_dose_beside_its_ct_is_skipped_with_a_note(self, ct, tmp_path):
+        from medh5.cli import EXIT_OK, main
+        from medh5.io.dicom import from_dicom
+
+        _rt_dose(ct["root"] / "dose.dcm", ct["paths"][0])
+        out = tmp_path / "out.medh5"
+        report = from_dicom(ct["root"], out)
+        (note,) = report.of_kind("non_image")
+        assert note.severity == "info" and "RT Dose Storage" in note.message
+        assert report.ok, "the dose grid is the ordinary company of a CT"
+        self._only_the_ct(out, ct)
+        cli = tmp_path / "cli.medh5"
+        assert main(["convert", "from-dicom", str(ct["root"]), str(cli)]) == EXIT_OK
+
+    def test_S3_a_multi_frame_object_is_skipped_with_a_warning(self, ct, tmp_path):
+        from pydicom.uid import NuclearMedicineImageStorage
+
+        from medh5.io.dicom import from_dicom
+
+        nm = tmp_path / "nm.dcm"
+        _rt_dose(nm, ct["paths"][0])
+        ds = pydicom.dcmread(nm)
+        ds.SOPClassUID = ds.file_meta.MediaStorageSOPClassUID = (
+            NuclearMedicineImageStorage
+        )
+        ds.Modality = "NM"
+        ds.save_as(str(ct["root"] / "nm.dcm"), enforce_file_format=True)
+        out = tmp_path / "out.medh5"
+        report = from_dicom(ct["root"], out)
+        (warning,) = report.of_kind("unsupported")
+        assert warning.severity == "warning" and "multi-frame" in warning.message
+        self._only_the_ct(out, ct)
+
+    def test_S3_1_a_localizer_is_left_out_by_name(self, ct, tmp_path):
+        """One SeriesInstanceUID in three orientations is no volume."""
+        from medh5.cli import EXIT_ERROR, main
+        from medh5.io.dicom import from_dicom
+
+        localizer = self._second(ct)
+        for path, orientation in zip(
+            sorted(localizer["paths"])[1:3],
+            ([1, 0, 0, 0, 0, -1], [0, 1, 0, 0, 0, -1]),
+            strict=True,
+        ):
+            ds = pydicom.dcmread(path)
+            ds.ImageOrientationPatient = orientation
+            ds.save_as(path, enforce_file_format=True)
+        out = tmp_path / "out.medh5"
+        report = from_dicom(ct["root"], out)
+        (warning,) = report.of_kind("series")
+        assert localizer["series_uid"] in warning.message
+        assert "ImageOrientationPatient" in warning.message
+        assert warning.detail["series_uid"] == localizer["series_uid"]
+        assert not report.ok
+        self._only_the_ct(out, ct)
+        # The command line writes the file, and its exit status says so.
+        cli = tmp_path / "cli.medh5"
+        assert main(["convert", "from-dicom", str(ct["root"]), str(cli)]) == EXIT_ERROR
+        assert cli.is_file()
+
+    def test_S3_a_transfer_syntax_nothing_decodes_is_left_out(self, ct, tmp_path):
+        from pydicom.encaps import encapsulate
+        from pydicom.uid import MPEG2MPML
+
+        from medh5.io.dicom import from_dicom
+
+        second = self._second(ct)
+        for path in second["paths"]:
+            ds = pydicom.dcmread(path)
+            ds.file_meta.TransferSyntaxUID = MPEG2MPML
+            ds.PixelData = encapsulate([ds.PixelData])
+            ds["PixelData"].VR = "OB"
+            ds["PixelData"].is_undefined_length = True
+            ds.save_as(path, enforce_file_format=True)
+        out = tmp_path / "out.medh5"
+        report = from_dicom(ct["root"], out)
+        (warning,) = report.of_kind("series")
+        assert "MPEG2 Main Profile / Main Level" in warning.message
+        assert "no installed pixel-data decoder" in warning.message
+        self._only_the_ct(out, ct)
+
+    def test_S3_a_slice_that_does_not_decode_is_refused_by_name(self, ct, tmp_path):
+        """pydicom's own `ValueError` named no file."""
+        from medh5.io.dicom import from_dicom, read_series, scan_dicom
+
+        second = self._second(ct)
+        broken = sorted(second["paths"])[1]
+        ds = pydicom.dcmread(broken)
+        ds.PixelData = ds.PixelData[:10]
+        ds.save_as(broken, enforce_file_format=True)
+        wanted = next(
+            s for s in scan_dicom(ct["root"]) if s.series_uid == second["series_uid"]
+        )
+        with pytest.raises(MEDH5ValidationError, match="could not be decoded") as exc:
+            read_series(wanted)
+        assert str(ds.SOPInstanceUID) in str(exc.value) and broken in str(exc.value)
+        out = tmp_path / "out.medh5"
+        report = from_dicom(ct["root"], out)
+        assert report.of_kind("series")
+        self._only_the_ct(out, ct)
+
+    def test_S3_when_no_series_imports_the_refusals_are_raised(self, ct, tmp_path):
+        from medh5.io.dicom import from_dicom
+
+        second = self._second(ct)
+        for path in [*ct["paths"], *second["paths"]]:
+            ds = pydicom.dcmread(path)
+            ds.PixelSpacing = [0.5 + 0.1 * int(ds.InstanceNumber), 0.5]
+            ds.save_as(path, enforce_file_format=True)
+        out = tmp_path / "out.medh5"
+        with pytest.raises(MEDH5ValidationError, match="none of the 2 series") as exc:
+            from_dicom(ct["root"], out)
+        assert ct["series_uid"] in str(exc.value)
+        assert second["series_uid"] in str(exc.value)
+        assert not out.exists()
 
 
 class TestDicom:

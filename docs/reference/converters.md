@@ -144,8 +144,13 @@ is written to.
 **Slices are ordered by geometry** — position projected on the slice normal, not
 `InstanceNumber`, which is a display order and is regularly wrong.
 
-**Spacing is measured** as the gap between consecutive slice origins, not read
-from `SliceThickness`.
+**Spacing is measured** from the slice origins, not read from
+`SliceThickness`, and every slice must lie within a tenth of a slice, and at
+least 0.01 mm, of where the regular stack puts it — or the series is refused,
+never resampled. The `slice_spacing` decision records the worst slice's
+distance (`max_through_plane_error_mm`); [Import from
+DICOM](../guides/import-dicom.md#3-expect-refusals-and-read-them) sets out the
+policy.
 
 **Modality LUT is stored, not applied.** `RescaleSlope` and `RescaleIntercept`
 become the image's `rescale`, so `read(physical=True)` gives HU and `read()`
@@ -160,7 +165,15 @@ reports such a file (`W903`).
 classic single-frame series. An Enhanced CT/MR/PET object keeps its geometry
 in per-frame functional groups it does not read, so such files are skipped
 and named in the report as a warning — an import that found nothing says
-why. Convert them to classic instances first.
+why. Convert them to classic instances first. Other multi-frame objects are
+skipped with a warning too, and an object that carries a patient position
+but is not an image — an RT Dose grid — with a note.
+
+**One series does not stop the tree.** A series the importer refuses is left
+out with a warning (`series`) naming it and the reason, and the rest are
+imported; a subject left with no series gets no file (`subject`), and an
+import where no series can be read is refused. A pixel decoder's failure is a
+refusal naming the file, not a traceback.
 
 **`MONOCHROME1` is stored as written.** Lower stored values are brighter in
 such a series; the importer never rewrites values (§4.2), records the
@@ -195,7 +208,11 @@ turned or spaced against each other are refused, and so is a frame stating no
 pixel spacing or naming no segment. Positions are DICOM's (LPS, millimetres),
 converted for an RAS grid or one in other length units; a grid in pixels or
 another convention is refused (`E414`). **Segments match by label, not by
-number.** A `BINARY` or `FRACTIONAL` SEG is read; a `LABELMAP` one, whose frames
+number**, and segments that share a label — one `Lesion` segment per lesion is
+common — are one class: a `BINARY` SEG's are combined as their union and a
+`FRACTIONAL` one's as their maximum, recorded as a `segment_union` decision.
+Two segments whose labels make one class but code different concepts are
+refused. A `BINARY` or `FRACTIONAL` SEG is read; a `LABELMAP` one, whose frames
 hold every segment by pixel value, is refused by name.
 
 **Frames of reference come first.** A SEG is matched to the grid that shares
@@ -212,10 +229,14 @@ question on its own: equal, not, or `None` when either frame is unknown.
 **A SEG may omit its empty frames.** An import places each frame on the grid by
 its own position. `read_dicom_seg`, which has no grid and builds the SEG's own
 volume, puts the planes the file carries on the regular stack they sit on —
-its step the stated `SpacingBetweenSlices`, else the smallest gap, and every
-gap a whole number of steps, to 10⁻³ mm — with the planes it omits empty;
-planes no such stack holds are refused, and `read_dicom_seg_frames` reads them
-frame by frame.
+its step the stated `SpacingBetweenSlices`, else the smallest gap or the
+least-squares step, and every plane within a tenth of a step, and at least
+0.01 mm, of its place, the bound a DICOM series is held to — with the planes
+it omits empty; planes no such stack holds are refused, and
+`read_dicom_seg_frames` reads them frame by frame. A SEG of one plane has no
+step to measure: its `SpacingBetweenSlices` is the step, else its
+`SliceThickness`, as a recorded decision, and one stating neither is refused
+rather than given 1 mm.
 
 **Export writes an annotation onto its own grid only**: the source images must
 be that grid's slices — rows and columns running the same way at the same
@@ -223,6 +244,13 @@ spacing, each image starting at its slice's first voxel — or the export is
 refused (`E405`); nothing is resampled. They must be in the grid's frame of
 reference where it states one (`E414` otherwise); `--frame-salt` (`frame_salt=`)
 compares a frame `medh5 scrub` pseudonymised.
+
+**Export writes the classes the annotation examined.** A segment's 0 says
+examined and absent, which a class outside `annotated_class_ids` never was, so
+such a class is left out, as an `unexamined` decision, and `classes=` naming
+one is refused; an annotation that examined none is refused. Every class went
+out, and one nobody looked for became an empty segment — a verified negative
+to whoever read it back.
 
 <!-- illustrative -->
 ```python
@@ -261,17 +289,42 @@ from_rtstruct("plan.dcm", "case.medh5", rasterize=False)
 ```
 
 **Contours stay contours** (§8.6), in world coordinates. `--rasterize` is opt-in,
-and the rule it used goes into the provenance graph.
+and the rule it used goes into the provenance graph; a class whose contours
+enclose no voxel centre is a warning, since its empty mask reads as examined
+and absent.
+
+**Only areas import.** A medh5 contour is a closed polygon, so an ROI drawn as
+`CLOSED_PLANAR` contours imports, and so does one drawn as `CLOSEDPLANAR_XOR`
+contours that are nested or apart on every slice, where their exclusive-or is
+the holes the import marks. Exclusive-or contours that cross are refused,
+naming the ROI and the slice, and so is an ROI mixing exclusive-or with another
+type (PS3.3 C.8.8.6.1). An ROI of `POINT`, `OPEN_PLANAR` or `OPEN_NONPLANAR`
+contours — a marker, a brachytherapy applicator — is left out with a warning
+per type (`contour_type`), so no class is minted or marked examined for it; an
+ROI mixing areas with points or curves is refused. A contour stating no type
+is read as `CLOSED_PLANAR`, on a recorded guess, and one of fewer than three
+points is dropped with a warning.
+
+**Every contour lies in a slice of the grid**, along its first axis, within a
+tenth of a slice and at least 0.01 mm, the bound the DICOM import holds slices
+to. A contour between two slices, across several — drawn on another
+orientation, or not planar — or outside the grid is refused, not moved onto a
+slice.
 
 **The import reads patient coordinates.** `ContourData` is millimetres in LPS,
 and the contours are stored in their grid's world coordinates — scaled for a
 grid in other length units, flipped in x and y for an RAS one; a grid in pixels
-or another convention is refused (`E414`). They go onto the grid that shares
-the RTSTRUCT's frame of reference, or the sample's only grid, and a grid —
-matched or named with `--grid` — whose frame is known and is another is
-refused (`E414`) before the sample is touched. `frame_salt=` compares a frame
-`medh5 scrub` pseudonymised, and the contours then carry the grid's pseudonym.
-Where the RTSTRUCT or the grid states no frame, the report records a guess.
+or another convention is refused (`E414`). Each ROI is in the frame of
+reference it states, else the one the file lists: ROIs in several frames are
+refused (`E414`) before the sample is opened, the message saying which ROI is
+in which, and an ROI whose frame the file does not list is a warning. The
+contours go onto the grid that shares the ROIs' frame, or the sample's only
+grid, and a grid — matched or named with `--grid` — whose frame is known and
+is another is refused (`E414`) before the sample is touched. `frame_salt=`
+compares a frame `medh5 scrub` pseudonymised, and the contours then carry the
+grid's pseudonym. Where the RTSTRUCT or the grid states no frame, the report
+records a guess. Into a sample with a label set, an ROI takes the class its
+`ROIName` names, by key or by display name.
 
 Each imported polygon records the slice it lies on as `contour_plane`
 `(0, k)`, in the grid's index space, so `by_plane()` on the result groups the
@@ -284,6 +337,17 @@ give their units. The source images must share one frame of reference, and the
 contours must be in it — the annotation's `frame_uid` in world space, its
 grid's in index space; `--frame-salt` compares a frame `medh5 scrub`
 pseudonymised. Contours that state no frame are recorded as a guess.
+
+Each ROI is named for its class's display name — where every class exported
+has its own one that an `ROIName` holds, else for its key — and coloured as the
+label set colours the class, red where it gives none; text beyond ASCII is
+written as UTF-8, under `SpecificCharacterSet` `ISO_IR 192`. Every contour is
+`CLOSED_PLANAR`, a hole being a contour nested inside its outer, which readers
+that combine an ROI's contours by exclusive-or or even-odd fill read as medh5
+does. **Crossing contours mean their union** in medh5, and those readers cancel
+the overlap, so two contours of one class that cross on a plane are a warning
+(`crossing_contours`) naming the planes: merge them into one outline where
+such a reader matters.
 
 ### nnU-Net v2
 

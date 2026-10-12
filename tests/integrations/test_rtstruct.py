@@ -335,6 +335,426 @@ class TestRtstruct:
         assert mask[5, 10]  # in both: one region, not a hole
 
 
+FRAME_A = "1.2.826.0.1.3680043.8.498.111"
+FRAME_B = "1.2.826.0.1.3680043.8.498.222"
+CLOSED = "CLOSED_PLANAR"
+XOR = "CLOSEDPLANAR_XOR"
+
+
+def _dicom_case(tmp_path: Path, frame: str = FRAME_A) -> SimpleNamespace:
+    """A 6×16×16 CT of 1 mm voxels in *frame*, imported by ``from_dicom``."""
+    from pydicom.uid import generate_uid
+
+    from medh5.io.dicom import from_dicom
+
+    series = write_dicom_series(
+        tmp_path / "dcm",
+        patient_id="PSEUDO-9",
+        study_uid=generate_uid(),
+        study_date="20260101",
+        shape=(6, 16, 16),
+        spacing=(1.0, 1.0, 1.0),
+        origin=(0.0, 0.0, 0.0),
+        frame_uid=frame,
+    )
+    path = tmp_path / "case.medh5"
+    from_dicom(tmp_path / "dcm", path, group_by="study")
+    with medh5.open(path) as sample:
+        grid = sample.grids[sorted(sample.grids)[0]]
+    return SimpleNamespace(path=path, grid=grid, series=series, tmp=tmp_path)
+
+
+def _square(
+    grid: Any, plane: float, rows: tuple[int, int], columns: tuple[int, int]
+) -> np.ndarray:
+    """A square on *plane* whose edges sit on voxel edges, around the voxels
+    of *rows* and *columns* (inclusive), in patient coordinates."""
+    (r0, r1), (c0, c1) = rows, columns
+    corners = [
+        (r0 - 0.5, c0 - 0.5),
+        (r0 - 0.5, c1 + 0.5),
+        (r1 + 0.5, c1 + 0.5),
+        (r1 + 0.5, c0 - 0.5),
+    ]
+    return grid.index_to_world(np.array([[plane, r, c] for r, c in corners], float))
+
+
+def _structure_set(
+    out: Path,
+    rois: dict[int, tuple[str, list[tuple[str | None, np.ndarray]]]],
+    frames: list[str],
+    *,
+    roi_frames: dict[int, str | None] | None = None,
+) -> Path:
+    """An RTSTRUCT of *rois* --- ``{number: (name, [(type, points), ...])}``,
+    a type of ``None`` stating none --- listing *frames*.  Each ROI states the
+    frame *roi_frames* gives it (``None``: none), else the first listed."""
+    from pydicom.dataset import Dataset, FileMetaDataset
+    from pydicom.uid import ExplicitVRLittleEndian, generate_uid
+
+    structure = Dataset()
+    structure.file_meta = FileMetaDataset()
+    structure.file_meta.MediaStorageSOPClassUID = pydicom.uid.RTStructureSetStorage
+    structure.file_meta.MediaStorageSOPInstanceUID = generate_uid()
+    structure.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+    structure.SOPClassUID = pydicom.uid.RTStructureSetStorage
+    structure.SOPInstanceUID = structure.file_meta.MediaStorageSOPInstanceUID
+    structure.Modality = "RTSTRUCT"
+    structure.StructureSetLabel = out.stem
+    structure.ReferencedFrameOfReferenceSequence = []
+    for uid in frames:
+        item = Dataset()
+        item.FrameOfReferenceUID = uid
+        structure.ReferencedFrameOfReferenceSequence.append(item)
+    structure.StructureSetROISequence = []
+    structure.ROIContourSequence = []
+    for number, (name, contours) in rois.items():
+        roi = Dataset()
+        roi.ROINumber = number
+        roi.ROIName = name
+        frame = (roi_frames or {}).get(number, frames[0] if frames else None)
+        if frame:
+            roi.ReferencedFrameOfReferenceUID = frame
+        structure.StructureSetROISequence.append(roi)
+        item = Dataset()
+        item.ReferencedROINumber = number
+        item.ContourSequence = []
+        for kind, points in contours:
+            contour = Dataset()
+            if kind is not None:
+                contour.ContourGeometricType = kind
+            contour.NumberOfContourPoints = len(points)
+            contour.ContourData = [float(v) for v in np.asarray(points).reshape(-1)]
+            item.ContourSequence.append(contour)
+        structure.ROIContourSequence.append(item)
+    structure.save_as(str(out), enforce_file_format=True)
+    return out
+
+
+def _voxels(path: Path, ann_id: str = "rois") -> dict[str, int]:
+    """Each class the rasterised mask examined, and how many voxels it has."""
+    with medh5.open(path) as sample:
+        mask = sample.annotations[f"{ann_id}_mask"]
+        return {
+            c.key: int(mask.dense([c.key])[0].sum()) for c in mask.annotated_classes
+        }
+
+
+class TestContourTypes:
+    """A medh5 contour is a closed polygon in a slice of its grid (§8.6), so an
+    import takes what an RTSTRUCT draws as areas and says what it leaves out.
+
+    ``ContourGeometricType`` (PS3.3 C.8.8.6) was never read: crossing
+    exclusive-or contours were their union, an open curve was filled, an
+    applicator's path was flattened onto one slice and its class marked
+    examined with nothing in it, and a POINT ROI vanished without a note.
+    """
+
+    @pytest.fixture
+    def case(self, tmp_path: Path) -> SimpleNamespace:
+        return _dicom_case(tmp_path)
+
+    def _import(self, case: SimpleNamespace, rois: dict, **kw: Any) -> ConversionReport:
+        from medh5.io.rtstruct import from_rtstruct
+
+        rt = _structure_set(case.tmp / "rt.dcm", rois, [FRAME_A])
+        return from_rtstruct(rt, case.path, ann_id="rois", rasterize=True, **kw)
+
+    def _refused(self, case: SimpleNamespace, rois: dict, match: str) -> None:
+        before = case.path.read_bytes()
+        with pytest.raises(MEDH5ValidationError, match=match):
+            self._import(case, rois)
+        assert case.path.read_bytes() == before, "the sample is untouched"
+
+    @pytest.mark.parametrize("shape", ["overlapping", "plus"])
+    def test_S8_6_crossing_xor_contours_are_refused(self, case, shape):
+        """Two exclusive-or squares overlapping by 3×3 voxels are 54 voxels,
+        and were read as their union, 63.  A plus has no vertex inside the
+        other bar, so only an edge test sees it cross."""
+        grid = case.grid
+        first, second = (
+            {
+                "overlapping": ((2, 7), (2, 7)),
+                "plus": ((4, 5), (1, 10)),
+            }[shape],
+            {
+                "overlapping": ((5, 10), (5, 10)),
+                "plus": ((1, 10), (4, 5)),
+            }[shape],
+        )
+        a, b = _square(grid, 2, *first), _square(grid, 2, *second)
+        self._refused(
+            case,
+            {1: ("gtv", [(XOR, a), (XOR, b)])},
+            r"ROI 'gtv' has CLOSEDPLANAR_XOR contours that cross on slice 2 ",
+        )
+        # The same outlines, CLOSED_PLANAR, are medh5's union, as they were.
+        self._import(case, {1: ("gtv", [(CLOSED, a), (CLOSED, b)])})
+        assert _voxels(case.path) == {"gtv": 63 if shape == "overlapping" else 36}
+
+    def test_S8_6_nested_and_apart_xor_contours_import_as_their_exclusive_or(
+        self, case
+    ):
+        grid = case.grid
+        outer = _square(grid, 3, (2, 11), (2, 11))  # 100 voxels
+        inner = _square(grid, 3, (5, 8), (5, 8))  # 16
+        apart = _square(grid, 3, (13, 14), (13, 14))  # 4
+        report = self._import(
+            case, {1: ("gtv", [(XOR, inner), (XOR, outer), (XOR, apart)])}
+        )
+        assert _voxels(case.path) == {"gtv": 100 - 16 + 4}
+        with medh5.open(case.path) as sample:
+            roles = [p.role for p in sample.annotations["rois"].polygons()]
+        assert roles == ["hole", "outer", "outer"]
+        [note] = report.of_kind("contour_type")
+        assert note.severity == "decision" and note.detail == {"rois": ["gtv"]}
+        assert report.ok
+
+    def test_S8_6_xor_mixed_with_another_type_is_refused(self, case):
+        """PS3.3 C.8.8.6.1: an ROI with one exclusive-or contour is all
+        exclusive-or."""
+        outer = _square(case.grid, 3, (2, 11), (2, 11))
+        inner = _square(case.grid, 3, (5, 8), (5, 8))
+        self._refused(
+            case,
+            {1: ("gtv", [(XOR, outer), (CLOSED, inner)])},
+            "ROI 'gtv' in .* mixes CLOSEDPLANAR_XOR contours with CLOSED_PLANAR",
+        )
+
+    def test_S8_6_point_and_open_rois_are_left_out_with_a_warning_each(self, case):
+        grid = case.grid
+        organ = _square(grid, 2, (2, 7), (2, 7))
+        line = grid.index_to_world(
+            np.array([[2, 2.0, 2.0], [2, 2.0, 8.0], [2, 8.0, 8.0]])
+        )
+        path = grid.index_to_world(np.array([[k, 4.0 + k, 6.0] for k in range(6)]))
+        point = grid.index_to_world(np.array([[2, 4.0, 4.0]]))
+        report = self._import(
+            case,
+            {
+                1: ("organ", [(CLOSED, organ)]),
+                2: ("line", [("OPEN_PLANAR", line)]),
+                3: ("applicator", [("OPEN_NONPLANAR", path)]),
+                4: ("marker", [("POINT", point), ("POINT", point + 1.0)]),
+            },
+        )
+        with medh5.open(case.path) as sample:
+            assert [c.key for c in sample.label_set] == ["organ"]
+            assert len(list(sample.annotations["rois"].polygons())) == 1
+        assert _voxels(case.path) == {"organ": 36}, "no class examined and empty"
+        notes = report.of_kind("contour_type")
+        assert all(n.severity == "warning" for n in notes)
+        assert sorted(
+            (n.detail["roi"], n.detail["type"], n.detail["contours"]) for n in notes
+        ) == [
+            ("applicator", "OPEN_NONPLANAR", 1),
+            ("line", "OPEN_PLANAR", 1),
+            ("marker", "POINT", 2),
+        ]
+
+    def test_S8_6_an_rtstruct_of_points_alone_is_refused_by_name(self, case):
+        point = case.grid.index_to_world(np.array([[2, 4.0, 4.0]]))
+        self._refused(
+            case,
+            {4: ("marker", [("POINT", point)])},
+            "contains no usable contours: 'marker' is POINT",
+        )
+
+    def test_S8_6_an_roi_of_areas_and_curves_is_refused(self, case):
+        grid = case.grid
+        organ = _square(grid, 2, (2, 7), (2, 7))
+        line = grid.index_to_world(
+            np.array([[3, 2.0, 2.0], [3, 2.0, 8.0], [3, 8.0, 8.0]])
+        )
+        self._refused(
+            case,
+            {1: ("organ", [(CLOSED, organ), ("OPEN_PLANAR", line)])},
+            "ROI 'organ' in .* mixes CLOSED_PLANAR contours with OPEN_PLANAR ones",
+        )
+
+    def test_S8_6_a_contour_stating_no_type_is_closed_on_a_recorded_guess(self, case):
+        organ = _square(case.grid, 2, (2, 7), (2, 7))
+        report = self._import(case, {1: ("organ", [(None, organ)])})
+        assert _voxels(case.path) == {"organ": 36}
+        [note] = report.of_kind("contour_type")
+        assert note.severity == "guess" and note.detail == {"rois": {"organ": 1}}
+
+    def test_S8_6_a_contour_of_fewer_than_three_points_is_reported(self, case):
+        grid = case.grid
+        organ = _square(grid, 2, (2, 7), (2, 7))
+        two = grid.index_to_world(np.array([[3, 2.0, 2.0], [3, 2.0, 8.0]]))
+        report = self._import(case, {1: ("organ", [(CLOSED, organ), (CLOSED, two)])})
+        assert _voxels(case.path) == {"organ": 36}
+        [note] = report.of_kind("dropped_contours")
+        assert note.severity == "warning"
+        assert note.detail == {"roi": "organ", "contours": 1}
+
+    @pytest.mark.parametrize(
+        ("where", "match"),
+        [
+            ("between", r"0\.5 mm from slice 2 of grid .*beyond the 0\.1 mm tolerance"),
+            ("across", r"runs from slice 0 to 5 of grid"),
+            ("past", r"on slice 9 that lies outside grid .* \(6 slices of 16×16\)"),
+            ("beside", r"on slice 2 that lies outside grid"),
+        ],
+    )
+    def test_S8_6_a_contour_off_the_grids_slices_is_refused(self, case, where, match):
+        """It was stored on the median vertex's slice, rounded: between two
+        slices onto one of them, across six onto the middle one --- then
+        rasterised to nothing --- and past the last slice as is."""
+        index = {
+            "between": [[2.5, 3, 3], [2.5, 3, 10], [2.5, 10, 10], [2.5, 10, 3]],
+            "across": [[0, 3, 5], [5, 3, 5], [5, 12, 5], [0, 12, 5]],
+            "past": [[9, 3, 3], [9, 3, 10], [9, 10, 10], [9, 10, 3]],
+            "beside": [[2, 20, 20], [2, 20, 25], [2, 25, 25], [2, 25, 20]],
+        }[where]
+        organ = case.grid.index_to_world(np.array(index, float))
+        self._refused(
+            case,
+            {1: ("organ", [(CLOSED, organ)])},
+            f"ROI 'organ' has a contour .*{match}",
+        )
+
+    def test_S8_6_crossing_contours_of_one_class_are_a_warning_on_export(self, case):
+        """medh5 means the union of two crossing outlines; a reader combining
+        an ROI's contours by exclusive-or or even-odd fill cancels the
+        overlap, and the export said nothing."""
+        from medh5.io.rtstruct import to_rtstruct
+
+        grid = case.grid
+        self._import(
+            case,
+            {
+                1: (
+                    "gtv",
+                    [
+                        (CLOSED, _square(grid, 2, (2, 7), (2, 7))),
+                        (CLOSED, _square(grid, 2, (5, 10), (5, 10))),
+                        (CLOSED, _square(grid, 3, (2, 11), (2, 11))),
+                        (CLOSED, _square(grid, 3, (5, 8), (5, 8))),
+                    ],
+                )
+            },
+        )
+        report = ConversionReport()
+        out = case.tmp / "out.dcm"
+        to_rtstruct(case.path, "rois", case.series["paths"], out, report=report)
+        [note] = report.of_kind("crossing_contours")
+        assert note.severity == "warning"
+        assert note.detail == {"class": "gtv", "planes": [[0, 2]]}, (
+            "nested is no crossing"
+        )
+        assert out.exists(), "a warning, not a refusal"
+
+    def test_S11_3_a_class_rasterised_to_nothing_is_a_warning(self, case):
+        """Examined and absent is what an empty mask says; the contours say
+        there is something there, smaller than a voxel."""
+        grid = case.grid
+        organ = _square(grid, 2, (2, 7), (2, 7))
+        seed = grid.index_to_world(
+            np.array([[2, 9.1, 9.1], [2, 9.1, 9.4], [2, 9.4, 9.4], [2, 9.4, 9.1]])
+        )
+        report = self._import(
+            case, {1: ("organ", [(CLOSED, organ)]), 2: ("seed", [(CLOSED, seed)])}
+        )
+        assert _voxels(case.path) == {"organ": 36, "seed": 0}
+        [note] = [n for n in report.of_kind("rasterization") if n.severity == "warning"]
+        assert note.detail == {"classes": ["seed"]}
+
+
+class TestRoiFrames:
+    """Each ROI is in the frame of reference it states (PS3.3 C.8.8.5), and
+    one stating none is in the one its file lists.  The first frame the file
+    listed stood for every ROI, so the order of that list decided whether a
+    structure set in two frames was refused, or imported whole onto a grid in
+    one of them."""
+
+    def _rois(self, grid: Any) -> dict:
+        return {
+            1: ("in_a", [(CLOSED, _square(grid, 2, (2, 7), (2, 7)))]),
+            2: ("in_b", [(CLOSED, _square(grid, 3, (8, 13), (8, 13)))]),
+        }
+
+    def _import(self, case: SimpleNamespace, rt: Path) -> ConversionReport:
+        from medh5.io.rtstruct import from_rtstruct
+
+        return from_rtstruct(rt, case.path, ann_id="rois", rasterize=True)
+
+    @pytest.mark.parametrize("listed", [[FRAME_A, FRAME_B], [FRAME_B, FRAME_A]])
+    def test_S3_4_rois_in_two_frames_are_refused(self, tmp_path, listed):
+        case = _dicom_case(tmp_path)
+        rt = _structure_set(
+            tmp_path / "rt.dcm",
+            self._rois(case.grid),
+            listed,
+            roi_frames={1: FRAME_A, 2: FRAME_B},
+        )
+        before = case.path.read_bytes()
+        with pytest.raises(MEDH5ValidationError, match="2 frames of reference") as exc:
+            self._import(case, rt)
+        assert exc.value.code == "E414"
+        assert f"{FRAME_A}: 'in_a'" in str(exc.value)
+        assert f"{FRAME_B}: 'in_b'" in str(exc.value)
+        assert case.path.read_bytes() == before
+
+    def test_S3_4_rois_of_one_frame_import_from_a_file_listing_two(self, tmp_path):
+        case = _dicom_case(tmp_path)
+        rt = _structure_set(
+            tmp_path / "rt.dcm",
+            self._rois(case.grid),
+            [FRAME_B, FRAME_A],
+            roi_frames={1: FRAME_A, 2: FRAME_A},
+        )
+        report = self._import(case, rt)
+        assert _voxels(case.path) == {"in_a": 36, "in_b": 36}
+        with medh5.open(case.path) as sample:
+            assert sample.annotations["rois"].header.frame_uid == FRAME_A
+        assert report.ok and not report.of_kind("frame"), "the frames were compared"
+
+    def test_S3_4_an_roi_naming_another_frame_than_its_file_is_refused(self, tmp_path):
+        """The file lists frame A and its only ROI says B: the ROI's frame is
+        compared with the grid's, where the file's was."""
+        case = _dicom_case(tmp_path)
+        rois = {2: self._rois(case.grid)[2]}
+        rt = _structure_set(
+            tmp_path / "rt.dcm", rois, [FRAME_A], roi_frames={2: FRAME_B}
+        )
+        before = case.path.read_bytes()
+        with pytest.raises(
+            MEDH5ValidationError, match=f"drawn in frame of reference '{FRAME_B}'"
+        ) as exc:
+            self._import(case, rt)
+        assert exc.value.code == "E414"
+        assert case.path.read_bytes() == before
+
+    def test_S3_4_the_roi_frame_is_used_when_the_file_lists_none(self, tmp_path):
+        in_b = _dicom_case(tmp_path / "b", FRAME_B)
+        in_a = _dicom_case(tmp_path / "a", FRAME_A)
+        rois = {2: self._rois(in_b.grid)[2]}
+        rt = _structure_set(tmp_path / "rt.dcm", rois, [], roi_frames={2: FRAME_B})
+        report = self._import(in_b, rt)
+        assert _voxels(in_b.path) == {"in_b": 36}
+        [note] = report.of_kind("frame")
+        assert note.severity == "warning" and note.detail["rois"] == ["in_b"]
+        with pytest.raises(MEDH5ValidationError, match="registration") as exc:
+            self._import(in_a, rt)
+        assert exc.value.code == "E414"
+
+    def test_S3_4_an_roi_stating_no_frame_in_a_file_listing_two_is_refused(
+        self, tmp_path
+    ):
+        case = _dicom_case(tmp_path)
+        rois = {1: self._rois(case.grid)[1]}
+        rt = _structure_set(
+            tmp_path / "rt.dcm", rois, [FRAME_A, FRAME_B], roi_frames={1: None}
+        )
+        with pytest.raises(
+            MEDH5ValidationError, match="state no frame of reference"
+        ) as exc:
+            self._import(case, rt)
+        assert exc.value.code == "E414"
+
+
 class TestPatientCoordinates:
     """``ContourData`` is DICOM patient coordinates: millimetres, LPS, and the
     one frame of reference the source images share.
@@ -678,3 +1098,122 @@ class TestPatientCoordinates:
         salted = [*argv, str(out), *sources, "--frame-salt", "s3cret"]
         assert main(salted) == EXIT_OK
         assert out.exists()
+
+
+class TestRoiNamesAndText:
+    """An export names each ROI for its class's display name, colours it as
+    the label set does, and states the character set of text beyond ASCII.
+    The key and red were written, and a name with an umlaut went out in
+    Latin-1 under the default repertoire, which is ASCII."""
+
+    @pytest.fixture
+    def series(self, tmp_path: Path) -> dict[str, Any]:
+        from pydicom.uid import generate_uid
+
+        return write_dicom_series(
+            tmp_path / "dcm",
+            patient_id="PSEUDO-010",
+            study_uid=generate_uid(),
+            study_date="20260101",
+        )
+
+    def _sample(self, path: Path, series: dict[str, Any], classes: list) -> Path:
+        from medh5.annotations.geometric import Polygon
+        from medh5.labels import LabelSet
+
+        square = np.array(
+            [[2.0, 4.0, 4.0], [2.0, 4.0, 10.0], [2.0, 10.0, 10.0], [2.0, 10.0, 4.0]]
+        )
+        with medh5.create(path, sample_id="s", subject_id="s", codec="portable") as w:
+            w.label_set(LabelSet("rt", classes))
+            w.add_grid(
+                "g",
+                shape=(6, 16, 20),
+                spacing=(2.5, 0.8, 0.9),
+                origin=(-10.0, -20.0, 30.0),
+                frame_uid=series["frame_uid"],
+            )
+            w.add_image("CT", np.zeros((6, 16, 20), np.int16), grid="g", modality="CT")
+            w.add_contours(
+                "rois",
+                [
+                    Polygon(
+                        (square + [k, 0.0, 0.0]).astype(np.float32), c.id, (0, 2 + k)
+                    )
+                    for k, c in enumerate(classes)
+                ],
+                grid="g",
+                space="index",
+            )
+        return path
+
+    def test_S8_6_rois_take_the_label_sets_names_and_colours(self, tmp_path, series):
+        """And come back into that label set by display name, which no key
+        matched: the import refused the export (E402)."""
+        from medh5.io.rtstruct import from_rtstruct, to_rtstruct
+        from medh5.labels import LabelClass
+
+        path = self._sample(
+            tmp_path / "s.medh5",
+            series,
+            [
+                LabelClass(1, "kidney_left", "Left kidney", color=(10, 200, 30, 255)),
+                LabelClass(2, "liver", "Liver"),
+            ],
+        )
+        out = to_rtstruct(path, "rois", series["paths"], tmp_path / "rt.dcm")
+        written = pydicom.dcmread(out)
+        rois = [r.ROIName for r in written.StructureSetROISequence]
+        assert rois == ["Left kidney", "Liver"]
+        colours = [list(c.ROIDisplayColor) for c in written.ROIContourSequence]
+        assert colours == [[10, 200, 30], [255, 0, 0]], "red where none is given"
+        assert "SpecificCharacterSet" not in written, "ASCII states none, as before"
+
+        from_rtstruct(out, path, ann_id="back")
+        with medh5.open(path) as sample:
+            back = sample.annotations["back"]
+            keys = sorted(back.class_key(p.class_id) for p in back.polygons())
+        assert keys == ["kidney_left", "liver"]
+
+    def test_S8_6_rois_are_named_for_keys_where_display_names_repeat(
+        self, tmp_path, series
+    ):
+        from medh5.io.rtstruct import to_rtstruct
+        from medh5.labels import LabelClass
+
+        path = self._sample(
+            tmp_path / "s.medh5",
+            series,
+            [LabelClass(1, "lesion_1", "Lesion"), LabelClass(2, "lesion_2", "Lesion")],
+        )
+        report = ConversionReport()
+        out = to_rtstruct(
+            path, "rois", series["paths"], tmp_path / "rt.dcm", report=report
+        )
+        rois = [r.ROIName for r in pydicom.dcmread(out).StructureSetROISequence]
+        assert rois == ["lesion_1", "lesion_2"]
+        [note] = report.of_kind("roi_names")
+        assert note.severity == "decision" and "not distinct" in note.message
+
+    def test_S8_6_text_beyond_ascii_is_written_as_utf8(self, tmp_path, series):
+        from medh5.io.rtstruct import to_rtstruct
+        from medh5.labels import LabelClass
+
+        sources = []
+        for k, source in enumerate(series["paths"]):
+            image = pydicom.dcmread(source)
+            image.SpecificCharacterSet = "ISO_IR 100"
+            image.PatientName = "Müller^Jürgen"
+            sources.append(str(tmp_path / f"latin1_{k}.dcm"))
+            image.save_as(sources[-1], enforce_file_format=True)
+        path = self._sample(
+            tmp_path / "s.medh5", series, [LabelClass(1, "spinal_cord", "Rückenmark")]
+        )
+        out = to_rtstruct(path, "rois", sources, tmp_path / "rt.dcm")
+        raw = out.read_bytes()
+        assert "Müller".encode() in raw and "Rückenmark".encode() in raw
+        assert "Müller".encode("latin-1") not in raw
+        written = pydicom.dcmread(out)
+        assert written.SpecificCharacterSet == "ISO_IR 192"
+        assert str(written.PatientName) == "Müller^Jürgen"
+        assert written.StructureSetROISequence[0].ROIName == "Rückenmark"

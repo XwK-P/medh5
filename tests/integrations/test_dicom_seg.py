@@ -797,6 +797,232 @@ def _highdicom_seg(paths: list[Any], mask: Any, out: Path) -> Path:
     return out
 
 
+def _labelled_seg(
+    paths: list[Any],
+    segments: list[tuple[str, Any]],
+    out: Path,
+    *,
+    fractional: bool = False,
+    codes: list[tuple[str, str]] | None = None,
+) -> Path:
+    """A SEG of *segments* --- ``(SegmentLabel, volume)`` in the series'
+    geometric order --- over the DICOM files *paths*, numbered 1..N.  *codes*
+    are each segment's SNOMED ``(code, meaning)``; Liver by default."""
+    hd = pytest.importorskip("highdicom")
+    datasets = [pydicom.dcmread(p) for p in paths]
+    normal = np.cross([0, 0, 1], [0, 1, 0])
+    datasets.sort(
+        key=lambda d: float(np.dot([float(v) for v in d.ImagePositionPatient], normal))
+    )
+    codes = codes or [("10200004", "Liver")] * len(segments)
+    descriptions = [
+        hd.seg.SegmentDescription(
+            segment_number=number,
+            segment_label=label,
+            segmented_property_category=hd.sr.CodedConcept(
+                "91723000", "SCT", "Anatomical Structure"
+            ),
+            segmented_property_type=hd.sr.CodedConcept(code, "SCT", meaning),
+            algorithm_type=hd.seg.SegmentAlgorithmTypeValues.MANUAL,
+        )
+        for number, ((label, _), (code, meaning)) in enumerate(
+            zip(segments, codes, strict=True), start=1
+        )
+    ]
+    pixels = np.stack([np.asarray(volume) for _, volume in segments], axis=-1)
+    segmentation = hd.seg.Segmentation(
+        source_images=datasets,
+        pixel_array=pixels.astype(np.float32 if fractional else np.uint8),
+        segmentation_type=(
+            hd.seg.SegmentationTypeValues.FRACTIONAL
+            if fractional
+            else hd.seg.SegmentationTypeValues.BINARY
+        ),
+        segment_descriptions=descriptions,
+        series_instance_uid=hd.UID(),
+        series_number=1,
+        sop_instance_uid=hd.UID(),
+        instance_number=1,
+        manufacturer="t",
+        manufacturer_model_name="t",
+        software_versions="1",
+        device_serial_number="0",
+        omit_empty_frames=True,
+    )
+    segmentation.save_as(str(out))
+    return out
+
+
+class TestSegmentsOfOneClass:
+    """Segments that make one class are combined into it.  One "Lesion"
+    segment per lesion is common, and keyed by class each segment replaced the
+    one before: two lesions imported as the second alone, with no warning."""
+
+    @staticmethod
+    def _lesions(prepared: dict[str, Any]) -> tuple[Any, Any]:
+        first = np.zeros_like(prepared["lesion"])
+        first[1, 2:4, 3:6] = True
+        second = np.zeros_like(prepared["lesion"])
+        second[4, 9:12, 12:15] = True  # another slice, another place
+        return first, second
+
+    def test_S5_two_segments_of_one_label_are_both_imported(self, prepared, tmp_path):
+        from medh5.io.dicom_seg import from_dicom_seg
+
+        first, second = self._lesions(prepared)
+        seg = _labelled_seg(
+            prepared["series"]["paths"],
+            [("Lesion", first), ("Lesion", second)],
+            tmp_path / "lesions.dcm",
+        )
+        report = from_dicom_seg(seg, prepared["path"], ann_id="lesions")
+        with medh5.open(prepared["path"]) as sample:
+            imported = sample.annotations["lesions"]
+            assert imported.class_ids == (3,)
+            lesion = imported.dense(["lesion"])[0]
+        assert np.array_equal(lesion, first | second), "both lesions, every voxel"
+        (note,) = report.of_kind("segment_union")
+        assert note.severity == "decision"
+        assert [m["segment"] for m in note.detail["classes"]["lesion"]] == [1, 2]
+        assert report.ok
+
+    def test_S5_minted_classes_combine_one_label_too(self, tmp_path):
+        """With no label set to match, two segments keyed `lesion` minted two
+        classes of one key, refused at commit (E302)."""
+        from pydicom.uid import generate_uid
+
+        from medh5.io.dicom import from_dicom
+        from medh5.io.dicom_seg import from_dicom_seg
+
+        series = write_dicom_series(
+            tmp_path / "dcm", patient_id="p", study_uid=generate_uid(),
+            study_date="20260101",
+        )  # fmt: skip
+        blank = tmp_path / "blank.medh5"
+        from_dicom(tmp_path / "dcm", blank, group_by="study")
+        first = np.zeros((6, 16, 20), bool)
+        first[1, 2:4, 3:6] = True
+        second = np.zeros((6, 16, 20), bool)
+        second[4, 9:12, 12:15] = True
+        seg = _labelled_seg(
+            series["paths"],
+            [("Lesion", first), ("lesion", second)],
+            tmp_path / "lesions.dcm",
+        )
+        report = from_dicom_seg(seg, blank, ann_id="lesions")
+        with medh5.open(blank) as sample:
+            assert [(c.id, c.key, c.name) for c in sample.label_set] == [
+                (1, "lesion", "Lesion")
+            ]
+            dense = sample.annotations["lesions"].dense(["lesion"])[0]
+        assert np.array_equal(dense, first | second)
+        assert report.of_kind("segment_union")
+
+    def test_S5_one_key_coding_two_concepts_is_refused(self, tmp_path):
+        from pydicom.uid import generate_uid
+
+        from medh5.io.dicom import from_dicom
+        from medh5.io.dicom_seg import from_dicom_seg
+
+        series = write_dicom_series(
+            tmp_path / "dcm", patient_id="p", study_uid=generate_uid(),
+            study_date="20260101",
+        )  # fmt: skip
+        blank = tmp_path / "blank.medh5"
+        from_dicom(tmp_path / "dcm", blank, group_by="study")
+        mask = np.zeros((6, 16, 20), bool)
+        mask[2, 4:8, 5:9] = True
+        seg = _labelled_seg(
+            series["paths"],
+            [("Lesion", mask), ("Lesion", mask)],
+            tmp_path / "two.dcm",
+            codes=[("108369006", "Neoplasm"), ("441457006", "Cyst")],
+        )
+        before = blank.read_bytes()
+        with pytest.raises(MEDH5ValidationError, match="different concepts") as exc:
+            from_dicom_seg(seg, blank)
+        assert "SCT 108369006" in str(exc.value) and "SCT 441457006" in str(exc.value)
+        assert blank.read_bytes() == before
+
+    def test_S7_5_fractional_segments_of_one_class_take_their_maximum(
+        self, prepared, tmp_path
+    ):
+        from medh5.io.dicom_seg import from_dicom_seg
+
+        first = np.zeros(prepared["lesion"].shape, np.float32)
+        first[2, 4:8, 5:9] = 0.6
+        second = np.zeros_like(first)
+        second[2, 6:10, 5:9] = 0.8  # overlaps the first in two rows
+        seg = _labelled_seg(
+            prepared["series"]["paths"],
+            [("Lesion", first), ("Lesion", second)],
+            tmp_path / "frac.dcm",
+            fractional=True,
+        )
+        report = from_dicom_seg(seg, prepared["path"], ann_id="prob")
+        with medh5.open(prepared["path"]) as sample:
+            probabilities = sample.annotations["prob"].probabilities(["lesion"])[0]
+        expected = np.maximum(first, second)
+        assert np.allclose(probabilities, expected, atol=1 / 255)
+        assert "maximum" in report.of_kind("segment_union")[0].message
+
+
+class TestSegExportCoverage:
+    """A segment's 0 says "examined, absent".  Every class went out, and a
+    class nobody examined became an empty segment: a verified negative to
+    whoever read the SEG back."""
+
+    @staticmethod
+    def _partial(prepared: dict[str, Any]) -> None:
+        """Liver examined; lesion a class of the annotation nobody looked for."""
+        with medh5.amend(prepared["path"]) as writer:
+            writer.add_segmentation(
+                "partial",
+                grid=prepared["grid"],
+                masks={1: prepared["liver"], 3: np.zeros_like(prepared["liver"])},
+                annotated_classes=["liver"],
+            )
+
+    def test_S11_3_only_examined_classes_are_exported(self, prepared, tmp_path):
+        from medh5.io.dicom_seg import from_dicom_seg, read_dicom_seg, to_dicom_seg
+        from medh5.io.report import ConversionReport
+
+        self._partial(prepared)
+        with medh5.open(prepared["path"]) as sample:
+            partial = sample.annotations["partial"]
+            assert partial.class_ids == (1, 3) and partial.annotated_class_ids == (1,)
+        report = ConversionReport()
+        out = to_dicom_seg(
+            prepared["path"],
+            "partial",
+            prepared["series"]["paths"],
+            tmp_path / "s.dcm",
+            report=report,
+        )
+        _, geometry = read_dicom_seg(out)
+        assert [s["label"] for s in geometry["segments"].values()] == ["liver"]
+        (note,) = report.of_kind("unexamined")
+        assert note.detail["left_out"] == ["lesion"]
+        # Read back, the lesion is still a class nobody examined.
+        from_dicom_seg(out, prepared["path"], ann_id="back")
+        with medh5.open(prepared["path"]) as sample:
+            assert sample.annotations["back"].annotated_class_ids == (1,)
+            assert not sample.annotations["back"].is_annotated("lesion")
+
+    def test_S11_3_naming_an_unexamined_class_is_refused(self, prepared, tmp_path):
+        from medh5.io.dicom_seg import to_dicom_seg
+
+        self._partial(prepared)
+        out = tmp_path / "s.dcm"
+        sources = prepared["series"]["paths"]
+        with pytest.raises(MEDH5ValidationError, match="never examined") as exc:
+            to_dicom_seg(prepared["path"], "partial", sources, out, classes=["lesion"])
+        assert "['lesion']" in str(exc.value)
+        assert not out.exists()
+        to_dicom_seg(prepared["path"], "partial", sources, out, classes=["liver"])
+        assert out.exists()
+
+
 class TestSegFrameIdentity:
     """A SEG lands only in its own frame of reference: a grid in another
     known frame, with the same numbers, received
@@ -1041,6 +1267,67 @@ class TestSparseSegReader:
         assert _lattice([7.0], 3.0) == (3.0, [0])
         assert _lattice([10.0, 12.5, 16.25], None) is None
         assert _lattice([0.0, 2.5], 2.0) is None
+
+    def test_S3_3_planes_are_held_to_the_bound_a_series_is(self):
+        """A tenth of a step, and at least 0.01 mm, per plane --- as a DICOM
+        series is.  Each gap was held to 10⁻³ mm, which refused the planes of
+        a series whose positions were written to two decimals."""
+        from medh5.io.dicom_seg import _lattice
+
+        rounded = list(np.round(30.0 + 0.625 * np.arange(120), 2))
+        found = _lattice(rounded, None)
+        assert found is not None, "rounding to 0.01 mm accumulates nothing"
+        from medh5.io.dicom import _position_tolerance
+
+        step, indices = found
+        assert step == pytest.approx(0.625, abs=1e-4) and indices == list(range(120))
+        gapped = _lattice(np.delete(rounded, [3, 4]).tolist(), None)
+        assert gapped is not None, "two omitted planes are not irregularity"
+        assert gapped[0] == pytest.approx(step, abs=1e-4)
+        assert gapped[1] == [k for k in range(120) if k not in (3, 4)]
+        # A plane farther off than the bound is refused, not snapped.
+        off = 0.625 + 1.2 * _position_tolerance(0.625)
+        assert _lattice([0.0, off, 1.25, 1.875], 0.625) is None
+        assert _lattice([0.0, 0.625 + 0.9 * _position_tolerance(0.625), 1.25], 0.625)
+
+    def test_S3_3_a_one_plane_seg_takes_the_step_it_states_or_is_refused(
+        self, tmp_path
+    ):
+        """One plane has no step to measure, and 1 mm was assumed without a
+        note: `SpacingBetweenSlices`, else the slab `SliceThickness` states,
+        as for a lone DICOM slice, else a refusal."""
+        from pydicom.uid import generate_uid
+
+        from medh5.io.dicom_seg import read_dicom_seg
+        from medh5.io.report import ConversionReport
+
+        series = write_dicom_series(
+            tmp_path / "dcm", patient_id="p", study_uid=generate_uid(),
+            study_date="20260101", shape=(6, 16, 20),
+        )  # fmt: skip
+        mask = np.zeros((6, 16, 20), bool)
+        mask[2, 4:8, 5:9] = True
+        seg = _highdicom_seg(series["paths"], mask, tmp_path / "one.dcm")
+        _, stated = read_dicom_seg(seg)
+        assert stated["spacing"][0] == 2.5
+
+        dataset = pydicom.dcmread(str(seg))
+        measures = dataset.SharedFunctionalGroupsSequence[0].PixelMeasuresSequence[0]
+        del measures.SpacingBetweenSlices
+        dataset.save_as(str(seg), enforce_file_format=True)
+        report = ConversionReport()
+        volumes, geometry = read_dicom_seg(seg, report=report)
+        assert geometry["spacing"][0] == 5.0, "the slab, as for a lone slice"
+        assert report.of_kind("slice_spacing")[0].severity == "decision"
+        assert volumes[1].shape == (1, 16, 20)
+        assert stated["spacing_source"] == "SpacingBetweenSlices"
+        assert geometry["spacing_source"] == "SliceThickness"
+
+        del measures.SliceThickness
+        dataset.save_as(str(seg), enforce_file_format=True)
+        with pytest.raises(MEDH5ValidationError, match="none is invented") as exc:
+            read_dicom_seg(seg)
+        assert exc.value.code is None
 
     def test_S3_3_omitted_planes_come_back_empty_where_they_were(self, tmp_path):
         from pydicom.uid import generate_uid
