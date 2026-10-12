@@ -200,3 +200,16 @@ class TestKeys:
         assert sanitize_key("", fallback="roi") == "roi"
         assert sanitize_key("é") == "class"
         assert sanitize_stem("a b/c", limit=4) == "a_b_"
+
+    def test_S2_2_an_ascii_stem_is_a_sample_id(self):
+        from medh5 import _core
+        from medh5.io._common import sanitize_ascii_stem
+
+        assert sanitize_ascii_stem("Müller Hans") == "Muller_Hans"
+        assert sanitize_ascii_stem("Müller^Hans") == "Muller_Hans"
+        assert sanitize_ascii_stem("ﬁle.v2-Zoë") == "file.v2-Zoe"
+        assert sanitize_ascii_stem("日本") == "__"
+        assert sanitize_ascii_stem("case-1.v2") == "case-1.v2", "an id stays one"
+        assert sanitize_ascii_stem("x" * 300) == "x" * 200
+        for text in ("Müller Hans", "ß/ø", "İstanbul"):
+            _core.validate_sample_key(sanitize_ascii_stem(text))

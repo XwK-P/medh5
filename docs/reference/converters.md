@@ -32,7 +32,11 @@ The distinction that matters:
 | **warning** | something is wrong or lost |
 
 `--report FILE` writes it as JSON. A guess is not a failure; it is the thing
-you go back and check.
+you go back and check. A report never replaces a file the command reads or
+writes: a `--report` naming one — through `..` or a link included — or lying
+inside the tree or nnU-Net dataset the command reads or the nnU-Net dataset it
+writes is refused before anything is converted, and so is an output naming one
+of the command's inputs.
 
 ## What each converter does
 
@@ -65,6 +69,12 @@ A file with a scale (`scl_slope`/`scl_inter`) comes back as its physical values
 by default — floats, with no scale; `--stored` (`physical=False`) writes the
 stored voxels and the scale, as the file had them.
 
+**A 2-D file is a plane at z = 0.** A 2-D grid (§3.6) is on the first two world
+axes and has no z, so a 2-D NIfTI must lie in the x-y world plane at z = 0
+(to 10⁻³ mm), which is where `to_nifti` writes one back. A plane off it, or not
+parallel to it, is refused rather than moved; saved as `(x, y, 1)` it imports
+as a one-slice volume that keeps its z.
+
 **An export says what its numbers are in.** Lengths are written in millimetres
 — a grid in `m` or `um` is scaled to them, and an uncalibrated `px` grid gets
 NIfTI's "unknown" — and a time axis whose frames are evenly spaced becomes
@@ -83,8 +93,9 @@ is written as its `labelmap()`, where a voxel of the §7.7 ignore region is the
 annotation's `ignore_id` (`65535` unless the header says otherwise). One class
 (`--class`, `class_key=`) is a 0/1 mask, which has no value for "ignored" and
 whose `0` says "examined, absent", so it is refused for an annotation with an
-ignore region. The output is named `.nii` or `.nii.gz`; any other name, or a
-directory, is refused before anything is written.
+ignore region, and for a class outside the annotation's `annotated_class_ids`,
+which nobody examined. The output is named `.nii` or `.nii.gz`; any other
+name, or a directory, is refused before anything is written.
 
 **Volumes must share one grid** — shape, spacing, origin and direction, with
 lengths compared in millimetres, and frame times where both volumes state them.
@@ -120,7 +131,11 @@ time there; multi-b-value DWI and multi-echo series put channels there (§3.6),
 and NIfTI's header does not distinguish them. A `.bval` sidecar, a BIDS sidecar,
 the intent code or a time unit settles it; otherwise the axis is read as time
 and the report records a guess. `--fourth-axis time|channel` (`fourth_axis=`)
-overrides it, and b-values or echo times go to `acquisition`.
+overrides it, and b-values or echo times go to `acquisition`. A series stored
+on NIfTI's fifth dimension, `(x, y, z, 1, n)`, is where NIfTI-1 puts a voxel's
+components: with nothing else to say, it is read as channels, on a guess, and
+it never takes frame times from the header, whose temporal step is the empty
+fourth dimension's.
 
 ### DICOM
 
@@ -399,7 +414,12 @@ nothing is resampled — and the label table is the union of the cases'
 classes, one name per id. **Every case must have examined every class
 exported** (`annotated_class_ids`): a class one case never looked for would be
 written as its background, a negative nobody observed; `classes=` exports a
-subset all of them examined.
+subset all of them examined. **A dataset directory that already exists may
+hold only what the export writes**: a NIfTI file in `imagesTr`, `labelsTr` or
+`imagesTs` the export would not write — an earlier export's dropped case or
+channel, a case since moved between `imagesTr` and `imagesTs`, the other file
+ending — refuses it, since nnU-Net trains on every case file it finds. An
+identical re-export replaces its own files, and other files are left alone.
 
 **Every file is a name under the dataset.** A case's files are named by its
 `sample_id`, which must be a sample key (`[A-Za-z0-9_.-]`, not `.` or `..`),

@@ -17,7 +17,10 @@ units say.
 as its ignore id (`65535` unless the header says otherwise). `--class` writes
 one class as a 0/1 mask, which cannot say "ignored" — its `0` says "examined,
 absent" — so it refuses an annotation with an ignore region: export the
-labelmap instead. The output is a `.nii` or `.nii.gz` file.
+labelmap instead. For the same reason it refuses a class the annotation never
+examined (one outside `annotated_class_ids`): its empty mask would be a
+verified negative to whoever imported it back. The output is a `.nii` or
+`.nii.gz` file.
 
 The round trip from `from_nifti` reproduces the affine and the voxels; a file
 that had a scale comes back as its physical values unless `--stored` writes the
@@ -48,6 +51,11 @@ medh5 convert to-dicom-seg case.medh5 organs out.dcm "${args[@]}"
 ```
 
 Overlapping segments survive.
+
+**Only the classes the annotation examined are written.** A segment's 0 says
+"examined, absent", which a class outside `annotated_class_ids` never was, so
+such a class is left out, and the report records it (`unexamined`);
+`classes=` naming one is refused, and so is an annotation that examined none.
 
 **Export is binary, and it thresholds.** `to-dicom-seg` writes
 `SegmentationTypeValues.BINARY` from `annotation.dense()`, and for a `probmap`
@@ -89,6 +97,13 @@ marching-squares fallback: the contours it would produce are not the contours
 anyone drew, and an RTSTRUCT is a clinical document that asserts they are. Export
 contours you imported, or drew, as contours.
 
+Each ROI takes its class's display name and the label set's colour for it, and
+text beyond ASCII is written as UTF-8 under `SpecificCharacterSet` `ISO_IR 192`.
+**Crossing contours mean their union** in medh5, while readers that combine an
+ROI's contours by exclusive-or or even-odd fill cancel the overlap, so two
+contours of one class that cross on a plane are a warning
+(`crossing_contours`): merge them into one outline where such a reader matters.
+
 ## nnU-Net v2
 
 ```bash
@@ -111,6 +126,15 @@ any value that is not its own (`medh5_class_ids`), so `from-nnunet` restores it.
 Every case is checked before any file is written, so a refused case leaves no
 half-written dataset behind.
 
+**An existing dataset directory must hold only what the export writes.** An
+identical re-export replaces its own files and `dataset.json`, and files that
+are not NIfTI are left alone. A NIfTI file in `imagesTr`, `labelsTr` or
+`imagesTs` that the export would not write — a case or a channel since
+dropped, a case moved between `imagesTr` and `imagesTs`, the other file
+ending — refuses the export with nothing written: nnU-Net trains on every case
+file it finds there, whatever `dataset.json` says. Export to a new directory,
+or remove those files first.
+
 nnU-Net normalises a channel by its name in `dataset.json`: `CT` selects its CT
 scheme, and any other name z-scoring. A stashed `dataset.json` keeps its own
 names; without one a channel is named for its image, and a CT image `CT`.
@@ -120,6 +144,15 @@ names; without one a channel is named for its image, and a CT image `CT`.
 **COCO**, deliberately. It has no world geometry, spacing or frame of reference,
 so an export discards the geometry that makes a medical annotation reproducible.
 [The full reasoning](../explanation/refusals.md#coco).
+
+Nothing writes these out to another format either; they stay in the `.medh5`:
+
+- **Images as DICOM.** The DICOM importer reads a series, and no exporter
+  writes one: a round trip through DICOM is an annotation's, as a SEG or an
+  RTSTRUCT against the original series.
+- **Boxes, keypoints and meshes**, which none of the formats above carries.
+- **Transforms**.
+- **Clinical records**, apart from their JSON (`medh5 clinical export`).
 
 ## Check before you ship
 

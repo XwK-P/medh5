@@ -19,7 +19,9 @@ warnings still print.
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 import signal
 import sys
 from collections.abc import Callable, Mapping, Sequence
@@ -122,7 +124,9 @@ def _convert(command: str, args: Mapping[str, Any]) -> int:
     file that cannot be read or written, a name the file does not have ---
     prints ``medh5: <why>`` and exits 1, as every native command does.  A
     ``--report`` that names a directory is refused before anything is
-    converted, not after the output is written.
+    converted, not after the output is written, and so is a report or an
+    output that would replace a file the command reads or writes
+    (:func:`_collision`).
     """
     handler = _HANDLERS.get(command)
     if handler is None:
@@ -130,6 +134,9 @@ def _convert(command: str, args: Mapping[str, Any]) -> int:
     report = args.get("report")
     if report and Path(report).is_dir():
         return _fail(f"--report {report} is a directory; name the file to write")
+    clash = _collision(command, args)
+    if clash is not None:
+        return _fail(clash)
     try:
         return handler(SimpleNamespace(**args))
     except BrokenPipeError:  # pragma: no cover - `medh5 convert ... | head`
@@ -140,6 +147,144 @@ def _convert(command: str, args: Mapping[str, Any]) -> int:
         return _fail(_os_error(exc))
     except LookupError as exc:
         return _fail(_what(exc))
+
+
+def _collision(command: str, args: Mapping[str, Any]) -> str | None:
+    """Why *command*'s report or output would replace a file it reads or
+    writes, or ``None``.
+
+    Each was written over whatever it named, with exit status 0: a
+    ``--report`` naming the sample ``from-dicom-seg`` amends replaced the only
+    copy of it with JSON, and an output naming an input replaced the input.
+    Paths are compared resolved and, where both exist, as one file, so
+    ``sub/../ct.nii.gz``, a link to it and a hard link are the file itself.  A
+    report is not written inside a tree the command reads or the nnU-Net
+    dataset it writes, whose files are the dataset's.
+    """
+    reads, writes, trees = _files(command, args)
+    report = args.get("report")
+    if report:
+        for what, path in (*reads, *writes):
+            if _same_file(Path(report), path):
+                return f"--report {report} is {what}; name another file for the report"
+        for what, path in trees:
+            if _inside(Path(report), path):
+                return (
+                    f"--report {report} is inside {what} ({path}); write the "
+                    "report outside it"
+                )
+    for _, out in writes:
+        for what, path in reads:
+            if _same_file(out, path):
+                return f"the output {out} is {what}; name another file to write"
+    return None
+
+
+def _files(
+    command: str, args: Mapping[str, Any]
+) -> tuple[list[tuple[str, Path]], list[tuple[str, Path]], list[tuple[str, Path]]]:
+    """What a converter command reads, writes, and reads as a whole tree, as
+    ``(what, path)`` pairs --- named from its arguments, before it runs."""
+    reads: list[tuple[str, Path]] = []
+    writes: list[tuple[str, Path]] = []
+    trees: list[tuple[str, Path]] = []
+
+    def given(key: str) -> Path | None:
+        value = args.get(key)
+        return Path(value) if value else None
+
+    def read(what: str, key: str) -> None:
+        if (path := given(key)) is not None:
+            reads.append((what, path))
+
+    out = given("out")
+    if command == "from-nifti":
+        for flag in ("image", "mask"):
+            for entry in args.get(flag) or []:
+                name, _, value = str(entry).partition("=")
+                if value:
+                    reads.append(
+                        (f"{flag} {name!r}, which this command reads", Path(value))
+                    )
+    elif command in ("to-nifti", "to-dicom-seg", "to-rtstruct"):
+        read("the sample this command reads", "path")
+        for source in args.get("source") or []:
+            reads.append(("a source image this command reads", Path(source)))
+    elif command in ("from-dicom-seg", "from-rtstruct"):
+        # The sample is amended in place: an input the report must not name,
+        # and no output to compare with it.
+        read("the SEG this command imports", "seg")
+        read("the RTSTRUCT this command imports", "rtstruct")
+        read("the sample this command amends", "sample")
+    elif command == "from-dicom" and (root := given("root")) is not None:
+        trees.append(("the DICOM tree this command reads", root))
+        if out is not None and _inside(out, root) and _is_dicom(out):
+            reads.append(("a DICOM file of the tree this command reads", out))
+    elif command == "from-nnunet" and (root := given("root")) is not None:
+        trees.append(("the nnU-Net dataset this command reads", root))
+        if out is not None:
+            for case in _nnunet_cases(root, args.get("case_ids")):
+                writes.append(
+                    (
+                        f"case {case!r}'s sample, which this command writes",
+                        out / f"{case}.medh5",
+                    )
+                )
+    elif command == "to-nnunet":
+        for path in args.get("paths") or []:
+            reads.append(("a sample this command exports", Path(path)))
+        if out is not None and args.get("dataset_name"):
+            trees.append(
+                (
+                    "the nnU-Net dataset this command writes",
+                    out / str(args["dataset_name"]),
+                )
+            )
+    if out is not None:
+        writes.append(("the output this command writes", out))
+    return reads, writes, trees
+
+
+def _same_file(first: Path, second: Path) -> bool:
+    """Whether two paths name one file: equal once resolved, or one file on
+    disk (a hard link, or a name the resolution cannot see through)."""
+    with contextlib.suppress(OSError, RuntimeError):  # RuntimeError: a link loop
+        if first.resolve() == second.resolve():
+            return True
+    try:
+        return os.path.samefile(first, second)
+    except OSError:  # one of them does not exist
+        return False
+
+
+def _inside(path: Path, tree: Path) -> bool:
+    """Whether *path* lies inside directory *tree*, once both are resolved."""
+    try:
+        return path.resolve().is_relative_to(tree.resolve())
+    except (OSError, RuntimeError):
+        return False
+
+
+def _is_dicom(path: Path) -> bool:
+    """Whether *path* is a file the DICOM importer reads: ``DICM`` at 128."""
+    try:
+        with open(path, "rb") as handle:
+            return handle.read(132)[128:] == b"DICM"
+    except OSError:
+        return False
+
+
+def _nnunet_cases(root: Path, case_ids: Sequence[str] | None) -> list[str]:
+    """The cases ``from-nnunet`` would write, or none where the dataset is
+    one the converter refuses itself."""
+    if case_ids:
+        return list(case_ids)
+    from medh5.io.nnunetv2 import cases, read_dataset_json
+
+    try:
+        return cases(root, read_dataset_json(root))
+    except (MEDH5Error, OSError, ValueError, KeyError, TypeError):
+        return []
 
 
 def _os_error(exc: OSError) -> str:
@@ -182,15 +327,47 @@ def _sample_file(path: str) -> str:
 
 
 def _finish(report: ConversionReport, args: Any) -> int:
-    if getattr(args, "report", None):
-        Path(args.report).write_text(
-            json.dumps(report.to_json(), indent=2) + "\n", encoding="utf-8"
+    """Keep the report where ``--report`` says, print it, and exit on it.
+
+    An output the arguments could not name in advance --- a sample of a
+    ``from-dicom`` directory --- is checked here: a report naming one is not
+    written, and the command fails rather than replace the sample.
+    """
+    target = getattr(args, "report", None)
+    refusal = None
+    if target:
+        clash = next(
+            (o for o in report.outputs if _same_file(Path(target), Path(o))), None
         )
+        if clash is None:
+            _write_report(Path(target), json.dumps(report.to_json(), indent=2) + "\n")
+        else:
+            refusal = (
+                f"--report {target} is {clash}, which this command wrote; the "
+                "report was not written --- name another file for it"
+            )
     if getattr(args, "json", False):
         print(json.dumps(report.to_json(), indent=2, default=str))
     else:
         print(report.format(verbose=True))
+    if refusal is not None:
+        return _fail(refusal)
     return EXIT_OK if report.ok else EXIT_ERROR
+
+
+def _write_report(path: Path, text: str) -> None:
+    """*text* as *path*, through a rename: a link at *path* is replaced
+    rather than written through to the file it names.  An error names
+    *path*, not the temporary beside it."""
+    temporary = path.with_name(f".{os.getpid()}-{path.name}")
+    try:
+        temporary.write_text(text, encoding="utf-8")
+        os.replace(temporary, path)
+    except OSError as exc:
+        raise OSError(exc.errno, exc.strerror, os.fspath(path)) from None
+    finally:
+        with contextlib.suppress(OSError):
+            temporary.unlink(missing_ok=True)
 
 
 def _from_nifti(args: Any) -> int:

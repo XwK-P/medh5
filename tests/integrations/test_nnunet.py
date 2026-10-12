@@ -1029,6 +1029,110 @@ class TestUnlabeled:
         assert nnunet_checks(tmp_path / "cli" / "D2")["numTraining"] == 1
 
 
+class TestReexport:
+    """A second export into one dataset kept what the first wrote and the
+    second did not plan --- a removed case, a dropped channel, a case moved to
+    ``imagesTs`` still in ``imagesTr``, the other file ending --- under a
+    ``dataset.json`` describing none of it; nnU-Net trains on every case file
+    it finds, and ``from_nnunetv2`` read the removed case back."""
+
+    @staticmethod
+    def _case(
+        path: Path, sample_id: str, channels=("CT",), labeled: bool = True
+    ) -> Path:
+        from medh5.labels import LabelClass, LabelSet
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with medh5.create(path, sample_id=sample_id, codec="portable") as w:
+            w.add_grid("g", shape=Organs.SHAPE, spacing=(1.0, 1.0, 1.0))
+            for channel in channels:
+                w.add_image(
+                    channel,
+                    np.zeros(Organs.SHAPE, np.int16),
+                    grid="g",
+                    modality=channel,
+                )
+            if labeled:
+                w.label_set(
+                    LabelSet(
+                        "l", version="1.0.0", classes=[LabelClass(1, "liver", "Liver")]
+                    )
+                )
+                mask = np.zeros(Organs.SHAPE, bool)
+                mask[1:3, 1:3, 1:3] = True
+                w.add_segmentation("seg", grid="g", masks={1: mask})
+        return path
+
+    @staticmethod
+    def _files(root: Path) -> dict[str, bytes]:
+        return {
+            str(p.relative_to(root)): p.read_bytes()
+            for p in sorted(root.rglob("*"))
+            if p.is_file()
+        }
+
+    def _exports(self, tmp_path: Path, change: str) -> tuple[dict, dict]:
+        """The first export's arguments and the second's, for *change*."""
+        a, b = (self._case(tmp_path / f"s/{n}.medh5", n) for n in "ab")
+        first: dict = {"paths": [a, b]}
+        second: dict = {"paths": [a, b]}
+        if change == "case":
+            second = {"paths": [a]}
+        elif change == "channel":
+            two = [
+                self._case(tmp_path / f"two/{n}.medh5", n, ("CT", "MR")) for n in "ab"
+            ]
+            first = {"paths": two}
+        elif change == "partition":
+            bare = self._case(tmp_path / "u/b.medh5", "b", labeled=False)
+            first = {"paths": [a, bare], "unlabeled": "test"}
+        elif change == "ending":
+            first = {"paths": [a, b], "file_ending": ".nii"}
+        return first, second
+
+    @pytest.mark.parametrize(
+        "change", ["identical", "case", "channel", "partition", "ending"]
+    )
+    def test_a_reexport_has_its_own_files_or_writes_nothing(
+        self, tmp_path: Path, change: str
+    ):
+        from medh5.io.nnunetv2 import to_nnunetv2
+
+        first, second = self._exports(tmp_path, change)
+        out = tmp_path / "nn"
+        to_nnunetv2(dataset_name="D1", out=out, **first)
+        root = out / "D1"
+        (root / "imagesTr" / "README.txt").write_text("mine", encoding="utf-8")
+        (root / "splits_final.json").write_text("[]", encoding="utf-8")
+        before = self._files(root)
+        try:
+            report = to_nnunetv2(dataset_name="D1", out=out, **second)
+        except MEDH5ValidationError as exc:
+            assert change != "identical", exc
+            assert "would not write" in str(exc) and exc.code is None
+            assert self._files(root) == before, "nothing was written"
+            return
+        assert change == "identical"
+        written = {str(Path(o).relative_to(root)) for o in report.outputs}
+        nifti = {n for n in self._files(root) if n.endswith((".nii", ".nii.gz"))}
+        assert nifti == written - {"dataset.json"}
+        assert (root / "imagesTr" / "README.txt").read_text(encoding="utf-8") == "mine"
+        assert (root / "splits_final.json").exists()
+        nnunet_checks(root)
+
+    def test_the_command_line_refuses_a_stale_destination(self, tmp_path, capsys):
+        from medh5.cli import EXIT_ERROR, EXIT_OK, main
+
+        a, b = (self._case(tmp_path / f"s/{n}.medh5", n) for n in "ab")
+        argv = ["convert", "to-nnunet", str(tmp_path / "nn"), "--dataset-name", "D1"]
+        assert main([*argv, str(a), str(b)]) == EXIT_OK
+        capsys.readouterr()
+        before = self._files(tmp_path / "nn")
+        assert main([*argv, str(a)]) == EXIT_ERROR
+        assert "imagesTr/b_0000.nii.gz" in capsys.readouterr().err
+        assert self._files(tmp_path / "nn") == before
+
+
 class TestConsecutiveLabels:
     """Class ids with a gap were written as label
     values with one, and nnU-Net's dataset check refuses them.  They are

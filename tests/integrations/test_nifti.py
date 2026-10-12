@@ -29,6 +29,10 @@ SHAPE_XYZ = (24, 20, 12)
 AFFINE = np.array(
     [[0.8, 0.0, 0.0, -10.0], [0.0, 0.9, 0.0, -20.0], [0.0, 0.0, 2.0, 5.0], [0, 0, 0, 1]]
 )
+# A 2-D plane's affine: in the world's x-y plane, at z = 0 (§3.6).
+PLANE = np.array(
+    [[0.8, 0.0, 0.0, -10.0], [0.0, 0.9, 0.0, -20.0], [0.0, 0.0, 1.0, 0.0], [0, 0, 0, 1]]
+)
 
 
 @pytest.fixture
@@ -327,7 +331,7 @@ class TestNifti:
         supports could not be imported at all.
         """
         source = tmp_path / "xray.nii.gz"
-        nib.save(nib.Nifti1Image(np.zeros((32, 40), np.int16), AFFINE), str(source))
+        nib.save(nib.Nifti1Image(np.zeros((32, 40), np.int16), PLANE), str(source))
 
         from_nifti({"XR": source}, tmp_path / "xray.medh5")
         with medh5.open(tmp_path / "xray.medh5") as sample:
@@ -339,15 +343,28 @@ class TestNifti:
 
     def test_S3_6_a_plane_tilted_in_3D_is_refused(self, tmp_path):
         """Flattening it would move every pixel to somewhere it is not."""
-        tilted = np.array(AFFINE, dtype=float, copy=True)
+        tilted = np.array(PLANE, dtype=float, copy=True)
         tilted[:3, :2] = [[0.8, 0.0], [0.0, 0.6], [0.0, 0.67]]
         source = tmp_path / "tilt.nii.gz"
         nib.save(nib.Nifti1Image(np.zeros((32, 40), np.int16), tilted), str(source))
-        with pytest.raises(MEDH5ValidationError) as exc:
+        with pytest.raises(
+            MEDH5ValidationError, match="not parallel to the x-y"
+        ) as exc:
             from_nifti({"XR": source}, tmp_path / "tilt.medh5")
         # Uncoded: E102 is `direction` not orthonormal, and this direction is
         # perfectly orthonormal -- it just cannot be reduced to a 2x2.
         assert exc.value.code is None
+
+    def test_S3_6_a_sagittal_plane_is_refused_as_not_parallel(self, tmp_path):
+        """Its in-plane axes are world y and z: not tilted, and not on the
+        two world axes a 2-D grid has."""
+        sagittal = np.array(
+            [[0, 0, 1.0, 7.0], [0.8, 0, 0, -20.0], [0, 0.9, 0, 5.0], [0, 0, 0, 1]]
+        )
+        source = tmp_path / "sag.nii.gz"
+        nib.save(nib.Nifti1Image(np.zeros((32, 40), np.int16), sagittal), str(source))
+        with pytest.raises(MEDH5ValidationError, match="sag.nii.gz is a 2-D plane not"):
+            from_nifti({"XR": source}, tmp_path / "sag.medh5")
 
     def test_a_4D_series_cannot_keep_its_NIfTI_axis_order(self, tmp_path):
         """§3.1 wants the spatial axes trailing; NIfTI puts time there.
@@ -477,6 +494,41 @@ class TestNifti:
         assert (labels[Organs.ignore()] == 65535).all()
         assert (labels[Organs.blocks()[1]] == 1).all()
 
+    def test_S11_3_a_class_nobody_examined_is_no_one_class_mask(self, tmp_path, capsys):
+        """A one-class mask's 0 says "examined, absent": a class outside
+        `annotated_class_ids` went out as an empty mask, and imported back
+        it was a verified negative nobody observed."""
+        from medh5.cli import EXIT_ERROR, main
+
+        path = tmp_path / "partial.medh5"
+        liver = Organs.blocks()[1]
+        with Organs.writer(path) as w:
+            w.add_segmentation(
+                "organs",
+                grid="g",
+                masks={1: liver, 2: np.zeros(Organs.SHAPE, bool)},
+                annotated_classes=[1],
+            )
+        out = tmp_path / "spleen.nii.gz"
+        for key in ("spleen", 2):
+            with pytest.raises(
+                MEDH5ValidationError, match="never examined 'spleen'"
+            ) as exc:
+                to_nifti(path, "CT", out, annotation="organs", class_key=key)
+            assert exc.value.code is None
+        argv = ["convert", "to-nifti", str(path), "CT", str(out), "--annotation"]
+        assert main([*argv, "organs", "--class", "spleen"]) == EXIT_ERROR
+        assert "never examined 'spleen'" in capsys.readouterr().err
+        assert not out.exists()
+        examined = to_nifti(
+            path,
+            "CT",
+            tmp_path / "liver.nii.gz",
+            annotation="organs",
+            class_key="liver",
+        )
+        assert np.array_equal(np.asanyarray(nib.load(str(examined)).dataobj).T, liver)
+
     @pytest.mark.parametrize(
         "name", ["plain", "ct.img", "ct.nii.txt", "folder", "folder.nii"]
     )
@@ -601,7 +653,7 @@ class TestNifti:
         from medh5.io.nifti import from_nifti, to_nifti
 
         affine = np.array(
-            [[0.8, 0, 0, -1.0], [0, 0.9, 0, -2.0], [0, 0, 3.0, 5.0], [0, 0, 0, 1]]
+            [[0.8, 0, 0, -1.0], [0, 0.9, 0, -2.0], [0, 0, 3.0, 0.0], [0, 0, 0, 1]]
         )
         data = np.arange(32 * 40, dtype=np.int16).reshape(32, 40)
         source = tmp_path / "xray.nii.gz"
@@ -614,11 +666,61 @@ class TestNifti:
         assert first_affine.shape == (3, 3)
 
         exported = to_nifti(tmp_path / "xray.medh5", "XR", tmp_path / "back.nii.gz")
+        # Every pixel where it was: a plane at z = 0 is the one 2-D grids hold.
+        back = nib.load(str(exported)).affine
+        assert np.allclose(back[:2], affine[:2]) and np.allclose(back[2, 3], 0.0)
         from_nifti({"XR": exported}, tmp_path / "again.medh5")
         with medh5.open(tmp_path / "again.medh5") as sample:
             assert np.array_equal(sample.images["XR"].read(), first_voxels)
             assert np.allclose(np.asarray(sample.grids["ref"].affine), first_affine)
             assert sample.grids["ref"].shape == (32, 40)
+
+    @staticmethod
+    def _plane_at(path: Path, z: float, data: Any = None) -> Path:
+        affine = np.array(PLANE, copy=True)
+        affine[2, 3] = z
+        pixels = np.zeros((32, 40), np.int16) if data is None else data
+        nib.save(nib.Nifti1Image(pixels, affine), str(path))
+        return path
+
+    def test_S3_6_a_plane_off_z0_is_refused(self, tmp_path, capsys):
+        """A 2-D grid has no z: a plane at z = 50 was imported, and exported,
+        at z = 0, with nothing in the report to say so."""
+        from medh5.cli import EXIT_ERROR, main
+
+        source = self._plane_at(tmp_path / "z50.nii.gz", 50.0)
+        out = tmp_path / "z50.medh5"
+        with pytest.raises(MEDH5ValidationError, match="at world z = 50 mm") as exc:
+            from_nifti({"XR": source}, out)
+        assert exc.value.code is None and "(x, y, 1)" in str(exc.value)
+        argv = ["convert", "from-nifti", str(out), "--image", f"XR={source}"]
+        assert main(argv) == EXIT_ERROR
+        assert "z50.nii.gz is a 2-D plane at world z = 50 mm" in capsys.readouterr().err
+        assert not out.exists()
+
+    @pytest.mark.parametrize("kind", ["image", "mask"])
+    def test_S3_6_planes_from_two_slices_never_share_a_grid(self, tmp_path, kind):
+        """Two planes, or an image and a mask drawn on another slice, were
+        accepted onto one grid: the mask labelled pixels it was never on."""
+        image = self._plane_at(tmp_path / "z0.nii.gz", 0.0)
+        other = self._plane_at(
+            tmp_path / "z60.nii.gz", 60.0, np.ones((32, 40), np.uint8)
+        )
+        images, masks = {"XR": image}, {}
+        (images if kind == "image" else masks)["B"] = other
+        with pytest.raises(MEDH5ValidationError, match="z60.nii.gz is a 2-D plane"):
+            from_nifti(images, tmp_path / "two.medh5", masks=masks)
+        assert not (tmp_path / "two.medh5").exists()
+
+    def test_S3_6_a_one_slice_volume_keeps_its_z(self, tmp_path):
+        """The way the refusal names: `(x, y, 1)` is a 3-D grid, and z stays."""
+        affine = np.array(PLANE, copy=True)
+        affine[2, 3] = 50.0
+        source = tmp_path / "v50.nii.gz"
+        nib.save(nib.Nifti1Image(np.zeros((32, 40, 1), np.int16), affine), str(source))
+        from_nifti({"XR": source}, tmp_path / "v50.medh5")
+        back = to_nifti(tmp_path / "v50.medh5", "XR", tmp_path / "back.nii.gz")
+        assert np.allclose(nib.load(str(back)).affine, affine)
 
 
 class TestDimensionality:
@@ -644,7 +746,9 @@ class TestDimensionality:
         bvals=None,
         sidecar=None,
     ):
-        image = nib.Nifti1Image(np.zeros(shape, np.int16), AFFINE)
+        image = nib.Nifti1Image(
+            np.zeros(shape, np.int16), PLANE if len(shape) == 2 else AFFINE
+        )
         if intent is not None:
             image.header.set_intent(intent)
         if units is not None:
@@ -884,6 +988,26 @@ class TestDimensionality:
             grid = sample.grids["ref"]
             assert grid.shape == (4, 12, 20, 24), "the singleton axis carried nothing"
             assert grid.axis_kinds == ("channel", "spatial", "spatial", "spatial")
+
+    def test_S3_6_a_fifth_dimension_never_takes_dim4s_timing(self, tmp_path):
+        """`(x, y, z, 1, n)`: the temporal zoom and unit of the squeezed
+        dim[4] made NIfTI's component axis a measured time series."""
+        source = self._write(tmp_path, "five", (24, 20, 12, 1, 6), tr=2.0, units="sec")
+        _, geometry = read_nifti(source)
+        assert geometry["leading_kind"] == "channel"
+        assert geometry["time_values"] is None
+        report = from_nifti({"IM": source}, tmp_path / "five.medh5")
+        with medh5.open(tmp_path / "five.medh5") as sample:
+            assert sample.grids["ref"].axis_kinds[0] == "channel"
+            assert sample.grids["ref"].time_values is None
+        assert [n.severity for n in report.of_kind("axis_kinds")] == ["guess"]
+        # Read as time on request, its frames are indices: no step is theirs.
+        _, timed = read_nifti(source, fourth_axis="time")
+        assert timed["time_values"] == [0.0, 1.0, 2.0, 3.0, 4.0, 5.0]
+        assert timed["time_measured"] is False
+        # A series on dim[4] keeps the step the header states for it.
+        cine = self._write(tmp_path, "four", (24, 20, 12, 6), tr=2.0, units="sec")
+        assert read_nifti(cine)[1]["time_values"] == [0.0, 2.0, 4.0, 6.0, 8.0, 10.0]
 
     def test_an_unknown_fourth_axis_is_refused(self, tmp_path):
         source = self._write(tmp_path, "bad", (24, 20, 12, 3))
@@ -1361,6 +1485,24 @@ class TestNiftiInputs:
         )
         assert not report.of_kind("identity")
 
+    def test_S2_2_a_non_ascii_file_name_names_an_ascii_sample(self, volumes, tmp_path):
+        """A sample id is `[A-Za-z0-9_.-]`, and the default was the file name:
+        `Müller Hans.medh5` was refused (E003) once every volume was read."""
+        out = tmp_path / "Müller Hans.medh5"
+        report = from_nifti({"CT": volumes["ct"]}, out)
+        with medh5.open(out) as sample:
+            assert sample.identity.sample_id == "Muller_Hans"
+            assert sample.identity.subject_id == "Müller Hans", "the name kept whole"
+        notes = {n.severity: n.detail for n in report.of_kind("identity")}
+        assert notes == {
+            "decision": {"sample_id": "Muller_Hans", "name": "Müller Hans"},
+            "guess": {"subject_id": "Müller Hans"},
+        }
+        # A name that is a sample id already is the id, as it was.
+        from_nifti({"CT": volumes["ct"]}, tmp_path / "case-1.v2.medh5")
+        with medh5.open(tmp_path / "case-1.v2.medh5") as sample:
+            assert sample.identity.sample_id == "case-1.v2"
+
     def test_S3_2_an_untransposed_4D_file_counts_its_frames(self, tmp_path):
         """Read off the leading axis, which untransposed is x, a 4-frame file
         had 24 frame times."""
@@ -1387,6 +1529,48 @@ class TestNiftiInputs:
         err = capsys.readouterr().err
         assert code == EXIT_ERROR and err.startswith("medh5: ")
         assert "is not a NIfTI file" in err and not out.exists()
+
+    @pytest.mark.parametrize("kind", ["analyze", "mgh"])
+    def test_a_file_nibabel_reads_as_another_format_is_refused_by_name(
+        self, tmp_path, kind
+    ):
+        """nibabel loads Analyze and MGH through the same call, and the first
+        NIfTI header field read raised a bare `ValueError`."""
+        data = np.zeros((4, 5, 6), np.int16)
+        if kind == "analyze":
+            path = tmp_path / "ct.img"
+            nib.save(nib.AnalyzeImage(data, np.eye(4)), str(path))
+        else:
+            path = tmp_path / "ct.mgz"
+            nib.save(nib.MGHImage(data, np.eye(4)), str(path))
+        with pytest.raises(MEDH5ValidationError, match="is not a NIfTI file: nib"):
+            read_nifti(path)
+
+    def test_import_seg_nifti_reports_and_takes_what_from_nifti_does(
+        self, volumes, tmp_path
+    ):
+        """It dropped the reader's guesses, refused a mask with no spatial
+        mapping by naming `assume_geometry=`, which it did not take, and named
+        a command that does not exist as the tool of its import."""
+        import h5py
+
+        sample = tmp_path / "s.medh5"
+        from_nifti({"CT": volumes["ct"]}, sample)
+        bare = nib.Nifti1Image(np.asarray(volumes["_liver"]), AFFINE)
+        bare.set_sform(None, code=0)
+        bare.set_qform(None, code=0)
+        nib.save(bare, str(tmp_path / "bare.nii.gz"))
+        masks = {"liver": tmp_path / "bare.nii.gz"}
+        with pytest.raises(MEDH5ValidationError, match="assume_geometry=True"):
+            import_seg_nifti(sample, masks)
+        report = import_seg_nifti(
+            sample, masks, assume_geometry=True, assume_aligned=True
+        )
+        assert any("no spatial mapping" in n.message for n in report.guesses)
+        with h5py.File(sample, "r") as f:
+            meta = bytes(f["meta"][()])
+        assert b"medh5.io.nifti.import_seg_nifti" in meta
+        assert b"import-seg-nifti" not in meta
 
     def test_a_report_path_that_is_a_directory_is_refused_first(
         self, volumes, tmp_path, capsys

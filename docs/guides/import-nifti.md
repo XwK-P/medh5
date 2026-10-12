@@ -34,6 +34,13 @@ A file with a scale (`scl_slope`/`scl_inter`) comes back as its physical values
 by default, as floats; `to-nifti --stored` writes the stored voxels and the
 scale, as the file had them.
 
+**A 2-D file must lie in the x-y world plane at z = 0.** A 2-D grid (spec
+§3.6) has two world axes, the first two, and no z: a plane at z = 50 would be
+imported at z = 0, on one grid with a plane — or a mask — from any other
+slice, so it is refused, and so is a plane not parallel to x-y. Save such an
+image as `(x, y, 1)` instead: it imports as a one-slice volume, whose third
+axis keeps its position.
+
 Mask names become class keys as a label set allows them — `--mask GTV-1=...`
 is the class `gtv_1`, displayed as `GTV-1` — and two names that make one key
 are refused. NIfTI names no subject, so give one with `--subject-id`; without
@@ -103,8 +110,16 @@ resampled is refused rather than filed onto channel 0's grid.
 
 ```bash
 medh5 info case.medh5
-medh5 validate case.medh5 --level strict
+medh5 validate case.medh5 --level integrity
 ```
+
+`--level integrity` runs every check, every byte against its digest included,
+and fails on errors. `--level strict` also fails on warnings, so it fails every
+freshly imported file: the importer writes no de-identification record
+(`W903`), and classes minted from mask names carry no ontology code (`W912`).
+Strict is the gate for a dataset you publish, once
+[de-identification](deidentify.md) and the label set's codes have dealt with
+both.
 
 ## Related
 

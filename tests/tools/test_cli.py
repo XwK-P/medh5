@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 import io
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -1812,6 +1813,292 @@ class TestRecompressAndBench:
         else:
             assert verdict == "all targets met"
             assert code == EXIT_OK
+
+
+class TestConvertPathsNeverAlias:
+    """A ``--report`` or an output naming a file the command reads or writes
+    replaced it with exit status 0 --- ``from-dicom-seg --report case.medh5``
+    the only copy of the sample it had just amended.  Each is refused before
+    the converter runs, with every file as it was."""
+
+    DICOM = b"\0" * 128 + b"DICM" + b"original"
+
+    # Each command's arguments, and the files it reads or writes (relative to
+    # the directory the test builds) that no report may name.
+    COMMANDS = {
+        "from-nifti": (
+            [
+                "{d}/out.medh5",
+                "--image",
+                "CT={d}/ct.nii.gz",
+                "--mask",
+                "m={d}/m.nii.gz",
+            ],
+            ["ct.nii.gz", "m.nii.gz", "out.medh5"],
+        ),
+        "from-dicom": (["{d}/dcm", "{d}/out.medh5"], ["dcm/CT_000.dcm", "out.medh5"]),
+        "from-dicom-seg": (
+            ["{d}/seg.dcm", "{d}/case.medh5"],
+            ["seg.dcm", "case.medh5"],
+        ),
+        "to-dicom-seg": (
+            [
+                "{d}/case.medh5",
+                "organs",
+                "{d}/out.dcm",
+                "--source",
+                "{d}/dcm/CT_000.dcm",
+            ],
+            ["case.medh5", "dcm/CT_000.dcm", "out.dcm"],
+        ),
+        "from-rtstruct": (["{d}/rt.dcm", "{d}/case.medh5"], ["rt.dcm", "case.medh5"]),
+        "to-rtstruct": (
+            ["{d}/case.medh5", "rois", "{d}/out.dcm", "--source", "{d}/dcm/CT_000.dcm"],
+            ["case.medh5", "dcm/CT_000.dcm", "out.dcm"],
+        ),
+        "from-nnunet": (
+            ["{d}/nn/D1", "{d}/imp"],
+            ["nn/D1/dataset.json", "nn/D1/imagesTr/a_0000.nii.gz", "imp/a.medh5"],
+        ),
+        "to-nnunet": (
+            ["{d}/nn2", "{d}/case.medh5", "--dataset-name", "D2"],
+            ["case.medh5", "nn2/D2/dataset.json", "nn2/D2/imagesTr/case_0000.nii.gz"],
+        ),
+    }
+
+    @classmethod
+    def _tree(cls, root: Path) -> dict[str, bytes]:
+        """Every input the commands name, as placeholders: no converter runs."""
+        files = {
+            "ct.nii.gz": b"original",
+            "m.nii.gz": b"original",
+            "seg.dcm": cls.DICOM,
+            "rt.dcm": cls.DICOM,
+            "case.medh5": b"original",
+            "dcm/CT_000.dcm": cls.DICOM,
+            "nn/D1/imagesTr/a_0000.nii.gz": b"original",
+            "nn/D1/dataset.json": json.dumps(
+                {
+                    "channel_names": {"0": "CT"},
+                    "labels": {"background": 0, "liver": 1},
+                    "numTraining": 1,
+                    "file_ending": ".nii.gz",
+                }
+            ).encode(),
+        }
+        for name, data in files.items():
+            (root / name).parent.mkdir(parents=True, exist_ok=True)
+            (root / name).write_bytes(data)
+        (root / "sub").mkdir()
+        return files
+
+    @staticmethod
+    def _snapshot(root: Path) -> dict[str, bytes]:
+        return {
+            str(p.relative_to(root)): p.read_bytes()
+            for p in sorted(root.rglob("*"))
+            if p.is_file() and not p.is_symlink()
+        }
+
+    def _refused(self, capsys, monkeypatch, root, command, argv) -> str:
+        from medh5 import cli
+
+        before = self._snapshot(root)
+        ran: list[str] = []
+        monkeypatch.setitem(cli._HANDLERS, command, lambda a: ran.append(command) or 0)
+        code, printed = run(capsys, "convert", command, *argv)
+        assert code == EXIT_ERROR, (command, argv, printed.err)
+        assert not ran, "refused before the converter runs"
+        assert self._snapshot(root) == before, "every file as it was"
+        return printed.err
+
+    @pytest.mark.parametrize(
+        ("command", "target"),
+        [(c, t) for c, (_, targets) in COMMANDS.items() for t in targets],
+    )
+    def test_no_report_names_a_file_the_command_reads_or_writes(
+        self, capsys, monkeypatch, tmp_path, command, target
+    ):
+        self._tree(tmp_path)
+        argv = [a.format(d=tmp_path) for a in self.COMMANDS[command][0]]
+        err = self._refused(
+            capsys,
+            monkeypatch,
+            tmp_path,
+            command,
+            [*argv, "--report", str(tmp_path / target)],
+        )
+        assert err.startswith(f"medh5: --report {tmp_path / target} is ")
+
+    @pytest.mark.parametrize("alias", ["relative", "symlink", "hardlink"])
+    def test_an_alias_of_an_input_is_the_input(
+        self, capsys, monkeypatch, tmp_path, alias
+    ):
+        """`sub/../ct.nii.gz`, a link to it, or a second name for its inode:
+        the report was written through each of them onto the source."""
+        self._tree(tmp_path)
+        source = tmp_path / "ct.nii.gz"
+        if alias == "relative":
+            report = tmp_path / "sub" / ".." / "ct.nii.gz"
+        else:
+            report = tmp_path / "sub" / "r.json"
+            try:
+                (report.symlink_to if alias == "symlink" else report.hardlink_to)(
+                    source
+                )
+            except OSError as exc:  # pragma: no cover - no links on this file system
+                pytest.skip(str(exc))
+        argv = [a.format(d=tmp_path) for a in self.COMMANDS["from-nifti"][0]]
+        self._refused(
+            capsys,
+            monkeypatch,
+            tmp_path,
+            "from-nifti",
+            [*argv, "--report", str(report)],
+        )
+        assert source.read_bytes() == b"original"
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["from-nifti", "{d}/ct.nii.gz", "--image", "CT={d}/ct.nii.gz"],
+            ["to-nifti", "{d}/m.nii.gz", "CT", "{d}/m.nii.gz"],
+            ["from-dicom", "{d}/dcm", "{d}/dcm/CT_000.dcm"],
+            [
+                "to-dicom-seg",
+                "{d}/case.medh5",
+                "o",
+                "{d}/case.medh5",
+                "--source",
+                "{d}/seg.dcm",
+            ],
+            [
+                "to-dicom-seg",
+                "{d}/case.medh5",
+                "o",
+                "{d}/seg.dcm",
+                "--source",
+                "{d}/seg.dcm",
+            ],
+            [
+                "to-rtstruct",
+                "{d}/case.medh5",
+                "o",
+                "{d}/case.medh5",
+                "--source",
+                "{d}/rt.dcm",
+            ],
+            ["to-nnunet", "{d}/case.medh5", "{d}/case.medh5"],
+        ],
+    )
+    def test_no_output_names_an_input(self, capsys, monkeypatch, tmp_path, argv):
+        self._tree(tmp_path)
+        command, *rest = (a.format(d=tmp_path) for a in argv)
+        err = self._refused(capsys, monkeypatch, tmp_path, command, rest)
+        assert err.startswith("medh5: the output ")
+
+    def test_paths_that_alias_nothing_reach_the_converter(
+        self, capsys, monkeypatch, tmp_path
+    ):
+        """The checks refuse aliases only: a report beside the output, a report
+        inside the output directory, and a sample written into the DICOM tree
+        over an earlier one --- no DICOM file --- all run."""
+        from medh5 import cli
+
+        self._tree(tmp_path)
+        (tmp_path / "dcm" / "old.medh5").write_bytes(b"\x89HDF\r\n\x1a\n")
+        ran: list[str] = []
+        for command in ("from-dicom", "from-nnunet"):
+            monkeypatch.setitem(
+                cli._HANDLERS, command, lambda a: ran.append(a.out) or 0
+            )
+        for argv in (
+            [
+                "from-dicom",
+                f"{tmp_path}/dcm",
+                f"{tmp_path}/out.medh5",
+                "--report",
+                f"{tmp_path}/r.json",
+            ],
+            ["from-dicom", f"{tmp_path}/dcm", f"{tmp_path}/dcm/old.medh5"],
+            [
+                "from-nnunet",
+                f"{tmp_path}/nn/D1",
+                f"{tmp_path}/imp",
+                "--report",
+                f"{tmp_path}/imp/r.json",
+            ],
+        ):
+            assert run(capsys, "convert", *argv)[0] == EXIT_OK, argv
+        assert len(ran) == 3
+
+    def test_S2_a_report_naming_an_output_known_only_after_is_not_written(
+        self, capsys, monkeypatch, tmp_path
+    ):
+        """A `from-dicom` directory's samples are named for their subjects,
+        which only the import learns: a report naming one is refused there,
+        and the sample stays."""
+        from medh5 import cli
+        from medh5.io.report import ConversionReport
+
+        sample = tmp_path / "out" / "PSEUDO-1.medh5"
+
+        def convert(args: Any) -> int:
+            sample.parent.mkdir()
+            sample.write_bytes(b"the sample")
+            report = ConversionReport(converter="from-dicom", outputs=[str(sample)])
+            return cli._finish(report, args)
+
+        monkeypatch.setitem(cli._HANDLERS, "from-dicom", convert)
+        (tmp_path / "dcm").mkdir()
+        code, printed = run(
+            capsys, "convert", "from-dicom", str(tmp_path / "dcm"),
+            f"{tmp_path / 'out'}{os.sep}", "--report", str(sample),
+        )  # fmt: skip
+        assert code == EXIT_ERROR
+        assert "the report was not written" in printed.err
+        assert sample.read_bytes() == b"the sample"
+
+    def test_a_report_replaces_a_link_rather_than_writing_through_it(
+        self, capsys, monkeypatch, tmp_path
+    ):
+        from medh5 import cli
+        from medh5.io.report import ConversionReport
+
+        other = tmp_path / "other.txt"
+        other.write_text("someone else's", encoding="utf-8")
+        link = tmp_path / "r.json"
+        try:
+            link.symlink_to(other)
+        except OSError as exc:  # pragma: no cover - no links on this file system
+            pytest.skip(str(exc))
+        monkeypatch.setitem(
+            cli._HANDLERS,
+            "from-nnunet",
+            lambda a: cli._finish(ConversionReport(converter="from-nnunet"), a),
+        )
+        argv = ["from-nnunet", str(tmp_path / "x"), str(tmp_path / "y")]
+        assert run(capsys, "convert", *argv, "--report", str(link))[0] == EXIT_OK
+        assert not link.is_symlink()
+        assert (
+            json.loads(link.read_text(encoding="utf-8"))["converter"] == "from-nnunet"
+        )
+        assert other.read_text(encoding="utf-8") == "someone else's"
+
+    def test_a_report_naming_the_output_of_a_real_import_is_refused(
+        self, capsys, tmp_path
+    ):
+        nib = pytest.importorskip("nibabel")
+        source = tmp_path / "ct.nii.gz"
+        nib.save(nib.Nifti1Image(np.zeros((4, 5, 6), np.int16), np.eye(4)), str(source))
+        out = tmp_path / "out.medh5"
+        code, printed = run(
+            capsys, "convert", "from-nifti", str(out), "--image", f"CT={source}",
+            "--report", str(out),
+        )  # fmt: skip
+        assert code == EXIT_ERROR
+        assert "is the output this command writes" in printed.err
+        assert not out.exists()
 
 
 class TestConvert:
