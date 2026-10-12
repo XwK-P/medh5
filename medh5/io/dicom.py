@@ -26,7 +26,6 @@ afterwards.
 from __future__ import annotations
 
 import os
-import unicodedata
 from collections import Counter
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
@@ -39,7 +38,7 @@ import numpy.typing as npt
 from medh5._optional import require
 from medh5.curation import ID_SOURCE
 from medh5.errors import MEDH5ValidationError
-from medh5.io._common import sanitize_stem
+from medh5.io._common import sanitize_ascii_stem
 from medh5.io.grouping import (
     FALLBACK_PREFIX,
     Occasion,
@@ -966,15 +965,10 @@ def _demographics(entries: Sequence[Series]) -> dict[str, str]:
 def _safe(text: str) -> str:
     """*text* as a sample id or a file name stem: ASCII identifier characters.
 
-    ``sanitize_stem`` keeps every alphanumeric character, and a sample id is
-    ``[A-Za-z0-9_.-]`` (§2.3), so a ``PatientID`` of ``Müller^Hans`` aborted
-    the import (E003).  Accents are dropped --- ``Muller_Hans`` --- and any
-    other character outside ASCII becomes ``_``, as punctuation does.
+    A ``PatientID`` of ``Müller^Hans`` aborted the import (E003); see
+    :func:`~medh5.io._common.sanitize_ascii_stem`.
     """
-    folded = "".join(
-        c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c)
-    )
-    return "".join(c if c.isascii() else "_" for c in sanitize_stem(folded, limit=200))
+    return sanitize_ascii_stem(text)
 
 
 def _series_names(entries: Sequence[Series], tp: str) -> list[tuple[Series, str, str]]:
