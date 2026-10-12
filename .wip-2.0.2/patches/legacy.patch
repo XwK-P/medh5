@@ -1,0 +1,513 @@
+diff --git a/crates/medh5/src/convert/grouping.rs b/crates/medh5/src/convert/grouping.rs
+index f7175ed..6d0d9da 100644
+--- a/crates/medh5/src/convert/grouping.rs
++++ b/crates/medh5/src/convert/grouping.rs
+@@ -106,8 +106,10 @@ pub fn parse_date(value: Option<&str>) -> Option<i64> {
+     if text.is_empty() {
+         return None;
+     }
++    // Sliced by byte below, so only an ASCII head is a candidate: a short
++    // head holding a multibyte character used to split it, and panic.
+     let head: String = text.chars().take(8).collect();
+-    if head.len() == 8 {
++    if head.len() == 8 && head.is_ascii() {
+         if let (Some(y), Some(m), Some(d)) = (digits(&head[..4]), digits(&head[4..6]), digits(&head[6..8])) {
+             if let Some(days) = days_from_civil(y, m as u32, d as u32) {
+                 return Some(days);
+@@ -115,7 +117,7 @@ pub fn parse_date(value: Option<&str>) -> Option<i64> {
+         }
+     }
+     let iso: String = text.chars().take(10).collect();
+-    if iso.len() == 10 && &iso[4..5] == "-" && &iso[7..8] == "-" {
++    if iso.len() == 10 && iso.is_ascii() && &iso[4..5] == "-" && &iso[7..8] == "-" {
+         if let (Some(y), Some(m), Some(d)) = (digits(&iso[..4]), digits(&iso[5..7]), digits(&iso[8..10])) {
+             return days_from_civil(y, m as u32, d as u32);
+         }
+@@ -386,4 +388,20 @@ mod tests {
+         assert_eq!(key_stem("1.2.840.113"), "1.2.840.113");
+         assert_eq!(key_stem("/data/case_01.medh5"), "case_01");
+     }
++
++    #[test]
++    fn s3_7_a_non_ascii_date_is_unparseable_not_a_panic() {
++        // Eight or ten bytes, fewer characters: the byte slices split one.
++        for text in ["202é001", "202é-01-0", "２０２０-01-05"] {
++            assert_eq!(parse_date(Some(text)), None, "{text}");
++        }
++        let o = |key: &str, date: &str| Occasion {
++            key: key.into(),
++            subject_id: Some("P".into()),
++            date: Some(date.into()),
++            ..Default::default()
++        };
++        let groups = group_by_subject(vec![o("a", "202é001"), o("b", "20200105")], "subject", None).unwrap();
++        assert_eq!(groups[0].occasions.len(), 2);
++    }
+ }
+diff --git a/crates/medh5/src/convert/legacy.rs b/crates/medh5/src/convert/legacy.rs
+index 97298d4..45c1e4a 100644
+--- a/crates/medh5/src/convert/legacy.rs
++++ b/crates/medh5/src/convert/legacy.rs
+@@ -31,6 +31,8 @@ use super::grouping::{
+ use super::report::ConversionReport;
+ use crate::annotations::Assertions;
+ use crate::array::NdArray;
++use crate::curation::provenance::is_timestamp;
++use crate::curation::quality::QUALITY_STATUS;
+ use crate::h5::attrs::{self, AttrValue};
+ use crate::h5::{data, ops};
+ use crate::json::repr_str;
+@@ -230,6 +232,16 @@ fn key(name: &str) -> String {
+     sanitize_key(name, "class")
+ }
+ 
++/// The class a 0.x sample label names: its `label_name`, or the label's own
++/// text when it has none (Appendix B maps both to a classification).
++fn label_class(meta: &LegacyMeta) -> Option<String> {
++    match (&meta.label_name, &meta.label) {
++        (Some(name), _) if !name.is_empty() => Some(name.clone()),
++        (_, Some(label)) => Some(label.text()),
++        _ => None,
++    }
++}
++
+ /// A sample id from a subject id: §2.3's identifier rule, lowercased.
+ pub fn sample_key(subject_id: &str) -> String {
+     let stem = sanitize_stem(subject_id.trim(), 128);
+@@ -294,6 +306,11 @@ pub fn build_label_set(paths: &[&Path], mut report: Option<&mut ConversionReport
+             Ok(None) if has_boxes => add("object"),
+             _ => {}
+         }
++        // The sample label is a class too (Appendix B); minted last, so the
++        // ids of a cohort's mask and box classes do not move.
++        if let Some(name) = label_class(&meta) {
++            add(&name);
++        }
+     }
+     // An id goes to the first key whose mapping asks for it; a later key
+     // asking for it is minted another.
+@@ -697,7 +714,7 @@ fn migrate_one(
+     // The review is of what the file held: each annotation migrated from it
+     // carries the review's quality record, and the review names them.
+     let review = match meta.extra.get("review") {
+-        Some(Value::Object(review)) => Some(LegacyReview::read(writer, review)?),
++        Some(Value::Object(review)) => Some(LegacyReview::read(writer, review, tool, log, source)?),
+         _ => None,
+     };
+     let quality = review.as_ref().map(|r| QualityArg::Record(r.quality.clone()));
+@@ -802,9 +819,16 @@ fn migrate_one(
+             json!({"source": source, "boxes": n, "shift": BOX_SHIFT}),
+         );
+     }
+-    if let Some(label) = &meta.label {
+-        let name = meta.label_name.clone().filter(|n| !n.is_empty()).unwrap_or_else(|| label.text());
+-        match label_set.get(&ClassKey::Key(key(&name))) {
++    if let Some(name) = label_class(meta) {
++        let class = key(&name);
++        let raw = match &meta.label {
++            None => Value::Null,
++            Some(LegacyLabel::Int(i)) => json!(i),
++            Some(LegacyLabel::Float(f)) => crate::json::num(*f),
++            Some(LegacyLabel::Bool(b)) => json!(b),
++            Some(LegacyLabel::Text(t)) => json!(t),
++        };
++        match label_set.get(&ClassKey::Key(class.clone())) {
+             Some(entry) => {
+                 let ann_id = format!("label{suffix}");
+                 writer.add_classification(
+@@ -820,6 +844,47 @@ fn migrate_one(
+                         ..Default::default()
+                     },
+                 )?;
++                let detail = json!({"source": source, "label": raw, "label_name": meta.label_name, "class": class,
++                    "annotation": ann_id});
++                let shown = match &meta.label {
++                    Some(LegacyLabel::Text(t)) => repr_str(t),
++                    Some(other) => other.text(),
++                    None => String::new(),
++                };
++                let named = meta.label_name.as_deref().is_some_and(|n| !n.is_empty());
++                match (&meta.label, named) {
++                    (Some(_), true) => log.decision(
++                        "label",
++                        format!(
++                            "{source}: sample label {shown} ({}) became classification {} of class {}",
++                            repr_str(&name),
++                            repr_str(&ann_id),
++                            repr_str(&class)
++                        ),
++                        detail,
++                    ),
++                    (Some(_), false) => log.guess(
++                        "label",
++                        format!(
++                            "{source}: sample label {shown} has no label_name, so its text became class {} of \
++                             classification {}; rename the class if the value means something else, such as a 0 \
++                             for absent",
++                            repr_str(&class),
++                            repr_str(&ann_id)
++                        ),
++                        detail,
++                    ),
++                    (None, _) => log.guess(
++                        "label",
++                        format!(
++                            "{source}: label_name {} has no label, and classification {} asserts it as class {}",
++                            repr_str(&name),
++                            repr_str(&ann_id),
++                            repr_str(&class)
++                        ),
++                        detail,
++                    ),
++                };
+                 written.push(ann_id);
+             }
+             None => {
+@@ -837,52 +902,113 @@ fn migrate_one(
+     Ok(())
+ }
+ 
+-fn timestamp(value: Option<&Value>) -> Option<String> {
+-    let text = match value? {
+-        Value::Null => return None,
+-        Value::String(s) if s.is_empty() => return None,
+-        other => crate::json::py_str(other),
+-    };
+-    if text.ends_with('Z') && text.contains('T') {
++/// An activity time from a 0.x review time: an RFC 3339 timestamp (0.x wrote
++/// `datetime.isoformat()`, with its `+00:00` offset) or a bare `YYYY-MM-DD`.
++fn timestamp(value: &Value) -> Option<String> {
++    let text = crate::json::py_str(value).trim().to_string();
++    if is_timestamp(&text) {
+         return Some(text);
+     }
+-    if text.chars().count() == 10 && text.chars().nth(4) == Some('-') {
+-        return Some(format!("{text}T00:00:00Z"));
+-    }
+-    None
++    let midnight = format!("{text}T00:00:00Z");
++    (text.len() == 10 && is_timestamp(&midnight)).then_some(midnight)
+ }
+ 
+ /// A 0.x `extra.review`: who reviewed the file, and their verdict.
+ ///
+-/// It became a quality record keyed `seg`, whatever the file held, which no
+-/// annotation named, and a `review` activity whose output was `seg` even in
+-/// a file of boxes.  The record now rides on each annotation migrated from
+-/// the file, and the activity names those annotations.  The dict itself
+-/// stays in the file's `extra.legacy` entry, verbatim, with whatever else it
+-/// held (Appendix B).
++/// The 0.x API (`medh5.review`, 0.3 to 0.6) wrote `status` (`pending`,
++/// `reviewed`, `flagged` or `rejected`), `annotator`, `timestamp`, `notes`
++/// and `history`.  Only `reviewer`/`by` and `date`/`reviewed_at` were read,
++/// so the activity of every record the API wrote had no agent and the file
++/// failed to migrate (E005), and a status outside 1.0's became `reviewed`.
++/// `pending` and `flagged` now map to `submitted`, a flag stays an issue, and
++/// each such mapping is a guess; with no reviewer named, the import tool is
++/// the agent.  The record rides on each annotation migrated from the file,
++/// and the activity names those annotations.  The dict itself stays in the
++/// file's `extra.legacy` entry, verbatim, with whatever else it held
++/// (Appendix B).
+ struct LegacyReview {
+-    agent: Option<String>,
+-    verdict: String,
++    agent: String,
++    verdict: Option<String>,
++    status: String,
+     ended: Option<String>,
+     quality: Map<String, Value>,
+ }
+ 
+ impl LegacyReview {
+-    fn read(writer: &mut crate::sample::SampleWriter, review: &Map<String, Value>) -> Result<LegacyReview> {
+-        let reviewer =
+-            review.get("reviewer").or_else(|| review.get("by")).filter(|v| !v.is_null() && v.as_str() != Some(""));
+-        let agent = match reviewer {
++    fn read(
++        writer: &mut crate::sample::SampleWriter,
++        review: &Map<String, Value>,
++        tool: &str,
++        log: &mut ConversionReport,
++        source: &str,
++    ) -> Result<LegacyReview> {
++        let given = |k: &str| review.get(k).filter(|v| !v.is_null() && v.as_str() != Some(""));
++        let verdict = given("status").map(crate::json::py_str);
++        // 0.x's own default status was `pending`.
++        let stated = verdict.as_deref().unwrap_or("pending").to_lowercase();
++        let (status, why) = match stated.as_str() {
++            s if QUALITY_STATUS.contains(&s) => (s.to_string(), None),
++            "pending" if verdict.is_none() => {
++                ("submitted".to_string(), Some("the record states no status, and 0.x's default was 'pending'"))
++            }
++            "pending" => ("submitted".to_string(), Some("0.x 'pending' means nobody had reviewed it yet")),
++            "flagged" => {
++                ("submitted".to_string(), Some("0.x 'flagged' neither accepts nor rejects; the flag is kept as an issue"))
++            }
++            _ => ("submitted".to_string(), Some("it is neither a 0.x nor a 1.0 review status")),
++        };
++        if let Some(why) = why {
++            log.guess(
++                "review",
++                format!(
++                    "{source}: review status {} became quality status {}: {why}",
++                    repr_str(verdict.as_deref().unwrap_or("(none)")),
++                    repr_str(&status)
++                ),
++                json!({"source": source, "verdict": verdict, "status": status}),
++            );
++        }
++        let reviewer = given("reviewer").or_else(|| given("by")).or_else(|| given("annotator"));
++        let person = match reviewer {
+             Some(r) => Some(writer.person(&crate::json::py_str(r), None, Map::new())?.id),
+             None => None,
+         };
+-        let verdict = review.get("status").map(crate::json::py_str).unwrap_or_else(|| "reviewed".into());
+-        let status = verdict.to_lowercase();
+-        let allowed = ["draft", "submitted", "reviewed", "approved", "rejected", "deprecated"];
++        let agent = match &person {
++            Some(id) => id.clone(),
++            None => {
++                log.guess(
++                    "review",
++                    format!(
++                        "{source}: extra.review names no reviewer, so its `review` activity is attributed to the import \
++                         tool, which recorded it"
++                    ),
++                    json!({"source": source, "agent": tool}),
++                );
++                tool.to_string()
++            }
++        };
+         let mut quality = Map::new();
+-        quality.insert("status".into(), json!(if allowed.contains(&status.as_str()) { &status } else { "reviewed" }));
+-        quality.insert("reviewed_by".into(), json!(agent.iter().collect::<Vec<_>>()));
+-        let ended = timestamp(review.get("date").filter(|v| !v.is_null()).or_else(|| review.get("reviewed_at")));
+-        Ok(LegacyReview { agent, verdict, ended, quality })
++        quality.insert("status".into(), json!(status));
++        // A pending record names whoever set it, not a reviewer.
++        let reviewed: Vec<&String> = person.iter().filter(|_| stated != "pending").collect();
++        quality.insert("reviewed_by".into(), json!(reviewed));
++        if stated == "flagged" {
++            quality.insert("issues".into(), json!([{"code": "flagged", "severity": "warning"}]));
++        }
++        let stamp = given("timestamp").or_else(|| given("date")).or_else(|| given("reviewed_at"));
++        let ended = stamp.and_then(timestamp);
++        if let (Some(raw), None) = (stamp, &ended) {
++            log.decision(
++                "review",
++                format!(
++                    "{source}: review time {} is neither an RFC 3339 timestamp nor a date, so the `review` activity \
++                     states no end; extra.legacy keeps it",
++                    repr_str(&crate::json::py_str(raw))
++                ),
++                json!({"source": source, "time": raw}),
++            );
++        }
++        Ok(LegacyReview { agent, verdict, status, ended, quality })
+     }
+ 
+     /// The `review` activity, whose outputs are the annotations reviewed.
+@@ -897,10 +1023,12 @@ impl LegacyReview {
+         if let Some(t) = &self.ended {
+             fields.insert("ended".into(), json!(t));
+         }
+-        fields.insert("params".into(), json!({"verdict": self.verdict}));
++        if let Some(verdict) = &self.verdict {
++            fields.insert("params".into(), json!({"verdict": verdict}));
++        }
+         let outputs: Vec<String> = annotations.iter().map(|a| format!("annotations/{a}")).collect();
+         fields.insert("outputs".into(), json!(outputs));
+-        writer.activity("review", self.agent.as_deref(), None, fields)?;
++        writer.activity("review", Some(&self.agent), None, fields)?;
+         log.decision(
+             "review",
+             format!(
+@@ -909,7 +1037,7 @@ impl LegacyReview {
+                  reviewed (§11.1)",
+                 if annotations.is_empty() { "no annotation".to_string() } else { crate::json::repr_list(annotations) }
+             ),
+-            json!({"source": source, "status": self.verdict.to_lowercase(), "annotations": annotations}),
++            json!({"source": source, "status": self.status, "verdict": self.verdict, "annotations": annotations}),
+         );
+         Ok(())
+     }
+@@ -929,3 +1057,20 @@ pub fn load_sidecar(path: &Path) -> Result<LabelSet> {
+     LabelSet::from_json(Some(&doc))?
+         .ok_or_else(|| Error::Value(format!("{} holds no label set", path.to_string_lossy())))
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn appendix_b_review_times_are_0x_isoformat_or_a_date() {
++        // 0.x wrote `datetime.now(timezone.utc).isoformat()`.
++        let iso = json!("2026-01-01T10:00:00.123456+00:00");
++        assert_eq!(timestamp(&iso).as_deref(), Some("2026-01-01T10:00:00.123456+00:00"));
++        assert_eq!(timestamp(&json!("2026-03-01")).as_deref(), Some("2026-03-01T00:00:00Z"));
++        // A naive time states no zone, and a near-date is not a date.
++        assert_eq!(timestamp(&json!("2026-01-01T10:00:00")), None);
++        assert_eq!(timestamp(&json!("2026-1x-01")), None);
++        assert_eq!(timestamp(&json!("é")), None);
++    }
++}
+diff --git a/tests/integrations/test_migrate.py b/tests/integrations/test_migrate.py
+index ded179b..07ad865 100644
+--- a/tests/integrations/test_migrate.py
++++ b/tests/integrations/test_migrate.py
+@@ -216,6 +216,85 @@ class TestMigrate:
+             assert review.outputs == ("annotations/boxes",)
+         assert not validate_file(tmp_path / "new.medh5").errors
+ 
++    @pytest.mark.parametrize(
++        ("status", "quality", "reviewed_by", "guessed"),
++        [
++            ("pending", "submitted", False, True),
++            ("flagged", "submitted", True, True),
++            ("reviewed", "reviewed", True, False),
++            ("rejected", "rejected", True, False),
++        ],
++    )
++    def test_appendix_B_a_review_the_0x_api_wrote_migrates(
++        self, tmp_path, status, quality, reviewed_by, guessed
++    ):
++        """0.x's ``set_review_status`` wrote ``annotator`` and ``timestamp``,
++        which were never read: the activity had no agent and every such file
++        failed (E005), and ``pending`` or ``flagged`` became ``reviewed``."""
++        from medh5.io.legacy import migrate
++
++        record = {
++            "status": status,
++            "annotator": "RAD-07",
++            "timestamp": "2026-01-01T10:00:00.123456+00:00",
++            "notes": "margin unclear",
++            "history": [
++                {
++                    "status": "pending",
++                    "annotator": None,
++                    "timestamp": "2025-12-01T09:00:00+00:00",
++                    "notes": None,
++                }
++            ],
++        }
++        old = write_legacy_sample(
++            tmp_path / "old.medh5",
++            images={"CT": np.zeros((4, 5, 6), np.int16)},
++            seg={"liver": np.ones((4, 5, 6), bool)},
++            spacing=[1.0, 1.0, 1.0],
++            coord_system="LPS",
++            extra={"review": record},
++        )
++        report = migrate(old, tmp_path / "new.medh5")
++        assert not validate_file(tmp_path / "new.medh5").errors
++        with medh5.open(tmp_path / "new.medh5") as sample:
++            document = sample.document
++            seg = document.quality["seg"]
++            assert seg.status == quality
++            assert [i.code for i in seg.issues] == (
++                ["flagged"] if status == "flagged" else []
++            )
++            (review,) = document.provenance.activities_by_type("review")
++            assert document.provenance.agent(review.agent).name == "RAD-07"
++            assert bool(seg.reviewed_by) is reviewed_by
++            assert review.ended == record["timestamp"]
++            assert review.params == {"verdict": status}
++            assert document.extra["legacy"]["tp0"]["review"] == record
++        guesses = [n for n in report.guesses if n.kind == "review"]
++        assert bool(guesses) is guessed
++
++    def test_a_review_naming_no_one_is_the_import_tools(self, tmp_path):
++        """With no reviewer, the activity had no agent, which the schema
++        refuses: the import tool that recorded it is its agent, as a guess."""
++        from medh5.io.legacy import migrate
++
++        old = write_legacy_sample(
++            tmp_path / "old.medh5",
++            images={"CT": np.zeros((4, 5, 6), np.int16)},
++            seg={"liver": np.ones((4, 5, 6), bool)},
++            spacing=[1.0, 1.0, 1.0],
++            coord_system="LPS",
++            extra={"review": {"status": "reviewed"}},
++        )
++        report = migrate(old, tmp_path / "new.medh5")
++        assert not validate_file(tmp_path / "new.medh5").errors
++        with medh5.open(tmp_path / "new.medh5") as sample:
++            provenance = sample.document.provenance
++            (review,) = provenance.activities_by_type("review")
++            assert provenance.agent(review.agent).type == "software"
++            assert sample.document.quality["seg"].reviewed_by == ()
++        assert any("import tool" in n.message for n in report.guesses)
++
+     def test_an_mtime_order_is_reported_once_per_subject(self, legacy, tmp_path):
+         from medh5.io.legacy import migrate_paths
+ 
+@@ -352,6 +431,68 @@ class TestLabelKeys:
+         assert warnings[1].detail["kept_by"] == "liver"
+ 
+ 
++class TestSampleLabel:
++    """Appendix B maps ``label`` and ``label_name`` to a sample-scope
++    classification.  The label set minted only mask and box names, so the
++    label was dropped unless its name happened to be one of them."""
++
++    @staticmethod
++    def _old(path: Path, **label: Any) -> Path:
++        shape = (4, 5, 6)
++        tumor = np.zeros(shape, bool)
++        tumor[1:3, 1:3, 1:3] = True
++        return write_legacy_sample(
++            path,
++            images={"CT": np.zeros(shape, np.int16)},
++            seg={"tumor": tumor, "liver": np.ones(shape, bool)},
++            spacing=[1.0, 1.0, 1.0],
++            coord_system="LPS",
++            **label,
++        )
++
++    def test_appendix_B_the_0x_readme_example_keeps_its_label(self, tmp_path: Path):
++        from medh5.io.legacy import migrate
++
++        old = self._old(tmp_path / "old.medh5", label=1, label_name="malignant")
++        report = migrate(old, tmp_path / "new.medh5")
++        assert report.ok, [n.message for n in report.warnings]
++        with medh5.open(tmp_path / "new.medh5") as sample:
++            assert sample.annotations["label"].positives == ("malignant",)
++            keys = sorted(c.key for c in sample.label_set)
++            assert keys == ["liver", "malignant", "tumor"]
++        (note,) = report.of_kind("label")
++        assert note.severity == "decision"
++        assert note.detail["label"] == 1
++        assert not validate_file(tmp_path / "new.medh5").errors
++
++    def test_appendix_B_a_classification_cohort_keeps_every_label(
++        self, tmp_path: Path
++    ):
++        from medh5.io.legacy import migrate_paths
++
++        paths = [
++            self._old(tmp_path / f"case_{value}.medh5", label=value)
++            for value in (0, 1)
++        ]
++        report = migrate_paths(paths, tmp_path / "out")
++        assert report.ok, [n.message for n in report.warnings]
++        for value in (0, 1):
++            with medh5.open(tmp_path / "out" / f"case_{value}.medh5") as sample:
++                assert sample.annotations["label"].positives == (str(value),)
++        # A bare value is not a class name anyone chose.
++        assert len([n for n in report.guesses if n.kind == "label"]) == 2
++
++    def test_a_label_name_without_a_label_is_kept_as_a_guess(self, tmp_path: Path):
++        from medh5.io.legacy import migrate
++
++        old = self._old(tmp_path / "old.medh5", label_name="benign")
++        report = migrate(old, tmp_path / "new.medh5")
++        with medh5.open(tmp_path / "new.medh5") as sample:
++            assert sample.annotations["label"].positives == ("benign",)
++        (note,) = report.of_kind("label")
++        assert note.severity == "guess"
++
++
+ class TestLegacyExtra:
+     """Appendix B puts a 0.x ``extra.nnunetv2`` at ``/meta → extra.nnunetv2``,
+     where the nnU-Net exporter reads a stashed ``dataset.json``.  The whole

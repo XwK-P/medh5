@@ -1,0 +1,19 @@
+diff --git a/crates/medh5-python/src/lib.rs b/crates/medh5-python/src/lib.rs
+index a4f27a8..0cbbaec 100644
+--- a/crates/medh5-python/src/lib.rs
++++ b/crates/medh5-python/src/lib.rs
+@@ -41,7 +41,13 @@ pub mod validate;
+ pub mod values;
+ pub mod writer;
+ 
+-#[pymodule]
++// `gil_used = true` is said out loud because PyO3 defaults to the opposite:
++// without it, a build for free-threaded CPython (3.14t) declares the module
++// `Py_MOD_GIL_NOT_USED` and runs it with no GIL at all.  Nothing here has been
++// audited for that --- the mutable handles' borrow checks and the Python
++// handle cache's check-then-act both assume one thread at a time --- so a
++// free-threaded interpreter must turn the GIL back on when it imports us.
++#[pymodule(gil_used = true)]
+ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
+     m.add("__version__", medh5::VERSION)?;
+     m.add("__format_version__", medh5::FORMAT_VERSION)?;

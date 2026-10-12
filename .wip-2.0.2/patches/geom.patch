@@ -1,0 +1,99 @@
+diff --git a/crates/medh5/src/transforms/model.rs b/crates/medh5/src/transforms/model.rs
+index 77c84e2..5e03bee 100644
+--- a/crates/medh5/src/transforms/model.rs
++++ b/crates/medh5/src/transforms/model.rs
+@@ -292,7 +292,13 @@ impl Transform {
+         }
+     }
+ 
+-    /// An in-memory chain of steps, refusing steps in different units.
++    /// An in-memory chain of steps, refusing steps in different units or
++    /// whose frames do not meet (E501), as a stored composite's are
++    /// ([`Transform::check_chain`]).
++    ///
++    /// Steps given in the wrong order were chained anyway: the chain took
++    /// its frames from its first and last steps and mapped points through
++    /// a path that does not exist.
+     pub fn chain(steps: Vec<Transform>) -> Result<Transform> {
+         if steps.is_empty() {
+             return Err(Error::invalid("a transform chain needs at least one step"));
+@@ -313,6 +319,17 @@ impl Transform {
+                 ),
+             ));
+         }
++        let breaks = frame_breaks(&steps);
++        if !breaks.is_empty() {
++            return Err(Error::coded(
++                "E501",
++                format!(
++                    "cannot chain transforms whose frames do not meet: {}; each step must start in the frame the \
++                     step before it ends in",
++                    breaks.join("; ")
++                ),
++            ));
++        }
+         let first = &steps[0];
+         let header = TransformHeader {
+             kind: "composite".into(),
+@@ -1005,17 +1022,7 @@ impl Transform {
+                 repr_str(self.to_frame())
+             ));
+         }
+-        for pair in chain.windows(2) {
+-            if pair[0].to_frame() != pair[1].from_frame() {
+-                problems.push(format!(
+-                    "{} ends in {} but {} starts in {}",
+-                    repr_str(&pair[0].transform_id),
+-                    repr_str(pair[0].to_frame()),
+-                    repr_str(&pair[1].transform_id),
+-                    repr_str(pair[1].from_frame())
+-                ));
+-            }
+-        }
++        problems.extend(frame_breaks(&chain));
+         let mismatched: Vec<String> = chain
+             .iter()
+             .filter(|t| t.units() != self.units())
+@@ -1080,6 +1087,24 @@ impl Transform {
+     }
+ }
+ 
++/// `'a' ends in 'M' but 'b' starts in 'F'` for each step of `steps` that
++/// does not start in the frame the step before it ends in.
++fn frame_breaks(steps: &[Transform]) -> Vec<String> {
++    steps
++        .windows(2)
++        .filter(|pair| pair[0].to_frame() != pair[1].from_frame())
++        .map(|pair| {
++            format!(
++                "{} ends in {} but {} starts in {}",
++                repr_str(&pair[0].transform_id),
++                repr_str(pair[0].to_frame()),
++                repr_str(&pair[1].transform_id),
++                repr_str(pair[1].from_frame())
++            )
++        })
++        .collect()
++}
++
+ /// B-spline basis weights at fractional position `t` in `[0, 1)`.
+ pub fn basis(order: i64, t: f64) -> Result<Vec<f64>> {
+     match order {
+diff --git a/medh5/transforms.py b/medh5/transforms.py
+index 3d9e85a..30d1240 100644
+--- a/medh5/transforms.py
++++ b/medh5/transforms.py
+@@ -341,7 +341,12 @@ class InverseTransform(Transform):
+ 
+ 
+ class ChainTransform(Transform):
+-    """Several transforms applied in order --- a resolved path."""
++    """Several transforms applied in order --- a resolved path.
++
++    Each step must start in the frame the step before it ends in, as a
++    composite's components must; steps whose frames do not meet, or that are
++    in different units, are refused (E501).
++    """
+ 
+     __slots__ = ()
+ 
