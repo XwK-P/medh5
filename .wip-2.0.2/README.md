@@ -19,15 +19,17 @@ The scope is §3 (W0–W10) of `audit-2.0.2-2.1.0.md`, including the revision-2 
 | scrub | `b193fbe` |
 | annot | `6cf90c9` |
 | valid | `82d1631` |
+| dataset | `6f68e5c` |
 
-After scrub was merged, the combined tree passed `cargo check --workspace --all-targets`. A full test run of the merged tree was in progress when this was written.
+At `82d1631` (all of the above except dataset), the full test run passed: pytest 2997 passed, 2 skipped, 95.03% coverage; `cargo test --workspace` green; the corpus 163/163 through both command lines; fmt, ruff and mypy clean. Neither clippy nor mkdocs had been run on the merged tree yet. Dataset's item 4 (manifest paths relative to `root`) is deferred: it needs a manifest-format decision.
 
 **In progress:**
-- `dataset` (`patches/dataset.patch`, refreshed by snapshots). It was resumed with priorities: stats NaN, F10, F16 stats, CLI exit code, then the rest; plus C202 folds (handed off from curation).
-- `conv2` had just started (`patches/conv2.patch`, an ASCII-fold helper in `_common.py`).
+- `conv2` (`patches/conv2.patch`): F11, then F08, F05, `to_nifti`, non-ASCII ids.
+- `torch` (`patches/torch.patch`): F12, then F20, `PairedPatchDataset`, F13, F21.
+- Snapshots refresh both patches every 15 minutes.
 
 **Not started:**
-- wave 1: torch, docs, spec, ci;
+- wave 1: docs, spec, ci;
 - wave 2: geom, legacy, clin, comp, cli, pyapi. These branch from this branch.
 
 The plans are in `prompts/`. Handoffs for docs, spec, cli and others are listed in each `reports/<name>.md`, under "Handoffs" and "Spec wording".
