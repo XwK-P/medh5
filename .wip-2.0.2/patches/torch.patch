@@ -1,0 +1,17 @@
+diff --git a/medh5/torch/clinical.py b/medh5/torch/clinical.py
+index fca4a64..340b551 100644
+--- a/medh5/torch/clinical.py
++++ b/medh5/torch/clinical.py
+@@ -592,6 +592,12 @@ class ClinicalTaskDataset(_DatasetBase):  # type: ignore[misc,valid-type]
+             present = set(ann.class_ids)
+             examined = set(ann.annotated_class_ids)
+             wanted = [c for c in classes if c in present]
++            if not wanted and examined.isdisjoint(classes):
++                # It neither labels nor examined a class the slot asks for,
++                # so its ignore region (§7.7) is about other structures: an
++                # organ annotation ignoring the whole grid erased every
++                # lesion positive from the loss mask.
++                continue
+             if wanted:
+                 planes = np.pad(
+                     np.asarray(ann.dense(wanted, roi=list(roi)), dtype=np.float32),
