@@ -661,7 +661,10 @@ __version__: str
 
 def affine_summary(affine: npt.ArrayLike) -> dict[str, Any]: ...
 def agreement_box_iou(a: Any, b: Any) -> float:
-    """IoU of two `(S, 2)` boxes in the same space."""
+    """IoU of two `(S, 2)` boxes in the same space.  Refused for boxes of
+    different numbers of axes or of none (`ValueError`), and for a bound that
+    is not finite or a `lo` above its `hi` (E406).
+    """
     ...
 
 def agreement_compare(
@@ -3651,7 +3654,8 @@ class Tracking:
     def coverage(self) -> dict[Any, Any]:
         """`{timepoint: frozenset of class ids}`: the classes the annotators at
         each timepoint committed to finding (§11.3), whose absence is
-        therefore a finding.
+        therefore a finding --- those of the annotations there that ignore no
+        part of their grid (§7.7).
         """
         ...
     def get(self, instance_id: Any, default: Any = None) -> Any: ...
@@ -3677,8 +3681,9 @@ class Tracking:
     def state_at(self, instance_id: int, timepoint: str) -> str:
         """`present`, `resolved` or `unexamined`.  `resolved` is claimed only
         where the object's class is in that timepoint's `coverage`; anywhere
-        else an unseen object is `unexamined`: nobody looked, so its absence
-        measures nothing.  `KeyError` for an id no track has.
+        else an unseen object is `unexamined`: nobody looked, or an ignore
+        region may hide it, so its absence measures nothing.  `KeyError` for
+        an id no track has.
         """
         ...
     def states(self, instance_id: int) -> dict[str, str]:
@@ -3692,7 +3697,8 @@ class Tracking:
     def to_json(self) -> dict[str, Any]: ...
     def unexamined(self) -> dict[str, tuple[int, ...]]:
         """`{timepoint: instance ids}` of the objects that are `unexamined`
-        there: not seen, and of a class nobody committed to finding.
+        there: not seen, and of a class nobody there examined without
+        ignoring part of the volume.
         """
         ...
     def values(self) -> tuple[Track, ...]: ...

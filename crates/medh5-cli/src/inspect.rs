@@ -658,8 +658,8 @@ fn track(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
         print_skipped(&tracking, ctx);
         ctx.print(
             "\nvolume in mm³ (mm² on a 2-D grid), or in px on an uncalibrated grid; `resolved` means the class was \
-             in `annotated_class_ids` at that timepoint and the object was not found, `unexamined` that nobody looked \
-             (spec §7.4, §11.3).",
+             examined at that timepoint, outside any ignore region, and the object was not found, `unexamined` that \
+             nobody looked for it there, or that an ignore region may hide it (spec §7.4, §7.7, §11.3).",
         );
         Ok(EXIT_OK)
     })();

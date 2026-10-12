@@ -14,7 +14,8 @@ different ``manifest_sha256`` values.  One of them predates a re-split, and any
 training run that mixes them is using two different partitions at once.
 
 **Subject leakage.**  Two files carrying the same grouping key (§12.2) --- or
-the same subject under two keys --- land in different partitions of one split.
+the same subject under two keys --- land in different partitions of one split,
+or in different folds of it: a fold is a partition of its own.
 A sample never spans subjects (§3.7), so assigning whole files is subject-safe
 *by construction* --- but only if the assignment itself respected the grouping,
 and nothing prevents a hand-edited manifest from splitting a patient's baseline
@@ -66,7 +67,8 @@ class Leak:
     The unit is a connected component of ``subject_id`` and grouping key: two
     files are in one unit if they share either, transitively.  ``group_id``
     names the unit by its first grouping key; ``groups`` and ``subjects`` list
-    everything it joined.
+    everything it joined.  A fold is a partition of its own: ``partitions``
+    names a claim with a fold as ``train (fold 0)``.
     """
 
     set_id: str

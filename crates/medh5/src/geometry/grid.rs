@@ -420,9 +420,14 @@ impl Grid {
     /// Whether two grids are physically comparable without a transform (§3.3.4).
     ///
     /// A grid without a `frame_uid` shares a frame with nothing --- including
-    /// another grid without one.
+    /// another grid without one.  Nor does a 2-D grid share a world with a 3-D
+    /// one: `direction` is S×S (§3.2), so a plane's world coordinates are not
+    /// a volume's, whatever frame they name.
     pub fn comparable_with(&self, other: &Grid) -> bool {
-        self.frame_uid.is_some() && self.frame_uid == other.frame_uid && self.coord_system == other.coord_system
+        self.frame_uid.is_some()
+            && self.frame_uid == other.frame_uid
+            && self.coord_system == other.coord_system
+            && self.n_spatial() == other.n_spatial()
     }
 
     /// Whether two grids describe the same lattice, within `tol`.

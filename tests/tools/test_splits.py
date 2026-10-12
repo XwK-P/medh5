@@ -52,6 +52,43 @@ class TestSplitLeaks:
         assert "fam-A" in finding.where and "fam-B" in finding.where
         assert "patient-7" in finding.message
 
+    def test_S12_3_one_subject_in_two_folds_is_a_leak(self, tmp_path: Path):
+        """A fold is a partition of its own.  Claims of a k-fold split are
+        `train` in every fold but the validation one, so a subject in folds 0
+        and 3 read `train` twice, and `medh5 splits` found no leak."""
+        paths = []
+        for i, fold in enumerate((0, 3, 0)):
+            path = tmp_path / f"visit{i}.medh5"
+            with Framed.writer(path) as w:
+                w.identity(sample_id=f"s{i}", subject_id="patient-7" if i < 2 else "p8")
+                w.split(set_id="cv5", partition="train", fold=fold)
+            paths.append(path)
+        audit = audit_splits(paths)
+        assert not audit.ok
+        (leak,) = audit.leaks
+        assert leak.subjects == ("patient-7",)
+        assert leak.partitions == ("train (fold 0)", "train (fold 3)")
+        assert "is in train (fold 0), train (fold 3) (2 files)" in str(leak)
+        # Two files of one subject in one fold are one place.
+        assert audit_splits([paths[0], paths[2]]).ok
+
+    def test_the_command_line_reports_a_leak_between_folds(
+        self, tmp_path: Path, capsys
+    ):
+        from medh5.cli import main
+
+        paths = []
+        for i, fold in enumerate((0, 3)):
+            path = tmp_path / f"visit{i}.medh5"
+            with Framed.writer(path) as w:
+                w.identity(sample_id=f"s{i}", subject_id="patient-7")
+                w.split(set_id="cv5", partition="train", fold=fold)
+            paths.append(str(path))
+        assert main(["splits", *paths]) == 1
+        assert "LEAK  cv5: group 'patient-7' is in train (fold 0), train (fold 3)" in (
+            capsys.readouterr().out
+        )
+
     def test_S12_3_units_join_through_subjects_transitively(self):
         from medh5.curation.splits import anatomy_units
 

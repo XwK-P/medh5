@@ -97,13 +97,18 @@ record is keyed by class **id**, as §11.2 and the schema require, and it is
 refused when nothing was comparable: `value` is then `None`, not 0 — two raters
 who both found nothing agree, and a 0 in the file would say they did not.
 
-Object-level agreement matches instances by id where both carry one, and by IoU
-otherwise. A miss counts only where the other side looked: an unmatched object
-whose class the other annotation never examined is left out, and its class is
-listed under `skipped`. A matched pair always counts, even when the two classed
-it differently — that is what `class_mismatches` reports. Both must be on one
-grid for index boxes, or one frame for world boxes; comparing index coordinates
-of two grids is refused (`E101`).
+Object-level agreement matches instances by id where both carry one and both
+are in one sample, and by IoU otherwise. An `instance_id` names an object within
+its own sample (§7.4), so two raters' files that each number their objects from
+1 are matched by where the objects are, not by their numbers. A miss counts only
+where the other side looked: an unmatched object whose class the other
+annotation never examined is left out, and its class is listed under `skipped`.
+A matched pair always counts, even when the two classed it differently — that
+is what `class_mismatches` reports. Both must be on one grid for index boxes, or
+one frame for world boxes; comparing index coordinates of two grids is refused
+(`E101`), and so are boxes of different numbers of axes, which are not in one
+space (`E414`), and a box whose bound is not finite or whose `lo` is above its
+`hi` (`E406`).
 
 <!-- illustrative -->
 ```python
@@ -111,9 +116,10 @@ from medh5.curation.agreement import compare_instances
 
 result = compare_instances(s.annotations["pred"], s.annotations["truth"],
                            threshold=0.5)
-result.matched            # ((a_id, b_id, iou), ...)
+result.matched            # ((index in a, index in b, iou), ...): rows, not ids
 result.only_in_a, result.only_in_b
-result.matched_by         # "instance_id" where both carry one, else "iou"
+result.matched_by         # "instance_id" within one sample where both carry ids, else "iou"
+result.to_json()["threshold"]  # None for an id match, which pairs whatever the IoU
 result.mean_iou           # None when nothing matched
 result.value              # object F1; None when neither side has an object
 result.skipped            # classes not examined by both
@@ -124,6 +130,13 @@ result.class_mismatches   # matched objects whose classes disagree
 `instances` or `boxes` annotations, voxels for two voxel annotations — and
 refuses an argument the chosen one cannot use (`metric=` for objects,
 `threshold=` for voxels) rather than ignoring it.
+
+Two files compare where their grids share a declared frame and are one lattice
+in it — two raters' copies of one scan. A class id is then a number within each
+file's label set: an id both use that the two label sets give different
+meanings, or a class name the two resolve to different ids, is refused (`C102`,
+as `dataset check` refuses it in a cohort) rather than scored. Where a file has
+no label set, its ids are compared as numbers.
 
 ## Identity and cohort
 
@@ -164,7 +177,7 @@ $ medh5 splits cohort/*.medh5        # conflicting claims and subject leakage
 audit = medh5.audit_splits(paths)
 audit.ok
 audit.conflicts        # W906: one set_id, different manifest digests
-audit.leaks            # a subject or group key in more than one partition
+audit.leaks            # a subject or group key in more than one partition, or fold
 audit.unclaimed        # files carrying no split claim at all
 ```
 

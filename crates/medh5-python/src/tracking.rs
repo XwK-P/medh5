@@ -323,8 +323,14 @@ impl Tracking {
 
 #[pymethods]
 impl Tracking {
-    fn __getitem__(&self, instance_id: u64) -> PyResult<Track> {
-        Ok(Track(self.require(instance_id)?.clone()))
+    /// `KeyError` for any key no track has, as a mapping raises it: a key
+    /// that is no instance id (`-1`, `"7"`) raised `OverflowError` or
+    /// `TypeError`, which `get` and `in` already answered as absent.
+    fn __getitem__(&self, instance_id: &Bound<'_, PyAny>) -> PyResult<Track> {
+        match instance_id.extract::<u64>().ok().and_then(|i| self.0.tracks.get(&i)) {
+            Some(track) => Ok(Track(track.clone())),
+            None => Err(PyKeyError::new_err(instance_id.clone().unbind())),
+        }
     }
     fn __iter__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         Ok(PyTuple::new(py, self.0.tracks.keys())?.try_iter()?.into_any())
@@ -380,7 +386,8 @@ impl Tracking {
     }
     /// `{timepoint: frozenset of class ids}`: the classes the annotators at
     /// each timepoint committed to finding (§11.3), whose absence is
-    /// therefore a finding.
+    /// therefore a finding --- those of the annotations there that ignore no
+    /// part of their grid (§7.7).
     #[getter]
     fn coverage<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let out = PyDict::new(py);
@@ -391,8 +398,9 @@ impl Tracking {
     }
     /// `present`, `resolved` or `unexamined`.  `resolved` is claimed only
     /// where the object's class is in that timepoint's `coverage`; anywhere
-    /// else an unseen object is `unexamined`: nobody looked, so its absence
-    /// measures nothing.  `KeyError` for an id no track has.
+    /// else an unseen object is `unexamined`: nobody looked, or an ignore
+    /// region may hide it, so its absence measures nothing.  `KeyError` for
+    /// an id no track has.
     fn state_at(&self, instance_id: u64, timepoint: &str) -> PyResult<&'static str> {
         self.require(instance_id)?;
         Ok(self.0.state_at(instance_id, timepoint).unwrap_or(engine::UNEXAMINED))
@@ -431,7 +439,8 @@ impl Tracking {
         Ok(out)
     }
     /// `{timepoint: instance ids}` of the objects that are `unexamined`
-    /// there: not seen, and of a class nobody committed to finding.
+    /// there: not seen, and of a class nobody there examined without
+    /// ignoring part of the volume.
     fn unexamined<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let out = PyDict::new(py);
         for (k, v) in self.0.unexamined() {

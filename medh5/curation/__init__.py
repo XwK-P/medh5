@@ -36,10 +36,11 @@ shifting, and it is the clinically load-bearing quantity.
 ``instance_id`` names one physical object within the sample, reused by every
 annotation that describes it.  Absence is not a measurement --- a lesion missing
 from a follow-up is *resolved* only if the annotator committed to looking for
-its class there (``annotated_class_ids``), so absence resolves to ``present``,
-``resolved`` or ``unexamined``, never to a silent zero.  A track carries one
-class: two class ids under one instance id is reported (W909), not resolved.
-``Sample.tracks()`` runs the join.
+its class there (``annotated_class_ids``) and declared no part of the volume
+unexamined (an ignore region, §7.7), which may hide it; so absence resolves to
+``present``, ``resolved`` or ``unexamined``, never to a silent zero.  A track
+carries one class: two class ids under one instance id is reported (W909), not
+resolved.  ``Sample.tracks()`` runs the join.
 """
 
 from __future__ import annotations

@@ -265,6 +265,24 @@ class TestGrid:
         assert not a.comparable_with(c)
         assert not a.comparable_with(grid(grid_id="d"))
 
+    def test_S3_3_a_plane_is_not_comparable_with_a_volume(self):
+        # `direction` is S×S (§3.2): a 2-D grid's world is a plane of its own,
+        # whatever frame it names, and a box on it is not a volume's.
+        volume = grid(grid_id="v", frame_uid="f1")
+        plane = grid(
+            grid_id="p",
+            shape=(24, 24),
+            axis_names=("y", "x"),
+            axis_kinds=("spatial", "spatial"),
+            spacing=(0.8, 0.8),
+            origin=(-9.6, -9.6),
+            direction=np.eye(2),
+            frame_uid="f1",
+        )
+        assert not volume.comparable_with(plane)
+        assert not plane.comparable_with(volume)
+        assert plane.comparable_with(dataclasses.replace(plane, grid_id="q"))
+
     def test_time_values_must_match_the_time_axis(self):
         with pytest.raises(MEDH5ValidationError):
             Grid(

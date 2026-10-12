@@ -16,10 +16,12 @@ Three decisions are deliberate:
   are empty; scoring it as 0 punishes raters for agreeing that a structure is
   absent, and scoring it as 1 inflates every partially-labelled cohort.  It is
   reported as ``None`` and excluded from the mean.
-* **Instances match by id first.**  Where both annotations carry ``instance_id``
-  (§7.4) the correspondence is already stated and IoU matching would only
-  second-guess it.  Greedy IoU matching is the fallback for annotations that
-  have no shared ids, and it says so in the result.
+* **Instances match by id first, within one sample.**  Where both annotations
+  carry ``instance_id`` (§7.4) the correspondence is already stated and IoU
+  matching would only second-guess it.  Greedy IoU matching is the fallback for
+  annotations that have no shared ids, and it says so in the result.  An id
+  names an object within its own sample, so two files' objects always match by
+  IoU: two raters' files that each number from 1 paired disjoint lesions by id.
 
 The first two hold for objects as for voxels.  An object whose class one side
 never examined is left out, not counted as missed: identical work scored 0.667
@@ -31,6 +33,13 @@ a number that was never measured.
 A record is keyed the way §11.2 keys it: ``per_class`` by class **id**.  Keyed
 by class name, as the reports print it, no record this module produced could be
 stored in the file it described --- the schema admits only numeric keys.
+
+Compared across two files, a class id is a number within its own label set:
+an id both sides use that their label sets give different meanings ("liver"
+in one, "spleen" in the other) is refused (C102, the code ``dataset check``
+gives the same clash in a cohort) rather than scored, and so is a class name
+the two resolve to different ids.  Where either side has no label set, an id is
+compared as a number.
 """
 
 from __future__ import annotations
@@ -67,7 +76,12 @@ def iou(a: npt.NDArray[np.bool_], b: npt.NDArray[np.bool_]) -> float | None:
 
 
 def box_iou(a: npt.ArrayLike, b: npt.ArrayLike) -> float:
-    """IoU of two ``(S, 2)`` boxes in the same space."""
+    """IoU of two ``(S, 2)`` boxes in the same space.
+
+    Refused rather than scored where the two are not boxes of one space:
+    boxes of different numbers of axes, or of none (``ValueError``), and a
+    bound that is not finite or a ``lo`` above its ``hi`` (E406).
+    """
     result: float = _core.agreement_box_iou(a, b)
     return result
 
@@ -120,11 +134,16 @@ class InstanceAgreement:
     """Object-level agreement: what matched, what did not, and how."""
 
     matched: tuple[tuple[int, int, float], ...] = ()
-    """``(index in a, index in b, IoU)`` for every matched pair."""
+    """``(index in a, index in b, IoU)`` for every matched pair: row indices
+    of the objects, not their ids."""
     only_in_a: tuple[int, ...] = ()
     only_in_b: tuple[int, ...] = ()
     matched_by: str = "instance_id"
+    """``"instance_id"`` within one sample where both sides carry ids, else
+    ``"iou"``."""
     threshold: float = DEFAULT_IOU
+    """The IoU at which IoU matching pairs two objects.  An id match pairs
+    them whatever their IoU, so its report (:meth:`to_json`) gives ``None``."""
     against: str | None = None
     class_mismatches: tuple[tuple[int, int, int], ...] = ()
     """``(instance_id, class in a, class in b)`` --- matched but classed apart."""

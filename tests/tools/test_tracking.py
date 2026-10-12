@@ -105,6 +105,158 @@ class TestThreeStates:
             assert coverage["tp0"] == frozenset({3})
             assert coverage["tp1"] == frozenset({3})
 
+    def test_a_key_no_track_has_is_a_KeyError(self, series):
+        """`Tracking` is a mapping, and a key that is no instance id raised
+        `OverflowError` or `TypeError` where `get` and `in` answered absent."""
+        with medh5.open(series) as sample:
+            tracking = sample.tracks()
+            for key in (-1, "7", 2**64, 3.5, None, 999):
+                with pytest.raises(KeyError):
+                    tracking[key]
+                assert key not in tracking
+                assert tracking.get(key) is None
+            assert tracking[np.uint64(7)].timepoints == ("tp0", "tp1")
+
+
+class TestIgnoredRegions:
+    """§7.7, §11.3: an ignore region says "not examined here", so an object
+    absent where one is declared was not looked for there.  The follow-up
+    ignored as a whole still resolved the baseline's lesion, and a baseline
+    that ignored a place made the lesion found there later `new`."""
+
+    BEFORE = lesion(8, 8, 8, 1)
+    AFTER = lesion(4, 16, 16, 1)
+
+    @staticmethod
+    def _visits(
+        path: Path,
+        label_set,
+        *,
+        baseline: list[InstanceInput],
+        follow_up: list[InstanceInput],
+        ignore: dict[str, np.ndarray] | None = None,
+    ) -> Path:
+        """Two visits registered by the identity, one lesion annotation each."""
+        ignore = ignore or {}
+        with medh5.create(path, sample_id=path.stem, codec="portable") as w:
+            w.add_timepoint("tp0", days_from_baseline=0)
+            w.add_timepoint("tp1", days_from_baseline=90)
+            w.label_set(label_set)
+            for tp, found in (("tp0", baseline), ("tp1", follow_up)):
+                w.add_grid(
+                    f"g_{tp}",
+                    shape=SHAPE,
+                    spacing=(1.0, 1.0, 1.0),
+                    timepoint=tp,
+                    frame_uid=f"pseudo:{tp}",
+                )
+                w.add_image(
+                    f"CT_{tp}", np.zeros(SHAPE, np.int16), grid=f"g_{tp}", modality="CT"
+                )
+                w.add_segmentation(
+                    f"les_{tp}",
+                    grid=f"g_{tp}",
+                    instances=found,
+                    annotated_classes=[3],
+                    encoding="instances",
+                    ignore=ignore.get(tp),
+                )
+            w.add_transform(
+                "tp0_to_tp1",
+                kind="affine",
+                matrix=np.eye(4),
+                from_frame="pseudo:tp0",
+                to_frame="pseudo:tp1",
+            )
+        return path
+
+    def _gone(self, path: Path, label_set, ignored: np.ndarray | None) -> Path:
+        """Lesion 7 at baseline, nothing at the follow-up."""
+        return self._visits(
+            path,
+            label_set,
+            baseline=[InstanceInput(class_id=3, instance_id=7, mask=self.BEFORE)],
+            follow_up=[],
+            ignore=None if ignored is None else {"tp1": ignored},
+        )
+
+    @pytest.mark.parametrize("region", ["the lesion", "the whole volume"])
+    def test_S7_7_absence_inside_an_ignore_region_is_unexamined(
+        self, tmp_path, label_set, region
+    ):
+        ignored = self.BEFORE if region == "the lesion" else np.ones(SHAPE, bool)
+        path = self._gone(tmp_path / "ignored.medh5", label_set, ignored)
+        with medh5.open(path) as sample:
+            assert sample.annotations["les_tp1"].has_ignore_region
+            tracking = sample.tracks()
+            assert tracking.states(7) == {"tp0": PRESENT, "tp1": UNEXAMINED}
+            assert not tracking.is_resolved(7)
+            assert tracking.unexamined()["tp1"] == (7,)
+            assert tracking.coverage["tp1"] == frozenset()
+            assert tracking.summary()["resolved"] == []
+
+    def test_S11_3_examined_everywhere_the_absence_is_a_finding(
+        self, tmp_path, label_set
+    ):
+        """The controls: no ignore region, and one that ignores no voxel."""
+        for name, ignored in (("none", None), ("empty", np.zeros(SHAPE, bool))):
+            path = self._gone(tmp_path / f"{name}.medh5", label_set, ignored)
+            with medh5.open(path) as sample:
+                tracking = sample.tracks()
+                assert tracking.state_at(7, "tp1") == RESOLVED, name
+                assert tracking.is_resolved(7), name
+                assert tracking.coverage["tp1"] == frozenset({3}), name
+
+    def test_S11_3_another_annotation_that_examined_the_whole_volume_resolves(
+        self, tmp_path, label_set
+    ):
+        path = self._gone(tmp_path / "second.medh5", label_set, np.ones(SHAPE, bool))
+        with medh5.amend(path) as w:
+            w.add_segmentation(
+                "les_tp1_r2",
+                grid="g_tp1",
+                instances=[],
+                annotated_classes=[3],
+                encoding="instances",
+            )
+        with medh5.open(path) as sample:
+            assert sample.tracks().state_at(7, "tp1") == RESOLVED
+
+    def test_S7_7_a_baseline_that_ignored_the_place_finds_no_new_lesion(
+        self, tmp_path, label_set
+    ):
+        found = [InstanceInput(class_id=3, instance_id=9, mask=self.AFTER)]
+        new = self._visits(
+            tmp_path / "new.medh5", label_set, baseline=[], follow_up=found
+        )
+        with medh5.open(new) as sample:
+            assert sample.tracks().is_new(9), "the control: looked for, not found"
+        path = self._visits(
+            tmp_path / "ignored.medh5",
+            label_set,
+            baseline=[],
+            follow_up=found,
+            ignore={"tp0": self.AFTER},
+        )
+        with medh5.open(path) as sample:
+            tracking = sample.tracks()
+            assert tracking.states(9) == {"tp0": UNEXAMINED, "tp1": PRESENT}
+            assert not tracking.is_new(9)
+            assert tracking.summary()["new"] == []
+
+    def test_the_command_line_says_what_resolved_means(
+        self, tmp_path, label_set, capsys
+    ):
+        from medh5.cli import main
+
+        path = self._gone(tmp_path / "ignored.medh5", label_set, self.BEFORE)
+        assert main(["track", str(path)]) == 0
+        out = capsys.readouterr().out
+        row = next(line for line in out.splitlines() if line.split()[:1] == ["7"])
+        assert row.split()[1:4] == ["lesion", "8", "unexamined"]
+        legend = " ".join(out.split())
+        assert "examined at that timepoint, outside any ignore region, and" in legend
+
 
 class TestClassConflicts:
     def test_S7_4_reclassification_across_visits_is_reported(self, tmp_path, label_set):
