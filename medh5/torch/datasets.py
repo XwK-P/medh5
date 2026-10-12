@@ -49,6 +49,7 @@ import numpy as np
 import numpy.typing as npt
 
 from medh5.annotations.base import VoxelAnnotation
+from medh5.annotations.voxel import InstancesAnnotation
 from medh5.errors import MEDH5ValidationError
 from medh5.labels import IGNORE_ID
 from medh5.sample import Sample, open_sample
@@ -168,6 +169,17 @@ class _Base(_DatasetBase):  # type: ignore[misc,valid-type]
                     f"{sample.path}: no image(s) {missing}; present: "
                     f"{sorted(sample.images)}"
                 )
+            if self.timepoint is not None:
+                # `timepoint=` was ignored beside `images=`: another visit's
+                # images were read without a word.
+                at = sample.at(self.timepoint).images
+                elsewhere = [i for i in self.images if i not in at]
+                if elsewhere:
+                    raise MEDH5ValidationError(
+                        f"{sample.path}: image(s) {elsewhere} are not at "
+                        f"timepoint {self.timepoint!r}, whose images are "
+                        f"{sorted(at)}"
+                    )
             return self.images
         if self.timepoint is not None:
             return tuple(sorted(sample.at(self.timepoint).images))
@@ -286,21 +298,24 @@ class _Base(_DatasetBase):  # type: ignore[misc,valid-type]
                     f"{sorted(sample.annotations)}"
                 )
             ann = sample.annotations[ann_id]
+            if not isinstance(ann, VoxelAnnotation):
+                # Boxes, points and the like have no voxels to read, in any
+                # format: each one failed on a missing method, by its name.
+                raise MEDH5ValidationError(
+                    f"{sample.path}: annotation {ann_id!r} is {ann.kind!r}, and "
+                    f"label_format={self.label_format!r} reads voxel annotations "
+                    "(segmentations) only; leave it out of `annotations=`"
+                )
             wanted = list(classes) if classes else None
             examined = set(ann.annotated_class_ids)
             requested = ann.resolve_classes(wanted)
             annotated[ann_id] = np.asarray(
                 [c in examined for c in requested], dtype=bool
             )
-            region = (
-                sample.ignore_region(ann_id, roi)
-                if isinstance(ann, VoxelAnnotation)
-                else None
+            region = sample.ignore_region(ann_id, roi)
+            ignore[ann_id] = (
+                region if patch is None else patch.apply_padding(region, value=True)
             )
-            if region is not None:
-                ignore[ann_id] = (
-                    region if patch is None else patch.apply_padding(region, value=True)
-                )
             if self.label_format == "instances":
                 chosen = None if wanted is None else requested
                 labels[ann_id] = self._instances_in(ann, patch, chosen)
@@ -316,9 +331,8 @@ class _Base(_DatasetBase):  # type: ignore[misc,valid-type]
                     # rest are painted beneath them: what was not asked for is
                     # background, as in every other label format.
                     array[~np.isin(array, [*requested, IGNORE_ID])] = 0
-                if region is not None:
-                    # As 65535, whatever `ignore_id` the file declares.
-                    array[region] = IGNORE_ID
+                # As 65535, whatever `ignore_id` the file declares.
+                array[region] = IGNORE_ID
                 pad: float = IGNORE_ID
             else:
                 array = np.asarray(ann.dense(wanted, roi=roi), dtype=self.dtype)
@@ -346,10 +360,10 @@ class _Base(_DatasetBase):  # type: ignore[misc,valid-type]
         """
         wanted = None if classes is None else set(classes)
         objects = []
-        for obj in ann.instances():
-            if wanted is not None and obj.class_id not in wanted:
+        for instance_id, class_id, stored, score in _object_rows(ann):
+            if wanted is not None and class_id not in wanted:
                 continue
-            box = np.asarray(obj.box, dtype=np.float64)
+            box = np.asarray(stored, dtype=np.float64)
             if patch is not None:
                 start = np.asarray([s.start for s in patch.slices], dtype=np.float64)
                 stop = np.asarray([s.stop for s in patch.slices], dtype=np.float64)
@@ -359,10 +373,10 @@ class _Base(_DatasetBase):  # type: ignore[misc,valid-type]
                 box = box - start[:, None] + before[:, None]
             objects.append(
                 {
-                    "instance_id": obj.instance_id,
-                    "class_id": obj.class_id,
+                    "instance_id": instance_id,
+                    "class_id": class_id,
                     "box": box.astype(np.float32),
-                    "score": obj.score,
+                    "score": score,
                 }
             )
         return objects
@@ -674,8 +688,17 @@ class PairedPatchDataset(_Base):
         label_id = self.label or pair.label
         if label_id and label_id in sample.annotations:
             ann = sample.annotations[label_id]
-            item["label"] = {label_id: dict(ann.labels)}
-            item["meta"]["label_annotation"] = label_id
+            if ann.kind != "classification":
+                raise MEDH5ValidationError(
+                    f"{sample.path}: label={label_id!r} is a {ann.kind!r} "
+                    "annotation; a pair's label is a classification of the "
+                    "change between its two visits"
+                )
+            # Only the pair it spans: one pair's change was served as the
+            # target of every other pair of the file.
+            if tuple(ann.timepoints) == (pair.first, pair.second):
+                item["label"] = {label_id: dict(ann.labels)}
+                item["meta"]["label_annotation"] = label_id
         return item
 
     # -- internals ---------------------------------------------------------
@@ -689,9 +712,19 @@ class PairedPatchDataset(_Base):
         live in --- so a visit holding both a CT and a PET grid picks the
         annotation belonging to the modality that was asked for rather than
         whichever annotation sorts first.
+
+        A named ``annotation`` lies on one visit's grid, and is drawn from at
+        that visit only; elsewhere the visit's own is selected, as without
+        one.  Taken everywhere, it was refused for every pair not starting at
+        its visit.  A name the file does not hold is still the sampler's to
+        refuse.
         """
-        if self.annotation is not None:
-            return self.annotation
+        named = self.annotation
+        if named is not None:
+            if named not in sample.annotations:
+                return named
+            if grid is None or sample.annotations[named].grid_id == grid:
+                return named
         for name in sorted(sample.at(timepoint).annotations):
             annotation = sample.annotations[name]
             if annotation.kind == "classification":
@@ -869,6 +902,33 @@ class PairedPatchDataset(_Base):
             )
             out[image_id] = patch.apply_padding(array)
         return out
+
+
+def _object_rows(ann: Any) -> Iterator[tuple[int, int, Any, Any]]:
+    """``(instance_id, class_id, box, score)`` of every object of *ann*.
+
+    From the object columns where the encoding keeps them: ``instances()``
+    also decodes every object's mask, for every patch, and an item carries
+    none of them.
+    """
+    if isinstance(ann, InstancesAnnotation):
+        scores = ann.scores
+        rows = zip(
+            ann.instance_ids.tolist(),
+            ann.object_class_ids.tolist(),
+            np.asarray(ann.boxes, dtype=np.float32),
+            strict=True,
+        )
+        for i, (instance_id, class_id, box) in enumerate(rows):
+            yield (
+                instance_id,
+                class_id,
+                box,
+                None if scores is None else float(scores[i]),
+            )
+        return
+    for obj in ann.instances():
+        yield obj.instance_id, obj.class_id, obj.box, obj.score
 
 
 def _require_units(transform: Any, source: Any, target: Any) -> None:

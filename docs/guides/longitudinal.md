@@ -165,12 +165,14 @@ dataset = PairedPatchDataset(
     PatchSampler((96, 96, 96), strategy="foreground", foreground_classes=["lesion"]),
     pair_sampler=TimepointPairSampler("consecutive"),   # or baseline_vs_all, all_pairs
     align="transform",                                  # or "none"
-    annotation="lesions_tp0",   # an id that exists; omit it to pick per visit
+    annotation="lesions_tp0",   # drawn from at tp0; other visits pick their own
 )
 ```
 
-`annotation` names an annotation **in the file**, not a family across visits.
-The example above wrote `lesions_tp0` and `lesions_tp1`, so passing `"lesions"`
+`annotation` names an annotation **in the file**, not a family across visits,
+and windows are drawn from it at its own visit only: at every other visit the
+dataset selects that visit's own annotation, as it does when `annotation` is
+omitted. The example above wrote `lesions_tp0` and `lesions_tp1`, so passing `"lesions"`
 raises `KeyError` on the first item. Omitting it lets the dataset select the
 one belonging to each visit, which is usually what you want.
 

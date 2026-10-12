@@ -238,6 +238,9 @@ class TestMonai:
                 padding_mode="zeros",
             )(tensor)
             (saved,) = out.glob("*.nii.gz")
+            # Named after the sample it came from (`filename_or_obj`), not
+            # numbered.
+            assert saved.name.startswith("mr")
             written[resample] = np.asarray(nib.load(str(saved)).dataobj)
         crop = written[False]
         assert crop.shape == (2, 3, 3, 2)
@@ -308,11 +311,36 @@ class TestMonai:
                 sample.images["CT"].level(1).grid.affine,
             )
 
+    def test_S8_a_box_annotation_is_refused_by_name(self, tmp_path):
+        """`labelmap()` ran before the voxel check, so a box failed on the
+        missing method instead of naming the annotation."""
+        pytest.importorskip("monai")
+        from medh5.monai import to_dict
+
+        path = tmp_path / "boxes.medh5"
+        with medh5.create(path, codec="portable") as w:
+            w.add_grid("g", shape=SHAPE, spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", np.zeros(SHAPE, np.int16), grid="g", modality="CT")
+            box = np.asarray([[[0.5, 2.5], [0.5, 2.5], [0.5, 2.5]]], np.float32)
+            w.add_boxes("det", box, [1], grid="g")
+        with medh5.open(path) as sample:
+            with pytest.raises(MEDH5ValidationError, match="'det' is 'boxes'"):
+                to_dict(sample, ["CT"], ["det"])
+            assert set(to_dict(sample, ["CT"])) == {"CT"}
+
     def test_medh5_metadata_is_json_safe(self, indexed_cohort):
         from medh5.monai import meta_dict
 
         with medh5.open(indexed_cohort[0]) as sample:
             json.dumps(meta_dict(sample, "CT_tp0")["medh5"])
+
+    def test_the_metadata_names_its_file(self, indexed_cohort):
+        from medh5.monai import _annotation_meta, meta_dict
+
+        with medh5.open(indexed_cohort[0]) as sample:
+            assert meta_dict(sample, "CT_tp0")["filename_or_obj"] == sample.path
+            ann = sample.annotations["organs_tp0"]
+            assert _annotation_meta(sample, ann)["filename_or_obj"] == sample.path
 
 
 class TestWithoutMonai:

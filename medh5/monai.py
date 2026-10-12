@@ -144,6 +144,9 @@ def meta_dict(
         "original_affine": affine,
         "spatial_shape": np.asarray(grid.spatial_shape, dtype=np.int64),
         "space": space or grid.coord_system,
+        # The file it came from, as MONAI's own loaders say: `SaveImage`
+        # names its output after it, and numbered them without it.
+        "filename_or_obj": sample.path,
         # The grid's channel axis where it has one.  "no_channel" on an image
         # that has one makes `EnsureChannelFirst` add a second channel axis.
         "original_channel_dim": (
@@ -341,6 +344,13 @@ def to_dict(
         item[image_id] = to_metatensor(sample, image_id, physical=physical, space=space)
     for ann_id in annotations:
         ann = sample.annotations[ann_id]
+        if not isinstance(ann, VoxelAnnotation):
+            # Checked before `labelmap()`, which a box or a point lacks.
+            raise MEDH5ValidationError(
+                f"{sample.path}: annotation {ann_id!r} is {ann.kind!r}, and "
+                "to_dict reads voxel annotations (segmentations) only, as label "
+                "volumes"
+            )
         # `int64`, the dtype torch indexes and one-hots with.  `int16` wrapped
         # every class id above 32767 -- §5.3 gives them the full `uint16` range
         # -- and turned the ignore id 65535 into -1 without anything saying so.
@@ -349,8 +359,7 @@ def to_dict(
         # `ignore_id`, in band or from its sibling mask (§7.7), and a file may
         # declare another id than 65535.  Every item carries 65535, so one
         # `ignore_index=65535` masks it out of the loss whatever the file says.
-        if isinstance(ann, VoxelAnnotation):
-            planes[sample.ignore_region(ann_id)] = IGNORE_ID
+        planes[sample.ignore_region(ann_id)] = IGNORE_ID
         item[ann_id] = _metatensor(planes, _annotation_meta(sample, ann, space=space))
     return item
 
@@ -366,6 +375,7 @@ def _annotation_meta(
         "original_affine": affine,
         "spatial_shape": np.asarray(grid.spatial_shape, dtype=np.int64),
         "space": space or grid.coord_system,
+        "filename_or_obj": sample.path,
         # A label volume is spatial whatever its grid holds: `labelmap()` has
         # no channel axis, so there is none to name.
         "original_channel_dim": "no_channel",

@@ -34,10 +34,13 @@ and shrinks back as they are released.
 **A cached handle can outlive its file.**  ``amend`` is copy-on-write: it
 writes a new file and renames it over the old, and a handle opened before
 keeps reading the old inode.  A lease given the ``content_id`` it must read
-(:meth:`HandleCache.lease`) therefore checks the handle's: a stale one is
+(:meth:`HandleCache.lease`) therefore checks the handle's, and the file's
+identity (device, inode, size, modification time) against the one recorded
+when the handle was opened --- one ``stat`` per lease: a stale handle is
 reopened (for that lease alone while another is still reading the old
 handle), and a sample that is still another version is refused (T302) ---
-what a task's rows pin is what they read.
+what a task's rows pin is what they read, warm cache or cold.  A lease in
+progress finishes on the bytes it opened.
 """
 
 from __future__ import annotations
@@ -57,6 +60,9 @@ DEFAULT_MAXSIZE = 32
 Key = tuple[str, str | None]
 """``(path, sample_key)``: a standalone file is ``(path, None)``."""
 
+Identity = tuple[int, int, int, int] | None
+"""``(st_dev, st_ino, st_size, st_mtime_ns)`` of a path; ``None`` unknown."""
+
 
 def _key(path: str | os.PathLike[str], member: str | None) -> Key:
     return (str(Path(path)), member)
@@ -75,6 +81,30 @@ def _open(key: Key) -> Sample:
     return found
 
 
+def _identity(path: str) -> Identity:
+    try:
+        found = os.stat(path)
+    except OSError:
+        return None
+    return (found.st_dev, found.st_ino, found.st_size, found.st_mtime_ns)
+
+
+def _open_identified(key: Key) -> tuple[Sample, Identity]:
+    """A handle for *key* and the identity of the file it holds.
+
+    A file replaced while it was being opened leaves which one the handle
+    holds unknown, so it is opened again; ``None`` after three tries, which
+    the next pinned lease takes for a replacement.
+    """
+    for _ in range(3):
+        before = _identity(key[0])
+        sample = _open(key)
+        if _identity(key[0]) == before and before is not None:
+            return sample, before
+        sample.close()
+    return _open(key), None
+
+
 _ABANDONED: list[Sample] = []
 """Samples inherited across a fork: pinned, never closed, never collected."""
 
@@ -89,12 +119,21 @@ def _abandon(samples: Iterator[Sample] | list[Sample]) -> None:
 class HandleCache:
     """PID-scoped, thread-safe LRU cache of open samples."""
 
-    __slots__ = ("_items", "_lock", "_owner_pid", "_pins", "maxsize", "opens")
+    __slots__ = (
+        "_identities",
+        "_items",
+        "_lock",
+        "_owner_pid",
+        "_pins",
+        "maxsize",
+        "opens",
+    )
 
     def __init__(self, maxsize: int = DEFAULT_MAXSIZE) -> None:
         self.maxsize = int(maxsize)
         self._items: OrderedDict[Key, Sample] = OrderedDict()
         self._pins: dict[Key, int] = {}
+        self._identities: dict[Key, Identity] = {}
         self._lock = threading.Lock()
         self._owner_pid = os.getpid()
         self.opens = 0
@@ -116,6 +155,7 @@ class HandleCache:
             self._lock = threading.Lock()
             self._items = OrderedDict()
             self._pins = {}
+            self._identities = {}
             self._owner_pid = pid
 
     def _acquire(self, key: Key, *, pin: bool) -> Sample:
@@ -124,7 +164,7 @@ class HandleCache:
         if cached is not None:
             self._items.move_to_end(key)
         else:
-            cached = _open(key)
+            cached, self._identities[key] = _open_identified(key)
             self.opens += 1
             self._items[key] = cached
         if pin:
@@ -144,6 +184,7 @@ class HandleCache:
             if key == keep or self._pins.get(key):
                 continue
             evicted.append(self._items.pop(key))
+            self._identities.pop(key, None)
         return evicted
 
     @staticmethod
@@ -178,10 +219,13 @@ class HandleCache:
         """An open handle that no eviction closes until the block ends.
 
         With ``content_id``, the handle is that version of the sample: a
-        cached handle whose file was replaced since it was opened is reopened
-        --- in the cache, or, while another lease is still reading the old
-        handle, for this lease alone --- and a sample that is another version
-        all the same is refused with ``MEDH5ValidationError`` (T302).
+        cached handle whose file was replaced since it was opened --- another
+        version, or the file's identity changed --- is reopened, in the
+        cache, or, while another lease is still reading the old handle, for
+        this lease alone; and a sample that is another version all the same
+        is refused with ``MEDH5ValidationError`` (T302).  A warm handle of the
+        pinned version was served from a replaced file, while a cold cache
+        refused the same row.
         """
         self._ensure_owner()
         key = _key(path, sample_key)
@@ -189,9 +233,13 @@ class HandleCache:
         private: list[Sample] = []
         with self._lock:
             sample = self._acquire(key, pin=True)
-            if content_id is not None and sample.content_id != content_id:
+            if content_id is not None and (
+                sample.content_id != content_id
+                or _identity(key[0]) != self._identities.get(key)
+                or self._identities.get(key) is None
+            ):
                 try:
-                    sample = _open(key)
+                    sample, identity = _open_identified(key)
                 except BaseException:
                     self._unpin(key)
                     raise
@@ -199,6 +247,7 @@ class HandleCache:
                 if self._pins.get(key) == 1:  # no other lease is reading it
                     stale.append(self._items.pop(key))
                     self._items[key] = sample
+                    self._identities[key] = identity
                 else:
                     private.append(sample)
             evicted = self._overflow(keep=key)
@@ -237,12 +286,20 @@ class HandleCache:
         self._close(evicted)
 
     def clear(self) -> None:
-        """Drop every handle without closing it --- the post-fork reset."""
-        _abandon(list(self._items.values()))
-        self._lock = threading.Lock()
-        self._items = OrderedDict()
-        self._pins = {}
-        self._owner_pid = os.getpid()
+        """Drop every handle: abandon what was inherited across a fork, and
+        close what this process opened --- but a handle a lease is reading,
+        which its lease's end leaves to the LRU.
+
+        Abandoning in the owning process too pinned every handle open for the
+        life of the process: each call leaked them all.
+        """
+        self._ensure_owner()
+        with self._lock:
+            idle = [key for key in self._items if not self._pins.get(key)]
+            samples = [self._items.pop(key) for key in idle]
+            for key in idle:
+                self._identities.pop(key, None)
+        self._close(samples)
 
     def close_all(self) -> None:
         """Close what *this* process opened, and abandon anything inherited.
@@ -259,6 +316,7 @@ class HandleCache:
             samples = list(reversed(self._items.values()))
             self._items = OrderedDict()
             self._pins = {}
+            self._identities = {}
         self._close(samples)
 
 
@@ -276,7 +334,8 @@ def open_cached(path: str | os.PathLike[str], sample_key: str | None = None) -> 
 
 
 def worker_init_fn(worker_id: int) -> None:
-    """``DataLoader(worker_init_fn=...)``: drop handles inherited across ``fork``."""
+    """``DataLoader(worker_init_fn=...)``: drop handles inherited across ``fork``
+    (in a process that opened them, close them; see :meth:`HandleCache.clear`)."""
     CACHE.clear()
 
 

@@ -14,8 +14,13 @@ pip install "medh5[torch]"
 arguments: `images`, `annotations`, `label_format` (`onehot`, `labelmap`,
 `instances` or `none`), `physical`, `dtype`, `timepoint`. A patch is drawn, and
 a cover planned, on the grid the images they read share, so `timepoint="tp1"`
-reads the follow-up's grid. `PairedPatchDataset` takes `images`, `physical` and
+reads the follow-up's grid; `images=` given beside it must be at that visit. `PairedPatchDataset` takes `images`, `physical` and
 `dtype`, and refuses the other three: a pair chooses its own visits.
+
+`annotations` names voxel annotations (segmentations) only: every label format,
+`instances` included, is read from voxels, and a `boxes`, `points` or other
+geometric annotation is refused by name (`MEDH5ValidationError`), as it is by
+MONAI's `to_dict`.
 
 ```python
 from medh5.torch import (
@@ -92,7 +97,9 @@ ds.report      # files, pairs, and cross-sectional files that contributed none
 `all_pairs`. Each item carries both visits' patches, `meta["pair"]` and
 `meta["interval_days"]`, and — where a change label spans exactly that pair —
 `item["label"][ann_id]`, that classification's `{class_key: value}`. `label=`
-names the change-label annotation explicitly instead. An item's `images` and
+names the change-label annotation explicitly instead: a classification, carried
+only by the pair it spans. `annotation=` is drawn from at its own visit, and
+every other visit selects its own. An item's `images` and
 `valid` are keyed by timepoint first (`item["images"]["tp0"]["CT_tp0"]`), so
 `collate` batches pairs of the same two visits, and names the key when a batch
 mixes others.
@@ -219,7 +226,15 @@ through it. The datasets read through `CACHE.lease(path, sample_key,
 content_id=...)`, which holds the handle until the block ends. Given the
 `content_id` a task's row pins, a lease reopens a handle whose file `amend`
 replaced after it was opened, and refuses a sample that is another version
-all the same (`T302`): what the row pins is what it reads.
+all the same (`T302`): what the row pins is what it reads. Every new lease
+re-checks the source, with one `stat` against the file's identity when its
+handle was opened, so a worker with the file cached and one without agree; a
+lease in progress finishes on the bytes it opened. `VolumeDataset`,
+`PatchDataset`, `GridPatchDataset` and `PairedPatchDataset` lease without a
+pin, so after an `amend` during training one epoch can read both versions of a
+file: a worker that has the old one open keeps reading it until the handle is
+evicted. `clear()` (and `worker_init_fn`) abandons handles inherited across a
+`fork`, and closes the idle ones the process opened itself.
 
 A 10-epoch soak over the cache leaves the handle count and the descriptor count
 flat; there is a test that asserts it.
@@ -290,12 +305,12 @@ A batch, for `B` rows:
 
 | Key | Shape | Meaning |
 |---|---|---|
-| `images[slot]` | `(B, C, *patch)` | The slot's window on its image's own grid; zeros where the slot is empty |
+| `images[slot]` | `(B, C, *patch)` | The slot's window on its image's own grid; zeros where the slot is empty, with the channel count of the images that fill the slot anywhere in the task (refused, `T102`, when they disagree). A slot without a `patch` reads whole volumes, which batch only when they agree: give it a `patch`, or use `batch_size=1` |
 | `present[slot]` | `(B,)` bool | Modality availability: an eligible image filled the slot |
 | `valid[slot]` | `(B, *patch)` bool | Field of view: inside the image and its valid region, never the padding |
 | `image_time[slot][...]` | `(B, 2)`, `(B,)` | The image's acquisition (`start_age_h`) and availability (`available_age_h`), as ages before the cutoff, with `start_known` and `available_known` |
 | `label[slot]`, `annotated[slot]` | `(B, K, *patch)`, `(B, K)` | Supervision for the slot's `classes`, and whether each was examined (coverage) |
-| `ignore[slot]` | `(B, *patch)` bool | Voxels a loss must not score: ignore regions and padding |
+| `ignore[slot]` | `(B, *patch)` bool | Voxels a loss must not score: padding, and the ignore regions of the annotations that label or examined one of the slot's `classes` (an annotation of other classes only has no say). It is one mask for every class, so with several classes a region one annotation ignores is masked for the others' supervision too |
 | `events[...]` | `(B, N)`, `(B, N, 2)` | The admitted versions in input order, padded to the longest history; `mask` marks real events, `length` counts them (below) |
 | `documents[...]` | `(B, M, D)`, `(B, M)`, `(B, M, 2)` | `features` of the admitted documents, `event` (the owning version's position in `events`), `start_age_h` and `available_age_h` with their `*_known`; `mask` and `length` |
 | `target["value"]`, `target["observed"]` | `(B,)` | The label, and whether it is observed (a censored row is not) |
@@ -351,7 +366,8 @@ tensor's space, and their `units` — and refuses a tensor whose metadata states
 no affine or no space, which has none to return.
 
 `to_dict(sample, images, annotations)` builds a dictionary-transform item, with
-the same `space=` and `physical=` options.
+the same `space=` and `physical=` options. Every tensor's `filename_or_obj` is
+the sample's path, so `SaveImage` names its output after the sample.
 Annotations arrive as `int64` label volumes with their own grid's affine, and
 every voxel of the §7.7 ignore region is `65535` whichever encoding stores it —
 pass `ignore_index=65535` to the loss.
