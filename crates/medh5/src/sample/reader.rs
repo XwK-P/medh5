@@ -552,7 +552,9 @@ impl Sample {
         let window = annotation.window(roi)?;
         let shape: Vec<usize> = window.iter().map(|(a, b)| b.saturating_sub(*a)).collect();
         let mut region = ArrayD::from_elem(IxDyn(&shape), false);
-        if matches!(annotation.kind(), "labelmap" | "layers") {
+        // In band only where the data can hold the ignore id: a training
+        // item reads this per patch, and most label volumes hold none.
+        if matches!(annotation.kind(), "labelmap" | "layers") && annotation.may_encode_ignore()? {
             let slices = window_slices(&window);
             region.zip_mut_with(&annotation.ignore_mask(Some(&slices))?, |r, v| *r |= *v);
         }

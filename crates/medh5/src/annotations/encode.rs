@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use half::f16;
 use ndarray::{ArrayD, ArrayViewD, Axis, Dimension, IxDyn, Slice as NdSlice};
 
-use super::layout::{column_problems, mask_problems};
+use super::layout::{column_problems, mask_problems, table_problems};
 use super::payload::{normalize_masks, packbits, unpackbits, Masks, Payload, PayloadData};
 use super::select::{analyse, bbox, label_dtype_size, layers_from_colouring};
 use crate::array::{DType, NdArray};
@@ -53,6 +53,13 @@ pub struct EncodeOptions {
 
 fn first_true(mask: &ArrayD<bool>) -> Option<Vec<usize>> {
     mask.indexed_iter().find(|(_, v)| **v).map(|(idx, _)| idx.slice().to_vec())
+}
+
+/// Whether `[lo, hi]` bounds one axis of a box (§8.2): finite, and `lo` not
+/// past `hi`.  A NaN fails `lo <= hi` --- and so read as a box --- and an
+/// infinite bound spans no grid.
+pub fn box_axis_ok(lo: f32, hi: f32) -> bool {
+    lo <= hi && lo.is_finite() && hi.is_finite()
 }
 
 /// Refuse an in-band ignore region the volume cannot hold (§6.2, §7.7): a
@@ -597,8 +604,11 @@ pub fn encode_instances(
             return Err(Error::coded("E405", format!("instance {}: a box is (S, 2)", obj.instance_id)));
         }
         let s = bx.len() / 2;
-        if (0..s).any(|k| bx[2 * k] > bx[2 * k + 1]) {
-            return Err(Error::coded("E406", format!("instance {}: box has lo > hi", obj.instance_id)));
+        if (0..s).any(|k| !box_axis_ok(bx[2 * k], bx[2 * k + 1])) {
+            return Err(Error::coded(
+                "E406",
+                format!("instance {}: box has lo > hi, or a bound that is not finite", obj.instance_id),
+            ));
         }
         match ndim {
             None => ndim = Some(s),
@@ -728,10 +738,16 @@ fn minted_id(start_id: u64, i: usize) -> Result<u64> {
 /// One object per class --- what a converter can honestly infer from masks
 /// --- the `i`-th class's minted `start_id + i`.  An id past the largest
 /// `uint64` is refused (E404).
+///
+/// A class whose mask is empty has no object, and none is made for it ---
+/// [`encode_instances`] refuses an empty object --- but it keeps its place
+/// in the numbering, as the `instances` transcode numbers objects; pass the
+/// classes to [`encode_instances`] as `class_ids` to keep them examined.
 pub fn instances_from_masks(masks: &Masks, start_id: u64) -> Result<Vec<InstanceInput>> {
     masks
         .iter()
         .enumerate()
+        .filter(|(_, (_, mask))| mask.iter().any(|v| *v))
         .map(|(i, (class_id, mask))| {
             Ok(InstanceInput {
                 class_id: *class_id,
@@ -785,6 +801,7 @@ pub fn decode_crop(mask_data: &[u8], offsets: &[u64], shapes: &ArrayD<i64>, inde
 /// A `probmap` is thresholded at `threshold` when given, else at its own
 /// declared threshold.
 pub fn payload_to_masks(payload: &Payload, spatial_shape: Option<&[usize]>, threshold: Option<f64>) -> Result<Masks> {
+    check_planes(payload)?;
     let mut out = Masks::new();
     match payload.kind.as_str() {
         "labelmap" => {
@@ -836,6 +853,50 @@ pub fn payload_to_masks(payload: &Payload, spatial_shape: Option<&[usize]>, thre
         other => return Err(Error::coded("E401", format!("cannot decode voxel kind {}", repr_str(other)))),
     }
     Ok(out)
+}
+
+/// Hold a hand-built `layers`, `bitmask` or `probmap` payload to what a
+/// stored one is held to when it is opened, before a plane is indexed: a
+/// class table with one row or bit per stored plane and each class once
+/// (E405, E404), and one probability plane per class (E405).  A payload
+/// with `class_ids` is held to them too.
+fn check_planes(payload: &Payload) -> Result<()> {
+    let kind = payload.kind.as_str();
+    if !matches!(kind, "layers" | "bitmask" | "probmap") {
+        return Ok(());
+    }
+    let planes = payload.datasets.get("data").map(|d| d.shape().first().copied().unwrap_or(0));
+    if kind == "probmap" {
+        if let Some(planes) = planes.filter(|p| *p != payload.class_ids.len()) {
+            return Err(Error::coded(
+                "E405",
+                format!(
+                    "`data` has {planes} plane(s) for {} class id(s); a probmap stores one plane per class, in \
+                     `class_ids` order",
+                    payload.class_ids.len()
+                ),
+            ));
+        }
+        return Ok(());
+    }
+    let table = if kind == "layers" { "layer_class_ids" } else { "bit_class_ids" };
+    let shape_of = |name: &str| payload.datasets.get(name).map(PayloadData::shape);
+    let rows: Option<Vec<Vec<i64>>> = match payload.datasets.get(table) {
+        None => None,
+        Some(_) => {
+            let values = payload.array(table)?.cast::<i64>();
+            Some(if kind == "layers" && values.ndim() == 2 {
+                values.outer_iter().map(|row| row.iter().copied().collect()).collect()
+            } else {
+                vec![values.iter().copied().collect()]
+            })
+        }
+    };
+    let declared = (!payload.class_ids.is_empty()).then_some(payload.class_ids.as_slice());
+    if let Some(problem) = table_problems(kind, &shape_of, planes, rows.as_deref(), declared).first() {
+        return Err(Error::coded(problem.code, problem.message.clone()));
+    }
+    Ok(())
 }
 
 fn instances_to_masks(payload: &Payload, spatial_shape: &[usize]) -> Result<Masks> {
@@ -987,6 +1048,15 @@ pub fn check_identity(from_kind: &str, to_kind: &str, drop_identity: bool) -> Re
 }
 
 /// Convert a payload to another encoding, preserving `contains`.
+///
+/// Refused as `SampleWriter.transcode_annotation` refuses a stored one:
+/// object identity cannot be made from a dense encoding (E404, §7.4), and
+/// leaves `instances` only with `drop_identity`; class identity cannot go
+/// into a `mask` (E404).  An in-band ignore region (§7.7) --- the voxels of
+/// a `labelmap` or `layers` payload holding `options.ignore_id`, 65535 by
+/// default --- is carried in band to `labelmap` and `layers`, beside any
+/// `options.ignore`, and refused (E404) for an encoding that cannot hold it,
+/// where it would have read as background: verified absent.
 pub fn transcode_payload(
     payload: &Payload,
     to_kind: &str,
@@ -1000,12 +1070,67 @@ pub fn transcode_payload(
     }
     check_target(to_kind)?;
     check_identity(&payload.kind, to_kind, drop_identity)?;
+    if to_kind == "instances" {
+        return Err(Error::coded(
+            "E404",
+            format!(
+                "cannot transcode {} to 'instances': a dense encoding carries no object identity, so every object of \
+                 a class would merge into one with a newly minted instance_id (spec §7.4). Re-derive the objects \
+                 from the source that had them.",
+                repr_str(&payload.kind)
+            ),
+        ));
+    }
     let masks = payload_to_masks(payload, spatial_shape, threshold)?;
     let shape: Vec<usize> = match spatial_shape {
         Some(s) => s.to_vec(),
         None => masks.values().next().map(|m| m.shape().to_vec()).unwrap_or_default(),
     };
-    encode_masks(&masks, to_kind, Some(&shape), options)
+    let ignore_id = options.ignore_id.unwrap_or(IGNORE_ID);
+    let Some(region) = in_band_ignore(payload, ignore_id)? else {
+        return encode_masks(&masks, to_kind, Some(&shape), options);
+    };
+    if !IN_BAND_IGNORE_KINDS.contains(&to_kind) {
+        return Err(Error::coded(
+            "E404",
+            format!(
+                "cannot transcode {} to {}: the payload carries an in-band ignore region, which {} cannot hold \
+                 (spec §7.7), and its voxels would read as verified absent. Keep the region as a separate `mask` \
+                 annotation named by `ignore_mask`, or transcode to 'labelmap' or 'layers' instead.",
+                repr_str(&payload.kind),
+                repr_str(to_kind),
+                repr_str(to_kind)
+            ),
+        ));
+    }
+    let mut carried = options.clone();
+    carried.ignore_id = Some(ignore_id);
+    carried.ignore = Some(match &options.ignore {
+        Some(given) if given.shape() == region.shape() => {
+            ndarray::Zip::from(given).and(&region).map_collect(|g, r| *g || *r)
+        }
+        // A region of another shape is the encoder's to refuse (E405).
+        Some(given) => given.clone(),
+        None => region,
+    });
+    encode_masks(&masks, to_kind, Some(&shape), &carried)
+}
+
+/// The in-band ignore region (§7.7) of a `labelmap` or `layers` payload ---
+/// where any plane holds `ignore_id` --- or `None` where no voxel does.  An
+/// `ignore_id` that is one of the payload's classes marks that class, not a
+/// region.
+fn in_band_ignore(payload: &Payload, ignore_id: i64) -> Result<Option<ArrayD<bool>>> {
+    if !IN_BAND_IGNORE_KINDS.contains(&payload.kind.as_str()) || payload.class_ids.contains(&ignore_id) {
+        return Ok(None);
+    }
+    let data = payload.data()?.cast::<i64>();
+    let region = if payload.kind == "layers" && data.ndim() > 0 {
+        data.map_axis(Axis(0), |lane| lane.iter().any(|v| *v == ignore_id))
+    } else {
+        data.mapv(|v| v == ignore_id)
+    };
+    Ok(region.iter().any(|v| *v).then_some(region))
 }
 
 /// Whether two mask sets agree on every class --- the losslessness check.
@@ -1013,16 +1138,20 @@ pub fn masks_equal(a: &Masks, b: &Masks) -> bool {
     a.len() == b.len() && a.iter().all(|(k, v)| b.get(k) == Some(v))
 }
 
-/// Whether `A -> B -> A` preserves every class mask.
+/// Whether transcoding to `to_kind` keeps what the payload holds: every
+/// class mask, and the in-band ignore region (§7.7) under the default
+/// `ignore_id`, decode alike from the payload and from its transcode
+/// (§7.6).  A conversion [`transcode_payload`] refuses raises as it does.
 pub fn check_roundtrip(payload: &Payload, to_kind: &str, spatial_shape: Option<&[usize]>) -> Result<bool> {
     let shape: Option<Vec<usize>> = match spatial_shape {
         Some(s) => Some(s.to_vec()),
-        None => payload.datasets.get("data").map(|d| d.shape()[payload.stacked_axes..].to_vec()),
+        None => payload.datasets.get("data").and_then(|d| d.shape().get(payload.stacked_axes..).map(<[usize]>::to_vec)),
     };
     let original = payload_to_masks(payload, shape.as_deref(), None)?;
     let converted = transcode_payload(payload, to_kind, shape.as_deref(), None, false, &EncodeOptions::default())?;
     let decoded = payload_to_masks(&converted, shape.as_deref(), None)?;
-    Ok(masks_equal(&original, &decoded))
+    Ok(masks_equal(&original, &decoded)
+        && in_band_ignore(payload, IGNORE_ID)? == in_band_ignore(&converted, IGNORE_ID)?)
 }
 
 /// A payload dataset as `PayloadData`, for writers building payloads by hand.

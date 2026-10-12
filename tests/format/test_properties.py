@@ -372,6 +372,9 @@ class TestTranscodeRoundTrip:
             # these only a labelmap cannot: every other one holds an overlap.
             if _labelmap_refused_an_overlap(exc, target == "labelmap", masks):
                 return
+            # Object identity cannot be made from a dense encoding (§7.4).
+            if target == "instances" and getattr(exc, "code", None) == "E404":
+                return
             raise
         except Exception as exc:
             raise AssertionError(

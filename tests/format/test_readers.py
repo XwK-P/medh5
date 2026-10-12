@@ -648,3 +648,78 @@ class TestFastPathsAreExact:
             assert annotation.kind == encoding
             counts = annotation.voxel_counts()
         assert counts[1] == int(first.sum()) and counts[2] == int(second.sum())
+
+
+def _index_sample(path: Path, encoding: str, masks: dict[int, np.ndarray]) -> Path:
+    with medh5.create(path, codec="portable") as w:
+        w.add_grid("ct", shape=SHAPE, spacing=(1.0, 1.0, 1.0))
+        w.add_image("CT", np.zeros(SHAPE, np.int16), grid="ct", modality="CT")
+        common: dict[str, Any] = {"grid": "ct", "annotated_classes": sorted(masks)}
+        if encoding == "instances":
+            objects = [
+                InstanceInput(class_id=c, instance_id=i + 1, mask=m)
+                for i, (c, m) in enumerate(masks.items())
+            ]
+            w.add_segmentation("seg", instances=objects, **common)
+        elif encoding == "probmap":
+            soft = {c: m.astype(float) for c, m in masks.items()}
+            w.add_segmentation("seg", probabilities=soft, **common)
+        else:
+            w.add_segmentation("seg", masks=masks, encoding=encoding, **common)
+    return path
+
+
+class TestIndexEquivalence:
+    """§14.3: the index is the same whichever encoding holds the classes.
+    `labelmap`, `layers` and `bitmask` are walked once for every class;
+    `instances` and `probmap` are decoded class by class, as every encoding
+    was before --- so agreeing with them is agreeing with the old index."""
+
+    @pytest.mark.parametrize("overlap", [False, True])
+    def test_S14_3_every_encoding_builds_the_same_index(self, tmp_path, overlap):
+        rng = np.random.default_rng(3)
+        masks = {}
+        for class_id in (1, 2, 300, 7):
+            mask = rng.random(SHAPE) < 0.2
+            if not overlap:
+                for other in masks.values():
+                    mask &= ~other
+            masks[class_id] = mask
+        masks[7] = np.zeros(SHAPE, dtype=bool)  # examined, absent
+        encodings = ("layers", "bitmask", "instances", "probmap")
+        if not overlap:
+            encodings = ("labelmap", *encodings)
+        built = {}
+        for encoding in encodings:
+            if encoding == "instances":
+                present = {c: m for c, m in masks.items() if m.any()}
+                path = _index_sample(tmp_path / f"{encoding}.medh5", encoding, present)
+            else:
+                path = _index_sample(tmp_path / f"{encoding}.medh5", encoding, masks)
+            with medh5.open(path) as sample:
+                ann = sample.annotations["seg"]
+                built[encoding] = [
+                    medh5.storage.build_index(
+                        ann, classes=[1, 2, 300, 7], max_coords=n, occupancy=k, seed=5
+                    )
+                    for n, k in ((20, 2), (100000, None))
+                ]
+        reference = built["probmap"]
+        for encoding, payloads in built.items():
+            for got, want in zip(payloads, reference, strict=True):
+                assert got.class_ids.tolist() == want.class_ids.tolist(), encoding
+                assert np.array_equal(got.voxel_counts, want.voxel_counts), encoding
+                assert np.array_equal(
+                    got.class_bboxes, want.class_bboxes, equal_nan=True
+                ), encoding
+                assert got.fg_coords.keys() == want.fg_coords.keys(), encoding
+                for key in want.fg_coords:
+                    assert np.array_equal(got.fg_coords[key], want.fg_coords[key])
+                if want.occupancy is None:
+                    assert got.occupancy is None
+                else:
+                    assert np.array_equal(got.occupancy, want.occupancy), encoding
+        # All the coordinates, where none are drawn, are every voxel.
+        full = reference[1]
+        for position, class_id in enumerate(full.class_ids.tolist()):
+            assert full.voxel_counts[position] == masks[class_id].sum()

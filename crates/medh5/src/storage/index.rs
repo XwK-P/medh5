@@ -8,10 +8,11 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use indexmap::IndexMap;
-use ndarray::{Array2, Array3, ArrayD, Axis, Dimension, IxDyn};
+use ndarray::{Array2, Array3, ArrayD, Axis, IxDyn};
 use serde_json::{json, Map, Value};
 
 use super::codecs::{dataset_layout, CodecProfile, Role};
+use crate::annotations::read::walk_rows;
 use crate::annotations::Annotation;
 use crate::array::{Index, NdArray, Slice};
 use crate::geometry::affine::slices_to_box;
@@ -44,49 +45,72 @@ pub struct IndexPayload {
 }
 
 /// Uniformly subsample foreground voxel coordinates.
+///
+/// Every foreground voxel when there are at most `max_coords`; otherwise
+/// `max_coords` of them drawn without replacement, in C order.
 pub fn sample_foreground_coords(mask: &ArrayD<bool>, max_coords: usize, rng: &mut Rng) -> Result<Array2<i32>> {
-    let ndim = mask.ndim();
-    let total = mask.iter().filter(|v| **v).count();
-    if total == 0 {
-        return Ok(Array2::zeros((0, ndim)));
+    let mask = mask.as_standard_layout();
+    let values = mask.as_slice().expect("standard layout");
+    let mut picker = Picker::new(values.iter().filter(|v| **v).count(), max_coords, rng)?;
+    for (flat, v) in values.iter().enumerate() {
+        if *v {
+            picker.offer(flat);
+        }
     }
-    let shape = mask.shape().to_vec();
-    let unravel = |flat: usize| -> Vec<i32> {
-        let mut rest = flat;
-        let mut out = vec![0i32; ndim];
-        for axis in (0..ndim).rev() {
-            out[axis] = (rest % shape[axis]) as i32;
-            rest /= shape[axis];
-        }
-        out
-    };
-    let picks = if total <= max_coords {
-        None
-    } else {
-        let mut p = rng.sample_without_replacement(total, max_coords)?;
-        p.sort_unstable();
-        Some(p)
-    };
-    let mut chosen = Vec::with_capacity(total.min(max_coords));
-    let mut ordinal = 0usize;
-    let mut next = 0usize;
-    for (flat, v) in mask.iter().enumerate() {
-        if !*v {
-            continue;
-        }
-        match &picks {
-            None => chosen.push(flat),
+    picker.coords(mask.shape())
+}
+
+/// The foreground voxels [`sample_foreground_coords`] keeps of one class,
+/// offered in C order: every one, or the draw it made from the count.
+struct Picker {
+    picks: Option<Vec<usize>>,
+    ordinal: usize,
+    next: usize,
+    chosen: Vec<usize>,
+}
+
+impl Picker {
+    /// The draw is made here, from the class's voxel count alone, so a
+    /// class's picks depend only on its count and the classes drawn before.
+    fn new(total: usize, max_coords: usize, rng: &mut Rng) -> Result<Picker> {
+        let picks = if total == 0 || total <= max_coords {
+            None
+        } else {
+            let mut p = rng.sample_without_replacement(total, max_coords)?;
+            p.sort_unstable();
+            Some(p)
+        };
+        Ok(Picker { picks, ordinal: 0, next: 0, chosen: Vec::with_capacity(total.min(max_coords)) })
+    }
+
+    fn offer(&mut self, flat: usize) {
+        match &self.picks {
+            None => self.chosen.push(flat),
             Some(p) => {
-                if next < p.len() && p[next] == ordinal {
-                    chosen.push(flat);
-                    next += 1;
+                if self.next < p.len() && p[self.next] == self.ordinal {
+                    self.chosen.push(flat);
+                    self.next += 1;
                 }
             }
         }
-        ordinal += 1;
+        self.ordinal += 1;
     }
-    let flat: Vec<i32> = chosen.into_iter().flat_map(unravel).collect();
-    Ok(Array2::from_shape_vec((flat.len() / ndim.max(1), ndim), flat)?)
+
+    /// The kept voxels' `(n, S)` indices in a volume of `shape`.
+    fn coords(self, shape: &[usize]) -> Result<Array2<i32>> {
+        let ndim = shape.len();
+        let unravel = |flat: usize| -> Vec<i32> {
+            let mut rest = flat;
+            let mut out = vec![0i32; ndim];
+            for axis in (0..ndim).rev() {
+                out[axis] = (rest % shape[axis]) as i32;
+                rest /= shape[axis];
+            }
+            out
+        };
+        let flat: Vec<i32> = self.chosen.into_iter().flat_map(unravel).collect();
+        Ok(Array2::from_shape_vec((flat.len() / ndim.max(1), ndim), flat)?)
+    }
 }
 
 /// Low-resolution "is there anything in this block" map, for rejection
@@ -96,18 +120,84 @@ pub fn occupancy(mask: &ArrayD<bool>, factor: usize) -> Result<ArrayD<bool>> {
     if factor == 0 {
         return Err(Error::Value("an occupancy factor must be at least 1".into()));
     }
-    let coarse: Vec<usize> = mask.shape().iter().map(|n| n.div_ceil(factor).max(1)).collect();
-    let mut out = ArrayD::from_elem(IxDyn(&coarse), false);
-    for (idx, v) in mask.indexed_iter() {
-        if *v {
-            let block: Vec<usize> = idx.slice().iter().map(|i| i / factor).collect();
-            out[IxDyn(&block)] = true;
+    let mask = mask.as_standard_layout();
+    let mut tally = Tally::new(mask.shape(), Some(factor));
+    if mask.ndim() == 0 {
+        // One voxel, and one block holding it.
+        if mask.iter().any(|v| *v) {
+            tally.occupied.as_mut().expect("a factor").fill(true);
+        }
+    } else {
+        walk_rows(mask.as_slice().expect("standard layout"), mask.shape(), |row, outer, k, v| {
+            if *v {
+                tally.add(row, outer, k);
+            }
+        });
+    }
+    tally.occupancy()
+}
+
+/// One class's count, bounds and occupancy, gathered a voxel at a time in
+/// one pass --- the rows of the last axis in C order, as
+/// [`Annotation::scan_classes`] and [`walk_rows`] hand them out.
+struct Tally {
+    count: u64,
+    bounds: Vec<(usize, usize)>,
+    /// The occupancy map's shape, its C-order bits, and the block edge.
+    coarse: Vec<usize>,
+    occupied: Option<Vec<bool>>,
+    factor: usize,
+    /// The row whose occupancy offset `base` is: rows come in order.
+    row: Option<usize>,
+    base: usize,
+}
+
+impl Tally {
+    fn new(shape: &[usize], factor: Option<usize>) -> Tally {
+        let factor = factor.unwrap_or(0);
+        let coarse: Vec<usize> = shape.iter().map(|n| n.div_ceil(factor.max(1)).max(1)).collect();
+        let occupied = (factor > 0).then(|| vec![false; coarse.iter().product()]);
+        Tally { count: 0, bounds: vec![(usize::MAX, 0); shape.len()], coarse, occupied, factor, row: None, base: 0 }
+    }
+
+    fn add(&mut self, row: usize, outer: &[usize], k: usize) {
+        self.count += 1;
+        for ((lo, hi), index) in self.bounds.iter_mut().zip(outer.iter().chain([&k])) {
+            *lo = (*lo).min(*index);
+            *hi = (*hi).max(index + 1);
+        }
+        if let Some(occupied) = self.occupied.as_mut() {
+            if self.row != Some(row) {
+                // The block row's offset: C order over the coarse shape.
+                let mut base = 0;
+                for (index, extent) in outer.iter().zip(&self.coarse) {
+                    base = base * extent + index / self.factor;
+                }
+                self.base = base * self.coarse.last().copied().unwrap_or(1);
+                self.row = Some(row);
+            }
+            occupied[self.base + k / self.factor] = true;
         }
     }
-    Ok(out)
+
+    /// Tight `(start, stop)` per axis, `None` for an empty class.
+    fn bbox(&self) -> Option<Vec<(usize, usize)>> {
+        (self.count > 0).then(|| self.bounds.clone())
+    }
+
+    fn occupancy(self) -> Result<ArrayD<bool>> {
+        let bits = self.occupied.unwrap_or_default();
+        Ok(ArrayD::from_shape_vec(IxDyn(&self.coarse), bits)?)
+    }
 }
 
 /// Compute the sampling index for one voxel annotation.
+///
+/// `labelmap`, `layers` and `bitmask` are read a stored plane at a time:
+/// one pass counts, bounds and blocks every class, the coordinate draws are
+/// made in class order from the counts, and a second pass keeps the drawn
+/// voxels --- the entries the per-class reading gives, from two reads of
+/// each plane rather than four passes and a read per class.
 pub fn build_index(
     annotation: &Annotation,
     classes: Option<&[ClassKey]>,
@@ -118,28 +208,57 @@ pub fn build_index(
 ) -> Result<IndexPayload> {
     let ids = annotation.resolve_classes(classes)?;
     let mut rng = Rng::new(seed);
-    let window = annotation.window(None)?;
-    let n_spatial = annotation.spatial_shape()?.len();
+    let shape = annotation.spatial_shape()?;
+    let factor = occupancy_factor.filter(|f| *f > 0);
+    let mut tallies: Vec<Tally> = ids.iter().map(|_| Tally::new(&shape, factor)).collect();
+    let mut picked: Vec<Array2<i32>> = Vec::with_capacity(ids.len());
+    if annotation.scan_classes(&ids, &mut |entry, row, outer, k| tallies[entry].add(row, outer, k))? {
+        let mut pickers: Vec<Picker> =
+            tallies.iter().map(|t| Picker::new(t.count as usize, max_coords, &mut rng)).collect::<Result<_>>()?;
+        let width = shape.last().copied().unwrap_or(1);
+        annotation.scan_classes(&ids, &mut |entry, row, _, k| pickers[entry].offer(row * width + k))?;
+        for picker in pickers {
+            picked.push(picker.coords(&shape)?);
+        }
+    } else {
+        let window = annotation.window(None)?;
+        for (entry, class_id) in ids.iter().enumerate() {
+            let mask = annotation.dense_class(*class_id, &window)?;
+            let mask = mask.as_standard_layout();
+            let values = mask.as_slice().expect("standard layout");
+            let tally = &mut tallies[entry];
+            walk_rows(values, &shape, |row, outer, k, v| {
+                if *v {
+                    tally.add(row, outer, k);
+                }
+            });
+            let mut picker = Picker::new(tally.count as usize, max_coords, &mut rng)?;
+            for (flat, v) in values.iter().enumerate() {
+                if *v {
+                    picker.offer(flat);
+                }
+            }
+            picked.push(picker.coords(&shape)?);
+        }
+    }
     let mut counts = vec![0i64; ids.len()];
-    let mut bboxes = Array3::<f32>::zeros((ids.len(), n_spatial, 2));
+    let mut bboxes = Array3::<f32>::zeros((ids.len(), shape.len(), 2));
     let mut coords = IndexMap::new();
     let mut planes = Vec::new();
-    for (i, class_id) in ids.iter().enumerate() {
-        let mask = annotation.dense_class(*class_id, &window)?;
-        counts[i] = mask.iter().filter(|v| **v).count() as i64;
-        match crate::annotations::select::bbox(&mask) {
+    for (i, ((class_id, tally), found)) in ids.iter().zip(tallies).zip(picked).enumerate() {
+        counts[i] = tally.count as i64;
+        match tally.bbox() {
             Some(b) => {
                 let slices: Vec<(i64, i64)> = b.iter().map(|(lo, hi)| (*lo as i64, *hi as i64)).collect();
-                let flat = slices_to_box(&slices);
-                for (k, v) in flat.into_iter().enumerate() {
+                for (k, v) in slices_to_box(&slices).into_iter().enumerate() {
                     bboxes[[i, k / 2, k % 2]] = v;
                 }
             }
             None => bboxes.index_axis_mut(Axis(0), i).fill(f32::NAN),
         }
-        coords.insert(*class_id, sample_foreground_coords(&mask, max_coords, &mut rng)?);
-        if let Some(factor) = occupancy_factor.filter(|f| *f > 0) {
-            planes.push(occupancy(&mask, factor)?);
+        coords.insert(*class_id, found);
+        if factor.is_some() {
+            planes.push(tally.occupancy()?);
         }
     }
     let occupancy = if planes.is_empty() {

@@ -73,7 +73,7 @@ fn stats(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let ignore = annotation.encodes_ignore()?;
     let costs = cost_model(&measured, ignore);
     let keep = (stored == "instances").then_some("instances");
-    let chosen = select_encoding(&measured, stored == "probmap", keep, ignore);
+    let chosen = select_encoding(&measured, stored == "probmap", keep, ignore)?;
     let cost_bytes: Vec<(&str, Option<u64>)> = vec![
         ("labelmap", costs.labelmap),
         ("layers", Some(costs.layers)),

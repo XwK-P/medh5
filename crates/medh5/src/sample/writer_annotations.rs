@@ -382,7 +382,7 @@ impl SampleWriter {
                 let in_band_possible = ignore.is_some() && !overlaps;
                 let stats = analyse(&given, Some(&shape))?;
                 let prefer = if encoding == "auto" { None } else { Some(encoding) };
-                let kind = select_encoding(&stats, false, prefer, in_band_possible);
+                let kind = select_encoding(&stats, false, prefer, in_band_possible)?;
                 let in_band = in_band_possible && IN_BAND_IGNORE_KINDS.contains(&kind.as_str());
                 // Masks carry no identity: as `instances`, each class is one
                 // object, minted an id no object in the sample holds yet.
@@ -1291,5 +1291,5 @@ pub fn transcode(annotation: &Annotation, to_kind: &str, drop_identity: bool) ->
 pub fn annotation_to_masks(annotation: &Annotation, classes: Option<&[ClassKey]>) -> Result<Masks> {
     let ids = annotation.resolve_classes(classes)?;
     let window = annotation.window(None)?;
-    ids.into_iter().map(|c| Ok((c, annotation.dense_class(c, &window)?))).collect()
+    ids.into_iter().map(|c| Ok((c, annotation.stored_class(c, &window)?))).collect()
 }

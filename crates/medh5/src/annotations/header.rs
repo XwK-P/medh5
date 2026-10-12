@@ -184,6 +184,33 @@ impl AnnotationHeader {
                 ),
             ));
         }
+        self.check_ignore_id()
+    }
+
+    /// The `ignore_id` the encoders accept (§6.2, §7.7): a `uint16` other
+    /// than background, and no class's id.  A stored one outside that wrapped
+    /// or read as a class --- `labelmap()` painted the ignore region as that
+    /// class, and `dense()` of the class returned the ignored voxels --- so it
+    /// is refused where it is read (E404), as the encoders refuse to write it.
+    fn check_ignore_id(&self) -> Result<()> {
+        let id = self.ignore_id;
+        if !(BACKGROUND_ID < id && id <= IGNORE_ID) {
+            return Err(Error::coded(
+                "E404",
+                format!(
+                    "ignore_id {id} is outside 1..65535: it is stored as a uint16 beside the class ids, and 0 is \
+                     background (§6.2)"
+                ),
+            ));
+        }
+        if self.class_ids.contains(&id) {
+            return Err(Error::coded(
+                "E404",
+                format!(
+                    "ignore_id {id} is also a class id; one value cannot mark both the class and the ignore region"
+                ),
+            ));
+        }
         Ok(())
     }
 

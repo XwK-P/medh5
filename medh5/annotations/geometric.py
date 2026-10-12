@@ -36,9 +36,19 @@ encode_mesh = _core.encode_mesh
 
 
 class GeometricAnnotation(Annotation):
-    """Base for the §8 kinds: N objects whose coordinates live in one space."""
+    """Base for the §8 kinds: N objects whose coordinates live in one space.
 
-    __slots__ = ()
+    A coordinate column is read once and handed out read-only: the same
+    array on every access, so ``ann.points[i]`` in a loop does not re-read
+    the dataset, and a caller writing into it cannot change what the next
+    access returns.  Copy it to edit it.
+    """
+
+    __slots__ = ("_columns",)
+
+    def __init__(self, handle: Any) -> None:
+        super().__init__(handle)
+        self._columns: dict[str, npt.NDArray[Any] | None] = {}
 
     @property
     def space(self) -> str:
@@ -76,9 +86,17 @@ class GeometricAnnotation(Annotation):
     def _read(
         self, name: str, dtype: npt.DTypeLike, required: bool = True
     ) -> npt.NDArray[Any] | None:
-        if not required and not self._handle.has_dataset(name):
-            return None
-        return np.asarray(self._handle.dataset(name).read(), dtype=dtype)
+        # The handle refuses once the file is closed, kept column or not.
+        present = self._handle.has_dataset(name)
+        if name in self._columns:
+            return self._columns[name]
+        if not required and not present:
+            found = None
+        else:
+            found = np.asarray(self._handle.dataset(name).read(), dtype=dtype)
+            found.flags.writeable = False
+        self._columns[name] = found
+        return found
 
     def _need(self, name: str, dtype: npt.DTypeLike) -> npt.NDArray[Any]:
         found = self._read(name, dtype)
@@ -121,7 +139,9 @@ class BoxesAnnotation(GeometricAnnotation):
 
     @property
     def boxes(self) -> npt.NDArray[np.float32]:
-        return self._need("boxes", np.float32)
+        """``(N, S, 2)`` ``[lo, hi]`` at voxel edges, read once (read-only)."""
+        found: npt.NDArray[np.float32] = self._handle.boxes
+        return found
 
     @property
     def slice_index(self) -> npt.NDArray[np.int32] | None:
@@ -143,6 +163,10 @@ class BoxesAnnotation(GeometricAnnotation):
         return found
 
     def __iter__(self) -> Iterator[Instance]:
+        """Each box as an :class:`Instance`.  Without ``instance_ids`` (§8.2
+        makes them optional) a box's ``instance_id`` is its 0-based row ---
+        which names no object beyond this annotation and joins nothing
+        across visits --- and a score that is not finite is ``None``."""
         for row in self._handle.instances():
             yield _instance(row)
 

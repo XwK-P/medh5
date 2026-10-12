@@ -908,7 +908,7 @@ fn select_encoding<'py>(
         }
         (None, None) => return Err(medh5::Error::invalid("select_encoding needs masks= or stats=").into()),
     };
-    let kind = select::select_encoding(&stats, soft, prefer, ignore);
+    let kind = select::select_encoding(&stats, soft, prefer, ignore)?;
     Ok(PyTuple::new(py, [PyString::new(py, &kind).into_any(), Bound::new(py, OverlapStats::wrap(stats))?.into_any()])?)
 }
 
@@ -1127,7 +1127,7 @@ fn encode_voxels<'py>(
     let ignore = given(ignore).map(|i| bool_array(&i)).transpose()?;
     let stats = select::analyse(&masks, Some(&shape))?;
     let prefer = if encoding == "auto" { None } else { Some(encoding) };
-    let kind = select::select_encoding(&stats, false, prefer, ignore.is_some());
+    let kind = select::select_encoding(&stats, false, prefer, ignore.is_some())?;
     let mut options = encode_options(kwargs)?;
     if let Some(region) = ignore {
         if !enc::IN_BAND_IGNORE_KINDS.contains(&kind.as_str()) {

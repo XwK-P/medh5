@@ -542,3 +542,176 @@ class TestVoxelShape:
             sample.annotations["seg"].dense()
         assert exc.value.code == "E405"
         assert "E405" in _codes(path)
+
+
+def _segmentation(
+    path: Path,
+    encoding: str,
+    masks: dict[int, np.ndarray],
+    *,
+    label_set: LabelSet | None = None,
+    **kwargs: Any,
+) -> Path:
+    """One `seg` annotation of *masks* under *encoding*, written by the writer."""
+    with medh5.create(path, sample_id="s", codec="portable") as w:
+        if label_set is not None:
+            w.label_set(label_set)
+        w.add_grid("g", shape=SHAPE, spacing=(1.0, 1.0, 1.0))
+        w.add_image("CT", np.zeros(SHAPE, np.int16), grid="g", modality="CT")
+        common: dict[str, Any] = {
+            "grid": "g",
+            "annotated_classes": sorted(masks),
+            **kwargs,
+        }
+        if encoding == "instances":
+            objects = [
+                InstanceInput(class_id=c, instance_id=i + 1, mask=m)
+                for i, (c, m) in enumerate(masks.items())
+            ]
+            w.add_segmentation("seg", instances=objects, **common)
+        elif encoding == "probmap":
+            soft = {c: m.astype(float) for c, m in masks.items()}
+            w.add_segmentation("seg", probabilities=soft, **common)
+        else:
+            w.add_segmentation("seg", masks=masks, encoding=encoding, **common)
+    return path
+
+
+HIERARCHY = LabelSet(
+    "closure-v1",
+    classes=[
+        LabelClass(1, "kidney", "Kidney"),
+        LabelClass(2, "left_kidney", "Left kidney", parents=[1]),
+        LabelClass(3, "spleen", "Spleen"),
+    ],
+)
+
+
+class TestClosure:
+    """§5.4: under `implicit` a class holds wherever a descendant does, in
+    every encoding; under `explicit` nothing is inferred.  The closure was
+    stored and never applied, so `dense("kidney")` missed the left kidney."""
+
+    @staticmethod
+    def _masks() -> dict[int, np.ndarray]:
+        return {1: _cube(0, 2), 2: _cube(3, 5), 3: _cube(6, 8)}
+
+    @pytest.mark.parametrize("encoding", ENCODINGS)
+    def test_S5_4_implicit_closure_reaches_every_voxel_reader(self, tmp_path, encoding):
+        masks = self._masks()
+        path = _segmentation(
+            tmp_path / "c.medh5",
+            encoding,
+            masks,
+            label_set=HIERARCHY,
+            closure="implicit",
+        )
+        kidney = masks[1] | masks[2]
+        with medh5.open(path) as sample:
+            ann = sample.annotations["seg"]
+            assert np.array_equal(ann.dense(["kidney"])[0], kidney)
+            assert np.array_equal(ann.dense(["left_kidney"])[0], masks[2])
+            assert ann.contains("kidney", (4, 4, 4))
+            assert ann.voxel_counts()[1] == int(kidney.sum())
+            found = np.nonzero(kidney)
+            expected = [[v.min() - 0.5, v.max() + 0.5] for v in found]
+            assert np.array_equal(ann.class_bboxes()[1], expected)
+            # A labelmap holds what is stored, one class per voxel.
+            assert ann.labelmap()[4, 4, 4] == 2
+
+    @pytest.mark.parametrize("encoding", ENCODINGS)
+    def test_S5_4_explicit_closure_infers_nothing(self, tmp_path, encoding):
+        masks = self._masks()
+        path = _segmentation(tmp_path / "e.medh5", encoding, masks, label_set=HIERARCHY)
+        with medh5.open(path) as sample:
+            ann = sample.annotations["seg"]
+            assert np.array_equal(ann.dense(["kidney"])[0], masks[1])
+            assert not ann.contains("kidney", (4, 4, 4))
+            assert ann.voxel_counts()[1] == int(masks[1].sum())
+
+    def _classification(self, path: Path, closure: str) -> Path:
+        with medh5.create(path, sample_id="s", codec="portable") as w:
+            w.label_set(HIERARCHY)
+            w.add_grid("g", shape=SHAPE, spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", np.zeros(SHAPE, np.int16), grid="g", modality="CT")
+            w.add_classification(
+                "dx",
+                [("left_kidney", 1.0, 7), ("spleen", 1.0, 8)],
+                scope="instance",
+                annotated_classes="all",
+                closure=closure,
+            )
+        return path
+
+    def test_S9_an_implicit_ancestor_of_an_asserted_class_is_positive(self, tmp_path):
+        path = self._classification(tmp_path / "dx.medh5", "implicit")
+        with medh5.open(path) as sample:
+            dx = sample.annotations["dx"]
+            assert dx.state("kidney", scope_id=7) == "positive"
+            # Per scope unit: nothing in unit 8 implies a kidney.
+            assert dx.state("kidney", scope_id=8) == "negative"
+            # The record stays literal.
+            assert dx.value("kidney", scope_id=7) is None
+            assert 1 not in dx.asserted_class_ids.tolist()
+
+    def test_S9_explicit_closure_keeps_the_ancestor_negative(self, tmp_path):
+        path = self._classification(tmp_path / "dx.medh5", "explicit")
+        with medh5.open(path) as sample:
+            assert sample.annotations["dx"].state("kidney", scope_id=7) == "negative"
+
+
+class TestReservedIds:
+    @pytest.mark.parametrize("encoding", ENCODINGS)
+    def test_S6_2_background_is_no_class(self, tmp_path, encoding):
+        """`dense([0])` answered every unlabelled voxel under `labelmap` and
+        nothing under the other encodings."""
+        path = _segmentation(tmp_path / "z.medh5", encoding, {1: _cube(0, 2)})
+        with medh5.open(path) as sample:
+            ann = sample.annotations["seg"]
+            for read in (lambda: ann.dense([0]), lambda: ann.contains(0, (0, 0, 0))):
+                with pytest.raises(MEDH5ValidationError) as exc:
+                    read()
+                assert exc.value.code == "E404"
+
+    @pytest.mark.parametrize("planted", [0, 70000, 1])
+    def test_S6_2_a_stored_ignore_id_is_range_checked_at_open(self, tmp_path, planted):
+        path = _segmentation(tmp_path / "i.medh5", "labelmap", {1: _cube(0, 2)})
+        with h5py.File(path, "r+") as f:
+            f["annotations/seg"].attrs["ignore_id"] = planted
+        with medh5.open(path) as sample, pytest.raises(MEDH5ValidationError) as exc:
+            sample.annotations["seg"].dense()
+        assert exc.value.code == "E404"
+
+    def test_S7_2_a_layer_table_short_of_the_planes_is_refused_at_open(self, tmp_path):
+        masks = {1: _cube(0, 4), 2: _cube(2, 6)}
+        path = _segmentation(tmp_path / "l.medh5", "layers", masks)
+        with h5py.File(path, "r+") as f:
+            table = f["annotations/seg/layer_class_ids"][...]
+            assert table.shape[0] == 2
+        _replace(path, "annotations/seg/layer_class_ids", table[:1])
+        with medh5.open(path) as sample, pytest.raises(MEDH5ValidationError) as exc:
+            sample.annotations["seg"].dense()
+        assert exc.value.code == "E405"
+
+    def test_S7_3_a_repeated_bit_class_id_is_refused_at_open(self, tmp_path):
+        masks = {1: _cube(0, 4), 2: _cube(2, 6)}
+        path = _segmentation(tmp_path / "b.medh5", "bitmask", masks)
+        _replace(path, "annotations/seg/bit_class_ids", np.array([1, 1], np.uint16))
+        with medh5.open(path) as sample, pytest.raises(MEDH5ValidationError) as exc:
+            sample.annotations["seg"].dense()
+        assert exc.value.code == "E404"
+
+    def test_S7_7_an_empty_sibling_mask_is_no_ignore_region(self, tmp_path):
+        """`has_ignore_region` said yes where `ignore_region` found nothing."""
+        ignore = _cube(0, 3)
+        masks = {1: _cube(0, 2)}  # overlaps: the region goes to a sibling mask
+        path = _segmentation(tmp_path / "s.medh5", "bitmask", masks, ignore=ignore)
+        with medh5.open(path) as sample:
+            sibling = sample.annotations["seg"].header.ignore_mask
+            assert sibling and sample.annotations["seg"].has_ignore_region
+        with h5py.File(path, "r+") as f:
+            f[f"annotations/{sibling}/data"][...] = 0
+        with medh5.open(path) as sample:
+            ann = sample.annotations["seg"]
+            assert not ann.has_ignore_region
+            assert not sample.ignore_region("seg").any()

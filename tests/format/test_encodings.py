@@ -15,6 +15,7 @@ from medh5.annotations.voxel import (
     TRANSCODABLE,
     InstanceInput,
     analyse,
+    check_roundtrip,
     cost_model,
     encode_bitmask,
     encode_instances,
@@ -94,6 +95,16 @@ class TestSelection:
     def test_explicit_preference_wins(self):
         kind, _ = select_encoding(disjoint_masks(), SHAPE, prefer="bitmask")
         assert kind == "bitmask"
+
+    @pytest.mark.parametrize(("prefer", "code"), [("runes", "E401"), ("mask", "E404")])
+    def test_S7_6_a_preference_the_masks_cannot_be_written_in_is_refused(
+        self, prefer, code
+    ):
+        """`prefer` was returned unchecked, and `mask` merged every class into
+        one volume with no classes."""
+        with pytest.raises(MEDH5ValidationError) as exc:
+            select_encoding(disjoint_masks(), SHAPE, prefer=prefer)
+        assert exc.value.code == code
 
     def test_S7_3_layers_bitmask_crossover(self):
         """§7.3: uint16 layers beat bitmask while L < 4*ceil(C/64)."""
@@ -360,7 +371,9 @@ class TestEncoders:
 
 
 class TestTranscoding:
-    @pytest.mark.parametrize("target", [k for k in TRANSCODABLE if k != "labelmap"])
+    @pytest.mark.parametrize(
+        "target", [k for k in TRANSCODABLE if k not in ("labelmap", "instances")]
+    )
     def test_S7_6_every_pair_round_trips(self, target):
         """§7.6: transcoding MUST preserve contains() for every class and voxel."""
         masks = random_masks(13, n_classes=5)
@@ -368,25 +381,65 @@ class TestTranscoding:
         converted = transcode_payload(original, target, spatial_shape=SHAPE)
         decoded = payload_to_masks(converted, spatial_shape=SHAPE)
         assert masks_equal(masks, decoded)
-        # Back from `instances`, the voxels survive and the ids do not, so that
-        # leg has to be asked for.
-        back = transcode_payload(
-            converted,
-            "layers",
-            spatial_shape=SHAPE,
-            drop_identity=target == "instances",
-        )
+        back = transcode_payload(converted, "layers", spatial_shape=SHAPE)
         assert masks_equal(masks, payload_to_masks(back, spatial_shape=SHAPE))
+        assert check_roundtrip(original, target, spatial_shape=SHAPE)
 
     @pytest.mark.parametrize("source", ["layers", "bitmask", "instances", "probmap"])
     @pytest.mark.parametrize("target", ["layers", "bitmask", "instances", "probmap"])
     def test_S7_6_full_matrix(self, source, target):
         masks = random_masks(21, n_classes=4)
         start = encode_masks(masks, source, SHAPE)
+        if target == "instances" and source != "instances":
+            # §7.4: a dense encoding has no objects to carry.
+            with pytest.raises(MEDH5ValidationError) as exc:
+                transcode_payload(start, target, spatial_shape=SHAPE)
+            assert exc.value.code == "E404"
+            return
         end = transcode_payload(
             start, target, spatial_shape=SHAPE, drop_identity=source == "instances"
         )
         assert masks_equal(masks, payload_to_masks(end, spatial_shape=SHAPE))
+
+    @pytest.mark.parametrize("source", ["labelmap", "layers", "bitmask", "probmap"])
+    def test_S7_4_transcode_payload_refuses_dense_to_instances(self, source):
+        """The writer refused it; the payload function minted one object per
+        class and an id belonging to none of them."""
+        payload = encode_masks(disjoint_masks(), source, SHAPE)
+        with pytest.raises(MEDH5ValidationError) as exc:
+            transcode_payload(payload, "instances", spatial_shape=SHAPE)
+        assert exc.value.code == "E404"
+        with pytest.raises(MEDH5ValidationError):
+            check_roundtrip(payload, "instances", spatial_shape=SHAPE)
+
+    @pytest.mark.parametrize("target", ["bitmask", "probmap", "mask"])
+    def test_S7_7_transcode_payload_refuses_to_drop_an_in_band_ignore_region(
+        self, target
+    ):
+        masks = disjoint_masks()
+        ignore = np.zeros(SHAPE, dtype=bool)
+        ignore[:, :, 15] = True
+        for kind in ("labelmap", "layers"):
+            payload = encode_masks(masks, kind, SHAPE, ignore=ignore)
+            with pytest.raises(MEDH5ValidationError) as exc:
+                transcode_payload(payload, target, spatial_shape=SHAPE)
+            assert exc.value.code == "E404"
+
+    def test_S7_7_transcode_payload_carries_the_ignore_region_in_band(self):
+        masks = disjoint_masks()
+        ignore = np.zeros(SHAPE, dtype=bool)
+        ignore[:, :, 15] = True
+        for source, target in (("labelmap", "layers"), ("layers", "labelmap")):
+            payload = encode_masks(masks, source, SHAPE, ignore=ignore)
+            converted = transcode_payload(payload, target, spatial_shape=SHAPE)
+            data = converted.data
+            region = (
+                (data == 65535)
+                if data.ndim == len(SHAPE)
+                else ((data == 65535).any(axis=0))
+            )
+            assert np.array_equal(region, ignore)
+            assert check_roundtrip(payload, target, spatial_shape=SHAPE)
 
     def test_S7_1_labelmap_is_only_a_valid_target_without_overlap(self):
         """A lossy conversion fails loudly rather than dropping the loser."""
@@ -399,6 +452,8 @@ class TestTranscoding:
         masks = disjoint_masks()
         payload = encode_masks(masks, "labelmap", SHAPE)
         for target in TRANSCODABLE:
+            if target == "instances":
+                continue
             converted = transcode_payload(payload, target, spatial_shape=SHAPE)
             assert masks_equal(masks, payload_to_masks(converted, spatial_shape=SHAPE))
 
@@ -410,6 +465,39 @@ class TestTranscoding:
         payload = encode_masks(random_masks(1), "layers", SHAPE)
         with pytest.raises(MEDH5ValidationError):
             transcode_payload(payload, "runes", spatial_shape=SHAPE)
+
+    def test_S7_2_payload_to_masks_refuses_a_layer_table_short_of_the_planes(self):
+        """A hand-built payload panicked (`PanicException`) instead."""
+        payload = encode_masks(random_masks(13, n_classes=5), "layers", SHAPE)
+        table = payload.datasets["layer_class_ids"]
+        assert table.shape[0] > 1
+        payload.datasets["layer_class_ids"] = table[:-1]
+        with pytest.raises(MEDH5ValidationError) as exc:
+            payload_to_masks(payload, spatial_shape=SHAPE)
+        assert exc.value.code == "E405"
+
+    def test_S7_3_payload_to_masks_refuses_more_classes_than_bitplanes(self):
+        payload = encode_masks(disjoint_masks(), "bitmask", SHAPE)
+        payload.datasets["bit_class_ids"] = np.arange(1, 71, dtype=np.uint16)
+        payload.class_ids = tuple(range(1, 71))
+        with pytest.raises(MEDH5ValidationError) as exc:
+            payload_to_masks(payload, spatial_shape=SHAPE)
+        assert exc.value.code == "E404"
+
+    def test_S7_4_instances_from_masks_skips_an_empty_mask(self):
+        """It emitted an empty object, which `encode_instances` refuses."""
+        masks = disjoint_masks()
+        masks[2] = np.zeros(SHAPE, dtype=bool)
+        objects = instances_from_masks(masks)
+        assert [(o.class_id, o.instance_id) for o in objects] == [
+            (1, 1),
+            (3, 3),
+            (4, 4),
+        ]
+        payload = encode_instances(objects, SHAPE, class_ids=sorted(masks))
+        decoded = payload_to_masks(payload, spatial_shape=SHAPE)
+        assert not decoded.get(2, np.zeros(SHAPE, bool)).any()
+        assert all(np.array_equal(decoded[c], masks[c]) for c in (1, 3, 4))
 
     def test_instances_need_a_shape_to_decode(self):
         masks = random_masks(9, n_classes=2)
