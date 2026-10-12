@@ -8,7 +8,7 @@ use serde_json::{Map, Value};
 use super::writer::{Annotated, QualityArg, SampleWriter};
 use crate::annotations::encode::{
     check_identity, check_target, encode_instances, encode_mask, encode_masks, encode_probmap, EncodeOptions,
-    InstanceInput, IN_BAND_IGNORE_KINDS,
+    InstanceInput, IN_BAND_IGNORE_KINDS, TRANSCODABLE,
 };
 use crate::annotations::encode_geometric::{
     check_slice_index, check_space, encode_boxes, encode_classification, encode_contours, encode_keypoints,
@@ -181,7 +181,9 @@ impl SampleWriter {
 
     /// Write a voxel annotation, choosing the encoding by measurement.
     ///
-    /// Returns the chosen `kind` and the overlap statistics behind the choice.
+    /// `encoding` is `auto` or one of [`TRANSCODABLE`]; `mask`, which has no
+    /// classes, is refused (E404) as a transcode to it is.  Returns the
+    /// chosen `kind` and the overlap statistics behind the choice.
     /// An `ignore` region rides in band under `labelmap`/`layers` when it
     /// overlaps no class; otherwise it is written as the sibling `mask`
     /// annotation `<ann_id>_ignore`, named by `ignore_mask` (§7.7).
@@ -217,6 +219,26 @@ impl SampleWriter {
                     ),
                 ));
             }
+        }
+        // What a transcode refuses, a write refuses: as `mask`, every class
+        // merged into one volume, written with no `class_ids` and no
+        // `annotated_class_ids` --- and the file validated clean (§4.4).
+        if encoding != "auto" {
+            check_target(&encoding).map_err(|refused| {
+                let message = match encoding.as_str() {
+                    "mask" => format!(
+                        "a `mask` has no classes (§4.4), so every class would merge into one volume and the \
+                         coverage contract (`class_ids`, `annotated_class_ids`) would be lost; pass encoding='auto' \
+                         or one of {}, and write a deliberate union with add_mask",
+                        repr_list(&TRANSCODABLE)
+                    ),
+                    _ => refused.message().to_string(),
+                };
+                Error::coded(
+                    refused.code().unwrap_or("E404"),
+                    format!("annotation {}: encoding={}: {message}", repr_str(ann_id), repr_str(&encoding)),
+                )
+            })?;
         }
         if options.threshold.is_some() && !matches!(source, SegmentationSource::Probabilities(_)) {
             return Err(Error::coded(
@@ -368,6 +390,9 @@ impl SampleWriter {
                 let options = EncodeOptions {
                     ignore: if in_band { ignore.cloned() } else { None },
                     start_id,
+                    // `layers` colours the overlap graph just measured, rather
+                    // than measuring it again.
+                    colouring: Some(stats.colouring.clone()),
                     ..Default::default()
                 };
                 let payload = encode_masks(&given, &kind, Some(&shape), &options)?;

@@ -9,7 +9,7 @@ use ndarray::Array2;
 use serde_json::{json, Value};
 
 use crate::annotations::Grids;
-use crate::array::{DType, Index, NdArray, Slice};
+use crate::array::{DType, Element, Index, NdArray, Slice};
 use crate::geometry::grid::Grid;
 use crate::geometry::multiscale::Pyramid;
 use crate::h5::attrs::{self, AttrValue};
@@ -284,8 +284,11 @@ impl Image {
 
     /// Read the image, or a region of it.
     ///
-    /// `physical` applies `stored * slope + intercept` (in `dtype`, default
-    /// `float32`).  The rescale is never applied silently.
+    /// `physical` applies `stored * slope + intercept` to an image that
+    /// declares a rescale ([`Self::is_rescaled`]), computed in `dtype`
+    /// (default `float32`).  Any other image already holds physical values,
+    /// and is read as stored --- in its own type unless `dtype` names
+    /// another.  The rescale is never applied silently.
     pub fn read(&self, roi: Option<&[Slice]>, physical: bool, dtype: Option<DType>) -> Result<NdArray> {
         let index = self.index(roi)?;
         self.read_index(&index, physical, dtype)
@@ -294,14 +297,17 @@ impl Image {
     /// Read with an explicit selection (indices may drop axes).
     pub fn read_index(&self, index: &[Index], physical: bool, dtype: Option<DType>) -> Result<NdArray> {
         let block = data::read_region(&self.dataset()?, index)?;
-        if physical && self.is_rescaled()? {
+        if physical {
             let (slope, intercept) = self.rescale()?;
-            let out = dtype.unwrap_or(DType::F32);
-            return Ok(rescaled(&block, slope, intercept, out));
+            if slope != 1.0 || intercept != 0.0 {
+                return Ok(rescaled(&block, slope, intercept, dtype.unwrap_or(DType::F32)));
+            }
         }
+        // A block already of the type asked for is the answer: converted to
+        // its own type, it was copied whole.
         Ok(match dtype {
-            Some(d) => block.astype(d),
-            None => block,
+            Some(d) if d != block.dtype() => block.astype(d),
+            _ => block,
         })
     }
 
@@ -323,8 +329,12 @@ impl Image {
         Ok(Value::Object(out))
     }
 
-    /// Python's `repr()`.
+    /// Python's `repr()`.  A closed image says so, as a closed dataset does,
+    /// rather than failing: debuggers, loggers and test reports all ask.
     pub fn repr(&self) -> Result<String> {
+        if !self.location().is_valid() {
+            return Ok(format!("Image({}, closed)", repr_str(&self.image_id)));
+        }
         let shape = repr_int_tuple(&self.shape()?);
         if let Some(level) = self.level {
             return Ok(format!("Image({} level {level}, shape={shape})", repr_str(&self.image_id)));
@@ -340,33 +350,37 @@ impl Image {
 }
 
 /// `stored * slope + intercept`, computed in `out` as NumPy computes it: a
-/// `float32` result rounds after the multiply and after the add.
+/// `float32` result rounds after the multiply and after the add.  Each value
+/// is converted as [`NdArray::cast`] converts it, in the same pass as the
+/// rescale: cast first, the block was copied whole once more.
 pub fn rescaled(block: &NdArray, slope: f64, intercept: f64, out: DType) -> NdArray {
     match out {
         DType::F32 => {
             let (s, i) = (slope as f32, intercept as f32);
-            NdArray::from(block.cast::<f32>().mapv(|v| v * s + i))
+            NdArray::from(crate::with_array!(block, a => a.mapv(|v| f32::from_f64(v.to_f64()) * s + i)))
         }
         DType::F16 => {
             let (s, i) = (half::f16::from_f64(slope), half::f16::from_f64(intercept));
-            NdArray::from(block.cast::<half::f16>().mapv(|v| v * s + i))
+            NdArray::from(crate::with_array!(block, a => a.mapv(|v| half::f16::from_f64(v.to_f64()) * s + i)))
         }
-        DType::F64 => NdArray::from(block.to_f64().mapv(|v| v * slope + intercept)),
-        other => NdArray::from(block.to_f64().mapv(|v| v * slope + intercept)).astype(other),
+        DType::F64 => NdArray::from(crate::with_array!(block, a => a.mapv(|v| v.to_f64() * slope + intercept))),
+        other => {
+            NdArray::from(crate::with_array!(block, a => a.mapv(|v| v.to_f64() * slope + intercept))).astype(other)
+        }
     }
 }
 
-/// Whether a float array would survive `int16` storage unchanged (W907).
+/// Whether a float array would survive `int16` storage unchanged (W907):
+/// every value an integer within range.  `int16` holds no NaN and no
+/// infinity, so an array holding one would not --- where every *finite*
+/// value was tested, an image with NaN outside its field of view was
+/// advised into a type that cannot store it.
 pub fn lossless_as_int16(array: &NdArray) -> bool {
     if !array.dtype().is_float() {
         return false;
     }
-    let values = array.to_f64();
-    let mut finite = values.iter().filter(|v| v.is_finite()).peekable();
-    if finite.peek().is_none() {
-        return false;
-    }
-    finite.all(|v| *v == v.round_ties_even() && *v >= i16::MIN as f64 && *v <= i16::MAX as f64)
+    let fits = |v: f64| v.is_finite() && v == v.round_ties_even() && v >= i16::MIN as f64 && v <= i16::MAX as f64;
+    crate::with_array!(array, a => !a.is_empty() && a.iter().all(|v| fits(v.to_f64())))
 }
 
 /// Whether every value lies in `[0, 1]` (and there is at least one).
@@ -377,5 +391,54 @@ pub fn is_probability(array: &NdArray) -> bool {
     match array.min_max() {
         Some((lo, hi)) => lo >= 0.0 && hi <= 1.0,
         None => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One pass converts and rescales each value exactly as the cast and
+    /// the rescale did in two, for every stored type and every output.
+    #[test]
+    fn s4_2_the_rescale_reads_each_value_as_the_cast_did() {
+        let values = vec![-1000.0, -1.5, 0.0, 0.25, 1.0, 1e-8, 3e38, 65504.0, 70000.0, f64::NAN, f64::INFINITY];
+        let (slope, intercept) = (0.5, -1024.0);
+        for stored in [DType::Bool, DType::U8, DType::I16, DType::I64, DType::F16, DType::F32, DType::F64] {
+            let block = NdArray::from_vec(&[values.len()], values.clone()).unwrap().astype(stored);
+            for out in [DType::F32, DType::F16, DType::F64, DType::I32] {
+                let two_pass = match out {
+                    DType::F32 => {
+                        let (s, i) = (slope as f32, intercept as f32);
+                        NdArray::from(block.cast::<f32>().mapv(|v| v * s + i))
+                    }
+                    DType::F16 => {
+                        let (s, i) = (half::f16::from_f64(slope), half::f16::from_f64(intercept));
+                        NdArray::from(block.cast::<half::f16>().mapv(|v| v * s + i))
+                    }
+                    DType::F64 => NdArray::from(block.to_f64().mapv(|v| v * slope + intercept)),
+                    other => NdArray::from(block.to_f64().mapv(|v| v * slope + intercept)).astype(other),
+                };
+                let one_pass = rescaled(&block, slope, intercept, out);
+                assert_eq!(one_pass.dtype(), two_pass.dtype());
+                assert_eq!(one_pass.le_bytes(), two_pass.le_bytes(), "{stored:?} -> {out:?}");
+            }
+        }
+    }
+
+    /// `int16` holds no NaN and no infinity, so an image holding one is never
+    /// advised into it (W907): every finite value was tested, and NaN outside
+    /// a field of view passed.
+    #[test]
+    fn s4_2_int16_is_lossless_only_for_finite_integers_in_range() {
+        let floats = |v: Vec<f64>| NdArray::from_vec(&[v.len()], v).unwrap().astype(DType::F32);
+        assert!(lossless_as_int16(&floats(vec![-1000.0, 0.0, 1500.0])));
+        assert!(!lossless_as_int16(&floats(vec![-1000.0, f64::NAN, 1500.0])));
+        assert!(!lossless_as_int16(&floats(vec![0.0, f64::INFINITY])));
+        assert!(!lossless_as_int16(&floats(vec![f64::NAN])));
+        assert!(!lossless_as_int16(&floats(vec![0.5])));
+        assert!(!lossless_as_int16(&floats(vec![40000.0])));
+        assert!(!lossless_as_int16(&floats(Vec::new())));
+        assert!(!lossless_as_int16(&NdArray::from_vec(&[2], vec![1i16, 2]).unwrap()));
     }
 }

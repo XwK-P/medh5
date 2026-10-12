@@ -161,8 +161,11 @@ class Image:
 
         *roi* covers every axis, or only the spatial axes (leading channel or
         time axes are then read whole).  ``physical=True`` applies
-        ``rescale_slope``/``rescale_intercept`` (into ``float32`` unless
-        *dtype* says otherwise).
+        ``rescale_slope``/``rescale_intercept`` to an image that declares a
+        rescale (:attr:`is_rescaled`), into ``float32`` unless *dtype* says
+        otherwise.  Any other image already holds physical values and is read
+        as stored, in its own dtype: pass ``dtype=np.float32`` to read every
+        image as ``float32``, rescaled or not.
 
         *dtype* converts as NumPy's ``astype`` does, except that a value the
         target cannot hold **saturates** to the nearest value it does hold

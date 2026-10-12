@@ -68,8 +68,12 @@ pub fn civil_from_days(z: i64) -> (i64, u32, u32) {
 }
 
 /// The `medh5_version` a commit writes: the lowest version the declared
-/// profiles need (1.0, or 1.1 with `clinical`), never below what an amended
-/// file already declared --- a no-op amend does not downgrade (1.1 §2.3).
+/// profiles need (1.0, or 1.1 with `clinical`), never below `source`, what
+/// an amended file already declared --- a no-op amend does not downgrade
+/// (1.1 §2.3).  An amendment that removes the clinical profile is the
+/// exception (1.1 §2.1): `drop_clinical`, or an amendment leaving the group
+/// behind, passes no `source`, so the imaging projection is written at the
+/// lowest version what remains needs.
 pub fn written_version(source: Option<&str>, profiles: &[String]) -> String {
     let needed = crate::version::required_for(profiles);
     match source {
@@ -145,13 +149,33 @@ pub struct GridOptions {
     pub time_units: Option<String>,
 }
 
+/// Where a writer is in its life.  A commit refused before it changes
+/// anything leaves the writer [`State::Open`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum State {
+    /// Being built: `add_*` and `commit` work.
+    Open,
+    /// The file is written; a second `commit` has nothing to do.
+    Committed,
+    /// Discarded --- by `abort`, or by a commit that failed once it had begun
+    /// changing the file --- and the target left as it was.
+    Aborted,
+}
+
 /// Builder for one sample.  Every `add_*` validates immediately.
 pub struct SampleWriter {
     pub path: PathBuf,
     /// The codec profile name datasets default to.
     pub codec: String,
     file: Option<AtomicFile>,
-    committed: bool,
+    state: State,
+    /// The algorithm the commit digests with: an amended file's own, so an
+    /// amendment never mixes two (§13.1).
+    digest_algo: String,
+    /// Every path but `meta` at which the amended file held its `/meta` by a
+    /// hard link.  Until the commit re-links each to the document it writes,
+    /// the file being built holds a copy of the old document there.
+    pub(crate) meta_aliases: Vec<String>,
     pub(crate) grids: IndexMap<String, Grid>,
     pub(crate) images: IndexMap<String, (String, String)>,
     pub(crate) image_multiscale: HashMap<String, bool>,
@@ -206,7 +230,12 @@ pub type Source<'a> = (&'a hdf5::Group, &'a [&'a str]);
 /// carried with its group.  A file this engine cannot preserve --- another
 /// major, a higher minor, a profile it does not implement --- is refused before
 /// anything is written (1.1 §2.3).  `codec` defaults to the family the file was
-/// written in.
+/// written in, and the commit digests in the algorithm the file declares.
+///
+/// The commit renames the new file over the old.  On POSIX a reader holding
+/// the old file open keeps reading it; Windows cannot replace a file that is
+/// open, so there every reader of it must be closed before the commit, whose
+/// rename otherwise fails and leaves the file as it was.
 pub fn amend(path: &Path, codec: Option<&str>) -> Result<SampleWriter> {
     amend_into(path, path, codec, &[])
 }
@@ -283,6 +312,57 @@ fn restamp_refused(shown: &str, failed: &[String]) -> Error {
     )
 }
 
+/// Stamp the digests under `root` in `algo`, as [`stamp_digests`] does ---
+/// with `only_missing`, also restamping a digest kept in another algorithm,
+/// so the file never carries two.  Returns every digest, by path.
+fn stamp_in(root: &hdf5::Group, algo: &str, only_missing: bool) -> Result<IndexMap<String, String>> {
+    let mut stamped = stamp_digests(root, algo, &["index"], only_missing)?;
+    if only_missing {
+        for (path, value) in stamped.iter_mut() {
+            // A malformed digest is left as it was, to fail as it did.
+            if crate::digest::parse_digest(value).is_ok_and(|(found, _)| found != algo) {
+                let ds = root.dataset(path)?;
+                if crate::integrity::digest::digestible(&ds)? {
+                    let fresh = crate::integrity::digest::dataset_digest(&ds, path, algo)?;
+                    attrs::write(&ds, "digest", &AttrValue::Str(fresh.clone()))?;
+                    *value = fresh;
+                }
+            }
+        }
+    }
+    Ok(stamped)
+}
+
+/// Every path but `meta` itself at which `root` holds its `/meta` by a hard
+/// link, outside the top-level members `without` names.  Each group is
+/// listed once however many paths reach it, so a link to `/meta` in it is
+/// found under the group's first path, whatever the link is called.
+fn meta_aliases(root: &hdf5::Group, without: &[&str]) -> Result<Vec<String>> {
+    let Some(meta) = ops::object_id_by_name(root, META_DATASET) else { return Ok(Vec::new()) };
+    let mut found = Vec::new();
+    let mut scan = |prefix: &str, group: &hdf5::Group| -> Result<()> {
+        for name in ops::members(group)? {
+            let path = if prefix.is_empty() { name.clone() } else { format!("{prefix}/{name}") };
+            if path != META_DATASET
+                && ops::link_kind(group, &name) == Some(ops::LinkKind::Hard)
+                && ops::object_id_by_name(group, &name) == Some(meta)
+            {
+                found.push(path);
+            }
+        }
+        Ok(())
+    };
+    scan("", root)?;
+    ops::visit(root, &mut |path, node| {
+        if let ops::Node::Group(group) = node {
+            scan(path, group)?;
+        }
+        Ok(true)
+    })?;
+    found.retain(|path| !without.contains(&path.split('/').next().unwrap_or_default()));
+    Ok(found)
+}
+
 impl SampleWriter {
     /// A writer for `path`; `source` copies an existing sample in (amend),
     /// but for the top-level members it names.
@@ -305,7 +385,9 @@ impl SampleWriter {
             path: path.to_path_buf(),
             codec,
             file: Some(file),
-            committed: false,
+            state: State::Open,
+            digest_algo: crate::digest::DEFAULT_ALGO.to_string(),
+            meta_aliases: Vec::new(),
             grids: IndexMap::new(),
             images: IndexMap::new(),
             image_multiscale: HashMap::new(),
@@ -368,17 +450,28 @@ impl SampleWriter {
         written
     }
 
-    /// Discard the in-progress file, leaving any existing one untouched.
+    /// Discard the in-progress file, leaving any existing one untouched.  A
+    /// writer that has committed stays committed.
     pub fn abort(&mut self) {
         if let Some(f) = self.file.take() {
             f.abort();
         }
-        self.committed = true;
+        if self.state == State::Open {
+            self.state = State::Aborted;
+        }
     }
 
-    /// Whether `commit` or `abort` has run.
+    /// Whether the writer has committed or been aborted.  A commit refused
+    /// before it changed anything leaves it open.
     pub fn is_closed(&self) -> bool {
-        self.committed
+        self.state != State::Open
+    }
+
+    /// The algorithm the commit digests with: the amended file's, or the
+    /// default for a new one.  A tool restamping before the commit stamps in
+    /// it, or the commit finds every digest changed.
+    pub(crate) fn digest_algo(&self) -> &str {
+        &self.digest_algo
     }
 
     pub fn document(&self) -> &SampleDocument {
@@ -397,7 +490,9 @@ impl SampleWriter {
     /// Remove the `clinical` profile --- its group, its records and its
     /// declaration --- for the imaging projection (1.1 §10).  The sample is
     /// then written in the lowest version its remaining profiles need, and is
-    /// a different sample with a different `content_id`.
+    /// a different sample with a different `content_id`.  A sample with no
+    /// clinical profile to remove keeps the version it declared: only an
+    /// amendment that removes the profile lowers it (1.1 §2.1).
     ///
     /// HDF5 does not reclaim an unlinked group's space, so the commit
     /// rewrites the file from its root before it replaces anything: unlinked
@@ -409,8 +504,12 @@ impl SampleWriter {
     /// version became an input with that payload from its old availability.
     pub fn drop_clinical(&mut self) -> Result<()> {
         let root = self.root()?;
-        if ops::exists(&root, crate::clinical::GROUP) {
+        let present = ops::exists(&root, crate::clinical::GROUP);
+        if present {
             self.compact = true;
+        }
+        if present || self.clinical.is_some() || self.declared_profiles.contains(crate::clinical::PROFILE) {
+            self.source_version = None;
         }
         if self.clinical_source == ClinicalSource::Inherited && self.inherited_events.is_empty() {
             // Tables that do not read hold no version anything can be held to.
@@ -423,7 +522,6 @@ impl SampleWriter {
         self.clinical_ids = Default::default();
         self.clinical_source = ClinicalSource::Absent;
         self.declared_profiles.remove(crate::clinical::PROFILE);
-        self.source_version = None;
         Ok(())
     }
 
@@ -447,6 +545,15 @@ impl SampleWriter {
                     ClinicalSource::Foreign
                 };
         }
+        // The file's own algorithm: restamped in another, every digest and
+        // the `content_id` changed, and the digests a commit left alone were
+        // kept under a root declaring the other.  One this engine cannot
+        // compute (E703) gives way to the default.
+        if let Some(algo) = attrs::get_str(source, "digest_algo").ok().flatten() {
+            if crate::digest::DIGEST_ALGOS.contains(&algo.as_str()) {
+                self.digest_algo = algo;
+            }
+        }
         let root = self.root()?;
         // The source's graph comes across whole, as one copy: a hard link
         // between two of its groups stays one object, where copying group by
@@ -460,6 +567,16 @@ impl SampleWriter {
         let mut skip: Vec<&str> = vec![META_DATASET];
         skip.extend(without);
         crate::h5::graph::GraphCopy::new(source, &root).members(source, &root, &skip, &mut crate::h5::graph::Raw)?;
+        // Another hard link to `/meta` is the document under another name,
+        // and the copy brought the old document across under it: written
+        // anew at commit, `/meta` became another object, and the alias kept
+        // every identifier a scrub had replaced.  The commit re-links each
+        // alias to the new document, and rewrites the file so the old one's
+        // bytes go with it.  A soft link names `/meta` by path, and follows.
+        self.meta_aliases = meta_aliases(source, without)?;
+        if !self.meta_aliases.is_empty() {
+            self.compact = true;
+        }
         for name in ["grids", "images", "annotations"] {
             if !ops::exists(&root, name) {
                 root.create_group(name)?;
@@ -786,6 +903,10 @@ impl SampleWriter {
     /// Rename frames of reference everywhere they are named (§3.4): on
     /// grids, world-space annotations and transforms at once.  Returns the
     /// attributes rewritten.
+    ///
+    /// HDF5 leaves an overwritten attribute's old value in the file's free
+    /// space, so after a rename the commit rewrites the file from its root:
+    /// rewritten in place alone, every old UID stayed in the committed bytes.
     pub fn remap_frame_uids(&mut self, mapping: &HashMap<String, String>) -> Result<Vec<String>> {
         let root = self.root()?;
         let mut changed = Vec::new();
@@ -797,6 +918,7 @@ impl SampleWriter {
                     let current = attrs::get_str(&obj, attr)?.unwrap_or_default();
                     match mapping.get(&current) {
                         Some(replacement) if replacement != &current => {
+                            self.compact = true;
                             attrs::write(&obj, attr, &AttrValue::Str(replacement.clone()))?;
                             changed.push(format!("{group}.{name}.{attr}"));
                         }
@@ -1312,21 +1434,42 @@ impl SampleWriter {
     /// amendment rewrote is stamped afresh.
     ///
     /// `digests = false` stamps only the datasets that carry no digest yet,
-    /// and leaves every other as it was.  `content_id` is always computed.
-    /// Returns the `content_id`, or `None` when the writer had already
-    /// committed.
+    /// and leaves every other as it was --- but for one in another algorithm
+    /// than the file's, restamped in the file's and checked as any changed
+    /// digest is, so a file never carries two.  `content_id` is always
+    /// computed.
+    ///
+    /// A commit refused before it changes anything --- a sample without an
+    /// image (E201), a reference that does not resolve, a document its schema
+    /// rejects (E005), an event version the amended file held, changed ---
+    /// leaves the writer open: mend what was refused and commit again.  One
+    /// that fails once it has begun writing aborts the writer, discarding the
+    /// file being built and leaving the target as it was.  Returns the
+    /// `content_id`, or `None` when the writer had already committed; an
+    /// aborted writer has nothing to commit, and says so.
     pub fn commit(&mut self, digests: bool) -> Result<Option<String>> {
-        if self.committed {
-            return Ok(None);
+        match self.state {
+            State::Committed => return Ok(None),
+            State::Aborted => {
+                return Err(Error::invalid(
+                    "this writer was aborted --- by abort(), or by a commit that failed once it had begun writing \
+                     --- so there is nothing to commit, and the target is as it was; build the sample again",
+                ))
+            }
+            State::Open => {}
         }
-        let result = self.commit_inner(digests);
+        // Refused here, nothing has changed: the writer stays open.
+        let profiles = self.check_commit()?;
+        let result = self.commit_inner(digests, &profiles);
         if result.is_err() {
             self.abort();
         }
         result.map(Some)
     }
 
-    fn commit_inner(&mut self, digests: bool) -> Result<String> {
+    /// What a commit refuses before it changes anything, and the profiles it
+    /// declares.
+    fn check_commit(&self) -> Result<Vec<String>> {
         if self.images.is_empty() {
             return Err(Error::coded("E201", "a sample must contain at least one image"));
         }
@@ -1341,35 +1484,46 @@ impl SampleWriter {
                 ),
             ));
         }
+        self.check_held()?;
+        Ok(self.infer_profiles()?.into_iter().collect())
+    }
+
+    fn commit_inner(&mut self, digests: bool, profiles: &[String]) -> Result<String> {
         let root = self.root()?;
         ops::unlink(&root, META_DATASET)?;
         data::create_scalar_string(&root, META_DATASET, &self.document.dumps())?;
+        for alias in &self.meta_aliases {
+            // Gone if this amendment removed it, or the group holding it.
+            if ops::exists(&root, alias) {
+                ops::unlink(&root, alias)?;
+                root.link_hard(META_DATASET, alias)?;
+            }
+        }
         self.write_clinical()?;
-        let profiles: Vec<String> = self.infer_profiles()?.into_iter().collect();
-        let version = written_version(self.source_version.as_deref(), &profiles);
+        let version = written_version(self.source_version.as_deref(), profiles);
+        let algo = self.digest_algo.clone();
         attrs::write(&root, "medh5_version", &AttrValue::Str(version))?;
         attrs::write(&root, "medh5_kind", &AttrValue::Str("sample".into()))?;
-        attrs::write(&root, "medh5_profiles", &crate::annotations::header::list_attr(&profiles))?;
+        attrs::write(&root, "medh5_profiles", &crate::annotations::header::list_attr(profiles))?;
         attrs::write(&root, "created", &AttrValue::Str(utcnow()))?;
         attrs::write(&root, "generator", &AttrValue::Str(format!("medh5 {VERSION}")))?;
-        attrs::write(&root, "digest_algo", &AttrValue::Str("sha256".into()))?;
+        attrs::write(&root, "digest_algo", &AttrValue::Str(algo.clone()))?;
         let stored = collect_digests(&root, &["index"])?;
-        let stamped = stamp_digests(&root, "sha256", &["index"], !digests)?;
+        let stamped = stamp_in(&root, &algo, !digests)?;
         self.refuse_restamping(&stored, &stamped)?;
-        let content_id = compute_content_id(&root, &attr_name_map_of(&root)?, "sha256", None)?;
+        let content_id = compute_content_id(&root, &attr_name_map_of(&root)?, &algo, None)?;
         attrs::write(&root, "content_id", &AttrValue::Str(content_id.clone()))?;
         self.check_valid()?;
         drop(root);
-        self.committed = true;
-        if let Some(file) = self.file.take() {
-            if self.compact {
-                // Only what the root reaches comes across; the copy keeps the
-                // graph, so every digest and the `content_id` are unchanged.
-                file.rebuild(crate::collection::copy_root)?.commit()?;
-            } else {
-                file.commit()?;
-            }
+        let file = self.file.take().ok_or_else(|| Error::invalid("this writer has already committed or aborted"))?;
+        if self.compact {
+            // Only what the root reaches comes across; the copy keeps the
+            // graph, so every digest and the `content_id` are unchanged.
+            file.rebuild(crate::collection::copy_root)?.commit()?;
+        } else {
+            file.commit()?;
         }
+        self.state = State::Committed;
         Ok(content_id)
     }
 
@@ -1440,7 +1594,12 @@ mod tests {
     /// One image on one grid, and a fixed-length string dataset outside
     /// every group the specification defines.
     fn sample(path: &Path) {
-        let mut writer = create(path, Some("s"), None, "portable", &[]).unwrap();
+        sample_of(path, None);
+    }
+
+    /// [`sample`], of the subject `subject_id` names.
+    fn sample_of(path: &Path, subject_id: Option<&str>) {
+        let mut writer = create(path, Some("s"), subject_id, "portable", &[]).unwrap();
         writer.add_grid("g", &[4, 6, 8], &[1.0, 1.0, 1.0], GridOptions::default()).unwrap();
         let ct =
             NdArray::from_vec(&[4, 6, 8], (0..192).map(f64::from).collect()).unwrap().astype(crate::array::DType::I16);
@@ -1510,5 +1669,152 @@ mod tests {
         let committed = amend(&path, None).unwrap().commit(true).unwrap_err();
         assert_eq!((refused.code(), refused.to_string()), (committed.code(), committed.to_string()));
         assert!(!refused.to_string().contains("  "), "{refused}");
+    }
+
+    /// A commit refused before it changed anything leaves the writer open, to
+    /// mend and commit again, and a second commit of a committed writer has
+    /// nothing to do.  A refused commit killed the writer, and the next one
+    /// returned `None`, as if it had written the file it never wrote.
+    #[test]
+    fn s14_4_a_commit_refused_before_writing_leaves_the_writer_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.medh5");
+        let mut writer = create(&path, Some("s"), None, "portable", &[]).unwrap();
+        writer.add_grid("g", &[2, 3, 4], &[1.0, 1.0, 1.0], GridOptions::default()).unwrap();
+        let refused = writer.commit(true).unwrap_err();
+        assert_eq!(refused.code(), Some("E201"), "{refused}");
+        assert!(!writer.is_closed() && !path.exists());
+        // A reference that does not resolve is refused alike, and mended.
+        let ct = NdArray::from_vec(&[2, 3, 4], vec![0i16; 24]).unwrap();
+        let options = ImageOptions { prov: Some("act_import_9".into()), ..Default::default() };
+        writer.add_image("CT", &ct, "g", "CT", options).unwrap();
+        assert_eq!(writer.commit(true).unwrap_err().code(), Some("E601"));
+        assert!(!writer.is_closed() && !path.exists());
+        let agent = writer.software("importer", None, Map::new()).unwrap();
+        writer.activity("import", Some(&agent.id), Some("act_import_9"), Map::new()).unwrap();
+        let content_id = writer.commit(true).unwrap();
+        assert!(content_id.is_some() && path.exists());
+        assert!(writer.is_closed());
+        assert_eq!(writer.commit(true).unwrap(), None);
+    }
+
+    /// An aborted writer has nothing to commit, and says so --- aborted by
+    /// its caller, or by a commit refused once it had begun writing --- and
+    /// leaves the target as it was, with no temporary file beside it.
+    #[test]
+    fn s14_4_an_aborted_writer_refuses_to_commit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.medh5");
+        let mut writer = create(&path, Some("s"), None, "portable", &[]).unwrap();
+        writer.abort();
+        assert!(writer.is_closed());
+        let refused = writer.commit(true).unwrap_err();
+        assert!(refused.to_string().contains("aborted"), "{refused}");
+        assert!(!path.exists());
+
+        sample(&path);
+        {
+            let file = hdf5::File::open_rw(&path).unwrap();
+            let ct = file.dataset("images/CT").unwrap();
+            ct.write_slice(&ndarray::arr3(&[[[999i16]]]), (0..1, 0..1, 0..1)).unwrap();
+        }
+        let before = std::fs::read(&path).unwrap();
+        let mut writer = amend(&path, None).unwrap();
+        // Refused by the stamp, after the commit had begun writing.
+        assert_eq!(writer.commit(true).unwrap_err().code(), Some("E701"));
+        assert!(writer.is_closed());
+        let refused = writer.commit(true).unwrap_err();
+        assert!(refused.to_string().contains("aborted"), "{refused}");
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    /// Every digest under `path`, and its `content_id`, restamped in `algo`,
+    /// as a writer digesting in it would have written them.
+    fn restamped_in(path: &Path, algo: &str) {
+        let file = hdf5::File::open_rw(path).unwrap();
+        let root = file.as_group().unwrap();
+        attrs::write(&root, "digest_algo", &AttrValue::Str(algo.into())).unwrap();
+        stamp_digests(&root, algo, &["index"], false).unwrap();
+        let content_id = compute_content_id(&root, &attr_name_map_of(&root).unwrap(), algo, None).unwrap();
+        attrs::write(&root, "content_id", &AttrValue::Str(content_id)).unwrap();
+    }
+
+    fn digests_and_address(path: &Path) -> (Option<String>, IndexMap<String, String>, Option<String>) {
+        let file = open_read(path).unwrap();
+        let root = file.as_group().unwrap();
+        let algo = attrs::get_str(&root, "digest_algo").unwrap();
+        (algo, collect_digests(&root, &["index"]).unwrap(), attrs::get_str(&root, "content_id").unwrap())
+    }
+
+    /// An amendment digests in the algorithm the file declares.  It
+    /// restamped every digest in sha256 under a root it relabelled --- a new
+    /// `content_id` for an unchanged sample --- and with `digests = false`
+    /// kept the old digests under a root declaring sha256.  A digest kept in
+    /// another algorithm than the file's is restamped in the file's.
+    #[test]
+    fn s13_1_an_amendment_keeps_the_files_digest_algorithm() {
+        for algo in ["sha512", "blake2b"] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("s.medh5");
+            sample(&path);
+            restamped_in(&path, algo);
+            let (_, _, address) = digests_and_address(&path);
+            for digests in [false, true] {
+                amend(&path, None).unwrap().commit(digests).unwrap();
+                let (declared, stored, after) = digests_and_address(&path);
+                assert_eq!(declared.as_deref(), Some(algo));
+                assert!(stored.values().all(|d| d.starts_with(&format!("{algo}:"))), "{algo}: {stored:?}");
+                assert_eq!(after, address, "{algo}: a no-op amendment moved the address");
+                assert!(mismatched(&path).is_empty());
+            }
+            // A third-party file carrying one digest in another algorithm.
+            {
+                let file = hdf5::File::open_rw(&path).unwrap();
+                let notes = file.dataset("x_site/notes").unwrap();
+                let other = crate::integrity::digest::dataset_digest(&notes, "x_site/notes", "sha256").unwrap();
+                attrs::write(&notes, "digest", &AttrValue::Str(other)).unwrap();
+            }
+            amend(&path, None).unwrap().commit(false).unwrap();
+            let (_, stored, after) = digests_and_address(&path);
+            assert!(stored.values().all(|d| d.starts_with(&format!("{algo}:"))), "{algo}: {stored:?}");
+            assert_eq!(after, address);
+            assert!(mismatched(&path).is_empty());
+        }
+    }
+
+    /// A hard link to `/meta` names the document the commit writes, under
+    /// any name and wherever it sorts.  Copied by path, an alias kept the
+    /// old document as an object of its own: an identifier the amendment
+    /// replaced stayed in the file under it, and in its bytes.
+    #[test]
+    fn s2_4_a_hard_link_to_meta_names_the_document_the_commit_writes() {
+        for alias in ["x_acme/meta", "a_first/meta", "meta_copy"] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("s.medh5");
+            sample_of(&path, Some("MRN-000042"));
+            {
+                let file = hdf5::File::open_rw(&path).unwrap();
+                if let Some((group, _)) = alias.split_once('/') {
+                    file.create_group(group).unwrap();
+                }
+                file.link_hard("meta", alias).unwrap();
+            }
+            let mut writer = amend(&path, None).unwrap();
+            assert_eq!(writer.meta_aliases, vec![alias.to_string()]);
+            let mut fields = Map::new();
+            fields.insert("subject_id".into(), Value::String("pseudo-1".into()));
+            writer.identity(fields).unwrap();
+            writer.commit(true).unwrap();
+            {
+                let file = open_read(&path).unwrap();
+                let root = file.as_group().unwrap();
+                assert!(ops::object_id_by_name(&root, alias).is_some());
+                assert_eq!(ops::object_id_by_name(&root, alias), ops::object_id_by_name(&root, "meta"), "{alias}");
+            }
+            let bytes = std::fs::read(&path).unwrap();
+            assert!(!bytes.windows(10).any(|w| w == b"MRN-000042"), "{alias}: the old document is in the file");
+            assert!(mismatched(&path).is_empty());
+        }
     }
 }

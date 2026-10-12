@@ -174,7 +174,7 @@ pub fn fix(path: &Path, options: &FixOptions) -> Result<Repair> {
             // annotation's digest (§13.3), so one rebuilt from the digests the
             // file had went stale when the commit restamped them --- and one
             // that matched before the restamp went stale without being rebuilt.
-            stamp_digests(&writer.root()?, "sha256", &["index"], false)?;
+            stamp_digests(&writer.root()?, writer.digest_algo(), &["index"], false)?;
         }
         let mut names = stale_index_entries(&writer.root()?)?;
         names.sort();

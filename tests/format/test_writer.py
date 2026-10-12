@@ -29,6 +29,31 @@ from medh5.labels import LabelClass, LabelSet
 from medh5.validate import validate_file
 from tests.kits import Flat, Framed, Numbered, Organs
 
+# Each door a boolean volume comes in by, writing it into annotation `a`, and
+# what reads it back.
+_BOOLEAN_VOLUMES: dict[str, tuple[Any, Any]] = {
+    "add_mask": (
+        lambda w, volume: w.add_mask("a", volume, grid="g"),
+        lambda sample: sample.annotations["a"].read(),
+    ),
+    "masks": (
+        lambda w, volume: w.add_segmentation("a", grid="g", masks={1: volume}),
+        lambda sample: sample.annotations["a"].dense([1])[0],
+    ),
+    "ignore": (
+        lambda w, volume: w.add_segmentation(
+            "a", grid="g", masks={3: Flat.mask((5, 5, 5))}, ignore=volume
+        ),
+        lambda sample: sample.ignore_region("a"),
+    ),
+    "instance": (
+        lambda w, volume: w.add_segmentation(
+            "a", grid="g", instances=[InstanceInput(1, 1, mask=volume)]
+        ),
+        lambda sample: sample.annotations["a"].dense([1])[0],
+    ),
+}
+
 
 class TestWriterSideRefusals:
     """Every new validator rule is refused by the writer at commit as well."""
@@ -106,6 +131,23 @@ class TestWriterSideRefusals:
             w.add_grid("g", shape=Flat.SHAPE, spacing=(1.0, 1.0, 1.0), timepoint="tp0")
             w.add_image("CT", Flat.image(), grid="g", modality="CT", valid_mask="nope")
         assert exc.value.code == "E413"
+
+    @pytest.mark.parametrize("door", sorted(_BOOLEAN_VOLUMES))
+    def test_S4_4_a_float_mask_holds_only_0_and_1(self, tmp_path: Path, door: str):
+        """Every boolean volume a writer takes was read as set wherever it was
+        non-zero, so a soft value --- 0.2 --- became `True`: a threshold
+        nobody chose, stored as which voxels are in the mask.  A float array
+        of 0s and 1s is still a mask."""
+        write, read = _BOOLEAN_VOLUMES[door]
+        soft = Flat.mask().astype(np.float32) * np.float32(0.2)
+        self._refused(tmp_path, "E411", lambda w: write(w, soft))
+
+        path = tmp_path / "binary.medh5"
+        with Flat.open_writer(path) as w:
+            write(w, Flat.mask().astype(np.float64))
+        with medh5.open(path) as sample:
+            np.testing.assert_array_equal(read(sample), Flat.mask())
+        assert validate_file(path).ok
 
     def test_S10_1_transform_links_are_checked(self, tmp_path: Path):
         def dangling_prov(w: Any) -> None:
@@ -388,6 +430,65 @@ class TestWriterContracts:
         with pytest.raises(MEDH5ValidationError):
             transcode_payload(payload, "mask", spatial_shape=Organs.SHAPE)
 
+    @pytest.mark.parametrize(("encoding", "code"), [("mask", "E404"), ("nope", "E401")])
+    def test_S7_6_a_write_refuses_the_encodings_a_transcode_refuses(
+        self, tmp_path: Path, encoding: str, code: str
+    ):
+        """`add_segmentation(encoding="mask")` OR-ed every class into one
+        volume and wrote it with empty `class_ids` and `annotated_class_ids`
+        under `task="segmentation"` --- the coverage contract a transcode to
+        `mask` refuses to erase --- and the file validated clean."""
+        from medh5.annotations.voxel import encode_masks, transcode_payload
+
+        payload = encode_masks(Organs.blocks(), "layers", Organs.SHAPE)
+        with pytest.raises(MEDH5ValidationError) as transcoded:
+            transcode_payload(payload, encoding, spatial_shape=Organs.SHAPE)
+        path = tmp_path / "encoding.medh5"
+        with Organs.writer(path) as w:
+            with pytest.raises(MEDH5ValidationError) as written:
+                w.add_segmentation(
+                    "seg", grid="g", masks=Organs.blocks(), encoding=encoding
+                )
+            assert written.value.code == transcoded.value.code == code
+            assert list(w.handle["annotations"].keys()) == []
+            w.add_segmentation(
+                "seg", grid="g", masks=Organs.blocks(), annotated_classes=[1, 3]
+            )
+        with medh5.open(path) as sample:
+            annotation = sample.annotations["seg"]
+            assert annotation.kind != "mask"
+            assert annotation.class_ids == annotation.annotated_class_ids == (1, 3)
+
+    def test_S7_2_the_writer_stores_the_layers_the_encoder_builds(self, tmp_path: Path):
+        """The writer measured the overlap graph to choose an encoding, then
+        measured and coloured it again to write `layers`.  It now writes the
+        colouring it measured, which must be the one the encoder builds."""
+        from medh5.annotations.voxel import encode_masks
+
+        rng = np.random.default_rng(7)
+        masks = {}
+        for class_id in range(1, 9):
+            mask = np.zeros(Numbered.SHAPE, bool)
+            z, y, x = (int(rng.integers(0, n - 4)) for n in Numbered.SHAPE)
+            mask[z : z + 4, y : y + 4, x : x + 4] = True
+            masks[class_id] = mask
+        expected = encode_masks(masks, "layers", Numbered.SHAPE)
+        assert expected.datasets["data"].shape[0] > 1, "the classes overlap"
+
+        path = tmp_path / "layers.medh5"
+        with medh5.create(path, codec="portable") as w:
+            w.add_grid("g", shape=Numbered.SHAPE, spacing=(1.0, 1.0, 1.0))
+            w.add_image(
+                "CT", np.zeros(Numbered.SHAPE, np.int16), grid="g", modality="CT"
+            )
+            w.label_set(Numbered.label_set(8))
+            kind, _ = w.add_segmentation("seg", grid="g", masks=masks)
+        assert kind == "layers"
+        with medh5.open(path) as sample:
+            group = sample.annotations["seg"].group
+            for name, array in expected.datasets.items():
+                np.testing.assert_array_equal(group[name][...], array, strict=True)
+
 
 class TestRewriteGate:
     """What every door into a file checks."""
@@ -402,8 +503,11 @@ class TestRewriteGate:
             medh5.amend(path)
         assert path.read_bytes() == before
 
-    def test_S16_amend_keeps_a_later_minor(self, tmp_path: Path):
-        """A 1.1 file's objects are carried through, so it stays a 1.1 file."""
+    def test_S2_3_an_amendment_never_lowers_the_version(self, tmp_path: Path):
+        """1.1 §2.1, §2.3: imaging alone needs 1.0, but a file that declares
+        1.1 stays a 1.1 file, with what it carries.  (1.1 is this engine's own
+        version: a *later* minor is refused, which the test of the gate
+        below holds.)"""
         path = Numbered.plain(tmp_path / "v11.medh5")
         with h5py.File(path, "r+") as handle:
             handle.attrs["medh5_version"] = "1.1"
@@ -414,14 +518,45 @@ class TestRewriteGate:
             assert handle.attrs["medh5_version"] == "1.1"
             assert "x_future" in handle
 
-    def test_S16_the_scrub_and_fix_doors_are_the_same_gate(self, tmp_path: Path):
-        from medh5.curation import scrub
-
-        path = Numbered.plain(tmp_path / "v2s.medh5")
+    def test_S2_1_dropping_a_clinical_profile_the_file_lacks_keeps_its_version(
+        self, tmp_path: Path
+    ):
+        """Only an amendment that removes the clinical profile lowers the
+        version (1.1 §2.1).  `drop_clinical` on a file with none removed
+        nothing, and wrote a 1.1 file as 1.0."""
+        path = Numbered.plain(tmp_path / "v11.medh5")
         with h5py.File(path, "r+") as handle:
-            handle.attrs["medh5_version"] = "2.0"
-        with pytest.raises(MEDH5VersionError):
-            scrub.apply(path)
+            handle.attrs["medh5_version"] = "1.1"
+        with medh5.amend(path) as w:
+            w.drop_clinical()
+        with h5py.File(path, "r") as handle:
+            assert handle.attrs["medh5_version"] == "1.1"
+
+    @pytest.mark.parametrize("version", ["2.0", "1.2"])
+    def test_S16_the_scrub_and_fix_doors_are_the_same_gate(
+        self, tmp_path: Path, version: str
+    ):
+        """Every tool that rewrites a file refuses what `amend` refuses ---
+        another major, and a later minor read only as its projection (1.1
+        §2.3) --- and leaves it as it was.  The test was named for the fix
+        door and knocked only on scrub's."""
+        from medh5.curation import scrub
+        from medh5.integrity import fix
+
+        path = Numbered.plain(tmp_path / "gate.medh5")
+        with h5py.File(path, "r+") as handle:
+            handle.attrs["medh5_version"] = version
+        before = path.read_bytes()
+        doors = {
+            "amend": lambda: medh5.amend(path),
+            "scrub": lambda: scrub.apply(path),
+            "fix": lambda: fix(path, rewrite_digests=True, reason="restamp"),
+        }
+        for door, knock in doors.items():
+            with pytest.raises(MEDH5VersionError):
+                knock()
+            assert path.read_bytes() == before, door
+        assert [p.name for p in tmp_path.iterdir()] == [path.name]
 
     @pytest.fixture
     def secret(self, tmp_path: Path) -> Path:

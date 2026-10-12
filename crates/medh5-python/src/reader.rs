@@ -1378,7 +1378,15 @@ impl SampleHandle {
     fn is_open(&self) -> bool {
         self.inner.lock().unwrap().as_ref().is_some_and(|s| s.is_open())
     }
+    /// `repr()`; a closed sample says so rather than raising, as a closed
+    /// dataset does: debuggers, loggers and test reports all ask.
     fn repr(&self) -> R<String> {
+        if !self.is_open() {
+            return Ok(match &self.path {
+                Some(path) => format!("Sample({}, closed)", medh5::json::repr_str(path)),
+                None => "Sample(closed)".to_string(),
+            });
+        }
         Ok(self.sample()?.repr()?)
     }
     /// The sample document (§2), as read --- a later minor's as its supported

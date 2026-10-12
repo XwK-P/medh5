@@ -711,7 +711,9 @@ def agreement_voxel_value(agreement: Any) -> float | None: ...
 def amend(path: str | os.PathLike[str], *, codec: str | None = None) -> SampleWriter:
     """Copy-on-write amend: build a new file from the old and replace it.
 
-    Anything holding the old file open keeps reading the old inode.
+    On POSIX, anything holding the old file open keeps reading the old inode.
+    Windows cannot replace an open file: close every reader of it before the
+    commit, whose rename otherwise fails and leaves the file as it was.
     """
     ...
 
@@ -1834,7 +1836,9 @@ def world_to_index(
 def written_version(source: str | None, profiles: Sequence[str] = ...) -> str:
     """The `medh5_version` a commit writes: the lowest version `profiles` need
     (`1.0`, or `1.1` with `clinical`), and never below `source`, the version
-    an amended file already declared (1.1 §2.3).
+    an amended file already declared (1.1 §2.3).  An amendment that removes
+    the clinical profile (`drop_clinical`) passes no `source`: the imaging
+    projection is written at the lowest version what remains needs (1.1 §2.1).
     """
     ...
 
@@ -3152,7 +3156,10 @@ class SampleWriter:
         prov: Activity | str | None = None,
         codec: str | None = None,
     ) -> None:
-        """Write a boolean `mask` annotation (FOV, ignore region)."""
+        """Write a boolean `mask` annotation (FOV, ignore region).  A
+        floating-point mask holding a value other than 0 and 1 is refused
+        (E411) rather than read as set wherever it is non-zero.
+        """
         ...
     def add_mesh(
         self,
@@ -3271,8 +3278,10 @@ class SampleWriter:
         """Write a voxel annotation, choosing the encoding by measurement.
 
         Returns the chosen `kind` and the overlap statistics behind the choice.
-        Masks stored as `instances` are one object per class, each minted an
-        id above every id the sample holds (§7.4).
+        `encoding` is `"auto"` or one of `TRANSCODABLE`: a `mask` has no
+        classes, so it is refused (E404), as a transcode to it is.  Masks
+        stored as `instances` are one object per class, each minted an id
+        above every id the sample holds (§7.4).
         """
         ...
     def add_timepoint(self, timepoint_id: str, **fields: Any) -> Timepoint:
@@ -3326,7 +3335,9 @@ class SampleWriter:
         ...
     @property
     def closed(self) -> bool:
-        """Whether `commit` or `abort` has run."""
+        """Whether the writer has committed or been aborted.  A commit refused
+        before it changed anything leaves it open.
+        """
         ...
     @property
     def codec(self) -> str:
@@ -3338,8 +3349,13 @@ class SampleWriter:
 
         `digests=True` recomputes every digest, and refuses (E701) to restamp
         one whose bytes the amended file already failed; `digests=False`
-        stamps only datasets that carry none.  Returns the `content_id`, or
-        `None` when already committed.
+        stamps only datasets that carry none (or one in another algorithm than
+        the file's).  An amended file keeps its `digest_algo`.  A commit
+        refused before it changes anything --- no image (E201), a reference
+        that does not resolve, a schema error (E005) --- leaves the writer
+        open, to mend and commit again; one that fails after it began writing
+        aborts it.  Returns the `content_id`, or `None` when already
+        committed; committing an aborted writer raises.
         """
         ...
     def deidentification(self, **fields: Any) -> Deidentification: ...
@@ -3352,7 +3368,10 @@ class SampleWriter:
     @document.setter
     def document(self, value: SampleDocument) -> None: ...
     def drop_clinical(self) -> None:
-        """Remove the clinical profile: the imaging projection (1.1 §10)."""
+        """Remove the clinical profile: the imaging projection (1.1 §10), written
+        at the lowest version what remains needs.  A sample with no clinical
+        profile to remove keeps the version it declared (1.1 §2.1).
+        """
         ...
     def extra(self, namespace: str, value: Any) -> None:
         """Set a namespaced extension member of the document."""
