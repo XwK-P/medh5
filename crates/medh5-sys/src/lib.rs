@@ -1,6 +1,6 @@
 //! Native dependencies of the medh5 format engine.
 //!
-//! This crate links three things into whatever depends on it, statically:
+//! This crate links, statically, into whatever depends on it:
 //!
 //! * **HDF5**, built from source by `hdf5-metno-sys` (re-exported as
 //!   [`hdf5_sys`]);
@@ -17,7 +17,9 @@
 //! Nothing here interprets a MEDH5 file; the `medh5` crate does.  The entry
 //! points beyond the raw bindings are [`register_blosc2_filter`] and
 //! [`register_zstd_filter`], which must run before a dataset using either
-//! filter is created or read.
+//! filter is created or read.  Both filters are compiled in, so nothing here
+//! needs HDF5's dynamically loaded plugins; the `medh5` crate turns their
+//! loading off unless the user asks for it.
 
 #![allow(non_camel_case_types)]
 
@@ -133,13 +135,42 @@ pub unsafe fn register_zstd_filter() -> bool {
     ok
 }
 
+/// HDF5 here is not built thread-safe, and the tests of a crate run in
+/// parallel: a test that calls into HDF5 holds this.
+#[cfg(test)]
+static HDF5_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::ffi::CStr;
+    use std::os::raw::c_uint;
+
+    /// C-Blosc2's `blosc2_storage`: null pointers take its defaults.
+    #[repr(C)]
+    struct Blosc2Storage {
+        contiguous: bool,
+        urlpath: *mut c_char,
+        cparams: *mut c_void,
+        dparams: *mut c_void,
+        io: *mut c_void,
+    }
+
+    /// C-Blosc2's `blosc2_codec`; the callbacks are never called here.
+    #[repr(C)]
+    struct Blosc2Codec {
+        compcode: u8,
+        compname: *const c_char,
+        complib: u8,
+        version: u8,
+        encoder: Option<unsafe extern "C" fn()>,
+        decoder: Option<unsafe extern "C" fn()>,
+    }
 
     unsafe extern "C" {
         fn blosc2_get_version_string() -> *const c_char;
+        fn blosc2_register_codec(codec: *mut Blosc2Codec) -> c_int;
+        fn blosc2_compname_to_compcode(compname: *const c_char) -> c_int;
         fn blosc1_set_compressor(compname: *const c_char) -> c_int;
         fn blosc2_compress(
             clevel: c_int,
@@ -152,6 +183,19 @@ mod tests {
         ) -> c_int;
         fn blosc2_decompress(src: *const c_void, srcsize: i32, dest: *mut c_void, destsize: i32) -> c_int;
         fn blosclz_decompress(input: *const c_void, length: c_int, output: *mut c_void, maxout: c_int) -> c_int;
+        fn blosc2_filter_function(
+            flags: c_uint,
+            cd_nelmts: usize,
+            cd_values: *const c_uint,
+            nbytes: usize,
+            buf_size: *mut usize,
+            buf: *mut *mut c_void,
+        ) -> usize;
+        fn blosc2_schunk_new(storage: *mut Blosc2Storage) -> *mut c_void;
+        fn blosc2_schunk_to_buffer(schunk: *mut c_void, cframe: *mut *mut u8, needs_free: *mut bool) -> i64;
+        fn blosc2_schunk_free(schunk: *mut c_void) -> c_int;
+        fn malloc(size: usize) -> *mut c_void;
+        fn free(ptr: *mut c_void);
     }
 
     #[test]
@@ -237,5 +281,132 @@ mod tests {
         assert!((written as usize) < values.len(), "BloscLZ compressed nothing");
         assert_eq!(read as usize, values.len());
         assert_eq!(back, values);
+    }
+
+    /// Fill the stack the next call will use with a byte that is not zero,
+    /// so that what a callee leaves uninitialised is not zero by luck.
+    #[inline(never)]
+    fn dirty_stack() {
+        let mut junk = [0xA5u8; 64 * 1024];
+        std::hint::black_box(&mut junk);
+    }
+
+    /// The Blosc2 filter run as HDF5 runs it --- `data` in a buffer of
+    /// `buf_size` bytes, or of `data`'s own size if larger --- forward or
+    /// `reverse`: what it hands back, if anything.
+    fn blosc2_filter(reverse: bool, values: &[c_uint], data: &[u8], buf_size: usize) -> Option<Vec<u8>> {
+        let _held = HDF5_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let flags = if reverse { hdf5_sys::h5z::H5Z_FLAG_REVERSE } else { 0 };
+        let mut size = buf_size.max(data.len()).max(1);
+        // SAFETY: the buffer is allocated as the filter frees it, and holds
+        // `data`; the filter frees or keeps it, and what it holds after is
+        // freed here.
+        unsafe {
+            let mut buf = malloc(size);
+            assert!(!buf.is_null());
+            std::ptr::copy_nonoverlapping(data.as_ptr(), buf.cast::<u8>(), data.len());
+            dirty_stack();
+            let n = blosc2_filter_function(flags, values.len(), values.as_ptr(), data.len(), &mut size, &mut buf);
+            let out = (n > 0).then(|| std::slice::from_raw_parts(buf.cast::<u8>(), n).to_vec());
+            free(buf);
+            out
+        }
+    }
+
+    /// Filter values: revision, block size, type size, chunk bytes, level,
+    /// shuffle, BloscLZ, and for B2ND the chunk's rank and shape.
+    fn filter_values(chunk: usize, shape: Option<[c_uint; 2]>) -> Vec<c_uint> {
+        let mut values = vec![2, 0, 1, chunk as c_uint, 5, 1, 0];
+        if let Some(shape) = shape {
+            values.push(2);
+            values.extend(shape);
+        }
+        values
+    }
+
+    /// A chunk that decompresses to more than its dataset's chunk is refused
+    /// before anything is allocated for it --- 4 MiB of zeros compress to a
+    /// few hundred bytes, and both a chunk header and the filter values can
+    /// state up to gigabytes --- and a chunk of the dataset still decodes, in
+    /// plain Blosc2 (which trusted the header's size) and in B2ND (which
+    /// trusted the filter values).
+    #[test]
+    fn s14_2_a_blosc2_chunk_larger_than_its_dataset_chunk_is_refused() {
+        let zeros = vec![0u8; 4 << 20];
+        for shape in [None, Some([1024, 4096])] {
+            let values = filter_values(zeros.len(), shape);
+            let frame = blosc2_filter(false, &values, &zeros, zeros.len()).expect("compressed");
+            assert!(frame.len() < 64 * 1024, "{} bytes", frame.len());
+            let small = filter_values(4096, shape.map(|_| [64, 64]));
+            assert_eq!(blosc2_filter(true, &small, &frame, 4096), None, "shape: {shape:?}");
+            // The filter values of the dataset the chunk belongs to, with a
+            // smaller buffer than the chunk: B2ND checks them against it.
+            if shape.is_some() {
+                assert_eq!(blosc2_filter(true, &values, &frame, 4096), None);
+            }
+            assert_eq!(blosc2_filter(true, &values, &frame, zeros.len()).as_deref(), Some(&zeros[..]));
+        }
+    }
+
+    /// A super-chunk of no chunks --- the frame C-Blosc2 itself writes for
+    /// one --- is refused.  Asked for its chunk 0, C-Blosc2 left the filter's
+    /// chunk pointer unset, and the filter then freed whatever the stack held
+    /// there.
+    #[test]
+    fn s14_2_a_blosc2_frame_of_no_chunks_is_refused() {
+        // SAFETY: a super-chunk of default parameters in memory; its frame is
+        // copied out before it is freed.
+        let frame = unsafe {
+            blosc2_init();
+            use std::ptr::null_mut;
+            let mut storage = Blosc2Storage {
+                contiguous: true,
+                urlpath: null_mut(),
+                cparams: null_mut(),
+                dparams: null_mut(),
+                io: null_mut(),
+            };
+            let schunk = blosc2_schunk_new(&mut storage);
+            assert!(!schunk.is_null());
+            let (mut cframe, mut needs_free) = (std::ptr::null_mut(), false);
+            let len = blosc2_schunk_to_buffer(schunk, &mut cframe, &mut needs_free);
+            assert!(len > 0 && !needs_free);
+            let frame = std::slice::from_raw_parts(cframe, len as usize).to_vec();
+            blosc2_schunk_free(schunk);
+            frame
+        };
+        assert_eq!(blosc2_filter(true, &filter_values(4096, None), &frame, 4096), None);
+    }
+
+    /// A damaged chunk leaves C-Blosc2 as it was.  The filter's failure path
+    /// called `blosc2_destroy()`, which frees the library's global context
+    /// and destroys the mutexes and thread pools a window read on another
+    /// thread may be using; the next `blosc2_init()` then started the library
+    /// afresh, forgetting the codecs registered with it among the rest.
+    #[test]
+    fn s14_2_a_damaged_blosc2_chunk_leaves_the_library_as_it_was() {
+        let name = c"medh5-test-codec";
+        let mut codec = Blosc2Codec {
+            compcode: 250,
+            compname: name.as_ptr(),
+            complib: 250,
+            version: 1,
+            encoder: None,
+            decoder: None,
+        };
+        // SAFETY: the codec is copied into C-Blosc2's registry, and its name
+        // is a static string; nothing compresses with it.
+        unsafe {
+            blosc2_init();
+            assert!(blosc2_register_codec(&mut codec) >= 0);
+            assert_eq!(blosc2_compname_to_compcode(name.as_ptr()), 250);
+        }
+        // Not a frame at all.
+        assert_eq!(blosc2_filter(true, &filter_values(4096, None), &[0x5A; 256], 4096), None);
+        // SAFETY: as above.
+        unsafe {
+            blosc2_init();
+            assert_eq!(blosc2_compname_to_compcode(name.as_ptr()), 250);
+        }
     }
 }

@@ -84,6 +84,20 @@ class TestLevels:
         assert not report.ok
         assert "E001" in report.codes
 
+    def test_S15_a_missing_file_is_reported_the_same_on_every_run(self, tmp_path):
+        """The report of a missing file was HDF5's error stack, which carries
+        the time of the call and an address: ``validate --json`` differed
+        from run to run, and could not be compared with an expected report."""
+        missing = tmp_path / "nope.medh5"
+        first = validate_file(missing)
+        assert first.dumps() == validate_file(missing).dumps()
+        [diagnostic] = first.diagnostics
+        assert diagnostic.code == "E001"
+        assert diagnostic.message.endswith(": no such file or directory")
+        [diagnostic] = validate_file(tmp_path).diagnostics
+        assert diagnostic.code == "E001"
+        assert diagnostic.message.endswith(": it is a directory, not a file")
+
     def test_validate_paths_returns_one_report_each(self, sample_path):
         reports = validate_paths([sample_path, sample_path])
         assert len(reports) == 2

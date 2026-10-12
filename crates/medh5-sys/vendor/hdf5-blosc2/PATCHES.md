@@ -4,9 +4,9 @@
 7.1.0 ships it in `lib/HDF5-Blosc2/src/` (HDF5-Blosc2 3.0.1): the header byte
 for byte, the source with the changes below, each marked `medh5:`. They turn
 assertions on values read from a file into the filter's ordinary error return,
-so a damaged or hostile file is an HDF5 read error rather than an aborted
-process. They are offered upstream; until they land there, keep them when the
-filter is updated.
+and check what upstream trusted, so a damaged or hostile file is an HDF5 read
+error rather than an aborted process or an unbounded allocation. They are
+offered upstream; until they land there, keep them when the filter is updated.
 
 Defining `NDEBUG` is not a substitute. It removes the assertion and leaves the
 condition unchecked, so a file whose stored chunk size is smaller than its
@@ -25,6 +25,26 @@ chunk would go on to be decompressed into the wrong buffer.
 3. **Compression.** `compute_b2nd_block_shape` returned through assertions on
    its arguments (a type size of 0 divided by zero); it now returns `-1`, and
    the caller fails the filter.
+4. **Decompressed size.** Both branches allocated what the file states the
+   chunk holds --- the plain branch the size in the chunk's header, without
+   checking that the header parsed (`blosc2_cbuffer_sizes`'s return), the B2ND
+   branch the chunk size in the filter values --- however little HDF5 expects
+   back. A chunk of special values states 2 GB in a few bytes. The size must
+   now parse, and is capped before anything is allocated at twice the buffer
+   HDF5 hands the filter and 64 KiB more: the cap the Zstandard filter applies
+   (`src/zstd_filter.rs`), which leaves room for a filter applied before this
+   one, such as a Fletcher32 checksum.
+5. **The failure path.** Upstream's exit path called `blosc2_destroy()` on
+   every chunk that failed, freeing Blosc2's global context and destroying its
+   mutexes while a window read (`src/b2nd_slice.c`) may be decompressing on
+   another thread, outside HDF5's lock. Removed: nothing the filter allocates
+   outlives the call.
+6. **Uninitialised locals.** The plain branch's exit path frees `chunk` when
+   `needs_free` says so, and a super-chunk of no chunks failed before either
+   was set. Both start initialised.
+
+Patches 4 to 6 are held by tests in `src/lib.rs` that call the filter as HDF5
+does.
 
 The window reads that skip HDF5's pipeline (`src/b2nd_slice.c`) are this
 crate's own code, not upstream's, and check the same conditions.

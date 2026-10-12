@@ -716,6 +716,99 @@ class TestRewriteGate:
             writer.commit()
         assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
+    def test_S14_4_a_read_only_file_is_amended_and_stays_read_only(
+        self, tmp_path: Path
+    ):
+        """On every platform, a read-only file is amended, and stays read-only.
+
+        Windows refused both halves of it: the temporary was made read-only
+        and then opened for writing to be flushed, and a rename does not
+        replace a read-only file.
+        """
+        path = Numbered.plain(tmp_path / "read-only.medh5")
+        os.chmod(path, stat.S_IREAD)
+        try:
+            with medh5.amend(path) as w:
+                w.add_grid("g2", shape=(4, 4, 4), spacing=(1.0, 1.0, 1.0))
+            assert not path.stat().st_mode & stat.S_IWRITE
+            with medh5.open(path) as sample:
+                assert "g2" in sample.grids
+        finally:
+            os.chmod(path, stat.S_IREAD | stat.S_IWRITE)
+        assert [p.name for p in tmp_path.iterdir()] == [path.name]
+
+
+def _amend(path: Path) -> None:
+    with medh5.amend(path) as w:
+        w.add_grid("g2", shape=(4, 4, 4), spacing=(1.0, 1.0, 1.0))
+
+
+def _scrub(path: Path) -> None:
+    from medh5.curation import scrub
+
+    assert scrub.apply(path).ok
+
+
+def _recompress(path: Path) -> None:
+    from medh5.storage import recompress
+
+    assert recompress(path, "archive").changed
+
+
+def _fix(path: Path) -> None:
+    from medh5.integrity import fix
+
+    with h5py.File(path, "r+") as handle:  # an edit behind the writer's back
+        handle["images/CT"][0, 0, 0] = 7
+    assert fix(path, rewrite_digests=True, reason="edited by another tool").changed
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symbolic links need privilege")
+class TestReplaceThroughLinks:
+    """§14.4: a rewrite through a symbolic link replaces the file it names.
+
+    The temporary file was made beside the link and renamed over it: the link
+    became an independent copy, and the file it named was left as it was ---
+    after ``scrub --apply``, the identifying original, beside a scrubbed copy
+    the user took for it.
+    """
+
+    @pytest.mark.parametrize(
+        "rewrite",
+        [_amend, _scrub, _recompress, _fix],
+        ids=["amend", "scrub", "recompress", "fix"],
+    )
+    @pytest.mark.parametrize("link", ["absolute", "relative", "chain"])
+    def test_S14_4_the_file_a_link_names_is_rewritten_and_the_link_kept(
+        self, tmp_path: Path, rewrite: Any, link: str
+    ):
+        data, farm = tmp_path / "data", tmp_path / "farm"
+        data.mkdir()
+        farm.mkdir()
+        # Large enough that recompression has a bulk dataset to re-encode.
+        with Numbered.writer(data / "real.medh5", shape=(32, 64, 64)):
+            pass
+        real = data / "real.medh5"
+        before = real.read_bytes()
+        given = farm / "given.medh5"
+        if link == "absolute":
+            given.symlink_to(real)
+        elif link == "relative":
+            given.symlink_to(Path("..", "data", "real.medh5"))
+        else:
+            (farm / "middle.medh5").symlink_to(Path("..", "data", "real.medh5"))
+            given.symlink_to("middle.medh5")
+        named = os.readlink(given)
+
+        rewrite(given)
+
+        assert given.is_symlink() and os.readlink(given) == named
+        assert given.resolve() == real.resolve()
+        assert real.read_bytes() != before
+        assert validate_file(real).ok
+        assert sorted(p.name for p in data.iterdir()) == ["real.medh5"]
+        assert all(p.is_symlink() for p in farm.iterdir())
+
 
 class TestWriterEqualsValidator:
     """One definition of a valid file."""
