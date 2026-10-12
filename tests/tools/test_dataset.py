@@ -18,11 +18,12 @@ import numpy as np
 import pytest
 
 import medh5
+from medh5 import _core
 from medh5.cli import main
 from medh5.dataset.check import check
 from medh5.dataset.manifest import Manifest, entries_for, find, scan
 from medh5.dataset.split import make_splits, write_claims
-from medh5.dataset.stats import Moments, compute_stats, stats_for
+from medh5.dataset.stats import DatasetStats, Moments, compute_stats, stats_for
 from medh5.errors import MEDH5Error, MEDH5ValidationError
 from medh5.labels import LabelClass, LabelSet
 from tests.helpers import SHAPE, block, write_sample
@@ -71,6 +72,31 @@ def _subject(path: Path) -> str:
 
 
 class TestManifest:
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges")
+    def test_a_scan_follows_linked_directories_once_ignoring_case_and_appledouble(
+        self, tmp_path, sample_path
+    ):
+        """A symlinked directory was passed over, and `CASE.MEDH5` with it,
+        while `._case.medh5` --- a Mac's AppleDouble file --- failed the scan
+        as a sample that would not open."""
+        root, elsewhere = tmp_path / "root", tmp_path / "elsewhere"
+        (root / "real").mkdir(parents=True)
+        elsewhere.mkdir()
+        for name in ("real/a.medh5", "B.MEDH5"):
+            (root / name).write_bytes(sample_path.read_bytes())
+        (elsewhere / "c.medh5").write_bytes(sample_path.read_bytes())
+        (root / "._a.medh5").write_bytes(b"\x00\x05\x16\x07 AppleDouble")
+        (root / "linked").symlink_to(elsewhere, target_is_directory=True)
+        (root / "real" / "up").symlink_to(root, target_is_directory=True)
+        built, failures = scan(root)
+        assert failures == ()
+        assert [Path(e.path).relative_to(root).as_posix() for e in built] == [
+            "B.MEDH5",
+            "linked/c.medh5",
+            "real/a.medh5",
+        ]
+        assert [p.name for p in find(root)] == ["B.MEDH5", "c.medh5", "a.medh5"]
+
     def test_a_scan_reads_metadata_only(self, cohort):
         built, failures = scan(cohort)
         assert len(built) == 6
@@ -148,8 +174,11 @@ class TestManifest:
         assert manifest.stale() == (str(victim),)
 
     def test_a_broken_file_does_not_abort_the_scan(self, cohort):
+        """... and `on_error="warn"`, the default, warns: it returned the
+        failures and told nobody."""
         (cohort / "broken.medh5").write_bytes(b"not hdf5")
-        built, failures = scan(cohort)
+        with pytest.warns(UserWarning, match="1 path"):
+            built, failures = scan(cohort)
         assert len(built) == 6
         assert len(failures) == 1 and "broken.medh5" in failures[0]
 
@@ -163,7 +192,8 @@ class TestManifest:
         the manifest was short of everything under it, with no failure to say
         so, even on a strict scan."""
         missing = tmp_path / "no-such-cohort"
-        built, failures = scan(missing)
+        with pytest.warns(UserWarning, match="1 path"):
+            built, failures = scan(missing)
         assert len(built) == 0
         # In the system's own words: Windows says it cannot find the path.
         with pytest.raises(FileNotFoundError) as listing:
@@ -506,6 +536,39 @@ class TestSplits:
         for entry in built:
             assert f"{entry.path}::{entry.key}" in placed[split.partition_of(entry)]
 
+    def test_S12_3_a_manifest_the_split_was_not_made_from_is_refused(
+        self, manifest, cohort, label_set
+    ):
+        """A split made before the cohort grew stamped its old digest --- stale
+        on arrival (C201) --- and passed over the new sample in silence."""
+        split = make_splits(manifest, seed=0)
+        write_sample(cohort / "new.medh5", label_set=label_set, sample_id="new")
+        wider, _ = scan(cohort)
+        with pytest.raises(MEDH5ValidationError, match="new.medh5"):
+            write_claims(split, wider)
+        assert all(self._claims(entry.path) == [] for entry in wider)
+        site_a = manifest.filter(lambda e: e.site_id == "site-A")
+        assert len(write_claims(split, site_a)) == 3
+
+    def test_partition_of_follows_the_assignments_without_rebuilding_them(
+        self, manifest
+    ):
+        """Each call rebuilt the whole split in the engine: the documented
+        per-entry loop took 34 s at 3,000 subjects."""
+        split = make_splits(manifest, k_folds=2, seed=0)
+        for entry in manifest:
+            doc, fields = split._doc(), entry._fields()
+            assert split.partition_of(entry) == (
+                _core.dataset_split_partition_of(doc, fields)
+            )
+            assert split.fold_of(entry) == _core.dataset_split_fold_of(doc, fields)
+        entry = manifest[0]
+        moved = next(a for a in split.assignments if a.group == entry.group_id)
+        moved.fold = 1 - (moved.fold or 0)
+        assert split.fold_of(entry) == moved.fold
+        split.assignments = []
+        assert split.partition_of(entry) is None
+
     def test_S12_3_an_entry_in_two_partitions_is_a_leak(self, manifest):
         """`leaks()` checked groups alone: a loaded split placing one file
         under two groups in two partitions passed it."""
@@ -782,6 +845,138 @@ class TestStats:
         with pytest.raises(MEDH5Error, match="inverse_frequency"):
             stats_for(sample_path).class_weights(scheme="magic")
 
+    @staticmethod
+    def _measured(path: Path, image: Any) -> Path:
+        with medh5.create(path, sample_id=path.stem, subject_id=path.stem) as w:
+            w.add_grid("g", shape=image.shape, spacing=(1.0, 1.0, 1.0))
+            w.add_image("PT", image, grid="g", modality="PT")
+        return path
+
+    def test_a_non_finite_voxel_is_counted_and_left_out(self, tmp_path):
+        """A NaN made every moment NaN, the extremes depend on the order of the
+        files, and the `null` it was written as reloaded as mean 0, std 0."""
+        odd = np.arange(64, dtype=np.float32).reshape(4, 4, 4) - 10
+        odd[0, 0, 0], odd[1, 1, 1] = np.nan, np.inf
+        flat = np.full((4, 4, 4), 5.0, np.float32)
+        paths = [
+            self._measured(tmp_path / "odd.medh5", odd),
+            self._measured(tmp_path / "flat.medh5", flat),
+        ]
+        finite = np.concatenate([odd[np.isfinite(odd)], flat.ravel()]).astype(float)
+        forward, backward = compute_stats(paths), compute_stats(paths[::-1])
+        for result in (forward, backward):
+            pt = result.images["PT"]
+            assert (pt.count, pt.nonfinite) == (finite.size, 2)
+            assert (pt.minimum, pt.maximum) == (finite.min(), finite.max())
+            assert pt.mean == pytest.approx(finite.mean())
+            assert pt.std == pytest.approx(finite.std())
+        doc = json.loads(json.dumps(forward.to_json()))
+        assert doc["images"]["PT"]["nonfinite"] == 2
+        back = DatasetStats.from_json(doc).normalization("PT")
+        assert back == pytest.approx(forward.normalization("PT"))
+        doc["images"]["PT"]["mean"] = None
+        with pytest.raises(ValueError, match="'PT'.*no mean"):
+            DatasetStats.from_json(doc)
+
+    def test_S5_1_a_class_id_meaning_two_things_is_refused(self, tmp_path, capsys):
+        """1 was "liver" in one label set and "spleen" in another, and both
+        were counted as one class, whose voxels fed one loss weight."""
+
+        def labelled(name: str, key: str) -> Path:
+            vocabulary = LabelSet(
+                f"vocab-{key}", version="1", classes=[LabelClass(1, key, key)]
+            )
+            masks = {1: block(SHAPE, (2, 2, 2), 4)}
+            path = tmp_path / f"{name}.medh5"
+            return write_sample(path, label_set=vocabulary, masks=masks)
+
+        a, b, c = (
+            labelled("a", "liver"),
+            labelled("b", "spleen"),
+            labelled("c", "liver"),
+        )
+        same = compute_stats([a, c])
+        assert (same.classes[1].key, same.classes[1].voxels) == ("liver", 2 * 4**3)
+        assert same.to_json()["classes"][0]["key"] == "liver"
+        for paths, named in (([a, b], "b.medh5"), ([b, c, a], "c.medh5")):
+            for workers in (1, 2):
+                with pytest.raises(MEDH5ValidationError, match="C102") as exc:
+                    compute_stats(paths, workers=workers)
+                assert named in str(exc.value)
+        merged = compute_stats([a])
+        with pytest.raises(MEDH5ValidationError, match="'liver' in these"):
+            merged.merge(compute_stats([b]))
+        manifest = tmp_path / "m.json"
+        Manifest(entries=entries_for(a) + entries_for(b)).save(manifest)
+        capsys.readouterr()
+        assert main(["dataset", "stats", str(manifest)]) == 1
+        assert "class 1 is 'spleen'" in capsys.readouterr().err
+
+    def test_stats_are_the_plane_by_plane_fold_to_the_bit(self, tmp_path):
+        """A read per plane decompressed each chunk once per plane it holds;
+        reading a chunk's planes at once changes no bit of the moments."""
+        shape = (24, 40, 36)  # 64 KiB and more is chunked
+        stored = np.random.default_rng(5).integers(-999, 999, shape).astype(np.int16)
+        fov = np.ones(shape, bool)
+        fov[:, :2] = False
+        path = tmp_path / "s.medh5"
+        with medh5.create(path, sample_id="s") as w:
+            w.add_grid(
+                "g", shape=shape, spacing=(1.0, 1.0, 1.0), chunk_hint=(5, 40, 36)
+            )
+            w.add_mask("fov", fov, grid="g")
+            w.add_image(
+                "CT",
+                stored,
+                grid="g",
+                modality="CT",
+                rescale_slope=0.37,
+                rescale_intercept=-12.5,
+                valid_mask="fov",
+            )
+            w.add_image("raw", stored, grid="g", modality="CT")
+        with medh5.open(path) as sample:
+            assert sample.images["CT"].chunks[0] > 1, "a read must span planes"
+            for stride in (1, 4):
+                for physical in (True, False):
+                    expected = {}
+                    for key in ("CT", "raw"):
+                        moments = Moments()
+                        for z in range(0, shape[0], stride):
+                            roi = (slice(z, z + 1), slice(None), slice(None))
+                            plane = np.asarray(
+                                sample.images[key].read(roi, physical=physical), float
+                            )
+                            valid = sample.valid_region(key, roi)
+                            moments.update(plane[np.broadcast_to(valid, plane.shape)])
+                        expected[key] = moments
+                    found = stats_for(path, sample_stride=stride, physical=physical)
+                    assert found.images == expected
+
+    @pytest.mark.parametrize("stride", [0, -1])
+    def test_a_stride_below_one_is_refused(self, sample_path, stride):
+        """0 read every plane, as 1 does, and -1 raised `OverflowError`."""
+        with pytest.raises(MEDH5ValidationError, match="sample_stride"):
+            stats_for(sample_path, sample_stride=stride)
+        with pytest.raises(MEDH5ValidationError, match="sample_stride"):
+            compute_stats([sample_path], sample_stride=stride)
+
+    def test_an_unreadable_file_fails_the_command_and_is_named_on_stderr(
+        self, cohort, tmp_path, capsys
+    ):
+        """`dataset stats` exited 0 over part of the cohort, and listed what it
+        could not read on stdout, among the numbers."""
+        manifest = tmp_path / "m.json"
+        assert main(["dataset", "index", str(cohort), "-o", str(manifest)]) == 0
+        victim = sorted(cohort.glob("*.medh5"))[0]
+        victim.write_bytes(b"not hdf5")
+        capsys.readouterr()
+        assert main(["dataset", "stats", str(manifest), "--json"]) == 1
+        out = capsys.readouterr()
+        payload = json.loads(out.out)
+        assert (payload["samples"], len(payload["failures"])) == (5, 1)
+        assert f"medh5: unreadable: {victim}" in out.err
+
     def test_stats_round_trip_through_json(self, sample_path):
         result = stats_for(sample_path)
         again = type(result).from_json(json.loads(json.dumps(result.to_json())))
@@ -877,6 +1072,36 @@ class TestCohortCheck:
         wider, _ = scan(cohort)
         report = check(wider)
         assert "C201" in {f.code for f in report.errors}
+
+    def test_C201_counts_samples_not_claims(self, cohort):
+        """A sample with two stale claims was counted, and listed, twice."""
+        for path in sorted(cohort.glob("*.medh5"))[:2]:
+            with medh5.amend(path) as writer:
+                for set_id in ("s1", "s2"):
+                    writer.split(
+                        set_id=set_id, partition="train", manifest_sha256="0" * 64
+                    )
+        built, _ = scan(cohort)
+        stale = next(f for f in check(built).errors if f.code == "C201")
+        assert stale.message.startswith("2 sample(s)")
+        assert len(stale.where) == len(set(stale.where)) == 2
+
+    def test_C202_a_unit_in_two_folds_is_a_leak(self, manifest, cohort):
+        """k-fold claims are `train` in every fold but the validation one, so a
+        subject in folds 0 and 3 read `train` twice and was no leak."""
+        a, b = [p for p in sorted(cohort.glob("*.medh5")) if _subject(p) == "subj-A"]
+        digest = manifest.sha256()
+        for path, fold in ((a, 0), (b, 3)):
+            with medh5.amend(path) as writer:
+                writer.split(
+                    set_id="cv", partition="train", fold=fold, manifest_sha256=digest
+                )
+        built, _ = scan(cohort)
+        assert "C202" in {f.code for f in check(built).errors}
+        with medh5.amend(b) as writer:
+            writer.split(set_id="cv", partition="train", fold=0, manifest_sha256=digest)
+        built, _ = scan(cohort)
+        assert "C202" not in {f.code for f in check(built).findings}
 
     def test_C202_a_subject_in_two_partitions_is_caught(self, manifest, cohort):
         """The leak splitting is designed to prevent, checked independently."""

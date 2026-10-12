@@ -202,9 +202,21 @@ class PatchSampler:
         self._engine()  # refuse a bad configuration now, not at the first draw
 
     def __setattr__(self, name: str, value: Any) -> None:
+        # Once configured, a change is checked as `__init__` checks one: set
+        # after construction, a bad strategy was accepted and refused at the
+        # next draw.  A refused change leaves the sampler as it was.
+        configured = name in _CONFIG and all(hasattr(self, n) for n in _CONFIG)
+        before = getattr(self, name, None)
         object.__setattr__(self, name, value)
         if name in _CONFIG:
             object.__setattr__(self, "_built", None)
+        if configured:
+            try:
+                self._engine()
+            except BaseException:
+                object.__setattr__(self, name, before)
+                object.__setattr__(self, "_built", None)
+                raise
 
     def __getstate__(self) -> dict[str, Any]:
         return {name: getattr(self, name) for name in _CONFIG}

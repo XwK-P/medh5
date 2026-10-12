@@ -229,6 +229,17 @@ Class counts come from the §14.3 sampling index when it is current — a few
 hundred bytes per annotation instead of decompressing every mask. A stale index
 is not trusted.
 
+A class is its id *and* the key its label set gives it (`lesion.key`). Two
+samples whose label sets give one id two keys — id 1 is `liver` in one and
+`spleen` in the other — are refused rather than counted as one class, whose
+weight would feed `class_weights`; `medh5 dataset check` reports the same clash
+as C102. Measure each vocabulary apart, or relabel to one.
+
+A NaN or infinite voxel (PET, resampled data) is left out of the moments and
+counted in `ct.nonfinite`, so one does not turn the mean into NaN. Saved
+statistics with a moment written as `null` are refused on reading, not read as
+0.
+
 ### Normalisation from the training split only
 
 `--partition train` is how you compute normalisation constants without looking
@@ -238,7 +249,7 @@ what knows the assignment — using the same `split` object you made above:
 ```python
 from medh5.dataset import compute_stats
 
-train = [e.path for e in manifest if split.partition_of(e) == "train"]
+train = split.paths("train")   # a collection's member as `path::key`
 stats = compute_stats(train, images=["CT"], workers=8)
 mean, std = stats.normalization("CT")
 weights = stats.class_weights(scheme="inverse_frequency")
@@ -248,8 +259,8 @@ weights = stats.class_weights(scheme="inverse_frequency")
 Writing claims amends the *sample files*; it does not update the manifest you
 loaded, or the `cohort.json` on disk. `entry.splits` still holds whatever the
 scan saw, so the filter matches nothing and you silently compute statistics over
-an empty set. Either use `split.partition_of()` as above, or re-scan the
-directory first:
+an empty set. Either use `split.paths()` as above, or re-scan the directory
+first:
 
 ```python
 from medh5.dataset import scan

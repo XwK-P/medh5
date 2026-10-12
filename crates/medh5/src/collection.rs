@@ -304,7 +304,8 @@ pub fn pack(sources: &[&Path], out: &Path, keys: Option<&[String]>) -> Result<Pa
             None => default_key(p),
         })
         .collect::<Result<_>>()?;
-    let mut duplicates: Vec<&String> = chosen.iter().filter(|k| chosen.iter().filter(|x| x == k).count() > 1).collect();
+    let mut seen = std::collections::HashSet::new();
+    let mut duplicates: Vec<&String> = chosen.iter().filter(|k| !seen.insert(k.as_str())).collect();
     duplicates.sort();
     duplicates.dedup();
     if !duplicates.is_empty() {
@@ -358,6 +359,23 @@ pub fn pack(sources: &[&Path], out: &Path, keys: Option<&[String]>) -> Result<Pa
             Err(e)
         }
     }
+}
+
+/// Refuse to write a member over the collection it is read from: the shard
+/// was replaced by that one member, and every other member was lost --- through
+/// the same path, a relative or linked alias of it, or a member named for
+/// the shard (`out/a.medh5` unpacked into `out/`).
+fn refuse_own_collection(collection: &Path, destination: &Path, member: &str) -> Result<()> {
+    if same_file(collection, destination) {
+        return Err(Error::invalid(format!(
+            "{} is the collection {} itself: writing member {} there would replace the collection, and every other \
+             member with it; write it to another path",
+            repr_str(&destination.to_string_lossy()),
+            repr_str(&collection.to_string_lossy()),
+            repr_str(member)
+        )));
+    }
+    Ok(())
 }
 
 fn write_sample_root(src: &hdf5::Group, destination: &Path) -> Result<()> {
@@ -429,24 +447,21 @@ pub fn unpack(path: &Path, outdir: &Path, keys: Option<&[String]>, suffix: &str)
             }));
         }
     }
-    let group = collection.group()?;
-    let mut written = Vec::new();
-    for key in wanted {
-        let destination = outdir.join(format!("{key}{suffix}"));
-        write_sample_root(&group.group(&key)?, &destination)?;
-        written.push(destination);
+    // Every destination is checked before the first is written.
+    let destinations: Vec<PathBuf> = wanted.iter().map(|key| outdir.join(format!("{key}{suffix}"))).collect();
+    for (key, destination) in wanted.iter().zip(&destinations) {
+        refuse_own_collection(path, destination, key)?;
     }
-    Ok(written)
+    let group = collection.group()?;
+    for (key, destination) in wanted.iter().zip(&destinations) {
+        write_sample_root(&group.group(key)?, destination)?;
+    }
+    Ok(destinations)
 }
 
 /// Extract one member into a standalone sample file at `out` (and nothing
 /// else is written).
 pub fn extract(path: &Path, key: &str, out: &Path) -> Result<PathBuf> {
-    if let Some(parent) = out.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)?;
-        }
-    }
     let wanted = validate_sample_key(key)?.to_string();
     let collection = open_collection(path)?;
     let known = collection.keys()?;
@@ -455,6 +470,14 @@ pub fn extract(path: &Path, key: &str, out: &Path) -> Result<PathBuf> {
             "E003",
             format!("collection has no sample {}; known keys: {}", repr_str(&wanted), repr_list(&known)),
         ));
+    }
+    refuse_own_collection(path, out, &wanted)?;
+    if let Some(parent) = out.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+            // `new/../s.medh5c` names the collection once `new` exists.
+            refuse_own_collection(path, out, &wanted)?;
+        }
     }
     write_sample_root(&collection.group()?.group(&wanted)?, out)?;
     Ok(out.to_path_buf())
@@ -510,6 +533,39 @@ mod tests {
         ] {
             assert!(matches!(failure, Error::File(_)), "{failure:?}");
         }
+    }
+
+    /// `extract(s, key, out=s)` replaced the shard with one member, through
+    /// the same path or an alias of it, and `unpack` did the same to a shard
+    /// named for one of its members --- every other member lost, exit 0.
+    #[test]
+    fn s2_2_a_member_is_never_written_over_its_own_collection() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = shard(dir.path());
+        let before = std::fs::read(&path).unwrap();
+        let mut aliases = vec![path.clone(), dir.path().join("sub/../s.medh5c"), dir.path().join("new/../s.medh5c")];
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&path, dir.path().join("link.medh5c")).unwrap();
+            aliases.push(dir.path().join("link.medh5c"));
+        }
+        for alias in &aliases {
+            let err = extract(&path, "a", alias).unwrap_err();
+            assert!(err.to_string().contains("is the collection"), "{err}");
+            assert!(extract(alias, "b", &path).is_err());
+        }
+        // A shard named for a member, unpacked into its own directory.
+        let named = dir.path().join("out/a.medh5");
+        std::fs::create_dir(dir.path().join("out")).unwrap();
+        std::fs::copy(&path, &named).unwrap();
+        for keys in [None, Some(vec!["b".to_string(), "a".to_string()])] {
+            let err = unpack(&named, &dir.path().join("out"), keys.as_deref(), ".medh5").unwrap_err();
+            assert!(err.to_string().contains("member 'a'"), "{err}");
+            assert!(!dir.path().join("out/b.medh5").exists(), "nothing is written before the refusal");
+        }
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(open_collection(&named).unwrap().keys().unwrap(), vec!["a", "b"]);
     }
 
     /// A collection dropped without `close` leaves the members read from it

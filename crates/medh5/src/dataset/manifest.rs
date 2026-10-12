@@ -472,14 +472,31 @@ pub fn find_with(root: &Path, suffixes: &[&str]) -> Result<Vec<PathBuf>> {
 
 /// The files under `root` with one of `suffixes`, in a stable order, and the
 /// directories under it that could not be listed, with why.
+///
+/// A symlinked directory is part of the tree and is walked, once: every real
+/// directory is listed before any link is followed, links in name order, and
+/// a directory already listed --- a link back up the tree, two links to one
+/// place --- is not listed again.  Suffixes match without regard to case
+/// (`CASE.MEDH5`), and AppleDouble files (`._case.medh5`, the metadata a Mac
+/// leaves on a foreign volume) are not samples.
 fn walk(root: &Path, suffixes: &[&str]) -> (Vec<PathBuf>, Vec<(PathBuf, std::io::Error)>) {
     if root.is_file() {
         return (vec![root.to_path_buf()], Vec::new());
     }
+    let suffixes: Vec<String> = suffixes.iter().map(|s| s.to_lowercase()).collect();
     let mut found = Vec::new();
     let mut unlisted = Vec::new();
+    let mut listed = std::collections::HashSet::new();
     let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
+    let mut linked = std::collections::BTreeSet::new();
+    loop {
+        let dir = match stack.pop() {
+            Some(dir) => dir,
+            None => match linked.pop_first() {
+                Some(dir) => dir,
+                None => break,
+            },
+        };
         let listing = match std::fs::read_dir(&dir) {
             Ok(listing) => listing,
             Err(e) => {
@@ -487,22 +504,47 @@ fn walk(root: &Path, suffixes: &[&str]) -> (Vec<PathBuf>, Vec<(PathBuf, std::io:
                 continue;
             }
         };
+        if let Some(id) = identity(&dir) {
+            if !listed.insert(id) {
+                continue;
+            }
+        }
         for item in listing.flatten() {
             let path = item.path();
-            let is_dir = item.file_type().map(|t| t.is_dir()).unwrap_or(false);
-            if is_dir {
-                stack.push(path);
-            } else if path.is_file() {
-                let suffix = path.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
-                if suffixes.contains(&suffix.as_str()) {
-                    found.push(path);
+            let name = item.file_name().to_string_lossy().to_lowercase();
+            if name.starts_with("._") {
+                continue;
+            }
+            let link = item.file_type().map(|t| t.is_symlink()).unwrap_or(false);
+            let Ok(meta) = std::fs::metadata(&path) else { continue };
+            if meta.is_dir() {
+                if link {
+                    linked.insert(path);
+                } else {
+                    stack.push(path);
                 }
+            } else if meta.is_file() && suffixes.iter().any(|s| name.len() > s.len() && name.ends_with(s.as_str())) {
+                found.push(path);
             }
         }
     }
     found.sort();
     unlisted.sort_by(|a, b| a.0.cmp(&b.0));
     (found, unlisted)
+}
+
+/// What makes two paths one directory: its device and inode, where there are
+/// such things, else its canonical path.
+fn identity(dir: &Path) -> Option<(u64, u64, PathBuf)> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata(dir).ok().map(|m| (m.dev(), m.ino(), PathBuf::new()))
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::canonicalize(dir).ok().map(|p| (0, 0, p))
+    }
 }
 
 /// Build a manifest from a directory tree, and report what would not open.
@@ -646,4 +688,34 @@ pub fn counts(entries: &[Entry], by: &str) -> Result<std::collections::BTreeMap<
         *out.entry(entry.field_str(by)?).or_insert(0) += 1;
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A symlinked directory was passed over, and `CASE.MEDH5` with it, while
+    /// `._case.medh5` --- a Mac's AppleDouble file --- was taken for a sample.
+    #[cfg(unix)]
+    #[test]
+    fn a_scan_follows_linked_directories_once_ignoring_case_and_appledouble() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("root");
+        let elsewhere = dir.path().join("elsewhere");
+        std::fs::create_dir_all(root.join("real")).unwrap();
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        for file in ["real/a.medh5", "B.MEDH5", "._a.medh5", "real/._b.medh5c", "notes.txt"] {
+            std::fs::write(root.join(file), b"").unwrap();
+        }
+        std::fs::write(elsewhere.join("c.medh5c"), b"").unwrap();
+        std::os::unix::fs::symlink(&elsewhere, root.join("linked")).unwrap();
+        // A cycle, and a second way into a directory already walked.
+        std::os::unix::fs::symlink(&root, root.join("real/up")).unwrap();
+        std::os::unix::fs::symlink(root.join("real"), root.join("again")).unwrap();
+        let (found, unlisted) = walk(&root, &SUFFIXES);
+        assert!(unlisted.is_empty());
+        let names: Vec<String> =
+            found.iter().map(|p| p.strip_prefix(&root).unwrap().to_string_lossy().into_owned()).collect();
+        assert_eq!(names, ["B.MEDH5", "linked/c.medh5c", "real/a.medh5"]);
+    }
 }

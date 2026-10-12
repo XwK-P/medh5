@@ -15,6 +15,7 @@ instead of quietly training on a stale partition.
 from __future__ import annotations
 
 import os
+import warnings
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, fields
 from pathlib import Path
@@ -285,11 +286,21 @@ def scan(
     and directories that could not be listed, whose samples the manifest
     lacks.  A cohort scan that dies on one broken file has told you nothing
     about the other 9 999; ``on_error="raise"`` re-raises the first failure
-    instead (the default is ``"warn"``, and any other value is refused).
+    instead (the default is ``"warn"``, which also issues a ``UserWarning``
+    naming how many paths failed --- the manifest lacks their samples --- and
+    any other value is refused).
     """
     doc, failures = _core.dataset_scan(
         os.fspath(root), suffixes=list(suffixes), on_error=on_error
     )
+    if failures:
+        more = f" (and {len(failures) - 1} more)" if len(failures) > 1 else ""
+        warnings.warn(
+            f"{len(failures)} path(s) under {os.fspath(root)!r} could not be "
+            f"scanned, so the manifest lacks their samples: {failures[0]}{more}",
+            UserWarning,
+            stacklevel=2,
+        )
     return Manifest.from_json(doc), tuple(failures)
 
 
