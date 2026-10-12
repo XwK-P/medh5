@@ -1,0 +1,447 @@
+diff --git a/crates/medh5/src/dataset/stats.rs b/crates/medh5/src/dataset/stats.rs
+index 7cac7c9..fb44b6a 100644
+--- a/crates/medh5/src/dataset/stats.rs
++++ b/crates/medh5/src/dataset/stats.rs
+@@ -7,15 +7,24 @@
+ //! in (`valid_mask`, §4.4).  Intensities are **physical** by default --- what
+ //! the loaders hand a model --- and `physical = false` measures stored values.
+ //!
+-//! The arithmetic is NumPy's, operation for operation (pairwise sums, the same
+-//! merge formula evaluated in the same order), so a statistics file is the one
+-//! 1.x wrote.
++//! The moments are over finite values.  A NaN or an infinity (PET outside its
++//! field of view, resampled data) is counted, in `nonfinite`, and left out:
++//! folded in, it made every moment NaN, the minimum and maximum depend on the
++//! order of the files, and a statistics file written with NaN as `null`
++//! reloaded as a mean of 0 and a standard deviation of 1.
++//!
++//! The arithmetic over finite values is NumPy's, operation for operation
++//! (pairwise sums, the same merge formula evaluated in the same order), so the
++//! numbers are the ones 1.x computed.  An image is read a chunk's planes at a
++//! time and measured plane by plane, as 1.x measured it, so reading more than
++//! one plane per read changes no bit of the result.
+ 
++use std::borrow::Cow;
+ use std::collections::{BTreeMap, BTreeSet};
+ use std::path::{Path, PathBuf};
+ 
+ use indexmap::IndexMap;
+-use ndarray::{ArrayD, IxDyn};
++use ndarray::{ArrayViewD, Axis, IxDyn};
+ use serde_json::{json, Map, Value};
+ 
+ use crate::array::Slice;
+@@ -25,7 +34,8 @@ use crate::numeric::pairwise_sum;
+ use crate::sample::{open_sample, Sample};
+ use crate::{Error, Result};
+ 
+-/// Count, mean and M2 for one image key --- a Welford accumulator.
++/// Count, mean and M2 for one image key --- a Welford accumulator over the
++/// finite values folded in.
+ #[derive(Debug, Clone, PartialEq)]
+ pub struct Moments {
+     pub count: u64,
+@@ -33,66 +43,77 @@ pub struct Moments {
+     pub m2: f64,
+     pub minimum: f64,
+     pub maximum: f64,
++    /// Values left out of the moments because they are NaN or infinite.
++    pub nonfinite: u64,
+ }
+ 
+ impl Default for Moments {
+     fn default() -> Self {
+-        Moments { count: 0, mean: 0.0, m2: 0.0, minimum: f64::INFINITY, maximum: f64::NEG_INFINITY }
++        Moments { count: 0, mean: 0.0, m2: 0.0, minimum: f64::INFINITY, maximum: f64::NEG_INFINITY, nonfinite: 0 }
+     }
+ }
+ 
+-/// NumPy's `min`/`max` reduction: NaN propagates.
+-fn reduce(values: &[f64], pick: fn(f64, f64) -> f64) -> f64 {
+-    let mut out = values[0];
+-    for v in &values[1..] {
+-        if out.is_nan() {
+-            return out;
+-        }
+-        out = if v.is_nan() { *v } else { pick(out, *v) };
++/// A finite number a statistics document holds under `name`, or why not.
++fn finite(doc: &Value, name: &str, count: u64) -> Result<f64> {
++    match doc.get(name).and_then(Value::as_f64) {
++        Some(v) if v.is_finite() => Ok(v),
++        _ => Err(Error::Value(format!(
++            "statistics over {count} value(s) hold no {name} ({}): a moment that was not a number was written as \
++             null, and reading it as 0 normalised with (0, 1) --- recompute the statistics",
++            doc.get(name).map(crate::json::repr).unwrap_or_else(|| "missing".into())
++        ))),
+     }
+-    out
+ }
+ 
+ impl Moments {
+-    /// Fold in one block of values.
++    /// Fold in one block of values; a NaN or an infinity is counted in
++    /// `nonfinite`, not folded in.
+     pub fn update(&mut self, block: &[f64]) {
+-        if block.is_empty() {
++        let values: Cow<'_, [f64]> = if block.iter().all(|v| v.is_finite()) {
++            Cow::Borrowed(block)
++        } else {
++            Cow::Owned(block.iter().copied().filter(|v| v.is_finite()).collect())
++        };
++        self.nonfinite += (block.len() - values.len()) as u64;
++        if values.is_empty() {
+             return;
+         }
+-        let n = block.len() as f64;
+-        let mean = pairwise_sum(block) / n;
+-        let squares: Vec<f64> = block.iter().map(|v| (v - mean) * (v - mean)).collect();
++        let n = values.len() as f64;
++        let mean = pairwise_sum(&values) / n;
++        let squares: Vec<f64> = values.iter().map(|v| (v - mean) * (v - mean)).collect();
+         self.merge(&Moments {
+-            count: block.len() as u64,
++            count: values.len() as u64,
+             mean,
+             m2: pairwise_sum(&squares),
+-            minimum: reduce(block, f64::min),
+-            maximum: reduce(block, f64::max),
++            minimum: values.iter().copied().fold(f64::INFINITY, f64::min),
++            maximum: values.iter().copied().fold(f64::NEG_INFINITY, f64::max),
++            nonfinite: 0,
+         });
+     }
+ 
+     /// Chan-Golub-LeVeque parallel merge --- exact, not an approximation.
+     pub fn merge(&mut self, other: &Moments) {
+-        if other.count == 0 {
+-            return;
+-        }
+-        if self.count == 0 {
++        let nonfinite = self.nonfinite + other.nonfinite;
++        if other.count > 0 && self.count == 0 {
+             *self = other.clone();
+-            return;
+-        }
+-        let total = self.count + other.count;
+-        let delta = other.mean - self.mean;
+-        self.mean += delta * other.count as f64 / total as f64;
+-        self.m2 += other.m2 + delta * delta * self.count as f64 * other.count as f64 / total as f64;
+-        self.count = total;
+-        // Python's builtin `min`/`max`: the first argument unless the second
+-        // is strictly better.
+-        if other.minimum < self.minimum {
+-            self.minimum = other.minimum;
+-        }
+-        if other.maximum > self.maximum {
+-            self.maximum = other.maximum;
++        } else if other.count > 0 {
++            let total = self.count + other.count;
++            let delta = other.mean - self.mean;
++            self.mean += delta * other.count as f64 / total as f64;
++            self.m2 += other.m2 + delta * delta * self.count as f64 * other.count as f64 / total as f64;
++            self.count = total;
++            // Python's builtin `min`/`max`: the first argument unless the
++            // second is strictly better --- and a NaN, which no comparison
++            // replaces, is replaced, so the result does not depend on which
++            // operand came first.
++            if other.minimum < self.minimum || self.minimum.is_nan() {
++                self.minimum = other.minimum;
++            }
++            if other.maximum > self.maximum || self.maximum.is_nan() {
++                self.maximum = other.maximum;
++            }
+         }
++        self.nonfinite = nonfinite;
+     }
+ 
+     pub fn std(&self) -> f64 {
+@@ -110,18 +131,27 @@ impl Moments {
+             "std": num(self.std()),
+             "min": if self.count == 0 { Value::Null } else { num(self.minimum) },
+             "max": if self.count == 0 { Value::Null } else { num(self.maximum) },
++            "nonfinite": self.nonfinite,
+         })
+     }
+ 
++    /// The moments a statistics document describes.  Statistics over any
++    /// value need every moment: `null` there is a NaN written as JSON, and
++    /// reading it as 0 turned a normalisation into (0, 1) without a word.
+     pub fn from_json(doc: &Value) -> Result<Moments> {
+         let count = doc.get("count").and_then(Value::as_u64).ok_or_else(|| Error::Key("'count'".into()))?;
+-        let std = doc.get("std").and_then(Value::as_f64).unwrap_or(0.0);
++        let nonfinite = doc.get("nonfinite").and_then(Value::as_u64).unwrap_or(0);
++        if count == 0 {
++            return Ok(Moments { nonfinite, ..Default::default() });
++        }
++        let std = finite(doc, "std", count)?;
+         Ok(Moments {
+             count,
+-            mean: doc.get("mean").and_then(Value::as_f64).unwrap_or(0.0),
++            mean: finite(doc, "mean", count)?,
+             m2: std * std * count as f64,
+-            minimum: doc.get("min").and_then(Value::as_f64).unwrap_or(f64::INFINITY),
+-            maximum: doc.get("max").and_then(Value::as_f64).unwrap_or(f64::NEG_INFINITY),
++            minimum: finite(doc, "min", count)?,
++            maximum: finite(doc, "max", count)?,
++            nonfinite,
+         })
+     }
+ }
+@@ -130,6 +160,11 @@ impl Moments {
+ #[derive(Debug, Clone, PartialEq, Default)]
+ pub struct ClassStats {
+     pub class_id: i64,
++    /// What the id means: its key in the label set of the samples measured,
++    /// `None` where none of them declares one (no label set, or one by
++    /// reference).  A class id is local to its label set, so statistics
++    /// that would count one id under two keys are refused.
++    pub key: Option<String>,
+     pub voxels: u64,
+     /// Samples that examined the class and found it (a longitudinal sample
+     /// counts once).  A class found where nobody looked for it says nothing
+@@ -157,6 +192,7 @@ impl ClassStats {
+     pub fn to_json(&self) -> Value {
+         json!({
+             "class_id": self.class_id,
++            "key": self.key,
+             "voxels": self.voxels,
+             "present_in": self.present_in,
+             "examined_in": self.examined_in,
+@@ -165,6 +201,11 @@ impl ClassStats {
+     }
+ }
+ 
++/// Why statistics that give one class id two keys are refused.
++const CLASH: &str = "their label sets give the id two meanings, and statistics over both would count one class's \
++                     voxels as the other's, under one weight --- measure each label set's samples apart, or relabel \
++                     them to one vocabulary (`medh5 dataset check` reports the clash as C102)";
++
+ /// Everything one streaming pass over a cohort learned.
+ #[derive(Debug, Clone, PartialEq)]
+ pub struct DatasetStats {
+@@ -191,6 +232,8 @@ impl Default for DatasetStats {
+ }
+ 
+ impl DatasetStats {
++    /// Fold another pass in; refused, and nothing changed, when the two do
++    /// not describe one thing.
+     pub fn merge(&mut self, other: &DatasetStats) -> Result<()> {
+         if other.samples > 0 {
+             // One pass, one convention: a mean over physical values merged
+@@ -202,6 +245,15 @@ impl DatasetStats {
+                         .into(),
+                 ));
+             }
++        }
++        if let Some((class_id, mine, theirs)) = self.key_clash(other) {
++            return Err(Error::invalid(format!(
++                "class {class_id} is {} in these statistics and {} in the ones merged in: {CLASH}",
++                repr_str(&mine),
++                repr_str(&theirs)
++            )));
++        }
++        if other.samples > 0 {
+             self.physical = other.physical;
+         }
+         self.samples += other.samples;
+@@ -212,6 +264,9 @@ impl DatasetStats {
+         }
+         for (class_id, stats) in &other.classes {
+             let mine = self.classes.entry(*class_id).or_insert_with(|| ClassStats::new(*class_id));
++            if mine.key.is_none() {
++                mine.key.clone_from(&stats.key);
++            }
+             mine.voxels += stats.voxels;
+             mine.present_in += stats.present_in;
+             mine.examined_in += stats.examined_in;
+@@ -219,6 +274,20 @@ impl DatasetStats {
+         Ok(())
+     }
+ 
++    /// The first class id `other` gives another key than these statistics
++    /// do, with the two keys.  A class id means its key in its label set:
++    /// binned by the id alone, "liver" in one label set and "spleen" in
++    /// another were one class, whose counts fed one loss weight.  An id
++    /// without a key (no label set, or one by reference) says nothing either
++    /// way.
++    fn key_clash(&self, other: &DatasetStats) -> Option<(i64, String, String)> {
++        other.classes.iter().find_map(|(class_id, theirs)| {
++            let mine = self.classes.get(class_id)?.key.as_deref()?;
++            let theirs = theirs.key.as_deref()?;
++            (mine != theirs).then(|| (*class_id, mine.to_string(), theirs.to_string()))
++        })
++    }
++
+     /// `(mean, std)` for a z-score transform, or `(0, 1)` if unseen.
+     pub fn normalization(&self, image_key: &str) -> (f64, f64) {
+         match self.images.get(image_key) {
+@@ -291,7 +360,11 @@ impl DatasetStats {
+         let mut images = IndexMap::new();
+         if let Some(Value::Object(m)) = doc.get("images") {
+             for (k, v) in m {
+-                images.insert(k.clone(), Moments::from_json(v)?);
++                let moments = Moments::from_json(v).map_err(|e| match e {
++                    Error::Value(why) => Error::Value(format!("image {}: {why}", repr_str(k))),
++                    other => other,
++                })?;
++                images.insert(k.clone(), moments);
+             }
+         }
+         let mut classes = IndexMap::new();
+@@ -303,6 +376,7 @@ impl DatasetStats {
+                     id,
+                     ClassStats {
+                         class_id: id,
++                        key: c.get("key").and_then(Value::as_str).map(str::to_string),
+                         voxels: count("voxels"),
+                         present_in: count("present_in"),
+                         examined_in: count("examined_in"),
+@@ -343,6 +417,17 @@ impl Default for StatsOptions {
+     }
+ }
+ 
++impl StatsOptions {
++    /// Refuse what no read could honour: a stride of 0 read every plane as a
++    /// stride of 1 does, and said nothing.
++    fn check(&self) -> Result<()> {
++        if self.sample_stride == 0 {
++            return Err(Error::invalid("sample_stride must be at least 1: it reads every Nth plane"));
++        }
++        Ok(())
++    }
++}
++
+ /// A sample by its path, or by `path::key` for a member of a collection ---
+ /// the locator a split names it by (`Split::paths`), so a partition's list
+ /// can be measured as it is.  A file whose own name holds `::` is still
+@@ -367,6 +452,7 @@ fn open_located(path: &Path) -> Result<Sample> {
+ ///
+ /// `path` is a file or, for a member of a collection, `path::key`.
+ pub fn stats_for(path: &Path, options: &StatsOptions) -> Result<DatasetStats> {
++    options.check()?;
+     let mut out = DatasetStats { samples: 1, physical: options.physical, ..Default::default() };
+     let sample = open_located(path)?;
+     let mut measured: BTreeSet<String> = BTreeSet::new();
+@@ -402,9 +488,13 @@ pub fn stats_for(path: &Path, options: &StatsOptions) -> Result<DatasetStats> {
+         examined.extend(looked_for.iter().copied());
+         let mut classes: BTreeSet<i64> = annotation.class_ids().iter().copied().collect();
+         classes.extend(looked_for.iter().copied());
++        let label_set = annotation.label_set();
+         for class_id in classes {
+             let voxels = counts.get(&class_id).copied().unwrap_or(0);
+             let stats = out.classes.entry(class_id).or_insert_with(|| ClassStats::new(class_id));
++            if stats.key.is_none() {
++                stats.key = label_set.and_then(|l| l.by_id(class_id)).map(|c| c.key.clone());
++            }
+             stats.voxels += voxels;
+             if voxels > 0 {
+                 present.insert(class_id);
+@@ -425,8 +515,17 @@ pub fn stats_for(path: &Path, options: &StatsOptions) -> Result<DatasetStats> {
+     Ok(out)
+ }
+ 
+-/// Slabs of an image along its first spatial axis, valid voxels only, one at
+-/// a time: memory stays at one slab however large the volume.
++/// The most bytes of `f64` one read of an image holds.
++const SLAB_BYTES: usize = 32 << 20;
++
++/// The planes of an image along its first spatial axis, valid voxels only,
++/// one at a time; every `stride`th plane.
++///
++/// A read covers a chunk's extent along that axis (fewer planes where they
++/// would pass [`SLAB_BYTES`]), so a chunk is decompressed once, where reading
++/// plane by plane decompressed it once for every plane it holds.  The planes
++/// are still visited one by one and in order, so the moments are, to the
++/// bit, the ones a plane-by-plane read computes.  Memory stays at one read.
+ fn for_each_block(
+     sample: &Sample,
+     key: &str,
+@@ -440,22 +539,34 @@ fn for_each_block(
+         return Ok(());
+     }
+     let masked = image.valid_mask()?.is_some();
+-    for start in (0..spatial[0]).step_by(stride.max(1)) {
+-        let mut roi = vec![Slice::new(start as i64, start as i64 + 1)];
++    // The spatial axes trail (§3.1), so the first of them is this one.
++    let shape = image.shape()?;
++    let axis = shape.len().saturating_sub(spatial.len());
++    let plane: usize = shape.iter().enumerate().filter(|(i, _)| *i != axis).map(|(_, n)| *n).product();
++    let fits = (SLAB_BYTES / (plane.max(1) * std::mem::size_of::<f64>())).max(1);
++    let per_read = image.chunks()?.and_then(|c| c.get(axis).copied()).unwrap_or(fits).clamp(1, fits);
++    let stride = stride.max(1);
++    for start in (0..spatial[0]).step_by(per_read) {
++        let stop = (start + per_read).min(spatial[0]);
++        let planes: Vec<usize> = (start.div_ceil(stride) * stride..stop).step_by(stride).collect();
++        let (Some(&first), Some(&last)) = (planes.first(), planes.last()) else { continue };
++        let mut roi = vec![Slice::new(first as i64, last as i64 + 1)];
+         roi.extend(std::iter::repeat_n(Slice::full(), spatial.len() - 1));
+         let block = image.read(Some(&roi), physical, None)?.to_f64();
+-        if masked {
+-            let valid = sample.valid_region(key, Some(&roi))?;
+-            visit(&select(&block, &valid)?);
+-        } else {
+-            visit(&block.iter().copied().collect::<Vec<_>>());
++        let valid = if masked { Some(sample.valid_region(key, Some(&roi))?) } else { None };
++        for at in planes.iter().map(|p| p - first) {
++            let values = block.index_axis(Axis(axis), at);
++            match &valid {
++                Some(valid) => visit(&select(values, valid.index_axis(Axis(0), at))?),
++                None => visit(&values.iter().copied().collect::<Vec<_>>()),
++            }
+         }
+     }
+     Ok(())
+ }
+ 
+ /// `block[np.broadcast_to(valid, block.shape)]`.
+-fn select(block: &ArrayD<f64>, valid: &ArrayD<bool>) -> Result<Vec<f64>> {
++fn select(block: ArrayViewD<'_, f64>, valid: ArrayViewD<'_, bool>) -> Result<Vec<f64>> {
+     let mask = valid.broadcast(IxDyn(block.shape())).ok_or_else(|| {
+         Error::Value(format!(
+             "operands could not be broadcast together with remapped shapes [original->remapped]: {:?} and requested \
+@@ -480,6 +591,20 @@ fn guarded(path: &Path, options: &StatsOptions) -> Result<DatasetStats> {
+     }
+ }
+ 
++/// Fold one file's statistics into the cohort's; a class id the file gives
++/// another key than the files before it is refused, naming the file.
++fn merge_file(total: &mut DatasetStats, stats: &DatasetStats, path: &Path) -> Result<()> {
++    if let Some((class_id, mine, theirs)) = total.key_clash(stats) {
++        return Err(Error::invalid(format!(
++            "class {class_id} is {} in {} and {} in the files before it: {CLASH}",
++            repr_str(&theirs),
++            path.display(),
++            repr_str(&mine)
++        )));
++    }
++    total.merge(stats)
++}
++
+ /// Stream a whole cohort, optionally across `workers` threads.
+ ///
+ /// Workers return accumulators, not arrays, and the results are merged in
+@@ -489,10 +614,11 @@ pub fn compute_stats<P: AsRef<Path> + Sync>(
+     options: &StatsOptions,
+     workers: usize,
+ ) -> Result<DatasetStats> {
++    options.check()?;
+     let mut total = DatasetStats { physical: options.physical, ..Default::default() };
+     if workers <= 1 || paths.len() <= 1 {
+         for path in paths {
+-            total.merge(&guarded(path.as_ref(), options)?)?;
++            merge_file(&mut total, &guarded(path.as_ref(), options)?, path.as_ref())?;
+         }
+         return Ok(total);
+     }
+@@ -518,9 +644,9 @@ pub fn compute_stats<P: AsRef<Path> + Sync>(
+     for (i, slot) in slots.into_iter().enumerate() {
+         results[i] = slot.into_inner().ok().flatten();
+     }
+-    for result in results {
++    for (result, path) in results.into_iter().zip(&owned) {
+         let stats = result.ok_or_else(|| Error::Runtime("a statistics worker died".into()))??;
+-        total.merge(&stats)?;
++        merge_file(&mut total, &stats, path)?;
+     }
+     Ok(total)
+ }
