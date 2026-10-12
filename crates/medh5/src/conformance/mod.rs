@@ -54,7 +54,7 @@ pub struct Case {
     pub errors: Vec<String>,
     /// The warning codes a conforming validator reports, and no others.
     pub warnings: Vec<String>,
-    /// `.medh5c` for a collection case (§2.1).
+    /// `.medh5c` for a collection case (§2.2).
     pub suffix: String,
     /// Built by editing a committed file, so its digests are deliberately
     /// stale: "no expected errors" does not mean "this file also verifies".
@@ -137,9 +137,11 @@ pub struct CaseResult {
     pub got_errors: Vec<String>,
     /// The warning codes the validator reported.
     pub got_warnings: Vec<String>,
-    /// Expected codes the validator did not report.
+    /// Expected codes the validator did not report, at the severity
+    /// expected: an error reported as a warning is missing as an error.
     pub missing: Vec<String>,
-    /// Codes the validator reported that the case does not expect.
+    /// Codes the validator reported that the case does not expect at the
+    /// severity reported.
     pub unexpected: Vec<String>,
     /// Why the case could not be run at all, when it could not.
     pub error: Option<String>,
@@ -189,13 +191,31 @@ impl CaseResult {
 
     /// Fill in what a validator reported against what the case expects.
     pub fn compare(&mut self, errors: BTreeSet<String>, warnings: BTreeSet<String>) {
-        let expected: BTreeSet<String> = self.case.errors.iter().chain(&self.case.warnings).cloned().collect();
-        let got: BTreeSet<String> = errors.union(&warnings).cloned().collect();
+        let (missing, unexpected) = differences(&self.case.errors, &self.case.warnings, &errors, &warnings);
         self.got_errors = errors.into_iter().collect();
         self.got_warnings = warnings.into_iter().collect();
-        self.missing = expected.difference(&got).cloned().collect();
-        self.unexpected = got.difference(&expected).cloned().collect();
+        self.missing = missing;
+        self.unexpected = unexpected;
     }
+}
+
+/// What was expected and not reported, and reported and not expected, each
+/// at its severity: an error reported as a warning is both.  The codes alone
+/// were compared, so a validator reporting every code as a warning ---
+/// rejecting nothing --- passed every case.
+pub(crate) fn differences(
+    expect_errors: &[String],
+    expect_warnings: &[String],
+    errors: &BTreeSet<String>,
+    warnings: &BTreeSet<String>,
+) -> (Vec<String>, Vec<String>) {
+    let expect_errors: BTreeSet<String> = expect_errors.iter().cloned().collect();
+    let expect_warnings: BTreeSet<String> = expect_warnings.iter().cloned().collect();
+    let missing: BTreeSet<String> =
+        expect_errors.difference(errors).chain(expect_warnings.difference(warnings)).cloned().collect();
+    let unexpected: BTreeSet<String> =
+        errors.difference(&expect_errors).chain(warnings.difference(&expect_warnings)).cloned().collect();
+    (missing.into_iter().collect(), unexpected.into_iter().collect())
 }
 
 /// Every case, in the order the corpus lists them.
@@ -256,9 +276,12 @@ pub fn run_corpus(outdir: &Path, names: Option<&[String]>) -> Result<Vec<CaseRes
         match validate_file(&path, &entry.level, None) {
             Err(e) => result.error = Some(e.python_line()),
             Ok(report) => {
-                let errors = report.errors().iter().map(|d| d.code.clone()).collect();
-                let warnings = report.warnings().iter().map(|d| d.code.clone()).collect();
-                result.compare(errors, warnings);
+                // By the code table's severity, as a submission states it,
+                // whatever the level promotes.
+                let by = |severity: &str| -> BTreeSet<String> {
+                    report.diagnostics.iter().filter(|d| d.severity == severity).map(|d| d.code.clone()).collect()
+                };
+                result.compare(by("error"), by("warning"));
                 result.details = report.diagnostics.iter().map(|d| d.line()).collect();
             }
         }

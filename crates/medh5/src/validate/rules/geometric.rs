@@ -52,7 +52,7 @@ pub(super) fn check_geometric(
     // grid is not this validator's to judge.
     let judged = space.as_deref().filter(|s| SPACES.contains(s) || !ctx.projection);
     if let (Some(s), Some(gid), Some(g)) = (judged, grid_id, grids) {
-        if s != "index" && ops::exists(g, gid) {
+        if s != "index" && ops::is_group(g, gid) {
             let grid_group = g.group(gid)?;
             let units = str_attr(&grid_group, "units")?.unwrap_or_else(|| "mm".into());
             if units == "px" {
@@ -90,7 +90,7 @@ pub(super) fn check_geometric(
             if boxes.ndim() == 3 && !boxes.is_empty() {
                 let bad = bad_boxes(&boxes);
                 if bad > 0 {
-                    out.push(ctx.err("E406", location.clone(), format!("{bad} box(es) have lo > hi")));
+                    out.push(ctx.err("E406", location.clone(), bad_boxes_message(bad)));
                 }
             }
             if let (Some(planes_ds), true) = (sub_dataset(group, "slice_index"), consistent) {
@@ -100,7 +100,7 @@ pub(super) fn check_geometric(
                 let mut spatial: Option<Vec<usize>> = None;
                 if space.as_deref() == Some("index") {
                     if let (Some(gid), Some(g)) = (grid_id, grids) {
-                        if ops::exists(g, gid) {
+                        if ops::is_group(g, gid) {
                             let full = grid_shape(g, gid)?;
                             if full.len() >= dims {
                                 spatial = Some(full[full.len() - dims..].iter().map(|v| *v as usize).collect());
@@ -145,9 +145,10 @@ pub(super) fn check_geometric(
                     ),
                 ));
             }
+            // A NaN is no length: `v < 0.0` let one through.
             if let Some(sizes) = sub_dataset(group, "sizes") {
-                if read_f64(&sizes)?.iter().any(|v| *v < 0.0) {
-                    out.push(ctx.err("E406", location.clone(), "`sizes` must be non-negative edge lengths"));
+                if read_f64(&sizes)?.iter().any(|v| !(v.is_finite() && *v >= 0.0)) {
+                    out.push(ctx.err("E406", location.clone(), "`sizes` must be finite, non-negative edge lengths"));
                 }
             }
         }
@@ -157,7 +158,7 @@ pub(super) fn check_geometric(
     }
     if kind == "points" {
         if let Some(target) = str_attr(a, "correspondence")? {
-            let exists = ops::child_group(&ctx.root, "annotations").is_some_and(|g| ops::exists(&g, &target));
+            let exists = ops::child_group(&ctx.root, "annotations").is_some_and(|g| ops::is_group(&g, &target));
             if !exists {
                 out.push(ctx.err(
                     "E413",
@@ -176,8 +177,22 @@ pub(super) fn check_geometric(
     Ok(out)
 }
 
+/// How many boxes have an axis whose `lo` exceeds its `hi`, or whose bounds
+/// are not both finite (§8.2, E406).  `lo > hi` is false for a NaN, so a box
+/// of NaN passed, and a reader cropped nothing or everything from it.
 pub(super) fn bad_boxes(boxes: &ArrayD<f64>) -> usize {
-    boxes.outer_iter().filter(|b| b.outer_iter().any(|axis| axis.len() == 2 && axis[0] > axis[1])).count()
+    boxes
+        .outer_iter()
+        .filter(|b| {
+            b.outer_iter()
+                .any(|axis| axis.len() == 2 && !(axis[0].is_finite() && axis[1].is_finite() && axis[0] <= axis[1]))
+        })
+        .count()
+}
+
+/// E406's message for `bad` boxes.
+pub(super) fn bad_boxes_message(bad: usize) -> String {
+    format!("{bad} box(es) have lo > hi or a bound that is not finite")
 }
 
 /// The shapes of `points`, `visibility` and `keypoint_class_ids` are the
@@ -194,12 +209,10 @@ fn check_keypoints(ctx: &Context, name: &str, group: &Node) -> Result<Vec<Diagno
             ));
         }
     }
-    if let Some(skeleton) = str_attr(loc(group), "skeleton")? {
-        let known = ctx
-            .document
-            .as_ref()
-            .and_then(|d| d.label_set.as_ref())
-            .is_some_and(|ls| ls.skeletons.iter().any(|s| s.id == skeleton));
+    // Without a document there is no label set to resolve it against: that
+    // is `/meta`'s finding (E004, E005), not this annotation's.
+    if let (Some(skeleton), Some(doc)) = (str_attr(loc(group), "skeleton")?, &ctx.document) {
+        let known = doc.label_set.as_ref().is_some_and(|ls| ls.skeletons.iter().any(|s| s.id == skeleton));
         if !known {
             out.push(ctx.err(
                 "E413",

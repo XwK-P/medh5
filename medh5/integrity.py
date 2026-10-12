@@ -149,12 +149,15 @@ class Diagnosis:
     stale_index: tuple[str, ...] = ()
     missing_index: tuple[str, ...] = ()
     content_id_ok: bool | None = None
+    #: Datasets whose ``digest`` does not parse, which ``verify`` fails.
+    malformed: tuple[str, ...] = ()
 
     @classmethod
     def from_json(cls, doc: dict[str, Any]) -> Diagnosis:
         return cls(
             path=doc["path"],
             mismatched=tuple(doc.get("mismatched") or ()),
+            malformed=tuple(doc.get("malformed") or ()),
             undigested=tuple(doc.get("undigested") or ()),
             unattested=tuple(doc.get("unattested") or ()),
             stale_index=tuple(doc.get("stale_index") or ()),
@@ -169,8 +172,12 @@ class Diagnosis:
 
     @property
     def needs_digests(self) -> bool:
+        """Whether the digests no longer attest the bytes: a mismatch, a
+        digest that does not parse, a path no line of ``content_id`` covers,
+        or a stale ``content_id``."""
         return (
             bool(self.mismatched)
+            or bool(self.malformed)
             or bool(self.unattested)
             or self.content_id_ok is False
         )
@@ -183,6 +190,7 @@ class Diagnosis:
         return {
             "path": self.path,
             "mismatched": list(self.mismatched),
+            "malformed": list(self.malformed),
             "undigested": list(self.undigested),
             "unattested": list(self.unattested),
             "stale_index": list(self.stale_index),
@@ -260,7 +268,9 @@ def fix(
 
 
 def fix_paths(paths: Sequence[str | os.PathLike[str]], **options: Any) -> list[Repair]:
-    """:func:`fix` over many files."""
+    """:func:`fix` over many files, every one of them: a file that cannot be
+    repaired stops no other.  If any could not be, the error names each one
+    and why, and how many of the others were repaired."""
     return [
         Repair.from_json(doc)
         for doc in _core.fix_paths([os.fspath(p) for p in paths], **options)

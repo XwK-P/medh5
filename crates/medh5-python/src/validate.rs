@@ -67,14 +67,7 @@ fn validate_root<'py>(
     profiles: Option<&Bound<'py, PyAny>>,
     errors_only: bool,
 ) -> R<Bound<'py, PyAny>> {
-    if !engine::LEVELS.contains(&level) {
-        return Err(medh5::Error::Value(format!(
-            "unknown validation level {}; expected one of {}",
-            medh5::json::repr_str(level),
-            medh5::json::repr_list(&engine::LEVELS).replacen('[', "(", 1).replacen(']', ")", 1)
-        ))
-        .into());
-    }
+    known_level(level)?;
     let handle = match sample.cast::<SampleHandle>() {
         Ok(h) => h.clone(),
         Err(_) => sample.getattr("_handle")?.cast_into::<SampleHandle>().map_err(PyErr::from)?,
@@ -102,10 +95,26 @@ fn validate_root<'py>(
     Ok(json_to_py(py, &report.to_json())?)
 }
 
-/// Every rule run at `level`, in order.
+/// A level the validator runs, or `ValueError`, as the engine's own
+/// validators refuse an unknown one.
+fn known_level(level: &str) -> R<()> {
+    if !engine::LEVELS.contains(&level) {
+        return Err(medh5::Error::Value(format!(
+            "unknown validation level {}; expected one of {}",
+            medh5::json::repr_str(level),
+            medh5::json::repr_list(&engine::LEVELS).replacen('[', "(", 1).replacen(']', ")", 1)
+        ))
+        .into());
+    }
+    Ok(())
+}
+
+/// Every rule run at `level`, in order.  An unknown level is refused: every
+/// rule, which it was given, read as the answer for a misspelt level.
 #[pyfunction]
-fn rules_for(level: &str) -> Vec<&'static str> {
-    engine::rules::rules_for(level).into_iter().map(|(n, _)| n).collect()
+fn rules_for(level: &str) -> R<Vec<&'static str>> {
+    known_level(level)?;
+    Ok(engine::rules::rules_for(level).into_iter().map(|(n, _)| n).collect())
 }
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {

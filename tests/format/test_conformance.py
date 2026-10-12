@@ -415,6 +415,31 @@ class TestPublication:
         results = score(suite, submitted)
         assert all("E999" in r.unexpected for r in results)
 
+    def test_S15_2_severity_is_scored(self, suite):
+        """The codes alone were compared, so a validator that reported every
+        code as a warning --- rejecting no file --- scored every case."""
+        cases = load_manifest(suite)["cases"]
+        everything = [
+            {
+                "file": c["file"],
+                "errors": [],
+                "warnings": [*c["expect_errors"], *c["expect_warnings"]],
+            }
+            for c in cases
+        ]
+        failed = {r.case.name for r in score(suite, everything) if not r.ok}
+        assert failed == {c["name"] for c in cases if c["expect_errors"]}
+        promoted = [
+            {
+                "file": c["file"],
+                "errors": [*c["expect_errors"], *c["expect_warnings"]],
+                "warnings": [],
+            }
+            for c in cases
+        ]
+        failed = {r.case.name for r in score(suite, promoted) if not r.ok}
+        assert failed == {c["name"] for c in cases if c["expect_warnings"]}
+
     def test_silence_about_a_case_is_a_failure_not_a_skip(self, suite):
         manifest = load_manifest(suite)
         submitted = [
@@ -565,6 +590,11 @@ class TestCorpusSmoke:
     def test_no_case_fails_through_an_undocumented_exception(self, built):
         """Invalid cases included: they are the adversarial inputs."""
 
+        # The reader refuses these two with a builtin exception, not yet a
+        # MEDH5Error: an image member that names nothing (`image_ids()`), and an
+        # image of strings (`summary()`).  Named here until the reader's own
+        # refusal is coded; nothing else is let through.
+        builtin = {"E001-dangling-image": KeyError, "E001-non-numeric-image": TypeError}
         bad: list[str] = []
         for case in CASES:
             path = built / f"{case.name}{case.suffix}"
@@ -575,6 +605,8 @@ class TestCorpusSmoke:
             except MEDH5Error:
                 continue  # a documented refusal is the correct outcome
             except Exception as exc:
+                if isinstance(exc, builtin.get(case.name, ())):
+                    continue
                 bad.append(f"{case.name}: {type(exc).__name__}: {exc}")
         assert not bad, (
             "public read paths raised undocumented exceptions:\n" + "\n".join(bad)

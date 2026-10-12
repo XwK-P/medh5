@@ -261,7 +261,20 @@ fn check_descriptor_dataset(
         out.push(ctx.err("E801", location, "`clinical/meta` is a scalar UTF-8 string dataset"));
         return Ok(None);
     }
-    let text = data::read_scalar_string(&meta)?;
+    // Read as stored: a lossy read put U+FFFD in place of bytes that are not
+    // UTF-8, and the descriptor parsed.
+    let stored = data::read_stored_strings(&meta)?.into_iter().next().unwrap_or_default();
+    let text = match String::from_utf8(stored) {
+        Ok(text) => text,
+        Err(e) => {
+            out.push(ctx.err(
+                "E801",
+                location,
+                format!("`clinical/meta` is not valid UTF-8 (byte {} is not)", e.utf8_error().valid_up_to()),
+            ));
+            return Ok(None);
+        }
+    };
     let value = match crate::json::loads(&text) {
         Ok(v) => v,
         Err(e) => {
@@ -356,9 +369,18 @@ fn sample_context(ctx: &Context, records: &ClinicalRecords) -> Result<SampleCont
 }
 
 /// Semantic: the rows against each other and the sample (E808--E817, W914).
+///
+/// The tables are taken from the context for the check and put back after
+/// it, not cloned: a copy of every clinical table was made for each pass.
 pub fn check_clinical_records(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
+    let Some(tables) = ctx.clinical.take() else { return Ok(Vec::new()) };
+    let checked = check_records(ctx, &tables);
+    ctx.clinical = Some(tables);
+    checked
+}
+
+fn check_records(ctx: &Context, tables: &ClinicalTables) -> Result<Vec<Diagnostic>> {
     let mut out = Vec::new();
-    let Some(tables) = ctx.clinical.clone() else { return Ok(out) };
     let Some(events) = &tables.events else { return Ok(out) };
     if !tables.sound() {
         return Ok(out); // the structural findings come first

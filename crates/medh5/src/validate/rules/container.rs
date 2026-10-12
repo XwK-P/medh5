@@ -1,52 +1,39 @@
 //! §1.3, §2 --- the container, the document, bulk storage and profiles (E0xx).
 
 use std::collections::BTreeSet;
+use std::path::Path;
 
-use super::{child, children, loc, str_attr, strs_attr, Context};
+use super::{child, children, describe, loc, str_attr, strs_attr, unresolved, Context};
 use crate::annotations::header::VOXEL_KINDS;
 use crate::document::{projected, validate_document_version, SampleDocument};
-use crate::h5::attrs;
-use crate::h5::data;
+use crate::h5::attrs::{self, AttrValue};
+use crate::h5::data::{self, Kind};
 use crate::h5::ops::{self, Node};
 use crate::ids::{is_valid_id, matches_pattern};
 use crate::json::{repr_list, repr_str};
 use crate::sample::reader::PROFILES;
+use crate::sample::require_major;
 use crate::storage::codecs::is_bulk;
 use crate::validate::{Diagnostic, SAMPLES_GROUP};
-use crate::Result;
+use crate::version::{support, Support};
+use crate::{Error, Result};
 
 /// The major version this validator implements.
 pub const SUPPORTED_MAJOR: &str = "1";
 
 /// Structural: the root's version, kind and profiles, the required groups
-/// and `/meta`, and identifier syntax (E001--E004, E006--E008, W913).
+/// and `/meta` and what kind of object each is, every member of the four
+/// groups an object, and identifier syntax (E001--E004, E006--E008, W913).
+///
+/// The version is read as the readers read it ([`check_version`]).  Another
+/// major is E002 and ends the pass: no rule of this major speaks for its
+/// content.
 pub fn check_container(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     let mut out = Vec::new();
     let root = ctx.root.clone();
-    match str_attr(&root, "medh5_version")? {
-        None => out.push(ctx.err("E001", "/", "root has no `medh5_version` attribute")),
-        Some(version) if version.trim().is_empty() => out.push(ctx.err("E001", "/", "`medh5_version` is empty")),
-        Some(version) => {
-            let major = version.split('.').next().unwrap_or("");
-            if major != SUPPORTED_MAJOR {
-                out.push(ctx.err(
-                    "E002",
-                    "/",
-                    format!("declares MEDH5 {version}; this validator implements {SUPPORTED_MAJOR}.x"),
-                ));
-            } else if ctx.projection {
-                out.push(ctx.err(
-                    "W913",
-                    "/",
-                    format!(
-                        "declares MEDH5 {version}; this validator implements up to {}: only the supported \
-                         projection was validated, which is not conformance to {version}, and the file must not be \
-                         amended by this engine",
-                        crate::FORMAT_VERSION
-                    ),
-                ));
-            }
-        }
+    out.extend(check_version(ctx, &root, false)?);
+    if out.iter().any(|d| d.code == "E002") {
+        return Ok(out);
     }
     match str_attr(&root, "medh5_kind")? {
         None => out.push(ctx.err("E006", "/", "root has no `medh5_kind` attribute")),
@@ -66,13 +53,33 @@ pub fn check_container(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
             out.push(ctx.unknown("E007", "/", format!("unknown profile(s) {}", repr_list(&unknown))));
         }
     }
-    for required in ["grids", "images"] {
-        if !ops::exists(&root, required) {
-            out.push(ctx.err("E008", format!("/{required}"), format!("required group `{required}` is absent")));
+    // What each name is, not only that it is there (§2.3): a dataset, or a
+    // soft link to nothing, where a group belongs left every rule reading the
+    // group with nothing to read, and the file passed every level.
+    for (name, required) in [("grids", true), ("images", true), ("annotations", false), ("transforms", false)] {
+        if ops::is_group(&root, name) {
+            continue;
         }
+        if !ops::exists(&root, name) {
+            if required {
+                out.push(ctx.err("E008", format!("/{name}"), format!("required group `{name}` is absent")));
+            }
+            continue;
+        }
+        out.push(ctx.err(
+            "E008",
+            format!("/{name}"),
+            format!("`{name}` is {}; the layout makes it a group (§2.3)", describe(&root, name)),
+        ));
     }
     if !ops::exists(&root, "meta") {
         out.push(ctx.err("E004", "/meta", "required dataset `meta` is absent"));
+    } else if !ops::is_dataset(&root, "meta") {
+        out.push(ctx.err(
+            "E004",
+            "/meta",
+            format!("`meta` is {}; §2.4 makes it a dataset holding one UTF-8 JSON string", describe(&root, "meta")),
+        ));
     }
     for group in ["grids", "images", "annotations", "transforms"] {
         let Some(node) = ops::child_group(&root, group) else { continue };
@@ -84,7 +91,79 @@ pub fn check_container(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
                     format!("identifier {} does not match [A-Za-z0-9_.-]{{1,128}}", repr_str(&name)),
                 ));
             }
+            // No rule can read it, so it is reported here, once, rather than
+            // dropped by every rule that walks the group.
+            if let Some(what) = unresolved(&node, &name) {
+                out.push(ctx.err(
+                    "E001",
+                    format!("/{group}/{name}"),
+                    format!("is {what}, so nothing it should hold can be read or checked"),
+                ));
+            }
         }
+    }
+    Ok(out)
+}
+
+/// What is wrong with `root`'s `medh5_version` (§2.1): a sample root's, or
+/// with `collection` a collection's own.
+///
+/// Absent, empty or not a string is E001.  Another major is E002, decided as
+/// the readers decide it ([`require_major`], the check `open`, `amend` and
+/// `open_collection` make): the validator neither passes a file they refuse
+/// for its version nor refuses one they read.  A higher minor is W913, as
+/// [`support`] reads it.
+fn check_version(ctx: &Context, root: &hdf5::Group, collection: bool) -> Result<Vec<Diagnostic>> {
+    let mut out = Vec::new();
+    let version = match attrs::read(root, "medh5_version")? {
+        None if collection => {
+            out.push(ctx.err("E001", "/", "collection root has no `medh5_version` attribute"));
+            return Ok(out);
+        }
+        None => {
+            out.push(ctx.err("E001", "/", "root has no `medh5_version` attribute"));
+            return Ok(out);
+        }
+        Some(AttrValue::Str(text)) => text,
+        // The readers read its text; §2.1 makes it a string.
+        Some(other) => {
+            let text = attrs::stringify_value(&other);
+            out.push(ctx.err(
+                "E001",
+                "/",
+                format!("`medh5_version` is {}, not a string; §2.1 makes it `MAJOR.MINOR`", repr_str(&text)),
+            ));
+            text
+        }
+    };
+    if version.trim().is_empty() {
+        let message = if collection { "the collection's `medh5_version` is empty" } else { "`medh5_version` is empty" };
+        out.push(ctx.err("E001", "/", message));
+        return Ok(out);
+    }
+    if let Err(Error::Version(_)) = require_major(root, Path::new(&ctx.path)) {
+        out.push(ctx.err(
+            "E002",
+            "/",
+            format!("declares MEDH5 {version}; this validator implements {SUPPORTED_MAJOR}.x"),
+        ));
+        return Ok(out);
+    }
+    if support(&version) == Support::Projection {
+        let rest = if collection {
+            String::new()
+        } else {
+            format!(", which is not conformance to {version}, and the file must not be amended by this engine")
+        };
+        out.push(ctx.err(
+            "W913",
+            "/",
+            format!(
+                "declares MEDH5 {version}; this validator implements up to {}: only the supported projection was \
+                 validated{rest}",
+                crate::FORMAT_VERSION
+            ),
+        ));
     }
     Ok(out)
 }
@@ -94,21 +173,9 @@ pub fn check_collection(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     let mut out = Vec::new();
     let root = ctx.root.clone();
     let outer = str_attr(&root, "medh5_version")?;
-    match &outer {
-        None => out.push(ctx.err("E001", "/", "collection root has no `medh5_version` attribute")),
-        Some(v) if v.trim().is_empty() => out.push(ctx.err("E001", "/", "the collection's `medh5_version` is empty")),
-        Some(v) if v.split('.').next().unwrap_or("") != SUPPORTED_MAJOR => {
-            out.push(ctx.err("E002", "/", format!("declares MEDH5 {v}; this validator implements {SUPPORTED_MAJOR}.x")))
-        }
-        Some(v) if ctx.projection => out.push(ctx.err(
-            "W913",
-            "/",
-            format!(
-                "declares MEDH5 {v}; this validator implements up to {}: only the supported projection was validated",
-                crate::FORMAT_VERSION
-            ),
-        )),
-        _ => {}
+    out.extend(check_version(ctx, &root, true)?);
+    if out.iter().any(|d| d.code == "E002") {
+        return Ok(out);
     }
     let Some(node) = ops::child_group(&root, SAMPLES_GROUP) else {
         out.push(ctx.err(
@@ -131,7 +198,16 @@ pub fn check_collection(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
                 format!("sample key {} does not match [A-Za-z0-9_.-]{{1,255}}", repr_str(&key)),
             ));
         }
-        let Some(member) = child(&node, &key) else { continue };
+        let Some(member) = child(&node, &key) else {
+            if let Some(what) = unresolved(&node, &key) {
+                out.push(ctx.err(
+                    "E001",
+                    location,
+                    format!("is {what}, so the sample root it names can be neither read nor validated"),
+                ));
+            }
+            continue;
+        };
         // 1.1 §8: the outer root declares a version no lower than any
         // member's, so a reader that stops at the outer version sees every
         // member it can read.
@@ -185,7 +261,28 @@ pub fn check_document(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
         ));
         return Ok(out);
     }
-    let text = data::read_scalar_string(&meta)?;
+    // Text, and only UTF-8 text (§2.4): read as stored, where a lossy read
+    // put U+FFFD in place of bytes that are not, and the document parsed.
+    let Kind::Strings = data::kind(&meta)? else {
+        out.push(ctx.err(
+            "E004",
+            "/meta",
+            format!("`meta` is a dataset of {}; §2.4 makes it one UTF-8 JSON string", super::dtype_name(&meta)),
+        ));
+        return Ok(out);
+    };
+    let stored = data::read_stored_strings(&meta)?.into_iter().next().unwrap_or_default();
+    let text = match String::from_utf8(stored) {
+        Ok(text) => text,
+        Err(e) => {
+            out.push(ctx.err(
+                "E004",
+                "/meta",
+                format!("`meta` is not valid UTF-8 (byte {} is not)", e.utf8_error().valid_up_to()),
+            ));
+            return Ok(out);
+        }
+    };
     let parsed: serde_json::Value = match crate::json::loads_lenient(&text) {
         Ok((v, None)) => v,
         // What 1.x's `json.dumps` wrote for a NaN: not JSON, so E004, but the

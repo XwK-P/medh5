@@ -203,13 +203,17 @@ pub fn score(root: &Path, submitted: &[Value]) -> Result<Vec<CaseResult>> {
             continue;
         };
         let (errors, warnings) = submitted_codes(entry);
-        let expected: BTreeSet<String> =
-            strings_of(record, "expect_errors").into_iter().chain(strings_of(record, "expect_warnings")).collect();
-        let got: BTreeSet<String> = errors.union(&warnings).cloned().collect();
+        // Against the published expectations, severity by severity.
+        let (missing, unexpected) = super::differences(
+            &strings_of(record, "expect_errors"),
+            &strings_of(record, "expect_warnings"),
+            &errors,
+            &warnings,
+        );
         result.got_errors = errors.into_iter().collect();
         result.got_warnings = warnings.into_iter().collect();
-        result.missing = expected.difference(&got).cloned().collect();
-        result.unexpected = got.difference(&expected).cloned().collect();
+        result.missing = missing;
+        result.unexpected = unexpected;
         results.push(result);
     }
     Ok(results)
@@ -297,10 +301,12 @@ json.dump(results, open("results.json", "w"))
 
 ## How it is scored
 
-For each case, the set of codes you report must **equal** the expected set: a
-missing code is a defect you failed to catch, an extra code is a valid file you
-rejected. Both fail. A case you report nothing about fails too --- silence about
-a file you were handed is not a pass.
+For each case, the errors you report must **equal** the expected errors, and
+the warnings the expected warnings: a missing code is a defect you failed to
+catch, an extra code is a valid file you rejected. Both fail. Severity is
+scored: an expected error you report as a warning is missing as an error, and
+a file you report only warnings for is a file you accepted. A case you report
+nothing about fails too --- silence about a file you were handed is not a pass.
 
 Diagnostic *messages* are yours to write; only the codes are normative.
 
@@ -314,7 +320,7 @@ their stored digests cover the pre-edit bytes and an integrity pass adds a
 `"mutated": true`, and the mismatch is an artifact of how they are built, not
 something to diagnose.
 
-**A `.medh5c` case is a collection** (spec §2.1) --- it contains samples rather
+**A `.medh5c` case is a collection** (spec §2.2) --- it contains samples rather
 than being one. `"file_suffix"` in the manifest tells you which.
 
 **Verify the bytes first.** `{CHECKSUMS}` covers every published file, and

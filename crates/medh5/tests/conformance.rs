@@ -56,6 +56,46 @@ fn a_published_suite_scores_a_foreign_report() {
     assert_eq!(check_checksums(dir.path()).unwrap(), ["core-minimal.medh5"]);
 }
 
+/// Severity is scored: an expected error reported as a warning is a defect
+/// not reported, and a warning reported as an error a file rejected.  The
+/// codes alone were compared, so a validator that reported every code as a
+/// warning --- and so rejected nothing --- scored every case.
+#[test]
+fn s15_2_an_error_reported_as_a_warning_fails_its_case() {
+    let dir = tempfile::tempdir().unwrap();
+    let names = vec!["E001-missing-version".to_string(), "W903-no-deidentification".to_string()];
+    publish(dir.path(), Some(&names)).unwrap();
+    let report = |e001: &str, w903: &str| {
+        vec![
+            json!({"file": "E001-missing-version.medh5", "diagnostics": [{"code": "E001", "severity": e001}]}),
+            json!({"file": "W903-no-deidentification.medh5", "diagnostics": [{"code": "W903", "severity": w903}]}),
+        ]
+    };
+    let scored = |submitted: Vec<Value>| -> Vec<(String, bool, Vec<String>, Vec<String>)> {
+        score(dir.path(), &submitted)
+            .unwrap()
+            .into_iter()
+            .map(|r| (r.case.name.clone(), r.ok(), r.missing.clone(), r.unexpected.clone()))
+            .collect()
+    };
+    assert!(scored(report("error", "warning")).iter().all(|(_, ok, _, _)| *ok));
+    let swapped = scored(report("warning", "error"));
+    assert_eq!(
+        swapped,
+        [
+            ("E001-missing-version".to_string(), false, vec!["E001".to_string()], vec!["E001".to_string()]),
+            ("W903-no-deidentification".to_string(), false, vec!["W903".to_string()], vec!["W903".to_string()]),
+        ]
+    );
+    // The foreign shape is scored the same way.
+    let lists = vec![
+        json!({"file": "E001-missing-version.medh5", "errors": [], "warnings": ["E001"]}),
+        json!({"file": "W903-no-deidentification.medh5", "errors": [], "warnings": ["W903"]}),
+    ];
+    let results = score(dir.path(), &lists).unwrap();
+    assert_eq!(results.iter().map(|r| r.ok()).collect::<Vec<_>>(), [false, true]);
+}
+
 #[test]
 fn the_task_and_cache_fixtures_hold() {
     use medh5::conformance::companion::{run_fixtures, write_fixtures, SOURCES};

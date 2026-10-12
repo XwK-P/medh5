@@ -304,7 +304,7 @@ pub fn verify_root(
     partial: Option<&[String]>,
     check_content_id: bool,
 ) -> Result<VerifyResult> {
-    verify(root, attr_names, partial, check_content_id, None)
+    verify(root, attr_names, partial, check_content_id, None, None)
 }
 
 /// [`verify_root`], handing every block of every digested dataset it reads to
@@ -319,12 +319,46 @@ pub fn verify_root_inspecting(
     check_content_id: bool,
     inspect: &mut dyn FnMut(&str, &NdArray) -> Result<()>,
 ) -> Result<VerifyResult> {
-    verify(root, attr_names, partial, check_content_id, Some(inspect))
+    verify(root, attr_names, partial, check_content_id, Some(inspect), None)
 }
 
 /// What [`verify_root_inspecting`] hands each block it reads to, with the
 /// dataset's path.
 pub type InspectPath<'a> = &'a mut dyn FnMut(&str, &NdArray) -> Result<()>;
+
+/// What a reporting pass could not read: the path relative to the root (`""`
+/// for the root's `content_id`), and why.
+pub(crate) type Unread = Vec<(String, Error)>;
+
+/// [`verify_root_inspecting`] over the whole root, for the validator: an
+/// object that cannot be read --- a dataset whose chunk no longer decodes, a
+/// `content_id` that cannot be recomputed --- is returned beside the result
+/// with what stopped it, and the pass goes on to the next.  Stopping at the
+/// first unreadable chunk hid every other E701 and E702 in the file, and the
+/// name of the dataset that stopped it.
+pub(crate) fn verify_root_reporting(
+    root: &hdf5::Group,
+    attr_names: Option<&AttrNameMap>,
+    check_content_id: bool,
+    inspect: &mut dyn FnMut(&str, &NdArray) -> Result<()>,
+) -> Result<(VerifyResult, Unread)> {
+    let mut unread = Vec::new();
+    let result = verify(root, attr_names, None, check_content_id, Some(inspect), Some(&mut unread))?;
+    Ok((result, unread))
+}
+
+/// `step`, or --- when `unread` collects failures --- its value, a failure
+/// recorded under `path` as `None`.
+fn tolerated<T>(unread: &mut Option<&mut Unread>, path: &str, step: Result<T>) -> Result<Option<T>> {
+    match (step, unread) {
+        (Ok(v), _) => Ok(Some(v)),
+        (Err(e), Some(unread)) => {
+            unread.push((path.to_string(), e));
+            Ok(None)
+        }
+        (Err(e), None) => Err(e),
+    }
+}
 
 fn verify(
     root: &hdf5::Group,
@@ -332,6 +366,7 @@ fn verify(
     partial: Option<&[String]>,
     check_content_id: bool,
     mut inspect: Option<InspectPath<'_>>,
+    mut unread: Option<&mut Unread>,
 ) -> Result<VerifyResult> {
     let stored = collect_digests(root, &["index"])?;
     let targets: Vec<String> = match partial {
@@ -352,22 +387,41 @@ fn verify(
             result.malformed.push(path);
             continue;
         };
-        let ds = root.dataset(&path)?;
-        if !digestible(&ds)? {
-            result.unverifiable.push(path);
-            continue;
-        }
-        result.checked.push(path.clone());
-        let computed = match inspect.as_mut() {
-            Some(inspect) => {
-                let mut each = |block: &NdArray| inspect(&path, block);
-                let each: Inspect<'_> = &mut each;
-                dataset_digest_inspected(&ds, &path, &algo, STREAM_BYTES, Some(each))?
+        // One dataset that cannot be read is that dataset's failure, not the
+        // pass's, where the caller collects them.
+        let digest = (|| -> Result<Option<String>> {
+            let ds = root.dataset(&path)?;
+            if !digestible(&ds)? {
+                return Ok(None);
             }
-            None => dataset_digest_inspected(&ds, &path, &algo, STREAM_BYTES, None)?,
+            let computed = match inspect.as_mut() {
+                Some(inspect) => {
+                    let mut each = |block: &NdArray| inspect(&path, block);
+                    let each: Inspect<'_> = &mut each;
+                    dataset_digest_inspected(&ds, &path, &algo, STREAM_BYTES, Some(each))?
+                }
+                None => dataset_digest_inspected(&ds, &path, &algo, STREAM_BYTES, None)?,
+            };
+            Ok(Some(computed))
+        })();
+        // Named, where nothing collects it: HDF5's message does not say which
+        // dataset's chunk failed to decode.
+        let digest = match (digest, unread.is_some()) {
+            (Err(e), false) => {
+                let message = format!("{path}: {}", e.message());
+                Err(super::restated(e, message))
+            }
+            (digest, _) => digest,
         };
-        if &computed != value {
-            result.mismatched.push(path);
+        match tolerated(&mut unread, &path, digest)? {
+            None => {}
+            Some(None) => result.unverifiable.push(path),
+            Some(Some(computed)) => {
+                result.checked.push(path.clone());
+                if &computed != value {
+                    result.mismatched.push(path);
+                }
+            }
         }
     }
     let mut undigested = Vec::new();
@@ -387,15 +441,16 @@ fn verify(
     };
     if check_content_id && partial.is_none() {
         if let Some(names) = attr_names {
-            result.content_id_computed = Some(compute_content_id(root, names, &root_algo(root)?, Some(&stored))?);
+            let computed = root_algo(root).and_then(|algo| compute_content_id(root, names, &algo, Some(&stored)));
+            result.content_id_computed = tolerated(&mut unread, "", computed)?;
         }
     }
     if declared.is_some() && partial.is_none() {
-        result.unattested = unattested(root)?;
+        result.unattested = tolerated(&mut unread, "", unattested(root))?.unwrap_or_default();
     }
     result.undigested = undigested;
     result.content_id_declared = declared;
-    result.stale_index = stale_index_entries(root)?;
+    result.stale_index = tolerated(&mut unread, "index", stale_index_entries(root))?.unwrap_or_default();
     Ok(result)
 }
 

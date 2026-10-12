@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use super::geometric::{bad_boxes, check_classification, check_geometric};
+use super::geometric::{bad_boxes, bad_boxes_message, check_classification, check_geometric};
 use super::{
     dtype_name, grid_spatial, has_member, int_set, kinds_known, loc, read_f64, read_i64, str_attr, strs_attr,
     sub_dataset, Context,
@@ -77,161 +77,223 @@ pub fn geometric_dtypes(kind: &str) -> &'static [(&'static str, &'static [&'stat
 /// E406, E407, W908, W909), and partial coverage without an ignore region
 /// (W904).  A kind or value only a later minor defines is W913 in its files
 /// (1.1 §2.2).
+///
+/// An annotation that cannot be read is its own finding, and the others are
+/// still checked.  Without a document there is nothing to resolve its
+/// timepoints against: that is `/meta`'s finding (E004, E005), not an E409
+/// for every annotation naming one.
 pub fn check_annotations(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     let mut out = Vec::new();
     let grids = ops::child_group(&ctx.root, "grids");
-    let declared_tps: BTreeSet<String> =
-        ctx.document.as_ref().map(|d| d.timepoints.ids().into_iter().collect()).unwrap_or_default();
+    let declared_tps: Option<BTreeSet<String>> =
+        ctx.document.as_ref().map(|d| d.timepoints.ids().into_iter().collect());
     let label_set = ctx.document.as_ref().and_then(|d| d.label_set.clone());
+    let sample = Sample { grids: grids.as_ref(), timepoints: declared_tps.as_ref(), label_set: label_set.as_ref() };
     for (name, group) in ctx.children("annotations")? {
-        let location = format!("/annotations/{name}");
-        let a = loc(&group);
-        let Some(kind) = str_attr(a, "kind")? else {
-            out.push(ctx.err("E412", location, "missing required attribute `kind`"));
-            continue;
-        };
-        if RESERVED_KINDS.contains(&kind.as_str()) {
-            out.push(ctx.unknown(
-                "E401",
-                location,
-                format!("kind {} is reserved by spec §16 and must not appear in a 1.0 or 1.1 file", repr_str(&kind)),
-            ));
-            continue;
+        match check_annotation(ctx, &name, &group, &sample) {
+            Ok(found) => out.extend(found),
+            Err(e) => out.push(ctx.failed(format!("/annotations/{name}"), &e)),
         }
-        if !ANNOTATION_KINDS.contains(&kind.as_str()) {
-            out.push(ctx.unknown("E401", location, format!("unknown annotation kind {}", repr_str(&kind))));
-            continue;
+    }
+    Ok(out)
+}
+
+/// What an annotation is checked against: the grids, and what the document
+/// declares when it could be read.
+struct Sample<'a> {
+    grids: Option<&'a hdf5::Group>,
+    timepoints: Option<&'a BTreeSet<String>>,
+    label_set: Option<&'a crate::labels::LabelSet>,
+}
+
+/// One annotation, against §6--§9.
+fn check_annotation(ctx: &Context, name: &str, group: &Node, sample: &Sample<'_>) -> Result<Vec<Diagnostic>> {
+    let mut out = Vec::new();
+    let grids = sample.grids;
+    let location = format!("/annotations/{name}");
+    let a = loc(group);
+    let Some(kind) = str_attr(a, "kind")? else {
+        out.push(ctx.err("E412", location, "missing required attribute `kind`"));
+        return Ok(out);
+    };
+    if RESERVED_KINDS.contains(&kind.as_str()) {
+        out.push(ctx.unknown(
+            "E401",
+            location,
+            format!("kind {} is reserved by spec §16 and must not appear in a 1.0 or 1.1 file", repr_str(&kind)),
+        ));
+        return Ok(out);
+    }
+    if !ANNOTATION_KINDS.contains(&kind.as_str()) {
+        out.push(ctx.unknown("E401", location, format!("unknown annotation kind {}", repr_str(&kind))));
+        return Ok(out);
+    }
+    // What a reader would otherwise assume: a `closure` it took as
+    // `explicit`, a `task` it guessed from the kind.
+    let mut missing: Vec<&str> = ["task", "closure"].into_iter().filter(|k| !attrs::has(a, k)).collect();
+    if kind != "mask" && !attrs::has(a, "class_ids") {
+        missing.push("class_ids");
+    }
+    if !missing.is_empty() {
+        out.push(ctx.err(
+            "E412",
+            location.clone(),
+            format!("missing required attribute(s) {}; §6.2 requires them of every annotation", repr_list(&missing)),
+        ));
+    }
+    if let Some(task) = str_attr(a, "task")? {
+        if !TASKS.contains(&task.as_str()) {
+            out.push(ctx.unknown("E412", location.clone(), format!("unknown task {}", repr_str(&task))));
         }
-        if let Some(task) = str_attr(a, "task")? {
-            if !TASKS.contains(&task.as_str()) {
-                out.push(ctx.unknown("E412", location.clone(), format!("unknown task {}", repr_str(&task))));
-            }
+    }
+    if let Some(closure) = str_attr(a, "closure")? {
+        if !CLOSURES.contains(&closure.as_str()) {
+            out.push(ctx.unknown("E412", location.clone(), format!("unknown closure {}", repr_str(&closure))));
         }
-        if let Some(closure) = str_attr(a, "closure")? {
-            if !CLOSURES.contains(&closure.as_str()) {
-                out.push(ctx.unknown("E412", location.clone(), format!("unknown closure {}", repr_str(&closure))));
-            }
-        }
-        if !attrs::has(a, "annotated_class_ids") && kind != "mask" {
+    }
+    if !attrs::has(a, "annotated_class_ids") && kind != "mask" {
+        out.push(ctx.err("E412", location.clone(), "missing `annotated_class_ids`; the coverage contract is required"));
+    }
+    let class_ids = int_set(a, "class_ids")?;
+    let annotated = int_set(a, "annotated_class_ids")?;
+    // Without `class_ids` that is the finding (E412), not every annotated id.
+    if !annotated.is_subset(&class_ids) && kind != "mask" && attrs::has(a, "class_ids") {
+        let extra: Vec<i64> = annotated.difference(&class_ids).copied().collect();
+        out.push(ctx.err(
+            "E403",
+            location.clone(),
+            format!("annotated_class_ids {} are not in class_ids", repr_int_list(&extra)),
+        ));
+    }
+    if let Some(ls) = sample.label_set.filter(|l| l.form == "inline") {
+        let missing = ls.missing(class_ids.iter().copied());
+        if !missing.is_empty() {
             out.push(ctx.err(
-                "E412",
+                "E402",
                 location.clone(),
-                "missing `annotated_class_ids`; the coverage contract is required",
+                format!("class ids {} are not in label set {}", repr_int_list(&missing), repr_str(&ls.id)),
             ));
         }
-        let class_ids = int_set(a, "class_ids")?;
-        let annotated = int_set(a, "annotated_class_ids")?;
-        if !annotated.is_subset(&class_ids) && kind != "mask" {
-            let extra: Vec<i64> = annotated.difference(&class_ids).copied().collect();
-            out.push(ctx.err(
-                "E403",
+    }
+    let reserved: Vec<i64> = class_ids.iter().copied().filter(|c| *c == BACKGROUND_ID || *c == IGNORE_ID).collect();
+    if !reserved.is_empty() {
+        out.push(ctx.err(
+            "E303",
+            location.clone(),
+            format!("class_ids uses reserved id(s) {}", repr_int_list(&reserved)),
+        ));
+    }
+    out.extend(check_ignore_id(ctx, &location, a, &class_ids)?);
+    if let (true, Some(declared)) = (attrs::has(a, "timepoints"), sample.timepoints) {
+        for tp in strs_attr(a, "timepoints")? {
+            if !declared.contains(&tp) {
+                out.push(ctx.err("E409", location.clone(), format!("undeclared timepoint {}", repr_str(&tp))));
+            }
+        }
+    }
+    let grid_id = str_attr(a, "grid")?;
+    // A grid is a group (§3.2): a dataset or a dangling link of its name is
+    // no grid to read.
+    let on_grid = |gid: &str| grids.is_some_and(|g| ops::is_group(g, gid));
+    if VOXEL_KINDS.contains(&kind.as_str()) {
+        match &grid_id {
+            None => out.push(ctx.err("E412", location.clone(), format!("kind {} requires a `grid`", repr_str(&kind)))),
+            Some(gid) if !on_grid(gid) => out.push(ctx.err(
+                "E101",
                 location.clone(),
-                format!("annotated_class_ids {} are not in class_ids", repr_int_list(&extra)),
-            ));
+                format!("names grid {}, which does not exist", repr_str(gid)),
+            )),
+            _ => {}
         }
-        if let Some(ls) = label_set.as_ref().filter(|l| l.form == "inline") {
-            let missing = ls.missing(class_ids.iter().copied());
-            if !missing.is_empty() {
-                out.push(ctx.err(
-                    "E402",
-                    location.clone(),
-                    format!("class ids {} are not in label set {}", repr_int_list(&missing), repr_str(&ls.id)),
-                ));
-            }
-        }
-        let reserved: Vec<i64> = class_ids.iter().copied().filter(|c| *c == BACKGROUND_ID || *c == IGNORE_ID).collect();
-        if !reserved.is_empty() {
+    }
+    for required in required_datasets(&kind) {
+        if !has_member(group, required) {
             out.push(ctx.err(
-                "E303",
+                "E410",
                 location.clone(),
-                format!("class_ids uses reserved id(s) {}", repr_int_list(&reserved)),
+                format!("kind {} requires dataset {}", repr_str(&kind), repr_str(required)),
             ));
         }
-        if attrs::has(a, "timepoints") {
-            for tp in strs_attr(a, "timepoints")? {
-                if !declared_tps.contains(&tp) {
-                    out.push(ctx.err("E409", location.clone(), format!("undeclared timepoint {}", repr_str(&tp))));
-                }
-            }
-        }
-        let grid_id = str_attr(a, "grid")?;
-        if VOXEL_KINDS.contains(&kind.as_str()) {
-            match &grid_id {
-                None => {
-                    out.push(ctx.err("E412", location.clone(), format!("kind {} requires a `grid`", repr_str(&kind))))
-                }
-                Some(gid) if !grids.as_ref().is_some_and(|g| ops::exists(g, gid)) => out.push(ctx.err(
-                    "E101",
-                    location.clone(),
-                    format!("names grid {}, which does not exist", repr_str(gid)),
-                )),
-                _ => {}
-            }
-        }
-        for required in required_datasets(&kind) {
-            if !has_member(&group, required) {
-                out.push(ctx.err(
-                    "E410",
-                    location.clone(),
-                    format!("kind {} requires dataset {}", repr_str(&kind), repr_str(required)),
-                ));
-            }
-        }
-        if let (Some(ds), Some(allowed)) = (sub_dataset(&group, "data"), allowed_dtypes(&kind)) {
-            let found = dtype_name(&ds);
-            if !allowed.contains(&found.as_str()) {
-                out.push(ctx.err(
-                    "E411",
-                    format!("{location}/data"),
-                    format!(
-                        "dtype {found} is not permitted for kind {} (expected one of {})",
-                        repr_str(&kind),
-                        repr_list(allowed)
-                    ),
-                ));
-            }
-        }
-        // The grid's spatial axes, where it has them and they are known: what
-        // index coordinates and instance masks are measured against.
-        let spatial: Option<Vec<usize>> = match (&grid_id, &grids) {
-            (Some(gid), Some(g)) if ops::exists(g, gid) && kinds_known(g, gid)? => grid_spatial(g, gid)
-                .ok()
-                .filter(|s| !s.is_empty())
-                .map(|s| s.iter().map(|v| (*v).max(0) as usize).collect()),
-            _ => None,
-        };
-        let space = str_attr(a, "space")?;
-        let rank = spatial.as_ref().filter(|_| layout::ranked(&kind, space.as_deref())).map(Vec::len);
-        let columns = layout::column_problems(&kind, &|n| sub_dataset(&group, n).map(|d| d.shape()), rank);
-        // Rules that index one column by another's rows run only where the
-        // columns agree; the disagreement is the finding.
-        let consistent = columns.is_empty();
-        for problem in columns {
-            out.push(ctx.err(problem.code, format!("{location}/{}", problem.dataset), problem.message));
-        }
-        out.extend(check_voxel_shape(ctx, &name, &group, &kind, grid_id.as_deref(), grids.as_ref())?);
-        out.extend(check_encoding_invariants(ctx, &name, &group, &kind, consistent, spatial.as_deref())?);
-        out.extend(check_dataset_dtypes(ctx, &name, &group, &kind));
-        out.extend(check_object_classes(ctx, &name, &group, &kind, &class_ids)?);
-        out.extend(check_geometric(ctx, &name, &group, &kind, grid_id.as_deref(), grids.as_ref(), consistent)?);
-        out.extend(check_classification(ctx, &name, &group, &kind, consistent)?);
-        if !ctx.errors_only
-            && kind != "mask"
-            && annotated.is_subset(&class_ids)
-            && annotated.len() < class_ids.len()
-            && !has_ignore(&group, &kind)?
-        {
+    }
+    if let (Some(ds), Some(allowed)) = (sub_dataset(group, "data"), allowed_dtypes(&kind)) {
+        let found = dtype_name(&ds);
+        if !allowed.contains(&found.as_str()) {
             out.push(ctx.err(
-                "W904",
-                location,
+                "E411",
+                format!("{location}/data"),
                 format!(
-                    "{} class(es) are encodable but not annotated, and there is no ignore region; `0` cannot be read as a verified negative for them",
-                    class_ids.difference(&annotated).count()
+                    "dtype {found} is not permitted for kind {} (expected one of {})",
+                    repr_str(&kind),
+                    repr_list(allowed)
                 ),
             ));
         }
     }
+    // The grid's spatial axes, where it has them and they are known: what
+    // index coordinates and instance masks are measured against.
+    let spatial: Option<Vec<usize>> = match (&grid_id, grids) {
+        (Some(gid), Some(g)) if on_grid(gid) && kinds_known(g, gid)? => grid_spatial(g, gid)
+            .ok()
+            .filter(|s| !s.is_empty())
+            .map(|s| s.iter().map(|v| (*v).max(0) as usize).collect()),
+        _ => None,
+    };
+    let space = str_attr(a, "space")?;
+    let rank = spatial.as_ref().filter(|_| layout::ranked(&kind, space.as_deref())).map(Vec::len);
+    let columns = layout::column_problems(&kind, &|n| sub_dataset(group, n).map(|d| d.shape()), rank);
+    // Rules that index one column by another's rows run only where the
+    // columns agree; the disagreement is the finding.
+    let consistent = columns.is_empty();
+    for problem in columns {
+        out.push(ctx.err(problem.code, format!("{location}/{}", problem.dataset), problem.message));
+    }
+    out.extend(check_voxel_shape(ctx, name, group, &kind, grid_id.as_deref(), grids)?);
+    out.extend(check_encoding_invariants(ctx, name, group, &kind, consistent, spatial.as_deref())?);
+    out.extend(check_dataset_dtypes(ctx, name, group, &kind));
+    out.extend(check_object_classes(ctx, name, group, &kind, &class_ids)?);
+    out.extend(check_geometric(ctx, name, group, &kind, grid_id.as_deref(), grids, consistent)?);
+    out.extend(check_classification(ctx, name, group, &kind, consistent)?);
+    if !ctx.errors_only
+        && kind != "mask"
+        && annotated.is_subset(&class_ids)
+        && annotated.len() < class_ids.len()
+        && !has_ignore(group, &kind)?
+    {
+        out.push(ctx.err(
+            "W904",
+            location,
+            format!(
+                "{} class(es) are encodable but not annotated, and there is no ignore region; `0` cannot be read as a verified negative for them",
+                class_ids.difference(&annotated).count()
+            ),
+        ));
+    }
     Ok(out)
+}
+
+/// A stored `ignore_id` (§6.2, §7.7) is a `uint16` no class uses, and not
+/// background: `0` made every background voxel read as ignored, and an id a
+/// class holds made that class's voxels ignored --- either way the region
+/// where `0` is a verified negative was not the one the file means (E404).
+fn check_ignore_id(
+    ctx: &Context,
+    location: &str,
+    a: &hdf5::Location,
+    class_ids: &BTreeSet<i64>,
+) -> Result<Vec<Diagnostic>> {
+    let Some(value) = attrs::read(a, "ignore_id")? else { return Ok(Vec::new()) };
+    let message = match value.as_i64() {
+        None => "`ignore_id` is not an integer; it is a uint16 (§6.2)".to_string(),
+        Some(id) if !(1..=i64::from(u16::MAX)).contains(&id) => format!(
+            "`ignore_id` {id} is outside 1..65535: it is stored as a uint16 beside the class ids, and 0 is \
+             background, so every unlabelled voxel would read as ignored"
+        ),
+        Some(id) if class_ids.contains(&id) => {
+            format!("`ignore_id` {id} is also a class id; one value cannot mark both the class and the ignore region")
+        }
+        Some(_) => return Ok(Vec::new()),
+    };
+    Ok(vec![ctx.err("E404", location, message)])
 }
 
 fn has_ignore(group: &Node, kind: &str) -> Result<bool> {
@@ -347,7 +409,7 @@ fn check_voxel_shape(
 ) -> Result<Vec<Diagnostic>> {
     let mut out = Vec::new();
     let (Some(gid), Some(grids)) = (grid_id, grids) else { return Ok(out) };
-    if !VOXEL_KINDS.contains(&kind) || !ops::exists(grids, gid) {
+    if !VOXEL_KINDS.contains(&kind) || !ops::is_group(grids, gid) {
         return Ok(out);
     }
     let Some(ds) = sub_dataset(group, "data") else { return Ok(out) };
@@ -423,6 +485,22 @@ fn check_encoding_invariants(
             } else {
                 vec![table.iter().copied().collect()]
             };
+            // A row per layer (§7.2): a class listed in a row with no plane is
+            // read from none, and a plane with no row holds classes nothing
+            // names --- a voxel of either read as a verified negative.
+            if let Some(planes) = sub_dataset(group, "data").and_then(|d| d.shape().first().copied()) {
+                if rows.len() != planes {
+                    out.push(ctx.err(
+                        "E405",
+                        format!("{location}/layer_class_ids"),
+                        format!(
+                            "`layer_class_ids` has {} row(s) for the {planes} layer(s) of `data`; §7.2 gives each \
+                             layer one row",
+                            rows.len()
+                        ),
+                    ));
+                }
+            }
             let mut seen: BTreeMap<i64, usize> = BTreeMap::new();
             for (layer, row) in rows.iter().enumerate() {
                 for class_id in row {
@@ -480,6 +558,9 @@ fn check_encoding_invariants(
         }
     }
     if kind == "bitmask" {
+        if let Some(bits) = sub_dataset(group, "bit_class_ids") {
+            out.extend(check_bit_positions(ctx, &location, &bits, &declared)?);
+        }
         if let (Some(bits), Some(ds)) = (sub_dataset(group, "bit_class_ids"), sub_dataset(group, "data")) {
             let n_classes = bits.shape().iter().product::<usize>();
             let expected = n_classes.div_ceil(64).max(1);
@@ -495,6 +576,57 @@ fn check_encoding_invariants(
     }
     if kind == "instances" {
         out.extend(check_instances(ctx, name, group, consistent, spatial)?);
+    }
+    Ok(out)
+}
+
+/// `bit_class_ids` (§7.3) is `(C,)`, one bit position per class id: each
+/// id once, and every id of `class_ids`.  A class given two positions reads
+/// as the union of two bits' voxels, and a declared class given none reads as
+/// absent everywhere --- a negative nobody looked for.  An id the attribute
+/// does not declare is [`check_object_classes`]'s finding.
+fn check_bit_positions(
+    ctx: &Context,
+    location: &str,
+    bits: &hdf5::Dataset,
+    declared: &BTreeSet<i64>,
+) -> Result<Vec<Diagnostic>> {
+    let mut out = Vec::new();
+    let shape = bits.shape();
+    if shape.len() != 1 || shape[0] != declared.len() {
+        out.push(ctx.err(
+            "E405",
+            format!("{location}/bit_class_ids"),
+            format!(
+                "`bit_class_ids` has shape {}; a `bitmask` stores it as ({},), one position per class id (§7.3)",
+                repr_int_tuple(&shape),
+                declared.len()
+            ),
+        ));
+    }
+    // Unreadable values are another rule's finding (E411).
+    let Ok(values) = read_i64(bits) else { return Ok(out) };
+    let mut seen = BTreeSet::new();
+    let mut repeated: Vec<i64> = values.iter().copied().filter(|c| !seen.insert(*c)).collect();
+    repeated.sort_unstable();
+    repeated.dedup();
+    if !repeated.is_empty() {
+        out.push(ctx.err(
+            "E404",
+            format!("{location}/bit_class_ids"),
+            format!("class id(s) {} hold more than one bit position; each class has one bit", repr_int_list(&repeated)),
+        ));
+    }
+    let unplaced: Vec<i64> = declared.iter().copied().filter(|c| !seen.contains(c)).collect();
+    if !unplaced.is_empty() {
+        out.push(ctx.err(
+            "E404",
+            format!("{location}/bit_class_ids"),
+            format!(
+                "class id(s) {} of `class_ids` have no bit position, so no voxel can hold them",
+                repr_int_list(&unplaced)
+            ),
+        ));
     }
     Ok(out)
 }
@@ -675,7 +807,7 @@ fn check_instances(
     if let Some(boxes) = boxes.as_ref().filter(|b| b.ndim() == 3) {
         let bad = bad_boxes(boxes);
         if bad > 0 {
-            out.push(ctx.err("E406", location.clone(), format!("{bad} box(es) have lo > hi")));
+            out.push(ctx.err("E406", location.clone(), bad_boxes_message(bad)));
         }
     }
     let offsets: Option<Vec<i64>> = match sub_dataset(group, "mask_offsets") {

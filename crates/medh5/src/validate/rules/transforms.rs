@@ -20,6 +20,9 @@ use crate::Result;
 /// lattice's grid (E101, E503), a composite's chain (E501), and each declared
 /// inverse (E505).  A kind or vector space only a later minor defines is W913
 /// in its files (1.1 §2.2).
+///
+/// A transform that cannot be read is its own finding, and the others are
+/// still checked.
 pub fn check_transforms(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     let mut out = Vec::new();
     let Some(node) = ops::child_group(&ctx.root, "transforms") else { return Ok(out) };
@@ -29,54 +32,89 @@ pub fn check_transforms(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     // them in one walk, where rebuilding the transforms and walking from each
     // composite in turn was quadratic in the number of composites.
     let mut graph: IndexMap<String, Vec<String>> = IndexMap::new();
+    let mut unread: BTreeMap<String, crate::Error> = BTreeMap::new();
     for (name, t) in &transforms {
-        if str_attr(loc(t), "kind")?.as_deref() == Some("composite") {
-            graph.insert(name.clone(), strs_attr(loc(t), "components")?);
+        let components = (|| -> Result<Option<Vec<String>>> {
+            if str_attr(loc(t), "kind")?.as_deref() != Some("composite") {
+                return Ok(None);
+            }
+            Ok(Some(strs_attr(loc(t), "components")?))
+        })();
+        match components {
+            Ok(Some(components)) => {
+                graph.insert(name.clone(), components);
+            }
+            Ok(None) => {}
+            Err(e) => {
+                unread.insert(name.clone(), e);
+            }
         }
     }
     let cycles = composite_cycles(&graph)?;
     let mut declared: BTreeMap<String, (String, String)> = BTreeMap::new();
     for (name, t) in transforms {
         let location = format!("/transforms/{name}");
-        let a = loc(&t);
-        let Some(kind) = str_attr(a, "kind")? else {
-            out.push(ctx.err("E502", location, "transform has no `kind` attribute"));
-            continue;
-        };
-        if !TRANSFORM_KINDS.contains(&kind.as_str()) {
-            out.push(ctx.unknown(
-                "E502",
-                location,
-                format!("unknown transform kind {}; expected one of {}", repr_str(&kind), repr_list(&TRANSFORM_KINDS)),
-            ));
+        if let Some(e) = unread.get(&name) {
+            out.push(ctx.failed(location, e));
             continue;
         }
-        let missing: Vec<&str> = ["from_frame", "to_frame"].into_iter().filter(|k| !attrs::has(a, k)).collect();
-        if !missing.is_empty() {
-            out.push(ctx.err("E502", location, format!("missing {}", repr_list(&missing))));
-            continue;
-        }
-        let source = str_attr(a, "from_frame")?.unwrap_or_default();
-        let target = str_attr(a, "to_frame")?.unwrap_or_default();
-        declared.insert(name.clone(), (source.clone(), target.clone()));
-        if source == target {
-            out.push(ctx.err(
-                "E502",
-                location.clone(),
-                format!("maps frame {} to itself; grids sharing a frame need no transform (§3.4)", repr_str(&source)),
-            ));
-        }
-        out.extend(check_units(ctx, &name, &t, grids.as_ref(), &source, &target)?);
-        match kind.as_str() {
-            "affine" => out.extend(check_affine(ctx, &name, &t, grids.as_ref(), &source, &target)?),
-            "displacement" | "bspline" => {
-                out.extend(check_field_transform(ctx, &name, &t, &kind, &source, grids.as_ref())?)
-            }
-            "composite" => out.extend(check_composite(ctx, &name, &t, &node, &source, &target, cycles.get(&name))?),
-            _ => {}
+        let checked = check_transform(ctx, &name, &t, &node, grids.as_ref(), cycles.get(&name), &mut declared);
+        match checked {
+            Ok(found) => out.extend(found),
+            Err(e) => out.push(ctx.failed(location, &e)),
         }
     }
     out.extend(check_inverses(ctx, &node, &declared)?);
+    Ok(out)
+}
+
+/// One transform, recording its frames in `declared` once they are read.
+fn check_transform(
+    ctx: &Context,
+    name: &str,
+    t: &Node,
+    node: &hdf5::Group,
+    grids: Option<&hdf5::Group>,
+    cycle: Option<&Vec<String>>,
+    declared: &mut BTreeMap<String, (String, String)>,
+) -> Result<Vec<Diagnostic>> {
+    let mut out = Vec::new();
+    let location = format!("/transforms/{name}");
+    let a = loc(t);
+    let Some(kind) = str_attr(a, "kind")? else {
+        out.push(ctx.err("E502", location, "transform has no `kind` attribute"));
+        return Ok(out);
+    };
+    if !TRANSFORM_KINDS.contains(&kind.as_str()) {
+        out.push(ctx.unknown(
+            "E502",
+            location,
+            format!("unknown transform kind {}; expected one of {}", repr_str(&kind), repr_list(&TRANSFORM_KINDS)),
+        ));
+        return Ok(out);
+    }
+    let missing: Vec<&str> = ["from_frame", "to_frame"].into_iter().filter(|k| !attrs::has(a, k)).collect();
+    if !missing.is_empty() {
+        out.push(ctx.err("E502", location, format!("missing {}", repr_list(&missing))));
+        return Ok(out);
+    }
+    let source = str_attr(a, "from_frame")?.unwrap_or_default();
+    let target = str_attr(a, "to_frame")?.unwrap_or_default();
+    declared.insert(name.to_string(), (source.clone(), target.clone()));
+    if source == target {
+        out.push(ctx.err(
+            "E502",
+            location.clone(),
+            format!("maps frame {} to itself; grids sharing a frame need no transform (§3.4)", repr_str(&source)),
+        ));
+    }
+    out.extend(check_units(ctx, name, t, grids, &source, &target)?);
+    match kind.as_str() {
+        "affine" => out.extend(check_affine(ctx, name, t, grids, &source, &target)?),
+        "displacement" | "bspline" => out.extend(check_field_transform(ctx, name, t, &kind, &source, grids)?),
+        "composite" => out.extend(check_composite(ctx, name, t, node, &source, &target, cycle)?),
+        _ => {}
+    }
     Ok(out)
 }
 
@@ -154,6 +192,17 @@ fn check_affine(
         Err(e) => return Ok(vec![ctx.err("E504", location, e.message())]),
     };
     let m = read_f64(&ds)?;
+    // Every entry a number: the last row's comparison passed a NaN elsewhere,
+    // and a reader mapped every point to NaN.
+    let bad = m.iter().filter(|v| !v.is_finite()).count();
+    if bad > 0 {
+        let what = if bad == 1 {
+            "1 entry that is not a finite number".to_string()
+        } else {
+            format!("{bad} entries that are not finite numbers")
+        };
+        return Ok(vec![ctx.err("E504", location, format!("`matrix` holds {what}"))]);
+    }
     let last: Vec<f64> = (0..=s).map(|c| m[[s, c]]).collect();
     let mut expected = vec![0.0; s + 1];
     expected[s] = 1.0;
@@ -215,7 +264,7 @@ fn check_field_transform(
         out.push(ctx.err("E503", location, format!("kind {} requires {}", repr_str(kind), repr_str(grid_attr))));
         return Ok(out);
     };
-    let Some(grids) = grids.filter(|g| ops::exists(g, &grid_id)) else {
+    let Some(grids) = grids.filter(|g| ops::is_group(g, &grid_id)) else {
         out.push(ctx.err("E101", location, format!("{grid_attr} {} does not exist", repr_str(&grid_id))));
         return Ok(out);
     };
@@ -316,7 +365,9 @@ fn check_composite(
         return Ok(out);
     }
     let components = strs_attr(a, "components")?;
-    let unknown: Vec<&String> = components.iter().filter(|c| !ops::exists(node, c)).collect();
+    // A component is a transform, a group (§10.2): a dataset or a link to
+    // nothing of its name is none.
+    let unknown: Vec<&String> = components.iter().filter(|c| !ops::is_group(node, c)).collect();
     if !unknown.is_empty() {
         out.push(ctx.err("E501", location, format!("names components {} that do not exist", repr_list(&unknown))));
         return Ok(out);
@@ -407,52 +458,69 @@ fn check_inverses(
     declared: &BTreeMap<String, (String, String)>,
 ) -> Result<Vec<Diagnostic>> {
     let mut out = Vec::new();
-    for (name, (source, target)) in declared {
-        let t = child(node, name).ok_or_else(|| crate::Error::Key(repr_str(name)))?;
-        let Some(other) = str_attr(loc(&t), "inverse_id")? else { continue };
+    for (name, frames) in declared {
         let location = format!("/transforms/{name}");
-        let Some((os, ot)) = declared.get(&other) else {
-            // A transform that exists but could not be judged --- a kind this
-            // validator does not know, no frames --- has its own finding there
-            // (E502, or W913 in a later minor's file); it is not missing.
-            if child(node, &other).is_none() {
-                out.push(ctx.err(
-                    "E505",
-                    location,
-                    format!("`inverse_id` names {}, which does not exist", repr_str(&other)),
-                ));
-            }
-            continue;
-        };
-        if (os, ot) != (target, source) {
+        match check_inverse(ctx, node, declared, name, frames) {
+            Ok(found) => out.extend(found),
+            Err(e) => out.push(ctx.failed(location, &e)),
+        }
+    }
+    Ok(out)
+}
+
+/// One transform's `inverse_id` (§10.1, E505).
+fn check_inverse(
+    ctx: &Context,
+    node: &hdf5::Group,
+    declared: &BTreeMap<String, (String, String)>,
+    name: &str,
+    (source, target): &(String, String),
+) -> Result<Vec<Diagnostic>> {
+    let mut out = Vec::new();
+    let t = child(node, name).ok_or_else(|| crate::Error::Key(repr_str(name)))?;
+    let Some(other) = str_attr(loc(&t), "inverse_id")? else { return Ok(out) };
+    let location = format!("/transforms/{name}");
+    let Some((os, ot)) = declared.get(&other) else {
+        // A transform that exists but could not be judged --- a kind this
+        // validator does not know, no frames --- has its own finding there
+        // (E502, or W913 in a later minor's file); it is not missing.
+        if child(node, &other).is_none() {
+            out.push(ctx.err(
+                "E505",
+                location,
+                format!("`inverse_id` names {}, which does not exist", repr_str(&other)),
+            ));
+        }
+        return Ok(out);
+    };
+    if (os, ot) != (target, source) {
+        out.push(ctx.err(
+            "E505",
+            location,
+            format!(
+                "`inverse_id` names {}, which maps {} -> {}; an inverse must map {} -> {}",
+                repr_str(&other),
+                repr_str(os),
+                repr_str(ot),
+                repr_str(target),
+                repr_str(source)
+            ),
+        ));
+        return Ok(out);
+    }
+    let o = child(node, &other).ok_or_else(|| crate::Error::Key(repr_str(&other)))?;
+    if let Some(back) = str_attr(loc(&o), "inverse_id")? {
+        if back != name {
             out.push(ctx.err(
                 "E505",
                 location,
                 format!(
-                    "`inverse_id` names {}, which maps {} -> {}; an inverse must map {} -> {}",
+                    "{} names {} as its inverse, not {}; the relation must be mutual",
                     repr_str(&other),
-                    repr_str(os),
-                    repr_str(ot),
-                    repr_str(target),
-                    repr_str(source)
+                    repr_str(&back),
+                    repr_str(name)
                 ),
             ));
-            continue;
-        }
-        let o = child(node, &other).ok_or_else(|| crate::Error::Key(repr_str(&other)))?;
-        if let Some(back) = str_attr(loc(&o), "inverse_id")? {
-            if &back != name {
-                out.push(ctx.err(
-                    "E505",
-                    location,
-                    format!(
-                        "{} names {} as its inverse, not {}; the relation must be mutual",
-                        repr_str(&other),
-                        repr_str(&back),
-                        repr_str(name)
-                    ),
-                ));
-            }
         }
     }
     Ok(out)

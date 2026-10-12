@@ -14,8 +14,8 @@ import pytest
 
 import medh5
 from medh5.errors import MEDH5ValidationError
-from medh5.integrity import diagnose, fix
-from tests.helpers import SHAPE, block, write_sample
+from medh5.integrity import diagnose, fix, fix_paths
+from tests.helpers import SHAPE, block, encode_attr, write_sample
 
 
 @pytest.fixture
@@ -250,3 +250,104 @@ class TestFix:
         fix(indexed, rewrite_digests=True, reason="test")
         with medh5.open(indexed) as sample:
             assert sample.verify().ok
+
+
+class TestRepairReach:
+    """What `diagnose` and `fix` see is what `verify` and the validator see."""
+
+    def test_S13_1_a_digest_that_does_not_parse_needs_restamping(self, indexed):
+        """`verify` failed it and `fix` said "nothing to fix": `Diagnosis` had
+        no `malformed`, and without a `content_id` nothing else flagged it."""
+        import h5py
+
+        with h5py.File(indexed, "r+") as handle:
+            handle["images/CT_tp0"].attrs["digest"] = encode_attr("md5:" + "0" * 32)
+            del handle.attrs["content_id"]
+        diagnosis = diagnose(indexed)
+        assert diagnosis.malformed == ("images/CT_tp0",)
+        assert diagnosis.needs_digests and not diagnosis.clean
+        assert diagnosis.to_json()["malformed"] == ["images/CT_tp0"]
+        with pytest.raises(MEDH5ValidationError, match="do not parse"):
+            fix(indexed, rebuild_index=True)
+        repair = fix(indexed, rewrite_digests=True, reason="restamped after a transfer")
+        assert repair.rewrote_digests
+        with medh5.open(indexed) as sample:
+            assert sample.verify().ok
+
+    def test_S14_3_a_rebuild_keeps_what_the_entry_was_built_with(
+        self, tmp_path: Path, label_set, masks
+    ):
+        """It rebuilt every entry with the default `max_coords`, occupancy and
+        seed: a current entry rebuilt is now the same entry."""
+        import h5py
+
+        path = write_sample(tmp_path / "custom.medh5", label_set=label_set, masks=masks)
+        with medh5.amend(path) as writer:
+            writer.build_index(max_coords=16, occupancy=4, seed=7)
+
+        def entry() -> dict:
+            with h5py.File(path) as handle:
+                node = handle["index/organs_tp0"]
+                found = {k: node.attrs[k] for k in ("max_coords", "seed")}
+                found["occupancy"] = node["occupancy"][...].tolist()
+                found["coords"] = {
+                    k: v[...].tolist() for k, v in node["fg_coords"].items()
+                }
+                return found
+
+        before = entry()
+        with h5py.File(path, "r+") as handle:
+            handle["index/organs_tp0"].attrs["source_digest"] = encode_attr(
+                "sha256:" + "0" * 64
+            )
+        assert fix(path, rebuild_index=True).rebuilt_index == ("organs_tp0",)
+        assert entry() == before
+        with h5py.File(path, "r+") as handle:
+            handle["index/organs_tp0"].attrs["source_digest"] = encode_attr(
+                "sha256:" + "0" * 64
+            )
+        fix(path, rebuild_index=True, max_coords=8)
+        assert entry()["max_coords"] == 8
+
+    def test_fix_paths_repairs_every_file_and_names_each_failure(
+        self, tmp_path: Path, label_set, masks
+    ):
+        """It stopped at the first failure: the files after it went unrepaired,
+        and those before it unreported."""
+        good = [
+            write_sample(tmp_path / f"good{i}.medh5", label_set=label_set, masks=masks)
+            for i in range(2)
+        ]
+        for path in good:
+            _edit_mask_in_place(path)
+        missing = tmp_path / "missing.medh5"
+        with pytest.raises(OSError) as refused:
+            fix_paths([good[0], missing, good[1]], rewrite_digests=True, reason="test")
+        assert "1 of 3 files could not be repaired, and 2 were" in str(refused.value)
+        assert "missing.medh5" in str(refused.value)
+        assert not any(diagnose(path).needs_digests for path in good)
+
+    @pytest.mark.parametrize(
+        "edit", ["an image of strings", "a transform names nothing"]
+    )
+    def test_S15_restamping_refuses_a_file_the_validator_rejects(self, indexed, edit):
+        """`fix --rewrite-digests` restamped an image of strings, and the file
+        then passed strict with no finding: the commit now refuses it, as it
+        refuses every file it would fail."""
+        import h5py
+        import numpy as np
+
+        with h5py.File(indexed, "r+") as handle:
+            if edit == "an image of strings":
+                kept = dict(handle["images/CT_tp0"].attrs)
+                del handle["images/CT_tp0"]
+                made = handle.create_dataset(
+                    "images/CT_tp0", data=np.full(SHAPE, b"ab", "S2")
+                )
+                made.attrs.update(kept)
+            else:
+                handle.create_group("transforms")["t"] = h5py.SoftLink("/nowhere")
+        before = indexed.read_bytes()
+        with pytest.raises(MEDH5ValidationError, match="E001"):
+            fix(indexed, rewrite_digests=True, reason="test")
+        assert indexed.read_bytes() == before

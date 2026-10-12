@@ -18,7 +18,9 @@ use crate::Result;
 const REQUIRED: [&str; 8] =
     ["shape", "axis_names", "axis_kinds", "spacing", "origin", "direction", "coord_system", "units"];
 
-/// Structural: every grid against §3.1--§3.2.
+/// Structural: every grid against §3.1--§3.2.  A grid is a group whose
+/// attributes hold its geometry: a dataset in its place is E109, and a member
+/// that is no object the container rule's finding (E001).
 pub fn check_geometry(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     let mut out = Vec::new();
     let Some(node) = ops::child_group(&ctx.root, "grids") else {
@@ -32,6 +34,15 @@ pub fn check_geometry(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     for name in names {
         let Some(grid) = child(&node, &name) else { continue };
         let location = format!("/grids/{name}");
+        if let Node::Dataset(_) = grid {
+            // Every reader resolves a grid as a group, so nothing names it.
+            out.push(ctx.err(
+                "E109",
+                location,
+                "is a dataset; a grid is a group whose attributes hold its geometry (§3.2)",
+            ));
+            continue;
+        }
         match check_grid(ctx, &grid, &name, &location) {
             Ok(found) => out.extend(found),
             Err(e) => out.push(ctx.failed(location, &e)),
@@ -291,15 +302,46 @@ pub fn check_timepoints(ctx: &mut Context) -> Result<Vec<Diagnostic>> {
     Ok(out)
 }
 
+/// Whether the transforms relate two timepoints: a chain of them --- each
+/// read in either direction, as a path between frames may be --- joins two
+/// frames of the sample's grids in different timepoints.
+///
+/// A transform from a frame no grid is in, an atlas's, joins no timepoint by
+/// itself: comparing each transform's two ends, one in no timepoint and one
+/// in some, suppressed the warning for a sample whose visits nothing relates.
 fn has_relating_transform(root: &hdf5::Group, frames: &BTreeMap<String, BTreeSet<String>>) -> Result<bool> {
     let Some(node) = ops::child_group(root, "transforms") else { return Ok(false) };
-    let empty = BTreeSet::new();
+    // The frames each frame is joined to, by union-find over the transforms.
+    let mut parent: BTreeMap<String, String> = BTreeMap::new();
+    fn find(parent: &mut BTreeMap<String, String>, frame: &str) -> String {
+        let mut at = frame.to_string();
+        while let Some(up) = parent.get(&at).filter(|up| **up != at) {
+            at = up.clone();
+        }
+        parent.insert(frame.to_string(), at.clone());
+        at
+    }
     for (_, t) in children(&node)? {
         let src = str_attr(loc(&t), "from_frame")?.filter(|s| !s.is_empty());
         let dst = str_attr(loc(&t), "to_frame")?.filter(|s| !s.is_empty());
         if let (Some(s), Some(d)) = (src, dst) {
-            if frames.get(&s).unwrap_or(&empty) != frames.get(&d).unwrap_or(&empty) {
-                return Ok(true);
+            let (a, b) = (find(&mut parent, &s), find(&mut parent, &d));
+            parent.insert(a, b);
+        }
+    }
+    // Two frames joined, each a grid's in a timepoint, their timepoints not
+    // the same set.
+    let mut seen: BTreeMap<String, &BTreeSet<String>> = BTreeMap::new();
+    for (frame, timepoints) in frames.iter().filter(|(_, t)| !t.is_empty()) {
+        if !parent.contains_key(frame) {
+            continue;
+        }
+        let component = find(&mut parent, frame);
+        match seen.get(&component) {
+            Some(other) if *other != timepoints => return Ok(true),
+            Some(_) => {}
+            None => {
+                seen.insert(component, timepoints);
             }
         }
     }

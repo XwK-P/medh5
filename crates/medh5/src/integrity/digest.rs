@@ -140,11 +140,13 @@ pub fn dataset_digest_inspected(
             let rows = shape.first().copied().unwrap_or(1);
             let row_bytes = shape.iter().skip(1).try_fold(size, |n, e| n.checked_mul(*e)).unwrap_or(usize::MAX);
             let step = (stream_bytes / row_bytes.max(1)).clamp(1, rows);
+            let chunk = data::chunks(ds).and_then(|c| c.first().copied());
+            let slabs = Slabs::new(step, chunk, row_bytes, stream_bytes);
             let mut start = 0;
             while start < rows {
-                let count = step.min(rows - start);
-                hasher.update(&data::read_stored_rows(ds, size, start, count)?);
-                start += count;
+                let stop = slabs.end(start, rows);
+                hasher.update(&data::read_stored_rows(ds, size, start, stop - start)?);
+                start = stop;
             }
             Ok(hasher.finish())
         }
@@ -182,10 +184,48 @@ fn row_bytes(shape: &[usize], axis: usize, itemsize: usize) -> usize {
     shape[axis + 1..].iter().try_fold(itemsize, |n, e| n.checked_mul(*e)).unwrap_or(usize::MAX).max(1)
 }
 
+/// How one axis of a chunked dataset is cut into slabs: `step` rows each,
+/// at chunk boundaries, so no chunk is decompressed for two slabs.
+///
+/// The step is the budget's, rounded down to whole bands of chunks along the
+/// axis.  A band larger than the budget is read whole when it is at most
+/// twice the budget, so each of its chunks is still decompressed once; past
+/// that it is cut evenly, and no slab crosses into the next band.  Slabs
+/// that straddled bands had every chunk of a band decompressed for each
+/// slab touching it --- 2 to 4 times over, as HDF5's chunk cache holds far
+/// less than a band.
+struct Slabs {
+    step: usize,
+    /// The band no slab crosses, where a band is cut into several.
+    band: Option<usize>,
+}
+
+impl Slabs {
+    /// `step` rows of `row` bytes fit the budget; `chunk` is the chunk extent
+    /// along the axis, `None` for a dataset that is not chunked.
+    fn new(step: usize, chunk: Option<usize>, row: usize, budget: usize) -> Slabs {
+        match chunk {
+            Some(c) if c > 1 && step >= c => Slabs { step: step / c * c, band: None },
+            Some(c) if c > 1 && c.saturating_mul(row) <= budget.saturating_mul(2) => Slabs { step: c, band: None },
+            Some(c) if c > 1 => Slabs { step: c.div_ceil(c.div_ceil(step.max(1))), band: Some(c) },
+            _ => Slabs { step: step.max(1), band: None },
+        }
+    }
+
+    /// Where the slab starting at row `start` of `n` ends.
+    fn end(&self, start: usize, n: usize) -> usize {
+        let stop = start.saturating_add(self.step).min(n);
+        match self.band {
+            Some(c) => stop.min((start / c).saturating_add(1).saturating_mul(c)),
+            None => stop,
+        }
+    }
+}
+
 /// Read a numeric dataset of `shape` in C order, a block at a time, each
 /// about `budget` bytes: whole rows of the leading axis when one fits, else
 /// the leading axes an index at a time and the first axis whose rows fit
-/// sliced.
+/// sliced --- in slabs aligned to its chunks ([`Slabs`]).
 fn for_each_block(
     ds: &hdf5::Dataset,
     shape: &[usize],
@@ -197,12 +237,14 @@ fn for_each_block(
     while axis + 1 < shape.len() && row_bytes(shape, axis, itemsize) > budget {
         axis += 1;
     }
-    let step = (budget / row_bytes(shape, axis, itemsize)).max(1);
+    let row = row_bytes(shape, axis, itemsize);
+    let chunk = data::chunks(ds).and_then(|c| c.get(axis).copied());
+    let slabs = Slabs::new((budget / row).max(1), chunk, row, budget);
     let mut outer = vec![0usize; axis];
     loop {
         let mut start = 0;
         while start < shape[axis] {
-            let stop = (start + step).min(shape[axis]);
+            let stop = slabs.end(start, shape[axis]);
             let mut index: Vec<Index> = outer.iter().map(|i| Index::At(*i as i64)).collect();
             index.push(Index::Slice(Slice::new(start as i64, stop as i64)));
             each(data::read_region(ds, &index)?)?;
@@ -358,9 +400,16 @@ pub fn compute_content_id(
     dataset_lines.sort();
     let meta = ops::child_dataset(root, "meta")
         .ok_or_else(|| Error::Key("\"Unable to synchronously open object (object 'meta' doesn't exist)\"".into()))?;
-    let meta_text = data::read_scalar_string(&meta)?;
+    // The document as stored: decoded as text, bytes that are not UTF-8
+    // became U+FFFD, and different stored documents shared a root.  Valid
+    // UTF-8 hashes as it always did.
+    let meta_bytes = match data::read_scalar_string(&meta) {
+        Ok(text) if !text.contains('\u{FFFD}') => text.into_bytes(),
+        Ok(_) => data::read_stored_strings(&meta)?.into_iter().next().unwrap_or_default(),
+        Err(e) => return Err(e),
+    };
     let mut meta_hasher = Hasher::new(algo)?;
-    meta_hasher.update(meta_text.as_bytes());
+    meta_hasher.update(&meta_bytes);
     let meta_hash = meta_hasher.hexdigest();
     let mut attr_lines = Vec::new();
     for (path, names) in attr_names {
@@ -437,6 +486,61 @@ mod tests {
         let flat: Vec<f32> =
             inspected.iter().flat_map(|b| b.cast::<f32>().iter().copied().collect::<Vec<_>>()).collect();
         assert_eq!(flat, data.iter().copied().collect::<Vec<_>>());
+    }
+
+    /// Slabs start and end on chunk boundaries: no slab ends inside a band
+    /// of chunks the next one starts in, so no chunk is decompressed for two
+    /// slabs, and none holds more than twice the budget.  The digest is the
+    /// array's whatever the budget.
+    #[test]
+    fn s13_1_slabs_are_aligned_to_the_chunks_and_the_digest_is_unchanged() {
+        for n in [1, 10, 16, 17] {
+            for c in [1, 3, 4, 8] {
+                for step in 1..=20 {
+                    let slabs = Slabs::new(step, Some(c), 1, step);
+                    let mut start = 0;
+                    while start < n {
+                        let stop = slabs.end(start, n);
+                        assert!(stop > start && stop - start <= 2 * step, "n {n}, chunk {c}, step {step}");
+                        let within = start / c == (stop - 1) / c;
+                        let whole_bands = start % c == 0 && (stop % c == 0 || stop == n);
+                        assert!(within || whole_bands, "n {n}, chunk {c}, step {step}: {start}..{stop}");
+                        if c <= step {
+                            assert!(whole_bands, "n {n}, chunk {c}, step {step}: {start}..{stop}");
+                        }
+                        start = stop;
+                    }
+                }
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let file = hdf5::File::create(dir.path().join("c.h5")).unwrap();
+        let data = ndarray::Array3::<f32>::from_shape_fn((10, 6, 8), |(z, y, x)| (z * 100 + y * 10 + x) as f32);
+        let ds = file.new_dataset_builder().with_data(&data).chunk((4, 3, 8)).create("d").unwrap();
+        let whole = array_digest("d", &NdArray::from(data.clone().into_dyn()), "sha256").unwrap();
+        let row = 6 * 8 * 4;
+        for budget in [4, 100, row, 3 * row, 4 * row, 5 * row, 7 * row, 9 * row, 1 << 20] {
+            let mut rows = Vec::new();
+            let mut flat: Vec<f32> = Vec::new();
+            for_each_block(&ds, &[10, 6, 8], 4, budget, &mut |block| {
+                if block.ndim() == 3 {
+                    rows.push(block.shape()[0]);
+                }
+                flat.extend(block.cast::<f32>().iter().copied());
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(flat, data.iter().copied().collect::<Vec<_>>(), "budget {budget}");
+            assert_eq!(dataset_digest_streamed(&ds, "d", "sha256", budget).unwrap(), whole, "budget {budget}");
+            if budget >= 4 * row {
+                // Whole bands of 4 rows, the last one short.
+                let mut ends = rows.iter().scan(0, |at, n| {
+                    *at += n;
+                    Some(*at)
+                });
+                assert!(ends.all(|end| end % 4 == 0 || end == 10), "budget {budget}: {rows:?}");
+            }
+        }
     }
 
     /// A string hashes as stored: decoded as text, invalid UTF-8 became U+FFFD
