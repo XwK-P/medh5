@@ -39,24 +39,41 @@ print(report.format())
 ```
 
 **What it examines is the whole file, not a list of places.** Every string in
-`/meta`, every object name, every HDF5 attribute and every string dataset —
-including objects and attributes written by a newer version, which `amend`
-carries through without understanding them. JSON stored inside a string (an
-attribute holding a serialized mapping, a box's `attributes` column) is decoded
-and examined as a mapping. The few fields it skips are skipped by name, with the
-reason in the code: the writer's own timestamp and digests, which every commit
-rewrites; provenance `started` and `ended`, which say when a tool ran rather
-than when the subject was seen; and closed vocabularies such as `sex`.
+`/meta`, the de-identification record included; the name of every link — a
+second hard link to an object, a soft link and the path it holds, a committed
+datatype; every HDF5 attribute, on groups, datasets and committed datatypes
+alike; and every string dataset — including objects and attributes written by a
+newer version, which `amend` carries through without understanding them. JSON
+stored inside a string (an attribute holding a serialized mapping, a box's
+`attributes` column) is decoded and examined as a mapping. The few fields it
+skips are skipped by name, with the reason in the code: the writer's own
+timestamp and digests, which every commit rewrites; provenance `started` and
+`ended`, which say when a tool ran rather than when the subject was seen; and
+closed vocabularies such as `sex`.
+
+**What it does not read, it reports.** Strings inside a compound, array or
+variable-length type are not decoded, so a dataset whose type holds them, at any
+depth of nesting, is reported as `unreadable`. Numbers are not read as text. In
+the imaging groups (`images`, `annotations`, `grids`, `transforms`, `index`)
+they are what the format puts there; anywhere else, every non-string dataset is
+named in the report's `not_checked`, and one that can carry text — a byte
+buffer, or a type the tool cannot decode — is reported as `unreadable` too.
 
 The rules it applies everywhere: identifying DICOM keywords as mapping keys *or*
-attribute names (`PatientName` stored as an HDF5 attribute is caught like one in
-`extra`), DICOM person names in any script (`Müller^Hans`, `山田^太郎`), real
-DICOM UIDs where a pseudonym belongs — including inside provenance references
-such as `dicom:<SeriesInstanceUID>` — filesystem paths in provenance, unshifted
-dates and date-times (ISO 8601 or DICOM, alone or inside a longer string such as
-`CT_2020-01-31.nii`), ages over 90, the names of person and organization agents,
-and free text no rule can judge. That last category is why the read-only pass exists:
-`needs_review` is the part no tool should decide for you.
+attribute names, at any level (`PatientName` stored as an HDF5 attribute is
+caught like one in `extra`, and `extra.PatientID` like `extra.dicom.PatientID`),
+DICOM person names in any script (`Müller^Hans`, `山田^太郎`), real DICOM UIDs
+where a pseudonym belongs — alone, inside a provenance reference such as
+`dicom:<SeriesInstanceUID>`, or inside any longer string — filesystem paths in
+provenance, unshifted dates and date-times (ISO 8601 or DICOM, alone or inside
+a longer string such as `CT_2020-01-31.nii`; a value that is wholly a date is
+one under any key, `RadiopharmaceuticalStartDateTime` as surely as
+`StudyDate`), ages over 90, the names of person and organization agents, a copy
+of the sample document outside `/meta` or `/meta` itself under a second name
+(either keeps every identifier `--apply` replaces in the document, so `--apply`
+removes it), and free text no rule can judge. That last category is why the
+read-only pass exists: `needs_review` is the part no tool should decide for
+you.
 
 Some findings are reported and never acted on, at any profile, because
 rewriting them would break something that refers to them: ids (object names,
@@ -79,19 +96,36 @@ them, so a benign free-text field keeps this gate red on every future scan no
 matter who has looked at it. Only editing or removing the flagged metadata makes
 it green.
 
-If you want a gate that fails on what can be fixed and merely reports the rest,
-build it on `actionable` rather than on the exit code:
+If you want a gate that fails on what still has to be done and merely reports
+the rest, build it on the report rather than on the exit code — but not on
+`actionable` alone, which passes three things no `--apply` clears and no
+publication should: the sample's own ids while they are identifiers
+(`open_identity`: `--apply` never rewrites them by itself), a sample carrying
+the clinical profile (rule `clinical`: not examined, and refused by `--apply`),
+and whatever the scan could not read (`unreadable`, `too_deep`). Block on all
+of them:
 
 ```python
 from medh5.curation import scrub
 
+NOT_EXAMINED = {"clinical", "unreadable", "too_deep"}
+
 reports = [scrub.scan(p) for p in paths]
-blocking = [r for r in reports if r.actionable]
+blocking = [
+    r
+    for r in reports
+    if r.actionable
+    or r.open_identity
+    or any(f.rule in NOT_EXAMINED for f in r.findings)
+]
 for r in reports:
     for f in r.needs_review:
         print(f"review: {r.path}: {f}")
 raise SystemExit(1 if blocking else 0)
 ```
+
+What is reported as not examined stays blocking until a person has dealt with
+it: removed it, or decided outside this gate that it can go.
 
 ## 2. Apply, with a salt
 
@@ -103,7 +137,16 @@ medh5 scrub out/*.medh5 --apply --date-shift-days -117 --salt "$SALT" --by RAD-0
 report = scrub.apply(path, date_shift_days=-117, salt=SALT)
 ```
 
-Three behaviours worth knowing before you run it:
+`--date-shift-days`, `--salt` and `--by` act only with `--apply`, and without
+it they are refused rather than ignored: a scan meant as a salted, shifted
+scrub would otherwise exit as a plain scan. `scrub.scrub_paths` refuses its
+apply options without `apply_changes=True` the same way. Like the command line,
+it processes every path even when one is refused — a clinical sample always is
+— and then raises the first refusal, carrying every path's report in order as
+`reports` (`None` for a refused path), so the `uid_map` of a file already
+rewritten is never lost.
+
+Four behaviours worth knowing before you run it:
 
 **It re-scans its own output.** After amending, `--apply` runs the same rules
 over the file it just wrote, records `remaining` and `remaining_actionable` in
@@ -117,7 +160,9 @@ answer as the exit code.
 `--apply` acts on everything the scan calls actionable, which under
 `--profile strict` includes a person or organization agent's name (replaced by
 a stable pseudonym, so the graph still says two activities were the same
-person), an age over 90 (recorded as 90: Safe Harbor aggregates every age over
+person — salted with `--salt` and recorded in `uid_map` like every other
+pseudonym, since an unsalted hash of a name is reversed by hashing candidate
+names), an age over 90 (recorded as 90: Safe Harbor aggregates every age over
 89 into one "90 or older" category, so 90 itself is the category and stays),
 and flagged free text (removed). Provenance paths keep only their
 file name, and under `strict` lose that too.
@@ -146,31 +191,50 @@ for finding in report.open_identity:
 either — with salted stable pseudonyms, so every file of one subject still
 agrees, and it records the change in `id_source`. It **requires** `--salt`: an
 unsalted hash of a record number is reversed by hashing every record number.
+The old id is replaced wherever else a string holds it as a word of its own —
+a timepoint label, a note in `extra`, an attribute — since there it would
+outlive its pseudonym, and a later scan cannot know it was an id. An object
+name holding it is never renamed, so it is reported as an open identity finding
+by the run that knows to look. An id shorter than four characters is replaced
+in `identity` and not looked for elsewhere: `s1` is in too many words.
 Or re-mint the ids yourself with `w.identity(sample_id=..., subject_id=...)`;
 the writer drops the recorded DICOM source of an id that changes. Either way,
 `scrub` cannot rename files: a file still named after the old id is reported as
 `file_name`, and renaming it is yours to do.
 
 **UIDs are pseudonymised, not deleted.** A frame UID is how two files agree they
-share a frame of reference, so deleting it breaks registration.
-`pseudonymise(uid, salt)` is stable, which means a cohort scrubbed file by file
-— even on different machines — still joins afterwards. Only a *salted* run
-records `id_mapping: external`; an unsalted hash is recoverable by anyone
-holding the original UIDs, and claiming otherwise would be exactly the overclaim
-this tool exists to avoid. **Keep the salt, and keep it separately from the
-data.** The same goes for `report.uid_map` (`uid_map` in `--json` output): it
-maps every original value the run replaced — UIDs, and the ids under
-`--pseudonymise-ids` — to its pseudonym, so it is identifying.
+share a frame of reference, so deleting it breaks registration. A UID inside a
+longer string — `derived from 1.2.840…` — is replaced by the same pseudonym it
+gets everywhere else. `pseudonymise(uid, salt)` is stable, which means a cohort
+scrubbed file by file — even on different machines — still joins afterwards.
+Only a *salted* run records `id_mapping: external`; an unsalted hash is
+recoverable by anyone holding the original UIDs, and claiming otherwise would
+be exactly the overclaim this tool exists to avoid. **Keep the salt, and keep
+it separately from the data.** The same goes for `report.uid_map` (`uid_map` in
+`--json` output): it maps every original value the run replaced — UIDs, the ids
+under `--pseudonymise-ids`, the names `strict` pseudonymises — to its
+pseudonym, so it is identifying.
 
 **Dates shift rather than vanish**, so intervals — and therefore
 `days_from_baseline`, and therefore any longitudinal model — survive. A
 date-time keeps its time, and a value holding two dates moves both. What is
-shifted is every date `--apply` acts on: a timepoint's `date` and a date
-attribute (`StudyDate`, `AcquisitionDateTime`, …). A date inside free text is
-reported for review and left as written, since no rule can tell what a sentence
-means by it. A date `--apply` cannot shift — written in another script's digits,
-or moved off the calendar — is removed. Running scrub twice does not shift them
-twice.
+shifted is every date `--apply` acts on: a timepoint's `date`, a date attribute
+(`StudyDate`, `AcquisitionDateTime`, …) and any value that is wholly a date,
+whatever its key. A date inside free text is reported for review and left as
+written, since no rule can tell what a sentence means by it; so is a software
+version that reads as a date, which is a build's and not the subject's. A date
+`--apply` cannot shift — written in another script's digits, or moved off the
+calendar — is removed.
+
+A file is shifted once. Its record keeps the shift, and a later run leaves its
+dates alone: with no `--date-shift-days`, or the same one, it re-attests the
+recorded shift, and a different one is refused, since the record would then be
+false of some of the dates. A shift of `0` is refused too — it moves nothing,
+and a record of it would pass every later date over; a record that says `0` —
+an earlier version wrote one when asked to — is read as no shift at all. A
+timepoint whose `date` was
+added after the shift is reported: its `days_from_baseline` puts it apart from
+the dates that moved together, and a person has to decide what it should say.
 
 ## 3. Record what was done
 

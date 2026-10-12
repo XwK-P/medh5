@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -131,6 +132,32 @@ class TestDeidentificationAttestation:
         )
         capsys.readouterr()
         assert main(["scrub", str(path), "--profile", "strict"]) == 0
+
+    @pytest.mark.parametrize(
+        "flags",
+        [
+            ["--salt", "pep"],
+            ["--date-shift-days", "-30"],
+            ["--by", "R7"],
+            ["--salt", "pep", "--by", "R7"],
+        ],
+    )
+    def test_an_apply_option_without_apply_is_refused(
+        self, tmp_path: Path, capsys, flags: list[str]
+    ):
+        """Without `--apply` these were dropped without a word, and a scan
+        meant as a salted, shifted scrub exited as a scan."""
+        from medh5.cli import main
+
+        path = self._dirty(tmp_path / "flags.medh5")
+        with medh5.open(path) as sample:
+            before = sample.content_id
+        assert main(["scrub", str(path), *flags]) == 2
+        err = capsys.readouterr().err
+        assert "without --apply" in err
+        assert all(flag in err for flag in flags[::2])
+        with medh5.open(path) as sample:
+            assert sample.content_id == before
 
 
 class TestDeidentification:
@@ -323,6 +350,107 @@ class TestDeidentification:
             assert json.loads(attrs["x_source"]) == {"kv": 120}
         assert b"Doe^Jane" not in path.read_bytes()
         assert b"Lee^Bo" not in path.read_bytes()
+
+    def test_S11_4_a_replaced_id_is_replaced_wherever_a_string_holds_it(
+        self, tmp_path: Path
+    ):
+        """`--pseudonymise-ids` replaced the ids in `identity` alone, and the
+        record number outlived its pseudonym in a label, a note and an
+        attribute --- which no later scan can tell is one."""
+        from medh5.curation import scrub
+
+        record = "MRN-000042"
+        path = tmp_path / "ids.medh5"
+        with medh5.create(path, sample_id=record, subject_id=record) as w:
+            w.add_timepoint("tp0", label=f"baseline of {record}")
+            w.add_grid(
+                "g", shape=Numbered.SHAPE, spacing=(1.0, 1.0, 1.0), timepoint="tp0"
+            )
+            w.add_image(
+                "CT", np.zeros(Numbered.SHAPE, np.int16), grid="g", modality="CT"
+            )
+            w.extra("src", {"note": f"case {record}.nii", "other": f"{record}1"})
+        with h5py.File(path, "r+") as handle:
+            handle["images/CT"].attrs["x_case"] = f"{record}/ct"
+        report = scrub.apply(path, profile="strict", salt="pep", pseudonymise_ids=True)
+        assert report.ok, report.format()
+        pseudonym = report.uid_map[record]
+        with medh5.open(path) as sample:
+            document = sample.document
+            assert document.timepoints["tp0"].label == f"baseline of {pseudonym}"
+            assert document.extra["src"]["note"] == f"case {pseudonym}.nii"
+            # A longer token is another value, and is left as it is.
+            assert document.extra["src"]["other"] == f"{record}1"
+        with h5py.File(path, "r") as handle:
+            assert handle["images/CT"].attrs["x_case"] == f"{pseudonym}/ct"
+        assert re.findall(rb"MRN-000042(?!1)", path.read_bytes()) == []
+
+    def test_S11_4_an_id_too_short_to_tell_from_a_word_is_not_sought(
+        self, tmp_path: Path
+    ):
+        from medh5.curation import scrub
+
+        path = tmp_path / "short.medh5"
+        with Numbered.writer(path) as w:
+            w.extra("src", {"note": "s1 of subj-1"})
+        report = scrub.apply(path, salt="pep", pseudonymise_ids=True)
+        with medh5.open(path) as sample:
+            note = sample.document.extra["src"]["note"]
+        assert note == f"s1 of {report.uid_map['subj-1']}"
+
+    def test_S11_4_a_replaced_id_in_an_object_name_is_left_for_a_person(
+        self, tmp_path: Path
+    ):
+        """A name is never rewritten, so the run that knows the old id says
+        where it still is --- a later scan cannot know to look."""
+        from medh5.curation import scrub
+
+        path = tmp_path / "named.medh5"
+        with medh5.create(path, sample_id="MRN-000042", subject_id="subj-1") as w:
+            w.add_grid("g", shape=Numbered.SHAPE, spacing=(1.0, 1.0, 1.0))
+            w.add_image(
+                "CT", np.zeros(Numbered.SHAPE, np.int16), grid="g", modality="CT"
+            )
+        with h5py.File(path, "r+") as handle:
+            handle.create_group("x_MRN-000042")
+        report = scrub.apply(path, profile="strict", salt="pep", pseudonymise_ids=True)
+        assert [f.where for f in report.open_identity] == ["x_MRN-000042"]
+        assert not report.ok
+
+    def test_S11_4_a_strict_name_pseudonym_is_salted_and_recorded(self, tmp_path: Path):
+        """Strict replaced a staff or site name with an unsalted hash of it,
+        which hashing candidate names reverses, and kept no key to it."""
+        from medh5.curation import scrub
+
+        path = tmp_path / "staff.medh5"
+        with Numbered.writer(path) as w:
+            w.organization("St Elsewhere General")
+            w.person("Dr Alice Roe")
+        report = scrub.apply(path, profile="strict", salt="pep")
+        assert report.ok
+        names = ("St Elsewhere General", "Dr Alice Roe")
+        expected = {name: scrub.pseudonymise(name, "pep") for name in names}
+        assert {name: report.uid_map[name] for name in names} == expected
+        with medh5.open(path) as sample:
+            agents = {a.name for a in sample.document.provenance.agents}
+        assert set(expected.values()) <= agents
+        assert scrub.pseudonymise("Dr Alice Roe") not in agents
+
+    def test_S11_4_the_record_and_an_organization_are_scanned(self, tmp_path: Path):
+        """Neither was read: a name in the record's profile passed every scan,
+        under the attestation that said the file was clean."""
+        from medh5.curation import scrub
+
+        path = tmp_path / "record.medh5"
+        with Numbered.writer(path) as w:
+            person = w.person("Roe", organization="1.2.840.113619.2.55.7")
+            w.deidentification(method="manual", profile="checked by Doe^Jane")
+        found = {(f.rule, f.where): f.actionable for f in scrub.scan(path).findings}
+        assert found[("person_name", "deidentification.profile")] is True
+        assert found[("uid", f"provenance.agents[{person.id}].organization")] is False
+        report = scrub.apply(path)
+        assert report.ok
+        assert b"Doe^Jane" not in path.read_bytes()
 
     def test_S11_4_every_string_slot_is_removed_or_reported(self, tmp_path: Path):
         """The invariant the location lists could not keep.
@@ -847,6 +975,143 @@ class TestScrubCoverage:
         findings = scrubber.scan(path).findings
         assert [f.rule for f in findings] == ["uid"]
 
+    @pytest.mark.parametrize(
+        ("key", "value", "rule", "actionable"),
+        [
+            ("nhs_number", "943 476 5919", "identifier", True),
+            ("birth_date", "19500302", "date", True),
+            ("date_of_birth", "1950-03-02", "date", True),
+            ("study_uid", "not-a-uid", "uid", False),
+            ("series_uid", "not-a-uid", "uid", False),
+            ("frame_uid", "not-a-uid", "uid", False),
+        ],
+    )
+    def test_S11_4_a_table_entry_written_with_underscores_is_matched(
+        self, tmp_path, key, value, rule, actionable
+    ):
+        """A lookup compares a key with its underscores and spaces removed,
+        and the tables held these as written: none could ever match, so an
+        NHS number scanned clean and a date of birth was only text."""
+        path = self._with(tmp_path, key, **{key: value})
+        found = [
+            (f.rule, f.actionable)
+            for f in scrubber.scan(path).findings
+            if f.where == f"acquisition.CT.{key}"
+        ]
+        assert found == [(rule, actionable)]
+
+    def test_S11_4_every_key_table_is_stored_as_a_lookup_compares(self):
+        tables = (
+            scrubber.IDENTIFYING_KEYS,
+            scrubber.QUASI_IDENTIFYING_KEYS,
+            scrubber.DATE_KEYS,
+            scrubber.UID_KEYS,
+        )
+        for table in tables:
+            spelled = {k for k in table if k != k.replace("_", "").replace(" ", "")}
+            assert spelled | {k for k in table if k != k.lower()} == set()
+
+    def test_S11_4_a_pseudonym_under_a_uid_key_is_what_the_rule_asks_for(
+        self, tmp_path
+    ):
+        """The rule reported the pseudonym `--apply` wrote, so a scrubbed file
+        never scanned clean."""
+        uid = "1.2.840.113619.2.55.3.7"
+        path = self._with(tmp_path, "uid-key", StudyInstanceUID=uid)
+        assert [f.rule for f in scrubber.scan(path).actionable] == ["uid"]
+        report = scrubber.apply(path, salt="pep")
+        assert report.ok
+        with medh5.open(path) as sample:
+            acquisition = sample.document.acquisition["CT"]
+            assert acquisition["StudyInstanceUID"] == report.uid_map[uid]
+        assert scrubber.scan(path).clean
+
+    def test_S11_4_a_top_level_key_is_a_key_like_any_other(self, tmp_path):
+        """`extra.src.PatientID` was removed and `extra.PatientID` scanned
+        clean: the top level read its keys as ids and its values as text."""
+        path = tmp_path / "top.medh5"
+        with Numbered.writer(path) as w:
+            w.extra("PatientID", "MRN12345")
+            w.extra("AccessionNumber", {"value": "A-99213"})
+            w.extra("StudyDate", "20200131")
+            w.extra("Doe^Jane", {"kv": 120})
+            w.extra("org.example", {"kv": 120})
+        found = {(f.rule, f.where): f.actionable for f in scrubber.scan(path).findings}
+        assert found == {
+            ("identifier", "extra.PatientID"): True,
+            ("identifier", "extra.AccessionNumber"): True,
+            ("date", "extra.StudyDate"): True,
+            ("person_name", "extra.Doe^Jane"): True,
+        }
+        assert scrubber.apply(path, date_shift_days=-10).ok
+        with medh5.open(path) as sample:
+            extra = sample.document.extra
+        assert extra["StudyDate"] == "20200121"
+        assert extra["org.example"] == {"kv": 120}
+        assert not {"PatientID", "AccessionNumber", "Doe^Jane"} & set(extra)
+        assert b"MRN12345" not in path.read_bytes()
+
+    def test_S11_4_a_value_that_is_wholly_a_date_is_one_under_any_key(self, tmp_path):
+        """No table names every date attribute: a
+        `RadiopharmaceuticalStartDateTime` survived a strict apply that
+        reported `ok`."""
+        path = tmp_path / "dated.medh5"
+        with Numbered.writer(path) as w:
+            w.software("conv", version="20240115")
+            w.extra(
+                "src",
+                {
+                    "RadiopharmaceuticalStartDateTime": "20200131102200",
+                    "injected": "2020-01-31T10:22:00Z",
+                    "visits": ["2020-01-31", "2020-02-03"],
+                    "note": "seen on 2020-01-31",
+                    "code": "52988006",
+                },
+            )
+        found = {
+            f.where: f.actionable
+            for f in scrubber.scan(path, profile="strict").findings
+            if f.rule == "date"
+        }
+        assert found == {
+            "extra.src.RadiopharmaceuticalStartDateTime": True,
+            "extra.src.injected": True,
+            "extra.src.visits[0]": True,
+            "extra.src.visits[1]": True,
+            # Text holding a date, and a build's date, are a person's call.
+            "extra.src.note": False,
+            "provenance.agents[s1].version": False,
+        }
+        report = scrubber.apply(path, profile="strict", date_shift_days=10)
+        assert report.ok
+        with medh5.open(path) as sample:
+            src = sample.document.extra["src"]
+            assert sample.document.provenance.agents[0].version == "20240115"
+        assert src["RadiopharmaceuticalStartDateTime"] == "20200210102200"
+        assert src["injected"] == "2020-02-10T10:22:00Z"
+        assert src["visits"] == ["2020-02-10", "2020-02-13"]
+        assert src["note"] == "seen on 2020-01-31"
+        assert src["code"] == "52988006"
+
+    def test_S11_4_a_uid_inside_text_is_pseudonymised_as_the_field_is(self, tmp_path):
+        """Left in a description, the real UID maps its pseudonym straight
+        back."""
+        uid = "1.2.840.113619.2.55.3.1234"
+        path = tmp_path / "text.medh5"
+        with Numbered.writer(path) as w:
+            w.add_timepoint("tp0", study_uid=uid)
+            w.extra("src", {"description": f"derived from {uid} (recon 2)"})
+        found = {(f.rule, f.where, f.actionable) for f in scrubber.scan(path).findings}
+        assert ("uid", "extra.src.description", True) in found
+        report = scrubber.apply(path, salt="pep")
+        assert report.ok
+        pseudonym = report.uid_map[uid]
+        with medh5.open(path) as sample:
+            assert sample.document.timepoints["tp0"].study_uid == pseudonym
+            described = sample.document.extra["src"]["description"]
+        assert described == f"derived from {pseudonym} (recon 2)"
+        assert uid.encode() not in path.read_bytes()
+
     def test_too_deep_is_reported_not_skipped(self, tmp_path):
         """A silent stop would leave an attestation over uninspected data."""
         payload = {"PatientName": "Doe^Jane"}
@@ -1051,6 +1316,203 @@ class TestScrubApplies:
         assert not [f for f in second_run.findings if f.rule == "identifier"]
 
 
+class TestScrubContainer:
+    """The HDF5 file around `/meta`: every name a link holds, every type that
+    can carry a string, and every copy of the document."""
+
+    RECORD = "MRN-000042"
+
+    def _named(self, path: Path) -> Path:
+        """A sample whose ids are a record number nothing marks as one."""
+        with medh5.create(path, sample_id=self.RECORD, subject_id=self.RECORD) as w:
+            w.add_grid("g", shape=Numbered.SHAPE, spacing=(1.0, 1.0, 1.0))
+            w.add_image(
+                "CT", np.zeros(Numbered.SHAPE, np.int16), grid="g", modality="CT"
+            )
+        return path
+
+    @pytest.mark.parametrize("alias", ["x_acme/meta", "a_first/meta", "meta_copy"])
+    def test_S11_4_another_name_for_meta_is_reported_and_removed(
+        self, tmp_path: Path, alias: str
+    ):
+        """A hard link to `/meta` is the document under a second name.
+
+        An amendment wrote the new document at `/meta` and carried the old one
+        across under the alias, so `--pseudonymise-ids` left the record number
+        there --- while the apply reported `ok` and a fresh strict scan was
+        clean.
+        """
+        path = self._named(tmp_path / "alias.medh5")
+        with h5py.File(path, "r+") as handle:
+            handle[alias] = handle["meta"]
+        where = alias.replace("/", ".")
+        scanned = scrubber.scan(path, profile="strict").findings
+        assert [(f.rule, f.where, f.actionable, f.value) for f in scanned] == [
+            ("identity", where, True, self.RECORD)
+        ]
+
+        report = scrubber.apply(
+            path, profile="strict", salt="pep", pseudonymise_ids=True
+        )
+        assert report.ok, report.format()
+        assert self.RECORD.encode() not in path.read_bytes()
+        assert scrubber.scan(path, profile="strict").clean
+        with h5py.File(path, "r") as handle:
+            assert alias not in handle and "meta" in handle
+        with medh5.open(path) as sample:
+            assert sample.identity.subject_id == report.uid_map[self.RECORD]
+
+    def test_S11_4_the_command_line_gate_sees_the_alias(self, tmp_path: Path, capsys):
+        from medh5.cli import main
+
+        path = self._named(tmp_path / "gate.medh5")
+        with h5py.File(path, "r+") as handle:
+            handle["x_acme/meta"] = handle["meta"]
+        strict = ["scrub", str(path), "--profile", "strict"]
+        assert main(strict) == 1
+        assert "another name for /meta" in capsys.readouterr().out
+        assert main([*strict, "--apply", "--salt", "pep", "--pseudonymise-ids"]) == 0
+        assert main(strict) == 0
+
+    def test_S11_4_a_soft_link_to_meta_reads_the_new_document(self, tmp_path: Path):
+        """A soft link names `/meta` by path, so it follows the document."""
+        path = self._named(tmp_path / "soft.medh5")
+        with h5py.File(path, "r+") as handle:
+            handle["x_document"] = h5py.SoftLink("/meta")
+        assert scrubber.scan(path, profile="strict").clean
+        report = scrubber.apply(
+            path, profile="strict", salt="pep", pseudonymise_ids=True
+        )
+        assert report.ok
+        assert self.RECORD.encode() not in path.read_bytes()
+        with h5py.File(path, "r") as handle:
+            document = json.loads(handle["x_document"][()])
+        assert document["identity"]["subject_id"] == report.uid_map[self.RECORD]
+
+    def test_S11_4_a_copy_of_the_document_is_reported_and_removed(self, tmp_path: Path):
+        """A copy keeps every identifier `--apply` replaces in `/meta`."""
+        path = self._named(tmp_path / "copy.medh5")
+        with h5py.File(path, "r+") as handle:
+            document = handle["meta"][()]
+            handle.create_group("x_backup").create_dataset("meta", data=document)
+            # Found once, at its first name; removed under every name.
+            handle["x_backup/again"] = handle["x_backup/meta"]
+            handle["images/CT"].attrs["x_document"] = document
+        scanned = scrubber.scan(path, profile="strict").findings
+        assert {(f.rule, f.where, f.actionable, f.value) for f in scanned} == {
+            ("identity", "x_backup.again", True, self.RECORD),
+            ("identity", "images.CT.x_document", True, self.RECORD),
+        }
+        report = scrubber.apply(
+            path, profile="strict", salt="pep", pseudonymise_ids=True
+        )
+        assert report.ok, report.format()
+        assert self.RECORD.encode() not in path.read_bytes()
+        with h5py.File(path, "r") as handle:
+            assert list(handle["x_backup"]) == []
+            assert "x_document" not in handle["images/CT"].attrs
+
+    @staticmethod
+    def _plant(handle: h5py.File, carrier: str) -> tuple[str, str]:
+        """A person name in one carrier: where, and by which rule, it is
+        reported."""
+        name = "Doe^Jane"
+        if carrier == "a second hard link":
+            handle.create_group("x_a").create_dataset("table", data=np.arange(3))
+            handle[f"x_b/{name}"] = handle["x_a/table"]
+            return f"x_b.{name}", "person_name"
+        if carrier == "a soft link":
+            handle[f"x_{name}"] = h5py.SoftLink("/images/CT")
+            return f"x_{name}", "person_name"
+        if carrier == "a soft link's target":
+            handle["x_points"] = h5py.SoftLink(f"/x_{name}/gone")
+            return "x_points (link target)", "person_name"
+        if carrier == "a committed type's name":
+            handle[f"x_{name}"] = np.dtype("i4")
+            return f"x_{name}", "person_name"
+        if carrier == "a committed type's attribute":
+            handle["x_row"] = np.dtype("i4")
+            handle["x_row"].attrs["PatientName"] = name
+            return "x_row.PatientName", "identifier"
+        if carrier == "a nested compound":
+            inner = np.dtype([("who", h5py.string_dtype())])
+            row = np.dtype([("n", "i4"), ("about", inner)])
+            handle.create_dataset("x_log", data=np.array([(1, (name,))], row))
+            return "x_log", "unreadable"
+        assert carrier == "an array of strings in a compound"
+        row = np.dtype([("n", "i4"), ("who", h5py.string_dtype(), (2,))])
+        handle.create_dataset("x_log", data=np.array([(1, (name, "ok"))], row))
+        return "x_log", "unreadable"
+
+    @pytest.mark.parametrize(
+        "carrier",
+        [
+            "a second hard link",
+            "a soft link",
+            "a soft link's target",
+            "a committed type's name",
+            "a committed type's attribute",
+            "a nested compound",
+            "an array of strings in a compound",
+        ],
+    )
+    def test_S11_4_every_name_and_string_carrier_is_examined(
+        self, tmp_path: Path, carrier: str
+    ):
+        """Each scanned clean before and after a strict apply: the walk reached
+        each object once, by its first name, and read only flat compounds."""
+        path = Numbered.plain(tmp_path / "carrier.medh5")
+        with h5py.File(path, "r+") as handle:
+            reported = self._plant(handle, carrier)
+        found = {
+            (f.where, f.rule) for f in scrubber.scan(path, profile="strict").findings
+        }
+        assert reported in found
+        report = scrubber.apply(path, profile="strict", salt="pep")
+        # Gone from the file's bytes, or still reported: never silent.
+        if b"Doe^Jane" in path.read_bytes():
+            assert reported in {(f.where, f.rule) for f in report.remaining}
+
+    def test_S11_4_the_walk_ends_where_links_go_round(self, tmp_path: Path):
+        """A hard link back to a group, or to the root, is walked once --- and
+        every name on the way is still read."""
+        path = Numbered.plain(tmp_path / "cycle.medh5")
+        with h5py.File(path, "r+") as handle:
+            group = handle.create_group("x_loop")
+            group["itself"] = group
+            group["root"] = handle["/"]
+            group["Doe^Jane"] = group
+        found = {
+            (f.where, f.rule) for f in scrubber.scan(path, profile="strict").findings
+        }
+        assert found == {("x_loop.Doe^Jane", "person_name")}
+
+    def test_S11_4_a_dataset_outside_the_imaging_groups_is_named_if_not_read(
+        self, tmp_path: Path
+    ):
+        """A DICOM header kept as bytes scanned clean: only strings were read,
+        and the report did not say what was not."""
+        path = Numbered.plain(tmp_path / "bytes.medh5")
+        with h5py.File(path, "r+") as handle:
+            vendor = handle.create_group("x_acme")
+            vendor["header"] = np.frombuffer(b"PatientName=Doe^Jane", np.uint8)
+            vendor["blob"] = np.void(b"PatientName=Doe^Jane")
+            vendor["calibration"] = np.linspace(0.0, 1.0, 4)
+        report = scrubber.scan(path)
+        found = {f.where: (f.rule, f.actionable) for f in report.findings}
+        assert found == {
+            "x_acme.header": ("unreadable", False),
+            "x_acme.blob": ("unreadable", False),
+        }
+        (note,) = [n for n in report.not_checked if "non-string datasets" in n]
+        assert all(
+            name in note
+            for name in ("x_acme/blob", "x_acme/calibration", "x_acme/header")
+        )
+        # The imaging groups hold numbers by design, and are not listed.
+        assert "images/" not in note
+
+
 class TestScrubDates:
     """A date is found, and shifted, in every form a converter writes one."""
 
@@ -1148,6 +1610,88 @@ class TestScrubDates:
             )
         assert scrubber.scan(path).clean
 
+    def test_S11_4_a_shift_of_nothing_is_refused(self, tmp_path):
+        """Recorded, a shift of 0 moved no date and silenced every later scan."""
+        from medh5.cli import main
+
+        path = self._with(tmp_path / "zero.medh5", date="2020-01-31")
+        with medh5.open(path) as sample:
+            before = sample.content_id
+        with pytest.raises(MEDH5ValidationError, match="shifts nothing"):
+            scrubber.apply(path, date_shift_days=0)
+        assert main(["scrub", str(path), "--apply", "--date-shift-days", "0"]) == 2
+        with medh5.open(path) as sample:
+            assert sample.content_id == before
+            assert sample.document.deidentification is None
+
+    def test_S11_4_a_recorded_shift_of_nothing_is_no_shift(self, tmp_path):
+        """A file that recorded 0 is read as unshifted, and is not rewritten
+        to say so."""
+        path = tmp_path / "zero-record.medh5"
+        with Numbered.writer(path) as w:
+            w.add_timepoint("tp0", date="2020-01-31")
+            w.deidentification(method="manual", date_shift_days=0)
+        found = [f for f in scrubber.scan(path).findings if f.rule == "date"]
+        assert [(f.where, f.actionable) for f in found] == [
+            ("timepoints[0].date", True)
+        ]
+        with medh5.open(path) as sample:
+            assert sample.document.deidentification.date_shift_days == 0
+        assert scrubber.apply(path, date_shift_days=-30).ok
+        with medh5.open(path) as sample:
+            assert sample.document.timepoints["tp0"].date == "2020-01-01"
+            assert sample.document.deidentification.date_shift_days == -30
+
+    def test_S11_4_a_date_added_after_the_shift_is_reported(self, tmp_path):
+        """The record silenced the date scan, so a visit added later kept its
+        real date under an attestation that every date had moved."""
+        path = tmp_path / "later.medh5"
+        with medh5.create(path, sample_id="s1", subject_id="subj-1") as w:
+            w.add_timepoint("tp0", date="2020-01-31")
+            w.add_grid(
+                "g", shape=Numbered.SHAPE, spacing=(1.0, 1.0, 1.0), timepoint="tp0"
+            )
+            w.add_image(
+                "CT", np.zeros(Numbered.SHAPE, np.int16), grid="g", modality="CT"
+            )
+        assert scrubber.apply(path, date_shift_days=-10).ok
+        with medh5.amend(path) as w:
+            # Shifted by hand, as the record says: it agrees.
+            w.add_timepoint("tp1", date="2020-04-20", days_from_baseline=90)
+            # The real date, ten days from what the others imply.
+            w.add_timepoint("tp2", date="2020-07-29", days_from_baseline=180)
+        dates = [f for f in scrubber.scan(path).findings if f.rule == "date"]
+        assert [(f.where, f.actionable) for f in dates] == [
+            ("timepoints[2].date", False)
+        ]
+        assert "10 day(s) off" in dates[0].detail
+        # A run with the recorded shift leaves the dates alone, and says so.
+        again = scrubber.apply(path, date_shift_days=-10)
+        assert [f.where for f in again.remaining if f.rule == "date"] == [
+            "timepoints[2].date"
+        ]
+
+    def test_S11_4_a_second_shift_that_differs_is_refused(self, tmp_path):
+        """It was ignored: the dates stayed where the first shift put them, and
+        the caller who asked for another was told nothing."""
+        from medh5.cli import main
+
+        path = self._with(tmp_path / "twice.medh5", date="2020-01-31")
+        assert scrubber.apply(path, date_shift_days=117).ok
+        with medh5.open(path) as sample:
+            before = sample.content_id
+        with pytest.raises(MEDH5ValidationError, match="records a date shift of 117"):
+            scrubber.apply(path, date_shift_days=-30)
+        assert main(["scrub", str(path), "--apply", "--date-shift-days", "-30"]) == 1
+        with medh5.open(path) as sample:
+            assert sample.content_id == before
+        # The recorded shift, or none, is the one the dates already had.
+        assert scrubber.apply(path, date_shift_days=117).ok
+        assert scrubber.apply(path).ok
+        with medh5.open(path) as sample:
+            assert sample.document.timepoints["tp0"].date == "2020-05-27"
+            assert sample.document.deidentification.date_shift_days == 117
+
 
 class TestClinicalIsNotScrubbed:
     """The clinical profile is outside what this tool examines (1.1 §6:
@@ -1231,3 +1775,56 @@ class TestClinicalIsNotScrubbed:
         ]
         report = scrubber.apply(projection, profile="strict")
         assert report.applied
+
+
+class TestScrubPaths:
+    """`scrub_paths`, the batch: every path, every report, no silent option."""
+
+    def test_every_path_is_processed_and_every_report_kept(self, tmp_path: Path):
+        """The first refusal raised at once: the reports of the files already
+        rewritten --- their `uid_map` the only key to the pseudonyms --- went
+        with it, and the files after it were never scrubbed."""
+        first = Numbered.plain(tmp_path / "a.medh5")
+        clinical = TestClinicalIsNotScrubbed._clinical(tmp_path)
+        last = Numbered.plain(tmp_path / "b.medh5")
+        with pytest.raises(MEDH5ValidationError, match="clinical strip") as refused:
+            scrubber.scrub_paths(
+                [first, clinical, last], apply_changes=True, salt="pep"
+            )
+        reports = refused.value.reports  # type: ignore[attr-defined]
+        assert [report is None for report in reports] == [False, True, False]
+        assert reports[0].applied and reports[2].applied
+        with medh5.open(last) as sample:
+            assert sample.document.deidentification is not None
+
+    def test_a_misspelt_option_cannot_become_a_scan(self, tmp_path: Path):
+        """`apply=True` went into `**options`, unread, and the files were
+        scanned instead of scrubbed."""
+        path = Numbered.plain(tmp_path / "a.medh5")
+        with pytest.raises(TypeError, match="apply"):
+            scrubber.scrub_paths([path], apply=True)  # type: ignore[call-arg]
+        with medh5.open(path) as sample:
+            assert sample.document.deidentification is None
+
+    @pytest.mark.parametrize(
+        "option",
+        [
+            {"salt": "pep"},
+            {"date_shift_days": -30},
+            {"performed_by": "R7"},
+            {"pseudonymise_ids": True},
+        ],
+    )
+    def test_an_apply_option_without_apply_changes_is_refused(
+        self, tmp_path: Path, option: dict[str, Any]
+    ):
+        path = Numbered.plain(tmp_path / "a.medh5")
+        with pytest.raises(MEDH5ValidationError, match="apply_changes=True"):
+            scrubber.scrub_paths([path], **option)
+
+    def test_a_scan_and_an_apply(self, tmp_path: Path):
+        paths = [Numbered.plain(tmp_path / f"{name}.medh5") for name in "ab"]
+        scanned = scrubber.scrub_paths(paths, profile="strict")
+        assert [(r.applied, r.profile) for r in scanned] == [(False, "strict")] * 2
+        applied = scrubber.scrub_paths(paths, apply_changes=True, date_shift_days=-30)
+        assert [(r.applied, r.ok) for r in applied] == [(True, True)] * 2
