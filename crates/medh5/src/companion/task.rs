@@ -126,7 +126,10 @@ pub struct TargetSpec {
     pub negative: Vec<String>,
     /// The window after the cutoff an outcome must fall in: `(c, c + h]`.
     pub horizon_us: i64,
-    /// A negative needs an observation at least this long after the cutoff.
+    /// A negative needs an observation inside the window at least this long
+    /// after the cutoff.  The default, `horizon_us`, leaves a negative only
+    /// an observation at exactly `c + h` (contract §5), so nearly every row
+    /// without a positive is censored: give it whenever negatives matter.
     pub min_follow_up_us: i64,
     /// `censor` (keep the row, target unobserved) or `exclude` (drop it).
     pub censoring: String,
@@ -418,11 +421,13 @@ impl TaskManifest {
     }
 
     /// Write the manifest with its fingerprint, pretty-printed.
+    ///
+    /// Atomically: `task reconcile` writes over its input, which a write cut
+    /// short --- a full disk, a crash --- left truncated.
     pub fn save(&self, path: &Path) -> Result<()> {
         let mut doc = self.to_json();
         doc["fingerprint"] = json!(self.manifest_fingerprint());
-        std::fs::write(path, crate::json::pretty(&doc) + "\n")?;
-        Ok(())
+        crate::h5::file::write_atomic(path, (crate::json::pretty(&doc) + "\n").as_bytes())
     }
 
     /// Identifies the task: its canonical definition's digest.

@@ -501,9 +501,10 @@ pub struct SlotFill {
     /// Eligible voxel annotations on the image's grid: usable as *inputs*
     /// (a prior mask, an ROI), because selection admits them at the cutoff.
     pub annotations: Vec<String>,
-    /// Every voxel annotation on the image's grid, eligible or not: label
-    /// *supervision*, which --- like the target --- may come from after the
-    /// cutoff and never enters an input.
+    /// Every voxel annotation on the image's grid that labels or examined one
+    /// of the slot's classes, eligible or not: label *supervision*, which ---
+    /// like the target --- may come from after the cutoff and never enters an
+    /// input.
     pub label_annotations: Vec<String>,
 }
 
@@ -631,9 +632,9 @@ struct Candidate {
     modality: String,
     grid_id: String,
     center: Vec<i64>,
-    /// Voxel, non-mask annotations on the grid: supervision, and inputs when
-    /// eligible.
-    voxel: Vec<String>,
+    /// Voxel, non-mask annotations on the grid, each with the classes it
+    /// labels and those it examined: supervision, and inputs when eligible.
+    voxel: Vec<(String, Vec<i64>, Vec<i64>)>,
     /// Instance-bearing annotations on the grid (`instances`, `boxes`), each
     /// with the centre of its first instance by `instance_id`: what an
     /// `eligible_instances` slot centres on.
@@ -662,7 +663,7 @@ fn candidate(
             continue;
         }
         if annotation.is_voxel() && annotation.kind() != "mask" {
-            voxel.push(ann_id.clone());
+            voxel.push((ann_id.clone(), annotation.class_ids().to_vec(), annotation.annotated_class_ids().to_vec()));
         }
         if instances && matches!(annotation.kind(), "instances" | "boxes") {
             if let Some(center) = first_instance_center(annotation, grid)? {
@@ -813,8 +814,14 @@ impl<'a> Rows<'a> {
             .filter(|(f, k, _)| *f == best.fragment && k == "annotation")
             .map(|(_, _, id)| id.as_str())
             .collect();
-        for ann_id in &best.voxel {
-            fill.label_annotations.push(ann_id.clone());
+        for (ann_id, labels, examined) in &best.voxel {
+            // Supervision for the slot's classes: an annotation that neither
+            // labels nor examined one --- an organ beside lesion classes ---
+            // says nothing of them, and its ignore region is about other
+            // structures, which the loader skips as well.
+            if slot.classes.iter().any(|c| labels.contains(c) || examined.contains(c)) {
+                fill.label_annotations.push(ann_id.clone());
+            }
             if eligible.contains(ann_id.as_str()) {
                 fill.annotations.push(ann_id.clone());
             }
@@ -1198,8 +1205,9 @@ pub struct Admitted {
 }
 
 /// One row of [`Admitted`]: its cutoff, its subject, its admitted versions'
-/// positions and its fingerprint.
-type Admits = (i64, Option<usize>, Vec<usize>, String);
+/// positions, its fingerprint, and whether it is in `error` --- when what it
+/// admits is not known, and its empty selection says nothing.
+type Admits = (i64, Option<usize>, Vec<usize>, String, bool);
 
 impl Admitted {
     /// From a preflight already in hand.
@@ -1237,7 +1245,7 @@ impl Admitted {
 
     fn admits(view: &RowView) -> Admits {
         let positions = view.selection.as_ref().map_or_else(Vec::new, |s| s.events.iter().map(|e| e.index).collect());
-        (view.cutoff_us, view.subject, positions, view.fingerprint.clone())
+        (view.cutoff_us, view.subject, positions, view.fingerprint.clone(), view.status == "error")
     }
 
     fn insert(&mut self, row_id: &str, admits: Admits) {
@@ -1249,7 +1257,7 @@ impl Admitted {
     /// this task does not have, empty when its subject is unknown.
     pub fn row_pins(&self, row_id: &str) -> Option<&BTreeSet<String>> {
         static NONE: std::sync::OnceLock<BTreeSet<String>> = std::sync::OnceLock::new();
-        let (_, subject, _, _) = &self.views[*self.rows.get(row_id)?];
+        let (_, subject, _, _, _) = &self.views[*self.rows.get(row_id)?];
         Some(subject.and_then(|i| self.pins.get(i)).unwrap_or_else(|| NONE.get_or_init(BTreeSet::new)))
     }
 
@@ -1260,9 +1268,16 @@ impl Admitted {
         Some(self.views[*self.rows.get(row_id)?].3.as_str())
     }
 
+    /// Whether a row's preflight is in `error`: its sources or the manifest
+    /// have findings, so what it admits is unknown.  `None` for a row this
+    /// task does not have.
+    pub(crate) fn in_error(&self, row_id: &str) -> Option<bool> {
+        Some(self.views[*self.rows.get(row_id)?].4)
+    }
+
     /// A row's cutoff and the ids of the versions it admits, in input order.
     pub fn row(&self, row_id: &str) -> Option<(i64, Vec<&str>)> {
-        let (cutoff, subject, positions, _) = &self.views[*self.rows.get(row_id)?];
+        let (cutoff, subject, positions, _, _) = &self.views[*self.rows.get(row_id)?];
         let ids = subject
             .and_then(|i| self.names.get(i))
             .map_or_else(Vec::new, |names| positions.iter().map(|&i| names.get(i)[0]).collect());

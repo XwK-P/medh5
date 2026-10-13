@@ -754,7 +754,12 @@ fn cache() -> Command {
             .about("check a cache's checksums and pins, and --- given a task --- its admissibility (T4xx)")
             .arg(positional("path", "a .medh5cache file"))
             .arg(opt("task", "task", "also check the cache against this task manifest (T404-T406)"))
-            .arg(opt("base", "base", "resolve the entries' relative source URIs here (default: the cache's directory)"))
+            .arg(opt(
+                "base",
+                "base",
+                "resolve the entries' relative source URIs here (default: the manifest's directory with --task, else \
+                 the cache's)",
+            ))
             .arg(json()),
     )
 }

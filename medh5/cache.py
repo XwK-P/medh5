@@ -124,14 +124,15 @@ class CacheEntry:
 class CacheWriter:
     """Write a cache; it appears at ``path`` only on :meth:`commit`.
 
-    As a context manager it commits when the block succeeds and leaves nothing
-    behind when it raises.  Every entry must match the declared output dtype
+    As a context manager it commits when the block succeeds --- unless the
+    block committed or aborted it itself --- and leaves nothing behind when
+    it raises.  Every entry must match the declared output dtype
     and shape (T402), name the source versions it read (T403), and --- at the
     patient level --- pin its row (by id and fingerprint), cutoff and selected
     versions (T404); an event-level entry names no row.
     """
 
-    __slots__ = ("_handle", "digest", "path")
+    __slots__ = ("_finished", "_handle", "digest", "path")
 
     def __init__(
         self,
@@ -159,6 +160,7 @@ class CacheWriter:
         }
         self._handle: Any = _core.cache_create(os.fspath(self.path), header)
         self.digest: str | None = None
+        self._finished = False
 
     def add(
         self,
@@ -198,13 +200,19 @@ class CacheWriter:
         and admitted versions pinned from the row itself (§7.2).  *sources*
         are the source versions the feature read --- default, every one the
         row's subject pins."""
+        # By position in the subject's history: an `Event` per admitted version
+        # was built only to read its id.
+        subject = row.subject
+        ids = None if subject is None else subject.events.column("event_id")
         return self.add(
             entry_id if entry_id is not None else row.row_id,
             values,
             sources=list(row.sources) if sources is None else sources,
             row_id=row.row_id,
             cutoff_us=row.cutoff_us,
-            event_versions=[e.event_id for e in row.events],
+            event_versions=[]
+            if ids is None
+            else [str(ids[int(k)]) for k in row.selected],
             row_fingerprint=row.fingerprint,
         )
 
@@ -227,11 +235,13 @@ class CacheWriter:
 
     def commit(self) -> str:
         """Write the manifest and its checksum, and move the file into place."""
+        self._finished = True
         self.digest = str(self._handle.commit())
         return self.digest
 
     def abort(self) -> None:
         """Discard the half-written cache."""
+        self._finished = True
         self._handle.abort()
 
     def __enter__(self) -> CacheWriter:
@@ -243,10 +253,12 @@ class CacheWriter:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
-        if exc_type is None:
-            self.commit()
-        else:
+        # A block that committed or aborted has finished the cache; one that
+        # raised leaves nothing behind.
+        if exc_type is not None:
             self.abort()
+        elif not self._finished:
+            self.commit()
 
 
 class FeatureCache:
@@ -325,7 +337,9 @@ class FeatureCache:
         return None if entry is None else self.get(str(entry["entry_id"]))
 
     def __len__(self) -> int:
-        return len(self.entries)
+        if self._entries is not None:
+            return len(self._entries)
+        return int(self._handle.entry_count())
 
     def __repr__(self) -> str:
         return f"FeatureCache({self.path!r}, {self.level}, {len(self)} entries)"
@@ -391,10 +405,13 @@ def validate_cache(
     partition, and (``check_rows``) that each row's entry was built at its
     cutoff, from versions it admits, of its own subject's sources.
 
-    ``base`` resolves the entries' relative source URIs (default: the cache's
-    directory); ``task_base`` the task's (default: the manifest's).  The row
-    checks run the task's preflight; an event-level cache has no row entries,
-    so ``check_rows=False`` spares it that.
+    ``base`` resolves the entries' relative source URIs; ``task_base`` the
+    task's (default: the manifest's).  Entries copy their task's references,
+    so with a task ``base`` defaults to ``task_base`` (contract §7.1), and to
+    the cache's directory without one.  The row checks run the task's
+    preflight; an event-level cache has no row entries, so
+    ``check_rows=False`` spares it that.  A path naming no file raises
+    :class:`~medh5.errors.MEDH5FileError`: there is no cache to report on.
     """
     if task is not None and task_base is None:
         task_base = task.base
@@ -472,13 +489,25 @@ def build_document_cache(
     event describes.  Event-level features are cutoff-free: one event version
     is immutable, so its feature is reused by every row --- and each row's
     selection decides which of them it may read.  Returns the new cache's
-    validation report.
+    validation report.  A source that is no longer the version the task
+    pins is refused (T302) and nothing is written.
     """
+    from medh5.errors import MEDH5ValidationError
+
     root = base if base is not None else task.base
     with CacheWriter(path, level="event", **encoder.header()) as writer:
         for subject in task.subjects:
             for source in subject.sources:
                 with source.open(root) as sample:
+                    # What is encoded is filed under the pin: a source changed
+                    # since gave its new text the old version's entries.
+                    if sample.content_id != source.content_id:
+                        raise MEDH5ValidationError(
+                            f"{source.locator} is now {sample.content_id}; the task "
+                            f"pins {source.content_id} --- repin it explicitly if "
+                            "the change is meant",
+                            "T302",
+                        )
                     clinical = sample.clinical
                     if clinical is None:
                         continue

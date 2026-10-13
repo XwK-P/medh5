@@ -123,6 +123,28 @@ fn s3_2_fingerprints_identify_the_task_not_its_spelling() {
     assert_eq!(codes, ["T103"]);
 }
 
+/// `task reconcile` writes over its input, which `save` truncated and
+/// rewrote in place: a write cut short lost the manifest.
+#[cfg(unix)]
+#[test]
+fn s3_1_a_saved_manifest_replaces_the_file_whole() {
+    use std::os::unix::fs::MetadataExt;
+    let dir = tempfile::tempdir().unwrap();
+    let (task, _) = worked_task(dir.path());
+    let real = dir.path().join("task.json");
+    task.save(&real).unwrap();
+    let link = dir.path().join("link.json");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let before = std::fs::metadata(&real).unwrap().ino();
+    task.save(&link).unwrap();
+    assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink(), "the link is kept");
+    assert_ne!(std::fs::metadata(&real).unwrap().ino(), before, "a new file, never the old one rewritten");
+    assert!(TaskManifest::load(&real).unwrap().validate().is_empty());
+    let names: Vec<String> =
+        std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    assert!(names.iter().all(|n| !n.contains(".tmp-")), "{names:?}");
+}
+
 #[test]
 fn s3_4_a_value_outside_a_vocabulary_fails_the_schema_alone() {
     let dir = tempfile::tempdir().unwrap();
@@ -337,6 +359,63 @@ fn feature(value: f32) -> NdArray {
     NdArray::from_vec(&[4], vec![value; 4]).unwrap()
 }
 
+fn cache_header(task: &TaskManifest, level: &str) -> CacheHeader {
+    CacheHeader {
+        level: level.into(),
+        encoder: json!({"name": "fixture-hash", "revision": "sha256:00", "tokenizer": null}),
+        preprocessing: json!({"lowercase": true}),
+        output: json!({"dtype": "float32", "shape": [4], "pooling": "mean", "chunking": null}),
+        task_fingerprint: Some(task.task_fingerprint()),
+        selection: Some("strict_prospective".into()),
+        fitted_on: Some(CacheHeader::fitted_on(task, "train")),
+    }
+}
+
+fn event_entry(source: &SourceRef, event: &str, document: &str) -> CacheEntry {
+    CacheEntry {
+        entry_id: event_entry_id(&source.content_id, event),
+        sources: vec![source.clone()],
+        event_id: Some(event.into()),
+        document_id: Some(document.into()),
+        row_id: None,
+        cutoff_us: None,
+        event_versions: None,
+        row_fingerprint: None,
+        digest: String::new(),
+    }
+}
+
+/// An event-level cache of the worked example's first report; its entry id.
+fn event_cache(path: &Path, task: &TaskManifest) -> String {
+    let source = &task.subjects[0].sources[0];
+    let mut w = CacheWriter::create(path, cache_header(task, "event")).unwrap();
+    let entry = w.add(event_entry(source, "report0_v1", "report0_text_v1"), &feature(0.5)).unwrap();
+    w.commit().unwrap();
+    entry.entry_id
+}
+
+#[test]
+fn s8_a_payload_is_judged_by_its_declaration_before_it_is_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let (task, _) = worked_task(dir.path());
+    let path = dir.path().join("events.medh5cache");
+    let id = event_cache(&path, &task);
+    // A hostile payload: declared far larger than any memory, and costing
+    // nothing on disk, since no chunk of it is written.
+    let file = hdf5::File::open_rw(&path).unwrap();
+    let entries = file.group("entries").unwrap();
+    entries.unlink(&id).unwrap();
+    entries.new_dataset::<f32>().chunk([1usize << 16]).shape([1usize << 40]).create(id.as_str()).unwrap();
+    drop(entries);
+    drop(file);
+    let cache = FeatureCache::open(&path).unwrap();
+    let err = cache.get(&id).unwrap_err();
+    assert_eq!(err.code(), Some("T402"), "refused as the entry's fault, not as an allocation failure: {err}");
+    assert!(err.message().contains("[1099511627776]"), "{err}");
+    drop(cache);
+    assert_eq!(validate_cache(&path, None, None, None).unwrap().corrupt(), [id]);
+}
+
 #[test]
 fn s8_caches_are_rejected_when_stale_corrupt_or_inadmissible() {
     let dir = tempfile::tempdir().unwrap();
@@ -351,34 +430,12 @@ fn s8_caches_are_rejected_when_stale_corrupt_or_inadmissible() {
     );
     assert!(admitted.row("nope").is_none());
     let source = task.subjects[0].sources[0].clone();
-    let header = |level: &str| CacheHeader {
-        level: level.into(),
-        encoder: json!({"name": "fixture-hash", "revision": "sha256:00", "tokenizer": null}),
-        preprocessing: json!({"lowercase": true}),
-        output: json!({"dtype": "float32", "shape": [4], "pooling": "mean", "chunking": null}),
-        task_fingerprint: Some(task.task_fingerprint()),
-        selection: Some("strict_prospective".into()),
-        fitted_on: Some(CacheHeader::fitted_on(&task, "train")),
-    };
+    let header = |level: &str| cache_header(&task, level);
     // Event level: one feature per document event.
     let events_path = dir.path().join("events.medh5cache");
     let mut w = CacheWriter::create(&events_path, header("event")).unwrap();
     for (event, document) in [("report0_v1", "report0_text_v1"), ("report0_v2", "report0_text_v2")] {
-        w.add(
-            CacheEntry {
-                entry_id: event_entry_id(&source.content_id, event),
-                sources: vec![source.clone()],
-                event_id: Some(event.into()),
-                document_id: Some(document.into()),
-                row_id: None,
-                cutoff_us: None,
-                event_versions: None,
-                row_fingerprint: None,
-                digest: String::new(),
-            },
-            &feature(0.5),
-        )
-        .unwrap();
+        w.add(event_entry(&source, event, document), &feature(0.5)).unwrap();
     }
     w.commit().unwrap();
     assert!(validate_cache(&events_path, None, Some(&task), Some(&admitted)).unwrap().ok());
@@ -387,15 +444,17 @@ fn s8_caches_are_rejected_when_stale_corrupt_or_inadmissible() {
     assert_eq!(cache.get(&entry.entry_id).unwrap(), feature(0.5));
     drop(cache);
 
-    // Patient level: pinned to the row's cutoff and selection --- and a
+    // Patient level: pinned to the row's cutoff and selection --- and, in a
+    // cache of its own, since a cache holds one feature per row, a
     // whole-history feature that is not.
     let patient_path = dir.path().join("patient.medh5cache");
-    let mut w = CacheWriter::create(&patient_path, header("patient")).unwrap();
+    let whole_path = dir.path().join("whole.medh5cache");
     let r24 = pre.row("r24").unwrap();
-    for (entry_id, versions) in [
-        ("r24", pre.events_of(r24).iter().map(|e| e.event_id.clone()).collect::<Vec<_>>()),
-        ("r24_whole_history", vec!["lab0".into(), "ct0".into(), "report0_v2".into(), "ct1".into()]),
+    for (path, entry_id, versions) in [
+        (&patient_path, "r24", pre.events_of(r24).iter().map(|e| e.event_id.clone()).collect::<Vec<_>>()),
+        (&whole_path, "r24_whole_history", vec!["lab0".into(), "ct0".into(), "report0_v2".into(), "ct1".into()]),
     ] {
+        let mut w = CacheWriter::create(path, header("patient")).unwrap();
         w.add(
             CacheEntry {
                 entry_id: entry_id.into(),
@@ -411,9 +470,10 @@ fn s8_caches_are_rejected_when_stale_corrupt_or_inadmissible() {
             &feature(1.0),
         )
         .unwrap();
+        w.commit().unwrap();
     }
-    w.commit().unwrap();
-    let report = validate_cache(&patient_path, None, Some(&task), Some(&admitted)).unwrap();
+    assert!(validate_cache(&patient_path, None, Some(&task), Some(&admitted)).unwrap().ok());
+    let report = validate_cache(&whole_path, None, Some(&task), Some(&admitted)).unwrap();
     let inadmissible: Vec<&str> =
         report.findings.iter().filter(|f| f.code == "T406").map(|f| f.location.as_str()).collect();
     assert_eq!(inadmissible, ["r24_whole_history"]);
@@ -436,6 +496,124 @@ fn s8_caches_are_rejected_when_stale_corrupt_or_inadmissible() {
     // Stale: the source changes; every entry reading it is rejected.
     add_event(&path, observation("lab_late", "lab_late", 5000 * HOUR, Some(5001 * HOUR)), Vec::new());
     let report = validate_cache(&patient_path, None, None, None).unwrap();
-    assert_eq!(report.stale(), ["r24", "r24_whole_history"]);
+    assert_eq!(report.stale(), ["r24"]);
     assert!(report.corrupt().is_empty());
+}
+
+#[test]
+fn s8_an_entry_of_a_row_in_error_is_stale_not_inadmissible() {
+    let dir = tempfile::tempdir().unwrap();
+    let (task, path) = worked_task(dir.path());
+    let pre = preflight(&task, None, false).unwrap();
+    let r24 = pre.row("r24").unwrap();
+    let cache = dir.path().join("patient.medh5cache");
+    let mut w = CacheWriter::create(&cache, cache_header(&task, "patient")).unwrap();
+    let entry = CacheEntry {
+        entry_id: "r24".into(),
+        sources: task.subjects[0].sources.clone(),
+        event_id: None,
+        document_id: None,
+        row_id: Some("r24".into()),
+        cutoff_us: Some(r24.cutoff_us),
+        event_versions: Some(pre.events_of(r24).iter().map(|e| e.event_id.clone()).collect()),
+        row_fingerprint: Some(r24.fingerprint.clone()),
+        digest: String::new(),
+    };
+    w.add(entry, &feature(1.0)).unwrap();
+    w.commit().unwrap();
+    // The source changes: its rows are in error, and admit nothing to compare
+    // an entry with.
+    add_event(&path, observation("lab_late", "lab_late", 5000 * HOUR, Some(5001 * HOUR)), Vec::new());
+    let admitted = Admitted::preflight(&task, None, false).unwrap();
+    let report = validate_cache(&cache, None, Some(&task), Some(&admitted)).unwrap();
+    let found: Vec<(&str, &str)> = report.findings.iter().map(|f| (f.code.as_str(), f.location.as_str())).collect();
+    assert_eq!(found, [("T403", "r24"), ("T404", "r24")], "{:?}", report.findings);
+    assert!(report.findings[1].message.contains("in error"), "{:?}", report.findings[1]);
+    // A manifest with findings leaves every row in error, unclaimed by any
+    // subject: one T404 again, not a source the row's subject "does not pin".
+    let mut invalid = task.clone();
+    invalid.subjects[0].partition = None;
+    let admitted = Admitted::preflight(&invalid, None, false).unwrap();
+    let report = validate_cache(&cache, None, Some(&invalid), Some(&admitted)).unwrap();
+    let rows: Vec<&str> = report.findings.iter().filter(|f| f.location == "r24").map(|f| f.code.as_str()).collect();
+    assert_eq!(rows, ["T403", "T404"], "{:?}", report.findings);
+}
+
+#[test]
+fn s7_1_the_writer_refuses_what_its_reader_rejects() {
+    let dir = tempfile::tempdir().unwrap();
+    let (task, _) = worked_task(dir.path());
+    let source = task.subjects[0].sources[0].clone();
+    let path = dir.path().join("events.medh5cache");
+    let mut w = CacheWriter::create(&path, cache_header(&task, "event")).unwrap();
+    // Each of these was written, committed and checksummed, and the cache
+    // then refused by its own reader (T401).
+    let mut unaddressed = event_entry(&source, "report0_v1", "report0_text_v1");
+    unaddressed.sources[0].uri = String::new();
+    let mut unpinned = event_entry(&source, "report0_v1", "report0_text_v1");
+    unpinned.sources[0].content_id = "not-a-digest".into();
+    for entry in [unaddressed, unpinned] {
+        let err = w.add(entry, &feature(0.5)).unwrap_err();
+        assert_eq!(err.code(), Some("T401"), "{err}");
+        assert!(err.message().contains("sources/0/"), "{err}");
+    }
+    // One feature per event version: a second under another id was served in
+    // the first's place, whose checksum was then never compared.
+    w.add(event_entry(&source, "report0_v1", "report0_text_v1"), &feature(0.5)).unwrap();
+    let mut again = event_entry(&source, "report0_v1", "report0_text_v1");
+    again.entry_id = "another".into();
+    assert!(w.add(again, &feature(0.5)).unwrap_err().message().contains("one feature per event version"));
+    w.commit().unwrap();
+    assert!(validate_cache(&path, None, None, None).unwrap().ok());
+}
+
+#[test]
+fn s8_a_path_naming_no_cache_is_refused_not_corrupt() {
+    let dir = tempfile::tempdir().unwrap();
+    let err = validate_cache(&dir.path().join("nope.medh5cache"), None, None, None).unwrap_err();
+    assert!(err.message().contains("no such file"), "{err}");
+    let garbage = dir.path().join("garbage.medh5cache");
+    std::fs::write(&garbage, b"not a cache").unwrap();
+    assert_eq!(validate_cache(&garbage, None, None, None).unwrap().corrupt(), ["manifest"]);
+}
+
+#[test]
+fn s7_1_a_manifest_with_two_entries_for_one_lookup_is_corrupt() {
+    let dir = tempfile::tempdir().unwrap();
+    let (task, _) = worked_task(dir.path());
+    let path = dir.path().join("events.medh5cache");
+    let id = event_cache(&path, &task);
+    // A second entry with the first's id, or its event version, and a wrong
+    // checksum: lookups served one, and the other was never compared.
+    // Rewritten and re-checksummed, as a writer would.
+    let rewrite = |change: &dyn Fn(&mut serde_json::Value)| {
+        use medh5::h5::{attrs, data};
+        let file = hdf5::File::open_rw(&path).unwrap();
+        let text = data::read_scalar_string(&file.dataset("manifest").unwrap()).unwrap();
+        let mut doc: serde_json::Value = serde_json::from_str(&text).unwrap();
+        change(&mut doc);
+        let text = medh5::json::canonical(&doc);
+        file.unlink("manifest").unwrap();
+        data::create_scalar_string(&file, "manifest", &text).unwrap();
+        let digest = attrs::AttrValue::Str(medh5::companion::sha256(text.as_bytes()));
+        attrs::write(&file, "manifest_digest", &digest).unwrap();
+    };
+    let original = {
+        let cache = FeatureCache::open(&path).unwrap();
+        cache.entries[0].to_json()
+    };
+    for (twin, why) in [("id", "twice"), ("event", "two entries for event 'report0_v1'")] {
+        let mut copy = original.clone();
+        copy["digest"] = json!(format!("sha256:{}", "f".repeat(64)));
+        if twin == "event" {
+            copy["entry_id"] = json!("another");
+        }
+        rewrite(&|doc| doc["entries"] = json!([original.clone(), copy.clone()]));
+        let err = FeatureCache::open(&path).unwrap_err();
+        assert_eq!(err.code(), Some("T401"), "{err}");
+        assert!(err.message().contains(why), "{err}");
+        let report = validate_cache(&path, None, None, None).unwrap();
+        assert_eq!(report.corrupt(), ["manifest"], "{:?}", report.findings);
+    }
+    let _ = id;
 }

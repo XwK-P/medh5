@@ -434,12 +434,16 @@ fn task_reconcile(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
 
 fn cache_validate(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let path = Path::new(req_str(m, "path"));
-    let base = get_str(m, "base").map(PathBuf::from);
+    let mut base = get_str(m, "base").map(PathBuf::from);
     let (task, admitted) = match get_str(m, "task") {
         Some(file) => {
             let file = Path::new(file);
             let manifest = TaskManifest::load(file)?;
             let admitted = Admitted::preflight(&manifest, file.parent(), false)?;
+            // The entries copy the task's references, relative to its
+            // directory (task-cache-1 §7.1): resolved against the cache's,
+            // a cache kept anywhere else was all stale.
+            base = base.or_else(|| file.parent().map(Path::to_path_buf));
             (Some(manifest), Some(admitted))
         }
         None => (None, None),

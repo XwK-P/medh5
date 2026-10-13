@@ -552,7 +552,6 @@ def _schema_markdown(root: Path) -> str:
 _MARKERS: dict[str, Any] = {
     "<!--@diagnostic-codes-->": _codes_markdown,
     "<!--@cohort-codes-->": _cohort_codes_markdown,
-    "<!--@companion-codes-->": _companion_codes_markdown,
     "<!--@schema-->": _schema_markdown,
 }
 

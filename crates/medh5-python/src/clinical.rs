@@ -256,6 +256,28 @@ fn task_row_fingerprint(doc: &Bound<'_, PyAny>, row_id: &str) -> R<String> {
     Ok(m.row_fingerprint(row))
 }
 
+/// Every row's fingerprint by row id --- the first row of an id, as
+/// `task_row_fingerprint` finds it --- from one parse of the manifest: a
+/// parse per row made fingerprinting a task's rows quadratic.
+#[pyfunction]
+fn task_row_fingerprints<'py>(py: Python<'py>, doc: &Bound<'py, PyAny>) -> R<Bound<'py, PyDict>> {
+    let m = manifest(doc)?;
+    let task = m.task_fingerprint();
+    let mut subjects: std::collections::HashMap<&str, &medh5::companion::task::Subject> =
+        std::collections::HashMap::new();
+    for s in &m.subjects {
+        subjects.entry(s.subject_id.as_str()).or_insert(s);
+    }
+    let out = PyDict::new(py);
+    for row in &m.rows {
+        if !out.contains(&row.row_id)? {
+            let subject = subjects.get(row.subject_id.as_str()).copied();
+            out.set_item(&row.row_id, m.row_fingerprint_with(&task, subject, row))?;
+        }
+    }
+    Ok(out)
+}
+
 #[pyfunction]
 fn task_subjects_digest(doc: &Bound<'_, PyAny>, partition: &str) -> R<String> {
     Ok(manifest(doc)?.subjects_digest(partition))
@@ -309,6 +331,14 @@ fn source_pin<'py>(
     Ok(json_to_py(py, &found.to_json())?)
 }
 
+/// The file a source URI names, relative to `base` when it is relative: a
+/// `file:` URI decoded as the engine decodes it.
+#[pyfunction]
+#[pyo3(signature = (uri, base=None))]
+fn source_resolve(uri: &str, base: Option<PathBuf>) -> PathBuf {
+    SourceRef::new(uri, None, "").resolve(base.as_deref())
+}
+
 /// The findings of checking a reference against its sample now.
 #[pyfunction]
 #[pyo3(signature = (source, base=None, deep=false))]
@@ -356,28 +386,9 @@ impl CacheWriterHandle {
         entry: &Bound<'py, PyAny>,
         values: &Bound<'py, PyAny>,
     ) -> R<Bound<'py, PyAny>> {
-        let doc = record(entry)?;
-        let text = |k: &str| doc.get(k).and_then(Value::as_str).map(str::to_string);
-        let entry = CacheEntry {
-            entry_id: text("entry_id").unwrap_or_default(),
-            sources: doc
-                .get("sources")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .map(SourceRef::from_json)
-                .collect::<medh5::Result<_>>()?,
-            event_id: text("event_id"),
-            document_id: text("document_id"),
-            row_id: text("row_id"),
-            cutoff_us: doc.get("cutoff_us").and_then(Value::as_i64),
-            event_versions: doc
-                .get("event_versions")
-                .and_then(Value::as_array)
-                .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()),
-            row_fingerprint: text("row_fingerprint"),
-            digest: String::new(),
-        };
+        // As the reader parses one: a cutoff that is not an integer was read
+        // as none, and refused as a row entry pinning no cutoff.
+        let entry = CacheEntry { digest: String::new(), ..CacheEntry::from_json(&record(entry)?)? };
         let values = py_to_nd(values)?;
         let writer = self.inner.as_mut().ok_or_else(|| medh5::Error::invalid("this cache writer has finished"))?;
         Ok(json_to_py(py, &writer.add(entry, &values)?.to_json())?)
@@ -451,6 +462,10 @@ impl FeatureCacheHandle {
     fn entries<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyList>> {
         Ok(to_list(py, self.cache()?.entries.iter().map(CacheEntry::to_json))?)
     }
+    /// How many entries the cache holds, without building them.
+    fn entry_count(&self) -> R<usize> {
+        Ok(self.cache()?.entries.len())
+    }
     /// An entry's payload, its checksum verified.
     fn get<'py>(&self, py: Python<'py>, entry_id: &str) -> R<Bound<'py, PyAny>> {
         let cache = self.cache()?;
@@ -492,6 +507,10 @@ fn cache_validate<'py>(
             Some(t) if check_rows => Some(medh5::companion::Admitted::preflight(t, task_base.as_deref(), false)?),
             _ => None,
         };
+        // The entries copy the task's references, relative to its base
+        // (task-cache-1 §7.1): resolved against the cache's directory, a
+        // cache kept anywhere else was all stale.
+        let base = base.or_else(|| task.as_ref().and(task_base));
         medh5::companion::validate_cache(&path, base.as_deref(), task.as_ref(), admitted.as_ref())
     })?;
     Ok(json_to_py(py, &report.to_json())?)
@@ -539,11 +558,13 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         wrap_pyfunction!(task_validate, m)?,
         wrap_pyfunction!(task_fingerprints, m)?,
         wrap_pyfunction!(task_row_fingerprint, m)?,
+        wrap_pyfunction!(task_row_fingerprints, m)?,
         wrap_pyfunction!(task_subjects_digest, m)?,
         wrap_pyfunction!(task_reconcile, m)?,
         wrap_pyfunction!(task_preflight, m)?,
         wrap_pyfunction!(source_pin, m)?,
         wrap_pyfunction!(source_check, m)?,
+        wrap_pyfunction!(source_resolve, m)?,
         wrap_pyfunction!(cache_create, m)?,
         wrap_pyfunction!(cache_open, m)?,
         wrap_pyfunction!(cache_validate, m)?,

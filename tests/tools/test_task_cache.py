@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import pickle
+import re
 import shutil
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,7 @@ import numpy as np
 import pytest
 
 import medh5
+from medh5 import _core
 from medh5.cache import (
     CacheWriter,
     FeatureCache,
@@ -37,6 +39,7 @@ from medh5.errors import MEDH5ValidationError
 from medh5.task import (
     CODES,
     Finding,
+    Packed,
     Slot,
     SourceRef,
     Target,
@@ -150,6 +153,64 @@ class TestManifest:
         assert "TaskManifest('progression'" in repr(loaded)
         assert '"medh5.task/1"' in schema_text()
         assert set(CODES) >= {"T101", "T302", "T406"}
+
+    def test_S3_1_a_save_replaces_the_manifest_whole(
+        self, setup, tmp_path: Path, capsys
+    ):
+        """A manifest was written in place, so a write cut short --- a full
+        disk, a crash --- truncated it; `task reconcile` writes over its input.
+        Python's save and the engine's now each replace the file whole."""
+        task, _ = setup
+        path = task.save(tmp_path / "cohort" / "t.task.json")
+        for write in (
+            lambda: task.save(path),
+            lambda: main(["task", "reconcile", str(path)]),
+        ):
+            before = path.stat().st_ino
+            write()
+            assert path.stat().st_ino != before, "a new file, not the old rewritten"
+            assert TaskManifest.load(path).validate() == []
+        capsys.readouterr()
+        assert [p.name for p in path.parent.glob(".*")] == []
+
+    def test_S3_2_fingerprints_follow_the_manifest(self, setup):
+        """Computed once until the manifest changes --- each access parsed the
+        whole manifest, a row's twice --- and the same values."""
+        task, _ = setup
+        doc = task.to_json()
+        assert task.row_fingerprint("P-02@d95") == _core.task_row_fingerprint(
+            doc, "P-02@d95"
+        )
+        first = task.manifest_fingerprint
+        task.add_row("P-01@48h", "P-01", 48 * HOUR)
+        assert task.manifest_fingerprint != first
+        assert task.row_fingerprint("P-01@48h") == _core.task_row_fingerprint(
+            task.to_json(), "P-01@48h"
+        )
+        assert task.subjects_digest("train") == _core.task_subjects_digest(doc, "train")
+        with pytest.raises(KeyError):
+            task.row_fingerprint("nope")
+
+    def test_S3_3_default_source_ids_are_valid_and_tell_sites_apart(
+        self, setup, tmp_path: Path
+    ):
+        """A reference built without an id had `""`, which fails the schema,
+        and `pin` named one by its file stem alone, so two sites' `P-01.medh5`
+        collided (T204).  `validate` raised the schema's T101; it reports it."""
+        _, paths = setup
+        refs = []
+        for site in ("site-a", "site-b"):
+            copy = tmp_path / site / "P-01.medh5"
+            copy.parent.mkdir()
+            shutil.copyfile(paths["P-01"], copy)
+            refs.append(SourceRef.pin(copy, uri=f"{site}/P-01.medh5"))
+        assert [r.source_id for r in refs] == ["site-a_P-01", "site-b_P-01"]
+        bare = SourceRef("P-01.medh5", refs[0].content_id, sample_key="m")
+        assert bare.source_id == "P-01:m"
+        task = TaskManifest.new("t", "1", identity_namespace="n")
+        task.add_subject("P-01", [SourceRef("", refs[0].content_id)])
+        (finding,) = task.validate()
+        assert finding.code == "T101"
 
     def test_S3_2_the_task_fingerprint_is_the_definition(self, setup):
         task, _ = setup
@@ -802,6 +863,24 @@ class TestSources:
         assert found(pin.check(tmp_path, deep=True)) == ["T302"]
         assert "E701" in validate_file(path, level="integrity").codes
 
+    def test_S2_a_file_uri_names_the_path_it_was_made_from(self, setup, tmp_path: Path):
+        """`Path.as_uri()` percent-escapes a space and may name `localhost`;
+        stripping `file://` kept the escapes, and made `file://localhost/x`
+        the relative `localhost/x`."""
+        _, paths = setup
+        spaced = tmp_path / "with space" / "P 01.medh5"
+        spaced.parent.mkdir()
+        shutil.copyfile(paths["P-01"], spaced)
+        ref = SourceRef.pin(spaced, uri=spaced.as_uri())
+        assert ref.resolve() == spaced and ref.check() == []
+        assert ref.source_id == "with_space_P_01"
+        if spaced.as_uri().startswith("file:///"):  # POSIX: no drive
+            local = SourceRef(
+                "file://localhost" + spaced.as_uri()[len("file://") :], ref.content_id
+            )
+            assert local.resolve(tmp_path / "elsewhere") == spaced
+            assert local.check() == []
+
     def test_S2_a_missing_source_is_T301(self, setup, tmp_path: Path):
         task, paths = setup
         paths["P-03"].unlink()
@@ -843,6 +922,18 @@ class TestPreflight:
         )
         with pytest.raises(KeyError):
             report.row("nope")
+
+    def test_S6_a_slot_is_supervised_by_annotations_of_its_classes(self, setup):
+        """`label_annotations` listed every voxel annotation on the grid, while
+        the loader skips one that neither labels nor examined a class the slot
+        asks for: the row view and the batch it builds disagreed."""
+        task, _ = setup
+        doc = task.to_json()
+        doc["slots"][0]["classes"] = [7]
+        other = TaskManifest(doc, base=task.base)
+        for asked, found in ((task, ("lesions_tp0",)), (other, ())):
+            fill = asked.preflight().row("P-02@24h").slots["ct"]
+            assert fill.image_id == "CT_tp0" and fill.label_annotations == found
 
     def test_S5_targets(self, setup):
         task, _ = setup
@@ -1363,6 +1454,14 @@ class TestPreflightAtScale:
         assert subject.events.column("event_id").offsets.dtype == np.int64
         assert report.row("r0").slots["ct"].annotations == ()
 
+    def test_a_packed_column_indexes_as_a_sequence(self):
+        """`column[-1]` sliced `offsets[-1]:offsets[0]` and returned `""`."""
+        column = Packed(b"abcdef", np.array([0, 3, 6], np.int64))
+        assert (column[-1], column[-2], column[1]) == ("def", "abc", "def")
+        for outside in (2, -3):
+            with pytest.raises(IndexError):
+                column[outside]
+
     def test_S4_the_manifest_findings_leave_no_history_read(self, tmp_path: Path):
         task = self.many_cutoffs(tmp_path, 2)
         task.add_row("ghost", "P-99", DAY)
@@ -1462,6 +1561,188 @@ class TestCaches:
             )
         stale = validate_cache(path)
         assert stale.stale and "T403" in found(stale.findings)
+
+    def test_S8_an_entry_of_a_row_in_error_is_stale_not_inadmissible(
+        self, setup, tmp_path: Path
+    ):
+        """A row in error admits nothing that is known: each of its entries was
+        T406, inadmissible, on top of the stale source that put it there."""
+        task, paths = setup
+        path = tmp_path / "cohort" / "rows.medh5cache"
+        with CacheWriter(
+            path,
+            level="patient",
+            encoder={"name": "fixture", "revision": "1"},
+            output={"dtype": "float32", "shape": [2]},
+            task=task,
+        ) as w:
+            entry = w.add_row(task.preflight().row("P-02@24h"), np.zeros(2, np.float32))
+        assert entry.event_versions == ("lab0", "ct0", "rep_v1")
+        assert validate_cache(path, task=task).ok
+        with medh5.amend(paths["P-02"]) as w:
+            w.add_event(
+                Event("late", "late", "other", "static", "final", available_us=0)
+            )
+        findings = validate_cache(path, task=task).findings
+        assert [(f.code, f.location) for f in findings] == [
+            ("T403", "P-02@24h"),
+            ("T404", "P-02@24h"),
+        ]
+        assert "in error" in findings[1].message
+
+    def test_S7_1_a_cache_kept_away_from_its_task_validates_against_it(
+        self, setup, tmp_path: Path, capsys
+    ):
+        """Entries copy the task's references, relative to the manifest's
+        directory, and were resolved against the cache's: a cache kept
+        anywhere else was all stale (T403), however often it was rebuilt."""
+        task, _ = setup
+        path = tmp_path / "elsewhere" / "docs.medh5cache"
+        path.parent.mkdir()
+        assert build_document_cache(task, path, HashingTextEncoder(dim=4)).ok
+        assert validate_cache(path, task=task).ok
+        assert validate_cache(path).stale, "without a task: the cache's directory"
+        assert validate_cache(path, base=task.base).ok
+        manifest = task.save(tmp_path / "cohort" / "t.task.json")
+        args = ["cache", "validate", str(path), "--task", str(manifest)]
+        assert main(args) == EXIT_OK
+        capsys.readouterr()
+
+    def test_S7_1_the_writer_refuses_what_its_reader_rejects(
+        self, setup, tmp_path: Path
+    ):
+        """Entries were never held to the schema: the writer committed caches
+        its own reader refused (T401).  And a cache holds one feature per event
+        version (or row): a second was served in the first's place."""
+        task, _ = setup
+        source = task.subjects[0].sources[0]
+        path = tmp_path / "cohort" / "x.medh5cache"
+        with CacheWriter(
+            path,
+            level="event",
+            encoder={"name": "fixture", "revision": "1"},
+            output={"dtype": "float32", "shape": [1]},
+        ) as w:
+            for bad in (
+                SourceRef("", source.content_id),
+                SourceRef(source.uri, "not-a-digest"),
+            ):
+                with pytest.raises(MEDH5ValidationError) as caught:
+                    w.add(
+                        "e1", np.ones(1, np.float32), sources=[bad], event_id="rep_v1"
+                    )
+                assert caught.value.code == "T401"
+            w.add_event(source, "rep_v1", np.ones(1, np.float32))
+            with pytest.raises(MEDH5ValidationError, match="one feature per event"):
+                w.add("e2", np.ones(1, np.float32), sources=[source], event_id="rep_v1")
+        assert validate_cache(path).ok
+
+    def test_S7_1_two_entries_for_one_row_are_corrupt(self, setup, tmp_path: Path):
+        """Of two entries for one row, a lookup served the last, and the other's
+        checksum was never compared: a wrong one hid behind its twin."""
+        task, _ = setup
+        path = tmp_path / "cohort" / "rows.medh5cache"
+        with CacheWriter(
+            path,
+            level="patient",
+            encoder={"name": "fixture", "revision": "1"},
+            output={"dtype": "float32", "shape": [2]},
+            task=task,
+        ) as w:
+            w.add_row(task.preflight().row("P-01@24h"), np.zeros(2, np.float32))
+
+        def twin(doc: dict[str, Any]) -> None:
+            first = doc["entries"][0]
+            doc["entries"].append(
+                dict(first, entry_id="twin", digest="sha256:" + "f" * 64)
+            )
+
+        self._rewrite_manifest(path, twin)
+        report = validate_cache(path, task=task)
+        assert report.corrupt == ("manifest",) and found(report.findings) == ["T401"]
+        with pytest.raises(MEDH5ValidationError, match="two entries for row"):
+            FeatureCache.open(path)
+
+    def test_S7_a_document_cache_encodes_only_the_pinned_versions(
+        self, setup, tmp_path: Path
+    ):
+        """A source changed since its pin had its new text encoded under the
+        old version's entries --- which, the file restored, validated clean."""
+        task, paths = setup
+        with medh5.amend(paths["P-02"]) as w:
+            w.add_event(
+                Event("late", "late", "other", "static", "final", available_us=0)
+            )
+        path = tmp_path / "cohort" / "docs.medh5cache"
+        with pytest.raises(MEDH5ValidationError) as caught:
+            build_document_cache(task, path, HashingTextEncoder(dim=4))
+        assert caught.value.code == "T302" and "P-02.medh5" in str(caught.value)
+        assert not path.exists()
+
+    def test_a_writer_finished_in_its_block_is_not_finished_again(
+        self, setup, tmp_path: Path
+    ):
+        """`commit()` or `abort()` inside `with` raised "this cache writer has
+        finished" as the block closed."""
+        task, _ = setup
+        source = task.subjects[0].sources[0]
+        header: dict[str, Any] = {
+            "level": "event",
+            "encoder": {"name": "fixture", "revision": "1"},
+            "output": {"dtype": "float32", "shape": [1]},
+        }
+        committed = tmp_path / "cohort" / "c.medh5cache"
+        with CacheWriter(committed, **header) as w:
+            w.add_event(source, "rep_v1", np.ones(1, np.float32))
+            digest = w.commit()
+        assert validate_cache(committed).manifest_digest == digest
+        aborted = tmp_path / "cohort" / "a.medh5cache"
+        with CacheWriter(aborted, **header) as w:
+            w.add_event(source, "rep_v1", np.ones(1, np.float32))
+            w.abort()
+        assert not aborted.exists()
+
+    def test_S8_a_path_naming_no_cache_is_refused_not_corrupt(
+        self, tmp_path: Path, capsys
+    ):
+        """A mistyped path was "1 corrupt" (T401): the cache's own bytes
+        wrong.  It is refused as opening it is; a file that is not a cache is
+        still corrupt."""
+        missing = tmp_path / "nope.medh5cache"
+        with pytest.raises(medh5.MEDH5FileError, match="no such file"):
+            validate_cache(missing)
+        assert main(["cache", "validate", str(missing)]) == EXIT_ERROR
+        assert "no such file" in capsys.readouterr().err
+        garbage = tmp_path / "garbage.medh5cache"
+        garbage.write_bytes(b"not a cache")
+        assert validate_cache(garbage).corrupt == ("manifest",)
+
+    def test_S7_2_a_cutoff_that_is_not_an_integer_is_refused_as_such(
+        self, setup, tmp_path: Path
+    ):
+        """The writer read a float cutoff as none, and refused the entry for
+        pinning no cutoff (T404); it is the cutoff that is wrong."""
+        task, _ = setup
+        row = task.preflight().row("P-01@24h")
+        writer = CacheWriter(
+            tmp_path / "cohort" / "rows.medh5cache",
+            level="patient",
+            encoder={"name": "fixture", "revision": "1"},
+            output={"dtype": "float32", "shape": [2]},
+            task=task,
+        )
+        with pytest.raises(MEDH5ValidationError, match="cutoff_us") as caught:
+            writer.add(
+                row.row_id,
+                np.zeros(2, np.float32),
+                sources=list(row.sources),
+                row_id=row.row_id,
+                row_fingerprint=row.fingerprint,
+                cutoff_us=float(row.cutoff_us),  # type: ignore[arg-type]
+                event_versions=[e.event_id for e in row.events],
+            )
+        writer.abort()
+        assert caught.value.code == "T401"
 
     def test_S8_a_row_entrys_versions_are_compared_as_a_set(
         self, setup, tmp_path: Path
@@ -1832,6 +2113,19 @@ class TestCaches:
         finding = Finding("T302", "P-01", "changed")
         assert str(finding) == "T302 P-01: changed"
         assert "pinned" in finding.summary
+
+    def test_S9_the_code_table_is_the_engines(self):
+        """§9 was a marker the site replaced: a reader of the text --- on GitHub,
+        in the sdist --- found no table.  It is written out, and held to the
+        engine's ``CODES`` here."""
+        spec = Path(__file__).resolve().parents[2] / "docs/spec/task-cache-1.md"
+        text = spec.read_text(encoding="utf-8")
+        section = text.split("## 9. Finding codes", 1)[1].split("\n## ", 1)[0]
+        rows = re.findall(
+            r'^\| <a id="(t\d{3})"></a>`(T\d{3})` \| (.*) \|$', section, re.M
+        )
+        assert {code: meaning for _, code, meaning in rows} == CODES
+        assert all(anchor == code.lower() for anchor, code, _ in rows)
 
     def test_S9_T404_says_what_it_is_found_for(self):
         """§6 and §8 find T404 for another task's cache, another manifest's

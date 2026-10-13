@@ -585,7 +585,9 @@ version owns (T407). With `--task`,
 also that it was built for this task and its cutoffs (T404), fitted on its
 training partition (T405), and encodes only versions its rows admit (T406) —
 the task is preflighted a subject at a time, keeping only each row's cutoff
-and admitted versions.
+and admitted versions. Entries copy their task's source references, so their
+relative URIs resolve against `--base`, by default the task manifest's
+directory with `--task` and the cache's directory without.
 
 ## Conformance
 

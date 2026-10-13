@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from types import TracebackType
 from typing import Any, ClassVar, final
 
@@ -484,6 +485,7 @@ __all__ = [
     "slices_to_box",
     "source_check",
     "source_pin",
+    "source_resolve",
     "spatial_chunk_for",
     "splits_from_json",
     "stale_index_entries",
@@ -495,6 +497,7 @@ __all__ = [
     "task_preflight",
     "task_reconcile",
     "task_row_fingerprint",
+    "task_row_fingerprints",
     "task_schema_text",
     "task_subjects_digest",
     "task_validate",
@@ -1723,6 +1726,12 @@ def source_pin(
     """A source reference pinned to what the sample is now."""
     ...
 
+def source_resolve(uri: str, base: str | os.PathLike[str] | None = None) -> Path:
+    """The file a source URI names, relative to `base` when it is relative: a
+    `file:` URI decoded as the engine decodes it.
+    """
+    ...
+
 def spatial_chunk_for(
     spatial_shape: Sequence[int],
     patch: Sequence[int] | int | None = None,
@@ -1769,6 +1778,13 @@ def task_reconcile(
     ...
 
 def task_row_fingerprint(doc: Any, row_id: str) -> str: ...
+def task_row_fingerprints(doc: Any) -> dict[str, str]:
+    """Every row's fingerprint by row id --- the first row of an id, as
+    `task_row_fingerprint` finds it --- from one parse of the manifest: a
+    parse per row made fingerprinting a task's rows quadratic.
+    """
+    ...
+
 def task_schema_text() -> str: ...
 def task_subjects_digest(doc: Any, partition: str) -> str: ...
 def task_validate(doc: Any) -> list[dict[str, Any]]:
@@ -2341,6 +2357,9 @@ class FeatureCacheHandle:
         ...
     def close(self) -> None: ...
     def entries(self) -> list[dict[str, Any]]: ...
+    def entry_count(self) -> int:
+        """How many entries the cache holds, without building them."""
+        ...
     def event_entry(self, content_id: str, event_id: str) -> dict[str, Any] | None: ...
     def get(self, entry_id: str) -> npt.NDArray[Any]:
         """An entry's payload, its checksum verified."""

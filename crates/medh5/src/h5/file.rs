@@ -511,6 +511,33 @@ pub fn atomic_rewrite<T>(
     Ok(value)
 }
 
+/// Write `bytes` as `target` the way [`AtomicFile`] writes a file: to a
+/// temporary sibling, flushed, its mode the target's, renamed into place
+/// through the target's symbolic links.  A write cut short leaves the
+/// previous file whole --- what a text file written over its input needs.
+pub fn write_atomic(target: &Path, bytes: &[u8]) -> Result<()> {
+    let target = resolve_links(target)?;
+    let tmp = temporary_name(&target);
+    let mode = existing_mode(&target);
+    precreate(&tmp, mode)?;
+    let result = (|| -> Result<()> {
+        fs::write(&tmp, bytes)?;
+        fsync_path(&tmp)?;
+        if let Some(mode) = mode {
+            set_mode(&tmp, mode);
+        }
+        replace(&tmp, &target)?;
+        if let Some(parent) = target.parent() {
+            fsync_dir(if parent.as_os_str().is_empty() { Path::new(".") } else { parent });
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        remove_temporary(&tmp);
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
