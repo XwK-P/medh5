@@ -27,12 +27,12 @@ At `82d1631` (all of the above except dataset), the full test run passed: pytest
 
 **Test run at `a7351b6`** (all merges above): pytest 3081 passed, 2 skipped, 95.11% coverage; `cargo test --workspace` green; the corpus 163/163 through both command lines; fmt, ruff and mypy clean.
 
-**In progress** (each uncommitted diff is snapshotted to `patches/<name>.patch` every 15 minutes): `legacy` (from `c3b9f0e`), `spec`, and, from `a7351b6`, `comp`, `clin`, `pyapi`, `geom`, `cli`, `docs` and `ci`. That is every remaining workstream. The weekly limit stopped them on 2026-10-12 at 08:00Z; they resumed on 2026-10-13.
+**In progress**, in each agent's worktree under the session scratchpad (disk survived the reboot, so the patch snapshots were retired): `legacy` (from `c3b9f0e`), `spec`, and, from `a7351b6`, `comp`, `clin`, `pyapi`, `geom`, `cli`, `docs` and `ci`. That is every remaining workstream. The weekly limit stopped them on 2026-10-12 at 08:00Z; they resumed on 2026-10-13.
 
 The plans are in `prompts/`. Handoffs for docs, spec, cli and others are listed in each `reports/<name>.md`, under "Handoffs" and "Spec wording".
 
 ## Resuming
-1. Branch a worktree from `1959938` and `git apply --3way patches/<name>.patch`, or apply onto this branch directly. Finish the prompt's remaining items, test, and squash-merge here.
+1. Resume each agent in its worktree (`SCR/wt/<name>`, branch `w202/<name>`); if the worktrees were lost, redo the workstream from its prompt on a branch from this one. Finish the prompt's remaining items, test, and squash-merge here.
 2. Handoffs to route:
    - **docs:** take `refusals.md` wording from `reports/conv1.md`, and the `python-api.md:419-420` Windows amend wording plus the writer reference notes from `reports/writer.md`.
    - **legacy:** `sanitize_stem` in `convert/grouping.rs` keeps Unicode letters; fold to ASCII, as the Python converters now do.
