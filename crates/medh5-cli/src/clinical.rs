@@ -441,6 +441,22 @@ fn row_line(r: &RowView) -> (String, Vec<String>) {
 
 fn task_reconcile(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let (mut manifest, base) = load_task(m)?;
+    // The save replaces whatever `--out` names: a source sample, named again
+    // or through a link, became the manifest that pins it, and exit 0.
+    if let Some(out) = get_str(m, "out") {
+        for subject in &manifest.subjects {
+            if let Some(source) =
+                subject.sources.iter().find(|s| same_file(&s.resolve(base.as_deref()), Path::new(out)))
+            {
+                return Err(Error::invalid(format!(
+                    "--out {} is {}, a source of subject {}; write the manifest to another file",
+                    repr_str(out),
+                    repr_str(&source.locator()),
+                    repr_str(&subject.subject_id)
+                )));
+            }
+        }
+    }
     let mut recorded = 0;
     for i in 0..manifest.subjects.len() {
         let found = medh5::companion::view::reconcile(&manifest.subjects[i], base.as_deref())?;

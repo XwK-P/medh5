@@ -1227,7 +1227,9 @@ def from_nifti(
             "import",
             agent=tool,
             tool="medh5 convert from-nifti",
-            inputs=[str(p) for p in images.values()],
+            # The files' names, not their paths: a local path often holds a
+            # patient's name or MRN, and the sample's content_id followed it.
+            inputs=[f"nifti:{Path(os.fspath(p)).name}" for p in images.values()],
             params={"coord_system": coord_system, "transpose": bool(transpose)},
         )
         if label_set is not None:

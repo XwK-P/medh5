@@ -743,13 +743,23 @@ fn check_same_space(a: &Annotation, b: &Annotation) -> Result<()> {
 ///
 /// **A miss counts only where the other side looked** (§11.3): an unmatched
 /// object whose class the other annotation never examined is dropped and its
-/// class listed under `skipped`.
+/// class listed under `skipped`.  Two objects match at an IoU of at least
+/// `threshold`, which lies in (0, 1].
 pub fn compare_instances(
     a: &Annotation,
     b: &Annotation,
     threshold: f64,
     classes: Option<&[ClassKey]>,
 ) -> Result<InstanceAgreement> {
+    // As `medh5 agree --threshold` holds it: NaN matched no object, and 0 or
+    // less every pair, objects that do not touch among them.
+    let in_range = threshold > 0.0 && threshold <= 1.0;
+    if !in_range {
+        return Err(Error::invalid(format!(
+            "threshold {} is no IoU threshold: two objects match at an IoU in (0, 1]",
+            py_float(threshold)
+        )));
+    }
     for ann in [a, b] {
         if !OBJECT_KINDS.contains(&ann.kind()) {
             return Err(Error::invalid(format!(

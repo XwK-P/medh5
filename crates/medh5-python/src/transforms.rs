@@ -43,6 +43,7 @@ fn encode_affine(matrix: &Bound<'_, PyAny>) -> R<AnnotationPayload> {
 #[pyfunction]
 #[pyo3(signature = (field, *, field_grid, vector_space="world", interpolation="linear", extrapolation="zero", dtype=None))]
 fn encode_displacement(
+    py: Python<'_>,
     field: &Bound<'_, PyAny>,
     field_grid: &str,
     vector_space: &str,
@@ -54,14 +55,11 @@ fn encode_displacement(
         Some(d) => dtype_arg(d)?,
         None => DType::F32,
     };
-    Ok(AnnotationPayload::wrap(enc::encode_displacement(
-        &py_to_nd(field)?,
-        field_grid,
-        vector_space,
-        interpolation,
-        extrapolation,
-        dtype,
-    )?))
+    let field = py_to_nd(field)?;
+    let payload = py.detach(move || {
+        enc::encode_displacement(&field, field_grid, vector_space, interpolation, extrapolation, dtype)
+    })?;
+    Ok(AnnotationPayload::wrap(payload))
 }
 
 #[pyfunction]
@@ -110,8 +108,10 @@ fn check_transform_id(transform_id: &str) -> R<String> {
 #[pyfunction]
 fn inside_extent<'py>(py: Python<'py>, spatial: Vec<usize>, points: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
     let points = points2(points)?;
-    apply::check_points(&spatial, &points)?;
-    let inside = apply::inside_extent(&spatial, &points);
+    let inside = py.detach(move || -> medh5::Result<Vec<bool>> {
+        apply::check_points(&spatial, &points)?;
+        Ok(apply::inside_extent(&spatial, &points))
+    })?;
     Ok(array_to_py(py, ArrayD::from_shape_vec(IxDyn(&[inside.len()]), inside)?))
 }
 
@@ -133,7 +133,9 @@ fn linear_sample<'py>(
     coords: &Bound<'py, PyAny>,
     extrapolation: &str,
 ) -> R<Bound<'py, PyAny>> {
-    Ok(array_to_py(py, apply::linear_sample(&field_of(field)?, &points2(coords)?, extrapolation)?.into_dyn()))
+    let (field, coords) = (field_of(field)?, points2(coords)?);
+    let sampled = py.detach(move || apply::linear_sample(&field, &coords, extrapolation))?;
+    Ok(array_to_py(py, sampled.into_dyn()))
 }
 
 #[pyfunction]
@@ -144,7 +146,9 @@ fn cubic_sample<'py>(
     coords: &Bound<'py, PyAny>,
     extrapolation: &str,
 ) -> R<Bound<'py, PyAny>> {
-    Ok(array_to_py(py, apply::cubic_sample(&field_of(field)?, &points2(coords)?, extrapolation)?.into_dyn()))
+    let (field, coords) = (field_of(field)?, points2(coords)?);
+    let sampled = py.detach(move || apply::cubic_sample(&field, &coords, extrapolation))?;
+    Ok(array_to_py(py, sampled.into_dyn()))
 }
 
 #[pyfunction]
@@ -156,10 +160,9 @@ fn sample_field<'py>(
     interpolation: &str,
     extrapolation: &str,
 ) -> R<Bound<'py, PyAny>> {
-    Ok(array_to_py(
-        py,
-        apply::sample_field(&field_of(field)?, &points2(coords)?, interpolation, extrapolation)?.into_dyn(),
-    ))
+    let (field, coords) = (field_of(field)?, points2(coords)?);
+    let sampled = py.detach(move || apply::sample_field(&field, &coords, interpolation, extrapolation))?;
+    Ok(array_to_py(py, sampled.into_dyn()))
 }
 
 #[pyfunction]
@@ -174,7 +177,9 @@ fn to_world_vectors<'py>(
     grid: &Bound<'py, PyAny>,
     vector_space: &str,
 ) -> R<Bound<'py, PyAny>> {
-    Ok(array_to_py(py, apply::to_world_vectors(&points2(vectors)?, &grid_arg(grid)?, vector_space)?.into_dyn()))
+    let (vectors, grid) = (points2(vectors)?, grid_arg(grid)?);
+    let world = py.detach(move || apply::to_world_vectors(&vectors, &grid, vector_space))?;
+    Ok(array_to_py(py, world.into_dyn()))
 }
 
 #[pyfunction]
@@ -185,12 +190,14 @@ fn jacobian_determinant<'py>(
     grid: &Bound<'py, PyAny>,
     vector_space: &str,
 ) -> R<Bound<'py, PyAny>> {
-    Ok(array_to_py(py, apply::jacobian_determinant(&field_of(field)?, &grid_arg(grid)?, vector_space)?))
+    let (field, grid) = (field_of(field)?, grid_arg(grid)?);
+    Ok(array_to_py(py, py.detach(move || apply::jacobian_determinant(&field, &grid, vector_space))?))
 }
 
 #[pyfunction]
-fn folding_fraction(determinants: &Bound<'_, PyAny>) -> R<f64> {
-    Ok(apply::folding_fraction(&f64_array(determinants)?))
+fn folding_fraction(py: Python<'_>, determinants: &Bound<'_, PyAny>) -> R<f64> {
+    let determinants = f64_array(determinants)?;
+    Ok(py.detach(move || apply::folding_fraction(&determinants)))
 }
 
 /// TRE `‖T(p_F) − p_M‖` over world landmarks with matching row order

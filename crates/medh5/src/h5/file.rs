@@ -160,7 +160,7 @@ fn existing_mode(target: &Path) -> Option<u32> {
 
 /// Create the temporary file before any data, readable by its owner only when
 /// it will replace an existing file.
-fn precreate(tmp: &Path, mode: Option<u32>) -> Result<()> {
+fn precreate(tmp: &Path, mode: Option<u32>) -> std::io::Result<()> {
     let mut options = fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -193,7 +193,7 @@ fn set_mode(path: &Path, mode: u32) {
 ///
 /// Windows flushes only through a handle that may write, so this runs before
 /// the file is made read-only.
-fn fsync_path(path: &Path) -> Result<()> {
+fn fsync_path(path: &Path) -> std::io::Result<()> {
     let file = fs::OpenOptions::new().read(true).write(cfg!(windows)).open(path)?;
     file.sync_all()?;
     Ok(())
@@ -516,11 +516,15 @@ pub fn atomic_rewrite<T>(
 /// through the target's symbolic links.  A write cut short leaves the
 /// previous file whole --- what a text file written over its input needs.
 pub(crate) fn write_atomic(target: &Path, bytes: &[u8]) -> Result<()> {
+    let given = target;
     let target = resolve_links(target)?;
     let tmp = temporary_name(&target);
     let mode = existing_mode(&target);
-    precreate(&tmp, mode)?;
-    let result = (|| -> Result<()> {
+    // An I/O error names the file asked for, as the engine words one; the
+    // temporary's name would tell the caller nothing.
+    let named = |e: std::io::Error| crate::error::os_error(&e, given);
+    precreate(&tmp, mode).map_err(named)?;
+    let result = (|| -> std::io::Result<()> {
         fs::write(&tmp, bytes)?;
         fsync_path(&tmp)?;
         if let Some(mode) = mode {
@@ -535,7 +539,7 @@ pub(crate) fn write_atomic(target: &Path, bytes: &[u8]) -> Result<()> {
     if result.is_err() {
         remove_temporary(&tmp);
     }
-    result
+    result.map_err(named)
 }
 
 #[cfg(test)]

@@ -392,8 +392,11 @@ impl Manifest {
     }
 
     /// Write the manifest to `path`; an error names the file.
+    ///
+    /// Atomically: a write cut short --- a full disk, a crash --- left the
+    /// manifest a cohort's splits are drawn from truncated.
     pub fn save(&self, path: &Path) -> Result<PathBuf> {
-        std::fs::write(path, pretty(&self.to_json()) + "\n").map_err(|e| crate::error::os_error(&e, path))?;
+        crate::h5::file::write_atomic(path, (pretty(&self.to_json()) + "\n").as_bytes())?;
         Ok(path.to_path_buf())
     }
 

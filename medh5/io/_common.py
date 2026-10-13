@@ -28,18 +28,24 @@ def sanitize_key(name: str, *, fallback: str = "class") -> str:
 
 
 def sanitize_stem(text: str, *, limit: int = 200) -> str:
-    """A filename stem from free text: identifier characters only, truncated."""
+    """A filename stem from free text: ASCII identifier characters, truncated.
+
+    Latin letters lose their accents (``Müller`` is ``Muller``), and any other
+    character outside ``[A-Za-z0-9_.-]`` becomes ``_``.
+    """
     return str(_core.io_sanitize_stem(text, limit=limit))
 
 
 def sanitize_ascii_stem(text: str, *, limit: int = 200) -> str:
     """*text* as a sample id or a file name stem: ASCII identifier characters.
 
-    :func:`sanitize_stem` keeps every alphanumeric character, and a sample id
-    is ``[A-Za-z0-9_.-]`` (§2.2), so a name like ``Müller Hans`` made an id
-    the writer refused (E003).  Accents are dropped --- ``Muller_Hans`` ---
-    and any other character outside ASCII becomes ``_``, as punctuation does.
-    Text that is already such an id comes back unchanged (up to *limit*).
+    A sample id is ``[A-Za-z0-9_.-]`` (§2.2), so a name like ``Müller Hans``
+    must lose its accents --- ``Muller_Hans`` --- or the writer refuses it
+    (E003).  :func:`sanitize_stem` folds the Latin-1 and Latin Extended-A
+    letters itself; this decomposes *text* first (NFKD), so an accented
+    letter beyond them folds to its base letter too.  Any other character
+    outside ASCII becomes ``_``, as punctuation does.  Text that is already
+    such an id comes back unchanged (up to *limit*).
     """
     folded = "".join(
         c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c)

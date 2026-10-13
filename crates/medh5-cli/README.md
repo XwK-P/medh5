@@ -37,7 +37,8 @@ and says so when the flag is missing. The release binaries are built with it.
 integration with Python libraries — nibabel, pydicom, highdicom — and lives
 in the Python package, as does the dataloader row of `medh5 bench` (PyTorch).
 The binary hands them to a Python interpreter that has the package installed
-(`python3`, or `MEDH5_PYTHON`), and says what to install when there is none:
+(`python3` — `python` on Windows — or `MEDH5_PYTHON`), and says what to install
+when there is none:
 
 ```bash
 pip install "medh5[nifti,dicom]"

@@ -1485,6 +1485,23 @@ class TestNiftiInputs:
         )
         assert not report.of_kind("identity")
 
+    def test_W1_no_local_path_reaches_the_sample(self, volumes, tmp_path):
+        """The import activity named each volume by the path it was given ---
+        a local directory, and the patient name it often holds, among them ---
+        so the sample's `content_id` followed the machine.  It names the file,
+        as `migrate` does."""
+        where = tmp_path / "MRN-0042 Doe"
+        where.mkdir()
+        ct = where / "ct.nii.gz"
+        ct.write_bytes(volumes["ct"].read_bytes())
+        out = tmp_path / "case.medh5"
+        from_nifti({"CT": ct}, out, subject_id="P1")
+        with medh5.open(out) as sample:
+            provenance = sample.document.provenance
+            (activity,) = provenance.activities_by_type("import")
+            assert activity.inputs == ("nifti:ct.nii.gz",)
+            assert "MRN-0042" not in json.dumps(sample.document.to_json())
+
     def test_S2_2_a_non_ascii_file_name_names_an_ascii_sample(self, volumes, tmp_path):
         """A sample id is `[A-Za-z0-9_.-]`, and the default was the file name:
         `Müller Hans.medh5` was refused (E003) once every volume was read."""

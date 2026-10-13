@@ -215,7 +215,9 @@ STALE_CLAIMS: tuple[tuple[str, str, str, str | None], ...] = (
     ),
     (
         "strict offered as the check for a new file",
-        r"medh5 validate case(_0001)?\.medh5 --level strict",
+        # Any sample or glob: the 0.x guide's `new/*.medh5` escaped the first
+        # form of this, which named `case.medh5` and `case_0001.medh5` only.
+        r"medh5 validate \S+\.medh5 --level strict",
         "strict promotes W903 (no de-identification record) and W912 (no "
         "ontology code) to errors, so it fails every freshly written or "
         "imported sample; check one at --level integrity.",
@@ -314,6 +316,18 @@ STALE_PHRASES: tuple[tuple[str, str, str], ...] = (
         "each slice is held to where the regular stack puts it, within a tenth "
         "of the spacing and at least 0.01 mm; per-gap bounds let drift "
         "accumulate.",
+    ),
+    (
+        "the L3 read per core",
+        r"(?i)detected per-core",
+        "the chunk budget is one CPU's share of the L3: its size over the CPUs "
+        "sharing it.",
+    ),
+    (
+        "chunks said to be held between 512 KiB and 4 MiB",
+        r"(?i)chunks are held between 512 KiB and 4 MiB",
+        "the budget is held there; no computed chunk passes 4 MiB, and nothing "
+        "raises a smaller one to 512 KiB.",
     ),
 )
 

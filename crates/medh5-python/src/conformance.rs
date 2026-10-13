@@ -99,10 +99,25 @@ fn conformance_score<'py>(py: Python<'py>, root: PathBuf, submitted: &Bound<'py,
 
 // -- bench -------------------------------------------------------------------------------
 
+/// A count from Python, where a negative one reaches the engine as 0, which
+/// it refuses for what 0 would measure: taken unsigned, it raised PyO3's
+/// `OverflowError` instead.
+fn count(value: i64) -> usize {
+    if value < 0 {
+        0
+    } else {
+        usize::try_from(value).unwrap_or(usize::MAX)
+    }
+}
+
 /// Median milliseconds per call of a Python callable.
 #[pyfunction]
 #[pyo3(signature = (r#fn, *, repeats=20, warmup=3))]
-fn bench_timed(py: Python<'_>, r#fn: Py<PyAny>, repeats: usize, warmup: usize) -> R<f64> {
+fn bench_timed(py: Python<'_>, r#fn: Py<PyAny>, repeats: i64, warmup: i64) -> R<f64> {
+    let Ok(warmup) = usize::try_from(warmup) else {
+        return Err(medh5::Error::invalid(format!("warmup must be at least 0, not {warmup}")).into());
+    };
+    let repeats = count(repeats);
     let mut failure: Option<PyErr> = None;
     let value = bench::timed(
         || match r#fn.call0(py) {
@@ -135,9 +150,10 @@ fn bench_benchmark_file<'py>(
     py: Python<'py>,
     path: PathBuf,
     annotation: Option<String>,
-    patch: usize,
-    repeats: usize,
+    patch: i64,
+    repeats: i64,
 ) -> R<Bound<'py, PyList>> {
+    let (patch, repeats) = (count(patch), count(repeats));
     let found = py.detach(move || bench::benchmark_file(&path, annotation.as_deref(), patch, repeats))?;
     Ok(measurements_to_py(py, &found)?)
 }
@@ -176,12 +192,8 @@ fn bench_synthetic_many_class_sample(py: Python<'_>, directory: PathBuf, classes
 
 #[pyfunction]
 #[pyo3(signature = (path, *, patch=64, repeats=20))]
-fn bench_many_class_measurement<'py>(
-    py: Python<'py>,
-    path: PathBuf,
-    patch: usize,
-    repeats: usize,
-) -> R<Bound<'py, PyAny>> {
+fn bench_many_class_measurement<'py>(py: Python<'py>, path: PathBuf, patch: i64, repeats: i64) -> R<Bound<'py, PyAny>> {
+    let (patch, repeats) = (count(patch), count(repeats));
     let found = py.detach(move || bench::many_class_measurement(&path, patch, repeats))?;
     Ok(json_to_py(py, &found.to_json())?)
 }

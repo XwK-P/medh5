@@ -129,7 +129,9 @@ result.class_mismatches   # matched objects whose classes disagree
 `compare(a, b)` picks the comparison the kinds support — objects for two
 `instances` or `boxes` annotations, voxels for two voxel annotations — and
 refuses an argument the chosen one cannot use (`metric=` for objects,
-`threshold=` for voxels) rather than ignoring it.
+`threshold=` for voxels) rather than ignoring it. The IoU threshold lies in
+(0, 1], as for `medh5 agree --threshold`; NaN, 0 or less, and more than 1 are
+refused.
 
 Two files compare where their grids share a declared frame and are one lattice
 in it — two raters' copies of one scan. A class id is then a number within each
@@ -225,6 +227,15 @@ edit what the document hands back, not the record given. An edit through a
 record read before its member changed another way (`w.identity(...)` again,
 say) raises `RuntimeError` rather than undoing that change; read it again and
 edit that.
+
+A record added to an existing file goes through `medh5.amend`, which writes
+the new version beside the file and renames it over the old
+([Amending](python-api.md#amending)). Through a symbolic link, the file the
+link names is rewritten and the link kept; a file with several hard links is
+replaced at the path given only, and its other names keep the old version. A
+link in a directory anyone can write to, such as `/tmp`, that neither you nor
+the directory's owner owns is not followed: the amend is refused
+(`MEDH5FileError`), as the system would refuse to open the file through it.
 
 ## Collections and integrity
 

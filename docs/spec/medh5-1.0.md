@@ -79,7 +79,7 @@ Root attributes of a sample: on the file (`/`) of a `sample`, and on each sample
 
 | Attribute | Type | Req. | Value |
 |---|---|---|---|
-| `medh5_version` | `str` | **MUST** | `"MAJOR.MINOR"`: `"1.0"` in a file of this version. Readers **MUST** refuse a major version they do not implement (E002) and **MUST NOT** refuse a file solely for a higher minor: they read its supported projection, reporting what they do not know as unsupported (§16; [1.1](medh5-1.1.md) §2.2). |
+| `medh5_version` | `str` | **MUST** | `"MAJOR.MINOR"`: `"1.0"` in a file of this version. Its major is the text before the first `.`, compared exactly, and its minor a run of decimal digits; a minor that is not one is read as a higher minor (W913). Readers **MUST** refuse a major version they do not implement (E002) and **MUST NOT** refuse a file solely for a higher minor: they read its supported projection, reporting what they do not know as unsupported (§16; [1.1](medh5-1.1.md) §2.2). |
 | `medh5_kind` | `str` | **MUST** | `"sample"` or `"collection"`. |
 | `medh5_profiles` | `str[]` | **MUST** | Declared profiles (§1.3). |
 | `content_id` | `str` | SHOULD | `"<algo>:<hex>"` Merkle root (§13.2). |
@@ -441,7 +441,9 @@ axis, relative to level 0), `downsample_method` (`"mean"`, `"nearest"`, `"gaussi
 Every level **MUST** have its own grid with a geometry consistent with level 0: for factor *f_k*,
 `spacing'_k = spacing_k · f_k` and `origin' = origin + direction · (spacing ⊙ ((f − 1)/2))`
 (the half-voxel shift that keeps the physical field of view identical). A validator **MUST** check
-this to 1e-3 relative tolerance.
+this to a tolerance of 1e-3: each spacing relative to the derived spacing, and the origin to 1e-3 of
+the level's voxel along each of its axes (its offset from the derived origin, in the level's index
+coordinates).
 
 Voxel annotations MAY be pyramided identically, with `downsample_method = "nearest"` or `"max"`
 (never `"mean"`) — see §7.
@@ -1480,9 +1482,11 @@ Normative requirements:
 
 Recommended sizing (the 0.x L3-aware optimizer, generalised):
 
-* target 0.5–4 MiB per chunk, defaulting to ≈ 80 % of one L3 slice;
-* start from `2^ceil(log2(patch_hint))` per spatial axis, grow along the axis with the smallest
-  chunk/patch ratio, and stop when the mean ratio exceeds 1.5;
+* target 0.5–4 MiB per chunk, defaulting to ≈ 80 % of one CPU's share of the L3 (its size over the
+  CPUs sharing it);
+* start from `2^ceil(log2(patch_hint))` per spatial axis, or, where that passes 4 MiB, from the
+  patch, halved until within it; grow along the axis with the smallest chunk/patch ratio, and stop
+  when the mean ratio exceeds 1.5 or the next step passes 4 MiB;
 * never exceed the array extent on any axis;
 * `time` and `channel` axes get chunk 1 unless the whole axis is always read together.
 
@@ -1708,14 +1712,14 @@ that absence means *resolved*, not *unexamined*.
 |---|---|
 | `images/<name>` (all same shape) | `images/<name>` + one `grids/ref` shared by all |
 | `images.attrs.spacing/origin/direction/coord_system/axis_labels` | `grids/ref` attributes; `direction` stored 2-D. Without `spacing` the grid is uncalibrated (`units = "px"`, §3.5) rather than given a voxel size nobody measured; without `coord_system` it is written `"LPS"`, reported as a guess |
-| `images.attrs.shape` | `grids/ref.shape` |
+| `images.attrs.shape`, or the root's `shape` (0.x up to 0.5) | `grids/ref.shape` |
 | `images.attrs.patch_size` | `grids/ref.patch_hint` |
 | `seg/<name>` boolean volumes | one `annotations/<id>` of the kind §7.6 selects (`labelmap`, `layers`, `instances` or `bitmask`); mask names become label-set `key`s, and names that become one key (`liver`, `Liver`) are one class, whose voxels are their masks' union |
 | `bboxes` `(n, ndim, 2)` int | `annotations/<id>` kind `boxes`, `float32`, `space="index"`, `lo = min − 0.5`, `hi = max − 0.5` |
 | `bbox_scores`, `bbox_labels` | `scores`, `class_ids` (+ new label-set entries) |
-| `label`, `label_name` | `annotations/<id>` kind `classification`, `scope="sample"` |
+| `label`, `label_name` | `annotations/<id>` kind `classification`, `scope="sample"`, asserting the class `label_name` names, or without one a class of its own named by the `label`, reported as a guess; the classes are minted with the cohort's label set, after the mask and box classes |
 | (no notion of time) | a single declared timepoint `tp0` with `index = 0`; every grid gets `timepoint = "tp0"` |
-| `extra.review` | `/meta → provenance.activities` (type `review`), whose `outputs` are the annotations migrated from the file, + a `/meta → quality` record for each of them; the dict also stays verbatim in the file's `extra.legacy` entry, which keeps whatever else it held |
+| `extra.review` | `/meta → provenance.activities` (type `review`), whose `outputs` are the annotations migrated from the file, + a `/meta → quality` record for each of them. Its `status` is the review's where §11.2 defines one; any other — 0.x's `pending`, also its default, and `flagged`, which neither accepts nor rejects and is kept as an issue (`flagged`) — becomes `submitted`, reported as a guess. The dict also stays verbatim in the file's `extra.legacy` entry, which keeps whatever else it held |
 | `extra.nnunetv2` | `/meta → extra.nnunetv2` (preserved verbatim) + a generated label set; files grouped into one sample keep the first file's, and a different one stays in its file's `extra.legacy` entry |
 | every other `extra` key | `/meta → extra.legacy.<timepoint>` (preserved verbatim), one entry per file, under the timepoint it became |
 | `checksum_sha256` (whole file) | per-object `digest` + root `content_id` |
@@ -1733,7 +1737,10 @@ patient, because that is the unit this specification defines (§3.7). When patie
 established across studies — commonly because de-identification replaced it — a converter **MUST**
 fall back to one sample per study and **MUST** report the fallback prominently rather than silently
 emitting study-scoped samples that look subject-scoped. Migration from 0.x defaults to study
-grouping, since a 0.x file carries no reliable subject key of its own.
+grouping, since a 0.x file carries no reliable subject key of its own. A study given no subject is
+named for its file, never its path: its `sample_id` is the file's stem made a sample id (§2.2),
+unique within the migration, and its `subject_id` is `study:<sample_id>`. A local path often holds
+a patient's name, and the sample's `content_id` would follow the machine.
 
 ## Appendix C — Implementation status
 
@@ -1764,10 +1771,10 @@ any machine. On one, with a 192×256×256 synthetic CT and eight classes, a mult
 costs 2.3 ms, foreground centre sampling 0.03 ms (O(1) in volume size, via §14.3; 0.04 ms at 63
 classes), a metadata-only read 0.13 ms, and `open()` → first patch 1.6 ms.
 
-Seventy-four clauses have been corrected — ten during implementation, eleven in the 1.x package
+Seventy-seven clauses have been corrected — ten during implementation, eleven in the 1.x package
 releases that followed, four when the engine was written a second time, in Rust, for the 2.0
 package, one when it implemented 1.1, twenty-eight in the audits of 2.0 before its release, and
-twenty in the audit of 2.0.1 — each because
+twenty-three in the audit of 2.0.1 — each because
 writing the code showed the text was not implementable, not unambiguous, or not what the
 implementation could honestly promise, as written:
 
@@ -1847,6 +1854,9 @@ implementation could honestly promise, as written:
 | §2.5 | Found by the audit of 2.0.1: readers **MUST** accept an integer attribute of any width and signedness, and the type an attribute table names bounds its value. §2.5 stored every integer as `int64`, while the tables name `uint16` for `class_ids`, `annotated_class_ids` and `ignore_id`, and the reference writer stores the first two as `uint16` and `ignore_id` as `int64`: a reader held to either text refused files the other described. |
 | §7.1 | Found by the audit of 2.0.1: "no ignore region" is no voxel of `data` holding `ignore_id`; a region kept in a sibling `mask` (§7.7) does not count. A `uint16` labelmap whose classes are all at most 254, with only a sibling mask, was E411 under one reading and valid under another; the reference validator reads the stored voxels. |
 | §10 | Found by the audit of 2.0.1: grids in different timepoints do not share a frame *except as §3.4 permits*. "Never share a frame" contradicted §3.4, which allows it when the acquisitions genuinely share one, as in a single interrupted session, and makes it a warning (W910), not an error. |
+| §2.1 | Found by the audit of 2.0.1; enforced from 2.0.2: the major of `medh5_version` is the text before the first `.`, compared exactly, and its minor a run of decimal digits; a minor that is not one is read as a higher minor (W913). The clause defined neither part, and the reference's support check trimmed whitespace and accepted a sign while its readers compared the major as text, so `" 1.0"` was supported, validated and amendable to one half of the engine and refused at open by the other. |
+| §4.3 | Found by the audit of 2.0.1; enforced from 2.0.2: a level's origin is held to 1e-3 of its own voxel along each axis — its offset from the derived origin, in the level's index coordinates — and its spacing to 1e-3 relative. "1e-3 relative tolerance" read as relative to the origin's magnitude, so about 500 voxels from the world's zero — a whole-body CT, a microscope stage in µm — a level missing its half-voxel shift passed the writer and the validator (**E105**). |
+| Appendix B | Found by the audit of 2.0.1; enforced from 2.0.2: the mapping reads the root `shape` 0.x wrote up to 0.5; a sample `label` without a `label_name` asserts a class of its own; a review status §11.2 does not define becomes `submitted`, a flag kept as an issue; and a study given no subject is `study:<sample_id>`, named for its file's stem. The table read the shape from `images` only, gave an unnamed label no class, and mapped no status, so the reference kept a sample label only when its name matched a mask's or a box's class, migrated a `pending` or `flagged` review as `reviewed`, and named a study without a subject for its absolute path. |
 
 ### C.2 Prototype checks
 

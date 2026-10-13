@@ -1342,6 +1342,24 @@ class TestErrorsNameTheFile:
             assert code == EXIT_ERROR, command
             assert repr(str(target)) in out.err, command
 
+    def test_a_file_replaced_whole_is_named(self, capsys, tmp_path, sample_path):
+        """A manifest and a label set are replaced whole, through a temporary
+        beside them; a label set that could not be written said only "No such
+        file or directory (os error 2)"."""
+        target = tmp_path / "nodir" / "x.json"
+        code, out = run(
+            capsys, "dataset", "index", str(sample_path.parent), "-o", str(target)
+        )
+        assert code == EXIT_ERROR
+        assert repr(str(target)) in out.err
+        old = tmp_path / "old.medh5"
+        write_legacy_sample(old, images={"CT": np.zeros((4, 4, 4), np.int16)})
+        argv = ["migrate", str(old), "-o", str(tmp_path / "m")]
+        code, out = run(capsys, *argv, "--write-labels", str(target))
+        assert code == EXIT_ERROR
+        assert repr(str(target)) in out.err
+        assert not target.parent.exists()
+
     def test_a_report_that_cannot_be_written(self, capsys, tmp_path):
         old = tmp_path / "old.medh5"
         write_legacy_sample(old, images={"CT": np.zeros((4, 4, 4), np.int16)})

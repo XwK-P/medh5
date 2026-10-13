@@ -169,7 +169,9 @@ def build_label_set(
     ``Liver``) are one class, named by the first, and *report* lists them
     (a ``label_set`` guess).  Two mappings that give a key different ids keep
     the first, and an id two keys ask for goes to the first of them, the
-    other being minted a new one; each is a ``label_set`` warning.
+    other being minted a new one; each is a ``label_set`` warning.  A file
+    that cannot be read is an ``unreadable`` warning, and the label set is
+    minted from the rest.
     """
     label_set, notes = _core.legacy_build_label_set([os.fspath(p) for p in paths])
     if report is not None:

@@ -144,6 +144,18 @@ class TestMigrate:
         assert {c.key for c in load_sidecar(sidecar)} == {"liver", "lesion"}
         assert report.of_kind("label_set")
 
+    def test_a_sidecar_is_replaced_whole(self, legacy, tmp_path):
+        """A sidecar was written in place, so a write cut short left the
+        label set under review truncated."""
+        from medh5.io.legacy import build_label_set, load_sidecar, write_sidecar
+
+        label_set = build_label_set(legacy)
+        sidecar = write_sidecar(label_set, tmp_path / "labels.json")
+        before = sidecar.stat().st_ino
+        assert write_sidecar(label_set, sidecar) == sidecar
+        assert sidecar.stat().st_ino != before, "a new file, not the old rewritten"
+        assert {c.key for c in load_sidecar(sidecar)} == {"liver", "lesion"}
+
     def test_an_unreadable_file_is_reported_not_fatal(self, legacy, tmp_path):
         from medh5.io.legacy import migrate_paths
 
@@ -152,6 +164,27 @@ class TestMigrate:
         report = migrate_paths([*legacy, broken], tmp_path / "out")
         assert report.warnings
         assert len(list((tmp_path / "out").glob("*.medh5"))) == 3
+
+    def test_a_label_set_names_the_files_it_could_not_read(self, legacy, tmp_path):
+        """``migrate --write-labels`` passed over a file it could not read
+        and wrote a label set without that file's classes, with exit status
+        0.  Each run that mints a label set reports such a file once."""
+        from medh5.cli import EXIT_ERROR, main
+        from medh5.io.legacy import build_label_set, migrate_paths
+
+        broken = tmp_path / "broken.medh5"
+        broken.write_bytes(b"not hdf5")
+        report = ConversionReport()
+        label_set = build_label_set([*legacy, broken], report=report)
+        assert {c.key for c in label_set} == {"liver", "lesion"}
+        (note,) = report.of_kind("unreadable")
+        assert note.severity == "warning" and note.detail == {"path": str(broken)}
+        report = migrate_paths([*legacy, broken], tmp_path / "out")
+        assert [n.detail["path"] for n in report.of_kind("unreadable")] == [str(broken)]
+        labels = tmp_path / "labels.json"
+        argv = ["migrate", *map(str, [*legacy, broken]), "-o", str(tmp_path / "o")]
+        assert main([*argv, "--write-labels", str(labels)]) == EXIT_ERROR
+        assert labels.exists(), "the label set of the files it could read"
 
     def test_a_file_that_cannot_be_migrated_is_reported_and_the_rest_are(
         self, legacy, tmp_path

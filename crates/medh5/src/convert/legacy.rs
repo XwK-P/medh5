@@ -272,8 +272,16 @@ pub fn sample_key(subject_id: &str) -> String {
 /// and the report names them; two files' mappings that disagree keep the
 /// first one's id, as does an id two keys ask for, and each is a warning.
 /// Keyed by name instead, `liver` and `Liver` were two classes with one key,
-/// and the label set a curator is asked to review was refused (E302).
-pub fn build_label_set(paths: &[&Path], mut report: Option<&mut ConversionReport>) -> Result<LabelSet> {
+/// and the label set a curator is asked to review was refused (E302).  A
+/// file that cannot be read is an `unreadable` warning, and the label set is
+/// minted from the rest.
+pub fn build_label_set(paths: &[&Path], report: Option<&mut ConversionReport>) -> Result<LabelSet> {
+    mint_label_set(paths, report, true)
+}
+
+/// [`build_label_set`]; `unreadable` says whether the report hears of a file
+/// that could not be read, which [`migrate_paths`] reports itself.
+fn mint_label_set(paths: &[&Path], mut report: Option<&mut ConversionReport>, unreadable: bool) -> Result<LabelSet> {
     let mut names: IndexMap<String, Vec<String>> = IndexMap::new();
     let mut add = |name: &str| {
         let spellings = names.entry(key(name)).or_default();
@@ -284,9 +292,18 @@ pub fn build_label_set(paths: &[&Path], mut report: Option<&mut ConversionReport
     // key -> (id, the file whose mapping gave it)
     let mut reused: IndexMap<String, (i64, String)> = IndexMap::new();
     let mut conflicts: Vec<(String, String, i64, String, i64)> = Vec::new();
+    let mut skipped: Vec<(String, String)> = Vec::new();
     for path in paths {
-        let Ok(meta) = read_meta(path) else { continue };
         let source = path.to_string_lossy().into_owned();
+        let meta = match read_meta(path) {
+            Ok(meta) => meta,
+            Err(e) => {
+                // Skipped in silence, its classes were missing from the label
+                // set a curator reviews, with exit status 0.
+                skipped.push((source, e.to_string()));
+                continue;
+            }
+        };
         for name in &meta.seg_names {
             add(name);
         }
@@ -356,6 +373,15 @@ pub fn build_label_set(paths: &[&Path], mut report: Option<&mut ConversionReport
         classes.push(LabelClass::new(class_id, k.clone(), spellings[0].clone())?);
     }
     if let Some(log) = report.as_deref_mut() {
+        if unreadable {
+            for (source, e) in &skipped {
+                log.warn(
+                    "unreadable",
+                    format!("{source}: {e}; none of its classes are in the label set"),
+                    json!({"path": source}),
+                );
+            }
+        }
         for (k, spellings) in names.iter().filter(|(_, s)| s.len() > 1) {
             log.guess(
                 "label_set",
@@ -513,7 +539,8 @@ pub fn migrate_paths(
     let mut log = ConversionReport::new("migrate", &format!("{} file(s)", paths.len()));
     let labels = match label_set {
         Some(l) => l.clone(),
-        None => build_label_set(paths, Some(&mut log))?,
+        // A file it cannot read is reported below, once.
+        None => mint_label_set(paths, Some(&mut log), false)?,
     };
     let mut occasions = Vec::new();
     let mut sources = Vec::new();
@@ -1110,9 +1137,12 @@ impl LegacyReview {
 }
 
 /// Write the minted label set for review before a cohort-wide migration.
+///
+/// Atomically: a write cut short --- a full disk, a crash --- left a
+/// truncated label set where the one under review was.
 pub fn write_sidecar(label_set: &LabelSet, path: &Path) -> Result<PathBuf> {
     let text = crate::json::dumps(&label_set.to_json(None), crate::json::Style::PYTHON.with_indent(Some(2)));
-    std::fs::write(path, format!("{text}\n"))?;
+    crate::h5::file::write_atomic(path, format!("{text}\n").as_bytes())?;
     Ok(path.to_path_buf())
 }
 

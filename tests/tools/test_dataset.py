@@ -130,6 +130,16 @@ class TestManifest:
         assert [e.to_json() for e in again] == [e.to_json() for e in manifest]
         assert again.sha256() == manifest.sha256()
 
+    def test_a_save_replaces_the_manifest_whole(self, manifest, tmp_path):
+        """A manifest was written in place, so a write cut short --- a full
+        disk, a crash --- left it truncated; it is replaced whole now."""
+        target = manifest.save(tmp_path / "m.json")
+        before = target.stat().st_ino
+        assert manifest.save(target) == target
+        assert target.stat().st_ino != before, "a new file, not the old rewritten"
+        assert Manifest.load(target).sha256() == manifest.sha256()
+        assert [p.name for p in tmp_path.glob(".*")] == []
+
     def test_the_digest_ignores_where_and_when(self, manifest):
         """A cohort scanned on another machine must digest the same."""
         moved = Manifest(

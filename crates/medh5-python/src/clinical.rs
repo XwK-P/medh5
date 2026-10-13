@@ -131,8 +131,11 @@ impl ClinicalHandle {
     fn document<'py>(&self, py: Python<'py>, document_id: &str) -> R<Bound<'py, PyAny>> {
         Ok(json_to_py(py, &self.inner.document(document_id)?.to_json())?)
     }
+    /// Every record, each document's text read from the file now.
     fn records<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyAny>> {
-        Ok(json_to_py(py, &self.inner.records()?.to_json())?)
+        let inner = self.inner.clone();
+        let doc = py.detach(move || inner.records().map(|r| r.to_json()))?;
+        Ok(json_to_py(py, &doc)?)
     }
     #[pyo3(signature = (cutoff_us, policy=None))]
     fn select<'py>(&self, py: Python<'py>, cutoff_us: i64, policy: Option<&Bound<'py, PyAny>>) -> R<Bound<'py, PyAny>> {
@@ -389,12 +392,14 @@ impl CacheWriterHandle {
         let entry = CacheEntry { digest: String::new(), ..CacheEntry::from_json(&record(entry)?)? };
         let values = py_to_nd(values)?;
         let writer = self.inner.as_mut().ok_or_else(|| medh5::Error::invalid("this cache writer has finished"))?;
-        Ok(json_to_py(py, &writer.add(entry, &values)?.to_json())?)
+        // The digest and the write, of values already out of Python.
+        let added = py.detach(move || writer.add(entry, &values).map(|e| e.to_json()))?;
+        Ok(json_to_py(py, &added)?)
     }
     /// Write the manifest and its checksum; returns the checksum.
-    fn commit(&mut self) -> R<String> {
+    fn commit(&mut self, py: Python<'_>) -> R<String> {
         let writer = self.inner.take().ok_or_else(|| medh5::Error::invalid("this cache writer has finished"))?;
-        Ok(writer.commit()?)
+        Ok(py.detach(move || writer.commit())?)
     }
     /// Discard the half-written cache.
     fn abort(&mut self) {

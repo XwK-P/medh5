@@ -478,6 +478,10 @@ with medh5.open("cohort/P-03.medh5") as s:
     c.records()                        # -> ClinicalRecords: everything, as one bundle
 ```
 
+`c.select` raises `MEDH5VersionError` for a later minor version's projection
+(`s.support == "projection"`): a certified selection claims clinical-training
+support, which 1.1 §2.2 forbids for a version this package does not implement.
+
 | | |
 |---|---|
 | `Clock.relative(clock_id, origin_description)` | The subject clock every time is measured on |

@@ -2172,6 +2172,63 @@ class TestCommandLine:
         assert main(["task", "validate", str(broken)]) == EXIT_ERROR
         assert "T101" in capsys.readouterr().out
 
+    @pytest.mark.parametrize("alias", ["exact", "relative", "symlink", "hardlink"])
+    def test_S3_3_reconcile_never_writes_over_a_source(
+        self, setup, tmp_path: Path, capsys, alias: str
+    ):
+        """``task reconcile -o`` saved the manifest over whatever ``--out``
+        named, a source sample too, with exit status 0 (F11). A source, by
+        any path or link, is refused before anything is written."""
+        task, paths = setup
+        manifest = task.save(tmp_path / "cohort" / "t.task.json")
+        source = paths["P-02"]
+        if alias == "exact":
+            out = source
+        elif alias == "relative":
+            (tmp_path / "sub").mkdir()
+            out = tmp_path / "sub" / ".." / "cohort" / source.name
+        else:
+            out = tmp_path / "alias.medh5"
+            try:
+                (out.symlink_to if alias == "symlink" else out.hardlink_to)(source)
+            except OSError as exc:  # pragma: no cover - no links on this file system
+                pytest.skip(str(exc))
+        before = source.read_bytes(), manifest.read_bytes()
+        capsys.readouterr()
+        assert main(["task", "reconcile", str(manifest), "-o", str(out)]) == EXIT_ERROR
+        assert "a source of subject 'P-02'" in capsys.readouterr().err
+        assert (source.read_bytes(), manifest.read_bytes()) == before
+        elsewhere = tmp_path / "r.task.json"
+        assert main(["task", "reconcile", str(manifest), "-o", str(elsewhere)]) == 0
+        assert TaskManifest.load(elsewhere).validate() == []
+
+    def test_S3_1_a_manifest_that_cannot_be_saved_is_named(
+        self, setup, tmp_path: Path, capsys
+    ):
+        """The atomic save said only "No such file or directory (os error 2)"
+        where the command line names the file, as for every other output."""
+        task, _ = setup
+        manifest = task.save(tmp_path / "cohort" / "t.task.json")
+        out = tmp_path / "nodir" / "r.task.json"
+        capsys.readouterr()
+        assert main(["task", "reconcile", str(manifest), "-o", str(out)]) == EXIT_ERROR
+        assert repr(str(out)) in capsys.readouterr().err
+
+    def test_S3_3_reconcile_never_writes_over_a_collection_it_reads(
+        self, setup, tmp_path: Path, capsys
+    ):
+        _, paths = setup
+        root = tmp_path / "cohort"
+        shard = pack([paths["P-01"]], root / "s.medh5c", keys=["P-01"])
+        member = SourceRef.pin(shard, sample_key="P-01", uri=shard.name)
+        manifest = task_for(root, paths, refs={"P-01": member}).save(root / "t.json")
+        before = shard.read_bytes()
+        capsys.readouterr()
+        argv = ["task", "reconcile", str(manifest), "-o", str(shard)]
+        assert main(argv) == EXIT_ERROR
+        assert "'s.medh5c::P-01', a source" in capsys.readouterr().err
+        assert shard.read_bytes() == before
+
     def test_clinical_commands(self, setup, tmp_path: Path, capsys):
         _, paths = setup
         path = str(paths["P-01"])

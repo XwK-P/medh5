@@ -65,11 +65,16 @@ class TestBench:
 
     def test_timed_returns_a_median(self):
         from medh5.bench import timed
+        from medh5.errors import MEDH5ValidationError
 
         assert timed(lambda: None, repeats=3, warmup=1) >= 0.0
+        assert timed(lambda: None, repeats=1, warmup=0) >= 0.0
+        with pytest.raises(MEDH5ValidationError, match="^warmup must be"):
+            timed(lambda: None, warmup=-1)
 
     @pytest.mark.parametrize(
-        ("patch", "repeats", "refused"), [(8, 0, "repeats"), (0, 2, "patch")]
+        ("patch", "repeats", "refused"),
+        [(8, 0, "repeats"), (0, 2, "patch"), (8, -1, "repeats"), (-8, 2, "patch")],
     )
     def test_S14_a_run_that_measures_nothing_is_refused(
         self, indexed_cohort, patch, repeats, refused
@@ -77,17 +82,18 @@ class TestBench:
         """The command line refused `--repeats 0`, and the Python API ran it:
         no run has no median, so the row was NaN, which the report could not
         print and `benchmark_file` could not read back (`TypeError`).  A
-        patch of side 0 timed reads of nothing."""
+        patch of side 0 timed reads of nothing.  A negative count raised
+        PyO3's `OverflowError`; it is refused as 0 is."""
         from medh5.bench import benchmark_file, many_class_measurement, timed
         from medh5.errors import MEDH5ValidationError
 
         for measure in (benchmark_file, many_class_measurement):
             with pytest.raises(MEDH5ValidationError, match=f"^{refused} must be"):
                 measure(indexed_cohort[0], patch=patch, repeats=repeats)
-        if repeats == 0:
+        if repeats <= 0:
             ran = []
             with pytest.raises(MEDH5ValidationError, match="^repeats must be"):
-                timed(lambda: ran.append(1), repeats=0)
+                timed(lambda: ran.append(1), repeats=repeats)
             assert ran == []
 
     def test_the_throughput_run_measures_steady_state(self, indexed_cohort):

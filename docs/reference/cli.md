@@ -639,7 +639,9 @@ medh5 task reconcile MANIFEST [--base DIR] [--out OUT]
 ```
 
 Record, per subject, the event versions several of its fragments hold and the
-digest they share — what preflight checks duplicates against.
+digest they share — what preflight checks duplicates against. The manifest is
+replaced whole, in place or at `--out`; an `--out` that is one of the task's
+sources, by any path or link, is refused before anything is written.
 
 ### `medh5 cache validate`
 

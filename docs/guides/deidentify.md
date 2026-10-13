@@ -146,6 +146,14 @@ it processes every path even when one is refused — a clinical sample always is
 `reports` (`None` for a refused path), so the `uid_map` of a file already
 rewritten is never lost.
 
+`--apply` writes the scrubbed version beside the file and renames it over the
+original. Through a symbolic link, the file the link names is rewritten and the
+link kept. A file with several hard links is replaced at the path given only,
+and its other names keep the original, identifiers and all: remove them. A link
+in a directory anyone can write to, such as `/tmp`, that neither you nor the
+directory's owner owns is not followed: the file is refused (`MEDH5FileError`),
+as the system would refuse to open it through the link.
+
 Four behaviours worth knowing before you run it:
 
 **It re-scans its own output.** After amending, `--apply` runs the same rules

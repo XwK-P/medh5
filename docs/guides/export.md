@@ -99,6 +99,9 @@ contours you imported, or drew, as contours.
 
 Each ROI takes its class's display name and the label set's colour for it, and
 text beyond ASCII is written as UTF-8 under `SpecificCharacterSet` `ISO_IR 192`.
+The names are used only when every class exported has its own, and each fits
+an `ROIName` (1 to 64 printable characters, no backslash); otherwise every ROI
+is named for its class key, and the report says why (`roi_names`).
 **Crossing contours mean their union** in medh5, while readers that combine an
 ROI's contours by exclusive-or or even-odd fill cancel the overlap, so two
 contours of one class that cross on a plane are a warning

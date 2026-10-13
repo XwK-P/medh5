@@ -347,6 +347,19 @@ class TestAgreement:
             assert result.matched and result.matched[0][2] == pytest.approx(1.0)
             assert result.mean_iou == pytest.approx(1.0)
 
+    @pytest.mark.parametrize("threshold", [float("nan"), -1.0, 0.0, 1.5, float("inf")])
+    def test_an_iou_threshold_lies_in_0_to_1(self, tmp_path, label_set, threshold):
+        """As ``medh5 agree --threshold`` holds it.  The Python API took any
+        float: NaN matched no object, and 0 or less every pair, objects that
+        do not touch among them, each scored as agreement."""
+        path = write_raters(tmp_path / "raters.medh5", label_set)
+        with medh5.open(path) as sample:
+            a, b = sample.annotations["r1"], sample.annotations["r2"]
+            for measure in (compare_instances, compare):
+                with pytest.raises(MEDH5ValidationError, match=r"in \(0, 1\]"):
+                    measure(a, b, threshold=threshold)
+            assert compare_instances(a, b, threshold=1.0).threshold == 1.0
+
     def test_no_matches_scores_zero(self, tmp_path, label_set):
         path = write_raters(
             tmp_path / "nomatch.medh5",

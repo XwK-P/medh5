@@ -377,12 +377,13 @@ impl Grid {
 }
 
 /// Run a flat `S`-per-point function over an array of points of shape
-/// `(S,)` or `(N, S)` (or any `(..., S)`), keeping that shape.
+/// `(S,)` or `(N, S)` (or any `(..., S)`), keeping that shape.  It runs with
+/// the GIL released: a point set can be a whole volume's voxel centres.
 fn points_through<'py>(
     py: Python<'py>,
     points: &Bound<'py, PyAny>,
     s: usize,
-    f: impl FnOnce(&[f64]) -> medh5::Result<Vec<f64>>,
+    f: impl FnOnce(&[f64]) -> medh5::Result<Vec<f64>> + Send,
 ) -> R<Bound<'py, PyAny>> {
     let array = f64_array(points)?;
     let shape = array.shape().to_vec();
@@ -393,8 +394,10 @@ fn points_through<'py>(
         ))
         .into());
     }
-    let flat: Vec<f64> = array.iter().copied().collect();
-    let out = f(&flat)?;
+    let out = py.detach(move || {
+        let flat: Vec<f64> = array.iter().copied().collect();
+        f(&flat)
+    })?;
     Ok(array_to_py(py, ArrayD::from_shape_vec(IxDyn(&shape), out)?))
 }
 

@@ -24,7 +24,8 @@ medh5 migrate old/*.medh5 -o new/ --write-labels labels.json
 A class is its key, and a key is the name lowercased, with anything but ASCII
 letters, digits and `_` made `_` and the `_` at its ends dropped: names that
 differ only so (`liver`, `Liver`) are already one class, and the report lists
-them. Open `labels.json`. Assign the ids you want, fix the names, and add the
+them. A file the pass cannot read is a warning (`unreadable`, exit status 1),
+and none of its classes is in the label set. Open `labels.json`. Assign the ids you want, fix the names, and add the
 hierarchy if the names imply one. **This is the step that is worth an hour**,
 because every later decision references these ids. Keep the keys: the
 migration finds each mask, box and sample label's class by the key its name
