@@ -25,13 +25,9 @@ The scope is §3 (W0–W10) of `audit-2.0.2-2.1.0.md`, including the revision-2 
 
 At `82d1631` (all of the above except dataset), the full test run passed: pytest 2997 passed, 2 skipped, 95.03% coverage; `cargo test --workspace` green; the corpus 163/163 through both command lines; fmt, ruff and mypy clean. Neither clippy nor mkdocs had been run on the merged tree yet. Dataset's item 4 (manifest paths relative to `root`) is deferred: it needs a manifest-format decision.
 
-**In progress** (each uncommitted diff is snapshotted to `patches/<name>.patch` every 15 minutes):
-- `legacy` (from `c3b9f0e`) and `spec`;
-- since 07:55Z, wave 2 from `a7351b6`: `comp`, `clin`, `pyapi` and `geom`.
+**Test run at `a7351b6`** (all merges above): pytest 3081 passed, 2 skipped, 95.11% coverage; `cargo test --workspace` green; the corpus 163/163 through both command lines; fmt, ruff and mypy clean.
 
-**Not started:**
-- `cli` (waiting for disk space);
-- `docs` and `ci`: the agents exist, and their worktrees have been fast-forwarded to `a7351b6`. They resume once the main tree's extension is rebuilt.
+**In progress** (each uncommitted diff is snapshotted to `patches/<name>.patch` every 15 minutes): `legacy` (from `c3b9f0e`), `spec`, and, from `a7351b6`, `comp`, `clin`, `pyapi`, `geom`, `cli`, `docs` and `ci`. That is every remaining workstream. The weekly limit stopped them on 2026-10-12 at 08:00Z; they resumed on 2026-10-13.
 
 The plans are in `prompts/`. Handoffs for docs, spec, cli and others are listed in each `reports/<name>.md`, under "Handoffs" and "Spec wording".
 
