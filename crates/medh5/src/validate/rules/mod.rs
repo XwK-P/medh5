@@ -182,8 +182,9 @@ pub fn children(group: &hdf5::Group) -> Result<Vec<(String, Node)>> {
 
 /// What a member of `group` is when it is neither a group nor a dataset ---
 /// a soft link to nothing, an external link, a committed type --- for a
-/// message; `None` when it is one of the two.
-fn unresolved(group: &hdf5::Group, name: &str) -> Option<String> {
+/// message; `None` when it is one of the two.  The readers refuse such a
+/// member in the same words (E001).
+pub(crate) fn unresolved(group: &hdf5::Group, name: &str) -> Option<String> {
     match ops::node_kind(group, name) {
         Some(NodeKind::Group | NodeKind::Dataset) => None,
         Some(NodeKind::Other) if ops::link_kind(group, name) == Some(LinkKind::External) => {

@@ -400,7 +400,8 @@ impl AnnotationHandle {
     }
     fn summary<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyAny>> {
         self.live()?;
-        Ok(json_to_py(py, &self.inner.summary()?)?)
+        let ann = self.inner.clone();
+        Ok(json_to_py(py, &py.detach(move || ann.summary())?)?)
     }
     fn __repr__(&self) -> String {
         self.inner.repr()
@@ -1238,13 +1239,15 @@ impl IndexHandle {
         Ok(out)
     }
     fn bbox<'py>(&self, py: Python<'py>, class_id: i64) -> R<Bound<'py, PyAny>> {
-        Ok(match self.inner.bbox(class_id)? {
+        let index = self.inner.clone();
+        Ok(match py.detach(move || index.bbox(class_id))? {
             Some(b) => array_to_py(py, b.into_dyn()),
             None => py.None().into_bound(py),
         })
     }
     fn coords<'py>(&self, py: Python<'py>, class_id: i64) -> R<Bound<'py, PyAny>> {
-        Ok(array_to_py(py, self.inner.coords(class_id)?.into_dyn()))
+        let index = self.inner.clone();
+        Ok(array_to_py(py, py.detach(move || index.coords(class_id))?.into_dyn()))
     }
     /// Draw `n` foreground voxel coordinates of a class; `rng` seeds the draw
     /// (an int, ints, or a `numpy.random.Generator`; fresh entropy when `None`).
@@ -1257,7 +1260,9 @@ impl IndexHandle {
         rng: Option<Bound<'py, PyAny>>,
     ) -> R<Bound<'py, PyAny>> {
         let mut rng = crate::rng::rng_arg(rng.as_ref())?;
-        Ok(array_to_py(py, self.inner.sample_foreground(class_id, n, &mut rng)?.into_dyn()))
+        let index = self.inner.clone();
+        let drawn = py.detach(move || index.sample_foreground(class_id, n, &mut rng))?;
+        Ok(array_to_py(py, drawn.into_dyn()))
     }
     #[pyo3(signature = (mode="inverse_frequency"))]
     fn class_weights<'py>(&self, py: Python<'py>, mode: &str) -> R<Bound<'py, PyDict>> {
@@ -1275,7 +1280,8 @@ impl IndexHandle {
         Ok(self.inner.has_occupancy()?)
     }
     fn occupancy_plane<'py>(&self, py: Python<'py>, position: usize) -> R<Bound<'py, PyAny>> {
-        Ok(match self.inner.occupancy_plane(position)? {
+        let index = self.inner.clone();
+        Ok(match py.detach(move || index.occupancy_plane(position))? {
             Some(p) => array_to_py(py, p),
             None => py.None().into_bound(py),
         })
@@ -1544,16 +1550,23 @@ impl SampleHandle {
         Ok(py.detach(move || sample.compute_content_id())?)
     }
     fn summary<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyAny>> {
-        Ok(json_to_py(py, &self.sample()?.summary()?)?)
+        let sample = self.sample()?;
+        Ok(json_to_py(py, &py.detach(move || sample.summary())?)?)
     }
     #[pyo3(signature = (class_key=None, *, measure=true))]
-    fn tracks(&self, class_key: Option<&Bound<'_, PyAny>>, measure: bool) -> R<crate::tracking::Tracking> {
+    fn tracks(
+        &self,
+        py: Python<'_>,
+        class_key: Option<&Bound<'_, PyAny>>,
+        measure: bool,
+    ) -> R<crate::tracking::Tracking> {
         let key = match class_key {
             Some(k) if !k.is_none() => Some(crate::convert::class_key(k)?),
             _ => None,
         };
         let sample = self.sample()?;
-        Ok(crate::tracking::Tracking::wrap(medh5::curation::tracking::build_tracks(&sample, key.as_ref(), measure)?))
+        let tracks = py.detach(move || medh5::curation::tracking::build_tracks(&sample, key.as_ref(), measure))?;
+        Ok(crate::tracking::Tracking::wrap(tracks))
     }
 }
 

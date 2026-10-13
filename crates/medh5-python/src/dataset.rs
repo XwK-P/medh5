@@ -192,10 +192,13 @@ fn suffix_list(suffixes: Option<Vec<String>>) -> Vec<String> {
 
 #[pyfunction]
 #[pyo3(signature = (root, *, suffixes=None))]
-fn dataset_find(root: PathBuf, suffixes: Option<Vec<String>>) -> R<Vec<String>> {
+fn dataset_find(py: Python<'_>, root: PathBuf, suffixes: Option<Vec<String>>) -> R<Vec<String>> {
     let suffixes = suffix_list(suffixes);
-    let refs: Vec<&str> = suffixes.iter().map(String::as_str).collect();
-    Ok(manifest::find_with(&root, &refs)?.into_iter().map(|p| p.to_string_lossy().into_owned()).collect())
+    let found = py.detach(move || {
+        let refs: Vec<&str> = suffixes.iter().map(String::as_str).collect();
+        manifest::find_with(&root, &refs)
+    })?;
+    Ok(found.into_iter().map(|p| p.to_string_lossy().into_owned()).collect())
 }
 
 /// `(manifest JSON, failures)`; `on_error="raise"` re-raises the first.
@@ -295,8 +298,9 @@ fn dataset_manifest_load<'py>(py: Python<'py>, path: PathBuf) -> R<Bound<'py, Py
 }
 
 #[pyfunction]
-fn dataset_manifest_stale(doc: &Bound<'_, PyAny>) -> R<Vec<String>> {
-    Ok(manifest_arg(doc)?.stale())
+fn dataset_manifest_stale(py: Python<'_>, doc: &Bound<'_, PyAny>) -> R<Vec<String>> {
+    let found = manifest_arg(doc)?;
+    Ok(py.detach(move || found.stale()))
 }
 
 // -- splits ------------------------------------------------------------------------------------

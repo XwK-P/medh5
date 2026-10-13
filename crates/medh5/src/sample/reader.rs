@@ -1000,8 +1000,9 @@ pub fn require_major(root: &hdf5::Location, path: &Path) -> Result<String> {
         AttrValue::Str(s) => s,
         other => attrs::stringify_value(&other),
     };
-    let major = text.split('.').next().unwrap_or("");
-    if major != FORMAT_VERSION.split('.').next().unwrap_or("") {
+    // `support` decides: the major is the text before the first `.`, so a
+    // version it calls unsupported is the one every reader refuses.
+    if crate::version::support(&text) == crate::version::Support::Unsupported {
         return Err(Error::Version(format!("{shown} is MEDH5 {text}; this reader implements {FORMAT_VERSION}")));
     }
     Ok(text)

@@ -861,8 +861,10 @@ impl SampleWriter {
     /// floating-point mask holding a value other than 0 and 1 is refused
     /// (E411) rather than read as set wherever it is non-zero.
     #[pyo3(signature = (ann_id, mask, *, grid, task="other", prov=None, codec=None))]
+    #[allow(clippy::too_many_arguments)]
     fn add_mask(
         &mut self,
+        py: Python<'_>,
         ann_id: &str,
         mask: &Bound<'_, PyAny>,
         grid: &str,
@@ -872,7 +874,8 @@ impl SampleWriter {
     ) -> R<()> {
         let mask = mask_arg(mask, &format!("mask {}", medh5::json::repr_str(ann_id)))?;
         let prov = prov_arg(prov)?;
-        Ok(self.writer()?.add_mask(ann_id, mask, grid, task, prov.as_deref(), codec)?)
+        let writer = self.writer()?;
+        Ok(py.detach(move || writer.add_mask(ann_id, mask, grid, task, prov.as_deref(), codec))?)
     }
 
     /// Drop an annotation, and any index entry derived from it.
@@ -1094,6 +1097,7 @@ impl SampleWriter {
     #[allow(clippy::too_many_arguments)]
     fn add_contours(
         &mut self,
+        py: Python<'_>,
         ann_id: &str,
         polygons: &Bound<'_, PyAny>,
         grid: Option<&str>,
@@ -1110,7 +1114,9 @@ impl SampleWriter {
     ) -> R<Group> {
         let found = polygons_of(&self.inner, polygons)?;
         let options = common(annotated_classes, closure, timepoints, prov, quality, derived_from, Some(task), codec)?;
-        let group = self.writer()?.add_contours(ann_id, &found, placement(grid, Some(space), frame_uid), options)?;
+        let at = placement(grid, Some(space), frame_uid);
+        let writer = self.writer()?;
+        let group = py.detach(move || writer.add_contours(ann_id, &found, at, options))?;
         Ok(Group::wrap(group))
     }
 
@@ -1121,6 +1127,7 @@ impl SampleWriter {
     #[allow(clippy::too_many_arguments)]
     fn add_mesh(
         &mut self,
+        py: Python<'_>,
         ann_id: &str,
         vertices: &Bound<'_, PyAny>,
         faces: &Bound<'_, PyAny>,
@@ -1147,17 +1154,21 @@ impl SampleWriter {
         let offsets = is_given(mesh_offsets).map(|o| i64_vec(&o)).transpose()?;
         let mesh_ids = opt_keys(mesh_class_ids)?;
         let options = common(annotated_classes, closure, timepoints, prov, quality, derived_from, Some(task), codec)?;
-        let group = self.writer()?.add_mesh(
-            ann_id,
-            &vertices,
-            &faces,
-            normals.as_ref(),
-            vertex_ids.as_deref(),
-            offsets.as_deref(),
-            mesh_ids.as_deref(),
-            placement(grid, Some(space), frame_uid),
-            options,
-        )?;
+        let at = placement(grid, Some(space), frame_uid);
+        let writer = self.writer()?;
+        let group = py.detach(move || {
+            writer.add_mesh(
+                ann_id,
+                &vertices,
+                &faces,
+                normals.as_ref(),
+                vertex_ids.as_deref(),
+                offsets.as_deref(),
+                mesh_ids.as_deref(),
+                at,
+                options,
+            )
+        })?;
         Ok(Group::wrap(group))
     }
 
@@ -1351,9 +1362,10 @@ impl SampleWriter {
     }
 
     /// Add a logical-record bundle: `clinical`, `events`, `documents`, `links`.
-    fn add_records(&mut self, records: &Bound<'_, PyAny>) -> R<()> {
+    fn add_records(&mut self, py: Python<'_>, records: &Bound<'_, PyAny>) -> R<()> {
         let records = medh5::clinical::ClinicalRecords::from_json(&crate::clinical::record(records)?)?;
-        Ok(self.writer()?.add_records(records)?)
+        let writer = self.writer()?;
+        Ok(py.detach(move || writer.add_records(records))?)
     }
 
     /// The clinical records so far (an amended file's once loaded), or `None`.

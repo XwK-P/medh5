@@ -145,11 +145,17 @@ pub(super) fn check_geometric(
                     ),
                 ));
             }
-            // A NaN is no length: `v < 0.0` let one through.
-            if let Some(sizes) = sub_dataset(group, "sizes") {
-                if read_f64(&sizes)?.iter().any(|v| !(v.is_finite() && *v >= 0.0)) {
-                    out.push(ctx.err("E406", location.clone(), "`sizes` must be finite, non-negative edge lengths"));
-                }
+        }
+        // A NaN is no length: `v < 0.0` let one through.
+        if let Some(sizes) = sub_dataset(group, "sizes") {
+            if read_f64(&sizes)?.iter().any(|v| !(v.is_finite() && *v >= 0.0)) {
+                out.push(ctx.err("E406", location.clone(), "`sizes` must be finite, non-negative edge lengths"));
+            }
+        }
+        // Nor a place: a box centred at NaN is nowhere (§8.3).
+        if let Some(centers) = sub_dataset(group, "centers") {
+            if read_f64(&centers)?.iter().any(|v| !v.is_finite()) {
+                out.push(ctx.err("E406", location.clone(), "`centers` must be finite"));
             }
         }
     }

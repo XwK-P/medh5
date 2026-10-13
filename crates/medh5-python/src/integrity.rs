@@ -31,14 +31,16 @@ pub fn verify_result_to_py<'py>(py: Python<'py>, r: &verify::VerifyResult) -> Py
 
 #[pyfunction]
 #[pyo3(signature = (path, array, algo="sha256"))]
-fn array_digest(path: &str, array: &Bound<'_, PyAny>, algo: &str) -> R<String> {
-    Ok(digest::array_digest(path, &py_to_nd(array)?, algo)?)
+fn array_digest(py: Python<'_>, path: &str, array: &Bound<'_, PyAny>, algo: &str) -> R<String> {
+    let array = py_to_nd(array)?;
+    Ok(py.detach(|| digest::array_digest(path, &array, algo))?)
 }
 
 #[pyfunction]
 #[pyo3(signature = (payload, algo="sha256"))]
-fn digest_bytes(payload: &[u8], algo: &str) -> R<String> {
-    Ok(medh5::digest::digest_bytes(payload, algo)?)
+fn digest_bytes(py: Python<'_>, payload: &[u8], algo: &str) -> R<String> {
+    // `bytes` are immutable: other threads may run while they are read.
+    Ok(py.detach(|| medh5::digest::digest_bytes(payload, algo))?)
 }
 
 #[pyfunction]
@@ -212,7 +214,8 @@ fn verify_object(py: Python<'_>, root: &Bound<'_, PyAny>, path: &str) -> R<bool>
 
 #[pyfunction]
 fn stale_index_entries<'py>(py: Python<'py>, root: &Bound<'py, PyAny>) -> R<Bound<'py, PyTuple>> {
-    Ok(PyTuple::new(py, verify::stale_index_entries(&group_of(root)?)?)?)
+    let g = group_of(root)?;
+    Ok(PyTuple::new(py, py.detach(move || verify::stale_index_entries(&g))?)?)
 }
 
 #[pyfunction]
@@ -232,13 +235,15 @@ fn verify_root<'py>(
 
 #[pyfunction]
 fn raw_chunks<'py>(py: Python<'py>, dataset: &Bound<'py, PyAny>) -> R<Bound<'py, PyList>> {
-    let chunks = verify::raw_chunks(&crate::nodes::dataset_arg(dataset)?.get().ds)?;
+    let ds = crate::nodes::dataset_arg(dataset)?.get().ds.clone();
+    let chunks = py.detach(move || verify::raw_chunks(&ds))?;
     Ok(PyList::new(py, chunks.iter().map(|c| PyBytes::new(py, c)))?)
 }
 
 #[pyfunction]
 fn subtrees_identical<'py>(py: Python<'py>, a: &Bound<'py, PyAny>, b: &Bound<'py, PyAny>) -> R<Bound<'py, PyTuple>> {
-    Ok(PyTuple::new(py, verify::subtrees_identical(&group_of(a)?, &group_of(b)?)?)?)
+    let (a, b) = (group_of(a)?, group_of(b)?);
+    Ok(PyTuple::new(py, py.detach(move || verify::subtrees_identical(&a, &b))?)?)
 }
 
 #[pyfunction]
@@ -268,9 +273,13 @@ fn fix_paths<'py>(
 #[pyfunction]
 #[pyo3(signature = (root, skip=vec!["index".to_string()]))]
 fn collect_digests<'py>(py: Python<'py>, root: &Bound<'py, PyAny>, skip: Vec<String>) -> R<Bound<'py, PyDict>> {
-    let skip: Vec<&str> = skip.iter().map(String::as_str).collect();
+    let g = group_of(root)?;
+    let found = py.detach(move || {
+        let skip: Vec<&str> = skip.iter().map(String::as_str).collect();
+        medh5::integrity::digest::collect_digests(&g, &skip)
+    })?;
     let out = PyDict::new(py);
-    for (path, digest) in medh5::integrity::digest::collect_digests(&group_of(root)?, &skip)? {
+    for (path, digest) in found {
         out.set_item(path, digest)?;
     }
     Ok(out)

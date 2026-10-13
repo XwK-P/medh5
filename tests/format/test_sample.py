@@ -1324,6 +1324,48 @@ class TestOpen:
                 _ = sample.reference_grid
             assert exc.value.code == "E111"
 
+    @staticmethod
+    def _found(path: Path, location: str) -> list[str]:
+        return [
+            d.code for d in validate_file(path).diagnostics if d.location == location
+        ]
+
+    def test_S2_3_an_image_that_leads_nowhere_is_refused_as_E001(self, sample_path):
+        """Listing the images raised a bare `KeyError` for a member that is a
+        link to nothing: a defect of the file, read as a name the caller got
+        wrong.  The reader now refuses it under the validator's code."""
+        with h5py.File(sample_path, "r+") as handle:
+            handle["images"]["PET"] = h5py.SoftLink("/nowhere")
+        with medh5.open(sample_path) as sample:
+            with pytest.raises(MEDH5ValidationError, match="'PET'") as exc:
+                list(sample.images)
+            assert exc.value.code == "E001"
+            with pytest.raises(MEDH5ValidationError):
+                sample.summary()
+        assert self._found(sample_path, "/images/PET") == [exc.value.code]
+
+    def test_S4_2_an_image_of_strings_is_refused_as_E001(self, tmp_path: Path):
+        """An image is numbers; one of strings raised a bare `TypeError` from
+        `summary()`, `dtype` and `read()`, as for an argument of the wrong
+        type, where the validator reports the file (E001)."""
+        path = tmp_path / "text.medh5"
+        with Organs.writer(path):
+            pass
+        with h5py.File(path, "r+") as handle:
+            old = handle["images/CT"]
+            text = handle["images"].create_dataset("CT.text", old.shape, dtype="S4")
+            for key, value in old.attrs.items():
+                text.attrs[key] = value
+            del handle["images/CT"]
+            handle["images"].move("CT.text", "CT")
+        with medh5.open(path) as sample:
+            image = sample.images["CT"]
+            for call in (image.summary, image.read, lambda: image.dtype):
+                with pytest.raises(MEDH5ValidationError, match="'CT'") as exc:
+                    call()
+                assert exc.value.code == "E001"
+        assert self._found(path, "/images/CT") == ["E001"]
+
 
 class TestDocument:
     def test_meta_is_a_scalar_utf8_string(self, sample_path):

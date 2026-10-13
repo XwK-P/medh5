@@ -74,7 +74,16 @@ impl Image {
         let node = match ops::node_kind(parent, image_id) {
             Some(ops::NodeKind::Group) => ImageNode::Multiscale(parent.group(image_id)?),
             Some(ops::NodeKind::Dataset) => ImageNode::Single(parent.dataset(image_id)?),
-            _ => return Err(Error::Key(repr_str(image_id))),
+            _ if ops::link_kind(parent, image_id).is_none() => return Err(Error::Key(repr_str(image_id))),
+            // A member that leads nowhere is the file's defect, not a name
+            // the caller got wrong: E001, as the validator reports it.
+            _ => {
+                let what = crate::validate::rules::unresolved(parent, image_id).unwrap_or_default();
+                return Err(Error::coded(
+                    "E001",
+                    format!("image {} is {what}, so it cannot be read", repr_str(image_id)),
+                ));
+            }
         };
         Ok(Image { image_id: image_id.to_string(), node, grids, level: None })
     }
@@ -247,7 +256,18 @@ impl Image {
     }
 
     pub fn dtype(&self) -> Result<DType> {
-        data::dtype(&self.dataset()?)
+        data::dtype(&self.dataset()?).map_err(|e| self.not_numbers(e))
+    }
+
+    /// An image's samples are numbers (§4.2): a dataset of strings or
+    /// compounds is the file's defect --- E001, as the validator reports it
+    /// --- not an argument of the wrong type.  `data`'s only `TypeError` on
+    /// a read is that one.
+    fn not_numbers(&self, error: Error) -> Error {
+        match error {
+            Error::Type(why) => Error::coded("E001", format!("image {}: {why} (§4.2)", repr_str(&self.image_id))),
+            other => other,
+        }
     }
 
     pub fn nbytes(&self) -> Result<usize> {
@@ -296,7 +316,7 @@ impl Image {
 
     /// Read with an explicit selection (indices may drop axes).
     pub fn read_index(&self, index: &[Index], physical: bool, dtype: Option<DType>) -> Result<NdArray> {
-        let block = data::read_region(&self.dataset()?, index)?;
+        let block = data::read_region(&self.dataset()?, index).map_err(|e| self.not_numbers(e))?;
         if physical {
             let (slope, intercept) = self.rescale()?;
             if slope != 1.0 || intercept != 0.0 {

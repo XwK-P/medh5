@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+import time
 from pathlib import Path
 
 import h5py
@@ -81,6 +83,39 @@ class TestDigests:
     def test_unsupported_algorithm(self):
         with pytest.raises(MEDH5ValidationError):
             digest_bytes(b"x", "md5")
+
+    def test_a_digest_lets_other_threads_run(self):
+        """A digest is a pass over a whole payload, run with the GIL released
+        as every long engine call is: held, another Python thread stood still
+        for the whole of it.  The other thread stamps the time as it runs; a
+        gap as long as the call is the GIL held."""
+        payload = bytes(4 << 20)
+        start = time.perf_counter()
+        digest_bytes(payload, "sha512")
+        rate = len(payload) / max(time.perf_counter() - start, 1e-6)
+        # About 0.4 s of hashing, within 256 MiB (of untouched zero pages).
+        payload = bytes(min(int(rate * 0.4), 256 << 20))
+        stamps: list[float] = []
+        done = threading.Event()
+
+        def tick() -> None:
+            while not done.is_set():
+                stamps.append(time.perf_counter())
+                time.sleep(0.0005)
+
+        ticker = threading.Thread(target=tick)
+        ticker.start()
+        try:
+            time.sleep(0.01)
+            t0 = time.perf_counter()
+            digest_bytes(payload, "sha512")
+            t1 = time.perf_counter()
+        finally:
+            done.set()
+            ticker.join()
+        inside = [t for t in stamps if t0 < t < t1]
+        longest = float(np.diff([t0, *inside, t1]).max())
+        assert longest < (t1 - t0) / 2, f"no tick for {longest:.3f} of {t1 - t0:.3f} s"
 
     def test_streaming_matches_whole_array(self, sample_path):
         """A stored dataset digests as its in-memory array does.

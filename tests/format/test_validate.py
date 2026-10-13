@@ -190,6 +190,46 @@ class TestRules:
             refused = True
         assert ("E002" in codes(sample_path, "structural")) is refused
 
+    @pytest.mark.parametrize(
+        "version, support",
+        [
+            ("1.0", "full"),
+            ("1", "full"),
+            ("1.2", "projection"),
+            ("1.0 ", "projection"),
+            ("1. 0", "projection"),
+            (" 1.0", None),
+            ("01.0", None),
+            ("+1.0", None),
+        ],
+    )
+    def test_S2_1_whitespace_is_no_part_of_a_version(
+        self, sample_path, version, support
+    ):
+        """`MAJOR.MINOR` (§2.1; 1.1 §2).  The support a version gets trimmed
+        it, and the readers did not: ` 1.0` was a fully supported version no
+        reader opens, and `1.0 ` was validated and amended as 1.0.  Before the
+        major, whitespace or a sign is another major; after it, a minor this
+        engine does not know: read as a projection, and never amended."""
+        with h5py.File(sample_path, "r+") as handle:
+            handle.attrs["medh5_version"] = version
+        before = sample_path.read_bytes()
+        if support is None:
+            with pytest.raises(MEDH5VersionError):
+                medh5.open(sample_path)
+            with pytest.raises(MEDH5VersionError):
+                medh5.amend(sample_path)
+            assert sample_path.read_bytes() == before
+            return
+        with medh5.open(sample_path) as sample:
+            assert sample.support == support
+        warned = "W913" in at(validate_file(sample_path, level="structural"), "/")
+        assert warned is (support == "projection")
+        if support == "projection":
+            with pytest.raises(MEDH5VersionError):
+                medh5.amend(sample_path)
+            assert sample_path.read_bytes() == before
+
     def test_S2_1_another_major_is_not_read_as_this_one(self, sample_path):
         """Every rule still ran after E002, so a file of another major was
         reported for every way it is not a 1.x file (§2.1: readers refuse it)."""
@@ -439,6 +479,16 @@ class TestNonFiniteValues:
         with h5py.File(path, "r+") as handle:
             handle["annotations/obb/sizes"][0, 0] = np.nan
         assert at(validate_file(path), "/annotations/obb") == ["E406"]
+
+    @pytest.mark.parametrize("value", [np.nan, np.inf])
+    def test_S8_3_a_centre_that_is_not_finite_is_E406(self, tmp_path, value):
+        # The writer refuses one; the validator checked only `sizes`.
+        path = self._boxes(tmp_path / "b.medh5")
+        with h5py.File(path, "r+") as handle:
+            handle["annotations/obb/centers"][0, 2] = value
+        report = validate_file(path)
+        (found,) = [d for d in report.diagnostics if d.location == "/annotations/obb"]
+        assert found.code == "E406" and "`centers`" in found.message
 
     @pytest.mark.parametrize("value", [np.nan, np.inf])
     def test_S10_3_an_affine_entry_that_is_not_finite_is_E504(self, tmp_path, value):
@@ -902,8 +952,13 @@ class TestNodeKinds:
         report = validate_file(sample_path, level="structural")
         (found,) = [d for d in report.diagnostics if d.code == "E201"]
         assert "no member of `images` is one" in found.message
-        with medh5.open(sample_path) as sample, pytest.raises(KeyError):
+        # The reader refuses it as the file's defect, not as a missing name.
+        with (
+            medh5.open(sample_path) as sample,
+            pytest.raises(MEDH5ValidationError) as exc,
+        ):
             sample.images["CT_tp0"].read()
+        assert exc.value.code == "E001"
 
 
 class TestStrictPromotion:
