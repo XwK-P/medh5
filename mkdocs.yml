@@ -3,7 +3,11 @@ site_description: >-
   Self-describing HDF5 container for one medical imaging subject and all of its
   ground truth: multi-timepoint images with segmentation, detection,
   classification and registration annotations, provenance and integrity.
-site_url: https://medh5.readthedocs.io/
+# Read the Docs serves each version under its own prefix (`/en/latest/`,
+# `/en/stable/`) and names it in READTHEDOCS_CANONICAL_URL. Material builds every
+# page's canonical link and the sitemap from `site_url`, so the bare host pointed
+# them at paths the site does not serve. A build elsewhere keeps the bare host.
+site_url: !ENV [READTHEDOCS_CANONICAL_URL, "https://medh5.readthedocs.io/"]
 repo_url: https://github.com/XwK-P/medh5
 repo_name: XwK-P/medh5
 edit_uri: edit/main/docs/
@@ -17,13 +21,15 @@ docs_dir: docs
 # requirements file is not documentation and is excluded; it only lives here
 # because that is where Read the Docs looks for it. So are the scratch files and
 # JSON results the benchmark scripts write beside themselves when run from a
-# checkout: a local build would otherwise publish megabytes of HDF5. And so is
-# the bytecode Python leaves beside the examples once the test suite has
-# imported them.
+# checkout: a local build would otherwise publish megabytes of HDF5 --- as is the
+# sample `reference_writer.py` writes to the directory it runs in, which the
+# examples page runs it from. And so is the bytecode Python leaves beside the
+# examples once the test suite has imported them.
 exclude_docs: |
   requirements.txt
   examples/*.h5
   examples/*.json
+  examples/*.medh5
   __pycache__/
 
 # A broken cross-reference in a normative specification is a defect, not a
@@ -109,9 +115,7 @@ markdown_extensions:
   - pymdownx.highlight:
       anchor_linenums: true
       pygments_lang_class: true
-  - pymdownx.inlinehilite
   - pymdownx.superfences
-  - pymdownx.snippets
 
 plugins:
   - search

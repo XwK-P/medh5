@@ -84,9 +84,15 @@ with medh5.open("case_0001.medh5") as s:
     organs = s.annotations["organs"]
     organs.kind                            # "layers"
     organs.dense(["liver", "lesion"])      # (2, 64, 96, 96) bool
-    organs.labelmap()                      # (64, 96, 96) of class ids
+    organs.labelmap(priority=["lesion"])   # (64, 96, 96) of class ids
     organs.voxel_counts()                  # {1: 75000, 2: 0, 3: 600}
 ```
+
+`dense()` gives each class its own plane, so the overlap survives. `labelmap()`
+flattens to one class per voxel, and where liver and lesion meet one of them has
+to go: `priority=` names the classes that win, highest first. Without it,
+`labelmap()` paints in class order and warns that it flattened 600 overlapping
+voxels.
 
 Reads are lazy. `medh5.open` parses the metadata document and nothing else;
 slicing an image reads only the chunks that slice touches.

@@ -23,7 +23,8 @@ then. Format versions [**1.0**](https://medh5.readthedocs.io/en/stable/spec/medh
 ```python
 import medh5
 
-with medh5.open("case_0001.medh5") as s:
+# A subject with two visits: images, segmentation, registration, tracking.
+with medh5.open("subject.medh5") as s:
     s.identity.subject_id                              # "BRATS-GLI-01234"
     s.at("tp1").images["CT_tp1"].read(physical=True)   # HU, not raw counts
     s.annotations["organs"].dense(["liver", "spleen"]) # any encoding, one API
@@ -71,13 +72,15 @@ Other systems, building from source, the 1.x line and troubleshooting are on the
 ## Documentation
 
 **[medh5.readthedocs.io](https://medh5.readthedocs.io/)** — tutorials, how-to
-guides, the Python and CLI reference, and the normative specification.
+guides, the Python and CLI reference, and the normative specifications.
 
 [Write your first sample](https://medh5.readthedocs.io/en/stable/tutorials/first-sample/) ·
 [How-to guides](https://medh5.readthedocs.io/en/stable/guides/) ·
 [Python API](https://medh5.readthedocs.io/en/stable/reference/python-api/) ·
 [CLI](https://medh5.readthedocs.io/en/stable/reference/cli/) ·
-[Specification](https://medh5.readthedocs.io/en/stable/spec/medh5-1.0/)
+Specification [1.0](https://medh5.readthedocs.io/en/stable/spec/medh5-1.0/),
+[1.1](https://medh5.readthedocs.io/en/stable/spec/medh5-1.1/) and the
+[task and cache contract](https://medh5.readthedocs.io/en/stable/spec/task-cache-1/)
 
 ## What the format is for
 
@@ -185,7 +188,7 @@ which is the same code compiled ahead of time.
 
 ```bash
 medh5 info case.medh5                  # grids, images, annotations, coverage
-medh5 validate case.medh5 --level strict
+medh5 validate case.medh5 --level integrity
 medh5 verify case.medh5                # digests and content_id
 medh5 timeline case.medh5              # visits and intervals
 medh5 track case.medh5 --class lesion  # per-lesion volumes across visits

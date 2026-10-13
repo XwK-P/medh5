@@ -153,3 +153,14 @@ install `medh5[h5py]` and `import hdf5plugin` before opening the file. To hand
 files to someone with a plain HDF5 build, write them with
 `medh5 recompress --profile portable`, which uses gzip; see
 [Storage](reference/storage.md).
+
+**A read fails with "filter plugins disabled".** The dataset names a
+compression filter medh5 does not carry. Blosc2 and Zstandard are compiled in
+and HDF5 brings gzip, shuffle and Fletcher32, which covers every storage
+profile, so medh5 does not load HDF5's filter plugins unless asked: HDF5 would
+load whatever shared library its search path holds, as whoever opened the file,
+and on Windows that path includes a directory any local user can create. To
+read such a file, set `HDF5_PLUGIN_PATH` to the directory holding the filter,
+or `MEDH5_ALLOW_PLUGINS=1` to load from HDF5's standard directory
+(`/usr/local/hdf5/lib/plugin`, or `%ALLUSERSPROFILE%\hdf5\lib\plugin` on
+Windows). Both are read once, before the process opens its first file.

@@ -121,8 +121,8 @@ The reason this is not a dictionary lookup:
 | State | Meaning |
 |---|---|
 | `present` | the object was found at this visit |
-| `resolved` | the class **was examined** at this visit and the object was not found |
-| `unexamined` | nobody looked for that class at this visit |
+| `resolved` | the class **was examined** at this visit, outside any ignore region, and the object was not found |
+| `unexamined` | nobody looked for that class at this visit, or an ignore region (§7.7) may hide it |
 
 ```python
 tracking.state_at(7, "tp1")     # "resolved"
@@ -130,15 +130,23 @@ tracking.states(7)              # {"tp0": "present", "tp1": "resolved"}
 tracking.is_new(7)
 tracking.is_resolved(7)
 tracking.is_persistent(7)
-tracking.unexamined()           # {timepoint: instance ids nobody looked for}
-tracking.coverage               # {timepoint: class ids examined there}
+tracking.unexamined()           # {timepoint: instance ids unexamined there}
+tracking.coverage               # {timepoint: class ids whose absence there is a finding}
 ```
 
 A lesion that responded to treatment and a lesion nobody segmented at the
 follow-up look identical if you only check whether the id is present. They are
 completely different findings, and the state is derived from
-`annotated_class_ids` — from what the annotator committed to — rather than from
-absence.
+`annotated_class_ids` and the annotation's ignore region — from what the
+annotator committed to — rather than from absence.
+
+An annotation whose ignore region holds any voxel examined its classes only
+outside that region, and nothing records whether a missing object lay inside
+it. So it adds nothing to `coverage`: an object it does not show is
+`unexamined` at its visit, never `resolved`. The baseline is read the same
+way — `is_new` asks that the baseline examined the class and did not find the
+object — so a lesion first seen at follow-up is not new where the baseline
+ignored part of its volume.
 
 ### Class conflicts
 
@@ -220,10 +228,14 @@ Two details decide whether this check is worth running.
 
 **Resolve between the frames, not the timepoints — and not by grid id either.**
 A visit may hold a CT grid and a PET grid on different frames.
-`transform_between("tp0", "tp1")` searches every frame of the first visit
-against every frame of the second and returns the first path it finds, so a CT
-registration makes the timepoint-level question answer "yes" for a PET dataset
-that has no registration of its own. Naming the two grids instead is not enough:
+`transform_between("tp0", "tp1")` takes the frames of each visit's grids, in
+grid-id order, and tries them pair by pair: the first pair that is one frame
+answers `None`, and the first pair a path relates answers with that transform,
+whichever comes first. So the answer depends on how the grids are named. A CT
+registration answers "yes" for a PET dataset that has no registration of its
+own; and two PET grids on one shared frame answer `None` for the whole visit
+pair, CT registration or not, when their ids sort before the CT grids'.
+Naming the two grids instead is not enough:
 grid ids and timepoint ids are separate namespaces (spec §2.3), so a grid may
 legitimately be called `tp0`, and a key is read as a timepoint before it is read
 as a grid — which puts the whole visit's frames back in play for exactly the

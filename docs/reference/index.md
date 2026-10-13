@@ -16,7 +16,7 @@ What everything is, rather than how to do anything. For task-shaped answers, see
 
 | | |
 |---|---|
-| **[Annotation kinds](annotations.md)** | Thirteen kinds: five voxel encodings, boxes, contours, keypoints, meshes, classification. |
+| **[Annotation kinds](annotations.md)** | Thirteen kinds: six voxel kinds (five encodings and `mask`), boxes, oriented boxes, keypoints, points, contours, meshes, classification. |
 | **[Converters](converters.md)** | NIfTI, DICOM, DICOM SEG, RTSTRUCT, nnU-Net v2, and 0.x migration. |
 | **[Curation records](curation.md)** | Provenance, quality, agreement, identity, de-identification. |
 | **[Storage](storage.md)** | On-disk layout, codec profiles, chunking, integrity, collections. |

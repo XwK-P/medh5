@@ -179,11 +179,16 @@ jacobian_determinant(field, grid)                           # for a displacement
 ```
 
 `transform_between` accepts a timepoint id, a grid id or a frame uid at either
-end, matched in that order. It searches the frame graph, composing chains and
-traversing a link backwards only where its inverse can be *evaluated* — an
-affine's or identity's analytic inverse, or a stored `inverse_id` — not merely where
-`invertible=True` is declared. It returns `None` when no path exists — it does
-not invent one — and raises `KeyError` for a key that is not a timepoint, a grid
+end, matched in that order. A timepoint stands for the frames of all its grids:
+their pairs are tried in grid-id order, and the first that is one frame answers
+`None`, the first a path relates answers with that transform — so between two
+visits of several frames, resolve between the frames the images you read are
+on ([why](../guides/longitudinal.md#train-on-the-pairs)). It searches the frame
+graph, composing chains and traversing a link backwards only where its inverse
+can be *evaluated* — an affine's or identity's analytic inverse, or a stored
+`inverse_id` — not merely where `invertible=True` is declared. It returns
+`None` when the two are one frame or no path exists — it does not invent one —
+and raises `KeyError` for a key that is not a timepoint, a grid
 or a frame of reference in the sample, so a mistyped `"TP1"` is not mistaken for
 "no registration exists". [Registration between visits](../guides/registration.md)
 covers what `None` means and when to store an inverse.
@@ -199,8 +204,8 @@ tracking.is_new(instance_id)
 tracking.is_resolved(instance_id)
 tracking.is_persistent(instance_id)
 tracking.class_conflicts()              # objects whose class changed between visits
-tracking.unexamined()                   # {timepoint: instance ids nobody looked for}
-tracking.coverage                       # {timepoint: class ids examined there}
+tracking.unexamined()                   # {timepoint: instance ids unexamined there}
+tracking.coverage                       # {timepoint: class ids whose absence there is a finding}
 
 for instance_id, track in tracking.items():
     track.volumes                       # {timepoint: volume in its grid's units cubed}
@@ -208,7 +213,11 @@ for instance_id, track in tracking.items():
     track.at("tp1")                     # the Observation, or None
 ```
 
-See [Longitudinal](../guides/longitudinal.md).
+`resolved` means the class was examined at that visit, outside any ignore
+region, and the object was not found; `unexamined`, that nobody looked for the
+class there or that an ignore region (§7.7) may hide the object. An annotation
+whose ignore region holds any voxel counts towards no visit's `coverage`. See
+[Longitudinal](../guides/longitudinal.md#three-states-not-two).
 
 ### Integrity
 
@@ -250,9 +259,16 @@ ds.attrs["modality"]              # attributes, decoded as spec §2.5 fixes
 "images" in s.root, s.root["annotations"].keys()
 ```
 
-A view lives as long as the sample it came from: after `s.close()` using one
-raises `MEDH5FileError`. For HDF5 features the views do not cover, open the
-file with `h5py` (`pip install "medh5[h5py]"`); it is plain HDF5.
+A view lives as long as the sample it came from: after `s.close()`, reading
+through one — data, shape, attributes or members — raises `MEDH5FileError`, as
+does every other read of the file through the sample: `img.read()` and an
+image's properties, `ann.dense()`, `t.transform_points()`, `s.identity`. What
+was read while the sample was open is held in memory and keeps answering:
+`s.grids`, the `s.images` and `s.annotations` mappings, an annotation's header
+fields (`kind`, `class_ids`, `annotated_class_ids`, `grid_id`, `timepoints`,
+`label_set`, `prov`) and a transform's `kind`, `from_frame` and `to_frame`.
+For HDF5 features the views do not cover, open the file with `h5py`
+(`pip install "medh5[h5py]"`); it is plain HDF5.
 
 ## Writing
 
@@ -264,12 +280,17 @@ with medh5.create("out.medh5", sample_id="c1", subject_id="s1",
 ```
 
 `create` and `amend` both return a `SampleWriter`. It builds a temporary file
-and `os.replace`s it into position on a clean exit; an exception aborts and
-leaves nothing behind. Without a `with` block, call `w.commit()` to finish or
-`w.abort()` to discard. An amendment stamps what it writes and never restamps a
-digest its source already failed: a file edited behind the library's back is
-refused (`E701`) until its bytes are restored or `medh5 fix --rewrite-digests`
-restamps them with a recorded reason.
+beside the target and, on a clean exit, fsyncs it, renames it over the target
+and fsyncs the directory, so the file appears complete or not at all; an
+exception aborts and leaves nothing behind. Without a `with` block, call
+`w.commit()` to finish or `w.abort()` to discard. A commit the validator
+refuses (below) changes nothing and leaves the writer open, so the defect can
+be mended and `commit()` called again; in a `with` block the refusal aborts.
+Committing an aborted writer raises. An amendment stamps what it writes, in
+the file's own digest algorithm, and never restamps a digest its source
+already failed: a file edited behind the library's back is refused (`E701`)
+until its bytes are restored or `medh5 fix --rewrite-digests` restamps them
+with a recorded reason.
 
 ### Document
 
@@ -365,8 +386,14 @@ yourself instead; passing both is refused.
 
 Pass exactly one of `masks=`, `probabilities=` and `instances=`, with
 `encoding="auto"` or the encoding the argument implies; anything else is
-refused rather than half-honoured. `instances=[]` with `annotated_classes=`
-records "examined, none found" (§7.4).
+refused rather than half-honoured. `encoding` is `"auto"` or one of the five
+encodings (`medh5.annotations.voxel.TRANSCODABLE`): `"mask"` is refused
+(`E404`), having no classes to hold them. `instances=[]` with
+`annotated_classes=` records "examined, none found" (§7.4).
+
+A mask is boolean. A floating-point one may hold only 0 and 1 — anything else
+is refused (`E411`), by `add_mask` too, rather than read as set wherever it is
+not zero — so threshold it first, or pass a `bool` array.
 
 Every `commit()` runs the validator's structural and semantic error rules over
 the finished file and refuses to write one it would reject, so a file this
@@ -416,8 +443,18 @@ are copied through untouched, so amending never silently drops what it cannot
 read. A file it cannot preserve is refused before anything is written: a later
 minor version (read as a projection, `MEDH5VersionError`), a profile this
 package does not implement (`E007`), or one holding HDF5 references — addresses
-in the old file, which no copy preserves (`MEDH5FileError`). Anything holding the file open across an
-`amend` keeps reading the old version.
+in the old file, which no copy preserves (`MEDH5FileError`).
+
+On POSIX, anything holding the file open across an amend keeps reading the old
+version; Windows cannot replace a file that is open, so close every reader of
+it before the commit, whose rename otherwise fails and leaves the file as it
+was. The file's permission bits, read-only included, are carried onto the
+replacement. Through a symbolic link, the file the link names is rewritten and
+the link kept; a file with several hard links is replaced at the path given
+only, and its other names keep the old version. A link in a directory anyone
+can write to, such as `/tmp`, that neither you nor the directory's owner owns
+is not followed: the amend is refused (`MEDH5FileError`), as the system would
+refuse to open the file through it.
 
 ## Clinical history (format 1.1)
 
@@ -443,13 +480,13 @@ with medh5.open("cohort/P-03.medh5") as s:
 
 | | |
 |---|---|
-| `Clock.relative(id, origin)` | The subject clock every time is measured on |
+| `Clock.relative(clock_id, origin_description)` | The subject clock every time is measured on |
 | `Event(event_id, record_id, kind, temporal_type, status, ...)` | One immutable version; times as `(lo, hi)` microseconds (an `int` is an exact instant) |
 | `Document(document_id, text, ...)` | Source text, owned by one `document` event |
-| `Link.between(source, relation, target, asserted_by=None, span=None)` | A typed relationship between sample-relative objects |
+| `Link.between(source, relation, target, *, asserted_by=None, span=None, target_annotation_id=None)` | A typed relationship between sample-relative objects; `target_annotation_id` names the annotation an `instance` target is in |
 | `SelectionPolicy(...)` | Context window, kinds, plans, limits, ties (contract §3.4) |
-| `select(events, links, cutoff_us, policy)` | Selection over records not read from a file |
-| `augment(path, records, out=None)` | Add a history to a 1.0 or 1.1 sample; returns the report |
+| `select(events, links, cutoff_us, policy=None)` | Selection over records not read from a file |
+| `augment(path, records, *, out=None)` | Add a history to a 1.0 or 1.1 sample, in place or into `out`; returns the report |
 | `strip(path, out)` | The imaging projection, as a new 1.0 file |
 | `imaging_events_from_timepoints(path)` | Day-precision imaging events from `days_from_baseline` |
 
@@ -474,7 +511,7 @@ row.events, row.slots["ct"].image_id, row.target.status
 | Module | |
 |---|---|
 | `medh5.task` | `TaskManifest`, `SourceRef` (`pin`, `check`), `Slot`, `Target`, `preflight`, `Preflight`, `RowView`, `Finding` |
-| `medh5.cache` | `CacheWriter`, `FeatureCache`, `validate_cache` (`CacheReport.stale` / `.corrupt`, and the `.manifest_digest` and `.level` it validated), `fitted_on`, `fitted_on_mismatches`, `build_document_cache`, `HashingTextEncoder` |
+| `medh5.cache` | `CacheWriter`, `FeatureCache`, `validate_cache` (`CacheReport.stale` / `.corrupt`, and the `.manifest_digest` and `.level` it validated), `fitted_on`, `fitted_on_mismatches`, `build_document_cache`, `HashingTextEncoder` (an encoder has `encode`, `dim` and `header`: [the contract](../guides/clinical-training.md#read-documents)) |
 | `medh5.torch` | `ClinicalTaskDataset`, `ConceptVocabulary`, `collate_clinical` ([PyTorch](torch.md#clinical-tasks-format-11)) |
 
 | | |
@@ -482,7 +519,7 @@ row.events, row.slots["ct"].image_id, row.target.status
 | `TaskManifest.row_fingerprint(row_id)` | One example's identity: the task, the subject, its sources' pinned `content_id`s and the cutoff (contract §3.2) — what a row feature pins |
 | `medh5.task.concept_token(kind, code_system, code)` | An event's concept as a vocabulary keys it: the kind, the coding system and the code, a separator inside either escaped so two concepts never share a token |
 | `CacheWriter.add(entry_id, values, *, sources, ...)` | One entry, naming every source version it read; at the patient level also its row, fingerprint, cutoff and the versions it encodes |
-| `CacheWriter.add_row(row, values)` | A preflight row's feature, its id, fingerprint, cutoff, admitted versions and sources taken from the `RowView` |
+| `CacheWriter.add_row(row, values, ...)` | A preflight row's feature, its id, fingerprint, cutoff, admitted versions and sources taken from the `RowView` |
 
 The contract is [Task and cache contract 1](../spec/task-cache-1.md); the
 walk-through is [Train on clinical tasks](../guides/clinical-training.md).
@@ -528,6 +565,14 @@ MEDH5Error
 
 `MEDH5ValidationError.code` is the §15.2 diagnostic code where one applies,
 so a caller can branch on the defect rather than on the message text.
+
+`MEDH5Error` is the base of the errors this package defines, not of every
+error it raises. HDF5 failing to read a file's bytes — a damaged chunk, say —
+raises a plain `OSError`; a missing file or a directory is `MEDH5FileError`, an
+`OSError` with no `errno`, so `except FileNotFoundError` does not catch it; and
+lookups and arguments raise the built-in `KeyError`, `IndexError`, `TypeError`
+and `ValueError`. Where a damaged file must not stop a loop, catch `OSError`
+beside `MEDH5Error`.
 
 ## Sub-packages
 

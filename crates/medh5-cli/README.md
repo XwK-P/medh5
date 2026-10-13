@@ -11,7 +11,7 @@ the same exit codes: `0` success, `1` a handled error, `2` a usage error.
 ```bash
 cargo install --locked medh5-cli # or a binary from the GitHub Release, or Homebrew
 medh5 info case.medh5            # grids, images, annotations, coverage
-medh5 validate case.medh5 --level strict
+medh5 validate case.medh5 --level integrity
 medh5 verify case.medh5          # digests and content_id
 medh5 conformance run corpus/    # the 163-case conformance corpus
 ```

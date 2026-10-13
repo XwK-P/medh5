@@ -213,6 +213,108 @@ STALE_CLAIMS: tuple[tuple[str, str, str, str | None], ...] = (
         "is no superset of a submission.",
         None,
     ),
+    (
+        "strict offered as the check for a new file",
+        r"medh5 validate case(_0001)?\.medh5 --level strict",
+        "strict promotes W903 (no de-identification record) and W912 (no "
+        "ontology code) to errors, so it fails every freshly written or "
+        "imported sample; check one at --level integrity.",
+        # Legitimate as the gate for a dataset being published.
+        r"publi(sh|cation)",
+    ),
+    (
+        "tracking coverage described without the ignore region",
+        r"instance ids nobody looked for\}|class ids examined there\}",
+        "an annotation whose ignore region holds any voxel adds nothing to "
+        "`coverage`, so an object it does not show is `unexamined`, never "
+        "`resolved` (§7.4, §7.7).",
+        None,
+    ),
+    (
+        "probmap named as the only lossy transcode",
+        r"lossless(ly)?,?\s+(except|but)\s+(for\s+)?(a\s+)?`?probmap",
+        "`instances` to a dense encoding drops every instance_id, and is refused "
+        "without drop_identity=True (--drop-identity).",
+        None,
+    ),
+    (
+        "manifest entries keyed by path alone",
+        r"\be\.path:\s*set\(",
+        "the members of a collection share its path, so all but one are lost; key "
+        "a sample as split.paths() names it, `path::key` for a member.",
+        None,
+    ),
+    (
+        "partial-labels' organs said not to have examined its lesion",
+        r'is_annotated\("lesion"\)\s*#\s*False',
+        "the page writes `organs` with annotated_classes=[liver, spleen, lesion].",
+        None,
+    ),
+    (
+        "a batch's used_index read as one item's",
+        r'patch = batch\["meta"\]\["patch"\]|batch\["meta"\]\["patch"\]\["used_index"\]'
+        r"\s*#\s*True",
+        "collate turns the patch metadata into lists, one entry per item; one "
+        'item\'s is item["meta"]["patch"]["used_index"].',
+        None,
+    ),
+    (
+        "the clinical guide amending the cohort the training guide pins",
+        r'amend\("cohort/P-03\.medh5"\)',
+        "progression.task.json pins P-03's content_id, so an amendment in place "
+        "fails the next guide's preflight (T302); amend a copy.",
+        None,
+    ),
+)
+
+
+# Phrases corrected during review that no surrounding sentence makes true.  They
+# sat in a decision table and a list of non-goals, whose other rows say "not"
+# for reasons of their own --- which exempts the paragraph from the check above,
+# so these are matched wherever they appear.
+STALE_PHRASES: tuple[tuple[str, str, str], ...] = (
+    (
+        "a C-compatible library promised",
+        r"C-compatible",
+        'the engine has no C interface: no `extern "C"` API and no header; a C '
+        "or C++ program runs the `medh5` binary.",
+    ),
+    (
+        "lossless round trips to DICOM promised",
+        r"round trips? to DICOM",
+        "no exporter writes images as DICOM; annotations go back as a SEG or an "
+        "RTSTRUCT against the original series.",
+    ),
+    (
+        "the annotation kinds miscounted",
+        r"Thirteen kinds: five voxel encodings",
+        "six voxel kinds (five encodings and `mask`), boxes, oriented boxes, "
+        "keypoints, points, contours, meshes and classification.",
+    ),
+    (
+        "annotations placed at §5",
+        r"annotations`\]? \| §5",
+        "§5 is the label space (`labels`); the annotations are §6–§9.",
+    ),
+    (
+        "commit described as os.replace",
+        r"`os\.replace`s it into position",
+        "the engine fsyncs the temporary file, renames it over the target and "
+        "fsyncs the directory.",
+    ),
+    (
+        "every view said to raise after close",
+        r"after `s\.close\(\)` using one\s+raises",
+        "views and file reads raise; what the sample already read (grids, "
+        "annotation headers, a transform's frames) keeps answering.",
+    ),
+    (
+        "DICOM slice spacing held per gap",
+        r"gaps disagree by more than a tolerance",
+        "each slice is held to where the regular stack puts it, within a tenth "
+        "of the spacing and at least 0.01 mm; per-gap bounds let drift "
+        "accumulate.",
+    ),
 )
 
 
@@ -307,6 +409,129 @@ def test_the_registration_preflight_resolves_on_frames() -> None:
     )
 
 
+def test_transform_between_over_visits_is_described_as_it_behaves(
+    tmp_path: Path,
+) -> None:
+    """Between two visits, `transform_between` tries the visits' frame pairs in
+    grid-id order, and answers for the first that is one frame (`None`) or that
+    a path relates.
+
+    The guides said it searched every pair and returned the first path. Where
+    the visits share a frame, it answers `None` before it reaches a registered
+    pair whose grids sort later, so renaming a grid changes the answer. Out of
+    reach of `STALE_CLAIMS`: both wrong paragraphs carried a word the
+    disclaimer check reads as a correction. Should the engine come to search
+    every pair, this fails, and the pages need the new rule.
+    """
+    import numpy as np
+
+    import medh5
+
+    def between_visits(shared: str) -> object:
+        path = tmp_path / f"{shared}.medh5"
+        with medh5.create(path, sample_id=shared) as w:
+            w.add_timepoint("tp0", days_from_baseline=0)
+            w.add_timepoint("tp1", days_from_baseline=90)
+            for grid, timepoint, frame in (
+                (f"{shared}0", "tp0", "pseudo:pet"),
+                ("ct0", "tp0", "pseudo:ct0"),
+                (f"{shared}1", "tp1", "pseudo:pet"),
+                ("ct1", "tp1", "pseudo:ct1"),
+            ):
+                w.add_grid(
+                    grid,
+                    shape=(4, 4, 4),
+                    spacing=(1.0, 1.0, 1.0),
+                    timepoint=timepoint,
+                    frame_uid=frame,
+                )
+            w.add_image("CT", np.zeros((4, 4, 4), np.int16), grid="ct0", modality="CT")
+            w.add_transform(
+                "ct0_to_ct1",
+                kind="affine",
+                from_frame="pseudo:ct0",
+                to_frame="pseudo:ct1",
+                matrix=np.eye(4),
+            )
+        with medh5.open(path) as s:
+            return s.transform_between("tp0", "tp1")
+
+    assert between_visits("apet") is None  # the shared frame's grids sort first
+    assert between_visits("pet") is not None  # ... and here, after the CT's
+    for page in ("guides/longitudinal.md", "guides/registration.md"):
+        text = (DOCS / page).read_text(encoding="utf-8")
+        assert "grid-id order" in text, page
+        assert "returns the first path it finds" not in text, page
+        assert "share a frame with the other visit's" not in text, page
+    assert "grid-id order" in (DOCS / "reference/python-api.md").read_text(
+        encoding="utf-8"
+    )
+
+
+def _documented_signatures() -> list[tuple[str, str]]:
+    """`(name, parameters)` of each signature row of the Python reference's
+    tables: a call standing alone in a row's first cell, elided (`...`) or not."""
+    text = (DOCS / "reference" / "python-api.md").read_text(encoding="utf-8")
+    return re.findall(r"^\| `((?:medh5\.\w+\.)?[\w.]+)\(([^`]*)\)` \|", text, re.M)
+
+
+def _plain(func: Any) -> str:
+    """A signature as the reference writes one: names, `*`, and defaults."""
+    import inspect
+
+    parts: list[str] = []
+    star = False
+    for p in inspect.signature(func).parameters.values():
+        if p.kind is p.VAR_POSITIONAL:
+            parts.append(f"*{p.name}")
+            star = True
+        elif p.kind is p.VAR_KEYWORD:
+            parts.append(f"**{p.name}")
+        else:
+            if p.kind is p.KEYWORD_ONLY and not star:
+                parts.append("*")
+                star = True
+            parts.append(p.name if p.default is p.empty else f"{p.name}={p.default!r}")
+    return ", ".join(parts)
+
+
+def test_documented_signatures_are_the_real_ones() -> None:
+    """A signature in the Python reference is the function's own.
+
+    `Link.between` was documented with its options positional and without
+    `target_annotation_id`, and `augment` with a positional `out`: a call
+    written from the page raised `TypeError`. A row that elides (`...`) is
+    held to the parameters it names, in order.
+    """
+    import importlib
+
+    import medh5.cache
+    import medh5.clinical
+    import medh5.task
+
+    modules = (medh5.clinical, medh5.task, medh5.cache)
+    rows = _documented_signatures()
+    assert any(name == "Link.between" for name, _ in rows)
+    for name, documented in rows:
+        if name.startswith("medh5."):
+            module, _, attr = name.rpartition(".")
+            found: Any = getattr(importlib.import_module(module), attr)
+        else:
+            head, *rest = name.split(".")
+            owner = next((m for m in modules if hasattr(m, head)), None)
+            if owner is None:
+                continue
+            found = getattr(owner, head)
+            for part in rest:
+                found = getattr(found, part)
+        real = _plain(found).removeprefix("self, ").removeprefix("self")
+        if documented.endswith("..."):
+            named = [w.strip() for w in documented.split(",")[:-1]]
+            assert real.split(", ")[: len(named)] == named, (name, documented, real)
+        elif documented:
+            assert documented == real, f"{name}({documented}) is {name}({real})"
+
+
 @pytest.mark.parametrize(
     ("label", "pattern", "why", "unless"), STALE_CLAIMS, ids=lambda v: str(v)[:40]
 )
@@ -344,6 +569,32 @@ def test_corrected_claims_stay_corrected(
                 hits.append(f"{path.name}:{line_no}: {first.strip()[:80]}")
             offset += len(para) + 2
     assert not hits, f"{label}: {why}\n  " + "\n  ".join(hits)
+
+
+@pytest.mark.parametrize(
+    ("label", "pattern", "why"), STALE_PHRASES, ids=lambda v: v[:40]
+)
+def test_corrected_phrases_stay_corrected(label: str, pattern: str, why: str) -> None:
+    """Each of these was once on a page, and no context makes it true."""
+    hits = [
+        f"{path.name}:{text.count(chr(10), 0, match.start()) + 1}"
+        for path in [*PAGES, README, *sorted(ROOT.glob("crates/*/README.md"))]
+        for text in [path.read_text(encoding="utf-8")]
+        for match in re.finditer(pattern, text)
+    ]
+    assert not hits, f"{label}: {why}\n  " + "\n  ".join(hits)
+
+
+def test_the_front_pages_link_every_normative_document() -> None:
+    """The README and the site's front page linked 1.0 alone, so a reader
+    writing an implementation never found 1.1 (the clinical profile, and how
+    a later minor version is opened) or the task-and-cache contract."""
+    readme = README.read_text(encoding="utf-8")
+    index = (DOCS / "index.md").read_text(encoding="utf-8")
+    for spec in ("medh5-1.0", "medh5-1.1", "task-cache-1"):
+        assert (DOCS / "spec" / f"{spec}.md").is_file()
+        assert f"/spec/{spec}/)" in readme, f"README.md does not link {spec}"
+        assert f"](spec/{spec}.md)" in index, f"docs/index.md does not link {spec}"
 
 
 # What is not prose on a Markdown page: fenced and inline code, link targets,

@@ -7,3 +7,9 @@
 # that changes under you is not a gate. Bump deliberately.
 mkdocs==1.6.1
 mkdocs-material==9.7.7
+# Not direct dependencies, but the anchors `--strict` checks come from them:
+# pymdown-extensions supplies the heading slugs (mkdocs.yml, `toc.slugify`), and
+# Python-Markdown renders every page. A release of either can move an anchor,
+# so they are pinned with the two above.
+pymdown-extensions==12.2
+Markdown==3.11

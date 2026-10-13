@@ -7,7 +7,8 @@ single self-describing HDF5 file.
 ```python
 import medh5
 
-with medh5.open("case_0001.medh5") as s:
+# A subject with two visits: images, segmentation, registration, tracking.
+with medh5.open("subject.medh5") as s:
     s.identity.subject_id                              # "BRATS-GLI-01234"
     s.at("tp1").images["CT_tp1"].read(physical=True)   # HU, not raw counts
     s.annotations["organs"].dense(["liver", "spleen"]) # any encoding, one API
@@ -38,9 +39,12 @@ twenty minutes, start to finish, then
 [Import from NIfTI and nnU-Net](guides/import-nifti.md) ·
 [Migrate from 0.x](guides/migrate-0x.md)
 
-**Writing your own reader?** [The specification](spec/medh5-1.0.md) is
-normative, the [conformance suite](spec/conformance.md) is 163 cases you can run
-against your implementation, and the
+**Writing your own reader?** The specifications are normative:
+[1.0](spec/medh5-1.0.md) for the format, [1.1](spec/medh5-1.1.md) for the
+clinical profile and for how a reader opens a later minor version, and the
+separately versioned [task and cache contract](spec/task-cache-1.md) for the
+companions training builds on. The [conformance suite](spec/conformance.md) is
+163 cases you can run against your implementation, and the
 [diagnostic codes](reference/diagnostic-codes.md) are the stable contract
 between the two.
 
@@ -93,7 +97,7 @@ hardware.
 
 ```
 $ medh5 info case_0001.medh5             # grids, images, annotations, coverage
-$ medh5 validate case_0001.medh5 --level strict
+$ medh5 validate case_0001.medh5 --level integrity
 $ medh5 track case_0001.medh5            # per-lesion volumes across visits
 $ medh5 dataset index studies/ -o cohort.json
 $ medh5 dataset split cohort.json --group-by group_id --stratify-by site_id
@@ -109,13 +113,14 @@ Every command is in the [CLI reference](reference/cli.md).
 ## Going deeper
 
 - **[Runnable examples](examples/index.md)** — a complete two-timepoint sample
-  written by following the specification literally, and the benchmark scripts
-  behind every number quoted here.
+  written by following the specification literally, a clinical cohort trained
+  on end to end, and the benchmark scripts behind every number quoted here.
 - **[Sample document schema](reference/schema.md)** — every field of `/meta`,
   with the machine-readable schema itself.
-- **[Design rationale](explanation/design-rationale.md)** — why 1.0 is shaped
-  the way it is: what 0.x could not express, the alternatives weighed, the costs
-  accepted, and what the format deliberately is not.
+- **[Design rationale](explanation/design-rationale.md)** — why the format is
+  shaped the way it is: what 0.x could not express, the alternatives weighed,
+  the costs accepted, why 2.0 is one engine with three frontends, how 1.1 keeps
+  what was known when, and what the format deliberately is not.
 - **[Changelog](changelog.md)** — every release, with the behaviour changes to
   read before upgrading a pipeline.
 - **[Contributing](https://github.com/XwK-P/medh5/blob/main/CONTRIBUTING.md)** —

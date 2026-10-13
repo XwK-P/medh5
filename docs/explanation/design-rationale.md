@@ -203,14 +203,15 @@ honestly** — coverage, provenance, geometry and integrity.
 ## One engine, three frontends (2.0)
 
 Through 1.x the format was implemented in Python, over `h5py`. That served
-Python users and nobody else: a Rust or C++ pipeline, a viewer, or a cluster
-node without a Python environment had the specification and the conformance
+Python users and nobody else: a Rust pipeline, a viewer, or a cluster node
+without a Python environment had the specification and the conformance
 corpus, but no implementation to call. 2.0 moved the implementation, not the
-format.
+format. It has no C interface yet: a C or C++ program runs the `medh5` binary,
+or reads the HDF5 itself.
 
 | Decision | Why |
 |---|---|
-| **One engine, in Rust** | The canonical implementation is a library every frontend calls, not a Python package other languages re-implement. Rust gives a C-compatible native library with no runtime to ship, and the memory safety a parser of untrusted files should have. |
+| **One engine, in Rust** | The canonical implementation is a library every frontend calls, not a Python package other languages re-implement. Rust gives a native library and a standalone binary with no runtime to ship, and the memory safety a parser of untrusted files should have. |
 | **Three frontends over it** | The Rust crate, the Python package (through PyO3) and the native `medh5` binary run the same code, so there is one behaviour to specify, test and keep conformant — the corpus runs through both the Python and the native command line. |
 | **Python keeps what is Python's** | NumPy at the API, PyTorch and MONAI datasets, and the converters, whose job is to call nibabel, pydicom and highdicom. Moving those into Rust would re-implement libraries the ecosystem already maintains. |
 | **HDF5 compiled in, statically** | A wheel, a crate and a binary that need nothing installed, and one HDF5 and one Blosc2 everywhere — so a chunk one frontend writes is the chunk the others read. |
@@ -257,8 +258,11 @@ why, is in [1.1 Appendix A](../spec/medh5-1.1.md#appendix-a--changes-from-the-re
 ## Non-goals
 
 - **Not a PACS or an archive format.** DICOM is the archive. medh5 is the
-  training-time representation, with lossless round trips to DICOM and NIfTI
-  where the source permits.
+  training-time representation: it imports DICOM series, SEG and RTSTRUCT, and
+  NIfTI, whose affine and voxels an export to NIfTI reproduces. Back to DICOM
+  it writes annotations only, as a SEG or an RTSTRUCT against the original
+  series; no exporter writes images as DICOM
+  ([what has none](../guides/export.md#what-has-no-exporter)).
 - **Not a whole-slide imaging format.** The multiscale and channel model can
   hold WSI tiles, but gigapixel pathology is better served by DICOM-WSI or
   OME-Zarr, and medh5 will not add tile-server semantics.
