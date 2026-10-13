@@ -136,9 +136,7 @@ impl ClinicalHandle {
     }
     #[pyo3(signature = (cutoff_us, policy=None))]
     fn select<'py>(&self, py: Python<'py>, cutoff_us: i64, policy: Option<&Bound<'py, PyAny>>) -> R<Bound<'py, PyAny>> {
-        let policy = policy_arg(policy)?;
-        let links: Vec<(usize, &Link)> = self.inner.links.iter().map(|l| (0, l)).collect();
-        let selection = medh5::clinical::select(&self.inner.events, &links, cutoff_us, &policy)?;
+        let selection = self.inner.select(cutoff_us, &policy_arg(policy)?)?;
         Ok(json_to_py(py, &selection.to_json(&self.inner.events))?)
     }
     fn summary<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {

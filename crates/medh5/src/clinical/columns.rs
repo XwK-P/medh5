@@ -337,8 +337,7 @@ pub fn read_table_deferring(
             ));
         }
     }
-    // The table's row count is the first required column's.
-    let mut rows: Option<usize> = None;
+    let mut read: Vec<Column> = Vec::new();
     for spec in specs {
         let location = format!("{base}/{}", spec.name);
         if !ops::exists(group, spec.name) {
@@ -352,23 +351,37 @@ pub fn read_table_deferring(
             Some(v) => v,
             None => continue,
         };
-        let column = Column { spec: *spec, values, mask: None };
-        let n = column.rows();
-        match rows {
-            None => rows = Some(n),
-            Some(expected) if expected != n => {
-                out.problems.push(Problem::new(
-                    "E805",
-                    location,
-                    format!("column `{}` has {n} rows; the table's other columns have {expected}", spec.name),
-                ));
-                continue;
-            }
-            _ => {}
-        }
-        out.columns.insert(spec.name.to_string(), column);
+        read.push(Column { spec: *spec, values, mask: None });
     }
-    out.rows = rows.unwrap_or(0);
+    // The table's row count is the one most of its columns agree on, the
+    // earliest column's among equals.  It was the first column's: one wrong
+    // `event_id` made every other column the outlier, and only it was kept.
+    let mut counts: Vec<(usize, usize)> = Vec::new();
+    for column in &read {
+        let n = column.rows();
+        match counts.iter_mut().find(|(rows, _)| *rows == n) {
+            Some((_, agreeing)) => *agreeing += 1,
+            None => counts.push((n, 1)),
+        }
+    }
+    let rows = counts.iter().copied().reduce(|best, c| if c.1 > best.1 { c } else { best });
+    for column in read {
+        let n = column.rows();
+        if let Some((expected, agreeing)) = rows.filter(|(expected, _)| *expected != n) {
+            out.problems.push(Problem::new(
+                "E805",
+                format!("{base}/{}", column.spec.name),
+                format!(
+                    "column `{}` has {n} rows, where {agreeing} of the table's {} columns have {expected}",
+                    column.spec.name,
+                    counts.iter().map(|(_, k)| k).sum::<usize>()
+                ),
+            ));
+            continue;
+        }
+        out.columns.insert(column.spec.name.to_string(), column);
+    }
+    out.rows = rows.map_or(0, |(n, _)| n);
     read_masks(group, &base, specs, &mut out, projection)?;
     check_null_cells(&base, &mut out);
     check_finite(&base, &mut out);
@@ -892,6 +905,28 @@ mod tests {
             Values::Deferred { offsets } => offsets.clone(),
             other => panic!("not deferred: {other:?}"),
         }
+    }
+
+    #[test]
+    fn s4_a_table_has_the_row_count_most_of_its_columns_agree_on() {
+        // `document_id` is the outlier, and the first column read: every other
+        // column was blamed and dropped, and the one wrong column kept.
+        let dir = tempfile::tempdir().unwrap();
+        let file = hdf5::File::create(dir.path().join("t.h5")).unwrap();
+        let group = file.create_group("documents").unwrap();
+        let profile = resolve_profile(Some("training")).unwrap();
+        TableWriter::new(group.clone(), &profile, 1).utf8(&DOCUMENT_COLUMNS[0], &[Some("d1")]).unwrap();
+        let mut w = TableWriter::new(group.clone(), &profile, 2);
+        w.utf8(&DOCUMENT_COLUMNS[1], &[Some("text/plain"), Some("text/plain")]).unwrap();
+        w.utf8(&DOCUMENT_COLUMNS[2], &[Some("a"), Some("b")]).unwrap();
+        let raw = read_table(&group, "documents", &DOCUMENT_COLUMNS, false).unwrap();
+        let blamed: Vec<&Problem> = raw.problems.iter().filter(|p| p.code == "E805").collect();
+        assert_eq!(blamed.len(), 1, "{blamed:?}");
+        assert_eq!(blamed[0].location, "/clinical/documents/document_id");
+        assert!(blamed[0].message.ends_with("has 1 rows, where 2 of the table's 3 columns have 2"), "{blamed:?}");
+        assert_eq!(raw.rows, 2);
+        assert!(raw.column("document_id").is_none());
+        assert!(raw.column("media_type").is_some() && raw.column("text").is_some());
     }
 
     #[test]

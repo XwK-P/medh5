@@ -343,9 +343,13 @@ invented to resolve it.
 A relationship used as a model input **MUST** be attested at the cutoff (§9): either it is the
 immutable **structural** link from an event to its own payload — a `document` event `describes`
 its document, an `imaging` event `describes` its image — or its `asserted_by_event_id` names an
-event version eligible at the cutoff. Adding or replacing an owned payload needs a new event
-version. An unattributed link supports navigation, never a claim about what was known when: a
-report-to-lesion grounding drawn later is not available with the original report.
+event version **eligible** at the cutoff: known available by then and the current version of its
+record (§9.1 steps 1–2), whether or not the task's kinds, plans, context window or event limit
+admit it as an input. Those choose what a row reads; they do not withdraw evidence known at the
+cutoff. The link's event and document endpoints are still admitted ones (§9.1 step 5). Adding or
+replacing an owned payload needs a new event version. An unattributed link supports navigation,
+never a claim about what was known when: a report-to-lesion grounding drawn later is not available
+with the original report.
 
 A single file cannot show when a link was written, so the rule is enforced where it can be: at the
 amendment boundary, where what an event version the sample already held attests is fixed with it. A
@@ -563,6 +567,7 @@ or reviewing that implementation before its release, showed it was needed.
 | §7.2 | Merging chains (two predecessors) and a record whose versions the links do not order into one chain are E816, beside branches, cycles and contradicted availability. | The draft required "an acyclic, unambiguous `supersedes` chain"; a record with two unrelated versions is ambiguous in exactly the way selection cannot resolve. |
 | §7.3 | A writer amending a sample refuses a structural link from an event version the sample already held (E809). | Found by the fourth audit of 2.0: "adding or replacing an owned payload needs a new event version" had no point of enforcement, and one file cannot show when a link was written. Text attached in an amendment to an inherited text-less document event was owned by a version available a day before the text existed, and selection admitted it at that cutoff. |
 | §7.3 | An amendment also refuses a link asserted by an event version the sample held, and any change to a payload such a version attests; a held version dropped with the profile and added again in the same amendment is held to what it was. | Found by the review of 2.0 before its release: refusing only the structural link left three ways to attach later information to an earlier version — a grounding asserted by the original report, a lesion mask replaced under the id a procedure attests, and the refused link added once the profile was dropped and its records added again — and selection admitted each at the old version's availability. |
+| §7.3 | An asserting version need only be *eligible* at the cutoff — known available and the current version of its record (§9.1 steps 1–2); the kinds, plan, unknown-time, window and limit filters choose inputs and do not withdraw its attestation. The link's event and document endpoints must still be admitted. | Found by the audit of 2.0.1: §7.3 said *eligible*, §9.1 step 5 *a selected event*, and the reference engine required the asserter to be admitted as an input, so a filter choosing what a row reads also withdrew evidence known at the cutoff — under the default ordering a segmentation of unknown time never attested its mask, and no crop centred on it. |
 | §8 | A collection's outer version must be at least each member's (E011); the packer declares the newest member's, and refuses a higher-minor member. | The draft required `1.1` outside a 1.1 member but gave no code, and said nothing of a member newer than the packer. |
 | §9 | Strict selection, the plan rule, tie groups, the event-limit boundary and payload attestation are defined here, normatively, and the task contract only names a policy. | The draft placed them in a companion "not an additional payload requirement". They define what a record *means* about what was known when; two implementations of one selection must agree, so they belong to the profile. |
 | §9.1 | An event with no order time (`unknown` time ordered by effective start, or without the time `order_by` names) is excluded as `unknown_time`. | "Unknown/coarse times may be excluded or handled by an explicitly named alternative policy": strict excludes them, and the exclusion is counted. |

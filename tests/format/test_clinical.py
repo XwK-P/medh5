@@ -95,6 +95,34 @@ class TestVersions:
         with pytest.raises(MEDH5VersionError):
             pack([future], tmp_path / "shard.medh5c")
 
+    @pytest.mark.parametrize("policy", ["strict_prospective", "latest_provable"])
+    def test_S2_2_a_projection_is_never_selected_from(
+        self, history: Path, tmp_path: Path, capsys, policy: str
+    ):
+        """What a cutoff admits from a later minor is not this engine's to
+        claim: ``select`` reported such a file ``certified``, while a task's
+        preflight refused it (T306)."""
+        from medh5.cli import EXIT_ERROR, EXIT_OK, main
+
+        future = tmp_path / "future.medh5"
+        shutil.copyfile(history, future)
+        with h5py.File(future, "r+") as f:
+            f.attrs["medh5_version"] = "1.2"
+        argv = ["--cutoff-hours", "24", "--policy", policy, "--json"]
+        with medh5.open(history) as s:
+            assert s.clinical.select(24 * HOUR, policy).status != "uncertifiable"
+        assert main(["clinical", "select", str(history), *argv]) == EXIT_OK
+        capsys.readouterr()
+        with medh5.open(future) as s:
+            assert s.clinical is not None and s.clinical.projection
+            with pytest.raises(MEDH5VersionError, match="projection"):
+                s.clinical.select(24 * HOUR, policy)
+            events, links = s.clinical.events, s.clinical.links
+        assert main(["clinical", "select", str(future), *argv]) == EXIT_ERROR
+        assert "projection" in capsys.readouterr().err
+        # Records taken out of the file are the caller's to select from.
+        assert clinical.select(events, links, 24 * HOUR, policy).event_ids
+
     def test_S2_2_a_member_of_a_text_column_follows_the_version(
         self, history: Path, tmp_path: Path
     ):
@@ -230,6 +258,43 @@ class TestRecords:
             with pytest.raises(MEDH5ValidationError) as caught:
                 w.add_event(Event("z", "z", "other", "static", "final"))
             assert caught.value.code == "E809"
+
+    def test_S5_2_a_numpy_integer_is_a_time(self, tmp_path: Path):
+        """An instant of ``numpy.int64`` could not even make an Event, though
+        the same value in a dict was written.  A float or a bool is no time
+        either way: in a pair, an Event truncated ``1.5`` to ``1``."""
+        t = np.int64(3 * HOUR)
+        event = Event(
+            "e",
+            "e",
+            "observation",
+            "point",
+            "final",
+            effective_start_us=t,
+            available_us=(np.int32(-60), t),
+        )
+        assert event.effective_start_us == (3 * HOUR, 3 * HOUR)
+        assert event.available_us == (-60, 3 * HOUR)
+        assert {type(x) for x in (*event.effective_start_us, *event.available_us)} == {
+            int
+        }
+        with History.writer_for(tmp_path / "w.medh5") as w:
+            w.set_clock(Clock.relative("clock", "baseline CT acquisition"))
+            w.add_event(event)
+            for bad in [(1.5, 2), (np.float64(1), 2), (True, 2), (1, np.bool_(True))]:
+                as_event = Event("x", "x", "other", "static", "final", available_us=bad)
+                as_dict = {**as_event.to_json(), "available_us": list(bad)}
+                for given in (as_event, as_dict):
+                    with pytest.raises(MEDH5ValidationError) as caught:
+                        w.add_event(given)
+                    assert caught.value.code == "E811", (bad, given)
+            for scalar in (2.0, True, np.float32(2)):
+                with pytest.raises(TypeError, match="a clinical time"):
+                    Event("x", "x", "other", "static", "final", available_us=scalar)
+            w.commit()
+        with medh5.open(tmp_path / "w.medh5") as s:
+            assert s.clinical is not None
+            assert s.clinical.events == (event,)
             w.abort()
 
     def test_S3_the_clock_is_fixed_once(self, tmp_path: Path):
@@ -852,6 +917,51 @@ class TestValidation:
             )
         assert "E805" in codes(history, "structural")
 
+    def test_S7_2_a_chain_is_checked_whole(self, tmp_path: Path):
+        """A link given twice is one link, as selection reads it (the commit
+        refused it as a branch and a merge); and a version available before
+        an ancestor could have been is E816 though the version between them
+        has unknown availability (the commit accepted it, and selection
+        certified the newest version before its ancestor existed)."""
+        twice = tmp_path / "twice.medh5"
+        History.write(
+            twice,
+            links=[
+                Link.between(("event", "rep_v2"), "supersedes", ("event", "rep_v1"))
+            ],
+        )
+        assert codes(twice) == []
+        with medh5.open(twice) as s:
+            assert s.clinical is not None
+            assert "rep_v2" in s.clinical.select(72 * HOUR).event_ids
+
+        def version(event_id: str, available_us: int | None) -> Event:
+            return Event(
+                event_id,
+                "x",
+                "observation",
+                "point",
+                "final",
+                effective_start_us=0,
+                available_us=available_us,
+            )
+
+        with pytest.raises(MEDH5ValidationError) as caught:
+            History.write(
+                tmp_path / "contradicted.medh5",
+                events=[
+                    version("x1", 10 * HOUR),
+                    version("x2", None),
+                    version("x3", 5 * HOUR),
+                ],
+                links=[
+                    Link.between(("event", "x2"), "supersedes", ("event", "x1")),
+                    Link.between(("event", "x3"), "supersedes", ("event", "x2")),
+                ],
+            )
+        assert caught.value.code == "E816"
+        assert "'x3' was available by" in str(caught.value)
+
     def test_S4_a_null_cell_holds_nothing(self, history: Path):
         with h5py.File(history, "r+") as f:
             valid = f["clinical/events/valid/value_num"][()]
@@ -1050,6 +1160,50 @@ class TestSelection:
         assert window.excluded["outside_context"] == 1
         assert kinds.event_ids == ["rep_v1"]
         assert limited.event_ids == ["ct1", "recist1"]
+
+    def test_S7_3_an_eligible_version_attests_whatever_a_row_reads(
+        self, tmp_path: Path
+    ):
+        """An asserting version need only be known at the cutoff.  The kinds,
+        plan, unknown-time, window and limit filters choose what a row reads,
+        and withdrew what a version they left out asserts: under the default
+        ordering, a segmentation of unknown time never made its mask eligible,
+        so no crop ever centred on it."""
+        path = tmp_path / "seg.medh5"
+        History.write(
+            path,
+            events=[
+                Event(
+                    "seg0",
+                    "seg0",
+                    "procedure",
+                    "unknown",
+                    "completed",
+                    available_us=2 * HOUR,
+                )
+            ],
+            links=[
+                Link.between(
+                    ("event", "ct0"),
+                    "describes",
+                    ("annotation", "lesions_tp0"),
+                    asserted_by="seg0",
+                )
+            ],
+        )
+        with medh5.open(path) as s:
+            assert s.clinical is not None
+            early = s.clinical.select(HOUR)
+            default = s.clinical.select(24 * HOUR)
+            imaging = s.clinical.select(24 * HOUR, {"kinds": ["imaging"]})
+            documents = s.clinical.select(24 * HOUR, {"kinds": ["document"]})
+        assert early.admits("image", "CT_tp0")
+        assert not early.admits("annotation", "lesions_tp0"), "not known at 1 h"
+        for chosen in (default, imaging):
+            assert "seg0" not in chosen.event_ids
+            assert chosen.admits("annotation", "lesions_tp0")
+        # The relationship still needs its event endpoint read.
+        assert not documents.admits("annotation", "lesions_tp0")
         assert SelectionPolicy.from_json(SelectionPolicy(kinds=("imaging",)).to_json())
 
     def test_S9_1_a_window_bounds_plans_from_below(self):
@@ -1344,3 +1498,62 @@ class TestProjection:
             clinical.strip(source, existing)
         assert existing.read_bytes() == b"keep me"
         assert not [p for p in tmp_path.iterdir() if p.name.startswith(".")]
+
+
+class TestOutputPaths:
+    """No clinical command writes over the file it reads (F11).  ``clinical
+    export S -o S`` truncated the sample and wrote the JSON describing it in
+    its place, with exit status 0."""
+
+    @staticmethod
+    def _alias(path: Path, tmp_path: Path, alias: str) -> Path:
+        if alias == "exact":
+            return path
+        if alias == "relative":
+            (tmp_path / "sub").mkdir()
+            return tmp_path / "sub" / ".." / path.name
+        out = tmp_path / "alias.medh5"
+        try:
+            (out.symlink_to if alias == "symlink" else out.hardlink_to)(path)
+        except OSError as exc:  # pragma: no cover - no links on this file system
+            pytest.skip(str(exc))
+        return out
+
+    @pytest.mark.parametrize("alias", ["exact", "relative", "symlink", "hardlink"])
+    def test_S10_no_output_names_the_sample_it_reads(
+        self, history: Path, tmp_path: Path, capsys, alias: str
+    ):
+        from medh5.cli import EXIT_ERROR, EXIT_OK, main
+
+        records = tmp_path / "records.json"
+        assert main(["clinical", "export", str(history), "-o", str(records)]) == 0
+        out = str(self._alias(history, tmp_path, alias))
+        before = history.read_bytes()
+        capsys.readouterr()
+        assert main(["clinical", "export", str(history), "--out", out]) == EXIT_ERROR
+        assert "the file being exported" in capsys.readouterr().err
+        assert history.read_bytes() == before
+        # The commands that write a sample refuse it too.
+        others = [["clinical", "strip", str(history), "--out", out]]
+        if alias != "exact":  # `augment S R -o S` is the in-place augmentation
+            others.append(
+                ["clinical", "augment", str(history), str(records), "-o", out]
+            )
+        for argv in others:
+            assert main(argv) == EXIT_ERROR, argv
+            assert history.read_bytes() == before, argv
+        with medh5.open(history) as s:
+            assert s.clinical is not None and len(s.clinical.events) == 6
+        assert main(["clinical", "export", str(history)]) == EXIT_OK
+
+    def test_S10_export_refuses_the_collection_it_reads(
+        self, history: Path, tmp_path: Path, capsys
+    ):
+        from medh5.cli import EXIT_ERROR, main
+
+        shard = pack([history], tmp_path / "one.medh5c", keys=["a"])
+        before = shard.read_bytes()
+        argv = ["clinical", "export", str(shard), "--key", "a", "-o", str(shard)]
+        assert main(argv) == EXIT_ERROR
+        assert "the file being exported" in capsys.readouterr().err
+        assert shard.read_bytes() == before

@@ -33,6 +33,7 @@ what a model may see at a cutoff from Rust, Python and the command line.
 
 from __future__ import annotations
 
+import operator
 import os
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, fields
@@ -74,13 +75,32 @@ def days(value: float) -> int:
     return int(round(value * DAY))
 
 
+def _time(value: Any) -> Any:
+    """``value`` as Python's ``int`` when it is an integer --- NumPy's too ---
+    and as given otherwise, for the engine to refuse (E811), as it does in a
+    dict: a float or a bool is no time, and truncating one moved it."""
+    if isinstance(value, bool):
+        return value
+    try:
+        return operator.index(value)
+    except TypeError:
+        return value
+
+
 def _bounds(value: Any) -> Bounds | None:
     if value is None:
         return None
-    if isinstance(value, int):
-        return (value, value)
-    lo, hi = value
-    return (int(lo), int(hi))
+    instant = _time(value)
+    if isinstance(instant, int) and not isinstance(instant, bool):
+        return (instant, instant)
+    try:
+        lo, hi = value
+    except (TypeError, ValueError):
+        raise TypeError(
+            "a clinical time is microseconds, as an integer or a (lo, hi) pair "
+            f"of them, not {value!r}"
+        ) from None
+    return (_time(lo), _time(hi))
 
 
 def _jsonable(value: Any) -> Any:
@@ -335,7 +355,7 @@ class SelectedEvent:
 
 @dataclass(frozen=True, slots=True)
 class Selection:
-    """What a cutoff admits (task-and-cache contract §4)."""
+    """What a cutoff admits (1.1 §9)."""
 
     cutoff_us: int
     policy: str
@@ -485,7 +505,11 @@ class Clinical:
         cutoff_us: int,
         policy: SelectionPolicy | Mapping[str, Any] | str | None = None,
     ) -> Selection:
-        """What strict (or the named) selection admits at ``cutoff_us``."""
+        """What strict (or the named) selection admits at ``cutoff_us``.
+
+        A later minor version's projection is refused (``MEDH5VersionError``):
+        what it admits is not this engine's to certify (1.1 §2.2).
+        """
         return Selection.from_json(self._handle.select(int(cutoff_us), _policy(policy)))
 
     def summary(self) -> dict[str, Any]:

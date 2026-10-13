@@ -194,8 +194,7 @@ fn select_cmd(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
         _ => return Ok(ctx.usage("give the cutoff once: --cutoff-us or --cutoff-hours")),
     };
     let policy = policy_of(m)?;
-    let links: Vec<(usize, &Link)> = clinical.links.iter().map(|l| (0, l)).collect();
-    let selection = medh5::clinical::select(&clinical.events, &links, cutoff, &policy)?;
+    let selection = clinical.select(cutoff, &policy)?;
     if flag(m, "json") {
         ctx.emit(&selection.to_json(&clinical.events), true);
         return Ok(EXIT_OK);
@@ -227,8 +226,31 @@ fn select_cmd(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     Ok(EXIT_OK)
 }
 
+/// Whether two paths name one existing file: the same path, or one reached
+/// through `..`, a symbolic link or, where the system says so, a hard link.
+fn same_file(a: &Path, b: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        matches!((std::fs::metadata(a), std::fs::metadata(b)), (Ok(x), Ok(y)) if (x.dev(), x.ino()) == (y.dev(), y.ino()))
+    }
+    #[cfg(not(unix))]
+    {
+        matches!((std::fs::canonicalize(a), std::fs::canonicalize(b)), (Ok(x), Ok(y)) if x == y)
+    }
+}
+
 fn export(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let path = req_str(m, "path");
+    // The write truncates whatever `--out` names: the sample itself, named
+    // again or through a link, became the JSON describing it, and exit 0.
+    if let Some(out) = get_str(m, "out").filter(|out| same_file(Path::new(path), Path::new(out))) {
+        return Err(Error::invalid(format!(
+            "--out {} is {}, the file being exported; write the records to another file",
+            repr_str(out),
+            repr_str(path)
+        )));
+    }
     let sample = open_sample(m)?;
     let records = clinical_of(&sample, path)?.records()?;
     let text = pretty(&records.to_json()) + "\n";

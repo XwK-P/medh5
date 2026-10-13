@@ -15,6 +15,7 @@ use super::columns::{
 use super::model::{
     Bounds, ClinicalRecords, Descriptor, Document, Event, Link, DESCRIPTOR, DOCUMENTS, EVENTS, GROUP, LINKS, SCHEMA,
 };
+use super::select::{Selection, SelectionPolicy};
 use crate::h5::data;
 use crate::h5::ops;
 use crate::json::repr_str;
@@ -142,10 +143,11 @@ pub fn links_of(table: &RawTable) -> Vec<Link> {
 /// times last (§4).
 pub fn storage_order(events: &[Event]) -> Vec<usize> {
     let mut order: Vec<usize> = (0..events.len()).collect();
-    order.sort_by(|a, b| {
-        let key =
-            |e: &Event| (e.effective_start.is_none(), e.effective_start.map(|s| (s.lo, s.hi)), e.event_id.clone());
-        key(&events[*a]).cmp(&key(&events[*b]))
+    // The id borrowed: cloned per comparison, it cost a million allocations
+    // for the corpus's 65 600 events.
+    order.sort_by_key(|&i| {
+        let e = &events[i];
+        (e.effective_start.is_none(), e.effective_start.map(|s| (s.lo, s.hi)), e.event_id.as_str())
     });
     order
 }
@@ -508,6 +510,25 @@ impl Clinical {
         })
     }
 
+    /// Select at `cutoff` from this sample's own history (1.1 §9).
+    ///
+    /// Refused for a projection: a later minor may define what changes the
+    /// answer --- a column, a status, a relation this engine cannot see --- so
+    /// neither `certified` nor `provable` is this engine's to claim (1.1 §2.2),
+    /// as a task's preflight reports such a source (T306).
+    pub fn select(&self, cutoff: i64, policy: &SelectionPolicy) -> Result<Selection> {
+        if self.projection {
+            return Err(Error::Version(format!(
+                "this clinical profile is a later minor version's, read as a projection: this engine implements MEDH5 \
+                 up to {}, and a selection from it would claim what that version may define otherwise, so it is \
+                 refused (1.1 §2.2)",
+                crate::version::LATEST_VERSION
+            )));
+        }
+        let links: Vec<(usize, &Link)> = self.links.iter().map(|l| (0, l)).collect();
+        super::select::select(&self.events, &links, cutoff, policy)
+    }
+
     /// Links leaving `(kind, id)`.
     pub fn links_from<'a>(&'a self, source_type: &'a str, source_id: &'a str) -> impl Iterator<Item = &'a Link> + 'a {
         self.links.iter().filter(move |l| l.source_type == source_type && l.source_id == source_id)
@@ -534,5 +555,29 @@ impl Clinical {
             "links": self.links.len(),
             "unknown_availability": self.events.iter().filter(|e| e.available.is_none()).count(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn s4_events_are_stored_by_known_start_then_id() {
+        let at = |id: &str, start: Option<(i64, i64)>| Event {
+            event_id: id.into(),
+            effective_start: start.map(|(lo, hi)| Bounds::new(lo, hi)),
+            ..Default::default()
+        };
+        let events = [
+            at("u2", None),
+            at("b", Some((5, 9))),
+            at("a", Some((5, 9))),
+            at("u1", None),
+            at("c", Some((5, 6))),
+            at("z", Some((-3, -3))),
+        ];
+        let ids: Vec<&str> = storage_order(&events).into_iter().map(|i| events[i].event_id.as_str()).collect();
+        assert_eq!(ids, ["z", "c", "a", "b", "u1", "u2"]);
     }
 }
