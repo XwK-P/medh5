@@ -100,6 +100,9 @@ impl CacheEntry {
     /// An entry as a manifest spells it.  A member present but of the wrong
     /// type is refused (T401), never read as absent: a float cutoff read as
     /// none was refused for a row it did pin.
+    ///
+    /// Public for the workspace's frontends, not as API.
+    #[doc(hidden)]
     pub fn from_json(v: &Value) -> Result<CacheEntry> {
         let wrong = |k: &str, found: &Value, what: &str| Error::coded("T401", format!("{k} {found} is not {what}"));
         let text = |k: &str| match v.get(k) {
