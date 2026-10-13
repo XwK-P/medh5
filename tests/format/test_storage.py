@@ -58,29 +58,34 @@ class TestChunking:
         assert chunk[0] == 1
         assert len(chunk) == 4
 
-    def test_S14_1_l3_detection_spawns_nothing_where_sysfs_answers(self, monkeypatch):
-        """The probe used to fork `/bin/sh` on every platform, before the read.
+    def test_S14_1_l3_is_one_cpus_share_of_what_sysfs_reports(self):
+        """The probe is the engine's: it reads sysfs, and its one process
+        (``sysctl``, for macOS) is compiled in only on macOS.  This test
+        patched Python's process entry points, which the engine never calls,
+        so that half held nothing.  What is observable is the answer: where
+        sysfs reports an L3, the share of one of the CPUs sharing it --- the
+        whole of it overstated the budget on every multi-core host --- and the
+        answer is positive and stable."""
+        from medh5.storage import DEFAULT_L3_BYTES, detect_l3_bytes
 
-        On Linux that is a wasted fork+exec for a sysctl key that does not
-        exist, in a package whose handle cache exists because HDF5 state must
-        not cross a fork.  The probe is the engine's now: it reads sysfs, and
-        its one process (`sysctl`, for macOS) is compiled in only on macOS.
-        What stays observable here: no Python process-spawning entry point is
-        reached, and the answer is positive and stable.
-        """
-        import subprocess
-
-        from medh5.storage import detect_l3_bytes
-
-        def refuse(*args, **kwargs):
-            raise AssertionError("L3 detection must not spawn a process here")
-
-        monkeypatch.setattr(os, "popen", refuse)
-        monkeypatch.setattr(subprocess, "run", refuse)
-        monkeypatch.setattr(subprocess, "Popen", refuse)
         found = detect_l3_bytes()
         assert found > 0
         assert detect_l3_bytes() == found
+        index3 = Path("/sys/devices/system/cpu/cpu0/cache/index3")
+        try:
+            size = (index3 / "size").read_text().strip()
+            shared = (index3 / "shared_cpu_list").read_text().strip()
+        except OSError:
+            if sys.platform.startswith("linux"):
+                assert found == DEFAULT_L3_BYTES
+            return
+        unit = {"K": 1024, "M": 1024 * 1024}.get(size[-1], 1)
+        total = int(size.rstrip("KM")) * unit
+        sharing = 0
+        for part in shared.split(","):
+            first, _, last = part.partition("-")
+            sharing += int(last or first) - int(first) + 1
+        assert found == total // sharing
 
     def test_S14_1_a_chunk_hint_never_exceeds_the_extent(self, tmp_path: Path):
         """A hint larger than the grid was passed to HDF5 as given, which
@@ -94,6 +99,83 @@ class TestChunking:
             w.add_image("CT", np.zeros(shape, np.int16), grid="g", modality="CT")
         with medh5.open(path) as sample:
             assert sample.images["CT"].chunks == (64, 16, 64)
+
+    def test_S14_1_every_array_on_a_hinted_grid_takes_its_spatial_chunk(
+        self, tmp_path: Path
+    ):
+        """§14.1: labels SHOULD chunk as their grid's images do.  The stacked
+        encodings ignored the grid's ``chunk_hint`` and fell back to the
+        optimiser, so they were chunked apart from the image they label ---
+        by the writer, and again by ``recompress --rechunk``."""
+        from medh5.storage import recompress
+
+        path = tmp_path / "hinted.medh5"
+        shape = (48, 64, 64)
+        masks = {1: np.zeros(shape, bool), 2: np.zeros(shape, bool)}
+        masks[1][4:20] = True
+        masks[2][10:30, 8:40] = True
+        with medh5.create(path, codec="portable") as w:
+            w.add_grid(
+                "g",
+                shape=shape,
+                spacing=(1.0, 1.0, 1.0),
+                chunk_hint=(16, 32, 128),
+                frame_uid="F0",
+            )
+            w.add_image("CT", np.zeros(shape, np.int16), grid="g", modality="CT")
+            w.label_set(Framed.label_set(2))
+            w.add_segmentation("layered", grid="g", masks=masks, encoding="layers")
+            w.add_segmentation("bits", grid="g", masks=masks, encoding="bitmask")
+            w.add_transform(
+                "warp",
+                kind="displacement",
+                from_frame="F0",
+                to_frame="F1",
+                field=np.zeros((3, *shape), np.float32),
+                field_grid="g",
+            )
+        stacked = ("annotations/layered/data", "annotations/bits/data")
+        stacked += ("transforms/warp/field",)
+        for _ in range(2):
+            with h5py.File(path) as f:
+                assert f["images/CT"].chunks == (16, 32, 64)
+                for name in stacked:
+                    assert f[name].chunks == (1, 16, 32, 64), name
+            assert recompress(path, "portable", rechunk=True).ok
+
+    def test_S13_1_a_new_chunk_shape_changes_no_content_id(self, tmp_path: Path):
+        """2.0.1 rounded a 96³ float32 patch up to an 8 MiB 128³ chunk; the
+        optimiser now keeps it within 4 MiB.  Digests cover decompressed
+        content, so the file verifies under one ``content_id`` chunked either
+        way, and re-chunking one written the old way keeps it."""
+        from medh5.storage import recompress
+
+        shape = (128, 128, 128)
+        now, then = tmp_path / "now.medh5", tmp_path / "then.medh5"
+        ct = np.indices(shape).sum(axis=0).astype(np.float32)
+        with medh5.create(now, codec="training") as w:
+            w.add_grid("g", shape=shape, spacing=(1.0, 1.0, 1.0), patch_hint=(96,) * 3)
+            w.add_image("CT", ct, grid="g", modality="CT")
+        then.write_bytes(now.read_bytes())
+        # Chunk the copy as 2.0.1's optimiser did.
+        with h5py.File(then, "r+") as f:
+            attrs = dict(f["images/CT"].attrs)
+            del f["images/CT"]
+            node = f["images"].create_dataset("CT", data=ct, chunks=(128, 128, 128))
+            node.attrs.update(attrs)
+        chunks, ids = [], []
+        for path in (now, then):
+            with medh5.open(path) as sample:
+                assert sample.verify().ok, path.name
+                chunks.append(sample.images["CT"].chunks)
+                ids.append(sample.content_id)
+        assert int(np.prod(chunks[0])) * 4 <= MAX_CHUNK_BYTES
+        assert int(np.prod(chunks[1])) * 4 > MAX_CHUNK_BYTES
+        result = recompress(then, "training", rechunk=True)
+        assert result.ok and result.content_id_preserved
+        assert result.content_id == ids[0] == ids[1]
+        with medh5.open(then) as sample:
+            assert sample.images["CT"].chunks == chunks[0]
 
     @pytest.mark.parametrize("hint", [(0, 16, 16), (16, -1, 16)])
     def test_S3_2_a_chunk_hint_extent_is_positive(self, tmp_path: Path, hint):
@@ -149,6 +231,35 @@ class TestCodecs:
         assert resolve_profile(PROFILES["archive"]) is PROFILES["archive"]
         assert resolve_profile(None).name == "balanced"
 
+    def test_S14_2_a_profile_of_ones_own_is_honoured(self):
+        """Only a profile's name reached the engine, so a ``CodecProfile`` of
+        one's own --- which the signature takes --- was refused as an unknown
+        name."""
+        from medh5.storage import Codec, CodecProfile
+
+        mine = CodecProfile(
+            "mine",
+            image=Codec("gzip:9", gzip_level=9),
+            label=Codec("gzip:1", gzip_level=1),
+            description="ours",
+        )
+        big, small = (64, 64, 64), (4,)
+        named = dataset_kwargs(big, np.int16, profile="portable")
+        assert dataset_kwargs(big, np.int16, profile=mine) == {
+            **named,
+            "codec": "gzip:9",
+        }
+        assert (
+            dataset_kwargs(big, np.int16, profile=mine, role="label")["codec"]
+            == "gzip:1"
+        )
+        assert dataset_kwargs(small, np.int16, profile=mine) == {}
+        for name, profile in PROFILES.items():
+            for role in ("image", "label"):
+                found = dataset_kwargs(big, np.int16, profile=profile, role=role)
+                assert found == dataset_kwargs(big, np.int16, profile=name, role=role)
+                assert found["codec"] == profile.codec(role).name
+
     def test_S14_2_portable_needs_no_plugin(self, tmp_path):
         """A `portable` file must open with stock h5py filters only."""
         import h5py
@@ -163,6 +274,32 @@ class TestCodecs:
         with h5py.File(path) as handle:
             assert handle["images/CT"].compression == "gzip"
             assert np.asarray(handle["images/CT"][0, 0, :4]).size == 4
+
+    def test_S14_2_every_plugin_filter_is_named(self, tmp_path: Path):
+        """``describe_filters`` named gzip, lzf, szip and Blosc, and called
+        anything else "chunked" --- Zstandard, which the engine reads, among
+        them --- so ``medh5 info`` hid that a reader needs a plugin."""
+        hdf5plugin = pytest.importorskip("hdf5plugin")
+        from medh5.storage import describe_filters
+
+        path = write_sample(tmp_path / "filters.medh5")
+        values = np.arange(4096, dtype="<i4")
+        with h5py.File(path, "r+") as f:
+            f.create_dataset(
+                "x_other/zstd", data=values, chunks=(1024,), **hdf5plugin.Zstd(clevel=5)
+            )
+            f.create_dataset(
+                "x_other/lz4", data=values, chunks=(1024,), **hdf5plugin.LZ4()
+            )
+            f.create_dataset(
+                "x_other/gzip", data=values, chunks=(1024,), compression="gzip"
+            )
+        with medh5.open(path) as sample:
+            found = {
+                name: describe_filters(sample.root[f"x_other/{name}"])
+                for name in ("zstd", "lz4", "gzip")
+            }
+        assert found == {"zstd": "zstd:5", "lz4": "filter:32004", "gzip": "gzip:4"}
 
     def test_is_bulk(self, sample_path):
         with medh5.open(sample_path) as sample:
@@ -511,6 +648,51 @@ class TestRecompress:
         with medh5.open(path) as s:
             assert s.verify().ok and s.content_id == before
 
+    def test_S14_2_a_portable_recompression_leaves_nothing_needing_a_plugin(
+        self, tmp_path: Path
+    ):
+        """A dataset under the compression threshold was copied as stored, so
+        one another writer had compressed with Blosc2 or Zstandard still
+        needed the plugin in a file recompressed to be portable."""
+        hdf5plugin = pytest.importorskip("hdf5plugin")
+        from medh5.storage import profile_family, recompress
+
+        path = tmp_path / "small.medh5"
+        image = np.arange(8 * 8 * 8, dtype=np.int16).reshape(8, 8, 8)
+        with medh5.create(path, codec="portable") as w:
+            w.add_grid("g", shape=image.shape, spacing=(1.0, 1.0, 1.0))
+            w.add_image("CT", image, grid="g", modality="CT")
+        # Another writer's small datasets: chunked, under a plugin's filter.
+        with h5py.File(path, "r+") as f:
+            attrs = dict(f["images/CT"].attrs)
+            del f["images/CT"]
+            f.create_dataset(
+                "images/CT", data=image, chunks=(4, 8, 8), **hdf5plugin.Blosc2()
+            )
+            f["images/CT"].attrs.update(attrs)
+            f.create_dataset(
+                "x_other/small", data=np.arange(64.0), chunks=(16,), **hdf5plugin.Zstd()
+            )
+        assert profile_family(path) == "balanced"
+        with medh5.open(path) as sample:
+            before = sample.content_id
+        kept = recompress(path, "balanced", out=tmp_path / "kept.medh5")
+        assert kept.ok and kept.changed == []
+        assert profile_family(tmp_path / "kept.medh5") == "balanced"
+        result = recompress(path, "portable")
+        assert result.ok and result.content_id == before
+        assert {(p, after) for p, _, after in result.changed} == {
+            ("/images/CT", "contiguous"),
+            ("/x_other/small", "contiguous"),
+        }
+        assert profile_family(path) == "portable"
+        with medh5.open(path) as sample:
+            np.testing.assert_array_equal(sample.images["CT"].read(), image)
+            np.testing.assert_array_equal(
+                sample.root["x_other/small"].read(), np.arange(64.0)
+            )
+            assert sample.verify().ok
+
     def test_S2_2_a_shard_is_recompressed_member_by_member(self, tmp_path: Path):
         """Every member of a collection is re-encoded, and keeps its address."""
         from medh5.collection import open_collection, pack
@@ -615,6 +797,38 @@ class TestRecompress:
         results = recompress_paths(indexed_cohort[:2], "portable")
         assert len(results) == 2
         assert set(results[0].to_json()) >= {"path", "profile", "ratio", "content_id"}
+
+    def test_S14_4_recompress_paths_attempts_every_file(self, tmp_path: Path):
+        """A file that could not be recompressed stopped the batch: the files
+        after it were never tried, and the results of those before it ---
+        already replaced --- were lost with the error.  Every file is tried,
+        and the error names each failure and counts the rest, as
+        ``fix_paths`` does."""
+        from medh5.storage import profile_family, recompress_paths
+
+        shape = (64, 64, 64)
+        paths = []
+        for i in range(2):
+            path = tmp_path / f"m{i}.medh5"
+            with medh5.create(path, sample_id=f"m{i}", codec="portable") as w:
+                w.add_grid("g", shape=shape, spacing=(1.0, 1.0, 1.0))
+                w.add_image("CT", np.ones(shape, np.int16), grid="g", modality="CT")
+            paths.append(path)
+        broken = tmp_path / "broken.medh5"
+        broken.write_bytes(b"not an HDF5 file")
+        with pytest.raises(MEDH5FileError) as exc:
+            recompress_paths([paths[0], broken, paths[1]], "balanced")
+        message = str(exc.value)
+        assert "1 of 3 files could not be recompressed, and 2 were" in message
+        assert "broken.medh5" in message
+        assert [profile_family(p) for p in paths] == ["balanced", "balanced"]
+        # One file fails as `recompress` does, and a bad profile before any.
+        with pytest.raises(MEDH5FileError) as exc:
+            recompress_paths([broken], "portable")
+        assert "could not be recompressed" not in str(exc.value)
+        with pytest.raises(MEDH5ValidationError, match="unknown codec profile"):
+            recompress_paths([paths[0], broken], "turbo")
+        assert [profile_family(p) for p in paths] == ["balanced", "balanced"]
 
     def test_S14_1_rechunk_chunks_the_way_the_writer_does(self, tmp_path: Path):
         """A `layers` dataset went to h5py's (2, 16, 24, 48), and drew W902."""

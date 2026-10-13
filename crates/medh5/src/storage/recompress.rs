@@ -12,7 +12,9 @@ use indexmap::IndexMap;
 use serde_json::{json, Value};
 
 use super::chunking::{field_chunks, fit_chunks, grid_chunks};
-use super::codecs::{dataset_layout, describe_filters, profile_names, resolve_profile, CodecProfile, Role};
+use super::codecs::{
+    builtin_only, dataset_layout, describe_filters, needs_plugin, profile_names, resolve_profile, CodecProfile, Role,
+};
 use crate::array::{Index, Slice};
 use crate::geometry::grid::{read_grids, Grid};
 use crate::h5::attrs;
@@ -103,15 +105,7 @@ impl RecompressResult {
 ///
 /// Copy-on-write like every other mutation (§14.4).
 pub fn recompress(path: &Path, profile: &str, out: Option<&Path>, rechunk: bool) -> Result<RecompressResult> {
-    if !profile_names().contains(&profile) {
-        let mut names = profile_names();
-        names.sort_unstable();
-        return Err(Error::invalid(format!(
-            "unknown codec profile {}; expected one of {}",
-            repr_str(profile),
-            crate::json::repr_list(&names)
-        )));
-    }
+    check_profile(profile)?;
     let codec = resolve_profile(Some(profile))?;
     refuse_projection(path)?;
     let target = out.unwrap_or(path);
@@ -145,6 +139,20 @@ pub fn recompress(path: &Path, profile: &str, out: Option<&Path>, rechunk: bool)
     result.verified = all_ok;
     result.content_id_preserved = before == after && ids_ok;
     Ok(result)
+}
+
+/// Refuse a profile name that is not one of the four (§14.2).
+fn check_profile(profile: &str) -> Result<()> {
+    if profile_names().contains(&profile) {
+        return Ok(());
+    }
+    let mut names = profile_names();
+    names.sort_unstable();
+    Err(Error::invalid(format!(
+        "unknown codec profile {}; expected one of {}",
+        repr_str(profile),
+        crate::json::repr_list(&names)
+    )))
 }
 
 /// Verify every sample root of the written file: its `content_id`, whether
@@ -365,9 +373,13 @@ fn copy_dataset(
     };
     let shape = ds.shape();
     let new_layout = dataset_layout(&shape, dtype.itemsize(), codec, role(&relative_name(&ds.name(), root)), chunks);
-    if new_layout.chunks.is_none() {
-        // Below the compression threshold: copied through as stored, exactly
-        // what a fresh write would leave contiguous.
+    // Below the compression threshold: copied through as stored, exactly
+    // what a fresh write would leave contiguous --- unless another writer
+    // compressed it with a plugin and the profile is one that needs none,
+    // which a copy left needing one.  It is rewritten contiguous.
+    let left_needing_plugin =
+        || -> Result<bool> { Ok(builtin_only(codec) && !shape.contains(&0) && needs_plugin(&ds)?) };
+    if new_layout.chunks.is_none() && !left_needing_plugin()? {
         return copy_stored(parent, name, dst);
     }
     let before = describe_filters(&ds)?;
@@ -407,9 +419,39 @@ fn slabs(shape: &[usize], itemsize: usize, budget: usize) -> Vec<(usize, usize)>
     out
 }
 
-/// Recompress many files.
+/// Recompress many files: every one of them, a file that cannot be
+/// recompressed stopping no other.
+///
+/// When any could not be, the error --- the first failure's kind --- names
+/// each file that failed and why, and how many of the others were
+/// recompressed, as `fix_paths` reports a repair.  Stopping at the first
+/// failure left the files after it as they were, and lost the results of
+/// those before it, already replaced.  One file fails as [`recompress`] does.
 pub fn recompress_paths(paths: &[&Path], profile: &str, rechunk: bool) -> Result<Vec<RecompressResult>> {
-    paths.iter().map(|p| recompress(p, profile, None, rechunk)).collect()
+    check_profile(profile)?;
+    let mut done = Vec::new();
+    let mut failed: Vec<(String, Error)> = Vec::new();
+    for path in paths {
+        match recompress(path, profile, None, rechunk) {
+            Ok(result) => done.push(result),
+            Err(e) => failed.push((path.to_string_lossy().into_owned(), e)),
+        }
+    }
+    if failed.is_empty() {
+        return Ok(done);
+    }
+    if paths.len() == 1 {
+        return Err(failed.remove(0).1);
+    }
+    let listed: Vec<String> = failed.iter().map(|(path, e)| format!("{}: {}", repr_str(path), e.message())).collect();
+    let message = format!(
+        "{} of {} files could not be recompressed, and {} were: {}",
+        failed.len(),
+        paths.len(),
+        done.len(),
+        listed.join("; ")
+    );
+    Err(crate::integrity::restated(failed.remove(0).1, message))
 }
 
 #[cfg(test)]

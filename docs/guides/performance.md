@@ -80,13 +80,12 @@ w.add_grid("ct", shape=..., spacing=..., patch_hint=(96, 96, 96))
 ```
 
 `patch_hint` is how you say what you will read; without one the optimiser
-assumes a 64-voxel patch on each axis. The cache budget is 80 % of the L3 size
-the platform reports, or of ~1.375 MiB where it reports none, held between
-512 KiB and 4 MiB. The size reported is the whole L3, which the cores on it
-share — not a per-core slice — so on a server the budget is usually the
-4 MiB ceiling. A chunk starts at the patch, each axis rounded up to a power of
-two, so a patch larger than the budget makes a larger chunk: 8 MiB for a 96³
-`float32` patch.
+assumes a 64-voxel patch on each axis. The cache budget is 80 % of one CPU's
+share of the L3 (its size over the CPUs sharing it), or of ~1.375 MiB where
+the platform reports none, held between 512 KiB and 4 MiB. A chunk starts at
+the patch, each axis rounded up to a power of two, and no computed chunk is
+larger than 4 MiB: a patch whose rounding would pass that starts at the patch
+itself, halved until it fits.
 
 For an existing cohort, `--rechunk` re-derives the chunk shape as well as the
 codec, by the writer's own rule — from each grid's `patch_hint`, one plane per

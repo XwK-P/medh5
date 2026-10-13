@@ -162,15 +162,25 @@ def dataset_kwargs(
     chunks: tuple[int, ...] | None = None,
 ) -> dict[str, Any]:
     """The layout the writer gives one dataset: ``{}`` when it is stored
-    contiguous (small or empty), else ``{"chunks": ..., "codec": ...}``."""
-    name = resolve_profile(profile).name
+    contiguous (small or empty), else ``{"chunks": ..., "codec": ...}``, the
+    codec being *profile*'s for *role* --- a :class:`CodecProfile` of your own
+    as much as a named one.
+
+    Since 2.0 this is the writer's layout, not the ``h5py`` keywords 1.x
+    returned; for those, pass ``resolve_profile(profile).codec(role).kwargs()``
+    and the ``chunks`` to ``create_dataset``.
+    """
+    # Only the codec depends on the profile, and a profile of one's own has
+    # a name the engine does not know: it was refused as one.
+    resolved = resolve_profile(profile)
     found: dict[str, Any] = _core.dataset_layout(
         [int(n) for n in shape],
         np.dtype(dtype).itemsize,
-        profile=name,
         role=role,
         chunks=None if chunks is None else [int(c) for c in chunks],
     )
+    if found:
+        found["codec"] = resolved.codec(role).name
     return found
 
 
@@ -317,7 +327,10 @@ def recompress(
 def recompress_paths(
     paths: Sequence[str | os.PathLike[str]], profile: str, *, rechunk: bool = False
 ) -> list[RecompressResult]:
-    """Recompress many files, one result each."""
+    """Recompress many files, one result each: every one of them --- a file
+    that cannot be recompressed stops no other.  If any could not be, the
+    error names each one and why, and how many of the others were
+    recompressed (and replaced)."""
     return [
         RecompressResult.from_json(doc)
         for doc in _core.recompress_paths(

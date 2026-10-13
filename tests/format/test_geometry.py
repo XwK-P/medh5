@@ -118,6 +118,18 @@ class TestBoxConvention:
                 (s,) = box_to_slices(box)
                 assert s.stop - s.start == width
 
+    @pytest.mark.parametrize(
+        "bounds", [(np.nan, 4.0), (0.0, np.nan), (-np.inf, 4.0), (0.0, np.inf)]
+    )
+    def test_S8_1_a_bound_that_is_not_finite_is_E406(self, bounds):
+        """``lo > hi`` is false for a NaN: a NaN bound became voxel 0 and an
+        infinite one a slice to the end of the integers."""
+        box = np.array([[0.0, 1.0], bounds])
+        for shape in (None, (4, 10)):
+            with pytest.raises(MEDH5ValidationError) as exc:
+                box_to_slices(box, shape)
+            assert exc.value.code == "E406"
+
     def test_S8_1_extent_is_voxel_count(self):
         box = slices_to_box([slice(12, 40), slice(0, 3)])
         extents = box[:, 1] - box[:, 0]
@@ -130,6 +142,28 @@ class TestBoxConvention:
 
     def test_box_to_slices_clips_to_shape(self):
         assert box_to_slices(np.array([[-4.5, 99.5]]), (10,)) == (slice(0, 10),)
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            slice(0, None),
+            slice(None, None),
+            slice(-3, 5),
+            slice(2, -1),
+            slice(0, 10, 2),
+            slice(5, 3),
+        ],
+    )
+    def test_S8_1_a_box_is_made_only_from_a_bounded_block(self, bad):
+        """An open stop raised a bare ``TypeError``; a negative bound, counted
+        from an end only the array knows, and a step made a box of other
+        voxels."""
+        with pytest.raises(ValueError, match="0 <= start <= stop") as exc:
+            slices_to_box([slice(0, 4), bad])
+        assert "axis 1" in str(exc.value)
+        # An open start is 0 on any axis, and a step of 1 is no step.
+        box = slices_to_box([slice(None, 4), slice(2, 2), slice(0, 4, 1)])
+        assert box.tolist() == [[-0.5, 3.5], [1.5, 1.5], [-0.5, 3.5]]
 
     def test_box_corners_are_odometer_ordered(self):
         corners = box_corners(np.array([[0.0, 1.0], [10.0, 20.0]]))
@@ -188,6 +222,27 @@ class TestMisshapenArguments:
         )
         spacing, _, _ = decompose_affine(affine)
         np.testing.assert_array_equal(spacing, [2.0, 1.0, 1.0])
+
+    def test_S8_1_every_box_helper_refuses_what_box_to_slices_refuses(self):
+        """Only ``box_to_slices`` checked a box's shape: ``box_corners`` and
+        ``apply_affine_to_box`` flattened a ``(2, 3)`` min/max-corner box and
+        answered for three axes of made-up bounds."""
+        corners = np.array([[0.0, 0.0, 0.0], [9.0, 19.0, 29.0]])
+        helpers = (
+            box_to_slices,
+            box_corners,
+            lambda b: apply_affine_to_box(np.eye(4), b),
+        )
+        for bad in (corners, corners.ravel(), corners.T[..., None]):
+            for helper in helpers:
+                with pytest.raises(ValueError, match=r"shape \(S, 2\)"):
+                    helper(bad)
+        box = corners.T
+        assert box_to_slices(box) == (slice(0, 9), slice(0, 19), slice(0, 29))
+        np.testing.assert_array_equal(apply_affine_to_box(np.eye(4), box), box)
+        found = box_corners(box)
+        np.testing.assert_array_equal(found.min(axis=0), corners[0])
+        np.testing.assert_array_equal(found.max(axis=0), corners[1])
 
 
 class TestGrid:
@@ -348,6 +403,19 @@ class TestMultiscale:
             pyramid_factors(base, [base, level1]), [[1, 1, 1], [2, 4, 4]]
         )
 
+    @pytest.mark.parametrize("factor", [np.nan, np.inf, 0.0, -2.0])
+    def test_S4_3_a_factor_that_is_not_finite_and_positive_is_E105(self, factor):
+        """``v <= 0`` is false for a NaN: the declaration took a NaN factor
+        the validator refuses."""
+        with pytest.raises(MEDH5ValidationError, match="finite") as exc:
+            Pyramid(
+                levels=2,
+                downsample_factors=np.array([[1.0, 1.0, 1.0], [2.0, factor, 2.0]]),
+                downsample_method="mean",
+                grid_levels=("l0", "l1"),
+            )
+        assert exc.value.code == "E105"
+
     def test_pyramid_rejects_level0_downsampling(self):
         with pytest.raises(MEDH5ValidationError):
             Pyramid(
@@ -389,6 +457,47 @@ class TestPyramidChecks:
         assert check_pyramid(base, [base, level], [[1, 1, 1], [2, 2, 2]]) == []
         problems = check_pyramid(base, [base, permuted], [[1, 1, 1], [2, 2, 2]])
         assert any("direction" in p for p in problems)
+
+    @pytest.mark.parametrize(
+        ("spacing", "origin", "direction"),
+        [
+            ((1.0, 1.0, 1.0), (0.0, 0.0, 0.0), np.eye(3)),
+            # Whole-body CT, 1600 voxels from zero: the tolerance scaled with
+            # |origin| and swallowed the missing shift.
+            ((0.5, 0.5, 0.5), (-800.0, 0.0, 0.0), np.eye(3)),
+            # A µm stage, its axes permuted and anisotropic: a world axis was
+            # weighed by another axis's spacing.
+            (
+                (0.25, 2.0, 1.0),
+                (5e4, -2e4, 3e4),
+                np.array([[0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]),
+            ),
+        ],
+    )
+    def test_S4_3_the_origin_is_held_to_a_level_voxel_wherever_it_lies(
+        self, spacing, origin, direction
+    ):
+        """A level's origin is accepted within 1e-3 of the level's voxel of
+        the derived one along each of its axes, and nowhere else --- however
+        far from zero the grid sits."""
+        base = dataclasses.replace(
+            self._base(), spacing=spacing, origin=origin, direction=direction
+        )
+        level = derive_level_grid(base, (2, 2, 2), "l1")
+        factors = [[1, 1, 1], [2, 2, 2]]
+        assert check_pyramid(base, [base, level], factors) == []
+        unshifted = dataclasses.replace(level, origin=base.origin)
+        problems = check_pyramid(base, [base, unshifted], factors)
+        assert len(problems) == 1 and "half-voxel shift missing" in problems[0]
+        for axis in range(3):
+            for voxels, ok in ((0.5e-3, True), (-0.5e-3, True), (2e-3, False)):
+                offset = np.zeros(3)
+                offset[axis] = voxels
+                nudged = dataclasses.replace(
+                    level, origin=tuple(level.index_to_world(offset))
+                )
+                found = check_pyramid(base, [base, nudged], factors)
+                assert (found == []) is ok, (axis, voxels, found)
 
     def test_S4_3_a_level_extent_that_is_not_a_resampling_is_caught(self):
         base = self._base()

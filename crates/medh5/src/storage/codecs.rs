@@ -29,6 +29,10 @@ pub const BLOSC2_FILTER_ID: i32 = 32026;
 pub const BLOSC_FILTER_ID: i32 = 32001;
 /// HDF5's own filters: deflate, shuffle, fletcher32, szip, n-bit, scale-offset.
 pub const BUILTIN_FILTER_IDS: [i32; 6] = [1, 2, 3, 4, 5, 6];
+/// The HDF Group's id for the Zstandard filter, which the engine registers.
+const ZSTD_FILTER_ID: i32 = 32015;
+/// h5py's LZF filter.
+const LZF_FILTER_ID: i32 = 32000;
 /// The default profile.
 pub const DEFAULT_PROFILE: &str = "balanced";
 
@@ -194,9 +198,9 @@ pub fn describe_filters(ds: &hdf5::Dataset) -> Result<String> {
         return Ok("contiguous".into());
     }
     let pipeline = crate::h5::data::filters(ds)?;
-    let named_compression = pipeline.iter().find_map(|(id, values)| match id {
+    let named_compression = pipeline.iter().find_map(|(id, values)| match *id {
         1 => Some(format!("gzip:{}", values.first().copied().unwrap_or(0))),
-        32000 => Some("lzf".to_string()),
+        LZF_FILTER_ID => Some("lzf".to_string()),
         4 => Some("szip".to_string()),
         _ => None,
     });
@@ -204,16 +208,27 @@ pub fn describe_filters(ds: &hdf5::Dataset) -> Result<String> {
     let mut parts: Vec<String> = Vec::new();
     let mut named = false;
     for (id, values) in &pipeline {
-        if *id == BLOSC2_FILTER_ID {
-            parts.push(describe_blosc(values));
-        } else if *id == BLOSC_FILTER_ID {
-            let d = describe_blosc(values);
-            parts.push(format!("blosc:{}", d.split_once(':').map(|x| x.1).unwrap_or("")));
-        } else if !named {
-            if let Some(c) = &named_compression {
-                named = true;
-                parts.push(c.clone());
+        match *id {
+            BLOSC2_FILTER_ID => parts.push(describe_blosc(values)),
+            BLOSC_FILTER_ID => {
+                let d = describe_blosc(values);
+                parts.push(format!("blosc:{}", d.split_once(':').map(|x| x.1).unwrap_or("")));
             }
+            // Zstandard and any other plugin are named, never left as
+            // "chunked": a reader needs the plugin to open the dataset.
+            ZSTD_FILTER_ID => {
+                parts.push(values.first().map_or_else(|| "zstd".to_string(), |level| format!("zstd:{level}")));
+            }
+            other if !BUILTIN_FILTER_IDS.contains(&other) && other != LZF_FILTER_ID => {
+                parts.push(format!("filter:{other}"));
+            }
+            _ if !named => {
+                if let Some(c) = &named_compression {
+                    named = true;
+                    parts.push(c.clone());
+                }
+            }
+            _ => {}
         }
     }
     if has_shuffle {
@@ -228,21 +243,27 @@ pub fn describe_filters(ds: &hdf5::Dataset) -> Result<String> {
 /// An amend has to infer what a file was written for: amending a `portable`
 /// file must not add Blosc2 datasets its intended readers cannot open.
 pub fn profile_family(root: &hdf5::Group) -> Result<&'static str> {
-    let mut needs_plugin = false;
+    let mut plugin = false;
     crate::h5::ops::visit(root, &mut |_, node| {
         if let crate::h5::ops::Node::Dataset(ds) = node {
-            if crate::h5::data::chunks(ds).is_some() {
-                for (id, _) in crate::h5::data::filters(ds)? {
-                    if !BUILTIN_FILTER_IDS.contains(&id) {
-                        needs_plugin = true;
-                        return Ok(false);
-                    }
-                }
-            }
+            plugin = needs_plugin(ds)?;
         }
-        Ok(true)
+        Ok(!plugin)
     })?;
-    Ok(if needs_plugin { "balanced" } else { "portable" })
+    Ok(if plugin { "balanced" } else { "portable" })
+}
+
+/// Whether reading `ds` takes a filter HDF5 does not build in.
+pub(crate) fn needs_plugin(ds: &hdf5::Dataset) -> Result<bool> {
+    if crate::h5::data::chunks(ds).is_none() {
+        return Ok(false);
+    }
+    Ok(crate::h5::data::filters(ds)?.iter().any(|(id, _)| !BUILTIN_FILTER_IDS.contains(id)))
+}
+
+/// Whether every dataset `profile` writes reads with HDF5's own filters.
+pub(crate) fn builtin_only(profile: &CodecProfile) -> bool {
+    [&profile.image, &profile.label].iter().all(|codec| codec.blosc2.is_none())
 }
 
 /// Whether a dataset is large enough for the W902 warning.

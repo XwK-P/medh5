@@ -1,7 +1,8 @@
 //! Multiscale pyramids (spec §4.3).
 //!
 //! Every level has its **own grid**, and the geometry of level *l* is derived
-//! from level 0 by a rule the validator checks to 1e-3 relative tolerance:
+//! from level 0 by a rule the validator checks to 1e-3 relative tolerance ---
+//! of the spacing, and for the origin, of the level's voxel:
 //!
 //! ```text
 //! spacing'_k = spacing_k * f_k
@@ -62,8 +63,9 @@ impl Pyramid {
         if !DOWNSAMPLE_METHODS.contains(&p.downsample_method.as_str()) {
             return Err(Error::coded("E105", format!("unknown downsample_method {}", repr_str(&p.downsample_method))));
         }
-        if p.downsample_factors.iter().any(|v| *v <= 0.0) {
-            return Err(Error::coded("E105", "downsample factors must be > 0"));
+        // `v <= 0` is false for a NaN, which the validator refuses (E105).
+        if p.downsample_factors.iter().any(|v| !(v.is_finite() && *v > 0.0)) {
+            return Err(Error::coded("E105", "downsample factors must be finite and > 0"));
         }
         if rows > 0 {
             let first: Vec<f64> = p.downsample_factors.row(0).to_vec();
@@ -144,7 +146,9 @@ pub fn derive_level_grid(base: &Grid, factors: &[f64], grid_id: &str, shape: Opt
 
 /// Check every level's geometry against the derivation rule.
 ///
-/// Returns human-readable messages; empty means the pyramid conforms.
+/// Spacing is held to `rtol` of the derived spacing; the origin to `rtol` of
+/// the level's voxel along each of its axes, wherever it lies.  Returns
+/// human-readable messages; empty means the pyramid conforms.
 // Each axis is checked across several parallel per-axis vectors at once.
 #[allow(clippy::needless_range_loop)]
 pub fn check_pyramid(base: &Grid, levels: &[&Grid], factors: &Array2<f64>, rtol: f64) -> Result<Vec<String>> {
@@ -176,15 +180,23 @@ pub fn check_pyramid(base: &Grid, levels: &[&Grid], factors: &Array2<f64>, rtol:
                     format_g(f[axis], 6)
                 ));
             }
-            let (got_o, want_o) = (grid.origin[axis], expected.origin[axis]);
-            let scale = want_o.abs().max(base.spacing[axis]);
-            if (got_o - want_o).abs() > rtol * scale {
-                problems.push(format!(
-                    "level {level} axis {axis}: origin {} != {} (half-voxel shift missing?)",
-                    format_g(got_o, 6),
-                    format_g(want_o, 6)
-                ));
-            }
+        }
+        // The origin is a position, so it is held to `rtol` of the level's
+        // own voxel along each of its axes.  Measured against |origin| the
+        // tolerance outgrew the half-voxel shift it exists to find wherever
+        // the origin lay ~500 voxels from zero (whole-body CT, a µm stage),
+        // and it weighed a world axis by a stored axis's spacing.
+        let off = expected.world_to_index(&grid.origin)?;
+        if off.iter().any(|v| v.is_nan() || v.abs() > rtol) {
+            let shown = |values: &[f64], digits: usize| {
+                values.iter().map(|v| format_g(*v, digits)).collect::<Vec<_>>().join(", ")
+            };
+            problems.push(format!(
+                "level {level}: origin ({}) != ({}), ({}) of a voxel off along its axes (half-voxel shift missing?)",
+                shown(&grid.origin, 6),
+                shown(&expected.origin, 6),
+                shown(&off, 3)
+            ));
         }
         let same_direction = grid.direction.dim() == base.direction.dim()
             && allclose(
