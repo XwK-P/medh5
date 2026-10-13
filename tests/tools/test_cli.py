@@ -2514,6 +2514,49 @@ class TestConvertPathsNeverAlias:
         )
         assert other.read_text(encoding="utf-8") == "someone else's"
 
+    def test_a_link_at_the_temporary_name_is_not_written_through(
+        self, capsys, monkeypatch, tmp_path
+    ):
+        """The temporary beside a report was ``.<pid>-<name>``: a link planted
+        there, by anyone who could write the directory, was followed, and the
+        file it named overwritten with the report.  The temporary is created
+        exclusively under a random name, and a name already taken is passed
+        over."""
+        import secrets
+
+        from medh5 import cli
+        from medh5.io.report import ConversionReport
+
+        other = tmp_path / "other.txt"
+        other.write_text("someone else's", encoding="utf-8")
+        planted = [
+            tmp_path / f".{os.getpid()}-r.json",
+            tmp_path / f".{os.getpid()}-00000000-r.json",
+        ]
+        try:
+            for link in planted:
+                link.symlink_to(other)
+        except OSError as exc:  # pragma: no cover - no links on this file system
+            pytest.skip(str(exc))
+        tokens = iter(["00000000", "11111111"])
+        monkeypatch.setattr(secrets, "token_hex", lambda _: next(tokens))
+        monkeypatch.setitem(
+            cli._HANDLERS,
+            "from-nnunet",
+            lambda a: cli._finish(ConversionReport(converter="from-nnunet"), a),
+        )
+        report = tmp_path / "r.json"
+        argv = ["from-nnunet", str(tmp_path / "x"), str(tmp_path / "y")]
+        assert run(capsys, "convert", *argv, "--report", str(report))[0] == EXIT_OK
+        assert (
+            json.loads(report.read_text(encoding="utf-8"))["converter"] == "from-nnunet"
+        )
+        assert other.read_text(encoding="utf-8") == "someone else's"
+        assert all(link.is_symlink() for link in planted)
+        assert sorted(p.name for p in tmp_path.iterdir()) == sorted(
+            ["other.txt", "r.json", *(link.name for link in planted)]
+        )
+
     def test_a_report_naming_the_output_of_a_real_import_is_refused(
         self, capsys, tmp_path
     ):

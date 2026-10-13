@@ -31,6 +31,7 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
+from medh5._files import temporary_beside, write_text
 from medh5._optional import require
 from medh5.errors import MEDH5ValidationError
 from medh5.geometry import ORTHONORMAL_TOL, build_affine, decompose_affine
@@ -189,7 +190,8 @@ def write_nifti(
     header.set_xyzt_units(xyz="mm" if scale is not None else "unknown", t=temporal)
     sidecar = _sidecar_for(target)
     fields = _volume_statements(sidecar, needed=bool(statements))
-    temporary = target.with_name(f".{os.getpid()}-{target.name}")
+    temporary, fd = temporary_beside(target)
+    os.close(fd)
     try:
         nib.save(image, str(temporary))
         kept = _withdraw_volume_statements(target, sidecar, fields)
@@ -326,12 +328,7 @@ def _replace_text(path: Path, text: str | None) -> None:
     if text is None:
         path.unlink(missing_ok=True)
         return
-    temporary = path.with_name(f".{os.getpid()}-{path.name}")
-    try:
-        temporary.write_text(text, encoding="utf-8")
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
+    write_text(path, text)
 
 
 def _write_timing(

@@ -579,6 +579,28 @@ class TestSplits:
         split.assignments = []
         assert split.partition_of(entry) is None
 
+    def test_partition_of_sees_an_assignment_put_in_anothers_place(self, manifest):
+        """The lookup was kept while the list's identity and length held, so
+        an assignment made before a call and put in place after it, by index
+        or by slice, left the lookup answering for the one it replaced."""
+        from medh5.dataset.split import Assignment
+
+        split = make_splits(manifest, seed=0)
+        entry = manifest[0]
+        at = next(
+            i for i, a in enumerate(split.assignments) if a.group == entry.group_id
+        )
+        old = split.assignments[at]
+        other = "train" if old.partition == "test" else "test"
+        replacement = Assignment(old.group, other, entries=old.entries)
+        assert split.partition_of(entry) == old.partition
+        split.assignments[at] = replacement
+        assert split.partition_of(entry) == other
+        split.assignments[:] = [
+            old if a is replacement else a for a in split.assignments
+        ]
+        assert split.partition_of(entry) == old.partition
+
     def test_S12_3_an_entry_in_two_partitions_is_a_leak(self, manifest):
         """`leaks()` checked groups alone: a loaded split placing one file
         under two groups in two partitions passed it."""

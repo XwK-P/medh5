@@ -60,6 +60,13 @@ transcoding, digests, index building and field sampling release the GIL.
   and the link is kept (§14.4); a link in a sticky, world-writable directory
   that another user owns is refused, as Linux's `fs.protected_symlinks` refuses
   it.
+- **A temporary file is no longer one another user can name in advance.**
+  `to_nifti` and `to_nnunetv2` wrote each image and its sidecar to
+  `.<pid>-<name>` beside the target and renamed it into place, so a link
+  planted at that name, by anyone who could write the directory, was followed
+  and the file it named overwritten. The temporary is now created exclusively,
+  under a name with a random part, as are those of a converter's `--report` and
+  `TaskManifest.save`.
 - **`scrub` reads every name, and every copy of the document.** A second hard
   link's name, a soft link and its target, a committed datatype's name and
   attributes, and `/meta` under a second name or copied elsewhere all scanned

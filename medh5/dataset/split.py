@@ -82,15 +82,26 @@ class Split:
     def _places(self) -> dict[str, tuple[str, int | None]]:
         """``group -> (partition, fold)``, built once and kept while the
         assignments stand: rebuilding the whole split per call made the
-        documented per-entry loop take 34 s at 3,000 subjects."""
-        state = (_EDITS[0], id(self.assignments), len(self.assignments), self.group_by)
-        if self._lookup is None or self._lookup[0] != state:
+        documented per-entry loop take 34 s at 3,000 subjects.
+
+        They stand while no :class:`Assignment` has changed and the list
+        still holds what it held.  An assignment put in another's place, or a
+        slice assigned, changes neither the list's identity nor its length,
+        so the list is compared with a copy taken when the lookup was built:
+        element by element, identity first, a pass over pointers when nothing
+        moved."""
+        state = (_EDITS[0], self.group_by)
+        if (
+            self._lookup is None
+            or self._lookup[0] != state
+            or self._lookup[1] != self.assignments
+        ):
             places: dict[str, tuple[str, int | None]] = {}
             for a in self.assignments:
                 fold = a.fold if type(a.fold) is int else None
                 places.setdefault(str(a.group), (str(a.partition), fold))
-            self._lookup = (state, places)
-        found: dict[str, tuple[str, int | None]] = self._lookup[1]
+            self._lookup = (state, list(self.assignments), places)
+        found: dict[str, tuple[str, int | None]] = self._lookup[2]
         return found
 
     def _place(self, entry: Entry) -> tuple[str, int | None] | None:

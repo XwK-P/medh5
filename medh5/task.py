@@ -47,6 +47,7 @@ import numpy as np
 import numpy.typing as npt
 
 from medh5 import _core
+from medh5._files import temporary_beside
 from medh5.clinical import (
     SELECTION_POLICIES,
     Event,
@@ -461,9 +462,9 @@ class TaskManifest:
         doc = self.to_json()
         doc["fingerprint"] = self.manifest_fingerprint
         target = path.resolve() if path.is_symlink() else path
-        temporary = target.with_name(f".{os.getpid()}-{target.name}")
+        temporary, fd = temporary_beside(target)
         try:
-            with open(temporary, "w", encoding="utf-8") as out:
+            with open(fd, "w", encoding="utf-8") as out:
                 out.write(json.dumps(doc, indent=2, ensure_ascii=False) + "\n")
                 out.flush()
                 os.fsync(out.fileno())

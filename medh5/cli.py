@@ -360,15 +360,12 @@ def _write_report(path: Path, text: str) -> None:
     """*text* as *path*, through a rename: a link at *path* is replaced
     rather than written through to the file it names.  An error names
     *path*, not the temporary beside it."""
-    temporary = path.with_name(f".{os.getpid()}-{path.name}")
+    from medh5._files import write_text
+
     try:
-        temporary.write_text(text, encoding="utf-8")
-        os.replace(temporary, path)
+        write_text(path, text)
     except OSError as exc:
         raise OSError(exc.errno, exc.strerror, os.fspath(path)) from None
-    finally:
-        with contextlib.suppress(OSError):
-            temporary.unlink(missing_ok=True)
 
 
 def _from_nifti(args: Any) -> int:
