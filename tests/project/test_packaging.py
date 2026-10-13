@@ -21,7 +21,7 @@ import sysconfig
 import tarfile
 from importlib.metadata import distribution
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -223,9 +223,16 @@ def test_the_release_notes_fit_a_github_release() -> None:
     assert len(notes.notes(text, "2.0.0", "XwK-P/medh5", "v2.0.0")) <= (
         notes.GITHUB_LIMIT
     )
-    long = "## [9.9.9]\n\n" + "- x\n" * (notes.GITHUB_LIMIT // 4 + 1)
+    # Notes of exactly the limit pass and one character more is refused.  In
+    # long lines: the parser's time grows with the blocks, and the thirty
+    # thousand one-word items this used to build took most of the file's run.
+    line = "- " + "x" * 998
+    body = "\n".join([line] * (notes.GITHUB_LIMIT // (len(line) + 1)))
+    body += "\n- " + "x" * (notes.GITHUB_LIMIT - len(body) - 3)
+    assert len(body) == notes.GITHUB_LIMIT
+    assert notes.notes(f"## [9.9.9]\n\n{body}\n", "9.9.9", "o/r", "v9.9.9") == body
     with pytest.raises(SystemExit, match="GitHub takes at most"):
-        notes.notes(long, "9.9.9", "o/r", "v9.9.9")
+        notes.notes(f"## [9.9.9]\n\n{body}x\n", "9.9.9", "o/r", "v9.9.9")
 
 
 def test_a_release_page_breaks_no_line_of_the_changelog() -> None:
@@ -350,8 +357,12 @@ class TestRepositoryGates:
 
     def test_actions_are_pinned_by_commit(self):
         uses = []
-        for name in ("ci.yml", "release.yml"):
-            text = (ROOT / ".github/workflows" / name).read_text(encoding="utf-8")
+        workflows = sorted((ROOT / ".github/workflows").glob("*.yml"))
+        assert {"ci.yml", "release.yml", "advisories.yml"} <= {
+            p.name for p in workflows
+        }
+        for path in workflows:
+            text = path.read_text(encoding="utf-8")
             uses += re.findall(r"uses:\s*(\S+)(.*)", text)
         external = [(u, rest) for u, rest in uses if not u.startswith("./")]
         assert external
@@ -379,6 +390,167 @@ class TestRepositoryGates:
         msrv = _jobs(CI.read_text(encoding="utf-8"))["msrv"]
         assert "^[0-9]+\\.[0-9]+\\.[0-9]+$" in msrv
 
+    def test_the_rust_the_project_builds_with_is_pinned(self):
+        """CI installed `stable` as it stood that day, and the release re-runs
+        CI on its tag: a lint a new stable had added since the pull request
+        failed `clippy -D warnings` there, and the artifacts were built by
+        whichever compiler that was.  rust-toolchain.toml names one release,
+        no older than `rust-version`, with the components the gates run.  The
+        unpacked sdist carries no pin: its users build with their own Rust."""
+        pin = ROOT / "rust-toolchain.toml"
+        if (ROOT / "PKG-INFO").is_file():
+            assert not pin.exists()
+            return
+        text = pin.read_text(encoding="utf-8")
+        channel = re.search(r'^channel = "(\d+)\.(\d+)\.(\d+)"$', text, re.M)
+        assert channel, "pin a release, X.Y.Z, not a channel"
+        workspace = WORKSPACE.read_text(encoding="utf-8")
+        msrv = re.search(r'^rust-version = "(\d+)\.(\d+)\.(\d+)"$', workspace, re.M)
+        assert msrv
+        assert tuple(map(int, channel.groups())) >= tuple(map(int, msrv.groups()))
+        components = re.search(r"^components = \[(.*)\]$", text, re.M)
+        assert components
+        assert {"rustfmt", "clippy"} <= set(re.findall(r'"([\w-]+)"', components[1]))
+
+    def test_every_rust_build_installs_the_pinned_rust_first(self):
+        """Each job that compiles Rust installs rust-toolchain.toml's before
+        its first cargo or maturin, and nothing installs `stable`: a job that
+        did not would build with whatever its runner had.  The manylinux
+        containers have no Rust, and installed `stable` with `curl | sh`;
+        build-dist.sh now checks a pinned rustup-init against its digest, and
+        pins maturin (inside pyproject.toml's range) and CMake."""
+        install = "rustup toolchain install --no-self-update"
+        build = (ROOT / ".github/scripts/build-dist.sh").read_text(encoding="utf-8")
+        assert install in build and "sh.rustup.rs" not in build
+        pins = dict(re.findall(r"^(\w+_version)=(\S+)$", build, re.M))
+        assert set(pins) == {"maturin_version", "cmake_version", "rustup_version"}
+        assert all(re.fullmatch(r"\d+\.\d+\.\d+", v) for v in pins.values()), pins
+        assert '"maturin==$maturin_version"' in build
+        assert '"cmake==$cmake_version"' in build
+        text = PYPROJECT.read_text(encoding="utf-8")
+        floor = re.search(r'"maturin>=([\d.]+),<(\d+)"', text)
+        assert floor
+        version = tuple(map(int, pins["maturin_version"].split(".")))
+        assert tuple(map(int, floor[1].split("."))) <= version < (int(floor[2]),)
+        for arch in ("x86_64", "aarch64"):
+            assert re.search(rf"^rustup_sha256_{arch}=[0-9a-f]{{64}}$", build, re.M)
+        assert "sha256sum --check" in build
+        containers = re.findall(r"container: (\S+)", CI.read_text(encoding="utf-8"))
+        assert len(containers) == 2
+        for image in containers:
+            assert re.fullmatch(r"quay\.io/pypa/[\w.-]+@sha256:[0-9a-f]{64}", image)
+        built = []
+        for workflow in (CI, RELEASE):
+            for name, job in _jobs(workflow.read_text(encoding="utf-8")).items():
+                code = "\n".join(
+                    line
+                    for line in job.splitlines()
+                    if not line.lstrip().startswith("#")
+                )
+                rust = re.search(r"\bcargo (?!\+)|\bmaturin |build-dist\.sh", code)
+                if not rust:
+                    continue
+                built.append(name)
+                assert not re.search(r"(install|default)[^\n]*\bstable\b", code), name
+                if "build-dist.sh" not in code:
+                    assert install in code[: rust.start()], name
+        assert sorted(built) == [
+            "build", "crates", "msvc-from-crates-io", "rust", "rust-platforms", "sdist"
+        ]  # fmt: skip
+
+    def test_advisories_are_checked_weekly_and_before_a_release(self):
+        """Nothing checked the crates compiled into every wheel and binary, or
+        what the extras install, against the published advisories.  Both are
+        checked every week, on a pull request that changes what is locked or
+        declared, and on the release tag, whose build waits for them."""
+        text = (ROOT / ".github/workflows/advisories.yml").read_text(encoding="utf-8")
+        for trigger in ("schedule", "workflow_call", "pull_request"):
+            assert f"\n  {trigger}:" in text, trigger
+        assert "      - Cargo.lock\n" in text and "      - pyproject.toml\n" in text
+        assert re.search(r"cargo install cargo-audit --version [\d.]+ --locked", text)
+        assert "cargo audit --deny warnings" in text
+        assert re.search(r'pip install "pip-audit==[\d.]+"', text)
+        assert "pip-audit --requirement requirements.txt --strict" in text
+        jobs = _jobs(RELEASE.read_text(encoding="utf-8"))
+        assert "uses: ./.github/workflows/advisories.yml" in jobs["advisories"]
+        assert re.search(r"^    needs: \[ci, advisories\]$", jobs["build"], re.M)
+
+    def test_the_native_inventory_is_what_the_lock_builds(self):
+        """RustSec sees crates, not the C libraries they compile: zlib 1.3.2
+        reaches every wheel as `libz-sys` 1.1.29, a version no zlib advisory
+        names.  SECURITY.md lists each library with the crate or the vendored
+        source that builds it, so a bump that changes a library changes its
+        row --- and with it the reading of each advisory against it."""
+        security = (ROOT / "SECURITY.md").read_text(encoding="utf-8")
+        table = security.split("\n## Native inventory\n", 1)[1].split("\n## ", 1)[0]
+        rows = {
+            library: (version, source)
+            for library, version, source in re.findall(
+                r"^\| ([\w -]+?) \| ([\d.]+) \| ([^|]+?) \|", table, re.M
+            )
+        }
+        lock = (ROOT / "Cargo.lock").read_text(encoding="utf-8")
+        locked = dict(re.findall(r'^name = "([^"]+)"\nversion = "([^"]+)"', lock, re.M))
+        crates = {
+            "HDF5": "hdf5-metno-src",
+            "zlib": "libz-sys",
+            "LZ4": "lz4-sys",
+            "Zstandard": "zstd-sys",
+        }
+        for library, crate in crates.items():
+            assert rows[library][1] == f"`{crate}` {locked[crate]}", library
+        # The -sys crates that carry their library's version in their own.
+        assert locked["lz4-sys"].endswith(f"+lz4-{rows['LZ4'][0]}")
+        assert locked["zstd-sys"].endswith(f"+zstd.{rows['Zstandard'][0]}")
+        vendor = ROOT / "crates/medh5-sys/vendor"
+        blosc2 = (vendor / "c-blosc2/include/blosc2.h").read_text(encoding="utf-8")
+        version = re.escape(rows["C-Blosc2"][0])
+        assert re.search(rf'#define BLOSC2_VERSION_STRING\s+"{version}"', blosc2)
+        patches = (vendor / "hdf5-blosc2/PATCHES.md").read_text(encoding="utf-8")
+        assert f"(HDF5-Blosc2 {rows['HDF5-Blosc2 filter'][0]})" in patches
+        assert set(rows) == {*crates, "C-Blosc2", "HDF5-Blosc2 filter"}
+
+    def test_a_release_that_bundles_an_affected_zlib_says_why_it_is_not(self):
+        """CVE-2026-85091 names zlib 1.3.1.2 through 1.3.2, and a scanner that
+        keys on the version flags every wheel, though the code is not linked
+        (SECURITY.md).  The VEX statement must name the version being
+        released while the bundled zlib is in that range --- and only then."""
+        security = (ROOT / "SECURITY.md").read_text(encoding="utf-8")
+        zlib = re.search(r"^\| zlib \| ([\d.]+) \|", security, re.M)
+        assert zlib
+        row = f"| [CVE-2026-85091](#cve-2026-85091) | zlib {zlib[1]} | not affected |"
+        vex = json.loads((ROOT / "vex/medh5.openvex.json").read_text(encoding="utf-8"))
+        (statement,) = [
+            s
+            for s in vex["statements"]
+            if s["vulnerability"]["name"] == "CVE-2026-85091"
+        ]
+        assert statement["status"] == "not_affected"
+        assert statement["justification"] == "vulnerable_code_not_present"
+        products = {p["@id"] for p in statement["products"]}
+        version = _declared()
+        released = {
+            f"pkg:pypi/medh5@{version}",
+            f"pkg:cargo/medh5-cli@{version}",
+            f"pkg:github/XwK-P/medh5@v{version}",
+        }
+        affected = (1, 3, 1, 2) <= tuple(map(int, zlib[1].split("."))) <= (1, 3, 2)
+        if affected:
+            assert row in security
+            assert released <= products, sorted(released - products)
+            lock = (ROOT / "Cargo.lock").read_text(encoding="utf-8")
+            libz = re.search(r'^name = "libz-sys"\nversion = "([^"]+)"', lock, re.M)
+            assert libz
+            for product in statement["products"]:
+                assert {c["@id"] for c in product["subcomponents"]} >= {
+                    f"pkg:generic/zlib@{zlib[1]}"
+                }
+            assert f"pkg:cargo/libz-sys@{libz[1]}" in {
+                c["@id"] for p in statement["products"] for c in p["subcomponents"]
+            }
+        else:
+            assert not released & products
+
     def test_ci_runs_what_ships_where_it_ships(self):
         """The engine's Rust tests ran on Linux alone, `medh5.torch` never on
         Windows, the standalone binary's hand-over to Python nowhere, two of
@@ -399,13 +571,183 @@ class TestRepositoryGates:
         assert tested == {"aarch64-unknown-linux-gnu", "x86_64-apple-darwin"}
         assert "-rs" in jobs["test-monai"]
 
+    def test_an_older_hdf5_reads_what_the_engine_writes(self):
+        """The specification promises files HDF5 1.10 reads, and none was ever
+        read by an HDF5 older than the 2.0 the test suite's h5py bundles (the
+        engine links 2.2).  CI reads the valid cases, and their samples under
+        each Blosc2 profile, with each series from the promised one up, and
+        compares every value with what the newest h5py reads."""
+        spec = (ROOT / "docs/spec/medh5-1.0.md").read_text(encoding="utf-8")
+        promised = re.search(r"\*\*Container:\*\* HDF5 ≥ (\d+\.\d+) ", spec)
+        assert promised
+        job = _jobs(CI.read_text(encoding="utf-8"))["hdf5-readers"]
+        series = re.findall(r'^ {10}- hdf5: "(\d+\.\d+)"$', job, re.M)
+        assert series == ["1.10", "1.12", "1.14"] and series[0] == promised[1]
+        script = "python .github/scripts/hdf5_readers.py"
+        for step in (
+            "write suite/ cases/",
+            "read cases/ --out newest.json",
+            "read cases/ --hdf5 ${{ matrix.hdf5 }} --compare newest.json",
+        ):
+            assert f"{script} {step}" in job, step
+
+    def test_the_older_reader_fails_on_another_series_or_another_value(
+        self, tmp_path, capsys
+    ):
+        """What the job runs fails when h5py runs another HDF5 series than its
+        entry names, when a value reads otherwise than it did for the newest
+        h5py, and when a file was not read at all."""
+        import h5py
+
+        readers = _release_script("hdf5_readers.py")
+        cases = tmp_path / "cases"
+        cases.mkdir()
+        write_sample(cases / "gzip.medh5")
+        write_sample(cases / "blosc2.medh5", codec="balanced")
+        newest = tmp_path / "newest.json"
+        read = ["read", str(cases)]
+        assert readers.main([*read, "--out", str(newest)]) == 0
+        assert readers.main([*read, "--compare", str(newest)]) == 0
+        running = h5py.version.hdf5_version.rsplit(".", 1)[0]
+        assert readers.main([*read, "--hdf5", running]) == 0
+        capsys.readouterr()
+        assert readers.main([*read, "--hdf5", "1.8"]) == 1
+        assert "expected HDF5 1.8.x" in capsys.readouterr().err
+        found = json.loads(newest.read_text(encoding="utf-8"))
+        attrs = found["blosc2.medh5"]["/"]["attrs"]
+        attrs[sorted(attrs)[0]] = "0" * 64
+        newest.write_text(json.dumps(found), encoding="utf-8")
+        (cases / "gzip.medh5").unlink()
+        assert readers.main([*read, "--compare", str(newest)]) == 1
+        err = capsys.readouterr().err
+        assert "gzip.medh5: not in" in err
+        assert "blosc2.medh5: reads differently at /\n" in err
+
+    def test_ci_jobs_are_bounded_and_cached_where_they_can_be(self):
+        """No job had a timeout (GitHub's default is six hours), one failing
+        Python version cancelled the others, every pull request kept eleven
+        large artifacts for 90 days, and nothing was cached, so HDF5 compiled
+        from source in every Rust job of every push."""
+        for path in sorted((ROOT / ".github/workflows").glob("*.yml")):
+            for name, job in _jobs(path.read_text(encoding="utf-8")).items():
+                if re.search(r"^    uses: ", job, re.M):
+                    continue  # a called workflow's jobs carry their own
+                timeout = re.search(r"^    timeout-minutes: (\d+)$", job, re.M)
+                assert timeout and 0 < int(timeout[1]) <= 60, (path.name, name)
+        text = CI.read_text(encoding="utf-8")
+        jobs = _jobs(text)
+        assert "fail-fast: false" in jobs["test"]
+        cache = "uses: Swatinem/rust-cache@"
+        for name in ("rust", "rust-platforms"):
+            assert cache in jobs[name], name
+            assert "save-if: ${{ github.ref == 'refs/heads/main' }}" in jobs[name]
+        # Not where the release's artifacts are built, nor where the job is
+        # what a clean build does.
+        for name in ("build", "sdist", "msvc-from-crates-io"):
+            assert cache not in jobs[name], name
+        uploads = re.findall(
+            r"upload-artifact@\S+ # v[\d.]+\n {8}with:\n((?: {10}.*\n)+)", text
+        )
+        assert len(uploads) == 4
+        short = "retention-days: ${{ github.event_name == 'pull_request' && 3 || 90 }}"
+        assert all(short in upload for upload in uploads)
+
+    def test_the_local_gate_is_one_chain_and_runs_what_ci_gates(self):
+        """CLAUDE.md's chain lacked the native corpus run that CONTRIBUTING's
+        had, and neither ran the notices check that fails CI whenever
+        Cargo.lock changes without THIRD_PARTY_NOTICES.  The two are one
+        chain, and it runs every check CI gates each change on.  (CLAUDE.md
+        is not in the sdist, so from there CONTRIBUTING's is checked alone.)"""
+
+        def chain(name: str, heading: str) -> str:
+            text = (ROOT / name).read_text(encoding="utf-8")
+            section = text.split(f"\n## {heading}\n", 1)[1]
+            return section.split("```bash\n", 1)[1].split("```", 1)[0]
+
+        contributing = chain("CONTRIBUTING.md", "The checks")
+        if not (ROOT / "PKG-INFO").is_file():
+            assert chain("CLAUDE.md", "Pre-commit checks") == contributing
+        ci = CI.read_text(encoding="utf-8")
+        for gate in (
+            "cargo fmt --all -- --check",
+            "cargo clippy --workspace --all-targets",
+            "cargo test --workspace",
+            "python .github/scripts/third_party_notices.py --check",
+            "ruff check .",
+            "ruff format --check .",
+            "mypy medh5",
+            "--cov-fail-under=90",
+            "mkdocs build --strict",
+        ):
+            assert gate in ci and gate in contributing, gate
+        assert "medh5 conformance run /tmp/corpus " in contributing
+        native = "cargo run --release -p medh5-cli -- conformance run"
+        assert f"{native} /tmp/corpus-native" in contributing
+
+    def test_every_declared_floor_is_installed_by_ci(self):
+        """The extras declared PyTorch 2.0, MONAI 1.3, nibabel 5, pydicom 3.0
+        and highdicom 0.23 as their floors, and no job installed any of them;
+        only NumPy's, and the test suite's HDF5 tools', were tested."""
+        text = PYPROJECT.read_text(encoding="utf-8")
+        requirement = r'"([A-Za-z0-9_.-]+)>=([\d.]+)"'
+        runtime = text.split("\ndependencies = [", 1)[1].split("]", 1)[0]
+        floors = dict(re.findall(requirement, runtime))
+        for extra, body in _extras().items():
+            found = dict(re.findall(requirement, body))
+            if extra == "dev":  # of the tools, the ones the suite reads files with
+                found = {k: v for k, v in found.items() if k in ("h5py", "hdf5plugin")}
+            floors.update(found)
+        assert set(floors) == {
+            "numpy", "torch", "monai", "nibabel", "pydicom", "highdicom", "h5py",
+            "hdf5plugin",
+        }  # fmt: skip
+        job = _jobs(CI.read_text(encoding="utf-8"))["test-min-deps"]
+        for name, floor in floors.items():
+            series = floor if "." in floor else f"{floor}.0"
+            assert f'"{name}=={series}.*"' in job, name
+        oldest = re.search(r'^requires-python = ">=(3\.\d+)"$', text, re.M)
+        assert oldest and f'python-version: "{oldest[1]}"' in job
+        assert 'python -c "import torch, monai, nibabel, pydicom, highdicom"' in job
+
+    def test_the_commit_hooks_run_in_ci_at_the_gates_versions(self):
+        """CI never ran the commit hooks, so a commit made without them
+        installed reached `main` unchecked; and their `pre-commit-hooks` was a
+        2024 release."""
+        config = (ROOT / ".pre-commit-config.yaml").read_text(encoding="utf-8")
+        revs = dict(
+            re.findall(
+                r"- repo: https://github.com/\S+/(\S+)\n.*?rev: (\S+)", config, re.S
+            )
+        )
+        ruff = next(r for r in _extras()["dev"].split("\n") if '"ruff==' in r)
+        assert revs["ruff-pre-commit"] == "v" + ruff.split("==")[1].split('"')[0]
+        assert re.fullmatch(r"v\d+\.\d+\.\d+", revs["pre-commit-hooks"])
+        assert int(revs["pre-commit-hooks"][1:].split(".")[0]) >= 6
+        # Upstream's sources stay as upstream wrote them.
+        assert re.search(r"^exclude: \^crates/medh5-sys/vendor/$", config, re.M)
+        lint = _jobs(CI.read_text(encoding="utf-8"))["lint"]
+        assert re.search(r'pip install "pre-commit==\d+\.\d+\.\d+"', lint)
+        assert "pre-commit run --all-files" in lint
+
+    def test_every_commit_on_main_is_tested(self):
+        """One concurrency group for `main` keeps one run pending and cancels
+        it when the next arrives, whatever `cancel-in-progress` says, so the
+        middle of three quick merges went untested.  A pull request's newest
+        push still supersedes its older runs."""
+        header = CI.read_text(encoding="utf-8").split("\njobs:\n", 1)[0]
+        group = re.search(r"^  group: (.+)$", header, re.M)
+        assert group and "github.sha" in group[1] and "github.ref" in group[1]
+        assert (
+            "cancel-in-progress: ${{ github.event_name == 'pull_request' }}" in header
+        )
+
     def test_the_release_runs_ci_on_the_tagged_commit(self):
         ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         release = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
         assert "workflow_call:" in ci and "concurrency:" in ci
         assert "uses: ./.github/workflows/ci.yml" in release
         build = release[release.index("  build:") :]
-        assert "needs: ci" in build.split("\n  publish:")[0]
+        assert "needs: [ci, advisories]" in build.split("\n  publish:")[0]
         # The two builds upload in one run when CI is called; names must differ.
         assert "name: ci-dist" in ci and "name: dist" in release
 
@@ -422,8 +764,31 @@ class TestDistribution:
         jobs = _jobs(CI.read_text(encoding="utf-8"))
         gate = jobs.pop("ci-ok")
         needs = re.findall(r"^      - ([\w-]+)$", gate.split("steps:")[0], re.M)
-        assert sorted(needs) == sorted(jobs)
+        # A job that cannot fail the run is information, and the gate does not
+        # wait for it.
+        informational = {
+            name
+            for name, job in jobs.items()
+            if re.search(r"^    continue-on-error: true$", job, re.M)
+        }
+        assert informational == {"test-python-next"}
+        assert sorted(needs) == sorted(set(jobs) - informational)
         assert "if: always()" in gate and 'result != "success"' in gate
+
+    def test_the_next_python_is_tried_and_not_claimed(self):
+        """The classifiers name the interpreters the gating matrix tests, and
+        the next one runs the suite as information until it can join them:
+        3.15 was out, and nothing had run on it."""
+        jobs = _jobs(CI.read_text(encoding="utf-8"))
+        matrix = re.search(r"python-version: \[(.*)\]", jobs["test"])
+        assert matrix
+        tested = [v.strip().strip('"') for v in matrix[1].split(",")]
+        text = PYPROJECT.read_text(encoding="utf-8")
+        claimed = re.findall(r'"Programming Language :: Python :: (3\.\d+)"', text)
+        assert claimed == tested
+        newest = max(tested, key=lambda v: int(v.split(".")[1]))
+        following = f"3.{int(newest.split('.')[1]) + 1}"
+        assert f'python-version: "{following}"' in jobs["test-python-next"]
 
     def test_the_notices_name_what_is_compiled_in(self):
         """Every crate the notices list is Cargo.lock's, at its version, and
@@ -461,6 +826,19 @@ class TestDistribution:
             encoding="utf-8"
         )
         assert '"LICENSE",' in sys_manifest.split("include = [", 1)[1].split("]")[0]
+
+    def test_the_release_profile_strips_the_symbol_table(self):
+        """The wheels and binaries shipped their symbol tables: 5.4 MB of the
+        30 MB Linux extension, read by nothing that ships.  Stripping keeps
+        the dynamic symbols Python imports the module by; nothing in the
+        release uploads symbols separately."""
+        workspace = WORKSPACE.read_text(encoding="utf-8")
+        profile = workspace.split("\n[profile.release]\n", 1)[1].split("\n[", 1)[0]
+        assert re.search(r'^strip = "symbols"$', profile, re.M)
+        release = RELEASE.read_text(encoding="utf-8")
+        build = (ROOT / ".github/scripts/build-dist.sh").read_text(encoding="utf-8")
+        for text in (release, build):
+            assert not re.search(r"debuginfo|\.pdb\b|dSYM|--strip", text)
 
     def test_the_installed_package_carries_the_notices(self):
         names = {str(f) for f in distribution("medh5").files or []}
@@ -630,6 +1008,55 @@ class TestDistribution:
         with pytest.raises(SystemExit, match="2 versions"):
             release.dist_version(["medh5-2.0.0.tar.gz", "medh5-2.0.1.tar.gz"])
 
+    def test_a_backport_is_not_latest_and_leaves_the_tap(self, tmp_path, monkeypatch):
+        """`gh release create` let GitHub mark every final release "Latest",
+        and the tap took every final release's formula: a 2.0.x patch tagged
+        after 2.1.0 would have become the repository's Latest and moved
+        Homebrew users back to 2.0.  Only the newest final release tagged
+        is either."""
+        release = _release_script("release.py")
+        tags = ["v2.0.0", "v2.0.1", "v2.1.0-rc.1", "v2.1.0", "v1.4.4", "vfoo"]
+        assert release.newest("v2.1.0", tags)
+        assert release.newest("v2.1.1", [*tags, "v2.1.1"])
+        assert release.newest("v2.2.0", tags)
+        assert not release.newest("v2.0.2", [*tags, "v2.0.2"])
+        assert not release.newest("v1.4.5", tags)
+        assert not release.newest("v2.2.0-rc.1", tags)
+        # A pre-release tagged after a final one does not make it a backport.
+        assert release.newest("v2.1.0", [*tags, "v2.2.0-rc.1"])
+
+        created: list[tuple[str, ...]] = []
+        monkeypatch.setattr(release, "run", lambda *c, **_: created.append(c) or "")
+        missing = SimpleNamespace(returncode=1, stdout="", stderr="")
+        monkeypatch.setattr(
+            release, "subprocess", SimpleNamespace(run=lambda *a, **k: missing)
+        )
+        monkeypatch.setenv("GITHUB_REPOSITORY", "XwK-P/medh5")
+        (tmp_path / "notes.md").write_text("notes", encoding="utf-8")
+        files = [tmp_path / "notes.md"]
+        for argv, flags in (
+            ([], set()),
+            (["--not-latest"], {"--latest=false"}),
+            (["--prerelease"], {"--prerelease"}),
+        ):
+            created.clear()
+            release.main(["github-release", "v2.0.2", *map(str, files), *argv])
+            (command,) = created
+            assert {"--latest=false", "--prerelease"} & set(command) == flags, argv
+        with pytest.raises(SystemExit):
+            release.main(["github-release", "v2", "x", "--prerelease", "--not-latest"])
+
+        jobs = _jobs(RELEASE.read_text(encoding="utf-8"))
+        assert "latest: ${{ steps.version.outputs.latest }}" in jobs["build"]
+        newest = 'release.py newest "$GITHUB_REF_NAME"'
+        assert f'{newest} >> "$GITHUB_OUTPUT"' in jobs["build"]
+        assert "flags+=(--not-latest)" in jobs["github-release"]
+        assert "if: needs.build.outputs.latest == 'true'" in jobs["homebrew"]
+        assert re.search(
+            r'if \[\[ "\$LATEST" == true \]\]; then\n\s+flags\+=\(--tap "\$TAP"\)',
+            jobs["verify"],
+        )
+
     def test_only_the_distributions_are_compared_with_pypi(self, tmp_path, monkeypatch):
         """Under Trusted Publishing the upload signs every distribution and
         writes its attestation beside it, as `<file>.publish.attestation`.
@@ -656,12 +1083,60 @@ class TestDistribution:
         # And `verify`, which reads the same directory.
         (cli / "medh5-2.0.0-x.tar.gz").write_bytes(b"x")
         assets = {"assets": [{"name": n} for n in [*names, "medh5-2.0.0-x.tar.gz"]]}
-        monkeypatch.setattr(release, "on_crates_io", lambda name, version: True)
+        monkeypatch.setattr(
+            release, "crates_io_status", lambda name, version: "published"
+        )
         monkeypatch.setattr(
             release, "fetch", lambda url, **_: json.dumps(assets).encode()
         )
         monkeypatch.setenv("GITHUB_REPOSITORY", "XwK-P/medh5")
         assert release.verify("v2.0.0", dist, cli, tap=None, token=None) == 0
+
+    def test_a_yanked_crate_is_neither_published_again_nor_called_missing(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """crates.io keeps a yanked version and never takes it again, and the
+        script read one as unpublished: the publishing step ran `cargo
+        publish` into crates.io's refusal, and `verify` called the crate
+        missing."""
+        release = _release_script("release.py")
+        records = {
+            "medh5-sys": {"version": {"yanked": False}},
+            "medh5": {"version": {"yanked": True}},
+        }
+
+        def fetch(url: str, **_: object) -> bytes | None:
+            name = url.split("/")[-2]
+            return json.dumps(records[name]).encode() if name in records else None
+
+        monkeypatch.setattr(release, "fetch", fetch)
+        status = {n: release.crates_io_status(n, "2.0.0") for n in release.CRATES}
+        assert status == {
+            "medh5-sys": "published", "medh5": "yanked", "medh5-cli": "absent"
+        }  # fmt: skip
+        ran: list[tuple[str, ...]] = []
+        monkeypatch.setattr(release, "run", lambda *cmd, **_: ran.append(cmd) or "")
+        monkeypatch.setattr(release, "crates_io_status", lambda name, version: "yanked")
+        with pytest.raises(SystemExit, match=r"medh5-sys \S+ is on crates.io, yanked"):
+            release.publish_crates()
+        assert ran == []
+        dist, cli = tmp_path / "dist", tmp_path / "cli"
+        dist.mkdir()
+        cli.mkdir()
+        (dist / "medh5-2.0.0.tar.gz").write_bytes(b"sdist")
+        monkeypatch.setattr(release, "pypi_digests", lambda v: release.digests(dist))
+        assets = {"assets": [{"name": "medh5-2.0.0.tar.gz"}]}
+        monkeypatch.setattr(
+            release, "fetch", lambda url, **_: json.dumps(assets).encode()
+        )
+        monkeypatch.setenv("GITHUB_REPOSITORY", "XwK-P/medh5")
+        monkeypatch.setattr(release, "crates_io_status", lambda name, v: status[name])
+        capsys.readouterr()
+        assert release.verify("v2.0.0", dist, cli, tap=None, token=None) == 1
+        assert capsys.readouterr().err.splitlines() == [
+            "crates.io: medh5 2.0.0 is yanked",
+            "crates.io: medh5-cli 2.0.0 is not published",
+        ]
 
     def test_a_crate_is_verified_without_the_token_and_indexed_before_the_next(
         self, monkeypatch
@@ -680,7 +1155,7 @@ class TestDistribution:
 
         monkeypatch.setenv("CARGO_REGISTRY_TOKEN", "secret")
         monkeypatch.setattr(release, "run", run)
-        monkeypatch.setattr(release, "on_crates_io", lambda name, version: False)
+        monkeypatch.setattr(release, "crates_io_status", lambda name, version: "absent")
         monkeypatch.setattr(
             release,
             "wait_for_index",
@@ -747,6 +1222,7 @@ class TestDistribution:
         )
         needed = [
             ".github/dependabot.yml",
+            ".pre-commit-config.yaml",
             ".github/workflows/ci.yml",
             ".github/workflows/release.yml",
             *(
@@ -758,6 +1234,8 @@ class TestDistribution:
             "hooks/mkdocs_hooks.py",
             "docs/requirements.txt",
             "CHANGELOG.md",
+            "SECURITY.md",
+            "vex/medh5.openvex.json",
         ]
         for path in needed:
             assert (ROOT / path).is_file(), path

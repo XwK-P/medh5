@@ -1,8 +1,10 @@
 """The publishing steps of `release.yml`, each safe to run again.
 
+    python .github/scripts/release.py newest TAG
     python .github/scripts/release.py crates
     python .github/scripts/release.py pypi DIST
-    python .github/scripts/release.py github-release TAG DIST... [--prerelease]
+    python .github/scripts/release.py github-release TAG DIST...
+        [--prerelease | --not-latest]
     python .github/scripts/release.py verify TAG DIST CLI [--tap OWNER/REPO]
 
 A release publishes to four places in turn --- PyPI, crates.io, the GitHub
@@ -117,6 +119,26 @@ def formula_version(text: str) -> str | None:
     return match.group(1) if match else None
 
 
+# A final release's tag; a pre-release (`v2.1.0-rc.1`) is never the newest.
+FINAL = re.compile(r"v(\d+)\.(\d+)\.(\d+)")
+
+
+def newest(tag: str, tags: list[str]) -> bool:
+    """Whether `tag` is a final release no older than any final release
+    tagged: what GitHub's "Latest" and the Homebrew tap follow.  A backport
+    --- a 2.0.x patch tagged after 2.1.0 --- is not, and must not move them
+    back."""
+    ours = FINAL.fullmatch(tag)
+    if not ours:
+        return False
+    mine = tuple(map(int, ours.groups()))
+    return all(
+        mine >= tuple(map(int, other.groups()))
+        for other in map(FINAL.fullmatch, tags)
+        if other
+    )
+
+
 def digests(directory: Path) -> dict[str, str]:
     return {
         p.name: sha256(p.read_bytes())
@@ -190,9 +212,15 @@ def workspace_version() -> str:
     return match.group(1)
 
 
-def on_crates_io(name: str, version: str) -> bool:
+def crates_io_status(name: str, version: str) -> str:
+    """`name` at `version` on crates.io: "absent", "published" or "yanked".
+
+    A yanked version is not absent: crates.io refuses to take it again.
+    """
     body = fetch(f"https://crates.io/api/v1/crates/{name}/{version}")
-    return body is not None and not json.loads(body)["version"]["yanked"]
+    if body is None:
+        return "absent"
+    return "yanked" if json.loads(body)["version"]["yanked"] else "published"
 
 
 def index_path(name: str) -> str:
@@ -241,6 +269,18 @@ def published_crate(name: str, version: str) -> bytes:
     return body
 
 
+def origin_tags() -> list[str]:
+    """Every `v*` tag the repository has (the checkout fetched only its own)."""
+    listing = subprocess.run(
+        ["git", "ls-remote", "--tags", "--refs", "origin", "v*"],
+        cwd=ROOT,
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout
+    return [line.split("refs/tags/", 1)[1] for line in listing.splitlines() if line]
+
+
 def pypi_digests(version: str) -> dict[str, str]:
     body = fetch(f"https://pypi.org/pypi/medh5/{version}/json")
     if body is None:
@@ -260,7 +300,14 @@ def publish_crates() -> int:
     # of every dependency --- which need not see the token that publishes.
     untokened = {k: v for k, v in os.environ.items() if k not in TOKENS}
     for name in CRATES:
-        if not on_crates_io(name, version):
+        status = crates_io_status(name, version)
+        if status == "yanked":
+            raise SystemExit(
+                f"{name} {version} is on crates.io, yanked, and a version cannot be "
+                "published twice: undo the yank (`cargo yank --undo`) if it holds "
+                "this release, or publish under a new version"
+            )
+        if status == "absent":
             run("cargo", "package", "-p", name, "--locked", env=untokened)
             run("cargo", "publish", "-p", name, "--locked", "--no-verify")
             # `cargo publish` waits for the index only so long, then warns and
@@ -308,7 +355,7 @@ def check_pypi(dist: Path, *, wait: int = 600) -> int:
 
 
 def github_release(
-    tag: str, files: list[Path], *, prerelease: bool, notes: Path
+    tag: str, files: list[Path], *, prerelease: bool, notes: Path, latest: bool = True
 ) -> int:
     repository = os.environ["GITHUB_REPOSITORY"]
     local = {path.name: sha256(path.read_bytes()) for path in files}
@@ -318,7 +365,11 @@ def github_release(
         text=True,
     )
     if view.returncode != 0:
+        # GitHub makes a new final release "Latest" unless told otherwise,
+        # backports included.
         flags = ["--prerelease"] if prerelease else []
+        if not prerelease and not latest:
+            flags.append("--latest=false")
         run(
             "gh", "release", "create", tag, *map(str, files), "--repo", repository,
             "--title", f"medh5 {tag.removeprefix('v')}", "--notes-file", str(notes),
@@ -381,10 +432,11 @@ def verify(
         f"PyPI: {p}"
         for p in dist_problems(local, pypi_digests(dist_version(list(local))))
     ]
+    statuses = {n: crates_io_status(n, version) for n in CRATES}
     problems += [
-        f"crates.io: {n} {version} is not published"
-        for n in CRATES
-        if not on_crates_io(n, version)
+        f"crates.io: {n} {version} is {'yanked' if s == 'yanked' else 'not published'}"
+        for n, s in statuses.items()
+        if s != "published"
     ]
     repository = os.environ["GITHUB_REPOSITORY"]
     release = fetch(
@@ -423,6 +475,9 @@ def verify(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="step", required=True)
+    # `latest=true|false`, for $GITHUB_OUTPUT.
+    latest = sub.add_parser("newest")
+    latest.add_argument("tag")
     sub.add_parser("crates")
     pypi = sub.add_parser("pypi")
     pypi.add_argument("dist", type=Path)
@@ -430,20 +485,29 @@ def main(argv: list[str] | None = None) -> int:
     release.add_argument("tag")
     release.add_argument("files", type=Path, nargs="+")
     release.add_argument("--notes", type=Path, default=Path("release-notes.md"))
-    release.add_argument("--prerelease", action="store_true")
+    kind = release.add_mutually_exclusive_group()
+    kind.add_argument("--prerelease", action="store_true")
+    kind.add_argument("--not-latest", action="store_true")
     check = sub.add_parser("verify")
     check.add_argument("tag")
     check.add_argument("dist", type=Path)
     check.add_argument("cli", type=Path)
     check.add_argument("--tap")
     args = parser.parse_args(argv)
+    if args.step == "newest":
+        print(f"latest={str(newest(args.tag, origin_tags())).lower()}")
+        return 0
     if args.step == "crates":
         return publish_crates()
     if args.step == "pypi":
         return check_pypi(args.dist)
     if args.step == "github-release":
         return github_release(
-            args.tag, args.files, prerelease=args.prerelease, notes=args.notes
+            args.tag,
+            args.files,
+            prerelease=args.prerelease,
+            notes=args.notes,
+            latest=not args.not_latest,
         )
     return verify(
         args.tag, args.dist, args.cli, tap=args.tap, token=os.environ.get("GH_TOKEN")

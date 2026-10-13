@@ -49,3 +49,7 @@ numpy = { version = "0.29.0", features = ["half"] }
 [profile.release]
 lto = "thin"
 codegen-units = 4
+# The symbol table, which nothing that ships reads: 5.4 MB of the 30 MB
+# extension.  Python finds the module by its dynamic symbols, which stay, and a
+# panic keeps its message and location; a Rust backtrace loses frame names.
+strip = "symbols"

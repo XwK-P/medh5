@@ -1,9 +1,18 @@
 # Keeps the SHA-pinned actions in `.github/workflows/` current.  Actions are
 # pinned by commit, not tag, so a moved tag cannot change what CI or the release
 # job runs; Dependabot proposes each update as a pull request, which runs CI
-# like any other change.  Python dependencies are ranges in `pyproject.toml`,
-# and the docs toolchain is pinned deliberately (docs/requirements.txt), so
-# neither is managed here.
+# like any other change.
+#
+# Nothing else is updated from here, on purpose.  A Cargo.lock update has to
+# regenerate THIRD_PARTY_NOTICES in the same commit, or CI fails, and a
+# Dependabot pull request cannot; the package's Python requirements are floors,
+# which CI installs (`test-min-deps`), not versions to follow; and what is
+# pinned exactly (the Rust in rust-toolchain.toml, ruff and mypy in the `dev`
+# extra, the docs toolchain in docs/requirements.txt, the build tools in
+# .github/scripts/build-dist.sh) changes what the gates report, so it is bumped
+# by hand.  An advisory against what the project ships, the crates it compiles
+# in and what the package and its extras install, is caught by
+# .github/workflows/advisories.yml, every week and on every release tag.
 version: 2
 updates:
   - package-ecosystem: github-actions

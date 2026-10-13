@@ -12,24 +12,50 @@ set -euo pipefail
 
 target="$1"
 
+# What builds the artifacts is pinned, as the Rust is (rust-toolchain.toml): a
+# new release of any of them reaches what the project publishes only through a
+# pull request that bumps it here.  These are the newest maturin (within the
+# range pyproject.toml's build-system requires) and CMake of the day 2.0.1 was
+# built, so the ones that built it; a hosted runner's CMake is its image's.
+maturin_version=1.15.0
+cmake_version=4.4.4
+# rustup-init for the manylinux containers, which have no Rust: this release,
+# checked against the digests static.rust-lang.org publishes beside it.
+rustup_version=1.28.2
+rustup_sha256_x86_64=20a06e644b0d9bd2fbdbfd52d42540bdde820ea7df86e92e533c073da0cdd43c
+rustup_sha256_aarch64=e3853c5a252fca15252d07cb23a1bdd9377a8c6f3efa01531109281ae47f841c
+
 if [[ -x /opt/python/cp312-cp312/bin/python ]]; then
-  # A manylinux container: its own Python and CMake, and a Rust toolchain.
+  # A manylinux container: its own Python, with CMake and Rust installed here.
   python=/opt/python/cp312-cp312/bin/python
-  "$python" -m pip install --quiet --upgrade maturin cmake
+  "$python" -m pip install --quiet "maturin==$maturin_version" "cmake==$cmake_version"
   export PATH="$(dirname "$python"):$HOME/.cargo/bin:$PATH"
-  if ! command -v cargo >/dev/null; then
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
-      sh -s -- -y --profile minimal --default-toolchain stable
+  if ! command -v rustup >/dev/null; then
+    arch=$(uname -m)
+    case "$arch" in
+      x86_64) digest=$rustup_sha256_x86_64 ;;
+      aarch64) digest=$rustup_sha256_aarch64 ;;
+      *) echo "no rustup-init digest for $arch" >&2; exit 1 ;;
+    esac
+    # Under this name: rustup is one binary that acts as the name it runs as.
+    init="$(mktemp -d)/rustup-init"
+    curl --proto '=https' --tlsv1.2 -sSf -o "$init" \
+      "https://static.rust-lang.org/rustup/archive/$rustup_version/$arch-unknown-linux-gnu/rustup-init"
+    echo "$digest  $init" | sha256sum --check --quiet
+    chmod +x "$init"
+    "$init" -y --no-modify-path --profile minimal --default-toolchain none
+    rm -r "$(dirname "$init")"
   fi
   compatibility=(--compatibility manylinux_2_28)
 else
   # A hosted runner: Python from setup-python, CMake and rustup preinstalled.
   python=python
-  "$python" -m pip install --quiet --upgrade maturin
-  rustup toolchain install stable --profile minimal
-  rustup default stable
+  "$python" -m pip install --quiet "maturin==$maturin_version"
   compatibility=()
 fi
+# The Rust rust-toolchain.toml pins, which rustup reads from the checkout, as
+# every cargo below does.
+rustup toolchain install --no-self-update
 
 # (The `+` form: an empty array is "unbound" to the bash 3.2 macOS ships.)
 maturin build --release --locked --out dist --interpreter "$python" ${compatibility[@]+"${compatibility[@]}"}

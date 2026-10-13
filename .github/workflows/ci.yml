@@ -12,9 +12,13 @@ on:
   workflow_call:
 
 # A new push to a pull request supersedes the run in progress.  Runs on `main`
-# and on a release tag always complete: each is a record of that commit.
+# and on a release tag always complete: each is a record of its commit, so each
+# commit has a group of its own.  A group holds one running and one pending run
+# and cancels the pending one when another arrives, whatever
+# `cancel-in-progress` says: grouped by branch, the middle of three quick merges
+# to `main` was never tested.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.ref }}-${{ github.event_name == 'pull_request' && 'latest' || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Every job only reads the repository.
@@ -24,18 +28,31 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
 
+# Every job that compiles Rust first installs the toolchain rust-toolchain.toml
+# pins (`rustup toolchain install` with no argument reads the file, as cargo in
+# the checkout does), so CI, the release and a checkout build with one Rust.
+# Not `stable`: the release re-runs this workflow on its tag, where a lint a new
+# stable had added since the pull request failed `clippy -D warnings`.
+
 jobs:
   rust:
     # The engine and the native command line: formatting, lints, and every
     # Rust test --- unit tests, the conformance corpus, the README doctest.
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # PyO3 links an interpreter into the extension crate's test binary.
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - run: rustup toolchain install stable --profile minimal --component rustfmt,clippy && rustup default stable
+      - run: rustup toolchain install --no-self-update
+      # The crates' builds, HDF5's among them, as main's last run left them:
+      # saved from main only, so pull requests restore it and never crowd it
+      # out.  Not in `build`, whose artifacts the release publishes.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
@@ -60,18 +77,23 @@ jobs:
       matrix:
         runner: [windows-latest, macos-14]
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
     defaults:
       run:
         shell: bash
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: rustup toolchain install stable --profile minimal && rustup default stable
+      - run: rustup toolchain install --no-self-update
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo test -p medh5 --lib --locked
 
   msrv:
     # `rust-version` in Cargo.toml is a promise to everyone who depends on the
     # crates; this is where it is kept.
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -90,6 +112,7 @@ jobs:
 
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -101,9 +124,14 @@ jobs:
       - run: pip install "$(python -c 'import tomllib; print(next(r for r in tomllib.load(open("pyproject.toml", "rb"))["project"]["optional-dependencies"]["dev"] if r.startswith("ruff")))')"
       - run: ruff check .
       - run: ruff format --check .
+      # The commit hooks, over every file: installing them is optional, so
+      # without this a commit made without them reached `main` unchecked.
+      - run: pip install "pre-commit==4.6.2"
+      - run: pre-commit run --all-files --show-diff-on-failure
 
   typecheck:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -116,6 +144,7 @@ jobs:
 
   docs:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -141,13 +170,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # The manylinux images by digest (the ones 2.0.1 was built in), not
+        # by `latest`, which moves: a new image reaches the artifacts through a
+        # pull request that names it.  `docker pull` prints an image's digest.
         include:
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-latest
-            container: quay.io/pypa/manylinux_2_28_x86_64
+            container: quay.io/pypa/manylinux_2_28_x86_64@sha256:4131ddd7acb9c6c966af02fe7e71edc51e078c2d41f475966697676430bfa2ae
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-24.04-arm
-            container: quay.io/pypa/manylinux_2_28_aarch64
+            container: quay.io/pypa/manylinux_2_28_aarch64@sha256:abd1230aa9e4058a74b89d27cd14ba18c0db036d7bfe6e6f219a29ea63c24eb6
           - target: aarch64-apple-darwin
             runner: macos-14
           - target: x86_64-apple-darwin
@@ -155,6 +187,7 @@ jobs:
           - target: x86_64-pc-windows-msvc
             runner: windows-latest
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
     env:
       # The oldest macOS the wheel and the binary support; ignored elsewhere.
       MACOSX_DEPLOYMENT_TARGET: "11.0"
@@ -213,36 +246,48 @@ jobs:
           grep -F "MEDH5_PYTHON" missing.log
       # Not `dist`: when `release.yml` calls this workflow, the release's own
       # job uploads that name in the same run, and artifact names are unique.
+      # A pull request's artifacts are kept 3 days, which is all anyone reads
+      # them for; a release's, 90, so re-running its failed jobs finds them.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ci-dist-${{ matrix.target }}
           path: dist/*.whl
           if-no-files-found: error
+          retention-days: ${{ github.event_name == 'pull_request' && 3 || 90 }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ci-cli-${{ matrix.target }}
           path: cli/*
           if-no-files-found: error
+          retention-days: ${{ github.event_name == 'pull_request' && 3 || 90 }}
 
   sdist:
     # A platform without a wheel builds from the sdist, so CI does too: the
     # whole engine from the source distribution alone, in a clean directory ---
     # with the oldest maturin `pyproject.toml` accepts, so the floor it states
     # is one that builds, and writes the licence as PEP 639 says.  `build`
-    # runs the newest.
+    # runs the one build-dist.sh pins.
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
+      # The unpacked sdist has no rust-toolchain.toml (its users build with
+      # their own Rust; a step below checks), so the pin is named for every
+      # step instead.
+      - name: The Rust rust-toolchain.toml pins
+        run: |
+          rustup toolchain install --no-self-update
+          echo "RUSTUP_TOOLCHAIN=$(python -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])')" >> "$GITHUB_ENV"
       - name: Install the oldest maturin pyproject.toml accepts
         run: |
           floor=$(python -c 'import re, tomllib; print(re.search(r">=([0-9.]+)", tomllib.load(open("pyproject.toml", "rb"))["build-system"]["requires"][0]).group(1))')
           pip install "maturin==$floor" twine
       - run: maturin sdist --out dist
       - run: twine check dist/*
-      - name: The sdist states the licence, and carries the notices
+      - name: The sdist states the licence, carries the notices, and pins no Rust
         run: |
           python - <<'PY'
           import glob, tarfile, tomllib
@@ -256,6 +301,10 @@ jobs:
                         "License-File: THIRD_PARTY_NOTICES"):
               assert field in fields, f"PKG-INFO lacks {field!r}"
           assert f"{top}/THIRD_PARTY_NOTICES" in names, "the sdist lacks the notices"
+          # The pin is the project's: under rustup it would make everyone who
+          # builds from the sdist download that Rust, where any from
+          # `rust-version` on builds it.
+          assert f"{top}/rust-toolchain.toml" not in names, "the sdist pins a Rust"
           PY
       - name: Build from the sdist alone, with that maturin, in a clean directory
         run: |
@@ -284,6 +333,7 @@ jobs:
           name: ci-dist-sdist
           path: dist/*.tar.gz
           if-no-files-found: error
+          retention-days: ${{ github.event_name == 'pull_request' && 3 || 90 }}
 
   msvc-from-crates-io:
     # `cargo install medh5-cli` builds from crates.io, where this repository's
@@ -292,6 +342,7 @@ jobs:
     # stop it, naming the variable to set, and the binary built with that
     # variable must report damaged files rather than abort on them.
     runs-on: windows-latest
+    timeout-minutes: 60
     defaults:
       run:
         shell: bash
@@ -300,7 +351,9 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - run: rustup toolchain install stable --profile minimal && rustup default stable
+      # The copy below keeps rust-toolchain.toml, so it builds with this Rust.
+      # No build cache: the job is what a clean build from crates.io does.
+      - run: rustup toolchain install --no-self-update
       - name: The workspace, without its cargo configuration
         run: |
           cd "$RUNNER_TEMP"
@@ -343,7 +396,10 @@ jobs:
     # tests --- and `--cov=medh5` --- found.
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
+      # One version failing says nothing about the others; let them finish.
+      fail-fast: false
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
@@ -365,12 +421,43 @@ jobs:
       # ones the suite has by design should be visible in every log.
       - run: pytest tests/ -v -rs --cov=medh5 --cov-report=term-missing --cov-fail-under=90
 
+  test-python-next:
+    # The next Python, before the package claims it: information, not a gate
+    # (`continue-on-error`, and not among what `ci-ok` needs), because what
+    # the suite needs has not caught up.  No h5py, PyTorch or pyjpegls (which
+    # highdicom needs) publishes a 3.15 wheel, so h5py builds against Ubuntu
+    # 24.04's libhdf5, and the torch and DICOM SEG tests skip; `--no-cov`, as
+    # skipped tests cover less.  Once this is green with the full extras, 3.15
+    # joins the `test` matrix and the classifiers.
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.15"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ci-dist-x86_64-unknown-linux-gnu
+          path: dist/
+      - run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libhdf5-dev
+      - run: pip install "$(ls dist/*.whl)[dev,nifti,dicom]"
+        env:
+          HDF5_DIR: /usr/lib/x86_64-linux-gnu/hdf5/serial
+      - run: rm -rf medh5
+      - run: pytest tests/ -v -rs --no-cov -p no:cacheprovider
+
   test-macos:
     # macOS defaults to the `spawn` multiprocessing start method, which is
     # where DataLoader workers and process pools re-import the package.  One
     # interpreter: this job is about the start method, not the matrix.
     needs: build
     runs-on: macos-14
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -391,6 +478,7 @@ jobs:
     # DataLoader workers start by `spawn` here, as on macOS.
     needs: build
     runs-on: windows-latest
+    timeout-minutes: 45
     defaults:
       run:
         shell: bash
@@ -425,6 +513,7 @@ jobs:
             runner: macos-15-intel
             extras: dev,nifti,dicom,dicomseg
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -439,11 +528,15 @@ jobs:
       - run: pytest tests/ -v -rs --no-cov -p no:cacheprovider
 
   test-min-deps:
-    # The NumPy floor `pyproject.toml` declares, on the oldest interpreter it
-    # supports, with the floors of the test suite's own HDF5 tools. A floor
-    # nothing installs is a floor nobody has checked.
+    # The floors `pyproject.toml` declares, on the oldest interpreter it
+    # supports: NumPy's, every extra's, and those of the test suite's own HDF5
+    # tools. A floor nothing installs is a floor nobody has checked; the
+    # extras' went untested until 2.0.2.  One resolve, so the floors are
+    # installed together or the job says they cannot be.  (highdicom 0.23
+    # needs pydicom 3.0.1, so `pydicom==3.0.*` resolves to that or later.)
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -453,9 +546,14 @@ jobs:
         with:
           name: ci-dist-x86_64-unknown-linux-gnu
           path: dist/
-      - run: pip install "$(ls dist/*.whl)[dev]"
-      - run: pip install "numpy==1.24.*" "h5py==3.13.*" "hdf5plugin==4.1.*"
-      - run: python -c "from importlib.metadata import version; print(*(f'{p} {version(p)}' for p in ('numpy', 'h5py', 'hdf5plugin')))"
+      - run: >-
+          pip install "$(ls dist/*.whl)[dev,torch,nifti,dicom,dicomseg,monai]"
+          "numpy==1.24.*" "h5py==3.13.*" "hdf5plugin==4.1.*"
+          "torch==2.0.*" "monai==1.3.*" "nibabel==5.0.*" "pydicom==3.0.*" "highdicom==0.23.*"
+      - run: python -c "from importlib.metadata import version; print(*(f'{p} {version(p)}' for p in ('numpy', 'h5py', 'hdf5plugin', 'torch', 'monai', 'nibabel', 'pydicom', 'highdicom')))"
+      # As in `test-monai`: a failed import would skip its tests, and the job
+      # would pass having tested nothing at the floor.
+      - run: python -c "import torch, monai, nibabel, pydicom, highdicom"
       - run: rm -rf medh5
       - run: pytest tests/ -v -rs --no-cov -p no:cacheprovider
 
@@ -467,6 +565,7 @@ jobs:
     # a test that had never once executed.
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -495,6 +594,7 @@ jobs:
     # native binary this run built.
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -548,6 +648,7 @@ jobs:
     # rather than the in-process one.
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -584,6 +685,61 @@ jobs:
         with:
           name: conformance-suite
           path: suite/
+          retention-days: ${{ github.event_name == 'pull_request' && 3 || 90 }}
+
+  hdf5-readers:
+    # The specification promises files any HDF5 from 1.10 on reads.  The
+    # engine links HDF5 2.x and writes with `libver_bounds(V110, latest)`, so
+    # only an older library shows the promise kept.  Every valid case of the
+    # published suite, and each unmutated sample re-encoded under the Blosc2
+    # profiles, is read whole --- every dataset, every attribute --- by an h5py
+    # on each older HDF5 series, and every value must read as the newest h5py
+    # reads it.  No h5py wheel bundles 1.10, so that entry builds h5py against
+    # Ubuntu 24.04's libhdf5 (1.10.10); the runner is pinned for that reason.
+    # h5py 3.13 and hdf5plugin 4.1 are the test suite's floors; h5py 3.9 is
+    # the last wheel that bundles 1.12.
+    name: hdf5-readers (HDF5 ${{ matrix.hdf5 }})
+    needs: [build, conformance]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - hdf5: "1.10"
+            h5py: --no-binary h5py h5py==3.13.0
+          - hdf5: "1.12"
+            h5py: h5py==3.9.0
+          - hdf5: "1.14"
+            h5py: h5py==3.13.0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ci-dist-x86_64-unknown-linux-gnu
+          path: dist/
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: conformance-suite
+          path: suite/
+      # What the newest h5py reads is the reference.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - run: pip install dist/*.whl h5py hdf5plugin
+      - run: python .github/scripts/hdf5_readers.py write suite/ cases/
+      - run: python .github/scripts/hdf5_readers.py read cases/ --out newest.json
+      # The older reader, in an interpreter of its own.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.10"
+      - if: matrix.hdf5 == '1.10'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libhdf5-dev
+          echo "HDF5_DIR=/usr/lib/x86_64-linux-gnu/hdf5/serial" >> "$GITHUB_ENV"
+      - run: pip install "numpy==1.26.*" "hdf5plugin==4.1.*" ${{ matrix.h5py }}
+      - run: python .github/scripts/hdf5_readers.py read cases/ --hdf5 ${{ matrix.hdf5 }} --compare newest.json
 
   ci-ok:
     # The one check the branch ruleset requires.  A ruleset names checks as
@@ -613,7 +769,9 @@ jobs:
       - test-monai
       - prototype
       - conformance
+      - hdf5-readers
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Every job passed
         env:

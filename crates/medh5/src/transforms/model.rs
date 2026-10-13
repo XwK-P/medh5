@@ -1468,7 +1468,9 @@ mod tests {
             (0..n).map(|i| (format!("c{i}"), vec!["leg".to_string(), format!("c{}", i + 1)])).collect();
         let started = std::time::Instant::now();
         assert!(composite_cycles(&g).unwrap().is_empty());
-        assert!(started.elapsed() < std::time::Duration::from_secs(10), "{:?}", started.elapsed());
+        // Bounds for the walks this guards against, not for the machine: the
+        // whole test has taken 5.6 s unoptimised on a shared Windows runner.
+        assert!(started.elapsed() < std::time::Duration::from_secs(60), "{:?}", started.elapsed());
         // Closed into a ring, every one of them is on the cycle, and up to
         // `CYCLE_PATHS` of them each has its whole path.
         let ring = |n: usize, chord: bool| -> IndexMap<String, Vec<String>> {
@@ -1490,7 +1492,7 @@ mod tests {
         // `CYCLE_PATHS`, a path is where it starts, and how it closes.
         let started = std::time::Instant::now();
         let cycles = composite_cycles(&ring(n, false)).unwrap();
-        assert!(started.elapsed() < std::time::Duration::from_secs(10), "{:?}", started.elapsed());
+        assert!(started.elapsed() < std::time::Duration::from_secs(60), "{:?}", started.elapsed());
         assert_eq!(cycles.len(), n);
         assert!(cycles.values().all(|path| path.len() <= CYCLE_SHOWN + 2 && path[path.len() - 2] == "…"));
         assert_eq!(cycles["c7"][..3], ["c7", "c8", "c9"]);

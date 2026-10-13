@@ -150,6 +150,9 @@ include = [
   { path = "LICENSE", format = "sdist" },
   { path = "CHANGELOG.md", format = "sdist" },
   { path = "CONTRIBUTING.md", format = "sdist" },
+  # The native inventory, the advisories against it and their VEX statements.
+  { path = "SECURITY.md", format = "sdist" },
+  { path = "vex/*.json", format = "sdist" },
   { path = "docs/**/*.md", format = "sdist" },
   { path = "docs/**/*.py", format = "sdist" },
   { path = "tests/**/*.py", format = "sdist" },
@@ -159,6 +162,7 @@ include = [
   # built with, so `pytest tests/project` and `mkdocs build` run from the
   # unpacked sdist as they do from a checkout.
   { path = ".github/dependabot.yml", format = "sdist" },
+  { path = ".pre-commit-config.yaml", format = "sdist" },
   { path = ".github/scripts/*.py", format = "sdist" },
   { path = ".github/scripts/*.sh", format = "sdist" },
   { path = ".github/workflows/*.yml", format = "sdist" },
