@@ -7,6 +7,7 @@
 //! /bbox_scores     (n,) floats            (optional)
 //! /bbox_labels     (n,) strings           (optional)
 //! root attrs       schema_version, label, label_name, extra (JSON), ...
+//!                  (and shape, up to 0.5)
 //! /images attrs    shape, spacing, origin, direction (flattened), axis_labels,
 //!                  coord_system, patch_size
 //! ```
@@ -26,11 +27,14 @@ use ndarray::ArrayD;
 use serde_json::{json, Map, Value};
 
 use super::grouping::{
-    group_by_subject, note_instance_ids, output_name, sanitize_key, sanitize_stem, Occasion, SubjectGroup,
+    group_by_subject, is_fallback, note_instance_ids, output_name, sanitize_key, sanitize_stem, Occasion, SubjectGroup,
+    FALLBACK_PREFIX,
 };
 use super::report::ConversionReport;
 use crate::annotations::Assertions;
 use crate::array::NdArray;
+use crate::curation::provenance::is_timestamp;
+use crate::curation::quality::QUALITY_STATUS;
 use crate::h5::attrs::{self, AttrValue};
 use crate::h5::{data, ops};
 use crate::json::repr_str;
@@ -140,7 +144,11 @@ fn read_meta_from(handle: &hdf5::File) -> Result<LegacyMeta> {
     spatial.origin = attrs::get_f64s(&group, "origin")?;
     spatial.axis_labels = attrs::get_strs(&group, "axis_labels")?;
     spatial.coord_system = attrs::get_str(&group, "coord_system")?;
-    meta.shape = attrs::get_i64s(&group, "shape")?;
+    // 0.x up to 0.5 wrote `shape` on the root; 0.6 moved it to `/images`.
+    meta.shape = match attrs::get_i64s(&group, "shape")? {
+        Some(shape) => Some(shape),
+        None => attrs::get_i64s(handle, "shape")?,
+    };
     meta.patch_size = attrs::get_i64s(&group, "patch_size")?;
     if let (Some(raw), Some(first)) = (attrs::get_f64s(&group, "direction")?, meta.image_names.first()) {
         let ndim = group.dataset(first)?.ndim();
@@ -170,8 +178,14 @@ fn read_meta_from(handle: &hdf5::File) -> Result<LegacyMeta> {
     if let Some(text) = attrs::get_str(handle, "extra")? {
         let parsed =
             crate::json::loads(&text).map_err(|e| Error::Schema(format!("0.x attribute 'extra' is not JSON: {e}")))?;
-        if let Value::Object(m) = parsed {
-            meta.extra = m;
+        match parsed {
+            Value::Object(m) => meta.extra = m,
+            Value::Null => {}
+            // Kept under the attribute's own name, so it reaches
+            // `extra.legacy` as every key of an object does; it was dropped.
+            other => {
+                meta.extra.insert("extra".into(), other);
+            }
         }
     }
     meta.schema_version = attrs::get_str(handle, "schema_version")?.unwrap_or_else(|| SCHEMA_VERSION.into());
@@ -228,6 +242,16 @@ pub fn read_sample(path: &Path) -> Result<LegacySample> {
 
 fn key(name: &str) -> String {
     sanitize_key(name, "class")
+}
+
+/// The class a 0.x sample label names: its `label_name`, or the label's own
+/// text when it has none (Appendix B maps both to a classification).
+fn label_class(meta: &LegacyMeta) -> Option<String> {
+    match (&meta.label_name, &meta.label) {
+        (Some(name), _) if !name.is_empty() => Some(name.clone()),
+        (_, Some(label)) => Some(label.text()),
+        _ => None,
+    }
 }
 
 /// A sample id from a subject id: §2.3's identifier rule, lowercased.
@@ -293,6 +317,11 @@ pub fn build_label_set(paths: &[&Path], mut report: Option<&mut ConversionReport
             // set must therefore declare.
             Ok(None) if has_boxes => add("object"),
             _ => {}
+        }
+        // The sample label is a class too (Appendix B); minted last, so the
+        // ids of a cohort's mask and box classes do not move.
+        if let Some(name) = label_class(&meta) {
+            add(&name);
         }
     }
     // An id goes to the first key whose mapping asks for it; a later key
@@ -386,7 +415,25 @@ pub fn build_label_set(paths: &[&Path], mut report: Option<&mut ConversionReport
     LabelSet::new("migrated", classes, "1.0.0", Vec::new(), Vec::new(), "inline", None, None)
 }
 
+/// Whether two paths name one existing file: the same device and inode on
+/// POSIX (a symbolic or hard link included), the same canonical path elsewhere.
+fn same_file(a: &Path, b: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        matches!((std::fs::metadata(a), std::fs::metadata(b)), (Ok(x), Ok(y)) if (x.dev(), x.ino()) == (y.dev(), y.ino()))
+    }
+    #[cfg(not(unix))]
+    {
+        matches!((std::fs::canonicalize(a), std::fs::canonicalize(b)), (Ok(x), Ok(y)) if x == y)
+    }
+}
+
 /// Migrate one 0.x file into one 1.0 sample.
+///
+/// The sample is named as [`migrate_paths`] names a study it gives no
+/// subject: `sample_id` from the file's stem, `subject_id` `study:<that>`.
+/// The stem was the subject id, which inferred identity from a file name.
 pub fn migrate(
     path: &Path,
     out: &Path,
@@ -394,6 +441,12 @@ pub fn migrate(
     codec: &str,
     report: Option<ConversionReport>,
 ) -> Result<ConversionReport> {
+    if same_file(path, out) {
+        return Err(Error::invalid(format!(
+            "{} is the 0.x file being migrated; write the sample to a new path",
+            repr_str(&out.to_string_lossy())
+        )));
+    }
     let mut log = report.unwrap_or_else(|| ConversionReport::new("migrate", ""));
     log.source = path.to_string_lossy().into_owned();
     let labels = match label_set {
@@ -401,12 +454,13 @@ pub fn migrate(
         None => build_label_set(&[path], Some(&mut log))?,
     };
     let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let name = sample_key(&stem);
     let group = SubjectGroup {
-        subject_id: stem,
+        subject_id: format!("{FALLBACK_PREFIX}:{name}"),
         occasions: vec![Occasion { key: log.source.clone(), payload: 0, ..Default::default() }],
         ordered_by: "given".into(),
     };
-    write_group(&group, &[path.to_path_buf()], out, &labels, codec, &mut log)?;
+    write_group(&group, &name, &[path.to_path_buf()], out, &labels, codec, &mut log)?;
     Ok(log)
 }
 
@@ -497,14 +551,39 @@ pub fn migrate_paths(
     }
     let groups = group_by_subject(occasions, group_by, Some(&mut log))?;
     let mut used = BTreeSet::new();
-    for group in groups {
+    for mut group in groups {
+        // The output's name is the sample's id, unique in the run: a
+        // subject's studies, or keys differing only in case, shared one.
         let name = output_name(&group, &mut used, &|s: &str| sample_key(s));
+        // A study with no subject was `study:<its path>`, which put a local
+        // path --- often an MRN or a name --- in the identity, and made
+        // `content_id` depend on where the file lay.
+        if is_fallback(&group) {
+            group.subject_id = format!("{FALLBACK_PREFIX}:{name}");
+        }
         let target = outdir.join(format!("{name}.medh5"));
+        let inputs: Vec<&str> = group.occasions.iter().map(|o| o.key.as_str()).collect();
+        // `-o .` wrote each sample over its 0.x original.
+        if let Some(input) = paths.iter().find(|p| same_file(p, &target)) {
+            log.warn(
+                "failed",
+                format!(
+                    "{}: the output {} is the input {}; nothing was written for it",
+                    inputs.join(", "),
+                    repr_str(&target.to_string_lossy()),
+                    repr_str(&input.to_string_lossy())
+                ),
+                json!({"inputs": inputs, "output": target.to_string_lossy()}),
+            );
+            continue;
+        }
         // A file whose content cannot be migrated is reported, and the rest
         // of the cohort is: the first such file used to end the migration,
-        // with the files after it never written.
-        if let Err(e) = write_group(&group, &sources, &target, &labels, codec, &mut log) {
-            let inputs: Vec<&str> = group.occasions.iter().map(|o| o.key.as_str()).collect();
+        // with the files after it never written.  What the group's notes
+        // described was never written either, so they go.
+        let mark = log.notes.len();
+        if let Err(e) = write_group(&group, &name, &sources, &target, &labels, codec, &mut log) {
+            log.notes.truncate(mark);
             log.warn(
                 "failed",
                 format!("{}: {e}; nothing was written for it", inputs.join(", ")),
@@ -517,6 +596,7 @@ pub fn migrate_paths(
 
 fn write_group(
     group: &SubjectGroup,
+    sample_id: &str,
     sources: &[PathBuf],
     target: &Path,
     label_set: &LabelSet,
@@ -526,7 +606,7 @@ fn write_group(
     // An order by mtime is reported where the grouping chose it.
     note_instance_ids(group, log);
     let days = group.days_from_baseline();
-    let mut writer = create(target, Some(&sample_key(&group.subject_id)), Some(&group.subject_id), codec, &[])?;
+    let mut writer = create(target, Some(sample_id), Some(&group.subject_id), codec, &[])?;
     let result = (|| -> Result<()> {
         writer.label_set(label_set.clone());
         let tool = writer.software("medh5", Some(VERSION), Map::new())?;
@@ -623,7 +703,9 @@ fn migrate_one(
     let suffix = if single { String::new() } else { format!("_{timepoint}") };
     let mut fields = Map::new();
     fields.insert("tool".into(), json!("medh5 migrate"));
-    fields.insert("inputs".into(), json!([format!("medh5-0.x:{source}")]));
+    // The file's name, not its path, for the reason the identity is.
+    let file = Path::new(source).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    fields.insert("inputs".into(), json!([format!("medh5-0.x:{file}")]));
     let activity = writer.activity("import", Some(tool), None, fields)?;
     let grid_id = format!("ref{suffix}");
     let spatial = &meta.spatial;
@@ -697,7 +779,7 @@ fn migrate_one(
     // The review is of what the file held: each annotation migrated from it
     // carries the review's quality record, and the review names them.
     let review = match meta.extra.get("review") {
-        Some(Value::Object(review)) => Some(LegacyReview::read(writer, review)?),
+        Some(Value::Object(review)) => Some(LegacyReview::read(writer, review, tool, log, source)?),
         _ => None,
     };
     let quality = review.as_ref().map(|r| QualityArg::Record(r.quality.clone()));
@@ -802,9 +884,16 @@ fn migrate_one(
             json!({"source": source, "boxes": n, "shift": BOX_SHIFT}),
         );
     }
-    if let Some(label) = &meta.label {
-        let name = meta.label_name.clone().filter(|n| !n.is_empty()).unwrap_or_else(|| label.text());
-        match label_set.get(&ClassKey::Key(key(&name))) {
+    if let Some(name) = label_class(meta) {
+        let class = key(&name);
+        let raw = match &meta.label {
+            None => Value::Null,
+            Some(LegacyLabel::Int(i)) => json!(i),
+            Some(LegacyLabel::Float(f)) => crate::json::num(*f),
+            Some(LegacyLabel::Bool(b)) => json!(b),
+            Some(LegacyLabel::Text(t)) => json!(t),
+        };
+        match label_set.get(&ClassKey::Key(class.clone())) {
             Some(entry) => {
                 let ann_id = format!("label{suffix}");
                 writer.add_classification(
@@ -820,6 +909,47 @@ fn migrate_one(
                         ..Default::default()
                     },
                 )?;
+                let detail = json!({"source": source, "label": raw, "label_name": meta.label_name, "class": class,
+                    "annotation": ann_id});
+                let shown = match &meta.label {
+                    Some(LegacyLabel::Text(t)) => repr_str(t),
+                    Some(other) => other.text(),
+                    None => String::new(),
+                };
+                let named = meta.label_name.as_deref().is_some_and(|n| !n.is_empty());
+                match (&meta.label, named) {
+                    (Some(_), true) => log.decision(
+                        "label",
+                        format!(
+                            "{source}: sample label {shown} ({}) became classification {} of class {}",
+                            repr_str(&name),
+                            repr_str(&ann_id),
+                            repr_str(&class)
+                        ),
+                        detail,
+                    ),
+                    (Some(_), false) => log.guess(
+                        "label",
+                        format!(
+                            "{source}: sample label {shown} has no label_name, so its text became class {} of \
+                             classification {}; rename the class if the value means something else, such as a 0 \
+                             for absent",
+                            repr_str(&class),
+                            repr_str(&ann_id)
+                        ),
+                        detail,
+                    ),
+                    (None, _) => log.guess(
+                        "label",
+                        format!(
+                            "{source}: label_name {} has no label, and classification {} asserts it as class {}",
+                            repr_str(&name),
+                            repr_str(&ann_id),
+                            repr_str(&class)
+                        ),
+                        detail,
+                    ),
+                };
                 written.push(ann_id);
             }
             None => {
@@ -837,52 +967,114 @@ fn migrate_one(
     Ok(())
 }
 
-fn timestamp(value: Option<&Value>) -> Option<String> {
-    let text = match value? {
-        Value::Null => return None,
-        Value::String(s) if s.is_empty() => return None,
-        other => crate::json::py_str(other),
-    };
-    if text.ends_with('Z') && text.contains('T') {
+/// An activity time from a 0.x review time: an RFC 3339 timestamp (0.x wrote
+/// `datetime.isoformat()`, with its `+00:00` offset) or a bare `YYYY-MM-DD`.
+fn timestamp(value: &Value) -> Option<String> {
+    let text = crate::json::py_str(value).trim().to_string();
+    if is_timestamp(&text) {
         return Some(text);
     }
-    if text.chars().count() == 10 && text.chars().nth(4) == Some('-') {
-        return Some(format!("{text}T00:00:00Z"));
-    }
-    None
+    let midnight = format!("{text}T00:00:00Z");
+    (text.len() == 10 && is_timestamp(&midnight)).then_some(midnight)
 }
 
 /// A 0.x `extra.review`: who reviewed the file, and their verdict.
 ///
-/// It became a quality record keyed `seg`, whatever the file held, which no
-/// annotation named, and a `review` activity whose output was `seg` even in
-/// a file of boxes.  The record now rides on each annotation migrated from
-/// the file, and the activity names those annotations.  The dict itself
-/// stays in the file's `extra.legacy` entry, verbatim, with whatever else it
-/// held (Appendix B).
+/// The 0.x API (`medh5.review`, 0.3 to 0.6) wrote `status` (`pending`,
+/// `reviewed`, `flagged` or `rejected`), `annotator`, `timestamp`, `notes`
+/// and `history`.  Only `reviewer`/`by` and `date`/`reviewed_at` were read,
+/// so the activity of every record the API wrote had no agent and the file
+/// failed to migrate (E005), and a status outside 1.0's became `reviewed`.
+/// `pending` and `flagged` now map to `submitted`, a flag stays an issue, and
+/// each such mapping is a guess; with no reviewer named, the import tool is
+/// the agent.  The record rides on each annotation migrated from the file,
+/// and the activity names those annotations.  The dict itself stays in the
+/// file's `extra.legacy` entry, verbatim, with whatever else it held
+/// (Appendix B).
 struct LegacyReview {
-    agent: Option<String>,
-    verdict: String,
+    agent: String,
+    verdict: Option<String>,
+    status: String,
     ended: Option<String>,
     quality: Map<String, Value>,
 }
 
 impl LegacyReview {
-    fn read(writer: &mut crate::sample::SampleWriter, review: &Map<String, Value>) -> Result<LegacyReview> {
-        let reviewer =
-            review.get("reviewer").or_else(|| review.get("by")).filter(|v| !v.is_null() && v.as_str() != Some(""));
-        let agent = match reviewer {
+    fn read(
+        writer: &mut crate::sample::SampleWriter,
+        review: &Map<String, Value>,
+        tool: &str,
+        log: &mut ConversionReport,
+        source: &str,
+    ) -> Result<LegacyReview> {
+        let given = |k: &str| review.get(k).filter(|v| !v.is_null() && v.as_str() != Some(""));
+        let verdict = given("status").map(crate::json::py_str);
+        // 0.x's own default status was `pending`.
+        let stated = verdict.as_deref().unwrap_or("pending").to_lowercase();
+        let (status, why) = match stated.as_str() {
+            s if QUALITY_STATUS.contains(&s) => (s.to_string(), None),
+            "pending" if verdict.is_none() => {
+                ("submitted".to_string(), Some("the record states no status, and 0.x's default was 'pending'"))
+            }
+            "pending" => ("submitted".to_string(), Some("0.x 'pending' means nobody had reviewed it yet")),
+            "flagged" => (
+                "submitted".to_string(),
+                Some("0.x 'flagged' neither accepts nor rejects; the flag is kept as an issue"),
+            ),
+            _ => ("submitted".to_string(), Some("it is neither a 0.x nor a 1.0 review status")),
+        };
+        if let Some(why) = why {
+            log.guess(
+                "review",
+                format!(
+                    "{source}: review status {} became quality status {}: {why}",
+                    repr_str(verdict.as_deref().unwrap_or("(none)")),
+                    repr_str(&status)
+                ),
+                json!({"source": source, "verdict": verdict, "status": status}),
+            );
+        }
+        let reviewer = given("reviewer").or_else(|| given("by")).or_else(|| given("annotator"));
+        let person = match reviewer {
             Some(r) => Some(writer.person(&crate::json::py_str(r), None, Map::new())?.id),
             None => None,
         };
-        let verdict = review.get("status").map(crate::json::py_str).unwrap_or_else(|| "reviewed".into());
-        let status = verdict.to_lowercase();
-        let allowed = ["draft", "submitted", "reviewed", "approved", "rejected", "deprecated"];
+        let agent = match &person {
+            Some(id) => id.clone(),
+            None => {
+                log.guess(
+                    "review",
+                    format!(
+                        "{source}: extra.review names no reviewer, so its `review` activity is attributed to the import \
+                         tool, which recorded it"
+                    ),
+                    json!({"source": source, "agent": tool}),
+                );
+                tool.to_string()
+            }
+        };
         let mut quality = Map::new();
-        quality.insert("status".into(), json!(if allowed.contains(&status.as_str()) { &status } else { "reviewed" }));
-        quality.insert("reviewed_by".into(), json!(agent.iter().collect::<Vec<_>>()));
-        let ended = timestamp(review.get("date").filter(|v| !v.is_null()).or_else(|| review.get("reviewed_at")));
-        Ok(LegacyReview { agent, verdict, ended, quality })
+        quality.insert("status".into(), json!(status));
+        // A pending record names whoever set it, not a reviewer.
+        let reviewed: Vec<&String> = person.iter().filter(|_| stated != "pending").collect();
+        quality.insert("reviewed_by".into(), json!(reviewed));
+        if stated == "flagged" {
+            quality.insert("issues".into(), json!([{"code": "flagged", "severity": "warning"}]));
+        }
+        let stamp = given("timestamp").or_else(|| given("date")).or_else(|| given("reviewed_at"));
+        let ended = stamp.and_then(timestamp);
+        if let (Some(raw), None) = (stamp, &ended) {
+            log.decision(
+                "review",
+                format!(
+                    "{source}: review time {} is neither an RFC 3339 timestamp nor a date, so the `review` activity \
+                     states no end; extra.legacy keeps it",
+                    repr_str(&crate::json::py_str(raw))
+                ),
+                json!({"source": source, "time": raw}),
+            );
+        }
+        Ok(LegacyReview { agent, verdict, status, ended, quality })
     }
 
     /// The `review` activity, whose outputs are the annotations reviewed.
@@ -897,10 +1089,12 @@ impl LegacyReview {
         if let Some(t) = &self.ended {
             fields.insert("ended".into(), json!(t));
         }
-        fields.insert("params".into(), json!({"verdict": self.verdict}));
+        if let Some(verdict) = &self.verdict {
+            fields.insert("params".into(), json!({"verdict": verdict}));
+        }
         let outputs: Vec<String> = annotations.iter().map(|a| format!("annotations/{a}")).collect();
         fields.insert("outputs".into(), json!(outputs));
-        writer.activity("review", self.agent.as_deref(), None, fields)?;
+        writer.activity("review", Some(&self.agent), None, fields)?;
         log.decision(
             "review",
             format!(
@@ -909,7 +1103,7 @@ impl LegacyReview {
                  reviewed (§11.1)",
                 if annotations.is_empty() { "no annotation".to_string() } else { crate::json::repr_list(annotations) }
             ),
-            json!({"source": source, "status": self.verdict.to_lowercase(), "annotations": annotations}),
+            json!({"source": source, "status": self.status, "verdict": self.verdict, "annotations": annotations}),
         );
         Ok(())
     }
@@ -928,4 +1122,21 @@ pub fn load_sidecar(path: &Path) -> Result<LabelSet> {
     let doc = crate::json::loads(&text)?;
     LabelSet::from_json(Some(&doc))?
         .ok_or_else(|| Error::Value(format!("{} holds no label set", path.to_string_lossy())))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn appendix_b_review_times_are_0x_isoformat_or_a_date() {
+        // 0.x wrote `datetime.now(timezone.utc).isoformat()`.
+        let iso = json!("2026-01-01T10:00:00.123456+00:00");
+        assert_eq!(timestamp(&iso).as_deref(), Some("2026-01-01T10:00:00.123456+00:00"));
+        assert_eq!(timestamp(&json!("2026-03-01")).as_deref(), Some("2026-03-01T00:00:00Z"));
+        // A naive time states no zone, and a near-date is not a date.
+        assert_eq!(timestamp(&json!("2026-01-01T10:00:00")), None);
+        assert_eq!(timestamp(&json!("2026-1x-01")), None);
+        assert_eq!(timestamp(&json!("é")), None);
+    }
 }

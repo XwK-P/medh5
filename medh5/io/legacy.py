@@ -47,7 +47,8 @@ written down, rather than a dependency on code that still runs.
     /bbox_labels            (n,) strings           (optional)
 
     root attrs              schema_version, image_names, label, label_name,
-                            has_seg, seg_names, has_bbox, extra (JSON)
+                            has_seg, seg_names, has_bbox, extra (JSON),
+                            and shape up to 0.5
     /images attrs           shape, spacing, origin, direction (flattened
                             row-major), axis_labels, coord_system, patch_size
 

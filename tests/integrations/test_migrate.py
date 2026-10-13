@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 import medh5
-from medh5.errors import MEDH5FileError, MEDH5SchemaError
+from medh5.errors import MEDH5FileError, MEDH5SchemaError, MEDH5ValidationError
 from medh5.io.report import ConversionReport
 from medh5.validate import validate_file
 from tests.helpers import write_legacy_sample
@@ -164,6 +164,8 @@ class TestMigrate:
         with h5py.File(legacy[1], "r+") as handle:
             del handle["seg/liver"]
             handle["seg"].create_dataset("liver", data=np.zeros((2, 2, 2), bool))
+            # A guess made before the failure, about a file never written.
+            del handle["images"].attrs["coord_system"]
         report = migrate_paths(legacy, tmp_path / "out")
         written = sorted(p.stem for p in (tmp_path / "out").glob("*.medh5"))
         assert written == ["old_0", "old_2"]
@@ -171,6 +173,9 @@ class TestMigrate:
         assert len(failed) == 1 and failed[0].severity == "warning"
         assert failed[0].detail["inputs"] == [str(legacy[1])]
         assert "E405" in failed[0].message
+        # Nothing was written for it, so nothing else describes it.
+        about = [n.kind for n in report.notes if str(legacy[1]) in n.message]
+        assert about == ["failed"]
 
     def test_review_is_the_quality_of_each_migrated_annotation(self, legacy, tmp_path):
         """The review became a quality record keyed ``seg`` that no annotation
@@ -215,6 +220,123 @@ class TestMigrate:
             (review,) = sample.document.provenance.activities_by_type("review")
             assert review.outputs == ("annotations/boxes",)
         assert not validate_file(tmp_path / "new.medh5").errors
+
+    @pytest.mark.parametrize(
+        ("status", "quality", "reviewed_by", "guessed"),
+        [
+            ("pending", "submitted", False, True),
+            ("flagged", "submitted", True, True),
+            ("reviewed", "reviewed", True, False),
+            ("rejected", "rejected", True, False),
+        ],
+    )
+    def test_appendix_B_a_review_the_0x_api_wrote_migrates(
+        self, tmp_path, status, quality, reviewed_by, guessed
+    ):
+        """0.x's ``set_review_status`` wrote ``annotator`` and ``timestamp``,
+        which were never read: the activity had no agent and every such file
+        failed (E005), and ``pending`` or ``flagged`` became ``reviewed``."""
+        from medh5.io.legacy import migrate
+
+        record = {
+            "status": status,
+            "annotator": "RAD-07",
+            "timestamp": "2026-01-01T10:00:00.123456+00:00",
+            "notes": "margin unclear",
+            "history": [
+                {
+                    "status": "pending",
+                    "annotator": None,
+                    "timestamp": "2025-12-01T09:00:00+00:00",
+                    "notes": None,
+                }
+            ],
+        }
+        old = write_legacy_sample(
+            tmp_path / "old.medh5",
+            images={"CT": np.zeros((4, 5, 6), np.int16)},
+            seg={"liver": np.ones((4, 5, 6), bool)},
+            spacing=[1.0, 1.0, 1.0],
+            coord_system="LPS",
+            extra={"review": record},
+        )
+        report = migrate(old, tmp_path / "new.medh5")
+        assert not validate_file(tmp_path / "new.medh5").errors
+        with medh5.open(tmp_path / "new.medh5") as sample:
+            document = sample.document
+            seg = document.quality["seg"]
+            assert seg.status == quality
+            assert [i.code for i in seg.issues] == (
+                ["flagged"] if status == "flagged" else []
+            )
+            (review,) = document.provenance.activities_by_type("review")
+            assert document.provenance.agent(review.agent).name == "RAD-07"
+            assert bool(seg.reviewed_by) is reviewed_by
+            assert review.ended == record["timestamp"]
+            assert review.params == {"verdict": status}
+            assert document.extra["legacy"]["tp0"]["review"] == record
+        guesses = [n for n in report.guesses if n.kind == "review"]
+        assert bool(guesses) is guessed
+
+    def test_a_review_naming_no_one_is_the_import_tools(self, tmp_path):
+        """With no reviewer, the activity had no agent, which the schema
+        refuses: the import tool that recorded it is its agent, as a guess."""
+        from medh5.io.legacy import migrate
+
+        old = write_legacy_sample(
+            tmp_path / "old.medh5",
+            images={"CT": np.zeros((4, 5, 6), np.int16)},
+            seg={"liver": np.ones((4, 5, 6), bool)},
+            spacing=[1.0, 1.0, 1.0],
+            coord_system="LPS",
+            extra={"review": {"status": "reviewed"}},
+        )
+        report = migrate(old, tmp_path / "new.medh5")
+        assert not validate_file(tmp_path / "new.medh5").errors
+        with medh5.open(tmp_path / "new.medh5") as sample:
+            provenance = sample.document.provenance
+            (review,) = provenance.activities_by_type("review")
+            assert provenance.agent(review.agent).type == "software"
+            assert sample.document.quality["seg"].reviewed_by == ()
+        assert any("import tool" in n.message for n in report.guesses)
+
+    def test_S12_1_each_study_of_a_subject_has_its_own_sample_id(
+        self, legacy, tmp_path
+    ):
+        """In study mode with a subject key, every study of a subject was
+        given the subject's sample id; the id is now the output's name."""
+        from medh5.io.legacy import migrate_paths
+
+        migrate_paths(legacy, tmp_path / "out", subject_key="extra.patient_id")
+        identities = []
+        for path in sorted((tmp_path / "out").glob("*.medh5")):
+            with medh5.open(path) as sample:
+                identity = sample.document.identity
+                assert identity.sample_id == path.stem
+                identities.append((identity.sample_id, identity.subject_id))
+        assert len({sample_id for sample_id, _ in identities}) == 3
+        assert sorted(s for _, s in identities) == ["PAT-A", "PAT-A", "PAT-B"]
+
+    def test_W1_no_local_path_reaches_the_sample(self, legacy, tmp_path):
+        """A study with no subject was ``study:<its absolute path>``, and its
+        sample id the path made an identifier; `migrate` used the bare stem
+        as the subject.  Both now name it for its stem, the same way."""
+        from medh5.io.legacy import migrate, migrate_paths
+
+        where = tmp_path / "MRN-0042 Doe"
+        where.mkdir()
+        old = where / "Case 7.medh5"
+        old.write_bytes(legacy[0].read_bytes())
+        migrate_paths([old], tmp_path / "out")
+        migrate(old, tmp_path / "single.medh5")
+        for path in (tmp_path / "out" / "case_7.medh5", tmp_path / "single.medh5"):
+            with medh5.open(path) as sample:
+                identity = sample.document.identity
+                assert (identity.sample_id, identity.subject_id) == (
+                    "case_7",
+                    "study:case_7",
+                )
+                assert "MRN-0042" not in json.dumps(sample.document.to_json())
 
     def test_an_mtime_order_is_reported_once_per_subject(self, legacy, tmp_path):
         from medh5.io.legacy import migrate_paths
@@ -350,6 +472,150 @@ class TestLabelKeys:
         assert len(warnings) == 2
         assert warnings[0].detail["kept"] == 1 and warnings[0].detail["ignored"] == 2
         assert warnings[1].detail["kept_by"] == "liver"
+
+
+class TestOlderLayouts:
+    @staticmethod
+    def _old(path: Path) -> Path:
+        return write_legacy_sample(
+            path,
+            images={"CT": np.zeros((4, 5, 6), np.int16)},
+            spacing=[1.0, 1.0, 1.0],
+            coord_system="LPS",
+        )
+
+    def test_appendix_B_0x_up_to_0_5_kept_shape_on_the_root(self, tmp_path: Path):
+        from medh5.io.legacy import legacy_meta
+
+        old = self._old(tmp_path / "old.medh5")
+        with h5py.File(old, "r+") as handle:
+            del handle["images"].attrs["shape"]
+            handle.attrs["shape"] = np.asarray([4, 5, 6], np.int64)
+        assert legacy_meta(old).shape == [4, 5, 6]
+
+    def test_appendix_B_an_extra_that_is_not_an_object_is_kept(self, tmp_path: Path):
+        from medh5.io.legacy import migrate
+
+        old = self._old(tmp_path / "old.medh5")
+        with h5py.File(old, "r+") as handle:
+            handle.attrs["extra"] = json.dumps(["kept", 7])
+        migrate(old, tmp_path / "new.medh5")
+        with medh5.open(tmp_path / "new.medh5") as sample:
+            assert sample.document.extra["legacy"]["tp0"] == {"extra": ["kept", 7]}
+
+
+class TestNoOutputAliasesAnInput:
+    """F11: ``migrate -o .`` replaced the 0.x originals, and a ``--report`` or
+    ``--write-labels`` naming an input made it JSON; each exited 0."""
+
+    @pytest.fixture
+    def old(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+        monkeypatch.chdir(tmp_path)
+        paths = [
+            TestOlderLayouts._old(tmp_path / f"old_{index}.medh5") for index in (0, 1)
+        ]
+        (tmp_path / "link.json").symlink_to(paths[0])
+        return paths
+
+    @pytest.mark.parametrize(
+        ("args", "converts"),
+        [
+            (["-o", "."], True),
+            (["-o", "out", "--report", "old_0.medh5"], False),
+            (["-o", "out", "--report", "../{here}/old_1.medh5"], False),
+            (["-o", "out", "--report", "link.json"], False),
+            (["-o", "out", "--write-labels", "old_1.medh5"], False),
+            (["-o", "out", "--report", "."], False),
+            (["-o", "out", "--report", "nodir/r.json"], False),
+            (["-o", "out", "--report", "out/old_0.medh5"], True),
+        ],
+    )
+    def test_F11_no_output_path_aliases_an_input(self, old, tmp_path, args, converts):
+        from medh5.cli import EXIT_ERROR, main
+
+        before = [p.read_bytes() for p in old]
+        argv = [a.replace("{here}", tmp_path.name) for a in args]
+        assert main(["migrate", "old_0.medh5", "old_1.medh5", *argv]) == EXIT_ERROR
+        assert [p.read_bytes() for p in old] == before
+        # A refusal comes before anything is written.
+        assert (tmp_path / "out").exists() is (converts and "out" in argv)
+        for written in (tmp_path / "out").glob("*.medh5"):
+            with medh5.open(written) as sample:
+                assert sample.document.identity.sample_id == written.stem
+
+    def test_a_report_may_go_in_the_output_directory(self, old, tmp_path):
+        from medh5.cli import EXIT_OK, main
+
+        argv = ["migrate", "old_0.medh5", "-o", "out", "--report", "./out/r.json"]
+        assert main(argv) == EXIT_OK
+        assert json.loads((tmp_path / "out" / "r.json").read_text())["outputs"]
+
+    def test_F11_migrate_refuses_to_write_over_its_source(self, old):
+        from medh5.io.legacy import migrate
+
+        before = old[0].read_bytes()
+        with pytest.raises(MEDH5ValidationError, match="being migrated"):
+            migrate(old[0], Path(".") / old[0].name)
+        assert old[0].read_bytes() == before
+
+
+class TestSampleLabel:
+    """Appendix B maps ``label`` and ``label_name`` to a sample-scope
+    classification.  The label set minted only mask and box names, so the
+    label was dropped unless its name happened to be one of them."""
+
+    @staticmethod
+    def _old(path: Path, **label: Any) -> Path:
+        shape = (4, 5, 6)
+        tumor = np.zeros(shape, bool)
+        tumor[1:3, 1:3, 1:3] = True
+        return write_legacy_sample(
+            path,
+            images={"CT": np.zeros(shape, np.int16)},
+            seg={"tumor": tumor, "liver": np.ones(shape, bool)},
+            spacing=[1.0, 1.0, 1.0],
+            coord_system="LPS",
+            **label,
+        )
+
+    def test_appendix_B_the_0x_readme_example_keeps_its_label(self, tmp_path: Path):
+        from medh5.io.legacy import migrate
+
+        old = self._old(tmp_path / "old.medh5", label=1, label_name="malignant")
+        report = migrate(old, tmp_path / "new.medh5")
+        assert report.ok, [n.message for n in report.warnings]
+        with medh5.open(tmp_path / "new.medh5") as sample:
+            assert sample.annotations["label"].positives == ("malignant",)
+            keys = sorted(c.key for c in sample.label_set)
+            assert keys == ["liver", "malignant", "tumor"]
+        (note,) = report.of_kind("label")
+        assert note.severity == "decision"
+        assert note.detail["label"] == 1
+        assert not validate_file(tmp_path / "new.medh5").errors
+
+    def test_appendix_B_a_classification_cohort_keeps_every_label(self, tmp_path: Path):
+        from medh5.io.legacy import migrate_paths
+
+        paths = [
+            self._old(tmp_path / f"case_{value}.medh5", label=value) for value in (0, 1)
+        ]
+        report = migrate_paths(paths, tmp_path / "out")
+        assert report.ok, [n.message for n in report.warnings]
+        for value in (0, 1):
+            with medh5.open(tmp_path / "out" / f"case_{value}.medh5") as sample:
+                assert sample.annotations["label"].positives == (str(value),)
+        # A bare value is not a class name anyone chose.
+        assert len([n for n in report.guesses if n.kind == "label"]) == 2
+
+    def test_a_label_name_without_a_label_is_kept_as_a_guess(self, tmp_path: Path):
+        from medh5.io.legacy import migrate
+
+        old = self._old(tmp_path / "old.medh5", label_name="benign")
+        report = migrate(old, tmp_path / "new.medh5")
+        with medh5.open(tmp_path / "new.medh5") as sample:
+            assert sample.annotations["label"].positives == ("benign",)
+        (note,) = report.of_kind("label")
+        assert note.severity == "guess"
 
 
 class TestLegacyExtra:
