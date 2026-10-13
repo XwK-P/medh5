@@ -10,10 +10,11 @@ use serde_json::{json, Map, Value};
 use medh5::collection::{open_any, AnyFile, Collection};
 use medh5::curation::tracking::{build_tracks, Track, Tracking};
 use medh5::h5::{attrs, ops};
-use medh5::integrity::repair::{fix, FixOptions};
+use medh5::integrity::repair::{fix, FixOptions, Repair};
+use medh5::integrity::stale_index_entries;
 use medh5::json::py_str;
 use medh5::labels::ClassKey;
-use medh5::sample::Sample;
+use medh5::sample::{open_sample, Sample};
 use medh5::storage::codecs::describe_filters;
 use medh5::validate::validate_paths;
 use medh5::Error;
@@ -455,6 +456,12 @@ fn verify(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
             for name in &result.stale_index {
                 ctx.print(format!("  STALE     index/{name} (rebuild with `medh5 index build`)"));
             }
+            // Neither checked nor refuted, so not a failure --- but named, or
+            // `OK` reads as covering it (`--partial` on one said `OK 0
+            // objects` and nothing else).
+            for name in &result.unverifiable {
+                ctx.print(format!("  UNCHECKED {name} (a digest its type cannot have, §13.1: not checked)"));
+            }
         }
     }
     ctx.emit(&Value::Array(results), as_json);
@@ -471,17 +478,35 @@ fn fix_cmd(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
         max_coords: None,
     };
     let mut results = Vec::new();
-    let mut failed = false;
+    let mut all_ok = true;
     for path in get_paths(m, "paths") {
-        let repair = match fix(Path::new(&path), &options) {
-            Ok(r) => r,
+        let fixed = fix(Path::new(&path), &options).and_then(|repair| {
+            let stale = still_stale(&path, &repair)?;
+            Ok((repair, stale))
+        });
+        let (repair, stale) = match fixed {
+            Ok(v) => v,
             Err(e) => {
                 results.push(ctx.file_failed(&path, &sample_file_error(&path, e)));
-                failed = true;
+                all_ok = false;
                 continue;
             }
         };
-        results.push(repair.to_json());
+        // Done when nothing is left needing attention: a run that found
+        // problems and was not asked to act on them has reported, and one
+        // that restamped the digests without rebuilding the index has left
+        // the index stale --- the note says so, and the exit code agrees.
+        let ok = stale.is_empty() && (repair.rewrote_digests || !repair.diagnosis.needs_digests());
+        all_ok &= ok;
+        let notes: Vec<String> = repair.notes.iter().map(|note| in_cli_terms(note)).collect();
+        let mut entry = Map::new();
+        entry.insert("path".into(), json!(repair.path));
+        entry.insert("ok".into(), json!(ok));
+        if let Value::Object(rest) = repair.to_json() {
+            entry.extend(rest);
+        }
+        entry.insert("notes".into(), json!(notes));
+        results.push(Value::Object(entry));
         if as_json {
             continue;
         }
@@ -495,41 +520,43 @@ fn fix_cmd(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
                 done.push("rewrote digests".to_string());
             }
             ctx.print(format!("{path}: {}", done.join("; ")));
-            for note in &repair.notes {
-                ctx.print(format!("  note: {note}"));
-            }
         } else if diagnosis.clean() {
             ctx.print(format!("{path}: nothing to fix"));
         } else {
             ctx.print(format!("{path}: needs attention, nothing changed"));
-            if !diagnosis.stale_index.is_empty() {
-                ctx.print(format!("  stale index: {} (--rebuild-index)", diagnosis.stale_index.join(", ")));
-            }
-            if !diagnosis.mismatched.is_empty() {
-                ctx.print(format!(
-                    "  digest mismatch: {} (--rewrite-digests, and read what it means first)",
-                    diagnosis.mismatched.join(", ")
-                ));
-            }
-            if !diagnosis.unattested.is_empty() {
-                ctx.print(format!(
-                    "  unsigned: {} (no line of content_id covers it at this path)",
-                    diagnosis.unattested.join(", ")
-                ));
+            let restamp = "--rewrite-digests, and read what it means first";
+            let unparsed = format!("not of the form ALGO:HEX; {restamp}");
+            for (names, what, hint) in [
+                (&diagnosis.stale_index, "stale index", "--rebuild-index"),
+                (&diagnosis.mismatched, "digest mismatch", restamp),
+                (&diagnosis.malformed, "malformed digest", unparsed.as_str()),
+                (&diagnosis.unattested, "unsigned", "no line of content_id covers it at this path"),
+            ] {
+                if !names.is_empty() {
+                    ctx.print(format!("  {what}: {} ({hint})", names.join(", ")));
+                }
             }
             if diagnosis.content_id_ok == Some(false) {
                 ctx.print("  content_id does not match the file's own contents");
             }
         }
+        // What was left, and why: said whatever was done.
+        for note in &notes {
+            ctx.print(format!("  note: {note}"));
+        }
     }
-    // Non-zero when a file still needs attention: a fix run that found
-    // problems and was not asked to act on them has not succeeded, it has
-    // reported.
-    let outstanding = results.iter().any(|r| {
-        !truthy(&r["changed"]) && (truthy(&r["diagnosis"]["needs_index"]) || truthy(&r["diagnosis"]["needs_digests"]))
-    });
     ctx.emit(&Value::Array(results), as_json);
-    Ok(if outstanding || failed { EXIT_ERROR } else { EXIT_OK })
+    Ok(if all_ok { EXIT_OK } else { EXIT_ERROR })
+}
+
+/// The index entries still stale once `repair` is done: the diagnosis's, or
+/// --- where it rewrote the file --- what the file now holds.  A restamp
+/// changes the digests an entry pins (§13.3).
+fn still_stale(path: &str, repair: &Repair) -> medh5::Result<Vec<String>> {
+    if !repair.changed() {
+        return Ok(repair.diagnosis.stale_index.clone());
+    }
+    stale_index_entries(&open_sample(Path::new(path))?.root)
 }
 
 fn timeline(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {

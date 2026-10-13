@@ -10,18 +10,39 @@ attached to every GitHub Release, and `brew install XwK-P/medh5/medh5`. Each is
 the same code, with the same output and exit codes. The converters
 (`medh5 convert …`) and the dataloader row of `medh5 bench` are Python
 integrations: the standalone binary runs them through a Python that has the
-package installed (`python3`, or the interpreter `MEDH5_PYTHON` names), and
-says what to install when there is none. `medh5 migrate` is native.
+package installed (`python3` — `python` on Windows — or the interpreter
+`MEDH5_PYTHON` names). That package must be a medh5 2.x; when it is not, or
+will not import, the command says why — the version found, or the last line
+Python printed — and what to install. `medh5 migrate` is native.
 
 Exit codes are Unix-conventional: **0** success, **1** a handled error or a
 failed check, **2** a usage error. Every inspection command takes `--json` and
-writes a machine-readable document to stdout.
+writes a machine-readable document to stdout. Help you ask for (`-h`,
+`--help`) goes to stdout and exits 0; a usage error goes to stderr and exits 2,
+including `medh5` or a command group given no command, which prints its help
+there.
+
+A long option can be shortened to any prefix that names only one of the
+command's options — `--dry` for `--dry-run` — as the 1.x parser allowed.
+Spell options in full in scripts: a later release that adds an option can make
+a prefix name two.
 
 A command given several files reports on each of them. One it cannot process
-is named on stderr — and, with `--json`, is an entry of its own carrying the
-`error` — and the files after it are still processed; the command then
-exits with 1. Output that cannot be written (a full disk) fails the command
-too.
+is named on stderr — and, with `--json`, is an entry of its own,
+`{"path": …, "ok": false, "error": …}`, its `error` what stderr says — and
+the files after it are still processed; the command then exits with 1. Output
+that cannot be written (a full disk) fails the command too.
+
+A command that changes a file in place — `fix`, `index build`, `seg convert`,
+`scrub --apply`, `recompress` without `--out`, `dataset split --write-claims`,
+`clinical augment` without `--out` — writes the new version beside it and
+renames it over the old (§14.4). Through a symbolic link, the file the link
+names is rewritten and the link kept; a file with several hard links is
+replaced at the path given only, and its other names keep the old version —
+after `scrub --apply`, remove them. A link in a directory anyone can write to,
+such as `/tmp`, that neither you nor the directory's owner owns is not
+followed: the command refuses the file, as the system would refuse to open it
+through the link.
 
 ## Inspecting
 
@@ -76,7 +97,10 @@ Recompute every object's digest and the root `content_id`. `--partial` limits
 it to datasets named by path (`images/CT`, `annotations/seg/data`) — useful
 when you only want to know whether one image changed. A digest that is not
 `ALGO:HEX`, or a `--partial` name with no digest at that path (a group, a
-typo), is reported as `MALFORMED` and fails the check.
+typo), is reported as `MALFORMED` and fails the check. A dataset carrying a
+digest its type cannot have (§13.1) — variable-length data other than strings,
+references — can be neither checked nor refuted: it is named on an `UNCHECKED`
+line (`unverifiable` in `--json`) and does not fail the check.
 
 In a file that declares a `content_id`, a dataset inside a grid, image,
 annotation or transform that carries no digest fails the check (`UNSIGNED`):
@@ -91,10 +115,16 @@ so none of its files has either.
 ### `medh5 fix`
 
 ```
-medh5 fix PATH... [--rebuild-index] [--rewrite-digests --reason WHY] [--by WHO] [--json]
+medh5 fix PATH... [--rebuild-index] [--rewrite-digests --reason WHY [--by WHO]] [--json]
 ```
 
-With no flags: diagnose and change nothing. Exit 1 if anything needs attention.
+With no flags: diagnose and change nothing. `fix` exits 0 only when nothing is
+left needing attention once it has done what it was asked, and 1 otherwise —
+a diagnosis that finds something, or an index entry left stale: an entry pins
+its annotation's digests (§13.3), so restamping them without `--rebuild-index`
+leaves it stale. Each file's report names what is left — a digest that is not
+`ALGO:HEX` as malformed — and its notes, which say why, are printed whatever
+was done.
 
 `--rebuild-index` recomputes stale sampling indices. Ordinary repair.
 
@@ -102,7 +132,8 @@ With no flags: diagnose and change nothing. Exit 1 if anything needs attention.
 that the bytes changed*, and recomputing it destroys the evidence. It therefore
 requires `--reason`, which is recorded in the file's provenance along with the
 fact that the tool did not verify the content it just re-attested. `--by` names
-who made the change, in the same record.
+who made the change, in the same record. Only the restamp records them, so
+`--reason` or `--by` without `--rewrite-digests` is a usage error.
 
 ## Longitudinal
 
@@ -122,7 +153,10 @@ medh5 track PATH [--class KEY] [--key K] [--json]
 
 Join instance ids across visits: per object, its volume at each timepoint in
 mm³ (in px on an uncalibrated grid), the relative change, and whether it is
-`present`, `resolved` or `unexamined`. Masks, boxes, oriented boxes and points
+`present`, `resolved` or `unexamined`. `resolved` means the class was examined
+at this visit, outside any ignore region, and the object was not found;
+`unexamined`, that nobody looked for that class at this visit, or that an
+ignore region (§7.7) may hide it. Masks, boxes, oriented boxes and points
 join; an annotation of another kind that carries `instance_ids` is named as
 skipped, and the rest still join.
 
@@ -144,13 +178,15 @@ medh5 seg convert PATH ANNOTATION --to KIND [--dry-run] [--drop-identity] [--jso
 ```
 
 Re-encode a voxel annotation: `labelmap`, `layers`, `bitmask`, `instances`,
-`probmap`. `--dry-run` prints the size change without writing. Every
-conversion is lossless but one, as §7.6 allows: a `probmap` is lossless only
-under its `threshold` (§7.5), so another encoding keeps the voxels at or above
-it as the class and loses the probabilities. From `instances` to a dense
-encoding the voxels survive and the object ids do not, so it is refused unless
-`--drop-identity` says to drop them; the file then records a `transcode`
-activity saying so.
+`probmap`. `--dry-run` prints the size change without writing. A conversion
+to the encoding the annotation already has re-encodes nothing and leaves the
+file as it was (`"applied": false` with `--json`). Every conversion is
+lossless but two. A `probmap` is lossless only under its `threshold` (§7.5), so
+another encoding keeps the voxels at or above it as the class and loses the
+probabilities, as §7.6 allows. From `instances` to a dense encoding the voxels
+survive and the object ids do not, so it is refused unless `--drop-identity`
+says to drop them; the file then records a `transcode` activity saying so. A
+refused conversion leaves the file untouched.
 
 ### `medh5 index build`
 
@@ -165,6 +201,14 @@ occupancy map, in voxels per axis (default 8, so the map is 1/8 resolution;
 `0` builds no map); `--seed` (default 0) fixes the coordinate subsample, so
 rebuilding an index reproduces it.
 
+An entry that already holds what the build would write — current, and drawn
+with the same `--max-coords`, `--occupancy` and `--seed` — is kept, and a file
+whose entries all hold it is left untouched (`index current for …; the file is
+unchanged`). A file with nothing to index — no voxel annotation with classes;
+a `mask` has none — is done, not a failure. With `--json`, the document
+maps each path to the annotations it now indexes, or to the entry of a file it
+could not process.
+
 ### `medh5 labels`
 
 ```
@@ -174,7 +218,10 @@ medh5 labels registry list [--json]
 ```
 
 Inspect a file's label set, check a cohort's label sets against each other, and
-list the bundled vocabularies.
+list the bundled vocabularies. With `--json`, `check` gives every file an entry
+under `files` — its vocabulary key, or why it could not be read — beside the
+files grouped by vocabulary (`vocabularies`) and the failures by path
+(`unreadable`).
 
 ## Curation
 
@@ -195,11 +242,13 @@ medh5 agree PATH A B [--metric dice|iou] [--threshold T] [--record] [--json]
 Per-class Dice or IoU between two voxel annotations, and object F1 between two
 `instances` or `boxes` annotations of the same sample — two readers, or a reader
 and a model. `--metric` applies to the first and `--threshold` to the second;
-the other is refused rather than ignored. Only classes both sides examined are
-scored (§11.3), and a comparison with nothing to score says so rather than
-reporting 0. The two must share a grid (for index boxes) or a frame (for world
-boxes). `--record` prints the `quality.agreement` record the measurement
-produces, keyed by class id, and exits 1 when there is nothing to record.
+the other is refused rather than ignored. Two objects match at an IoU of at
+least the threshold, which lies in (0, 1] (default 0.5); any other value is a
+usage error. Only classes both sides examined are scored (§11.3), and a
+comparison with nothing to score says so rather than reporting 0. The two must
+share a grid (for index boxes) or a frame (for world boxes). `--record` prints
+the `quality.agreement` record the measurement produces, keyed by class id, and
+exits 1 when there is nothing to record.
 
 ### `medh5 splits`
 
@@ -210,20 +259,22 @@ medh5 splits PATH... [--json]
 Cross-file audit: conflicting split claims (W906) and subject leakage between
 partitions. Needs the whole cohort, which is why it is not part of `validate`.
 A leak is found over subjects *and* grouping keys together, so one subject
-curated under two `group_id`s in two partitions is a leak.
+curated under two `group_id`s in two partitions is a leak. A file it cannot
+read is named on stderr (and is an entry under `unreadable` with `--json`), and
+fails the audit.
 
 ### `medh5 scrub`
 
 ```
-medh5 scrub PATH... [--profile basic|strict] [--apply] [--date-shift-days N] [--salt S] [--by WHO] [--pseudonymise-ids] [--json]
+medh5 scrub PATH... [--profile basic|strict] [--apply [--date-shift-days N] [--salt S] [--by WHO] [--pseudonymise-ids]] [--json]
 ```
 
 Find identifiers in the container. Without `--apply` nothing is written and the
 exit code is 1 if anything was found, so it works as a pipeline gate.
 
-The scan covers every string in the file — all of `/meta`, every object name,
-attribute and string dataset, including ones a newer version wrote — and skips
-only fields named in the code with a reason (see the
+The scan covers every string in the file — all of `/meta`, every link name,
+attribute (committed types included) and string dataset, including ones a newer
+version wrote — and skips only fields named in the code with a reason (see the
 [de-identification guide](../guides/deidentify.md#1-look-before-you-change-anything)).
 `--apply` removes identifying attributes wherever the scan reports them,
 pseudonymises UIDs (so files still join on a shared frame of reference) including
@@ -248,7 +299,9 @@ rename files.
 $ medh5 scrub out/*.medh5 --apply --date-shift-days -117 --by RAD-07
 ```
 
-Running it twice does not shift dates twice.
+Running it twice does not shift dates twice: a second run with a different
+shift is refused, as is a shift of zero. `--date-shift-days`, `--salt` and
+`--by` act only with `--apply`, and are refused without it.
 
 ## Collections
 
@@ -281,7 +334,9 @@ medh5 dataset index ROOT -o manifest.json [--strict] [--json]
 ```
 
 Metadata-only scan of a directory tree. Reports what would not open instead of
-aborting; `--strict` makes the first failure fatal.
+aborting; `--strict` makes the first failure fatal. Follows symlinked
+directories (each once), matches suffixes in any case, and skips AppleDouble
+`._*` files.
 
 ### `medh5 dataset split`
 
@@ -299,13 +354,15 @@ medh5 dataset split manifest.json [options]
 -o, --out split.json
 --write-claims       stamp each sample with its partition and the manifest digest
 --fold N             with --k-folds --write-claims: which fold is validation
---assigned-by WHO    recorded on each claim as who assigned it
+--assigned-by WHO    with --write-claims: recorded on each claim as who assigned it
 --json
 ```
 
 Groups, not files: a subject's baseline and follow-up cannot land on opposite
 sides. If the ratios cannot be met by an indivisible set of groups, the command
 says which partition got nothing rather than leaving you to notice later.
+`--fold` and `--assigned-by` describe the claims `--write-claims` stamps, so
+either without it is a usage error.
 
 ### `medh5 dataset stats`
 
@@ -321,7 +378,8 @@ one partition of `--set-id` (default `default`), which is how you compute
 normalisation constants without looking at your test set. `--stride N` reads
 every Nth slab along the first axis — faster, approximate, and opt-in.
 `--image` or `--annotation` naming an id that no sample in the manifest (or the
-partition) has is an error, not an empty table.
+partition) has is an error, not an empty table. Exits 1 if any file would not
+open, naming each on stderr; the class table shows each class's label-set key.
 
 Intensity moments are over **physical** values: each image's rescale is applied
 first, which is what the loaders read with `physical=True`. `--stored` measures
@@ -369,10 +427,14 @@ medh5 convert to-nnunet OUT PATH... [--dataset-name NAME] [--annotation A]
                                     [--class K ...] [--unlabeled refuse|test]
 ```
 
-All but `to-nifti` also take `[--report FILE] [--json]`. Options marked `...`
-repeat, one value per occurrence. `PATH` and `SAMPLE` are sample files: a
-collection is refused before anything is converted, and `medh5 unpack`
-extracts its members.
+All but `to-nifti` also take `[--report FILE] [--json]`. A report never
+replaces a file the command reads or writes: a `--report` naming one — through
+`..` or a link included — or lying inside the tree or nnU-Net dataset the
+command reads or the nnU-Net dataset it writes is refused before anything is
+converted, and so is an output naming one of the command's inputs. Options
+marked `...` repeat, one value per occurrence. `PATH` and `SAMPLE` are sample
+files: a collection is refused before anything is converted, and
+`medh5 unpack` extracts its members.
 
 `from-nifti --fourth-axis` says what a 4-D series' extra axis is — `time` for
 cine, DCE and 4-D CT, `channel` for multi-b-value DWI and multi-echo; `auto`
@@ -461,6 +523,10 @@ sample for the `foreground_sample_many_ms` row, which holds the foreground draw
 to its target where the class count is large. A longitudinal sample given as
 `PATH` gets the paired row when a transform relates its first two visits.
 Progress goes to stderr, so `--json` output is only the document.
+`--repeats` (default 20) is how many times each measurement runs, its median
+reported, and `--patch` (default 64) the side of the patches it reads. Each is
+at least 1, in the Python API too: no run has no median, and a patch of side 0
+reads nothing.
 
 The `patch_throughput` row runs the PyTorch dataloader, so it needs
 `medh5[torch]`; the standalone binary hands it to Python as it does the
@@ -490,7 +556,8 @@ What strict prospective selection (1.1 §9) admits at the cutoff: the event
 versions, the payloads they attest, the records a later revision of unknown
 availability makes uncertifiable, and how many events each rule excluded.
 `--policy latest_provable` names the one alternative; `--policy-file` takes a
-whole policy (contract §3.4).
+whole policy (contract §3.4). A later minor version, read as a projection, is
+refused (1.1 §2.2).
 
 ### `medh5 clinical export`
 
@@ -499,7 +566,9 @@ medh5 clinical export PATH [--key K] [--out RECORDS.json]
 ```
 
 The logical-record bundle — clock, events, documents with their text, links —
-as JSON, checked against `medh5-clinical-1.schema.json`.
+as JSON, checked against `medh5-clinical-1.schema.json`. `--out` never names
+the file being exported, by any path or link; that is refused before anything
+is written.
 
 ### `medh5 clinical augment`
 

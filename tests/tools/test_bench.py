@@ -68,6 +68,28 @@ class TestBench:
 
         assert timed(lambda: None, repeats=3, warmup=1) >= 0.0
 
+    @pytest.mark.parametrize(
+        ("patch", "repeats", "refused"), [(8, 0, "repeats"), (0, 2, "patch")]
+    )
+    def test_S14_a_run_that_measures_nothing_is_refused(
+        self, indexed_cohort, patch, repeats, refused
+    ):
+        """The command line refused `--repeats 0`, and the Python API ran it:
+        no run has no median, so the row was NaN, which the report could not
+        print and `benchmark_file` could not read back (`TypeError`).  A
+        patch of side 0 timed reads of nothing."""
+        from medh5.bench import benchmark_file, many_class_measurement, timed
+        from medh5.errors import MEDH5ValidationError
+
+        for measure in (benchmark_file, many_class_measurement):
+            with pytest.raises(MEDH5ValidationError, match=f"^{refused} must be"):
+                measure(indexed_cohort[0], patch=patch, repeats=repeats)
+        if repeats == 0:
+            ran = []
+            with pytest.raises(MEDH5ValidationError, match="^repeats must be"):
+                timed(lambda: ran.append(1), repeats=0)
+            assert ran == []
+
     def test_the_throughput_run_measures_steady_state(self, indexed_cohort):
         pytest.importorskip("torch")  # the run goes through the real DataLoader
         from medh5.bench import throughput
@@ -102,21 +124,24 @@ class TestBench:
         assert measured.target == TARGETS["foreground_sample_many_ms"][0]
         assert measured.detail == {"classes": MANY_CLASSES, "used_index": True}
 
-    def test_bench_json_is_only_the_document(self, capsys):
+    def test_bench_json_is_only_the_document(self, indexed_cohort, capsys):
         """Progress lines on stdout ahead of the JSON made `--json` unparsable.
 
-        The engine writes the synthetic samples at their published size, so
-        this run is the slow one."""
+        Measured on a file: without one, `bench` writes its synthetic samples
+        at their published size, which made this the slowest test of the
+        suite.  The command line's own test of it
+        (`s14_bench_json_is_only_the_document`) runs that path, progress lines
+        and all, on samples a fraction of the size."""
         from medh5.cli import main
 
-        code = main(
-            ["bench", "--no-throughput", "--json", "--repeats", "1", "--patch", "8"]
-        )
+        path = str(indexed_cohort[0])
+        argv = ["bench", path, "--no-throughput", "--json", "--repeats", "1"]
+        code = main([*argv, "--patch", "8"])
         out, err = capsys.readouterr()
         payload = json.loads(out)
+        assert payload["path"] == path
         names = {m["name"] for m in payload["measurements"]}
-        assert "foreground_sample_many_ms" in names
-        assert "writing a synthetic" in err
+        assert {"foreground_sample_ms", "meta_read_ms"} <= names
         assert code == (0 if payload["ok"] else 1)
 
     def test_bench_measures_throughput_through_the_dataloader(

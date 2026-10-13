@@ -67,6 +67,7 @@ fn check(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let paths = get_paths(m, "paths");
     let mut seen: IndexMap<String, Vec<String>> = IndexMap::new();
     let mut unreadable = serde_json::Map::new();
+    let mut files = Vec::new();
     let mut rows = Vec::new();
     for path in &paths {
         let label_set = match sample_file(path).and_then(|s| Ok(s.label_set()?.cloned())) {
@@ -74,6 +75,7 @@ fn check(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
             Err(e) => {
                 let failed = ctx.file_failed(path, &e);
                 unreadable.insert(path.clone(), failed["error"].clone());
+                files.push(failed);
                 rows.push(vec![path.clone(), "(unreadable)".to_string()]);
                 continue;
             }
@@ -86,12 +88,16 @@ fn check(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
             _ => "<none>".to_string(),
         };
         seen.entry(key.clone()).or_default().push(path.clone());
+        files.push(json!({"path": path, "ok": true, "vocabulary": key}));
         rows.push(vec![path.clone(), key]);
     }
     let ok = seen.len() <= 1 && unreadable.is_empty();
     if flag(m, "json") {
         let vocabularies: serde_json::Map<String, Value> = seen.iter().map(|(k, v)| (k.clone(), json!(v))).collect();
-        ctx.emit(&json!({"vocabularies": vocabularies, "unreadable": unreadable}), true);
+        // `files` gives each file an entry, a failure the one every batch
+        // command gives it; `unreadable` keeps the same failures by path.
+        let payload = json!({"ok": ok, "vocabularies": vocabularies, "unreadable": unreadable, "files": files});
+        ctx.emit(&payload, true);
     } else {
         ctx.print(table(&rows, &["file", "vocabulary"]));
         if seen.len() > 1 {

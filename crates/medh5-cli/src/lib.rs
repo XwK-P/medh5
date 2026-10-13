@@ -66,22 +66,58 @@ impl Host for NativeHost {
         _command: &str,
         _args: &Value,
         _out: &mut dyn Write,
-        _err: &mut dyn Write,
+        err: &mut dyn Write,
     ) -> Option<i32> {
-        let python = Self::python();
-        let probe =
-            python_running(&python, "import medh5.io, medh5.cli").stdout(Stdio::null()).stderr(Stdio::null()).status();
-        if !matches!(probe, Ok(s) if s.success()) {
-            return None;
-        }
-        let status =
-            python_running(&python, "from medh5.cli import main; raise SystemExit(main())").args(argv).status().ok()?;
-        Some(status.code().unwrap_or(EXIT_ERROR))
+        hand_over(&Self::python(), argv, err)
     }
 
     fn throughput(&self, path: &str, patch: i64, workers: i64, annotation: Option<&str>) -> Result<Value, String> {
         measure_throughput(&Self::python(), path, patch, workers, annotation)
     }
+}
+
+/// The last line `bytes` hold that is not blank: of a traceback, the
+/// exception (`ModuleNotFoundError: No module named 'medh5'`).
+fn last_line(bytes: &[u8]) -> Option<String> {
+    String::from_utf8_lossy(bytes).lines().map(str::trim).rfind(|l| !l.is_empty()).map(str::to_string)
+}
+
+/// Whether `python` can be handed a command: it runs, and imports `modules`
+/// from a `medh5` of this one's major version --- the 1.x package's
+/// `medh5.cli` has another grammar, and its converters write another
+/// format.  `Err` says why not, in Python's words where Python gave some.
+fn probe(python: &str, modules: &str) -> Result<(), String> {
+    let code = format!("import medh5, {modules}; print(medh5.__version__)");
+    let ran = python_running(python, &code)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("{python} could not be run: {e}"))?;
+    if !ran.status.success() {
+        let why = last_line(&ran.stderr).unwrap_or_else(|| ran.status.to_string());
+        return Err(format!("{python} could not import {modules}: {why}"));
+    }
+    let found = last_line(&ran.stdout).unwrap_or_default();
+    let major = medh5::VERSION.split('.').next().unwrap_or_default();
+    if found.split('.').next() != Some(major) {
+        return Err(format!(
+            "{python} has medh5 {found}, and medh5 {} hands its commands only to medh5 {major}.x",
+            medh5::VERSION
+        ));
+    }
+    Ok(())
+}
+
+/// Run `medh5 argv` in `python`'s package; `None`, with the reason on `err`,
+/// when it cannot.
+fn hand_over(python: &str, argv: &[String], err: &mut dyn Write) -> Option<i32> {
+    if let Err(why) = probe(python, "medh5.io, medh5.cli") {
+        let _ = writeln!(err, "medh5: {why}");
+        let _ = err.flush();
+        return None;
+    }
+    let status =
+        python_running(python, "from medh5.cli import main; raise SystemExit(main())").args(argv).status().ok()?;
+    Some(status.code().unwrap_or(EXIT_ERROR))
 }
 
 /// The dataloader benchmark, run by `python`'s `medh5` package as the console
@@ -99,14 +135,13 @@ fn measure_throughput(
         "the dataloader benchmark runs in the Python package, with PyTorch (pip install 'medh5[torch]'); {python} \
          could not run it (MEDH5_PYTHON names another interpreter)"
     );
+    // A 1.x package would measure its own dataloader under this one's name.
+    probe(python, "medh5.bench").map_err(|why| format!("{needs}: {why}"))?;
     let ran = python_running(python, CODE)
         .args([path, &patch.to_string(), &workers.to_string(), annotation.unwrap_or("")])
         .stdin(Stdio::null())
         .output()
         .map_err(|e| format!("{needs}: {e}"))?;
-    let last_line = |bytes: &[u8]| {
-        String::from_utf8_lossy(bytes).lines().map(str::trim).rfind(|l| !l.is_empty()).map(str::to_string)
-    };
     if !ran.status.success() {
         // The last line of a traceback is the exception: `No module named 'torch'`.
         return Err(format!("{needs}: {}", last_line(&ran.stderr).unwrap_or_else(|| ran.status.to_string())));
@@ -170,9 +205,11 @@ pub fn run_with(args: &[String], out: &mut dyn Write, err: &mut dyn Write, host:
             return ctx.finish(code);
         }
     };
+    // No command is a usage error, so its help goes where every usage error
+    // goes, as a command group's does: stdout is for help asked for.
     let Some((name, sub)) = matches.subcommand() else {
         let help = command.render_help();
-        ctx.print(help.to_string().trim_end());
+        ctx.eprint(help.to_string().trim_end());
         return ctx.finish(EXIT_USAGE);
     };
     let result = match name {
@@ -305,5 +342,74 @@ mod tests {
     fn a_throughput_run_python_cannot_make_says_what_it_needs() {
         let why = measure_throughput("/nonexistent/python3", "case.medh5", 64, 0, None).unwrap_err();
         assert!(why.contains("pip install 'medh5[torch]'") && why.contains("MEDH5_PYTHON"), "{why}");
+    }
+
+    /// The probe discarded what Python printed, so "not installed" was all a
+    /// broken install ever said; and it accepted any `medh5`, so a 1.x
+    /// package was handed 2.x commands --- another grammar, and converters
+    /// that write another format.
+    #[cfg(unix)]
+    #[test]
+    fn a_python_is_handed_a_command_only_by_a_package_of_this_major() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        // A stand-in interpreter: `-c CODE ARGS...`, the probe's code being
+        // the one that prints the version.
+        let fake = |name: &str, on_probe: &str| {
+            let path = dir.path().join(name);
+            let body = format!(
+                "#!/bin/sh\ncase \"$2\" in\n  *__version__*) {on_probe} ;;\n  *) shift 2; echo \"$@\" > \"{}\"; exit 3 \
+                 ;;\nesac\n",
+                dir.path().join("handed").display()
+            );
+            std::fs::write(&path, body).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            // A file just written can be busy (ETXTBSY) for as long as a
+            // process another test forked meanwhile still holds it open.
+            for _ in 0..200 {
+                match Command::new(&path).args(["-c", "__version__"]).output() {
+                    Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                        std::thread::sleep(std::time::Duration::from_millis(5))
+                    }
+                    _ => break,
+                }
+            }
+            path.to_string_lossy().into_owned()
+        };
+        let major = medh5::VERSION.split('.').next().unwrap();
+        let current = fake("current", &format!("echo {}", medh5::VERSION));
+        let old = fake("old", "echo 1.4.2");
+        let broken = fake(
+            "broken",
+            "printf 'Traceback (most recent call last):\\nModuleNotFoundError: No module named medh5\\n\\n' >&2; exit 1",
+        );
+        let modules = "medh5.io, medh5.cli";
+
+        assert_eq!(probe(&current, modules), Ok(()));
+        let refused =
+            format!("{old} has medh5 1.4.2, and medh5 {} hands its commands only to medh5 {major}.x", medh5::VERSION);
+        assert_eq!(probe(&old, modules), Err(refused.clone()));
+        assert_eq!(
+            probe(&broken, modules),
+            Err(format!("{broken} could not import {modules}: ModuleNotFoundError: No module named medh5"))
+        );
+        let missing = probe("/nonexistent/python3", modules).unwrap_err();
+        assert!(missing.starts_with("/nonexistent/python3 could not be run: "), "{missing}");
+
+        // Handed over: the command line as given, and its exit code.
+        let argv = ["convert".to_string(), "from-nifti".to_string(), "out.medh5".to_string()];
+        let mut err = Vec::new();
+        assert_eq!(hand_over(&current, &argv, &mut err), Some(3));
+        assert!(err.is_empty(), "{}", String::from_utf8_lossy(&err));
+        let handed = std::fs::read_to_string(dir.path().join("handed")).unwrap();
+        assert_eq!(handed.trim_end(), "convert from-nifti out.medh5");
+        // Refused: nothing run, and why on stderr.
+        std::fs::remove_file(dir.path().join("handed")).unwrap();
+        assert_eq!(hand_over(&old, &argv, &mut err), None);
+        assert_eq!(String::from_utf8(err).unwrap(), format!("medh5: {refused}\n"));
+        assert!(!dir.path().join("handed").exists());
+        let why = measure_throughput(&old, "case.medh5", 64, 0, None).unwrap_err();
+        assert!(why.ends_with(&refused) && why.contains("pip install 'medh5[torch]'"), "{why}");
     }
 }
