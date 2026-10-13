@@ -371,29 +371,27 @@ class TestPatchSampler:
             assert sampler.draw(sample, "organs_tp0", 0).strategy == "uniform"
 
     def test_S14_3_an_indexed_draw_reads_at_most_two_datasets_at_63_classes(
-        self, tmp_path: Path, monkeypatch
+        self, tmp_path: Path
     ):
-        """190 HDF5 reads and 7.6 ms per draw: the class table, re-read per class."""
+        """190 HDF5 reads and 7.6 ms per draw: the class table, re-read per class.
+
+        The reads are the engine's, so the engine counts them: a count of
+        `h5py` calls, which the package no longer makes, could not fail."""
+        from medh5 import _core
         from medh5.sampling import PatchSampler
 
         path = Framed.many_classes(tmp_path / "many.medh5")
-        reads = {"n": 0}
-        original = h5py.Dataset.__getitem__
-
-        def counting(self: Any, key: Any) -> Any:
-            reads["n"] += 1
-            return original(self, key)
-
         sampler = PatchSampler(8, strategy="foreground")
+        draws = 20
         with medh5.open(path) as s:
             sampler.draw(s, "organs", np.random.default_rng(0))
-            monkeypatch.setattr(h5py.Dataset, "__getitem__", counting)
-            draws = 20
+            _core._read_stats()
             for i in range(draws):
                 patch = sampler.draw(s, "organs", np.random.default_rng(i))
-            monkeypatch.undo()
+            reads = _core._read_stats()
         assert patch.used_index is True
-        assert reads["n"] <= 2 * draws
+        # One row of a class's pool per draw, at least: the count sees them.
+        assert draws <= sum(reads.values()) <= 2 * draws, reads
 
     def test_S14_3_a_draw_picks_what_it_picked_before(self, tmp_path: Path):
         """One row is read instead of the pool, and the same row: runs reproduce.

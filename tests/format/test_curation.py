@@ -334,6 +334,20 @@ class TestDocument:
         document = new_document("c")
         assert SampleDocument.loads(document.dumps().encode()).subject_id == "c"
 
+    def test_S2_4_bytes_that_are_not_utf_8_are_refused(self):
+        """Bytes were decoded with replacement, so a document whose text was
+        damaged parsed, a U+FFFD standing where its bytes had been."""
+        document = SampleDocument.from_json(
+            {
+                "identity": {"sample_id": "c", "subject_id": "c"},
+                "timepoints": [{"id": "tp0", "index": 0, "description": "baseline"}],
+            }
+        )
+        raw = document.dumps().encode()
+        assert SampleDocument.loads(raw).timepoints["tp0"].description == "baseline"
+        with pytest.raises(MEDH5SchemaError, match="not valid UTF-8"):
+            SampleDocument.loads(raw.replace(b"baseline", b"base\xffline"))
+
     def test_schema_errors_are_readable(self):
         errors = validate_against_schema({"identity": {}, "timepoints": []})
         assert errors

@@ -3,6 +3,8 @@
 //! Regions are read **in one call** (spec §14.5): `d[(k, *roi)]`, never
 //! `d[k][roi]`, which materialises the whole sub-array first.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use hdf5::filters::Filter;
 use hdf5::types::{TypeDescriptor as TD, VarLenAscii, VarLenUnicode};
 use hdf5::{Hyperslab, SliceOrIndex};
@@ -26,6 +28,58 @@ impl Layout {
     pub fn contiguous() -> Layout {
         Layout::default()
     }
+}
+
+// -- read accounting ------------------------------------------------------------
+
+/// A read of a dataset's data, as [`read_stats`] counts it.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Read {
+    /// A whole dataset ([`read`]).
+    Whole,
+    /// A region through the Blosc2 blocks it covers (the `window` module).
+    Window,
+    /// A region through HDF5's filter pipeline.
+    Hyperslab,
+    /// Rows as their stored bytes, for a digest or a comparison.
+    Rows,
+    /// Strings: a scalar, or rows of an array.
+    Strings,
+}
+
+impl Read {
+    /// Every kind, in the order [`read_stats`] reports them.
+    pub const ALL: [Read; 5] = [Read::Whole, Read::Window, Read::Hyperslab, Read::Rows, Read::Strings];
+
+    /// The kind's name.
+    pub fn name(self) -> &'static str {
+        match self {
+            Read::Whole => "whole",
+            Read::Window => "window",
+            Read::Hyperslab => "hyperslab",
+            Read::Rows => "rows",
+            Read::Strings => "strings",
+        }
+    }
+}
+
+/// The reads of each kind since [`read_stats`] last took them.
+///
+/// A test holds a read path to its number of reads --- 1.x drew a patch in
+/// 190 --- and a count kept in Python cannot see the engine's reads, so the
+/// engine counts its own: one relaxed increment per read, nothing more.
+static READS: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
+
+fn counted(read: Read) {
+    READS[read as usize].fetch_add(1, Ordering::Relaxed);
+}
+
+/// The reads of each kind ([`Read::ALL`]) counted since the last call, in
+/// every thread, and the counts set back to zero.  For tests: not an API.
+#[doc(hidden)]
+pub fn read_stats() -> [(Read, u64); 5] {
+    Read::ALL.map(|read| (read, READS[read as usize].swap(0, Ordering::Relaxed)))
 }
 
 /// What a dataset stores.
@@ -179,6 +233,7 @@ pub(crate) fn read_stored_rows(ds: &hdf5::Dataset, size: usize, start: usize, co
             h5s::H5Screate_simple(counts.len() as i32, counts.as_ptr(), std::ptr::null())
         };
         if status >= 0 && bytes > 0 {
+            counted(Read::Rows);
             status = h5d::H5Dread(ds.id(), ftype, mspace, fspace, h5p::H5P_DEFAULT, buf.as_mut_ptr().cast());
         }
         h5s::H5Sclose(mspace);
@@ -270,6 +325,7 @@ pub fn read(ds: &hdf5::Dataset) -> Result<NdArray> {
     super::alive(ds)?;
     let dtype = dtype(ds)?;
     ensure_allocatable(ds, &ds.shape(), dtype.itemsize())?;
+    counted(Read::Whole);
     if is_plain_enum(ds) {
         return read_enum(ds, dtype);
     }
@@ -384,11 +440,14 @@ pub fn read_region(ds: &hdf5::Dataset, index: &[Index]) -> Result<NdArray> {
         return Ok(NdArray::zeros(dtype, &out_shape));
     }
     if is_plain_enum(ds) {
+        counted(Read::Hyperslab);
         return read_enum_region(ds, dtype, &axes, &out_shape);
     }
     if let Some(window) = super::window::read_window(ds, dtype, &axes, &out_shape)? {
+        counted(Read::Window);
         return Ok(window);
     }
+    counted(Read::Hyperslab);
     read_hyperslab(ds, dtype, &axes, &out_shape)
 }
 
@@ -536,6 +595,7 @@ fn read_string_rows(ds: &hdf5::Dataset, td: &TD, start: usize, count: usize) -> 
     let n: usize = count.saturating_mul(shape[1..].iter().product::<usize>());
     out.try_reserve_exact(n)
         .map_err(|_| Error::Io(format!("{n} strings of {} are more than this process can hold", ds.name())))?;
+    counted(Read::Strings);
     match td {
         TD::VarLenUnicode => {
             out.extend(ds.read_slice::<VarLenUnicode, _, IxDyn>(hyper)?.iter().map(|s| s.as_bytes().to_vec()))
@@ -642,6 +702,9 @@ pub fn read_stored_strings(ds: &hdf5::Dataset) -> Result<Vec<Vec<u8>>> {
             ds.name(),
             extents.iter().map(usize::to_string).collect::<Vec<_>>().join(" x ")
         )));
+    }
+    if ds.is_scalar() {
+        counted(Read::Strings);
     }
     Ok(match td {
         TD::VarLenUnicode if ds.is_scalar() => {

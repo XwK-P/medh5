@@ -531,38 +531,29 @@ class TestFastPathsAreExact:
             assert sample.annotations["fov"].summary()["true_voxels"] == 64
 
     def test_the_class_table_is_read_once_per_annotation(self, tmp_path: Path):
-        """`dense()` asked the table once per class: 63 reads for 63 classes."""
+        """`dense()` asked the table once per class: 63 reads for 63 classes.
+
+        The reads are the engine's, so the engine counts them: a count of
+        `h5py` calls, which the package no longer makes, could not fail.  The
+        table is read whole, once; each layer or bitplane is a region."""
+        from medh5 import _core
 
         masks = {c: np.zeros(Organs.SHAPE, dtype=bool) for c in range(1, 4)}
         for c, mask in masks.items():
             mask[c, c:, c:] = True
-        for encoding, table in (
-            ("layers", "layer_class_ids"),
-            ("bitmask", "bit_class_ids"),
-        ):
+        for encoding in ("layers", "bitmask"):
             path = tmp_path / f"{encoding}.medh5"
             with Organs.writer(path) as w:
                 w.add_segmentation("seg", grid="g", masks=masks, encoding=encoding)
-
-            reads = 0
-            original = h5py.Dataset.__getitem__
-
-            def counting(
-                self: Any, key: Any, _name: str = table, _original: Any = original
-            ) -> Any:
-                nonlocal reads
-                if self.name.endswith(_name):
-                    reads += 1
-                return _original(self, key)
-
             with medh5.open(path) as sample:
+                _core._read_stats()
                 annotation = sample.annotations["seg"]
-                h5py.Dataset.__getitem__ = counting  # type: ignore[method-assign]
-                try:
+                for _ in range(2):
                     annotation.dense(list(annotation.class_ids))
-                finally:
-                    h5py.Dataset.__getitem__ = original  # type: ignore[method-assign]
-            assert reads <= 1, f"{encoding}: {reads} reads of {table}"
+                reads = _core._read_stats()
+            assert reads["whole"] == 1, (encoding, reads)
+            # The three classes share one layer, or one bitplane, read per call.
+            assert reads["window"] + reads["hyperslab"] == 2, (encoding, reads)
 
     @pytest.mark.parametrize(
         "encoding", ["labelmap", "layers", "bitmask", "instances", "probmap"]

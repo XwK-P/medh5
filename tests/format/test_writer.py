@@ -1328,6 +1328,130 @@ class TestDocumentEdits:
             w.document.acquisition["CT"]["ms"] = 5  # read again: accepted
             assert w.document.acquisition["CT"] == {"kvp": 120, "mA": 300, "ms": 5}
 
+    def test_S2_4_every_mapping_edit_reaches_the_file(self, tmp_path: Path):
+        """A member mapping's every edit writes through, not only ``[k] = v``
+        and ``del``: what a removal hands back is detached."""
+        path = tmp_path / "mapping.medh5"
+        with Flat.open_writer(path) as w:
+            extra = w.document.extra
+            extra.update({"a": 1, "b": {"x": [1]}}, c=3)
+            extra |= {"d": 4}
+            assert extra.setdefault("d", 9) == 4
+            extra.setdefault("e", {"y": 1})["z"] = 2
+            popped = extra.pop("b")
+            popped["x"].append(2)
+            assert extra.pop("b", None) is None
+            with pytest.raises(KeyError):
+                extra.pop("b")
+            assert extra.popitem() == ("e", {"y": 1, "z": 2})
+            assert extra == w.document.extra == {"a": 1, "c": 3, "d": 4}
+            w.document.acquisition["CT"] = {"kvp": 120}
+            w.document.acquisition.clear()
+            with pytest.raises(KeyError):
+                w.document.acquisition.popitem()
+        with medh5.open(path) as sample:
+            assert sample.document.extra == {"a": 1, "c": 3, "d": 4}
+            assert sample.document.acquisition == {}
+
+    def test_S2_4_every_nested_edit_reaches_the_file(self, tmp_path: Path):
+        """Every edit of a dict or a list inside a member rewrites the member."""
+        path = tmp_path / "nested.medh5"
+        with Flat.open_writer(path) as w:
+            w.document.extra["t"] = {"d": {"a": 1, "b": 2}, "l": [3, 1, 2]}
+            member = w.document.extra["t"]
+            d, items = member["d"], member["l"]
+            d |= {"c": 3}
+            d.update(e=5)
+            d.setdefault("g", [0]).append(1)
+            assert d.pop("a") == 1 and d.pop("absent", None) is None
+            assert d.popitem() == ("g", [0, 1])
+            del d["b"]
+            items.insert(0, 4)
+            items.remove(1)
+            items.sort()
+            items += [7]
+            items *= 2
+            items.extend([8])
+            items.reverse()
+            assert items.pop() == 2
+            items[0] = 9
+            items[1:3] = [10, 11]
+            del items[-1]
+            expected = {"d": {"c": 3, "e": 5}, "l": [9, 10, 11, 3, 2, 7, 4]}
+            assert w.document.extra["t"] == expected
+            w.document.extra["u"] = {"d": {"a": 1}, "l": [1]}
+            w.document.extra["u"]["d"].clear()
+            w.document.extra["u"]["l"].clear()
+        with medh5.open(path) as sample:
+            assert sample.document.extra == {"t": expected, "u": {"d": {}, "l": []}}
+
+    @pytest.mark.parametrize(
+        "edit",
+        [
+            lambda d, items: d.__setitem__("c", 3),
+            lambda d, items: d.__delitem__("a"),
+            lambda d, items: d.update(c=3),
+            lambda d, items: d.__ior__({"c": 3}),
+            lambda d, items: d.setdefault(f"k{len(d)}", 3),
+            lambda d, items: d.pop(next(iter(d))),
+            lambda d, items: d.popitem(),
+            lambda d, items: d.clear(),
+            lambda d, items: items.__setitem__(0, 9),
+            lambda d, items: items.__setitem__(slice(0, 2), []),
+            lambda d, items: items.__delitem__(0),
+            lambda d, items: items.__iadd__([9]),
+            lambda d, items: items.__imul__(2),
+            lambda d, items: items.append(9),
+            lambda d, items: items.extend([9]),
+            lambda d, items: items.insert(0, 9),
+            lambda d, items: items.pop(),
+            lambda d, items: items.remove(1),
+            lambda d, items: items.clear(),
+            lambda d, items: items.sort(),
+            lambda d, items: items.reverse(),
+        ],
+    )
+    def test_S2_4_every_nested_edit_to_a_member_changed_since_is_refused(
+        self, tmp_path: Path, edit
+    ):
+        """Each edit refuses to write a stale member back; once refused, the
+        member's containers refuse every edit before changing anything."""
+        with Flat.open_writer(tmp_path / "stale-every.medh5") as w:
+            w.document.extra["t"] = {"d": {"a": 1, "b": 2}, "l": [2, 1, 3]}
+            member = w.document.extra["t"]
+            d, items = member["d"], member["l"]
+            changed = {"d": {"a": 5}, "l": [5]}
+            w.document.extra["t"] = changed
+            with pytest.raises(RuntimeError, match="has changed since it was read"):
+                edit(d, items)
+            held = (dict(d), list(items))
+            with pytest.raises(RuntimeError, match="read it again"):
+                edit(d, items)
+            assert (dict(d), list(items)) == held
+            assert w.document.extra["t"] == changed
+
+    def test_S2_4_an_update_refused_partway_shows_what_was_written(
+        self, tmp_path: Path
+    ):
+        """The members before the refused value are in the document, and the
+        view showed none of them."""
+        with Flat.open_writer(tmp_path / "partway.medh5") as w:
+            extra = w.document.extra
+            with pytest.raises(TypeError, match="not JSON serializable"):
+                extra.update({"a": 1, "b": {"x", "y"}})
+            assert extra == w.document.extra == {"a": 1}
+
+    def test_S2_4_a_sort_that_fails_writes_nothing_back(self, tmp_path: Path):
+        """A sort that fails partway leaves a list part-sorted, and the next
+        edit wrote that order into the document."""
+        with Flat.open_writer(tmp_path / "sort.medh5") as w:
+            w.document.extra["t"] = [1, 3, 2, 4, "a"]
+            items = w.document.extra["t"]
+            with pytest.raises(TypeError):
+                items.sort()
+            items.append(0)
+            assert w.document.extra["t"] == items == [1, 3, 2, 4, "a", 0]
+
     def test_S2_4_a_copy_of_a_member_is_a_plain_detached_dict(self, tmp_path: Path):
         import copy
         import pickle

@@ -361,6 +361,13 @@ class TestRepositoryGates:
         dependabot = (ROOT / ".github/dependabot.yml").read_text(encoding="utf-8")
         assert "package-ecosystem: github-actions" in dependabot
 
+    def test_the_extension_asks_a_free_threaded_python_for_the_gil(self):
+        """PyO3 declares a module GIL-free unless told otherwise, so a build
+        for free-threaded CPython ran `_core`, never audited for it, with no
+        GIL at all.  An abi3 build cannot show the slot, so the source must."""
+        lib = (ROOT / "crates/medh5-python/src/lib.rs").read_text(encoding="utf-8")
+        assert "#[pymodule(gil_used = true)]" in lib
+
     def test_the_minimum_rust_is_a_full_version(self):
         """`rust-version` is published with every crate and cannot be
         corrected there.  It said `1.85` --- 1.85.0 to cargo --- while the HDF5

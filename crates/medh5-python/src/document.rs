@@ -347,13 +347,18 @@ impl SampleDocument {
             None => d.dumps(),
         })
     }
+    /// Parse a document from its JSON text, or from that text's UTF-8 bytes.
+    ///
+    /// Bytes that are not UTF-8 are refused (§2.4), not decoded with
+    /// replacement characters standing in for what was there.
     #[classmethod]
     fn loads(_cls: &Bound<'_, pyo3::types::PyType>, payload: &Bound<'_, PyAny>) -> R<Self> {
         let text: String = match payload.extract::<String>() {
             Ok(s) => s,
             Err(_) => {
                 let bytes: Vec<u8> = payload.extract()?;
-                String::from_utf8_lossy(&bytes).into_owned()
+                String::from_utf8(bytes)
+                    .map_err(|e| medh5::Error::Schema(format!("`meta` is not valid UTF-8: {}", e.utf8_error())))?
             }
         };
         Ok(SampleDocument::owned(engine::SampleDocument::loads(&text)?))
@@ -628,15 +633,17 @@ fn new_document(
 
 /// The raw `/meta` text under a sample root (`sample.root`).
 #[pyfunction]
-fn read_document_text(root: &Bound<'_, PyAny>) -> R<String> {
-    Ok(medh5::sample::read_document_text(&crate::integrity::group_of(root)?)?)
+fn read_document_text(py: Python<'_>, root: &Bound<'_, PyAny>) -> R<String> {
+    let group = crate::integrity::group_of(root)?;
+    Ok(py.detach(move || medh5::sample::read_document_text(&group))?)
 }
 
 /// The sample document under a sample root, parsed: a later minor's as its
 /// supported projection (1.1 §2.2).
 #[pyfunction]
-fn read_document(root: &Bound<'_, PyAny>) -> R<SampleDocument> {
-    Ok(SampleDocument::owned(medh5::sample::read_document(&crate::integrity::group_of(root)?)?))
+fn read_document(py: Python<'_>, root: &Bound<'_, PyAny>) -> R<SampleDocument> {
+    let group = crate::integrity::group_of(root)?;
+    Ok(SampleDocument::owned(py.detach(move || medh5::sample::read_document(&group))?))
 }
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {

@@ -211,6 +211,7 @@ __all__ = [
     "VOXEL_KINDS",
     "__format_version__",
     "__version__",
+    "_read_stats",
     "affine_summary",
     "agreement_box_iou",
     "agreement_compare",
@@ -658,6 +659,15 @@ VISIBILITY: dict[int, str]
 VOXEL_KINDS: tuple[str, ...]
 __format_version__: str
 __version__: str
+
+def _read_stats() -> dict[str, int]:
+    """The engine's dataset reads by kind (`whole`, `window`, `hyperslab`,
+    `rows`, `strings`) since the last call, and the counts set back to zero.
+
+    Private, for the tests that hold a read path to its number of reads: the
+    reads are the engine's, so a count of `h5py` calls sees none of them.
+    """
+    ...
 
 def affine_summary(affine: npt.ArrayLike) -> dict[str, Any]: ...
 def agreement_box_iou(a: Any, b: Any) -> float:
@@ -2292,7 +2302,8 @@ class Dataset:
     @property
     def ndim(self) -> int: ...
     def read(self) -> npt.NDArray[Any]:
-        """The whole dataset as an array."""
+        """The whole dataset as an array: a numeric dataset as its dtype, a
+        string dataset as an object array of `str`."""
         ...
     @property
     def shape(self) -> tuple[int, ...]: ...
@@ -2872,7 +2883,12 @@ class SampleDocument:
     @property
     def group_id(self) -> str: ...
     @classmethod
-    def loads(cls, payload: str | bytes) -> SampleDocument: ...
+    def loads(cls, payload: str | bytes) -> SampleDocument:
+        """Parse a document from its JSON text, or from that text's UTF-8 bytes.
+
+        Bytes that are not UTF-8 are refused (§2.4), not decoded with
+        replacement characters standing in for what was there."""
+        ...
     def quality_of(self, key: str | None) -> QualityRecord | None: ...
     @property
     def subject_id(self) -> str: ...
