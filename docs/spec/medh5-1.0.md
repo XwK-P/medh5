@@ -79,11 +79,11 @@ Root attributes of a sample: on the file (`/`) of a `sample`, and on each sample
 
 | Attribute | Type | Req. | Value |
 |---|---|---|---|
-| `medh5_version` | `str` | **MUST** | `"1.0"`. Readers **MUST** refuse a major version they do not implement and **MAY** read a higher minor version, ignoring unknown objects. |
+| `medh5_version` | `str` | **MUST** | `"MAJOR.MINOR"`: `"1.0"` in a file of this version. Readers **MUST** refuse a major version they do not implement (E002) and **MUST NOT** refuse a file solely for a higher minor: they read its supported projection, reporting what they do not know as unsupported (§16; [1.1](medh5-1.1.md) §2.2). |
 | `medh5_kind` | `str` | **MUST** | `"sample"` or `"collection"`. |
 | `medh5_profiles` | `str[]` | **MUST** | Declared profiles (§1.3). |
 | `content_id` | `str` | SHOULD | `"<algo>:<hex>"` Merkle root (§13.2). |
-| `digest_algo` | `str` | SHOULD | `"sha256"` (default), `"sha512"` or `"blake2b"`. A validator **MUST** report any other value as E703. |
+| `digest_algo` | `str` | SHOULD | `"sha256"` (default), `"sha512"` or `"blake2b"` — unkeyed BLAKE2b-512, a 64-byte digest of 128 hex characters. A validator **MUST** report any other value as E703. An amendment keeps the algorithm the file declares. |
 | `created` | `str` | SHOULD | RFC 3339 timestamp, in UTC (`Z`) as §11.1 recommends. |
 | `generator` | `str` | SHOULD | `"<name> <version>"` of the writing software. |
 
@@ -188,7 +188,7 @@ Top-level members of the sample document:
 | string | variable-length string, UTF-8 character set (`H5T_VARIABLE`, `H5T_CSET_UTF8`; `h5py.string_dtype()`) |
 | string list | 1-D array of variable-length UTF-8, **never** a JSON string |
 | boolean | 8-bit signed integer enumeration with members `FALSE = 0` and `TRUE = 1` — what `h5py` writes for `np.bool_` |
-| integer / integer list | `int64` scalar / 1-D `int64` |
+| integer / integer list | `int64` scalar / 1-D `int64`, or the integer type an attribute's table names (`class_ids`: `uint16[]`). Readers **MUST** accept an integer attribute of any width and signedness: the type a table names bounds the value — an `ignore_id` is a `uint16` value, which the reference writer stores as `int64` |
 | float / float list | `float64` scalar / 1-D `float64` |
 | matrix | 2-D array, **stored 2-D** (0.x flattened `direction`; 1.0 **MUST NOT**) |
 | enum | lowercase `snake_case` string from the values listed in this spec |
@@ -272,9 +272,11 @@ Consequences that readers and writers **MUST** honour:
    Voxel *i* spans `[i-0.5, i+0.5)`.
 3. A `channel` or `time` axis has no geometric extent; it is never part of **i**.
 4. Two grids are **physically comparable without a transform** if and only if they share `frame_uid`
-   and `coord_system`. They need not share `shape`, `spacing` or `direction`. A grid without a
-   `frame_uid` shares a frame with nothing — including another grid without one: two absent frames
-   are not one frame, and nothing says their world coordinates agree.
+   and `coord_system` and have the same number of spatial axes *S*. They need not share `shape`,
+   `spacing` or `direction`. A grid without a `frame_uid` shares a frame with nothing — including
+   another grid without one: two absent frames are not one frame, and nothing says their world
+   coordinates agree. Nor does a 2-D grid share a world with a 3-D one, whatever frame both name: a
+   plane's world coordinates are two numbers (§3.6), a volume's three.
 
 ### 3.4 Frames of reference
 
@@ -314,6 +316,11 @@ magnitudes are all expressed in the grid's `units`. `units = "px"` declares an u
 | 4D DCE / cine / 4D-CT | `["time","spatial","spatial","spatial"]` | one geometry, `time_values` per frame |
 | RGB / multi-echo | `["channel","spatial","spatial"]` | `channel_names` on the image (§4.1) |
 | Multi-b-value DWI | `["channel"] + ["spatial"]*3` | b-values in `acquisition` (§4.5) |
+
+With *S* = 2, `spacing`, `origin` and `direction` refer to the **first two world axes** of
+`coord_system` — L and P under `LPS`, R and A under `RAS` — and the grid's plane is the one where the
+third world coordinate is 0. A 2-D grid has no third coordinate to place a plane elsewhere, so a slice
+that lies elsewhere, or not parallel to that plane, is a one-slice 3-D grid, which keeps where it lies.
 
 Diffusion gradients, multiple echoes and multiple contrast phases **SHOULD** be separate images on a
 shared grid when they are separately addressable in training, and a `channel` axis when they are
@@ -403,6 +410,10 @@ dataset — or on the group, inherited by every level:
 | `probability` | `float16`/`float32` | ∈ [0,1] |
 | `displacement` | `float32` | vector field; see §10.4 |
 | `mask` | `bool`/`uint8` | validity / FOV mask |
+
+Whatever its `value_type`, an image's samples **MUST** be numbers — an integer, floating-point or
+boolean dtype — at every level of a pyramid (§4.3). An image stored as strings, a compound or any
+other type holds no value a reader can read, and is **E001**.
 
 **Physical value** = `stored × rescale_slope + rescale_intercept`. Readers **MUST** apply this when
 asked for physical values and **MUST NOT** apply it silently when returning raw arrays; the API
@@ -497,7 +508,16 @@ computed so that two implementations in two languages agree. The digested docume
 
 with `classes` sorted by `id`, `relations` sorted by `(subject, predicate, object)`, `skeletons` sorted
 by `id`, and `relations`/`skeletons` omitted when empty. It is serialized as **canonical JSON** (below)
-and hashed.
+and hashed. Each entry holds only what it says, so that a member written as `null` or as empty digests
+as one left out:
+
+* a **class** holds `id`, `key` and `name`; `category` and `laterality` when not `null`; and `color`,
+  `parents`, `codes` and `properties` when not empty. `parents` and `codes` keep the order given, and
+  each code holds `system`, `code`, and `name` when not `null`;
+* a **relation** holds `subject`, `predicate` and `object`, and a **skeleton** `id`, `keypoints` and
+  `edges`, each list in the order given;
+* strings — a predicate, a skeleton id — sort by their UTF-8 bytes, and a member not listed here is
+  not digested.
 `form`, `uri` and `sha256` are **excluded**: they describe how the vocabulary is *carried*, not what it
 says, so an inline copy and a referenced copy of one vocabulary digest identically.
 
@@ -512,7 +532,7 @@ says, so an inline copy and a referenced copy of one vocabulary digest identical
 * a number keeps its type: an **integer** is written in decimal with no exponent or fraction; a
   **float** is written in its *shortest round-trip form* — the fewest significant digits that read
   back to the same IEEE-754 binary64 value — in fixed notation with at least one fractional digit
-  when `1e-4 ≤ |x| < 1e16` (`1.0`, `0.0001`, `2.5`), and otherwise as `d[.ddd]e±XX` with a sign and
+  when `x` is zero or `1e-4 ≤ |x| < 1e16` (`0.0`, `-0.0`, `1.0`, `0.0001`, `2.5`), and otherwise as `d[.ddd]e±XX` with a sign and
   at least two exponent digits (`1e-05`, `1.5e+16`); `-0.0` keeps its sign. A JSON document has no
   non-finite values; an attribute can hold one, and `canonical_attrs` writes it `NaN`, `Infinity` or
   `-Infinity`.
@@ -580,8 +600,12 @@ Every annotation declares how ancestors are to be interpreted via `closure`:
 | `explicit` | Only the listed classes hold. `liver_segment_iv` present does **not** imply `liver`. |
 | `implicit` | All `is_a` ancestors of a listed class also hold. |
 
-Readers **MUST NOT** infer ancestors when `closure = "explicit"`. Writers **SHOULD** use `implicit`
-for hierarchical classification and `explicit` for voxel annotations.
+Readers **MUST NOT** infer ancestors when `closure = "explicit"`, and **MUST** when it is `implicit`:
+every state and membership query then answers a class as present wherever a class it is an `is_a`
+ancestor of is present — `contains` (§7.6), a dense read, counts and bounds, and a classification's
+state in each scope unit (§9). What is stored stays literal: the closure is applied when an
+annotation is read, never written into it. Writers **SHOULD** use `implicit` for hierarchical
+classification and `explicit` for voxel annotations.
 
 ### 5.5 Skeletons
 
@@ -613,13 +637,17 @@ for classes and a region of interest, never for a storage layout.
 | `space` | `str` | geometric kinds | `index` or `world` (§8.1) |
 | `frame_uid` | `str` | if `space = world` | frame the coordinates live in |
 | `class_ids` | `uint16[]` | **MUST** except `mask` | classes this annotation *can* express, in encoding order |
-| `annotated_class_ids` | `uint16[]` | **MUST** | classes actually searched for (§11.3) — the coverage contract |
+| `annotated_class_ids` | `uint16[]` | **MUST** except `mask` | classes actually searched for (§11.3) — the coverage contract |
 | `closure` | `str` | **MUST** | `explicit` or `implicit` (§5.4) |
 | `ignore_id` | `uint16` | MAY | defaults to `65535` |
 | `prov` | `str` | SHOULD | activity id (§11.1) |
 | `quality` | `str` | SHOULD | key into `/meta → quality` (§11.2) |
 | `derived_from` | `str[]` | MAY | annotation ids this was computed from (consensus, propagation) |
 | `digest` | `str` | SHOULD | §13.1 |
+
+An annotation without `task` or `closure`, or of a kind other than `mask` without `class_ids` or
+`annotated_class_ids`, is **E412**: a reader would otherwise guess its task from its kind, read its
+closure as `explicit`, and know neither which classes it can express nor which were looked for.
 
 `class_ids` ⊇ every class the data can encode. `annotated_class_ids` is what the annotator committed to
 finding. `annotated_class_ids ⊆ class_ids` **MUST** hold. The set difference is the crux of partial
@@ -686,7 +714,8 @@ One dense volume; each voxel has at most one class.
 | `data` | grid `shape` | `uint8` or `uint16` | value = class id; `0` = background; `ignore_id` = ignore |
 
 Use when classes are mutually exclusive (nnU-Net-style anatomy). `uint8` **MUST** be used when
-`max(class_ids) ≤ 254` and no ignore region is present; otherwise `uint16`.
+`max(class_ids) ≤ 254` and no voxel of `data` holds `ignore_id` — an ignore region kept in a sibling
+`mask` (§7.7) does not count; otherwise `uint16` (E411).
 
 ### 7.2 `layers` — **the default**
 
@@ -754,7 +783,8 @@ annotations, where each file is internally consistent and only the join is wrong
 
 An object present at one timepoint and absent at another is represented by its absence from that
 timepoint's annotation; a *resolved* lesion is distinguishable from an *unexamined* one only through
-`annotated_class_ids` (§11.3), which is why coverage is required.
+`annotated_class_ids` and the annotation's ignore region (§7.7, §11.3) — an absence inside, or
+possibly inside, an ignore region is unexamined — which is why coverage is required.
 
 **`N = 0` is permitted.** An `instances` annotation with no objects and a non-empty
 `annotated_class_ids` states that those classes were examined and nothing was found — the verified
@@ -865,7 +895,9 @@ The rounding is **half-up**: `floor(x + 0.5)`, not a language's default `round`.
 which is what Python's `round` and NumPy's `rint` do — breaks the extent identity above for a box on
 integer edge coordinates, because `lo + 0.5` and `hi + 0.5` then round in opposite directions.
 
-Boxes **MUST** be `float32` or `float64` and **MUST** satisfy `lo ≤ hi`. Writers **MUST NOT** store
+Boxes **MUST** be `float32` or `float64` and **MUST** satisfy `lo ≤ hi` with both bounds finite
+(E406): `lo > hi` is false for a NaN, and a reader crops nothing or everything from a box with one.
+Writers **MUST NOT** store
 integer boxes: rounding a box on resample or on world↔index conversion is lossy, and 0.x's
 integer-only boxes could not represent a rotated or resampled box at all.
 
@@ -886,6 +918,9 @@ assuming a convention.
 `slice_index` with `S = 3` and a degenerate axis (`lo == hi`) expresses "a 2D box on slice k",
 the common radiology annotation.
 
+Without `instance_ids`, a reader **MAY** number boxes by row, but such numbers name no physical
+object: they join nothing across annotations or timepoints (§7.4).
+
 ### 8.3 `obb` — oriented boxes
 
 | Dataset | Shape | dtype | Meaning |
@@ -895,6 +930,7 @@ the common radiology annotation.
 | `rotations` | `(N, S, S)` | `float32` | column *k* = unit direction of the box's local axis *k*, in `space` |
 | `class_ids`, `instance_ids`, `scores`, `attributes` | as §8.2 | | |
 
+`centers` **MUST** be finite, and `sizes` finite and non-negative (E406).
 `rotations` **MUST** be a proper rotation (orthonormal, `det = +1`) to 1e-4. Quaternion and
 Euler-angle forms are **not** stored; readers convert. The corner set is
 `center + rotations @ (sizes/2 ⊙ s)` for `s ∈ {−1,+1}^S`.
@@ -976,7 +1012,9 @@ profile on its own.
 Semantics:
 
 * A class in `annotated_class_ids` with **no** entry in the `class_ids` *dataset* is a **negative**:
-  it was looked for and not found. A class not in `annotated_class_ids` is **unknown**. Because
+  it was looked for and not found — unless, under `closure = "implicit"`, a class it is an `is_a`
+  ancestor of is asserted positive in the same scope unit, which makes it positive (§5.4). A class
+  not in `annotated_class_ids` is **unknown**. Because
   `annotated_class_ids ⊆ class_ids` must hold for the *attribute* (§6.2), a writer includes every
   searched-for class in the attribute even when no assertion carries it. This is the general rule for
   kinds whose `class_ids` attribute does not index storage — §8 and §9 — and it is why the attribute
@@ -1015,8 +1053,8 @@ Two uses dominate, and the format does not distinguish them — both are a mappi
 
 * **Intra-timepoint (multi-modal)** — PET to CT, T1 to FLAIR, acquired in one session and often
   already aligned, in which case the grids share a `frame_uid` and no transform is needed at all.
-* **Inter-timepoint (longitudinal)** — baseline to follow-up. Grids in different timepoints never
-  share a frame (§3.4), so this transform is always required to compare them, and it is the object
+* **Inter-timepoint (longitudinal)** — baseline to follow-up. Grids in different timepoints do not
+  share a frame, except as §3.4 permits, so this transform is required to compare them, and it is the object
   whose accuracy longitudinal landmark ground truth measures (§10.6).
 
 A transform's timepoints are those of the grids in its frames; it needs no `timepoint` attribute of
@@ -1065,8 +1103,8 @@ ambiguity here is the leading cause of silently mirrored registration results.
 
 `x_M_h = matrix @ x_F_h`, both in world coordinates in `units`. Index-space affines are **not** stored;
 compose with the grids' affines (§3.3) to obtain one. *S* is the number of spatial axes of the grids in
-`from_frame` and `to_frame`: a `matrix` of any other shape, like one whose last row is not `[0…0 1]`,
-is **E504**.
+`from_frame` and `to_frame`: a `matrix` of any other shape, like one whose last row is not `[0…0 1]`
+or one holding an entry that is not finite, is **E504**.
 
 ### 10.4 `displacement`
 
@@ -1223,7 +1261,8 @@ Normative rules:
   pseudonyms.
 * Writers **MUST NOT** copy DICOM tags wholesale into `acquisition` or `extra`; only the named
   parameters relevant to imaging physics.
-* `date_shift_days` records that dates were consistently shifted, preserving intervals.
+* `date_shift_days` records that dates were consistently shifted, preserving intervals. A recorded
+  `date_shift_days` of `0` means no shift: it claims nothing about the file's dates.
 * A file whose `deidentification` is absent **MUST** be treated by tooling as potentially identifying.
 
 ---
@@ -1287,12 +1326,16 @@ see the rest of its cohort, so the cross-file check is the audit's.
 
 ### 13.1 Object digests
 
-Every dataset **SHOULD** carry a `digest` attribute `"<algo>:<hex>"` over its canonical byte stream:
+Every dataset but `/meta` (§13.2) **SHOULD** carry a `digest` attribute `"<algo>:<hex>"` over its
+canonical byte stream:
 
 ```
 H( object_path ‖ 0x00 ‖ dtype_str ‖ 0x00 ‖ shape_csv ‖ 0x00 ‖ raw C-order little-endian bytes )
 ```
 
+`H` is the algorithm `<algo>` names (§2.1). `object_path` is the dataset's path relative to the sample
+root, in UTF-8 and with no leading `/` (`images/CT`, `annotations/organs/data`), so a sample extracted
+from a collection digests as it did inside it (§2.2).
 `dtype_str` is the NumPy dtype string with explicit byte order normalised to little-endian: `|b1`
 for booleans, `|i1` and `|u1` for 8-bit integers (one byte has no order), `<i2`, `<i4`, `<i8`,
 `<u2`, `<u4`, `<u8`, `<f2`, `<f4`, `<f8` otherwise, and `|O` for strings, variable-length or
@@ -1316,14 +1359,14 @@ The sample root **SHOULD** carry `content_id`, the Merkle root over the sorted d
 
 ```
 lines = sorted( f"{path}\t{digest}\n" for every dataset with a digest )
-       + [ "meta\t" + hex( H(meta_json_utf8) ) + "\n" ]
+       + [ "meta\t" + hex( H(meta_stored_bytes) ) + "\n" ]
        + sorted( f"@{obj}\t" + "<algo>:" + hex( H(canonical_attrs(obj)) ) + "\n"
                  for every object with an attribute line )
 content_id = "<algo>:" + hex( H( "".join(lines) ) )
 ```
 
-`hex` is lowercase hexadecimal. The three kinds of line spell a digest differently, and an
-implementation reproduces each to the byte: a dataset line carries the dataset's `digest` attribute as
+`H` is the algorithm the root's `digest_algo` names (§2.1), and `hex` is lowercase hexadecimal. The
+three kinds of line spell a digest differently, and an implementation reproduces each to the byte: a dataset line carries the dataset's `digest` attribute as
 stored (`<algo>:<hex>`, §13.1), an attribute line carries `<algo>:` before the hex digest, and the
 `meta` line carries the bare hex digest. The objects with an attribute line are the sample root and
 every member of `grids/`, `images/`, `annotations/` and `transforms/`; each has its line whichever of
@@ -1331,12 +1374,23 @@ its covered attributes (below) it carries, `{}` when it carries none.
 
 `canonical_attrs` serialises the covered attributes the object carries as one JSON object in the
 canonical JSON of §5.1, keyed by attribute name: a string as a string, a boolean as `true`/`false`,
-an integer or float scalar as a number of that type, and an array as nested lists of the same. Each of the three groups of lines is
-sorted independently and they are concatenated in the order shown. Paths are relative to the **sample
-root**, so a sample extracted from a collection keeps its `content_id` (§2.2).
+an integer or float scalar as a number of that type, and an array as nested lists of the same. Each of
+the three groups of lines is sorted independently, by the UTF-8 bytes of the whole line, and they are
+concatenated in the order shown. Paths are relative to the **sample root**, with no leading `/`, so a
+sample extracted from a collection keeps its `content_id` (§2.2): a dataset line's `path` is its §13.1
+`object_path`, an attribute line's `obj` is `grids/ct` or `images/CT`, and the sample root's own `obj`
+is empty, so that its line begins `@\t`.
+
+The `meta` line hashes the bytes `/meta` stores, as written: a reader does not re-serialise the
+document, whose spacing and member order are its writer's (§2.4). `/meta` carries no `digest`, since
+the `meta` line is its digest: writers **MUST NOT** stamp one, and one a file carries anyway enters
+the dataset lines as any dataset's `digest` does.
 
 **The covered attributes** are exactly these, by object; any other attribute an object carries —
-its own `digest`, an extension's, one a later minor version defines — has no part in its line:
+its own `digest`, an extension's — has no part in its line. The lists are this version's: a later
+minor version **MAY** extend them for the files that declare it, so an implementation that does not
+implement that minor cannot always recompute such a file's `content_id`, and reports it as
+unsupported, not refuted ([1.1](medh5-1.1.md) §2.2). 1.1 extends none (1.1 §8):
 
 | Object | Covered attributes |
 |---|---|
@@ -1494,7 +1548,11 @@ tens of GiB and cannot exist.
 
 * **One writer.** HDF5 has no multi-writer story. Writers **MUST** hold exclusive access.
 * **Create** is atomic: write to a sibling temporary file, `fsync`, `os.replace`, `fsync` the
-  directory. (0.x already does this; 1.0 keeps it normative.)
+  directory. (0.x already does this; 1.0 keeps it normative.) The file replaced is the one the path
+  names: when the path is a symbolic link, the replacement is written beside the file the link names
+  — following a chain of links — and renamed over that file, so the link is kept. A link another user
+  owns in a sticky, world-writable directory is refused rather than followed, as the system would not
+  follow it to open the file. Other hard links to the replaced file keep its previous content.
 * **File size scales with the record.** A subject-scoped sample holds every timepoint, so files are
   larger than a study-scoped equivalent and copy-on-write amend costs proportionally more. Writers
   curating long series **SHOULD** either accept the rewrite cost, use attribute-only in-place edits
@@ -1553,14 +1611,14 @@ one.
 
 | Range | Domain | Examples |
 |---|---|---|
-| `E0xx` | container | `E001` missing or empty `medh5_version`, or the file or an object a check must read cannot be read; `E002` unsupported major version; `E003` an identifier that does not match its syntax (§2.2, §2.3); `E004` `/meta` absent or not valid JSON; `E005` `/meta` fails schema; `E006` missing or unknown `medh5_kind`; `E007` missing `medh5_profiles` or unknown profile; `E008` a group required by the layout is absent — a §2.3 group, or a collection's `samples` — or a collection holds no sample root (§2.2); `E009` a declared profile's requirements are not met; `E010` a sample root in a `collection` lacks its own `content_id` |
-| `E1xx` | geometry | `E101` referenced grid does not exist; `E102` `direction` not orthonormal; `E103` spatial axes not trailing/contiguous; `E104` `spacing` not finite and strictly positive; `E105` a multiscale image's levels malformed (`levels`, `grid_levels` or `downsample_factors` missing or inconsistent, a level dataset missing), or a level's geometry inconsistent with level 0; `E106` grid without `timepoint` in a multi-timepoint sample; `E107` grid `timepoint` not declared; `E108` `timepoints` empty, a timepoint `id` repeated, or `index` not dense and increasing; `E109` a grid attribute missing where required, malformed or of the wrong size — a non-positive or uncountable `shape`, a non-finite `origin` and a non-positive `chunk_hint` among them — or `units`/`time_units` outside its vocabulary; `E110` `axis_kinds` invalid for the declared dimensionality; `E111` `grids` contains no grid |
+| `E0xx` | container | `E001` missing or empty `medh5_version`, or the file or an object a check must read cannot be read — a member of `grids/`, `images/`, `annotations/` or `transforms/` that resolves to no object, and an image whose samples are not numbers (§4.2), among them; `E002` unsupported major version; `E003` an identifier that does not match its syntax (§2.2, §2.3); `E004` `/meta` absent, not a dataset holding one string, or not valid JSON; `E005` `/meta` fails schema; `E006` missing or unknown `medh5_kind`; `E007` missing `medh5_profiles` or unknown profile; `E008` a group required by the layout is absent — a §2.3 group, or a collection's `samples` — a group the layout defines is not a group, or a collection holds no sample root (§2.2); `E009` a declared profile's requirements are not met; `E010` a sample root in a `collection` lacks its own `content_id` |
+| `E1xx` | geometry | `E101` referenced grid does not exist; `E102` `direction` not orthonormal; `E103` spatial axes not trailing/contiguous; `E104` `spacing` not finite and strictly positive; `E105` a multiscale image's levels malformed (`levels`, `grid_levels` or `downsample_factors` missing or inconsistent, a level dataset missing), or a level's geometry inconsistent with level 0; `E106` grid without `timepoint` in a multi-timepoint sample; `E107` grid `timepoint` not declared; `E108` `timepoints` empty, a timepoint `id` repeated, or `index` not dense and increasing; `E109` a grid that is not a group, or a grid attribute missing where required, malformed or of the wrong size — a non-positive or uncountable `shape`, a non-finite `origin` and a non-positive `chunk_hint` among them — or `units`/`time_units` outside its vocabulary; `E110` `axis_kinds` invalid for the declared dimensionality; `E111` `grids` contains no grid |
 | `E2xx` | images | `E201` `images` empty; `E202` image shape ≠ grid shape; `E203` unknown `value_type`; `E204` `channel_names` length ≠ channel extent; `E205` required image attribute missing |
 | `E3xx` | label set | `E301` missing label set for a declared profile; `E302` duplicate class id or key; `E303` reserved id used; `E304` hierarchy cycle; `E305` `ref` label set lacking `uri`/`sha256`, or unresolvable; `E306` class entry missing a required field, out of id range or naming an unknown parent, or a relation naming a class the label set does not hold (§5.4) |
-| `E4xx` | annotations | `E401` unknown `kind`; `E402` class id not in label set; `E403` `annotated_class_ids ⊄ class_ids`; `E404` encoding invariant violated (e.g. a class in two layers); `E405` shape mismatch with the grid, or between an annotation's own datasets, mesh `faces` indexing outside its `vertices` among them; `E406` box `lo > hi`; `E407` `rotations` not a proper rotation; `E408` offsets that decrease or do not delimit their data: an `instances` object's span in `mask_data` other than its packed crop's size or past its end (§7.4), or `contour_offsets`/`mesh_offsets` whose last value is not the number of vertices/faces they index (§8.6, §8.7); `E409` `timepoints` references an undeclared timepoint; `E410` a dataset required by the `kind` is absent; `E411` dataset dtype not permitted for the `kind`, or a stored value it does not permit: a `probmap` value outside [0, 1] (§7.5), a keypoint `visibility` other than 0, 1 or 2 (§8.4); `E412` required annotation attribute missing, or an unknown `task`, `closure`, `space` or `scope`; `E413` a `skeleton`, `correspondence`, `derived_from`, `ignore_mask` or `valid_mask` reference that does not resolve, or an `ignore_mask`/`valid_mask` naming an annotation that is not a `mask` on the same grid (§4.4, §7.7); `E414` `space` invalid for the annotation's grid or frame |
-| `E5xx` | transforms | `E501` composite frame chain broken; `E502` missing or unknown transform `kind`, or a transform lacking the frames or parameters its kind requires, mapping a frame to itself, or naming an unknown `vector_space`; `E503` a displacement field or B-spline control points not fitting their grid: `field_grid`/`cp_grid` missing or not in `from_frame`, a `field` not `(S, *spatial)` on its grid, or `control_points` not `(S, *cp_shape)` on the grid's spatial axes with at least `order + 1` points on each (§10.4, §10.5); `E504` affine `matrix` not `(S+1, S+1)` for the spatial axes of the grids it relates (§10.3), or its last row ≠ `[0…0 1]`; `E505` `inverse_id` not mutually consistent; `E506` `units` missing or not the units of the grids in its frames |
+| `E4xx` | annotations | `E401` unknown `kind`; `E402` class id not in label set; `E403` `annotated_class_ids ⊄ class_ids`; `E404` encoding invariant violated (e.g. a class in two layers); `E405` shape mismatch with the grid, or between an annotation's own datasets, mesh `faces` indexing outside its `vertices` among them; `E406` box `lo > hi`, or a bound that is not finite; an `obb` centre that is not finite, or a size that is not finite or is negative (§8.1, §8.3); `E407` `rotations` not a proper rotation; `E408` offsets that decrease or do not delimit their data: an `instances` object's span in `mask_data` other than its packed crop's size or past its end (§7.4), or `contour_offsets`/`mesh_offsets` whose last value is not the number of vertices/faces they index (§8.6, §8.7); `E409` `timepoints` references an undeclared timepoint; `E410` a dataset required by the `kind` is absent; `E411` dataset dtype not permitted for the `kind`, or a stored value it does not permit: a `probmap` value outside [0, 1] (§7.5), a keypoint `visibility` other than 0, 1 or 2 (§8.4); `E412` required annotation attribute missing — `task` or `closure`, or on any kind but `mask` `class_ids` or `annotated_class_ids` (§6.2) — or an unknown `task`, `closure`, `space` or `scope`; `E413` a `skeleton`, `correspondence`, `derived_from`, `ignore_mask` or `valid_mask` reference that does not resolve, or an `ignore_mask`/`valid_mask` naming an annotation that is not a `mask` on the same grid (§4.4, §7.7); `E414` `space` invalid for the annotation's grid or frame |
+| `E5xx` | transforms | `E501` composite frame chain broken; `E502` missing or unknown transform `kind`, or a transform lacking the frames or parameters its kind requires, mapping a frame to itself, or naming an unknown `vector_space`; `E503` a displacement field or B-spline control points not fitting their grid: `field_grid`/`cp_grid` missing or not in `from_frame`, a `field` not `(S, *spatial)` on its grid, or `control_points` not `(S, *cp_shape)` on the grid's spatial axes with at least `order + 1` points on each (§10.4, §10.5); `E504` affine `matrix` not `(S+1, S+1)` for the spatial axes of the grids it relates (§10.3), holding an entry that is not finite, or its last row ≠ `[0…0 1]`; `E505` `inverse_id` not mutually consistent; `E506` `units` missing or not the units of the grids in its frames |
 | `E6xx` | curation | `E601` dangling `prov` reference; `E602` unknown `quality` key; `E603` unknown agent or activity type; `E604` non-RFC3339 timestamp; `E605` activity names an undeclared agent |
-| `E7xx` | integrity | `E701` object digest mismatch; `E702` `content_id` mismatch; `E703` malformed digest string; `E704` an object `content_id` covers reached at a path that is not its own |
+| `E7xx` | integrity | `E701` object digest mismatch; `E702` `content_id` mismatch, or a `digest` on a dataset that no line of `content_id` covers (§13.2); `E703` malformed digest string; `E704` an object `content_id` covers reached at a path that is not its own |
 | `W9xx` | warnings | `W901` no digests; `W902` uncompressed or unchunked bulk dataset; `W903` no `deidentification`; `W904` partial coverage without an ignore region; `W905` stale `index/` entry; `W906` conflicting split claims; `W907` `float32` storage where `int16 + rescale` is lossless; `W908` `layers` count far from the greedy-colouring optimum; `W909` one `instance_id` carrying two class ids; `W910` grids in different timepoints sharing a `frame_uid`; `W911` multi-timepoint sample with no transform relating any two timepoints; `W912` a class used by an annotation carries no ontology binding |
 
 ---
@@ -1641,7 +1699,8 @@ $ h5ls -r case_0001.medh5
 
 Reading it: `PET_tp0` needs no transform to reach `CT_tp0` — same `frame_uid`. `CT_tp1` does, because
 follow-up is a new frame. Lesion 3 appears at baseline and not at follow-up, and because
-`annotated_class_ids` covers lesions at both visits, that absence means *resolved*, not *unexamined*.
+`annotated_class_ids` covers lesions at both visits and no ignore region hides any part of either,
+that absence means *resolved*, not *unexamined*.
 
 ## Appendix B — 0.x → 1.0 mapping
 
@@ -1705,9 +1764,10 @@ any machine. On one, with a 192×256×256 synthetic CT and eight classes, a mult
 costs 2.3 ms, foreground centre sampling 0.03 ms (O(1) in volume size, via §14.3; 0.04 ms at 63
 classes), a metadata-only read 0.13 ms, and `open()` → first patch 1.6 ms.
 
-Fifty-four clauses have been corrected — ten during implementation, eleven in the 1.x package
+Seventy-four clauses have been corrected — ten during implementation, eleven in the 1.x package
 releases that followed, four when the engine was written a second time, in Rust, for the 2.0
-package, one when it implemented 1.1, and twenty-eight in the audits of 2.0 before its release — each because
+package, one when it implemented 1.1, twenty-eight in the audits of 2.0 before its release, and
+twenty in the audit of 2.0.1 — each because
 writing the code showed the text was not implementable, not unambiguous, or not what the
 implementation could honestly promise, as written:
 
@@ -1767,6 +1827,26 @@ implementation could honestly promise, as written:
 | §3.2 | Each extent of a `chunk_hint` is positive, and a hint with one that is not is **E109**. The table called the hint a chunk shape and bounded nothing, and the validator checked only its length: a hint of `0` or `-1` validated, though no chunk has an extent below 1 — a writer that handed it to HDF5 failed at the first chunked dataset on the grid. A hint larger than the array is clipped to it, as §14.1 has every chunk. |
 | §7.4, §15.2 | An `instances` object's span, `[o[n], o[n+1])` of `mask_data`, is exactly its packed crop — `ceil(prod(mask_shapes[n]) / 8)` bytes — and lies inside `mask_data`; offsets that do not delimit it so are **E408**, as offsets that decrease are. §7.4 placed object *n* at its span and bounded nothing, and the table gave E408 only to offsets that decrease: a span shorter than its crop decoded with its missing bits as false, and offsets past the end of `mask_data` were read short, in files every validator passed. |
 | §15.2 | Four more codes are described by what the reference validator reports under them: **E105** also a multiscale image whose declaration is malformed — `levels`, `grid_levels` or `downsample_factors` missing or inconsistent, or a level's dataset missing (§4.3); **E109** also a grid attribute malformed or of the wrong size, and `units` or `time_units` outside its vocabulary (§3.2); **E306** also a relation naming a class the label set does not hold (§5.4); **E503** also a `field` that is not `(S, *spatial)` on its grid (§10.4). The table named one condition for each while those clauses required the rest, so a validator written from the table had no code to report them under. |
+| §3.3 | Found by the audit of 2.0.1; enforced from 2.0.2: rule 4 also requires the same number of spatial axes *S*, so a 2-D grid and a 3-D grid naming one frame are not comparable without a transform. A plane's world coordinates are two numbers and a volume's three, and nothing related them: the reference's agreement scored a 2-D box against a 3-D box at an overlap of about 10, and reported it as a match. |
+| §3.6 | Found by the audit of 2.0.1: a 2-D grid's `spacing`, `origin` and `direction` refer to the first two world axes of `coord_system`, and its plane is where the third world coordinate is 0. The clause gave a 2-D grid an S×S `direction` and named no world axes, while converters flipping RAS to LPS assumed the first two: a NIfTI plane at z = 50 was imported at z = 0, and planes from two slices shared one grid. The reference converter now refuses a plane it cannot place so. |
+| §4.2 | Found by the audit of 2.0.1; enforced from 2.0.2: an image's samples **MUST** be numbers, and an image of strings, a compound or another type is **E001**. "Any numeric" was a column of typical dtypes, not a requirement: such an image passed every validation level, `strict` included, while every reader refused to read it. |
+| §5.4, §9 | Found by the audit of 2.0.1; enforced from 2.0.2: under `closure = "implicit"` readers **MUST** answer state and membership queries with a class's ancestors, and an examined class with no assertion is negative unless a class it is an ancestor of is asserted positive in the same scope unit. §9 made every examined, unasserted class a negative and §5.4 made ancestors hold, and the reference applied the closure in no reader: a classification asserting `left_kidney` with `kidney` examined answered `kidney` negative — a false negative for the pattern §9 recommends — and a voxel read of an ancestor left out its descendants. What is stored is unchanged. |
+| §6.2, §15.2 | Found by the audit of 2.0.1; enforced from 2.0.2: an annotation without `task` or `closure`, or of a kind other than `mask` without `class_ids` or `annotated_class_ids`, is **E412**. The table required `annotated_class_ids` of a `mask`, which no validator asked of one, and the reference validator did not report a missing `task`, `closure` or `class_ids`, which its readers then guessed. |
+| §7.4 | Found by the audit of 2.0.1; enforced from 2.0.2: a resolved lesion is told from an unexamined one through `annotated_class_ids` *and the annotation's ignore region*. "Only through `annotated_class_ids`" contradicted §7.7 and §11.3, where an ignore region is how a file says "not examined here": the reference tracker reported a lesion resolved under a follow-up whose ignore region covered the whole volume, and new where the baseline ignored it. |
+| §8.1, §8.3, §10.3, §15.2 | Found by the audit of 2.0.1; enforced from 2.0.2: box bounds, `obb` centres and sizes, and an affine `matrix`'s entries are finite, and `obb` sizes not negative (**E406**, **E504**). `lo ≤ hi` is false for a NaN, so a box of NaN validated, and a reader cropped nothing or everything from it; a `matrix` holding NaN or infinity was written and validated clean. |
+| §8.2 | Found by the audit of 2.0.1: without `instance_ids`, a reader **MAY** number boxes by row, and such numbers name no object and join nothing. The table made `instance_ids` optional and said nothing of the numbers a reader gives such boxes, which a join on `instance_id` (§7.4) could take for identities. |
+| §14.4 | Found by the audit of 2.0.1; enforced from 2.0.2: a replace through a symbolic link writes beside, and renames over, the file the link names, and keeps the link. The temporary file was named from the path given, so amend, recompress, fix and `scrub --apply` on a linked path replaced the link with an independent copy and left the file it named untouched — for a scrub, the identifying original, while the command reported it scrubbed. |
+| §15.2 | Found by the audit of 2.0.1; enforced from 2.0.2: five codes are described by what the reference validator now reports under them — **E001** a member of `grids/`, `images/`, `annotations/` or `transforms/` that resolves to no object, and an image that is not numbers (§4.2); **E004** a `/meta` that is not a dataset holding one string; **E008** a group the layout defines that is not a group; **E109** a grid that is not a group; **E702** a `digest` on a dataset no line covers, as §13.2 already said. At 2.0.1 a `/meta` group or an `images` dataset validated clean, and a dangling image passed every level, `strict` included. |
+| §11.4 | Found by the audit of 2.0.1: a recorded `date_shift_days` of `0` means no shift. Recorded as a shift, it told every later scan that the dates were already shifted, so dates added afterwards were passed over; the reference scrub now refuses a zero shift. |
+| §2.1 | Found by the audit of 2.0.1: an amendment keeps the `digest_algo` the file declares. The reference writer restamped an amended file with `sha256`, and, writing no digests, left digests of two algorithms under one declaration. |
+| §5.1 | Found by the audit of 2.0.1: a float is written in fixed notation when it is zero, as well as when `1e-4 ≤ |x| < 1e16` — `0.0`, `-0.0`. The condition left zero out, so a literal reading wrote `0e+00` where every implementation writes `0.0`, and zeros are in almost every grid's `origin` and `direction`. No digest changes. |
+| §5.1 | Found by the audit of 2.0.1: the class, relation and skeleton entries that `label_set.sha256` digests are defined — a member that is `null` or empty is digested as one left out, `parents` and `codes` keep their order, and members §5.2 does not name are not digested. The text sorted the classes and said nothing of their members, while every implementation has digested them through its typed model: a reader digesting the §5.2 example as written, `"laterality": null` included, computed another `sha256`, and vocabulary compatibility failed between implementations. No digest changes. |
+| §2.1, §13.1, §13.2 | Found by the audit of 2.0.1: the bytes behind `content_id` are spelled out — `blake2b` is unkeyed BLAKE2b-512; `object_path` and every line's path are relative to the sample root with no leading `/`, and the root's `obj` is empty, so its line begins `@\t`; the `meta` line hashes the bytes `/meta` stores; `/meta` carries no `digest`; and lines sort by their UTF-8 bytes. Each was open to two readings, each of which changed every digest or every `content_id`: BLAKE2b is common at 256 bits, `@/` was as natural as `@`, and re-serialising `/meta` gave other bytes. No digest changes. |
+| §13.2 | Found by the audit of 2.0.1: the covered attributes are this version's lists, and a later minor **MAY** extend them for the files that declare it — which is why an implementation reports a later minor's `content_id` it cannot recompute as unsupported ([1.1](medh5-1.1.md) §2.2, W913), not as E702. This clause said an attribute a later minor defines is never covered, while 1.1 §2.2 said a later minor may cover attributes an older implementation does not know: both could not bind a 1.2, and the reference follows 1.1. 1.1 covers no attribute 1.0 does not, so no `content_id` changes. |
+| §2.1 | Found by the audit of 2.0.1: `medh5_version` is `"MAJOR.MINOR"`, and a reader **MUST NOT** refuse a file solely for a higher minor, reading its supported projection (§16, [1.1](medh5-1.1.md) §2.2). The table kept the rule the §16 correction above replaced — readers "**MAY** read a higher minor version, ignoring unknown objects" — and gave the value as `"1.0"`, which a 1.1 file does not carry. |
+| §2.5 | Found by the audit of 2.0.1: readers **MUST** accept an integer attribute of any width and signedness, and the type an attribute table names bounds its value. §2.5 stored every integer as `int64`, while the tables name `uint16` for `class_ids`, `annotated_class_ids` and `ignore_id`, and the reference writer stores the first two as `uint16` and `ignore_id` as `int64`: a reader held to either text refused files the other described. |
+| §7.1 | Found by the audit of 2.0.1: "no ignore region" is no voxel of `data` holding `ignore_id`; a region kept in a sibling `mask` (§7.7) does not count. A `uint16` labelmap whose classes are all at most 254, with only a sibling mask, was E411 under one reading and valid under another; the reference validator reads the stored voxels. |
+| §10 | Found by the audit of 2.0.1: grids in different timepoints do not share a frame *except as §3.4 permits*. "Never share a frame" contradicted §3.4, which allows it when the acquisitions genuinely share one, as in a single interrupted session, and makes it a warning (W910), not an error. |
 
 ### C.2 Prototype checks
 

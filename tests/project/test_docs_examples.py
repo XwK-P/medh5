@@ -87,6 +87,13 @@ def _parser_tree() -> dict[tuple[str, ...], dict[str, Any]]:
 # here is cheaper than the round trip that found it the first time.
 STALE_CLAIMS: tuple[tuple[str, str, str, str | None], ...] = (
     (
+        "a higher minor read as optional",
+        r"\bMAY\b\W*\s*read a higher minor",
+        "1.0 §16 and 1.1 §2.2: a reader MUST NOT refuse a file solely for a "
+        "higher minor, and reads its supported projection.",
+        None,
+    ),
+    (
         "ignore region read as a class",
         r"dense\(\[?65535",
         "the ignore id is not a class; `layers` gives an all-zero plane. "
