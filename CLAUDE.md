@@ -234,11 +234,12 @@ it into every file's `generator`. The crates' `=X.Y.Z` pins on each other in
 `docs/` is the MkDocs site: `tutorials/`, `guides/` (how-to), `reference/`,
 `explanation/`, `spec/`, and `examples/` (standalone scripts). `CHANGELOG.md`
 stays at the root and `hooks/mkdocs_hooks.py` pulls it in; the same hook renders
-the diagnostic-code, cohort-code, task-and-cache-code and schema tables from
-their sources (edit `crates/medh5/data/codes.json`, the `CHECK_CODES` table in
-`crates/medh5/src/dataset/check.rs`, the `CODES` table in
-`crates/medh5/src/companion/mod.rs`, or the schema — never the page) and emits
-redirects for moved pages (`REDIRECTS`). There are no separate design records:
+the diagnostic-code, cohort-code and schema tables from their sources (edit
+`crates/medh5/data/codes.json`, the `CHECK_CODES` table in
+`crates/medh5/src/dataset/check.rs`, or the schema — never the page) and emits
+redirects for moved pages (`REDIRECTS`). task-cache-1 §9 writes its code table
+out, so a reader of the raw text sees it; a test holds it to the `CODES` table
+in `crates/medh5/src/companion/mod.rs`, so edit both. There are no separate design records:
 the reasoning lives in `docs/explanation/design-rationale.md`.
 
 The docs are tested, not proofread:

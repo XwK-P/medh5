@@ -161,13 +161,14 @@ Documentation here is checked against the code, not proofread:
   stated run on a stated machine; re-measure rather than carry one forward, and
   read a new window for every patch — the same window twice is HDF5's chunk
   cache, not a read.
-- **Some tables are generated.** The diagnostic codes, the cohort check codes,
-  the task-and-cache finding codes and the sample-document schema are rendered
-  at build time from `crates/medh5/data/codes.json`, the `CHECK_CODES` table in
-  `crates/medh5/src/dataset/check.rs`, the `CODES` table in
-  `crates/medh5/src/companion/mod.rs` and the JSON Schema by
+- **Some tables are generated.** The diagnostic codes, the cohort check codes
+  and the sample-document schema are rendered at build time from
+  `crates/medh5/data/codes.json`, the `CHECK_CODES` table in
+  `crates/medh5/src/dataset/check.rs` and the JSON Schema by
   `hooks/mkdocs_hooks.py`. Edit the source, not the page; the page carries only
-  a marker comment.
+  a marker comment. The task-and-cache finding codes are written out in
+  task-cache-1 §9, so the raw text shows them, and a test holds that table to
+  the `CODES` table in `crates/medh5/src/companion/mod.rs`: edit both.
 - **The Rust example is tested twice.** The engine crate's README is its crate
   documentation, so its example is a doctest; `docs/reference/rust.md` shows
   the same block, and a test compares the two.
