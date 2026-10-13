@@ -275,7 +275,7 @@ pub fn column_problems(
 /// row --- what it maps (E404): no class twice, and given `declared` (the
 /// `class_ids`, when known) every declared class and no other.  `0` pads a
 /// layer row and is no class.
-pub fn table_problems(
+pub(crate) fn table_problems(
     kind: &str,
     shape_of: &dyn Fn(&str) -> Option<Vec<usize>>,
     planes: Option<usize>,

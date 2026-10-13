@@ -116,7 +116,7 @@ pub fn bbox(mask: &ndarray::ArrayD<bool>) -> Option<Vec<(usize, usize)>> {
 /// A mask is scanned a row of its last axis at a time: a row's first and
 /// last `true` bound that axis, and the row's place bounds the others, so
 /// no index is built per voxel.
-pub fn bbox_flat(values: &[bool], shape: &[usize]) -> Option<Vec<(usize, usize)>> {
+pub(crate) fn bbox_flat(values: &[bool], shape: &[usize]) -> Option<Vec<(usize, usize)>> {
     let Some((&width, outer)) = shape.split_last() else {
         // A 0-d mask: one value, no axes.
         return values.first().copied().filter(|v| *v).map(|_| Vec::new());
@@ -377,33 +377,47 @@ pub fn cost_model(stats: &OverlapStats, ignore: bool) -> CostModel {
 /// `ignore` says an in-band ignore region will be written with the masks,
 /// which forces `uint16` planes and moves the `layers`/`bitmask` crossover.
 ///
-/// A `prefer` other than `auto` is returned as the choice only when it is
-/// an encoding the masks can be written in --- one [`check_target`] accepts:
-/// `mask` (E404) has no classes, so every class would merge into one volume
-/// and `class_ids` would be lost, and any other name (E401) is no encoding.
-///
-/// [`check_target`]: super::encode::check_target
-pub fn select_encoding(stats: &OverlapStats, soft: bool, prefer: Option<&str>, ignore: bool) -> Result<String> {
+/// A `prefer` other than `auto` is returned as given; the writer refuses one
+/// the masks cannot be written in, and [`select_encoding_checked`] refuses it
+/// here.
+pub fn select_encoding(stats: &OverlapStats, soft: bool, prefer: Option<&str>, ignore: bool) -> String {
     if soft {
-        return Ok("probmap".into());
+        return "probmap".into();
     }
     if let Some(p) = prefer.filter(|p| *p != "auto") {
-        check_target(p)?;
-        return Ok(p.into());
+        return p.into();
     }
     let nonempty: Vec<i64> = stats.class_ids.iter().filter(|c| stats.counts[c] > 0).copied().collect();
     let all_localized = !nonempty.is_empty() && nonempty.iter().all(|c| stats.localized.contains(c));
     if all_localized && stats.fill() < SPARSE_FILL {
-        return Ok("instances".into());
+        return "instances".into();
     }
     if stats.is_edgeless() {
-        return Ok("labelmap".into());
+        return "labelmap".into();
     }
     let itemsize = label_dtype_size(&stats.class_ids, ignore);
     if stats.n_layers() < (8 / itemsize) * stats.n_planes() {
-        return Ok("layers".into());
+        return "layers".into();
     }
-    Ok("bitmask".into())
+    "bitmask".into()
+}
+
+/// [`select_encoding`], returning a `prefer` other than `auto` only when it
+/// is an encoding the masks can be written in --- one [`check_target`]
+/// accepts: `mask` (E404) has no classes, so every class would merge into one
+/// volume and `class_ids` would be lost, and any other name (E401) is no
+/// encoding.
+///
+/// Public for the workspace's frontends, not as API: 2.0.x keeps the 2.0.1
+/// signature of [`select_encoding`].
+///
+/// [`check_target`]: super::encode::check_target
+#[doc(hidden)]
+pub fn select_encoding_checked(stats: &OverlapStats, soft: bool, prefer: Option<&str>, ignore: bool) -> Result<String> {
+    if let Some(p) = prefer.filter(|p| !soft && *p != "auto") {
+        check_target(p)?;
+    }
+    Ok(select_encoding(stats, soft, prefer, ignore))
 }
 
 #[cfg(test)]
@@ -432,7 +446,7 @@ mod tests {
         assert_eq!(stats.edges, BTreeSet::from([(1, 3)]));
         assert_eq!(stats.n_layers(), 2);
         assert_eq!(layers_from_colouring(&stats.colouring), vec![vec![1, 2], vec![3]]);
-        assert_eq!(select_encoding(&stats, false, None, false).unwrap(), "layers");
+        assert_eq!(select_encoding_checked(&stats, false, None, false).unwrap(), "layers");
     }
 
     #[test]
@@ -441,13 +455,15 @@ mod tests {
         masks.insert(1, block(&[4, 4, 4], &[0, 0, 0], 2));
         let stats = analyse(&masks, None).unwrap();
         for kind in ["labelmap", "layers", "bitmask", "instances", "probmap"] {
-            assert_eq!(select_encoding(&stats, false, Some(kind), false).unwrap(), kind);
+            assert_eq!(select_encoding_checked(&stats, false, Some(kind), false).unwrap(), kind);
         }
-        assert_eq!(select_encoding(&stats, false, Some("auto"), false).unwrap(), "labelmap");
+        assert_eq!(select_encoding_checked(&stats, false, Some("auto"), false).unwrap(), "labelmap");
         // `mask` keeps no class, and `rle` or a typo is no encoding at all.
-        assert_eq!(select_encoding(&stats, false, Some("mask"), false).unwrap_err().code(), Some("E404"));
+        assert_eq!(select_encoding_checked(&stats, false, Some("mask"), false).unwrap_err().code(), Some("E404"));
+        // The public form keeps its 2.0.1 signature: a preference is returned as given.
+        assert_eq!(select_encoding(&stats, false, Some("mask"), false), "mask");
         for unknown in ["rle", "labelmaps", ""] {
-            assert_eq!(select_encoding(&stats, false, Some(unknown), false).unwrap_err().code(), Some("E401"));
+            assert_eq!(select_encoding_checked(&stats, false, Some(unknown), false).unwrap_err().code(), Some("E401"));
         }
     }
 

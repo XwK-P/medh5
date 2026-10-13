@@ -281,7 +281,7 @@ fn box_arg(obj: &Bound<'_, PyAny>) -> PyResult<ndarray::Array2<f64>> {
 /// is not finite or a `lo` above its `hi` (E406).
 #[pyfunction]
 fn agreement_box_iou(a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> R<f64> {
-    Ok(ag::box_iou_f64(&box_arg(a)?, &box_arg(b)?)?)
+    Ok(ag::box_iou_f64_checked(&box_arg(a)?, &box_arg(b)?)?)
 }
 
 // -- scrub -------------------------------------------------------------------------------

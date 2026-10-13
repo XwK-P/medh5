@@ -7,7 +7,7 @@ use clap::ArgMatches;
 use serde_json::{json, Map, Value};
 
 use medh5::annotations::encode::IN_BAND_IGNORE_KINDS;
-use medh5::annotations::select::{analyse, cost_model, select_encoding};
+use medh5::annotations::select::{analyse, cost_model, select_encoding_checked};
 use medh5::annotations::Annotation;
 use medh5::h5::{data, ops};
 use medh5::json::repr_str;
@@ -73,7 +73,7 @@ fn stats(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let ignore = annotation.encodes_ignore()?;
     let costs = cost_model(&measured, ignore);
     let keep = (stored == "instances").then_some("instances");
-    let chosen = select_encoding(&measured, stored == "probmap", keep, ignore)?;
+    let chosen = select_encoding_checked(&measured, stored == "probmap", keep, ignore)?;
     let cost_bytes: Vec<(&str, Option<u64>)> = vec![
         ("labelmap", costs.labelmap),
         ("layers", Some(costs.layers)),

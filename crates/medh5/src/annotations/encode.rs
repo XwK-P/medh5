@@ -58,7 +58,7 @@ fn first_true(mask: &ArrayD<bool>) -> Option<Vec<usize>> {
 /// Whether `[lo, hi]` bounds one axis of a box (§8.2): finite, and `lo` not
 /// past `hi`.  A NaN fails `lo <= hi` --- and so read as a box --- and an
 /// infinite bound spans no grid.
-pub fn box_axis_ok(lo: f32, hi: f32) -> bool {
+pub(crate) fn box_axis_ok(lo: f32, hi: f32) -> bool {
     lo <= hi && lo.is_finite() && hi.is_finite()
 }
 

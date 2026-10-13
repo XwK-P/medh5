@@ -75,20 +75,37 @@ fn product(values: impl Iterator<Item = f64>) -> f64 {
     values.fold(1.0, |acc, v| acc * v)
 }
 
-/// IoU of two `(S, 2)` boxes in the same space.
-pub fn box_iou(a: &Array2<f32>, b: &Array2<f32>) -> Result<f64> {
-    box_iou_f64(&a.mapv(f64::from), &b.mapv(f64::from))
+/// IoU of two `(S, 2)` boxes in the same space; NaN where there is none
+/// (see [`box_iou_f64`]).
+pub fn box_iou(a: &Array2<f32>, b: &Array2<f32>) -> f64 {
+    box_iou_checked(a, b).unwrap_or(f64::NAN)
 }
 
 /// [`box_iou`] of float64 boxes, as a caller gives them rather than a file
 /// stores them.
 ///
-/// Refused where the two are not boxes of one space, rather than scored:
-/// boxes of different numbers of axes --- a 2-D box against a 3-D one scored
-/// about 10, its area over a volume --- or of none, which scored 1
-/// (`ValueError`), and a bound that is not finite or a `lo` above its `hi`
-/// (E406), whose extent no product measures.
-pub fn box_iou_f64(a: &Array2<f64>, b: &Array2<f64>) -> Result<f64> {
+/// NaN where the two are not boxes of one space, rather than a score: boxes
+/// of different numbers of axes --- a 2-D box against a 3-D one scored about
+/// 10, its area over a volume --- or of none, which scored 1, and a bound that
+/// is not finite or a `lo` above its `hi`, whose extent no product measures.
+/// Agreement and the frontends refuse those instead.
+pub fn box_iou_f64(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
+    box_iou_f64_checked(a, b).unwrap_or(f64::NAN)
+}
+
+/// [`box_iou`], refusing what it answers with NaN.
+pub(crate) fn box_iou_checked(a: &Array2<f32>, b: &Array2<f32>) -> Result<f64> {
+    box_iou_f64_checked(&a.mapv(f64::from), &b.mapv(f64::from))
+}
+
+/// [`box_iou_f64`], refusing what it answers with NaN: boxes of different
+/// numbers of axes or of none (`ValueError`), and a bound that is not finite
+/// or a `lo` above its `hi` (E406).
+///
+/// Public for the workspace's frontends, not as API: 2.0.x keeps the 2.0.1
+/// signatures above.
+#[doc(hidden)]
+pub fn box_iou_f64_checked(a: &Array2<f64>, b: &Array2<f64>) -> Result<f64> {
     check_box(a)?;
     check_box(b)?;
     if a.nrows() != b.nrows() {
@@ -880,7 +897,7 @@ fn match_by_id(
     let mut mismatches = Vec::new();
     for obj in left.iter().filter(|o| shared.contains(&o.instance_id)) {
         let other = by_id_b[&obj.instance_id];
-        matched.push((obj.index, other.index, box_iou(&obj.bbox, &other.bbox)?));
+        matched.push((obj.index, other.index, box_iou_checked(&obj.bbox, &other.bbox)?));
         if obj.class_id != other.class_id {
             mismatches.push((obj.instance_id, obj.class_id, other.class_id));
         }
@@ -905,7 +922,7 @@ fn match_by_iou(left: &[Instance], right: &[Instance], threshold: f64, against: 
             if obj.class_id != other.class_id {
                 continue;
             }
-            let overlap = box_iou(&obj.bbox, &other.bbox)?;
+            let overlap = box_iou_checked(&obj.bbox, &other.bbox)?;
             if overlap >= threshold {
                 candidates.push((overlap, i, j));
             }
@@ -985,31 +1002,42 @@ mod tests {
     fn box_iou_is_zero_without_overlap_and_one_for_identity() {
         let a: Array2<f32> = array![[0.0, 2.0], [0.0, 2.0]];
         let b: Array2<f32> = array![[2.0, 4.0], [0.0, 2.0]];
-        assert_eq!(box_iou(&a, &b).unwrap(), 0.0);
-        assert_eq!(box_iou(&a, &a).unwrap(), 1.0);
+        assert_eq!(box_iou(&a, &b), 0.0);
+        assert_eq!(box_iou(&a, &a), 1.0);
         let c: Array2<f32> = array![[1.0, 3.0], [0.0, 2.0]];
-        assert_eq!(box_iou(&a, &c).unwrap(), 2.0 / 6.0);
+        assert_eq!(box_iou(&a, &c), 2.0 / 6.0);
     }
 
     #[test]
     fn s8_1_box_iou_refuses_what_is_not_two_boxes_of_one_space() {
         let plane: Array2<f64> = array![[0.0, 1.0], [0.0, 1.0]];
         let volume: Array2<f64> = array![[0.0, 1.0], [0.0, 1.0], [0.0, 0.1]];
+        // The public form keeps its 2.0.1 signature and answers NaN for
+        // exactly what the checked form refuses.
+        let both = |a: &Array2<f64>, b: &Array2<f64>| {
+            let checked = box_iou_f64_checked(a, b);
+            let public = box_iou_f64(a, b);
+            match &checked {
+                Ok(v) => assert_eq!(public, *v),
+                Err(_) => assert!(public.is_nan()),
+            }
+            checked
+        };
         // An area over a volume scored about 10, in both orders.
-        assert!(box_iou_f64(&plane, &volume).is_err());
-        assert!(box_iou_f64(&volume, &plane).is_err());
+        assert!(both(&plane, &volume).is_err());
+        assert!(both(&volume, &plane).is_err());
         // No axis at all scored 1.
         let none = Array2::<f64>::zeros((0, 2));
-        assert!(box_iou_f64(&none, &none).is_err());
+        assert!(both(&none, &none).is_err());
         for bad in [[f64::NAN, 1.0], [0.0, f64::INFINITY], [f64::NEG_INFINITY, 0.0], [1.0, 0.0]] {
             let broken = array![[bad[0], bad[1]], [0.0, 1.0]];
-            assert_eq!(box_iou_f64(&broken, &plane).unwrap_err().code(), Some("E406"), "{bad:?}");
-            assert_eq!(box_iou_f64(&plane, &broken).unwrap_err().code(), Some("E406"), "{bad:?}");
+            assert_eq!(both(&broken, &plane).unwrap_err().code(), Some("E406"), "{bad:?}");
+            assert_eq!(both(&plane, &broken).unwrap_err().code(), Some("E406"), "{bad:?}");
         }
         // Boxes of one space still score, a flat one as no overlap.
         let flat: Array2<f64> = array![[0.0, 0.0], [0.0, 1.0]];
-        assert_eq!(box_iou_f64(&flat, &flat).unwrap(), 0.0);
-        assert_eq!(box_iou_f64(&volume, &volume).unwrap(), 1.0);
+        assert_eq!(both(&flat, &flat).unwrap(), 0.0);
+        assert_eq!(both(&volume, &volume).unwrap(), 1.0);
     }
 
     /// Counted in slabs of chunks and in groups of classes, however small the

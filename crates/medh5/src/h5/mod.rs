@@ -64,11 +64,11 @@ pub(crate) mod plugins {
     use crate::h5sys::h5pl;
 
     /// HDF5's variable naming the directories plugins are loaded from.
-    pub const SEARCH_PATH: &str = "HDF5_PLUGIN_PATH";
+    pub(crate) const SEARCH_PATH: &str = "HDF5_PLUGIN_PATH";
 
     /// Set (to anything but `0`) to load HDF5's plugins from its standard
     /// directory when [`SEARCH_PATH`] names none.
-    pub const ALLOW: &str = "MEDH5_ALLOW_PLUGINS";
+    pub(crate) const ALLOW: &str = "MEDH5_ALLOW_PLUGINS";
 
     /// Where HDF5 looks for plugins by default, less the build directory it
     /// puts first.  HDF5 expands the variable on Windows.
@@ -85,7 +85,7 @@ pub(crate) mod plugins {
 
     /// Whether the user asked for plugins: `HDF5_PLUGIN_PATH` naming
     /// directories, or `MEDH5_ALLOW_PLUGINS` set to anything but `0`.
-    pub fn wanted(search_path: Option<&OsStr>, allow: Option<&OsStr>) -> bool {
+    pub(crate) fn wanted(search_path: Option<&OsStr>, allow: Option<&OsStr>) -> bool {
         search_path.is_some_and(|p| !p.is_empty()) || allow.is_some_and(|a| !a.is_empty() && a != "0")
     }
 
@@ -119,7 +119,7 @@ pub(crate) mod plugins {
     /// HDF5's plugin-loading mask (0: none load) and the directories it
     /// would search.
     #[cfg(test)]
-    pub fn state() -> (u32, Vec<String>) {
+    pub(crate) fn state() -> (u32, Vec<String>) {
         super::locked(|| {
             let mut mask: c_uint = 0;
             let mut n: c_uint = 0;

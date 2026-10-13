@@ -586,7 +586,7 @@ impl Annotation {
     /// `class_ids` order.  Under `explicit` none is: readers MUST NOT infer
     /// ancestors there.  Without a label set there is no DAG to read, and a
     /// class unknown to it has no descendants.
-    pub fn implying(&self, class_id: i64) -> Result<&[i64]> {
+    pub(crate) fn implying(&self, class_id: i64) -> Result<&[i64]> {
         let table = cached(&self.implied, || {
             let mut table: HashMap<i64, Vec<i64>> = HashMap::new();
             let Some(labels) = self.label_set.as_deref().filter(|_| self.closure() == "implicit") else {
@@ -810,7 +810,7 @@ impl Annotation {
 
     /// One class's voxels as stored, whatever the `closure`: what an encoder
     /// was given for it, and what a transcode or a flatten re-encodes.
-    pub fn stored_class(&self, class_id: i64, window: &Window) -> Result<ArrayD<bool>> {
+    pub(crate) fn stored_class(&self, class_id: i64, window: &Window) -> Result<ArrayD<bool>> {
         self.read_planes(&[(0, class_id)], window, 1).map(|p| p.index_axis_move(Axis(0), 0))
     }
 

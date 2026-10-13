@@ -17,7 +17,7 @@ use crate::annotations::encode_geometric::{
 use crate::annotations::header::{AnnotationHeader, VOXEL_KINDS};
 use crate::annotations::layout;
 use crate::annotations::payload::{normalize_masks, Masks, Payload, PayloadData};
-use crate::annotations::select::{analyse, select_encoding, OverlapStats};
+use crate::annotations::select::{analyse, select_encoding_checked, OverlapStats};
 use crate::annotations::Annotation;
 use crate::array::{DType, NdArray};
 use crate::curation::quality::QualityRecord;
@@ -382,7 +382,7 @@ impl SampleWriter {
                 let in_band_possible = ignore.is_some() && !overlaps;
                 let stats = analyse(&given, Some(&shape))?;
                 let prefer = if encoding == "auto" { None } else { Some(encoding) };
-                let kind = select_encoding(&stats, false, prefer, in_band_possible)?;
+                let kind = select_encoding_checked(&stats, false, prefer, in_band_possible)?;
                 let in_band = in_band_possible && IN_BAND_IGNORE_KINDS.contains(&kind.as_str());
                 // Masks carry no identity: as `instances`, each class is one
                 // object, minted an id no object in the sample holds yet.
