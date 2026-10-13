@@ -29,12 +29,15 @@ The scope is §3 (W0–W10) of `audit-2.0.2-2.1.0.md`, including the revision-2 
 | legacy | `bea9f87` |
 | comp | `2cbf709` (+ `4a5fb5f` API surface) |
 | clin | `982a561` (+ `32931ac` API surface) |
+| cli | `7a4f3c2` |
+| followups | `353e900` |
+| ci | `7c5fdf6` (pins Rust 1.97.0: locally, link `~/.rustup/toolchains/1.97.0-x86_64-unknown-linux-gnu` to the stable install) |
 
 At `82d1631` (all of the above except dataset), the full test run passed: pytest 2997 passed, 2 skipped, 95.03% coverage; `cargo test --workspace` green; the corpus 163/163 through both command lines; fmt, ruff and mypy clean. Neither clippy nor mkdocs had been run on the merged tree yet. Dataset's item 4 (manifest paths relative to `root`) is deferred: it needs a manifest-format decision.
 
 **Test run at `a7351b6`** (all merges above): pytest 3081 passed, 2 skipped, 95.11% coverage; `cargo test --workspace` green; the corpus 163/163 through both command lines; fmt, ruff and mypy clean.
 
-**In progress** (worktrees under the session scratchpad, `SCR/wt/<name>`): `geom`, `cli`, `ci` and `followups` (the GIL pass in the annotation, writer, reader, integrity and dataset bindings, plus the unowned handoffs; its prompt is `prompts/followups.md` in the scratchpad). The session limit stopped them at 21:50Z on 2026-10-13; they resumed at about 22:00Z.
+**In progress:** `geom` (bounding its cubic coefficient cache with a process-wide memory budget before merge; take its side of `docs/guides/performance.md`) and `polish` (`prompts/polish.md`: the small handoffs of merged workstreams; its items 9 and 19 wait for geom).
 
 **Coordinator, after the last merge:** a polish pass for the small handoffs of merged workstreams (listed in the scratchpad's `agent-ids.md`), the GIL pass over the storage, transforms, geometry and clinical bindings, the CHANGELOG (the draft is in the scratchpad), the version bump, the full gate, deleting this directory, and the PR.
 

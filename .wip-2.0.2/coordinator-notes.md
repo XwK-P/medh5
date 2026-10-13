@@ -11,7 +11,7 @@ conv2     ab8c7681ec090a0e9   DONE, merged 280f014 (+ _safe unification)
 torch     ac1233a378a7fb192   DONE, merged
 docs      ae6b833fd52c21e9e   DONE, merged fbe9dae (handoffs routed to geom, legacy, cli, ci)
 spec      a80e1258f72423b46   DONE, merged dfcbc8b
-ci        a08e55dd70afd108c   batch B (not yet resumed)
+ci        a08e55dd70afd108c   DONE, merged 7c5fdf6 (rustup 1.97.0 linked locally)
 # Wave 2 (prompts written, worktrees not yet created): geom legacy clin comp cli pyapi
 # Integration: squash-merge w202/<name> into claude/relaxed-volta-ua1vih in /home/user/medh5
 # Pending handoffs to route
@@ -27,7 +27,7 @@ comp      a75fcd5a2754b1435   DONE, merged 2cbf709
 clin      aa4b7305e08b4f87c   DONE, merged 982a561
 pyapi     ae64337137c69e276   DONE, merged 56460dd
 geom      ac6ff29f9428aae33   running
-cli       a6a0c691b4ff36a45   running (launched 2026-10-13 16:55Z)
+cli       a6a0c691b4ff36a45   DONE, merged 7a4f3c2
 docs/ci worktrees fast-forwarded to a7351b6; resume after main ext rebuilt (wgate running 07:52Z)
 # 2026-10-13 ~16:55Z: weekly limit reset, VM rebooted (fs intact). Gate at a7351b6 was GREEN (3081 passed, 95.11%, corpora 163/163, cargo/fmt/ruff/mypy ok).
 # Resumed via SendMessage: legacy spec comp clin pyapi geom docs ci. wsnap loop restarted.
@@ -47,3 +47,7 @@ followups a29cfaa711f83e991   running (GIL pass in annotations/writer/reader/int
 - API check after each merge: diff pub items vs 1959938 (new frontend-only items -> #[doc(hidden)]; crate-only -> pub(crate)). Done through comp (4a5fb5f).
 - polish (+clin): task reconcile -o over a source sample (refuse same file as a resolved source; medh5-cli clinical.rs task_reconcile); spec 1.1 §9.1 step 5 wording (clin report); python-api.md c.select MEDH5VersionError
 # 2026-10-13 21:50Z session limit; VM rebooted again. Resumed geom, cli, ci, followups ~22:00Z.
+- polish (+cli): engine compare/compare_instances refuse out-of-range threshold (Python API; CLI already does); medh5.bench negative repeats/patch -> MEDH5ValidationError not OverflowError; README + install.md + medh5/cli.py docstring say python3 only (Windows: python); same_file unify: SKIP (refactor)
+- geom: asked to bound cubic coefficient cache with 256 MiB process-wide budget before merge (performance.md conflict: take geom side)
+- spec (+geom): 1.0 §4.3 origin tolerance wording; §14.1 recommended sizing (one CPU's share of L3; start chunk rule; 4 MiB ceiling)
+polish    a7a130e213cc6a36d   running (prompts/polish.md); items 9+19 wait for geom merge
