@@ -516,6 +516,9 @@ impl Clinical {
     /// answer --- a column, a status, a relation this engine cannot see --- so
     /// neither `certified` nor `provable` is this engine's to claim (1.1 §2.2),
     /// as a task's preflight reports such a source (T306).
+    ///
+    /// Public for the workspace's frontends, not as API.
+    #[doc(hidden)]
     pub fn select(&self, cutoff: i64, policy: &SelectionPolicy) -> Result<Selection> {
         if self.projection {
             return Err(Error::Version(format!(
