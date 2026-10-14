@@ -208,6 +208,13 @@ fn baseline_day_clock<'py>(py: Python<'py>, clock_id: &str) -> PyResult<Bound<'p
     json_to_py(py, &medh5::clinical::augment::baseline_day_clock(clock_id).to_json())
 }
 
+/// `value` units of `unit_us` microseconds, rounded half to even: the
+/// engine's rounding, which `medh5.clinical.hours` and `days` are held to.
+#[pyfunction]
+fn clinical_round_micros(value: f64, unit_us: i64) -> R<i64> {
+    Ok(medh5::clinical::round_micros(value, unit_us)?)
+}
+
 #[pyfunction]
 fn clinical_schema_text() -> &'static str {
     medh5::clinical::schema::schema_text()
@@ -557,6 +564,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         wrap_pyfunction!(imaging_events_from_timepoints, m)?,
         wrap_pyfunction!(baseline_day_clock, m)?,
         wrap_pyfunction!(clinical_schema_text, m)?,
+        wrap_pyfunction!(clinical_round_micros, m)?,
         wrap_pyfunction!(task_normalize, m)?,
         wrap_pyfunction!(task_validate, m)?,
         wrap_pyfunction!(task_fingerprints, m)?,

@@ -8,7 +8,6 @@
 use clap::{Arg, ArgAction, ArgGroup, Command};
 
 use medh5::annotations::encode::TRANSCODABLE;
-use medh5::clinical::model::HOUR;
 use medh5::collection::SUFFIX;
 use medh5::sample::reader::PROFILES;
 use medh5::storage::index::{DEFAULT_MAX_COORDS, DEFAULT_OCCUPANCY_FACTOR};
@@ -696,13 +695,9 @@ fn iou_threshold(text: &str) -> Result<f64, String> {
 /// `int64` holds.  NaN and infinity would saturate to a cutoff nobody gave.
 fn clock_hours(text: &str) -> Result<f64, String> {
     let hours: f64 = text.trim().parse().map_err(|_| format!("{text:?} is not a number"))?;
-    let us = (hours * HOUR as f64).round();
-    // Every int64 lies in [-2^63, 2^63), and both ends are exact in an f64.
-    let bound = 2f64.powi(63);
-    if us.is_finite() && (-bound..bound).contains(&us) {
-        Ok(hours)
-    } else {
-        Err(format!("{text} hours is no time on the subject clock: its microseconds must be a finite int64"))
+    match medh5::clinical::hours(hours) {
+        Ok(_) => Ok(hours),
+        Err(_) => Err(format!("{text} hours is no time on the subject clock: its microseconds must be a finite int64")),
     }
 }
 
@@ -717,9 +712,13 @@ fn clinical() -> Command {
             sample(Command::new("select").about("what strict prospective selection admits at a cutoff"))
                 .arg(int("cutoff_us", "cutoff-us", "the cutoff, in microseconds on the subject clock"))
                 .arg(
-                    opt("cutoff_hours", "cutoff-hours", "the cutoff, in hours on the subject clock")
-                        .value_parser(clock_hours)
-                        .allow_negative_numbers(true),
+                    opt(
+                        "cutoff_hours",
+                        "cutoff-hours",
+                        "the cutoff, in hours on the subject clock (to the microsecond, half to even)",
+                    )
+                    .value_parser(clock_hours)
+                    .allow_negative_numbers(true),
                 )
                 .group(ArgGroup::new("cutoff").args(["cutoff_us", "cutoff_hours"]).required(true))
                 .arg(

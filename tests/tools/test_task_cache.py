@@ -2342,6 +2342,16 @@ class TestCommandLine:
         assert "'s.medh5c::P-01', a source" in capsys.readouterr().err
         assert shard.read_bytes() == before
 
+    def test_cutoff_hours_rounds_as_hours_does(self, setup, capsys):
+        """1.25e-09 hours is 4.5 us: ``hours`` gives 4 (half to even), and the
+        command line gave 5 (half away from zero)."""
+        from medh5.clinical import hours
+
+        _, paths = setup
+        argv = ["clinical", "select", str(paths["P-01"]), "--json"]
+        assert main([*argv, "--cutoff-hours=1.25e-09"]) == EXIT_OK
+        assert json.loads(capsys.readouterr().out)["cutoff_us"] == hours(1.25e-09) == 4
+
     def test_clinical_commands(self, setup, tmp_path: Path, capsys):
         _, paths = setup
         path = str(paths["P-01"])

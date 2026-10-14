@@ -288,6 +288,7 @@ __all__ = [
     "cli_main",
     "clinical_augment",
     "clinical_records",
+    "clinical_round_micros",
     "clinical_schema_text",
     "clinical_select",
     "clinical_strip",
@@ -931,6 +932,10 @@ def clinical_augment(
 ) -> dict[str, Any]: ...
 def clinical_records(records: Any) -> dict[str, Any]:
     """Check a logical-record bundle against its schema and parse it back."""
+    ...
+
+def clinical_round_micros(value: float, unit_us: int) -> int:
+    """`value` units of `unit_us` microseconds, rounded half to even."""
     ...
 
 def clinical_schema_text() -> str: ...

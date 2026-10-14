@@ -557,7 +557,9 @@ versions, the payloads they attest, the records a later revision of unknown
 availability makes uncertifiable, and how many events each rule excluded.
 `--policy latest_provable` names the one alternative; `--policy-file` takes a
 whole policy (contract §3.4). A later minor version, read as a projection, is
-refused (1.1 §2.2).
+refused (1.1 §2.2). `--cutoff-hours` is rounded to the microsecond half to
+even, as `medh5.clinical.hours` rounds it, so a cutoff given in hours is one
+instant from a script and from the command line.
 
 ### `medh5 clinical export`
 

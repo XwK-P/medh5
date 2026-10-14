@@ -68,12 +68,15 @@ LESION_PRESENCE = "lesion_presence"
 
 
 def hours(value: float) -> int:
-    """``value`` hours, in clock microseconds."""
+    """``value`` hours, in clock microseconds, rounded half to even --- as the
+    engine rounds ``medh5 clinical select --cutoff-hours`` and every time
+    given in hours, so a cutoff is one instant from every frontend."""
     return int(round(value * HOUR))
 
 
 def days(value: float) -> int:
-    """``value`` days, in clock microseconds."""
+    """``value`` days, in clock microseconds, rounded half to even, as the
+    engine rounds a visit's ``days_from_baseline``."""
     return int(round(value * DAY))
 
 

@@ -191,7 +191,7 @@ fn select_cmd(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let clinical = clinical_of(&sample, path)?;
     let cutoff = match (get_i64(m, "cutoff_us"), get_f64(m, "cutoff_hours")) {
         (Some(us), None) => us,
-        (None, Some(h)) => (h * HOUR as f64).round() as i64,
+        (None, Some(h)) => medh5::clinical::hours(h)?,
         _ => return Ok(ctx.usage("give the cutoff once: --cutoff-us or --cutoff-hours")),
     };
     let policy = policy_of(m)?;

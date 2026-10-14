@@ -87,6 +87,39 @@ pub const HOUR: i64 = 3_600 * SECOND;
 /// One day, in clock units.
 pub const DAY: i64 = 24 * HOUR;
 
+/// `value` units of `unit_us` microseconds, in clock microseconds, rounded
+/// half to even: the one rounding every frontend uses, so a cutoff given in
+/// hours from a script and from the command line is one instant, and
+/// admission is a closed bound.  A product that is not finite or that the
+/// clock's `int64` cannot hold is refused.
+pub fn round_micros(value: f64, unit_us: i64) -> Result<i64> {
+    let us = (value * unit_us as f64).round_ties_even();
+    // Every int64 lies in [-2^63, 2^63), and both ends are exact in an f64.
+    let bound = 2f64.powi(63);
+    if us.is_finite() && (-bound..bound).contains(&us) {
+        return Ok(us as i64);
+    }
+    let unit = match unit_us {
+        HOUR => "hours".to_string(),
+        DAY => "days".to_string(),
+        SECOND => "seconds".to_string(),
+        other => format!("units of {other} us"),
+    };
+    Err(Error::Value(format!(
+        "{value} {unit} is no time on the subject clock: its microseconds must be a finite int64"
+    )))
+}
+
+/// `value` hours in clock microseconds, rounded half to even ([`round_micros`]).
+pub fn hours(value: f64) -> Result<i64> {
+    round_micros(value, HOUR)
+}
+
+/// `value` days in clock microseconds, rounded half to even ([`round_micros`]).
+pub fn days(value: f64) -> Result<i64> {
+    round_micros(value, DAY)
+}
+
 /// Inclusive bounds on one instant, in clock microseconds (§5.2).
 ///
 /// An exact instant has `lo == hi`.  Day precision spans the day's instants:
@@ -619,5 +652,33 @@ impl ClinicalRecords {
 
     pub fn document(&self, document_id: &str) -> Option<&Document> {
         self.documents.iter().find(|d| d.document_id == document_id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Python's `hours` rounds half to even; the command line and augment
+    /// rounded half away from zero, so at an exact tie a cutoff differed by
+    /// one microsecond, and admission is a closed bound.
+    #[test]
+    fn s3_times_round_half_to_even() {
+        // 1.25e-09 h is 4.5 us: 4 under half to even, 5 away from zero.
+        assert_eq!(hours(1.25e-09).unwrap(), 4);
+        assert_eq!(hours(-1.25e-09).unwrap(), -4);
+        assert_eq!(hours(1.5 / HOUR as f64).unwrap(), 2, "1.5 us");
+        assert_eq!(round_micros(2.5, 1).unwrap(), 2);
+        assert_eq!(round_micros(3.5, 1).unwrap(), 4);
+        assert_eq!(days(0.5).unwrap(), DAY / 2);
+        assert_eq!(hours(-48.0).unwrap(), -48 * HOUR);
+        assert_eq!(round_micros(-(2f64.powi(63)), 1).unwrap(), i64::MIN);
+        for refused in [2f64.powi(63), -(2f64.powi(63)) * 1.000_000_000_000_001, f64::NAN, f64::INFINITY] {
+            let err = round_micros(refused, 1).unwrap_err();
+            assert!(matches!(err, Error::Value(_)), "{refused}: {err}");
+        }
+        let err = hours(f64::NAN).unwrap_err();
+        assert!(err.to_string().contains("NaN hours"), "{err}");
+        assert!(days(1e300).unwrap_err().to_string().contains("days"));
     }
 }

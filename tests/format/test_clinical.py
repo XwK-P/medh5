@@ -297,6 +297,20 @@ class TestRecords:
             assert s.clinical.events == (event,)
             w.abort()
 
+    def test_S3_hours_and_days_are_the_engines(self):
+        """One rounding of hours and days, half to even: the command line and
+        augment rounded half away from zero, so ``1.25e-09`` hours was 4 us
+        here and 5 there, and admission is a closed bound."""
+        from medh5 import _core
+
+        ties = [k + 0.5 for k in range(-40, 40)]
+        for x in [*(t / HOUR for t in ties), *(t / DAY for t in ties), 1.25e-09]:
+            assert clinical.hours(x) == _core.clinical_round_micros(x, HOUR), x
+            assert clinical.days(x) == _core.clinical_round_micros(x, DAY), x
+        assert clinical.hours(1.25e-09) == 4
+        with pytest.raises(ValueError, match="no time on the subject clock"):
+            _core.clinical_round_micros(float("nan"), HOUR)
+
     def test_S3_the_clock_is_fixed_once(self, tmp_path: Path):
         with History.writer_for(tmp_path / "w.medh5") as w:
             w.set_clock(Clock.relative("other", "a different origin"))
