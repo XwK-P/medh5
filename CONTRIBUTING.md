@@ -211,6 +211,15 @@ working, and goes in 3.0.
   `tests/project/test_deprecations.py` checks every message and every
   `#[deprecated]`.
 - **Changelog.** Every deprecation has an entry under `### Deprecated`.
+- **The API gates.** CI compares the public API with the newest release at or
+  below the tree's version, and fails a minor or patch that breaks it:
+  `cargo semver-checks` the crates (the `semver` job), and
+  `.github/scripts/public_api.py` the Python package (`python-api`). A
+  deprecated Python name prints as `deprecated` there, which is not a break;
+  its removal is, until 3.0. `tests/project/python_api.txt` is the Python
+  API as text: a change to it regenerates the file
+  (`python .github/scripts/public_api.py write`), so the diff shows reviewers
+  what changed.
 
 ## Changelog and releases
 

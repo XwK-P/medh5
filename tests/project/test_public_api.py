@@ -65,10 +65,10 @@ class Settings:
 
 
 class Thing:
-    def method(self, a, /, b, *, c=Mode.FAST, d=object()): ...  # noqa: ANN001,ANN201,B008
+    def method(self, a, /, b, *, c=Mode.FAST, d=object()): ...  # noqa: B008
 
     @classmethod
-    def build(cls, size=(1, 2), **options): ...  # noqa: ANN001,ANN003,ANN206
+    def build(cls, size=(1, 2), **options): ...
 
 
 def test_signatures_carry_names_kinds_and_literal_defaults(api: ModuleType) -> None:
@@ -92,7 +92,7 @@ def test_a_dump_line_carries_no_address(api: ModuleType) -> None:
 
 
 PACKAGE = {
-    "__init__.py": '''
+    "__init__.py": """
         import dataclasses
         import enum
         from typing import Optional
@@ -140,7 +140,7 @@ PACKAGE = {
             pass
 
         _DEPRECATED = {"old": (_old, "medh5 3.0 removes old: use measure")}
-        ''',
+        """,
     "sub.py": '__all__ = ["ONE"]\nONE = 1.0\n',
     "_private.py": '__all__ = ["HIDDEN"]\nHIDDEN = 1\n',
 }
@@ -229,11 +229,19 @@ def test_the_same_api_changes_nothing(api: ModuleType) -> None:
             "medh5.Writer.add: keyword 'scores' was removed",
         ),
         (
-            {"medh5.Writer.add": "medh5.Writer.add\tmethod\t(ann_id, boxes, *, scores)"},
+            {
+                "medh5.Writer.add": (
+                    "medh5.Writer.add\tmethod\t(ann_id, boxes, *, scores)"
+                )
+            },
             "medh5.Writer.add: parameter 'scores' lost its default",
         ),
         (
-            {"medh5.Writer": "medh5.Writer\tclass\t(path, *, codec='balanced', root) bases="},
+            {
+                "medh5.Writer": (
+                    "medh5.Writer\tclass\t(path, *, codec='balanced', root) bases="
+                )
+            },
             "medh5.Writer: new required keyword 'root'",
         ),
         (
@@ -301,9 +309,7 @@ def test_what_a_minor_may_add(api: ModuleType) -> None:
 
 
 def test_an_unreadable_signature_is_not_compared(api: ModuleType) -> None:
-    breaks, _ = _changes(
-        api, {"medh5.Writer": "medh5.Writer\tclass\t(?) bases="}
-    )
+    breaks, _ = _changes(api, {"medh5.Writer": "medh5.Writer\tclass\t(?) bases="})
     assert breaks == []
 
 
