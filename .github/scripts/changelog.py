@@ -271,6 +271,10 @@ def build(
     if f"## [{version}]" in text:
         raise FragmentError(f"CHANGELOG.md already has a section for {version}")
     heading = "## [Unreleased]\n\n"
+    # Checked before anything is written or deleted: a heading spelt otherwise
+    # would leave the changelog unchanged and the fragments gone.
+    if heading not in text:
+        raise FragmentError("CHANGELOG.md has no `## [Unreleased]` line, blank after")
     changelog.write_text(text.replace(heading, heading + section + "\n", 1), "utf-8")
     for path in [*paths, lead_path]:
         path.unlink()

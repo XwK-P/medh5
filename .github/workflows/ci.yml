@@ -164,11 +164,12 @@ jobs:
       # Each pull request records its change as a fragment (changes/README.md),
       # or says it has none; a push to `main` only checks them.  The `if:` is
       # on the step, so the job never skips.  Dependabot's updates and the
-      # lock refresh write none.
+      # lock refresh write none; the release pull request deletes them all
+      # (`changelog.py build`), so a deleted fragment counts too.
       - name: Every pull request records its change
         if: github.event_name == 'pull_request' && github.actor != 'dependabot[bot]' && github.head_ref != 'deps/cargo-lock'
         run: |
-          git diff --name-only --diff-filter=AM HEAD^1 HEAD -- 'changes/*.md' \
+          git diff --name-only --diff-filter=AMD HEAD^1 HEAD -- 'changes/*.md' \
             | grep -v -e '/README.md$' -e '/lead.md$' | grep -q . \
             || { echo "::error::add changes/<name>.md (see changes/README.md)"; exit 1; }
       - run: python .github/scripts/changelog.py check

@@ -96,6 +96,26 @@ def test_build_needs_a_lead(tmp_path) -> None:
     assert log.read_text(encoding="utf-8") == CHANGELOG
 
 
+def test_build_touches_nothing_without_the_unreleased_line(tmp_path) -> None:
+    changes, log = _tree(tmp_path)
+    spelt = CHANGELOG.replace("[Unreleased]\n\n", "[Unreleased] \n\n")
+    log.write_text(spelt, encoding="utf-8")
+    _fragment(changes, "x.md", "<!-- area: cli -->\n### Fixed\n\n- **Fix.**\n")
+    _fragment(changes, "lead.md", "**A release.**\n")
+    with pytest.raises(changelog.FragmentError, match="Unreleased"):
+        changelog.build("1.1.0", "2026-02-03", changes, log)
+    assert log.read_text(encoding="utf-8") == spelt
+    assert sorted(p.name for p in changes.iterdir()) == ["README.md", "lead.md", "x.md"]
+
+
+def test_the_release_pull_request_passes_the_fragment_step() -> None:
+    """It adds no fragment: `build` deletes them all, and that counts."""
+    ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    step = ci.split("- name: Every pull request records its change", 1)[1]
+    step = step.split("\n      - ", 1)[0]
+    assert "--diff-filter=AMD HEAD^1 HEAD -- 'changes/*.md'" in step
+
+
 def test_preview_is_what_the_site_shows_under_unreleased(tmp_path) -> None:
     hooks = _load(ROOT / "hooks/mkdocs_hooks.py", "medh5_hooks_test")
     text = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
