@@ -101,6 +101,12 @@ jobs:
       # HDF5 and C-Blosc2 besides; their licences ship as THIRD_PARTY_NOTICES,
       # which is generated from the lock and must be regenerated with it.
       - run: python .github/scripts/third_party_notices.py --check
+      # And each of those licences is one the package's `license` expression
+      # names (deny.toml), from a registry the project knows.  A pinned
+      # release, built from its own lock; rust-cache keeps the binary, and
+      # cargo skips an install it already has.  Advisories stay cargo-audit's.
+      - run: cargo install cargo-deny --version 0.20.2 --locked
+      - run: cargo deny --locked check licenses bans sources
 
   rust-platforms:
     # The engine's own tests off Linux, where the code that differs by platform

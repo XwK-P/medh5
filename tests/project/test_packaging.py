@@ -1163,6 +1163,31 @@ class TestDistribution:
         formula = brew.formula("2.0.0", sums, "medh5-project/medh5")
         assert f"  license all_of: {json.dumps(declared)}\n" in formula
 
+    def test_no_crate_brings_a_licence_the_package_does_not_declare(self):
+        """Nothing checked a new crate's licence against the expression the
+        wheels publish: one under the MPL would have shipped under metadata
+        that does not name it.  `cargo deny` allows exactly that expression's
+        licences, and ci.yml's rust job runs it with sources and bans."""
+        (expression,) = re.findall(
+            r'^license = "([^"]+)"$', PYPROJECT.read_text(encoding="utf-8"), re.M
+        )
+        # Read by pattern: Python 3.10, which the suite still runs on, has no
+        # tomllib.
+        deny = (ROOT / "deny.toml").read_text(encoding="utf-8")
+        allow = re.search(r"^allow = \[([^\]]*)\]$", deny, re.M)
+        assert allow
+        allowed = re.findall(r'"([^"]+)"', allow[1])
+        assert sorted(allowed) == sorted(expression.split(" AND "))
+        assert len(allowed) == len(set(allowed))
+        assert re.search(r'^unknown-registry = "deny"$', deny, re.M)
+        assert re.search(r'^unknown-git = "deny"$', deny, re.M)
+        clarify = deny.split("[[licenses.clarify]]", 1)[1]
+        assert 'crate = "hdf5-metno-src"' in clarify
+        assert re.search(r'path = "ext/hdf5/LICENSE", hash = 0x[0-9a-f]{8}', clarify)
+        rust = _jobs(CI.read_text(encoding="utf-8"))["rust"]
+        assert "cargo install cargo-deny --version 0.20.2 --locked" in rust
+        assert "cargo deny --locked check licenses bans sources" in rust
+
     def test_every_extra_is_one_the_package_asks_for(self):
         """An extra promises that something in the package needs it, so the
         package names each where it does --- `require(..., extra=...)`, or an
@@ -1491,6 +1516,7 @@ class TestDistribution:
         needed = [
             ".github/dependabot.yml",
             ".pre-commit-config.yaml",
+            "deny.toml",
             ".github/workflows/ci.yml",
             ".github/workflows/release.yml",
             *(
