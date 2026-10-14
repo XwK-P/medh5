@@ -66,6 +66,11 @@ fn count(name: &'static str, long: &'static str, help: &'static str, min: i64) -
     opt(name, long, help).value_parser(clap::value_parser!(i64).range(min..)).allow_negative_numbers(true)
 }
 
+/// `--workers N` for a command that takes its files one by one.
+fn workers() -> Arg {
+    count("workers", "workers", "processes to run files in; 0 and 1 run them in this one", 0).default_value("1")
+}
+
 fn json() -> Arg {
     flag("json", "json", "machine-readable output on stdout")
 }
@@ -163,6 +168,7 @@ fn inspect() -> Vec<Command> {
                 .value_name("N"),
             )
             .arg(flag("verbose", "verbose", "also print what each diagnostic's code means").short('v'))
+            .arg(workers())
             .arg(json()),
         Command::new("verify")
             .about("check digests and content_id (spec §13)")
@@ -176,6 +182,7 @@ fn inspect() -> Vec<Command> {
                 )
                 .value_name("OBJ"),
             )
+            .arg(workers())
             .arg(json()),
         Command::new("fix")
             .about("rebuild derived data; restamp digests")
@@ -198,6 +205,7 @@ fn inspect() -> Vec<Command> {
                 opt("performed_by", "by", "with --rewrite-digests: who is making the change; recorded in provenance")
                     .requires("rewrite_digests"),
             )
+            .arg(workers())
             .arg(json()),
         Command::new("timeline")
             .about("timepoints and what belongs to each")
@@ -261,6 +269,7 @@ fn seg() -> Vec<Command> {
                 .default_value(DEFAULT_OCCUPANCY_FACTOR.to_string()),
             )
             .arg(int("seed", "seed", "seed for the coordinate sample, so the index is reproducible").default_value("0"))
+            .arg(workers())
             .arg(json()),
     );
     vec![seg, index]
@@ -662,6 +671,7 @@ fn perf() -> Vec<Command> {
                 "also re-derive chunk shapes; off by default, since a codec change is not an access-pattern change",
             ))
             .arg(opt("out", "out", "write beside the source instead of replacing it (single input only)").short('o'))
+            .arg(workers())
             .arg(json()),
         Command::new("bench")
             .about("reproduce the performance targets")
