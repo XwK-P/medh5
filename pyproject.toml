@@ -175,6 +175,9 @@ include = [
 
 [tool.pytest.ini_options]
 addopts = "--cov=medh5 --cov-report=term-missing"
+# A deprecation warning is an error unless a test expects it with
+# `pytest.warns(..., match="^medh5 3.0 ")`: medh5 never uses what it deprecates.
+filterwarnings = ["error:medh5 3\\.0 "]
 
 [tool.ruff]
 target-version = "py310"

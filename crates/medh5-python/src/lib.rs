@@ -21,6 +21,7 @@ pub mod convert;
 pub mod curation;
 pub mod curation_tools;
 pub mod dataset;
+mod deprecation;
 pub mod document;
 pub mod errors;
 pub mod geometry;
