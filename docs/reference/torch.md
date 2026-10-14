@@ -379,8 +379,52 @@ collection — is `"none"` in `meta["medh5"]`, MONAI's own spelling: its
 (every NIfTI and nnU-Net import) could not be batched. `from_metatensor` reads
 `"none"` back as `None`.
 
-The affine construction (`affine_for`, `convert_affine`) does not import MONAI,
-so the geometry is testable — and tested — in an environment without it.
+### A reader for `LoadImage`
+
+`MedH5Reader` is a MONAI `ImageReader`, so `LoadImage` and `LoadImaged` open a
+`.medh5` — or a collection member, written `path::key` as a split names it —
+with the affine `to_metatensor` gives:
+
+```python
+from monai.transforms import Compose, EnsureChannelFirstd, LoadImaged
+from medh5.monai import MedH5Reader
+
+load = Compose([
+    LoadImaged("image", reader=MedH5Reader("CT")),
+    LoadImaged("label", reader=MedH5Reader(annotation="organs"), dtype=None),
+    EnsureChannelFirstd(["image", "label"]),
+])
+item = load({"image": "case.medh5", "label": "case.medh5"})
+member = LoadImaged("image", reader=MedH5Reader("CT"))({"image": "shard.medh5c::case_0001"})
+```
+
+`MedH5Reader()` without an image reads the sample's only image, and refuses a
+sample holding several, naming them. `annotation=` reads a voxel annotation as
+`to_dict` does — `int64`, `65535` in the ignore region — so pass `dtype=None` to
+`LoadImaged`, which otherwise casts to `float32`. Several files given to one
+call stack as channels, only when they share one grid. The reader leases each
+file from the per-process handle cache, so a worker opens a file once however
+many items read it.
+
+`LoadMedH5d` is `to_dict` as a dictionary transform: one key naming the sample,
+and one output key per image and annotation, read from one lease:
+
+```python
+from monai.transforms import Compose, EnsureChannelFirstd, Spacingd
+from medh5.monai import LoadMedH5d
+
+pipeline = Compose([
+    LoadMedH5d("path", images=["CT"], annotations=["organs"]),
+    EnsureChannelFirstd(["CT", "organs"]),
+    Spacingd(["CT", "organs"], pixdim=(1.5, 1.5, 1.5), mode=("bilinear", "nearest")),
+])
+item = pipeline({"path": "case.medh5"})
+```
+
+`import medh5.monai` imports no MONAI: the reader and the transform subclass
+MONAI's, and are loaded when they are first asked for. The affine construction
+(`affine_for`, `convert_affine`) does not import MONAI either, so the geometry is
+testable — and tested — in an environment without it.
 
 ## Related
 

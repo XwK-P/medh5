@@ -3232,6 +3232,12 @@ medh5.labels.load_file	function	(path)
 medh5.labels.register	function	(name, label_set)
 medh5.labels.unregister	function	(name)
 medh5.monai	module
+medh5.monai.LoadMedH5d	class	(keys='path', *, images=None, annotations=(), space=None, physical=True, allow_missing_keys=False) bases=
+medh5.monai.LoadMedH5d.__call__	method	(data)
+medh5.monai.MedH5Reader	class	(image=None, *, annotation=None, sample_key=None, physical=True, space=None, level=0, dtype=<value>) bases=
+medh5.monai.MedH5Reader.get_data	method	(img)
+medh5.monai.MedH5Reader.read	method	(data, **kwargs)
+medh5.monai.MedH5Reader.verify_suffix	method	(filename)
 medh5.monai.SPACES	constant	tuple
 medh5.monai.affine_for	function	(sample, image_id, *, space=None, level=0)
 medh5.monai.available	function	()

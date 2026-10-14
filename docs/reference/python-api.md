@@ -583,7 +583,7 @@ beside `MEDH5Error`.
 | | |
 |---|---|
 | `medh5.torch` | [Datasets and samplers](torch.md) |
-| `medh5.monai` | [MetaTensor adapter](torch.md#monai) |
+| `medh5.monai` | [MetaTensor adapter, `MedH5Reader` and `LoadMedH5d`](torch.md#monai) |
 | `medh5.io` | [Converters](converters.md) |
 | `medh5.dataset` | [Cohort manifests, splits, statistics](../guides/cohorts.md) |
 | `medh5.curation` | [Provenance, agreement, tracking, de-identification](curation.md) |

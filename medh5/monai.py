@@ -35,6 +35,7 @@ from medh5.geometry import Grid
 from medh5.labels import IGNORE_ID
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
+    from medh5._monai_readers import LoadMedH5d, MedH5Reader
     from medh5.sample import Sample
 
 SPACES = ("LPS", "RAS")
@@ -400,25 +401,38 @@ def to_dict(
     for image_id in wanted:
         item[image_id] = to_metatensor(sample, image_id, physical=physical, space=space)
     for ann_id in annotations:
-        ann = sample.annotations[ann_id]
-        if not isinstance(ann, VoxelAnnotation):
-            # Checked before `labelmap()`, which a box or a point lacks.
-            raise MEDH5ValidationError(
-                f"{sample.path}: annotation {ann_id!r} is {ann.kind!r}, and "
-                "to_dict reads voxel annotations (segmentations) only, as label "
-                "volumes"
-            )
-        # `int64`, the dtype torch indexes and one-hots with.  `int16` wrapped
-        # every class id above 32767 -- §5.3 gives them the full `uint16` range
-        # -- and turned the ignore id 65535 into -1 without anything saying so.
-        planes = np.asarray(ann.labelmap(), dtype=np.int64)
-        # `labelmap()` writes the ignore region as the annotation's own
-        # `ignore_id`, in band or from its sibling mask (§7.7), and a file may
-        # declare another id than 65535.  Every item carries 65535, so one
-        # `ignore_index=65535` masks it out of the loss whatever the file says.
-        planes[sample.ignore_region(ann_id)] = IGNORE_ID
-        item[ann_id] = _metatensor(planes, _annotation_meta(sample, ann, space=space))
+        planes, meta = _label_volume(sample, ann_id, space=space)
+        item[ann_id] = _metatensor(planes, meta)
     return item
+
+
+def _label_volume(
+    sample: Sample, ann_id: str, *, space: str | None = None, reader: str = "to_dict"
+) -> tuple[npt.NDArray[np.int64], dict[str, Any]]:
+    """One voxel annotation as MONAI receives it: an ``int64`` label volume,
+    65535 in its §7.7 ignore region, and the metadata of its own grid.
+
+    *reader* names the caller in the refusal of an annotation that is not
+    voxels.
+    """
+    ann = sample.annotations[ann_id]
+    if not isinstance(ann, VoxelAnnotation):
+        # Checked before `labelmap()`, which a box or a point lacks.
+        raise MEDH5ValidationError(
+            f"{sample.path}: annotation {ann_id!r} is {ann.kind!r}, and "
+            f"{reader} reads voxel annotations (segmentations) only, as label "
+            "volumes"
+        )
+    # `int64`, the dtype torch indexes and one-hots with.  `int16` wrapped
+    # every class id above 32767 -- §5.3 gives them the full `uint16` range
+    # -- and turned the ignore id 65535 into -1 without anything saying so.
+    planes = np.asarray(ann.labelmap(), dtype=np.int64)
+    # `labelmap()` writes the ignore region as the annotation's own
+    # `ignore_id`, in band or from its sibling mask (§7.7), and a file may
+    # declare another id than 65535.  Every item carries 65535, so one
+    # `ignore_index=65535` masks it out of the loss whatever the file says.
+    planes[sample.ignore_region(ann_id)] = IGNORE_ID
+    return planes, _annotation_meta(sample, ann, space=space)
 
 
 def _annotation_meta(
@@ -451,8 +465,28 @@ def _annotation_meta(
     }
 
 
+_READERS = ("LoadMedH5d", "MedH5Reader")
+"""Names served from :mod:`medh5._monai_readers`, which imports MONAI: they
+subclass MONAI's own ``ImageReader`` and ``MapTransform``, so they are defined
+when first asked for, and ``import medh5.monai`` imports no MONAI."""
+
+
+def __getattr__(name: str) -> Any:
+    if name in _READERS:
+        from medh5 import _monai_readers
+
+        return getattr(_monai_readers, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+    return sorted({*globals(), *_READERS})
+
+
 __all__ = [
     "SPACES",
+    "LoadMedH5d",
+    "MedH5Reader",
     "affine_for",
     "available",
     "convert_affine",
