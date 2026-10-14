@@ -121,7 +121,8 @@ mod tests {
         let mut ctx = Ctx::new(&mut out, &mut err, &crate::NativeHost);
         let code = bench_with(sub, &mut ctx, &SMALL).unwrap();
         let code = ctx.finish(code);
-        let payload: Value = serde_json::from_slice(&out).expect("stdout is one JSON document");
+        let payload: Value = serde_json::from_slice(&out)
+            .unwrap_or_else(|e| panic!("stdout is one JSON document: {e}; stderr: {}", String::from_utf8_lossy(&err)));
         let names: Vec<&str> =
             payload["measurements"].as_array().unwrap().iter().map(|m| m["name"].as_str().unwrap()).collect();
         for row in ["paired_center_ms", "foreground_sample_many_ms", "foreground_sample_ms", "meta_read_ms"] {

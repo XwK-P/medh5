@@ -38,8 +38,49 @@ pub fn open_read(path: &Path) -> Result<hdf5::File> {
         Err(err) => return Err(failed(&os_reason(&err))),
     }
     let handle = hdf5::File::open(path).map_err(|e| failed(&e))?;
+    close_on_exec(&handle);
     check_self_contained(&handle, Some(path))?;
     Ok(handle)
+}
+
+/// Keep the descriptor HDF5 opened `file` through out of every program this
+/// process starts.
+///
+/// HDF5 opens a file without `O_CLOEXEC`, so a child started while it was
+/// open, by any thread, inherited the descriptor: it could write a file opened
+/// for writing, and it held the lock HDF5 takes through the descriptor after
+/// the file was closed, so the next open of the file failed "unable to lock
+/// file" for as long as the child ran.  Only the `sec2` driver, the default,
+/// hands back a descriptor; another is left as it is, and so is a Windows
+/// handle.
+pub(crate) fn close_on_exec(file: &hdf5::File) {
+    #[cfg(unix)]
+    {
+        use hdf5::file::FileDriver;
+
+        use crate::h5sys::{h5f, h5p};
+
+        if !matches!(file.access_plist().and_then(|fapl| fapl.get_driver()), Ok(FileDriver::Sec2)) {
+            return;
+        }
+        super::locked(|| {
+            let mut handle: *mut std::ffi::c_void = std::ptr::null_mut();
+            // SAFETY: under HDF5's lock, for a file that stays open for the
+            // call; `sec2` hands back a pointer to the descriptor it holds.
+            unsafe {
+                if h5f::H5Fget_vfd_handle(file.id(), h5p::H5P_DEFAULT, &mut handle) < 0 || handle.is_null() {
+                    return;
+                }
+                let fd = *(handle as *const libc::c_int);
+                let flags = libc::fcntl(fd, libc::F_GETFD);
+                if flags >= 0 {
+                    libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC);
+                }
+            }
+        });
+    }
+    #[cfg(not(unix))]
+    let _ = file;
 }
 
 /// What the system said went wrong, without the error number: "no such file
@@ -63,10 +104,12 @@ fn os_reason(err: &std::io::Error) -> String {
 /// features newer than 1.10 are used only where an object needs them.
 pub fn create_truncate(path: &Path) -> Result<hdf5::File> {
     super::init();
-    hdf5::File::with_options()
+    let file = hdf5::File::with_options()
         .with_fapl(|p| p.libver_bounds(LibraryVersion::V110, LibraryVersion::latest()))
         .create(path)
-        .map_err(|e| Error::File(format!("failed to create {}: {}", repr_str(&path.to_string_lossy()), e)))
+        .map_err(|e| Error::File(format!("failed to create {}: {}", repr_str(&path.to_string_lossy()), e)))?;
+    close_on_exec(&file);
+    Ok(file)
 }
 
 /// The most links a chain is followed through, as Linux bounds one.
@@ -792,6 +835,28 @@ mod tests {
         fs::write(&path, &payload).unwrap();
         fsync_path(&path).unwrap();
         assert_eq!(fs::read(&path).unwrap(), payload);
+    }
+
+    /// A child started while a file was open kept HDF5's descriptor, and the
+    /// lock HDF5 holds through it: the file could not be opened again until
+    /// the child exited.  The command line's `bench` test met it when a
+    /// Python another test started outlived the sample being timed.
+    #[cfg(unix)]
+    #[test]
+    fn s14_4_a_child_process_inherits_no_open_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.h5");
+        create_truncate(&path).unwrap();
+        for door in [create_truncate, open_read] {
+            let file = door(&path).unwrap();
+            let mut child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+            drop(file);
+            // For writing: an exclusive lock, which any lock the child kept refuses.
+            let again = create_truncate(&path).map(drop);
+            child.kill().unwrap();
+            child.wait().unwrap();
+            again.unwrap();
+        }
     }
 
     /// Off POSIX the 2.0.1 checks compared canonical paths, which a hard link

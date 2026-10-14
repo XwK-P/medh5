@@ -112,6 +112,7 @@ fn open_legacy(path: &Path) -> Result<hdf5::File> {
     let text = path.to_string_lossy().into_owned();
     let handle = hdf5::File::open(path)
         .map_err(|e| Error::File(format!("cannot open {} as a 0.x file: {e}", repr_str(&text))))?;
+    crate::h5::file::close_on_exec(&handle);
     crate::h5::ops::check_self_contained(&handle, Some(path))?;
     if ops::exists(&handle, "meta") {
         return Err(Error::Schema(format!("{} is a 1.0 file (it has `/meta`), not a 0.x file", repr_str(&text))));

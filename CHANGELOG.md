@@ -129,6 +129,13 @@ transcoding, digests, index building and field sampling release the GIL.
   temporary file was made read-only before it was opened to be flushed, and
   Windows does not rename over a read-only file; the order is fixed, and a test
   amends a read-only file on every platform.
+- **A program started while a file is open no longer keeps the file locked.**
+  HDF5 opens files without close-on-exec, so a child process started while a
+  sample was open, by any thread, inherited the descriptor and the lock HDF5
+  takes through it: once the sample was closed, opening it again failed
+  "unable to lock file" until the child exited, and a child started during a
+  write held a descriptor that could write the file. The engine now marks each
+  descriptor close-on-exec as it opens the file, on Linux and macOS.
 - **`W907` no longer advises `int16` for a float image holding NaN or
   infinity.** Only the finite values were tested, so an image with NaN outside
   its field of view was advised into a type that cannot hold it.
