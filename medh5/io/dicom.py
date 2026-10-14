@@ -17,10 +17,12 @@ farther than a tenth of a slice from where the regular stack puts it is refused
 rather than averaged --- an irregular stack is not a grid, and pretending
 otherwise puts every label at the wrong depth.
 
-**Values.**  ``RescaleSlope``/``RescaleIntercept`` are stored, never applied
+**Values.**  ``RescaleSlope``/``RescaleIntercept`` are stored, not applied
 (§4.2), so ``read()`` returns what the file stored and ``read(physical=True)``
 returns HU.  A converter that bakes the rescale in makes the two indistinguishable
-afterwards.
+afterwards.  The one exception is asked for: a series whose slices each state
+their own rescale (ordinary in PET) has no one modality LUT to store, and
+``per_slice_rescale="apply"`` stores its physical values instead, saying so.
 """
 
 from __future__ import annotations
@@ -65,6 +67,20 @@ The DICOM SEG reader holds the planes it stacks to the same bound."""
 _POSITION_FLOOR_MM = 0.01
 """The least slice-position tolerance, in millimetres
 (:data:`SPACING_TOLERANCE`)."""
+
+
+_PER_SLICE_RESCALES = ("refuse", "apply")
+"""What :func:`from_dicom` does with a series whose slices state different
+rescales: refuse it, or apply each slice's and store physical values."""
+
+
+def _per_slice_rescale(mode: str) -> str:
+    if mode not in _PER_SLICE_RESCALES:
+        raise ValueError(
+            f"per_slice_rescale must be one of {', '.join(_PER_SLICE_RESCALES)}, "
+            f"not {mode!r}"
+        )
+    return mode
 
 
 def _position_tolerance(spacing: float) -> float:
@@ -336,7 +352,10 @@ def _text(value: Any) -> str | None:
 
 
 def read_series(
-    series: Series, *, report: ConversionReport | None = None
+    series: Series,
+    *,
+    report: ConversionReport | None = None,
+    per_slice_rescale: str = "refuse",
 ) -> tuple[npt.NDArray[Any], dict[str, Any]]:
     """One series as ``(volume, geometry)``, ordered and measured (§3.3).
 
@@ -345,8 +364,15 @@ def read_series(
     reads, or a slice that does not decode, is refused by name --- as a
     ``MEDH5ValidationError``, not the decoder's own exception, which named no
     file and reached the command line as a traceback.
+
+    The volume holds the stored values and ``geometry["rescale"]`` the
+    series' one ``(slope, intercept)``.  A series whose slices state
+    different ones is refused, unless *per_slice_rescale* is ``"apply"``:
+    then the volume holds ``stored × slope + intercept`` of each slice,
+    computed in float64 and returned as float32, ``geometry["rescale"]`` is
+    ``None``, and *report* records the slopes and their slices.
     """
-    planned = _plan_series(series, report)
+    planned = _plan_series(series, report, _per_slice_rescale(per_slice_rescale))
     volume = _decode(planned, series)
     planned.geometry["shape"] = tuple(int(v) for v in volume.shape)
     return volume, planned.geometry
@@ -361,9 +387,14 @@ class _Planned:
     uids: list[str]
     geometry: dict[str, Any]
     samples: int
+    rescales: list[tuple[float, float]] | None = None
+    """Each slice's ``(slope, intercept)``, when they differ and are applied
+    as the slices are decoded; ``None`` when the series has one."""
 
 
-def _plan_series(series: Series, report: ConversionReport | None) -> _Planned:
+def _plan_series(
+    series: Series, report: ConversionReport | None, per_slice_rescale: str = "refuse"
+) -> _Planned:
     """Read and check one series' headers --- every refusal but a slice that
     will not decode --- without decoding a pixel."""
     if not series.paths:
@@ -443,6 +474,7 @@ def _plan_series(series: Series, report: ConversionReport | None) -> _Planned:
             "as written, and a model trained on intensity should invert them",
             {"series_uid": series.series_uid},
         )
+    rescale, rescales = _series_rescale(slices, uids, series, report, per_slice_rescale)
     direction = np.stack([normal, column, row], axis=1)
     geometry = {
         "shape": (len(slices), int(rows), int(columns)),
@@ -452,7 +484,7 @@ def _plan_series(series: Series, report: ConversionReport | None) -> _Planned:
         "coord_system": "LPS",
         "units": "mm",
         "frame_uid": series.frame_uid,
-        "rescale": _agreed(slices, _rescale, "RescaleSlope/Intercept", series),
+        "rescale": rescale,
         "acquisition": {
             tag: _scalar(getattr(slices[0], tag, None))
             for tag in STORED_TAGS
@@ -460,7 +492,83 @@ def _plan_series(series: Series, report: ConversionReport | None) -> _Planned:
         },
         "gaps": gaps,
     }
-    return _Planned(paths=paths, uids=uids, geometry=geometry, samples=int(samples))
+    return _Planned(
+        paths=paths,
+        uids=uids,
+        geometry=geometry,
+        samples=int(samples),
+        rescales=rescales,
+    )
+
+
+def _series_rescale(
+    slices: Sequence[Any],
+    uids: Sequence[str],
+    series: Series,
+    report: ConversionReport | None,
+    mode: str,
+) -> tuple[tuple[float, float] | None, list[tuple[float, float]] | None]:
+    """The series' one ``(slope, intercept)``, or under ``"apply"`` each
+    slice's, when they differ: ``(rescale, None)`` or ``(None, rescales)``.
+
+    *slices* are in geometric order, so a position in *rescales* is the
+    slice's index along the grid's first axis.  A slice stating no rescale
+    among slices that do is refused whatever *mode* says: its LUT is not
+    stated, and taking it as the identity would be a guess.
+    """
+    what = "RescaleSlope/Intercept"
+    values = [_extracted(s, _rescale, what, series) for s in slices]
+    first = values[0]
+    differing = [k for k, v in enumerate(values) if _differs(first, v)]
+    if not differing:
+        return first, None
+    if None in values:
+        k = values.index(None)
+        raise MEDH5ValidationError(
+            f"series {series.series_uid}: instance {uids[k]} states no {what}, "
+            f"but other slices of the series do. Its modality LUT is not "
+            f"stated, and taking it as the identity would be a guess; restore "
+            f"the tags, or split the series."
+        )
+    if mode != "apply":
+        k = differing[0]
+        raise MEDH5ValidationError(
+            f"series {series.series_uid}: its slices state "
+            f"{len(_distinct(values))} different {what} pairs (instance "
+            f"{uids[k]} states {values[k]!r}, the first slice {first!r}). An "
+            f"image stores one modality LUT (§4.2), and storing the first "
+            f"slice's for all of them would misscale the rest without saying "
+            f'so. Import it with per_slice_rescale="apply" '
+            f"(--per-slice-rescale apply) to apply each slice's rescale and "
+            f"store physical values, or split the series."
+        )
+    rescales = [(float(v[0]), float(v[1])) for v in values if v is not None]
+    if report is not None:
+        groups = _distinct(rescales)
+        report.decision(
+            "per_slice_rescale",
+            f"series {series.series_uid}: its {len(rescales)} slices state "
+            f"{len(groups)} different {what} pairs, so stored × slope + "
+            "intercept was applied slice by slice in float64 and stored as "
+            "float32, with no rescale attributes (§4.2)",
+            {
+                "series_uid": series.series_uid,
+                "rescales": [
+                    {"slope": slope, "intercept": intercept, "slices": at}
+                    for (slope, intercept), at in groups.items()
+                ],
+            },
+        )
+    return None, rescales
+
+
+def _distinct(values: Sequence[Any]) -> dict[Any, list[int]]:
+    """Each distinct value of *values*, in order of first appearance, with the
+    positions holding it."""
+    out: dict[Any, list[int]] = {}
+    for k, value in enumerate(values):
+        out.setdefault(value, []).append(k)
+    return out
 
 
 def _require_decoder(slices: Sequence[Any], series: Series) -> None:
@@ -499,6 +607,7 @@ def _decode(planned: _Planned, series: Series) -> npt.NDArray[Any]:
     expected = tuple(planned.geometry["shape"][1:]) + (
         (planned.samples,) if planned.samples != 1 else ()
     )
+    rescales = planned.rescales
     volume: npt.NDArray[Any] | None = None
     for k, (path, uid) in enumerate(zip(planned.paths, planned.uids, strict=True)):
         dataset = _dcmread(path)
@@ -516,6 +625,10 @@ def _decode(planned: _Planned, series: Series) -> npt.NDArray[Any]:
                 f"series {series.series_uid}: instance {uid} ({path}) decodes to a "
                 f"{plane.shape} array, not the {expected} its header states"
             )
+        if rescales is not None:
+            # Physical values, slice by slice: float64 arithmetic, float32 kept.
+            slope, intercept = rescales[k]
+            plane = (plane.astype(np.float64) * slope + intercept).astype(np.float32)
         if volume is None:
             volume = np.empty((len(planned.paths), *plane.shape), dtype=plane.dtype)
         elif plane.dtype != volume.dtype:
@@ -740,11 +853,11 @@ def _agreed(
     A series is one volume with one geometry and one modality LUT, so each of
     these is read once --- but reading it from ``slices[0]`` *without* checking
     is what makes that assumption dangerous.  A stack whose slices disagree then
-    silently takes the first slice's answer for all of them: a PET series with a
-    per-slice rescale (which is ordinary) reports the wrong activity everywhere
-    slice 0's LUT does not apply, and a stack with one rotated slice places that
-    slice's voxels somewhere the scanner never put them.  Neither is visible in
-    the output, so both are refused here rather than averaged or assumed.
+    silently takes the first slice's answer for all of them: a stack with one
+    rotated slice places that slice's voxels somewhere the scanner never put
+    them, which is not visible in the output, so it is refused here rather
+    than averaged or assumed.  (A per-slice rescale, ordinary in PET, has its
+    own check, :func:`_series_rescale`, which can apply it instead.)
     """
     values = [_extracted(s, extract, what, series, expect) for s in slices]
     first = values[0]
@@ -860,6 +973,7 @@ def from_dicom(
     series_uids: Sequence[str] | None = None,
     codec: str = "balanced",
     report: ConversionReport | None = None,
+    per_slice_rescale: str = "refuse",
 ) -> ConversionReport:
     """Convert a DICOM tree into one sample per subject (or per study).
 
@@ -874,7 +988,15 @@ def from_dicom(
     imported: one such series aborted the whole tree.  A subject left with no
     series gets no file; when no series at all can be imported, the refusal
     is raised.
+
+    A series whose slices state different ``RescaleSlope``/``RescaleIntercept``
+    (ordinary in PET) is refused, since an image stores one modality LUT
+    (§4.2).  *per_slice_rescale* ``"apply"`` imports it instead, as
+    ``stored × slope + intercept`` of each slice in float32 with no rescale
+    attributes, and records the slopes and their slices.  A series with one
+    rescale is written the same either way, and SUV is never computed.
     """
+    mode = _per_slice_rescale(per_slice_rescale)
     log = report or ConversionReport(converter="from-dicom")
     log.source = os.fspath(root)
     series = scan_dicom(root, report=log)
@@ -920,7 +1042,9 @@ def from_dicom(
             if directory
             else target
         )
-        written += _write_subject(group, path, codec=codec, log=log, refused=refused)
+        written += _write_subject(
+            group, path, codec=codec, log=log, refused=refused, per_slice_rescale=mode
+        )
     if not written:
         if len(refused) == 1:
             raise refused[0]
@@ -1005,6 +1129,7 @@ def _write_subject(
     codec: str,
     log: ConversionReport,
     refused: list[MEDH5ValidationError],
+    per_slice_rescale: str = "refuse",
 ) -> bool:
     """Write one subject's sample to *path*; whether it was written.
 
@@ -1020,13 +1145,14 @@ def _write_subject(
         [
             (entry, plan)
             for entry in occasion.payload
-            if (plan := _plan(entry, log, refused))
+            if (plan := _plan(entry, log, refused, per_slice_rescale))
         ]
         for occasion in group.occasions
     ]
     if not any(planned):
         _no_sample(group, path, log)
         return False
+    applied = [e.series_uid for o in planned for e, p in o if p.rescales is not None]
     note_instance_ids(group, log)
     days = group.days_from_baseline()
     # The ids are the PatientID --- usually the medical record number --- or,
@@ -1065,8 +1191,15 @@ def _write_subject(
                 "value_scale",
                 "RescaleSlope/Intercept were stored, not applied; "
                 "read(physical=True) returns HU and read() returns stored values "
-                "(§4.2)",
-                {"subject": group.subject_id},
+                "(§4.2)"
+                + (
+                    f"; except in series {', '.join(applied)}, whose per-slice "
+                    "rescale was applied (per_slice_rescale)"
+                    if applied
+                    else ""
+                ),
+                {"subject": group.subject_id}
+                | ({"per_slice_rescale_applied": applied} if applied else {}),
             )
             # Information, not a warning: a warning fails the conversion, and
             # this one was on every conversion, so `convert from-dicom` exited 1
@@ -1087,12 +1220,15 @@ def _write_subject(
 
 
 def _plan(
-    entry: Series, log: ConversionReport, refused: list[MEDH5ValidationError]
+    entry: Series,
+    log: ConversionReport,
+    refused: list[MEDH5ValidationError],
+    per_slice_rescale: str = "refuse",
 ) -> _Planned | None:
     """*entry* checked for import, or ``None`` when it is refused --- with the
     refusal recorded as a warning and kept in *refused*."""
     try:
-        planned = _plan_series(entry, log)
+        planned = _plan_series(entry, log, per_slice_rescale)
         if planned.samples != 1:
             raise MEDH5ValidationError(
                 f"series {entry.series_uid} has {planned.samples} samples per pixel; "
@@ -1149,18 +1285,22 @@ def _write_occasion(
     plans = {entry.series_uid: plan for entry, plan in planned}
     written: dict[str, Series] = {}
     for entry, grid_id, image_id in _series_names([e for e, _ in planned], tp):
-        geometry = plans[entry.series_uid].geometry
+        plan = plans[entry.series_uid]
+        geometry = plan.geometry
         try:
-            volume = _decode(plans[entry.series_uid], entry)
+            volume = _decode(plan, entry)
         except MEDH5ValidationError as exc:
             _refuse(entry, exc, log, refused)
             continue
+        params: dict[str, Any] = {"slices": entry.n_slices, "modality": entry.modality}
+        if plan.rescales is not None:
+            params["per_slice_rescale"] = "applied"
         activity = writer.activity(
             "import",
             agent=tool,
             tool="medh5 convert from-dicom",
             inputs=[f"dicom:{entry.series_uid}"],
-            params={"slices": entry.n_slices, "modality": entry.modality},
+            params=params,
         )
         writer.add_grid(
             grid_id,

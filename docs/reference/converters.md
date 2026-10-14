@@ -171,6 +171,24 @@ policy.
 become the image's `rescale`, so `read(physical=True)` gives HU and `read()`
 gives what the scanner stored.
 
+**A per-slice rescale is refused, or applied when asked.** An image stores one
+modality LUT (§4.2), and a PET series often states one per slice; taking the
+first slice's for all of them would misscale the rest, so such a series is
+refused, naming `per_slice_rescale`. With `per_slice_rescale="apply"`
+(`--per-slice-rescale apply`), each slice becomes `stored × slope + intercept`,
+computed in float64 and stored as float32 with no rescale attributes; a
+`per_slice_rescale` decision lists the distinct slopes and intercepts with the
+slices (grid indices along the first axis) that state each, and the import
+activity's params gain `"per_slice_rescale": "applied"`. SUV is never
+computed, and `value_type` and units do not change. A slice that states no
+rescale among slices that do is refused either way, and a series with one
+rescale is written byte for byte the same whatever the option.
+
+<!-- illustrative -->
+```python
+report = from_dicom("/pet", "pet.medh5", per_slice_rescale="apply")
+```
+
 **Tags are an explicit allow-list.** Imaging physics goes to `acquisition`;
 everything else stays out (§11.4). The importer does not de-identify, and
 writes no de-identification record: the report says so, and the validator

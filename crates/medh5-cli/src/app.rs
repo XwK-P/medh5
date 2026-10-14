@@ -545,6 +545,16 @@ fn convert() -> Vec<Command> {
                 .arg(
                     append("series_uids", "series", "only import these SeriesInstanceUIDs; repeatable")
                         .value_name("SERIES"),
+                )
+                .arg(
+                    opt(
+                        "per_slice_rescale",
+                        "per-slice-rescale",
+                        "a series whose slices declare different RescaleSlope/Intercept (PET): refuse it (default), \
+                         or apply each slice's rescale and store physical values as float32",
+                    )
+                    .value_parser(["refuse", "apply"])
+                    .default_value("refuse"),
                 ),
         ))
         .subcommand(report_args(

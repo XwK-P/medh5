@@ -419,6 +419,7 @@ def _from_dicom(args: Any) -> int:
         group_by=args.group_by,
         modalities=args.modalities,
         series_uids=args.series_uids,
+        per_slice_rescale=args.per_slice_rescale,
     )
     return _finish(report, args)
 

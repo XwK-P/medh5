@@ -472,6 +472,7 @@ medh5 convert to-nifti PATH IMAGE OUT [--annotation A --class K] [--stored]
 
 medh5 convert from-dicom ROOT OUT [--group-by subject|study]
                                   [--modality M ...] [--series UID ...]
+                                  [--per-slice-rescale refuse|apply]
 
 medh5 convert from-dicom-seg SEG SAMPLE [--id ANN] [--grid G] [--frame-salt S]
 medh5 convert to-dicom-seg PATH ANNOTATION OUT --source DICOM [--source DICOM ...]
@@ -513,7 +514,11 @@ accession numbers; when it cannot be established the command falls back to one
 sample per study, warns, and records the fallback. `OUT` is the file the one
 sample is written to, or a directory of samples named for their subjects: when
 several samples result, when it is an existing directory, or when it ends in a
-path separator (`out/`).
+path separator (`out/`). A series whose slices state different
+`RescaleSlope`/`RescaleIntercept` — ordinary in PET — is refused unless
+`--per-slice-rescale apply` stores each slice's physical values instead, as
+float32 with no rescale; a series with one rescale is written the same either
+way.
 
 `--frame-salt` is for a sample `medh5 scrub` pseudonymised: given the salt the
 scrub used, the DICOM side's frame of reference (the SEG's or the RTSTRUCT's on
