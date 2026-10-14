@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import errno
 import json
+import math
 import os
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
@@ -454,7 +455,7 @@ def _geometry_notes(
         return notes
     if sform_code and qform_code:
         sform = np.asarray(header.get_sform(), dtype=np.float64)
-        qform = np.asarray(header.get_qform(), dtype=np.float64)
+        qform = _qform(header, path)
         if not np.allclose(sform, qform, atol=1e-4, rtol=0):
             notes.append(
                 (
@@ -470,6 +471,63 @@ def _geometry_notes(
                 )
             )
     return notes
+
+
+def _affine(image: Any, path: str | os.PathLike[str]) -> npt.NDArray[np.float64]:
+    """The file's index-to-RAS affine, chosen as nibabel and NIfTI readers
+    choose it: the sform where ``sform_code`` is set, else the qform where
+    ``qform_code`` is, else nibabel's fallback from ``pixdim`` (which
+    :func:`_geometry_notes` refuses unless asked)."""
+    header = image.header
+    if int(header["sform_code"]) == 0 and int(header["qform_code"]) != 0:
+        return _qform(header, path)
+    return np.asarray(image.affine, dtype=np.float64)
+
+
+def _qform(header: Any, path: str | os.PathLike[str]) -> npt.NDArray[np.float64]:
+    """The qform affine, computed in float64 from the quaternion parameters
+    as NIfTI-1 defines it (``nifti1.h``).
+
+    nibabel builds it in ``np.longdouble``, which is 80-bit on x86-64 and
+    64-bit elsewhere, so a qform-only file's direction and spacing --- and the
+    ``content_id`` of what it was imported into --- differed in the last bit
+    between platforms.  ``a`` is ``sqrt(1 - (b² + c² + d²))``; within the
+    stored (float32) precision of zero it is zero, and (b, c, d) is
+    normalised, as ``nifti1_io`` does; beyond it below zero, the parameters
+    are no rotation, and the file is refused, as nibabel refused it.
+    """
+    b, c, d = (float(header[name]) for name in ("quatern_b", "quatern_c", "quatern_d"))
+    w2 = 1.0 - (b * b + c * c + d * d)
+    if abs(w2) < float(np.finfo(np.float32).eps):
+        norm = math.sqrt(b * b + c * c + d * d)
+        a, b, c, d = 0.0, b / norm, c / norm, d / norm
+    elif w2 < 0:
+        raise MEDH5ValidationError(
+            f"{os.fspath(path)}: the qform's quaternion parameters (b, c, d) = "
+            f"({b}, {c}, {d}) have b² + c² + d² > 1, so they are no rotation"
+        )
+    else:
+        a = math.sqrt(w2)
+    pixdim = [float(v) for v in header["pixdim"][:4]]
+    if any(v < 0 for v in pixdim[1:]):
+        raise MEDH5ValidationError(
+            f"{os.fspath(path)}: pixdim[1:4] = {pixdim[1:]} holds a negative "
+            "voxel size, which the qform cannot scale by"
+        )
+    qfac = -1.0 if pixdim[0] < 0 else 1.0
+    rotation = (
+        (a * a + b * b - c * c - d * d, 2 * b * c - 2 * a * d, 2 * b * d + 2 * a * c),
+        (2 * b * c + 2 * a * d, a * a + c * c - b * b - d * d, 2 * c * d - 2 * a * b),
+        (2 * b * d - 2 * a * c, 2 * c * d + 2 * a * b, a * a + d * d - c * c - b * b),
+    )
+    scale = (pixdim[1], pixdim[2], qfac * pixdim[3])
+    offset = [float(header[name]) for name in ("qoffset_x", "qoffset_y", "qoffset_z")]
+    out = np.eye(4, dtype=np.float64)
+    for row in range(3):
+        for column in range(3):
+            out[row, column] = rotation[row][column] * scale[column]
+        out[row, 3] = offset[row]
+    return out
 
 
 def _replay_notes(log: ConversionReport, name: str, geo: Mapping[str, Any]) -> None:
@@ -551,7 +609,7 @@ def read_nifti(
     time_dim = [a for a in range(3, data.ndim) if a not in squeezed] == [3]
     for axis in squeezed:
         data = np.squeeze(data, axis=axis)
-    affine = convert_world(image.affine, source="RAS", target=coord_system)
+    affine = convert_world(_affine(image, path), source="RAS", target=coord_system)
     spacing, origin, direction = decompose_affine(affine)
     order = tuple(range(data.ndim))
     if transpose and data.ndim >= 3:

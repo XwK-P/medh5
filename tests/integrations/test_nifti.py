@@ -177,6 +177,56 @@ class TestNiftiGeometryIsNeverInvented:
         report = from_nifti({"IMG": src}, tmp_path / "out.medh5", sample_id="s")
         assert any("sform and qform" in n.message for n in report.guesses)
 
+    # A qform-only file's geometry, to the bit: what NIfTI-1's quaternion
+    # formula gives in float64 for the header below, on every platform.
+    QFORM_SPACING = (
+        "0x1.3ffffffffffffp+1",
+        "0x1.cccccbfffffffp-1",
+        "0x1.999999fffffffp-1",
+    )
+    QFORM_DIRECTION = (
+        ("0x1.e6702aa72c5b5p-3", "-0x1.ee26214f97e4fp-1", "-0x1.c28f4fae14779p-4"),
+        ("-0x1.0a4daa5157daap-1", "-0x1.c6a7eb43957fdp-3", "0x1.a6439f0b30acfp-1"),
+        ("-0x1.a40b77b50b0f0p-1", "-0x1.1c024b85c9f5bp-3", "-0x1.1c04145a54b6ep-1"),
+    )
+
+    def test_S3_a_qform_import_is_the_same_on_every_platform(self, tmp_path):
+        """nibabel builds the qform in `np.longdouble`, 80-bit on x86-64 and
+        64-bit elsewhere, so the grid a qform-only file imported to --- and
+        the sample's `content_id` --- differed in the last bit between
+        platforms.  The importer computes it in float64 itself."""
+        image = nib.Nifti1Image(np.zeros((4, 5, 6), np.int16), None)
+        header = image.header
+        header["quatern_b"], header["quatern_c"], header["quatern_d"] = (
+            0.13,
+            0.27,
+            -0.61,
+        )
+        header["pixdim"][:4] = [-1.0, 0.8, 0.9, 2.5]
+        header["qoffset_x"], header["qoffset_y"], header["qoffset_z"] = (
+            -10.5,
+            20.25,
+            5.125,
+        )
+        header["qform_code"], header["sform_code"] = 1, 0
+        src = tmp_path / "qform.nii"
+        nib.save(image, str(src))
+        out = tmp_path / "out.medh5"
+        from_nifti({"IMG": src}, out, sample_id="s")
+        with medh5.open(out) as sample:
+            (grid,) = sample.grids.values()
+            spacing = tuple(float(v).hex() for v in grid.spacing)
+            direction = tuple(
+                tuple(float(v).hex() for v in row) for row in np.asarray(grid.direction)
+            )
+            affine = np.asarray(grid.affine)
+        assert spacing == self.QFORM_SPACING
+        assert direction == self.QFORM_DIRECTION
+        # The same geometry nibabel reads, but for the last bit.
+        ras = convert_world(affine, source="LPS", target="RAS")
+        stated = nib.load(str(src)).affine
+        np.testing.assert_allclose(ras[:3, :3], stated[:3, :3][:, ::-1], atol=1e-12)
+
     def test_a_well_formed_file_reports_no_geometry_guess(self, tmp_path):
         src = self._write(
             tmp_path / "ok.nii.gz",
