@@ -34,9 +34,7 @@ report is read.  The engine does all of it; this module is the Python face.
 from __future__ import annotations
 
 import copy
-import json
 import os
-import shutil
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import KW_ONLY, dataclass, field, replace
 from pathlib import Path
@@ -46,7 +44,6 @@ import numpy as np
 import numpy.typing as npt
 
 from medh5 import _core
-from medh5._files import temporary_beside
 from medh5.clinical import (
     SELECTION_POLICIES,
     Event,
@@ -73,7 +70,7 @@ LABELS = ("positive", "negative", "censored", "prevalent", "none")
 
 PathLike = str | os.PathLike[str]
 
-Confine = bool | os.PathLike[str] | None
+Confine = bool | str | os.PathLike[str] | None
 """Where a runner lets a task's sources be opened from (contract §2):
 ``True`` confines them to the base relative URIs resolve against, a path to
 that directory, ``False`` opens wherever the URIs point.  ``None``, 2.1's
@@ -476,39 +473,27 @@ class TaskManifest:
 
     @classmethod
     def load(cls, path: PathLike) -> TaskManifest:
-        """Read a manifest; relative source URIs resolve against its directory."""
-        path = Path(path)
-        try:
-            doc = json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
-            from medh5.errors import MEDH5ValidationError
+        """Read a manifest; relative source URIs resolve against its directory.
 
-            raise MEDH5ValidationError(f"{path} is not JSON: {exc}", "T101") from None
-        out = cls(doc, base=path.parent)
+        T101 for a file that is not JSON --- ``NaN`` and the infinities
+        included, which JSON does not have.
+        """
+        path = Path(path)
+        out = cls(_core.task_load_document(path), base=path.parent)
         out._loaded = True
         return out
 
     def save(self, path: PathLike) -> Path:
-        """Write the manifest, pretty-printed, with its fingerprint.
+        """Write the manifest, pretty-printed, with its fingerprint: the bytes
+        ``medh5 task`` writes.
 
         Through a temporary file renamed over *path*: a write cut short --- a
-        full disk, a crash --- leaves the previous manifest whole.
+        full disk, a crash --- leaves the previous manifest whole.  A *path*
+        that is one of the manifest's sources, by any name or link, is
+        refused: saving there would replace a sample with JSON.
         """
         path = Path(path)
-        doc = self.to_json()
-        doc["fingerprint"] = self.manifest_fingerprint
-        target = path.resolve() if path.is_symlink() else path
-        temporary, fd = temporary_beside(target)
-        try:
-            with open(fd, "w", encoding="utf-8") as out:
-                out.write(json.dumps(doc, indent=2, ensure_ascii=False) + "\n")
-                out.flush()
-                os.fsync(out.fileno())
-            if target.exists():
-                shutil.copymode(target, temporary)
-            os.replace(temporary, target)
-        finally:
-            temporary.unlink(missing_ok=True)
+        _core.task_save(self._doc, path, self.base)
         return path
 
     def _normalised(self) -> dict[str, Any]:
@@ -587,11 +572,12 @@ class TaskManifest:
     ) -> TaskManifest:
         """Record, per subject, the event versions several fragments hold and
         the digest they agree on --- what preflight checks duplicates against.
-        ``confine`` says where sources may be opened (:data:`Confine`)."""
-        found = _core.task_reconcile(
+        ``confine`` says where sources may be opened (:data:`Confine`).  A
+        declared fingerprint is dropped, as ``medh5 task reconcile`` drops
+        it: the manifest changed, and :meth:`save` declares the new one."""
+        self._doc = _core.task_reconcile(
             self._doc, self._base(base), self._confined(base, confine)
         )
-        self._doc["subjects"] = found["subjects"]
         self._changed()
         return self
 

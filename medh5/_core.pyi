@@ -495,11 +495,13 @@ __all__ = [
     "subtrees_identical",
     "target_registration_error",
     "task_fingerprints",
+    "task_load_document",
     "task_normalize",
     "task_preflight",
     "task_reconcile",
     "task_row_fingerprint",
     "task_row_fingerprints",
+    "task_save",
     "task_schema_text",
     "task_sources_outside",
     "task_subjects_digest",
@@ -1784,6 +1786,10 @@ def task_fingerprints(doc: Any) -> dict[str, str]:
     """`{"task": ..., "manifest": ...}`."""
     ...
 
+def task_load_document(path: str | os.PathLike[str]) -> Any:
+    """A manifest file's document, unparsed: T101 for anything not JSON."""
+    ...
+
 def task_normalize(doc: Any) -> dict[str, Any]:
     """Parse, check the schema, and return the normalised manifest."""
     ...
@@ -1806,6 +1812,16 @@ def task_reconcile(
     ...
 
 def task_row_fingerprint(doc: Any, row_id: str) -> str: ...
+def task_save(
+    doc: Any,
+    path: str | os.PathLike[str],
+    base: str | os.PathLike[str] | None = None,
+) -> None:
+    """Write the manifest as the engine writes it, refusing an output that is
+    one of its sources.
+    """
+    ...
+
 def task_sources_outside(
     doc: Any, base: str | os.PathLike[str] | None = None
 ) -> list[str]:

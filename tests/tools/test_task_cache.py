@@ -173,6 +173,94 @@ class TestManifest:
         capsys.readouterr()
         assert [p.name for p in path.parent.glob(".*")] == []
 
+    @pytest.mark.parametrize("alias", ["exact", "relative", "symlink", "hardlink"])
+    def test_S3_3_save_never_writes_over_a_source(
+        self, setup, tmp_path: Path, alias: str
+    ):
+        """Only the command line refused an output that is a source:
+        ``TaskManifest.load(m).reconcile().save("ct.medh5")`` replaced a
+        patient's sample with JSON.  Both now refuse, by any path or link."""
+        task, paths = setup
+        source = paths["P-02"]
+        if alias == "exact":
+            out = source
+        elif alias == "relative":
+            (tmp_path / "sub").mkdir()
+            out = tmp_path / "sub" / ".." / "cohort" / source.name
+        else:
+            out = tmp_path / "alias.medh5"
+            try:
+                (out.symlink_to if alias == "symlink" else out.hardlink_to)(source)
+            except OSError as exc:  # pragma: no cover - no links on this file system
+                pytest.skip(str(exc))
+        before = source.read_bytes()
+        loaded = TaskManifest.load(task.save(tmp_path / "cohort" / "t.task.json"))
+        for unsaved in (task, loaded):
+            with pytest.raises(
+                MEDH5ValidationError, match="a source of subject 'P-02'"
+            ):
+                unsaved.save(out)
+        assert source.read_bytes() == before
+
+    def test_S3_3_both_frontends_reconcile_alike(self, tmp_path: Path):
+        """The reconcile loop was written twice: the binding kept the declared
+        fingerprint the command line dropped.  Both are now the engine's."""
+        root = tmp_path / "f"
+        root.mkdir()
+        a, b = root / "a.medh5", root / "b.medh5"
+        History.write(a, subject_id="P-01")
+        History.write(b, subject_id="P-01")
+        task = TaskManifest.new("t", "1", identity_namespace="n", base=root)
+        task.add_subject(
+            "P-01", [SourceRef.pin(a, uri="a.medh5"), SourceRef.pin(b, uri="b.medh5")]
+        )
+        task.add_row("r", "P-01", 24 * HOUR)
+        manifest = task.save(root / "t.task.json")
+        assert (
+            main(["task", "reconcile", str(manifest), "-o", str(root / "c.json")]) == 0
+        )
+        python = TaskManifest.load(manifest).reconcile()
+        assert len(python.subjects[0].reconciled) == 6
+        assert python.validate() == [], "no stale declared fingerprint (T103)"
+        python.save(root / "p.json")
+        cli = json.loads((root / "c.json").read_text(encoding="utf-8"))
+        assert json.loads((root / "p.json").read_text(encoding="utf-8")) == cli
+        assert (root / "p.json").read_bytes() == (root / "c.json").read_bytes()
+
+    def test_S3_1_both_frontends_save_one_byte_form(self, setup, tmp_path: Path):
+        """The engine wrote ``"M\\u00fcller"``, Python ``"Müller"``: one
+        document, two files.  Python now writes the engine's bytes."""
+        task, _ = setup
+        doc = task.to_json()
+        doc["task"]["description"] = "Müller's cohort, 東京"
+        doc["identity_namespace"] = "hôpital"
+        root = tmp_path / "cohort"
+        python = TaskManifest(doc, base=root).save(root / "p.json")
+        native = root / "n.json"
+        assert main(["task", "reconcile", str(python), "-o", str(native)]) == 0
+        assert python.read_bytes() == native.read_bytes()
+        assert TaskManifest.load(python).identity_namespace == "hôpital"
+
+    @pytest.mark.parametrize("spelling", ["NaN", "Infinity", "-Infinity"])
+    def test_S3_1_a_manifest_holding_nan_is_not_json(
+        self, setup, tmp_path: Path, capsys, spelling: str
+    ):
+        """Python's ``json.loads`` read ``NaN``; the engine refused it.  JSON
+        has none, so both refuse: T101."""
+        task, _ = setup
+        path = task.save(tmp_path / "cohort" / "t.task.json")
+        text = path.read_text(encoding="utf-8")
+        path.write_text(
+            text.replace('"version": "1"', f'"x": {spelling}, "version": "1"', 1),
+            encoding="utf-8",
+        )
+        with pytest.raises(MEDH5ValidationError) as caught:
+            TaskManifest.load(path)
+        assert caught.value.code == "T101"
+        capsys.readouterr()
+        assert main(["task", "validate", str(path)]) == EXIT_ERROR
+        assert "T101" in capsys.readouterr().out
+
     def test_S3_2_fingerprints_follow_the_manifest(self, setup):
         """Computed once until the manifest changes --- each access parsed the
         whole manifest, a row's twice --- and the same values."""

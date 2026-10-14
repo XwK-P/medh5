@@ -6,7 +6,7 @@
 //! task manifest is a dict, re-parsed per call, so it pickles into DataLoader
 //! workers with nothing to rebuild.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use pyo3::prelude::*;
@@ -310,13 +310,32 @@ fn task_reconcile<'py>(
 ) -> R<Bound<'py, PyAny>> {
     let mut m = manifest(doc)?;
     let m = py.detach(move || -> medh5::Result<TaskManifest> {
-        let access = access(base, root)?;
-        for i in 0..m.subjects.len() {
-            m.subjects[i].reconciled = medh5::companion::view::reconcile_in(&m.subjects[i], &access)?;
-        }
+        m.reconcile_all(&access(base, root)?)?;
         Ok(m)
     })?;
     Ok(json_to_py(py, &m.to_json())?)
+}
+
+/// Write the manifest as the engine writes it, refusing an output that is
+/// one of its sources; `base` resolves relative sources (else the output's
+/// directory).
+#[pyfunction]
+#[pyo3(signature = (doc, path, base=None))]
+fn task_save(py: Python<'_>, doc: &Bound<'_, PyAny>, path: PathBuf, base: Option<PathBuf>) -> R<()> {
+    let m = manifest(doc)?;
+    py.detach(move || -> medh5::Result<()> {
+        let base = base.or_else(|| path.parent().map(Path::to_path_buf));
+        m.check_output(&path, &SourceAccess::new(base.as_deref()))?;
+        m.save(&path)
+    })?;
+    Ok(())
+}
+
+/// A manifest file's document, unparsed: T101 for anything not JSON.
+#[pyfunction]
+fn task_load_document<'py>(py: Python<'py>, path: PathBuf) -> R<Bound<'py, PyAny>> {
+    let doc = py.detach(move || TaskManifest::read_document(&path))?;
+    Ok(json_to_py(py, &doc)?)
 }
 
 /// The preflight of a task, as columns (`crate::preflight`).
@@ -622,6 +641,8 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         wrap_pyfunction!(task_row_fingerprints, m)?,
         wrap_pyfunction!(task_subjects_digest, m)?,
         wrap_pyfunction!(task_reconcile, m)?,
+        wrap_pyfunction!(task_save, m)?,
+        wrap_pyfunction!(task_load_document, m)?,
         wrap_pyfunction!(task_preflight, m)?,
         wrap_pyfunction!(task_sources_outside, m)?,
         wrap_pyfunction!(source_pin, m)?,

@@ -464,28 +464,9 @@ fn task_reconcile(m: &ArgMatches, ctx: &mut Ctx) -> CmdResult {
     let access = source_access(m, &manifest, base.as_deref(), ctx)?;
     // The save replaces whatever `--out` names: a source sample, named again
     // or through a link, became the manifest that pins it, and exit 0.
-    if let Some(out) = get_str(m, "out") {
-        for subject in &manifest.subjects {
-            if let Some(source) =
-                subject.sources.iter().find(|s| access.locate(s).is_ok_and(|p| same_file(&p, Path::new(out))))
-            {
-                return Err(Error::invalid(format!(
-                    "--out {} is {}, a source of subject {}; write the manifest to another file",
-                    repr_str(out),
-                    repr_str(&source.locator()),
-                    repr_str(&subject.subject_id)
-                )));
-            }
-        }
-    }
-    let mut recorded = 0;
-    for i in 0..manifest.subjects.len() {
-        let found = medh5::companion::view::reconcile_in(&manifest.subjects[i], &access)?;
-        recorded += found.len();
-        manifest.subjects[i].reconciled = found;
-    }
-    manifest.fingerprint = None;
     let out = get_str(m, "out").unwrap_or_else(|| req_str(m, "manifest"));
+    manifest.check_output(Path::new(out), &access).map_err(|e| Error::invalid(format!("--out {}", e.message())))?;
+    let recorded = manifest.reconcile_all(&access)?;
     manifest.save(Path::new(out))?;
     ctx.print(format!("recorded {recorded} reconciled event(s); wrote {out}"));
     Ok(EXIT_OK)

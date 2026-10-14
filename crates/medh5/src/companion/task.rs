@@ -374,10 +374,48 @@ impl TaskManifest {
 
     /// Read a manifest file.
     pub fn load(path: &Path) -> Result<TaskManifest> {
+        TaskManifest::from_json(&TaskManifest::read_document(path)?)
+    }
+
+    /// A manifest file's document, before it is parsed: T101 for anything
+    /// that is not JSON, `NaN` and the infinities included (JSON has none).
+    pub fn read_document(path: &Path) -> Result<Value> {
         let text = std::fs::read_to_string(path).map_err(|e| crate::error::os_error(&e, path))?;
-        let doc = crate::json::loads(&text)
-            .map_err(|e| Error::coded("T101", format!("the task manifest is not JSON: {e}")))?;
-        TaskManifest::from_json(&doc)
+        crate::json::loads(&text).map_err(|e| Error::coded("T101", format!("the task manifest is not JSON: {e}")))
+    }
+
+    /// Record, per subject, the event versions several of its fragments
+    /// hold and the digest they share (`subjects[].reconciled`), opening
+    /// sources where `access` lets them be opened.  Returns how many were
+    /// recorded.  The declared fingerprint is dropped: the manifest changed.
+    pub fn reconcile_all(&mut self, access: &SourceAccess) -> Result<usize> {
+        let mut recorded = 0;
+        for subject in &mut self.subjects {
+            subject.reconciled = super::view::reconcile_in(subject, access)?;
+            recorded += subject.reconciled.len();
+        }
+        self.fingerprint = None;
+        Ok(recorded)
+    }
+
+    /// Refuse an output that is one of the manifest's sources, by any path
+    /// or link: saving there replaces a patient's sample with JSON.  Sources
+    /// are located through `access`, so nothing outside a confined root is
+    /// examined.
+    pub fn check_output(&self, out: &Path, access: &SourceAccess) -> Result<()> {
+        for subject in &self.subjects {
+            for source in &subject.sources {
+                if access.locate(source).is_ok_and(|p| crate::h5::file::same_file(&p, out)) {
+                    return Err(Error::invalid(format!(
+                        "{} is {}, a source of subject {}; write the manifest to another file",
+                        repr_str(&out.to_string_lossy()),
+                        repr_str(&source.locator()),
+                        repr_str(&subject.subject_id)
+                    )));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// The task's definition: what identifies the task, defaults filled in.
