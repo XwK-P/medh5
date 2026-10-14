@@ -30,7 +30,7 @@ from markdown_it import MarkdownIt
 GITHUB_LIMIT = 125_000
 
 # The repository the notes link into, outside the workflow.
-REPOSITORY = "XwK-P/medh5"
+REPOSITORY = "medh5-project/medh5"
 
 # GitHub's Markdown is CommonMark with tables (and inline extensions).
 MARKDOWN = MarkdownIt("commonmark").enable("table")

@@ -95,7 +95,7 @@ REDIRECTS: tuple[tuple[str, str], ...] = (
     ("design/medh5-1.0-proposal.md", "explanation/design-rationale.md"),
     (
         "design/medh5-1.0-implementation-plan.md",
-        "https://github.com/XwK-P/medh5/blob/11c4860/design/medh5-1.0-implementation-plan.md",
+        "https://github.com/medh5-project/medh5/blob/11c4860/design/medh5-1.0-implementation-plan.md",
     ),
     ("design/benchmarks/README.md", "examples/index.md"),
     ("getting-started.md", "tutorials/first-sample.md"),

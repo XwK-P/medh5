@@ -178,8 +178,8 @@ def test_release_the_homebrew_formula_names_the_binaries_ci_builds() -> None:
     assert brew.archive("2.0.0", "x") == "medh5-2.0.0-x.tar.gz"
 
     sums = {brew.archive("2.0.0", t): f"{i:064x}" for i, t in enumerate(sorted(built))}
-    text = brew.formula("2.0.0", sums, "XwK-P/medh5")
-    base = "https://github.com/XwK-P/medh5/releases/download/v2.0.0"
+    text = brew.formula("2.0.0", sums, "medh5-project/medh5")
+    base = "https://github.com/medh5-project/medh5/releases/download/v2.0.0"
     for target in brew.TARGETS.values():
         name = brew.archive("2.0.0", target)
         assert f'url "{base}/{name}"' in text
@@ -188,7 +188,7 @@ def test_release_the_homebrew_formula_names_the_binaries_ci_builds() -> None:
 
     del sums[brew.archive("2.0.0", "x86_64-apple-darwin")]
     with pytest.raises(SystemExit, match="x86_64-apple-darwin"):
-        brew.formula("2.0.0", sums, "XwK-P/medh5")
+        brew.formula("2.0.0", sums, "medh5-project/medh5")
     listing = f"{'a' * 64}  medh5-2.0.0-x.tar.gz\n\n{'b' * 64} *y.zip\n"
     assert brew.read_sums(listing) == {
         "medh5-2.0.0-x.tar.gz": "a" * 64,
@@ -206,10 +206,10 @@ def test_the_2_0_0_notes_describe_the_format_it_writes() -> None:
     """
     notes = _release_script("release_notes.py")
     text = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    body = notes.notes(text, "2.0.0", "XwK-P/medh5", "v2.0.0")
+    body = notes.notes(text, "2.0.0", "medh5-project/medh5", "v2.0.0")
     assert "**format 1.1**" in body and "**The `clinical` profile**" in body
     assert "format is unchanged" not in body
-    pinned = "https://github.com/XwK-P/medh5/blob/v2.0.0/docs/spec/medh5-1.1.md"
+    pinned = "https://github.com/medh5-project/medh5/blob/v2.0.0/docs/spec/medh5-1.1.md"
     assert f"]({pinned})" in body
     with pytest.raises(SystemExit, match="no section for 0.0.0"):
         notes.notes(text, "0.0.0", "o/r", "v0.0.0")
@@ -224,7 +224,7 @@ def test_the_release_notes_fit_a_github_release() -> None:
     they are written, before anything is published."""
     notes = _release_script("release_notes.py")
     text = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    assert len(notes.notes(text, "2.0.0", "XwK-P/medh5", "v2.0.0")) <= (
+    assert len(notes.notes(text, "2.0.0", "medh5-project/medh5", "v2.0.0")) <= (
         notes.GITHUB_LIMIT
     )
     # Notes of exactly the limit pass and one character more is refused.  In
@@ -255,7 +255,7 @@ def test_a_release_page_breaks_no_line_of_the_changelog() -> None:
     versions = re.findall(r"^## \[(\d[^\]]*)\]", text, re.M)
     assert {"0.5.0", "2.0.0"} <= set(versions)
     for version in versions:
-        body = notes.notes(text, version, "XwK-P/medh5", f"v{version}")
+        body = notes.notes(text, version, "medh5-project/medh5", f"v{version}")
         assert "<br" not in page.render(body), version
 
 
@@ -1054,7 +1054,7 @@ class TestDistribution:
         brew = _release_script("homebrew_formula.py")
         assert list(brew.LICENSES) == declared
         sums = {brew.archive("2.0.0", t): "0" * 64 for t in brew.TARGETS.values()}
-        formula = brew.formula("2.0.0", sums, "XwK-P/medh5")
+        formula = brew.formula("2.0.0", sums, "medh5-project/medh5")
         assert f"  license all_of: {json.dumps(declared)}\n" in formula
 
     def test_every_extra_is_one_the_package_asks_for(self):
@@ -1151,7 +1151,7 @@ class TestDistribution:
         monkeypatch.setattr(
             release, "subprocess", SimpleNamespace(run=lambda *a, **k: missing)
         )
-        monkeypatch.setenv("GITHUB_REPOSITORY", "XwK-P/medh5")
+        monkeypatch.setenv("GITHUB_REPOSITORY", "medh5-project/medh5")
         (tmp_path / "notes.md").write_text("notes", encoding="utf-8")
         files = [tmp_path / "notes.md"]
         for argv, flags in (
@@ -1209,7 +1209,7 @@ class TestDistribution:
         monkeypatch.setattr(
             release, "fetch", lambda url, **_: json.dumps(assets).encode()
         )
-        monkeypatch.setenv("GITHUB_REPOSITORY", "XwK-P/medh5")
+        monkeypatch.setenv("GITHUB_REPOSITORY", "medh5-project/medh5")
         assert release.verify("v2.0.0", dist, cli, tap=None, token=None) == 0
 
     def test_a_yanked_crate_is_neither_published_again_nor_called_missing(
@@ -1249,7 +1249,7 @@ class TestDistribution:
         monkeypatch.setattr(
             release, "fetch", lambda url, **_: json.dumps(assets).encode()
         )
-        monkeypatch.setenv("GITHUB_REPOSITORY", "XwK-P/medh5")
+        monkeypatch.setenv("GITHUB_REPOSITORY", "medh5-project/medh5")
         monkeypatch.setattr(release, "crates_io_status", lambda name, v: status[name])
         capsys.readouterr()
         assert release.verify("v2.0.0", dist, cli, tap=None, token=None) == 1
@@ -1325,7 +1325,10 @@ class TestDistribution:
             "release.py verify" in jobs["verify"] and "!cancelled()" in jobs["verify"]
         )
         for job in ("crates", "homebrew"):
-            assert "CANONICAL: ${{ github.repository == 'XwK-P/medh5' }}" in jobs[job]
+            assert (
+                "CANONICAL: ${{ github.repository == 'medh5-project/medh5' }}"
+                in jobs[job]
+            )
             fails = (
                 r'"\$CANONICAL" == true \]\]; then\n\s+echo "::error::[^\n]*\n\s+exit 1'
             )

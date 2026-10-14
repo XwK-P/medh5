@@ -19,7 +19,7 @@ on purpose in a pull request of its own. The crates themselves build with any
 Rust from `rust-version` in `Cargo.toml` on, which CI checks too.
 
 ```bash
-git clone https://github.com/XwK-P/medh5.git
+git clone https://github.com/medh5-project/medh5.git
 cd medh5
 # The Python package, with the engine compiled into it by maturin (release
 # profile). Re-run after changing Rust.
@@ -313,7 +313,7 @@ version. Before the first tag that publishes there:
 - **PyPI**: the project's Trusted Publisher names this repository,
   `release.yml` and the `pypi` environment, as it has since 1.x; renaming
   either here means renaming it there.
-- **Homebrew**: the tap (`XwK-P/homebrew-medh5`) exists, and
+- **Homebrew**: the tap (`medh5-project/homebrew-medh5`) exists, and
   `HOMEBREW_TAP_TOKEN` can push to it — a fine-grained token with read and
   write access to that repository's contents.
 

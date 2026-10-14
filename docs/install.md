@@ -77,10 +77,10 @@ compiled ahead of time, with the same commands and output.
 **Homebrew**, on macOS or Linux:
 
 ```bash
-brew install XwK-P/medh5/medh5
+brew install medh5-project/medh5/medh5
 ```
 
-**A download.** Every [GitHub Release](https://github.com/XwK-P/medh5/releases/latest)
+**A download.** Every [GitHub Release](https://github.com/medh5-project/medh5/releases/latest)
 has an archive for Linux (x86_64 or ARM64, glibc 2.28 or later), macOS (Intel
 or Apple silicon) and Windows (x64), and a `SHA256SUMS` file to check it
 against. Unpack it and put `medh5` on your path.
