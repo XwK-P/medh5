@@ -19,7 +19,7 @@
 //! nothing is left out.
 
 use crate::annotations::encode_geometric::{SCOPES, SPACES};
-use crate::annotations::header::{ANNOTATION_KINDS, GEOMETRIC_KINDS, RESERVED_KINDS, TASKS};
+use crate::annotations::header::{is_geometric_kind, kinds, RESERVED_KINDS, TASKS};
 use crate::geometry::grid::AXIS_KINDS;
 use crate::h5::attrs;
 use crate::json::repr_str;
@@ -72,12 +72,13 @@ pub fn annotation_value(group: &hdf5::Group) -> Result<Option<Later>> {
     if RESERVED_KINDS.contains(&kind.as_str()) {
         return Ok(Some(Later { what: "kind", value: kind, met: Met::First }));
     }
-    if let Some(found) = later("kind", &kind, &ANNOTATION_KINDS, Met::First) {
+    let known = kinds(crate::version::LATEST_VERSION).unwrap_or_default();
+    if let Some(found) = later("kind", &kind, known, Met::First) {
         return Ok(Some(found));
     }
     let mut checked: Vec<(&'static str, &[&str], Met)> =
         vec![("task", &TASKS, Met::Reading("E412")), ("closure", &CLOSURES, Met::Reading("E412"))];
-    if GEOMETRIC_KINDS.contains(&kind.as_str()) {
+    if is_geometric_kind(&kind) {
         checked.push(("space", &SPACES, Met::InUse));
     }
     if kind == "classification" {

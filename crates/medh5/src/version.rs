@@ -18,7 +18,16 @@
 use crate::{Error, Result};
 
 /// The format versions this engine implements, oldest first.
+#[deprecated(since = "2.1.0", note = "use version::format_versions(); removed in 3.0")]
 pub const FORMAT_VERSIONS: [&str; 2] = ["1.0", "1.1"];
+
+/// The format versions this engine implements, oldest first.
+///
+/// A slice, so a later engine implementing another version answers with a
+/// longer one and no caller's type changes.
+pub fn format_versions() -> &'static [&'static str] {
+    &["1.0", "1.1"]
+}
 /// The version an imaging-only sample is written in.
 pub const BASE_VERSION: &str = "1.0";
 /// The newest version this engine implements (`medh5::FORMAT_VERSION`).
@@ -156,8 +165,12 @@ mod tests {
         assert_eq!(next_minor("1.9").as_deref(), Some("1.10"));
         assert_eq!(next_minor("1").as_deref(), Some("1.1"));
         assert_eq!(next_minor("1.x"), None);
-        assert_eq!(FORMAT_VERSIONS.last(), Some(&LATEST_VERSION));
+        assert_eq!(format_versions().last(), Some(&LATEST_VERSION));
         assert_eq!(support(&later_minor()), Support::Projection);
+        assert!(format_versions().iter().all(|v| support(v) == Support::Full));
+        #[allow(deprecated)] // the deprecated array must keep answering what the function does
+        let array = FORMAT_VERSIONS;
+        assert_eq!(&array[..], format_versions());
     }
 
     #[test]
