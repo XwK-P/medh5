@@ -146,7 +146,10 @@ for epoch in range(epochs):
 With workers, make `samples_per_volume` a multiple of `batch_size`: a batch is
 read by one worker, so a file whose items straddle two batches is opened by
 both. `set_cache_size(n)` is the other lever — raise it toward the number of
-files a worker cycles through, lower it when descriptors are scarce.
+files a worker cycles through, lower it when descriptors are scarce. Under DDP
+the same sampler gives each rank a contiguous share of the files
+(`num_replicas`, `rank`), where `DistributedSampler` would have every rank
+open every file.
 
 ## On a network filesystem
 

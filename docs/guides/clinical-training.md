@@ -318,6 +318,22 @@ loader = DataLoader(train, batch_size=8, num_workers=4, persistent_workers=True,
                     worker_init_fn=worker_init_fn, collate_fn=collate_clinical)
 ```
 
+`FileGroupedSampler` takes a clinical dataset too: it groups rows by subject, whose rows all read
+the same sources, so a worker opens a subject's files once per epoch. Under DDP it is also the
+sampler that shards the rows (see [the torch reference](../reference/torch.md#keeping-a-files-items-together)):
+
+```python
+from torch.utils.data import DataLoader
+from medh5.torch import ClinicalTaskDataset, FileGroupedSampler, collate_clinical
+
+train = ClinicalTaskDataset("cohort/progression.task.json", partition="train")
+sampler = FileGroupedSampler(train, seed=0, num_replicas=2, rank=1)
+loader = DataLoader(train, batch_size=4, sampler=sampler, collate_fn=collate_clinical)
+for epoch in range(2):
+    sampler.set_epoch(epoch)      # on every rank
+    rows = [m["row_id"] for batch in loader for m in batch["meta"]]
+```
+
 The dataset holds only what pickles: the manifest, the preflight's columns, the fitted vocabulary
 and the cache's path — NumPy arrays, which a forked worker shares rather than copies. Workers
 re-read nothing that preflight decided, and read each source as the version its row pins: a handle

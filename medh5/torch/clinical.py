@@ -537,6 +537,17 @@ class ClinicalTaskDataset(_DatasetBase):  # type: ignore[misc,valid-type]
     def __len__(self) -> int:
         return len(self.rows)
 
+    def file_groups(self) -> list[list[int]]:
+        """Row indices per subject, in order of first appearance, for
+        :class:`~medh5.torch.FileGroupedSampler`: every row of a subject leases
+        the same sources.  A row without a subject is a group of its own."""
+        groups: dict[object, list[int]] = {}
+        for index, row in enumerate(self.rows):
+            subject = row.subject_index
+            key: object = ("row", index) if subject is None else subject
+            groups.setdefault(key, []).append(index)
+        return list(groups.values())
+
     def _placeholder_channels(self, report: Preflight) -> dict[str, int]:
         """Per slot some row leaves empty, its placeholder's channel extent.
 

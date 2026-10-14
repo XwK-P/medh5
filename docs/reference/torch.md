@@ -210,11 +210,36 @@ loader = DataLoader(ds, batch_size=4, sampler=FileGroupedSampler(ds, seed=0),
 
 The order is a function of `(seed, epoch)`, and the epoch is the dataset's:
 `ds.set_epoch(epoch)` redraws the patches and reorders the files. Pass it
-instead of `shuffle=True`, not with it. It works with the four datasets above,
-which say which items read which file (`file_groups()`) — `ClinicalTaskDataset`
-does not, and is refused — and with workers `samples_per_volume` should be a
-multiple of `batch_size`, since a file whose items straddle two batches is
-opened by both workers.
+instead of `shuffle=True`, not with it. It works with the four datasets above
+and with `ClinicalTaskDataset`, whose rows it groups by subject (every row of a
+subject reads the same sources); each says which items read which file
+(`file_groups()`). With workers `samples_per_volume` should be a multiple of
+`batch_size`, since a file whose items straddle two batches is opened by both
+workers.
+
+Under DDP, `FileGroupedSampler` takes the place of `DistributedSampler`, which
+deals items round-robin and so hands every rank a patch of every file. Each
+rank takes one contiguous share of the epoch's order — the same length on
+every rank, every epoch, so no collective waits on a rank that ran out — and a
+file is split between ranks only where a share ends: at most
+`num_replicas - 1` files an epoch are read by two neighbouring ranks.
+`num_replicas` and `rank` default to `torch.distributed`'s world size and rank,
+when a process group is initialised:
+
+```python
+from medh5.torch import FileGroupedSampler
+
+sampler = FileGroupedSampler(ds, seed=0, num_replicas=2, rank=1)
+loader = DataLoader(ds, batch_size=4, sampler=sampler, collate_fn=collate)
+for epoch in range(epochs):
+    ds.set_epoch(epoch)
+    sampler.set_epoch(epoch)     # on every rank, so the ranks agree on the order
+    for batch in loader:
+        pass
+```
+
+The epoch's order is extended cyclically to a multiple of `num_replicas`, as
+`DistributedSampler` pads; `drop_last=True` cuts it to one instead.
 
 The cache is shared by the threads of a process and locked. A handle is held
 for the length of an item, so a thread-based loader never has one closed under

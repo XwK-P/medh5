@@ -3739,6 +3739,7 @@ medh5.torch.CACHE	constant	medh5.torch.handles.HandleCache
 medh5.torch.ClinicalTaskDataset	class	(task, *, partition=None, statuses=('eligible',), concepts=None, documents=None, row_features=None, base=None, strict=True, preflight=None) bases=
 medh5.torch.ClinicalTaskDataset.__getitem__	method	(index)
 medh5.torch.ClinicalTaskDataset.__len__	method	()
+medh5.torch.ClinicalTaskDataset.file_groups	method	()
 medh5.torch.ConceptVocabulary	class	(concepts, stats=<factory>, fitted_on=None, units=<factory>, categories=<factory>) bases=
 medh5.torch.ConceptVocabulary.__len__	method	()
 medh5.torch.ConceptVocabulary.categories	field
@@ -3758,10 +3759,12 @@ medh5.torch.ConceptVocabulary.stats	field
 medh5.torch.ConceptVocabulary.to_json	method	()
 medh5.torch.ConceptVocabulary.units	field
 medh5.torch.ConceptVocabulary.value_index	method	(token, text)
-medh5.torch.FileGroupedSampler	class	(dataset, *, shuffle=True, seed=0) bases=
+medh5.torch.FileGroupedSampler	class	(dataset, *, shuffle=True, seed=0, num_replicas=None, rank=None, drop_last=False) bases=
 medh5.torch.FileGroupedSampler.__iter__	method	()
 medh5.torch.FileGroupedSampler.__len__	method	()
 medh5.torch.FileGroupedSampler.groups	property
+medh5.torch.FileGroupedSampler.num_replicas	property
+medh5.torch.FileGroupedSampler.rank	property
 medh5.torch.FileGroupedSampler.set_epoch	method	(epoch)
 medh5.torch.GridPatchDataset	class	(paths, patch_size, *, overlap=0, **kwargs) bases=
 medh5.torch.GridPatchDataset.__getitem__	method	(index)
@@ -3834,6 +3837,7 @@ medh5.torch.clinical	module
 medh5.torch.clinical.ClinicalTaskDataset	class	(task, *, partition=None, statuses=('eligible',), concepts=None, documents=None, row_features=None, base=None, strict=True, preflight=None) bases=
 medh5.torch.clinical.ClinicalTaskDataset.__getitem__	method	(index)
 medh5.torch.clinical.ClinicalTaskDataset.__len__	method	()
+medh5.torch.clinical.ClinicalTaskDataset.file_groups	method	()
 medh5.torch.clinical.ConceptVocabulary	class	(concepts, stats=<factory>, fitted_on=None, units=<factory>, categories=<factory>) bases=
 medh5.torch.clinical.ConceptVocabulary.__len__	method	()
 medh5.torch.clinical.ConceptVocabulary.categories	field
@@ -3905,10 +3909,12 @@ medh5.torch.handles.worker_init_fn	function	(worker_id)
 medh5.torch.open_cached	function	(path, sample_key=None)
 medh5.torch.require_torch	function	()
 medh5.torch.samplers	module
-medh5.torch.samplers.FileGroupedSampler	class	(dataset, *, shuffle=True, seed=0) bases=
+medh5.torch.samplers.FileGroupedSampler	class	(dataset, *, shuffle=True, seed=0, num_replicas=None, rank=None, drop_last=False) bases=
 medh5.torch.samplers.FileGroupedSampler.__iter__	method	()
 medh5.torch.samplers.FileGroupedSampler.__len__	method	()
 medh5.torch.samplers.FileGroupedSampler.groups	property
+medh5.torch.samplers.FileGroupedSampler.num_replicas	property
+medh5.torch.samplers.FileGroupedSampler.rank	property
 medh5.torch.samplers.FileGroupedSampler.set_epoch	method	(epoch)
 medh5.torch.set_cache_size	function	(maxsize)
 medh5.torch.stack_images	function	(batch, order)

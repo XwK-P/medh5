@@ -306,6 +306,28 @@ class TestWorkedExample:
         )
         assert {r.subject_id for r in partial.rows} == {"P-01", "P-02", "P-04"}
 
+    def test_rows_are_grouped_by_subject(self, worked: dict[str, Any]):
+        ds = ClinicalTaskDataset(worked["task"], partition="train")
+        groups = ds.file_groups()
+        assert sorted(i for group in groups for i in group) == list(range(len(ds)))
+        subjects = [{ds.rows[i].subject_id for i in group} for group in groups]
+        assert all(len(found) == 1 for found in subjects)
+        assert len({next(iter(found)) for found in subjects}) == len(groups)
+        assert len(groups) < len(ds), "some subject has more than one row"
+        assert [group[0] for group in groups] == sorted(group[0] for group in groups)
+
+    def test_the_sampler_takes_a_clinical_dataset(self, worked: dict[str, Any]):
+        from medh5.torch import FileGroupedSampler
+
+        ds = ClinicalTaskDataset(worked["task"], partition="train")
+        order = list(FileGroupedSampler(ds, seed=0))
+        assert sorted(order) == list(range(len(ds)))
+        runs = [ds.rows[order[0]].subject_id]
+        for index in order[1:]:
+            if ds.rows[index].subject_id != runs[-1]:
+                runs.append(ds.rows[index].subject_id)
+        assert len(runs) == len(set(runs)), "a subject's rows come together"
+
     def test_S6_workers_produce_the_same_batches(self, worked: dict[str, Any]):
         ds = ClinicalTaskDataset(worked["task"], partition="train")
         alone = next(iter(DataLoader(ds, batch_size=8, collate_fn=collate_clinical)))
