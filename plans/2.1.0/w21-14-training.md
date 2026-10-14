@@ -16,13 +16,13 @@
 > medh5 2.1.0 in this repository. First read `plans/README.md`,
 > `plans/2.1.0/README.md` and `plans/2.1.0/decisions.md` (D30, D34), then
 > `plans/2.1.0/w21-14-training.md` in full. Work from the latest `main` on
-> `w21/training`; land the four pull requests in order. `import medh5.monai` must
-> still import no MONAI; MONAI and torch tests `importorskip`, and run in the
-> `test-monai` and `test-min-deps` jobs (MONAI 1.3, torch 2.0): check the floors.
-> HDF5 handles must not cross `fork`, and rows index, never copy. Write tests
-> first, run the local gate from `CLAUDE.md` (and `pytest tests/ -k "Monai or
-> monai"` with the `monai` extra), add fragments, open `W21-14: …` pull requests,
-> and do not merge.
+> `w21/training`; land the four items in order as one pull request. `import
+> medh5.monai` must still import no MONAI; MONAI and torch tests `importorskip`,
+> and run in the `test-monai` and `test-min-deps` jobs (MONAI 1.3, torch 2.0):
+> check the floors. HDF5 handles must not cross `fork`, and rows index, never
+> copy. Write tests first, run the local gate from `CLAUDE.md` (and `pytest
+> tests/ -k "Monai or monai"` with the `monai` extra), add a fragment per item,
+> open the `W21-14: …` pull request, and do not merge.
 
 ## Pull requests
 

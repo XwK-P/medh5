@@ -16,14 +16,16 @@
 > of medh5 2.1.0 in this repository. First read `plans/README.md`,
 > `plans/2.1.0/README.md` and `plans/2.1.0/decisions.md` (D23), then
 > `plans/2.1.0/w21-05-files.md` in full. Work from the latest `main` on
-> `w21/files`; land the four pull requests in order. Before PR 1, check that
+> `w21/files`. PR 1 is an enabler: open it as a pull request of its own first;
+> items 2–4 follow, in order, as a second pull request. Before PR 1, check that
 > W21-04 PR 1 has merged: it adds a snapshot check to `AtomicFile::commit`,
 > which your refactor must keep. PR 1 changes how Python writes files (links are
 > kept, modes kept, LF on Windows): rewrite the 2.0.2 test that pins the old
 > link rule rather than deleting it. You move only the write sites this file
 > lists; each other owner moves theirs, and your guard test's allow-list holds
 > theirs until they do. Write tests first, run the local gate from `CLAUDE.md`,
-> add fragments, open `W21-05: …` pull requests, and do not merge.
+> add a fragment per item, open the two `W21-05: …` pull requests, and do not
+> merge.
 
 ## Pull requests
 

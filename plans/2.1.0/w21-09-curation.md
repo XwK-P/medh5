@@ -15,14 +15,14 @@
 > Implement workstream W21-09 (curation: tracking and agreement) of medh5 2.1.0
 > in this repository. First read `plans/README.md`, `plans/2.1.0/README.md` and
 > `plans/2.1.0/decisions.md` (D12, D13), then `plans/2.1.0/w21-09-curation.md`
-> in full. Work from the latest `main` on `w21/curation`; land the two pull
-> requests in order. Coverage is the invariant: `class_ids` is what an
+> in full. Work from the latest `main` on `w21/curation`; land the two items in
+> order as one pull request. Coverage is the invariant: `class_ids` is what an
 > annotation can express, `annotated_class_ids` what was looked for; never
 > collapse the two. Deprecating a Rust method means migrating every workspace
 > use in the same pull request, or `clippy -D warnings` fails. Write tests
 > first, write D12's and D13's text with their Appendix C.1 rows, run the local
-> gate from `CLAUDE.md`, add fragments, open `W21-09: …` pull requests, and do
-> not merge.
+> gate from `CLAUDE.md`, add a fragment per item, open the `W21-09: …` pull
+> request, and do not merge.
 
 ## Pull requests
 

@@ -330,16 +330,37 @@
     ("cancelled or superseded: re-run").
   - `release.yml` is unchanged (it downloads `ci-dist-*` and `ci-cli-*` by
     pattern).
+  - `on:` gains `merge_group:`, so the merge queue (plans/README.md, Branches
+    and pull requests) gets `ci-ok` on the tree it would merge. `changes`
+    already tests everything on any event but `pull_request`; a merge group's
+    ref is its own, so the concurrency group needs no change.
+  - The macOS x86_64 pair, `build-macos-x86_64` and `test-macos-x86_64`, is
+    skipped on `pull_request` (`if: github.event_name != 'pull_request'`): its
+    build took 14 to 23 minutes in October 2026's runs and set every pull
+    request's wall clock. It still runs on every push, merge group and the
+    release's call, and macOS arm64 runs on every pull request. `ci-ok`
+    accepts `skipped` for exactly those two jobs, and only on `pull_request`.
+  - Optionally, `build.yml` restores and saves a Rust build cache, never on a
+    tag (`!startsWith(github.ref, 'refs/tags/')`): the release calls this
+    workflow on its `v*` tag and publishes what it builds, so a release build
+    starts clean.
+  - Maintainer checklist in the pull request: once it merges, turn on "Require
+    merge queue" in the ruleset for `main` (squash; the queue replaces "require
+    branches to be up to date"), with `ci-ok` still the required check. The
+    queue is available only to a repository owned by an organization.
 - **Tests.** In `test_packaging`: `_jobs()` also reads `build.yml`; the list of
   Rust-building jobs names the five callers (containers still 2); the 60-minute
   rule skips `uses:` jobs and checks `build.yml`; the upload-artifact count is
   four across `ci.yml` and `build.yml`; the Homebrew target regex reads the
   callers' `target:` inputs. New `test_each_platform_waits_only_for_its_own_build`:
   a job that downloads `ci-dist-<t>` or `ci-cli-<t>` needs the build job for `<t>`
-  and no other build job.
+  and no other build job. `ci.yml` runs on `merge_group`; the macOS x86_64
+  pair, and no other job, skips on `pull_request`, and `ci-ok` excuses that
+  skip on `pull_request` only; no cache step restores on a tag.
 - **Changelog.** `<!-- no entry: CI only -->`.
 - **Done when** the Linux test jobs start while the macOS and Windows builds are
-  still running.
+  still running, a pull request's run ends without the macOS x86_64 pair, and a
+  push to `main` still runs it.
 
 ### 00.8 API gates (PR 8, after v2.0.2 is published)
 

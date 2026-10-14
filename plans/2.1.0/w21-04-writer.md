@@ -12,17 +12,19 @@
 
 ## Session prompt
 
-> Implement workstream W21-04 (the writer: amendment safety and completeness)
-> of medh5 2.1.0 in this repository. First read `plans/README.md`,
+> Implement workstream W21-04 (the writer: amendment safety and completeness) of
+> medh5 2.1.0 in this repository. First read `plans/README.md`,
 > `plans/2.1.0/README.md` and `plans/2.1.0/decisions.md` (D3, D16, D29), then
 > `plans/2.1.0/w21-04-writer.md` in full. Work from the latest `main` on
-> `w21/writer`; land the four pull requests in order. PR 1 changes what every
+> `w21/writer`. PR 1 is an enabler: open it as a pull request of its own first;
+> items 2–4 follow, in order, as a second pull request. PR 1 changes what every
 > amending command does (fix, scrub, split claims, clinical augment, seg,
-> `medh5.amend`): expect internal tests that amend a damaged file on purpose, and
-> move them to the repair path rather than weakening the refusal. Re-check each
-> "State at 2.0.2", write tests first and see them fail, write the spec text the
-> decisions give with their erratum rows, run the local gate from `CLAUDE.md`,
-> add fragments, open `W21-04: …` pull requests, and do not merge.
+> `medh5.amend`): expect internal tests that amend a damaged file on purpose,
+> and move them to the repair path rather than weakening the refusal. Re-check
+> each "State at 2.0.2", write tests first and see them fail, write the spec
+> text the decisions give with their erratum rows, run the local gate from
+> `CLAUDE.md`, add a fragment per item, open the two `W21-04: …` pull requests,
+> and do not merge.
 
 ## Pull requests
 

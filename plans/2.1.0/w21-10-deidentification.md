@@ -16,13 +16,14 @@
 > repository. First read `plans/README.md`, `plans/2.1.0/README.md` and
 > `plans/2.1.0/decisions.md` (D14, D15, D26), then
 > `plans/2.1.0/w21-10-deidentification.md` in full. Work from the latest `main`
-> on `w21/deidentification`; land the three pull requests in order, and check
-> before PR 3 that W21-04 PR 1 has merged (it closes the clinical hold that
-> PR 3's derivation relies on). Never attest work that was not done: a scrub
-> that cannot see a field reports it as not examined, and keeps the rule names
-> users gate on (`clinical`, `unreadable`, `too_deep`). Write tests first, write
-> the decisions' spec text with their erratum rows, run the local gate from
-> `CLAUDE.md`, add fragments, open `W21-10: …` pull requests, and do not merge.
+> on `w21/deidentification`; land the three items in order as one pull request,
+> and check before opening it that W21-04 PR 1 has merged (it closes the
+> clinical hold that PR 3's derivation relies on). Never attest work that was
+> not done: a scrub that cannot see a field reports it as not examined, and
+> keeps the rule names users gate on (`clinical`, `unreadable`, `too_deep`).
+> Write tests first, write the decisions' spec text with their erratum rows, run
+> the local gate from `CLAUDE.md`, add a fragment per item, open the `W21-10: …`
+> pull request, and do not merge.
 
 ## Pull requests
 

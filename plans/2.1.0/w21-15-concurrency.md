@@ -14,14 +14,14 @@
 
 > Implement workstream W21-15 (concurrency: the GIL and `--workers`) of medh5
 > 2.1.0 in this repository. First read `plans/README.md` and
-> `plans/2.1.0/README.md`, then `plans/2.1.0/w21-15-concurrency.md` in full. Work
-> from the latest `main` on `w21/concurrency`; land the two pull requests in
-> order, and check before PR 2 that W21-00 PR 6 has merged. One HDF5 lock covers
-> each process, filters included, so parallelism belongs to processes; output
-> must not depend on the worker count, byte for byte. Measure before and after
-> each GIL change and put the numbers in the pull request. Write tests first, run
-> the local gate from `CLAUDE.md`, add fragments, open `W21-15: …` pull requests,
-> and do not merge.
+> `plans/2.1.0/README.md`, then `plans/2.1.0/w21-15-concurrency.md` in full.
+> Work from the latest `main` on `w21/concurrency`; land the two items in order
+> as one pull request, and check that W21-00 PR 6 has merged. One HDF5 lock
+> covers each process, filters included, so parallelism belongs to processes;
+> output must not depend on the worker count, byte for byte. Measure before and
+> after each GIL change and put the numbers in the pull request. Write tests
+> first, run the local gate from `CLAUDE.md`, add a fragment per item, open the
+> `W21-15: …` pull request, and do not merge.
 
 ## Pull requests
 

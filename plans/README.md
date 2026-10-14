@@ -40,16 +40,29 @@ is to put there.
 - A workstream works on `w21/<name>` (2.1.0) or `w22/<name>` (2.2.0), cut from
   the latest `main`, or on the branch its session was assigned; the pull
   request's title starts with the workstream id (`W21-02: …`).
-- A workstream lands as the pull requests its file lists, in that order, each
-  green on its own. A pull request is small enough to review: one item or a few
-  related ones.
-- Pull requests are squash-merged by the coordinator, one at a time, each
-  rebased on the latest `main` and green after the rebase, so the merged tree is
-  the tested tree. A workstream never merges its own pull request, and never
-  merges another workstream's branch into its own.
-- Rebase on `main` before asking for a merge. Regenerate generated files after
-  a rebase instead of merging them by hand (see
-  [Generated files](#generated-files-and-stated-counts)).
+- In 2.1.0, from W21-01 on, a workstream lands as **one pull request** holding
+  every item its file lists, in that order, at least one commit per item. A
+  workstream file's "PR n" is item n of that pull request, and an edge naming
+  "W21-05 PR 1" means the pull request that holds that item. The one
+  exception is an *enabler*: a first item that other lanes wait on lands
+  alone, ahead of the rest of its workstream (the release's README names
+  them). W21-00 (phase 0) keeps its eight pull requests. Every item still
+  writes its own fragment, and an item that may be backported stays one commit,
+  so it can be cherry-picked from the branch.
+- The pull request's description lists its items, each with what it changed
+  and the "Done when" it meets, so a reviewer can take it an item at a time.
+- `main` takes pull requests through GitHub's merge queue. The coordinator
+  enables auto-merge on a green pull request, and the queue squash-merges it
+  after testing it on top of `main` and of the pull requests ahead of it, so
+  the merged tree is the tested tree. Until the queue is on, the coordinator
+  squash-merges one at a time, each pull request rebased on the latest `main`
+  and green after the rebase. A workstream never merges its own pull request,
+  and never merges another workstream's branch into its own.
+- Rebase on `main` when it conflicts, and before asking for a merge.
+  Regenerate generated files after a rebase instead of merging them by hand
+  (see [Generated files](#generated-files-and-stated-counts)). A pull request
+  the queue drops (a conflict, or red CI on the merged tree) is fixed on its
+  branch and enabled again.
 
 ### The local gate
 
@@ -183,11 +196,12 @@ write it as given unless implementing it shows it wrong, and then ask.
 
 ### Changelog fragments
 
-From W21-00 PR 4, each pull request adds `changes/<slug>.md` (the format is in
-`changes/README.md`); `CHANGELOG.md` is assembled from them at release. Before
-that pull request lands, add entries under `[Unreleased]`; PR 4 converts them.
-A pull request with nothing user-visible adds a fragment holding only `<!-- no
-entry: <reason> -->`.
+From W21-00 PR 4, each item adds `changes/<slug>.md` (the format is in
+`changes/README.md`), so a workstream's pull request adds one fragment per
+item; `CHANGELOG.md` is assembled from them at release. Before that pull
+request lands, add entries under `[Unreleased]`; PR 4 converts them. An item
+with nothing user-visible adds a fragment holding only `<!-- no entry:
+<reason> -->`.
 
 Classify each entry as 2.0.2 did:
 
