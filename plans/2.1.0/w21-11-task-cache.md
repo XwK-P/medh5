@@ -179,8 +179,8 @@
   field(default=False, init=False, repr=False, compare=False)`;
   `_default_source_id` and its `import re` go; `add_subject` re-derives a taken
   derived id.
-- **Tests.** `test_S2_colliding_default_ids_are_widened` (`a_site-a_P-01` and
-  `b_site-a_P-01`, validating clean); `test_S2_default_ids_widen_then_number`
+- **Tests.** `test_S2_colliding_default_ids_are_widened` (`site-a_P-01`, the
+  first holder's, and `b_site-a_P-01`, validating clean); `test_S2_default_ids_widen_then_number`
   (`site-a_P-01`, `site-a_P-01@2`); `test_S2_an_explicit_colliding_id_is_still_T204`;
   `test_S2_uncolliding_default_ids_are_unchanged` (a table of 2.0.2's outputs);
   a URI table with fixed ids, identical on every CI platform (relative, `../`,

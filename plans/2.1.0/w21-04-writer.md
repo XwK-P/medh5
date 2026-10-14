@@ -145,9 +145,15 @@
   self, source: PathBuf, seen: Snapshot)`, crate-internal). A change is refused
   with `Error::File` (Python `MEDH5FileError`): "'x.medh5' changed after this
   amendment read it; nothing was written: amend it again". No opt-out. The
-  optional informative sentence of D29 in §14.4.
+  optional informative sentence of D29 in §14.4. This is detection, not
+  exclusion: the last check and the rename are two calls, and no portable
+  rename compares before it replaces, so two commits that both pass the last
+  check inside that window can still both rename. Say so in
+  `design-rationale.md`; closing the window needs the exclusive access §14.4
+  already asks of writers.
 - **Tests.** `test_S14_4_a_commit_refuses_a_source_another_writer_replaced`, and
-  `..._modified_in_place`; `test_S14_4_two_amendments_of_one_file_cannot_both_commit`;
+  `..._modified_in_place`; `test_S14_4_an_amendment_that_read_before_another_committed_is_refused`
+  (the two run one after the other, not raced);
   Rust `s14_4_a_source_replaced_before_the_rename_is_not_overwritten` (the
   `BEFORE_RENAME` hook in `h5/file.rs`), `s14_4_a_repack_refuses_a_source_that_changed`.
 - **Docs.** `docs/reference/python-api.md` (amend), `docs/reference/curation.md`,
