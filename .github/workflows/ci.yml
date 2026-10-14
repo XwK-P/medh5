@@ -407,7 +407,8 @@ jobs:
             cargo build --release --locked -p medh5-cli
           fi
           target/release/medh5.exe conformance build corpus
-          python .github/scripts/damaged.py target/release/medh5.exe corpus
+          target/release/medh5.exe conformance build --robustness robustness
+          python .github/scripts/damaged.py target/release/medh5.exe corpus --structural robustness
 
   test:
     # The suite against the Linux wheel the release ships, on every supported

@@ -17,6 +17,7 @@ import os
 import random
 import re
 import shutil
+import subprocess
 import sysconfig
 import tarfile
 from importlib.metadata import distribution
@@ -1439,10 +1440,25 @@ class TestDistribution:
         (tmp_path / "corpus").mkdir()
         write_sample(tmp_path / "corpus" / "case.medh5")
         assert damaged.main([binary, str(tmp_path / "corpus"), "--runs", "6"]) == 0
+        # The shapes of 2.0.2's denial-of-service bugs, as the binary writes
+        # them, each reported as an error within bounds; a valid file is not.
+        hostile = tmp_path / "robustness"
+        subprocess.run(
+            [binary, "conformance", "build", "--robustness", str(hostile)], check=True
+        )
+        assert len(list(hostile.glob("*.medh5"))) == 4
+        corpus = [binary, str(tmp_path / "corpus"), "--runs", "1"]
+        assert damaged.main([*corpus, "--structural", str(hostile)]) == 0
+        assert damaged.structural(binary, tmp_path / "corpus" / "case.medh5") == (
+            "exit 0, not 1: "
+        )
         jobs = _jobs(CI.read_text(encoding="utf-8"))
-        assert "damaged.py" in _jobs(BUILD.read_text(encoding="utf-8"))["build"]
+        build = _jobs(BUILD.read_text(encoding="utf-8"))["build"]
         msvc = jobs["msvc-from-crates-io"]
-        assert "rm -r ws/.cargo" in msvc and "damaged.py" in msvc
+        assert "rm -r ws/.cargo" in msvc
+        for job in (build, msvc):
+            assert "conformance build --robustness" in job
+            assert re.search(r"damaged\.py .* --structural ", job)
         assert "cargo clean --release -p hdf5-metno-src" in msvc
         # The job's bash rewrote `/DNDEBUG` into `C:/Program Files/Git/DNDEBUG`.
         assert "CFLAGS_x86_64_pc_windows_msvc: -DNDEBUG" in msvc

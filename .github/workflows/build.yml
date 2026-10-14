@@ -76,8 +76,11 @@ jobs:
           "$exe" conformance build "$RUNNER_TEMP/corpus-native"
           "$exe" conformance run "$RUNNER_TEMP/corpus-native"
           # Damage is a report, never an abort: what an HDF5 built without
-          # NDEBUG does on a damaged file.
-          python .github/scripts/damaged.py "$exe" "$RUNNER_TEMP/corpus-native"
+          # NDEBUG does on a damaged file.  The structural fixtures are the
+          # shapes of 2.0.2's denial-of-service bugs, each reported within a
+          # time and a memory bound.
+          "$exe" conformance build --robustness "$RUNNER_TEMP/robustness"
+          python .github/scripts/damaged.py "$exe" "$RUNNER_TEMP/corpus-native" --structural "$RUNNER_TEMP/robustness"
       - name: The wheel installs and runs the conformance corpus
         shell: bash
         run: |
