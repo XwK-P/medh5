@@ -788,6 +788,81 @@ class TestSlotSupervision:
         )["ignore"]["ct"]
         assert padded[0].all() and padded[-1].all() and not padded[1:-1].any()
 
+    @staticmethod
+    def _classed(
+        tmp_path: Path,
+        name: str,
+        classes: tuple[int, ...],
+        patch: tuple[int, ...] = SLOT_SHAPE,
+        modality: str = "CT",
+        **sample: Any,
+    ) -> ClinicalTaskDataset:
+        from medh5.task import Slot
+
+        path = slot_sample(tmp_path / f"{name}.medh5", **sample)
+        slot = Slot("s", modality, patch=patch, classes=classes)
+        task = slot_task(tmp_path, {name: path}, slot)
+        return ClinicalTaskDataset(task, class_ignore=True)
+
+    def test_S7_7_a_class_is_masked_only_by_the_annotations_of_that_class(
+        self, tmp_path: Path
+    ):
+        """Rater A labels the organ with an ignore band, rater B the lesion
+        without: the union masked lesion voxels inside A's band, and that
+        supervision was lost."""
+        organ = np.zeros(SLOT_SHAPE, bool)
+        organ[0] = True
+        band = np.zeros(SLOT_SHAPE, bool)
+        band[:, 2, :] = True
+        item = self._classed(tmp_path, "raters", (1, 2), organ=(organ, band))[0]
+        per_class = item["class_ignore"]["s"]
+        assert per_class.dtype == torch.bool
+        assert tuple(per_class.shape) == (2, *SLOT_SHAPE)
+        assert not per_class[0].any(), "the lesion is not masked by the organ's band"
+        assert torch.equal(per_class[1], torch.from_numpy(band))
+        # The lesion's positives inside the band are scored for the lesion.
+        assert (item["label"]["s"][0].bool() & torch.from_numpy(band)).any()
+
+    def test_class_ignore_includes_the_padding(self, tmp_path: Path):
+        own = np.zeros(SLOT_SHAPE, bool)
+        own[3] = True
+        item = self._classed(tmp_path, "padded", (1, 2), patch=(6, 4, 4), ignore=own)[0]
+        per_class = item["class_ignore"]["s"]
+        assert tuple(per_class.shape) == (2, 6, 4, 4)
+        for channel in per_class:
+            assert channel[0].all() and channel[-1].all()
+        assert per_class[0][4].all() and not per_class[0][1:4].any()
+        assert not per_class[1][1:-1].any()
+
+    def test_an_empty_slot_ignores_every_class(self, tmp_path: Path):
+        item = self._classed(tmp_path, "empty", (1, 2), modality="PT")[0]
+        assert not item["present"]["s"]
+        assert item["class_ignore"]["s"].all()
+        assert tuple(item["class_ignore"]["s"].shape) == (2, *SLOT_SHAPE)
+
+    def test_the_union_of_class_ignore_is_ignore(self, tmp_path: Path):
+        organ = np.zeros(SLOT_SHAPE, bool)
+        organ[0] = True
+        band = np.zeros(SLOT_SHAPE, bool)
+        band[:, 2, :] = True
+        own = np.zeros(SLOT_SHAPE, bool)
+        own[3] = True
+        dataset = self._classed(
+            tmp_path, "union", (1, 2), patch=(6, 4, 4), ignore=own, organ=(organ, band)
+        )
+        item = dataset[0]
+        assert torch.equal(item["class_ignore"]["s"].any(dim=0), item["ignore"]["s"])
+        # Off by default: the item is what it was.
+        plain = ClinicalTaskDataset(dataset.task)[0]
+        assert "class_ignore" not in plain
+        assert torch.equal(plain["ignore"]["s"], item["ignore"]["s"])
+
+    def test_collate_stacks_class_ignore(self, tmp_path: Path):
+        dataset = self._classed(tmp_path, "batch", (1, 2))
+        batch = collate_clinical([dataset[0], dataset[0]])
+        assert tuple(batch["class_ignore"]["s"].shape) == (2, 2, *SLOT_SHAPE)
+        assert batch["class_ignore"]["s"].dtype == torch.bool
+
 
 class TestOptionalSlots:
     """An empty slot's placeholder had one channel whatever the slot held, so

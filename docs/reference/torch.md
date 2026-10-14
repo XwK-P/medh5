@@ -363,6 +363,7 @@ batch = next(iter(DataLoader(train, batch_size=8, collate_fn=collate_clinical)))
 | `base` | The directory relative source URIs resolve against — the manifest's own directory when omitted |
 | `strict` | Refuse a task whose preflight has findings (default), or keep only the unaffected rows |
 | `preflight` | This manifest's `Preflight`, when it has been run already; one of another task, or another instance of this one, is refused (T404). Run here when omitted |
+| `class_ignore` | Add `class_ignore[slot]`, the ignore mask per class (below); off by default |
 
 A batch, for `B` rows:
 
@@ -374,6 +375,7 @@ A batch, for `B` rows:
 | `image_time[slot][...]` | `(B, 2)`, `(B,)` | The image's acquisition (`start_age_h`) and availability (`available_age_h`), as ages before the cutoff, with `start_known` and `available_known` |
 | `label[slot]`, `annotated[slot]` | `(B, K, *patch)`, `(B, K)` | Supervision for the slot's `classes`, and whether each was examined (coverage) |
 | `ignore[slot]` | `(B, *patch)` bool | Voxels a loss must not score: padding, and the ignore regions of the annotations that label or examined one of the slot's `classes` (an annotation of other classes only has no say). It is one mask for every class, so with several classes a region one annotation ignores is masked for the others' supervision too |
+| `class_ignore[slot]` | `(B, K, *patch)` bool | With `class_ignore=True`: channel *k* is the padding and the ignore regions of the annotations that label or examined class *k* only (1.0 §7.7: a region belongs to its annotation), in the slot's class order; all `True` where the slot is empty. `ignore` is the union of its channels |
 | `events[...]` | `(B, N)`, `(B, N, 2)` | The admitted versions in input order, padded to the longest history; `mask` marks real events, `length` counts them (below) |
 | `documents[...]` | `(B, M, D)`, `(B, M)`, `(B, M, 2)` | `features` of the admitted documents, `event` (the owning version's position in `events`), `start_age_h` and `available_age_h` with their `*_known`; `mask` and `length` |
 | `target["value"]`, `target["observed"]` | `(B,)` | The label, and whether it is observed (a censored row is not) |

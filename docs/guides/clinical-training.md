@@ -168,6 +168,27 @@ What each part of a batch means, and the masks that keep it honest:
   still train but whose loss term should be masked. It reads occurrences: a `cancelled` outcome
   did not happen and labels nothing, and a `planned` one censors the window it may fall in.
 
+**Mask a loss per class when classes come from different annotations.** `ignore` is one mask for
+the slot: the ignore regions of every annotation that labels or examined one of its classes. When
+rater A labels the liver with an uncertain band and rater B the tumour without one, the band masks
+tumour voxels too, and that supervision is lost. `class_ignore=True` adds `class_ignore[slot]`,
+`(B, K, *patch)`: channel *k* holds only the regions of the annotations of class *k* (1.0 §7.7: a
+region belongs to its annotation), and the padding.
+
+```python
+import torch
+from medh5.torch import ClinicalTaskDataset, collate_clinical
+
+per_class = ClinicalTaskDataset("cohort/progression.task.json", partition="train",
+                                class_ignore=True)
+batch = collate_clinical([per_class[i] for i in range(len(per_class))])
+mask = ~batch["class_ignore"]["ct"]                       # (B, K, *patch)
+loss = torch.nn.functional.binary_cross_entropy_with_logits(
+    torch.zeros_like(batch["label"]["ct"]), batch["label"]["ct"], reduction="none")
+loss = (loss * mask).sum() / mask.sum().clamp(min=1)
+assert torch.equal(batch["class_ignore"]["ct"].any(dim=1), batch["ignore"]["ct"])
+```
+
 **Learned preprocessing is fitted on the training partition.** The concept vocabulary and its
 per-concept value statistics record the split they were fitted on (`fitted_on`); a vocabulary fitted
 on anything else is refused (T405).

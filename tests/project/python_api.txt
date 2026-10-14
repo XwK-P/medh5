@@ -3749,7 +3749,7 @@ medh5.torch	module
 medh5.torch.ALIGNMENTS	constant	tuple
 medh5.torch.AVAILABLE	constant	bool
 medh5.torch.CACHE	constant	medh5.torch.handles.HandleCache
-medh5.torch.ClinicalTaskDataset	class	(task, *, partition=None, statuses=('eligible',), concepts=None, documents=None, row_features=None, base=None, strict=True, preflight=None) bases=
+medh5.torch.ClinicalTaskDataset	class	(task, *, partition=None, statuses=('eligible',), concepts=None, documents=None, row_features=None, base=None, strict=True, preflight=None, class_ignore=False) bases=
 medh5.torch.ClinicalTaskDataset.__getitem__	method	(index)
 medh5.torch.ClinicalTaskDataset.__len__	method	()
 medh5.torch.ClinicalTaskDataset.file_groups	method	()
@@ -3851,7 +3851,7 @@ medh5.torch.VolumeDataset.__getitem__	method	(index)
 medh5.torch.VolumeDataset.__len__	method	()
 medh5.torch.VolumeDataset.file_groups	method	()
 medh5.torch.clinical	module
-medh5.torch.clinical.ClinicalTaskDataset	class	(task, *, partition=None, statuses=('eligible',), concepts=None, documents=None, row_features=None, base=None, strict=True, preflight=None) bases=
+medh5.torch.clinical.ClinicalTaskDataset	class	(task, *, partition=None, statuses=('eligible',), concepts=None, documents=None, row_features=None, base=None, strict=True, preflight=None, class_ignore=False) bases=
 medh5.torch.clinical.ClinicalTaskDataset.__getitem__	method	(index)
 medh5.torch.clinical.ClinicalTaskDataset.__len__	method	()
 medh5.torch.clinical.ClinicalTaskDataset.file_groups	method	()
