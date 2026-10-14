@@ -271,6 +271,15 @@ it states, and ROIs in several frames are refused (`E414`) before the sample is
 opened; which frame applied used to depend on the order of the file's frame
 list.
 
+**A contour of one ROI inside another's of the same class is refused.** ROIs
+whose names make one key are one class, and a class's polygons combine by
+nesting depth (§8.6): a contour inside another on its slice is a hole. Two
+ROIs named "Bladder", one drawn inside the other, would become a ring — 2.0.2
+imported such a pair as 105 voxels where 121 were drawn, its roles nested per
+ROI and its rasteriser per class. The refusal names the ROIs and the slice,
+and `--roi NUMBER=KEY` imports them as classes of their own. ROIs of one name
+that cross or lie apart are combined, with a `merged_rois` note.
+
 **Export refuses a mask.** `to-rtstruct` on a voxel annotation is an error, not
 a marching-squares fallback: the contours it would produce are not the contours
 anyone drew, and an RTSTRUCT is a clinical document that asserts they are.

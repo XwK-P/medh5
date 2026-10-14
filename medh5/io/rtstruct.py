@@ -16,10 +16,12 @@ library's defaults.  When it is used, the rule is written down and the contours
 stay in the file beside the mask.
 
 Holes are read the way planners write them: a contour on a slice that lies
-inside an odd number of others is stored with ``role="hole"``, and the
-rasteriser fills each slice by the even-odd rule, so an island inside a hole is
-a region again.  Treating every contour as an outer boundary is how a segmented
-vessel lumen ends up filled in.
+inside an odd number of others of its class is stored with ``role="hole"``,
+and the rasteriser fills each slice by the even-odd rule over those nesting
+depths, so an island inside a hole is a region again (§8.6).  Treating every
+contour as an outer boundary is how a segmented vessel lumen ends up filled
+in.  ROIs of one name are one class, and are combined only where that makes
+no contour of one a hole in another.
 
 Only areas are imported.  A medh5 contour is a closed polygon in one of its
 grid's slices (§8.6), so an import takes the ROIs drawn as ``CLOSED_PLANAR`` or
@@ -40,6 +42,7 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
+from medh5 import _core
 from medh5.errors import MEDH5ValidationError
 from medh5.geometry import MM_PER_UNIT
 from medh5.io._common import sanitize_key
@@ -159,6 +162,7 @@ def from_rtstruct(
     annotated_classes: Sequence[str] | str = "all_given",
     frame_salt: str | None = None,
     report: ConversionReport | None = None,
+    roi_classes: Mapping[int, str] | None = None,
 ) -> ConversionReport:
     """Import an RTSTRUCT's ROIs as contours, and optionally rasterise them.
 
@@ -196,9 +200,22 @@ def from_rtstruct(
     patient coordinates, and is refused (E414).  Stored as read, a contour on
     an RAS grid was mirrored through the origin in x and y, and one on a
     metre grid lay a thousand times as far out.
+
+    Each ROI is a class: the one whose key its ``ROIName`` makes, or, in a
+    sample that has a label set, the class of that key, name or display
+    name.  ROIs that come to one class are combined into it, with a
+    ``merged_rois`` decision naming them, and their contours' roles come
+    from nesting over the whole class, plane by plane (§8.6).  Outlines of
+    two such ROIs that cross are their union; a contour of one inside a
+    contour of another on a plane would become a hole in what both drew as
+    an area, so that import is refused, naming the ROIs and the plane.
+    *roi_classes* (``{ROINumber: key}``; ``--roi NUMBER=KEY`` on the command
+    line) puts an ROI in the class of that key instead --- minted, or one
+    the sample's label set must hold (E402) --- which imports same-named
+    ROIs apart.  Two ROIs of one name, one inside the other, were imported
+    as a hole, and minting a class for each failed (E302).
     """
     import medh5
-    from medh5.annotations.geometric import Polygon
     from medh5.labels import LabelClass, LabelSet
 
     log = report or ConversionReport(converter="from-rtstruct")
@@ -228,20 +245,34 @@ def from_rtstruct(
         for number, planar in contours.items()
     }
 
+    names = {number: meta["names"].get(number, f"roi_{number}") for number in contours}
+    keys = _roi_keys(sorted(contours), names, roi_classes, meta, path)
     label_set = existing
     ids: dict[int, int] = {}
     if label_set is None:
-        classes = [
-            LabelClass(
-                i + 1,
-                _key(meta["names"].get(number, f"roi_{number}")),
-                meta["names"].get(number, f"roi_{number}"),
-                color=meta["colors"].get(number),
+        # ROIs whose names make one key are one class: a key is unique in a
+        # label set (E302), and minting a class for each failed the write.
+        firsts: dict[str, int] = {}
+        for number in sorted(contours):
+            firsts.setdefault(keys[number], number)
+        colours = {
+            key: next(
+                (
+                    meta["colors"][n]
+                    for n in sorted(contours)
+                    if keys[n] == key and n in meta["colors"]
+                ),
+                None,
             )
-            for i, number in enumerate(sorted(contours))
+            for key in firsts
+        }
+        classes = [
+            LabelClass(i + 1, key, names[first], color=colours[key])
+            for i, (key, first) in enumerate(firsts.items())
         ]
         label_set = LabelSet("rtstruct", version="1.0.0", classes=classes)
-        ids = {number: i + 1 for i, number in enumerate(sorted(contours))}
+        minted = {key: i + 1 for i, key in enumerate(firsts)}
+        ids = {number: minted[keys[number]] for number in sorted(contours)}
         log.decision(
             "label_set",
             f"{len(classes)} class(es) were minted from ROIName, keeping each "
@@ -251,12 +282,22 @@ def from_rtstruct(
     else:
         missing = []
         for number in sorted(contours):
-            name = meta["names"].get(number, f"roi_{number}")
-            found = (
-                label_set.get(_key(name))
-                or label_set.get(name)
-                or _named(label_set, name)
-            )
+            name = names[number]
+            if roi_classes is not None and number in roi_classes:
+                found = label_set.get(keys[number])
+                if found is None:
+                    raise MEDH5ValidationError(
+                        f"roi_classes maps ROI {number} ({name!r}) to class "
+                        f"{keys[number]!r}, which the sample's label set does "
+                        "not hold",
+                        code="E402",
+                    )
+            else:
+                found = (
+                    label_set.get(_key(name))
+                    or label_set.get(name)
+                    or _named(label_set, name)
+                )
             if found is None:
                 missing.append(name)
             else:
@@ -267,28 +308,7 @@ def from_rtstruct(
                 code="E402",
             )
 
-    polygons: list[Polygon] = []
-    for number in sorted(contours):
-        planar = _assign_roles(
-            contours[number],
-            target,
-            log,
-            meta["names"].get(number),
-            xor=number in xor,
-        )
-        for points, role, plane in planar:
-            polygons.append(
-                Polygon(
-                    vertices=points.astype(np.float32),
-                    class_id=ids[number],
-                    # `(0, k)`: the polygon lies in slice k along the grid's
-                    # first spatial axis, in that grid's index space (§8.6).
-                    # It was computed to find holes and then thrown away, so
-                    # `by_plane()` on an imported RTSTRUCT answered nothing.
-                    plane=(0, plane),
-                    role=role,
-                )
-            )
+    polygons = _combine(contours, ids, names, label_set, target, log, xor)
     if xor:
         rois = [meta["names"].get(number, f"roi_{number}") for number in sorted(xor)]
         log.decision(
@@ -526,6 +546,116 @@ def _named(label_set: Any, name: str) -> Any:
     return found[0] if len(found) == 1 else None
 
 
+def _roi_keys(
+    numbers: Sequence[int],
+    names: Mapping[int, str],
+    roi_classes: Mapping[int, str] | None,
+    meta: Mapping[str, Any],
+    path: str | os.PathLike[str],
+) -> dict[int, str]:
+    """Each ROI's class key: the one *roi_classes* gives it, else the one its
+    name makes.  An ROI number the file does not hold is refused, so a typo
+    does not import the ROI it meant into the class of its name."""
+    given = dict(roi_classes or {})
+    held = {*meta["names"], *meta["types"], *meta["dropped"]}
+    unknown = sorted(n for n in given if n not in held)
+    if unknown:
+        raise MEDH5ValidationError(
+            f"roi_classes names ROI number(s) {unknown}, which {path} does not "
+            f"hold (it holds {sorted(held)})"
+        )
+    blank = sorted(n for n, k in given.items() if not isinstance(k, str) or not k)
+    if blank:
+        raise MEDH5ValidationError(
+            f"roi_classes gives ROI number(s) {blank} no class key"
+        )
+    return {n: given[n] if n in given else _key(names[n]) for n in numbers}
+
+
+def _combine(
+    contours: Mapping[int, list[npt.NDArray[np.float64]]],
+    ids: Mapping[int, int],
+    names: Mapping[int, str],
+    label_set: Any,
+    grid: Any,
+    log: ConversionReport,
+    xor: set[int],
+) -> list[Any]:
+    """Every ROI's polygons, their roles from nesting over each class, plane
+    by plane (§8.6).
+
+    Roles came from nesting within each ROI while the rasteriser nested per
+    class, so an ROI drawn inside another of its name became a hole: an 11×11
+    "Bladder" holding a 4×4 one was 105 voxels where 121 were drawn.  ROIs of
+    one class are combined only where no contour's depth in the class differs
+    from its depth within its own ROI; anywhere else the import is refused.
+    """
+    from medh5.annotations.geometric import Polygon
+
+    placed = {
+        number: _place(contours[number], grid, names[number], xor=number in xor)
+        for number in sorted(contours)
+    }
+    by_class: dict[int, list[int]] = {}
+    for number in sorted(contours):
+        by_class.setdefault(ids[number], []).append(number)
+    depth: dict[tuple[int, int], int] = {}
+    for class_id, numbers in by_class.items():
+        planes: dict[int, list[tuple[int, int]]] = {}
+        for number in numbers:
+            for position, (_, _, plane) in enumerate(placed[number]):
+                planes.setdefault(plane, []).append((number, position))
+        for plane, members in planes.items():
+            merged = _core.polygon_depths([placed[n][p][1][:, 1:] for n, p in members])
+            own: dict[tuple[int, int], int] = {}
+            for number in dict.fromkeys(n for n, _ in members):
+                mine = [(n, p) for n, p in members if n == number]
+                found = _core.polygon_depths([placed[n][p][1][:, 1:] for n, p in mine])
+                own.update(zip(mine, found, strict=True))
+            if any(d != own[member] for member, d in zip(members, merged, strict=True)):
+                rois = sorted({n for n, _ in members})
+                shown = ", ".join(f"{n} ({names[n]!r})" for n in rois)
+                raise MEDH5ValidationError(
+                    f"ROIs {shown} are one class "
+                    f"{label_set[class_id].key!r}, and on slice {plane} of "
+                    f"grid {grid.grid_id!r} a contour of one lies inside a "
+                    "contour of another: combined, it would be a hole in what "
+                    "each ROI drew as an area (§8.6). Import them apart with "
+                    "roi_classes= (--roi NUMBER=KEY), a class key for each"
+                )
+            depth.update(zip(members, merged, strict=True))
+        if len(numbers) > 1:
+            key = label_set[class_id].key
+            log.decision(
+                "merged_rois",
+                f"ROIs {numbers} "
+                f"({', '.join(repr(names[n]) for n in numbers)}) are one class "
+                f"{key!r}, so their contours were combined into it, plane by "
+                "plane; outlines of two of them that cross are their union",
+                {"class": key, "rois": numbers, "names": [names[n] for n in numbers]},
+            )
+    polygons: list[Polygon] = []
+    for number in sorted(contours):
+        holes = 0
+        for position, (points, _, plane) in enumerate(placed[number]):
+            hole = depth[(number, position)] % 2 == 1
+            holes += hole
+            polygons.append(
+                Polygon(
+                    vertices=points.astype(np.float32),
+                    class_id=ids[number],
+                    # `(0, k)`: the polygon lies in slice k along the grid's
+                    # first spatial axis, in that grid's index space (§8.6).
+                    # It was computed to find holes and then thrown away, so
+                    # `by_plane()` on an imported RTSTRUCT answered nothing.
+                    plane=(0, plane),
+                    role="hole" if hole else "outer",
+                )
+            )
+        _note_holes(log, holes, names[number])
+    return polygons
+
+
 def _assign_roles(
     contours: Sequence[npt.NDArray[np.float64]],
     grid: Any,
@@ -540,6 +670,47 @@ def _assign_roles(
     two contours and is a region again.  Marking every enclosed contour a hole
     erased it.
 
+    Returns ``(vertices, role, plane)`` with the plane index that grouping
+    found, so the writer can record it rather than lose it.
+    """
+    placed = _place(contours, grid, name, xor=xor)
+    planes: dict[int, list[int]] = {}
+    for position, (_, _, plane) in enumerate(placed):
+        planes.setdefault(plane, []).append(position)
+    depth: dict[int, int] = {}
+    for positions in planes.values():
+        found = _core.polygon_depths([placed[p][1][:, 1:] for p in positions])
+        depth.update(zip(positions, found, strict=True))
+    out = [
+        (points, "hole" if depth[p] % 2 else "outer", plane)
+        for p, (points, _, plane) in enumerate(placed)
+    ]
+    _note_holes(log, sum(role == "hole" for _, role, _ in out), name)
+    return out
+
+
+def _note_holes(log: ConversionReport, holes: int, name: str | None) -> None:
+    """The decision that *holes* contours of ROI *name* are holes."""
+    if holes:
+        log.decision(
+            "holes",
+            f"{holes} contour(s) of ROI {name!r} lie inside an odd number of others "
+            "on the same slice and were marked as holes; one inside a hole is a "
+            "region again",
+            {"holes": holes, "roi": name},
+        )
+
+
+def _place(
+    contours: Sequence[npt.NDArray[np.float64]],
+    grid: Any,
+    name: str | None,
+    *,
+    xor: bool = False,
+) -> list[tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], int]]:
+    """One ROI's contours as ``(vertices, index, plane)``, grouped by the
+    slice each lies in, the slices in the order they first appear.
+
     The grouping and the enclosure test are both done in the grid's **index**
     space, where a planar contour has one constant axis.  Doing it on world
     coordinates would only work for axial acquisitions: under the orientation
@@ -549,16 +720,12 @@ def _assign_roles(
     For an *xor* ROI (``CLOSEDPLANAR_XOR``) nesting parity is the
     exclusive-or only while no two contours on a slice cross, so two that do
     are refused, naming the slice: read as nested, they were their union.
-
-    Returns ``(vertices, role, plane)`` with the plane index that grouping
-    found, so the writer can record it rather than lose it.
     """
-    out: list[tuple[npt.NDArray[np.float64], str, int]] = []
     index = [grid.world_to_index(points) for points in contours]
     by_plane: dict[int, list[int]] = {}
     for position, points in enumerate(index):
         by_plane.setdefault(_slice(points, grid, name), []).append(position)
-    holes = 0
+    out: list[tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], int]] = []
     for plane, positions in by_plane.items():
         if xor:
             for first, second in combinations(positions, 2):
@@ -570,19 +737,7 @@ def _assign_roles(
                         "which is all a medh5 contour can hold (§8.6), and "
                         "read as nested they would be their union"
                     )
-        depths = _depths([index[position] for position in positions])
-        for position, depth in zip(positions, depths, strict=True):
-            role = "hole" if depth % 2 else "outer"
-            holes += role == "hole"
-            out.append((contours[position], role, plane))
-    if holes:
-        log.decision(
-            "holes",
-            f"{holes} contour(s) of ROI {name!r} lie inside an odd number of others "
-            "on the same slice and were marked as holes; one inside a hole is a "
-            "region again",
-            {"holes": holes, "roi": name},
-        )
+        out.extend((contours[p], index[p], plane) for p in positions)
     return out
 
 
@@ -701,23 +856,6 @@ def _between(
     return within
 
 
-def _depths(contours: Sequence[npt.NDArray[np.float64]]) -> list[int]:
-    """How many of the other contours on one slice enclose each contour."""
-    return [
-        sum(
-            1
-            for other, outer in enumerate(contours)
-            if other != position and _encloses(outer, inner)
-        )
-        for position, inner in enumerate(contours)
-    ]
-
-
-def _encloses(outer: npt.NDArray[np.float64], inner: npt.NDArray[np.float64]) -> bool:
-    """Whether every vertex of *inner* lies inside *outer*, in-plane."""
-    return bool(np.all(_inside(outer[:, 1:], inner[:, 1:])))
-
-
 def _inside(
     polygon: npt.NDArray[np.float64], points: npt.NDArray[np.float64]
 ) -> npt.NDArray[np.bool_]:
@@ -781,7 +919,8 @@ def _rasterize(
     }
     for (class_id, plane), contours in planes.items():
         levels: dict[int, npt.NDArray[np.bool_]] = {}
-        for depth, index in zip(_depths(contours), contours, strict=True):
+        depths = _core.polygon_depths([c[:, 1:] for c in contours])
+        for depth, index in zip(depths, contours, strict=True):
             filled = _inside(index[:, 1:], centres).reshape(shape[1], shape[2])
             levels[depth] = filled if depth not in levels else levels[depth] | filled
         region = np.zeros((shape[1], shape[2]), dtype=bool)

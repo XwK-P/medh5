@@ -458,6 +458,7 @@ __all__ = [
     "pack",
     "parse_digest",
     "payload_to_masks",
+    "polygon_depths",
     "profile_family",
     "pyramid_factors",
     "quality_from_json",
@@ -936,6 +937,11 @@ def carries_instance_ids(annotation: Any) -> bool:
 def check_class_id(class_id: Any) -> int: ...
 def check_contour_role(role: str) -> str:
     """A contour role, or E411."""
+    ...
+
+def polygon_depths(polygons: Any) -> list[int]:
+    """Each of one class's polygons in one plane, its depth: how many of the
+    others enclose it (§8.6).  Each is `(V, 2)` in-plane coordinates."""
     ...
 
 def check_orthonormal(

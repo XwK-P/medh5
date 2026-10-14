@@ -3064,7 +3064,7 @@ medh5.io.from_dicom	function	(root, out, *, group_by='subject', modalities=None,
 medh5.io.from_dicom_seg	function	(path, sample, *, ann_id='seg', grid=None, annotated_classes='all_given', frame_salt=None, report=None)
 medh5.io.from_nifti	function	(images, out, *, masks=None, sample_id=None, subject_id=None, modalities=None, coord_system='LPS', transpose=True, fourth_axis='auto', value_units=None, codec='balanced', annotated_classes='all_given', assume_geometry=False, report=None)
 medh5.io.from_nnunetv2	function	(root, out, *, case_ids=None, coord_system='LPS', codec='balanced', report=None)
-medh5.io.from_rtstruct	function	(path, sample, *, ann_id='contours', grid=None, rasterize=False, mask_id=None, annotated_classes='all_given', frame_salt=None, report=None)
+medh5.io.from_rtstruct	function	(path, sample, *, ann_id='contours', grid=None, rasterize=False, mask_id=None, annotated_classes='all_given', frame_salt=None, report=None, roi_classes=None)
 medh5.io.group_by_subject	function	(occasions, *, mode='subject', report=None)
 medh5.io.grouping	module
 medh5.io.grouping.FALLBACK_PREFIX	constant	str
@@ -3171,7 +3171,7 @@ medh5.io.report.SEVERITIES	constant	tuple
 medh5.io.report.merge_reports	function	(reports, converter='')
 medh5.io.rtstruct	module
 medh5.io.rtstruct.MIN_POLYGON_VERTICES	constant	int
-medh5.io.rtstruct.from_rtstruct	function	(path, sample, *, ann_id='contours', grid=None, rasterize=False, mask_id=None, annotated_classes='all_given', frame_salt=None, report=None)
+medh5.io.rtstruct.from_rtstruct	function	(path, sample, *, ann_id='contours', grid=None, rasterize=False, mask_id=None, annotated_classes='all_given', frame_salt=None, report=None, roi_classes=None)
 medh5.io.rtstruct.read_rtstruct	function	(path)
 medh5.io.rtstruct.to_rtstruct	function	(sample, ann_id, source_images, out, *, label='medh5 export', frame_salt=None, report=None)
 medh5.io.scan_dicom	function	(root, *, report=None)

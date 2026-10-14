@@ -587,6 +587,13 @@ fn convert() -> Vec<Command> {
                     "rasterize",
                     "also derive a voxel annotation; the rule is recorded in provenance",
                 ))
+                .arg(pairs(
+                    "roi_classes",
+                    "roi",
+                    "NUMBER=KEY",
+                    "import ROI NUMBER into class KEY instead of the class its name makes, which imports same-named \
+                     ROIs apart; repeatable",
+                ))
                 .arg(opt(
                     "frame_salt",
                     "frame-salt",

@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use ndarray::ArrayD;
 
 use super::{grid_shape, loc, read_f64, read_i64, str_attr, sub_dataset, Context};
+use crate::annotations::depth;
 use crate::annotations::encode_geometric::{check_slice_index, ROTATION_TOL, SCOPES, SPACES};
 use crate::annotations::header::is_geometric_kind;
 use crate::geometry::affine::is_proper_rotation;
@@ -176,7 +177,10 @@ pub(super) fn check_geometric(
         }
     }
     if kind == "contours" {
-        out.extend(check_offsets(ctx, name, group, "contour_offsets", "vertices")?);
+        let offsets = check_offsets(ctx, name, group, "contour_offsets", "vertices")?;
+        let delimited = offsets.is_empty();
+        out.extend(offsets);
+        out.extend(check_contour_roles(ctx, name, group, consistent && delimited)?);
     }
     if kind == "mesh" {
         out.extend(check_mesh(ctx, name, group)?);
@@ -244,6 +248,67 @@ fn check_offsets(ctx: &Context, name: &str, group: &Node, offsets_name: &str, ta
         if *last != len {
             out.push(ctx.err("E408", location, format!("last offset {last} != {target} length {len}")));
         }
+    }
+    Ok(out)
+}
+
+/// §8.6: a `contour_role` is `0` or `1` (E404), and **SHOULD** be the
+/// parity of the polygon's depth among its class's polygons in its plane
+/// (W919), which readers take instead.  The depths need the columns to
+/// agree and the offsets to delimit `vertices` (`paired`); a role the format
+/// does not define is reported whatever they hold.
+fn check_contour_roles(ctx: &Context, name: &str, group: &Node, paired: bool) -> Result<Vec<Diagnostic>> {
+    let mut out = Vec::new();
+    let Some(ds) = sub_dataset(group, "contour_role") else { return Ok(out) };
+    let roles: Vec<i64> = read_i64(&ds)?.iter().copied().collect();
+    let location = format!("/annotations/{name}/contour_role");
+    let unknown: Vec<usize> = (0..roles.len()).filter(|i| !(0..=1).contains(&roles[*i])).collect();
+    if let Some(first) = unknown.first() {
+        out.push(ctx.err(
+            "E404",
+            location.clone(),
+            format!(
+                "{} polygon(s) carry a contour_role other than 0 (outer) or 1 (hole), first polygon {first} with {}",
+                unknown.len(),
+                roles[*first]
+            ),
+        ));
+    }
+    let (Some(vertices), Some(offsets), Some(classes), Some(planes), true) = (
+        sub_dataset(group, "vertices"),
+        sub_dataset(group, "contour_offsets"),
+        sub_dataset(group, "contour_class_ids"),
+        sub_dataset(group, "contour_plane"),
+        paired,
+    ) else {
+        return Ok(out);
+    };
+    let Ok(vertices) = read_f64(&vertices)?.into_dimensionality::<ndarray::Ix2>() else { return Ok(out) };
+    let offsets: Vec<i64> = read_i64(&offsets)?.iter().copied().collect();
+    let classes: Vec<i64> = read_i64(&classes)?.iter().copied().collect();
+    let planes = read_i64(&planes)?;
+    if planes.ndim() != 2 || planes.shape()[1] != 2 {
+        return Ok(out);
+    }
+    let planes: Vec<(i64, i64)> = planes.outer_iter().map(|p| (p[0], p[1])).collect();
+    let depths = depth::contour_depths(vertices.view(), &offsets, &classes, &planes);
+    let disagree: Vec<(usize, usize)> = depths
+        .iter()
+        .enumerate()
+        .filter_map(|(i, d)| Some((i, (*d)?)))
+        .filter(|(i, d)| roles.get(*i).is_some_and(|r| (0..=1).contains(r) && *r as usize != d % 2))
+        .collect();
+    if let Some((first, d)) = disagree.first() {
+        out.push(ctx.err(
+            "W919",
+            location,
+            format!(
+                "{} polygon(s) carry a contour_role that disagrees with their depth among their class's polygons \
+                 in their plane, first polygon {first}: role {} at depth {d}; a reader takes the depth (§8.6)",
+                disagree.len(),
+                roles[*first]
+            ),
+        ));
     }
     Ok(out)
 }

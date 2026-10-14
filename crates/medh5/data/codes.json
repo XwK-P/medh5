@@ -793,6 +793,14 @@
       "summary": "a voxel annotation declares `closure = \"implicit\"`",
       "since": "1.0",
       "revision": 2
+    },
+    {
+      "code": "W919",
+      "severity": "warning",
+      "domain": "annotations",
+      "summary": "a contour's `contour_role` disagrees with its depth among its class's polygons in its plane",
+      "since": "1.0",
+      "revision": 2
     }
   ]
 }

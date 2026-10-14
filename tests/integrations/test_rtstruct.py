@@ -13,7 +13,7 @@ import medh5
 from medh5.errors import MEDH5ValidationError
 from medh5.io.report import ConversionReport
 from tests.helpers import write_dicom_series
-from tests.kits import Flat
+from tests.kits import Flat, NestedSameNameRoiKit
 
 pydicom = pytest.importorskip("pydicom")
 
@@ -1217,3 +1217,133 @@ class TestRoiNamesAndText:
         assert written.SpecificCharacterSet == "ISO_IR 192"
         assert str(written.PatientName) == "Müller^Jürgen"
         assert written.StructureSetROISequence[0].ROIName == "Rückenmark"
+
+
+def _bladder_label_set(*keys: str) -> Any:
+    from medh5.labels import LabelClass, LabelSet
+
+    return LabelSet(
+        "bladder-1",
+        version="1.0.0",
+        classes=[LabelClass(i, key, key.title()) for i, key in enumerate(keys, 1)],
+    )
+
+
+class TestSameNamedRois:
+    """ROIs whose names make one key are one class (§8.6).
+
+    Minting, two ROIs named "GTV" failed "[E302] duplicate class keys"; with
+    a label set they merged without a note, their roles nested per ROI while
+    the rasteriser nested per class --- so a "Bladder" drawn inside another
+    became a hole in it.
+    """
+
+    @pytest.fixture(params=["minted", "label_set"])
+    def given(self, request) -> Any:
+        """No label set (the importer mints one), or one the sample holds."""
+        if request.param == "minted":
+            return None
+        return _bladder_label_set("gtv", "bladder", "bladder_inner")
+
+    def test_S8_6_same_named_rois_are_one_class(self, tmp_path, given):
+        from medh5.io.rtstruct import from_rtstruct
+
+        case = _dicom_case(tmp_path)
+        if given is not None:
+            with medh5.amend(case.path) as w:
+                w.label_set(given)
+        grid = case.grid
+        rt = _structure_set(
+            case.tmp / "rt.dcm",
+            {
+                1: ("GTV", [(CLOSED, _square(grid, 2, (2, 5), (2, 5)))]),
+                3: ("gtv", [(CLOSED, _square(grid, 2, (8, 10), (8, 10)))]),
+                4: ("GTV", [(CLOSED, _square(grid, 3, (2, 7), (2, 7)))]),
+            },
+            [FRAME_A],
+        )
+        report = from_rtstruct(rt, case.path, ann_id="rois", rasterize=True)
+        with medh5.open(case.path) as sample:
+            polygons = list(sample.annotations["rois"].polygons())
+            gtv = sample.label_set["gtv"]
+            assert {p.class_id for p in polygons} == {gtv.id}
+            assert [p.role for p in polygons] == ["outer"] * 3
+            if given is None:
+                assert [c.key for c in sample.label_set] == ["gtv"]
+                assert gtv.name == "GTV"
+        assert _voxels(case.path) == {"gtv": 16 + 9 + 36}
+        [note] = report.of_kind("merged_rois")
+        assert note.severity == "decision"
+        assert note.detail == {
+            "class": "gtv",
+            "rois": [1, 3, 4],
+            "names": ["GTV", "gtv", "GTV"],
+        }
+
+    def test_S8_6_nested_same_named_rois_are_refused(self, tmp_path, given):
+        """The Bladder kit: drawn, 121 voxels; 2.0.2 stored 105."""
+        from medh5.io.rtstruct import from_rtstruct
+
+        kit = NestedSameNameRoiKit
+        sample = kit.sample(tmp_path / "ct.medh5", label_set=given)
+        rt = kit.rtstruct(tmp_path / "rt.dcm", sample)
+        before = sample.read_bytes()
+        with pytest.raises(
+            MEDH5ValidationError,
+            match=r"ROIs 1 \('Bladder'\), 2 \('Bladder'\) are one class 'bladder', "
+            r"and on slice 0 of grid 'ct' .*\(--roi NUMBER=KEY\)",
+        ):
+            from_rtstruct(rt, sample, rasterize=True)
+        assert sample.read_bytes() == before, "the sample is untouched"
+
+    def test_S8_6_roi_classes_import_rois_apart(self, tmp_path, given):
+        from medh5.io.rtstruct import from_rtstruct
+
+        kit = NestedSameNameRoiKit
+        sample = kit.sample(tmp_path / "ct.medh5", label_set=given)
+        rt = kit.rtstruct(tmp_path / "rt.dcm", sample)
+        report = from_rtstruct(
+            rt, sample, rasterize=True, roi_classes={2: "bladder_inner"}
+        )
+        assert _voxels(sample, "contours") == {
+            "bladder": kit.DRAWN,
+            "bladder_inner": 16,
+        }
+        assert not report.of_kind("merged_rois")
+        with medh5.open(sample) as opened:
+            assert opened.annotations["contours"].roles == ("outer", "outer")
+            if given is None:
+                assert [(c.key, c.name) for c in opened.label_set] == [
+                    ("bladder", "Bladder"),
+                    ("bladder_inner", "Bladder"),
+                ]
+
+    def test_S8_6_roi_classes_name_a_class_of_the_label_set(self, tmp_path):
+        """With a label set, the key must be one of its classes (E402); an ROI
+        number the file does not hold is refused, not ignored."""
+        from medh5.io.rtstruct import from_rtstruct
+
+        kit = NestedSameNameRoiKit
+        sample = kit.sample(
+            tmp_path / "ct.medh5", label_set=_bladder_label_set("bladder")
+        )
+        rt = kit.rtstruct(tmp_path / "rt.dcm", sample)
+        with pytest.raises(MEDH5ValidationError, match="'bladder_inner'") as exc:
+            from_rtstruct(rt, sample, roi_classes={2: "bladder_inner"})
+        assert exc.value.code == "E402"
+        with pytest.raises(MEDH5ValidationError, match=r"ROI number\(s\) \[7\]"):
+            from_rtstruct(rt, sample, roi_classes={7: "bladder"})
+
+    def test_roi_classes_come_in_through_the_command_line(self, tmp_path, capsys):
+        from medh5.cli import main
+
+        kit = NestedSameNameRoiKit
+        sample = kit.sample(tmp_path / "ct.medh5")
+        rt = kit.rtstruct(tmp_path / "rt.dcm", sample)
+        command = ["convert", "from-rtstruct", str(rt), str(sample), "--rasterize"]
+        assert main(command) == 1, "refused without --roi"
+        assert "--roi NUMBER=KEY" in capsys.readouterr().err
+        assert main([*command, "--roi", "two=x"]) == 1
+        assert "--roi" in capsys.readouterr().err
+        assert main([*command, "--roi", "2=bladder_inner"]) == 0
+        assert _voxels(sample, "contours") == {"bladder": 121, "bladder_inner": 16}

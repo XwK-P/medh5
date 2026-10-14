@@ -996,6 +996,12 @@ fn cls_base(path: &Path) -> Result<()> {
 
 /// Contours and a surface mesh, the two non-voxel shape representations.
 fn shape_base(path: &Path) -> Result<()> {
+    shapes(path, "hole")
+}
+
+/// [`shape_base`], its nested contour stored with `hole_role`: `"outer"`
+/// disagrees with its depth (W919).
+fn shapes(path: &Path, hole_role: &str) -> Result<()> {
     let mut rng = Rng::new(SEED);
     let shape = [12, 16, 16];
     let square = matrix(&[&[4.0, 4.0, 4.0], &[4.0, 4.0, 9.0], &[4.0, 9.0, 9.0], &[4.0, 9.0, 4.0]])?;
@@ -1015,7 +1021,7 @@ fn shape_base(path: &Path) -> Result<()> {
         w.add_image("CT", &ct_volume(&mut rng, &shape)?, "ct", "CT", quantitative(None))?;
         w.add_contours(
             "rtstruct",
-            &[Polygon::new(square, 1, (0, 4), "outer")?, Polygon::new(hole, 1, (0, 4), "hole")?],
+            &[Polygon::new(square, 1, (0, 4), "outer")?, Polygon::new(hole, 1, (0, 4), hole_role)?],
             on_ct(),
             AnnotationOptions::default(),
         )?;
@@ -1455,7 +1461,7 @@ fn break_affine_last_row(root: &hdf5::Group) -> Result<()> {
 
 /// Every case, in corpus order.
 pub(super) fn registry() -> Vec<Case> {
-    let mut cases = Vec::with_capacity(169);
+    let mut cases = Vec::with_capacity(171);
     valid_cases(&mut cases);
     first_invalid_batch(&mut cases);
     second_batch(&mut cases);
@@ -2023,6 +2029,23 @@ fn geometric_cases(cases: &mut Vec<Case>) {
             crowd_one_scope_unit,
         )
         .warnings(&["W911", "W912"]),
+        case(
+            "W919-contour-role-depth",
+            "A contour nested inside another of its class on one plane, stored as an outer boundary: readers \
+             take its depth, a hole.",
+            "§8.6",
+            |p| shapes(p, "outer"),
+        )
+        .warnings(&["W912", "W919"]),
+        invalid(
+            "E404-contour-role-value",
+            "A `contour_role` of 2, which the format does not define.",
+            "§8.6",
+            &["E404"],
+            shape_base,
+            |f| edit_values(f, "annotations/rtstruct/contour_role", |r| r[IxDyn(&[1])] = 2.0),
+        )
+        .warnings(&["W912"]),
         invalid(
             "E408-contour-offsets",
             "Contour offsets that do not end at the vertex count.",
@@ -2588,11 +2611,11 @@ mod tests {
     #[test]
     fn the_registry_holds_every_case_once() {
         let cases = registry();
-        assert_eq!(cases.len(), 169);
+        assert_eq!(cases.len(), 171);
         let mut names: Vec<&str> = cases.iter().map(|c| c.name.as_str()).collect();
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), 169);
+        assert_eq!(names.len(), 171);
     }
 
     #[test]

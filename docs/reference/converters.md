@@ -341,6 +341,22 @@ grid's pseudonym. Where the RTSTRUCT or the grid states no frame, the report
 records a guess. Into a sample with a label set, an ROI takes the class its
 `ROIName` names, by key or by display name.
 
+**ROIs of one class are combined.** ROIs whose names make one key — two
+called "GTV", or "GTV" and "gtv" — are one class, minted or found in the
+label set, and the report records a `merged_rois` decision naming their ROI
+numbers. Their contours combine as §8.6 defines: each polygon's role is its
+nesting depth among the class's polygons on its slice, so outlines of two
+ROIs that cross are their union. An import where one ROI's contour lies
+inside another's on a slice is refused, naming the ROIs and the slice:
+combined, the inner one would be a hole in what both drew as an area.
+`--roi NUMBER=KEY` (`roi_classes={NUMBER: KEY}`, repeatable) puts an ROI in
+the class of that key instead — minted, or one the sample's label set holds
+(`E402` otherwise) — which imports same-named ROIs apart:
+
+```
+$ medh5 convert from-rtstruct plan.dcm case.medh5 --roi 2=bladder_inner
+```
+
 Each imported polygon records the slice it lies on as `contour_plane`
 `(0, k)`, in the grid's index space, so `by_plane()` on the result groups the
 structure set the way the planner drew it.

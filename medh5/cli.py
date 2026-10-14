@@ -306,6 +306,19 @@ def _pairs(values: list[str] | None, what: str) -> dict[str, str]:
     return out
 
 
+def _numbered(values: list[str] | None, what: str) -> dict[int, str] | None:
+    """``NUMBER=VALUE`` pairs, keyed by the number; ``None`` for none."""
+    out: dict[int, str] = {}
+    for name, value in _pairs(values, what).items():
+        try:
+            out[int(name)] = value
+        except ValueError:
+            raise MEDH5Error(
+                f"--{what} expects NUMBER=VALUE, got {name}={value}"
+            ) from None
+    return out or None
+
+
 def _sample_file(path: str) -> str:
     """*path*, as the sample file a converter reads or imports into.
 
@@ -451,6 +464,7 @@ def _from_rtstruct(args: Any) -> int:
         rasterize=args.rasterize,
         # `--frame-salt`, where the grammar gives this command one.
         frame_salt=getattr(args, "frame_salt", None),
+        roi_classes=_numbered(getattr(args, "roi_classes", None), "roi"),
     )
     return _finish(report, args)
 
