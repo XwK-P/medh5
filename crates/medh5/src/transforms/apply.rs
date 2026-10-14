@@ -472,12 +472,20 @@ impl CoefficientBudget {
     }
 
     /// Count `bytes` as held, if they fit within the limit.
+    ///
+    /// A compare-exchange loop: `fetch_update` is deprecated from Rust 1.99
+    /// (renamed `try_update`), and `try_update` is newer than `rust-version`.
     fn reserve(&self, bytes: usize) -> bool {
-        self.held
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |held| {
-                held.checked_add(bytes).filter(|total| *total <= self.limit)
-            })
-            .is_ok()
+        let mut held = self.held.load(Ordering::Relaxed);
+        loop {
+            let Some(total) = held.checked_add(bytes).filter(|total| *total <= self.limit) else {
+                return false;
+            };
+            match self.held.compare_exchange_weak(held, total, Ordering::Relaxed, Ordering::Relaxed) {
+                Ok(_) => return true,
+                Err(now) => held = now,
+            }
+        }
     }
 }
 
