@@ -666,8 +666,14 @@ class TestRepositoryGates:
         # what a clean build does.
         for name in ("sdist", "msvc-from-crates-io"):
             assert cache not in jobs[name], name
+        # `build` saves on `main` and restores anywhere but on the tag, whose
+        # artifacts the release publishes, and never in a container.
         built = BUILD.read_text(encoding="utf-8")
-        assert cache not in built
+        step = built.split(cache, 1)[1].split("\n      - ", 1)[0]
+        assert "key: ${{ inputs.target }}" in step
+        assert "save-if: ${{ github.ref == 'refs/heads/main' }}" in step
+        when = "if: ${{ !inputs.container && !startsWith(github.ref, 'refs/tags/') }}"
+        assert built.count(when) == 2  # the toolchain its key reads, and it
         uploads = re.findall(
             r"upload-artifact@\S+ # v[\d.]+\n {8}with:\n((?: {10}.*\n)+)",
             text + built,
@@ -865,6 +871,28 @@ class TestDistribution:
                 downloading += 1
             assert needed == {build_of[t] for t in targets}, name
         assert downloading == 11
+
+    def test_the_intel_mac_skips_pull_requests_and_nothing_else(self):
+        """The Intel Mac build was the slowest job of every run (14 to 23
+        minutes), and a pull request's tests waited on it.  It and its tests
+        run on every other event (the merge queue, a push, the release's call),
+        and the gate accepts their skip on a pull request only."""
+        text = CI.read_text(encoding="utf-8")
+        # The merge queue runs it, and must: a group without `ci-ok` never merges.
+        assert "\n  merge_group:\n" in text.split("\njobs:", 1)[0]
+        jobs = _jobs(text)
+        skipping = {
+            name
+            for name, job in jobs.items()
+            if "github.event_name != 'pull_request'" in job.split("steps:")[0]
+        }
+        assert skipping == {"build-macos-x86_64"}
+        assert re.search(
+            r"^    needs: build-macos-x86_64$", jobs["test-macos-x86_64"], re.M
+        )
+        gate = jobs["ci-ok"]
+        assert "EVENT: ${{ github.event_name }}" in gate
+        assert 'for job in ("build-macos-x86_64", "test-macos-x86_64"):' in gate
 
     def test_the_next_python_is_tried_and_not_claimed(self):
         """The classifiers name the interpreters the gating matrix tests, and

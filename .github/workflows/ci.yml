@@ -5,6 +5,9 @@ on:
     branches: [main, "release/**"]
   pull_request:
     branches: [main, "release/**"]
+  # The merge queue tests each group of queued pull requests on their merged
+  # tree, and merges them only when `ci-ok` passes there.
+  merge_group:
   # `release.yml` runs this workflow on the tagged commit before publishing,
   # and publishes the wheels and binaries it built: what reaches PyPI, the
   # release page and Homebrew is what passed, not what passed on the pull
@@ -254,8 +257,13 @@ jobs:
       runner: macos-14
 
   build-macos-x86_64:
+    # Not on a pull request: the Intel Mac build was the slowest job of every
+    # run (14 to 23 minutes), and every test waited on it.  It runs, with its
+    # tests, in the merge queue, on each push to `main` and a release line, and
+    # on the release's own run of this workflow, so nothing ships untested; a
+    # break particular to it shows in the queue, not on the pull request.
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && github.event_name != 'pull_request'
     uses: ./.github/workflows/build.yml
     with:
       target: x86_64-apple-darwin
@@ -805,6 +813,7 @@ jobs:
       - name: Every job passed
         env:
           NEEDS: ${{ toJSON(needs) }}
+          EVENT: ${{ github.event_name }}
         run: |
           python3 - <<'PY'
           import json, os, sys
@@ -815,6 +824,11 @@ jobs:
           changes = needs["changes"]
           if changes["result"] == "success" and changes["outputs"]["code"] == "false":
               sys.exit(0)
+          # The Intel Mac jobs skip a pull request on purpose (build-macos-x86_64).
+          if os.environ["EVENT"] == "pull_request":
+              for job in ("build-macos-x86_64", "test-macos-x86_64"):
+                  if results[job] == "skipped":
+                      results[job] = "success"
           cancelled = sorted(job for job, result in results.items() if result == "cancelled")
           failed = sorted(
               job for job, result in results.items() if result not in ("success", "cancelled")

@@ -45,6 +45,21 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
+      # The crates' builds, HDF5's among them, as `main`'s last run of this
+      # platform left them; only `main` saves them.  Never on a tag: the
+      # release publishes what its run on the tag builds, so that build starts
+      # clean.  Not in the manylinux containers, whose Rust and
+      # Cargo home are the container's: the Windows build, which compiles HDF5
+      # each time, is the one on the pull request's longest path.
+      - name: Install the pinned Rust for the cache's key
+        if: ${{ !inputs.container && !startsWith(github.ref, 'refs/tags/') }}
+        shell: bash
+        run: rustup toolchain install --no-self-update
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: ${{ !inputs.container && !startsWith(github.ref, 'refs/tags/') }}
+        with:
+          key: ${{ inputs.target }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build in a manylinux container
         if: inputs.container
         run: docker run --rm -v "$PWD:/io" -w /io "${{ inputs.container }}" bash .github/scripts/build-dist.sh "${{ inputs.target }}"
