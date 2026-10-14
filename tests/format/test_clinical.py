@@ -1131,6 +1131,28 @@ class TestSelection:
         assert chosen.excluded == {"after_cutoff": 2}
         assert chosen.events[1].order_us == (0, 0)
 
+    def test_S9_1_admits_any_looks_in_every_fragment(self):
+        """``admits`` answers for fragment 0 unless told otherwise, so a
+        payload of a subject's second fragment read as not admitted."""
+        from medh5.clinical import Selection
+
+        chosen = Selection.from_json(
+            {
+                "cutoff_us": 0,
+                "policy": "strict_prospective",
+                "status": "certified",
+                "events": [],
+                "links": [],
+                "payloads": [[1, "image", "CT_tp1"]],
+                "uncertain_records": [],
+            }
+        )
+        assert not chosen.admits("image", "CT_tp1")
+        assert chosen.admits("image", "CT_tp1", fragment=1)
+        assert chosen.admits_any("image", "CT_tp1")
+        assert not chosen.admits_any("image", "CT_tp0")
+        assert not chosen.admits_any("annotation", "CT_tp1")
+
     def test_S9_1_an_uncertain_revision_is_uncertifiable(self, tmp_path: Path):
         path = tmp_path / "uncertain.medh5"
         History.write(

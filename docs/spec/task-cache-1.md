@@ -498,3 +498,10 @@ never what a manifest must contain.
 | §2 | An implementation should let the runner confine sources to one directory and, confined, must refuse a URI outside it, its `.` and `..` resolved lexically, without examining the path (T301), and open the path so resolved. | Found after 2.0.2: a manifest's author chose every path its runner opened, any path the running user could read, and T301 telling an absent path from an unreadable one answered whether it exists. Confinement by default would break every manifest naming `../data/…`, so it is the runner's choice; confining by canonical path would refuse the symbolic links data directories are full of, so it is lexical. |
 | §3.5 | A mask its own eligible procedure asserts it describes is an eligible annotation (1.1 §7.3). | 1.1 §7.3 required the asserter to be admitted when it was also the link's endpoint, so under `order_by = effective` a procedure of unknown time never attested its mask, and `roi = eligible_instances` fell back to `center_fallback`. |
 | §5 | A target with `negative` values should state `min_follow_up_us`; its default is unchanged. | With the default, the horizon, only an observation at exactly `c + h` can be a negative, so nearly every row without a positive is censored. The default is in every normal form, so in every task fingerprint and every patient-cache pin, and cannot change under `/1`; an implementation may note a target that leaves it out (`medh5 task validate` does), never fail it. |
+
+**Known limit.** A patient-level entry pins the task, the row fingerprint and the sources, not
+what the row read: the slot image, the crop centre, the admitted payloads. A correction to
+selection — such as the §3.5 row above — changes a row's inputs while every pin of its entries
+still holds, so validation cannot tell such an entry stale. A later `medh5.cache` version could
+add a digest over the row's admitted payloads and slot fills; until then, the changelog of a
+release that changes what a row reads says which caches to rebuild.

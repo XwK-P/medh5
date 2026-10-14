@@ -381,8 +381,10 @@ impl CacheWriter {
                 "an event-level feature is free of any row: it names no row, cutoff or selected versions (§7.2)",
             ));
         }
+        // The schema requires one source at least, and a writer refuses an
+        // entry that would fail it (§7.1): T401, not the stale T403.
         if entry.sources.is_empty() {
-            return Err(Error::coded("T403", "a feature names every source version it read"));
+            return Err(Error::coded("T401", "a feature names every source version it read: one at least"));
         }
         if self.header.level == "event" && entry.event_id.as_deref().is_none_or(str::is_empty) {
             return Err(Error::coded("T404", "an event-level feature names the event version it encodes"));
@@ -594,6 +596,22 @@ impl FeatureCache {
     }
 }
 
+/// One source of a cache, checked: why its pin failed, or what its versions
+/// own (at the event level).
+enum Checked {
+    Failed(String),
+    Pinned(Option<std::result::Result<Ownership, String>>),
+}
+
+impl Checked {
+    fn failed(&self) -> Option<String> {
+        match self {
+            Checked::Failed(why) => Some(why.clone()),
+            Checked::Pinned(_) => None,
+        }
+    }
+}
+
 /// What validating a cache found.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct CacheReport {
@@ -651,13 +669,13 @@ impl CacheReport {
 /// its structural `describes` link (1.1 §7.3).
 struct Ownership(HashMap<String, BTreeSet<String>>);
 
-/// What a source's event versions own, or why it cannot be read.  A pin
-/// checks digests only, so a source whose clinical tables are malformed but
-/// sealed passes it: what its entries name cannot then be verified.
-fn ownership(source: &SourceRef, access: &SourceAccess) -> std::result::Result<Ownership, String> {
-    let sample = source.open_in(access).map_err(|e| format!("{} cannot be opened: {e}", source.locator()))?;
+/// What a source's event versions own, or why its clinical tables cannot be
+/// read.  A pin checks digests only, so a source whose clinical tables are
+/// malformed but sealed passes it: what its entries name cannot then be
+/// verified.
+fn ownership(source: &SourceRef, sample: &crate::sample::Sample) -> std::result::Result<Ownership, String> {
     let owned =
-        owned_by(&sample).map_err(|e| format!("the clinical tables of {} cannot be read: {e}", source.locator()))?;
+        owned_by(sample).map_err(|e| format!("the clinical tables of {} cannot be read: {e}", source.locator()))?;
     Ok(Ownership(owned.into_iter().map(|(event, documents)| (event, documents.into_iter().collect())).collect()))
 }
 
@@ -809,21 +827,24 @@ pub fn validate_cache_in(path: &Path, check: &CacheCheck<'_>) -> Result<CacheRep
         }
     }
     let access = &check.entries;
-    let mut checked: HashMap<(String, Option<String>, String), Option<String>> = HashMap::new();
+    // Each source is opened once: for its pin and, at the event level, for
+    // what its versions own.
+    let event_level = cache.header.level == "event";
+    let mut checked: HashMap<(String, Option<String>, String), Checked> = HashMap::new();
     for entry in &cache.entries {
         for source in &entry.sources {
             let key = (source.uri.clone(), source.sample_key.clone(), source.content_id.clone());
             let problem = checked
                 .entry(key)
                 .or_insert_with(|| match source.open_in(access) {
-                    Err(e) => Some(format!("{} cannot be reached: {e}", source.locator())),
+                    Err(e) => Checked::Failed(format!("{} cannot be reached: {e}", source.locator())),
                     Ok(sample) => match source.check(&sample, false) {
-                        Ok(f) if f.is_empty() => None,
-                        Ok(f) => Some(f[0].message.clone()),
-                        Err(e) => Some(e.to_string()),
+                        Ok(f) if f.is_empty() => Checked::Pinned(event_level.then(|| ownership(source, &sample))),
+                        Ok(f) => Checked::Failed(f[0].message.clone()),
+                        Err(e) => Checked::Failed(e.to_string()),
                     },
                 })
-                .clone();
+                .failed();
             if let Some(why) = problem {
                 report.findings.push(Finding::new("T403", &entry.entry_id, why));
             }
@@ -834,16 +855,13 @@ pub fn validate_cache_in(path: &Path, check: &CacheCheck<'_>) -> Result<CacheRep
     // --- a newer revision's, say --- was served to every row admitting the
     // version it names, before that text existed.
     // Checked against the source, so with or without a task.
-    if cache.header.level == "event" {
-        let mut owners: HashMap<(String, Option<String>, String), std::result::Result<Ownership, String>> =
-            HashMap::new();
+    if event_level {
         for entry in &cache.entries {
             let (Some(event_id), Some(source)) = (&entry.event_id, entry.sources.first()) else { continue };
             let key = (source.uri.clone(), source.sample_key.clone(), source.content_id.clone());
-            if checked.get(&key).is_some_and(Option::is_some) {
-                continue; // its pin failed: stale (T403), not judged here
-            }
-            let why = match owners.entry(key).or_insert_with(|| ownership(source, access)) {
+            // A failed pin is stale (T403), not judged here.
+            let Some(Checked::Pinned(Some(owned))) = checked.get(&key) else { continue };
+            let why = match owned {
                 Ok(owned) => owned.mismatch(source, event_id, entry.document_id.as_deref()),
                 // Unverifiable: rejected, never skipped.
                 Err(e) => {
@@ -971,4 +989,48 @@ pub fn validate_cache_in(path: &Path, check: &CacheCheck<'_>) -> Result<CacheRep
         }
     }
     Ok(report)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::companion::source::OPENS;
+
+    /// Validating an event-level cache opened each source twice: for its
+    /// pin, then again for what its versions own.  Once now.
+    #[test]
+    fn s8_a_source_is_opened_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let sample = dir.path().join("worked.medh5");
+        crate::conformance::clinical::worked_example(&sample).unwrap();
+        let source = SourceRef::pin("worked.medh5", None, &crate::sample::open_sample(&sample).unwrap()).unwrap();
+        let path = dir.path().join("e.medh5cache");
+        let header = CacheHeader {
+            level: "event".into(),
+            encoder: json!({"name": "fixture-hash", "revision": "sha256:00", "tokenizer": null}),
+            preprocessing: json!({}),
+            output: json!({"dtype": "float32", "shape": [4], "pooling": "mean", "chunking": null}),
+            task_fingerprint: None,
+            selection: None,
+            fitted_on: None,
+        };
+        let mut writer = CacheWriter::create(&path, header).unwrap();
+        let entry = CacheEntry {
+            entry_id: event_entry_id(&source.content_id, "report0_v1"),
+            sources: vec![source],
+            event_id: Some("report0_v1".into()),
+            document_id: Some("report0_text_v1".into()),
+            row_id: None,
+            cutoff_us: None,
+            event_versions: None,
+            row_fingerprint: None,
+            digest: String::new(),
+        };
+        writer.add(entry, &NdArray::from_vec(&[4], vec![0.5f32; 4]).unwrap()).unwrap();
+        writer.commit().unwrap();
+        OPENS.with(|n| n.set(0));
+        let report = validate_cache(&path, None, None, None).unwrap();
+        assert!(report.ok(), "{:?}", report.findings);
+        assert_eq!(OPENS.with(std::cell::Cell::get), 1);
+    }
 }

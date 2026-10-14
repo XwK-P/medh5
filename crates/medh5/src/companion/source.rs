@@ -329,6 +329,8 @@ impl SourceRef {
     }
 
     fn open_at(&self, path: &Path) -> Result<Sample> {
+        #[cfg(test)]
+        OPENS.with(|n| n.set(n.get() + 1));
         match open_any(path, self.sample_key.as_deref())? {
             AnyFile::Sample(s) => Ok(s),
             AnyFile::Collection(_) => Err(Error::invalid(format!(
@@ -456,6 +458,13 @@ impl SourceRef {
             local_subject_id: text("local_subject_id"),
         })
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many sources this thread has opened: what a test of "one open per
+    /// source" counts.
+    pub(crate) static OPENS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]

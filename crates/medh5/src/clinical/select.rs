@@ -378,9 +378,18 @@ impl Selection {
         self.events.iter().map(|s| events[s.index].event_id.as_str()).collect()
     }
 
-    /// Whether `(fragment, kind, id)` may be read as input.
+    /// Whether `(fragment, kind, id)` may be read as input.  A payload is
+    /// admitted in the fragment that holds it: in a merged history, one of
+    /// a later fragment is not admitted in fragment 0 ([`admits_any`]).
+    ///
+    /// [`admits_any`]: Self::admits_any
     pub fn admits(&self, fragment: usize, kind: &str, id: &str) -> bool {
         self.payloads.contains(&(fragment, kind.to_string(), id.to_string()))
+    }
+
+    /// Whether `(kind, id)` may be read as input from any fragment.
+    pub fn admits_any(&self, kind: &str, id: &str) -> bool {
+        self.payloads.iter().any(|(_, k, i)| k == kind && i == id)
     }
 
     pub fn to_json(&self, events: &[Event]) -> Value {
@@ -1088,5 +1097,25 @@ mod tests {
             let once = select(&events, &refs, cutoff, &policy).unwrap();
             assert_eq!(prepared.select(cutoff, &policy).unwrap(), once, "cutoff {cutoff}");
         }
+    }
+
+    /// `admits` answers for one fragment; a payload of a subject's second
+    /// fragment read "not admitted" to a caller that left it at 0.
+    #[test]
+    fn s9_1_admits_any_looks_in_every_fragment() {
+        let selection = Selection {
+            cutoff_us: 0,
+            policy: POLICIES[0].into(),
+            status: CERTIFIED.into(),
+            events: Vec::new(),
+            links: Vec::new(),
+            payloads: BTreeSet::from([(1, "image".to_string(), "ct1".to_string())]),
+            uncertain_records: Vec::new(),
+            excluded: BTreeMap::new(),
+        };
+        assert!(!selection.admits(0, "image", "ct1"));
+        assert!(selection.admits(1, "image", "ct1"));
+        assert!(selection.admits_any("image", "ct1"));
+        assert!(!selection.admits_any("image", "ct0") && !selection.admits_any("annotation", "ct1"));
     }
 }

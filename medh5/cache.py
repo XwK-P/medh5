@@ -104,13 +104,13 @@ class CacheEntry:
 
     @classmethod
     def from_json(cls, doc: Mapping[str, Any]) -> CacheEntry:
+        """An entry as the engine reads it: a member of the wrong type is
+        refused (T401), never read as absent."""
+        doc = _core.cache_entry_json(doc)
         versions = doc.get("event_versions")
         return cls(
             str(doc["entry_id"]),
-            tuple(
-                SourceRef(str(s["uri"]), str(s["content_id"]), s.get("sample_key"))
-                for s in doc["sources"]
-            ),
+            tuple(SourceRef.from_json(s) for s in doc["sources"]),
             str(doc["digest"]),
             doc.get("event_id"),
             doc.get("document_id"),
@@ -127,7 +127,7 @@ class CacheWriter:
     As a context manager it commits when the block succeeds --- unless the
     block committed or aborted it itself --- and leaves nothing behind when
     it raises.  Every entry must match the declared output dtype
-    and shape (T402), name the source versions it read (T403), and --- at the
+    and shape (T402), name the source versions it read (T401), and --- at the
     patient level --- pin its row (by id and fingerprint), cutoff and selected
     versions (T404); an event-level entry names no row.
     """
@@ -366,20 +366,22 @@ class CacheReport:
 
     @property
     def ok(self) -> bool:
-        return not self.findings
-
-    def _with(self, codes: tuple[str, ...]) -> tuple[str, ...]:
-        return tuple(sorted({f.location for f in self.findings if f.code in codes}))
+        return bool(self.to_json()["ok"])
 
     @property
     def stale(self) -> tuple[str, ...]:
         """Entries whose sources changed or vanished (T403)."""
-        return self._with(("T403",))
+        return tuple(self.to_json()["stale"])
 
     @property
     def corrupt(self) -> tuple[str, ...]:
         """Entries (or ``"manifest"``) whose own bytes are wrong (T401, T402)."""
-        return self._with(("T401", "T402"))
+        return tuple(self.to_json()["corrupt"])
+
+    def to_json(self) -> dict[str, Any]:
+        """The report as ``medh5 cache validate --json`` writes it: the
+        engine's verdict, stale and corrupt entries."""
+        return dict(_core.cache_report_json(self))
 
     @classmethod
     def from_json(cls, doc: Mapping[str, Any]) -> CacheReport:

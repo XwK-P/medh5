@@ -453,6 +453,36 @@ fn cache_owned_documents<'py>(
     Ok(out)
 }
 
+/// An entry as the engine reads it, written back: a malformed entry is
+/// refused (T401) rather than read leniently.
+#[pyfunction]
+fn cache_entry_json<'py>(py: Python<'py>, doc: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
+    Ok(json_to_py(py, &CacheEntry::from_json(&py_to_json(doc)?)?.to_json())?)
+}
+
+/// A `CacheReport` dataclass's engine JSON: its verdict, stale and corrupt
+/// entries are the engine's.
+#[pyfunction]
+fn cache_report_json<'py>(py: Python<'py>, report: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
+    let mut findings = Vec::new();
+    for f in report.getattr("findings")?.try_iter()? {
+        let f = f?;
+        findings.push(medh5::companion::Finding::new(
+            &f.getattr("code")?.extract::<String>()?,
+            f.getattr("location")?.extract::<String>()?,
+            f.getattr("message")?.extract::<String>()?,
+        ));
+    }
+    let engine = medh5::companion::CacheReport {
+        path: report.getattr("path")?.extract()?,
+        entries: report.getattr("entries")?.extract()?,
+        findings,
+        manifest_digest: report.getattr("manifest_digest")?.extract()?,
+        level: report.getattr("level")?.extract()?,
+    };
+    Ok(json_to_py(py, &engine.to_json())?)
+}
+
 fn header(value: &Value) -> CacheHeader {
     let opt = |k: &str| value.get(k).and_then(Value::as_str).map(str::to_string);
     CacheHeader {
@@ -681,6 +711,8 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         wrap_pyfunction!(cache_open, m)?,
         wrap_pyfunction!(cache_validate, m)?,
         wrap_pyfunction!(cache_owned_documents, m)?,
+        wrap_pyfunction!(cache_entry_json, m)?,
+        wrap_pyfunction!(cache_report_json, m)?,
         wrap_pyfunction!(cache_fitted_on, m)?,
         wrap_pyfunction!(cache_fitted_on_mismatches, m)?,
         wrap_pyfunction!(cache_event_entry_id, m)?,

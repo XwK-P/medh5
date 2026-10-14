@@ -23,6 +23,7 @@ import pytest
 import medh5
 from medh5 import _core
 from medh5.cache import (
+    CacheEntry,
     CacheWriter,
     FeatureCache,
     HashingTextEncoder,
@@ -486,6 +487,33 @@ class TestManifest:
             fingerprints.append(TaskManifest(doc).task_fingerprint)
         omitted, explicit, half = fingerprints
         assert omitted == explicit != half
+
+    def test_S3_1_python_defaults_are_the_engines(self):
+        """``SelectionPolicy()``, ``Slot()`` and ``Target()`` keep their
+        Python defaults: each is what the engine fills into a document that
+        states only what is required."""
+        from medh5.clinical import SelectionPolicy
+
+        bare = {
+            "schema": "medh5.task/1",
+            "task": {"id": "t", "version": "1"},
+            "identity_namespace": "n",
+            "slots": [{"name": "ct", "modality": "CT"}],
+            "target": {
+                "id": "t",
+                "version": "1",
+                "event": {"code_system": "s", "code": "c"},
+                "positive": ["PD"],
+                "horizon_us": DAY,
+            },
+            "subjects": [],
+            "rows": [],
+        }
+        normal = TaskManifest(bare).to_json()
+        assert normal["policy"] == SelectionPolicy().to_json()
+        assert normal["slots"] == [Slot("ct", "CT").to_json()]
+        target = Target("t", "1", "s", "c", ("PD",), horizon_us=DAY).to_json()
+        assert normal["target"] == {**target, "min_follow_up_us": DAY}
 
     def test_S5_a_target_without_negatives_is_the_default(self, setup):
         """`negative` defaults to none: a target that leaves it out is the task
@@ -2241,6 +2269,65 @@ class TestCaches:
             FeatureCache.open(path)
         assert caught.value.code == "T401"
 
+    def test_S7_1_an_entry_without_sources_is_T401(self, tmp_path: Path):
+        """The schema requires a source, and a writer refuses an entry that
+        would fail its schema (T401): it was refused as stale (T403)."""
+        with CacheWriter(
+            tmp_path / "x.medh5cache",
+            level="event",
+            encoder={"name": "fixture", "revision": "1"},
+            output={"dtype": "float32", "shape": [2]},
+        ) as writer:
+            with pytest.raises(MEDH5ValidationError) as caught:
+                writer.add("x", np.zeros(2, np.float32), sources=[], event_id="e")
+            assert caught.value.code == "T401"
+            writer.abort()
+
+    def test_S7_1_an_entry_reads_as_the_engine_reads_it(self, setup):
+        """``CacheEntry.from_json`` read leniently what the engine refuses: a
+        float cutoff, a source list that is not a list."""
+        task, _ = setup
+        source = task.subjects[0].sources[0]
+        doc = {
+            "entry_id": "e",
+            "sources": [
+                {"uri": source.uri, "sample_key": None, "content_id": source.content_id}
+            ],
+            "event_id": None,
+            "document_id": None,
+            "row_id": "P-01@24h",
+            "cutoff_us": 24 * HOUR,
+            "event_versions": ["rep_v1"],
+            "row_fingerprint": "sha256:" + "0" * 64,
+            "digest": "sha256:" + "1" * 64,
+        }
+        entry = CacheEntry.from_json(doc)
+        assert entry.sources == (SourceRef(source.uri, source.content_id),)
+        assert _core.cache_entry_json(doc) == doc, "round-trips unchanged"
+        for member, wrong in [("cutoff_us", 1.5), ("sources", "ct.medh5")]:
+            with pytest.raises(MEDH5ValidationError) as caught:
+                CacheEntry.from_json({**doc, member: wrong})
+            assert caught.value.code == "T401", member
+
+    def test_S8_a_report_says_what_the_engine_says(self):
+        """``ok``, ``stale`` and ``corrupt`` re-computed the engine's verdict."""
+        from medh5.cache import CacheReport
+
+        report = CacheReport(
+            "c.medh5cache",
+            3,
+            (
+                Finding("T403", "b", "gone"),
+                Finding("T403", "a", "gone"),
+                Finding("T402", "manifest", "bytes"),
+                Finding("T406", "c", "inadmissible"),
+            ),
+        )
+        assert not report.ok
+        assert report.stale == ("a", "b") and report.corrupt == ("manifest",)
+        assert report.to_json()["findings"][0]["summary"] == CODES["T403"]
+        assert CacheReport("c", 0, ()).ok
+
     def test_S7_entries_match_the_declared_output(self, tmp_path: Path, setup):
         task, _ = setup
         source = task.subjects[0].sources[0]
@@ -2254,9 +2341,6 @@ class TestCaches:
         with pytest.raises(MEDH5ValidationError) as caught:
             writer.add_event(source, "rep_v1", np.zeros(3, np.float32))
         assert caught.value.code == "T402"
-        with pytest.raises(MEDH5ValidationError) as caught:
-            writer.add("x", np.zeros(2, np.float32), sources=[])
-        assert caught.value.code == "T403"
         writer.abort()
         assert not path.exists()
         with pytest.raises(MEDH5ValidationError) as caught:
@@ -2686,6 +2770,18 @@ class TestCommandLine:
         argv = ["clinical", "select", str(paths["P-01"]), "--json"]
         assert main([*argv, "--cutoff-hours=1.25e-09"]) == EXIT_OK
         assert json.loads(capsys.readouterr().out)["cutoff_us"] == hours(1.25e-09) == 4
+
+    def test_cutoff_hours_takes_a_negative_exponent_after_equals(self, setup, capsys):
+        """``--cutoff-hours -5.5e-07`` reads as a flag; the documented
+        ``--cutoff-hours=-5.5e-07`` is the cutoff."""
+        from medh5.clinical import hours
+
+        _, paths = setup
+        argv = ["clinical", "select", str(paths["P-01"]), "--json"]
+        assert main([*argv, "--cutoff-hours=-5.5e-07"]) == EXIT_OK
+        assert json.loads(capsys.readouterr().out)["cutoff_us"] == hours(-5.5e-07)
+        assert main([*argv, "--cutoff-hours", "-2"]) == EXIT_OK
+        assert json.loads(capsys.readouterr().out)["cutoff_us"] == hours(-2)
 
     def test_task_preflight_source_root_and_any_source_path(
         self, tmp_path: Path, capsys

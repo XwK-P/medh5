@@ -569,7 +569,13 @@ impl TaskManifest {
 
     /// The rows of one partition, in manifest order.
     pub fn rows_in(&self, partition: &str) -> Vec<&Row> {
-        self.rows.iter().filter(|r| self.partition_of(&r.subject_id) == Some(partition)).collect()
+        // One pass over the subjects, not one per row: the first subject of
+        // an id is the one `subject` finds.
+        let mut first: std::collections::HashMap<&str, bool> = std::collections::HashMap::new();
+        for s in &self.subjects {
+            first.entry(s.subject_id.as_str()).or_insert(s.partition.as_deref() == Some(partition));
+        }
+        self.rows.iter().filter(|r| first.get(r.subject_id.as_str()).copied().unwrap_or(false)).collect()
     }
 
     /// Everything wrong with the manifest that opening no file can find.

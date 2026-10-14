@@ -1843,6 +1843,7 @@ medh5.cache.CacheReport.manifest_digest	field
 medh5.cache.CacheReport.ok	property
 medh5.cache.CacheReport.path	field
 medh5.cache.CacheReport.stale	property
+medh5.cache.CacheReport.to_json	method	()
 medh5.cache.CacheWriter	class	(path, *, level, encoder, output, preprocessing=None, task=None, selection=None, fitted_on=None) bases=
 medh5.cache.CacheWriter.__enter__	method	()
 medh5.cache.CacheWriter.__exit__	method	(exc_type, exc, tb)
@@ -1996,6 +1997,7 @@ medh5.clinical.SelectedEvent.record_id	field
 medh5.clinical.SelectedEvent.tie_group	field
 medh5.clinical.Selection	class	(cutoff_us, policy, status, events, links, payloads, uncertain_records, excluded=<factory>) bases=
 medh5.clinical.Selection.admits	method	(kind, object_id, fragment=0)
+medh5.clinical.Selection.admits_any	method	(kind, object_id)
 medh5.clinical.Selection.certified	property
 medh5.clinical.Selection.cutoff_us	field
 medh5.clinical.Selection.event_ids	property

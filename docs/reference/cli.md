@@ -559,7 +559,9 @@ availability makes uncertifiable, and how many events each rule excluded.
 whole policy (contract §3.4). A later minor version, read as a projection, is
 refused (1.1 §2.2). `--cutoff-hours` is rounded to the microsecond half to
 even, as `medh5.clinical.hours` rounds it, so a cutoff given in hours is one
-instant from a script and from the command line.
+instant from a script and from the command line. A negative cutoff with an
+exponent is read as a flag when it follows a space: write it after `=`, as
+`--cutoff-hours=-5.5e-07`.
 
 ### `medh5 clinical export`
 

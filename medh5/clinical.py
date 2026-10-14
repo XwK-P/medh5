@@ -386,8 +386,18 @@ class Selection:
         return [e.event_id for e in self.events]
 
     def admits(self, kind: str, object_id: str, fragment: int = 0) -> bool:
-        """Whether ``(kind, id)`` in ``fragment`` may be read as input."""
+        """Whether ``(kind, id)`` in ``fragment`` may be read as input.
+
+        A payload is admitted in the fragment that holds it.  The default, 0,
+        is a single sample's own, or a merged history's first fragment: a
+        payload of a later fragment reads as not admitted there
+        (:meth:`admits_any` looks in every fragment)."""
         return (fragment, kind, str(object_id)) in self.payloads
+
+    def admits_any(self, kind: str, object_id: str) -> bool:
+        """Whether ``(kind, id)`` may be read as input from any fragment."""
+        object_id = str(object_id)
+        return any(k == kind and i == object_id for _, k, i in self.payloads)
 
     @classmethod
     def from_json(cls, doc: Mapping[str, Any]) -> Selection:

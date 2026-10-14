@@ -268,11 +268,13 @@ __all__ = [
     "build_affine",
     "build_index",
     "cache_create",
+    "cache_entry_json",
     "cache_event_entry_id",
     "cache_fitted_on",
     "cache_fitted_on_mismatches",
     "cache_open",
     "cache_owned_documents",
+    "cache_report_json",
     "cache_schema_text",
     "cache_validate",
     "canonical_attrs",
@@ -877,6 +879,14 @@ def cache_fitted_on_mismatches(doc: Any, fitted: Mapping[str, Any]) -> list[str]
 
 def cache_open(path: str | os.PathLike[str]) -> FeatureCacheHandle: ...
 def cache_schema_text() -> str: ...
+def cache_entry_json(doc: Any) -> dict[str, Any]:
+    """An entry as the engine reads it, written back."""
+    ...
+
+def cache_report_json(report: Any) -> dict[str, Any]:
+    """A `CacheReport` dataclass's engine JSON."""
+    ...
+
 def cache_owned_documents(
     source: Any,
     base: str | os.PathLike[str] | None = None,
