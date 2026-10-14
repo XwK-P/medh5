@@ -1325,7 +1325,10 @@ class TestDistribution:
             "release.py verify" in jobs["verify"] and "!cancelled()" in jobs["verify"]
         )
         for job in ("crates", "homebrew"):
-            assert "CANONICAL: ${{ github.repository == 'medh5-project/medh5' }}" in jobs[job]
+            assert (
+                "CANONICAL: ${{ github.repository == 'medh5-project/medh5' }}"
+                in jobs[job]
+            )
             fails = (
                 r'"\$CANONICAL" == true \]\]; then\n\s+echo "::error::[^\n]*\n\s+exit 1'
             )
