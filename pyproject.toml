@@ -150,6 +150,7 @@ include = [
   { path = ".cargo/config.toml", format = "sdist" },
   { path = "LICENSE", format = "sdist" },
   { path = "CHANGELOG.md", format = "sdist" },
+  { path = "changes/*.md", format = "sdist" },
   { path = "CONTRIBUTING.md", format = "sdist" },
   # The native inventory, the advisories against it and their VEX statements.
   { path = "SECURITY.md", format = "sdist" },

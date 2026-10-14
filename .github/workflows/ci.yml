@@ -153,10 +153,25 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      # Two commits: a pull request's merge commit and its base, which the
+      # changelog step diffs.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
+      # Each pull request records its change as a fragment (changes/README.md),
+      # or says it has none; a push to `main` only checks them.  The `if:` is
+      # on the step, so the job never skips.  Dependabot's updates and the
+      # lock refresh write none.
+      - name: Every pull request records its change
+        if: github.event_name == 'pull_request' && github.actor != 'dependabot[bot]' && github.head_ref != 'deps/cargo-lock'
+        run: |
+          git diff --name-only --diff-filter=AM HEAD^1 HEAD -- 'changes/*.md' \
+            | grep -v -e '/README.md$' -e '/lead.md$' | grep -q . \
+            || { echo "::error::add changes/<name>.md (see changes/README.md)"; exit 1; }
+      - run: python .github/scripts/changelog.py check
       # The pin in the `dev` extra, read from pyproject.toml: CI and a
       # developer's checkout run one version by construction.  Installing the
       # extra itself would compile the engine to run a linter.

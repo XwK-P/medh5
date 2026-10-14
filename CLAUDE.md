@@ -52,6 +52,7 @@ All of these must pass before committing:
 cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings \
   && cargo test --workspace \
   && python .github/scripts/third_party_notices.py --check \
+  && python .github/scripts/changelog.py check \
   && ruff check . && ruff format --check . && mypy medh5 \
   && pytest tests/ --cov=medh5 --cov-fail-under=90 \
   && medh5 conformance run /tmp/corpus \
@@ -233,7 +234,10 @@ it into every file's `generator`. The crates' `=X.Y.Z` pins on each other in
 
 `docs/` is the MkDocs site: `tutorials/`, `guides/` (how-to), `reference/`,
 `explanation/`, `spec/`, and `examples/` (standalone scripts). `CHANGELOG.md`
-stays at the root and `hooks/mkdocs_hooks.py` pulls it in; the same hook renders
+stays at the root and `hooks/mkdocs_hooks.py` pulls it in, with the fragments in
+`changes/` under [Unreleased]. A pull request never edits `CHANGELOG.md`: it adds
+`changes/<slug>.md` (`changes/README.md`), or one holding only `<!-- no entry:
+<reason> -->`, and the release assembles them. The same hook renders
 the diagnostic-code, cohort-code and schema tables from their sources (edit
 `crates/medh5/data/codes.json`, the `CHECK_CODES` table in
 `crates/medh5/src/dataset/check.rs`, or the schema — never the page) and emits
