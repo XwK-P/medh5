@@ -383,6 +383,8 @@ medh5 dataset split manifest.json [options]
 --ratios train=0.7,val=0.15,test=0.15
 --k-folds N          k-fold instead of ratios
 --seed N             deterministic given the manifest, seed and parameters (default 0)
+--algorithm 1|2      medh5.split/1 (the 2.x default) or medh5.split/2 (the 3.0 default)
+--previous SPLIT     continue a split JSON: its groups keep their places
 -o, --out split.json
 --write-claims       stamp each sample with its partition and the manifest digest
 --fold N             with --k-folds --write-claims: which fold is validation
@@ -395,6 +397,16 @@ sides. If the ratios cannot be met by an indivisible set of groups, the command
 says which partition got nothing rather than leaving you to notice later.
 `--fold` and `--assigned-by` describe the claims `--write-claims` stamps, so
 either without it is a usage error.
+
+`--algorithm` names how groups are dealt
+([the two algorithms](../guides/cohorts.md#the-algorithm-and-continuing-a-split));
+left out, the split is `medh5.split/1`, with a `warning:` on stderr where
+`medh5.split/2` would place some group differently. `--previous` continues
+a split: every group it placed keeps its partition or fold, and new groups are
+dealt by `medh5.split/2`; its parameters must be the previous split's, and
+`--algorithm 1` is refused with it. The split JSON records `algorithm` and,
+for a continued split, `previous` (the old manifest's digest, how many groups
+were kept, and those added and dropped).
 
 ### `medh5 dataset stats`
 

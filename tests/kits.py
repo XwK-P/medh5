@@ -14,7 +14,9 @@ defined once, here, under a name for what it builds:
 * :class:`Framed` --- classes ``c1`` … ``cn`` on 8×16×16, the grid in a frame of
   reference;
 * :class:`History` --- two CT visits with a clinical history (format 1.1),
-  8×12×12.
+  8×12×12;
+* :class:`SplitCohort` --- a cohort manifest of one-file groups in strata of
+  60 %, 30 % and 10 % and three rare ones, with no files behind it.
 """
 
 from __future__ import annotations
@@ -420,3 +422,37 @@ class History:
             content_id = w.commit()
         assert content_id is not None
         return str(content_id)
+
+
+class SplitCohort:
+    """A manifest of *n* one-file groups (subjects ``s000``, ``s001``, …) in
+    three strata of ``site_id`` holding 60 %, 30 % and 10 % of *n*, and rare
+    strata of 3, 5 and 7 groups.  Splits read no file, so none is written.
+
+    *extra* groups join the largest stratum after the others, so every other
+    subject keeps its id.
+    """
+
+    RATIOS = {"train": 0.7, "val": 0.15, "test": 0.15}
+    RARE = (3, 5, 7)
+
+    @staticmethod
+    def manifest(n: int = 100, *, extra: int = 0) -> Any:
+        from medh5.dataset import Entry, Manifest
+
+        strata = [("big", n * 6 // 10), ("mid", n * 3 // 10), ("small", n // 10)]
+        strata += [(f"rare-{k}", k) for k in SplitCohort.RARE]
+        sites = [site for site, count in strata for _ in range(count)]
+        sites += ["big"] * extra
+        return Manifest(
+            entries=[
+                Entry(
+                    path=f"s{i:03}.medh5",
+                    sample_id=f"s{i:03}",
+                    subject_id=f"s{i:03}",
+                    group_id=f"s{i:03}",
+                    site_id=site,
+                )
+                for i, site in enumerate(sites)
+            ]
+        )

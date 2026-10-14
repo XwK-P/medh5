@@ -29,9 +29,9 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal, TypeAlias
 
-from medh5 import _core
+from medh5 import _core, _deprecation
 from medh5.dataset.manifest import Entry, Manifest
 
 DEFAULT_RATIOS: dict[str, float] = dict(_core.dataset_default_ratios())
@@ -77,6 +77,12 @@ class Split:
     seed: int = 0
     k_folds: int | None = None
     ratios: Mapping[str, float] = field(default_factory=lambda: dict(DEFAULT_RATIOS))
+    algorithm: str = "medh5.split/1"
+    """How the groups were dealt: ``"medh5.split/1"`` or ``"medh5.split/2"``."""
+    previous: Mapping[str, Any] | None = None
+    """What this split continued, when it did: the previous split's
+    ``manifest_sha256``, how many groups it ``kept``, and the groups
+    ``added`` and ``dropped``."""
     _lookup: Any = field(default=None, init=False, repr=False, compare=False)
 
     def _places(self) -> dict[str, tuple[str, int | None]]:
@@ -117,6 +123,8 @@ class Split:
             "seed": self.seed,
             "k_folds": self.k_folds,
             "ratios": dict(self.ratios),
+            "algorithm": self.algorithm,
+            "previous": None if self.previous is None else dict(self.previous),
             "assignments": [a.to_json() for a in self.assignments],
         }
 
@@ -184,6 +192,15 @@ class Split:
         """
         return tuple(_core.dataset_split_leaks(self._doc()))
 
+    def moved_from(self, other: Split) -> dict[str, tuple[str, str]]:
+        """Groups this split places elsewhere than *other* does, each with
+        where *other* put it and where this one does: a partition, or
+        ``"fold N"``.  A group only one of them places is not listed."""
+        found: dict[str, tuple[str, str]] = _core.dataset_split_moved_from(
+            self._doc(), other._doc()
+        )
+        return found
+
     def to_json(self) -> dict[str, Any]:
         found: dict[str, Any] = _core.dataset_split_json(self._doc())
         return found
@@ -208,7 +225,12 @@ class Split:
             seed=int(doc.get("seed", 0)),
             k_folds=doc.get("k_folds"),
             ratios=dict(doc.get("ratios", DEFAULT_RATIOS)),
+            algorithm=str(doc.get("algorithm") or "medh5.split/1"),
+            previous=None if doc.get("previous") is None else dict(doc["previous"]),
         )
+
+
+Algorithm: TypeAlias = Literal["medh5.split/1", "medh5.split/2"]
 
 
 def make_splits(
@@ -220,6 +242,8 @@ def make_splits(
     ratios: Mapping[str, float] | None = None,
     k_folds: int | None = None,
     seed: int = 0,
+    algorithm: Algorithm | None = None,
+    previous: Split | str | os.PathLike[str] | None = None,
 ) -> Split:
     """Assign every group in *manifest* to a partition, or to a fold.
 
@@ -231,18 +255,44 @@ def make_splits(
     which a k-fold split has nothing to apply to.  Without ``k_folds``, groups
     go to ``train``/``val``/``test`` in the given ratios.  Deterministic given
     the manifest's entries, *seed* and the parameters.
+
+    *algorithm* is how groups are dealt.  ``"medh5.split/1"`` interleaves the
+    strata and deals by the largest deficit, so a group's partition depends on
+    every other group: adding one group to a cohort moves many.
+    ``"medh5.split/2"`` rounds each stratum's counts to meet the ratios and
+    fills a stratum's partitions in hash-rank order, so adding a group moves
+    few, and a rare stratum gets an evaluation group where /1 gave it none.
+    Left out, it is /1, with a ``FutureWarning`` where /2 would place some
+    group differently: medh5 3.0 deals by /2.
+
+    *previous* (a :class:`Split`, or the path of a split JSON) continues that
+    split: every group it placed keeps its partition or fold, and new groups
+    are dealt by /2 to fill each stratum's shortfall, so a re-split never
+    moves a test subject into training.  The set id, seed, ratios, grouping,
+    stratification and folds must be the previous split's, and
+    ``algorithm="medh5.split/1"`` is refused with it.
     """
-    return Split.from_json(
-        _core.dataset_make_splits(
-            manifest._doc(),
-            set_id=set_id,
-            group_by=group_by,
-            stratify_by=stratify_by,
-            ratios=None if ratios is None else dict(ratios),
-            k_folds=k_folds,
-            seed=seed,
-        )
+    if isinstance(previous, (str, os.PathLike)):
+        previous = load(previous)
+    doc, moved = _core.dataset_make_splits(
+        manifest._doc(),
+        set_id=set_id,
+        group_by=group_by,
+        stratify_by=stratify_by,
+        ratios=None if ratios is None else dict(ratios),
+        k_folds=k_folds,
+        seed=seed,
+        algorithm=algorithm,
+        previous=None if previous is None else previous._doc(),
     )
+    if moved:
+        _deprecation.warn(
+            "medh5 3.0 splits with medh5.split/2 by default, which places "
+            f"{moved} of these groups differently: pass "
+            'algorithm="medh5.split/1" to keep this split',
+            category=FutureWarning,
+        )
+    return Split.from_json(doc)
 
 
 def write_claims(
@@ -288,6 +338,7 @@ def load(path: str | os.PathLike[str]) -> Split:
 
 __all__ = [
     "DEFAULT_RATIOS",
+    "Algorithm",
     "Assignment",
     "Split",
     "load",

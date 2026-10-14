@@ -96,7 +96,8 @@ This is the link the spec's `SplitClaim.manifest_sha256` was designed around.
 
 ```
 $ medh5 dataset split cohort.json --group-by group_id --stratify-by site_id \
-      --ratios train=0.7,val=0.15,test=0.15 --seed 0 -o split.json --write-claims
+      --ratios train=0.7,val=0.15,test=0.15 --seed 0 --algorithm 2 \
+      -o split.json --write-claims
 ```
 
 <!-- illustrative -->
@@ -105,7 +106,7 @@ from medh5.dataset import make_splits, write_claims
 
 split = make_splits(manifest, set_id="cv5", group_by="group_id",
                     stratify_by="site_id", ratios={"train": .7, "val": .15, "test": .15},
-                    seed=0)
+                    seed=0, algorithm="medh5.split/2")
 split.counts            # {"test": 62, "train": 288, "val": 62}
 split.balance()         # achieved stratum counts per partition
 split.underfilled       # partitions that were asked for and got nothing
@@ -114,6 +115,56 @@ split.paths("train")    # files, and `path::key` for a sample inside a collectio
 
 write_claims(split, manifest, assigned_by="pipeline@v3")
 ```
+
+### The algorithm, and continuing a split
+
+A split JSON names how it was dealt under `algorithm`; one without it, written
+before 2.1, was dealt by `medh5.split/1`.
+
+- **`medh5.split/1`**, the default in 2.x, interleaves the strata and deals
+  each group to the partition furthest below its share. A group's partition
+  then depends on every other group: one group added to a cohort of a hundred
+  moves a median of a dozen or more of the others, test subjects into training
+  among them, and strata of 3, 5 or 7 groups at 70/15/15 get no test group.
+- **`medh5.split/2`**, the default in 3.0, fixes how many groups each
+  partition takes (the largest remainder of N·r), then how many each stratum
+  gives it: every count is the floor or the ceiling of n·r, and every stratum
+  and every total is met (a *controlled rounding*). Where a count could go
+  either way, it goes first to a stratum that would otherwise lack the
+  partition, smaller strata and the evaluation partitions first. Within a
+  stratum, groups fill the partitions in hash-rank order, `train` in the
+  middle. A group's place depends only on its stratum's counts and its rank,
+  so adding a group moves one or two others.
+
+Leaving `algorithm` out deals the cohort both ways and raises a
+`FutureWarning` (the command line prints `warning: …`) only where /2 would
+place some group differently. Pass `algorithm="medh5.split/1"` (`--algorithm
+1`) to keep a split as it is.
+
+A cohort that grows needs its split to grow without moving anyone: a model
+retrained on a re-split has trained on subjects that were in the old test set.
+`previous=` continues a split: every group it placed keeps its partition or
+fold, new groups fill each stratum's shortfall against /2's counts for the
+whole cohort, and groups no longer in the manifest are listed as dropped.
+
+<!-- illustrative -->
+```python
+grown = make_splits(manifest, set_id="cv5", group_by="group_id",
+                    stratify_by="site_id", ratios={"train": .7, "val": .15, "test": .15},
+                    seed=0, previous="split.json")
+grown.moved_from(split)   # {} — nothing that was placed moved
+grown.previous            # {"manifest_sha256": ..., "kept": 412, "added": [...], "dropped": [...]}
+```
+
+```
+$ medh5 dataset split cohort.json --group-by group_id --stratify-by site_id \
+      --ratios train=0.7,val=0.15,test=0.15 --seed 0 --previous split.json -o split-2.json
+```
+
+The set id, seed, ratios, grouping, stratification and folds must be the
+previous split's (anything else is another split, under another set id). The
+continued split carries the new manifest's digest, so claims stamped from the
+old one read as stale (`C201`): run `write_claims` again.
 
 Three rules, and they are the whole module.
 

@@ -539,6 +539,7 @@ def _namespace(workspace: dict[str, Any], tmp_path: Path) -> dict[str, Any]:
             stratify_by="site_id",
             ratios={"train": 0.7, "val": 0.15, "test": 0.15},
             seed=0,
+            algorithm="medh5.split/2",
         ),
         "scrub": scrub,
         # Which subject each file is, "from your own records".

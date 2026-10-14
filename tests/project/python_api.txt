@@ -2569,7 +2569,8 @@ medh5.dataset.Moments.nonfinite	field
 medh5.dataset.Moments.std	property
 medh5.dataset.Moments.to_json	method	()
 medh5.dataset.Moments.update	method	(values)
-medh5.dataset.Split	class	(set_id, manifest_sha256, assignments=<factory>, group_by='group_id', stratify_by=None, seed=0, k_folds=None, ratios=<factory>) bases=
+medh5.dataset.Split	class	(set_id, manifest_sha256, assignments=<factory>, group_by='group_id', stratify_by=None, seed=0, k_folds=None, ratios=<factory>, algorithm='medh5.split/1', previous=None) bases=
+medh5.dataset.Split.algorithm	field
 medh5.dataset.Split.assignments	field
 medh5.dataset.Split.balance	method	()
 medh5.dataset.Split.counts	property
@@ -2580,8 +2581,10 @@ medh5.dataset.Split.group_by	field
 medh5.dataset.Split.k_folds	field
 medh5.dataset.Split.leaks	method	()
 medh5.dataset.Split.manifest_sha256	field
+medh5.dataset.Split.moved_from	method	(other)
 medh5.dataset.Split.partition_of	method	(entry)
 medh5.dataset.Split.paths	method	(partition)
+medh5.dataset.Split.previous	field
 medh5.dataset.Split.ratios	field
 medh5.dataset.Split.seed	field
 medh5.dataset.Split.set_id	field
@@ -2614,7 +2617,7 @@ medh5.dataset.check.check	function	(manifest, *, set_id=None, deep=False)
 medh5.dataset.compute_stats	function	(paths, *, images=None, annotations=None, workers=1, sample_stride=1, physical=True)
 medh5.dataset.entries_for	function	(path)
 medh5.dataset.find	function	(root, *, suffixes=('.medh5', '.medh5c'))
-medh5.dataset.make_splits	function	(manifest, *, set_id='default', group_by='group_id', stratify_by=None, ratios=None, k_folds=None, seed=0)
+medh5.dataset.make_splits	function	(manifest, *, set_id='default', group_by='group_id', stratify_by=None, ratios=None, k_folds=None, seed=0, algorithm=None, previous=None)
 medh5.dataset.manifest	module
 medh5.dataset.manifest.Entry	class	(path, sample_id, subject_id, group_id, content_id=None, profiles=(), sex=None, laterality=None, bodypart=None, dataset_id=None, site_id=None, scanner_id=None, acquisition_protocol=None, timepoints=(), days_from_baseline=(), images=(), modalities=(), annotations=<factory>, class_ids=(), annotated_class_ids=(), class_keys=<factory>, label_set_id=None, label_set_version=None, label_set_digest=None, quality=<factory>, splits=(), deidentified=False, key=None, size=0, mtime=0.0) bases=
 medh5.dataset.manifest.Entry.acquisition_protocol	field
@@ -2682,6 +2685,7 @@ medh5.dataset.manifest.load	function	(path, *, base=None)
 medh5.dataset.manifest.scan	function	(root, *, suffixes=('.medh5', '.medh5c'), on_error='warn')
 medh5.dataset.scan	function	(root, *, suffixes=('.medh5', '.medh5c'), on_error='warn')
 medh5.dataset.split	module
+medh5.dataset.split.Algorithm	alias
 medh5.dataset.split.Assignment	class	(group, partition, fold=None, stratum=None, entries=()) bases=
 medh5.dataset.split.Assignment.entries	field
 medh5.dataset.split.Assignment.fold	field
@@ -2690,7 +2694,8 @@ medh5.dataset.split.Assignment.partition	field
 medh5.dataset.split.Assignment.stratum	field
 medh5.dataset.split.Assignment.to_json	method	()
 medh5.dataset.split.DEFAULT_RATIOS	constant	dict
-medh5.dataset.split.Split	class	(set_id, manifest_sha256, assignments=<factory>, group_by='group_id', stratify_by=None, seed=0, k_folds=None, ratios=<factory>) bases=
+medh5.dataset.split.Split	class	(set_id, manifest_sha256, assignments=<factory>, group_by='group_id', stratify_by=None, seed=0, k_folds=None, ratios=<factory>, algorithm='medh5.split/1', previous=None) bases=
+medh5.dataset.split.Split.algorithm	field
 medh5.dataset.split.Split.assignments	field
 medh5.dataset.split.Split.balance	method	()
 medh5.dataset.split.Split.counts	property
@@ -2701,8 +2706,10 @@ medh5.dataset.split.Split.group_by	field
 medh5.dataset.split.Split.k_folds	field
 medh5.dataset.split.Split.leaks	method	()
 medh5.dataset.split.Split.manifest_sha256	field
+medh5.dataset.split.Split.moved_from	method	(other)
 medh5.dataset.split.Split.partition_of	method	(entry)
 medh5.dataset.split.Split.paths	method	(partition)
+medh5.dataset.split.Split.previous	field
 medh5.dataset.split.Split.ratios	field
 medh5.dataset.split.Split.seed	field
 medh5.dataset.split.Split.set_id	field
@@ -2710,7 +2717,7 @@ medh5.dataset.split.Split.stratify_by	field
 medh5.dataset.split.Split.to_json	method	()
 medh5.dataset.split.Split.underfilled	property
 medh5.dataset.split.load	function	(path)
-medh5.dataset.split.make_splits	function	(manifest, *, set_id='default', group_by='group_id', stratify_by=None, ratios=None, k_folds=None, seed=0)
+medh5.dataset.split.make_splits	function	(manifest, *, set_id='default', group_by='group_id', stratify_by=None, ratios=None, k_folds=None, seed=0, algorithm=None, previous=None)
 medh5.dataset.split.write_claims	function	(split, manifest, *, assigned_by=None, fold=None)
 medh5.dataset.stats	module
 medh5.dataset.stats.ClassStats	class	(class_id, voxels=0, present_in=0, examined_in=0, key=None) bases=
