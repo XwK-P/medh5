@@ -1923,8 +1923,10 @@ medh5.clinical.Clock.id	field
 medh5.clinical.Clock.origin_description	field
 medh5.clinical.Clock.reference	field
 medh5.clinical.Clock.relative	classmethod	(clock_id, origin_description)
+medh5.clinical.Clock.shifted_utc	classmethod	(clock_id)
 medh5.clinical.Clock.to_json	method	()
 medh5.clinical.Clock.unit	field
+medh5.clinical.Clock.utc	classmethod	(clock_id)
 medh5.clinical.DAY	constant	int
 medh5.clinical.Document	class	(document_id, text, media_type='text/plain', language=None, source_type=None) bases=
 medh5.clinical.Document.document_id	field
@@ -2026,6 +2028,8 @@ medh5.clinical.SelectionPolicy.uncertainty	field
 medh5.clinical.TEMPORAL_TYPES	constant	tuple
 medh5.clinical.augment	function	(path, records, *, out=None)
 medh5.clinical.baseline_day_clock	function	(clock_id)
+medh5.clinical.clock_day	function	(t_us)
+medh5.clinical.day_bounds	function	(day, tz=None)
 medh5.clinical.days	function	(value)
 medh5.clinical.hours	function	(value)
 medh5.clinical.imaging_events_from_timepoints	function	(path)
@@ -2033,6 +2037,7 @@ medh5.clinical.records_from	function	(clock, events=(), documents=(), links=())
 medh5.clinical.schema_text	function	()
 medh5.clinical.select	function	(events, links, cutoff_us, policy=None)
 medh5.clinical.strip	function	(path, out)
+medh5.clinical.utc_us	function	(moment)
 medh5.collection	module
 medh5.collection.Collection	class	(handle) bases=
 medh5.collection.Collection.__contains__	method	(key)

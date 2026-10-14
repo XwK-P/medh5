@@ -215,6 +215,13 @@ fn clinical_round_micros(value: f64, unit_us: i64) -> R<i64> {
     Ok(medh5::clinical::round_micros(value, unit_us)?)
 }
 
+/// The clock day holding `t`, as inclusive `(lo, hi)` bounds.
+#[pyfunction]
+fn clinical_day_containing(t: i64) -> (i64, i64) {
+    let day = medh5::clinical::model::Bounds::day_containing(t);
+    (day.lo, day.hi)
+}
+
 #[pyfunction]
 fn clinical_schema_text() -> &'static str {
     medh5::clinical::schema::schema_text()
@@ -691,6 +698,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         wrap_pyfunction!(baseline_day_clock, m)?,
         wrap_pyfunction!(clinical_schema_text, m)?,
         wrap_pyfunction!(clinical_round_micros, m)?,
+        wrap_pyfunction!(clinical_day_containing, m)?,
         wrap_pyfunction!(task_normalize, m)?,
         wrap_pyfunction!(task_validate, m)?,
         wrap_pyfunction!(task_notes, m)?,

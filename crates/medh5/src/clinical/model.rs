@@ -140,6 +140,16 @@ impl Bounds {
         Bounds { lo: at, hi: at }
     }
 
+    /// The clock day holding `t`: every instant from its midnight to the
+    /// next, the last microsecond included.  Days are counted from the
+    /// clock's zero, so before it as after (`div_euclid`).  On a `utc` clock
+    /// that is the UTC day; a day known only in local time spans more (1.1
+    /// §5.2).  The first and last days of the clock's range are cut to it.
+    pub fn day_containing(t: i64) -> Bounds {
+        let into = t.rem_euclid(DAY);
+        Bounds { lo: t.saturating_sub(into), hi: t.saturating_add(DAY - 1 - into) }
+    }
+
     /// Whether every admissible instant is at or before `t`.
     pub fn at_or_before(&self, t: i64) -> bool {
         self.hi <= t
@@ -202,6 +212,18 @@ impl Clock {
             reference: "relative".into(),
             origin_description: Some(origin_description.into()),
         }
+    }
+
+    /// Microseconds since 1970-01-01T00:00:00Z.
+    pub fn utc(id: impl Into<String>) -> Clock {
+        Clock { id: id.into(), unit: CLOCK_UNIT.into(), reference: "utc".into(), origin_description: None }
+    }
+
+    /// UTC shifted by a per-subject offset, as de-identification shifts it:
+    /// valid only in a file whose `/meta` records that de-identification
+    /// (E802 otherwise).
+    pub fn shifted_utc(id: impl Into<String>) -> Clock {
+        Clock { id: id.into(), unit: CLOCK_UNIT.into(), reference: "shifted_utc".into(), origin_description: None }
     }
 
     pub fn to_json(&self) -> Value {
@@ -680,5 +702,26 @@ mod tests {
         let err = hours(f64::NAN).unwrap_err();
         assert!(err.to_string().contains("NaN hours"), "{err}");
         assert!(days(1e300).unwrap_err().to_string().contains("days"));
+    }
+
+    /// A day is its midnight to the last microsecond before the next,
+    /// counted from the clock's zero on both sides of it.
+    #[test]
+    fn s5_2_a_day_holds_its_instants() {
+        assert_eq!(Bounds::day_containing(0), Bounds::new(0, DAY - 1));
+        assert_eq!(Bounds::day_containing(DAY - 1), Bounds::new(0, DAY - 1));
+        assert_eq!(Bounds::day_containing(DAY), Bounds::new(DAY, 2 * DAY - 1));
+        assert_eq!(Bounds::day_containing(-1), Bounds::new(-DAY, -1));
+        assert_eq!(Bounds::day_containing(-DAY), Bounds::new(-DAY, -1));
+        let last = Bounds::day_containing(i64::MAX);
+        assert!(last.lo <= i64::MAX && last.hi == i64::MAX);
+        assert_eq!(Bounds::day_containing(i64::MIN).lo, i64::MIN);
+    }
+
+    #[test]
+    fn s3_utc_clocks() {
+        assert_eq!(Clock::utc("c").to_json(), json!({"id": "c", "unit": "us", "reference": "utc"}));
+        assert_eq!(Clock::shifted_utc("c").reference, "shifted_utc");
+        assert_eq!(Clock::from_json(&Clock::utc("c").to_json()).unwrap(), Clock::utc("c"));
     }
 }

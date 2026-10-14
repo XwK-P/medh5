@@ -1118,6 +1118,71 @@ class TestDocumentText:
         assert "E806" in codes(path)
 
 
+class TestClocks:
+    def test_S3_utc_clocks(self, tmp_path: Path):
+        """Only relative clocks could be built; 1.1 §3 has three."""
+        import datetime
+
+        from medh5.clinical import clock_day, utc_us
+
+        assert Clock.utc("c").to_json() == {"id": "c", "unit": "us", "reference": "utc"}
+        assert Clock.from_json(Clock.shifted_utc("c").to_json()) == Clock.shifted_utc(
+            "c"
+        )
+        path = tmp_path / "utc.medh5"
+        History.write(path, subject_id="P-01", clock=Clock.utc("subject-utc"))
+        assert validate_file(path).ok
+        moment = datetime.datetime(2024, 3, 1, 9, 30, tzinfo=datetime.timezone.utc)
+        assert utc_us(moment) == int(moment.timestamp()) * 1_000_000
+        assert (
+            utc_us(
+                datetime.datetime(
+                    1969, 12, 31, 23, 59, 59, 999_999, tzinfo=datetime.timezone.utc
+                )
+            )
+            == -1
+        )
+        with pytest.raises(ValueError, match="no time zone"):
+            utc_us(datetime.datetime(2024, 3, 1, 9, 30))
+        assert clock_day(utc_us(moment)) == (
+            utc_us(datetime.datetime(2024, 3, 1, tzinfo=datetime.timezone.utc)),
+            utc_us(datetime.datetime(2024, 3, 2, tzinfo=datetime.timezone.utc)) - 1,
+        )
+        assert clock_day(-1) == (-DAY, -1)
+
+    def test_S5_2_day_bounds_span_the_possible_instants(self):
+        """Day-only information spans the day's possible instants after clock
+        conversion and never implies midnight: with no zone, from the day's
+        start at UTC+14 to its end at UTC-12."""
+        import datetime
+        import zoneinfo
+
+        from medh5.clinical import day_bounds, utc_us
+
+        day = datetime.date(2024, 3, 1)
+        utc = datetime.timezone.utc
+        midnight = utc_us(datetime.datetime(2024, 3, 1, tzinfo=utc))
+        lo, hi = day_bounds(day)
+        assert (lo, hi) == (midnight - 14 * HOUR, midnight + DAY + 12 * HOUR - 1)
+        assert hi - lo + 1 == 50 * HOUR
+        assert day_bounds(day, utc) == (midnight, midnight + DAY - 1)
+        plus_two = datetime.timezone(datetime.timedelta(hours=2))
+        assert day_bounds(day, plus_two) == (
+            midnight - 2 * HOUR,
+            midnight + DAY - 2 * HOUR - 1,
+        )
+        for zone in (utc, plus_two):
+            zlo, zhi = day_bounds(day, zone)
+            assert lo <= zlo and zhi <= hi, "a known zone narrows the unknown one"
+        try:
+            spring = day_bounds(datetime.date(2024, 3, 31), "Europe/Berlin")
+        except zoneinfo.ZoneInfoNotFoundError:  # pragma: no cover - no tzdata
+            pytest.skip("no IANA zone database")
+        assert spring[1] - spring[0] + 1 == 23 * HOUR, "the day the clocks go forward"
+        with pytest.raises(TypeError):
+            day_bounds(datetime.datetime(2024, 3, 1, tzinfo=utc))
+
+
 class TestSelection:
     def test_S9_1_the_worked_example_at_hour_24(self, history: Path):
         with medh5.open(history) as s:

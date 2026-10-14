@@ -296,6 +296,7 @@ __all__ = [
     "cli_lookup_message",
     "cli_main",
     "clinical_augment",
+    "clinical_day_containing",
     "clinical_records",
     "clinical_round_micros",
     "clinical_schema_text",
@@ -969,6 +970,10 @@ def clinical_augment(
 ) -> dict[str, Any]: ...
 def clinical_records(records: Any) -> dict[str, Any]:
     """Check a logical-record bundle against its schema and parse it back."""
+    ...
+
+def clinical_day_containing(t: int) -> tuple[int, int]:
+    """The clock day holding `t`, as inclusive `(lo, hi)` bounds."""
     ...
 
 def clinical_round_micros(value: float, unit_us: int) -> int:
