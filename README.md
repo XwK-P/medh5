@@ -42,7 +42,8 @@ That is all most people need: the Python package and the `medh5` command line,
 enough to create, read, validate and inspect files. HDF5 and its compression
 filters are built in, so NumPy is the only other dependency. pip downloads it
 ready-built for Python 3.10 and later on Linux (x86_64, ARM64), macOS (Intel,
-Apple silicon) and Windows (x64).
+Apple silicon) and Windows (x64). 2.1.x is the last line to support Python
+3.10; medh5 2.2.0 will require 3.11.
 
 Add an extra for each tool you connect medh5 to:
 

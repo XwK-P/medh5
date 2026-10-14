@@ -74,6 +74,11 @@ at all: PyO3, the library that binds the engine to Python, does not support
 them. If pip prints `Building wheel for medh5`, it found no wheel for your
 system and needs these three.
 
+The 2.1 releases are the last to support Python 3.10, which reaches its end
+of life in October 2026: medh5 2.2.0 will require Python 3.11 or later. Nothing
+changes for 3.10 within 2.1.x, and nothing warns at run time; pin `"medh5<2.2"`
+to stay on a 3.10 interpreter.
+
 ## Only the command line
 
 `pip install medh5` already puts `medh5` on your path. To have the command line
@@ -111,6 +116,33 @@ On Windows, set one variable first; without it the build stops and names it:
 ```powershell
 $env:CFLAGS_x86_64_pc_windows_msvc = "-DNDEBUG"
 cargo install --locked medh5-cli
+```
+
+Prefer the Homebrew formula or a download where one fits your system: a crate
+on crates.io carries no build profile, so `cargo install` builds without the
+link-time optimisation the release binaries have, and keeps the symbol table,
+for a larger and slower binary. To build it as the releases are, give cargo
+the project's release profile:
+
+```bash
+CARGO_PROFILE_RELEASE_LTO=thin CARGO_PROFILE_RELEASE_CODEGEN_UNITS=4 \
+  CARGO_PROFILE_RELEASE_STRIP=symbols cargo install --locked medh5-cli
+```
+
+In PowerShell:
+
+```powershell
+$env:CARGO_PROFILE_RELEASE_LTO = "thin"
+$env:CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "4"
+$env:CARGO_PROFILE_RELEASE_STRIP = "symbols"
+cargo install --locked medh5-cli
+```
+
+Or, in any shell, as cargo options:
+
+```bash
+cargo install --locked medh5-cli --config 'profile.release.lto="thin"' \
+  --config profile.release.codegen-units=4 --config 'profile.release.strip="symbols"'
 ```
 
 The binary does everything itself except the converters (`medh5 convert …`,

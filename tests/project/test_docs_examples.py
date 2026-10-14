@@ -665,3 +665,29 @@ def test_the_torch_docstring_agrees_with_the_docs() -> None:
 
     assert "not optional" not in (torch_pkg.__doc__ or "")
     assert "recommended" in (torch_pkg.__doc__ or "")
+
+
+def test_cargo_install_is_told_the_release_profile() -> None:
+    """crates.io publishes no profile, so `cargo install medh5-cli` built
+    without the workspace's thin LTO and kept the symbol table.  The install
+    page and the crate's README give the profile three ways: the environment,
+    PowerShell's `$env:` and `--config`; each says what `Cargo.toml` says."""
+    workspace = (ROOT / "Cargo.toml").read_text(encoding="utf-8")
+    section = workspace.split("\n[profile.release]\n", 1)[1].split("\n[", 1)[0]
+    profile = {
+        key: value.strip('"')
+        for key, value in re.findall(r"^([\w-]+) = (\S+)$", section, re.M)
+    }
+    assert profile == {"lto": "thin", "codegen-units": "4", "strip": "symbols"}
+    for path in (DOCS / "install.md", ROOT / "crates/medh5-cli/README.md"):
+        text = path.read_text(encoding="utf-8")
+        found = {
+            "shell": re.findall(r"\bCARGO_PROFILE_RELEASE_(\w+)=(\w+)", text),
+            "powershell": re.findall(
+                r'^\$env:CARGO_PROFILE_RELEASE_(\w+) = "(\w+)"$', text, re.M
+            ),
+            "config": re.findall(r"profile\.release\.([\w-]+)=\"?(\w+)", text),
+        }
+        for form, pairs in found.items():
+            named = {key.lower().replace("_", "-"): value for key, value in pairs}
+            assert named == profile, f"{path.name}: {form}"

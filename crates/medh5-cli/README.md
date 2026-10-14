@@ -19,6 +19,33 @@ medh5 conformance run corpus/    # the 163-case conformance corpus
 HDF5 is linked statically: the binary needs nothing installed. Building it
 (`cargo install`) needs a C compiler and CMake, which HDF5's build uses.
 
+**Prefer the release binaries** (the GitHub Release, or Homebrew) where one
+fits your system. A crate on crates.io carries no build profile, so
+`cargo install` builds without the link-time optimisation the releases use,
+and keeps the symbol table: a larger binary, and a slower one. To build it as
+the releases are, give cargo the workspace's release profile:
+
+```bash
+CARGO_PROFILE_RELEASE_LTO=thin CARGO_PROFILE_RELEASE_CODEGEN_UNITS=4 \
+  CARGO_PROFILE_RELEASE_STRIP=symbols cargo install --locked medh5-cli
+```
+
+In PowerShell, set the same three first:
+
+```powershell
+$env:CARGO_PROFILE_RELEASE_LTO = "thin"
+$env:CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "4"
+$env:CARGO_PROFILE_RELEASE_STRIP = "symbols"
+cargo install --locked medh5-cli
+```
+
+Or, in any shell, as cargo options:
+
+```bash
+cargo install --locked medh5-cli --config 'profile.release.lto="thin"' \
+  --config profile.release.codegen-units=4 --config 'profile.release.strip="symbols"'
+```
+
 **On Windows (MSVC)**, give HDF5's C build `NDEBUG` before installing:
 
 ```powershell
