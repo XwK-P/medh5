@@ -8,6 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ndarray::ArrayD;
+use numpy::{PyUntypedArray, PyUntypedArrayMethods};
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyFrozenSet, PyList, PyString, PyTuple};
@@ -20,8 +21,8 @@ use medh5::annotations::select;
 use medh5::array::DType;
 
 use crate::convert::{
-    array_to_py, attr_to_py, bool_array, dtype_arg, dtype_to_py, f64_array, f64_vec, i64_array, i64_vec, json_to_py,
-    nd_to_py, opt_strings, py_to_attr, py_to_json, py_to_nd,
+    array_to_py, attr_to_py, bool_array, detach_if, dtype_arg, dtype_to_py, f64_array, f64_vec, i64_array, i64_vec,
+    json_to_py, nd_to_py, opt_strings, py_to_attr, py_to_json, py_to_nd, DETACH_ROWS,
 };
 use crate::errors::R;
 
@@ -1259,10 +1260,29 @@ fn normalize_masks<'py>(
     masks: &Bound<'py, PyAny>,
     spatial_shape: Option<&Bound<'py, PyAny>>,
 ) -> R<Bound<'py, PyTuple>> {
-    let masks = masks_arg(masks)?;
+    // `asarray(..., order="C")` returns a C-contiguous boolean array as it is,
+    // and casts anything else (with the GIL released, as NumPy casts): the
+    // shapes are checked on the arrays themselves, never on a copy.
+    let np = crate::convert::numpy(py)?;
+    let kwargs = PyDict::new(py);
+    kwargs.set_item("dtype", "bool")?;
+    kwargs.set_item("order", "C")?;
+    let mut given: BTreeMap<i64, Bound<'py, PyUntypedArray>> = BTreeMap::new();
+    for (k, v) in items_of(masks)? {
+        let class_id = int_of(&k)?;
+        let array = np.call_method("asarray", (v,), Some(&kwargs))?;
+        given.insert(class_id, array.cast_into::<PyUntypedArray>().map_err(PyErr::from)?);
+    }
     let shape = shape_arg(spatial_shape)?;
-    let found = medh5::annotations::payload::normalize_masks(&masks, shape.as_deref())?;
-    Ok(PyTuple::new(py, [masks_to_py(py, masks)?.into_any(), PyTuple::new(py, found)?.into_any()])?)
+    let found = medh5::annotations::payload::normalize_mask_shapes(
+        given.iter().map(|(class_id, array)| (*class_id, array.shape())),
+        shape.as_deref(),
+    )?;
+    let out = PyDict::new(py);
+    for (class_id, array) in given {
+        out.set_item(class_id, array)?;
+    }
+    Ok(PyTuple::new(py, [out.into_any(), PyTuple::new(py, found)?.into_any()])?)
 }
 
 #[pyfunction]
@@ -1319,6 +1339,7 @@ impl Columns {
 #[pyfunction]
 #[pyo3(signature = (boxes, class_ids, *, instance_ids=None, scores=None, attributes=None, slice_index=None))]
 fn encode_boxes(
+    py: Python<'_>,
     boxes: &Bound<'_, PyAny>,
     class_ids: &Bound<'_, PyAny>,
     instance_ids: Option<&Bound<'_, PyAny>>,
@@ -1330,12 +1351,15 @@ fn encode_boxes(
     let cols = Columns::of(class_ids, instance_ids, scores, attributes)?;
     let n_boxes = boxes.shape().first().copied().unwrap_or(0);
     let planes = given(slice_index).map(|s| slice_index_arg(&s, n_boxes)).transpose()?;
-    Ok(AnnotationPayload::wrap(geo::encode_boxes(&boxes, &cols.view(), planes.as_deref())?))
+    let encoded = detach_if(py, n_boxes >= DETACH_ROWS, || geo::encode_boxes(&boxes, &cols.view(), planes.as_deref()))?;
+    Ok(AnnotationPayload::wrap(encoded))
 }
 
 #[pyfunction]
 #[pyo3(signature = (centers, sizes, rotations, class_ids, *, instance_ids=None, scores=None, attributes=None))]
+#[allow(clippy::too_many_arguments)]
 fn encode_obb(
+    py: Python<'_>,
     centers: &Bound<'_, PyAny>,
     sizes: &Bound<'_, PyAny>,
     rotations: &Bound<'_, PyAny>,
@@ -1345,18 +1369,17 @@ fn encode_obb(
     attributes: Option<&Bound<'_, PyAny>>,
 ) -> R<AnnotationPayload> {
     let cols = Columns::of(class_ids, instance_ids, scores, attributes)?;
-    Ok(AnnotationPayload::wrap(geo::encode_obb(
-        &f64_array(centers)?,
-        &f64_array(sizes)?,
-        &f64_array(rotations)?,
-        &cols.view(),
-    )?))
+    let (centers, sizes, rotations) = (f64_array(centers)?, f64_array(sizes)?, f64_array(rotations)?);
+    let rows = centers.shape().first().copied().unwrap_or(0);
+    let encoded = detach_if(py, rows >= DETACH_ROWS, || geo::encode_obb(&centers, &sizes, &rotations, &cols.view()))?;
+    Ok(AnnotationPayload::wrap(encoded))
 }
 
 #[pyfunction]
 #[pyo3(signature = (points, keypoint_class_ids, class_ids, *, visibility=None, instance_ids=None, scores=None, skeleton=None))]
 #[allow(clippy::too_many_arguments)]
 fn encode_keypoints(
+    py: Python<'_>,
     points: &Bound<'_, PyAny>,
     keypoint_class_ids: &Bound<'_, PyAny>,
     class_ids: &Bound<'_, PyAny>,
@@ -1368,18 +1391,18 @@ fn encode_keypoints(
     let cols = Columns::of(class_ids, instance_ids, scores, None)?;
     let slots = ints_of(keypoint_class_ids)?;
     let visibility = given(visibility).map(|v| i64_array(&v)).transpose()?;
-    Ok(AnnotationPayload::wrap(geo::encode_keypoints(
-        &f64_array(points)?,
-        &slots,
-        &cols.view(),
-        visibility.as_ref(),
-        skeleton,
-    )?))
+    let points = f64_array(points)?;
+    let rows = points.shape().first().copied().unwrap_or(0) * slots.len().max(1);
+    let encoded = detach_if(py, rows >= DETACH_ROWS, || {
+        geo::encode_keypoints(&points, &slots, &cols.view(), visibility.as_ref(), skeleton)
+    })?;
+    Ok(AnnotationPayload::wrap(encoded))
 }
 
 #[pyfunction]
 #[pyo3(signature = (points, *, class_ids=None, instance_ids=None, names=None, weights=None, correspondence=None))]
 fn encode_points(
+    py: Python<'_>,
     points: &Bound<'_, PyAny>,
     class_ids: Option<&Bound<'_, PyAny>>,
     instance_ids: Option<&Bound<'_, PyAny>>,
@@ -1391,14 +1414,19 @@ fn encode_points(
     let instance_ids = given(instance_ids).map(|i| u64s(&i)).transpose()?;
     let names = opt_strings(names)?;
     let weights = given(weights).map(|w| f64_vec(&w)).transpose()?;
-    Ok(AnnotationPayload::wrap(geo::encode_points(
-        &f64_array(points)?,
-        ids.as_deref(),
-        instance_ids.as_deref(),
-        names.as_deref(),
-        weights.as_deref(),
-        correspondence,
-    )?))
+    let points = f64_array(points)?;
+    let rows = points.shape().first().copied().unwrap_or(0);
+    let encoded = detach_if(py, rows >= DETACH_ROWS, || {
+        geo::encode_points(
+            &points,
+            ids.as_deref(),
+            instance_ids.as_deref(),
+            names.as_deref(),
+            weights.as_deref(),
+            correspondence,
+        )
+    })?;
+    Ok(AnnotationPayload::wrap(encoded))
 }
 
 pub fn polygon_arg(item: &Bound<'_, PyAny>) -> R<geo::Polygon> {
@@ -1423,9 +1451,13 @@ pub fn polygon_arg(item: &Bound<'_, PyAny>) -> R<geo::Polygon> {
 
 #[pyfunction]
 #[pyo3(signature = (polygons, *, ndim=None))]
-fn encode_contours(polygons: &Bound<'_, PyAny>, ndim: Option<usize>) -> R<AnnotationPayload> {
+fn encode_contours(py: Python<'_>, polygons: &Bound<'_, PyAny>, ndim: Option<usize>) -> R<AnnotationPayload> {
+    // The polygons are Python objects, walked with the GIL; their packing is
+    // not.
     let found = polygons.try_iter()?.map(|p| polygon_arg(&p?)).collect::<R<Vec<_>>>()?;
-    Ok(AnnotationPayload::wrap(geo::encode_contours(&found, ndim)?))
+    let vertices: usize = found.iter().map(|p| p.vertices.shape().first().copied().unwrap_or(0)).sum();
+    let encoded = detach_if(py, vertices >= DETACH_ROWS, || geo::encode_contours(&found, ndim))?;
+    Ok(AnnotationPayload::wrap(encoded))
 }
 
 /// A contour role, or E411.

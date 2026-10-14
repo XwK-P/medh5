@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use ndarray::ArrayD;
 use numpy::{PyArrayDescrMethods, PyArrayDyn, PyArrayMethods, PyUntypedArray, PyUntypedArrayMethods};
 use pyo3::exceptions::{PyTypeError, PyValueError};
+use pyo3::marker::Ungil;
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PySlice, PyString, PyTuple};
@@ -305,13 +306,38 @@ pub fn asarray<'py>(obj: &Bound<'py, PyAny>, dtype: Option<&str>) -> PyResult<Bo
     Ok(array.cast_into::<PyUntypedArray>()?)
 }
 
+/// Arguments of this many bytes or more are copied with the GIL released.
+pub const DETACH_BYTES: usize = 1 << 20;
+
+/// Calls of this many rows or more run with the GIL released, once their
+/// arguments are converted: below it, releasing and taking the GIL back costs
+/// more than the work.
+pub const DETACH_ROWS: usize = 4096;
+
+/// `f()`, with the GIL released when `large`.
+pub fn detach_if<T: Ungil, F: Ungil + FnOnce() -> T>(py: Python<'_>, large: bool, f: F) -> T {
+    if large {
+        py.detach(f)
+    } else {
+        f()
+    }
+}
+
 /// An owned copy in standard (C) layout, whatever the input's: HDF5 reads and
 /// writes row-major buffers, and a Fortran-ordered, transposed or flipped
 /// array --- nibabel's `get_fdata()`, `x.T`, `np.flip(x, 0)` --- is as valid
 /// an input as any.
-fn typed<T: numpy::Element + Clone>(array: &Bound<'_, PyUntypedArray>) -> PyResult<ArrayD<T>> {
+///
+/// From [`DETACH_BYTES`] the copy runs with the GIL released, the read-only
+/// borrow held: another Python thread writing the array during the call may
+/// leave a torn copy, as NumPy's own GIL-free copies may, so an argument is not
+/// to be changed while a call reads it.
+fn typed<T: numpy::Element + Clone + Send + Sync>(array: &Bound<'_, PyUntypedArray>) -> PyResult<ArrayD<T>> {
     let typed = array.cast::<PyArrayDyn<T>>()?;
-    Ok(typed.readonly().as_array().as_standard_layout().into_owned())
+    let guard = typed.readonly();
+    let view = guard.as_array();
+    let large = view.len().saturating_mul(std::mem::size_of::<T>()) >= DETACH_BYTES;
+    Ok(detach_if(array.py(), large, || view.as_standard_layout().into_owned()))
 }
 
 /// A NumPy array (or anything `numpy.asarray` accepts) as an engine array.
@@ -347,7 +373,10 @@ pub fn untyped_to_nd(array: &Bound<'_, PyUntypedArray>) -> PyResult<NdArray> {
 }
 
 /// `numpy.asarray(obj, dtype=dtype)`, `T` being `dtype`'s element type.
-pub fn typed_array<T: numpy::Element + Clone>(obj: &Bound<'_, PyAny>, dtype: &str) -> PyResult<ArrayD<T>> {
+pub fn typed_array<T: numpy::Element + Clone + Send + Sync>(
+    obj: &Bound<'_, PyAny>,
+    dtype: &str,
+) -> PyResult<ArrayD<T>> {
     typed(&asarray(obj, Some(dtype))?)
 }
 

@@ -116,9 +116,13 @@ fn inside_extent<'py>(py: Python<'py>, spatial: Vec<usize>, points: &Bound<'py, 
 }
 
 #[pyfunction]
-fn refuse_outside(inside: &Bound<'_, PyAny>) -> R<()> {
-    let flags: Vec<bool> = crate::convert::bool_array(inside)?.iter().copied().collect();
-    Ok(apply::refuse_outside(&flags)?)
+fn refuse_outside(py: Python<'_>, inside: &Bound<'_, PyAny>) -> R<()> {
+    let flags = crate::convert::bool_array(inside)?;
+    let large = flags.len() >= crate::convert::DETACH_ROWS;
+    Ok(crate::convert::detach_if(py, large, move || {
+        let flags: Vec<bool> = flags.iter().copied().collect();
+        apply::refuse_outside(&flags)
+    })?)
 }
 
 fn field_of(obj: &Bound<'_, PyAny>) -> PyResult<ArrayD<f64>> {
