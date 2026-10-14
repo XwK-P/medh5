@@ -91,13 +91,19 @@ class Entry:
 
     @classmethod
     def from_json(cls, doc: Mapping[str, Any]) -> Entry:
+        """An entry from its JSON, read as the engine reads a manifest's."""
+        return cls._from_fields(_core.dataset_entry_json(doc))
+
+    @classmethod
+    def _from_fields(cls, doc: Mapping[str, Any]) -> Entry:
+        """An entry from the JSON the engine writes, which is already checked."""
         return cls(
-            path=str(doc["path"]),
-            sample_id=str(doc["sample_id"]),
-            subject_id=str(doc["subject_id"]),
-            group_id=str(doc["group_id"]),
+            path=doc["path"],
+            sample_id=doc["sample_id"],
+            subject_id=doc["subject_id"],
+            group_id=doc["group_id"],
             content_id=doc.get("content_id"),
-            profiles=tuple(doc.get("profiles", ())),
+            profiles=tuple(doc["profiles"]),
             sex=doc.get("sex"),
             laterality=doc.get("laterality"),
             bodypart=doc.get("bodypart"),
@@ -105,25 +111,23 @@ class Entry:
             site_id=doc.get("site_id"),
             scanner_id=doc.get("scanner_id"),
             acquisition_protocol=doc.get("acquisition_protocol"),
-            timepoints=tuple(doc.get("timepoints", ())),
-            days_from_baseline=tuple(doc.get("days_from_baseline", ())),
-            images=tuple(doc.get("images", ())),
-            modalities=tuple(doc.get("modalities", ())),
-            annotations=dict(doc.get("annotations", {})),
-            class_ids=_integers(doc, "class_ids"),
-            annotated_class_ids=_integers(doc, "annotated_class_ids"),
-            class_keys={
-                int(k): str(v) for k, v in (doc.get("class_keys") or {}).items()
-            },
+            timepoints=tuple(doc["timepoints"]),
+            days_from_baseline=tuple(doc["days_from_baseline"]),
+            images=tuple(doc["images"]),
+            modalities=tuple(doc["modalities"]),
+            annotations=dict(doc["annotations"]),
+            class_ids=tuple(doc["class_ids"]),
+            annotated_class_ids=tuple(doc["annotated_class_ids"]),
+            class_keys={int(k): v for k, v in doc["class_keys"].items()},
             label_set_id=doc.get("label_set_id"),
             label_set_version=doc.get("label_set_version"),
             label_set_digest=doc.get("label_set_digest"),
-            quality=dict(doc.get("quality", {})),
-            splits=tuple(dict(s) for s in doc.get("splits", ())),
-            deidentified=bool(doc.get("deidentified", False)),
+            quality=dict(doc["quality"]),
+            splits=tuple(doc["splits"]),
+            deidentified=doc["deidentified"],
             key=doc.get("key"),
-            size=int(doc.get("size", 0)),
-            mtime=float(doc.get("mtime", 0.0)),
+            size=doc["size"],
+            mtime=doc["mtime"],
         )
 
     def field(self, dotted: str) -> Any:
@@ -140,20 +144,6 @@ class Entry:
 
 GROUPABLE: tuple[str, ...] = _core.GROUPABLE
 """Fields worth grouping or stratifying on --- all single-valued and scannable."""
-
-
-def _integers(doc: Mapping[str, Any], name: str) -> tuple[int, ...]:
-    """A list of class ids, each an integer or refused --- as the engine
-    refuses it: `int(3.5)` is 3, and `3.0` read as no class at all."""
-    out = []
-    for value in doc.get(name, ()):
-        if isinstance(value, bool) or not isinstance(value, int):
-            raise ValueError(
-                f"manifest entry {doc.get('path')!r}: `{name}` holds {value!r}, "
-                "which is not an integer"
-            )
-        out.append(value)
-    return tuple(out)
 
 
 @dataclass(slots=True)
@@ -307,7 +297,9 @@ def scan(
 def entries_for(path: str | os.PathLike[str]) -> list[Entry]:
     """The manifest entries in one file: one per sample, so a collection fans
     out into one entry per member (each with its ``key``)."""
-    return [Entry.from_json(doc) for doc in _core.dataset_entries_for(os.fspath(path))]
+    return [
+        Entry._from_fields(doc) for doc in _core.dataset_entries_for(os.fspath(path))
+    ]
 
 
 def load(path: str | os.PathLike[str]) -> Manifest:

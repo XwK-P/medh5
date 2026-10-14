@@ -21,7 +21,7 @@ import medh5
 from medh5 import _core
 from medh5.cli import main
 from medh5.dataset.check import check
-from medh5.dataset.manifest import Manifest, entries_for, find, scan
+from medh5.dataset.manifest import Entry, Manifest, entries_for, find, scan
 from medh5.dataset.split import make_splits, write_claims
 from medh5.dataset.stats import DatasetStats, Moments, compute_stats, stats_for
 from medh5.errors import MEDH5Error, MEDH5ValidationError
@@ -257,6 +257,43 @@ class TestManifest:
         entry = manifest[0]
         assert entry.field("cohort.site_id") == entry.field("site_id")
         assert entry.field("identity.subject_id") == entry.subject_id
+
+    _BASE: dict[str, Any] = {
+        "path": "a.medh5",
+        "sample_id": "a",
+        "subject_id": "a",
+        "group_id": "a",
+    }
+
+    @pytest.mark.parametrize(
+        "change",
+        [
+            {"deidentified": "false"},
+            {"size": "12"},
+            {"size": -1},
+            {"mtime": "1.5"},
+            {"quality": {"q": 3}},
+            {"content_id": 5},
+            {"profiles": None},
+            {"profiles": "abc"},
+            {"splits": [1]},
+            {"class_keys": {"liver": "liver"}},
+            {"path": None},
+            {"sex": 3},
+        ],
+        ids=repr,
+    )
+    def test_an_entry_from_json_reads_as_the_engine_reads_it(self, change):
+        """`Entry.from_json` coerced a document its own way: `"false"` was a
+        de-identified member, and `save` wrote what it coerced."""
+        doc = {**self._BASE, **change}
+        try:
+            expected = _core.dataset_entry_json(doc)
+        except Exception as refused:
+            with pytest.raises(type(refused)):
+                Entry.from_json(doc)
+        else:
+            assert Entry.from_json(doc).to_json() == expected
 
     def test_manifest_fields_are_fields(self, tmp_path: Path):
         from medh5.dataset.manifest import scan
