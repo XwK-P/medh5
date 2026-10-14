@@ -867,7 +867,7 @@ class TestDistribution:
             for name, job in jobs.items()
             if re.search(r"^    continue-on-error: true$", job, re.M)
         }
-        assert informational == {"test-python-next"}
+        assert informational == {"test-python-next", "test-no-gil"}
         assert sorted(needs) == sorted(set(jobs) - informational)
         assert re.search(r"^    if: always\(\)$", gate, re.M)
         # A cancelled job fails the gate too, named apart in the summary.
@@ -926,7 +926,57 @@ class TestDistribution:
             if targets:
                 downloading += 1
             assert needed == {build_of[t] for t in targets}, name
-        assert downloading == 12
+        assert downloading == 14
+
+    def test_every_shipped_target_is_built_released_and_noticed(self):
+        """The targets were listed four times --- the build jobs, the
+        release's wheel platforms, its binaries, and the notices' platform
+        filter --- and nothing held the lists together: a target added to one
+        would ship without its notices, or be built and never released."""
+        jobs = _jobs(CI.read_text(encoding="utf-8"))
+        built = {
+            re.search(r"^      target: (\S+)$", job, re.M)[1]  # type: ignore[index]
+            for job in jobs.values()
+            if "uses: ./.github/workflows/build.yml" in job
+        }
+        verify = _jobs(RELEASE.read_text(encoding="utf-8"))["build"]
+        table = verify.split("platforms = {", 1)[1].split("}", 1)[0]
+        released = dict(re.findall(r'"([\w-]+)": "(\w+)",', table))
+        notices = _release_script("third_party_notices.py")
+        assert built == set(released) == set(notices.TARGETS)
+        for target, platform in released.items():
+            # Each wheel tag names the target's architecture as its platform
+            # does: aarch64 on Linux, arm64 on macOS, amd64 on Windows.
+            arch = target.split("-")[0]
+            names = {"aarch64": ("aarch64", "arm64"), "x86_64": ("x86_64", "amd64")}
+            assert platform.endswith(names[arch]), (target, platform)
+        # Each platform's wheels: abi3, and one for free-threaded 3.14.
+        assert '("cp310-abi3", "cp314-cp314t")' in verify
+        assert 'f"medh5-{raw}-{target}.{archive}"' in verify
+
+    def test_free_threaded_python_gets_a_wheel_of_its_own(self):
+        """Free-threaded CPython cannot load an abi3 extension, so medh5 did
+        not install there without a compiler.  Each build makes a second,
+        cp314t wheel (the module still asks for the GIL); a gating job tests
+        it, and one with the GIL forced off informs."""
+        build = (ROOT / ".github/scripts/build-dist.sh").read_text(encoding="utf-8")
+        assert "MEDH5_FT_PYTHON=/opt/python/cp314-cp314t/bin/python" in build
+        assert '--interpreter "$MEDH5_FT_PYTHON"' in build
+        workflow = _jobs(BUILD.read_text(encoding="utf-8"))["build"]
+        assert 'python-version: "3.14t"' in workflow
+        assert "MEDH5_FT_PYTHON: ${{ steps.free-threaded.outputs.python-path }}" in (
+            workflow
+        )
+        jobs = _jobs(CI.read_text(encoding="utf-8"))
+        for name in ("test-free-threaded", "test-no-gil"):
+            assert 'python-version: "3.14t"' in jobs[name], name
+            assert "dist/*-cp314t-*.whl" in jobs[name], name
+        assert 'PYTHON_GIL: "0"' in jobs["test-no-gil"]
+        assert "sys._is_gil_enabled()" in jobs["test-free-threaded"]
+        # Every other job installs the abi3 wheel by name: two wheels match
+        # `dist/*.whl` now.
+        for name, job in jobs.items():
+            assert "dist/*.whl" not in job, name
 
     def test_the_intel_mac_skips_pull_requests_and_nothing_else(self):
         """The Intel Mac build was the slowest job of every run (14 to 23

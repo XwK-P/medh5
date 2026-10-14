@@ -121,14 +121,24 @@ jobs:
           version = Version(raw)
           wheels = sorted(pathlib.Path("dist").glob("*.whl"))
           sdists = sorted(pathlib.Path("dist").glob("*.tar.gz"))
-          # One abi3 wheel per platform the project ships.
-          platforms = ("manylinux_2_28_x86_64", "manylinux_2_28_aarch64",
-                       "macosx_11_0_arm64", "macosx_11_0_x86_64", "win_amd64")
+          # Each target the project ships, with its wheels' platform tag: an
+          # abi3 wheel, one for free-threaded CPython 3.14 (which cannot load
+          # the abi3 one), and the binary.
+          platforms = {
+              "x86_64-unknown-linux-gnu": "manylinux_2_28_x86_64",
+              "aarch64-unknown-linux-gnu": "manylinux_2_28_aarch64",
+              "aarch64-apple-darwin": "macosx_11_0_arm64",
+              "x86_64-apple-darwin": "macosx_11_0_x86_64",
+              "x86_64-pc-windows-msvc": "win_amd64",
+          }
           problems = []
-          for platform in platforms:
-              found = [w for w in wheels if w.name.endswith(f"-cp310-abi3-{platform}.whl")]
-              if len(found) != 1:
-                  problems.append(f"{len(found)} wheels for {platform}")
+          for platform in platforms.values():
+              for abi in ("cp310-abi3", "cp314-cp314t"):
+                  found = [w for w in wheels if w.name.endswith(f"-{abi}-{platform}.whl")]
+                  if len(found) != 1:
+                      problems.append(f"{len(found)} {abi} wheels for {platform}")
+          if len(wheels) != 2 * len(platforms):
+              problems.append(f"{len(wheels)} wheels, not {2 * len(platforms)}")
           if len(sdists) != 1:
               problems.append(f"{len(sdists)} sdists")
           for dist in [*wheels, *sdists]:
@@ -145,12 +155,10 @@ jobs:
                   if not any(n.endswith(f".dist-info/licenses/{notice}") for n in names):
                       problems.append(f"{wheel.name} lacks {notice}")
           binaries = sorted(p.name for p in pathlib.Path("cli").iterdir())
-          for target in ("x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu",
-                         "aarch64-apple-darwin", "x86_64-apple-darwin"):
-              if f"medh5-{raw}-{target}.tar.gz" not in binaries:
+          for target in platforms:
+              archive = "zip" if "windows" in target else "tar.gz"
+              if f"medh5-{raw}-{target}.{archive}" not in binaries:
                   problems.append(f"no binary for {target}")
-          if f"medh5-{raw}-x86_64-pc-windows-msvc.zip" not in binaries:
-              problems.append("no binary for x86_64-pc-windows-msvc")
           # Each archive carries the licences of what the binary links.
           import tarfile
           for archive in sorted(pathlib.Path("cli").iterdir()):

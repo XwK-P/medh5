@@ -1,9 +1,10 @@
 name: Build
 
-# One platform's abi3 wheel and native binary, built together from one checkout
-# and one lock.  `ci.yml` calls this once per platform, as a job of its own, so
-# each platform's tests wait for its own build and no other: as one matrix job,
-# no test started before the slowest of the five builds ended.
+# One platform's wheels (abi3, and free-threaded 3.14) and native binary, built
+# together from one checkout and one lock.  `ci.yml` calls this once per
+# platform, as a job of its own, so each platform's tests wait for its own
+# build and no other: as one matrix job, no test started before the slowest of
+# the five builds ended.
 on:
   workflow_call:
     inputs:
@@ -45,6 +46,14 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
+      # The free-threaded CPython the second wheel is built for; a manylinux
+      # image has its own (build-dist.sh).  The 3.12 above stays first on PATH.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        id: free-threaded
+        if: ${{ !inputs.container }}
+        with:
+          python-version: "3.14t"
+          update-environment: false
       # The crates' builds, HDF5's among them, as `main`'s last run of this
       # platform left them; only `main` saves them.  Never on a tag: the
       # release publishes what its run on the tag builds, so that build starts
@@ -66,6 +75,8 @@ jobs:
       - name: Build
         if: ${{ !inputs.container }}
         shell: bash
+        env:
+          MEDH5_FT_PYTHON: ${{ steps.free-threaded.outputs.python-path }}
         run: bash .github/scripts/build-dist.sh "${{ inputs.target }}"
       - name: The binary runs the conformance corpus
         shell: bash
@@ -84,7 +95,7 @@ jobs:
       - name: The wheel installs and runs the conformance corpus
         shell: bash
         run: |
-          pip install dist/*.whl
+          pip install dist/*-abi3-*.whl
           cd "$RUNNER_TEMP"
           python -c "import medh5; print(medh5.__version__, medh5.__file__)"
           medh5 --version

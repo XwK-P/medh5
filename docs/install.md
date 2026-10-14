@@ -53,6 +53,13 @@ pip downloads a ready-built package (a *wheel*) for Python 3.10 and later on:
 | macOS, Intel or Apple silicon | macOS 11 or later |
 | Windows, x64 | Windows 10 or later |
 
+Each system has a second wheel for free-threaded CPython 3.14 (`python3.14t`),
+which cannot load the first. medh5 is not yet audited for running without the
+GIL, so it asks for it: importing medh5 turns the GIL back on, and Python says
+so once with a `RuntimeWarning`. Everything works as it does on a regular
+CPython; nothing runs in parallel that would not there. Running without the GIL
+is planned for 2.2.
+
 Anywhere else, pip builds medh5 from its source package instead. That takes
 several minutes and needs:
 
@@ -62,7 +69,7 @@ several minutes and needs:
 
 This covers Alpine and other musl-based Linux, Linux with a glibc older than
 2.28 (Ubuntu 18.04, CentOS 7), Windows on ARM, PyPy 3.11 and free-threaded
-CPython 3.14 or later. Free-threaded CPython 3.13 and PyPy 3.10 cannot build it
+CPython 3.15 or later. Free-threaded CPython 3.13 and PyPy 3.10 cannot build it
 at all: PyO3, the library that binds the engine to Python, does not support
 them. If pip prints `Building wheel for medh5`, it found no wheel for your
 system and needs these three.
